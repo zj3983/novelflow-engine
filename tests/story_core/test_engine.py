@@ -1,5 +1,5 @@
 from packages.story_core.engine import StoryEngine
-from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.models import CharacterRelationship, CharacterState, StoryState
 
 
 def test_generate_chapter_updates_state_and_returns_bundle():
@@ -58,3 +58,39 @@ def test_generate_chapter_does_not_mutate_frozen_character_state():
     assert frozen_character.memory == ["The ledger must stay hidden."]
     assert frozen_character.current_emotion == "guarded"
     assert frozen_character.location == "sealed vault"
+
+
+def test_generate_chapter_evolves_lead_relationships():
+    story = StoryState(
+        story_id="s-011",
+        outline="Two investigators circle the same ledger from opposite ends of the court.",
+        genre="fantasy",
+        style="court intrigue",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["expose the forgery"],
+                relationships={
+                    "Su Wan": CharacterRelationship(
+                        target="Su Wan",
+                        trust=0.4,
+                        tension=0.9,
+                        bond="uneasy alliance",
+                    )
+                },
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the family name"],
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+    relationship = bundle.updated_story.characters[0].relationships["Su Wan"]
+
+    assert relationship.trust == 0.5
+    assert relationship.tension == 1.0

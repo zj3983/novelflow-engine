@@ -101,6 +101,27 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
 
   const chapterNumber = story.current_chapter + 1;
   story.current_chapter = chapterNumber;
+  story.characters = story.characters.map((character, index) => {
+    if (index !== 0 || character.frozen || !character.relationships) {
+      return character;
+    }
+
+    const nextRelationships = Object.fromEntries(
+      Object.entries(character.relationships).map(([key, relationship]) => [
+        key,
+        {
+          ...relationship,
+          trust: Math.min(1, Number((relationship.trust + 0.1).toFixed(2))),
+          tension: Math.min(1, Number((relationship.tension + 0.1).toFixed(2))),
+        },
+      ]),
+    );
+
+    return {
+      ...character,
+      relationships: nextRelationships,
+    };
+  });
 
   const bundle: ChapterBundle = {
     chapter_number: chapterNumber,
