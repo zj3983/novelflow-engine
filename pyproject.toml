@@ -4,11 +4,13 @@ version = "0.0.0"
 description = "A story engine that evolves characters and generates chapters from an outline."
 requires-python = ">=3.11"
 dependencies = [
+  "fastapi>=0.110",
   "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "httpx>=0.26",
   "pytest>=8.0",
 ]
 
