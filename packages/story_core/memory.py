@@ -9,6 +9,19 @@ from packages.story_core.models import (
 )
 
 
+def _relationship_shift(goals: list[str]) -> tuple[float, float]:
+    goal_text = " ".join(goals).lower()
+
+    cooperative_words = ("protect", "save", "guard", "help")
+    adversarial_words = ("expose", "find", "accuse", "hunt")
+
+    if any(word in goal_text for word in cooperative_words):
+        return 0.1, -0.1
+    if any(word in goal_text for word in adversarial_words):
+        return -0.1, 0.1
+    return 0.05, 0.05
+
+
 def apply_post_chapter_updates(story: StoryState, body: str, chapter_number: int) -> None:
     fact = f"Chapter {chapter_number} confirms the investigation is still unfolding."
     unresolved = f"Who will control the truth after chapter {chapter_number}?"
@@ -23,10 +36,11 @@ def apply_post_chapter_updates(story: StoryState, body: str, chapter_number: int
             if lead.relationships:
                 key = next(iter(lead.relationships))
                 relation = lead.relationships[key]
+                trust_delta, tension_delta = _relationship_shift(lead.goals)
                 lead.relationships[key] = CharacterRelationship(
                     target=relation.target,
-                    trust=min(1.0, round(relation.trust + 0.1, 2)),
-                    tension=min(1.0, round(relation.tension + 0.1, 2)),
+                    trust=max(0.0, min(1.0, round(relation.trust + trust_delta, 2))),
+                    tension=max(0.0, min(1.0, round(relation.tension + tension_delta, 2))),
                     bond=relation.bond,
                 )
 

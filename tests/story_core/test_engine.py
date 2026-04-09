@@ -92,5 +92,36 @@ def test_generate_chapter_evolves_lead_relationships():
     bundle = StoryEngine().generate_next_chapter(story)
     relationship = bundle.updated_story.characters[0].relationships["Su Wan"]
 
-    assert relationship.trust == 0.5
+    assert relationship.trust == 0.3
     assert relationship.tension == 1.0
+
+
+def test_generate_chapter_can_reduce_tension_for_protective_goal():
+    story = StoryState(
+        story_id="s-012",
+        outline="A clerk protects an ally while hiding the ledger.",
+        genre="fantasy",
+        style="court intrigue",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Pei An",
+                role="protagonist",
+                goals=["protect Su Wan"],
+                relationships={
+                    "Su Wan": CharacterRelationship(
+                        target="Su Wan",
+                        trust=0.4,
+                        tension=0.6,
+                        bond="fragile trust",
+                    )
+                },
+            )
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+    relationship = bundle.updated_story.characters[0].relationships["Su Wan"]
+
+    assert relationship.trust == 0.5
+    assert relationship.tension == 0.5

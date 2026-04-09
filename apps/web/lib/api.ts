@@ -81,6 +81,18 @@ type MockStory = {
 
 const mockStore = new Map<string, MockStory>();
 
+function relationshipShift(goals: string[]): { trustDelta: number; tensionDelta: number } {
+  const goalText = goals.join(" ").toLowerCase();
+
+  if (/(protect|save|guard|help)/.test(goalText)) {
+    return { trustDelta: 0.1, tensionDelta: -0.1 };
+  }
+  if (/(expose|find|accuse|hunt)/.test(goalText)) {
+    return { trustDelta: -0.1, tensionDelta: 0.1 };
+  }
+  return { trustDelta: 0.05, tensionDelta: 0.05 };
+}
+
 function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
   const story: MockStory = {
     story_id: payload.story_id,
@@ -111,8 +123,8 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
         key,
         {
           ...relationship,
-          trust: Math.min(1, Number((relationship.trust + 0.1).toFixed(2))),
-          tension: Math.min(1, Number((relationship.tension + 0.1).toFixed(2))),
+          trust: Math.max(0, Math.min(1, Number((relationship.trust + relationshipShift(character.goals).trustDelta).toFixed(2)))),
+          tension: Math.max(0, Math.min(1, Number((relationship.tension + relationshipShift(character.goals).tensionDelta).toFixed(2)))),
         },
       ]),
     );
