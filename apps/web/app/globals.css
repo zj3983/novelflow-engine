@@ -1,0 +1,130 @@
+:root {
+  --bg: #f6f1e6;
+  --ink: #1f1d1a;
+  --muted: rgba(31, 29, 26, 0.65);
+  --paper: #fffaf0;
+  --edge: rgba(31, 29, 26, 0.18);
+  --accent: #b64b32;
+  --shadow: rgba(31, 29, 26, 0.08);
+  --radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: radial-gradient(1200px 800px at 15% 10%, #fff3d6, transparent 55%),
+    radial-gradient(1000px 700px at 80% 25%, #ffe9df, transparent 55%),
+    radial-gradient(900px 600px at 60% 90%, #f4ffed, transparent 55%),
+    var(--bg);
+  font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
+    serif;
+}
+
+.workbench {
+  min-height: 100vh;
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 1.05fr 1.4fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+@media (max-width: 900px) {
+  .workbench {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+}
+
+.panel {
+  background: linear-gradient(180deg, var(--paper), #fff);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px var(--shadow);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.panel__header {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--edge);
+  letter-spacing: 0.04em;
+  font-variant: all-small-caps;
+  font-size: 14px;
+  background: linear-gradient(90deg, rgba(182, 75, 50, 0.12), transparent 60%);
+}
+
+.panel__body {
+  padding: 14px;
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.field label {
+  display: block;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin: 0 0 6px 0;
+}
+
+.field textarea {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  border-radius: 12px;
+  border: 1px solid var(--edge);
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 1.5;
+  background: rgba(255, 255, 255, 0.8);
+  outline: none;
+}
+
+.field textarea:focus {
+  border-color: rgba(182, 75, 50, 0.55);
+  box-shadow: 0 0 0 4px rgba(182, 75, 50, 0.14);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid rgba(182, 75, 50, 0.45);
+  background: rgba(182, 75, 50, 0.12);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 10px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.btn + .btn {
+  margin-left: 10px;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn--ghost {
+  border-color: var(--edge);
+  background: rgba(255, 255, 255, 0.5);
+}
+
