@@ -24,7 +24,15 @@ export default function Page() {
   const [draft, setDraft] = useState<StoryDraft>({
     outline: "A detective prince uncovers palace crimes.",
     characters: [
-      { name: "Lin Yue", goal: "find the culprit", frozen: false },
+      {
+        name: "Lin Yue",
+        goal: "find the culprit",
+        frozen: false,
+        relationshipTarget: "",
+        relationshipBond: "",
+        trust: "0.0",
+        tension: "0.0",
+      },
     ],
   });
   const [bundle, setBundle] = useState<ChapterBundle | null>(null);
@@ -43,6 +51,16 @@ export default function Page() {
         role: index === 0 ? "protagonist" : "supporting",
         goals: [character.goal.trim()],
         frozen: character.frozen,
+        relationships: character.relationshipTarget.trim()
+          ? {
+              [character.relationshipTarget.trim()]: {
+                target: character.relationshipTarget.trim(),
+                trust: Number(character.trust || "0"),
+                tension: Number(character.tension || "0"),
+                bond: character.relationshipBond.trim(),
+              },
+            }
+          : {},
       }));
   }
 
@@ -148,6 +166,21 @@ export default function Page() {
                   <p className="hint" style={{ marginBottom: 10 }}>
                     Frozen: {(bundle.updated_story as { characters: Array<{ name: string; frozen: boolean }> }).characters[0].frozen ? "Yes" : "No"}
                   </p>
+                  {(() => {
+                    const lead = (bundle.updated_story as { characters: Array<{ relationships?: Record<string, { target: string; trust: number; tension: number; bond: string }> }> }).characters[0];
+                    const relations = Object.values(lead.relationships ?? {});
+                    if (!relations.length) return null;
+                    return (
+                      <>
+                        <p className="hint" style={{ marginBottom: 10 }}>
+                          Relationship: {relations[0].target} ({relations[0].bond || "unlabeled"})
+                        </p>
+                        <p className="hint" style={{ marginBottom: 10 }}>
+                          Trust/Tension: {relations[0].trust} / {relations[0].tension}
+                        </p>
+                      </>
+                    );
+                  })()}
                 </>
               ) : null}
               <pre style={{ margin: 0, overflowX: "auto" }}>

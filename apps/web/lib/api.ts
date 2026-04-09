@@ -8,6 +8,15 @@ export type CreateStoryRequest = {
     role: string;
     goals: string[];
     frozen: boolean;
+    relationships?: Record<
+      string,
+      {
+        target: string;
+        trust: number;
+        tension: number;
+        bond: string;
+      }
+    >;
   }>;
 };
 
@@ -41,6 +50,15 @@ export type StoryResponse = {
     role: string;
     goals: string[];
     frozen: boolean;
+    relationships?: Record<
+      string,
+      {
+        target: string;
+        trust: number;
+        tension: number;
+        bond: string;
+      }
+    >;
   }>;
   history: ChapterBundle[];
 };
@@ -93,6 +111,7 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
       goals: character.goals,
       current_emotion: character.frozen ? "steady" : "alert",
       location: character.frozen ? "held position" : "palace archive",
+      relationships: character.relationships ?? {},
     })),
     foreshadowing: [{ text: "A hidden letter appears.", first_chapter: chapterNumber, status: "open" }],
     next_outline: `Chapter ${chapterNumber + 1}: force the lead to act on the newest clue.`,

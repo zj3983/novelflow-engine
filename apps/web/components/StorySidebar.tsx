@@ -2,6 +2,10 @@ export type StoryCharacterDraft = {
   name: string;
   goal: string;
   frozen: boolean;
+  relationshipTarget: string;
+  relationshipBond: string;
+  trust: string;
+  tension: string;
 };
 
 export type StoryDraft = {
@@ -27,7 +31,15 @@ export function StorySidebar({ draft, onChange }: StorySidebarProps) {
       ...draft,
       characters: [
         ...draft.characters,
-        { name: "", goal: "", frozen: false },
+        {
+          name: "",
+          goal: "",
+          frozen: false,
+          relationshipTarget: "",
+          relationshipBond: "",
+          trust: "0.0",
+          tension: "0.0",
+        },
       ],
     });
   }
@@ -87,6 +99,60 @@ export function StorySidebar({ draft, onChange }: StorySidebarProps) {
             />
             <span>Freeze Character</span>
           </label>
+
+          <div className="field">
+            <label htmlFor={`relationship-target-${index}`}>Relationship Target {index + 1}</label>
+            <input
+              id={`relationship-target-${index}`}
+              aria-label={`Relationship Target ${index + 1}`}
+              className="text-input"
+              value={character.relationshipTarget}
+              onChange={(event) =>
+                updateCharacter(index, { ...character, relationshipTarget: event.target.value })
+              }
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor={`relationship-bond-${index}`}>Relationship Bond {index + 1}</label>
+            <input
+              id={`relationship-bond-${index}`}
+              aria-label={`Relationship Bond ${index + 1}`}
+              className="text-input"
+              value={character.relationshipBond}
+              onChange={(event) =>
+                updateCharacter(index, { ...character, relationshipBond: event.target.value })
+              }
+            />
+          </div>
+
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor={`trust-level-${index}`}>Trust Level {index + 1}</label>
+              <input
+                id={`trust-level-${index}`}
+                aria-label={`Trust Level ${index + 1}`}
+                className="text-input"
+                value={character.trust}
+                onChange={(event) =>
+                  updateCharacter(index, { ...character, trust: event.target.value })
+                }
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor={`tension-level-${index}`}>Tension Level {index + 1}</label>
+              <input
+                id={`tension-level-${index}`}
+                aria-label={`Tension Level ${index + 1}`}
+                className="text-input"
+                value={character.tension}
+                onChange={(event) =>
+                  updateCharacter(index, { ...character, tension: event.target.value })
+                }
+              />
+            </div>
+          </div>
         </section>
       ))}
 
