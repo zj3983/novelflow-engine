@@ -93,6 +93,23 @@ function relationshipShift(goals: string[]): { trustDelta: number; tensionDelta:
   return { trustDelta: 0.05, tensionDelta: 0.05 };
 }
 
+function relationshipSentence(story: MockStory): string {
+  const lead = story.characters[0];
+  const relations = Object.values(lead?.relationships ?? {});
+  if (!lead || !relations.length) {
+    return "The room offers no certainty, only pressure.";
+  }
+
+  const relation = relations[0];
+  if (relation.tension >= 0.8) {
+    return `Each exchange with ${relation.target} needles the alliance closer to open fracture.`;
+  }
+  if (relation.trust >= 0.5 && relation.tension <= 0.5) {
+    return `${lead.name} works in fragile step with ${relation.target}, trusting the silence between them.`;
+  }
+  return `${lead.name} studies ${relation.target} carefully, unsure which way the balance will tip.`;
+}
+
 function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
   const story: MockStory = {
     story_id: payload.story_id,
@@ -137,7 +154,7 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
 
   const bundle: ChapterBundle = {
     chapter_number: chapterNumber,
-    body: `Chapter ${chapterNumber} body.`,
+    body: `Chapter ${chapterNumber} body. ${relationshipSentence(story)}`,
     character_cards: story.characters.map((character) => ({
       name: character.name,
       role: character.role,

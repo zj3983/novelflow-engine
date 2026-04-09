@@ -94,6 +94,7 @@ def test_generate_chapter_evolves_lead_relationships():
 
     assert relationship.trust == 0.3
     assert relationship.tension == 1.0
+    assert "needles the alliance" in bundle.body
 
 
 def test_generate_chapter_can_reduce_tension_for_protective_goal():
@@ -125,3 +126,4 @@ def test_generate_chapter_can_reduce_tension_for_protective_goal():
 
     assert relationship.trust == 0.5
     assert relationship.tension == 0.5
+    assert "works in fragile step with Su Wan" in bundle.body

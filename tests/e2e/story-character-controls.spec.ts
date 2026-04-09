@@ -29,4 +29,5 @@ test("relationship editor carries trust and tension into generated state", async
 
   await expect(page.getByText("Relationship: Su Wan (uneasy alliance)")).toBeVisible();
   await expect(page.getByText("Trust/Tension: 0.3 / 1")).toBeVisible();
+  await expect(page.getByRole("article")).toContainText("needles the alliance");
 });
