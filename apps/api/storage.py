@@ -9,6 +9,7 @@ from packages.story_core.models import StoryState
 @dataclass
 class StoryRecord:
     story: StoryState
+    initial_story: StoryState
     history: list[ChapterBundle] = field(default_factory=list)
 
 
@@ -22,7 +23,10 @@ class InMemoryStoryStore:
         self._stories: dict[str, StoryRecord] = {}
 
     def create(self, story: StoryState) -> StoryRecord:
-        record = StoryRecord(story=story)
+        record = StoryRecord(
+            story=story,
+            initial_story=story.model_copy(deep=True),
+        )
         self._stories[story.story_id] = record
         return record
 
@@ -40,8 +44,39 @@ class InMemoryStoryStore:
         record = self._stories[story_id]
         if record.history:
             record.history.pop()
-            record.story.current_chapter = max(0, record.story.current_chapter - 1)
+            if record.history:
+                record.story = record.history[-1].updated_story.model_copy(deep=True)
+            else:
+                record.story = record.initial_story.model_copy(deep=True)
         return record
+
+    def branch_from(self, story_id: str, new_story_id: str, from_chapter: int) -> StoryRecord:
+        record = self._stories[story_id]
+        if new_story_id in self._stories:
+            raise ValueError("story_exists")
+
+        if from_chapter < 0 or from_chapter > len(record.history):
+            raise IndexError(from_chapter)
+
+        if from_chapter == 0:
+            branch_story = record.initial_story.model_copy(deep=True)
+            branch_history: list[ChapterBundle] = []
+        else:
+            branch_history = [bundle.model_copy(deep=True) for bundle in record.history[:from_chapter]]
+            branch_story = branch_history[-1].updated_story.model_copy(deep=True)
+
+        branch_story.story_id = new_story_id
+        for bundle in branch_history:
+            bundle.updated_story.story_id = new_story_id
+
+        branch_record = StoryRecord(
+            story=branch_story,
+            initial_story=record.initial_story.model_copy(deep=True),
+            history=branch_history,
+        )
+        branch_record.initial_story.story_id = new_story_id
+        self._stories[new_story_id] = branch_record
+        return branch_record
 
     def freeze_character(self, story_id: str, character_name: str) -> StoryRecord:
         record = self._stories[story_id]

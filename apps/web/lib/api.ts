@@ -77,9 +77,14 @@ type MockStory = {
   current_chapter: number;
   characters: StoryResponse["characters"];
   history: ChapterBundle[];
+  initial_story: StoryResponse;
 };
 
 const mockStore = new Map<string, MockStory>();
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
 
 function relationshipShift(goals: string[]): { trustDelta: number; tensionDelta: number } {
   const goalText = goals.join(" ").toLowerCase();
@@ -128,17 +133,28 @@ function continuitySentence(story: MockStory): string {
 }
 
 function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
+  const initialStory: StoryResponse = {
+    story_id: payload.story_id,
+    outline: payload.outline,
+    genre: payload.genre,
+    style: payload.style,
+    current_chapter: 0,
+    characters: clone(payload.characters ?? []),
+    history: [],
+  };
+
   const story: MockStory = {
     story_id: payload.story_id,
     outline: payload.outline,
     genre: payload.genre,
     style: payload.style,
     current_chapter: 0,
-    characters: payload.characters ?? [],
+    characters: clone(payload.characters ?? []),
     history: [],
+    initial_story: initialStory,
   };
   mockStore.set(payload.story_id, story);
-  return { ...story };
+  return clone(initialStory);
 }
 
 function mockGenerateNextChapter(storyId: string): ChapterBundle {
@@ -212,7 +228,7 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
   };
 
   story.history.push(bundle);
-  return bundle;
+  return clone(bundle);
 }
 
 function mockRollbackStory(storyId: string): StoryResponse {
@@ -221,10 +237,78 @@ function mockRollbackStory(storyId: string): StoryResponse {
 
   if (story.history.length > 0) {
     story.history.pop();
-    story.current_chapter = Math.max(0, story.current_chapter - 1);
+    if (story.history.length > 0) {
+      const restored = story.history.at(-1)?.updated_story as StoryResponse;
+      story.current_chapter = restored.current_chapter;
+      story.characters = clone(restored.characters);
+    } else {
+      story.current_chapter = story.initial_story.current_chapter;
+      story.characters = clone(story.initial_story.characters);
+    }
   }
 
-  return { ...story };
+  return {
+    story_id: story.story_id,
+    outline: story.outline,
+    genre: story.genre,
+    style: story.style,
+    current_chapter: story.current_chapter,
+    characters: clone(story.characters),
+    history: clone(story.history),
+  };
+}
+
+function mockFetchStory(storyId: string): StoryResponse {
+  const story = mockStore.get(storyId);
+  if (!story) throw new Error("mock: story_not_found");
+  return {
+    story_id: story.story_id,
+    outline: story.outline,
+    genre: story.genre,
+    style: story.style,
+    current_chapter: story.current_chapter,
+    characters: clone(story.characters),
+    history: clone(story.history),
+  };
+}
+
+function mockBranchStory(storyId: string, newStoryId: string, fromChapter: number): StoryResponse {
+  const story = mockStore.get(storyId);
+  if (!story) throw new Error("mock: story_not_found");
+  if (mockStore.has(newStoryId)) throw new Error("mock: story_exists");
+  if (fromChapter < 0 || fromChapter > story.history.length) throw new Error("mock: chapter_not_found");
+
+  const branchHistory = clone(story.history.slice(0, fromChapter));
+  const branchState =
+    fromChapter === 0
+      ? clone(story.initial_story)
+      : clone((branchHistory.at(-1)?.updated_story as StoryResponse | undefined) ?? story.initial_story);
+
+  branchState.story_id = newStoryId;
+  branchState.history = branchHistory;
+
+  const branchStory: MockStory = {
+    story_id: newStoryId,
+    outline: story.outline,
+    genre: story.genre,
+    style: story.style,
+    current_chapter: branchState.current_chapter,
+    characters: clone(branchState.characters),
+    history: branchHistory,
+    initial_story: {
+      ...clone(story.initial_story),
+      story_id: newStoryId,
+    },
+  };
+
+  for (const bundle of branchStory.history) {
+    if (bundle.updated_story && typeof bundle.updated_story === "object") {
+      (bundle.updated_story as { story_id?: string }).story_id = newStoryId;
+    }
+  }
+
+  mockStore.set(newStoryId, branchStory);
+  return mockFetchStory(newStoryId);
 }
 
 async function tryFetchJson(url: string, init: RequestInit): Promise<any> {
@@ -274,6 +358,28 @@ export async function rollbackStory(storyId: string): Promise<StoryResponse> {
   }
 }
 
+export async function fetchStory(storyId: string): Promise<StoryResponse> {
+  try {
+    return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}`, {
+      method: "GET",
+    });
+  } catch {
+    return mockFetchStory(storyId);
+  }
+}
+
+export async function branchStory(storyId: string, newStoryId: string, fromChapter: number): Promise<StoryResponse> {
+  try {
+    return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/branch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ new_story_id: newStoryId, from_chapter: fromChapter }),
+    });
+  } catch {
+    return mockBranchStory(storyId, newStoryId, fromChapter);
+  }
+}
+
 export async function freezeCharacter(storyId: string, characterName: string): Promise<StoryResponse> {
   try {
     return await tryFetchJson(
@@ -288,6 +394,6 @@ export async function freezeCharacter(storyId: string, characterName: string): P
     story.characters = story.characters.map((character) =>
       character.name === characterName ? { ...character, frozen: true } : character,
     );
-    return { ...story };
+    return mockFetchStory(storyId);
   }
 }

@@ -18,3 +18,23 @@ test("multi-character cast appears in generated state and rollback clears the dr
 
   await expect(page.getByText("No chapter generated yet.")).toBeVisible();
 });
+
+test("chapter history can be viewed and branched from an earlier chapter", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Outline Input").fill("A court archivist must decide which truth survives.");
+  await page.getByLabel("Character Name 1").fill("Lin Yue");
+  await page.getByLabel("Character Goal 1").fill("find the hidden ledger");
+
+  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
+  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
+
+  await expect(page.getByRole("button", { name: "View Chapter 1" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "View Chapter 2" })).toBeVisible();
+
+  await page.getByRole("button", { name: "View Chapter 1" }).click();
+  await expect(page.getByRole("heading", { name: "Chapter 1" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Branch from Chapter 1" }).click();
+  await expect(page.getByText("Branch story: s-001-branch-ch1")).toBeVisible();
+  await expect(page.getByText("Current chapter: 1")).toBeVisible();
+});

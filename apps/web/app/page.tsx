@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { ChapterBundleView } from "../components/ChapterBundleView";
 import { StorySidebar, type StoryDraft } from "../components/StorySidebar";
 import {
+  branchStory,
   createStory,
-  freezeCharacter,
+  fetchStory,
   generateNextChapter,
   rollbackStory,
   type ChapterBundle,
@@ -35,16 +36,24 @@ export default function Page() {
       },
     ],
   });
-  const [bundle, setBundle] = useState<ChapterBundle | null>(null);
+  const [story, setStory] = useState<StoryResponse | null>(null);
+  const [activeStoryId, setActiveStoryId] = useState(DEFAULT_STORY.story_id);
+  const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [storyInitialized, setStoryInitialized] = useState(false);
   const [activeDraftKey, setActiveDraftKey] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const draftRef = useRef(draft);
 
-  const currentDraftKey = JSON.stringify(draft);
+  const currentDraftKey = JSON.stringify(draftRef.current);
+
+  function updateDraft(next: StoryDraft) {
+    draftRef.current = next;
+    setDraft(next);
+  }
 
   function buildCharacters(): StoryCharacter[] {
-    return draft.characters
+    return draftRef.current.characters
       .filter((character) => character.name.trim() && character.goal.trim())
       .map((character, index) => ({
         name: character.name.trim(),
@@ -64,38 +73,62 @@ export default function Page() {
       }));
   }
 
-  async function ensureStoryReady() {
+  function buildStoryFromBundle(
+    baseStory: StoryResponse,
+    nextBundle: ChapterBundle,
+    storyId: string,
+  ): StoryResponse {
+    const history = [...baseStory.history, nextBundle];
+    const updatedStory = nextBundle.updated_story as StoryResponse | undefined;
+
+    return {
+      story_id: storyId,
+      outline: updatedStory?.outline ?? baseStory.outline,
+      genre: updatedStory?.genre ?? baseStory.genre,
+      style: updatedStory?.style ?? baseStory.style,
+      current_chapter: updatedStory?.current_chapter ?? nextBundle.chapter_number,
+      characters: updatedStory?.characters ?? baseStory.characters,
+      history,
+    };
+  }
+
+  async function ensureStoryReady(): Promise<StoryResponse> {
     const characters = buildCharacters();
     const mustReset = !storyInitialized || activeDraftKey !== currentDraftKey;
 
     if (mustReset) {
-      await createStory({
+      const createdStory = await createStory({
         ...DEFAULT_STORY,
-        outline: draft.outline,
+        outline: draftRef.current.outline,
         characters,
       });
-      for (const character of characters) {
-        if (character.frozen) {
-          await freezeCharacter(DEFAULT_STORY.story_id, character.name);
-        }
-      }
+      setStory(createdStory);
+      setSelectedChapter(createdStory.history.length ? createdStory.history[createdStory.history.length - 1].chapter_number : null);
       setStoryInitialized(true);
       setActiveDraftKey(currentDraftKey);
+      setActiveStoryId(DEFAULT_STORY.story_id);
+      return createdStory;
     }
-  }
 
-  function syncBundleFromStory(story: StoryResponse) {
-    const history = story.history ?? [];
-    setBundle(history.length ? history[history.length - 1] : null);
+    if (!story) {
+      const syncedStory = await fetchStory(activeStoryId);
+      setStory(syncedStory);
+      setSelectedChapter(syncedStory.history.length ? syncedStory.history[syncedStory.history.length - 1].chapter_number : null);
+      return syncedStory;
+    }
+
+    return story;
   }
 
   async function onGenerateNextChapter() {
     setError(null);
     setIsGenerating(true);
     try {
-      await ensureStoryReady();
-      const nextBundle = await generateNextChapter(DEFAULT_STORY.story_id);
-      setBundle(nextBundle);
+      const readyStory = await ensureStoryReady();
+      const nextBundle = await generateNextChapter(activeStoryId);
+      const nextStory = buildStoryFromBundle(readyStory, nextBundle, activeStoryId);
+      setStory(nextStory);
+      setSelectedChapter(nextBundle.chapter_number);
     } catch (e) {
       setError(e instanceof Error ? e.message : "generate failed");
     } finally {
@@ -107,8 +140,9 @@ export default function Page() {
     setError(null);
     setIsGenerating(true);
     try {
-      const story = await rollbackStory(DEFAULT_STORY.story_id);
-      syncBundleFromStory(story);
+      const syncedStory = await rollbackStory(activeStoryId);
+      setStory(syncedStory);
+      setSelectedChapter(syncedStory.history.length ? syncedStory.history[syncedStory.history.length - 1].chapter_number : null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "rollback failed");
     } finally {
@@ -116,20 +150,42 @@ export default function Page() {
     }
   }
 
+  async function onBranchFromChapter(chapterNumber: number) {
+    setError(null);
+    setIsGenerating(true);
+    try {
+      await ensureStoryReady();
+      const branchId = `${activeStoryId}-branch-ch${chapterNumber}`;
+      const branch = await branchStory(activeStoryId, branchId, chapterNumber);
+      setStory(branch);
+      setActiveStoryId(branch.story_id);
+      setSelectedChapter(branch.history.length ? branch.history[branch.history.length - 1].chapter_number : null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "branch failed");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  const selectedBundle =
+    selectedChapter == null
+      ? null
+      : story?.history.find((entry) => entry.chapter_number === selectedChapter) ?? null;
+
   return (
     <main className="workbench">
       <section className="panel panel-outline" aria-label="Outline Panel">
         <header className="panel__header">Outline</header>
         <div className="panel__body">
-          <StorySidebar draft={draft} onChange={setDraft} />
+          <StorySidebar draft={draft} onChange={updateDraft} />
         </div>
       </section>
 
       <section className="panel panel-draft" aria-label="Chapter Draft Panel">
         <header className="panel__header">Chapter Draft</header>
         <div className="panel__body">
-          {bundle ? (
-            <ChapterBundleView bundle={bundle} />
+          {selectedBundle ? (
+            <ChapterBundleView bundle={selectedBundle} />
           ) : (
             <p className="hint">No chapter generated yet.</p>
           )}
@@ -139,35 +195,47 @@ export default function Page() {
       <section className="panel panel-state" aria-label="Character State Panel">
         <header className="panel__header">Character State</header>
         <div className="panel__body">
-          {bundle ? (
+          {selectedBundle ? (
             <div>
               <p className="hint" style={{ marginBottom: 10 }}>
-                Current chapter: {bundle.chapter_number}
+                Story: {story?.story_id}
               </p>
               <p className="hint" style={{ marginBottom: 10 }}>
-                Continuity: {bundle.quality_report?.ok ? "OK" : "Needs review"}
+                Current chapter: {story?.current_chapter ?? selectedBundle.chapter_number}
               </p>
               <p className="hint" style={{ marginBottom: 10 }}>
-                Next beat: {bundle.next_outline ?? "Not planned yet."}
+                Viewing chapter: {selectedBundle.chapter_number}
               </p>
-              {bundle.chapter_summary?.facts?.length ? (
+              {story?.story_id !== DEFAULT_STORY.story_id ? (
                 <p className="hint" style={{ marginBottom: 10 }}>
-                  Latest fact: {bundle.chapter_summary.facts[0]}
+                  Branch story: {story?.story_id}
                 </p>
               ) : null}
-              {bundle.updated_story && (bundle.updated_story as { characters?: Array<{ name: string; frozen: boolean }> }).characters?.length ? (
+              <p className="hint" style={{ marginBottom: 10 }}>
+                Continuity: {selectedBundle.quality_report?.ok ? "OK" : "Needs review"}
+              </p>
+              <p className="hint" style={{ marginBottom: 10 }}>
+                Next beat: {selectedBundle.next_outline ?? "Not planned yet."}
+              </p>
+              {selectedBundle.chapter_summary?.facts?.length ? (
+                <p className="hint" style={{ marginBottom: 10 }}>
+                  Latest fact: {selectedBundle.chapter_summary.facts[0]}
+                </p>
+              ) : null}
+              {selectedBundle.updated_story &&
+              (selectedBundle.updated_story as { characters?: Array<{ name: string; frozen: boolean }> }).characters?.length ? (
                 <>
                   <p className="hint" style={{ marginBottom: 10 }}>
-                    Cast: {(bundle.updated_story as { characters: Array<{ name: string }> }).characters.map((character) => character.name).join(", ")}
+                    Cast: {(selectedBundle.updated_story as { characters: Array<{ name: string }> }).characters.map((character) => character.name).join(", ")}
                   </p>
                   <p className="hint" style={{ marginBottom: 10 }}>
-                    Lead: {(bundle.updated_story as { characters: Array<{ name: string; frozen: boolean }> }).characters[0].name}
+                    Lead: {(selectedBundle.updated_story as { characters: Array<{ name: string; frozen: boolean }> }).characters[0].name}
                   </p>
                   <p className="hint" style={{ marginBottom: 10 }}>
-                    Frozen: {(bundle.updated_story as { characters: Array<{ name: string; frozen: boolean }> }).characters[0].frozen ? "Yes" : "No"}
+                    Frozen: {(selectedBundle.updated_story as { characters: Array<{ name: string; frozen: boolean }> }).characters[0].frozen ? "Yes" : "No"}
                   </p>
                   {(() => {
-                    const lead = (bundle.updated_story as { characters: Array<{ relationships?: Record<string, { target: string; trust: number; tension: number; bond: string }> }> }).characters[0];
+                    const lead = (selectedBundle.updated_story as { characters: Array<{ relationships?: Record<string, { target: string; trust: number; tension: number; bond: string }> }> }).characters[0];
                     const relations = Object.values(lead.relationships ?? {});
                     if (!relations.length) return null;
                     return (
@@ -186,11 +254,11 @@ export default function Page() {
               <pre style={{ margin: 0, overflowX: "auto" }}>
                 {JSON.stringify(
                   {
-                    character_cards: bundle.character_cards ?? [],
-                    foreshadowing: bundle.foreshadowing ?? [],
-                    chapter_summary: bundle.chapter_summary ?? null,
-                    quality_report: bundle.quality_report ?? null,
-                    updated_story: bundle.updated_story ?? null,
+                    character_cards: selectedBundle.character_cards ?? [],
+                    foreshadowing: selectedBundle.foreshadowing ?? [],
+                    chapter_summary: selectedBundle.chapter_summary ?? null,
+                    quality_report: selectedBundle.quality_report ?? null,
+                    updated_story: selectedBundle.updated_story ?? null,
                   },
                   null,
                   2,
@@ -212,6 +280,33 @@ export default function Page() {
           <button className="btn btn--ghost" type="button" onClick={onRollbackChapter} disabled={isGenerating || !storyInitialized}>
             Rollback Chapter
           </button>
+          {story?.history.length ? (
+            <div style={{ marginTop: 14 }}>
+              <p className="hint" style={{ marginBottom: 8 }}>
+                Chapter History
+              </p>
+              {story.history.map((entry) => (
+                <div key={entry.chapter_number} style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                  <button
+                    className="btn btn--ghost"
+                    type="button"
+                    onClick={() => setSelectedChapter(entry.chapter_number)}
+                    disabled={isGenerating}
+                  >
+                    View Chapter {entry.chapter_number}
+                  </button>
+                  <button
+                    className="btn btn--ghost"
+                    type="button"
+                    onClick={() => onBranchFromChapter(entry.chapter_number)}
+                    disabled={isGenerating}
+                  >
+                    Branch from Chapter {entry.chapter_number}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {error ? <p className="hint" style={{ marginTop: 10 }}>{error}</p> : null}
           <p className="hint" style={{ marginTop: 10 }}>
             Note: If the backend is not running, generation uses a local deterministic mock.
