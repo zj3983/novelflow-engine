@@ -45,6 +45,8 @@ export type StoryResponse = {
   history: ChapterBundle[];
 };
 
+export type StoryCharacter = StoryResponse["characters"][number];
+
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 }
@@ -85,7 +87,13 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
   const bundle: ChapterBundle = {
     chapter_number: chapterNumber,
     body: `Chapter ${chapterNumber} body.`,
-    character_cards: [],
+    character_cards: story.characters.map((character) => ({
+      name: character.name,
+      role: character.role,
+      goals: character.goals,
+      current_emotion: character.frozen ? "steady" : "alert",
+      location: character.frozen ? "held position" : "palace archive",
+    })),
     foreshadowing: [{ text: "A hidden letter appears.", first_chapter: chapterNumber, status: "open" }],
     next_outline: `Chapter ${chapterNumber + 1}: force the lead to act on the newest clue.`,
     chapter_summary: {

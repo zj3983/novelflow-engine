@@ -4,7 +4,15 @@ import { useState } from "react";
 
 import { ChapterBundleView } from "../components/ChapterBundleView";
 import { StorySidebar, type StoryDraft } from "../components/StorySidebar";
-import { createStory, freezeCharacter, generateNextChapter, type ChapterBundle } from "../lib/api";
+import {
+  createStory,
+  freezeCharacter,
+  generateNextChapter,
+  rollbackStory,
+  type ChapterBundle,
+  type StoryCharacter,
+  type StoryResponse,
+} from "../lib/api";
 
 const DEFAULT_STORY = {
   story_id: "s-001",
@@ -15,37 +23,76 @@ const DEFAULT_STORY = {
 export default function Page() {
   const [draft, setDraft] = useState<StoryDraft>({
     outline: "A detective prince uncovers palace crimes.",
-    characterName: "Lin Yue",
-    characterGoal: "find the culprit",
-    freezeCharacter: false,
+    characters: [
+      { name: "Lin Yue", goal: "find the culprit", frozen: false },
+    ],
   });
   const [bundle, setBundle] = useState<ChapterBundle | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [storyInitialized, setStoryInitialized] = useState(false);
+  const [activeDraftKey, setActiveDraftKey] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const currentDraftKey = JSON.stringify(draft);
+
+  function buildCharacters(): StoryCharacter[] {
+    return draft.characters
+      .filter((character) => character.name.trim() && character.goal.trim())
+      .map((character, index) => ({
+        name: character.name.trim(),
+        role: index === 0 ? "protagonist" : "supporting",
+        goals: [character.goal.trim()],
+        frozen: character.frozen,
+      }));
+  }
+
+  async function ensureStoryReady() {
+    const characters = buildCharacters();
+    const mustReset = !storyInitialized || activeDraftKey !== currentDraftKey;
+
+    if (mustReset) {
+      await createStory({
+        ...DEFAULT_STORY,
+        outline: draft.outline,
+        characters,
+      });
+      for (const character of characters) {
+        if (character.frozen) {
+          await freezeCharacter(DEFAULT_STORY.story_id, character.name);
+        }
+      }
+      setStoryInitialized(true);
+      setActiveDraftKey(currentDraftKey);
+    }
+  }
+
+  function syncBundleFromStory(story: StoryResponse) {
+    const history = story.history ?? [];
+    setBundle(history.length ? history[history.length - 1] : null);
+  }
 
   async function onGenerateNextChapter() {
     setError(null);
     setIsGenerating(true);
     try {
-      await createStory({
-        ...DEFAULT_STORY,
-        outline: draft.outline,
-        characters: [
-          {
-            name: draft.characterName,
-            role: "protagonist",
-            goals: [draft.characterGoal],
-            frozen: draft.freezeCharacter,
-          },
-        ],
-      });
-      if (draft.freezeCharacter) {
-        await freezeCharacter(DEFAULT_STORY.story_id, draft.characterName);
-      }
+      await ensureStoryReady();
       const nextBundle = await generateNextChapter(DEFAULT_STORY.story_id);
       setBundle(nextBundle);
     } catch (e) {
       setError(e instanceof Error ? e.message : "generate failed");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  async function onRollbackChapter() {
+    setError(null);
+    setIsGenerating(true);
+    try {
+      const story = await rollbackStory(DEFAULT_STORY.story_id);
+      syncBundleFromStory(story);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "rollback failed");
     } finally {
       setIsGenerating(false);
     }
@@ -93,6 +140,9 @@ export default function Page() {
               {bundle.updated_story && (bundle.updated_story as { characters?: Array<{ name: string; frozen: boolean }> }).characters?.length ? (
                 <>
                   <p className="hint" style={{ marginBottom: 10 }}>
+                    Cast: {(bundle.updated_story as { characters: Array<{ name: string }> }).characters.map((character) => character.name).join(", ")}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 10 }}>
                     Lead: {(bundle.updated_story as { characters: Array<{ name: string; frozen: boolean }> }).characters[0].name}
                   </p>
                   <p className="hint" style={{ marginBottom: 10 }}>
@@ -126,7 +176,7 @@ export default function Page() {
           <button className="btn" type="button" onClick={onGenerateNextChapter} disabled={isGenerating}>
             Generate Next Chapter
           </button>
-          <button className="btn btn--ghost" type="button" disabled>
+          <button className="btn btn--ghost" type="button" onClick={onRollbackChapter} disabled={isGenerating || !storyInitialized}>
             Rollback Chapter
           </button>
           {error ? <p className="hint" style={{ marginTop: 10 }}>{error}</p> : null}

@@ -100,6 +100,23 @@ body {
   gap: 14px;
 }
 
+.character-card {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.character-card__title {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 .text-input {
   width: 100%;
   border-radius: 12px;
