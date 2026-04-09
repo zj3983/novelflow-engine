@@ -26,11 +26,23 @@ def _relationship_sentence(story: StoryState) -> str:
     return f"{lead.name} studies {relation.target} carefully, unsure which way the balance will tip."
 
 
+def _continuity_sentence(story: StoryState) -> str:
+    parts: list[str] = []
+
+    if story.world_facts:
+        parts.append(f"Carries forward: {story.world_facts[-1]}")
+    if story.foreshadowing:
+        parts.append(f"Foreshadowing lingers: {story.foreshadowing[0].text}")
+
+    return " ".join(parts)
+
+
 def write_chapter_body(story: StoryState, chapter_number: int) -> str:
     lead = story.characters[0].name if story.characters else "The investigator"
     lead_goal = story.characters[0].goals[0] if story.characters and story.characters[0].goals else "find the truth"
     relation_line = _relationship_sentence(story)
+    continuity_line = _continuity_sentence(story)
     return (
         f"Chapter {chapter_number} body. {lead} presses deeper into the intrigue, "
-        f"trying to {lead_goal}. {relation_line} A hidden letter appears before the chapter closes."
+        f"trying to {lead_goal}. {relation_line} {continuity_line} A hidden letter appears before the chapter closes."
     )

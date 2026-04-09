@@ -127,3 +127,29 @@ def test_generate_chapter_can_reduce_tension_for_protective_goal():
     assert relationship.trust == 0.5
     assert relationship.tension == 0.5
     assert "works in fragile step with Su Wan" in bundle.body
+
+
+def test_second_chapter_body_reuses_fact_and_foreshadowing_context():
+    story = StoryState(
+        story_id="s-013",
+        outline="A palace clerk follows a hidden ledger across two nights.",
+        genre="fantasy",
+        style="suspense",
+        current_chapter=1,
+        world_facts=["Chapter 1 confirms the investigation is still unfolding."],
+        foreshadowing=[],
+        chapter_summaries=[],
+        characters=[
+            CharacterState(
+                name="Pei An",
+                role="protagonist",
+                goals=["find the ledger"],
+            )
+        ],
+    )
+
+    first_bundle = StoryEngine().generate_next_chapter(story)
+    second_bundle = StoryEngine().generate_next_chapter(first_bundle.updated_story)
+
+    assert "Carries forward" in second_bundle.body
+    assert "A hidden letter appears." in second_bundle.body

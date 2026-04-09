@@ -110,6 +110,23 @@ function relationshipSentence(story: MockStory): string {
   return `${lead.name} studies ${relation.target} carefully, unsure which way the balance will tip.`;
 }
 
+function continuitySentence(story: MockStory): string {
+  const parts: string[] = [];
+  const lastFact = story.history.at(-1)?.chapter_summary?.facts?.[0];
+  const foreshadowingText = story.history.at(-1)?.foreshadowing?.[0]
+    ? ((story.history.at(-1)?.foreshadowing?.[0] as { text?: string }).text ?? "")
+    : "";
+
+  if (lastFact) {
+    parts.push(`Carries forward: ${lastFact}`);
+  }
+  if (foreshadowingText) {
+    parts.push(`Foreshadowing lingers: ${foreshadowingText}`);
+  }
+
+  return parts.join(" ");
+}
+
 function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
   const story: MockStory = {
     story_id: payload.story_id,
@@ -154,7 +171,7 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
 
   const bundle: ChapterBundle = {
     chapter_number: chapterNumber,
-    body: `Chapter ${chapterNumber} body. ${relationshipSentence(story)}`,
+    body: `Chapter ${chapterNumber} body. ${relationshipSentence(story)} ${continuitySentence(story)} A hidden letter appears.`,
     character_cards: story.characters.map((character) => ({
       name: character.name,
       role: character.role,
