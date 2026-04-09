@@ -14,10 +14,11 @@ def apply_post_chapter_updates(story: StoryState, body: str, chapter_number: int
 
     if story.characters:
         lead = story.characters[0]
-        lead.memory.append(f"Chapter {chapter_number} changed the situation.")
-        lead.current_emotion = "alert"
-        if not lead.location:
-            lead.location = "palace archive"
+        if not lead.frozen:
+            lead.memory.append(f"Chapter {chapter_number} changed the situation.")
+            lead.current_emotion = "alert"
+            if not lead.location:
+                lead.location = "palace archive"
 
     story.world_facts.append(fact)
     story.timeline.append(

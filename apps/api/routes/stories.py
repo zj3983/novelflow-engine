@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from apps.api.storage import InMemoryStoryStore
 from packages.story_core.engine import StoryEngine
-from packages.story_core.models import StoryState
+from packages.story_core.models import CharacterState, StoryState
 
 
 router = APIRouter()
@@ -18,6 +18,7 @@ class CreateStoryRequest(BaseModel):
     outline: str
     genre: str
     style: str
+    characters: list[CharacterState] = Field(default_factory=list)
 
 
 class StoryResponse(BaseModel):
@@ -26,6 +27,7 @@ class StoryResponse(BaseModel):
     genre: str
     style: str
     current_chapter: int
+    characters: list[dict] = Field(default_factory=list)
     history: list[dict] = Field(default_factory=list)
 
 
@@ -39,20 +41,20 @@ def _serialize_story(story_id: str) -> StoryResponse:
         genre=record.story.genre,
         style=record.story.style,
         current_chapter=record.story.current_chapter,
+        characters=[character.model_dump() for character in record.story.characters],
         history=[b.model_dump() for b in record.history],
     )
 
 
 @router.post("/stories")
 def create_story(payload: CreateStoryRequest) -> StoryResponse:
-    # For now, we don't ingest character setup from the API; UI can add later.
     story = StoryState(
         story_id=payload.story_id,
         outline=payload.outline,
         genre=payload.genre,
         style=payload.style,
         current_chapter=0,
-        characters=[],
+        characters=payload.characters,
     )
     store.create(story)
     return _serialize_story(payload.story_id)
@@ -71,6 +73,17 @@ def rollback(story_id: str) -> StoryResponse:
     if store.get(story_id) is None:
         raise HTTPException(status_code=404, detail="story_not_found")
     store.rollback_last(story_id)
+    return _serialize_story(story_id)
+
+
+@router.post("/stories/{story_id}/characters/{character_name}/freeze")
+def freeze_character(story_id: str, character_name: str) -> StoryResponse:
+    if store.get(story_id) is None:
+        raise HTTPException(status_code=404, detail="story_not_found")
+    try:
+        store.freeze_character(story_id, character_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="character_not_found") from exc
     return _serialize_story(story_id)
 
 

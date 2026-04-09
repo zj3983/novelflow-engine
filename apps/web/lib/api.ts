@@ -3,6 +3,12 @@ export type CreateStoryRequest = {
   outline: string;
   genre: string;
   style: string;
+  characters?: Array<{
+    name: string;
+    role: string;
+    goals: string[];
+    frozen: boolean;
+  }>;
 };
 
 export type ChapterBundle = {
@@ -30,6 +36,12 @@ export type StoryResponse = {
   genre: string;
   style: string;
   current_chapter: number;
+  characters: Array<{
+    name: string;
+    role: string;
+    goals: string[];
+    frozen: boolean;
+  }>;
   history: ChapterBundle[];
 };
 
@@ -43,6 +55,7 @@ type MockStory = {
   genre: string;
   style: string;
   current_chapter: number;
+  characters: StoryResponse["characters"];
   history: ChapterBundle[];
 };
 
@@ -55,6 +68,7 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     genre: payload.genre,
     style: payload.style,
     current_chapter: 0,
+    characters: payload.characters ?? [],
     history: [],
   };
   mockStore.set(payload.story_id, story);
@@ -90,7 +104,7 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
       genre: story.genre,
       style: story.style,
       current_chapter: story.current_chapter,
-      characters: [],
+      characters: story.characters,
       timeline: [
         {
           chapter_number: chapterNumber,
@@ -163,5 +177,23 @@ export async function rollbackStory(storyId: string): Promise<StoryResponse> {
     });
   } catch {
     return mockRollbackStory(storyId);
+  }
+}
+
+export async function freezeCharacter(storyId: string, characterName: string): Promise<StoryResponse> {
+  try {
+    return await tryFetchJson(
+      `${apiBase()}/stories/${encodeURIComponent(storyId)}/characters/${encodeURIComponent(characterName)}/freeze`,
+      {
+        method: "POST",
+      },
+    );
+  } catch {
+    const story = mockStore.get(storyId);
+    if (!story) throw new Error("mock: story_not_found");
+    story.characters = story.characters.map((character) =>
+      character.name === characterName ? { ...character, frozen: true } : character,
+    );
+    return { ...story };
   }
 }

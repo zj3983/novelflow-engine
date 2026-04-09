@@ -43,3 +43,10 @@ class InMemoryStoryStore:
             record.story.current_chapter = max(0, record.story.current_chapter - 1)
         return record
 
+    def freeze_character(self, story_id: str, character_name: str) -> StoryRecord:
+        record = self._stories[story_id]
+        for character in record.story.characters:
+            if character.name == character_name:
+                character.frozen = True
+                return record
+        raise KeyError(character_name)

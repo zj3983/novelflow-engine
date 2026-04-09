@@ -28,3 +28,28 @@ def test_story_can_be_created_and_rolled_back():
     assert rollback_resp.status_code == 200
     assert rollback_resp.json()["current_chapter"] == 0
 
+
+def test_story_can_store_characters_and_freeze_them():
+    create_resp = client.post(
+        "/stories",
+        json={
+            "story_id": "s-characters",
+            "outline": "A palace clerk learns the truth about the treasury.",
+            "genre": "fantasy",
+            "style": "court intrigue",
+            "characters": [
+                {
+                    "name": "Pei An",
+                    "role": "clerk",
+                    "goals": ["protect the evidence"],
+                    "frozen": False,
+                }
+            ],
+        },
+    )
+    assert create_resp.status_code == 200
+    assert create_resp.json()["characters"][0]["name"] == "Pei An"
+
+    freeze_resp = client.post("/stories/s-characters/characters/Pei%20An/freeze")
+    assert freeze_resp.status_code == 200
+    assert freeze_resp.json()["characters"][0]["frozen"] is True

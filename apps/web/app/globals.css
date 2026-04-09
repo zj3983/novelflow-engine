@@ -95,6 +95,39 @@ body {
   outline: none;
 }
 
+.sidebar-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.text-input {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--edge);
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 1.4;
+  background: rgba(255, 255, 255, 0.8);
+  outline: none;
+}
+
+.text-input:focus {
+  border-color: rgba(182, 75, 50, 0.55);
+  box-shadow: 0 0 0 4px rgba(182, 75, 50, 0.14);
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+}
+
+.checkbox-row input {
+  width: 16px;
+  height: 16px;
+}
+
 .field textarea:focus {
   border-color: rgba(182, 75, 50, 0.55);
   box-shadow: 0 0 0 4px rgba(182, 75, 50, 0.14);
@@ -127,4 +160,3 @@ body {
   border-color: var(--edge);
   background: rgba(255, 255, 255, 0.5);
 }
-
