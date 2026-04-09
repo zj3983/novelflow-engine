@@ -62,12 +62,24 @@ export default function Page() {
               <p className="hint" style={{ marginBottom: 10 }}>
                 Current chapter: {bundle.chapter_number}
               </p>
+              <p className="hint" style={{ marginBottom: 10 }}>
+                Continuity: {bundle.quality_report?.ok ? "OK" : "Needs review"}
+              </p>
+              <p className="hint" style={{ marginBottom: 10 }}>
+                Next beat: {bundle.next_outline ?? "Not planned yet."}
+              </p>
+              {bundle.chapter_summary?.facts?.length ? (
+                <p className="hint" style={{ marginBottom: 10 }}>
+                  Latest fact: {bundle.chapter_summary.facts[0]}
+                </p>
+              ) : null}
               <pre style={{ margin: 0, overflowX: "auto" }}>
                 {JSON.stringify(
                   {
                     character_cards: bundle.character_cards ?? [],
                     foreshadowing: bundle.foreshadowing ?? [],
-                    next_outline: bundle.next_outline ?? "",
+                    chapter_summary: bundle.chapter_summary ?? null,
+                    quality_report: bundle.quality_report ?? null,
                   },
                   null,
                   2,

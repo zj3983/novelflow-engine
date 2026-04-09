@@ -26,4 +26,7 @@ def test_generate_chapter_updates_state_and_returns_bundle():
     assert bundle.next_outline
     assert bundle.updated_story.current_chapter == 1
     assert bundle.updated_story.characters[0].memory
-
+    assert bundle.updated_story.timeline
+    assert bundle.updated_story.chapter_summaries
+    assert bundle.updated_story.foreshadowing
+    assert bundle.updated_story.chapter_summaries[0].facts

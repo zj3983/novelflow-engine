@@ -9,6 +9,7 @@ from packages.story_core.memory import (
 )
 from packages.story_core.models import StoryState
 from packages.story_core.planner import plan_next_outline
+from packages.story_core.quality import validate_bundle
 from packages.story_core.writer import write_chapter_body
 
 
@@ -19,6 +20,8 @@ class ChapterBundle(BaseModel):
     foreshadowing: list[dict] = Field(default_factory=list)
     next_outline: str
     updated_story: StoryState
+    chapter_summary: dict = Field(default_factory=dict)
+    quality_report: dict = Field(default_factory=dict)
 
 
 class StoryEngine:
@@ -31,12 +34,14 @@ class StoryEngine:
         body = write_chapter_body(updated_story, chapter_number)
         apply_post_chapter_updates(updated_story, body, chapter_number)
 
-        return ChapterBundle(
+        bundle = ChapterBundle(
             chapter_number=chapter_number,
             body=body,
             character_cards=build_character_cards(updated_story),
             foreshadowing=build_foreshadowing(updated_story, chapter_number),
             next_outline=plan_next_outline(updated_story, chapter_number),
             updated_story=updated_story,
+            chapter_summary=updated_story.chapter_summaries[-1].model_dump(),
         )
-
+        bundle.quality_report = validate_bundle(bundle.model_dump())
+        return bundle

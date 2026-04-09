@@ -1,19 +1,75 @@
 from __future__ import annotations
 
-from packages.story_core.models import StoryState
+from packages.story_core.models import (
+    ChapterSummary,
+    ForeshadowingState,
+    StoryState,
+    TimelineEvent,
+)
 
 
 def apply_post_chapter_updates(story: StoryState, body: str, chapter_number: int) -> None:
-    # Minimal placeholder memory update logic for Task 2.
+    fact = f"Chapter {chapter_number} confirms the investigation is still unfolding."
+    unresolved = f"Who will control the truth after chapter {chapter_number}?"
+
     if story.characters:
-        story.characters[0].memory.append(f"Chapter {chapter_number} changed the situation.")
+        lead = story.characters[0]
+        lead.memory.append(f"Chapter {chapter_number} changed the situation.")
+        lead.current_emotion = "alert"
+        if not lead.location:
+            lead.location = "palace archive"
+
+    story.world_facts.append(fact)
+    story.timeline.append(
+        TimelineEvent(
+            chapter_number=chapter_number,
+            summary=f"Chapter {chapter_number} pushes the core mystery forward.",
+            impact="raises pressure on every major player",
+        )
+    )
+
+    story.chapter_summaries.append(
+        ChapterSummary(
+            chapter_number=chapter_number,
+            summary=body,
+            facts=[fact],
+            unresolved_threads=[unresolved],
+        )
+    )
+
+    if not story.foreshadowing:
+        story.foreshadowing.append(
+            ForeshadowingState(
+                text="A hidden letter appears.",
+                first_chapter=chapter_number,
+                status="open",
+            )
+        )
+    else:
+        story.foreshadowing[0].status = "reinforced"
 
 
 def build_character_cards(story: StoryState) -> list[dict]:
-    return [{"name": c.name, "memory": list(c.memory)} for c in story.characters]
+    return [
+        {
+            "name": c.name,
+            "role": c.role,
+            "memory": list(c.memory),
+            "current_emotion": c.current_emotion,
+            "location": c.location,
+            "goals": list(c.goals),
+        }
+        for c in story.characters
+    ]
 
 
 def build_foreshadowing(story: StoryState, chapter_number: int) -> list[dict]:
-    # Keep this deterministic for tests; later we can make it dynamic.
-    return [{"text": "A hidden letter appears."}]
-
+    if not story.foreshadowing:
+        return [
+            {
+                "text": "A hidden letter appears.",
+                "first_chapter": chapter_number,
+                "status": "open",
+            }
+        ]
+    return [item.model_dump() for item in story.foreshadowing]

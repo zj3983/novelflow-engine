@@ -11,6 +11,16 @@ export type ChapterBundle = {
   character_cards?: unknown[];
   foreshadowing?: unknown[];
   next_outline?: string;
+  chapter_summary?: {
+    chapter_number: number;
+    summary: string;
+    facts: string[];
+    unresolved_threads: string[];
+  };
+  quality_report?: {
+    ok: boolean;
+    issues: string[];
+  };
   updated_story?: unknown;
 };
 
@@ -62,8 +72,18 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
     chapter_number: chapterNumber,
     body: `Chapter ${chapterNumber} body.`,
     character_cards: [],
-    foreshadowing: [{ text: "A hidden letter appears." }],
-    next_outline: `Continue from chapter ${chapterNumber}.`,
+    foreshadowing: [{ text: "A hidden letter appears.", first_chapter: chapterNumber, status: "open" }],
+    next_outline: `Chapter ${chapterNumber + 1}: force the lead to act on the newest clue.`,
+    chapter_summary: {
+      chapter_number: chapterNumber,
+      summary: `Chapter ${chapterNumber} body.`,
+      facts: [`Chapter ${chapterNumber} confirms the investigation is still unfolding.`],
+      unresolved_threads: [`Who will control the truth after chapter ${chapterNumber}?`],
+    },
+    quality_report: {
+      ok: true,
+      issues: [],
+    },
     updated_story: {
       story_id: story.story_id,
       outline: story.outline,
@@ -71,6 +91,15 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
       style: story.style,
       current_chapter: story.current_chapter,
       characters: [],
+      timeline: [
+        {
+          chapter_number: chapterNumber,
+          summary: `Chapter ${chapterNumber} pushes the core mystery forward.`,
+          impact: "raises pressure on every major player",
+        },
+      ],
+      chapter_summaries: [],
+      foreshadowing: [],
     },
   };
 
