@@ -42,6 +42,11 @@ export function StorySidebar({
   onAgentSettingsChange,
 }: StorySidebarProps) {
   const [isAgentSettingsOpen, setIsAgentSettingsOpen] = useState(true);
+  const runtimeMode =
+    agentSettings.mode === "LLM-assisted"
+      ? "LLM-assisted with deterministic fallback"
+      : "Rule-based only";
+  const agentRuntimeLabel = agentSettings.mode;
 
   function updateCharacter(index: number, next: StoryCharacterDraft) {
     const characters = draft.characters.map((character, currentIndex) =>
@@ -184,6 +189,15 @@ export function StorySidebar({
             <p className="hint">Writer model: {agentSettings.writerModel}</p>
             <p className="hint">Temperature: {agentSettings.temperature}</p>
             <p className="hint">New character policy: {agentSettings.newCharacterPolicy}</p>
+          </div>
+
+          <div className="agent-settings__summary" aria-label="Agent Runtime Status">
+            <p className="hint">Agent Runtime</p>
+            <p className="hint">Runtime mode: {runtimeMode}</p>
+            <p className="hint">CharacterAgent: {agentRuntimeLabel}</p>
+            <p className="hint">DirectorAgent: {agentRuntimeLabel}</p>
+            <p className="hint">WriterAgent: {agentRuntimeLabel}</p>
+            <p className="hint">MemoryAgent: {agentRuntimeLabel}</p>
           </div>
           </div>
         ) : null}

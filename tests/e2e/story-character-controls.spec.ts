@@ -57,6 +57,12 @@ test("agent settings panel exposes model and mode controls", async ({ page }) =>
   await expect(page.getByText("Mode: LLM-assisted", { exact: true })).toBeVisible();
   await expect(page.getByText("Character model: gpt-5.4", { exact: true })).toBeVisible();
   await expect(page.getByText("New character policy: Director review", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Runtime mode: LLM-assisted with deterministic fallback", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("DirectorAgent: LLM-assisted", { exact: true })).toBeVisible();
 });
 
 test("agent settings persist into story generation payload", async ({ page }) => {
