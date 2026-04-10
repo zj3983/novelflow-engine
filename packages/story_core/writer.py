@@ -37,6 +37,17 @@ def _continuity_sentence(story: StoryState) -> str:
     return " ".join(parts)
 
 
+def _next_focus_sentence(story: StoryState) -> str:
+    if not story.chapter_summaries:
+        return ""
+
+    next_focus = story.chapter_summaries[-1].next_focus
+    if not next_focus:
+        return ""
+
+    return f"Next focus: {next_focus}"
+
+
 def write_chapter_body(
     story: StoryState,
     chapter_number: int,
@@ -62,8 +73,10 @@ def write_chapter_body(
         if event_beat
         else ""
     )
+    next_focus_line = _next_focus_sentence(story)
     return (
         f"Chapter {chapter_number} body. {lead} presses deeper into the intrigue, "
         f"trying to {lead_goal}. {conflict_line} {secondary_line} {event_line} {relation_line} {continuity_line} "
+        f"{next_focus_line} "
         "A hidden letter appears before the chapter closes."
     )

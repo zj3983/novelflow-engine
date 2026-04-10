@@ -1,5 +1,5 @@
 from packages.story_core.engine import StoryEngine
-from packages.story_core.models import ChapterSummary, CharacterRelationship, CharacterState, StoryState
+from packages.story_core.models import ChapterSummary, CharacterRelationship, CharacterState, ForeshadowingState, StoryState
 from packages.story_core.planner import build_action_briefs
 
 
@@ -560,6 +560,66 @@ def test_chapter_summary_next_focus_points_to_primary_conflict_follow_up():
     assert summary["next_focus"]
     assert "Lin Yue" in summary["next_focus"]
     assert "Su Wan" in summary["next_focus"]
+
+
+def test_next_chapter_body_echoes_previous_summary_next_focus():
+    story = StoryState(
+        story_id="s-027",
+        outline="A prior chapter should leave a visible hook in the prose.",
+        genre="mystery",
+        style="tense",
+        current_chapter=1,
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                summary="The first clash leaves the witness unresolved.",
+                facts=["The witness is still contested."],
+                unresolved_threads=["Can Lin Yue and Su Wan control the witness next?"],
+                next_focus="Return to Lin Yue and Su Wan over the witness",
+                primary_conflict={
+                    "lead": "Lin Yue",
+                    "opposition": "Su Wan",
+                    "collision": "Lin Yue and Su Wan collide over the witness.",
+                },
+                secondary_conflict={
+                    "pressure": "time",
+                    "detail": "The court keeps closing ranks.",
+                    "participants": [{"name": "Pei An", "goal": "hide the ledger"}],
+                },
+                event_beat={
+                    "turn": "pressure spike",
+                    "pivot": "Lin Yue and Su Wan collide over the witness.",
+                },
+            )
+        ],
+        foreshadowing=[
+            ForeshadowingState(
+                text="A hidden letter appears.",
+                first_chapter=1,
+                status="reinforced",
+            )
+        ],
+        world_facts=["Chapter 1 confirms the investigation is still unfolding."],
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert "Next focus:" in bundle.body
+    assert "Return to Lin Yue and Su Wan over the witness" in bundle.body
 
 
 def test_action_briefs_use_latest_chapter_summary_as_context():
