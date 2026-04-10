@@ -324,7 +324,7 @@ def test_director_selects_secondary_conflict_and_event_beat():
     bundle = StoryEngine().generate_next_chapter(story)
 
     assert bundle.conflict_summary["secondary_conflict"]["participants"]
-    assert "Pei An" in bundle.conflict_summary["secondary_conflict"]["participants"]
+    assert "Pei An" in [item["name"] for item in bundle.conflict_summary["secondary_conflict"]["participants"]]
     assert bundle.event_beat["turn"] == "pressure spike"
     assert "ledger" in bundle.event_beat["pivot"] or "witness" in bundle.event_beat["pivot"]
     assert "Event beat:" in bundle.body
@@ -368,3 +368,43 @@ def test_post_chapter_updates_touch_multiple_conflict_participants():
     assert by_name["Lin Yue"].current_emotion == "alert"
     assert by_name["Su Wan"].current_emotion == "alert"
     assert by_name["Pei An"].current_emotion == "wary"
+
+
+def test_post_chapter_updates_write_role_specific_memories():
+    story = StoryState(
+        story_id="s-020",
+        outline="A witness cracks while three players fight over the truth.",
+        genre="mystery",
+        style="tense",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Pei An",
+                role="supporting",
+                goals=["hide the ledger"],
+                current_emotion="guarded",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+    by_name = {character.name: character for character in bundle.updated_story.characters}
+
+    assert "main clash" in by_name["Lin Yue"].memory[-1]
+    assert "main clash" in by_name["Su Wan"].memory[-1]
+    assert "side pressure" in by_name["Pei An"].memory[-1]
+    assert "witness" in by_name["Lin Yue"].memory[-1]
+    assert "witness" in by_name["Su Wan"].memory[-1]
+    assert "ledger" in by_name["Pei An"].memory[-1]

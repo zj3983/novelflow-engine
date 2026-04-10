@@ -3,6 +3,19 @@ from __future__ import annotations
 from packages.story_core.models import StoryState
 
 
+def _participant_entry(name: str, goal: str = "") -> dict:
+    return {
+        "name": name,
+        "goal": goal,
+    }
+
+
+def _participant_name(item: dict | str) -> str:
+    if isinstance(item, dict):
+        return item.get("name", "")
+    return item
+
+
 def _goal_action(goal: str) -> str:
     goal_text = goal.lower()
     if any(word in goal_text for word in ("protect", "save", "guard", "help")):
@@ -87,12 +100,12 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
             "secondary_conflict": {
                 "pressure": "time",
                 "detail": "Delay will let the newest clue fade into rumor.",
-                "participants": [lead["name"]],
+                "participants": [_participant_entry(lead["name"], lead["goal"])],
             },
         }
 
     secondary_candidates = [
-        candidate["name"]
+        _participant_entry(candidate["name"], candidate["goal"])
         for candidate in action_briefs[1:]
         if candidate["name"] != rival["name"]
     ]
@@ -112,7 +125,7 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
         "secondary_conflict": {
             "pressure": "time",
             "detail": "Every delay gives the court one more chance to hide the truth.",
-            "participants": secondary_candidates or [rival["name"]],
+            "participants": secondary_candidates or [_participant_entry(rival["name"], rival["goal"])],
         },
     }
 
@@ -121,8 +134,13 @@ def build_event_beat(conflict_summary: dict) -> dict:
     primary = conflict_summary.get("primary_conflict", {})
     secondary = conflict_summary.get("secondary_conflict", {})
     pivot = primary.get("collision", "The chapter needs a pivot.")
-    if secondary.get("participants"):
-        pivot = f"{pivot} Meanwhile, {' and '.join(secondary['participants'])} strain the board from the side."
+    participant_names = [
+        _participant_name(item)
+        for item in secondary.get("participants", [])
+        if _participant_name(item)
+    ]
+    if participant_names:
+        pivot = f"{pivot} Meanwhile, {' and '.join(participant_names)} strain the board from the side."
     return {
         "turn": "pressure spike",
         "pivot": pivot,

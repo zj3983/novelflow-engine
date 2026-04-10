@@ -9,6 +9,18 @@ from packages.story_core.models import (
 )
 
 
+def _normalize_participant(item: dict | str) -> dict:
+    if isinstance(item, dict):
+        return {
+            "name": item.get("name", ""),
+            "goal": item.get("goal", ""),
+        }
+    return {
+        "name": item,
+        "goal": "",
+    }
+
+
 def _relationship_shift(goals: list[str]) -> tuple[float, float]:
     goal_text = " ".join(goals).lower()
 
@@ -35,7 +47,11 @@ def apply_post_chapter_updates(
     primary = (conflict_summary or {}).get("primary_conflict", {})
     secondary = (conflict_summary or {}).get("secondary_conflict", {})
     primary_names = {primary.get("lead"), primary.get("opposition")} - {None, ""}
-    secondary_names = set(secondary.get("participants", []))
+    secondary_participants = [
+        _normalize_participant(item) for item in secondary.get("participants", [])
+    ]
+    secondary_names = {item["name"] for item in secondary_participants}
+    secondary_goals = {item["name"]: item.get("goal", "") for item in secondary_participants}
 
     for character in story.characters:
         if character.frozen:
@@ -43,11 +59,18 @@ def apply_post_chapter_updates(
 
         touched = False
         if character.name in primary_names:
-            character.memory.append(f"Chapter {chapter_number} forced {character.name} into the main clash.")
+            collision = primary.get("collision", "the main clash")
+            character.memory.append(
+                f"Chapter {chapter_number} forced {character.name} into the main clash over {collision}."
+            )
             character.current_emotion = "alert"
             touched = True
         elif character.name in secondary_names:
-            character.memory.append(f"Chapter {chapter_number} pulled {character.name} into the side pressure.")
+            detail = secondary.get("detail", "side pressure")
+            goal = secondary_goals.get(character.name, "hold the line")
+            character.memory.append(
+                f"Chapter {chapter_number} pulled {character.name} into the side pressure around {detail} while trying to {goal}."
+            )
             character.current_emotion = "wary"
             touched = True
 
