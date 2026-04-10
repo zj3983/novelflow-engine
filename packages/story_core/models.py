@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 ForeshadowingStatus = Literal["open", "reinforced", "resolved", "expired"]
+Cadence = Literal["urgent", "measured", "breathing"]
 
 
 class CharacterRelationship(BaseModel):
@@ -30,6 +31,7 @@ class ForeshadowingState(BaseModel):
 class ChapterSummary(BaseModel):
     chapter_number: int
     chapter_title: str = ""
+    cadence: Cadence = "measured"
     summary: str
     facts: list[str] = Field(default_factory=list)
     unresolved_threads: list[str] = Field(default_factory=list)

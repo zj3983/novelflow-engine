@@ -113,6 +113,54 @@ def _latest_next_focus(story: StoryState) -> str:
     return story.chapter_summaries[-1].next_focus
 
 
+def compute_chapter_cadence(
+    story: StoryState,
+    action_briefs: list[dict],
+    conflict_summary: dict,
+) -> str:
+    score = 0
+
+    cast_size = len(action_briefs)
+    if cast_size >= 4:
+        score += 3
+    elif cast_size >= 3:
+        score += 2
+    elif cast_size == 2:
+        score += 1
+
+    lead_priority = action_briefs[0].get("priority", 0) if action_briefs else 0
+    if lead_priority >= 9:
+        score += 2
+    elif lead_priority >= 7:
+        score += 1
+
+    if story.chapter_summaries:
+        prior_threads = len(story.chapter_summaries[-1].unresolved_threads)
+        if prior_threads >= 3:
+            score += 2
+        elif prior_threads >= 2:
+            score += 1
+
+    if story.foreshadowing:
+        score += 1
+
+    primary = (conflict_summary or {}).get("primary_conflict", {})
+    lead_name = primary.get("lead", "")
+    opposition_name = primary.get("opposition", "")
+    if lead_name and opposition_name and action_briefs:
+        by_name = {brief.get("name", ""): brief for brief in action_briefs}
+        lead_goal = by_name.get(lead_name, {}).get("goal", "")
+        opp_goal = by_name.get(opposition_name, {}).get("goal", "")
+        if lead_goal and opp_goal and _goal_polarity(lead_goal) != _goal_polarity(opp_goal):
+            score += 1
+
+    if score >= 6:
+        return "urgent"
+    if score >= 3:
+        return "measured"
+    return "breathing"
+
+
 def build_chapter_title(
     chapter_number: int,
     conflict_summary: dict | None = None,
@@ -275,9 +323,17 @@ def plan_next_outline(
     story: StoryState,
     chapter_number: int,
     conflict_summary: dict | None = None,
+    cadence: str | None = None,
 ) -> str:
     lead = story.characters[0].name if story.characters else "the lead"
     next_focus = _latest_next_focus(story)
+    cadence_clause = ""
+    if cadence == "urgent":
+        cadence_clause = " Move fast and do not linger."
+    elif cadence == "breathing":
+        cadence_clause = " Let the chapter breathe before the next strike."
+    elif cadence == "measured":
+        cadence_clause = " Keep the pressure steady."
     if conflict_summary and conflict_summary.get("primary_conflict"):
         primary = conflict_summary["primary_conflict"]
         secondary = conflict_summary.get("secondary_conflict", {})
@@ -290,16 +346,16 @@ def plan_next_outline(
             f"Chapter {chapter_number + 1}: force {primary['lead']} and {primary['opposition']} "
             f"to push their collision harder, keep pressure on {secondary.get('pressure', 'the clock')}, "
             "and decide who gains the next hold over the witness."
-            f"{focus_clause}"
+            f"{focus_clause}{cadence_clause}"
         )
 
     if next_focus:
         return (
             f"Chapter {chapter_number + 1}: start from {next_focus}, "
-            "escalate trust tension, and move one unresolved thread closer to exposure."
+            f"escalate trust tension, and move one unresolved thread closer to exposure.{cadence_clause}"
         )
 
     return (
         f"Chapter {chapter_number + 1}: force {lead} to act on the newest clue, "
-        "escalate trust tension, and move one unresolved thread closer to exposure."
+        f"escalate trust tension, and move one unresolved thread closer to exposure.{cadence_clause}"
     )

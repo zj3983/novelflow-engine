@@ -816,6 +816,63 @@ def test_build_chapter_title_varies_flavor_by_genre_and_style():
     assert mystery_title != fantasy_title
 
 
+def test_generate_chapter_assigns_cadence_and_threads_it_into_summary_and_next_outline():
+    story = StoryState(
+        story_id="s-031",
+        outline="A chapter with many factions should feel urgent.",
+        genre="mystery",
+        style="tense",
+        current_chapter=1,
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                chapter_title="Chapter 1: Witness Dossier",
+                summary="The first clash leaves the witness unresolved.",
+                facts=["The witness is still contested."],
+                unresolved_threads=[
+                    "Who paid for the forgery?",
+                    "Who moved the ledger?",
+                    "Can Lin Yue keep the witness alive next?",
+                ],
+                next_focus="Return to Lin Yue and Su Wan over the witness",
+                primary_conflict={"lead": "Lin Yue", "opposition": "Su Wan", "collision": "Lin Yue and Su Wan collide over the witness."},
+                secondary_conflict={"pressure": "time", "detail": "The court keeps closing ranks.", "participants": [{"name": "Pei An", "goal": "hide the ledger"}]},
+                event_beat={"turn": "pressure spike", "pivot": "Lin Yue and Su Wan collide over the witness."},
+            )
+        ],
+        foreshadowing=[ForeshadowingState(text="A hidden letter appears.", first_chapter=1, status="reinforced")],
+        characters=[
+            CharacterState(name="Lin Yue", role="protagonist", goals=["seize the witness"], current_emotion="alert"),
+            CharacterState(name="Su Wan", role="supporting", goals=["block Lin Yue"], current_emotion="defiant"),
+            CharacterState(name="Pei An", role="supporting", goals=["hide the ledger"], current_emotion="wary"),
+            CharacterState(name="Qin Yu", role="supporting", goals=["expose the forgery"], current_emotion="driven"),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert bundle.cadence == "urgent"
+    assert bundle.chapter_summary["cadence"] == "urgent"
+    assert "move fast" in bundle.next_outline.lower()
+
+
+def test_generate_chapter_can_breathe_when_pressure_is_low():
+    story = StoryState(
+        story_id="s-032",
+        outline="A lone investigator needs a quieter step.",
+        genre="fantasy",
+        style="reflective",
+        current_chapter=0,
+        characters=[CharacterState(name="Lin Yue", role="protagonist", goals=["hold the line"], current_emotion="neutral")],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert bundle.cadence == "breathing"
+    assert bundle.chapter_summary["cadence"] == "breathing"
+    assert "breathe" in bundle.next_outline.lower()
+
+
 def test_action_briefs_use_latest_chapter_summary_as_context():
     story = StoryState(
         story_id="s-024",

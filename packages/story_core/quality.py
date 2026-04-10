@@ -8,6 +8,8 @@ def validate_bundle(bundle: dict) -> dict:
         issues.append("body")
     if not bundle.get("chapter_title"):
         issues.append("chapter_title")
+    if not bundle.get("cadence"):
+        issues.append("cadence")
     if not bundle.get("next_outline"):
         issues.append("next_outline")
 
@@ -20,6 +22,8 @@ def validate_bundle(bundle: dict) -> dict:
     chapter_summary = bundle.get("chapter_summary") or {}
     if not chapter_summary.get("chapter_title"):
         issues.append("chapter_title_summary")
+    if not chapter_summary.get("cadence"):
+        issues.append("cadence_summary")
     if not chapter_summary.get("facts"):
         issues.append("facts")
     if not chapter_summary.get("next_focus"):
