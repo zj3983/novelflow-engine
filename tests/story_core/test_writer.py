@@ -89,3 +89,54 @@ def test_writer_uses_existing_chapter_title_when_present_for_same_chapter():
 
     assert "Title:" in body
     assert "Chapter 2: Custom Crossroads" in body
+
+
+def test_writer_marks_urgent_tempo_when_conflict_is_dense():
+    story = StoryState(
+        story_id="s-writer-004",
+        outline="Too many hands reach for the same witness.",
+        genre="mystery",
+        style="tense",
+        current_chapter=0,
+        characters=[
+            CharacterState(name="Lin Yue", role="protagonist", goals=["find the witness"]),
+            CharacterState(name="Su Wan", role="supporting", goals=["protect the witness"]),
+            CharacterState(name="Pei An", role="supporting", goals=["hide the ledger"]),
+        ],
+    )
+    conflict_summary = {
+        "summary": "Lin Yue tries to find the witness, while Su Wan moves to protect the witness.",
+        "stakes": "Control of the witness reshapes the court.",
+        "primary_conflict": {
+            "lead": "Lin Yue",
+            "opposition": "Su Wan",
+            "collision": "Lin Yue and Su Wan collide over whether the witness can be controlled.",
+        },
+        "secondary_conflict": {
+            "pressure": "time",
+            "detail": "Delay hides the truth.",
+            "participants": [{"name": "Pei An", "goal": "hide the ledger"}],
+        },
+    }
+    event_beat = {"turn": "pressure spike", "pivot": "The witness shifts hands too fast."}
+
+    body = write_chapter_body(story, 1, conflict_summary=conflict_summary, event_beat=event_beat)
+
+    assert "Tempo: urgent" in body
+    assert "cut comes hard" in body
+
+
+def test_writer_marks_breathing_tempo_when_conflict_is_light():
+    story = StoryState(
+        story_id="s-writer-005",
+        outline="A lone investigator reviews old notes.",
+        genre="mystery",
+        style="quiet",
+        current_chapter=0,
+        characters=[CharacterState(name="Lin Yue", role="protagonist", goals=["hold the line"])],
+    )
+
+    body = write_chapter_body(story, 1, conflict_summary=None, event_beat=None)
+
+    assert "Tempo: breathing" in body
+    assert "quiet note" in body

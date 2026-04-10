@@ -60,6 +60,61 @@ def _opening_hook_sentence(story: StoryState) -> str:
     return f"Opening hook: {next_focus}"
 
 
+def _conflict_participant_count(conflict_summary: dict | None) -> int:
+    if not conflict_summary:
+        return 0
+
+    primary = conflict_summary.get("primary_conflict", {})
+    names = {primary.get("lead"), primary.get("opposition")} - {None, "", "circumstance"}
+    secondary = conflict_summary.get("secondary_conflict", {})
+    for participant in secondary.get("participants", []) or []:
+        if isinstance(participant, dict):
+            name = participant.get("name", "")
+        else:
+            name = str(participant)
+        if name:
+            names.add(name)
+    return len(names)
+
+
+def _tempo(story: StoryState, conflict_summary: dict | None, event_beat: dict | None) -> str:
+    style_text = (story.style or "").lower()
+    genre_text = (story.genre or "").lower()
+
+    score = 0
+    participants = _conflict_participant_count(conflict_summary)
+    score += 2 if participants >= 3 else 1 if participants == 2 else 0
+    if conflict_summary and conflict_summary.get("stakes"):
+        score += 1
+    if conflict_summary and (conflict_summary.get("secondary_conflict") or {}).get("pressure") == "time":
+        score += 1
+    if event_beat and event_beat.get("turn"):
+        score += 1
+
+    if "tense" in style_text or "suspense" in style_text or "noir" in style_text:
+        score += 2
+    if "mystery" in genre_text:
+        score += 1
+
+    if score >= 5:
+        return "urgent"
+    if score >= 3:
+        return "measured"
+    return "breathing"
+
+
+def _tempo_sentence(tempo: str) -> str:
+    return f"Tempo: {tempo}"
+
+
+def _closing_sentence(tempo: str) -> str:
+    if tempo == "urgent":
+        return "The chapter closes as the cut comes hard."
+    if tempo == "measured":
+        return "The chapter closes with a held breath."
+    return "The chapter closes on a quiet note."
+
+
 def _resolve_chapter_title(
     story: StoryState,
     chapter_number: int,
@@ -99,6 +154,8 @@ def write_chapter_body(
     continuity_line = _continuity_sentence(story)
     opening_hook_line = _opening_hook_sentence(story)
     title_line = _title_sentence(story, chapter_number, conflict_summary=conflict_summary)
+    tempo_value = _tempo(story, conflict_summary, event_beat)
+    tempo_line = _tempo_sentence(tempo_value)
     conflict_line = (
         f"Conflict: {conflict_summary['summary']} Stakes: {conflict_summary['stakes']}"
         if conflict_summary
@@ -115,9 +172,10 @@ def write_chapter_body(
         else ""
     )
     next_focus_line = _next_focus_sentence(story)
+    closing_line = _closing_sentence(tempo_value)
     return (
-        f"Chapter {chapter_number} body. {opening_hook_line} {title_line} {lead} presses deeper into the intrigue, "
+        f"Chapter {chapter_number} body. {opening_hook_line} {title_line} {tempo_line} {lead} presses deeper into the intrigue, "
         f"trying to {lead_goal}. {conflict_line} {secondary_line} {event_line} {relation_line} {continuity_line} "
         f"{next_focus_line} "
-        "A hidden letter appears before the chapter closes."
+        f"A hidden letter appears before the chapter closes. {closing_line}"
     )
