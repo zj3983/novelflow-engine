@@ -12,6 +12,23 @@ def _goal_action(goal: str) -> str:
     return f"moves carefully to {goal} without losing leverage"
 
 
+def _goal_polarity(goal: str) -> str:
+    goal_text = goal.lower()
+    if any(word in goal_text for word in ("protect", "save", "guard", "help", "hide")):
+        return "defensive"
+    if any(word in goal_text for word in ("expose", "find", "accuse", "hunt")):
+        return "aggressive"
+    return "neutral"
+
+
+def _goal_topic(goal: str) -> str:
+    goal_text = goal.lower()
+    for candidate in ("witness", "ledger", "truth", "forgery", "letter", "archives"):
+        if candidate in goal_text:
+            return candidate
+    return goal_text.split()[-1] if goal_text.split() else "truth"
+
+
 def build_action_briefs(story: StoryState) -> list[dict]:
     briefs: list[dict] = []
     for character in story.characters:
@@ -44,7 +61,19 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
         }
 
     lead = action_briefs[0]
-    rival = action_briefs[1] if len(action_briefs) > 1 else None
+    rival = None
+    best_score = -1
+    for candidate in action_briefs[1:]:
+        score = 0
+        if _goal_topic(candidate["goal"]) == _goal_topic(lead["goal"]):
+            score += 2
+        if _goal_polarity(candidate["goal"]) != _goal_polarity(lead["goal"]):
+            score += 2
+        if candidate["emotion"] != lead["emotion"]:
+            score += 1
+        if score > best_score:
+            best_score = score
+            rival = candidate
     if rival is None:
         return {
             "summary": f"{lead['name']} acts alone, trying to {lead['goal']}.",

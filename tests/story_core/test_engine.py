@@ -254,3 +254,39 @@ def test_next_outline_reflects_primary_and_secondary_conflicts():
     assert "Su Wan" in bundle.next_outline
     assert "time" in bundle.next_outline
     assert "witness" in bundle.next_outline
+
+
+def test_director_selects_primary_conflict_by_goal_collision():
+    story = StoryState(
+        story_id="s-017",
+        outline="Three factions close in on a single witness.",
+        genre="mystery",
+        style="tense",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Pei An",
+                role="supporting",
+                goals=["hide the archives"],
+                current_emotion="guarded",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert bundle.conflict_summary["primary_conflict"]["lead"] == "Lin Yue"
+    assert bundle.conflict_summary["primary_conflict"]["opposition"] == "Su Wan"
+    assert "Pei An" not in bundle.conflict_summary["primary_conflict"]["collision"]
