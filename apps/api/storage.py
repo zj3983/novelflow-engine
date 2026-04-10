@@ -118,5 +118,6 @@ class InMemoryStoryStore:
         for character in record.story.characters:
             if character.name == character_name:
                 character.frozen = True
+                character.lifecycle_state = "frozen"
                 return record
         raise KeyError(character_name)

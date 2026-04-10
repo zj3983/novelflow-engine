@@ -55,6 +55,37 @@ def test_story_can_store_characters_and_freeze_them():
     assert freeze_resp.json()["characters"][0]["frozen"] is True
 
 
+def test_story_serializes_character_lifecycle_fields():
+    create_resp = client.post(
+        "/stories",
+        json={
+            "story_id": "s-lifecycle",
+            "outline": "A witness keeper enters the archive under a false name.",
+            "genre": "mystery",
+            "style": "tense",
+            "characters": [
+                {
+                    "name": "Old Archivist",
+                    "role": "supporting",
+                    "goals": ["hide the witness"],
+                    "frozen": False,
+                    "lifecycle_state": "proposed",
+                    "last_proposed_chapter": 2,
+                    "last_approved_chapter": 0,
+                    "introduced_by": "Su Wan",
+                }
+            ],
+        },
+    )
+
+    assert create_resp.status_code == 200
+    character = create_resp.json()["characters"][0]
+    assert character["lifecycle_state"] == "proposed"
+    assert character["last_proposed_chapter"] == 2
+    assert character["last_approved_chapter"] == 0
+    assert character["introduced_by"] == "Su Wan"
+
+
 def test_rollback_restores_previous_story_state():
     client.post(
         "/stories",

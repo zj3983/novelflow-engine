@@ -31,3 +31,13 @@ test("relationship editor carries trust and tension into generated state", async
   await expect(page.getByText("Trust/Tension: 0.3 / 1")).toBeVisible();
   await expect(page.getByRole("article")).toContainText("needles the alliance");
 });
+
+test("workbench displays lifecycle metadata for a character", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Outline Input").fill("An archivist enters the story under a false name.");
+  await page.getByLabel("Character Name 1").fill("Old Archivist");
+  await page.getByLabel("Character Goal 1").fill("hide the witness");
+  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
+
+  await expect(page.getByText("Lifecycle: active")).toBeVisible();
+});

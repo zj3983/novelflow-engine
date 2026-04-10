@@ -8,6 +8,10 @@ export type CreateStoryRequest = {
     role: string;
     goals: string[];
     frozen: boolean;
+    lifecycle_state?: "proposed" | "active" | "rejected" | "frozen";
+    last_proposed_chapter?: number;
+    last_approved_chapter?: number;
+    introduced_by?: string;
     relationships?: Record<
       string,
       {
@@ -52,6 +56,10 @@ export type StoryResponse = {
     role: string;
     goals: string[];
     frozen: boolean;
+    lifecycle_state: "proposed" | "active" | "rejected" | "frozen";
+    last_proposed_chapter: number;
+    last_approved_chapter: number;
+    introduced_by: string;
     relationships?: Record<
       string,
       {
@@ -149,6 +157,14 @@ function continuitySentence(story: MockStory): string {
 }
 
 function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
+  const normalizedCharacters = clone(payload.characters ?? []).map((character) => ({
+    ...character,
+    lifecycle_state: character.lifecycle_state ?? (character.frozen ? "frozen" : "active"),
+    last_proposed_chapter: character.last_proposed_chapter ?? 0,
+    last_approved_chapter: character.last_approved_chapter ?? 0,
+    introduced_by: character.introduced_by ?? "",
+  }));
+
   const initialStory: StoryResponse = {
     story_id: payload.story_id,
     outline: payload.outline,
@@ -157,7 +173,7 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     current_chapter: 0,
     parent_story_id: null,
     branched_from_chapter: null,
-    characters: clone(payload.characters ?? []),
+    characters: normalizedCharacters,
     history: [],
   };
 
@@ -167,7 +183,7 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     genre: payload.genre,
     style: payload.style,
     current_chapter: 0,
-    characters: clone(payload.characters ?? []),
+    characters: clone(normalizedCharacters),
     history: [],
     initial_story: initialStory,
     parent_story_id: null,
@@ -185,7 +201,10 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
   story.current_chapter = chapterNumber;
   story.characters = story.characters.map((character, index) => {
     if (index !== 0 || character.frozen || !character.relationships) {
-      return character;
+      return {
+        ...character,
+        lifecycle_state: character.frozen ? "frozen" : character.lifecycle_state,
+      };
     }
 
     const nextRelationships = Object.fromEntries(
@@ -201,6 +220,7 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
 
     return {
       ...character,
+      lifecycle_state: character.frozen ? "frozen" : character.lifecycle_state,
       relationships: nextRelationships,
     };
   });
@@ -495,7 +515,9 @@ export async function freezeCharacter(storyId: string, characterName: string): P
     const story = mockStore.get(storyId);
     if (!story) throw new Error("mock: story_not_found");
     story.characters = story.characters.map((character) =>
-      character.name === characterName ? { ...character, frozen: true } : character,
+      character.name === characterName
+        ? { ...character, frozen: true, lifecycle_state: "frozen" }
+        : character,
     );
     return mockFetchStory(storyId);
   }

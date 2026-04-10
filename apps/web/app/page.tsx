@@ -66,6 +66,10 @@ export default function Page() {
         role: index === 0 ? "protagonist" : "supporting",
         goals: [character.goal.trim()],
         frozen: character.frozen,
+        lifecycle_state: character.frozen ? "frozen" : "active",
+        last_proposed_chapter: 0,
+        last_approved_chapter: 0,
+        introduced_by: "",
         relationships: character.relationshipTarget.trim()
           ? {
               [character.relationshipTarget.trim()]: {
@@ -395,6 +399,18 @@ export default function Page() {
                   </p>
                   <p className="hint" style={{ marginBottom: 10 }}>
                     Frozen: {(selectedBundle.updated_story as { characters: Array<{ name: string; frozen: boolean }> }).characters[0].frozen ? "Yes" : "No"}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 10 }}>
+                    Lifecycle: {(selectedBundle.updated_story as { characters: Array<{ lifecycle_state: string }> }).characters[0].lifecycle_state}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 10 }}>
+                    Last proposed: {(selectedBundle.updated_story as { characters: Array<{ last_proposed_chapter: number }> }).characters[0].last_proposed_chapter}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 10 }}>
+                    Last approved: {(selectedBundle.updated_story as { characters: Array<{ last_approved_chapter: number }> }).characters[0].last_approved_chapter}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 10 }}>
+                    Introduced by: {(selectedBundle.updated_story as { characters: Array<{ introduced_by: string }> }).characters[0].introduced_by || "System"}
                   </p>
                   {(() => {
                     const lead = (selectedBundle.updated_story as { characters: Array<{ relationships?: Record<string, { target: string; trust: number; tension: number; bond: string }> }> }).characters[0];
