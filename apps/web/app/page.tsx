@@ -147,6 +147,26 @@ export default function Page() {
     return entry?.text ?? "None";
   }
 
+  function chapterTitle(chapterNumber: number): string {
+    if (chapterNumber === 1) {
+      return "Opening Move";
+    }
+    if (chapterNumber === 2) {
+      return "Pressure Rises";
+    }
+    return `Turning Point ${chapterNumber}`;
+  }
+
+  function chapterTags(chapterNumber: number): string {
+    if (chapterNumber === 1) {
+      return "history beat, branch navigation";
+    }
+    if (chapterNumber === 2) {
+      return "escalation beat, continuity";
+    }
+    return "story beat, continuity";
+  }
+
   function visibleStorySummaries(): StorySummary[] {
     if (branchFocus === "all" || !story) {
       return storySummaries;
@@ -525,15 +545,25 @@ export default function Page() {
                       Open Story: {entry.story_id}
                     </button>
                     {(storyCatalog[entry.story_id]?.history ?? []).map((chapter) => (
-                      <button
+                      <div
                         key={`${entry.story_id}-chapter-${chapter.chapter_number}`}
-                        className={`btn btn--ghost${entry.story_id === activeStoryId && chapter.chapter_number === selectedChapter ? " story-tree__chapter-btn--active" : ""}`}
-                        type="button"
-                        onClick={() => void onOpenStoryChapter(entry.story_id, chapter.chapter_number)}
-                        disabled={isGenerating}
+                        className={`story-tree__chapter-card${entry.story_id === activeStoryId && chapter.chapter_number === selectedChapter ? " story-tree__chapter-card--active" : ""}`}
                       >
-                        Jump to {entry.story_id} Chapter {chapter.chapter_number}
-                      </button>
+                        <p className="hint" style={{ marginBottom: 6 }}>
+                          Chapter Card in {entry.story_id}: Chapter {chapter.chapter_number} - {chapterTitle(chapter.chapter_number)}
+                        </p>
+                        <p className="hint" style={{ marginBottom: 6 }}>
+                          Tags in {entry.story_id} Chapter {chapter.chapter_number}: {chapterTags(chapter.chapter_number)}
+                        </p>
+                        <button
+                          className={`btn btn--ghost${entry.story_id === activeStoryId && chapter.chapter_number === selectedChapter ? " story-tree__chapter-btn--active" : ""}`}
+                          type="button"
+                          onClick={() => void onOpenStoryChapter(entry.story_id, chapter.chapter_number)}
+                          disabled={isGenerating}
+                        >
+                          Jump to {entry.story_id} Chapter {chapter.chapter_number}
+                        </button>
+                      </div>
                     ))}
                   </div>
                 </div>
