@@ -225,6 +225,22 @@ export default function Page() {
     }
   }
 
+  async function onOpenStoryChapter(storyId: string, chapterNumber: number) {
+    setError(null);
+    setIsGenerating(true);
+    try {
+      const openedStory = storyCatalog[storyId] ?? await fetchStory(storyId);
+      setStory(openedStory);
+      setActiveStoryId(storyId);
+      setSelectedChapter(chapterNumber);
+      await refreshStorySummaries();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "open chapter failed");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
   async function onDeleteActiveStory() {
     if (!story?.parent_story_id) {
       return;
@@ -445,6 +461,17 @@ export default function Page() {
                     >
                       Open Story: {entry.story_id}
                     </button>
+                    {(storyCatalog[entry.story_id]?.history ?? []).map((chapter) => (
+                      <button
+                        key={`${entry.story_id}-chapter-${chapter.chapter_number}`}
+                        className="btn btn--ghost"
+                        type="button"
+                        onClick={() => void onOpenStoryChapter(entry.story_id, chapter.chapter_number)}
+                        disabled={isGenerating}
+                      >
+                        Jump to {entry.story_id} Chapter {chapter.chapter_number}
+                      </button>
+                    ))}
                   </div>
                 </div>
               ))}
