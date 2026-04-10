@@ -785,6 +785,37 @@ def test_build_chapter_title_falls_back_to_pressure_for_generic_conflict():
     assert title == "Chapter 1: Pressure Crossroads"
 
 
+def test_build_chapter_title_varies_flavor_by_genre_and_style():
+    mystery_title = build_chapter_title(
+        1,
+        conflict_summary={
+            "genre": "mystery",
+            "style": "tense",
+            "primary_conflict": {
+                "collision": "Lin Yue and Su Wan collide over the witness.",
+            },
+        },
+        next_focus="Return to Lin Yue and Su Wan over the witness",
+    )
+    fantasy_title = build_chapter_title(
+        1,
+        conflict_summary={
+            "genre": "fantasy",
+            "style": "noir",
+            "primary_conflict": {
+                "collision": "Lin Yue and Su Wan collide over the witness.",
+            },
+        },
+        next_focus="Return to Lin Yue and Su Wan over the witness",
+    )
+
+    assert mystery_title.startswith("Chapter 1:")
+    assert fantasy_title.startswith("Chapter 1:")
+    assert "Witness" in mystery_title
+    assert "Witness" in fantasy_title
+    assert mystery_title != fantasy_title
+
+
 def test_action_briefs_use_latest_chapter_summary_as_context():
     story = StoryState(
         story_id="s-024",

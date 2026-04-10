@@ -142,7 +142,20 @@ def build_chapter_title(
     else:
         topic = topic.title()
 
-    return f"Chapter {chapter_number}: {topic} Crossroads"
+    genre_text = (conflict_summary or {}).get("genre", "")
+    style_text = (conflict_summary or {}).get("style", "")
+    flavor = "Crossroads"
+    flavor_basis = f"{genre_text} {style_text}".lower()
+    if "mystery" in flavor_basis or "suspense" in flavor_basis:
+        flavor = "Dossier"
+    elif "court" in flavor_basis or "intrigue" in flavor_basis or "political" in flavor_basis:
+        flavor = "Edict"
+    elif "fantasy" in flavor_basis:
+        flavor = "Omen"
+    elif "noir" in flavor_basis:
+        flavor = "Shadow"
+
+    return f"Chapter {chapter_number}: {topic} {flavor}"
 
 
 def build_action_briefs(story: StoryState) -> list[dict]:
