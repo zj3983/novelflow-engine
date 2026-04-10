@@ -77,7 +77,15 @@ def _conflict_participant_count(conflict_summary: dict | None) -> int:
     return len(names)
 
 
-def _tempo(story: StoryState, conflict_summary: dict | None, event_beat: dict | None) -> str:
+def _tempo(
+    story: StoryState,
+    conflict_summary: dict | None,
+    event_beat: dict | None,
+    cadence: str | None = None,
+) -> str:
+    if cadence in {"urgent", "measured", "breathing"}:
+        return cadence
+
     style_text = (story.style or "").lower()
     genre_text = (story.genre or "").lower()
 
@@ -147,6 +155,7 @@ def write_chapter_body(
     chapter_number: int,
     conflict_summary: dict | None = None,
     event_beat: dict | None = None,
+    cadence: str | None = None,
 ) -> str:
     lead = story.characters[0].name if story.characters else "The investigator"
     lead_goal = story.characters[0].goals[0] if story.characters and story.characters[0].goals else "find the truth"
@@ -154,7 +163,7 @@ def write_chapter_body(
     continuity_line = _continuity_sentence(story)
     opening_hook_line = _opening_hook_sentence(story)
     title_line = _title_sentence(story, chapter_number, conflict_summary=conflict_summary)
-    tempo_value = _tempo(story, conflict_summary, event_beat)
+    tempo_value = _tempo(story, conflict_summary, event_beat, cadence=cadence)
     tempo_line = _tempo_sentence(tempo_value)
     conflict_line = (
         f"Conflict: {conflict_summary['summary']} Stakes: {conflict_summary['stakes']}"

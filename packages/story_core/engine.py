@@ -51,6 +51,7 @@ class StoryEngine:
             chapter_number,
             conflict_summary=conflict_summary,
             event_beat=event_beat,
+            cadence=cadence,
         )
         apply_post_chapter_updates(
             updated_story,

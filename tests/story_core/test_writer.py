@@ -140,3 +140,25 @@ def test_writer_marks_breathing_tempo_when_conflict_is_light():
 
     assert "Tempo: breathing" in body
     assert "quiet note" in body
+
+
+def test_writer_uses_engine_supplied_cadence_when_available():
+    story = StoryState(
+        story_id="s-writer-006",
+        outline="An engine-supplied cadence should win over local heuristics.",
+        genre="fantasy",
+        style="quiet",
+        current_chapter=0,
+        characters=[CharacterState(name="Lin Yue", role="protagonist", goals=["hold the line"])],
+    )
+
+    body = write_chapter_body(
+        story,
+        1,
+        conflict_summary=None,
+        event_beat=None,
+        cadence="urgent",
+    )
+
+    assert "Tempo: urgent" in body
+    assert "cut comes hard" in body
