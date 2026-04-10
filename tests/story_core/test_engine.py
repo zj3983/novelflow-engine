@@ -408,3 +408,40 @@ def test_post_chapter_updates_write_role_specific_memories():
     assert "witness" in by_name["Lin Yue"].memory[-1]
     assert "witness" in by_name["Su Wan"].memory[-1]
     assert "ledger" in by_name["Pei An"].memory[-1]
+
+
+def test_post_chapter_updates_seed_role_specific_follow_up_goals():
+    story = StoryState(
+        story_id="s-021",
+        outline="A witness cracks while three players fight over the truth.",
+        genre="mystery",
+        style="tense",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Pei An",
+                role="supporting",
+                goals=["hide the ledger"],
+                current_emotion="guarded",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+    by_name = {character.name: character for character in bundle.updated_story.characters}
+
+    assert by_name["Lin Yue"].goals[0] == "seize control of the witness before Su Wan recovers"
+    assert by_name["Su Wan"].goals[0] == "block Lin Yue from taking the witness"
+    assert by_name["Pei An"].goals[0] == "stabilize the ledger before the side pressure breaks"

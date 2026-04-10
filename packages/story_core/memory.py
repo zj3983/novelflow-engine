@@ -34,6 +34,37 @@ def _relationship_shift(goals: list[str]) -> tuple[float, float]:
     return 0.05, 0.05
 
 
+def _goal_topic(text: str) -> str:
+    lowered = text.lower()
+    for candidate in ("witness", "ledger", "truth", "forgery", "letter", "archives"):
+        if candidate in lowered:
+            return candidate
+    return lowered.split()[-1] if lowered.split() else "truth"
+
+
+def _promote_goal(character, intent: str) -> None:
+    if not intent:
+        return
+    remaining = [goal for goal in character.goals if goal != intent]
+    character.goals = [intent, *remaining]
+
+
+def _primary_follow_up_intent(character_name: str, primary: dict) -> str:
+    topic = _goal_topic(primary.get("collision", "the truth"))
+    lead = primary.get("lead", "the lead")
+    opposition = primary.get("opposition", "the court")
+    if character_name == lead:
+        return f"seize control of the {topic} before {opposition} recovers"
+    if character_name == opposition:
+        return f"block {lead} from taking the {topic}"
+    return ""
+
+
+def _secondary_follow_up_intent(goal: str, secondary: dict) -> str:
+    topic = _goal_topic(goal or secondary.get("detail", "the truth"))
+    return f"stabilize the {topic} before the side pressure breaks"
+
+
 def apply_post_chapter_updates(
     story: StoryState,
     body: str,
@@ -63,6 +94,7 @@ def apply_post_chapter_updates(
             character.memory.append(
                 f"Chapter {chapter_number} forced {character.name} into the main clash over {collision}."
             )
+            _promote_goal(character, _primary_follow_up_intent(character.name, primary))
             character.current_emotion = "alert"
             touched = True
         elif character.name in secondary_names:
@@ -71,6 +103,7 @@ def apply_post_chapter_updates(
             character.memory.append(
                 f"Chapter {chapter_number} pulled {character.name} into the side pressure around {detail} while trying to {goal}."
             )
+            _promote_goal(character, _secondary_follow_up_intent(goal, secondary))
             character.current_emotion = "wary"
             touched = True
 
