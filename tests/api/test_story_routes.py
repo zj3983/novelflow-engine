@@ -86,6 +86,43 @@ def test_story_serializes_character_lifecycle_fields():
     assert character["introduced_by"] == "Su Wan"
 
 
+def test_agent_settings_influence_story_approval_flow():
+    create_resp = client.post(
+        "/stories",
+        json={
+            "story_id": "s-agent-settings",
+            "outline": "A court witness arrives under a false name.",
+            "genre": "mystery",
+            "style": "tense",
+            "agent_settings": {
+                "mode": "LLM-assisted",
+                "character_model": "gpt-5.4-mini",
+                "director_model": "gpt-5.4",
+                "writer_model": "gpt-5.4",
+                "temperature": "0.85",
+                "new_character_policy": "Auto-approve named candidates",
+            },
+            "characters": [
+                {
+                    "name": "Lin Yue",
+                    "role": "protagonist",
+                    "goals": ["find the witness"],
+                    "secrets": ["An archivist knows the false name."],
+                }
+            ],
+        },
+    )
+    assert create_resp.status_code == 200
+    assert create_resp.json()["agent_settings"]["mode"] == "LLM-assisted"
+
+    generated = client.post("/stories/s-agent-settings/generate")
+    assert generated.status_code == 200
+
+    story = generated.json()["updated_story"]
+    assert story["agent_settings"]["new_character_policy"] == "Auto-approve named candidates"
+    assert "Old Archivist" in generated.json()["conflict_summary"]["approved_new_characters"]
+
+
 def test_lifecycle_fields_remain_present_across_generate_freeze_and_rollback():
     create_resp = client.post(
         "/stories",

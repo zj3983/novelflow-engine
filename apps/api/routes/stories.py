@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from apps.api.storage import InMemoryStoryStore
 from packages.story_core.engine import StoryEngine
-from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.models import AgentSettings, CharacterState, StoryState
 
 
 router = APIRouter()
@@ -18,6 +18,7 @@ class CreateStoryRequest(BaseModel):
     outline: str
     genre: str
     style: str
+    agent_settings: AgentSettings = Field(default_factory=AgentSettings)
     characters: list[CharacterState] = Field(default_factory=list)
 
 
@@ -27,6 +28,7 @@ class StoryResponse(BaseModel):
     genre: str
     style: str
     current_chapter: int
+    agent_settings: dict = Field(default_factory=dict)
     characters: list[dict] = Field(default_factory=list)
     history: list[dict] = Field(default_factory=list)
     parent_story_id: str | None = None
@@ -64,6 +66,7 @@ def _serialize_story(story_id: str) -> StoryResponse:
         genre=record.story.genre,
         style=record.story.style,
         current_chapter=record.story.current_chapter,
+        agent_settings=record.story.agent_settings.model_dump(),
         characters=[character.model_dump() for character in record.story.characters],
         history=[b.model_dump() for b in record.history],
         parent_story_id=record.parent_story_id,
@@ -88,6 +91,7 @@ def create_story(payload: CreateStoryRequest) -> StoryResponse:
         genre=payload.genre,
         style=payload.style,
         current_chapter=0,
+        agent_settings=payload.agent_settings,
         characters=payload.characters,
     )
     store.create(story)

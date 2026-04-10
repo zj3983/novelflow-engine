@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-from packages.story_core.models import CharacterProposal, DirectorDecision, StoryState
+from packages.story_core.models import (
+    CharacterProposal,
+    DirectorDecision,
+    NewCharacterPolicy,
+    StoryState,
+)
 from packages.story_core.planner import build_chapter_title, select_primary_pair
 
 
-def _character_candidates(proposals: list[CharacterProposal]) -> tuple[list[str], list[str], list[str]]:
+def _character_candidates(
+    proposals: list[CharacterProposal],
+    policy: NewCharacterPolicy,
+) -> tuple[list[str], list[str], list[str]]:
     approved: list[str] = []
     deferred: list[str] = []
     rejected: list[str] = []
@@ -15,6 +23,14 @@ def _character_candidates(proposals: list[CharacterProposal]) -> tuple[list[str]
             if candidate in seen:
                 continue
             seen.add(candidate)
+            if policy == "Manual review":
+                deferred.append(candidate)
+                continue
+            if policy == "Auto-approve named candidates":
+                approved.append(candidate)
+                continue
+
+            # Default: director review keeps a conservative allow-list.
             if candidate == "Old Archivist":
                 approved.append(candidate)
             else:
@@ -42,7 +58,10 @@ class DirectorAgent:
             if rival:
                 primary["opposition"] = rival.get("name", primary.get("opposition", ""))
 
-        approved, deferred, rejected = _character_candidates(proposals)
+        approved, deferred, rejected = _character_candidates(
+            proposals,
+            story.agent_settings.new_character_policy,
+        )
         next_focus = story.chapter_summaries[-1].next_focus if story.chapter_summaries else ""
         chapter_title = build_chapter_title(
             story.current_chapter,
@@ -60,4 +79,3 @@ class DirectorAgent:
             rejected_characters=rejected,
             next_focus=next_focus,
         )
-

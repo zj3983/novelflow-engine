@@ -8,6 +8,17 @@ from pydantic import BaseModel, Field, model_validator
 ForeshadowingStatus = Literal["open", "reinforced", "resolved", "expired"]
 Cadence = Literal["urgent", "measured", "breathing"]
 CharacterLifecycleState = Literal["proposed", "active", "rejected", "frozen"]
+AgentMode = Literal["Rule-based", "LLM-assisted"]
+NewCharacterPolicy = Literal["Director review", "Auto-approve named candidates", "Manual review"]
+
+
+class AgentSettings(BaseModel):
+    mode: AgentMode = "Rule-based"
+    character_model: str = "gpt-5.4-mini"
+    director_model: str = "gpt-5.4"
+    writer_model: str = "gpt-5.4"
+    temperature: float = 0.7
+    new_character_policy: NewCharacterPolicy = "Director review"
 
 
 class CharacterRelationship(BaseModel):
@@ -97,6 +108,7 @@ class StoryState(BaseModel):
     genre: str
     style: str
     current_chapter: int = 0
+    agent_settings: AgentSettings = Field(default_factory=AgentSettings)
     characters: list[CharacterState] = Field(default_factory=list)
     world_facts: list[str] = Field(default_factory=list)
     timeline: list[TimelineEvent] = Field(default_factory=list)
