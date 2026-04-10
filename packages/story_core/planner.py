@@ -32,6 +32,15 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
         return {
             "summary": "No active conflict has surfaced yet.",
             "stakes": "The chapter must first establish pressure.",
+            "primary_conflict": {
+                "lead": "",
+                "opposition": "",
+                "collision": "No collision yet.",
+            },
+            "secondary_conflict": {
+                "pressure": "setup",
+                "detail": "The cast still needs a spark to force decisions.",
+            },
         }
 
     lead = action_briefs[0]
@@ -40,6 +49,15 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
         return {
             "summary": f"{lead['name']} acts alone, trying to {lead['goal']}.",
             "stakes": f"If {lead['name']} fails, the newest clue will lose all momentum.",
+            "primary_conflict": {
+                "lead": lead["name"],
+                "opposition": "circumstance",
+                "collision": f"{lead['name']} must {lead['goal']} before the trail collapses.",
+            },
+            "secondary_conflict": {
+                "pressure": "time",
+                "detail": "Delay will let the newest clue fade into rumor.",
+            },
         }
 
     return {
@@ -49,6 +67,15 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
         "stakes": (
             f"If either side wins too cleanly, control over the witness and the truth shifts for the whole cast."
         ),
+        "primary_conflict": {
+            "lead": lead["name"],
+            "opposition": rival["name"],
+            "collision": f"{lead['name']} and {rival['name']} collide over whether the witness can be controlled.",
+        },
+        "secondary_conflict": {
+            "pressure": "time",
+            "detail": "Every delay gives the court one more chance to hide the truth.",
+        },
     }
 
 

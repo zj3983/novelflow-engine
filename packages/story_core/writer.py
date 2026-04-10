@@ -51,8 +51,13 @@ def write_chapter_body(
         if conflict_summary
         else ""
     )
+    secondary_line = (
+        f"Secondary pressure: {conflict_summary['secondary_conflict']['detail']}"
+        if conflict_summary and conflict_summary.get("secondary_conflict")
+        else ""
+    )
     return (
         f"Chapter {chapter_number} body. {lead} presses deeper into the intrigue, "
-        f"trying to {lead_goal}. {conflict_line} {relation_line} {continuity_line} "
+        f"trying to {lead_goal}. {conflict_line} {secondary_line} {relation_line} {continuity_line} "
         "A hidden letter appears before the chapter closes."
     )

@@ -188,6 +188,9 @@ def test_generate_chapter_builds_action_briefs_and_conflict_summary():
     assert bundle.conflict_summary["stakes"]
     assert "Lin Yue" in bundle.conflict_summary["summary"]
     assert "Su Wan" in bundle.conflict_summary["summary"]
+    assert bundle.conflict_summary["primary_conflict"]["lead"] == "Lin Yue"
+    assert bundle.conflict_summary["primary_conflict"]["opposition"] == "Su Wan"
+    assert bundle.conflict_summary["secondary_conflict"]["pressure"] == "time"
 
 
 def test_generate_chapter_body_reflects_selected_conflict():
@@ -219,3 +222,4 @@ def test_generate_chapter_body_reflects_selected_conflict():
     assert "Lin Yue" in bundle.body
     assert "Su Wan" in bundle.body
     assert "witness" in bundle.body
+    assert "Secondary pressure:" in bundle.body
