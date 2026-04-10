@@ -1053,3 +1053,24 @@ def test_story_engine_includes_director_character_approval_metadata():
 
     assert "approved_new_characters" in bundle.conflict_summary
     assert "Old Archivist" in bundle.conflict_summary["approved_new_characters"]
+
+
+def test_story_engine_keeps_prose_markers_after_writer_memory_agent_split():
+    story = StoryState(
+        story_id="s-033",
+        outline="A witness drives a confrontation.",
+        genre="mystery",
+        style="tense",
+        characters=[
+            CharacterState(name="Lin Yue", role="protagonist", goals=["find the witness"]),
+            CharacterState(name="Su Wan", role="supporting", goals=["protect the witness"]),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert "Title:" in bundle.body
+    assert "Tempo:" in bundle.body
+    assert "Conflict:" in bundle.body
+    assert bundle.updated_story.timeline
+    assert bundle.updated_story.chapter_summaries

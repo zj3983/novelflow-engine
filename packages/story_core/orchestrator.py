@@ -3,8 +3,8 @@ from __future__ import annotations
 from packages.story_core.agent_base import StoryAgentProvider
 from packages.story_core.character_agent import CharacterAgent
 from packages.story_core.director_agent import DirectorAgent
+from packages.story_core.memory_agent import MemoryAgent
 from packages.story_core.memory import (
-    apply_post_chapter_updates,
     build_character_cards,
     build_foreshadowing,
 )
@@ -16,7 +16,7 @@ from packages.story_core.planner import (
     plan_next_outline,
 )
 from packages.story_core.quality import validate_bundle
-from packages.story_core.writer import write_chapter_body
+from packages.story_core.writer_agent import WriterAgent
 
 
 class RuleBasedStoryAgentProvider:
@@ -48,12 +48,13 @@ class RuleBasedStoryAgentProvider:
         event_beat: dict,
         cadence: str,
     ) -> str:
-        return write_chapter_body(
+        return WriterAgent().write(
             story,
             chapter_number,
-            conflict_summary=conflict_summary,
-            event_beat=event_beat,
-            cadence=cadence,
+            decision,
+            conflict_summary,
+            event_beat,
+            cadence,
         )
 
     def remember(
@@ -66,15 +67,15 @@ class RuleBasedStoryAgentProvider:
         event_beat: dict,
         cadence: str,
     ) -> StoryState:
-        apply_post_chapter_updates(
+        return MemoryAgent().remember(
             story,
             body,
             chapter_number,
-            conflict_summary=conflict_summary,
-            event_beat=event_beat,
+            decision,
+            conflict_summary,
+            event_beat,
+            cadence,
         )
-        story.chapter_summaries[-1].cadence = cadence
-        return story
 
 
 class StoryOrchestrator:

@@ -1,4 +1,5 @@
-from packages.story_core.models import ChapterSummary, CharacterState, StoryState
+from packages.story_core.models import ChapterSummary, CharacterState, DirectorDecision, StoryState
+from packages.story_core.writer_agent import WriterAgent
 from packages.story_core.writer import write_chapter_body
 
 
@@ -162,3 +163,64 @@ def test_writer_uses_engine_supplied_cadence_when_available():
 
     assert "Tempo: urgent" in body
     assert "cut comes hard" in body
+
+
+def test_writer_agent_keeps_existing_prose_markers():
+    story = StoryState(
+        story_id="s-writer-agent-001",
+        outline="A witness drives a confrontation.",
+        genre="mystery",
+        style="tense",
+        current_chapter=1,
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                chapter_title="Chapter 1: Witness Dossier",
+                summary="A previous clash over the witness.",
+                facts=["The witness vanished in the archive hall."],
+                unresolved_threads=["Can Lin Yue reclaim control of the witness?"],
+                next_focus="Return to Lin Yue and Su Wan over the witness",
+                primary_conflict={"lead": "Lin Yue", "opposition": "Su Wan", "collision": "They clash over the witness."},
+                secondary_conflict={"pressure": "time", "detail": "The court closes in.", "participants": []},
+                event_beat={"turn": "pressure spike", "pivot": "The witness slips away."},
+            )
+        ],
+        characters=[
+            CharacterState(name="Lin Yue", role="protagonist", goals=["find the witness"]),
+            CharacterState(name="Su Wan", role="supporting", goals=["protect the witness"]),
+        ],
+    )
+    conflict_summary = {
+        "summary": "Lin Yue pushes to secure the witness while Su Wan shields them.",
+        "stakes": "Control of the witness reshapes the court.",
+        "primary_conflict": {
+            "lead": "Lin Yue",
+            "opposition": "Su Wan",
+            "collision": "Lin Yue and Su Wan collide over whether the witness can be controlled.",
+        },
+        "secondary_conflict": {"pressure": "time", "detail": "Delay hides the truth.", "participants": []},
+    }
+    decision = DirectorDecision(
+        primary_conflict=conflict_summary["primary_conflict"],
+        secondary_conflict=conflict_summary["secondary_conflict"],
+        event_beat={"turn": "pressure spike", "pivot": "The witness slips away."},
+        cadence="urgent",
+        chapter_title="Chapter 2: Witness Dossier",
+        next_focus="Return to Lin Yue and Su Wan over the witness",
+    )
+
+    body = WriterAgent().write(
+        story,
+        chapter_number=2,
+        decision=decision,
+        conflict_summary=conflict_summary,
+        event_beat=decision.event_beat,
+        cadence="urgent",
+    )
+
+    assert "Title:" in body
+    assert "Tempo: urgent" in body
+    assert "Opening hook:" in body
+    assert "Conflict:" in body
+    assert "Secondary pressure:" in body
+    assert "Next focus:" in body
