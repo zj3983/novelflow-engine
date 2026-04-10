@@ -57,6 +57,7 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
             "secondary_conflict": {
                 "pressure": "setup",
                 "detail": "The cast still needs a spark to force decisions.",
+                "participants": [],
             },
         }
 
@@ -86,8 +87,15 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
             "secondary_conflict": {
                 "pressure": "time",
                 "detail": "Delay will let the newest clue fade into rumor.",
+                "participants": [lead["name"]],
             },
         }
+
+    secondary_candidates = [
+        candidate["name"]
+        for candidate in action_briefs[1:]
+        if candidate["name"] != rival["name"]
+    ]
 
     return {
         "summary": (
@@ -104,7 +112,20 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
         "secondary_conflict": {
             "pressure": "time",
             "detail": "Every delay gives the court one more chance to hide the truth.",
+            "participants": secondary_candidates or [rival["name"]],
         },
+    }
+
+
+def build_event_beat(conflict_summary: dict) -> dict:
+    primary = conflict_summary.get("primary_conflict", {})
+    secondary = conflict_summary.get("secondary_conflict", {})
+    pivot = primary.get("collision", "The chapter needs a pivot.")
+    if secondary.get("participants"):
+        pivot = f"{pivot} Meanwhile, {' and '.join(secondary['participants'])} strain the board from the side."
+    return {
+        "turn": "pressure spike",
+        "pivot": pivot,
     }
 
 

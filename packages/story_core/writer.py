@@ -41,6 +41,7 @@ def write_chapter_body(
     story: StoryState,
     chapter_number: int,
     conflict_summary: dict | None = None,
+    event_beat: dict | None = None,
 ) -> str:
     lead = story.characters[0].name if story.characters else "The investigator"
     lead_goal = story.characters[0].goals[0] if story.characters and story.characters[0].goals else "find the truth"
@@ -56,8 +57,13 @@ def write_chapter_body(
         if conflict_summary and conflict_summary.get("secondary_conflict")
         else ""
     )
+    event_line = (
+        f"Event beat: {event_beat['pivot']}"
+        if event_beat
+        else ""
+    )
     return (
         f"Chapter {chapter_number} body. {lead} presses deeper into the intrigue, "
-        f"trying to {lead_goal}. {conflict_line} {secondary_line} {relation_line} {continuity_line} "
+        f"trying to {lead_goal}. {conflict_line} {secondary_line} {event_line} {relation_line} {continuity_line} "
         "A hidden letter appears before the chapter closes."
     )
