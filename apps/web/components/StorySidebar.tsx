@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 export type StoryCharacterDraft = {
   name: string;
   goal: string;
@@ -13,17 +15,43 @@ export type StoryDraft = {
   characters: StoryCharacterDraft[];
 };
 
-type StorySidebarProps = {
-  draft: StoryDraft;
-  onChange: (next: StoryDraft) => void;
+export type AgentMode = "Rule-based" | "LLM-assisted";
+
+export type NewCharacterPolicy = "Director review" | "Auto-approve named candidates" | "Manual review";
+
+export type AgentSettings = {
+  mode: AgentMode;
+  characterModel: string;
+  directorModel: string;
+  writerModel: string;
+  temperature: string;
+  newCharacterPolicy: NewCharacterPolicy;
 };
 
-export function StorySidebar({ draft, onChange }: StorySidebarProps) {
+type StorySidebarProps = {
+  draft: StoryDraft;
+  agentSettings: AgentSettings;
+  onChange: (next: StoryDraft) => void;
+  onAgentSettingsChange: (next: AgentSettings) => void;
+};
+
+export function StorySidebar({
+  draft,
+  agentSettings,
+  onChange,
+  onAgentSettingsChange,
+}: StorySidebarProps) {
+  const [isAgentSettingsOpen, setIsAgentSettingsOpen] = useState(true);
+
   function updateCharacter(index: number, next: StoryCharacterDraft) {
     const characters = draft.characters.map((character, currentIndex) =>
       currentIndex === index ? next : character,
     );
     onChange({ ...draft, characters });
+  }
+
+  function updateAgentSettings(next: Partial<AgentSettings>) {
+    onAgentSettingsChange({ ...agentSettings, ...next });
   }
 
   function addCharacter() {
@@ -46,6 +74,121 @@ export function StorySidebar({ draft, onChange }: StorySidebarProps) {
 
   return (
     <div className="sidebar-fields">
+      <section className="agent-settings">
+        <button
+          className="agent-settings__toggle"
+          type="button"
+          onClick={() => setIsAgentSettingsOpen((value) => !value)}
+          aria-expanded={isAgentSettingsOpen}
+        >
+          Agent Settings
+        </button>
+        {isAgentSettingsOpen ? (
+          <div className="agent-settings__body">
+          <div className="agent-settings__grid">
+            <div className="field">
+              <label htmlFor="agent-mode">Agent Mode</label>
+              <select
+                id="agent-mode"
+                aria-label="Agent Mode"
+                className="text-input"
+                value={agentSettings.mode}
+                onChange={(event) =>
+                  updateAgentSettings({
+                    mode: event.target.value as AgentMode,
+                  })
+                }
+              >
+                <option value="Rule-based">Rule-based</option>
+                <option value="LLM-assisted">LLM-assisted</option>
+              </select>
+            </div>
+
+            <div className="field">
+              <label htmlFor="new-character-policy">New Character Policy</label>
+              <select
+                id="new-character-policy"
+                aria-label="New Character Policy"
+                className="text-input"
+                value={agentSettings.newCharacterPolicy}
+                onChange={(event) =>
+                  updateAgentSettings({
+                    newCharacterPolicy: event.target.value as NewCharacterPolicy,
+                  })
+                }
+              >
+                <option value="Director review">Director review</option>
+                <option value="Auto-approve named candidates">Auto-approve named candidates</option>
+                <option value="Manual review">Manual review</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="field">
+            <label htmlFor="character-model">Character Model</label>
+            <input
+              id="character-model"
+              aria-label="Character Model"
+              className="text-input"
+              value={agentSettings.characterModel}
+              onChange={(event) =>
+                updateAgentSettings({ characterModel: event.target.value })
+              }
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="director-model">Director Model</label>
+            <input
+              id="director-model"
+              aria-label="Director Model"
+              className="text-input"
+              value={agentSettings.directorModel}
+              onChange={(event) =>
+                updateAgentSettings({ directorModel: event.target.value })
+              }
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="writer-model">Writer Model</label>
+            <input
+              id="writer-model"
+              aria-label="Writer Model"
+              className="text-input"
+              value={agentSettings.writerModel}
+              onChange={(event) =>
+                updateAgentSettings({ writerModel: event.target.value })
+              }
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="agent-temperature">Temperature</label>
+            <input
+              id="agent-temperature"
+              aria-label="Temperature"
+              className="text-input"
+              inputMode="decimal"
+              value={agentSettings.temperature}
+              onChange={(event) =>
+                updateAgentSettings({ temperature: event.target.value })
+              }
+            />
+          </div>
+
+          <div className="agent-settings__summary" aria-label="Agent Settings Summary">
+            <p className="hint">Mode: {agentSettings.mode}</p>
+            <p className="hint">Character model: {agentSettings.characterModel}</p>
+            <p className="hint">Director model: {agentSettings.directorModel}</p>
+            <p className="hint">Writer model: {agentSettings.writerModel}</p>
+            <p className="hint">Temperature: {agentSettings.temperature}</p>
+            <p className="hint">New character policy: {agentSettings.newCharacterPolicy}</p>
+          </div>
+          </div>
+        ) : null}
+      </section>
+
       <div className="field">
         <label htmlFor="outline-input">Outline Input</label>
         <textarea

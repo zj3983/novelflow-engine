@@ -3,7 +3,11 @@
 import { useRef, useState } from "react";
 
 import { ChapterBundleView } from "../components/ChapterBundleView";
-import { StorySidebar, type StoryDraft } from "../components/StorySidebar";
+import {
+  StorySidebar,
+  type AgentSettings,
+  type StoryDraft,
+} from "../components/StorySidebar";
 import {
   branchStory,
   createStory,
@@ -39,9 +43,17 @@ export default function Page() {
       },
     ],
   });
+  const [agentSettings, setAgentSettings] = useState<AgentSettings>({
+    mode: "Rule-based",
+    characterModel: "gpt-5.4-mini",
+    directorModel: "gpt-5.4",
+    writerModel: "gpt-5.4",
+    temperature: "0.7",
+    newCharacterPolicy: "Director review",
+  });
   const [story, setStory] = useState<StoryResponse | null>(null);
   const [storyCatalog, setStoryCatalog] = useState<Record<string, StoryResponse>>({});
-  const [activeStoryId, setActiveStoryId] = useState(DEFAULT_STORY.story_id);
+  const [activeStoryId, setActiveStoryId] = useState<string>(DEFAULT_STORY.story_id);
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [storySummaries, setStorySummaries] = useState<StorySummary[]>([]);
   const [branchFocus, setBranchFocus] = useState<"all" | "active">("all");
@@ -127,10 +139,15 @@ export default function Page() {
 
   function storyDepth(entry: StorySummary): number {
     let depth = 0;
-    let cursor = entry.parent_story_id ? storySummaries.find((item) => item.story_id === entry.parent_story_id) : undefined;
+    let cursor: StorySummary | undefined = entry.parent_story_id
+      ? storySummaries.find((item) => item.story_id === entry.parent_story_id)
+      : undefined;
     while (cursor) {
       depth += 1;
-      cursor = cursor.parent_story_id ? storySummaries.find((item) => item.story_id === cursor.parent_story_id) : undefined;
+      const parentStoryId = cursor.parent_story_id;
+      cursor = parentStoryId
+        ? storySummaries.find((item) => item.story_id === parentStoryId)
+        : undefined;
     }
     return depth;
   }
@@ -177,13 +194,14 @@ export default function Page() {
     }
 
     const allowed = new Set<string>([activeStoryId]);
-    let cursor = story.parent_story_id
+    let cursor: StorySummary | undefined = story.parent_story_id
       ? storySummaries.find((item) => item.story_id === story.parent_story_id)
       : undefined;
     while (cursor) {
       allowed.add(cursor.story_id);
-      cursor = cursor.parent_story_id
-        ? storySummaries.find((item) => item.story_id === cursor.parent_story_id)
+      const parentStoryId = cursor.parent_story_id;
+      cursor = parentStoryId
+        ? storySummaries.find((item) => item.story_id === parentStoryId)
         : undefined;
     }
 
@@ -333,7 +351,12 @@ export default function Page() {
       <section className="panel panel-outline" aria-label="Outline Panel">
         <header className="panel__header">Outline</header>
         <div className="panel__body">
-          <StorySidebar draft={draft} onChange={updateDraft} />
+          <StorySidebar
+            draft={draft}
+            agentSettings={agentSettings}
+            onChange={updateDraft}
+            onAgentSettingsChange={setAgentSettings}
+          />
         </div>
       </section>
 

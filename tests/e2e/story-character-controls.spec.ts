@@ -41,3 +41,20 @@ test("workbench displays lifecycle metadata for a character", async ({ page }) =
 
   await expect(page.getByText("Lifecycle: active")).toBeVisible();
 });
+
+test("agent settings panel exposes model and mode controls", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.getByRole("button", { name: "Agent Settings" })).toBeVisible();
+
+  await page.getByLabel("Agent Mode").selectOption("LLM-assisted");
+  await page.getByLabel("Character Model").fill("gpt-5.4");
+  await page.getByLabel("Director Model").fill("gpt-5.4");
+  await page.getByLabel("Writer Model").fill("gpt-5.4-mini");
+  await page.getByLabel("Temperature").fill("0.85");
+  await page.getByLabel("New Character Policy").selectOption("Director review");
+
+  await expect(page.getByText("Mode: LLM-assisted", { exact: true })).toBeVisible();
+  await expect(page.getByText("Character model: gpt-5.4", { exact: true })).toBeVisible();
+  await expect(page.getByText("New character policy: Director review", { exact: true })).toBeVisible();
+});

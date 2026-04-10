@@ -100,6 +100,58 @@ body {
   gap: 14px;
 }
 
+.agent-settings {
+  padding: 12px;
+  border: 1px solid rgba(182, 75, 50, 0.26);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(182, 75, 50, 0.08), rgba(255, 255, 255, 0.5));
+}
+
+.agent-settings__toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+
+.agent-settings__body {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-settings__grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 600px) {
+  .agent-settings__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.agent-settings__summary {
+  padding: 10px 12px;
+  border: 1px solid rgba(31, 29, 26, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.agent-settings__summary .hint + .hint {
+  margin-top: 6px;
+}
+
 .character-card {
   display: grid;
   gap: 12px;
