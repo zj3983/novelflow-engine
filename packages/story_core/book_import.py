@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -24,6 +25,8 @@ class BookFolderReport(BaseModel):
     exists: bool = False
     missing_required_files: list[str] = Field(default_factory=list)
     missing_optional_files: list[str] = Field(default_factory=list)
+    unusable_required_files: list[str] = Field(default_factory=list)
+    empty_files: list[str] = Field(default_factory=list)
     present_files: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     documents: dict[str, str] = Field(default_factory=dict)
@@ -54,12 +57,7 @@ def _safe_read_text(path: Path, warnings: list[str]) -> str:
 
 
 def _parse_character_matrix(text: str) -> list[str]:
-    """Very small helper that extracts character names from simple markdown.
-
-    Supported patterns:
-    - a markdown table where the first column is the name
-    - bullet lines like "- Name"
-    """
+    """Extract simple character names from markdown tables or bullet lists."""
 
     seen: set[str] = set()
     names: list[str] = []
@@ -69,6 +67,10 @@ def _parse_character_matrix(text: str) -> list[str]:
         if not line:
             continue
 
+        # Common Markdown separator rows.
+        if re.match(r"^:?-{3,}:?$", line):
+            continue
+
         candidate = ""
         if line.startswith("|") and "|" in line[1:]:
             cells = [cell.strip() for cell in line.strip("|").split("|")]
@@ -76,9 +78,9 @@ def _parse_character_matrix(text: str) -> list[str]:
                 continue
             first = cells[0]
             lower_first = first.lower()
-            if lower_first in {"name", "角色", "姓名"}:
+            if lower_first in {"name", "瑙掕壊", "濮撳悕"}:
                 continue
-            if first and set(first) <= {"-"}:
+            if re.match(r"^:?-{3,}:?$", first):
                 continue
             candidate = first
         elif line.startswith(("-", "*")):
@@ -104,20 +106,37 @@ def scan_book_folder(source_path: Path | str) -> BookFolderParseResult:
         return BookFolderParseResult(report=report, bootstrap=bootstrap)
 
     report.exists = True
+    existing_files: set[str] = set()
 
     for filename in KNOWN_FILES:
         file_path = base / filename
         if not file_path.exists():
             continue
+        existing_files.add(filename)
+        if not file_path.is_file():
+            report.warnings.append(f"{filename} exists but is not a regular file.")
+            if filename in REQUIRED_FILES:
+                report.unusable_required_files.append(filename)
+            continue
+
         report.present_files.append(filename)
         content = _safe_read_text(file_path, report.warnings)
-        if content != "":
-            report.documents[filename] = content
+        report.documents[filename] = content
+        if content.strip() == "":
+            report.empty_files.append(filename)
+            if filename in REQUIRED_FILES:
+                report.unusable_required_files.append(filename)
 
     report.present_files = sorted(report.present_files)
-    report.missing_required_files = sorted([name for name in REQUIRED_FILES if name not in report.present_files])
-    report.missing_optional_files = sorted([name for name in OPTIONAL_FILES if name not in report.present_files])
-    report.can_bootstrap = report.exists and not report.missing_required_files
+    report.missing_required_files = sorted([name for name in REQUIRED_FILES if name not in existing_files])
+    report.missing_optional_files = sorted([name for name in OPTIONAL_FILES if name not in existing_files])
+    report.unusable_required_files = sorted(set(report.unusable_required_files))
+    report.empty_files = sorted(set(report.empty_files))
+    report.can_bootstrap = (
+        report.exists
+        and not report.missing_required_files
+        and not report.unusable_required_files
+    )
 
     volume_outline = report.documents.get("volume_outline.md", "").strip()
     current_focus = report.documents.get("current_focus.md", "").strip()
@@ -138,4 +157,3 @@ def scan_book_folder(source_path: Path | str) -> BookFolderParseResult:
         characters=characters,
     )
     return BookFolderParseResult(report=report, bootstrap=bootstrap)
-
