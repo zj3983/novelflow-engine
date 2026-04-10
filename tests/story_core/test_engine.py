@@ -622,6 +622,66 @@ def test_next_chapter_body_echoes_previous_summary_next_focus():
     assert "Return to Lin Yue and Su Wan over the witness" in bundle.body
 
 
+def test_next_chapter_body_uses_next_focus_as_opening_hook():
+    story = StoryState(
+        story_id="s-028",
+        outline="A prior chapter should seed the next opening beat.",
+        genre="mystery",
+        style="tense",
+        current_chapter=1,
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                summary="The first clash leaves the witness unresolved.",
+                facts=["The witness is still contested."],
+                unresolved_threads=["Can Lin Yue and Su Wan control the witness next?"],
+                next_focus="Return to Lin Yue and Su Wan over the witness",
+                primary_conflict={
+                    "lead": "Lin Yue",
+                    "opposition": "Su Wan",
+                    "collision": "Lin Yue and Su Wan collide over the witness.",
+                },
+                secondary_conflict={
+                    "pressure": "time",
+                    "detail": "The court keeps closing ranks.",
+                    "participants": [{"name": "Pei An", "goal": "hide the ledger"}],
+                },
+                event_beat={
+                    "turn": "pressure spike",
+                    "pivot": "Lin Yue and Su Wan collide over the witness.",
+                },
+            )
+        ],
+        foreshadowing=[
+            ForeshadowingState(
+                text="A hidden letter appears.",
+                first_chapter=1,
+                status="reinforced",
+            )
+        ],
+        world_facts=["Chapter 1 confirms the investigation is still unfolding."],
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert bundle.body.startswith("Chapter 2 body. Opening hook:")
+    assert "Return to Lin Yue and Su Wan over the witness" in bundle.body
+
+
 def test_action_briefs_use_latest_chapter_summary_as_context():
     story = StoryState(
         story_id="s-024",
