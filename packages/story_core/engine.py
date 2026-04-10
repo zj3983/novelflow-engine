@@ -16,6 +16,7 @@ from packages.story_core.writer import write_chapter_body
 class ChapterBundle(BaseModel):
     chapter_number: int
     body: str
+    chapter_title: str = ""
     action_briefs: list[dict] = Field(default_factory=list)
     conflict_summary: dict = Field(default_factory=dict)
     event_beat: dict = Field(default_factory=dict)
@@ -54,6 +55,7 @@ class StoryEngine:
         bundle = ChapterBundle(
             chapter_number=chapter_number,
             body=body,
+            chapter_title=updated_story.chapter_summaries[-1].chapter_title,
             action_briefs=action_briefs,
             conflict_summary=conflict_summary,
             event_beat=event_beat,

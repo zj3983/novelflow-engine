@@ -113,6 +113,25 @@ def _latest_next_focus(story: StoryState) -> str:
     return story.chapter_summaries[-1].next_focus
 
 
+def build_chapter_title(
+    chapter_number: int,
+    conflict_summary: dict | None = None,
+    next_focus: str = "",
+) -> str:
+    source_text = next_focus
+    if not source_text and conflict_summary:
+        primary = conflict_summary.get("primary_conflict", {})
+        source_text = primary.get("collision", "") or conflict_summary.get("summary", "")
+
+    topic = _goal_topic(source_text or "pressure")
+    if topic == "truth":
+        topic = "Pressure"
+    else:
+        topic = topic.title()
+
+    return f"Chapter {chapter_number}: {topic} Crossroads"
+
+
 def build_action_briefs(story: StoryState) -> list[dict]:
     briefs: list[dict] = []
     for character in story.characters:

@@ -742,6 +742,36 @@ def test_next_outline_uses_previous_summary_next_focus():
     assert "Return to Lin Yue and Su Wan over the witness" in bundle.next_outline
 
 
+def test_chapter_bundle_includes_generated_chapter_title():
+    story = StoryState(
+        story_id="s-030",
+        outline="A prior chapter should shape the next title as well.",
+        genre="mystery",
+        style="tense",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert bundle.chapter_title.startswith("Chapter 1:")
+    assert "Witness" in bundle.chapter_title
+    assert bundle.chapter_summary["chapter_title"] == bundle.chapter_title
+
+
 def test_action_briefs_use_latest_chapter_summary_as_context():
     story = StoryState(
         story_id="s-024",

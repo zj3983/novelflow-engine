@@ -6,6 +6,8 @@ def validate_bundle(bundle: dict) -> dict:
 
     if not bundle.get("body"):
         issues.append("body")
+    if not bundle.get("chapter_title"):
+        issues.append("chapter_title")
     if not bundle.get("next_outline"):
         issues.append("next_outline")
 

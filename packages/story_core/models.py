@@ -29,6 +29,7 @@ class ForeshadowingState(BaseModel):
 
 class ChapterSummary(BaseModel):
     chapter_number: int
+    chapter_title: str = ""
     summary: str
     facts: list[str] = Field(default_factory=list)
     unresolved_threads: list[str] = Field(default_factory=list)

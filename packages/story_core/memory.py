@@ -7,6 +7,7 @@ from packages.story_core.models import (
     StoryState,
     TimelineEvent,
 )
+from packages.story_core.planner import build_chapter_title
 
 
 def _normalize_participant(item: dict | str) -> dict:
@@ -162,6 +163,11 @@ def apply_post_chapter_updates(
     story.chapter_summaries.append(
         ChapterSummary(
             chapter_number=chapter_number,
+            chapter_title=build_chapter_title(
+                chapter_number,
+                conflict_summary or {},
+                inherited_next_focus or _build_next_focus(chapter_number, primary, secondary, [unresolved]),
+            ),
             summary=body,
             facts=[fact],
             unresolved_threads=[unresolved],
