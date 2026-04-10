@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 ForeshadowingStatus = Literal["open", "reinforced", "resolved", "expired"]
 Cadence = Literal["urgent", "measured", "breathing"]
+CharacterLifecycleState = Literal["proposed", "active", "rejected", "frozen"]
 
 
 class CharacterRelationship(BaseModel):
@@ -41,6 +42,27 @@ class ChapterSummary(BaseModel):
     event_beat: dict = Field(default_factory=dict)
 
 
+class CharacterProposal(BaseModel):
+    name: str
+    goal: str
+    emotion: str = "neutral"
+    action: str = ""
+    priority: int = 0
+    new_character_candidates: list[str] = Field(default_factory=list)
+
+
+class DirectorDecision(BaseModel):
+    primary_conflict: dict = Field(default_factory=dict)
+    secondary_conflict: dict = Field(default_factory=dict)
+    event_beat: dict = Field(default_factory=dict)
+    cadence: Cadence = "measured"
+    chapter_title: str = ""
+    approved_new_characters: list[str] = Field(default_factory=list)
+    deferred_characters: list[str] = Field(default_factory=list)
+    rejected_characters: list[str] = Field(default_factory=list)
+    next_focus: str = ""
+
+
 class CharacterState(BaseModel):
     """Mutable character state used by the story engine."""
 
@@ -54,6 +76,10 @@ class CharacterState(BaseModel):
     location: str = ""
     secrets: list[str] = Field(default_factory=list)
     frozen: bool = False
+    lifecycle_state: CharacterLifecycleState = "active"
+    last_proposed_chapter: int = 0
+    last_approved_chapter: int = 0
+    introduced_by: str = ""
 
 
 class StoryState(BaseModel):
