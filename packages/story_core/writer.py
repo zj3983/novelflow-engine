@@ -1,14 +1,7 @@
 from __future__ import annotations
 
 from packages.story_core.models import StoryState
-
-
-def _topic(text: str) -> str:
-    lowered = text.lower()
-    for candidate in ("witness", "ledger", "archives", "truth", "forgery", "letter"):
-        if candidate in lowered:
-            return candidate
-    return lowered.split()[-1] if lowered.split() else "pressure"
+from packages.story_core.planner import build_chapter_title
 
 
 def _goal_direction(goals: list[str]) -> str:
@@ -67,21 +60,31 @@ def _opening_hook_sentence(story: StoryState) -> str:
     return f"Opening hook: {next_focus}"
 
 
+def _resolve_chapter_title(
+    story: StoryState,
+    chapter_number: int,
+    conflict_summary: dict | None,
+) -> str:
+    # Prefer a title already computed upstream for this exact chapter.
+    for summary in story.chapter_summaries:
+        if summary.chapter_number == chapter_number and summary.chapter_title:
+            return summary.chapter_title
+
+    latest_next_focus = story.chapter_summaries[-1].next_focus if story.chapter_summaries else ""
+    return build_chapter_title(
+        chapter_number,
+        conflict_summary,
+        latest_next_focus,
+    )
+
+
 def _title_sentence(
     story: StoryState,
     chapter_number: int,
     conflict_summary: dict | None = None,
 ) -> str:
-    source_text = ""
-    if story.chapter_summaries and story.chapter_summaries[-1].next_focus:
-        source_text = story.chapter_summaries[-1].next_focus
-    elif conflict_summary:
-        primary = conflict_summary.get("primary_conflict", {})
-        source_text = primary.get("collision", "") or conflict_summary.get("summary", "")
-
-    topic = _topic(source_text or "pressure")
-    topic_word = "Pressure" if topic == "truth" else topic.title()
-    return f"Title: Chapter {chapter_number}: {topic_word} Crossroads"
+    chapter_title = _resolve_chapter_title(story, chapter_number, conflict_summary)
+    return f"Title: {chapter_title}"
 
 
 def write_chapter_body(

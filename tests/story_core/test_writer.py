@@ -61,3 +61,31 @@ def test_writer_prefers_previous_next_focus_when_present():
     assert "Chapter 2:" in body
     assert "Ledger" in body
 
+
+def test_writer_uses_existing_chapter_title_when_present_for_same_chapter():
+    story = StoryState(
+        story_id="s-writer-003",
+        outline="A title may already be computed upstream.",
+        genre="mystery",
+        style="tense",
+        current_chapter=1,
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=2,
+                chapter_title="Chapter 2: Custom Crossroads",
+                summary="Placeholder body for an already-titled chapter.",
+                facts=[],
+                unresolved_threads=[],
+                next_focus="Return to someone over something",
+                primary_conflict={},
+                secondary_conflict={},
+                event_beat={},
+            )
+        ],
+        characters=[CharacterState(name="Pei An", role="protagonist", goals=["hide the ledger"])],
+    )
+
+    body = write_chapter_body(story, 2, conflict_summary=None, event_beat=None)
+
+    assert "Title:" in body
+    assert "Chapter 2: Custom Crossroads" in body
