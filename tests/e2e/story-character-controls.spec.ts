@@ -58,3 +58,31 @@ test("agent settings panel exposes model and mode controls", async ({ page }) =>
   await expect(page.getByText("Character model: gpt-5.4", { exact: true })).toBeVisible();
   await expect(page.getByText("New character policy: Director review", { exact: true })).toBeVisible();
 });
+
+test("agent settings persist into story generation payload", async ({ page }) => {
+  // Force the workbench onto the deterministic frontend mock path so we can
+  // verify settings persistence even when the API server is not running.
+  await page.route("http://127.0.0.1:8000/**", (route) => route.abort());
+  await page.goto("/");
+
+  await page.getByLabel("Agent Mode").selectOption("LLM-assisted");
+  await page.getByLabel("Character Model").fill("gpt-5.4-mini");
+  await page.getByLabel("Director Model").fill("gpt-5.4");
+  await page.getByLabel("Writer Model").fill("gpt-5.4");
+  await page.getByLabel("Temperature").fill("0.85");
+  await page
+    .getByLabel("New Character Policy")
+    .selectOption("Auto-approve named candidates");
+
+  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
+
+  await page.getByText("Bundle", { exact: true }).click();
+  const bundleDebug = page.locator(
+    'section[aria-label="Chapter Draft Panel"] details pre',
+  );
+  await expect(bundleDebug).toContainText('"agent_settings"');
+  await expect(bundleDebug).toContainText('"mode": "LLM-assisted"');
+  await expect(bundleDebug).toContainText(
+    '"new_character_policy": "Auto-approve named candidates"',
+  );
+});

@@ -3,6 +3,14 @@ export type CreateStoryRequest = {
   outline: string;
   genre: string;
   style: string;
+  agent_settings?: {
+    mode: "Rule-based" | "LLM-assisted";
+    character_model: string;
+    director_model: string;
+    writer_model: string;
+    temperature: string | number;
+    new_character_policy: "Director review" | "Auto-approve named candidates" | "Manual review";
+  };
   characters?: Array<{
     name: string;
     role: string;
@@ -23,6 +31,8 @@ export type CreateStoryRequest = {
     >;
   }>;
 };
+
+export type AgentSettings = NonNullable<CreateStoryRequest["agent_settings"]>;
 
 export type ChapterBundle = {
   chapter_number: number;
@@ -49,6 +59,7 @@ export type StoryResponse = {
   genre: string;
   style: string;
   current_chapter: number;
+  agent_settings: AgentSettings;
   parent_story_id?: string | null;
   branched_from_chapter?: number | null;
   characters: Array<{
@@ -97,6 +108,7 @@ type MockStory = {
   genre: string;
   style: string;
   current_chapter: number;
+  agent_settings: AgentSettings;
   characters: StoryResponse["characters"];
   history: ChapterBundle[];
   initial_story: StoryResponse;
@@ -108,6 +120,26 @@ const mockStore = new Map<string, MockStory>();
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function defaultAgentSettings(): AgentSettings {
+  return {
+    mode: "Rule-based",
+    character_model: "gpt-5.4-mini",
+    director_model: "gpt-5.4",
+    writer_model: "gpt-5.4",
+    temperature: "0.7",
+    new_character_policy: "Director review",
+  };
+}
+
+function normalizeAgentSettings(
+  settings?: Partial<AgentSettings>,
+): AgentSettings {
+  return {
+    ...defaultAgentSettings(),
+    ...(settings ?? {}),
+  };
 }
 
 function relationshipShift(goals: string[]): { trustDelta: number; tensionDelta: number } {
@@ -157,6 +189,7 @@ function continuitySentence(story: MockStory): string {
 }
 
 function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
+  const agentSettings = normalizeAgentSettings(payload.agent_settings);
   const normalizedCharacters = clone(payload.characters ?? []).map((character) => ({
     ...character,
     lifecycle_state: character.lifecycle_state ?? (character.frozen ? "frozen" : "active"),
@@ -171,6 +204,7 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     genre: payload.genre,
     style: payload.style,
     current_chapter: 0,
+    agent_settings: clone(agentSettings),
     parent_story_id: null,
     branched_from_chapter: null,
     characters: normalizedCharacters,
@@ -183,6 +217,7 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     genre: payload.genre,
     style: payload.style,
     current_chapter: 0,
+    agent_settings: clone(agentSettings),
     characters: clone(normalizedCharacters),
     history: [],
     initial_story: initialStory,
@@ -254,6 +289,7 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
       genre: story.genre,
       style: story.style,
       current_chapter: story.current_chapter,
+      agent_settings: clone(story.agent_settings),
       characters: story.characters,
       timeline: [
         {
@@ -293,6 +329,7 @@ function mockRollbackStory(storyId: string): StoryResponse {
     genre: story.genre,
     style: story.style,
     current_chapter: story.current_chapter,
+    agent_settings: clone(story.agent_settings),
     characters: clone(story.characters),
     history: clone(story.history),
     parent_story_id: story.parent_story_id ?? null,
@@ -309,6 +346,7 @@ function mockFetchStory(storyId: string): StoryResponse {
     genre: story.genre,
     style: story.style,
     current_chapter: story.current_chapter,
+    agent_settings: clone(story.agent_settings),
     characters: clone(story.characters),
     history: clone(story.history),
     parent_story_id: story.parent_story_id ?? null,
@@ -337,6 +375,7 @@ function mockBranchStory(storyId: string, newStoryId: string, fromChapter: numbe
     genre: story.genre,
     style: story.style,
     current_chapter: branchState.current_chapter,
+    agent_settings: clone(branchState.agent_settings),
     characters: clone(branchState.characters),
     history: branchHistory,
     initial_story: {

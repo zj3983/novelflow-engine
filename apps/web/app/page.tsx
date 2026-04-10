@@ -16,6 +16,7 @@ import {
   generateNextChapter,
   listStories,
   rollbackStory,
+  type AgentSettings as ApiAgentSettings,
   type ChapterBundle,
   type StoryCharacter,
   type StoryResponse,
@@ -27,6 +28,28 @@ const DEFAULT_STORY = {
   genre: "fantasy",
   style: "noir",
 } as const;
+
+function toApiAgentSettings(settings: AgentSettings): ApiAgentSettings {
+  return {
+    mode: settings.mode,
+    character_model: settings.characterModel,
+    director_model: settings.directorModel,
+    writer_model: settings.writerModel,
+    temperature: settings.temperature,
+    new_character_policy: settings.newCharacterPolicy,
+  };
+}
+
+function fromApiAgentSettings(settings: ApiAgentSettings | undefined): AgentSettings {
+  return {
+    mode: settings?.mode ?? "Rule-based",
+    characterModel: settings?.character_model ?? "gpt-5.4-mini",
+    directorModel: settings?.director_model ?? "gpt-5.4",
+    writerModel: settings?.writer_model ?? "gpt-5.4",
+    temperature: String(settings?.temperature ?? "0.7"),
+    newCharacterPolicy: settings?.new_character_policy ?? "Director review",
+  };
+}
 
 export default function Page() {
   const [draft, setDraft] = useState<StoryDraft>({
@@ -109,6 +132,7 @@ export default function Page() {
       genre: updatedStory?.genre ?? baseStory.genre,
       style: updatedStory?.style ?? baseStory.style,
       current_chapter: updatedStory?.current_chapter ?? nextBundle.chapter_number,
+      agent_settings: updatedStory?.agent_settings ?? baseStory.agent_settings,
       parent_story_id: baseStory.parent_story_id ?? null,
       branched_from_chapter: baseStory.branched_from_chapter ?? null,
       characters: updatedStory?.characters ?? baseStory.characters,
@@ -216,9 +240,11 @@ export default function Page() {
       const createdStory = await createStory({
         ...DEFAULT_STORY,
         outline: draftRef.current.outline,
+        agent_settings: toApiAgentSettings(agentSettings),
         characters,
       });
       setStory(createdStory);
+      setAgentSettings(fromApiAgentSettings(createdStory.agent_settings));
       setSelectedChapter(createdStory.history.length ? createdStory.history[createdStory.history.length - 1].chapter_number : null);
       setStoryInitialized(true);
       setActiveDraftKey(currentDraftKey);
@@ -230,6 +256,7 @@ export default function Page() {
     if (!story) {
       const syncedStory = await fetchStory(activeStoryId);
       setStory(syncedStory);
+      setAgentSettings(fromApiAgentSettings(syncedStory.agent_settings));
       setSelectedChapter(syncedStory.history.length ? syncedStory.history[syncedStory.history.length - 1].chapter_number : null);
       return syncedStory;
     }
@@ -245,6 +272,7 @@ export default function Page() {
       const nextBundle = await generateNextChapter(activeStoryId);
       const nextStory = buildStoryFromBundle(readyStory, nextBundle, activeStoryId);
       setStory(nextStory);
+      setAgentSettings(fromApiAgentSettings(nextStory.agent_settings));
       setSelectedChapter(nextBundle.chapter_number);
       await refreshStorySummaries();
     } catch (e) {
@@ -260,6 +288,7 @@ export default function Page() {
     try {
       const syncedStory = await rollbackStory(activeStoryId);
       setStory(syncedStory);
+      setAgentSettings(fromApiAgentSettings(syncedStory.agent_settings));
       setSelectedChapter(syncedStory.history.length ? syncedStory.history[syncedStory.history.length - 1].chapter_number : null);
       await refreshStorySummaries();
     } catch (e) {
@@ -277,6 +306,7 @@ export default function Page() {
       const branchId = `${activeStoryId}-branch-ch${chapterNumber}`;
       const branch = await branchStory(activeStoryId, branchId, chapterNumber);
       setStory(branch);
+      setAgentSettings(fromApiAgentSettings(branch.agent_settings));
       setActiveStoryId(branch.story_id);
       setSelectedChapter(branch.history.length ? branch.history[branch.history.length - 1].chapter_number : null);
       await refreshStorySummaries();
@@ -293,6 +323,7 @@ export default function Page() {
     try {
       const openedStory = await fetchStory(storyId);
       setStory(openedStory);
+      setAgentSettings(fromApiAgentSettings(openedStory.agent_settings));
       setActiveStoryId(storyId);
       setSelectedChapter(openedStory.history.length ? openedStory.history[openedStory.history.length - 1].chapter_number : null);
       await refreshStorySummaries();
@@ -309,6 +340,7 @@ export default function Page() {
     try {
       const openedStory = storyCatalog[storyId] ?? await fetchStory(storyId);
       setStory(openedStory);
+      setAgentSettings(fromApiAgentSettings(openedStory.agent_settings));
       setActiveStoryId(storyId);
       setSelectedChapter(chapterNumber);
       await refreshStorySummaries();
@@ -331,6 +363,7 @@ export default function Page() {
       await deleteStory(activeStoryId);
       const parentStory = await fetchStory(parentStoryId);
       setStory(parentStory);
+      setAgentSettings(fromApiAgentSettings(parentStory.agent_settings));
       setActiveStoryId(parentStory.story_id);
       setSelectedChapter(parentStory.history.length ? parentStory.history[parentStory.history.length - 1].chapter_number : null);
       await refreshStorySummaries();
