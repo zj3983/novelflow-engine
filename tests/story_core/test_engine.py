@@ -1,6 +1,6 @@
 from packages.story_core.engine import StoryEngine
 from packages.story_core.models import ChapterSummary, CharacterRelationship, CharacterState, ForeshadowingState, StoryState
-from packages.story_core.planner import build_action_briefs
+from packages.story_core.planner import build_action_briefs, build_chapter_title
 
 
 def test_generate_chapter_updates_state_and_returns_bundle():
@@ -770,6 +770,19 @@ def test_chapter_bundle_includes_generated_chapter_title():
     assert bundle.chapter_title.startswith("Chapter 1:")
     assert "Witness" in bundle.chapter_title
     assert bundle.chapter_summary["chapter_title"] == bundle.chapter_title
+
+
+def test_build_chapter_title_falls_back_to_pressure_for_generic_conflict():
+    title = build_chapter_title(
+        1,
+        conflict_summary={
+            "primary_conflict": {
+                "collision": "Lin Yue and Su Wan collide over whether control can be secured.",
+            }
+        },
+    )
+
+    assert title == "Chapter 1: Pressure Crossroads"
 
 
 def test_action_briefs_use_latest_chapter_summary_as_context():

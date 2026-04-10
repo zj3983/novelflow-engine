@@ -36,7 +36,7 @@ def _goal_polarity(goal: str) -> str:
 
 def _goal_topic(goal: str) -> str:
     goal_text = goal.lower()
-    for candidate in ("witness", "ledger", "truth", "forgery", "letter", "archives"):
+    for candidate in ("witness", "ledger", "truth", "forgery", "letter", "archives", "archive"):
         if candidate in goal_text:
             return candidate
     return goal_text.split()[-1] if goal_text.split() else "truth"
@@ -118,12 +118,25 @@ def build_chapter_title(
     conflict_summary: dict | None = None,
     next_focus: str = "",
 ) -> str:
+    allowed_topics = {
+        "witness",
+        "ledger",
+        "forgery",
+        "letter",
+        "archives",
+        "archive",
+        "truth",
+    }
+
     source_text = next_focus
     if not source_text and conflict_summary:
         primary = conflict_summary.get("primary_conflict", {})
         source_text = primary.get("collision", "") or conflict_summary.get("summary", "")
 
-    topic = _goal_topic(source_text or "pressure")
+    topic = _goal_topic(source_text or "pressure").strip(" \t\r\n.,;:!?\"'()[]{}").lower()
+    if not topic or topic not in allowed_topics:
+        topic = "truth"
+
     if topic == "truth":
         topic = "Pressure"
     else:
