@@ -130,6 +130,22 @@ export default function Page() {
     return depth;
   }
 
+  function latestSummary(storyId: string): string {
+    const latest = storyCatalog[storyId]?.history.at(-1);
+    return latest?.chapter_summary?.summary ?? "None";
+  }
+
+  function latestThread(storyId: string): string {
+    const latest = storyCatalog[storyId]?.history.at(-1);
+    return latest?.chapter_summary?.unresolved_threads?.[0] ?? "None";
+  }
+
+  function latestForeshadowing(storyId: string): string {
+    const latest = storyCatalog[storyId]?.history.at(-1);
+    const entry = latest?.foreshadowing?.[0] as { text?: string } | undefined;
+    return entry?.text ?? "None";
+  }
+
   async function ensureStoryReady(): Promise<StoryResponse> {
     const characters = buildCharacters();
     const mustReset = !storyInitialized || activeDraftKey !== currentDraftKey;
@@ -451,6 +467,15 @@ export default function Page() {
                   </p>
                   <p className="hint" style={{ marginBottom: 6 }}>
                     Chapters in {entry.story_id}: {storyCatalog[entry.story_id]?.history.map((chapter) => chapter.chapter_number).join(", ") || "None"}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 6 }}>
+                    Latest summary in {entry.story_id}: {latestSummary(entry.story_id)}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 6 }}>
+                    Latest thread in {entry.story_id}: {latestThread(entry.story_id)}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 6 }}>
+                    Latest foreshadowing in {entry.story_id}: {latestForeshadowing(entry.story_id)}
                   </p>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <button

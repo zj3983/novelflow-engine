@@ -50,6 +50,10 @@ test("chapter history can be viewed and branched from an earlier chapter", async
   await expect(page.getByText("Story Branch: s-001-branch-ch1", { exact: true })).toBeVisible();
   await expect(page.getByText("Chapters in s-001: 1, 2", { exact: true })).toBeVisible();
   await expect(page.getByText("Chapters in s-001-branch-ch1: 1, 2", { exact: true })).toBeVisible();
+  await expect(page.getByText("Latest summary in s-001: Chapter 2 body.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Latest thread in s-001: Who will control the truth after chapter 2?", { exact: true })).toBeVisible();
+  await expect(page.getByText("Latest foreshadowing in s-001: A hidden letter appears.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Latest summary in s-001-branch-ch1: Chapter 2 body.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Jump to s-001 Chapter 1", exact: true }).click();
   await expect(page.getByText("Viewing chapter: 1", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Chapter 1" })).toBeVisible();
