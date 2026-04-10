@@ -22,27 +22,48 @@ def _relationship_shift(goals: list[str]) -> tuple[float, float]:
     return 0.05, 0.05
 
 
-def apply_post_chapter_updates(story: StoryState, body: str, chapter_number: int) -> None:
+def apply_post_chapter_updates(
+    story: StoryState,
+    body: str,
+    chapter_number: int,
+    conflict_summary: dict | None = None,
+) -> None:
     fact = f"Chapter {chapter_number} confirms the investigation is still unfolding."
     unresolved = f"Who will control the truth after chapter {chapter_number}?"
 
-    if story.characters:
-        lead = story.characters[0]
-        if not lead.frozen:
-            lead.memory.append(f"Chapter {chapter_number} changed the situation.")
-            lead.current_emotion = "alert"
-            if not lead.location:
-                lead.location = "palace archive"
-            if lead.relationships:
-                key = next(iter(lead.relationships))
-                relation = lead.relationships[key]
-                trust_delta, tension_delta = _relationship_shift(lead.goals)
-                lead.relationships[key] = CharacterRelationship(
-                    target=relation.target,
-                    trust=max(0.0, min(1.0, round(relation.trust + trust_delta, 2))),
-                    tension=max(0.0, min(1.0, round(relation.tension + tension_delta, 2))),
-                    bond=relation.bond,
-                )
+    participant_map = {character.name: character for character in story.characters}
+    primary = (conflict_summary or {}).get("primary_conflict", {})
+    secondary = (conflict_summary or {}).get("secondary_conflict", {})
+    primary_names = {primary.get("lead"), primary.get("opposition")} - {None, ""}
+    secondary_names = set(secondary.get("participants", []))
+
+    for character in story.characters:
+        if character.frozen:
+            continue
+
+        touched = False
+        if character.name in primary_names:
+            character.memory.append(f"Chapter {chapter_number} forced {character.name} into the main clash.")
+            character.current_emotion = "alert"
+            touched = True
+        elif character.name in secondary_names:
+            character.memory.append(f"Chapter {chapter_number} pulled {character.name} into the side pressure.")
+            character.current_emotion = "wary"
+            touched = True
+
+        if touched and not character.location:
+            character.location = "palace archive"
+
+        if character.name == story.characters[0].name and character.relationships:
+            key = next(iter(character.relationships))
+            relation = character.relationships[key]
+            trust_delta, tension_delta = _relationship_shift(character.goals)
+            character.relationships[key] = CharacterRelationship(
+                target=relation.target,
+                trust=max(0.0, min(1.0, round(relation.trust + trust_delta, 2))),
+                tension=max(0.0, min(1.0, round(relation.tension + tension_delta, 2))),
+                bond=relation.bond,
+            )
 
     story.world_facts.append(fact)
     story.timeline.append(

@@ -43,7 +43,12 @@ class StoryEngine:
             conflict_summary=conflict_summary,
             event_beat=event_beat,
         )
-        apply_post_chapter_updates(updated_story, body, chapter_number)
+        apply_post_chapter_updates(
+            updated_story,
+            body,
+            chapter_number,
+            conflict_summary=conflict_summary,
+        )
 
         bundle = ChapterBundle(
             chapter_number=chapter_number,

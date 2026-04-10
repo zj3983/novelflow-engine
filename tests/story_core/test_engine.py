@@ -328,3 +328,43 @@ def test_director_selects_secondary_conflict_and_event_beat():
     assert bundle.event_beat["turn"] == "pressure spike"
     assert "ledger" in bundle.event_beat["pivot"] or "witness" in bundle.event_beat["pivot"]
     assert "Event beat:" in bundle.body
+
+
+def test_post_chapter_updates_touch_multiple_conflict_participants():
+    story = StoryState(
+        story_id="s-019",
+        outline="Three factions collide over a witness and a ledger.",
+        genre="mystery",
+        style="tense",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Pei An",
+                role="supporting",
+                goals=["hide the ledger"],
+                current_emotion="guarded",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    by_name = {character.name: character for character in bundle.updated_story.characters}
+    assert by_name["Lin Yue"].memory
+    assert by_name["Su Wan"].memory
+    assert by_name["Pei An"].memory
+    assert by_name["Lin Yue"].current_emotion == "alert"
+    assert by_name["Su Wan"].current_emotion == "alert"
+    assert by_name["Pei An"].current_emotion == "wary"
