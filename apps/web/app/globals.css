@@ -100,6 +100,58 @@ body {
   gap: 14px;
 }
 
+.book-import {
+  padding: 12px;
+  border: 1px solid rgba(31, 29, 26, 0.14);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 243, 219, 0.92), rgba(255, 255, 255, 0.82));
+  display: grid;
+  gap: 12px;
+}
+
+.book-import__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.book-import__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.book-import__report {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid rgba(31, 29, 26, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.book-import__files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.book-import__file {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(31, 29, 26, 0.08);
+  font-size: 12px;
+}
+
+.book-import__file--missing {
+  background: rgba(184, 73, 41, 0.14);
+  color: #9d3019;
+}
+
 .agent-settings {
   padding: 12px;
   border: 1px solid rgba(182, 75, 50, 0.26);
@@ -150,6 +202,54 @@ body {
 
 .agent-settings__summary .hint + .hint {
   margin-top: 6px;
+}
+
+.runtime-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.runtime-status__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+.runtime-status__badge--idle {
+  background: rgba(31, 29, 26, 0.05);
+  border-color: rgba(31, 29, 26, 0.1);
+  color: var(--muted);
+}
+
+.runtime-status__badge--warning {
+  background: rgba(201, 137, 16, 0.14);
+  border-color: rgba(201, 137, 16, 0.28);
+  color: #8a5a00;
+}
+
+.runtime-status__badge--success {
+  background: rgba(29, 120, 75, 0.14);
+  border-color: rgba(29, 120, 75, 0.25);
+  color: #19613d;
+}
+
+.runtime-status__badge--error {
+  background: rgba(181, 53, 53, 0.14);
+  border-color: rgba(181, 53, 53, 0.25);
+  color: #8b2626;
+}
+
+.runtime-status__text {
+  color: var(--muted);
 }
 
 .character-card {

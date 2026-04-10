@@ -5,9 +5,11 @@ export type CreateStoryRequest = {
   style: string;
   agent_settings?: {
     mode: "Rule-based" | "LLM-assisted";
+    global_model: string;
     character_model: string;
     director_model: string;
     writer_model: string;
+    memory_model: string;
     temperature: string | number;
     new_character_policy: "Director review" | "Auto-approve named candidates" | "Manual review";
   };
@@ -33,6 +35,26 @@ export type CreateStoryRequest = {
 };
 
 export type AgentSettings = NonNullable<CreateStoryRequest["agent_settings"]>;
+
+export type RuntimeEndpoint = {
+  api_key: string;
+  base_url: string;
+};
+
+export type AgentRuntimeName = "character" | "director" | "writer" | "memory";
+
+export type RuntimeSettings = {
+  global: RuntimeEndpoint;
+  agents: Record<AgentRuntimeName, RuntimeEndpoint>;
+};
+
+export type RuntimeConnectionTarget = "global" | AgentRuntimeName;
+
+export type RuntimeConnectionResult = {
+  ok: boolean;
+  agent_name: RuntimeConnectionTarget;
+  message: string;
+};
 
 export type AgentRuntimeEntry = {
   mode: "Rule-based" | "LLM-assisted";
@@ -114,6 +136,36 @@ export type DeleteStoryResponse = {
 
 export type StoryCharacter = StoryResponse["characters"][number];
 
+export type BookImportScanRequest = {
+  source_path: string;
+};
+
+export type BookImportScanReport = {
+  source_path: string;
+  exists: boolean;
+  missing_required_files: string[];
+  missing_optional_files: string[];
+  unusable_required_files: string[];
+  empty_files: string[];
+  present_files: string[];
+  warnings: string[];
+  can_bootstrap: boolean;
+};
+
+export type BookImportBootstrapRequest = {
+  source_path: string;
+};
+
+export type BookImportBootstrapResponse = {
+  report: BookImportScanReport;
+  draft: {
+    source_path: string;
+    outline: string;
+    summary?: string;
+    characters: string[];
+  };
+};
+
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 }
@@ -134,6 +186,20 @@ type MockStory = {
 };
 
 const mockStore = new Map<string, MockStory>();
+let mockRuntimeSettings: RuntimeSettings = defaultRuntimeSettings();
+const runtimeSettingsStorageKey = "novel-autogrowth-engine.runtime-settings";
+
+function runtimeTargetLabel(target: RuntimeConnectionTarget): string {
+  return target === "global"
+    ? "全局默认"
+    : target === "character"
+      ? "角色代理"
+      : target === "director"
+        ? "导演代理"
+        : target === "writer"
+          ? "写作代理"
+          : "记忆代理";
+}
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -142,11 +208,39 @@ function clone<T>(value: T): T {
 function defaultAgentSettings(): AgentSettings {
   return {
     mode: "Rule-based",
+    global_model: "gpt-5.4",
     character_model: "gpt-5.4-mini",
     director_model: "gpt-5.4",
     writer_model: "gpt-5.4",
+    memory_model: "gpt-5.4",
     temperature: "0.7",
     new_character_policy: "Director review",
+  };
+}
+
+function defaultRuntimeEndpoint(): RuntimeEndpoint {
+  return {
+    api_key: "",
+    base_url: "https://api.openai.com/v1",
+  };
+}
+
+function blankRuntimeEndpoint(): RuntimeEndpoint {
+  return {
+    api_key: "",
+    base_url: "",
+  };
+}
+
+function defaultRuntimeSettings(): RuntimeSettings {
+  return {
+    global: defaultRuntimeEndpoint(),
+    agents: {
+      character: blankRuntimeEndpoint(),
+      director: blankRuntimeEndpoint(),
+      writer: blankRuntimeEndpoint(),
+      memory: blankRuntimeEndpoint(),
+    },
   };
 }
 
@@ -197,12 +291,47 @@ function updateRuntimeForChapter(
   nextRuntime.memory_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
   nextRuntime.recent_events = [
     ...nextRuntime.recent_events,
-    `CharacterAgent: ${source} at chapter ${chapterNumber}${fallbackReason ? ` (${fallbackReason})` : ""}`,
-    `DirectorAgent: ${source} at chapter ${chapterNumber}${fallbackReason ? ` (${fallbackReason})` : ""}`,
-    `WriterAgent: ${source} at chapter ${chapterNumber}${fallbackReason ? ` (${fallbackReason})` : ""}`,
-    `MemoryAgent: ${source} at chapter ${chapterNumber}${fallbackReason ? ` (${fallbackReason})` : ""}`,
+    `角色代理：${source === "llm" ? "模型" : source === "rule-based" ? "规则" : source === "fallback" ? "回退" : "空闲"}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
+    `导演代理：${source === "llm" ? "模型" : source === "rule-based" ? "规则" : source === "fallback" ? "回退" : "空闲"}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
+    `写作代理：${source === "llm" ? "模型" : source === "rule-based" ? "规则" : source === "fallback" ? "回退" : "空闲"}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
+    `记忆代理：${source === "llm" ? "模型" : source === "rule-based" ? "规则" : source === "fallback" ? "回退" : "空闲"}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
   ].slice(-8);
   return nextRuntime;
+}
+
+function normalizeRuntimeEndpoint(
+  value?: Partial<RuntimeEndpoint>,
+  fallbackBaseUrl = "https://api.openai.com/v1",
+): RuntimeEndpoint {
+  return {
+    api_key: value?.api_key ?? "",
+    base_url: value?.base_url ?? fallbackBaseUrl,
+  };
+}
+
+function normalizeRuntimeSettings(value?: Partial<RuntimeSettings> | any): RuntimeSettings {
+  const base = defaultRuntimeSettings();
+  if (!value) {
+    return base;
+  }
+
+  if ("api_key" in value || "base_url" in value) {
+    const endpoint = normalizeRuntimeEndpoint(value as Partial<RuntimeEndpoint>);
+    return {
+      global: endpoint,
+      agents: base.agents,
+    };
+  }
+
+  return {
+    global: normalizeRuntimeEndpoint(value.global),
+    agents: {
+      character: normalizeRuntimeEndpoint(value.agents?.character, ""),
+      director: normalizeRuntimeEndpoint(value.agents?.director, ""),
+      writer: normalizeRuntimeEndpoint(value.agents?.writer, ""),
+      memory: normalizeRuntimeEndpoint(value.agents?.memory, ""),
+    },
+  };
 }
 
 function relationshipShift(goals: string[]): { trustDelta: number; tensionDelta: number } {
@@ -304,7 +433,7 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
     story.agent_settings.mode === "LLM-assisted" ? "fallback" : "rule-based";
   const fallbackReason =
     story.agent_settings.mode === "LLM-assisted"
-      ? "Mock backend uses deterministic fallback."
+      ? "模拟后端使用确定性回退。"
       : "";
   story.agent_runtime = updateRuntimeForChapter(
     story.agent_runtime,
@@ -517,19 +646,120 @@ function mockDeleteStory(storyId: string): DeleteStoryResponse {
   };
 }
 
+function mockFetchRuntimeSettings(): RuntimeSettings {
+  if (typeof window !== "undefined") {
+    try {
+      const stored = window.localStorage.getItem(runtimeSettingsStorageKey);
+      if (stored) {
+        mockRuntimeSettings = normalizeRuntimeSettings(JSON.parse(stored));
+      }
+    } catch {
+      // Ignore storage errors and fall back to the in-memory copy.
+    }
+  }
+
+  return clone(mockRuntimeSettings);
+}
+
+function mockSaveRuntimeSettings(settings: RuntimeSettings): RuntimeSettings {
+  mockRuntimeSettings = normalizeRuntimeSettings(settings);
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(runtimeSettingsStorageKey, JSON.stringify(mockRuntimeSettings));
+    } catch {
+      // Ignore storage errors and keep the in-memory fallback.
+    }
+  }
+  return clone(mockRuntimeSettings);
+}
+
 async function tryFetchJson(url: string, init: RequestInit): Promise<any> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 1500);
+  const timeout = setTimeout(() => controller.abort(), 8000);
 
   try {
     const resp = await fetch(url, { ...init, signal: controller.signal });
     if (!resp.ok) {
-      throw new Error(`${url} failed: ${resp.status}`);
+      const detail = await resp.text().catch(() => "");
+      throw new Error(detail ? `${url} failed: ${resp.status} ${detail}` : `${url} failed: ${resp.status}`);
     }
     return resp.json();
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(`${url} failed: request timed out`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function fetchRuntimeSettings(): Promise<RuntimeSettings> {
+  try {
+    const response = await tryFetchJson(`${apiBase()}/runtime-settings`, {
+      method: "GET",
+    });
+    return normalizeRuntimeSettings(response);
+  } catch {
+    return mockFetchRuntimeSettings();
+  }
+}
+
+export async function saveRuntimeSettings(settings: RuntimeSettings): Promise<RuntimeSettings> {
+  try {
+    const response = await tryFetchJson(`${apiBase()}/runtime-settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    return normalizeRuntimeSettings(response);
+  } catch {
+    return mockSaveRuntimeSettings(settings);
+  }
+}
+
+export async function testRuntimeSettingsConnection(
+  settings: RuntimeSettings,
+  target: RuntimeConnectionTarget,
+): Promise<RuntimeConnectionResult> {
+  try {
+    const response = await tryFetchJson(`${apiBase()}/runtime-settings/test`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent_name: target,
+        runtime_settings: settings,
+      }),
+    });
+    return response as RuntimeConnectionResult;
+  } catch {
+    const endpoint =
+      target === "global" ? settings.global : settings.agents[target] ?? defaultRuntimeEndpoint();
+    const ok = Boolean(endpoint.api_key && endpoint.base_url);
+    return {
+      ok,
+      agent_name: target,
+      message: ok
+        ? `${runtimeTargetLabel(target)} 连接正常`
+        : `${runtimeTargetLabel(target)} 连接失败：缺少 API 密钥或接口地址`,
+    };
+  }
+}
+
+export async function scanBookImport(sourcePath: string): Promise<BookImportScanReport> {
+  return (await tryFetchJson(`${apiBase()}/book-import/scan`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source_path: sourcePath } satisfies BookImportScanRequest),
+  })) as BookImportScanReport;
+}
+
+export async function bootstrapBookImport(sourcePath: string): Promise<BookImportBootstrapResponse> {
+  return (await tryFetchJson(`${apiBase()}/book-import/bootstrap`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source_path: sourcePath } satisfies BookImportBootstrapRequest),
+  })) as BookImportBootstrapResponse;
 }
 
 export async function createStory(payload: CreateStoryRequest): Promise<StoryResponse> {
