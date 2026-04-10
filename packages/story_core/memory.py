@@ -82,9 +82,9 @@ def _build_next_focus(
 
     lead = primary.get("lead", "")
     opposition = primary.get("opposition", "")
-    collision = primary.get("collision", "the main clash")
     if lead and opposition:
-        return f"Return to {lead} and {opposition} over {collision}"
+        topic = _goal_topic(primary.get("collision", "the main clash"))
+        return f"Return to {lead} and {opposition} over the {topic}"
 
     if unresolved_threads:
         return unresolved_threads[0]
