@@ -3,6 +3,19 @@ from packages.story_core.writer_agent import WriterAgent
 from packages.story_core.writer import write_chapter_body
 
 
+class FakeLLMWriterProvider:
+    def write(
+        self,
+        story: StoryState,
+        chapter_number: int,
+        decision: DirectorDecision,
+        conflict_summary: dict,
+        event_beat: dict,
+        cadence: str,
+    ) -> str:
+        return "LLM-assisted chapter body."
+
+
 def test_writer_surfaces_compact_title_line_from_conflict_topic():
     story = StoryState(
         story_id="s-writer-001",
@@ -224,3 +237,60 @@ def test_writer_agent_keeps_existing_prose_markers():
     assert "Conflict:" in body
     assert "Secondary pressure:" in body
     assert "Next focus:" in body
+
+
+def test_writer_agent_uses_injected_llm_provider_when_assisted_mode_is_enabled():
+    story = StoryState(
+        story_id="s-writer-agent-002",
+        outline="A witness drives a confrontation.",
+        genre="mystery",
+        style="tense",
+        current_chapter=1,
+        agent_settings={"mode": "LLM-assisted"},
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                chapter_title="Chapter 1: Witness Dossier",
+                summary="A previous clash over the witness.",
+                facts=["The witness vanished in the archive hall."],
+                unresolved_threads=["Can Lin Yue reclaim control of the witness?"],
+                next_focus="Return to Lin Yue and Su Wan over the witness",
+                primary_conflict={"lead": "Lin Yue", "opposition": "Su Wan", "collision": "They clash over the witness."},
+                secondary_conflict={"pressure": "time", "detail": "The court closes in.", "participants": []},
+                event_beat={"turn": "pressure spike", "pivot": "The witness slips away."},
+            )
+        ],
+        characters=[
+            CharacterState(name="Lin Yue", role="protagonist", goals=["find the witness"]),
+            CharacterState(name="Su Wan", role="supporting", goals=["protect the witness"]),
+        ],
+    )
+    conflict_summary = {
+        "summary": "Lin Yue pushes to secure the witness while Su Wan shields them.",
+        "stakes": "Control of the witness reshapes the court.",
+        "primary_conflict": {
+            "lead": "Lin Yue",
+            "opposition": "Su Wan",
+            "collision": "Lin Yue and Su Wan collide over whether the witness can be controlled.",
+        },
+        "secondary_conflict": {"pressure": "time", "detail": "Delay hides the truth.", "participants": []},
+    }
+    decision = DirectorDecision(
+        primary_conflict=conflict_summary["primary_conflict"],
+        secondary_conflict=conflict_summary["secondary_conflict"],
+        event_beat={"turn": "pressure spike", "pivot": "The witness slips away."},
+        cadence="urgent",
+        chapter_title="Chapter 2: Witness Dossier",
+        next_focus="Return to Lin Yue and Su Wan over the witness",
+    )
+
+    body = WriterAgent(llm_provider=FakeLLMWriterProvider()).write(
+        story,
+        chapter_number=2,
+        decision=decision,
+        conflict_summary=conflict_summary,
+        event_beat=decision.event_beat,
+        cadence="urgent",
+    )
+
+    assert body == "LLM-assisted chapter body."
