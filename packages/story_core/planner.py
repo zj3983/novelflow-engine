@@ -66,6 +66,30 @@ def _goal_drive(goal: str) -> int:
     return 1
 
 
+def _latest_summary_boost(story: StoryState, character_name: str, goal: str) -> int:
+    if not story.chapter_summaries:
+        return 0
+
+    latest = story.chapter_summaries[-1]
+    boost = 0
+    if character_name in latest.primary_conflict.get("lead", ""):
+        boost += 2
+    if character_name in latest.primary_conflict.get("opposition", ""):
+        boost += 1
+
+    summary_text = " ".join(
+        [
+            latest.summary,
+            " ".join(latest.facts),
+            " ".join(latest.unresolved_threads),
+            " ".join(latest.event_beat.values()) if latest.event_beat else "",
+        ]
+    ).lower()
+    if _goal_topic(goal) in summary_text:
+        boost += 1
+    return boost
+
+
 def build_action_briefs(story: StoryState) -> list[dict]:
     briefs: list[dict] = []
     for character in story.characters:
@@ -80,6 +104,7 @@ def build_action_briefs(story: StoryState) -> list[dict]:
                     _goal_drive(goal)
                     + _emotion_drive(character.current_emotion or "controlled")
                     + _role_drive(character.role)
+                    + _latest_summary_boost(story, character.name, goal)
                 ),
             }
         )

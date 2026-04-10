@@ -1,5 +1,5 @@
 from packages.story_core.engine import StoryEngine
-from packages.story_core.models import CharacterRelationship, CharacterState, StoryState
+from packages.story_core.models import ChapterSummary, CharacterRelationship, CharacterState, StoryState
 from packages.story_core.planner import build_action_briefs
 
 
@@ -521,3 +521,61 @@ def test_chapter_summary_captures_conflict_and_event_structure():
     assert "Pei An" in [item["name"] for item in summary["secondary_conflict"]["participants"]]
     assert summary["event_beat"]["turn"] == "pressure spike"
     assert "witness" in summary["event_beat"]["pivot"] or "ledger" in summary["event_beat"]["pivot"]
+
+
+def test_action_briefs_use_latest_chapter_summary_as_context():
+    story = StoryState(
+        story_id="s-024",
+        outline="The aftermath should shape the next move.",
+        genre="mystery",
+        style="tense",
+        current_chapter=1,
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                summary="Lin Yue and Su Wan collide over the witness.",
+                facts=["The witness remains contested."],
+                unresolved_threads=["Who will control the witness next?"],
+                primary_conflict={
+                    "lead": "Lin Yue",
+                    "opposition": "Su Wan",
+                    "collision": "Lin Yue and Su Wan collide over the witness.",
+                },
+                secondary_conflict={
+                    "pressure": "time",
+                    "detail": "The court keeps closing ranks.",
+                    "participants": [{"name": "Pei An", "goal": "hide the ledger"}],
+                },
+                event_beat={
+                    "turn": "pressure spike",
+                    "pivot": "Lin Yue and Su Wan collide over the witness.",
+                },
+            )
+        ],
+        characters=[
+            CharacterState(
+                name="Pei An",
+                role="supporting",
+                goals=["hide the ledger"],
+                current_emotion="guarded",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+        ],
+    )
+
+    briefs = build_action_briefs(story)
+
+    assert briefs[0]["name"] == "Lin Yue"
+    assert briefs[0]["priority"] > briefs[-1]["priority"]
+    assert briefs[0]["priority"] >= briefs[1]["priority"]
