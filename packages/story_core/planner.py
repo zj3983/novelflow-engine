@@ -107,6 +107,12 @@ def _latest_thread_boost(story: StoryState, character_name: str) -> int:
     return boost
 
 
+def _latest_next_focus(story: StoryState) -> str:
+    if not story.chapter_summaries:
+        return ""
+    return story.chapter_summaries[-1].next_focus
+
+
 def build_action_briefs(story: StoryState) -> list[dict]:
     briefs: list[dict] = []
     for character in story.characters:
@@ -226,13 +232,26 @@ def plan_next_outline(
     conflict_summary: dict | None = None,
 ) -> str:
     lead = story.characters[0].name if story.characters else "the lead"
+    next_focus = _latest_next_focus(story)
     if conflict_summary and conflict_summary.get("primary_conflict"):
         primary = conflict_summary["primary_conflict"]
         secondary = conflict_summary.get("secondary_conflict", {})
+        focus_clause = (
+            f" Keep the previous focus intact: {next_focus}."
+            if next_focus
+            else ""
+        )
         return (
             f"Chapter {chapter_number + 1}: force {primary['lead']} and {primary['opposition']} "
             f"to push their collision harder, keep pressure on {secondary.get('pressure', 'the clock')}, "
             "and decide who gains the next hold over the witness."
+            f"{focus_clause}"
+        )
+
+    if next_focus:
+        return (
+            f"Chapter {chapter_number + 1}: start from {next_focus}, "
+            "escalate trust tension, and move one unresolved thread closer to exposure."
         )
 
     return (

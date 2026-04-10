@@ -101,6 +101,7 @@ def apply_post_chapter_updates(
 ) -> None:
     fact = f"Chapter {chapter_number} confirms the investigation is still unfolding."
     unresolved = f"Who will control the truth after chapter {chapter_number}?"
+    inherited_next_focus = story.chapter_summaries[-1].next_focus if story.chapter_summaries else ""
 
     participant_map = {character.name: character for character in story.characters}
     primary = (conflict_summary or {}).get("primary_conflict", {})
@@ -164,7 +165,8 @@ def apply_post_chapter_updates(
             summary=body,
             facts=[fact],
             unresolved_threads=[unresolved],
-            next_focus=_build_next_focus(chapter_number, primary, secondary, [unresolved]),
+            next_focus=inherited_next_focus
+            or _build_next_focus(chapter_number, primary, secondary, [unresolved]),
             primary_conflict=primary,
             secondary_conflict=secondary,
             event_beat=event_beat or {},
