@@ -1031,3 +1031,25 @@ def test_story_engine_proposals_include_archivist_candidate_from_secret():
 
     assert bundle.action_briefs
     assert "Old Archivist" in bundle.action_briefs[0]["new_character_candidates"]
+
+
+def test_story_engine_includes_director_character_approval_metadata():
+    story = StoryState(
+        story_id="s-032",
+        outline="A detective prince uncovers palace crimes.",
+        genre="fantasy",
+        style="noir",
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                secrets=["An archivist once forged the registry seal."],
+            )
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert "approved_new_characters" in bundle.conflict_summary
+    assert "Old Archivist" in bundle.conflict_summary["approved_new_characters"]

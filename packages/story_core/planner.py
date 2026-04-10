@@ -137,6 +137,27 @@ def build_action_briefs(story: StoryState) -> list[dict]:
     return [proposal.model_dump() for proposal in CharacterAgent().propose_all(story)]
 
 
+def select_primary_pair(action_briefs: list[dict]) -> tuple[dict, dict | None]:
+    if not action_briefs:
+        return {}, None
+
+    lead = action_briefs[0]
+    rival = None
+    best_score = -1
+    for candidate in action_briefs[1:]:
+        score = 0
+        if _goal_topic(candidate["goal"]) == _goal_topic(lead["goal"]):
+            score += 2
+        if _goal_polarity(candidate["goal"]) != _goal_polarity(lead["goal"]):
+            score += 2
+        if candidate["emotion"] != lead["emotion"]:
+            score += 1
+        if score > best_score:
+            best_score = score
+            rival = candidate
+    return lead, rival
+
+
 def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict:
     if not action_briefs:
         return {
@@ -154,20 +175,7 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
             },
         }
 
-    lead = action_briefs[0]
-    rival = None
-    best_score = -1
-    for candidate in action_briefs[1:]:
-        score = 0
-        if _goal_topic(candidate["goal"]) == _goal_topic(lead["goal"]):
-            score += 2
-        if _goal_polarity(candidate["goal"]) != _goal_polarity(lead["goal"]):
-            score += 2
-        if candidate["emotion"] != lead["emotion"]:
-            score += 1
-        if score > best_score:
-            best_score = score
-            rival = candidate
+    lead, rival = select_primary_pair(action_briefs)
     if rival is None:
         return {
             "summary": f"{lead['name']} acts alone, trying to {lead['goal']}.",

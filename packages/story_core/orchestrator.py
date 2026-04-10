@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from packages.story_core.agent_base import StoryAgentProvider
 from packages.story_core.character_agent import CharacterAgent
+from packages.story_core.director_agent import DirectorAgent
 from packages.story_core.memory import (
     apply_post_chapter_updates,
     build_character_cards,
@@ -9,7 +10,6 @@ from packages.story_core.memory import (
 )
 from packages.story_core.models import CharacterProposal, DirectorDecision, StoryState
 from packages.story_core.planner import (
-    build_chapter_title,
     build_conflict_summary,
     build_event_beat,
     compute_chapter_cadence,
@@ -31,20 +31,12 @@ class RuleBasedStoryAgentProvider:
         event_beat: dict,
         cadence: str,
     ) -> DirectorDecision:
-        primary = conflict_summary.get("primary_conflict", {})
-        secondary = conflict_summary.get("secondary_conflict", {})
-        chapter_title = build_chapter_title(
-            story.current_chapter,
+        return DirectorAgent().decide(
+            story,
+            proposals,
             conflict_summary,
-            story.chapter_summaries[-1].next_focus if story.chapter_summaries else "",
-        )
-        return DirectorDecision(
-            primary_conflict=primary,
-            secondary_conflict=secondary,
-            event_beat=event_beat,
-            cadence=cadence,
-            chapter_title=chapter_title,
-            next_focus=story.chapter_summaries[-1].next_focus if story.chapter_summaries else "",
+            event_beat,
+            cadence,
         )
 
     def write(
@@ -125,6 +117,12 @@ class StoryOrchestrator:
             event_beat,
             cadence,
         )
+        bundle_conflict_summary = {
+            **conflict_summary,
+            "approved_new_characters": decision.approved_new_characters,
+            "deferred_characters": decision.deferred_characters,
+            "rejected_characters": decision.rejected_characters,
+        }
 
         bundle = ChapterBundle(
             chapter_number=chapter_number,
@@ -132,7 +130,7 @@ class StoryOrchestrator:
             chapter_title=updated_story.chapter_summaries[-1].chapter_title,
             cadence=cadence,
             action_briefs=action_briefs,
-            conflict_summary=conflict_summary,
+            conflict_summary=bundle_conflict_summary,
             event_beat=event_beat,
             character_cards=build_character_cards(updated_story),
             foreshadowing=build_foreshadowing(updated_story, chapter_number),
