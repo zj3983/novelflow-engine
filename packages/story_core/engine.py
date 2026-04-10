@@ -45,7 +45,7 @@ class StoryEngine:
             conflict_summary=conflict_summary,
             character_cards=build_character_cards(updated_story),
             foreshadowing=build_foreshadowing(updated_story, chapter_number),
-            next_outline=plan_next_outline(updated_story, chapter_number),
+            next_outline=plan_next_outline(updated_story, chapter_number, conflict_summary=conflict_summary),
             updated_story=updated_story,
             chapter_summary=updated_story.chapter_summaries[-1].model_dump(),
         )

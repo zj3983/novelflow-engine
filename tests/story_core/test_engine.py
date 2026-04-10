@@ -223,3 +223,34 @@ def test_generate_chapter_body_reflects_selected_conflict():
     assert "Su Wan" in bundle.body
     assert "witness" in bundle.body
     assert "Secondary pressure:" in bundle.body
+
+
+def test_next_outline_reflects_primary_and_secondary_conflicts():
+    story = StoryState(
+        story_id="s-016",
+        outline="A censor and a magistrate race to control a witness.",
+        genre="mystery",
+        style="tense",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert "Lin Yue" in bundle.next_outline
+    assert "Su Wan" in bundle.next_outline
+    assert "time" in bundle.next_outline
+    assert "witness" in bundle.next_outline

@@ -79,8 +79,21 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
     }
 
 
-def plan_next_outline(story: StoryState, chapter_number: int) -> str:
+def plan_next_outline(
+    story: StoryState,
+    chapter_number: int,
+    conflict_summary: dict | None = None,
+) -> str:
     lead = story.characters[0].name if story.characters else "the lead"
+    if conflict_summary and conflict_summary.get("primary_conflict"):
+        primary = conflict_summary["primary_conflict"]
+        secondary = conflict_summary.get("secondary_conflict", {})
+        return (
+            f"Chapter {chapter_number + 1}: force {primary['lead']} and {primary['opposition']} "
+            f"to push their collision harder, keep pressure on {secondary.get('pressure', 'the clock')}, "
+            "and decide who gains the next hold over the witness."
+        )
+
     return (
         f"Chapter {chapter_number + 1}: force {lead} to act on the newest clue, "
         "escalate trust tension, and move one unresolved thread closer to exposure."
