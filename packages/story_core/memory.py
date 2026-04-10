@@ -65,6 +65,33 @@ def _secondary_follow_up_intent(goal: str, secondary: dict) -> str:
     return f"stabilize the {topic} before the side pressure breaks"
 
 
+def _build_next_focus(
+    chapter_number: int,
+    primary: dict,
+    secondary: dict,
+    unresolved_threads: list[str],
+) -> str:
+    for thread in unresolved_threads:
+        lowered = thread.lower()
+        if primary.get("lead", "").lower() in lowered or primary.get("opposition", "").lower() in lowered:
+            return thread
+        for participant in secondary.get("participants", []):
+            participant_name = participant.get("name", "").lower() if isinstance(participant, dict) else str(participant).lower()
+            if participant_name and participant_name in lowered:
+                return thread
+
+    lead = primary.get("lead", "")
+    opposition = primary.get("opposition", "")
+    collision = primary.get("collision", "the main clash")
+    if lead and opposition:
+        return f"Return to {lead} and {opposition} over {collision}"
+
+    if unresolved_threads:
+        return unresolved_threads[0]
+
+    return f"Chapter {chapter_number} should reopen the most recent pressure point."
+
+
 def apply_post_chapter_updates(
     story: StoryState,
     body: str,
@@ -137,6 +164,7 @@ def apply_post_chapter_updates(
             summary=body,
             facts=[fact],
             unresolved_threads=[unresolved],
+            next_focus=_build_next_focus(chapter_number, primary, secondary, [unresolved]),
             primary_conflict=primary,
             secondary_conflict=secondary,
             event_beat=event_beat or {},

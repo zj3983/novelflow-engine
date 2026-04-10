@@ -32,6 +32,7 @@ class ChapterSummary(BaseModel):
     summary: str
     facts: list[str] = Field(default_factory=list)
     unresolved_threads: list[str] = Field(default_factory=list)
+    next_focus: str = ""
     primary_conflict: dict = Field(default_factory=dict)
     secondary_conflict: dict = Field(default_factory=dict)
     event_beat: dict = Field(default_factory=dict)

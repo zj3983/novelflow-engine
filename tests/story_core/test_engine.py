@@ -521,6 +521,45 @@ def test_chapter_summary_captures_conflict_and_event_structure():
     assert "Pei An" in [item["name"] for item in summary["secondary_conflict"]["participants"]]
     assert summary["event_beat"]["turn"] == "pressure spike"
     assert "witness" in summary["event_beat"]["pivot"] or "ledger" in summary["event_beat"]["pivot"]
+    assert summary["next_focus"]
+    assert "Lin Yue" in summary["next_focus"] or "Su Wan" in summary["next_focus"]
+
+
+def test_chapter_summary_next_focus_points_to_primary_conflict_follow_up():
+    story = StoryState(
+        story_id="s-026",
+        outline="A witness and a ledger pull different players into the same night.",
+        genre="mystery",
+        style="tense",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Pei An",
+                role="supporting",
+                goals=["hide the ledger"],
+                current_emotion="guarded",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+    summary = bundle.chapter_summary
+
+    assert summary["next_focus"]
+    assert "Lin Yue" in summary["next_focus"]
+    assert "Su Wan" in summary["next_focus"]
 
 
 def test_action_briefs_use_latest_chapter_summary_as_context():
