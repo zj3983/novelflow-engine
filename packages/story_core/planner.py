@@ -42,6 +42,30 @@ def _goal_topic(goal: str) -> str:
     return goal_text.split()[-1] if goal_text.split() else "truth"
 
 
+def _emotion_drive(emotion: str) -> int:
+    emotion_text = emotion.lower()
+    if emotion_text == "alert":
+        return 2
+    if emotion_text in {"defiant", "driven", "wary"}:
+        return 1
+    return 0
+
+
+def _role_drive(role: str) -> int:
+    return 1 if role.lower() == "protagonist" else 0
+
+
+def _goal_drive(goal: str) -> int:
+    goal_text = goal.lower()
+    if any(word in goal_text for word in ("seize", "block", "corner", "force")):
+        return 4
+    if any(word in goal_text for word in ("find", "expose", "accuse", "hunt")):
+        return 3
+    if any(word in goal_text for word in ("protect", "hide", "stabilize", "guard", "save", "help")):
+        return 2
+    return 1
+
+
 def build_action_briefs(story: StoryState) -> list[dict]:
     briefs: list[dict] = []
     for character in story.characters:
@@ -52,8 +76,14 @@ def build_action_briefs(story: StoryState) -> list[dict]:
                 "goal": goal,
                 "emotion": character.current_emotion or "controlled",
                 "action": _goal_action(goal),
+                "priority": (
+                    _goal_drive(goal)
+                    + _emotion_drive(character.current_emotion or "controlled")
+                    + _role_drive(character.role)
+                ),
             }
         )
+    briefs.sort(key=lambda brief: (-brief["priority"], brief["name"]))
     return briefs
 
 

@@ -1,5 +1,6 @@
 from packages.story_core.engine import StoryEngine
 from packages.story_core.models import CharacterRelationship, CharacterState, StoryState
+from packages.story_core.planner import build_action_briefs
 
 
 def test_generate_chapter_updates_state_and_returns_bundle():
@@ -445,3 +446,39 @@ def test_post_chapter_updates_seed_role_specific_follow_up_goals():
     assert by_name["Lin Yue"].goals[0] == "seize control of the witness before Su Wan recovers"
     assert by_name["Su Wan"].goals[0] == "block Lin Yue from taking the witness"
     assert by_name["Pei An"].goals[0] == "stabilize the ledger before the side pressure breaks"
+
+
+def test_action_briefs_prioritize_urgent_follow_up_intents_over_character_order():
+    story = StoryState(
+        story_id="s-022",
+        outline="The aftermath of one chapter should reorder initiative.",
+        genre="mystery",
+        style="tense",
+        current_chapter=1,
+        characters=[
+            CharacterState(
+                name="Pei An",
+                role="supporting",
+                goals=["stabilize the ledger before the side pressure breaks"],
+                current_emotion="wary",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["block Lin Yue from taking the witness"],
+                current_emotion="alert",
+            ),
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["seize control of the witness before Su Wan recovers"],
+                current_emotion="alert",
+            ),
+        ],
+    )
+
+    briefs = build_action_briefs(story)
+
+    assert [brief["name"] for brief in briefs] == ["Lin Yue", "Su Wan", "Pei An"]
+    assert briefs[0]["goal"] == "seize control of the witness before Su Wan recovers"
+    assert briefs[0]["priority"] > briefs[-1]["priority"]
