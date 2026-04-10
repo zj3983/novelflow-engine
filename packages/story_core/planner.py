@@ -90,6 +90,23 @@ def _latest_summary_boost(story: StoryState, character_name: str, goal: str) -> 
     return boost
 
 
+def _latest_thread_boost(story: StoryState, character_name: str) -> int:
+    if not story.chapter_summaries:
+        return 0
+
+    latest = story.chapter_summaries[-1]
+    thread_text = " ".join(latest.unresolved_threads).lower()
+    if not thread_text:
+        return 0
+
+    boost = 0
+    if character_name.lower() in thread_text:
+        boost += 6
+    if "next" in thread_text:
+        boost += 1
+    return boost
+
+
 def build_action_briefs(story: StoryState) -> list[dict]:
     briefs: list[dict] = []
     for character in story.characters:
@@ -105,6 +122,7 @@ def build_action_briefs(story: StoryState) -> list[dict]:
                     + _emotion_drive(character.current_emotion or "controlled")
                     + _role_drive(character.role)
                     + _latest_summary_boost(story, character.name, goal)
+                    + _latest_thread_boost(story, character.name)
                 ),
             }
         )

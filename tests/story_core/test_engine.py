@@ -579,3 +579,60 @@ def test_action_briefs_use_latest_chapter_summary_as_context():
     assert briefs[0]["name"] == "Lin Yue"
     assert briefs[0]["priority"] > briefs[-1]["priority"]
     assert briefs[0]["priority"] >= briefs[1]["priority"]
+
+
+def test_action_briefs_promote_character_named_in_unresolved_threads():
+    story = StoryState(
+        story_id="s-025",
+        outline="The next move should follow the unresolved thread.",
+        genre="mystery",
+        style="tense",
+        current_chapter=1,
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                summary="The court waits after a cold confrontation over the archives.",
+                facts=["The ledger is still hidden in the archives."],
+                unresolved_threads=["Can Pei An keep the ledger hidden next?"],
+                primary_conflict={
+                    "lead": "Lin Yue",
+                    "opposition": "Su Wan",
+                    "collision": "Lin Yue and Su Wan collide over the archives.",
+                },
+                secondary_conflict={
+                    "pressure": "time",
+                    "detail": "The court keeps closing ranks.",
+                    "participants": [{"name": "Pei An", "goal": "hide the ledger"}],
+                },
+                event_beat={
+                    "turn": "pressure spike",
+                    "pivot": "Lin Yue and Su Wan collide over the archives.",
+                },
+            )
+        ],
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+            CharacterState(
+                name="Pei An",
+                role="supporting",
+                goals=["hold the line"],
+                current_emotion="controlled",
+            ),
+        ],
+    )
+
+    briefs = build_action_briefs(story)
+
+    assert briefs[0]["name"] == "Pei An"
+    assert briefs[0]["priority"] > briefs[1]["priority"]
