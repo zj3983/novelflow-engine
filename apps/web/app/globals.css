@@ -189,3 +189,16 @@ body {
   border-color: var(--edge);
   background: rgba(255, 255, 255, 0.5);
 }
+
+.story-tree__item {
+  position: relative;
+  margin-bottom: 12px;
+  padding: 10px 10px 10px 14px;
+  border-left: 2px solid rgba(182, 75, 50, 0.22);
+  background: rgba(255, 255, 255, 0.38);
+  border-radius: 10px;
+}
+
+.story-tree__label {
+  color: var(--ink);
+}

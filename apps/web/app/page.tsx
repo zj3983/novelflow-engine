@@ -40,6 +40,7 @@ export default function Page() {
     ],
   });
   const [story, setStory] = useState<StoryResponse | null>(null);
+  const [storyCatalog, setStoryCatalog] = useState<Record<string, StoryResponse>>({});
   const [activeStoryId, setActiveStoryId] = useState(DEFAULT_STORY.story_id);
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [storySummaries, setStorySummaries] = useState<StorySummary[]>([]);
@@ -101,6 +102,32 @@ export default function Page() {
   async function refreshStorySummaries() {
     const summaries = await listStories();
     setStorySummaries(summaries);
+    const details = await Promise.all(
+      summaries.map(async (entry) => {
+        try {
+          return await fetchStory(entry.story_id);
+        } catch {
+          return null;
+        }
+      }),
+    );
+    setStoryCatalog(
+      Object.fromEntries(
+        details
+          .filter((entry): entry is StoryResponse => entry !== null)
+          .map((entry) => [entry.story_id, entry]),
+      ),
+    );
+  }
+
+  function storyDepth(entry: StorySummary): number {
+    let depth = 0;
+    let cursor = entry.parent_story_id ? storySummaries.find((item) => item.story_id === entry.parent_story_id) : undefined;
+    while (cursor) {
+      depth += 1;
+      cursor = cursor.parent_story_id ? storySummaries.find((item) => item.story_id === cursor.parent_story_id) : undefined;
+    }
+    return depth;
   }
 
   async function ensureStoryReady(): Promise<StoryResponse> {
@@ -393,20 +420,32 @@ export default function Page() {
                 Story Tree
               </p>
               {storySummaries.map((entry) => (
-                <div key={entry.story_id} style={{ marginBottom: 8 }}>
+                <div
+                  key={entry.story_id}
+                  className="story-tree__item"
+                  style={{ paddingLeft: `${storyDepth(entry) * 18}px` }}
+                >
+                  <p className="hint story-tree__label" style={{ marginBottom: 6 }}>
+                    {entry.parent_story_id ? `Story Branch: ${entry.story_id}` : `Story Root: ${entry.story_id}`}
+                  </p>
                   <p className="hint" style={{ marginBottom: 6 }}>
                     {entry.parent_story_id
-                      ? `${entry.story_id} <- ${entry.parent_story_id} @ Chapter ${entry.branched_from_chapter}`
-                      : `${entry.story_id} (root)`}
+                      ? `From ${entry.parent_story_id} @ Chapter ${entry.branched_from_chapter}`
+                      : "Primary timeline"}
                   </p>
-                  <button
-                    className="btn btn--ghost"
-                    type="button"
-                    onClick={() => onOpenStory(entry.story_id)}
-                    disabled={isGenerating || entry.story_id === activeStoryId}
-                  >
-                    Open Story: {entry.story_id}
-                  </button>
+                  <p className="hint" style={{ marginBottom: 6 }}>
+                    Chapters in {entry.story_id}: {storyCatalog[entry.story_id]?.history.map((chapter) => chapter.chapter_number).join(", ") || "None"}
+                  </p>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      className="btn btn--ghost"
+                      type="button"
+                      onClick={() => onOpenStory(entry.story_id)}
+                      disabled={isGenerating || entry.story_id === activeStoryId}
+                    >
+                      Open Story: {entry.story_id}
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
