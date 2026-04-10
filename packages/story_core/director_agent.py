@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from packages.story_core.models import (
-    CharacterProposal,
-    DirectorDecision,
-    NewCharacterPolicy,
-    StoryState,
-)
+import json
+import os
+import urllib.error
+import urllib.request
+from typing import Protocol
+
+from packages.story_core.models import CharacterProposal, DirectorDecision, NewCharacterPolicy, StoryState
 from packages.story_core.planner import build_chapter_title, select_primary_pair
 
 
@@ -39,7 +40,36 @@ def _character_candidates(
     return approved, deferred, rejected
 
 
-class DirectorAgent:
+def _string_list(values: object) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
+def _nested_dict(value: object) -> dict:
+    return value.copy() if isinstance(value, dict) else {}
+
+
+def _normalize_cadence(value: object, fallback: str) -> str:
+    candidate = str(value).strip()
+    if candidate in {"urgent", "measured", "breathing"}:
+        return candidate
+    return fallback
+
+
+class DirectorDecisionProvider(Protocol):
+    def decide(
+        self,
+        story: StoryState,
+        proposals: list[CharacterProposal],
+        conflict_summary: dict,
+        event_beat: dict,
+        cadence: str,
+    ) -> DirectorDecision | None:
+        pass
+
+
+class RuleBasedDirectorDecisionProvider:
     def decide(
         self,
         story: StoryState,
@@ -78,4 +108,155 @@ class DirectorAgent:
             deferred_characters=deferred,
             rejected_characters=rejected,
             next_focus=next_focus,
+        )
+
+
+class OpenAIDirectorDecisionProvider:
+    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+
+    def available(self) -> bool:
+        return bool(self.api_key)
+
+    def decide(
+        self,
+        story: StoryState,
+        proposals: list[CharacterProposal],
+        conflict_summary: dict,
+        event_beat: dict,
+        cadence: str,
+    ) -> DirectorDecision | None:
+        if not self.available():
+            return None
+
+        prompt = self._build_prompt(story, proposals, conflict_summary, event_beat, cadence)
+        payload = {
+            "model": story.agent_settings.director_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are the director agent for a novel engine. "
+                        "Return JSON only with primary_conflict, secondary_conflict, event_beat, cadence, chapter_title, "
+                        "approved_new_characters, deferred_characters, rejected_characters, and next_focus."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": float(story.agent_settings.temperature),
+        }
+
+        try:
+            response = self._post_json("/chat/completions", payload)
+            content = response["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+        except (KeyError, IndexError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, ValueError):
+            return None
+
+        if not isinstance(parsed, dict):
+            return None
+
+        return DirectorDecision(
+            primary_conflict=_nested_dict(parsed.get("primary_conflict")),
+            secondary_conflict=_nested_dict(parsed.get("secondary_conflict")),
+            event_beat=_nested_dict(parsed.get("event_beat")),
+            cadence=_normalize_cadence(parsed.get("cadence"), cadence),
+            chapter_title=str(parsed.get("chapter_title", "")).strip(),
+            approved_new_characters=_string_list(parsed.get("approved_new_characters")),
+            deferred_characters=_string_list(parsed.get("deferred_characters")),
+            rejected_characters=_string_list(parsed.get("rejected_characters")),
+            next_focus=str(parsed.get("next_focus", "")).strip(),
+        )
+
+    def _build_prompt(
+        self,
+        story: StoryState,
+        proposals: list[CharacterProposal],
+        conflict_summary: dict,
+        event_beat: dict,
+        cadence: str,
+    ) -> str:
+        latest_summary = story.chapter_summaries[-1].summary if story.chapter_summaries else "No prior chapter."
+        proposal_lines = []
+        for proposal in proposals:
+            proposal_lines.append(
+                json.dumps(
+                    {
+                        "name": proposal.name,
+                        "goal": proposal.goal,
+                        "emotion": proposal.emotion,
+                        "action": proposal.action,
+                        "priority": proposal.priority,
+                        "new_character_candidates": proposal.new_character_candidates,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        return "\n".join(
+            [
+                f"Story outline: {story.outline}",
+                f"Genre: {story.genre}",
+                f"Style: {story.style}",
+                f"Current chapter: {story.current_chapter}",
+                f"Latest chapter summary: {latest_summary}",
+                f"Suggested cadence: {cadence}",
+                f"Conflict summary: {json.dumps(conflict_summary, ensure_ascii=False)}",
+                f"Event beat: {json.dumps(event_beat, ensure_ascii=False)}",
+                "Character proposals:",
+                *proposal_lines,
+                "Return a JSON object with these keys:",
+                '{ "primary_conflict": {}, "secondary_conflict": {}, "event_beat": {}, "cadence": "measured", "chapter_title": "", "approved_new_characters": [], "deferred_characters": [], "rejected_characters": [], "next_focus": "" }',
+            ]
+        )
+
+    def _post_json(self, path: str, payload: dict) -> dict:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+
+class DirectorAgent:
+    def __init__(
+        self,
+        llm_provider: DirectorDecisionProvider | None = None,
+        rule_provider: RuleBasedDirectorDecisionProvider | None = None,
+    ) -> None:
+        self.rule_provider = rule_provider or RuleBasedDirectorDecisionProvider()
+        self.llm_provider = llm_provider or OpenAIDirectorDecisionProvider()
+
+    def decide(
+        self,
+        story: StoryState,
+        proposals: list[CharacterProposal],
+        conflict_summary: dict,
+        event_beat: dict,
+        cadence: str,
+    ) -> DirectorDecision:
+        if story.agent_settings.mode == "LLM-assisted":
+            llm_decision = self.llm_provider.decide(
+                story,
+                proposals,
+                conflict_summary,
+                event_beat,
+                cadence,
+            )
+            if llm_decision is not None:
+                return llm_decision
+        return self.rule_provider.decide(
+            story,
+            proposals,
+            conflict_summary,
+            event_beat,
+            cadence,
         )

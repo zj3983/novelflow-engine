@@ -1,5 +1,38 @@
 from packages.story_core.director_agent import DirectorAgent
-from packages.story_core.models import CharacterProposal, StoryState
+from packages.story_core.models import CharacterProposal, DirectorDecision, StoryState
+
+
+class FakeLLMDirectorProvider:
+    def decide(
+        self,
+        story: StoryState,
+        proposals: list[CharacterProposal],
+        conflict_summary: dict,
+        event_beat: dict,
+        cadence: str,
+    ) -> DirectorDecision:
+        return DirectorDecision(
+            primary_conflict={
+                "lead": "Lin Yue",
+                "opposition": "Su Wan",
+                "collision": "LLM-selected collision over the witness.",
+            },
+            secondary_conflict={
+                "pressure": "time",
+                "detail": "LLM-selected pressure keeps the court moving.",
+                "participants": [{"name": "Su Wan", "goal": "protect the witness"}],
+            },
+            event_beat={
+                "turn": "LLM turn",
+                "pivot": "The witness becomes the center of the collision.",
+            },
+            cadence="urgent",
+            chapter_title="Chapter 2: LLM Crossroads",
+            approved_new_characters=["Old Archivist"],
+            deferred_characters=[],
+            rejected_characters=["Street Runner"],
+            next_focus="Return to Lin Yue and Su Wan over the witness",
+        )
 
 
 def test_director_agent_approves_old_archivist_and_defers_others():
@@ -106,3 +139,53 @@ def test_director_agent_auto_approves_named_candidates_when_policy_set():
     assert set(decision.approved_new_characters) == {"Old Archivist", "Street Runner"}
     assert not decision.deferred_characters
     assert not decision.rejected_characters
+
+
+def test_director_agent_uses_injected_llm_provider_when_assisted_mode_is_enabled():
+    story = StoryState(
+        story_id="s-dir-003",
+        outline="A witness arrives under a false name.",
+        genre="mystery",
+        style="tense",
+        agent_settings={
+            "mode": "LLM-assisted",
+        },
+    )
+    proposals = [
+        CharacterProposal(
+            name="Lin Yue",
+            goal="find the witness",
+            emotion="alert",
+            action="pushes hard to find the witness",
+            priority=9,
+        ),
+    ]
+    conflict_summary = {
+        "primary_conflict": {
+            "lead": "Lin Yue",
+            "opposition": "",
+            "collision": "Lin Yue presses toward the false name.",
+        },
+        "secondary_conflict": {
+            "pressure": "time",
+            "detail": "Every delay gives the court one more chance to hide the truth.",
+            "participants": [{"name": "Lin Yue", "goal": "find the witness"}],
+        },
+    }
+    event_beat = {
+        "turn": "pressure spike",
+        "pivot": "Lin Yue presses toward the false name.",
+    }
+
+    decision = DirectorAgent(llm_provider=FakeLLMDirectorProvider()).decide(
+        story,
+        proposals,
+        conflict_summary,
+        event_beat,
+        "measured",
+    )
+
+    assert decision.chapter_title == "Chapter 2: LLM Crossroads"
+    assert decision.cadence == "urgent"
+    assert decision.approved_new_characters == ["Old Archivist"]
+    assert decision.rejected_characters == ["Street Runner"]
