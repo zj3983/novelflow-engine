@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.story_core.agent_base import StoryAgentProvider
+from packages.story_core.character_agent import CharacterAgent
 from packages.story_core.memory import (
     apply_post_chapter_updates,
     build_character_cards,
@@ -8,7 +9,6 @@ from packages.story_core.memory import (
 )
 from packages.story_core.models import CharacterProposal, DirectorDecision, StoryState
 from packages.story_core.planner import (
-    build_action_briefs,
     build_chapter_title,
     build_conflict_summary,
     build_event_beat,
@@ -21,7 +21,7 @@ from packages.story_core.writer import write_chapter_body
 
 class RuleBasedStoryAgentProvider:
     def propose(self, story: StoryState) -> list[CharacterProposal]:
-        return [CharacterProposal(**brief) for brief in build_action_briefs(story)]
+        return CharacterAgent().propose_all(story)
 
     def decide(
         self,
