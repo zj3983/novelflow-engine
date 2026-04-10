@@ -7,6 +7,7 @@ import { StorySidebar, type StoryDraft } from "../components/StorySidebar";
 import {
   branchStory,
   createStory,
+  deleteStory,
   fetchStory,
   generateNextChapter,
   listStories,
@@ -197,6 +198,28 @@ export default function Page() {
     }
   }
 
+  async function onDeleteActiveStory() {
+    if (!story?.parent_story_id) {
+      return;
+    }
+
+    setError(null);
+    setIsGenerating(true);
+    try {
+      const parentStoryId = story.parent_story_id;
+      await deleteStory(activeStoryId);
+      const parentStory = await fetchStory(parentStoryId);
+      setStory(parentStory);
+      setActiveStoryId(parentStory.story_id);
+      setSelectedChapter(parentStory.history.length ? parentStory.history[parentStory.history.length - 1].chapter_number : null);
+      await refreshStorySummaries();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "delete story failed");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
   const selectedBundle =
     selectedChapter == null
       ? null
@@ -320,6 +343,23 @@ export default function Page() {
           <button className="btn btn--ghost" type="button" onClick={onRollbackChapter} disabled={isGenerating || !storyInitialized}>
             Rollback Chapter
           </button>
+          {story ? (
+            <div style={{ marginTop: 14 }}>
+              <p className="hint" style={{ marginBottom: 8 }}>
+                Active Story Admin
+              </p>
+              <p className="hint" style={{ marginBottom: 8 }}>
+                Active branch cleanup stays in the UI; story renaming is available through the API for now.
+              </p>
+              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                {story.parent_story_id ? (
+                  <button className="btn btn--ghost" type="button" onClick={onDeleteActiveStory} disabled={isGenerating}>
+                    Delete Active Story
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           {story?.history.length ? (
             <div style={{ marginTop: 14 }}>
               <p className="hint" style={{ marginBottom: 8 }}>

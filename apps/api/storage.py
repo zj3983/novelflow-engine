@@ -38,6 +38,34 @@ class InMemoryStoryStore:
     def list(self) -> list[StoryRecord]:
         return list(self._stories.values())
 
+    def rename(self, story_id: str, new_story_id: str) -> StoryRecord:
+        record = self._stories.get(story_id)
+        if record is None:
+            raise KeyError(story_id)
+        if new_story_id in self._stories:
+            raise ValueError("story_exists")
+
+        self._stories.pop(story_id)
+        record.story.story_id = new_story_id
+        record.initial_story.story_id = new_story_id
+        for bundle in record.history:
+            bundle.updated_story.story_id = new_story_id
+        for child in self._stories.values():
+            if child.parent_story_id == story_id:
+                child.parent_story_id = new_story_id
+        self._stories[new_story_id] = record
+        return record
+
+    def delete(self, story_id: str) -> StoryRecord:
+        record = self._stories.get(story_id)
+        if record is None:
+            raise KeyError(story_id)
+        if record.parent_story_id is None:
+            raise ValueError("cannot_delete_root")
+        if any(child.parent_story_id == story_id for child in self._stories.values()):
+            raise ValueError("story_has_children")
+        return self._stories.pop(story_id)
+
     def generate_next(self, story_id: str, engine: StoryEngine) -> ChapterBundle:
         record = self._stories[story_id]
         bundle = engine.generate_next_chapter(record.story)

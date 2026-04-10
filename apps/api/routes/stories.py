@@ -45,6 +45,15 @@ class StorySummaryResponse(BaseModel):
     branched_from_chapter: int | None = None
 
 
+class RenameStoryRequest(BaseModel):
+    new_story_id: str
+
+
+class DeleteStoryResponse(BaseModel):
+    deleted: bool
+    story_id: str
+
+
 def _serialize_story(story_id: str) -> StoryResponse:
     record = store.get(story_id)
     if record is None:
@@ -122,6 +131,31 @@ def branch_story(story_id: str, payload: BranchStoryRequest) -> StoryResponse:
     except IndexError as exc:
         raise HTTPException(status_code=404, detail="chapter_not_found") from exc
     return _serialize_story(payload.new_story_id)
+
+
+@router.post("/stories/{story_id}/rename")
+def rename_story(story_id: str, payload: RenameStoryRequest) -> StoryResponse:
+    if store.get(story_id) is None:
+        raise HTTPException(status_code=404, detail="story_not_found")
+    try:
+        store.rename(story_id, payload.new_story_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="story_exists") from exc
+    return _serialize_story(payload.new_story_id)
+
+
+@router.delete("/stories/{story_id}")
+def delete_story(story_id: str) -> DeleteStoryResponse:
+    if store.get(story_id) is None:
+        raise HTTPException(status_code=404, detail="story_not_found")
+    try:
+        deleted = store.delete(story_id)
+    except ValueError as exc:
+        detail = str(exc)
+        if detail == "cannot_delete_root":
+            raise HTTPException(status_code=409, detail=detail) from exc
+        raise HTTPException(status_code=409, detail="story_has_children") from exc
+    return DeleteStoryResponse(deleted=True, story_id=deleted.story.story_id)
 
 
 @router.post("/stories/{story_id}/characters/{character_name}/freeze")

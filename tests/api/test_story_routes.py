@@ -139,3 +139,40 @@ def test_story_can_branch_from_a_previous_chapter():
     list_resp = client.get("/stories")
     assert list_resp.status_code == 200
     assert {story["story_id"] for story in list_resp.json()} >= {"s-branch-root", "s-branch-alt"}
+
+
+def test_branch_can_be_renamed_and_deleted():
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-branch-admin-root",
+            "outline": "A censor builds three versions of the same testimony.",
+            "genre": "fantasy",
+            "style": "political",
+        },
+    )
+    client.post("/stories/s-branch-admin-root/generate")
+    client.post(
+        "/stories/s-branch-admin-root/branch",
+        json={"new_story_id": "s-branch-admin-alt", "from_chapter": 1},
+    )
+
+    rename_resp = client.post(
+        "/stories/s-branch-admin-alt/rename",
+        json={"new_story_id": "s-branch-admin-shadow"},
+    )
+    assert rename_resp.status_code == 200
+    assert rename_resp.json()["story_id"] == "s-branch-admin-shadow"
+    assert rename_resp.json()["parent_story_id"] == "s-branch-admin-root"
+
+    list_resp = client.get("/stories")
+    assert list_resp.status_code == 200
+    assert {story["story_id"] for story in list_resp.json()} >= {"s-branch-admin-root", "s-branch-admin-shadow"}
+    assert "s-branch-admin-alt" not in {story["story_id"] for story in list_resp.json()}
+
+    delete_resp = client.delete("/stories/s-branch-admin-shadow")
+    assert delete_resp.status_code == 200
+    assert delete_resp.json()["deleted"] is True
+
+    fetch_deleted = client.get("/stories/s-branch-admin-shadow")
+    assert fetch_deleted.status_code == 404

@@ -48,3 +48,17 @@ test("chapter history can be viewed and branched from an earlier chapter", async
   await expect(page.getByText("Current chapter: 2", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open Story: s-001-branch-ch1", exact: true })).toBeVisible();
 });
+
+test("branch can be deleted from the story tree", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Outline Input").fill("A witness keeps editing the same confession.");
+  await page.getByLabel("Character Name 1").fill("Lin Yue");
+  await page.getByLabel("Character Goal 1").fill("find the true author");
+
+  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
+  await page.getByRole("button", { name: "Branch from Chapter 1" }).click();
+
+  await page.getByRole("button", { name: "Delete Active Story" }).click();
+  await expect(page.getByText("Story: s-001", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Story: s-001-branch-ch1", exact: true })).toHaveCount(0);
+});

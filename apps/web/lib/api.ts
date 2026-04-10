@@ -72,6 +72,11 @@ export type StorySummary = {
   branched_from_chapter?: number | null;
 };
 
+export type DeleteStoryResponse = {
+  deleted: boolean;
+  story_id: string;
+};
+
 export type StoryCharacter = StoryResponse["characters"][number];
 
 function apiBase() {
@@ -332,6 +337,42 @@ function mockBranchStory(storyId: string, newStoryId: string, fromChapter: numbe
   return mockFetchStory(newStoryId);
 }
 
+function mockRenameStory(storyId: string, newStoryId: string): StoryResponse {
+  const story = mockStore.get(storyId);
+  if (!story) throw new Error("mock: story_not_found");
+  if (mockStore.has(newStoryId)) throw new Error("mock: story_exists");
+
+  mockStore.delete(storyId);
+  story.story_id = newStoryId;
+  story.initial_story.story_id = newStoryId;
+  for (const bundle of story.history) {
+    if (bundle.updated_story && typeof bundle.updated_story === "object") {
+      (bundle.updated_story as { story_id?: string }).story_id = newStoryId;
+    }
+  }
+  for (const child of mockStore.values()) {
+    if (child.parent_story_id === storyId) {
+      child.parent_story_id = newStoryId;
+    }
+  }
+  mockStore.set(newStoryId, story);
+  return mockFetchStory(newStoryId);
+}
+
+function mockDeleteStory(storyId: string): DeleteStoryResponse {
+  const story = mockStore.get(storyId);
+  if (!story) throw new Error("mock: story_not_found");
+  if (!story.parent_story_id) throw new Error("mock: cannot_delete_root");
+  if (Array.from(mockStore.values()).some((entry) => entry.parent_story_id === storyId)) {
+    throw new Error("mock: story_has_children");
+  }
+  mockStore.delete(storyId);
+  return {
+    deleted: true,
+    story_id: storyId,
+  };
+}
+
 async function tryFetchJson(url: string, init: RequestInit): Promise<any> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1500);
@@ -417,6 +458,28 @@ export async function branchStory(storyId: string, newStoryId: string, fromChapt
     });
   } catch {
     return mockBranchStory(storyId, newStoryId, fromChapter);
+  }
+}
+
+export async function renameStory(storyId: string, newStoryId: string): Promise<StoryResponse> {
+  try {
+    return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/rename`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ new_story_id: newStoryId }),
+    });
+  } catch {
+    return mockRenameStory(storyId, newStoryId);
+  }
+}
+
+export async function deleteStory(storyId: string): Promise<DeleteStoryResponse> {
+  try {
+    return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}`, {
+      method: "DELETE",
+    });
+  } catch {
+    return mockDeleteStory(storyId);
   }
 }
 
