@@ -482,3 +482,42 @@ def test_action_briefs_prioritize_urgent_follow_up_intents_over_character_order(
     assert [brief["name"] for brief in briefs] == ["Lin Yue", "Su Wan", "Pei An"]
     assert briefs[0]["goal"] == "seize control of the witness before Su Wan recovers"
     assert briefs[0]["priority"] > briefs[-1]["priority"]
+
+
+def test_chapter_summary_captures_conflict_and_event_structure():
+    story = StoryState(
+        story_id="s-023",
+        outline="A witness and a ledger pull different players into the same night.",
+        genre="mystery",
+        style="tense",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Pei An",
+                role="supporting",
+                goals=["hide the ledger"],
+                current_emotion="guarded",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+    summary = bundle.chapter_summary
+
+    assert summary["primary_conflict"]["lead"] == "Lin Yue"
+    assert summary["primary_conflict"]["opposition"] == "Su Wan"
+    assert "Pei An" in [item["name"] for item in summary["secondary_conflict"]["participants"]]
+    assert summary["event_beat"]["turn"] == "pressure spike"
+    assert "witness" in summary["event_beat"]["pivot"] or "ledger" in summary["event_beat"]["pivot"]

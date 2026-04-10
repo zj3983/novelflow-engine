@@ -18,5 +18,11 @@ def validate_bundle(bundle: dict) -> dict:
     chapter_summary = bundle.get("chapter_summary") or {}
     if not chapter_summary.get("facts"):
         issues.append("facts")
+    if not chapter_summary.get("primary_conflict"):
+        issues.append("primary_conflict")
+    if not chapter_summary.get("secondary_conflict"):
+        issues.append("secondary_conflict")
+    if not chapter_summary.get("event_beat"):
+        issues.append("event_beat")
 
     return {"ok": not issues, "issues": issues}

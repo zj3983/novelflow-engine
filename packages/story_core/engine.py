@@ -48,6 +48,7 @@ class StoryEngine:
             body,
             chapter_number,
             conflict_summary=conflict_summary,
+            event_beat=event_beat,
         )
 
         bundle = ChapterBundle(

@@ -70,6 +70,7 @@ def apply_post_chapter_updates(
     body: str,
     chapter_number: int,
     conflict_summary: dict | None = None,
+    event_beat: dict | None = None,
 ) -> None:
     fact = f"Chapter {chapter_number} confirms the investigation is still unfolding."
     unresolved = f"Who will control the truth after chapter {chapter_number}?"
@@ -136,6 +137,9 @@ def apply_post_chapter_updates(
             summary=body,
             facts=[fact],
             unresolved_threads=[unresolved],
+            primary_conflict=primary,
+            secondary_conflict=secondary,
+            event_beat=event_beat or {},
         )
     )
 
