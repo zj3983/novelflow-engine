@@ -11,6 +11,8 @@ class StoryRecord:
     story: StoryState
     initial_story: StoryState
     history: list[ChapterBundle] = field(default_factory=list)
+    parent_story_id: str | None = None
+    branched_from_chapter: int | None = None
 
 
 class InMemoryStoryStore:
@@ -32,6 +34,9 @@ class InMemoryStoryStore:
 
     def get(self, story_id: str) -> StoryRecord | None:
         return self._stories.get(story_id)
+
+    def list(self) -> list[StoryRecord]:
+        return list(self._stories.values())
 
     def generate_next(self, story_id: str, engine: StoryEngine) -> ChapterBundle:
         record = self._stories[story_id]
@@ -73,6 +78,8 @@ class InMemoryStoryStore:
             story=branch_story,
             initial_story=record.initial_story.model_copy(deep=True),
             history=branch_history,
+            parent_story_id=story_id,
+            branched_from_chapter=from_chapter,
         )
         branch_record.initial_story.story_id = new_story_id
         self._stories[new_story_id] = branch_record

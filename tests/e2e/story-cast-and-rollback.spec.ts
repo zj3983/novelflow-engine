@@ -35,6 +35,16 @@ test("chapter history can be viewed and branched from an earlier chapter", async
   await expect(page.getByRole("heading", { name: "Chapter 1" })).toBeVisible();
 
   await page.getByRole("button", { name: "Branch from Chapter 1" }).click();
-  await expect(page.getByText("Branch story: s-001-branch-ch1")).toBeVisible();
-  await expect(page.getByText("Current chapter: 1")).toBeVisible();
+  await expect(page.getByText("Branch story: s-001-branch-ch1", { exact: true })).toBeVisible();
+  await expect(page.getByText("Current chapter: 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("Parent story: s-001", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Story: s-001", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
+  await expect(page.getByText("Current chapter: 2", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Open Story: s-001", exact: true }).click();
+  await expect(page.getByText("Story: s-001", { exact: true })).toBeVisible();
+  await expect(page.getByText("Current chapter: 2", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Story: s-001-branch-ch1", exact: true })).toBeVisible();
 });

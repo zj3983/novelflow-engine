@@ -45,6 +45,8 @@ export type StoryResponse = {
   genre: string;
   style: string;
   current_chapter: number;
+  parent_story_id?: string | null;
+  branched_from_chapter?: number | null;
   characters: Array<{
     name: string;
     role: string;
@@ -63,6 +65,13 @@ export type StoryResponse = {
   history: ChapterBundle[];
 };
 
+export type StorySummary = {
+  story_id: string;
+  current_chapter: number;
+  parent_story_id?: string | null;
+  branched_from_chapter?: number | null;
+};
+
 export type StoryCharacter = StoryResponse["characters"][number];
 
 function apiBase() {
@@ -78,6 +87,8 @@ type MockStory = {
   characters: StoryResponse["characters"];
   history: ChapterBundle[];
   initial_story: StoryResponse;
+  parent_story_id?: string | null;
+  branched_from_chapter?: number | null;
 };
 
 const mockStore = new Map<string, MockStory>();
@@ -139,6 +150,8 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     genre: payload.genre,
     style: payload.style,
     current_chapter: 0,
+    parent_story_id: null,
+    branched_from_chapter: null,
     characters: clone(payload.characters ?? []),
     history: [],
   };
@@ -152,6 +165,8 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     characters: clone(payload.characters ?? []),
     history: [],
     initial_story: initialStory,
+    parent_story_id: null,
+    branched_from_chapter: null,
   };
   mockStore.set(payload.story_id, story);
   return clone(initialStory);
@@ -255,6 +270,8 @@ function mockRollbackStory(storyId: string): StoryResponse {
     current_chapter: story.current_chapter,
     characters: clone(story.characters),
     history: clone(story.history),
+    parent_story_id: story.parent_story_id ?? null,
+    branched_from_chapter: story.branched_from_chapter ?? null,
   };
 }
 
@@ -269,6 +286,8 @@ function mockFetchStory(storyId: string): StoryResponse {
     current_chapter: story.current_chapter,
     characters: clone(story.characters),
     history: clone(story.history),
+    parent_story_id: story.parent_story_id ?? null,
+    branched_from_chapter: story.branched_from_chapter ?? null,
   };
 }
 
@@ -299,6 +318,8 @@ function mockBranchStory(storyId: string, newStoryId: string, fromChapter: numbe
       ...clone(story.initial_story),
       story_id: newStoryId,
     },
+    parent_story_id: storyId,
+    branched_from_chapter: fromChapter,
   };
 
   for (const bundle of branchStory.history) {
@@ -365,6 +386,25 @@ export async function fetchStory(storyId: string): Promise<StoryResponse> {
     });
   } catch {
     return mockFetchStory(storyId);
+  }
+}
+
+function mockListStories(): StorySummary[] {
+  return Array.from(mockStore.values()).map((story) => ({
+    story_id: story.story_id,
+    current_chapter: story.current_chapter,
+    parent_story_id: story.parent_story_id ?? null,
+    branched_from_chapter: story.branched_from_chapter ?? null,
+  }));
+}
+
+export async function listStories(): Promise<StorySummary[]> {
+  try {
+    return await tryFetchJson(`${apiBase()}/stories`, {
+      method: "GET",
+    });
+  } catch {
+    return mockListStories();
   }
 }
 

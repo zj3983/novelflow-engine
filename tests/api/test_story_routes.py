@@ -129,7 +129,13 @@ def test_story_can_branch_from_a_previous_chapter():
     assert branch_story["current_chapter"] == 1
     assert len(branch_story["history"]) == 1
     assert branch_story["history"][0]["chapter_number"] == 1
+    assert branch_story["parent_story_id"] == "s-branch-root"
+    assert branch_story["branched_from_chapter"] == 1
 
     original_story = client.get("/stories/s-branch-root")
     assert original_story.status_code == 200
     assert original_story.json()["current_chapter"] == 2
+
+    list_resp = client.get("/stories")
+    assert list_resp.status_code == 200
+    assert {story["story_id"] for story in list_resp.json()} >= {"s-branch-root", "s-branch-alt"}

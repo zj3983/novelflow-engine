@@ -9,10 +9,12 @@ import {
   createStory,
   fetchStory,
   generateNextChapter,
+  listStories,
   rollbackStory,
   type ChapterBundle,
   type StoryCharacter,
   type StoryResponse,
+  type StorySummary,
 } from "../lib/api";
 
 const DEFAULT_STORY = {
@@ -39,6 +41,7 @@ export default function Page() {
   const [story, setStory] = useState<StoryResponse | null>(null);
   const [activeStoryId, setActiveStoryId] = useState(DEFAULT_STORY.story_id);
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
+  const [storySummaries, setStorySummaries] = useState<StorySummary[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [storyInitialized, setStoryInitialized] = useState(false);
   const [activeDraftKey, setActiveDraftKey] = useState("");
@@ -87,9 +90,16 @@ export default function Page() {
       genre: updatedStory?.genre ?? baseStory.genre,
       style: updatedStory?.style ?? baseStory.style,
       current_chapter: updatedStory?.current_chapter ?? nextBundle.chapter_number,
+      parent_story_id: baseStory.parent_story_id ?? null,
+      branched_from_chapter: baseStory.branched_from_chapter ?? null,
       characters: updatedStory?.characters ?? baseStory.characters,
       history,
     };
+  }
+
+  async function refreshStorySummaries() {
+    const summaries = await listStories();
+    setStorySummaries(summaries);
   }
 
   async function ensureStoryReady(): Promise<StoryResponse> {
@@ -107,6 +117,7 @@ export default function Page() {
       setStoryInitialized(true);
       setActiveDraftKey(currentDraftKey);
       setActiveStoryId(DEFAULT_STORY.story_id);
+      await refreshStorySummaries();
       return createdStory;
     }
 
@@ -129,6 +140,7 @@ export default function Page() {
       const nextStory = buildStoryFromBundle(readyStory, nextBundle, activeStoryId);
       setStory(nextStory);
       setSelectedChapter(nextBundle.chapter_number);
+      await refreshStorySummaries();
     } catch (e) {
       setError(e instanceof Error ? e.message : "generate failed");
     } finally {
@@ -143,6 +155,7 @@ export default function Page() {
       const syncedStory = await rollbackStory(activeStoryId);
       setStory(syncedStory);
       setSelectedChapter(syncedStory.history.length ? syncedStory.history[syncedStory.history.length - 1].chapter_number : null);
+      await refreshStorySummaries();
     } catch (e) {
       setError(e instanceof Error ? e.message : "rollback failed");
     } finally {
@@ -160,8 +173,25 @@ export default function Page() {
       setStory(branch);
       setActiveStoryId(branch.story_id);
       setSelectedChapter(branch.history.length ? branch.history[branch.history.length - 1].chapter_number : null);
+      await refreshStorySummaries();
     } catch (e) {
       setError(e instanceof Error ? e.message : "branch failed");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  async function onOpenStory(storyId: string) {
+    setError(null);
+    setIsGenerating(true);
+    try {
+      const openedStory = await fetchStory(storyId);
+      setStory(openedStory);
+      setActiveStoryId(storyId);
+      setSelectedChapter(openedStory.history.length ? openedStory.history[openedStory.history.length - 1].chapter_number : null);
+      await refreshStorySummaries();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "open story failed");
     } finally {
       setIsGenerating(false);
     }
@@ -209,6 +239,16 @@ export default function Page() {
               {story?.story_id !== DEFAULT_STORY.story_id ? (
                 <p className="hint" style={{ marginBottom: 10 }}>
                   Branch story: {story?.story_id}
+                </p>
+              ) : null}
+              {story?.parent_story_id ? (
+                <p className="hint" style={{ marginBottom: 10 }}>
+                  Parent story: {story.parent_story_id}
+                </p>
+              ) : null}
+              {story?.branched_from_chapter != null ? (
+                <p className="hint" style={{ marginBottom: 10 }}>
+                  Branched from chapter: {story.branched_from_chapter}
                 </p>
               ) : null}
               <p className="hint" style={{ marginBottom: 10 }}>
@@ -302,6 +342,30 @@ export default function Page() {
                     disabled={isGenerating}
                   >
                     Branch from Chapter {entry.chapter_number}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {storySummaries.length ? (
+            <div style={{ marginTop: 14 }}>
+              <p className="hint" style={{ marginBottom: 8 }}>
+                Story Tree
+              </p>
+              {storySummaries.map((entry) => (
+                <div key={entry.story_id} style={{ marginBottom: 8 }}>
+                  <p className="hint" style={{ marginBottom: 6 }}>
+                    {entry.parent_story_id
+                      ? `${entry.story_id} <- ${entry.parent_story_id} @ Chapter ${entry.branched_from_chapter}`
+                      : `${entry.story_id} (root)`}
+                  </p>
+                  <button
+                    className="btn btn--ghost"
+                    type="button"
+                    onClick={() => onOpenStory(entry.story_id)}
+                    disabled={isGenerating || entry.story_id === activeStoryId}
+                  >
+                    Open Story: {entry.story_id}
                   </button>
                 </div>
               ))}

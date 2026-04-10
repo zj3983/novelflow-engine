@@ -29,11 +29,20 @@ class StoryResponse(BaseModel):
     current_chapter: int
     characters: list[dict] = Field(default_factory=list)
     history: list[dict] = Field(default_factory=list)
+    parent_story_id: str | None = None
+    branched_from_chapter: int | None = None
 
 
 class BranchStoryRequest(BaseModel):
     new_story_id: str
     from_chapter: int = Field(ge=0)
+
+
+class StorySummaryResponse(BaseModel):
+    story_id: str
+    current_chapter: int
+    parent_story_id: str | None = None
+    branched_from_chapter: int | None = None
 
 
 def _serialize_story(story_id: str) -> StoryResponse:
@@ -48,6 +57,17 @@ def _serialize_story(story_id: str) -> StoryResponse:
         current_chapter=record.story.current_chapter,
         characters=[character.model_dump() for character in record.story.characters],
         history=[b.model_dump() for b in record.history],
+        parent_story_id=record.parent_story_id,
+        branched_from_chapter=record.branched_from_chapter,
+    )
+
+
+def _serialize_story_summary(record) -> StorySummaryResponse:
+    return StorySummaryResponse(
+        story_id=record.story.story_id,
+        current_chapter=record.story.current_chapter,
+        parent_story_id=record.parent_story_id,
+        branched_from_chapter=record.branched_from_chapter,
     )
 
 
@@ -63,6 +83,11 @@ def create_story(payload: CreateStoryRequest) -> StoryResponse:
     )
     store.create(story)
     return _serialize_story(payload.story_id)
+
+
+@router.get("/stories")
+def list_stories() -> list[StorySummaryResponse]:
+    return [_serialize_story_summary(record) for record in store.list()]
 
 
 @router.get("/stories/{story_id}")
