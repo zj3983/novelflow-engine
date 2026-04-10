@@ -9,6 +9,7 @@ ForeshadowingStatus = Literal["open", "reinforced", "resolved", "expired"]
 Cadence = Literal["urgent", "measured", "breathing"]
 CharacterLifecycleState = Literal["proposed", "active", "rejected", "frozen"]
 AgentMode = Literal["Rule-based", "LLM-assisted"]
+AgentRuntimeSource = Literal["idle", "rule-based", "llm", "fallback"]
 NewCharacterPolicy = Literal["Director review", "Auto-approve named candidates", "Manual review"]
 
 
@@ -19,6 +20,21 @@ class AgentSettings(BaseModel):
     writer_model: str = "gpt-5.4"
     temperature: float = 0.7
     new_character_policy: NewCharacterPolicy = "Director review"
+
+
+class AgentRuntimeEntry(BaseModel):
+    mode: AgentMode = "Rule-based"
+    source: AgentRuntimeSource = "idle"
+    fallback_reason: str = ""
+    last_run_chapter: int = 0
+
+
+class AgentRuntimeState(BaseModel):
+    character_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
+    director_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
+    writer_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
+    memory_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
+    recent_events: list[str] = Field(default_factory=list)
 
 
 class CharacterRelationship(BaseModel):
@@ -109,6 +125,7 @@ class StoryState(BaseModel):
     style: str
     current_chapter: int = 0
     agent_settings: AgentSettings = Field(default_factory=AgentSettings)
+    agent_runtime: AgentRuntimeState = Field(default_factory=AgentRuntimeState)
     characters: list[CharacterState] = Field(default_factory=list)
     world_facts: list[str] = Field(default_factory=list)
     timeline: list[TimelineEvent] = Field(default_factory=list)

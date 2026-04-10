@@ -91,4 +91,16 @@ test("agent settings persist into story generation payload", async ({ page }) =>
   await expect(bundleDebug).toContainText(
     '"new_character_policy": "Auto-approve named candidates"',
   );
+  await expect(
+    page.getByText(
+      "CharacterAgent: Fallback - Mock backend uses deterministic fallback.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Recent event: MemoryAgent: fallback at chapter 1 (Mock backend uses deterministic fallback.)",
+      { exact: true },
+    ),
+  ).toBeVisible();
 });

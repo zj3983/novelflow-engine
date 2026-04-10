@@ -7,6 +7,7 @@ import urllib.request
 from typing import Protocol
 
 from packages.story_core.models import DirectorDecision, StoryState
+from packages.story_core.runtime import record_agent_runtime
 from packages.story_core.writer import write_chapter_body
 
 
@@ -144,7 +145,33 @@ class WriterAgent:
                 cadence,
             )
             if llm_body:
+                record_agent_runtime(
+                    story,
+                    "WriterAgent",
+                    story.agent_settings.mode,
+                    "llm",
+                    story.current_chapter,
+                )
                 return llm_body
+            fallback_reason = "LLM provider returned no usable body"
+            if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
+                fallback_reason = "OPENAI_API_KEY missing"
+            record_agent_runtime(
+                story,
+                "WriterAgent",
+                story.agent_settings.mode,
+                "fallback",
+                story.current_chapter,
+                fallback_reason,
+            )
+        else:
+            record_agent_runtime(
+                story,
+                "WriterAgent",
+                story.agent_settings.mode,
+                "rule-based",
+                story.current_chapter,
+            )
         return write_chapter_body(
             story,
             chapter_number,

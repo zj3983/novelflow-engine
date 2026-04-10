@@ -29,6 +29,7 @@ class StoryResponse(BaseModel):
     style: str
     current_chapter: int
     agent_settings: dict = Field(default_factory=dict)
+    agent_runtime: dict = Field(default_factory=dict)
     characters: list[dict] = Field(default_factory=list)
     history: list[dict] = Field(default_factory=list)
     parent_story_id: str | None = None
@@ -67,6 +68,7 @@ def _serialize_story(story_id: str) -> StoryResponse:
         style=record.story.style,
         current_chapter=record.story.current_chapter,
         agent_settings=record.story.agent_settings.model_dump(),
+        agent_runtime=record.story.agent_runtime.model_dump(),
         characters=[character.model_dump() for character in record.story.characters],
         history=[b.model_dump() for b in record.history],
         parent_story_id=record.parent_story_id,

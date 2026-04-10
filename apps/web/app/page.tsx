@@ -133,6 +133,7 @@ export default function Page() {
       style: updatedStory?.style ?? baseStory.style,
       current_chapter: updatedStory?.current_chapter ?? nextBundle.chapter_number,
       agent_settings: updatedStory?.agent_settings ?? baseStory.agent_settings,
+      agent_runtime: updatedStory?.agent_runtime ?? baseStory.agent_runtime,
       parent_story_id: baseStory.parent_story_id ?? null,
       branched_from_chapter: baseStory.branched_from_chapter ?? null,
       characters: updatedStory?.characters ?? baseStory.characters,
@@ -210,6 +211,19 @@ export default function Page() {
       return "escalation beat, continuity";
     }
     return "story beat, continuity";
+  }
+
+  function runtimeSourceLabel(source?: string): string {
+    if (source === "llm") {
+      return "LLM";
+    }
+    if (source === "fallback") {
+      return "Fallback";
+    }
+    if (source === "rule-based") {
+      return "Rule-based";
+    }
+    return "Idle";
   }
 
   function visibleStorySummaries(): StorySummary[] {
@@ -439,6 +453,40 @@ export default function Page() {
               <p className="hint" style={{ marginBottom: 10 }}>
                 Next beat: {selectedBundle.next_outline ?? "Not planned yet."}
               </p>
+              {story?.agent_runtime ? (
+                <div className="agent-runtime" style={{ marginBottom: 10 }}>
+                  <p className="hint" style={{ marginBottom: 8 }}>
+                    Agent Runtime
+                  </p>
+                  <p className="hint" style={{ marginBottom: 6 }}>
+                    CharacterAgent: {runtimeSourceLabel(story.agent_runtime.character_agent.source)}
+                    {story.agent_runtime.character_agent.fallback_reason
+                      ? ` - ${story.agent_runtime.character_agent.fallback_reason}`
+                      : ""}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 6 }}>
+                    DirectorAgent: {runtimeSourceLabel(story.agent_runtime.director_agent.source)}
+                    {story.agent_runtime.director_agent.fallback_reason
+                      ? ` - ${story.agent_runtime.director_agent.fallback_reason}`
+                      : ""}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 6 }}>
+                    WriterAgent: {runtimeSourceLabel(story.agent_runtime.writer_agent.source)}
+                    {story.agent_runtime.writer_agent.fallback_reason
+                      ? ` - ${story.agent_runtime.writer_agent.fallback_reason}`
+                      : ""}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 6 }}>
+                    MemoryAgent: {runtimeSourceLabel(story.agent_runtime.memory_agent.source)}
+                    {story.agent_runtime.memory_agent.fallback_reason
+                      ? ` - ${story.agent_runtime.memory_agent.fallback_reason}`
+                      : ""}
+                  </p>
+                  <p className="hint" style={{ marginBottom: 0 }}>
+                    Recent event: {story.agent_runtime.recent_events.at(-1) ?? "None"}
+                  </p>
+                </div>
+              ) : null}
               {selectedBundle.chapter_summary?.facts?.length ? (
                 <p className="hint" style={{ marginBottom: 10 }}>
                   Latest fact: {selectedBundle.chapter_summary.facts[0]}

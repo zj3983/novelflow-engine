@@ -8,6 +8,7 @@ from typing import Protocol
 
 from packages.story_core.memory import apply_post_chapter_updates
 from packages.story_core.models import DirectorDecision, StoryState
+from packages.story_core.runtime import record_agent_runtime
 
 
 class MemorySummaryProvider(Protocol):
@@ -169,6 +170,13 @@ class MemoryAgent:
                 cadence,
             )
             if analysis:
+                record_agent_runtime(
+                    story,
+                    "MemoryAgent",
+                    story.agent_settings.mode,
+                    "llm",
+                    story.current_chapter,
+                )
                 summary = _string_text(analysis.get("summary"))
                 if summary:
                     story.chapter_summaries[-1].summary = summary
@@ -216,5 +224,25 @@ class MemoryAgent:
                         memory = _string_text(note.get("memory"))
                         if name and memory and name in by_name:
                             by_name[name].memory.append(memory)
+            else:
+                fallback_reason = "LLM provider returned no usable summary"
+                if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
+                    fallback_reason = "OPENAI_API_KEY missing"
+                record_agent_runtime(
+                    story,
+                    "MemoryAgent",
+                    story.agent_settings.mode,
+                    "fallback",
+                    story.current_chapter,
+                    fallback_reason,
+                )
+        else:
+            record_agent_runtime(
+                story,
+                "MemoryAgent",
+                story.agent_settings.mode,
+                "rule-based",
+                story.current_chapter,
+            )
 
         return story

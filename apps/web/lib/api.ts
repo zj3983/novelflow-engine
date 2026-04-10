@@ -34,6 +34,21 @@ export type CreateStoryRequest = {
 
 export type AgentSettings = NonNullable<CreateStoryRequest["agent_settings"]>;
 
+export type AgentRuntimeEntry = {
+  mode: "Rule-based" | "LLM-assisted";
+  source: "idle" | "rule-based" | "llm" | "fallback";
+  fallback_reason: string;
+  last_run_chapter: number;
+};
+
+export type AgentRuntimeState = {
+  character_agent: AgentRuntimeEntry;
+  director_agent: AgentRuntimeEntry;
+  writer_agent: AgentRuntimeEntry;
+  memory_agent: AgentRuntimeEntry;
+  recent_events: string[];
+};
+
 export type ChapterBundle = {
   chapter_number: number;
   body: string;
@@ -60,6 +75,7 @@ export type StoryResponse = {
   style: string;
   current_chapter: number;
   agent_settings: AgentSettings;
+  agent_runtime: AgentRuntimeState;
   parent_story_id?: string | null;
   branched_from_chapter?: number | null;
   characters: Array<{
@@ -109,6 +125,7 @@ type MockStory = {
   style: string;
   current_chapter: number;
   agent_settings: AgentSettings;
+  agent_runtime: AgentRuntimeState;
   characters: StoryResponse["characters"];
   history: ChapterBundle[];
   initial_story: StoryResponse;
@@ -140,6 +157,52 @@ function normalizeAgentSettings(
     ...defaultAgentSettings(),
     ...(settings ?? {}),
   };
+}
+
+function defaultRuntimeEntry(
+  mode: AgentSettings["mode"],
+  source: AgentRuntimeEntry["source"] = "idle",
+  fallbackReason = "",
+  lastRunChapter = 0,
+): AgentRuntimeEntry {
+  return {
+    mode,
+    source,
+    fallback_reason: fallbackReason,
+    last_run_chapter: lastRunChapter,
+  };
+}
+
+function defaultAgentRuntime(mode: AgentSettings["mode"]): AgentRuntimeState {
+  return {
+    character_agent: defaultRuntimeEntry(mode),
+    director_agent: defaultRuntimeEntry(mode),
+    writer_agent: defaultRuntimeEntry(mode),
+    memory_agent: defaultRuntimeEntry(mode),
+    recent_events: [],
+  };
+}
+
+function updateRuntimeForChapter(
+  runtime: AgentRuntimeState,
+  mode: AgentSettings["mode"],
+  chapterNumber: number,
+  source: AgentRuntimeEntry["source"],
+  fallbackReason = "",
+): AgentRuntimeState {
+  const nextRuntime = clone(runtime);
+  nextRuntime.character_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
+  nextRuntime.director_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
+  nextRuntime.writer_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
+  nextRuntime.memory_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
+  nextRuntime.recent_events = [
+    ...nextRuntime.recent_events,
+    `CharacterAgent: ${source} at chapter ${chapterNumber}${fallbackReason ? ` (${fallbackReason})` : ""}`,
+    `DirectorAgent: ${source} at chapter ${chapterNumber}${fallbackReason ? ` (${fallbackReason})` : ""}`,
+    `WriterAgent: ${source} at chapter ${chapterNumber}${fallbackReason ? ` (${fallbackReason})` : ""}`,
+    `MemoryAgent: ${source} at chapter ${chapterNumber}${fallbackReason ? ` (${fallbackReason})` : ""}`,
+  ].slice(-8);
+  return nextRuntime;
 }
 
 function relationshipShift(goals: string[]): { trustDelta: number; tensionDelta: number } {
@@ -190,6 +253,7 @@ function continuitySentence(story: MockStory): string {
 
 function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
   const agentSettings = normalizeAgentSettings(payload.agent_settings);
+  const agentRuntime = defaultAgentRuntime(agentSettings.mode);
   const normalizedCharacters = clone(payload.characters ?? []).map((character) => ({
     ...character,
     lifecycle_state: character.lifecycle_state ?? (character.frozen ? "frozen" : "active"),
@@ -205,6 +269,7 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     style: payload.style,
     current_chapter: 0,
     agent_settings: clone(agentSettings),
+    agent_runtime: clone(agentRuntime),
     parent_story_id: null,
     branched_from_chapter: null,
     characters: normalizedCharacters,
@@ -218,6 +283,7 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     style: payload.style,
     current_chapter: 0,
     agent_settings: clone(agentSettings),
+    agent_runtime: clone(agentRuntime),
     characters: clone(normalizedCharacters),
     history: [],
     initial_story: initialStory,
@@ -234,6 +300,19 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
 
   const chapterNumber = story.current_chapter + 1;
   story.current_chapter = chapterNumber;
+  const source: AgentRuntimeEntry["source"] =
+    story.agent_settings.mode === "LLM-assisted" ? "fallback" : "rule-based";
+  const fallbackReason =
+    story.agent_settings.mode === "LLM-assisted"
+      ? "Mock backend uses deterministic fallback."
+      : "";
+  story.agent_runtime = updateRuntimeForChapter(
+    story.agent_runtime,
+    story.agent_settings.mode,
+    chapterNumber,
+    source,
+    fallbackReason,
+  );
   story.characters = story.characters.map((character, index) => {
     if (index !== 0 || character.frozen || !character.relationships) {
       return {
@@ -290,6 +369,7 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
       style: story.style,
       current_chapter: story.current_chapter,
       agent_settings: clone(story.agent_settings),
+      agent_runtime: clone(story.agent_runtime),
       characters: story.characters,
       timeline: [
         {
@@ -317,9 +397,11 @@ function mockRollbackStory(storyId: string): StoryResponse {
       const restored = story.history.at(-1)?.updated_story as StoryResponse;
       story.current_chapter = restored.current_chapter;
       story.characters = clone(restored.characters);
+      story.agent_runtime = clone(restored.agent_runtime);
     } else {
       story.current_chapter = story.initial_story.current_chapter;
       story.characters = clone(story.initial_story.characters);
+      story.agent_runtime = clone(story.initial_story.agent_runtime);
     }
   }
 
@@ -330,6 +412,7 @@ function mockRollbackStory(storyId: string): StoryResponse {
     style: story.style,
     current_chapter: story.current_chapter,
     agent_settings: clone(story.agent_settings),
+    agent_runtime: clone(story.agent_runtime),
     characters: clone(story.characters),
     history: clone(story.history),
     parent_story_id: story.parent_story_id ?? null,
@@ -347,6 +430,7 @@ function mockFetchStory(storyId: string): StoryResponse {
     style: story.style,
     current_chapter: story.current_chapter,
     agent_settings: clone(story.agent_settings),
+    agent_runtime: clone(story.agent_runtime),
     characters: clone(story.characters),
     history: clone(story.history),
     parent_story_id: story.parent_story_id ?? null,
@@ -376,6 +460,7 @@ function mockBranchStory(storyId: string, newStoryId: string, fromChapter: numbe
     style: story.style,
     current_chapter: branchState.current_chapter,
     agent_settings: clone(branchState.agent_settings),
+    agent_runtime: clone(branchState.agent_runtime),
     characters: clone(branchState.characters),
     history: branchHistory,
     initial_story: {

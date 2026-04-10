@@ -7,6 +7,7 @@ import urllib.request
 from typing import Protocol
 
 from packages.story_core.models import CharacterProposal, CharacterState, StoryState
+from packages.story_core.runtime import record_agent_runtime
 
 
 def _goal_topic(goal: str) -> str:
@@ -265,5 +266,31 @@ class CharacterAgent:
         if story.agent_settings.mode == "LLM-assisted":
             llm_proposals = self.llm_provider.propose_all(story)
             if llm_proposals:
+                record_agent_runtime(
+                    story,
+                    "CharacterAgent",
+                    story.agent_settings.mode,
+                    "llm",
+                    story.current_chapter,
+                )
                 return llm_proposals
+            fallback_reason = "LLM provider returned no usable proposals"
+            if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
+                fallback_reason = "OPENAI_API_KEY missing"
+            record_agent_runtime(
+                story,
+                "CharacterAgent",
+                story.agent_settings.mode,
+                "fallback",
+                story.current_chapter,
+                fallback_reason,
+            )
+        else:
+            record_agent_runtime(
+                story,
+                "CharacterAgent",
+                story.agent_settings.mode,
+                "rule-based",
+                story.current_chapter,
+            )
         return self.rule_provider.propose_all(story)
