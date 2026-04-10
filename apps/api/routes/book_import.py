@@ -40,10 +40,13 @@ class BookBootstrapResponse(BaseModel):
 
 
 def _resolve_source_dir(source_path: str) -> Path:
-    base = Path(source_path)
-    if not base.exists() or not base.is_dir():
-        # Keep it human-readable; tests also accept 400, but we choose 404 here.
-        raise HTTPException(status_code=404, detail=f"source_path_not_found: {source_path}")
+    try:
+        base = Path(source_path).expanduser().resolve(strict=False)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=f"invalid_source_path: {source_path} ({exc!s})") from exc
+
+    if not base.is_absolute():
+        raise HTTPException(status_code=400, detail=f"invalid_source_path: {source_path}")
     return base
 
 
@@ -72,6 +75,8 @@ def scan(payload: BookImportRequest) -> BookFolderReportResponse:
 @router.post("/book-import/bootstrap")
 def bootstrap(payload: BookImportRequest) -> BookBootstrapResponse:
     base = _resolve_source_dir(payload.source_path)
+    if not base.exists() or not base.is_dir():
+        raise HTTPException(status_code=404, detail=f"source_path_not_found: {base}")
     result = scan_book_folder(base)
     return BookBootstrapResponse(
         report=_public_report(result.report),
@@ -86,4 +91,3 @@ def bootstrap(payload: BookImportRequest) -> BookBootstrapResponse:
 
 def init_book_import_routes() -> APIRouter:
     return router
-

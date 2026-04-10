@@ -50,14 +50,33 @@ def test_book_import_bootstrap_valid_folder_returns_draft_and_report(tmp_path: P
 
 
 def test_book_import_invalid_path_returns_clear_error():
-    invalid = Path("Z:/does/not/exist")
-    if invalid.exists():
-        invalid = Path("ZZ:/does/not/exist")
+    missing = Path.cwd() / "definitely_missing_book_import_folder"
+    scan_response = client.post("/book-import/scan", json={"source_path": str(missing)})
+    assert scan_response.status_code == 200
+    scan_payload = scan_response.json()
+    assert scan_payload["exists"] is False
+    assert scan_payload["can_bootstrap"] is False
+    assert "current_focus.md" in scan_payload["missing_required_files"]
 
-    response = client.post("/book-import/scan", json={"source_path": str(invalid)})
-    assert response.status_code in {400, 404}
-
-    detail = response.json().get("detail", "")
+    bootstrap_response = client.post("/book-import/bootstrap", json={"source_path": str(missing)})
+    assert bootstrap_response.status_code == 404
+    detail = bootstrap_response.json().get("detail", "")
     assert isinstance(detail, str)
-    assert "source_path" in detail or "not_found" in detail or "exist" in detail
+    assert "source_path_not_found" in detail
 
+
+def test_book_import_rejects_truly_invalid_path_string():
+    response = client.post("/book-import/scan", json={"source_path": "bad\u0000path"})
+    assert response.status_code == 400
+    detail = response.json().get("detail", "")
+    assert "invalid_source_path" in detail
+
+
+def test_book_import_bootstrap_rejects_file_path(tmp_path: Path):
+    file_path = tmp_path / "not_a_dir"
+    _write(file_path, "just a file")
+
+    response = client.post("/book-import/bootstrap", json={"source_path": str(file_path)})
+    assert response.status_code == 404
+    detail = response.json().get("detail", "")
+    assert "source_path_not_found" in detail
