@@ -454,7 +454,7 @@ export default function Page() {
               {storySummaries.map((entry) => (
                 <div
                   key={entry.story_id}
-                  className="story-tree__item"
+                  className={`story-tree__item${entry.story_id === activeStoryId ? " story-tree__item--active" : ""}`}
                   style={{ paddingLeft: `${storyDepth(entry) * 18}px` }}
                 >
                   <p className="hint story-tree__label" style={{ marginBottom: 6 }}>
@@ -489,7 +489,7 @@ export default function Page() {
                     {(storyCatalog[entry.story_id]?.history ?? []).map((chapter) => (
                       <button
                         key={`${entry.story_id}-chapter-${chapter.chapter_number}`}
-                        className="btn btn--ghost"
+                        className={`btn btn--ghost${entry.story_id === activeStoryId && chapter.chapter_number === selectedChapter ? " story-tree__chapter-btn--active" : ""}`}
                         type="button"
                         onClick={() => void onOpenStoryChapter(entry.story_id, chapter.chapter_number)}
                         disabled={isGenerating}

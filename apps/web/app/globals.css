@@ -202,3 +202,15 @@ body {
 .story-tree__label {
   color: var(--ink);
 }
+
+.story-tree__item--active {
+  border-left-color: var(--accent);
+  background: rgba(182, 75, 50, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(182, 75, 50, 0.14);
+}
+
+.story-tree__chapter-btn--active {
+  border-color: rgba(182, 75, 50, 0.72);
+  background: rgba(182, 75, 50, 0.2);
+  color: var(--ink);
+}

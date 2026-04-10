@@ -57,10 +57,16 @@ test("chapter history can be viewed and branched from an earlier chapter", async
   await page.getByRole("button", { name: "Jump to s-001 Chapter 1", exact: true }).click();
   await expect(page.getByText("Viewing chapter: 1", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Chapter 1" })).toBeVisible();
+  await expect(page.locator(".story-tree__item--active")).toContainText("Story Root: s-001");
+  await expect(page.locator(".story-tree__chapter-btn--active")).toHaveText("Jump to s-001 Chapter 1");
 
   await page.getByRole("button", { name: "Jump to s-001 Chapter 2", exact: true }).click();
   await expect(page.getByText("Viewing chapter: 2", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Chapter 2" })).toBeVisible();
+  await expect(page.locator(".story-tree__chapter-btn--active")).toHaveText("Jump to s-001 Chapter 2");
+
+  await page.getByRole("button", { name: "Open Story: s-001-branch-ch1", exact: true }).click();
+  await expect(page.locator(".story-tree__item--active")).toContainText("Story Branch: s-001-branch-ch1");
 });
 
 test("branch can be deleted from the story tree", async ({ page }) => {
