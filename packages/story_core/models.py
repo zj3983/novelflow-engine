@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 ForeshadowingStatus = Literal["open", "reinforced", "resolved", "expired"]
@@ -80,6 +80,13 @@ class CharacterState(BaseModel):
     last_proposed_chapter: int = 0
     last_approved_chapter: int = 0
     introduced_by: str = ""
+
+    @model_validator(mode="after")
+    def _sync_frozen_lifecycle(self) -> "CharacterState":
+        if self.lifecycle_state == "frozen" or self.frozen:
+            self.frozen = True
+            self.lifecycle_state = "frozen"
+        return self
 
 
 class StoryState(BaseModel):

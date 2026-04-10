@@ -38,3 +38,14 @@ def test_character_state_supports_lifecycle_tracking_fields():
     assert character.last_proposed_chapter == 3
     assert character.last_approved_chapter == 0
     assert character.introduced_by == "Su Wan"
+
+
+def test_character_state_normalizes_frozen_lifecycle():
+    character = CharacterState(
+        name="Old Archivist",
+        role="supporting",
+        frozen=True,
+    )
+
+    assert character.frozen is True
+    assert character.lifecycle_state == "frozen"
