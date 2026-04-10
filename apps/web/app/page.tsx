@@ -44,6 +44,7 @@ export default function Page() {
   const [activeStoryId, setActiveStoryId] = useState(DEFAULT_STORY.story_id);
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [storySummaries, setStorySummaries] = useState<StorySummary[]>([]);
+  const [branchFocus, setBranchFocus] = useState<"all" | "active">("all");
   const [isGenerating, setIsGenerating] = useState(false);
   const [storyInitialized, setStoryInitialized] = useState(false);
   const [activeDraftKey, setActiveDraftKey] = useState("");
@@ -144,6 +145,25 @@ export default function Page() {
     const latest = storyCatalog[storyId]?.history.at(-1);
     const entry = latest?.foreshadowing?.[0] as { text?: string } | undefined;
     return entry?.text ?? "None";
+  }
+
+  function visibleStorySummaries(): StorySummary[] {
+    if (branchFocus === "all" || !story) {
+      return storySummaries;
+    }
+
+    const allowed = new Set<string>([activeStoryId]);
+    let cursor = story.parent_story_id
+      ? storySummaries.find((item) => item.story_id === story.parent_story_id)
+      : undefined;
+    while (cursor) {
+      allowed.add(cursor.story_id);
+      cursor = cursor.parent_story_id
+        ? storySummaries.find((item) => item.story_id === cursor.parent_story_id)
+        : undefined;
+    }
+
+    return storySummaries.filter((entry) => allowed.has(entry.story_id));
   }
 
   async function ensureStoryReady(): Promise<StoryResponse> {
@@ -451,7 +471,25 @@ export default function Page() {
               <p className="hint" style={{ marginBottom: 8 }}>
                 Story Tree
               </p>
-              {storySummaries.map((entry) => (
+              <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                <button
+                  className="btn btn--ghost"
+                  type="button"
+                  onClick={() => setBranchFocus("active")}
+                  disabled={isGenerating || branchFocus === "active"}
+                >
+                  Focus Active Branch
+                </button>
+                <button
+                  className="btn btn--ghost"
+                  type="button"
+                  onClick={() => setBranchFocus("all")}
+                  disabled={isGenerating || branchFocus === "all"}
+                >
+                  Show All Branches
+                </button>
+              </div>
+              {visibleStorySummaries().map((entry) => (
                 <div
                   key={entry.story_id}
                   className={`story-tree__item${entry.story_id === activeStoryId ? " story-tree__item--active" : ""}`}

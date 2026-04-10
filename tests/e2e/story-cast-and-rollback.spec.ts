@@ -67,6 +67,12 @@ test("chapter history can be viewed and branched from an earlier chapter", async
 
   await page.getByRole("button", { name: "Open Story: s-001-branch-ch1", exact: true }).click();
   await expect(page.locator(".story-tree__item--active")).toContainText("Story Branch: s-001-branch-ch1");
+  await page.getByRole("button", { name: "Focus Active Branch", exact: true }).click();
+  await expect(page.getByText("Story Root: s-001", { exact: true })).toBeVisible();
+  await expect(page.getByText("Story Branch: s-001-branch-ch1", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Show All Branches", exact: true }).click();
+  await expect(page.getByText("Story Root: s-001", { exact: true })).toBeVisible();
 });
 
 test("branch can be deleted from the story tree", async ({ page }) => {
