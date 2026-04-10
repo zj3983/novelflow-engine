@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
+import urllib.error
+import urllib.request
+from typing import Protocol
+
 from packages.story_core.models import CharacterProposal, CharacterState, StoryState
 
 
@@ -93,7 +99,12 @@ def _new_character_candidates(character: CharacterState) -> list[str]:
     return candidates
 
 
-class CharacterAgent:
+class CharacterProposalProvider(Protocol):
+    def propose_all(self, story: StoryState) -> list[CharacterProposal]:
+        pass
+
+
+class RuleBasedCharacterProposalProvider:
     def propose(self, story: StoryState, character: CharacterState) -> CharacterProposal:
         goal = character.goals[0] if character.goals else "hold the line"
         emotion = character.current_emotion or "controlled"
@@ -120,3 +131,139 @@ class CharacterAgent:
         ]
         proposals.sort(key=lambda proposal: (-proposal.priority, proposal.name))
         return proposals
+
+
+class OpenAICharacterProposalProvider:
+    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+
+    def available(self) -> bool:
+        return bool(self.api_key)
+
+    def propose_all(self, story: StoryState) -> list[CharacterProposal]:
+        if not self.available():
+            return []
+
+        active_characters = [
+            character
+            for character in story.characters
+            if not character.frozen and character.lifecycle_state == "active"
+        ]
+        if not active_characters:
+            return []
+
+        prompt = self._build_prompt(story, active_characters)
+        model = story.agent_settings.character_model
+        temperature = float(story.agent_settings.temperature)
+
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a character action planner for a novel engine. "
+                        "Return JSON only, with a top-level object containing a proposals array. "
+                        "Each proposal must include name, goal, emotion, action, priority, and new_character_candidates."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": temperature,
+        }
+
+        try:
+            response = self._post_json("/chat/completions", payload)
+            content = response["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+        except (KeyError, IndexError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, ValueError):
+            return []
+
+        raw_proposals = parsed.get("proposals", []) if isinstance(parsed, dict) else []
+        proposals: list[CharacterProposal] = []
+        for item in raw_proposals:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            proposals.append(
+                CharacterProposal(
+                    name=name,
+                    goal=str(item.get("goal", "")).strip() or "hold the line",
+                    emotion=str(item.get("emotion", "neutral")).strip() or "neutral",
+                    action=str(item.get("action", "")).strip(),
+                    priority=int(item.get("priority", 0) or 0),
+                    new_character_candidates=[
+                        str(candidate).strip()
+                        for candidate in item.get("new_character_candidates", [])
+                        if str(candidate).strip()
+                    ],
+                )
+            )
+
+        proposals.sort(key=lambda proposal: (-proposal.priority, proposal.name))
+        return proposals
+
+    def _build_prompt(self, story: StoryState, characters: list[CharacterState]) -> str:
+        current_summary = story.chapter_summaries[-1].summary if story.chapter_summaries else "No prior chapter."
+        character_lines = []
+        for character in characters:
+            relationships = ", ".join(
+                f"{relationship.target} (trust={relationship.trust}, tension={relationship.tension})"
+                for relationship in character.relationships.values()
+            ) or "none"
+            goals = "; ".join(character.goals) or "hold the line"
+            secrets = "; ".join(character.secrets) or "none"
+            character_lines.append(
+                f"- {character.name} [{character.role}] goals: {goals}; emotion: {character.current_emotion}; relationships: {relationships}; secrets: {secrets}"
+            )
+
+        return "\n".join(
+            [
+                f"Story outline: {story.outline}",
+                f"Genre: {story.genre}",
+                f"Style: {story.style}",
+                f"Current chapter: {story.current_chapter}",
+                f"Latest chapter summary: {current_summary}",
+                "Active characters:",
+                *character_lines,
+                "Return JSON with the structure:",
+                '{ "proposals": [ { "name": "...", "goal": "...", "emotion": "...", "action": "...", "priority": 0, "new_character_candidates": [] } ] }',
+            ]
+        )
+
+    def _post_json(self, path: str, payload: dict) -> dict:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+
+class CharacterAgent:
+    def __init__(
+        self,
+        llm_provider: CharacterProposalProvider | None = None,
+        rule_provider: RuleBasedCharacterProposalProvider | None = None,
+    ) -> None:
+        self.rule_provider = rule_provider or RuleBasedCharacterProposalProvider()
+        self.llm_provider = llm_provider or OpenAICharacterProposalProvider()
+
+    def propose(self, story: StoryState, character: CharacterState) -> CharacterProposal:
+        return self.rule_provider.propose(story, character)
+
+    def propose_all(self, story: StoryState) -> list[CharacterProposal]:
+        if story.agent_settings.mode == "LLM-assisted":
+            llm_proposals = self.llm_provider.propose_all(story)
+            if llm_proposals:
+                return llm_proposals
+        return self.rule_provider.propose_all(story)
