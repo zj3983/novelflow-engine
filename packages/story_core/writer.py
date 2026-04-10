@@ -37,12 +37,22 @@ def _continuity_sentence(story: StoryState) -> str:
     return " ".join(parts)
 
 
-def write_chapter_body(story: StoryState, chapter_number: int) -> str:
+def write_chapter_body(
+    story: StoryState,
+    chapter_number: int,
+    conflict_summary: dict | None = None,
+) -> str:
     lead = story.characters[0].name if story.characters else "The investigator"
     lead_goal = story.characters[0].goals[0] if story.characters and story.characters[0].goals else "find the truth"
     relation_line = _relationship_sentence(story)
     continuity_line = _continuity_sentence(story)
+    conflict_line = (
+        f"Conflict: {conflict_summary['summary']} Stakes: {conflict_summary['stakes']}"
+        if conflict_summary
+        else ""
+    )
     return (
         f"Chapter {chapter_number} body. {lead} presses deeper into the intrigue, "
-        f"trying to {lead_goal}. {relation_line} {continuity_line} A hidden letter appears before the chapter closes."
+        f"trying to {lead_goal}. {conflict_line} {relation_line} {continuity_line} "
+        "A hidden letter appears before the chapter closes."
     )

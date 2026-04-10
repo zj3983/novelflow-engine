@@ -153,3 +153,69 @@ def test_second_chapter_body_reuses_fact_and_foreshadowing_context():
 
     assert "Carries forward" in second_bundle.body
     assert "A hidden letter appears." in second_bundle.body
+
+
+def test_generate_chapter_builds_action_briefs_and_conflict_summary():
+    story = StoryState(
+        story_id="s-014",
+        outline="Two rivals close in on the same witness.",
+        genre="fantasy",
+        style="court intrigue",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+                current_emotion="driven",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="guarded",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert bundle.action_briefs
+    assert bundle.action_briefs[0]["name"] == "Lin Yue"
+    assert bundle.action_briefs[1]["name"] == "Su Wan"
+    assert "find the witness" in bundle.action_briefs[0]["action"]
+    assert "protect the witness" in bundle.action_briefs[1]["action"]
+    assert bundle.conflict_summary["stakes"]
+    assert "Lin Yue" in bundle.conflict_summary["summary"]
+    assert "Su Wan" in bundle.conflict_summary["summary"]
+
+
+def test_generate_chapter_body_reflects_selected_conflict():
+    story = StoryState(
+        story_id="s-015",
+        outline="A magistrate corners an ally who knows too much.",
+        genre="mystery",
+        style="tense",
+        current_chapter=0,
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["expose the witness"],
+                current_emotion="grim",
+            ),
+            CharacterState(
+                name="Su Wan",
+                role="supporting",
+                goals=["protect the witness"],
+                current_emotion="defiant",
+            ),
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert "Conflict:" in bundle.body
+    assert "Lin Yue" in bundle.body
+    assert "Su Wan" in bundle.body
+    assert "witness" in bundle.body

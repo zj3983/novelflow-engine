@@ -3,6 +3,55 @@ from __future__ import annotations
 from packages.story_core.models import StoryState
 
 
+def _goal_action(goal: str) -> str:
+    goal_text = goal.lower()
+    if any(word in goal_text for word in ("protect", "save", "guard", "help")):
+        return f"tries to shield the fragile truth while attempting to {goal}"
+    if any(word in goal_text for word in ("expose", "find", "accuse", "hunt")):
+        return f"pushes hard to {goal} before the court closes ranks"
+    return f"moves carefully to {goal} without losing leverage"
+
+
+def build_action_briefs(story: StoryState) -> list[dict]:
+    briefs: list[dict] = []
+    for character in story.characters:
+        goal = character.goals[0] if character.goals else "hold the line"
+        briefs.append(
+            {
+                "name": character.name,
+                "goal": goal,
+                "emotion": character.current_emotion or "controlled",
+                "action": _goal_action(goal),
+            }
+        )
+    return briefs
+
+
+def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict:
+    if not action_briefs:
+        return {
+            "summary": "No active conflict has surfaced yet.",
+            "stakes": "The chapter must first establish pressure.",
+        }
+
+    lead = action_briefs[0]
+    rival = action_briefs[1] if len(action_briefs) > 1 else None
+    if rival is None:
+        return {
+            "summary": f"{lead['name']} acts alone, trying to {lead['goal']}.",
+            "stakes": f"If {lead['name']} fails, the newest clue will lose all momentum.",
+        }
+
+    return {
+        "summary": (
+            f"{lead['name']} tries to {lead['goal']}, while {rival['name']} moves to {rival['goal']}."
+        ),
+        "stakes": (
+            f"If either side wins too cleanly, control over the witness and the truth shifts for the whole cast."
+        ),
+    }
+
+
 def plan_next_outline(story: StoryState, chapter_number: int) -> str:
     lead = story.characters[0].name if story.characters else "the lead"
     return (
