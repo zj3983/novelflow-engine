@@ -986,3 +986,26 @@ def test_action_briefs_promote_character_named_in_unresolved_threads():
 
     assert briefs[0]["name"] == "Pei An"
     assert briefs[0]["priority"] > briefs[1]["priority"]
+
+
+def test_story_engine_routes_generation_through_orchestrator():
+    story = StoryState(
+        story_id="s-030",
+        outline="A detective prince uncovers palace crimes.",
+        genre="fantasy",
+        style="noir",
+        characters=[
+            CharacterState(
+                name="Lin Yue",
+                role="protagonist",
+                goals=["find the witness"],
+            )
+        ],
+    )
+
+    engine = StoryEngine()
+    assert hasattr(engine, "orchestrator")
+
+    bundle = engine.generate_next_chapter(story)
+    assert bundle.body
+    assert bundle.quality_report["ok"] is True
