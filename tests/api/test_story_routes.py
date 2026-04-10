@@ -86,6 +86,53 @@ def test_story_serializes_character_lifecycle_fields():
     assert character["introduced_by"] == "Su Wan"
 
 
+def test_lifecycle_fields_remain_present_across_generate_freeze_and_rollback():
+    create_resp = client.post(
+        "/stories",
+        json={
+            "story_id": "s-lifecycle-flow",
+            "outline": "A clerk follows witness rumors through sealed archives.",
+            "genre": "mystery",
+            "style": "tense",
+            "characters": [
+                {
+                    "name": "Pei An",
+                    "role": "supporting",
+                    "goals": ["hide the witness"],
+                    "frozen": False,
+                    "lifecycle_state": "active",
+                    "last_proposed_chapter": 0,
+                    "last_approved_chapter": 0,
+                    "introduced_by": "",
+                }
+            ],
+        },
+    )
+    assert create_resp.status_code == 200
+
+    generated = client.post("/stories/s-lifecycle-flow/generate")
+    assert generated.status_code == 200
+    generated_character = generated.json()["updated_story"]["characters"][0]
+    assert "lifecycle_state" in generated_character
+    assert "last_proposed_chapter" in generated_character
+    assert "last_approved_chapter" in generated_character
+    assert "introduced_by" in generated_character
+
+    frozen = client.post("/stories/s-lifecycle-flow/characters/Pei%20An/freeze")
+    assert frozen.status_code == 200
+    frozen_character = frozen.json()["characters"][0]
+    assert frozen_character["frozen"] is True
+    assert frozen_character["lifecycle_state"] == "frozen"
+
+    rolled_back = client.post("/stories/s-lifecycle-flow/rollback")
+    assert rolled_back.status_code == 200
+    rolled_character = rolled_back.json()["characters"][0]
+    assert "lifecycle_state" in rolled_character
+    assert "last_proposed_chapter" in rolled_character
+    assert "last_approved_chapter" in rolled_character
+    assert "introduced_by" in rolled_character
+
+
 def test_rollback_restores_previous_story_state():
     client.post(
         "/stories",

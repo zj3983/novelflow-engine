@@ -1074,3 +1074,36 @@ def test_story_engine_keeps_prose_markers_after_writer_memory_agent_split():
     assert "Conflict:" in bundle.body
     assert bundle.updated_story.timeline
     assert bundle.updated_story.chapter_summaries
+
+
+def test_story_engine_compatibility_path_generates_complete_bundle_with_lifecycle():
+    story = StoryState(
+        story_id="s-compat-001",
+        outline="A clerk tracks a witness through the archive maze.",
+        genre="mystery",
+        style="tense",
+        characters=[
+            CharacterState(
+                name="Pei An",
+                role="protagonist",
+                goals=["find the witness"],
+            )
+        ],
+    )
+
+    bundle = StoryEngine().generate_next_chapter(story)
+
+    assert bundle.chapter_number == 1
+    assert bundle.body
+    assert bundle.chapter_title
+    assert bundle.cadence in {"urgent", "measured", "breathing"}
+    assert bundle.next_outline
+    assert bundle.quality_report["ok"] is True
+    assert bundle.chapter_summary["next_focus"]
+    assert bundle.updated_story.chapter_summaries[-1].cadence
+    assert bundle.updated_story.characters[0].lifecycle_state in {
+        "proposed",
+        "active",
+        "rejected",
+        "frozen",
+    }
