@@ -1,7 +1,9 @@
 import { useState } from "react";
 
+import { BookLibraryBrowser } from "./BookLibraryBrowser";
 import { BookImportPanel } from "./BookImportPanel";
 import type { BookImportBootstrapResponse } from "../lib/api";
+import type { BookLibraryCatalogResponse, BookLibraryItem, ChapterBundle } from "../lib/api";
 
 export type StoryCharacterDraft = {
   name: string;
@@ -15,6 +17,7 @@ export type StoryCharacterDraft = {
 
 export type StoryDraft = {
   outline: string;
+  directorBrief: string;
   characters: StoryCharacterDraft[];
 };
 
@@ -60,6 +63,10 @@ type StorySidebarProps = {
   onRuntimeSettingsChange: (next: RuntimeSettings) => void;
   onSaveRuntimeSettings: () => void;
   onTestRuntimeSettings: (target: RuntimeConnectionTarget) => void;
+  onStartGeneration: () => Promise<void>;
+  history: ChapterBundle[];
+  selectedChapter: number | null;
+  onSelectHistoryChapter: (chapterNumber: number) => void;
 };
 
 export function StorySidebar({
@@ -73,9 +80,15 @@ export function StorySidebar({
   onRuntimeSettingsChange,
   onSaveRuntimeSettings,
   onTestRuntimeSettings,
+  onStartGeneration,
+  history,
+  selectedChapter,
+  onSelectHistoryChapter,
 }: StorySidebarProps) {
   const [isRuntimeSettingsOpen, setIsRuntimeSettingsOpen] = useState(true);
   const [isAgentSettingsOpen, setIsAgentSettingsOpen] = useState(true);
+  const [bookCatalog, setBookCatalog] = useState<BookLibraryCatalogResponse | null>(null);
+  const [selectedSourceItem, setSelectedSourceItem] = useState<BookLibraryItem | null>(null);
   const AGENT_RUNTIME_LABELS: Record<AgentRuntimeName, string> = {
     character: "角色代理",
     director: "导演代理",
@@ -145,6 +158,51 @@ export function StorySidebar({
     });
   }
 
+  function handleCatalogLoaded(nextCatalog: BookLibraryCatalogResponse | null) {
+    setBookCatalog(nextCatalog);
+    if (!nextCatalog) {
+      setSelectedSourceItem(null);
+    }
+  }
+
+  function loadSourceItem(item: BookLibraryItem) {
+    setSelectedSourceItem(item);
+
+    if (item.filename === "character_matrix.md" && item.parsed_characters?.length) {
+      onChange({
+        ...draft,
+        characters: item.parsed_characters.map((name) => ({
+          name,
+          goal: "待补全",
+          frozen: false,
+          relationshipTarget: "",
+          relationshipBond: "",
+          trust: "0.0",
+          tension: "0.0",
+        })),
+      });
+      return;
+    }
+
+    if (
+      item.filename === "volume_outline.md" ||
+      item.filename === "current_focus.md" ||
+      item.filename === "author_intent.md" ||
+      item.filename === "book_rules.md" ||
+      item.filename === "story_bible.md"
+    ) {
+      onChange({
+        ...draft,
+        outline: item.content.trim() || item.preview,
+      });
+      return;
+    }
+
+    if (item.chapter_number != null) {
+      onSelectHistoryChapter(item.chapter_number);
+    }
+  }
+
   function updateRuntimeSettings(next: Partial<RuntimeSettings>) {
     onRuntimeSettingsChange({
       global: next.global ? { ...runtimeSettings.global, ...next.global } : runtimeSettings.global,
@@ -168,13 +226,34 @@ export function StorySidebar({
     onChange({
       ...draft,
       outline: payload.outline ?? draft.outline,
+      directorBrief: payload.summary ?? draft.directorBrief,
       characters: nextCharacters.length ? nextCharacters : draft.characters,
     });
   }
 
   return (
     <div className="sidebar-fields">
-      <BookImportPanel onBootstrapDraft={onBootstrapDraft} />
+      <BookImportPanel
+        onBootstrapDraft={onBootstrapDraft}
+        onCatalogLoaded={handleCatalogLoaded}
+        onStartGeneration={onStartGeneration}
+      />
+
+      {draft.directorBrief ? (
+        <section className="book-import__report" aria-label="Director Pre Read">
+          <p className="book-import__title">导演预读</p>
+          <pre className="book-library-browser__preview-text">{draft.directorBrief}</pre>
+        </section>
+      ) : null}
+
+      <BookLibraryBrowser
+        catalog={bookCatalog}
+        history={history}
+        selectedSourceItemId={selectedSourceItem?.item_id ?? null}
+        selectedHistoryChapter={selectedChapter}
+        onSelectSourceItem={loadSourceItem}
+        onSelectHistoryChapter={onSelectHistoryChapter}
+      />
 
       <section className="agent-settings">
         <button

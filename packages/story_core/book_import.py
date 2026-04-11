@@ -111,6 +111,11 @@ def _parse_character_matrix(text: str) -> list[str]:
     return names
 
 
+def _one_line_excerpt(text: str, limit: int = 180) -> str:
+    compact = " ".join(text.split())
+    return compact[:limit]
+
+
 def scan_book_folder(source_path: Path | str) -> BookFolderParseResult:
     base = normalize_book_source_path(source_path)
 
@@ -178,7 +183,23 @@ def scan_book_folder(source_path: Path | str) -> BookFolderParseResult:
     outline_parts = [part for part in (volume_outline, current_focus) if part]
     outline = "\n\n".join(outline_parts)
 
-    summary = report.documents.get("author_intent.md", "").strip()
+    summary_sections: list[str] = []
+    for filename, label in (
+        ("author_intent.md", "作者意图"),
+        ("book_rules.md", "写作规则"),
+        ("story_bible.md", "故事圣经"),
+        ("volume_outline.md", "卷纲"),
+        ("current_focus.md", "当前聚焦"),
+    ):
+        text = report.documents.get(filename, "").strip()
+        if text:
+            summary_sections.append(f"{label}: {_one_line_excerpt(text)}")
+
+    extra_files = [name for name in report.present_files if name not in KNOWN_FILES]
+    if extra_files:
+        summary_sections.append(f"已识别补充材料: {', '.join(extra_files)}")
+
+    summary = "\n".join(summary_sections)
     if not summary:
         summary = report.documents.get("story_bible.md", "").strip()
 

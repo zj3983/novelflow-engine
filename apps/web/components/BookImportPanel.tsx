@@ -14,6 +14,7 @@ import {
 type BookImportPanelProps = {
   onBootstrapDraft: (draft: BookImportBootstrapResponse["draft"]) => void;
   onCatalogLoaded: (catalog: BookLibraryCatalogResponse | null) => void;
+  onStartGeneration: () => Promise<void>;
 };
 
 type RequestState = "idle" | "loading" | "success" | "error";
@@ -50,12 +51,17 @@ function normalizeSourcePathInput(value: string): string {
   return next;
 }
 
-export function BookImportPanel({ onBootstrapDraft, onCatalogLoaded }: BookImportPanelProps) {
+export function BookImportPanel({
+  onBootstrapDraft,
+  onCatalogLoaded,
+  onStartGeneration,
+}: BookImportPanelProps) {
   const inputId = useId();
   const [sourcePath, setSourcePath] = useState("");
   const [report, setReport] = useState<BookImportScanReport | null>(null);
   const [scanState, setScanState] = useState<RequestState>("idle");
   const [bootstrapState, setBootstrapState] = useState<RequestState>("idle");
+  const [directorBrief, setDirectorBrief] = useState("");
   const [error, setError] = useState<string | null>(null);
   const isBusy = scanState === "loading" || bootstrapState === "loading";
 
@@ -101,12 +107,38 @@ export function BookImportPanel({ onBootstrapDraft, onCatalogLoaded }: BookImpor
     try {
       const response = await bootstrapBookImport(trimmed);
       setReport(response.report);
+      setDirectorBrief(response.draft.summary ?? "");
       onBootstrapDraft(response.draft);
       await loadCatalog(trimmed);
       setBootstrapState("success");
     } catch (e) {
       setBootstrapState("error");
       setError(e instanceof Error ? e.message : "载入失败");
+    }
+  }
+
+  async function onBootstrapAndStart() {
+    const trimmed = normalizeSourcePathInput(sourcePath);
+    if (!trimmed || (report && !report.can_bootstrap)) {
+      return;
+    }
+
+    if (trimmed !== sourcePath) {
+      setSourcePath(trimmed);
+    }
+    setError(null);
+    setBootstrapState("loading");
+    try {
+      const response = await bootstrapBookImport(trimmed);
+      setReport(response.report);
+      setDirectorBrief(response.draft.summary ?? "");
+      onBootstrapDraft(response.draft);
+      await loadCatalog(trimmed);
+      await onStartGeneration();
+      setBootstrapState("success");
+    } catch (e) {
+      setBootstrapState("error");
+      setError(e instanceof Error ? e.message : "载入并开始失败");
     }
   }
 
@@ -126,6 +158,7 @@ export function BookImportPanel({ onBootstrapDraft, onCatalogLoaded }: BookImpor
           onChange={(event) => {
             setSourcePath(event.target.value);
             setReport(null);
+            setDirectorBrief("");
             setError(null);
             setScanState("idle");
             setBootstrapState("idle");
@@ -146,6 +179,14 @@ export function BookImportPanel({ onBootstrapDraft, onCatalogLoaded }: BookImpor
           disabled={isBusy || !sourcePath.trim() || (report ? !report.can_bootstrap : false)}
         >
           载入到工作台
+        </button>
+        <button
+          className="btn"
+          type="button"
+          onClick={() => void onBootstrapAndStart()}
+          disabled={isBusy || !sourcePath.trim() || (report ? !report.can_bootstrap : false)}
+        >
+          载入并开始
         </button>
       </div>
 
@@ -185,6 +226,13 @@ export function BookImportPanel({ onBootstrapDraft, onCatalogLoaded }: BookImpor
                   ))}
                 </div>
               </>
+            ) : null}
+
+            {directorBrief ? (
+              <div className="book-import__pre-read" aria-label="Director Pre Read">
+                <p className="hint">导演预读：</p>
+                <pre className="book-library-browser__preview-text">{directorBrief}</pre>
+              </div>
             ) : null}
 
             {report.warnings.length ? <p className="hint">提示：{report.warnings.join("；")}</p> : null}
