@@ -4,13 +4,16 @@ import { useId, useState } from "react";
 
 import {
   bootstrapBookImport,
+  fetchBookLibraryCatalog,
   scanBookImport,
   type BookImportBootstrapResponse,
   type BookImportScanReport,
+  type BookLibraryCatalogResponse,
 } from "../lib/api";
 
 type BookImportPanelProps = {
   onBootstrapDraft: (draft: BookImportBootstrapResponse["draft"]) => void;
+  onCatalogLoaded: (catalog: BookLibraryCatalogResponse | null) => void;
 };
 
 type RequestState = "idle" | "loading" | "success" | "error";
@@ -22,7 +25,32 @@ function humanBool(value: boolean | null): string {
   return value ? "是" : "否";
 }
 
-export function BookImportPanel({ onBootstrapDraft }: BookImportPanelProps) {
+function normalizeSourcePathInput(value: string): string {
+  let next = value.trim();
+  if (!next) {
+    return next;
+  }
+
+  if (
+    (next.startsWith('"') && next.endsWith('"')) ||
+    (next.startsWith("'") && next.endsWith("'"))
+  ) {
+    next = next.slice(1, -1).trim();
+  }
+
+  const lastSegment = next.split(/[\\/]/).at(-1) ?? next;
+  const looksLikeFile = /\.[a-z0-9]+$/i.test(lastSegment);
+  if (looksLikeFile) {
+    const separatorIndex = Math.max(next.lastIndexOf("\\"), next.lastIndexOf("/"));
+    if (separatorIndex > 0) {
+      next = next.slice(0, separatorIndex);
+    }
+  }
+
+  return next;
+}
+
+export function BookImportPanel({ onBootstrapDraft, onCatalogLoaded }: BookImportPanelProps) {
   const inputId = useId();
   const [sourcePath, setSourcePath] = useState("");
   const [report, setReport] = useState<BookImportScanReport | null>(null);
@@ -31,36 +59,50 @@ export function BookImportPanel({ onBootstrapDraft }: BookImportPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const isBusy = scanState === "loading" || bootstrapState === "loading";
 
+  async function loadCatalog(trimmed: string) {
+    const catalog = await fetchBookLibraryCatalog(trimmed);
+    onCatalogLoaded(catalog);
+  }
+
   async function onScan() {
-    const trimmed = sourcePath.trim();
+    const trimmed = normalizeSourcePathInput(sourcePath);
     if (!trimmed) {
       return;
     }
 
+    if (trimmed !== sourcePath) {
+      setSourcePath(trimmed);
+    }
     setError(null);
     setScanState("loading");
     try {
       const next = await scanBookImport(trimmed);
       setReport(next);
+      await loadCatalog(trimmed);
       setScanState("success");
     } catch (e) {
       setScanState("error");
+      onCatalogLoaded(null);
       setError(e instanceof Error ? e.message : "目录校验失败");
     }
   }
 
   async function onBootstrap() {
-    const trimmed = sourcePath.trim();
+    const trimmed = normalizeSourcePathInput(sourcePath);
     if (!trimmed || (report && !report.can_bootstrap)) {
       return;
     }
 
+    if (trimmed !== sourcePath) {
+      setSourcePath(trimmed);
+    }
     setError(null);
     setBootstrapState("loading");
     try {
       const response = await bootstrapBookImport(trimmed);
       setReport(response.report);
       onBootstrapDraft(response.draft);
+      await loadCatalog(trimmed);
       setBootstrapState("success");
     } catch (e) {
       setBootstrapState("error");
@@ -87,8 +129,9 @@ export function BookImportPanel({ onBootstrapDraft }: BookImportPanelProps) {
             setError(null);
             setScanState("idle");
             setBootstrapState("idle");
+            onCatalogLoaded(null);
           }}
-          placeholder="例如：D:/novels/demo"
+          placeholder="例如：D:/novels/demo/story"
         />
       </div>
 

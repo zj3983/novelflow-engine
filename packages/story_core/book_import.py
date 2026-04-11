@@ -18,6 +18,8 @@ OPTIONAL_FILES: tuple[str, ...] = (
 )
 
 KNOWN_FILES: tuple[str, ...] = REQUIRED_FILES + OPTIONAL_FILES
+SUPPORTED_EXTRA_FILE_SUFFIXES: tuple[str, ...] = (".md", ".txt", ".json", ".yaml", ".yml")
+IGNORED_EXTRA_DIRECTORIES: tuple[str, ...] = ("state", "runtime")
 
 
 class BookFolderReport(BaseModel):
@@ -43,6 +45,22 @@ class BookBootstrapDraft(BaseModel):
 class BookFolderParseResult(BaseModel):
     report: BookFolderReport
     bootstrap: BookBootstrapDraft
+
+
+def normalize_book_source_path(source_path: Path | str) -> Path:
+    raw = str(source_path).strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
+        raw = raw[1:-1].strip()
+
+    base = Path(raw).expanduser()
+    try:
+        base = base.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        base = Path(raw).expanduser()
+
+    if base.exists() and base.is_file():
+        return base.parent
+    return base
 
 
 def _safe_read_text(path: Path, warnings: list[str]) -> str:
@@ -94,7 +112,7 @@ def _parse_character_matrix(text: str) -> list[str]:
 
 
 def scan_book_folder(source_path: Path | str) -> BookFolderParseResult:
-    base = Path(source_path)
+    base = normalize_book_source_path(source_path)
 
     report = BookFolderReport(source_path=str(base))
     if not base.exists() or not base.is_dir():
@@ -126,6 +144,23 @@ def scan_book_folder(source_path: Path | str) -> BookFolderParseResult:
             report.empty_files.append(filename)
             if filename in REQUIRED_FILES:
                 report.unusable_required_files.append(filename)
+
+    for file_path in sorted(base.rglob("*") if base.exists() and base.is_dir() else []):
+        if not file_path.is_file():
+            continue
+        relative_path = file_path.relative_to(base)
+        if relative_path.parts and relative_path.parts[0] in IGNORED_EXTRA_DIRECTORIES:
+            continue
+        if file_path.name in KNOWN_FILES:
+            continue
+        if file_path.suffix.lower() not in SUPPORTED_EXTRA_FILE_SUFFIXES:
+            continue
+
+        report.present_files.append(relative_path.as_posix())
+        content = _safe_read_text(file_path, report.warnings)
+        report.documents[relative_path.as_posix()] = content
+        if content.strip() == "":
+            report.empty_files.append(relative_path.as_posix())
 
     report.present_files = sorted(report.present_files)
     report.missing_required_files = sorted([name for name in REQUIRED_FILES if name not in existing_files])

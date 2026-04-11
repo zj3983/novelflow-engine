@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from packages.story_core.book_import import scan_book_folder
+from packages.story_core.book_import import normalize_book_source_path, scan_book_folder
+from packages.story_core.book_browser import (
+    BookBrowserCatalogResponse,
+    BookBrowserItem,
+    BookBrowserSection,
+)
 
 
 router = APIRouter()
@@ -39,9 +45,13 @@ class BookBootstrapResponse(BaseModel):
     draft: BookBootstrapDraftResponse
 
 
+class BookBrowserCatalogRequest(BaseModel):
+    source_path: str = Field(min_length=1)
+
+
 def _resolve_source_dir(source_path: str) -> Path:
     try:
-        base = Path(source_path).expanduser().resolve(strict=False)
+        base = normalize_book_source_path(source_path)
     except (OSError, ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=f"invalid_source_path: {source_path} ({exc!s})") from exc
 
@@ -62,6 +72,91 @@ def _public_report(report) -> BookFolderReportResponse:
         present_files=list(report.present_files),
         warnings=list(report.warnings),
         can_bootstrap=report.can_bootstrap,
+    )
+
+
+def _short_preview(text: str, limit: int = 240) -> str:
+    compact = " ".join(text.split())
+    return compact[:limit]
+
+
+def _chapter_number_from_name(filename: str) -> int | None:
+    match = re.search(r"chapter-(\d+)", filename, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _runtime_title(filename: str) -> str:
+    number = _chapter_number_from_name(filename)
+    return f"Chapter {number}" if number is not None else filename
+
+
+def _document_item(base: Path, filename: str, content: str) -> BookBrowserItem:
+    return BookBrowserItem(
+        item_id=f"source:{filename}",
+        title=filename,
+        kind="source_document",
+        filename=filename,
+        path=str(base / filename),
+        preview=_short_preview(content),
+        content=content,
+    )
+
+
+def _state_item(base: Path, path: Path, content: str) -> BookBrowserItem:
+    return BookBrowserItem(
+        item_id=f"state:{path.name}",
+        title=path.name,
+        kind="state_file",
+        filename=path.name,
+        path=str(path),
+        preview=_short_preview(content),
+        content=content,
+    )
+
+
+def _runtime_item(path: Path, content: str) -> BookBrowserItem:
+    chapter_number = _chapter_number_from_name(path.name)
+    return BookBrowserItem(
+        item_id=f"runtime:{path.name}",
+        title=_runtime_title(path.name),
+        kind="runtime_chapter_artifact",
+        filename=path.name,
+        path=str(path),
+        preview=_short_preview(content),
+        chapter_number=chapter_number,
+        content=content,
+    )
+
+
+def _build_catalog(base: Path, report) -> BookBrowserCatalogResponse:
+    source_doc_items = [
+        _document_item(base, filename, report.documents.get(filename, ""))
+        for filename in sorted(report.documents.keys())
+    ]
+
+    state_dir = base / "state"
+    state_items: list[BookBrowserItem] = []
+    if state_dir.exists() and state_dir.is_dir():
+        for path in sorted(state_dir.iterdir()):
+            if path.is_file():
+                state_items.append(_state_item(base, path, path.read_text(encoding="utf-8", errors="replace")))
+
+    runtime_dir = base / "runtime"
+    runtime_items: list[BookBrowserItem] = []
+    if runtime_dir.exists() and runtime_dir.is_dir():
+        for path in sorted(runtime_dir.iterdir()):
+            if path.is_file() and path.name.startswith("chapter-"):
+                runtime_items.append(_runtime_item(path, path.read_text(encoding="utf-8", errors="replace")))
+
+    return BookBrowserCatalogResponse(
+        source_path=str(base),
+        exists=report.exists,
+        can_bootstrap=report.can_bootstrap,
+        sections=[
+            BookBrowserSection(section_id="source_docs", title="源书目录", items=source_doc_items),
+            BookBrowserSection(section_id="source_state", title="状态文件", items=state_items),
+            BookBrowserSection(section_id="runtime_chapters", title="运行章节", items=runtime_items),
+        ],
     )
 
 
@@ -87,6 +182,13 @@ def bootstrap(payload: BookImportRequest) -> BookBootstrapResponse:
             characters=list(result.bootstrap.characters),
         ),
     )
+
+
+@router.post("/book-import/catalog")
+def catalog(payload: BookBrowserCatalogRequest):
+    base = _resolve_source_dir(payload.source_path)
+    result = scan_book_folder(base)
+    return _build_catalog(base, result.report)
 
 
 def init_book_import_routes() -> APIRouter:
