@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from packages.story_core.engine import ChapterBundle, StoryEngine
-from packages.story_core.models import StoryState
+from packages.story_core.models import NovelOutline, NovelStatus, StoryState, WorldBible
 
 
 # SQLite database path: next to this file, or override via env var
@@ -55,6 +55,25 @@ def _init_db(db_path: str) -> sqlite3.Connection:
             ON chapter_bundles(story_id, chapter_number);
         CREATE INDEX IF NOT EXISTS idx_stories_parent
             ON stories(parent_story_id);
+        CREATE TABLE IF NOT EXISTS novel_outlines (
+            story_id TEXT PRIMARY KEY,
+            outline_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (story_id) REFERENCES stories(story_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS world_bibles (
+            story_id TEXT PRIMARY KEY,
+            world_bible_json TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (story_id) REFERENCES stories(story_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS novel_statuses (
+            story_id TEXT PRIMARY KEY,
+            status_json TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (story_id) REFERENCES stories(story_id) ON DELETE CASCADE
+        );
     """)
     conn.commit()
     return conn
@@ -358,6 +377,113 @@ class SQLiteStoryStore:
                 return record
 
         raise KeyError(character_name)
+
+
+    # ── outline persistence ──────────────────────────────────
+
+    def save_outline(self, story_id: str, outline: NovelOutline) -> None:
+        conn = self._conn()
+        conn.execute(
+            """
+            INSERT INTO novel_outlines (story_id, outline_json, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(story_id) DO UPDATE SET
+                outline_json = excluded.outline_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (story_id, outline.model_dump_json()),
+        )
+        conn.commit()
+
+    def get_outline(self, story_id: str) -> NovelOutline | None:
+        conn = self._conn()
+        cursor = conn.execute(
+            "SELECT outline_json FROM novel_outlines WHERE story_id = ?",
+            (story_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return NovelOutline.model_validate_json(row[0])
+
+    def delete_outline(self, story_id: str) -> bool:
+        conn = self._conn()
+        cursor = conn.execute("DELETE FROM novel_outlines WHERE story_id = ?", (story_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+    # ── world bible persistence ──────────────────────────────
+
+    def save_world_bible(self, story_id: str, world_bible: WorldBible) -> None:
+        conn = self._conn()
+        conn.execute(
+            """
+            INSERT INTO world_bibles (story_id, world_bible_json, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(story_id) DO UPDATE SET
+                world_bible_json = excluded.world_bible_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (story_id, world_bible.model_dump_json()),
+        )
+        conn.commit()
+
+    def get_world_bible(self, story_id: str) -> WorldBible | None:
+        conn = self._conn()
+        cursor = conn.execute(
+            "SELECT world_bible_json FROM world_bibles WHERE story_id = ?",
+            (story_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return WorldBible.model_validate_json(row[0])
+
+    def delete_world_bible(self, story_id: str) -> bool:
+        conn = self._conn()
+        cursor = conn.execute("DELETE FROM world_bibles WHERE story_id = ?", (story_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+    # ── novel status persistence ─────────────────────────────
+
+    def save_novel_status(self, story_id: str, novel_status: NovelStatus) -> None:
+        conn = self._conn()
+        conn.execute(
+            """
+            INSERT INTO novel_statuses (story_id, status_json, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(story_id) DO UPDATE SET
+                status_json = excluded.status_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (story_id, novel_status.model_dump_json()),
+        )
+        conn.commit()
+
+    def get_novel_status(self, story_id: str) -> NovelStatus | None:
+        conn = self._conn()
+        cursor = conn.execute(
+            "SELECT status_json FROM novel_statuses WHERE story_id = ?",
+            (story_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return NovelStatus.model_validate_json(row[0])
+
+    def update_novel_status_after_chapter(self, story_id: str, chapter_number: int, word_count: int) -> NovelStatus | None:
+        """Auto-update novel status after a chapter is generated."""
+        conn = self._conn()
+        status = self.get_novel_status(story_id)
+        if status is None:
+            return None
+        status.total_chapters_written = chapter_number
+        status.last_written_chapter = chapter_number
+        status.total_word_count += word_count
+        status.updated_at = ""
+        self.save_novel_status(story_id, status)
+        return status
 
 
 # Backward-compatible alias: existing code imports InMemoryStoryStore

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ChapterBundleView } from "../components/ChapterBundleView";
+import { NovelManager } from "../components/NovelManager";
 import {
   StorySidebar,
   type AgentSettings,
@@ -271,7 +272,7 @@ function buildStoryFromBundle(baseStory: StoryResponse, nextBundle: ChapterBundl
 }
 
 export default function Page() {
-  const [activeTab, setActiveTab] = useState<"workbench" | "config" | "api" | "proxy" | "system" | "about">("workbench");
+  const [activeTab, setActiveTab] = useState<"workbench" | "manage" | "config" | "api" | "proxy" | "system" | "about">("workbench");
   const [draft, setDraft] = useState<StoryDraft>({
     outline: "一位身为侦探的王子，揭开王宫里的连环罪案。",
     directorBrief: "",
@@ -572,6 +573,12 @@ export default function Page() {
           工作台
         </button>
         <button
+          className={`app-tab ${activeTab === "manage" ? "app-tab--active" : ""}`}
+          onClick={() => setActiveTab("manage")}
+        >
+          小说管理
+        </button>
+        <button
           className={`app-tab ${(activeTab === "config" || activeTab === "api" || activeTab === "proxy" || activeTab === "system") ? "app-tab--active" : ""}`}
           onClick={() => setActiveTab("api")}
         >
@@ -584,6 +591,16 @@ export default function Page() {
           关于
         </button>
       </div>
+
+      {activeTab === "manage" && (
+        <div className="app-content">
+          <main className="workbench" style={{ maxWidth: "100%" }}>
+            <section className="panel panel-manage" aria-label="小说管理面板">
+              <NovelManager storyId={activeStoryId} />
+            </section>
+          </main>
+        </div>
+      )}
 
       {activeTab === "workbench" && (
         <div className="app-content">

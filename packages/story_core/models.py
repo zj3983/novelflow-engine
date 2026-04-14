@@ -141,6 +141,72 @@ class NovelOutline(BaseModel):
     overall_arc: str = ""
     act_breaks: list[dict] = Field(default_factory=list)  # [{"act": 1, "start": 1, "end": 15, "theme": "..."}]
     notes: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+# ── World Bible ──────────────────────────────────────────────
+
+class PowerSystem(BaseModel):
+    """Magic/cultivation power system rules."""
+    name: str = ""
+    description: str = ""
+    levels: list[str] = Field(default_factory=list)  # e.g. ["练气", "筑基", "金丹"]
+    rules: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class WorldLocation(BaseModel):
+    """A place in the story world."""
+    name: str
+    description: str = ""
+    type: str = ""  # e.g. "city", "mountain", "realm"
+    importance: int = 1  # 1-5
+    connections: list[str] = Field(default_factory=list)  # connected locations
+
+
+class Faction(BaseModel):
+    """A group/organization in the story."""
+    name: str
+    description: str = ""
+    type: str = ""  # e.g. "sect", "kingdom", "guild"
+    goals: list[str] = Field(default_factory=list)
+    allies: list[str] = Field(default_factory=list)
+    enemies: list[str] = Field(default_factory=list)
+    notable_members: list[str] = Field(default_factory=list)
+
+
+class WorldBible(BaseModel):
+    """The comprehensive world background shared across all chapters and characters."""
+    story_id: str
+    world_name: str = ""
+    overview: str = ""
+    power_system: PowerSystem = Field(default_factory=PowerSystem)
+    locations: list[WorldLocation] = Field(default_factory=list)
+    factions: list[Faction] = Field(default_factory=list)
+    world_facts: list[str] = Field(default_factory=list)  # fundamental truths about the world
+    timeline_events: list[dict] = Field(default_factory=list)  # [{"chapter": 1, "event": "..."}]
+    cultural_notes: list[str] = Field(default_factory=list)
+    glossary: dict[str, str] = Field(default_factory=dict)  # term → explanation
+    updated_at: str = ""
+
+
+# ── Novel Status ─────────────────────────────────────────────
+
+NovelStatusType = Literal["draft", "outlining", "writing", "reviewing", "completed", "paused"]
+
+
+class NovelStatus(BaseModel):
+    """Overall status of the novel."""
+    story_id: str
+    status: NovelStatusType = "draft"
+    total_chapters_planned: int = 0
+    total_chapters_written: int = 0
+    total_word_count: int = 0
+    last_written_chapter: int = 0
+    last_written_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class StoryState(BaseModel):

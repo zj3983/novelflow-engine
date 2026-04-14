@@ -68,7 +68,105 @@ export type AgentRuntimeState = {
   director_agent: AgentRuntimeEntry;
   writer_agent: AgentRuntimeEntry;
   memory_agent: AgentRuntimeEntry;
+  outline_agent: AgentRuntimeEntry;
   recent_events: string[];
+};
+
+// ── Outline types ────────────────────────────────────────────────
+
+export type ChapterOutline = {
+  chapter_number: number;
+  chapter_title: string;
+  summary: string;
+  key_characters: string[];
+  primary_conflict: string;
+  cadence: "urgent" | "measured" | "breathing";
+  word_count_estimate: number;
+  arc_phase: string;
+};
+
+export type NovelOutlineResponse = {
+  story_id: string;
+  genre: string;
+  style: string;
+  total_chapters: number;
+  chapters: ChapterOutline[];
+  overall_arc: string;
+  act_breaks: Array<{ act: number; start: number; end: number; theme: string }>;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+  saved: boolean;
+};
+
+// ── World Bible types ─────────────────────────────────────────────
+
+export type PowerSystem = {
+  name: string;
+  description: string;
+  levels: string[];
+  rules: string[];
+  limitations: string[];
+};
+
+export type WorldLocation = {
+  name: string;
+  description: string;
+  type: string;
+  importance: number;
+  connections: string[];
+};
+
+export type Faction = {
+  name: string;
+  description: string;
+  type: string;
+  goals: string[];
+  allies: string[];
+  enemies: string[];
+  notable_members: string[];
+};
+
+export type WorldBibleResponse = {
+  story_id: string;
+  world_name: string;
+  overview: string;
+  power_system: PowerSystem;
+  locations: WorldLocation[];
+  factions: Faction[];
+  world_facts: string[];
+  timeline_events: Array<{ chapter: number; event: string }>;
+  cultural_notes: string[];
+  glossary: Record<string, string>;
+  updated_at: string;
+};
+
+export type WorldBibleRequest = {
+  world_name?: string;
+  overview?: string;
+  power_system?: Partial<PowerSystem>;
+  locations?: Partial<WorldLocation>[];
+  factions?: Partial<Faction>[];
+  world_facts?: string[];
+  timeline_events?: Array<{ chapter: number; event: string }>;
+  cultural_notes?: string[];
+  glossary?: Record<string, string>;
+};
+
+// ── Novel Status types ────────────────────────────────────────────
+
+export type NovelStatusType = "draft" | "outlining" | "writing" | "reviewing" | "completed" | "paused";
+
+export type NovelStatusResponse = {
+  story_id: string;
+  status: NovelStatusType;
+  total_chapters_planned: number;
+  total_chapters_written: number;
+  total_word_count: number;
+  last_written_chapter: number;
+  last_written_at: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type ChapterBundle = {
@@ -923,4 +1021,68 @@ export async function freezeCharacter(storyId: string, characterName: string): P
     );
     return mockFetchStory(storyId);
   }
+}
+
+// ── Outline API ────────────────────────────────────────────────
+
+export async function generateOutline(storyId: string, targetChapters: number = 30): Promise<NovelOutlineResponse> {
+  return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/outline/generate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target_chapters: targetChapters }),
+  });
+}
+
+export async function fetchOutline(storyId: string): Promise<NovelOutlineResponse> {
+  return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/outline`, {
+    method: "GET",
+  });
+}
+
+export async function updateOutline(storyId: string, payload: {
+  chapters: ChapterOutline[];
+  overall_arc?: string;
+  act_breaks?: Array<{ act: number; start: number; end: number; theme: string }>;
+  notes?: string;
+}): Promise<NovelOutlineResponse> {
+  return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/outline`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+// ── World Bible API ────────────────────────────────────────────
+
+export async function fetchWorldBible(storyId: string): Promise<WorldBibleResponse> {
+  return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/world-bible`, {
+    method: "GET",
+  });
+}
+
+export async function updateWorldBible(storyId: string, payload: WorldBibleRequest): Promise<WorldBibleResponse> {
+  return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/world-bible`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+// ── Novel Status API ───────────────────────────────────────────
+
+export async function fetchNovelStatus(storyId: string): Promise<NovelStatusResponse> {
+  return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/status`, {
+    method: "GET",
+  });
+}
+
+export async function updateNovelStatus(storyId: string, payload: {
+  status?: NovelStatusType;
+  total_chapters_planned?: number;
+}): Promise<NovelStatusResponse> {
+  return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/status`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
