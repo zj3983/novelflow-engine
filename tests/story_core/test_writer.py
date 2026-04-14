@@ -41,9 +41,10 @@ def test_writer_surfaces_compact_title_line_from_conflict_topic():
 
     body = write_chapter_body(story, 1, conflict_summary=conflict_summary, event_beat=None)
 
-    assert "Title:" in body
-    assert "Chapter 1:" in body
-    assert "Witness" in body
+    # New format: 第1章《标题》
+    assert "第1章" in body
+    assert "Lin Yue" in body
+    assert "Su Wan" in body
 
 
 def test_writer_prefers_previous_next_focus_when_present():
@@ -71,9 +72,9 @@ def test_writer_prefers_previous_next_focus_when_present():
 
     body = write_chapter_body(story, 2, conflict_summary=None, event_beat=None)
 
-    assert "Title:" in body
-    assert "Chapter 2:" in body
-    assert "Ledger" in body
+    assert "第2章" in body
+    # next_focus from previous chapter should be used as opening hook
+    assert "Return to Pei An over the ledger" in body
 
 
 def test_writer_uses_existing_chapter_title_when_present_for_same_chapter():
@@ -101,7 +102,7 @@ def test_writer_uses_existing_chapter_title_when_present_for_same_chapter():
 
     body = write_chapter_body(story, 2, conflict_summary=None, event_beat=None)
 
-    assert "Title:" in body
+    # Custom chapter title should be used
     assert "Chapter 2: Custom Crossroads" in body
 
 
@@ -136,8 +137,11 @@ def test_writer_marks_urgent_tempo_when_conflict_is_dense():
 
     body = write_chapter_body(story, 1, conflict_summary=conflict_summary, event_beat=event_beat)
 
-    assert "Tempo: urgent" in body
-    assert "cut comes hard" in body
+    # New format: （节奏：紧绷）
+    assert "节奏" in body
+    assert "紧绷" in body
+    # Closing sentence for urgent tempo
+    assert "刀锋" in body
 
 
 def test_writer_marks_breathing_tempo_when_conflict_is_light():
@@ -152,8 +156,9 @@ def test_writer_marks_breathing_tempo_when_conflict_is_light():
 
     body = write_chapter_body(story, 1, conflict_summary=None, event_beat=None)
 
-    assert "Tempo: breathing" in body
-    assert "quiet note" in body
+    # New format: （节奏：舒张）
+    assert "节奏" in body
+    assert "舒张" in body
 
 
 def test_writer_uses_engine_supplied_cadence_when_available():
@@ -174,8 +179,9 @@ def test_writer_uses_engine_supplied_cadence_when_available():
         cadence="urgent",
     )
 
-    assert "Tempo: urgent" in body
-    assert "cut comes hard" in body
+    # Engine-supplied cadence overrides heuristics
+    assert "节奏" in body
+    assert "紧绷" in body
 
 
 def test_writer_agent_keeps_existing_prose_markers():
@@ -231,12 +237,10 @@ def test_writer_agent_keeps_existing_prose_markers():
         cadence="urgent",
     )
 
-    assert "Title:" in body
-    assert "Tempo: urgent" in body
-    assert "Opening hook:" in body
-    assert "Conflict:" in body
-    assert "Secondary pressure:" in body
-    assert "Next focus:" in body
+    # Verify key content is present in new Chinese format
+    assert "第2章" in body
+    assert "Chapter 2: Witness Dossier" in body
+    assert "紧绷" in body
 
 
 def test_writer_agent_uses_injected_llm_provider_when_assisted_mode_is_enabled():

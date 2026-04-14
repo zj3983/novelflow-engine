@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
-import urllib.request
 from typing import Protocol
 
+from packages.story_core.agent_base import BaseOpenAIProvider
 from packages.story_core.models import CharacterProposal, DirectorDecision, NewCharacterPolicy, StoryState
 from packages.story_core.planner import build_chapter_title, select_primary_pair
 from packages.story_core.runtime import record_agent_runtime
@@ -112,13 +111,8 @@ class RuleBasedDirectorDecisionProvider:
         )
 
 
-class OpenAIDirectorDecisionProvider:
-    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-
-    def available(self) -> bool:
-        return bool(self.api_key)
+class OpenAIDirectorDecisionProvider(BaseOpenAIProvider):
+    runtime_key = "director"
 
     def decide(
         self,
@@ -128,12 +122,13 @@ class OpenAIDirectorDecisionProvider:
         event_beat: dict,
         cadence: str,
     ) -> DirectorDecision | None:
-        if not self.available():
+        settings = self._runtime_settings()
+        if not settings.api_key:
             return None
 
         prompt = self._build_prompt(story, proposals, conflict_summary, event_beat, cadence)
         payload = {
-            "model": story.agent_settings.director_model,
+            "model": story.agent_settings.director_model or story.agent_settings.global_model or "gpt-5.4",
             "messages": [
                 {
                     "role": "system",
@@ -150,7 +145,7 @@ class OpenAIDirectorDecisionProvider:
         }
 
         try:
-            response = self._post_json("/chat/completions", payload)
+            response = self._post_json("/chat/completions", payload, settings)
             content = response["choices"][0]["message"]["content"]
             parsed = json.loads(content)
         except (KeyError, IndexError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, ValueError):
@@ -213,19 +208,6 @@ class OpenAIDirectorDecisionProvider:
             ]
         )
 
-    def _post_json(self, path: str, payload: dict) -> dict:
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
-
 
 class DirectorAgent:
     def __init__(
@@ -261,9 +243,9 @@ class DirectorAgent:
                     story.current_chapter,
                 )
                 return llm_decision
-            fallback_reason = "LLM provider returned no usable decision"
+            fallback_reason = "LLM 生成没有可用裁决"
             if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                fallback_reason = "OPENAI_API_KEY missing"
+                fallback_reason = "未配置 OPENAI_API_KEY"
             record_agent_runtime(
                 story,
                 "DirectorAgent",

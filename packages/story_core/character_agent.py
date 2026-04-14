@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import json
-import os
+import re
 import urllib.error
-import urllib.request
 from typing import Protocol
 
+from packages.story_core.agent_base import BaseOpenAIProvider
 from packages.story_core.models import CharacterProposal, CharacterState, StoryState
 from packages.story_core.runtime import record_agent_runtime
 
 
 def _goal_topic(goal: str) -> str:
     goal_text = goal.lower()
-    for candidate in ("witness", "ledger", "truth", "forgery", "letter", "archives", "archive"):
+    for candidate in (
+        "witness", "ledger", "truth", "forgery", "letter",
+        "archives", "archive", "secret", "artifact", "power",
+        "cultivation", "treasure", "legacy", "realm", "formation",
+    ):
         if candidate in goal_text:
             return candidate
     return goal_text.split()[-1] if goal_text.split() else "truth"
@@ -23,7 +27,7 @@ def _goal_action(goal: str) -> str:
     if any(word in goal_text for word in ("protect", "save", "guard", "help")):
         return f"tries to shield the fragile truth while attempting to {goal}"
     if any(word in goal_text for word in ("expose", "find", "accuse", "hunt")):
-        return f"pushes hard to {goal} before the court closes ranks"
+        return f"pushes hard to {goal} before the opposition closes ranks"
     return f"moves carefully to {goal} without losing leverage"
 
 
@@ -93,10 +97,21 @@ def _latest_thread_boost(story: StoryState, character_name: str) -> int:
 
 
 def _new_character_candidates(character: CharacterState) -> list[str]:
+    # Generic: extract character name hints from secrets.
+    # Try to capture a preceding adjective/title modifier (e.g. "Old archivist" → "Old Archivist").
     candidates: list[str] = []
     for secret in character.secrets:
-        if "archivist" in secret.lower() and "Old Archivist" not in candidates:
-            candidates.append("Old Archivist")
+        secret_lower = secret.lower()
+        for keyword in ("archivist", "keeper", "guardian", "elder", "master"):
+            if keyword in secret_lower:
+                # Look for an optional preceding adjective (Old, Young, Blind, Silent, etc.)
+                match = re.search(r"\b([A-Za-z]+)\s+" + keyword, secret, re.IGNORECASE)
+                if match:
+                    title = match.group(1).capitalize() + " " + keyword.capitalize()
+                else:
+                    title = keyword.capitalize()
+                if title not in candidates:
+                    candidates.append(title)
     return candidates
 
 
@@ -134,16 +149,12 @@ class RuleBasedCharacterProposalProvider:
         return proposals
 
 
-class OpenAICharacterProposalProvider:
-    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-
-    def available(self) -> bool:
-        return bool(self.api_key)
+class OpenAICharacterProposalProvider(BaseOpenAIProvider):
+    runtime_key = "character"
 
     def propose_all(self, story: StoryState) -> list[CharacterProposal]:
-        if not self.available():
+        settings = self._runtime_settings()
+        if not settings.api_key:
             return []
 
         active_characters = [
@@ -155,11 +166,10 @@ class OpenAICharacterProposalProvider:
             return []
 
         prompt = self._build_prompt(story, active_characters)
-        model = story.agent_settings.character_model
         temperature = float(story.agent_settings.temperature)
 
         payload = {
-            "model": model,
+            "model": story.agent_settings.character_model or story.agent_settings.global_model or "gpt-5.4",
             "messages": [
                 {
                     "role": "system",
@@ -176,7 +186,7 @@ class OpenAICharacterProposalProvider:
         }
 
         try:
-            response = self._post_json("/chat/completions", payload)
+            response = self._post_json("/chat/completions", payload, settings)
             content = response["choices"][0]["message"]["content"]
             parsed = json.loads(content)
         except (KeyError, IndexError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, ValueError):
@@ -236,19 +246,6 @@ class OpenAICharacterProposalProvider:
             ]
         )
 
-    def _post_json(self, path: str, payload: dict) -> dict:
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
-
 
 class CharacterAgent:
     def __init__(
@@ -274,9 +271,9 @@ class CharacterAgent:
                     story.current_chapter,
                 )
                 return llm_proposals
-            fallback_reason = "LLM provider returned no usable proposals"
+            fallback_reason = "LLM 生成没有可用提案"
             if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                fallback_reason = "OPENAI_API_KEY missing"
+                fallback_reason = "未配置 OPENAI_API_KEY"
             record_agent_runtime(
                 story,
                 "CharacterAgent",

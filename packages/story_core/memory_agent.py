@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
-import urllib.request
 from typing import Protocol
 
+from packages.story_core.agent_base import BaseOpenAIProvider
 from packages.story_core.memory import apply_post_chapter_updates
 from packages.story_core.models import DirectorDecision, StoryState
 from packages.story_core.runtime import record_agent_runtime
@@ -25,13 +24,8 @@ class MemorySummaryProvider(Protocol):
         pass
 
 
-class OpenAIMemorySummaryProvider:
-    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-
-    def available(self) -> bool:
-        return bool(self.api_key)
+class OpenAIMemorySummaryProvider(BaseOpenAIProvider):
+    runtime_key = "memory"
 
     def summarize(
         self,
@@ -43,11 +37,12 @@ class OpenAIMemorySummaryProvider:
         event_beat: dict,
         cadence: str,
     ) -> dict | None:
-        if not self.available():
+        settings = self._runtime_settings()
+        if not settings.api_key:
             return None
 
         payload = {
-            "model": story.agent_settings.writer_model,
+            "model": story.agent_settings.memory_model or story.agent_settings.global_model or "gpt-5.4",
             "messages": [
                 {
                     "role": "system",
@@ -75,7 +70,7 @@ class OpenAIMemorySummaryProvider:
         }
 
         try:
-            response = self._post_json("/chat/completions", payload)
+            response = self._post_json("/chat/completions", payload, settings)
             content = response["choices"][0]["message"]["content"]
             parsed = json.loads(content)
         except (KeyError, IndexError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, ValueError):
@@ -109,19 +104,6 @@ class OpenAIMemorySummaryProvider:
                 "Return a JSON object with summary, facts, unresolved_threads, next_focus, chapter_title, timeline_summary, timeline_impact, foreshadowing, and character_memory_notes.",
             ]
         )
-
-    def _post_json(self, path: str, payload: dict) -> dict:
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
 
 
 def _string_list(value: object) -> list[str]:
@@ -225,9 +207,9 @@ class MemoryAgent:
                         if name and memory and name in by_name:
                             by_name[name].memory.append(memory)
             else:
-                fallback_reason = "LLM provider returned no usable summary"
+                fallback_reason = "LLM 生成没有可用摘要"
                 if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                    fallback_reason = "OPENAI_API_KEY missing"
+                    fallback_reason = "未配置 OPENAI_API_KEY"
                 record_agent_runtime(
                     story,
                     "MemoryAgent",

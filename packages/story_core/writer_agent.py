@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
-import urllib.request
 from typing import Protocol
 
+from packages.story_core.agent_base import BaseOpenAIProvider
 from packages.story_core.models import DirectorDecision, StoryState
 from packages.story_core.runtime import record_agent_runtime
 from packages.story_core.writer import write_chapter_body
@@ -24,13 +23,8 @@ class WriterTextProvider(Protocol):
         pass
 
 
-class OpenAIWriterTextProvider:
-    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-
-    def available(self) -> bool:
-        return bool(self.api_key)
+class OpenAIWriterTextProvider(BaseOpenAIProvider):
+    runtime_key = "writer"
 
     def write(
         self,
@@ -41,17 +35,19 @@ class OpenAIWriterTextProvider:
         event_beat: dict,
         cadence: str,
     ) -> str | None:
-        if not self.available():
+        settings = self._runtime_settings()
+        if not settings.api_key:
             return None
 
         payload = {
-            "model": story.agent_settings.writer_model,
+            "model": story.agent_settings.writer_model or story.agent_settings.global_model or "gpt-5.4",
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You are the writer agent for a novel engine. "
-                        "Return JSON only with a single body field containing the chapter prose."
+                        "你是小说自动演化引擎的写作代理。"
+                        "请输出自然、连贯、带悬念的中文章节正文。"
+                        "只返回 JSON，且只能包含一个 body 字段。"
                     ),
                 },
                 {
@@ -71,7 +67,7 @@ class OpenAIWriterTextProvider:
         }
 
         try:
-            response = self._post_json("/chat/completions", payload)
+            response = self._post_json("/chat/completions", payload, settings)
             content = response["choices"][0]["message"]["content"]
             parsed = json.loads(content)
         except (KeyError, IndexError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, ValueError):
@@ -92,34 +88,25 @@ class OpenAIWriterTextProvider:
         event_beat: dict,
         cadence: str,
     ) -> str:
-        latest_summary = story.chapter_summaries[-1].summary if story.chapter_summaries else "No prior chapter."
+        latest_summary = story.chapter_summaries[-1].summary if story.chapter_summaries else "暂无上一章摘要。"
         return "\n".join(
             [
-                f"Story outline: {story.outline}",
-                f"Genre: {story.genre}",
-                f"Style: {story.style}",
-                f"Current chapter: {chapter_number}",
-                f"Latest chapter summary: {latest_summary}",
-                f"Director decision: {json.dumps(decision.model_dump(), ensure_ascii=False)}",
-                f"Conflict summary: {json.dumps(conflict_summary, ensure_ascii=False)}",
-                f"Event beat: {json.dumps(event_beat, ensure_ascii=False)}",
-                f"Cadence: {cadence}",
-                "Return a JSON object with a body field containing the full chapter prose.",
+                f"小说大纲：{story.outline}",
+                f"题材：{story.genre}",
+                f"风格：{story.style}",
+                f"当前章节：第 {chapter_number} 章",
+                f"上一章摘要：{latest_summary}",
+                f"导演裁决：{json.dumps(decision.model_dump(), ensure_ascii=False)}",
+                f"冲突摘要：{json.dumps(conflict_summary, ensure_ascii=False)}",
+                f"事件节拍：{json.dumps(event_beat, ensure_ascii=False)}",
+                f"节奏：{cadence}",
+                "要求：",
+                "1. 必须写成中文小说正文，不要英文模板。",
+                "2. 不要解释系统设定，不要输出 JSON 以外的文字。",
+                "3. 章节要有场景推进、人物动作和结尾钩子。",
+                "只返回 JSON，对象里包含 body 字段，body 是完整章节正文。",
             ]
         )
-
-    def _post_json(self, path: str, payload: dict) -> dict:
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
 
 
 class WriterAgent:
@@ -153,9 +140,9 @@ class WriterAgent:
                     story.current_chapter,
                 )
                 return llm_body
-            fallback_reason = "LLM provider returned no usable body"
+            fallback_reason = "LLM 没有返回可用正文"
             if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                fallback_reason = "OPENAI_API_KEY missing"
+                fallback_reason = "未配置 API 密钥"
             record_agent_runtime(
                 story,
                 "WriterAgent",
@@ -178,4 +165,5 @@ class WriterAgent:
             conflict_summary=conflict_summary,
             event_beat=event_beat,
             cadence=cadence,
+            chapter_title_override=decision.chapter_title or None,
         )

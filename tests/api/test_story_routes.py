@@ -1,9 +1,252 @@
+import urllib.error
+
+import pytest
+
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def clean_db_and_restore_runtime_settings():
+    """Clean up persistent SQLite DB to ensure test isolation."""
+    import os as _os
+    from apps.api.storage import _get_db_path, _local
+    db_path = _get_db_path()
+    # Close all cached connections before deleting DB
+    if hasattr(_local, "connections"):
+        for conn in _local.connections.values():
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _local.connections.clear()
+    # Remove the DB file
+    if _os.path.exists(db_path):
+        try:
+            _os.remove(db_path)
+        except PermissionError:
+            # On Windows the file may still be locked; clear contents instead
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("DELETE FROM chapter_bundles")
+            conn.execute("DELETE FROM stories")
+            conn.commit()
+            conn.close()
+    original = client.get("/runtime-settings").json()
+    yield
+    client.put("/runtime-settings", json=original)
+
+
+def test_runtime_settings_can_be_saved_globally():
+    response = client.get("/runtime-settings")
+    assert response.status_code == 200
+    assert response.json()["global"]["base_url"]
+    assert "api_key" in response.json()["global"]
+
+    update_resp = client.put(
+        "/runtime-settings",
+        json={
+            "global": {
+                "api_key": "sk-test-123",
+                "base_url": "https://api.example.com/v1",
+            },
+        },
+    )
+    assert update_resp.status_code == 200
+    assert update_resp.json()["global"]["api_key"] == "sk-test-123"
+    assert update_resp.json()["global"]["base_url"] == "https://api.example.com/v1"
+
+    loaded = client.get("/runtime-settings")
+    assert loaded.status_code == 200
+    assert loaded.json()["global"]["api_key"] == "sk-test-123"
+    assert loaded.json()["global"]["base_url"] == "https://api.example.com/v1"
+
+
+def test_runtime_settings_can_store_agent_overrides():
+    update_resp = client.put(
+        "/runtime-settings",
+        json={
+            "global": {
+                "api_key": "sk-global",
+                "base_url": "https://api.global.example/v1",
+            },
+            "agents": {
+                "character": {
+                    "api_key": "sk-character",
+                    "base_url": "https://api.character.example/v1",
+                },
+                "director": {
+                    "api_key": "sk-director",
+                    "base_url": "https://api.director.example/v1",
+                },
+                "writer": {
+                    "api_key": "sk-writer",
+                    "base_url": "https://api.writer.example/v1",
+                },
+                "memory": {
+                    "api_key": "sk-memory",
+                    "base_url": "https://api.memory.example/v1",
+                },
+            },
+        },
+    )
+    assert update_resp.status_code == 200
+
+    loaded = client.get("/runtime-settings")
+    assert loaded.status_code == 200
+    payload = loaded.json()
+    assert payload["global"]["api_key"] == "sk-global"
+    assert payload["global"]["base_url"] == "https://api.global.example/v1"
+    assert payload["agents"]["character"]["api_key"] == "sk-character"
+    assert payload["agents"]["director"]["base_url"] == "https://api.director.example/v1"
+
+
+def test_runtime_settings_connection_can_be_tested_for_one_agent(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout=30):
+        captured["method"] = request.get_method()
+        captured["url"] = request.full_url
+        captured["authorization"] = request.headers["Authorization"]
+        captured["content_type"] = request.headers.get("Content-type")
+        captured["body"] = request.data
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        return _Response()
+
+    monkeypatch.setattr("apps.api.routes.stories.urllib.request.urlopen", fake_urlopen)
+
+    response = client.post(
+        "/runtime-settings/test",
+        json={
+            "agent_name": "character",
+            "runtime_settings": {
+                "global": {
+                    "api_key": "sk-global",
+                    "base_url": "https://api.global.example/v1",
+                },
+                "agents": {
+                    "character": {
+                        "api_key": "sk-character",
+                        "base_url": "https://api.character.example/v1",
+                    }
+                },
+            },
+            "model_name": "gpt-4.1-mini",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["agent_name"] == "character"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.character.example/v1/chat/completions"
+    assert captured["authorization"] == "Bearer sk-character"
+    assert captured["content_type"] == "application/json"
+    assert b'"model": "gpt-4.1-mini"' in captured["body"]
+
+
+def test_runtime_settings_connection_falls_back_to_models_when_chat_endpoint_missing(monkeypatch):
+    captured_urls = []
+
+    def fake_urlopen(request, timeout=30):
+        captured_urls.append(request.full_url)
+        if request.full_url.endswith("/chat/completions"):
+            raise urllib.error.HTTPError(
+                request.full_url,
+                404,
+                "Not Found",
+                hdrs=None,
+                fp=None,
+            )
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        return _Response()
+
+    monkeypatch.setattr("apps.api.routes.stories.urllib.request.urlopen", fake_urlopen)
+
+    response = client.post(
+        "/runtime-settings/test",
+        json={
+            "agent_name": "global",
+            "runtime_settings": {
+                "global": {
+                    "api_key": "sk-global",
+                    "base_url": "https://api.global.example/v1",
+                },
+            },
+            "model_name": "gpt-4.1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert captured_urls == [
+        "https://api.global.example/v1/chat/completions",
+        "https://api.global.example/v1/models",
+    ]
+
+
+def test_runtime_settings_connection_uses_custom_global_base_url(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout=30):
+        captured["url"] = request.full_url
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        return _Response()
+
+    monkeypatch.setattr("apps.api.routes.stories.urllib.request.urlopen", fake_urlopen)
+
+    response = client.post(
+        "/runtime-settings/test",
+        json={
+            "agent_name": "global",
+            "runtime_settings": {
+                "global": {
+                    "api_key": "sk-global",
+                    "base_url": "https://api.global.example/v1",
+                },
+            },
+            "model_name": "gpt-4.1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert captured["url"] == "https://api.global.example/v1/chat/completions"
 
 
 def test_story_can_be_created_and_rolled_back():
@@ -53,6 +296,27 @@ def test_story_can_store_characters_and_freeze_them():
     freeze_resp = client.post("/stories/s-characters/characters/Pei%20An/freeze")
     assert freeze_resp.status_code == 200
     assert freeze_resp.json()["characters"][0]["frozen"] is True
+
+
+def test_story_can_store_global_default_model_in_agent_settings():
+    create_resp = client.post(
+        "/stories",
+        json={
+            "story_id": "s-global-model",
+            "outline": "A court witness shifts the balance of power.",
+            "genre": "mystery",
+            "style": "tense",
+            "agent_settings": {
+                "global_model": "gpt-global",
+                "character_model": "",
+                "director_model": "",
+                "writer_model": "",
+            },
+        },
+    )
+
+    assert create_resp.status_code == 200
+    assert create_resp.json()["agent_settings"]["global_model"] == "gpt-global"
 
 
 def test_story_serializes_character_lifecycle_fields():
@@ -107,7 +371,7 @@ def test_agent_settings_influence_story_approval_flow():
                     "name": "Lin Yue",
                     "role": "protagonist",
                     "goals": ["find the witness"],
-                    "secrets": ["An archivist knows the false name."],
+                    "secrets": ["Old archivist knows the false name."],
                 }
             ],
         },
