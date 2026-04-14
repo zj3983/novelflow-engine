@@ -9,6 +9,7 @@ def _entry_attr(agent_name: str) -> str:
         "DirectorAgent": "director_agent",
         "WriterAgent": "writer_agent",
         "MemoryAgent": "memory_agent",
+        "OutlineAgent": "outline_agent",
     }
     return mapping[agent_name]
 
@@ -19,6 +20,7 @@ def _agent_label(agent_name: str) -> str:
         "DirectorAgent": "导演代理",
         "WriterAgent": "写作代理",
         "MemoryAgent": "记忆代理",
+        "OutlineAgent": "大纲代理",
     }
     return labels.get(agent_name, agent_name)
 

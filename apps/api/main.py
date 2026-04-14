@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.routes.book_import import init_book_import_routes
+from apps.api.routes.outlines import init_outline_routes
 from apps.api.routes.stories import init_story_routes
 
 
@@ -25,6 +26,7 @@ app.add_middleware(
 )
 app.include_router(init_story_routes())
 app.include_router(init_book_import_routes())
+app.include_router(init_outline_routes())
 
 
 @app.get("/health")

@@ -36,6 +36,7 @@ class AgentRuntimeState(BaseModel):
     director_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
     writer_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
     memory_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
+    outline_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
     recent_events: list[str] = Field(default_factory=list)
 
 
@@ -116,6 +117,30 @@ class CharacterState(BaseModel):
             self.frozen = True
             self.lifecycle_state = "frozen"
         return self
+
+
+class ChapterOutline(BaseModel):
+    """A single chapter outline entry."""
+    chapter_number: int
+    chapter_title: str
+    summary: str
+    key_characters: list[str] = Field(default_factory=list)
+    primary_conflict: str = ""
+    cadence: Cadence = "measured"
+    word_count_estimate: int = 3000
+    arc_phase: str = ""
+
+
+class NovelOutline(BaseModel):
+    """Full novel outline with per-chapter breakdowns."""
+    story_id: str
+    genre: str
+    style: str
+    total_chapters: int
+    chapters: list[ChapterOutline] = Field(default_factory=list)
+    overall_arc: str = ""
+    act_breaks: list[dict] = Field(default_factory=list)  # [{"act": 1, "start": 1, "end": 15, "theme": "..."}]
+    notes: str = ""
 
 
 class StoryState(BaseModel):
