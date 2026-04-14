@@ -14,7 +14,7 @@ import {
 type BookImportPanelProps = {
   onBootstrapDraft: (draft: BookImportBootstrapResponse["draft"]) => void;
   onCatalogLoaded: (catalog: BookLibraryCatalogResponse | null) => void;
-  onStartGeneration: () => Promise<void>;
+  onStartGeneration: (draft?: BookImportBootstrapResponse["draft"]) => Promise<void>;
 };
 
 type RequestState = "idle" | "loading" | "success" | "error";
@@ -66,8 +66,12 @@ export function BookImportPanel({
   const isBusy = scanState === "loading" || bootstrapState === "loading";
 
   async function loadCatalog(trimmed: string) {
-    const catalog = await fetchBookLibraryCatalog(trimmed);
-    onCatalogLoaded(catalog);
+    try {
+      const catalog = await fetchBookLibraryCatalog(trimmed);
+      onCatalogLoaded(catalog);
+    } catch {
+      onCatalogLoaded(null);
+    }
   }
 
   async function onScan() {
@@ -84,7 +88,7 @@ export function BookImportPanel({
     try {
       const next = await scanBookImport(trimmed);
       setReport(next);
-      await loadCatalog(trimmed);
+      void loadCatalog(trimmed);
       setScanState("success");
     } catch (e) {
       setScanState("error");
@@ -109,7 +113,7 @@ export function BookImportPanel({
       setReport(response.report);
       setDirectorBrief(response.draft.summary ?? "");
       onBootstrapDraft(response.draft);
-      await loadCatalog(trimmed);
+      void loadCatalog(trimmed);
       setBootstrapState("success");
     } catch (e) {
       setBootstrapState("error");
@@ -133,8 +137,8 @@ export function BookImportPanel({
       setReport(response.report);
       setDirectorBrief(response.draft.summary ?? "");
       onBootstrapDraft(response.draft);
-      await loadCatalog(trimmed);
-      await onStartGeneration();
+      void loadCatalog(trimmed);
+      await onStartGeneration(response.draft);
       setBootstrapState("success");
     } catch (e) {
       setBootstrapState("error");
@@ -190,7 +194,7 @@ export function BookImportPanel({
         </button>
       </div>
 
-      <div className="book-import__report" aria-label="Book Import Report">
+      <div className="book-import__report" aria-label="书籍导入报告">
         <p className="hint">路径状态：{sourcePath.trim() ? "已填写" : "未填写"}</p>
         <p className="hint">目录存在：{humanBool(exists)}</p>
         <p className="hint">可载入：{humanBool(canBootstrap)}</p>
@@ -229,7 +233,7 @@ export function BookImportPanel({
             ) : null}
 
             {directorBrief ? (
-              <div className="book-import__pre-read" aria-label="Director Pre Read">
+              <div className="book-import__pre-read" aria-label="导演预读">
                 <p className="hint">导演预读：</p>
                 <pre className="book-library-browser__preview-text">{directorBrief}</pre>
               </div>

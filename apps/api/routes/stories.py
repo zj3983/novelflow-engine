@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
+
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from apps.api.storage import InMemoryStoryStore
 from packages.story_core.engine import StoryEngine
 from packages.story_core.models import AgentSettings, CharacterState, StoryState
+from packages.story_core.runtime_config import (
+    OpenAIRuntimeSettings,
+    get_all_runtime_settings,
+    resolve_openai_runtime_settings,
+    set_all_runtime_settings,
+)
 
 
 router = APIRouter()
@@ -57,6 +67,34 @@ class DeleteStoryResponse(BaseModel):
     story_id: str
 
 
+class RuntimeSettingsResponse(BaseModel):
+    global_: OpenAIRuntimeSettings = Field(alias="global")
+    agents: dict[str, OpenAIRuntimeSettings] = Field(default_factory=dict)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class RuntimeSettingsRequest(BaseModel):
+    api_key: str | None = None
+    base_url: str | None = None
+    global_: OpenAIRuntimeSettings | None = Field(default=None, alias="global")
+    agents: dict[str, OpenAIRuntimeSettings] = Field(default_factory=dict)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class RuntimeSettingsTestRequest(BaseModel):
+    agent_name: str
+    model_name: str | None = None
+    runtime_settings: RuntimeSettingsRequest = Field(default_factory=RuntimeSettingsRequest)
+
+
+class RuntimeSettingsTestResponse(BaseModel):
+    ok: bool
+    agent_name: str
+    message: str
+
+
 def _serialize_story(story_id: str) -> StoryResponse:
     record = store.get(story_id)
     if record is None:
@@ -70,7 +108,7 @@ def _serialize_story(story_id: str) -> StoryResponse:
         agent_settings=record.story.agent_settings.model_dump(),
         agent_runtime=record.story.agent_runtime.model_dump(),
         characters=[character.model_dump() for character in record.story.characters],
-        history=[b.model_dump() for b in record.history],
+        history=[bundle.model_dump() for bundle in record.history],
         parent_story_id=record.parent_story_id,
         branched_from_chapter=record.branched_from_chapter,
     )
@@ -83,6 +121,58 @@ def _serialize_story_summary(record) -> StorySummaryResponse:
         parent_story_id=record.parent_story_id,
         branched_from_chapter=record.branched_from_chapter,
     )
+
+
+def _serialize_runtime_settings() -> dict[str, object]:
+    runtime = get_all_runtime_settings()
+    return {
+        "global": runtime["global"].model_dump(),
+        "agents": {
+            name: agent.model_dump()
+            for name, agent in runtime["agents"].items()
+        },
+    }
+
+
+def _runtime_target_label(agent_name: str) -> str:
+    return {
+        "global": "全局默认",
+        "character": "角色代理",
+        "director": "导演代理",
+        "writer": "写作代理",
+        "memory": "记忆代理",
+    }.get(agent_name, agent_name)
+
+
+def _probe_via_chat_completions(base_url: str, api_key: str, model_name: str) -> None:
+    payload = json.dumps(
+        {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}/chat/completions",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10):
+        return None
+
+
+def _probe_via_models(base_url: str, api_key: str) -> None:
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}/models",
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=10):
+        return None
 
 
 @router.post("/stories")
@@ -173,6 +263,76 @@ def freeze_character(story_id: str, character_name: str) -> StoryResponse:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="character_not_found") from exc
     return _serialize_story(story_id)
+
+
+@router.get("/runtime-settings")
+def read_runtime_settings() -> dict[str, object]:
+    return _serialize_runtime_settings()
+
+
+@router.put("/runtime-settings")
+def update_runtime_settings(payload: RuntimeSettingsRequest) -> dict[str, object]:
+    data = payload.model_dump(by_alias=True)
+    if data.get("global") is None and payload.api_key is not None and payload.base_url is not None:
+        data["global"] = {
+            "api_key": payload.api_key,
+            "base_url": payload.base_url,
+        }
+    elif data.get("global") is None and (payload.api_key is not None or payload.base_url is not None):
+        data["global"] = {
+            "api_key": payload.api_key or "",
+            "base_url": payload.base_url or "https://api.openai.com/v1",
+        }
+    if "agents" not in data:
+        data["agents"] = {}
+    set_all_runtime_settings(data)
+    return _serialize_runtime_settings()
+
+
+@router.post("/runtime-settings/test")
+def test_runtime_settings(payload: RuntimeSettingsTestRequest) -> RuntimeSettingsTestResponse:
+    agent_name = payload.agent_name
+    if agent_name not in {"character", "director", "writer", "memory", "global"}:
+        raise HTTPException(status_code=400, detail="invalid_agent_name")
+
+    overrides = payload.runtime_settings.model_dump(by_alias=True)
+    if agent_name == "global":
+        resolved = resolve_openai_runtime_settings(overrides=overrides)
+    else:
+        resolved = resolve_openai_runtime_settings(agent_name=agent_name, overrides=overrides)
+
+    if not resolved.api_key or not resolved.base_url:
+        return RuntimeSettingsTestResponse(
+            ok=False,
+            agent_name=agent_name,
+            message="缺少 API 密钥或接口地址",
+        )
+
+    try:
+        if payload.model_name:
+            try:
+                _probe_via_chat_completions(
+                    base_url=resolved.base_url,
+                    api_key=resolved.api_key,
+                    model_name=payload.model_name,
+                )
+            except urllib.error.HTTPError as exc:
+                if exc.code not in {404, 405}:
+                    raise
+                _probe_via_models(base_url=resolved.base_url, api_key=resolved.api_key)
+        else:
+            _probe_via_models(base_url=resolved.base_url, api_key=resolved.api_key)
+        return RuntimeSettingsTestResponse(
+            ok=True,
+            agent_name=agent_name,
+            message=f"{_runtime_target_label(agent_name)} 连接正常",
+        )
+    except Exception as exc:  # pragma: no cover - surfaced in UI and tests
+        return RuntimeSettingsTestResponse(
+            ok=False,
+            agent_name=agent_name,
+            message=f"{_runtime_target_label(agent_name)} 连接失败：{exc}",
+        )
 
 
 def init_story_routes() -> APIRouter:

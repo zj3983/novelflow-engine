@@ -28,7 +28,13 @@ def _goal_polarity(goal: str) -> str:
 
 def _goal_topic(goal: str) -> str:
     goal_text = goal.lower()
-    for candidate in ("witness", "ledger", "truth", "forgery", "letter", "archives", "archive"):
+    # Genre-agnostic topic extraction: try to find the most meaningful noun
+    # If no known keyword matches, fall back to the last meaningful word
+    for candidate in (
+        "witness", "ledger", "truth", "forgery", "letter",
+        "archives", "archive", "secret", "artifact", "power",
+        "cultivation", "treasure", "legacy", "realm", "formation",
+    ):
         if candidate in goal_text:
             return candidate
     return goal_text.split()[-1] if goal_text.split() else "truth"
@@ -38,6 +44,56 @@ def _latest_next_focus(story: StoryState) -> str:
     if not story.chapter_summaries:
         return ""
     return story.chapter_summaries[-1].next_focus
+
+
+def _topic_zh(topic: str, genre: str = "") -> str:
+    """Map English topic keywords to Chinese chapter title words.
+    
+    Falls back to genre-appropriate defaults when the topic is generic.
+    """
+    genre_lower = genre.lower()
+    is_xianxia = any(w in genre_lower for w in ("xianxia", "cultivation", "仙侠", "修真", "修仙"))
+    is_fantasy = any(w in genre_lower for w in ("fantasy", "奇幻", "玄幻", "魔幻"))
+    is_wuxia = any(w in genre_lower for w in ("wuxia", "武侠", "江湖"))
+
+    mapping: dict[str, str] = {
+        "witness": "证人",
+        "ledger": "账本",
+        "truth": "真相",
+        "forgery": "伪证",
+        "letter": "密信",
+        "archives": "档案",
+        "archive": "秘档",
+        "pressure": "压痕",
+        # Cultivation / Xianxia
+        "secret": "秘辛",
+        "artifact": "神器",
+        "power": "灵力",
+        "cultivation": "修行",
+        "treasure": "法宝",
+        "legacy": "传承",
+        "realm": "境界",
+        "formation": "阵法",
+    }
+    
+    result = mapping.get(topic, "")
+    if result:
+        return result
+    
+    # Genre-appropriate fallback for unknown topics
+    if is_xianxia or is_fantasy:
+        return "玄机"
+    if is_wuxia:
+        return "暗流"
+    return "迷局"
+
+
+def _pressure_zh(pressure: str) -> str:
+    mapping = {
+        "time": "时间",
+        "setup": "铺垫",
+    }
+    return mapping.get(pressure, pressure or "局势")
 
 
 def compute_chapter_cadence(
@@ -92,15 +148,13 @@ def build_chapter_title(
     chapter_number: int,
     conflict_summary: dict | None = None,
     next_focus: str = "",
+    genre: str = "",
 ) -> str:
     allowed_topics = {
-        "witness",
-        "ledger",
-        "forgery",
-        "letter",
-        "archives",
-        "archive",
-        "truth",
+        "witness", "ledger", "forgery", "letter",
+        "archives", "archive", "truth", "secret",
+        "artifact", "power", "cultivation", "treasure",
+        "legacy", "realm", "formation",
     }
 
     source_text = next_focus
@@ -112,25 +166,23 @@ def build_chapter_title(
     if not topic or topic not in allowed_topics:
         topic = "truth"
 
-    if topic == "truth":
-        topic = "Pressure"
+    genre_lower = (genre or "").lower()
+    if "mystery" in genre_lower or "suspense" in genre_lower:
+        flavor = "疑云"
+    elif "court" in genre_lower or "intrigue" in genre_lower or "political" in genre_lower:
+        flavor = "风声"
+    elif "xianxia" in genre_lower or "cultivation" in genre_lower or "仙侠" in genre_lower or "修真" in genre_lower:
+        flavor = "道韵"
+    elif "fantasy" in genre_lower or "奇幻" in genre_lower or "玄幻" in genre_lower:
+        flavor = "异兆"
+    elif "wuxia" in genre_lower or "武侠" in genre_lower:
+        flavor = "剑影"
+    elif "noir" in genre_lower:
+        flavor = "暗影"
     else:
-        topic = topic.title()
+        flavor = "交锋"
 
-    genre_text = (conflict_summary or {}).get("genre", "")
-    style_text = (conflict_summary or {}).get("style", "")
-    flavor = "Crossroads"
-    flavor_basis = f"{genre_text} {style_text}".lower()
-    if "mystery" in flavor_basis or "suspense" in flavor_basis:
-        flavor = "Dossier"
-    elif "court" in flavor_basis or "intrigue" in flavor_basis or "political" in flavor_basis:
-        flavor = "Edict"
-    elif "fantasy" in flavor_basis:
-        flavor = "Omen"
-    elif "noir" in flavor_basis:
-        flavor = "Shadow"
-
-    return f"Chapter {chapter_number}: {topic} {flavor}"
+    return f"{_topic_zh(topic, genre)}{flavor}"
 
 
 def build_action_briefs(story: StoryState) -> list[dict]:
@@ -161,16 +213,16 @@ def select_primary_pair(action_briefs: list[dict]) -> tuple[dict, dict | None]:
 def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict:
     if not action_briefs:
         return {
-            "summary": "No active conflict has surfaced yet.",
-            "stakes": "The chapter must first establish pressure.",
+            "summary": "当前还没有真正爆发的正面冲突。",
+            "stakes": "这一章首先要完成局势铺垫，让压力有落点。",
             "primary_conflict": {
                 "lead": "",
                 "opposition": "",
-                "collision": "No collision yet.",
+                "collision": "碰撞尚未成形。",
             },
             "secondary_conflict": {
                 "pressure": "setup",
-                "detail": "The cast still needs a spark to force decisions.",
+                "detail": "人物与线索都还需要一个足够强的引爆点。",
                 "participants": [],
             },
         }
@@ -178,16 +230,16 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
     lead, rival = select_primary_pair(action_briefs)
     if rival is None:
         return {
-            "summary": f"{lead['name']} acts alone, trying to {lead['goal']}.",
-            "stakes": f"If {lead['name']} fails, the newest clue will lose all momentum.",
+            "summary": f"{lead['name']}独自推进，试图{lead['goal']}。",
+            "stakes": f"如果{lead['name']}失手，刚刚浮出的线索就会迅速失温。",
             "primary_conflict": {
                 "lead": lead["name"],
                 "opposition": "circumstance",
-                "collision": f"{lead['name']} must {lead['goal']} before the trail collapses.",
+                "collision": f"{lead['name']}必须尽快{lead['goal']}，否则线索会先一步断掉。",
             },
             "secondary_conflict": {
                 "pressure": "time",
-                "detail": "Delay will let the newest clue fade into rumor.",
+                "detail": "拖延只会让新线索重新沉回流言和噪音里。",
                 "participants": [_participant_entry(lead["name"], lead["goal"])],
             },
         }
@@ -199,20 +251,16 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
     ]
 
     return {
-        "summary": (
-            f"{lead['name']} tries to {lead['goal']}, while {rival['name']} moves to {rival['goal']}."
-        ),
-        "stakes": (
-            f"If either side wins too cleanly, control over the witness and the truth shifts for the whole cast."
-        ),
+        "summary": f"{lead['name']}想要{lead['goal']}，而{rival['name']}则试图{rival['goal']}。",
+        "stakes": "无论谁在这一局赢得太干净，关键的控制权都会立刻倾斜。",
         "primary_conflict": {
             "lead": lead["name"],
             "opposition": rival["name"],
-            "collision": f"{lead['name']} and {rival['name']} collide over whether the witness can be controlled.",
+            "collision": f"{lead['name']}与{rival['name']}正面撞上，争的就是核心资源的控制权。",
         },
         "secondary_conflict": {
             "pressure": "time",
-            "detail": "Every delay gives the court one more chance to hide the truth.",
+            "detail": "每拖一步，局势就会更加复杂。",
             "participants": secondary_candidates or [_participant_entry(rival["name"], rival["goal"])],
         },
     }
@@ -221,14 +269,14 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
 def build_event_beat(conflict_summary: dict) -> dict:
     primary = conflict_summary.get("primary_conflict", {})
     secondary = conflict_summary.get("secondary_conflict", {})
-    pivot = primary.get("collision", "The chapter needs a pivot.")
+    pivot = primary.get("collision", "这一章还缺少真正的转折。")
     participant_names = [
         _participant_name(item)
         for item in secondary.get("participants", [])
         if _participant_name(item)
     ]
     if participant_names:
-        pivot = f"{pivot} Meanwhile, {' and '.join(participant_names)} strain the board from the side."
+        pivot = f"{pivot} 与此同时，{'、'.join(participant_names)}也在侧面不断挤压局势。"
     return {
         "turn": "pressure spike",
         "pivot": pivot,
@@ -241,37 +289,34 @@ def plan_next_outline(
     conflict_summary: dict | None = None,
     cadence: str | None = None,
 ) -> str:
-    lead = story.characters[0].name if story.characters else "the lead"
+    lead = story.characters[0].name if story.characters else "主角"
     next_focus = _latest_next_focus(story)
     cadence_clause = ""
     if cadence == "urgent":
-        cadence_clause = " Move fast and do not linger."
+        cadence_clause = " 下一章要更快，不给人物太多喘息空间。"
     elif cadence == "breathing":
-        cadence_clause = " Let the chapter breathe before the next strike."
+        cadence_clause = " 下一章可以稍微放缓，但要把暗流托起来。"
     elif cadence == "measured":
-        cadence_clause = " Keep the pressure steady."
+        cadence_clause = " 下一章继续稳稳加压，不要泄劲。"
     if conflict_summary and conflict_summary.get("primary_conflict"):
         primary = conflict_summary["primary_conflict"]
         secondary = conflict_summary.get("secondary_conflict", {})
-        focus_clause = (
-            f" Keep the previous focus intact: {next_focus}."
-            if next_focus
-            else ""
-        )
+        focus_clause = f" 继续咬住上一轮焦点：{next_focus}。" if next_focus else ""
+        pressure_zh = _pressure_zh(secondary.get('pressure', '时机'))
         return (
-            f"Chapter {chapter_number + 1}: force {primary['lead']} and {primary['opposition']} "
-            f"to push their collision harder, keep pressure on {secondary.get('pressure', 'the clock')}, "
-            "and decide who gains the next hold over the witness."
+            f"第{chapter_number + 1}章：逼{primary['lead']}与{primary['opposition']}把这场碰撞再往前推一步，"
+            f'同时继续放大"{pressure_zh}"带来的压迫，'
+            "并明确下一轮究竟是谁先抓住关键线索。"
             f"{focus_clause}{cadence_clause}"
         )
 
     if next_focus:
         return (
-            f"Chapter {chapter_number + 1}: start from {next_focus}, "
-            f"escalate trust tension, and move one unresolved thread closer to exposure.{cadence_clause}"
+            f'第{chapter_number + 1}章：从"{next_focus}"切入，继续抬高信任与紧张，'
+            f"让至少一条未解线索更接近曝光。{cadence_clause}"
         )
 
     return (
-        f"Chapter {chapter_number + 1}: force {lead} to act on the newest clue, "
-        f"escalate trust tension, and move one unresolved thread closer to exposure.{cadence_clause}"
+        f"第{chapter_number + 1}章：逼{lead}立刻对最新线索做出行动，"
+        f"继续抬高信任与紧张，并让至少一条未解线索更接近曝光。{cadence_clause}"
     )

@@ -15,9 +15,11 @@ NewCharacterPolicy = Literal["Director review", "Auto-approve named candidates",
 
 class AgentSettings(BaseModel):
     mode: AgentMode = "Rule-based"
+    global_model: str = "gpt-5.4"
     character_model: str = "gpt-5.4-mini"
     director_model: str = "gpt-5.4"
     writer_model: str = "gpt-5.4"
+    memory_model: str = "gpt-5.4"
     temperature: float = 0.7
     new_character_policy: NewCharacterPolicy = "Director review"
 

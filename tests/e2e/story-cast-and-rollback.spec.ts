@@ -3,20 +3,20 @@ import { expect, test } from "../../apps/web/node_modules/@playwright/test";
 test("multi-character cast appears in generated state and rollback clears the draft", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Outline Input").fill("Two investigators circle the same ledger from opposite sides of the court.");
-  await page.getByRole("button", { name: "Add Character" }).click();
+  await page.getByRole("button", { name: "添加角色" }).click();
   await page.getByLabel("Character Name 1").fill("Lin Yue");
   await page.getByLabel("Character Goal 1").fill("expose the forgery");
   await page.getByLabel("Character Name 2").fill("Su Wan");
   await page.getByLabel("Character Goal 2").fill("protect the family name");
 
-  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
+  await page.getByRole("button", { name: "生成下一章" }).click();
 
-  await expect(page.getByText("Cast: Lin Yue, Su Wan")).toBeVisible();
-  await expect(page.getByText("Lead: Lin Yue")).toBeVisible();
+  await expect(page.getByText("角色表：Lin Yue, Su Wan")).toBeVisible();
+  await expect(page.getByText("主角：Lin Yue")).toBeVisible();
 
-  await page.getByRole("button", { name: "Rollback Chapter" }).click();
+  await page.getByRole("button", { name: "回滚章节" }).click();
 
-  await expect(page.getByText("No chapter generated yet.")).toBeVisible();
+  await expect(page.getByText("还没有生成章节。")).toBeVisible();
 });
 
 test("chapter history can be viewed and branched from an earlier chapter", async ({ page }) => {
@@ -25,57 +25,55 @@ test("chapter history can be viewed and branched from an earlier chapter", async
   await page.getByLabel("Character Name 1").fill("Lin Yue");
   await page.getByLabel("Character Goal 1").fill("find the hidden ledger");
 
-  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
-  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
+  await page.getByRole("button", { name: "生成下一章" }).click();
+  await page.getByRole("button", { name: "生成下一章" }).click();
 
-  await expect(page.getByRole("button", { name: "View Chapter 1" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "View Chapter 2" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看第 1 章" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看第 2 章" })).toBeVisible();
 
-  await page.getByRole("button", { name: "View Chapter 1" }).click();
-  await expect(page.getByRole("heading", { name: "Chapter 1" })).toBeVisible();
+  await page.getByRole("button", { name: "查看第 1 章" }).click();
+  await expect(page.getByRole("heading", { name: "第 1 章" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Branch from Chapter 1" }).click();
-  await expect(page.getByText("Branch story: s-001-branch-ch1", { exact: true })).toBeVisible();
-  await expect(page.getByText("Current chapter: 1", { exact: true })).toBeVisible();
-  await expect(page.getByText("Parent story: s-001", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open Story: s-001", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "从第 1 章分叉" }).click();
+  await expect(page.getByText("分支故事：s-001-branch-ch1", { exact: true })).toBeVisible();
+  await expect(page.getByText("当前章节：1", { exact: true })).toBeVisible();
+  await expect(page.getByText("父故事：s-001", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开故事：s-001", exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
-  await expect(page.getByText("Current chapter: 2", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "生成下一章" }).click();
+  await expect(page.getByText("当前章节：2", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "Open Story: s-001", exact: true }).click();
-  await expect(page.getByText("Story: s-001", { exact: true })).toBeVisible();
-  await expect(page.getByText("Current chapter: 2", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open Story: s-001-branch-ch1", exact: true })).toBeVisible();
-  await expect(page.getByText("Story Branch: s-001-branch-ch1", { exact: true })).toBeVisible();
-  await expect(page.getByText("Chapters in s-001: 1, 2", { exact: true })).toBeVisible();
-  await expect(page.getByText("Chapters in s-001-branch-ch1: 1, 2", { exact: true })).toBeVisible();
-  await expect(page.getByText("Latest summary in s-001: Chapter 2 body.", { exact: true })).toBeVisible();
-  await expect(page.getByText("Latest thread in s-001: Who will control the truth after chapter 2?", { exact: true })).toBeVisible();
-  await expect(page.getByText("Latest foreshadowing in s-001: A hidden letter appears.", { exact: true })).toBeVisible();
-  await expect(page.getByText("Latest summary in s-001-branch-ch1: Chapter 2 body.", { exact: true })).toBeVisible();
-  await expect(page.getByText("Chapter Card in s-001: Chapter 1 - Opening Move", { exact: true })).toBeVisible();
-  await expect(page.getByText("Tags in s-001 Chapter 1: history beat, branch navigation", { exact: true })).toBeVisible();
-  await expect(page.getByText("Chapter Card in s-001: Chapter 2 - Pressure Rises", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Jump to s-001 Chapter 1", exact: true }).click();
-  await expect(page.getByText("Viewing chapter: 1", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Chapter 1" })).toBeVisible();
-  await expect(page.locator(".story-tree__item--active")).toContainText("Story Root: s-001");
-  await expect(page.locator(".story-tree__chapter-btn--active")).toHaveText("Jump to s-001 Chapter 1");
+  await page.getByRole("button", { name: "打开故事：s-001", exact: true }).click();
+  await expect(page.getByText("故事：s-001", { exact: true })).toBeVisible();
+  await expect(page.getByText("当前章节：2", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开故事：s-001-branch-ch1", exact: true })).toBeVisible();
+  await expect(page.getByText("分支故事：s-001-branch-ch1", { exact: true })).toBeVisible();
+  await expect(page.getByText("章节列表：1, 2").first()).toBeVisible();
+  await expect(page.getByText("最新摘要：Chapter 2 body.").first()).toBeVisible();
+  await expect(page.getByText("最新未解线索：Who will control the truth after chapter 2?").first()).toBeVisible();
+  await expect(page.getByText("最新伏笔：A hidden letter appears.").first()).toBeVisible();
+  await expect(page.getByText("章节卡：s-001 第 1 章 - 开局", { exact: true })).toBeVisible();
+  await expect(page.getByText("标签：s-001 第 1 章 - 历史节点，分支导航", { exact: true })).toBeVisible();
+  await expect(page.getByText("章节卡：s-001 第 2 章 - 压力上升", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "跳转到 s-001 第 1 章", exact: true }).click();
+  await expect(page.getByText("正在查看：1", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "第 1 章" })).toBeVisible();
+  await expect(page.locator(".story-tree__item--active")).toContainText("主线故事：s-001");
+  await expect(page.locator(".story-tree__chapter-btn--active")).toHaveText("跳转到 s-001 第 1 章");
 
-  await page.getByRole("button", { name: "Jump to s-001 Chapter 2", exact: true }).click();
-  await expect(page.getByText("Viewing chapter: 2", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Chapter 2" })).toBeVisible();
-  await expect(page.locator(".story-tree__chapter-btn--active")).toHaveText("Jump to s-001 Chapter 2");
+  await page.getByRole("button", { name: "跳转到 s-001 第 2 章", exact: true }).click();
+  await expect(page.getByText("正在查看：2", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "第 2 章" })).toBeVisible();
+  await expect(page.locator(".story-tree__chapter-btn--active")).toHaveText("跳转到 s-001 第 2 章");
 
-  await page.getByRole("button", { name: "Open Story: s-001-branch-ch1", exact: true }).click();
-  await expect(page.locator(".story-tree__item--active")).toContainText("Story Branch: s-001-branch-ch1");
-  await page.getByRole("button", { name: "Focus Active Branch", exact: true }).click();
-  await expect(page.getByText("Story Root: s-001", { exact: true })).toBeVisible();
-  await expect(page.getByText("Story Branch: s-001-branch-ch1", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "打开故事：s-001-branch-ch1", exact: true }).click();
+  await expect(page.locator(".story-tree__item--active")).toContainText("分支故事：s-001-branch-ch1");
+  await page.getByRole("button", { name: "聚焦当前分支", exact: true }).click();
+  await expect(page.getByText("主线故事：s-001").first()).toBeVisible();
+  await expect(page.getByText("分支故事：s-001-branch-ch1").first()).toBeVisible();
 
-  await page.getByRole("button", { name: "Show All Branches", exact: true }).click();
-  await expect(page.getByText("Story Root: s-001", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "显示全部分支", exact: true }).click();
+  await expect(page.getByText("主线故事：s-001").first()).toBeVisible();
 });
 
 test("branch can be deleted from the story tree", async ({ page }) => {
@@ -84,10 +82,10 @@ test("branch can be deleted from the story tree", async ({ page }) => {
   await page.getByLabel("Character Name 1").fill("Lin Yue");
   await page.getByLabel("Character Goal 1").fill("find the true author");
 
-  await page.getByRole("button", { name: "Generate Next Chapter" }).click();
-  await page.getByRole("button", { name: "Branch from Chapter 1" }).click();
+  await page.getByRole("button", { name: "生成下一章" }).click();
+  await page.getByRole("button", { name: "从第 1 章分叉" }).click();
 
-  await page.getByRole("button", { name: "Delete Active Story" }).click();
-  await expect(page.getByText("Story: s-001", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open Story: s-001-branch-ch1", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "删除当前故事" }).click();
+  await expect(page.getByText("故事：s-001", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开故事：s-001-branch-ch1", exact: true })).toHaveCount(0);
 });

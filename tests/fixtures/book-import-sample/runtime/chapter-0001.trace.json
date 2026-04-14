@@ -1,0 +1,4 @@
+{
+  "chapter_number": 1,
+  "events": ["loaded intent", "confirmed opening clue"]
+}

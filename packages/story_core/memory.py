@@ -37,7 +37,12 @@ def _relationship_shift(goals: list[str]) -> tuple[float, float]:
 
 def _goal_topic(text: str) -> str:
     lowered = text.lower()
-    for candidate in ("witness", "ledger", "truth", "forgery", "letter", "archives"):
+    # Genre-agnostic topic extraction
+    for candidate in (
+        "witness", "ledger", "truth", "forgery", "letter",
+        "archives", "archive", "secret", "artifact", "power",
+        "cultivation", "treasure", "legacy", "realm", "formation",
+    ):
         if candidate in lowered:
             return candidate
     return lowered.split()[-1] if lowered.split() else "truth"
@@ -51,19 +56,19 @@ def _promote_goal(character, intent: str) -> None:
 
 
 def _primary_follow_up_intent(character_name: str, primary: dict) -> str:
-    topic = _goal_topic(primary.get("collision", "the truth"))
+    topic = _goal_topic(primary.get("collision", "the core objective"))
     lead = primary.get("lead", "the lead")
-    opposition = primary.get("opposition", "the court")
+    opposition = primary.get("opposition", "the opposition")
     if character_name == lead:
-        return f"seize control of the {topic} before {opposition} recovers"
+        return f"在{opposition}缓过来之前抢先控制{topic}"
     if character_name == opposition:
-        return f"block {lead} from taking the {topic}"
+        return f"阻止{lead}拿到{topic}"
     return ""
 
 
 def _secondary_follow_up_intent(goal: str, secondary: dict) -> str:
-    topic = _goal_topic(goal or secondary.get("detail", "the truth"))
-    return f"stabilize the {topic} before the side pressure breaks"
+    topic = _goal_topic(goal or secondary.get("detail", "the core objective"))
+    return f"在侧面压力失控前先稳住{topic}"
 
 
 def _build_next_focus(
@@ -85,12 +90,25 @@ def _build_next_focus(
     opposition = primary.get("opposition", "")
     if lead and opposition:
         topic = _goal_topic(primary.get("collision", "the main clash"))
-        return f"Return to {lead} and {opposition} over the {topic}"
+        return f"回到{lead}与{opposition}围绕{topic}的争夺"
 
     if unresolved_threads:
         return unresolved_threads[0]
 
-    return f"Chapter {chapter_number} should reopen the most recent pressure point."
+    return f"第{chapter_number}章之后，需要重新掀开最近一次压力爆点。"
+
+
+def _generic_foreshadowing_text(chapter_number: int) -> str:
+    """Generate a genre-agnostic foreshadowing hook."""
+    hooks = [
+        "某个被隐藏的秘密即将浮出水面。",
+        "一场更大的风暴正在暗处酝酿。",
+        "一个意想不到的身影在暗处注视着一切。",
+        "某种被遗忘的力量正在苏醒。",
+        "一条未被发现的线索悄然浮现。",
+    ]
+    # Use chapter number to deterministically pick a hook
+    return hooks[chapter_number % len(hooks)]
 
 
 def apply_post_chapter_updates(
@@ -100,8 +118,8 @@ def apply_post_chapter_updates(
     conflict_summary: dict | None = None,
     event_beat: dict | None = None,
 ) -> None:
-    fact = f"Chapter {chapter_number} confirms the investigation is still unfolding."
-    unresolved = f"Who will control the truth after chapter {chapter_number}?"
+    fact = f"第{chapter_number}章确认调查仍在继续推进。"
+    unresolved = f"第{chapter_number}章之后，谁会先掌控核心线索？"
     inherited_next_focus = story.chapter_summaries[-1].next_focus if story.chapter_summaries else ""
 
     participant_map = {character.name: character for character in story.characters}
@@ -122,7 +140,7 @@ def apply_post_chapter_updates(
         if character.name in primary_names:
             collision = primary.get("collision", "the main clash")
             character.memory.append(
-                f"Chapter {chapter_number} forced {character.name} into the main clash over {collision}."
+                f'第{chapter_number}章把{character.name}直接推入了围绕"{collision}"展开的正面冲突。'
             )
             _promote_goal(character, _primary_follow_up_intent(character.name, primary))
             character.current_emotion = "alert"
@@ -131,14 +149,14 @@ def apply_post_chapter_updates(
             detail = secondary.get("detail", "side pressure")
             goal = secondary_goals.get(character.name, "hold the line")
             character.memory.append(
-                f"Chapter {chapter_number} pulled {character.name} into the side pressure around {detail} while trying to {goal}."
+                f'第{chapter_number}章把{character.name}卷进了"{detail}"带来的侧面压力中，而其行动目标是{goal}。'
             )
             _promote_goal(character, _secondary_follow_up_intent(goal, secondary))
             character.current_emotion = "wary"
             touched = True
 
         if touched and not character.location:
-            character.location = "palace archive"
+            character.location = "迷局深处"
 
         if character.name == story.characters[0].name and character.relationships:
             key = next(iter(character.relationships))
@@ -155,8 +173,8 @@ def apply_post_chapter_updates(
     story.timeline.append(
         TimelineEvent(
             chapter_number=chapter_number,
-            summary=f"Chapter {chapter_number} pushes the core mystery forward.",
-            impact="raises pressure on every major player",
+            summary=f"第{chapter_number}章把核心谜团继续向前推进。",
+            impact="主要角色承受的整体压力继续上升",
         )
     )
 
@@ -167,6 +185,7 @@ def apply_post_chapter_updates(
                 chapter_number,
                 conflict_summary or {},
                 inherited_next_focus or _build_next_focus(chapter_number, primary, secondary, [unresolved]),
+                genre=story.genre,
             ),
             summary=body,
             facts=[fact],
@@ -179,10 +198,11 @@ def apply_post_chapter_updates(
         )
     )
 
+    # Genre-agnostic foreshadowing
     if not story.foreshadowing:
         story.foreshadowing.append(
             ForeshadowingState(
-                text="A hidden letter appears.",
+                text=_generic_foreshadowing_text(chapter_number),
                 first_chapter=chapter_number,
                 status="open",
             )
@@ -210,7 +230,7 @@ def build_foreshadowing(story: StoryState, chapter_number: int) -> list[dict]:
     if not story.foreshadowing:
         return [
             {
-                "text": "A hidden letter appears.",
+                "text": _generic_foreshadowing_text(chapter_number),
                 "first_chapter": chapter_number,
                 "status": "open",
             }

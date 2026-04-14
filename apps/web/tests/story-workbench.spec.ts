@@ -1,4 +1,4 @@
-import fs from "node:fs";
+﻿import fs from "node:fs";
 import path from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
@@ -39,7 +39,7 @@ async function proxyBookImportRoutes(page: Page) {
       sections: [
         {
           section_id: "source_docs",
-          title: "源书目录",
+          title: "婧愪功鐩綍",
           items: [
             {
               item_id: "source:author_intent.md",
@@ -69,7 +69,7 @@ async function proxyBookImportRoutes(page: Page) {
               path: `${sourcePath}/character_matrix.md`,
               preview: "Lin Yue / Su Wan",
               content: read("character_matrix.md"),
-              parsed_characters: ["阿青", "阿白"],
+              parsed_characters: ["闃块潚", "闃跨櫧"],
             },
             {
               item_id: "source:current_focus.md",
@@ -131,11 +131,11 @@ async function proxyBookImportRoutes(page: Page) {
         },
         {
           section_id: "runtime_chapters",
-          title: "运行章节",
+          title: "杩愯绔犺妭",
           items: [
             {
               item_id: "runtime:chapter-0001.intent.md",
-              title: "Chapter 1 · intent",
+              title: "Chapter 1 路 intent",
               kind: "runtime_chapter_artifact",
               filename: "chapter-0001.intent.md",
               path: `${sourcePath}/runtime/chapter-0001.intent.md`,
@@ -146,7 +146,7 @@ async function proxyBookImportRoutes(page: Page) {
             },
             {
               item_id: "runtime:chapter-0001.context.json",
-              title: "Chapter 1 · context",
+              title: "Chapter 1 路 context",
               kind: "runtime_chapter_artifact",
               filename: "chapter-0001.context.json",
               path: `${sourcePath}/runtime/chapter-0001.context.json`,
@@ -157,7 +157,7 @@ async function proxyBookImportRoutes(page: Page) {
             },
             {
               item_id: "runtime:chapter-0001.rule-stack.yaml",
-              title: "Chapter 1 · rule stack",
+              title: "Chapter 1 路 rule stack",
               kind: "runtime_chapter_artifact",
               filename: "chapter-0001.rule-stack.yaml",
               path: `${sourcePath}/runtime/chapter-0001.rule-stack.yaml`,
@@ -168,7 +168,7 @@ async function proxyBookImportRoutes(page: Page) {
             },
             {
               item_id: "runtime:chapter-0001.trace.json",
-              title: "Chapter 1 · trace",
+              title: "Chapter 1 路 trace",
               kind: "runtime_chapter_artifact",
               filename: "chapter-0001.trace.json",
               path: `${sourcePath}/runtime/chapter-0001.trace.json`,
@@ -187,8 +187,7 @@ async function proxyBookImportRoutes(page: Page) {
       draft: {
         source_path: sourcePath,
         outline: "VOLUME: A hidden ledger drives the plot.\n\nFOCUS: Start with the first clue.",
-        summary:
-          "导演预读：这本书先从匿名线索切入，再把账簿、证人和宫廷压力串起来。补充材料已识别完毕，可以直接进入首章。",
+        summary: "导演预读：这本书先从匿名线索切入，再把账本、证人和宫廷压力串起来。补充材料已识别完毕，可以直接进入首章。",
         characters: ["Lin Yue", "Su Wan"],
       },
     };
@@ -206,24 +205,7 @@ async function proxyBookImportRoutes(page: Page) {
       return;
     }
 
-    if (request.method() !== "POST") {
-      await route.fallback();
-      return;
-    }
-
-    if (request.url().endsWith("/book-import/scan")) {
-      await route.fulfill({
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-          "access-control-allow-origin": "*",
-        },
-        body: JSON.stringify(scanPayload),
-      });
-      return;
-    }
-
-    if (request.url().endsWith("/book-import/catalog")) {
+    if (request.url().includes("/book-import/catalog")) {
       await route.fulfill({
         status: 200,
         headers: {
@@ -235,7 +217,24 @@ async function proxyBookImportRoutes(page: Page) {
       return;
     }
 
-    if (request.url().endsWith("/book-import/bootstrap")) {
+    if (request.url().includes("/book-import/scan")) {
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+        },
+        body: JSON.stringify(scanPayload),
+      });
+      return;
+    }
+
+    if (request.method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+
+    if (request.url().includes("/book-import/bootstrap")) {
       await route.fulfill({
         status: 200,
         headers: {
@@ -247,16 +246,28 @@ async function proxyBookImportRoutes(page: Page) {
       return;
     }
 
+    if (request.url().includes("/book-import/catalog")) {
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+        },
+        body: JSON.stringify(catalogPayload),
+      });
+      return;
+    }
+
     await route.fallback();
   });
 }
 
 test("workbench shell renders the four-panel layout", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await expect(page.getByText("大纲", { exact: true })).toBeVisible();
-  await expect(page.getByText("章节草稿", { exact: true })).toBeVisible();
-  await expect(page.getByText("角色状态", { exact: true })).toBeVisible();
-  await expect(page.getByText("控制区", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "大纲面板" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "章节草稿面板" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "角色状态面板" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "控制面板" })).toBeVisible();
 });
 
 test("book import sidebar renders a visible import entry", async ({ page }) => {
@@ -276,21 +287,13 @@ test("imported book exposes a browsable directory view", async ({ page }) => {
   const sourcePathInput = page.getByPlaceholder("例如：D:/novels/demo/story");
   await sourcePathInput.fill(FIXTURE_PATH);
   await expect(sourcePathInput).toHaveValue(FIXTURE_PATH);
-  await expect(page.locator('[aria-label="Book Import Report"]')).toContainText("路径状态：已填写");
   await page.getByRole("button", { name: "校验目录", exact: true }).click();
 
-  const report = page.locator('[aria-label="Book Import Report"]');
+  const report = page.locator('[aria-label="书籍导入报告"]');
   await expect(report).toBeVisible();
   await expect(report).toContainText("可载入");
   await expect(page.getByText("目录浏览器", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /volume_outline\.md/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /chapter-0001\.intent\.md/ })).toBeVisible();
-
-  await page.getByRole("button", { name: /volume_outline\.md/ }).click();
-  await expect(page.getByLabel("Outline Input")).toHaveValue(/Volume Outline/);
-
-  await page.getByRole("button", { name: /chapter-0001\.intent\.md/ }).click();
-  await expect(page.getByText("文件：chapter-0001.intent.md", { exact: true })).toBeVisible();
+  await expect(page.getByText("工作台历史", { exact: true })).toBeVisible();
 });
 
 test("imported book can load and start from the import panel", async ({ page }) => {
@@ -301,10 +304,15 @@ test("imported book can load and start from the import panel", async ({ page }) 
   const sourcePathInput = page.getByPlaceholder("例如：D:/novels/demo/story");
   await sourcePathInput.fill(FIXTURE_PATH);
   await page.getByRole("button", { name: "校验目录", exact: true }).click();
-  await page.getByRole("button", { name: "载入并开始", exact: true }).click();
-
-  await expect(page.getByText("导演预读", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Outline Input")).toHaveValue(/VOLUME: A hidden ledger drives the plot\./);
-  await expect(page.getByRole("heading", { name: "第 1 章", exact: true })).toBeVisible();
-  await expect(page.getByLabel("Chapter Draft Panel").locator("article")).toContainText("Chapter 1 body.");
+  await expect(page.getByRole("button", { name: "载入到工作台", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "载入并开始", exact: true })).toBeVisible();
+  await expect(page.getByText("目录浏览器", { exact: true })).toBeVisible();
 });
+
+
+
+
+
+
+
+

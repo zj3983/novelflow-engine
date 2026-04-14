@@ -8,3 +8,7 @@ node_modules/
 .next/
 test-results/
 playwright-report/
+
+# Local dev server logs
+apps/web/dev-server.out.log
+apps/web/dev-server.err.log

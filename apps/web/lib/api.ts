@@ -1,4 +1,4 @@
-export type CreateStoryRequest = {
+﻿export type CreateStoryRequest = {
   story_id: string;
   outline: string;
   genre: string;
@@ -166,6 +166,31 @@ export type BookImportBootstrapResponse = {
   };
 };
 
+export type BookLibraryItem = {
+  item_id: string;
+  title: string;
+  kind: string;
+  filename: string;
+  path: string;
+  preview: string;
+  content: string;
+  chapter_number?: number | null;
+  parsed_characters?: string[];
+};
+
+export type BookLibrarySection = {
+  section_id: string;
+  title: string;
+  items: BookLibraryItem[];
+};
+
+export type BookLibraryCatalogResponse = {
+  source_path: string;
+  exists: boolean;
+  can_bootstrap: boolean;
+  sections: BookLibrarySection[];
+};
+
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 }
@@ -199,6 +224,19 @@ function runtimeTargetLabel(target: RuntimeConnectionTarget): string {
         : target === "writer"
           ? "写作代理"
           : "记忆代理";
+}
+
+function runtimeSourceLabel(source: AgentRuntimeEntry["source"]): string {
+  if (source === "llm") {
+    return "模型";
+  }
+  if (source === "rule-based") {
+    return "规则";
+  }
+  if (source === "fallback") {
+    return "回退";
+  }
+  return "空闲";
 }
 
 function clone<T>(value: T): T {
@@ -291,10 +329,10 @@ function updateRuntimeForChapter(
   nextRuntime.memory_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
   nextRuntime.recent_events = [
     ...nextRuntime.recent_events,
-    `角色代理：${source === "llm" ? "模型" : source === "rule-based" ? "规则" : source === "fallback" ? "回退" : "空闲"}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
-    `导演代理：${source === "llm" ? "模型" : source === "rule-based" ? "规则" : source === "fallback" ? "回退" : "空闲"}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
-    `写作代理：${source === "llm" ? "模型" : source === "rule-based" ? "规则" : source === "fallback" ? "回退" : "空闲"}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
-    `记忆代理：${source === "llm" ? "模型" : source === "rule-based" ? "规则" : source === "fallback" ? "回退" : "空闲"}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
+    `角色代理：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
+    `导演代理：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
+    `写作代理：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
+    `记忆代理：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
   ].slice(-8);
   return nextRuntime;
 }
@@ -721,6 +759,7 @@ export async function saveRuntimeSettings(settings: RuntimeSettings): Promise<Ru
 export async function testRuntimeSettingsConnection(
   settings: RuntimeSettings,
   target: RuntimeConnectionTarget,
+  modelName?: string,
 ): Promise<RuntimeConnectionResult> {
   try {
     const response = await tryFetchJson(`${apiBase()}/runtime-settings/test`, {
@@ -728,6 +767,7 @@ export async function testRuntimeSettingsConnection(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent_name: target,
+        model_name: modelName,
         runtime_settings: settings,
       }),
     });
@@ -760,6 +800,14 @@ export async function bootstrapBookImport(sourcePath: string): Promise<BookImpor
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ source_path: sourcePath } satisfies BookImportBootstrapRequest),
   })) as BookImportBootstrapResponse;
+}
+
+export async function fetchBookLibraryCatalog(sourcePath: string): Promise<BookLibraryCatalogResponse> {
+  return (await tryFetchJson(`${apiBase()}/book-import/catalog`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source_path: sourcePath }),
+  })) as BookLibraryCatalogResponse;
 }
 
 export async function createStory(payload: CreateStoryRequest): Promise<StoryResponse> {

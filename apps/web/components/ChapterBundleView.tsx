@@ -30,22 +30,18 @@ export function ChapterBundleView({ bundle }: { bundle: ChapterBundleLike }) {
 
   return (
     <div>
-      <h2 style={{ marginTop: 0 }}>Chapter {bundle.chapter_number}</h2>
-      <article style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
-        {bundle.body}
-      </article>
+      <h2 style={{ marginTop: 0 }}>第 {bundle.chapter_number} 章</h2>
+      <article style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{bundle.body}</article>
       {bundle.chapter_summary ? (
         <section style={{ marginTop: 12 }}>
-          <strong>Compressed memory</strong>
+          <strong>压缩记忆</strong>
           <p style={{ margin: "6px 0 0 0" }}>{bundle.chapter_summary.summary}</p>
         </section>
       ) : null}
 
       <details style={{ marginTop: 12 }}>
-        <summary>Bundle</summary>
-        <pre style={{ margin: 0, overflowX: "auto" }}>
-          {JSON.stringify(debug, null, 2)}
-        </pre>
+        <summary>详细数据</summary>
+        <pre style={{ margin: 0, overflowX: "auto" }}>{JSON.stringify(debug, null, 2)}</pre>
       </details>
     </div>
   );

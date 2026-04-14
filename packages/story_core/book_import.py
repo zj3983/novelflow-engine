@@ -20,6 +20,7 @@ OPTIONAL_FILES: tuple[str, ...] = (
 KNOWN_FILES: tuple[str, ...] = REQUIRED_FILES + OPTIONAL_FILES
 SUPPORTED_EXTRA_FILE_SUFFIXES: tuple[str, ...] = (".md", ".txt", ".json", ".yaml", ".yml")
 IGNORED_EXTRA_DIRECTORIES: tuple[str, ...] = ("state", "runtime")
+CHARACTER_SECTION_NAMES: tuple[str, ...] = ("角色档案", "角色列表", "人物档案", "角色信息")
 
 
 class BookFolderReport(BaseModel):
@@ -102,6 +103,59 @@ def _parse_character_matrix(text: str) -> list[str]:
                 continue
             candidate = first
         elif line.startswith(("-", "*")):
+            candidate = line.lstrip("-* ").strip()
+
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            names.append(candidate)
+
+    return names
+
+
+def _parse_character_matrix_strict(text: str) -> list[str]:
+    """Extract character names only from dedicated character sections."""
+
+    seen: set[str] = set()
+    names: list[str] = []
+    collecting_characters = False
+    has_character_section = any(
+        section_name in text for section_name in CHARACTER_SECTION_NAMES
+    )
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        section_match = re.match(r"^###\s+(.*)$", line)
+        if section_match:
+            if section_match.group(1).strip() in CHARACTER_SECTION_NAMES:
+                collecting_characters = True
+                continue
+            collecting_characters = False
+            continue
+
+        if re.match(r"^:?-{3,}:?$", line):
+            continue
+
+        if not collecting_characters and has_character_section:
+            continue
+
+        candidate = ""
+        if line.startswith("|") and "|" in line[1:]:
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if not cells:
+                continue
+            first = cells[0]
+            lower_first = first.lower()
+            if lower_first in {"name", "角色", "角色名", "姓名"}:
+                continue
+            if re.match(r"^角色[a-zA-Z]$", first):
+                continue
+            if re.match(r"^:?-{3,}:?$", first):
+                continue
+            candidate = first
+        elif line.startswith(("-", "*")) and not has_character_section:
             candidate = line.lstrip("-* ").strip()
 
         if candidate and candidate not in seen:
@@ -204,7 +258,7 @@ def scan_book_folder(source_path: Path | str) -> BookFolderParseResult:
         summary = report.documents.get("story_bible.md", "").strip()
 
     characters_text = report.documents.get("character_matrix.md", "")
-    characters = _parse_character_matrix(characters_text) if characters_text else []
+    characters = _parse_character_matrix_strict(characters_text) if characters_text else []
 
     bootstrap = BookBootstrapDraft(
         source_path=str(base),

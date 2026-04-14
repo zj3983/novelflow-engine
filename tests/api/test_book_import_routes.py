@@ -65,6 +65,30 @@ def test_book_import_bootstrap_valid_folder_returns_draft_and_report(tmp_path: P
     assert draft["characters"] == ["Lin Yue", "Su Wan"]
 
 
+def test_book_import_bootstrap_ignores_relationship_table_headers(tmp_path: Path):
+    _write(tmp_path / "volume_outline.md", "VOLUME: A hidden ledger drives the plot.\n")
+    _write(tmp_path / "current_focus.md", "FOCUS: Open with the first clue.\n")
+    _write(
+        tmp_path / "character_matrix.md",
+        "\n".join(
+            [
+                "### 角色档案",
+                "| 角色 | 核心标签 | 反差细节 | 说话风格 | 性格底色 | 与主角关系 | 核心动机 | 当前目标 |",
+                "|------|----------|----------|----------|----------|------------|----------|----------|",
+                "### 相遇记录",
+                "| 角色A | 角色B | 首次相遇章 | 最近交互章 | 关系性质 | 关系变化 |",
+                "|-------|-------|------------|------------|----------|----------|",
+            ]
+        ),
+    )
+
+    response = client.post("/book-import/bootstrap", json={"source_path": str(tmp_path)})
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["draft"]["characters"] == []
+
+
 def test_book_import_bootstrap_accepts_file_path_and_uses_parent_folder(tmp_path: Path):
     story_dir = tmp_path / "story"
     story_dir.mkdir()
