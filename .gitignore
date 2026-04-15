@@ -12,3 +12,13 @@ playwright-report/
 # Local dev server logs
 apps/web/dev-server.out.log
 apps/web/dev-server.err.log
+apps/web/web-*.log
+
+# SQLite database
+apps/api/data/*.db
+apps/api/data/*.db-shm
+apps/api/data/*.db-wal
+
+# Build artifacts
+apps/web/tsconfig.tsbuildinfo
+packages/story_core/runtime_config.json
