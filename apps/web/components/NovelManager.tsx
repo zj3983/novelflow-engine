@@ -7,12 +7,14 @@ import {
   fetchWorldBible,
   fetchNovelStatus,
   generateOutline,
+  updateOutline,
+  updateWorldBible,
   updateNovelStatus,
   type NovelOutlineResponse,
   type WorldBibleResponse,
   type NovelStatusResponse,
   type NovelStatusType,
-} from "../../lib/api";
+} from "../lib/api";
 
 interface NovelManagerProps {
   storyId: string;
@@ -45,12 +47,33 @@ export function NovelManager({ storyId }: NovelManagerProps) {
 
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Outline edit state
+  const [outlineEditMode, setOutlineEditMode] = useState(false);
+  const [editingOutline, setEditingOutline] = useState<NovelOutlineResponse | null>(null);
+
+  // World bible edit state
+  const [worldEditMode, setWorldEditMode] = useState(false);
+  const [editingWorld, setEditingWorld] = useState<WorldBibleResponse | null>(null);
 
   useEffect(() => {
     if (!storyId) return;
     loadAll();
   }, [storyId]);
+
+  // Auto-dismiss success/error after 3s
+  useEffect(() => {
+    if (success || error) {
+      const timer = setTimeout(() => {
+        setSuccess(null);
+        setError(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [success, error]);
 
   async function loadAll() {
     setLoading(true);
@@ -87,11 +110,102 @@ export function NovelManager({ storyId }: NovelManagerProps) {
     }
   }
 
+  function startEditOutline() {
+    if (!outline) return;
+    setEditingOutline(JSON.parse(JSON.stringify(outline)));
+    setOutlineEditMode(true);
+  }
+
+  function cancelEditOutline() {
+    setOutlineEditMode(false);
+    setEditingOutline(null);
+  }
+
+  async function saveOutlineEdit() {
+    if (!editingOutline) return;
+    console.log('[NovelManager] saveOutlineEdit start, storyId:', storyId, 'chapters:', editingOutline.chapters.length);
+    setSaving(true);
+    setError(null);
+    try {
+      const payload = {
+        chapters: editingOutline.chapters.map(ch => ({
+          chapter_number: ch.chapter_number,
+          chapter_title: ch.chapter_title,
+          summary: ch.summary,
+          key_characters: ch.key_characters,
+          primary_conflict: ch.primary_conflict,
+          cadence: ch.cadence,
+          word_count_estimate: ch.word_count_estimate,
+          arc_phase: ch.arc_phase,
+        })),
+        overall_arc: editingOutline.overall_arc,
+        act_breaks: editingOutline.act_breaks,
+        notes: editingOutline.notes,
+      };
+      console.log('[NovelManager] calling updateOutline, payload size:', JSON.stringify(payload).length);
+      const result = await updateOutline(storyId, payload);
+      console.log('[NovelManager] updateOutline success:', result.story_id);
+      setOutline(result);
+      setSuccess("大纲保存成功");
+      setOutlineEditMode(false);
+      setEditingOutline(null);
+    } catch (e) {
+      console.error('[NovelManager] saveOutlineEdit error:', e);
+      setError(e instanceof Error ? e.message : "保存失败");
+    } finally {
+      console.log('[NovelManager] saveOutlineEdit finally');
+      setSaving(false);
+    }
+  }
+
+  function startEditWorld() {
+    if (!worldBible) return;
+    setEditingWorld(JSON.parse(JSON.stringify(worldBible)));
+    setWorldEditMode(true);
+  }
+
+  function cancelEditWorld() {
+    setWorldEditMode(false);
+    setEditingWorld(null);
+  }
+
+  async function saveWorldEdit() {
+    if (!editingWorld) return;
+    console.log('[NovelManager] saveWorldEdit start, storyId:', storyId);
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await updateWorldBible(storyId, {
+        world_name: editingWorld.world_name,
+        overview: editingWorld.overview,
+        power_system: editingWorld.power_system,
+        locations: editingWorld.locations,
+        factions: editingWorld.factions,
+        world_facts: editingWorld.world_facts,
+        timeline_events: editingWorld.timeline_events,
+        cultural_notes: editingWorld.cultural_notes,
+        glossary: editingWorld.glossary,
+      });
+      console.log('[NovelManager] updateWorldBible success:', result.world_name);
+      setWorldBible(result);
+      setSuccess("世界设定保存成功");
+      setWorldEditMode(false);
+      setEditingWorld(null);
+    } catch (e) {
+      console.error('[NovelManager] saveWorldEdit error:', e);
+      setError(e instanceof Error ? e.message : "保存失败");
+    } finally {
+      console.log('[NovelManager] saveWorldEdit finally');
+      setSaving(false);
+    }
+  }
+
   async function handleStatusChange(newStatus: NovelStatusType) {
     if (!novelStatus) return;
     try {
       const result = await updateNovelStatus(storyId, { status: newStatus });
       setNovelStatus(result);
+      setSuccess("状态已更新");
     } catch (e) {
       setError(e instanceof Error ? e.message : "更新状态失败");
     }
@@ -113,6 +227,104 @@ export function NovelManager({ storyId }: NovelManagerProps) {
       );
     }
 
+    // ── Edit mode ──
+    if (outlineEditMode && editingOutline) {
+      return (
+        <div>
+          {/* Overall arc */}
+          <div className="mb-4">
+            <label className="font-semibold text-sm text-gray-700 mb-1 block">故事主线</label>
+            <textarea
+              className="w-full border rounded p-2 text-sm"
+              rows={3}
+              value={editingOutline.overall_arc}
+              onChange={e => setEditingOutline(prev => prev ? {
+                ...prev,
+                overall_arc: e.target.value,
+              } : null)}
+            />
+          </div>
+
+          {/* Chapters */}
+          <div className="mb-4">
+            <label className="font-semibold text-sm text-gray-700 mb-2 block">章节列表</label>
+            <div className="max-h-96 overflow-y-auto">
+              {editingOutline.chapters.map((ch, idx) => (
+                <div key={ch.chapter_number} className="mb-3 p-3 border rounded">
+                  <div className="flex gap-2 mb-2">
+                    <span className="text-sm font-medium text-gray-500 w-8">#{ch.chapter_number}</span>
+                    <input
+                      className="flex-1 border rounded px-2 py-1 text-sm font-medium"
+                      value={ch.chapter_title}
+                      onChange={e => {
+                        setEditingOutline(prev => {
+                          if (!prev) return prev;
+                          const chapters = [...prev.chapters];
+                          chapters[idx] = { ...chapters[idx], chapter_title: e.target.value };
+                          return { ...prev, chapters };
+                        });
+                      }}
+                    />
+                    <span className={`px-2 py-0.5 rounded text-xs self-center ${
+                      ch.cadence === "urgent" ? "bg-red-100 text-red-700" :
+                      ch.cadence === "breathing" ? "bg-green-100 text-green-700" :
+                      "bg-gray-100 text-gray-700"
+                    }`}>
+                      {ch.cadence === "urgent" ? "紧张" : ch.cadence === "breathing" ? "舒缓" : "平稳"}
+                    </span>
+                  </div>
+                  <textarea
+                    className="w-full border rounded px-2 py-1 text-sm"
+                    rows={2}
+                    value={ch.summary}
+                    onChange={e => {
+                      setEditingOutline(prev => {
+                        if (!prev) return prev;
+                        const chapters = [...prev.chapters];
+                        chapters[idx] = { ...chapters[idx], summary: e.target.value };
+                        return { ...prev, chapters };
+                      });
+                    }}
+                  />
+                  <input
+                    className="w-full border rounded px-2 py-1 text-xs mt-2"
+                    placeholder="主要冲突"
+                    value={ch.primary_conflict}
+                    onChange={e => {
+                      setEditingOutline(prev => {
+                        if (!prev) return prev;
+                        const chapters = [...prev.chapters];
+                        chapters[idx] = { ...chapters[idx], primary_conflict: e.target.value };
+                        return { ...prev, chapters };
+                      });
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex gap-2">
+            <button
+              className="px-4 py-1.5 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 disabled:opacity-50"
+              onClick={saveOutlineEdit}
+              disabled={saving}
+            >
+              {saving ? "保存中..." : "保存修改"}
+            </button>
+            <button
+              className="px-4 py-1.5 bg-gray-200 text-gray-700 rounded text-sm hover:bg-gray-300"
+              onClick={cancelEditOutline}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── View mode ──
     return (
       <div>
         {/* Status bar */}
@@ -191,10 +403,16 @@ export function NovelManager({ storyId }: NovelManagerProps) {
           </table>
         </div>
 
-        {/* Generate button */}
-        <div className="mt-4">
+        {/* Action buttons */}
+        <div className="mt-4 flex gap-2">
           <button
-            className="btn btn--ghost"
+            className="px-4 py-1.5 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+            onClick={startEditOutline}
+          >
+            编辑大纲
+          </button>
+          <button
+            className="px-4 py-1.5 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200"
             onClick={handleGenerateOutline}
             disabled={generating}
           >
@@ -210,9 +428,270 @@ export function NovelManager({ storyId }: NovelManagerProps) {
       return <p className="text-gray-500">加载中...</p>;
     }
 
+    // ── Edit mode ──
+    if (worldEditMode && editingWorld) {
+      return (
+        <div>
+          {/* World name */}
+          <div className="mb-4">
+            <label className="font-semibold text-sm text-gray-700 mb-1 block">世界名称</label>
+            <input
+              className="w-full border rounded px-2 py-1 text-sm"
+              value={editingWorld.world_name}
+              onChange={e => setEditingWorld(prev => prev ? {
+                ...prev,
+                world_name: e.target.value,
+              } : null)}
+            />
+          </div>
+
+          {/* Overview */}
+          <div className="mb-4">
+            <label className="font-semibold text-sm text-gray-700 mb-1 block">世界概述</label>
+            <textarea
+              className="w-full border rounded p-2 text-sm"
+              rows={3}
+              value={editingWorld.overview}
+              onChange={e => setEditingWorld(prev => prev ? {
+                ...prev,
+                overview: e.target.value,
+              } : null)}
+            />
+          </div>
+
+          {/* Power System */}
+          <div className="mb-4">
+            <label className="font-semibold text-sm text-gray-700 mb-2 block">力量体系</label>
+            <div className="border rounded p-3 space-y-2">
+              <input
+                className="w-full border rounded px-2 py-1 text-sm"
+                placeholder="体系名称"
+                value={editingWorld.power_system.name}
+                onChange={e => setEditingWorld(prev => prev ? {
+                  ...prev,
+                  power_system: { ...prev.power_system, name: e.target.value },
+                } : null)}
+              />
+              <textarea
+                className="w-full border rounded px-2 py-1 text-sm"
+                placeholder="体系描述"
+                rows={2}
+                value={editingWorld.power_system.description}
+                onChange={e => setEditingWorld(prev => prev ? {
+                  ...prev,
+                  power_system: { ...prev.power_system, description: e.target.value },
+                } : null)}
+              />
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">境界等级（逗号分隔）</label>
+                <input
+                  className="w-full border rounded px-2 py-1 text-sm"
+                  value={editingWorld.power_system.levels.join(", ")}
+                  onChange={e => setEditingWorld(prev => prev ? {
+                    ...prev,
+                    power_system: { ...prev.power_system, levels: e.target.value.split(",").map(s => s.trim()).filter(Boolean) },
+                  } : null)}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Locations */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <label className="font-semibold text-sm text-gray-700">地点</label>
+              <button
+                className="text-xs text-blue-500 hover:underline"
+                onClick={() => setEditingWorld(prev => prev ? {
+                  ...prev,
+                  locations: [...prev.locations, { name: "", description: "", type: "", importance: 1, connections: [] }],
+                } : null)}
+              >
+                + 添加
+              </button>
+            </div>
+            <div className="space-y-2">
+              {editingWorld.locations.map((loc, idx) => (
+                <div key={idx} className="border rounded p-3">
+                  <div className="flex gap-2 mb-2">
+                    <input
+                      className="flex-1 border rounded px-2 py-1 text-sm font-medium"
+                      placeholder="名称"
+                      value={loc.name}
+                      onChange={e => setEditingWorld(prev => {
+                        if (!prev) return prev;
+                        const locations = [...prev.locations];
+                        locations[idx] = { ...locations[idx], name: e.target.value };
+                        return { ...prev, locations };
+                      })}
+                    />
+                    <input
+                      className="border rounded px-2 py-1 text-sm w-24"
+                      placeholder="类型"
+                      value={loc.type}
+                      onChange={e => setEditingWorld(prev => {
+                        if (!prev) return prev;
+                        const locations = [...prev.locations];
+                        locations[idx] = { ...locations[idx], type: e.target.value };
+                        return { ...prev, locations };
+                      })}
+                    />
+                    <button
+                      className="text-red-400 text-sm hover:text-red-600"
+                      onClick={() => setEditingWorld(prev => {
+                        if (!prev) return prev;
+                        const locations = [...prev.locations];
+                        locations.splice(idx, 1);
+                        return { ...prev, locations };
+                      })}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <input
+                    className="w-full border rounded px-2 py-1 text-xs"
+                    placeholder="描述"
+                    value={loc.description}
+                    onChange={e => setEditingWorld(prev => {
+                      if (!prev) return prev;
+                      const locations = [...prev.locations];
+                      locations[idx] = { ...locations[idx], description: e.target.value };
+                      return { ...prev, locations };
+                    })}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Factions */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <label className="font-semibold text-sm text-gray-700">势力</label>
+              <button
+                className="text-xs text-blue-500 hover:underline"
+                onClick={() => setEditingWorld(prev => prev ? {
+                  ...prev,
+                  factions: [...prev.factions, { name: "", description: "", type: "", goals: [], allies: [], enemies: [], notable_members: [] }],
+                } : null)}
+              >
+                + 添加
+              </button>
+            </div>
+            <div className="space-y-2">
+              {editingWorld.factions.map((faction, idx) => (
+                <div key={idx} className="border rounded p-3">
+                  <div className="flex gap-2 mb-2">
+                    <input
+                      className="flex-1 border rounded px-2 py-1 text-sm font-medium"
+                      placeholder="势力名称"
+                      value={faction.name}
+                      onChange={e => setEditingWorld(prev => {
+                        if (!prev) return prev;
+                        const factions = [...prev.factions];
+                        factions[idx] = { ...factions[idx], name: e.target.value };
+                        return { ...prev, factions };
+                      })}
+                    />
+                    <input
+                      className="border rounded px-2 py-1 text-sm w-24"
+                      placeholder="类型"
+                      value={faction.type}
+                      onChange={e => setEditingWorld(prev => {
+                        if (!prev) return prev;
+                        const factions = [...prev.factions];
+                        factions[idx] = { ...factions[idx], type: e.target.value };
+                        return { ...prev, factions };
+                      })}
+                    />
+                    <button
+                      className="text-red-400 text-sm hover:text-red-600"
+                      onClick={() => setEditingWorld(prev => {
+                        if (!prev) return prev;
+                        const factions = [...prev.factions];
+                        factions.splice(idx, 1);
+                        return { ...prev, factions };
+                      })}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <input
+                    className="w-full border rounded px-2 py-1 text-xs"
+                    placeholder="描述"
+                    value={faction.description}
+                    onChange={e => setEditingWorld(prev => {
+                      if (!prev) return prev;
+                      const factions = [...prev.factions];
+                      factions[idx] = { ...factions[idx], description: e.target.value };
+                      return { ...prev, factions };
+                    })}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* World Facts */}
+          <div className="mb-4">
+            <label className="font-semibold text-sm text-gray-700 mb-1 block">世界规则（每行一条）</label>
+            <textarea
+              className="w-full border rounded p-2 text-sm"
+              rows={3}
+              value={editingWorld.world_facts.join("\n")}
+              onChange={e => setEditingWorld(prev => prev ? {
+                ...prev,
+                world_facts: e.target.value.split("\n").map(s => s.trim()).filter(Boolean),
+              } : null)}
+            />
+          </div>
+
+          {/* Cultural Notes */}
+          <div className="mb-4">
+            <label className="font-semibold text-sm text-gray-700 mb-1 block">文化备注（每行一条）</label>
+            <textarea
+              className="w-full border rounded p-2 text-sm"
+              rows={2}
+              value={editingWorld.cultural_notes.join("\n")}
+              onChange={e => setEditingWorld(prev => prev ? {
+                ...prev,
+                cultural_notes: e.target.value.split("\n").map(s => s.trim()).filter(Boolean),
+              } : null)}
+            />
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex gap-2">
+            <button
+              className="px-4 py-1.5 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 disabled:opacity-50"
+              onClick={saveWorldEdit}
+              disabled={saving}
+            >
+              {saving ? "保存中..." : "保存修改"}
+            </button>
+            <button
+              className="px-4 py-1.5 bg-gray-200 text-gray-700 rounded text-sm hover:bg-gray-300"
+              onClick={cancelEditWorld}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── View mode ──
     return (
       <div>
-        <h3 className="font-semibold text-lg mb-2">{worldBible.world_name}</h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="font-semibold text-lg">{worldBible.world_name}</h3>
+          <button
+            className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+            onClick={startEditWorld}
+          >
+            编辑
+          </button>
+        </div>
 
         {/* Overview */}
         {worldBible.overview && (
@@ -408,6 +887,15 @@ export function NovelManager({ storyId }: NovelManagerProps) {
         <span>小说管理</span>
         <span className="text-xs text-gray-500">{storyId}</span>
       </header>
+
+      {/* Toast notifications */}
+      {(success || error) && (
+        <div className={`fixed top-4 right-4 z-50 px-4 py-2 rounded-lg text-sm shadow-lg transition-all ${
+          success ? "bg-green-500 text-white" : "bg-red-500 text-white"
+        }`}>
+          {success || error}
+        </div>
+      )}
 
       <div className="panel__body">
         {/* Tabs */}

@@ -1,0 +1,24 @@
+{
+  "global": {
+    "api_key": "",
+    "base_url": ""
+  },
+  "agents": {
+    "character": {
+      "api_key": "",
+      "base_url": ""
+    },
+    "director": {
+      "api_key": "",
+      "base_url": ""
+    },
+    "writer": {
+      "api_key": "",
+      "base_url": ""
+    },
+    "memory": {
+      "api_key": "",
+      "base_url": ""
+    }
+  }
+}

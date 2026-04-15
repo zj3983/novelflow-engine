@@ -409,6 +409,7 @@ function defaultAgentRuntime(mode: AgentSettings["mode"]): AgentRuntimeState {
     director_agent: defaultRuntimeEntry(mode),
     writer_agent: defaultRuntimeEntry(mode),
     memory_agent: defaultRuntimeEntry(mode),
+    outline_agent: defaultRuntimeEntry(mode),
     recent_events: [],
   };
 }
@@ -810,19 +811,27 @@ function mockSaveRuntimeSettings(settings: RuntimeSettings): RuntimeSettings {
 }
 
 async function tryFetchJson(url: string, init: RequestInit): Promise<any> {
+  console.log('[tryFetchJson] Requesting:', url, init.method);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => {
+    console.log('[tryFetchJson] Timeout, aborting:', url);
+    controller.abort();
+  }, 5000);
 
   try {
     const resp = await fetch(url, { ...init, signal: controller.signal });
+    console.log('[tryFetchJson] Response:', resp.status, resp.statusText);
     if (!resp.ok) {
       const detail = await resp.text().catch(() => "");
       throw new Error(detail ? `${url} failed: ${resp.status} ${detail}` : `${url} failed: ${resp.status}`);
     }
-    return resp.json();
+    const data = await resp.json();
+    console.log('[tryFetchJson] Success:', url);
+    return data;
   } catch (error) {
+    console.error('[tryFetchJson] Error:', error);
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error(`${url} failed: request timed out`);
+      throw new Error(`${url} failed: request timed out (5s)`);
     }
     throw error;
   } finally {
@@ -849,8 +858,9 @@ export async function saveRuntimeSettings(settings: RuntimeSettings): Promise<Ru
       body: JSON.stringify(settings),
     });
     return normalizeRuntimeSettings(response);
-  } catch {
-    return mockSaveRuntimeSettings(settings);
+  } catch (error) {
+    console.error('Save runtime settings failed:', error);
+    throw error;
   }
 }
 
@@ -870,17 +880,9 @@ export async function testRuntimeSettingsConnection(
       }),
     });
     return response as RuntimeConnectionResult;
-  } catch {
-    const endpoint =
-      target === "global" ? settings.global : settings.agents[target] ?? defaultRuntimeEndpoint();
-    const ok = Boolean(endpoint.api_key && endpoint.base_url);
-    return {
-      ok,
-      agent_name: target,
-      message: ok
-        ? `${runtimeTargetLabel(target)} 连接正常`
-        : `${runtimeTargetLabel(target)} 连接失败：缺少 API 密钥或接口地址`,
-    };
+  } catch (error) {
+    console.error('Test connection failed:', error);
+    throw error;
   }
 }
 

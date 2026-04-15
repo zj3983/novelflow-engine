@@ -1,0 +1,730 @@
+
+> novel-autogrowth-web@0.0.0 dev
+> next dev -p 3000
+
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:3000
+
+ ✓ Starting...
+ ✓ Ready in 1637ms
+ ✓ Compiled / in 292ms (459 modules)
+ GET / 200 in 419ms
+ GET / 200 in 35ms
+ GET / 200 in 63ms
+ GET / 200 in 49ms
+ GET / 200 in 93ms
+ ✓ Compiled in 196ms (459 modules)
+ ✓ Compiled in 141ms (459 modules)
+ ✓ Compiled in 151ms (459 modules)
+ ✓ Compiled in 99ms (459 modules)
+ GET / 200 in 50ms
+ GET / 200 in 77ms
+ GET / 200 in 56ms
+ GET / 200 in 13ms
+ GET / 200 in 73ms
+ GET / 200 in 67ms
+ GET / 200 in 72ms
+ ✓ Compiled in 144ms (459 modules)
+ GET / 200 in 81ms
+ ✓ Compiled /_not-found in 206ms (462 modules)
+ GET /_next/static/css/app/layout.css?v=1775892521888 404 in 281ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 276ms
+ GET /_next/static/chunks/main-app.js?v=1775892521888 404 in 279ms
+ GET / 200 in 59ms
+ GET / 200 in 43ms
+ GET / 200 in 73ms
+ GET /_next/static/css/app/layout.css?v=1775892539200 404 in 16ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775892539200 404 in 15ms
+ GET / 200 in 58ms
+ GET /_next/static/css/app/layout.css?v=1775892539435 404 in 13ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775892539435 404 in 12ms
+ GET / 200 in 44ms
+ GET /_next/static/css/app/layout.css?v=1775892539655 404 in 13ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775892539655 404 in 13ms
+ GET / 200 in 73ms
+ GET /_next/static/css/app/layout.css?v=1775892546435 404 in 13ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775892546435 404 in 12ms
+ GET / 200 in 57ms
+ GET / 200 in 75ms
+ GET / 200 in 38ms
+ GET /_next/static/css/app/layout.css?v=1775892595484 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775892595484 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 58ms
+ GET /_next/static/css/app/layout.css?v=1775892595696 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775892595696 404 in 11ms
+ GET / 200 in 74ms
+ GET /_next/static/css/app/layout.css?v=1775892595913 404 in 11ms
+ GET /_next/static/chunks/main-app.js?v=1775892595913 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 10ms
+ GET / 200 in 67ms
+ GET /_next/static/css/app/layout.css?v=1775892602771 404 in 15ms
+ GET /_next/static/chunks/main-app.js?v=1775892602771 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 13ms
+ GET / 200 in 31ms
+ GET / 200 in 60ms
+ GET / 200 in 79ms
+ GET /_next/static/css/app/layout.css?v=1775892650578 404 in 13ms
+ GET /_next/static/chunks/main-app.js?v=1775892650578 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 82ms
+ GET /_next/static/css/app/layout.css?v=1775892650811 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775892650811 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 10ms
+ GET / 200 in 81ms
+ GET /_next/static/css/app/layout.css?v=1775892651049 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775892651049 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 80ms
+ GET /_next/static/css/app/layout.css?v=1775892657916 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775892657916 404 in 11ms
+ GET / 200 in 82ms
+ GET / 200 in 60ms
+ GET / 200 in 46ms
+ GET / 200 in 61ms
+ GET / 200 in 72ms
+ GET / 200 in 60ms
+ GET / 200 in 57ms
+ GET / 200 in 74ms
+ GET / 200 in 55ms
+ GET /_next/static/css/app/layout.css?v=1775892892161 404 in 13ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 9ms
+ GET /_next/static/chunks/main-app.js?v=1775892892161 404 in 12ms
+ GET / 200 in 80ms
+ GET /_next/static/css/app/layout.css?v=1775892898423 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775892898423 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 12ms
+ GET / 200 in 58ms
+ GET /_next/static/css/app/layout.css?v=1775892898665 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775892898665 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 54ms
+ GET /_next/static/css/app/layout.css?v=1775892905520 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775892905520 404 in 11ms
+ GET / 200 in 76ms
+ GET / 200 in 59ms
+ GET / 200 in 78ms
+ GET /_next/static/css/app/layout.css?v=1775892967025 404 in 13ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775892967025 404 in 11ms
+ GET / 200 in 81ms
+ GET /_next/static/css/app/layout.css?v=1775892967256 404 in 11ms
+ GET /_next/static/chunks/main-app.js?v=1775892967256 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 10ms
+ GET / 200 in 57ms
+ GET /_next/static/css/app/layout.css?v=1775892967497 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775892967497 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 83ms
+ GET /_next/static/css/app/layout.css?v=1775892974313 404 in 13ms
+ GET /_next/static/chunks/main-app.js?v=1775892974313 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 62ms
+ GET / 200 in 61ms
+ GET / 200 in 79ms
+ GET /_next/static/css/app/layout.css?v=1775893062319 404 in 13ms
+ GET /_next/static/chunks/main-app.js?v=1775893062319 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 10ms
+ GET / 200 in 81ms
+ GET /_next/static/css/app/layout.css?v=1775893062551 404 in 15ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET /_next/static/chunks/main-app.js?v=1775893062551 404 in 12ms
+ GET / 200 in 67ms
+ GET /_next/static/css/app/layout.css?v=1775893062798 404 in 15ms
+ GET /_next/static/chunks/main-app.js?v=1775893062798 404 in 13ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 12ms
+ GET / 200 in 37ms
+ GET /_next/static/css/app/layout.css?v=1775893093842 404 in 10ms
+ GET /_next/static/chunks/main-app.js?v=1775893093842 404 in 10ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 12ms
+ GET / 200 in 70ms
+ GET / 200 in 60ms
+ GET / 200 in 78ms
+ GET /_next/static/css/app/layout.css?v=1775893140037 404 in 16ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET /_next/static/chunks/main-app.js?v=1775893140037 404 in 12ms
+ GET / 200 in 55ms
+ GET /_next/static/css/app/layout.css?v=1775893140296 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775893140296 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 74ms
+ GET /_next/static/css/app/layout.css?v=1775893140509 404 in 16ms
+ GET /_next/static/chunks/main-app.js?v=1775893140509 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 12ms
+ GET / 200 in 83ms
+ GET /_next/static/css/app/layout.css?v=1775893171539 404 in 13ms
+ GET /_next/static/chunks/main-app.js?v=1775893171539 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 9ms
+ GET / 200 in 66ms
+ GET / 200 in 61ms
+ GET / 200 in 69ms
+ GET /_next/static/css/app/layout.css?v=1775893227227 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775893227227 404 in 10ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 10ms
+ GET / 200 in 57ms
+ GET /_next/static/css/app/layout.css?v=1775893227462 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775893227462 404 in 10ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 9ms
+ GET / 200 in 81ms
+ GET /_next/static/chunks/main-app.js?v=1775893227700 404 in 9ms
+ GET /_next/static/css/app/layout.css?v=1775893227700 404 in 13ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 9ms
+ GET / 200 in 61ms
+ GET /_next/static/css/app/layout.css?v=1775893258768 404 in 13ms
+ GET /_next/static/chunks/main-app.js?v=1775893258768 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 56ms
+ GET / 200 in 60ms
+ GET / 200 in 75ms
+ GET /_next/static/css/app/layout.css?v=1775893303004 404 in 15ms
+ GET /_next/static/chunks/main-app.js?v=1775893303004 404 in 13ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 12ms
+ GET / 200 in 64ms
+ GET /_next/static/css/app/layout.css?v=1775893303235 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775893303235 404 in 10ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 10ms
+ GET / 200 in 72ms
+ GET /_next/static/css/app/layout.css?v=1775893303461 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775893303461 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 66ms
+ GET /_next/static/css/app/layout.css?v=1775893334495 404 in 11ms
+ GET /_next/static/chunks/main-app.js?v=1775893334495 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 80ms
+ GET / 200 in 74ms
+ GET / 200 in 80ms
+ GET /_next/static/css/app/layout.css?v=1775893390726 404 in 11ms
+ GET /_next/static/chunks/main-app.js?v=1775893390726 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 9ms
+ GET / 200 in 80ms
+ GET /_next/static/css/app/layout.css?v=1775893390960 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775893390960 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 10ms
+ GET / 200 in 71ms
+ GET /_next/static/css/app/layout.css?v=1775893391202 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775893391202 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 47ms
+ GET /_next/static/css/app/layout.css?v=1775893422259 404 in 14ms
+ GET /_next/static/chunks/main-app.js?v=1775893422259 404 in 10ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 10ms
+ GET / 200 in 64ms
+ GET / 200 in 60ms
+ GET / 200 in 85ms
+ GET /_next/static/css/app/layout.css?v=1775893494215 404 in 18ms
+ GET /_next/static/chunks/main-app.js?v=1775893494215 404 in 21ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 18ms
+ GET / 200 in 64ms
+ GET /_next/static/css/app/layout.css?v=1775893494488 404 in 23ms
+ GET /_next/static/chunks/main-app.js?v=1775893494488 404 in 21ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 21ms
+ GET / 200 in 69ms
+ GET /_next/static/css/app/layout.css?v=1775893494734 404 in 22ms
+ GET /_next/static/chunks/main-app.js?v=1775893494734 404 in 17ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 17ms
+ GET / 200 in 59ms
+ GET /_next/static/css/app/layout.css?v=1775893501660 404 in 23ms
+ GET /_next/static/chunks/main-app.js?v=1775893501660 404 in 18ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 18ms
+ GET / 200 in 67ms
+ GET /_next/static/css/app/layout.css?v=1775893605740 404 in 21ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 19ms
+ GET /_next/static/chunks/main-app.js?v=1775893605740 404 in 17ms
+ GET / 200 in 57ms
+ GET / 200 in 28ms
+ GET / 200 in 64ms
+ GET /_next/static/css/app/layout.css?v=1775893660978 404 in 23ms
+ GET /_next/static/chunks/main-app.js?v=1775893660978 404 in 20ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 18ms
+ GET / 200 in 56ms
+ GET /_next/static/css/app/layout.css?v=1775893661210 404 in 19ms
+ GET /_next/static/chunks/main-app.js?v=1775893661210 404 in 16ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 16ms
+ GET / 200 in 60ms
+ GET /_next/static/css/app/layout.css?v=1775893661439 404 in 18ms
+ GET /_next/static/chunks/main-app.js?v=1775893661439 404 in 22ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 21ms
+ GET / 200 in 86ms
+ GET /_next/static/css/app/layout.css?v=1775893692661 404 in 22ms
+ GET /_next/static/chunks/main-app.js?v=1775893692661 404 in 20ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 17ms
+ ✓ Compiled in 457ms (459 modules)
+ ✓ Compiled in 209ms (459 modules)
+ ✓ Compiled in 306ms (459 modules)
+ GET / 200 in 134ms
+ GET / 200 in 59ms
+ GET / 200 in 50ms
+ ✓ Compiled /_not-found in 170ms (462 modules)
+ GET /_next/static/css/app/layout.css?v=1775893793516 404 in 267ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 267ms
+ GET /_next/static/chunks/main-app.js?v=1775893793516 404 in 266ms
+ GET / 200 in 65ms
+ GET /_next/static/css/app/layout.css?v=1775893794005 404 in 22ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 19ms
+ GET /_next/static/chunks/main-app.js?v=1775893794005 404 in 18ms
+ GET / 200 in 41ms
+ GET /_next/static/css/app/layout.css?v=1775893794243 404 in 24ms
+ GET /_next/static/chunks/main-app.js?v=1775893794243 404 in 20ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 19ms
+ GET / 200 in 69ms
+ GET /_next/static/css/app/layout.css?v=1775893801092 404 in 16ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 18ms
+ GET /_next/static/chunks/main-app.js?v=1775893801092 404 in 16ms
+ ✓ Compiled in 237ms (462 modules)
+ GET / 200 in 76ms
+ GET / 200 in 75ms
+ GET / 200 in 82ms
+ GET /_next/static/css/app/layout.css?v=1775893842740 404 in 26ms
+ GET /_next/static/chunks/main-app.js?v=1775893842740 404 in 25ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 23ms
+ GET / 200 in 54ms
+ GET /_next/static/css/app/layout.css?v=1775893842987 404 in 22ms
+ GET /_next/static/chunks/main-app.js?v=1775893842987 404 in 21ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 20ms
+ GET / 200 in 75ms
+ GET /_next/static/css/app/layout.css?v=1775893843215 404 in 26ms
+ GET /_next/static/chunks/main-app.js?v=1775893843215 404 in 29ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 28ms
+ GET / 200 in 62ms
+ GET /_next/static/css/app/layout.css?v=1775893850100 404 in 22ms
+ GET /_next/static/chunks/main-app.js?v=1775893850100 404 in 19ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 17ms
+ GET / 200 in 57ms
+ GET /_next/static/css/app/layout.css?v=1775893881843 404 in 18ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 19ms
+ GET /_next/static/chunks/main-app.js?v=1775893881843 404 in 18ms
+ GET / 200 in 59ms
+ GET /_next/static/css/app/layout.css?v=1775893891674 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775893891674 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 10ms
+ GET / 200 in 57ms
+ GET /_next/static/css/app/layout.css?v=1775893906655 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET /_next/static/chunks/main-app.js?v=1775893906655 404 in 13ms
+ GET / 200 in 54ms
+ GET /_next/static/css/app/layout.css?v=1775893955132 404 in 13ms
+ GET /_next/static/chunks/main-app.js?v=1775893955132 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 44ms
+ GET /_next/static/css/app/layout.css?v=1775893996222 404 in 12ms
+ GET /_next/static/chunks/main-app.js?v=1775893996222 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 80ms
+ GET / 200 in 62ms
+ GET / 200 in 70ms
+ GET /_next/static/css/app/layout.css?v=1775894030079 404 in 11ms
+ GET /_next/static/chunks/main-app.js?v=1775894030079 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 31ms
+ GET /_next/static/css/app/layout.css?v=1775894030309 404 in 13ms
+ GET /_next/static/chunks/main-app.js?v=1775894030309 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 67ms
+ GET /_next/static/css/app/layout.css?v=1775894030492 404 in 16ms
+ GET /_next/static/chunks/main-app.js?v=1775894030492 404 in 12ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ GET / 200 in 72ms
+ GET /_next/static/css/app/layout.css?v=1775894031283 404 in 15ms
+ GET /_next/static/chunks/main-app.js?v=1775894031283 404 in 11ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 11ms
+ ✓ Compiled in 197ms (462 modules)
+ ✓ Compiled in 227ms (462 modules)
+ ✓ Compiled in 165ms (462 modules)
+ ✓ Compiled in 109ms (462 modules)
+ GET / 200 in 88ms
+ GET / 200 in 61ms
+ GET / 200 in 78ms
+ GET / 200 in 65ms
+ GET / 200 in 83ms
+ GET / 200 in 38ms
+ GET / 200 in 84ms
+ GET / 200 in 68ms
+ GET / 200 in 61ms
+ ⨯ ./components/BookImportPanel.tsx
+Error: Failed to read source code from D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\components\BookImportPanel.tsx
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Import trace for requested module:
+./components/BookImportPanel.tsx
+./components/StorySidebar.tsx
+./app/page.tsx
+ ⨯ ./components/BookImportPanel.tsx
+Error: Failed to read source code from D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\components\BookImportPanel.tsx
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Import trace for requested module:
+./components/BookImportPanel.tsx
+./components/StorySidebar.tsx
+./app/page.tsx
+ ✓ Compiled in 175ms (459 modules)
+ ⨯ ./components/BookLibraryBrowser.tsx
+Error: Failed to read source code from D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\components\BookLibraryBrowser.tsx
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Import trace for requested module:
+./components/BookLibraryBrowser.tsx
+./components/StorySidebar.tsx
+./app/page.tsx
+ ⨯ ./components/BookLibraryBrowser.tsx
+Error: Failed to read source code from D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\components\BookLibraryBrowser.tsx
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Import trace for requested module:
+./components/BookLibraryBrowser.tsx
+./components/StorySidebar.tsx
+./app/page.tsx
+ ✓ Compiled in 135ms (459 modules)
+ ⨯ ./components/StorySidebar.tsx
+Error: Failed to read source code from D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\components\StorySidebar.tsx
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Import trace for requested module:
+./components/StorySidebar.tsx
+./app/page.tsx
+ ⨯ ./components/StorySidebar.tsx
+Error: Failed to read source code from D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\components\StorySidebar.tsx
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Import trace for requested module:
+./components/StorySidebar.tsx
+./app/page.tsx
+ ✓ Compiled in 169ms (459 modules)
+ ⨯ ./app/page.tsx
+Error: 
+  [31mx[0m Unexpected token `normalize`. Expected ... , *,  (, [, :, , ?, =, an identifier, public, protected, private, readonly, <.
+     ,-[[36;1;4mD:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\app\page.tsx[0m:166:1]
+ [2m166[0m |     apiKey: "",
+ [2m167[0m |     baseUrl: "https://api.openai.com/v1",
+ [2m168[0m |     outline: "一位身为侦探的王子，揭开王宫里的连环罪案。",
+ [2m169[0m |   const normalize = (value?: { api_key?: string; base_url?: string }) => ({
+     : [31;1m        ^^^^^^^^^[0m
+ [2m170[0m |     apiKey: value?.api_key ?? defaultEndpoint.apiKey,
+ [2m171[0m |     baseUrl: value?.base_url ?? defaultEndpoint.baseUrl,
+ [2m171[0m |   });
+     `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./app/page.tsx
+ ⨯ ./app/page.tsx
+Error: 
+  [31mx[0m Expected a semicolon
+     ,-[[36;1;4mD:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\app\page.tsx[0m:541:1]
+ [2m541[0m |       setAgentSettings(fromApiAgentSettings(nextStory.agent_settings));
+ [2m542[0m |       setSelectedChapter(nextBundle.chapter_number);
+ [2m543[0m |       await refreshStorySummaries();
+ [2m544[0m |     } catch (e) {
+     : [31;1m      ^^^^^[0m
+ [2m545[0m |       setError(e instanceof Error ? e.message : "鐢熸垚澶辫触");
+ [2m546[0m |     } finally {
+ [2m546[0m |       setIsGenerating(false);
+     `----
+
+  [31mx[0m Unexpected token `main`. Expected jsx identifier
+     ,-[[36;1;4mD:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\app\page.tsx[0m:646:1]
+ [2m646[0m |       : story?.history.find((entry) => entry.chapter_number === selectedChapter) ?? null;
+ [2m647[0m | 
+ [2m648[0m |   return (
+ [2m649[0m |     <main className="workbench">
+     : [31;1m     ^^^^[0m
+ [2m650[0m |       <section className="panel panel-outline" aria-label="大纲面板">
+ [2m651[0m |         <header className="panel__header">大纲</header>
+ [2m651[0m |         <div className="panel__body">
+     `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./app/page.tsx
+ ⨯ ./app/page.tsx
+Error: 
+  [31mx[0m Expected a semicolon
+     ,-[[36;1;4mD:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\app\page.tsx[0m:541:1]
+ [2m541[0m |       setAgentSettings(fromApiAgentSettings(nextStory.agent_settings));
+ [2m542[0m |       setSelectedChapter(nextBundle.chapter_number);
+ [2m543[0m |       await refreshStorySummaries();
+ [2m544[0m |     } catch (e) {
+     : [31;1m      ^^^^^[0m
+ [2m545[0m |       setError(e instanceof Error ? e.message : "鐢熸垚澶辫触");
+ [2m546[0m |     } finally {
+ [2m546[0m |       setIsGenerating(false);
+     `----
+
+  [31mx[0m Unexpected token `main`. Expected jsx identifier
+     ,-[[36;1;4mD:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\app\page.tsx[0m:646:1]
+ [2m646[0m |       : story?.history.find((entry) => entry.chapter_number === selectedChapter) ?? null;
+ [2m647[0m | 
+ [2m648[0m |   return (
+ [2m649[0m |     <main className="workbench">
+     : [31;1m     ^^^^[0m
+ [2m650[0m |       <section className="panel panel-outline" aria-label="大纲面板">
+ [2m651[0m |         <header className="panel__header">大纲</header>
+ [2m651[0m |         <div className="panel__body">
+     `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./app/page.tsx
+ ✓ Compiled in 14ms
+ ✓ Compiled in 119ms (219 modules)
+ ✓ Compiled in 110ms (219 modules)
+ ⨯ ./lib/api.ts
+Error: 
+  [31mx[0m Expected ',', got '锛'
+     ,-[[36;1;4mD:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\lib\api.ts[0m:316:1]
+ [2m316[0m |   nextRuntime.memory_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
+ [2m317[0m |   nextRuntime.recent_events = [
+ [2m318[0m |     ...nextRuntime.recent_events,
+ [2m319[0m |     `瑙掕壊浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+     : [31;1m                                                                                                                                                                                                            ^^^[0m
+ [2m320[0m |     `瀵兼紨浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+ [2m321[0m |     `鍐欎綔浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+ [2m321[0m |     `璁板繂浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+     `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./lib/api.ts
+./app/page.tsx
+ ⨯ ./lib/api.ts
+Error: 
+  [31mx[0m Expected ',', got '锛'
+     ,-[[36;1;4mD:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\lib\api.ts[0m:316:1]
+ [2m316[0m |   nextRuntime.memory_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
+ [2m317[0m |   nextRuntime.recent_events = [
+ [2m318[0m |     ...nextRuntime.recent_events,
+ [2m319[0m |     `瑙掕壊浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+     : [31;1m                                                                                                                                                                                                            ^^^[0m
+ [2m320[0m |     `瀵兼紨浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+ [2m321[0m |     `鍐欎綔浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+ [2m321[0m |     `璁板繂浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+     `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./lib/api.ts
+./app/page.tsx
+ ⨯ Error: ENOENT: no such file or directory, open 'D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\.next\server\middleware-manifest.json'
+    at Object.readFileSync (node:fs:439:20)
+    at defaultLoadImpl (node:internal/modules/cjs/loader:1141:17)
+    at loadSource (node:internal/modules/cjs/loader:1831:20)
+    at Object..json (node:internal/modules/cjs/loader:1945:31)
+    at Module.load (node:internal/modules/cjs/loader:1525:32)
+    at Module._load (node:internal/modules/cjs/loader:1327:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:245:24)
+    at Module.<anonymous> (node:internal/modules/cjs/loader:1548:12)
+    at mod.require (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\require-hook.js:65:28)
+    at require (node:internal/modules/helpers:152:16)
+    at DevServer.getMiddlewareManifest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:938:26)
+    at DevServer.getEdgeFunctionsPages (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:954:31)
+    at DevServer.renderErrorToResponseImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:913:22)
+    at async DevServer.pipeImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\base-server.js:922:25)
+    at async NextNodeServer.handleCatchallRenderRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:231:21)
+    at async DevServer.handleRequestImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\base-server.js:818:17)
+    at async D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\dev\next-dev-server.js:339:20
+    at async Span.traceAsyncFn (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\trace\trace.js:154:20)
+    at async DevServer.handleRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\dev\next-dev-server.js:336:24)
+    at async invokeRender (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:179:21)
+    at async handleRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:359:24)
+    at async requestHandlerImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:383:13)
+    at async Server.requestListener (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\start-server.js:141:13) {
+  errno: -4058,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: 'D:\\xiaoshuofish\\.worktrees\\novel-autogrowth-engine\\apps\\web\\.next\\server\\middleware-manifest.json'
+}
+ ○ Compiling /_not-found ...
+Watchpack Error (initial scan): Error: EINVAL: invalid argument, lstat 'D:\System Volume Information'
+Watchpack Error (initial scan): Error: EINVAL: invalid argument, lstat 'D:\System Volume Information'
+ ⨯ ./lib/api.ts
+Error: 
+  [31mx[0m Expected ',', got '锛'
+     ,-[[36;1;4mD:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\lib\api.ts[0m:316:1]
+ [2m316[0m |   nextRuntime.memory_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
+ [2m317[0m |   nextRuntime.recent_events = [
+ [2m318[0m |     ...nextRuntime.recent_events,
+ [2m319[0m |     `瑙掕壊浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+     : [31;1m                                                                                                                                                                                                            ^^^[0m
+ [2m320[0m |     `瀵兼紨浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+ [2m321[0m |     `鍐欎綔浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+ [2m321[0m |     `璁板繂浠ｇ悊锛?{source === "llm" ? "妯″瀷" : source === "rule-based" ? "瑙勫垯" : source === "fallback" ? "鍥為€€" : "绌洪棽"}锛岀 ${chapterNumber} 绔?{fallbackReason ? `锛?{fallbackReason}锛塦 : ""}`,
+     `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./lib/api.ts
+./app/page.tsx
+ GET / 500 in 2484ms
+Watchpack Error (initial scan): Error: EINVAL: invalid argument, lstat 'D:\System Volume Information'
+ ⨯ Error: ENOENT: no such file or directory, open 'D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\.next\server\middleware-manifest.json'
+    at Object.readFileSync (node:fs:439:20)
+    at defaultLoadImpl (node:internal/modules/cjs/loader:1141:17)
+    at loadSource (node:internal/modules/cjs/loader:1831:20)
+    at Object..json (node:internal/modules/cjs/loader:1945:31)
+    at Module.load (node:internal/modules/cjs/loader:1525:32)
+    at Module._load (node:internal/modules/cjs/loader:1327:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:245:24)
+    at Module.<anonymous> (node:internal/modules/cjs/loader:1548:12)
+    at mod.require (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\require-hook.js:65:28)
+    at require (node:internal/modules/helpers:152:16)
+    at DevServer.getMiddlewareManifest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:938:26)
+    at DevServer.getEdgeFunctionsPages (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:954:31)
+    at NextNodeServer.handleCatchallRenderRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:238:49)
+    at async DevServer.handleRequestImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\base-server.js:818:17)
+    at async D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\dev\next-dev-server.js:339:20
+    at async Span.traceAsyncFn (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\trace\trace.js:154:20)
+    at async DevServer.handleRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\dev\next-dev-server.js:336:24)
+    at async invokeRender (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:179:21)
+    at async handleRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:359:24)
+    at async requestHandlerImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:383:13)
+    at async Server.requestListener (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\start-server.js:141:13) {
+  errno: -4058,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: 'D:\\xiaoshuofish\\.worktrees\\novel-autogrowth-engine\\apps\\web\\.next\\server\\middleware-manifest.json'
+}
+ GET / 500 in 11ms
+ ⨯ Error: ENOENT: no such file or directory, open 'D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\.next\server\middleware-manifest.json'
+    at Object.readFileSync (node:fs:439:20)
+    at defaultLoadImpl (node:internal/modules/cjs/loader:1141:17)
+    at loadSource (node:internal/modules/cjs/loader:1831:20)
+    at Object..json (node:internal/modules/cjs/loader:1945:31)
+    at Module.load (node:internal/modules/cjs/loader:1525:32)
+    at Module._load (node:internal/modules/cjs/loader:1327:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:245:24)
+    at Module.<anonymous> (node:internal/modules/cjs/loader:1548:12)
+    at mod.require (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\require-hook.js:65:28)
+    at require (node:internal/modules/helpers:152:16)
+    at DevServer.getMiddlewareManifest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:938:26)
+    at DevServer.getEdgeFunctionsPages (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:954:31)
+    at NextNodeServer.handleCatchallRenderRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:238:49)
+    at async DevServer.handleRequestImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\base-server.js:818:17)
+    at async D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\dev\next-dev-server.js:339:20
+    at async Span.traceAsyncFn (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\trace\trace.js:154:20)
+    at async DevServer.handleRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\dev\next-dev-server.js:336:24)
+    at async invokeRender (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:179:21)
+    at async handleRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:359:24)
+    at async requestHandlerImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:383:13)
+    at async Server.requestListener (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\start-server.js:141:13) {
+  errno: -4058,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: 'D:\\xiaoshuofish\\.worktrees\\novel-autogrowth-engine\\apps\\web\\.next\\server\\middleware-manifest.json'
+}
+ GET / 500 in 18ms
+ ⨯ Error: ENOENT: no such file or directory, open 'D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\.next\server\middleware-manifest.json'
+    at Object.readFileSync (node:fs:439:20)
+    at defaultLoadImpl (node:internal/modules/cjs/loader:1141:17)
+    at loadSource (node:internal/modules/cjs/loader:1831:20)
+    at Object..json (node:internal/modules/cjs/loader:1945:31)
+    at Module.load (node:internal/modules/cjs/loader:1525:32)
+    at Module._load (node:internal/modules/cjs/loader:1327:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:245:24)
+    at Module.<anonymous> (node:internal/modules/cjs/loader:1548:12)
+    at mod.require (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\require-hook.js:65:28)
+    at require (node:internal/modules/helpers:152:16)
+    at DevServer.getMiddlewareManifest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:938:26)
+    at DevServer.getEdgeFunctionsPages (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:954:31)
+    at NextNodeServer.handleCatchallRenderRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:238:49)
+    at async DevServer.handleRequestImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\base-server.js:818:17)
+    at async D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\dev\next-dev-server.js:339:20
+    at async Span.traceAsyncFn (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\trace\trace.js:154:20)
+    at async DevServer.handleRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\dev\next-dev-server.js:336:24)
+    at async invokeRender (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:179:21)
+    at async handleRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:359:24)
+    at async requestHandlerImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:383:13)
+    at async Server.requestListener (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\start-server.js:141:13) {
+  errno: -4058,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: 'D:\\xiaoshuofish\\.worktrees\\novel-autogrowth-engine\\apps\\web\\.next\\server\\middleware-manifest.json'
+}
+ GET / 500 in 19ms
+ ⨯ Error: ENOENT: no such file or directory, open 'D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\.next\server\middleware-manifest.json'
+    at Object.readFileSync (node:fs:439:20)
+    at defaultLoadImpl (node:internal/modules/cjs/loader:1141:17)
+    at loadSource (node:internal/modules/cjs/loader:1831:20)
+    at Object..json (node:internal/modules/cjs/loader:1945:31)
+    at Module.load (node:internal/modules/cjs/loader:1525:32)
+    at Module._load (node:internal/modules/cjs/loader:1327:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:245:24)
+    at Module.<anonymous> (node:internal/modules/cjs/loader:1548:12)
+    at mod.require (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\require-hook.js:65:28)
+    at require (node:internal/modules/helpers:152:16)
+    at DevServer.getMiddlewareManifest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:938:26)
+    at DevServer.getEdgeFunctionsPages (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:954:31)
+    at NextNodeServer.handleCatchallRenderRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\next-server.js:238:49)
+    at async DevServer.handleRequestImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\base-server.js:818:17)
+    at async D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\dev\next-dev-server.js:339:20
+    at async Span.traceAsyncFn (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\trace\trace.js:154:20)
+    at async DevServer.handleRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\dev\next-dev-server.js:336:24)
+    at async invokeRender (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:179:21)
+    at async handleRequest (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:359:24)
+    at async requestHandlerImpl (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\router-server.js:383:13)
+    at async Server.requestListener (D:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\node_modules\next\dist\server\lib\start-server.js:141:13) {
+  errno: -4058,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: 'D:\\xiaoshuofish\\.worktrees\\novel-autogrowth-engine\\apps\\web\\.next\\server\\middleware-manifest.json'
+}
+ GET / 500 in 17ms
+ ⨯ ./lib/api.ts
+Error: 
+  [31mx[0m Unterminated string constant
+     ,-[[36;1;4mD:\xiaoshuofish\.worktrees\novel-autogrowth-engine\apps\web\lib\api.ts[0m:471:1]
+ [2m471[0m |     story.agent_settings.mode === "LLM-assisted" ? "fallback" : "rule-based";
+ [2m472[0m |   const fallbackReason =
+ [2m473[0m |     story.agent_settings.mode === "LLM-assisted"
+ [2m474[0m |       ? "妯℃嫙鍚庣浣跨敤纭畾鎬у洖閫€銆?
+     : [31;1m        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m475[0m |       : "";
+ [2m476[0m |   story.agent_runtime = updateRuntimeForChapter(
+ [2m476[0m |     story.agent_runtime,
+     `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./lib/api.ts
+./app/page.tsx
+ ✓ Compiled /_error in 361ms (695 modules)
+ ✓ Compiled in 250ms (695 modules)
+ GET / 200 in 55ms
+[?25h
