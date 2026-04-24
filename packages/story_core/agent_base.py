@@ -2,7 +2,7 @@
 
 - BaseOpenAIProvider: shared base for OpenAI-style providers (_runtime_settings,
   available, _post_json, and the standard LLM call loop).
-- BaseLLMAgent: higher-level execute() wrapper with LLM-first + rule-fallback.
+- BaseLLMAgent: higher-level execute() wrapper with LLM-first + deterministic fallback.
 """
 
 from __future__ import annotations
@@ -23,6 +23,64 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 
+def compact_text(text: str, max_chars: int = 400) -> str:
+    compact = " ".join(str(text or "").split()).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return f"{compact[: max_chars - 1].rstrip()}…"
+
+
+def compact_list(items: list[str], max_items: int = 4, item_chars: int = 80) -> list[str]:
+    result: list[str] = []
+    for item in items[:max_items]:
+        cleaned = compact_text(str(item), item_chars)
+        if cleaned:
+            result.append(cleaned)
+    return result
+
+
+def parse_json_message_content(response: dict) -> dict | None:
+    try:
+        message = response["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+    content = message.get("content", "")
+    if isinstance(content, list):
+        fragments: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if text:
+                    fragments.append(str(text))
+            elif isinstance(block, str):
+                fragments.append(block)
+        content = "\n".join(fragments)
+    elif isinstance(content, dict):
+        content = str(content.get("text", "")).strip()
+    else:
+        content = str(content).strip()
+
+    content = content.strip()
+    if content.startswith("```"):
+        lines = [line for line in content.splitlines() if not line.strip().startswith("```")]
+        content = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(content)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        start = content.find("{")
+        end = content.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            parsed = json.loads(content[start : end + 1])
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+
 class BaseOpenAIProvider:
     """Shared base for OpenAI-style LLM providers.
     
@@ -40,6 +98,15 @@ class BaseOpenAIProvider:
     
     def available(self) -> bool:
         return bool(self._runtime_settings().api_key)
+
+    def _set_last_error(self, reason: str) -> None:
+        self._last_error = compact_text(reason, 160)
+
+    def _clear_last_error(self) -> None:
+        self._last_error = ""
+
+    def last_error_reason(self) -> str:
+        return getattr(self, "_last_error", "")
     
     def _post_json(self, path: str, payload: dict, settings: Any | None = None) -> dict:
         settings = settings or self._runtime_settings()
@@ -160,7 +227,7 @@ class BaseLLMAgent(Generic[T]):
         no_apikey_reason: str = "未配置 API 密钥",
         **kwargs: Any,
     ) -> T:
-        """Execute with LLM-first, rule-based-fallback pattern.
+        """Execute with LLM-first, deterministic-fallback pattern.
         
         Args:
             story: Current story state
@@ -195,14 +262,5 @@ class BaseLLMAgent(Generic[T]):
                 story.current_chapter,
                 reason,
             )
-        else:
-            record_agent_runtime(
-                story,
-                self.agent_name,
-                story.agent_settings.mode,
-                "rule-based",
-                story.current_chapter,
-            )
-        
         rule_args = rule_args or {}
         return rule_fallback(**{**kwargs, **rule_args})

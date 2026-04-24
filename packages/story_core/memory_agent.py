@@ -4,7 +4,12 @@ import json
 import urllib.error
 from typing import Protocol
 
-from packages.story_core.agent_base import BaseOpenAIProvider
+from packages.story_core.agent_base import (
+    BaseOpenAIProvider,
+    compact_list,
+    compact_text,
+    parse_json_message_content,
+)
 from packages.story_core.memory import apply_post_chapter_updates
 from packages.story_core.models import DirectorDecision, StoryState
 from packages.story_core.runtime import record_agent_runtime
@@ -47,7 +52,7 @@ class OpenAIMemorySummaryProvider(BaseOpenAIProvider):
                 {
                     "role": "system",
                     "content": (
-                        "You are the memory agent for a novel engine. "
+                        "You are the memory agent for an evolving Chinese novel project. "
                         "Return JSON only with summary, facts, unresolved_threads, next_focus, chapter_title, "
                         "timeline_summary, timeline_impact, foreshadowing, and character_memory_notes."
                     ),
@@ -67,16 +72,23 @@ class OpenAIMemorySummaryProvider(BaseOpenAIProvider):
             ],
             "response_format": {"type": "json_object"},
             "temperature": float(story.agent_settings.temperature),
+            "max_tokens": 900,
         }
 
         try:
             response = self._post_json("/chat/completions", payload, settings)
-            content = response["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-        except (KeyError, IndexError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, ValueError):
+            parsed = parse_json_message_content(response)
+            if parsed is None:
+                self._set_last_error("记忆代理返回的内容不是有效 JSON")
+                return None
+            self._clear_last_error()
+            return parsed
+        except urllib.error.HTTPError as exc:
+            self._set_last_error(f"记忆代理 HTTP {exc.code}")
             return None
-
-        return parsed if isinstance(parsed, dict) else None
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            self._set_last_error(f"记忆代理请求失败：{exc}")
+            return None
 
     def _build_prompt(
         self,
@@ -88,19 +100,39 @@ class OpenAIMemorySummaryProvider(BaseOpenAIProvider):
         event_beat: dict,
         cadence: str,
     ) -> str:
-        latest_summary = story.chapter_summaries[-1].summary if story.chapter_summaries else "No prior chapter."
+        latest_summary = compact_text(
+            story.chapter_summaries[-1].summary if story.chapter_summaries else "No prior chapter.",
+            220,
+        )
+        compact_decision = {
+            "chapter_title": compact_text(decision.chapter_title, 40),
+            "next_focus": compact_text(decision.next_focus, 120),
+            "primary_conflict": decision.primary_conflict,
+            "secondary_conflict": decision.secondary_conflict,
+        }
+        compact_conflict = {
+            "summary": compact_text(str(conflict_summary.get("summary", "")), 140),
+            "stakes": compact_text(str(conflict_summary.get("stakes", "")), 120),
+        }
+        compact_event = {
+            "turn": compact_text(str(event_beat.get("turn", "")), 80),
+            "pivot": compact_text(str(event_beat.get("pivot", "")), 100),
+            "closing": compact_text(str(event_beat.get("closing", "")), 80),
+        }
         return "\n".join(
             [
-                f"Story outline: {story.outline}",
+                f"Story outline: {compact_text(story.outline, 480)}",
                 f"Genre: {story.genre}",
                 f"Style: {story.style}",
+                f"Author constraints: {json.dumps(compact_list(story.author_constraints, max_items=4, item_chars=70), ensure_ascii=False)}",
                 f"Current chapter: {chapter_number}",
                 f"Latest chapter summary: {latest_summary}",
-                f"Chapter body: {body}",
-                f"Director decision: {json.dumps(decision.model_dump(), ensure_ascii=False)}",
-                f"Conflict summary: {json.dumps(conflict_summary, ensure_ascii=False)}",
-                f"Event beat: {json.dumps(event_beat, ensure_ascii=False)}",
+                f"Chapter body: {compact_text(body, 1200)}",
+                f"Director decision: {json.dumps(compact_decision, ensure_ascii=False)}",
+                f"Conflict summary: {json.dumps(compact_conflict, ensure_ascii=False)}",
+                f"Event beat: {json.dumps(compact_event, ensure_ascii=False)}",
                 f"Cadence: {cadence}",
+                "Keep only durable story memory: facts that should matter next chapter, unresolved threads, and explicit timeline impact.",
                 "Return a JSON object with summary, facts, unresolved_threads, next_focus, chapter_title, timeline_summary, timeline_impact, foreshadowing, and character_memory_notes.",
             ]
         )
@@ -207,9 +239,11 @@ class MemoryAgent:
                         if name and memory and name in by_name:
                             by_name[name].memory.append(memory)
             else:
-                fallback_reason = "LLM 生成没有可用摘要"
+                fallback_reason = "LLM did not return a usable memory summary"
+                if hasattr(self.llm_provider, "last_error_reason"):
+                    fallback_reason = self.llm_provider.last_error_reason() or fallback_reason
                 if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                    fallback_reason = "未配置 OPENAI_API_KEY"
+                    fallback_reason = "Missing OPENAI_API_KEY"
                 record_agent_runtime(
                     story,
                     "MemoryAgent",
@@ -218,13 +252,5 @@ class MemoryAgent:
                     story.current_chapter,
                     fallback_reason,
                 )
-        else:
-            record_agent_runtime(
-                story,
-                "MemoryAgent",
-                story.agent_settings.mode,
-                "rule-based",
-                story.current_chapter,
-            )
 
         return story

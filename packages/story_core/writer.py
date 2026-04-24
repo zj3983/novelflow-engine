@@ -4,238 +4,213 @@ from packages.story_core.models import StoryState
 from packages.story_core.planner import build_chapter_title
 
 
-# ── genre-agnostic detail sentences ──────────────────────────
-
-_DETAIL_POOL = [
-    "空气里多了一种说不清的味道，像是某种被刻意隐瞒的东西终于露出了边角。",
-    "脚步声在远处停了停，又继续走远了。没有人回头。",
-    "桌上的茶已经凉透，可没人有空去换一杯。",
-    "窗外的光渐渐暗下来，屋里的影子被拉得很长。",
-    "有人在门后站了一会儿，最后还是什么也没说就离开了。",
-    "一个不该出现在这里的东西，安静地躺在它不该出现的位置上。",
-    "风从缝隙里钻进来，吹动了一张没人注意到的纸。",
-    "沉默持续得太久，久到连呼吸都变得小心翼翼。",
-    "某个角落传来一声极轻的响动，像是有什么东西被轻轻推开了。",
-    "他低头看了一眼自己的手，手心里多了一道不知道什么时候留下的痕迹。",
-]
-
-
-def _detail_sentence(story: StoryState, chapter_number: int) -> str:
-    return _DETAIL_POOL[chapter_number % len(_DETAIL_POOL)]
-
-
-# ── goal direction ───────────────────────────────────────────
-
-def _goal_direction(goals: list[str]) -> str:
-    goal_text = " ".join(goals).lower()
-    if any(word in goal_text for word in ("protect", "save", "guard", "help", "hide")):
-        return "cooperative"
-    if any(word in goal_text for word in ("expose", "find", "accuse", "hunt")):
-        return "adversarial"
-    return "uncertain"
-
-
-# ── relationship sentence ────────────────────────────────────
-
-def _relationship_sentence(story: StoryState) -> str:
-    if not story.characters or not story.characters[0].relationships:
-        return "局面还没有给出答案，空气里只剩下层层逼近的压力。"
-
-    lead = story.characters[0]
-    relation = next(iter(lead.relationships.values()))
-    direction = _goal_direction(lead.goals)
-    if direction == "adversarial" or relation.tension >= 0.8:
-        return f"{lead.name}与{relation.target}的每一次交锋，都在把这段脆弱同盟推向决裂。"
-    if direction == "cooperative" or (relation.trust >= 0.5 and relation.tension <= 0.5):
-        return f"{lead.name}与{relation.target}勉强维持着同步，连沉默都像一种试探后的信任。"
-    return f"{lead.name}谨慎地观察着{relation.target}，还拿不准这段关系会倒向哪一边。"
-
-
-# ── continuity sentence ──────────────────────────────────────
-
-def _continuity_sentence(story: StoryState) -> str:
-    parts: list[str] = []
-
-    if story.world_facts:
-        parts.append(f"上一章留下的事实仍在发酵：{story.world_facts[-1]}。")
-    if story.foreshadowing:
-        parts.append(f"先前埋下的暗线仍未熄灭：{story.foreshadowing[0].text}。")
-
-    return "".join(parts)
-
-
-# ── next focus sentence ──────────────────────────────────────
-
-def _next_focus_sentence(story: StoryState) -> str:
-    if not story.chapter_summaries:
-        return ""
-
-    next_focus = story.chapter_summaries[-1].next_focus
-    if not next_focus:
-        return ""
-
-    return f"而这一章过后，新的焦点也已经浮出水面：{next_focus}。"
-
-
-# ── opening hook sentence ────────────────────────────────────
-
-def _opening_hook_sentence(story: StoryState) -> str:
-    if not story.chapter_summaries:
-        return ""
-
-    next_focus = story.chapter_summaries[-1].next_focus
-    if not next_focus:
-        return ""
-
-    return f"这一章一开场，所有目光都先被拉向了{next_focus}。"
-
-
-# ── conflict participant count ───────────────────────────────
-
-def _conflict_participant_count(conflict_summary: dict | None) -> int:
-    if not conflict_summary:
-        return 0
-
-    primary = conflict_summary.get("primary_conflict", {})
-    names = {primary.get("lead"), primary.get("opposition")} - {None, "", "circumstance"}
-    secondary = conflict_summary.get("secondary_conflict", {})
-    for participant in secondary.get("participants", []) or []:
-        if isinstance(participant, dict):
-            name = participant.get("name", "")
-        else:
-            name = str(participant)
-        if name:
-            names.add(name)
-    return len(names)
-
-
-# ── tempo ────────────────────────────────────────────────────
-
-def _tempo(
-    story: StoryState,
-    conflict_summary: dict | None,
-    event_beat: dict | None,
-    cadence: str | None = None,
-) -> str:
-    if cadence in {"urgent", "measured", "breathing"}:
-        return cadence
-
-    style_text = (story.style or "").lower()
-    genre_text = (story.genre or "").lower()
-
-    score = 0
-    participants = _conflict_participant_count(conflict_summary)
-    score += 2 if participants >= 3 else 1 if participants == 2 else 0
-    if conflict_summary and conflict_summary.get("stakes"):
-        score += 1
-    if conflict_summary and (conflict_summary.get("secondary_conflict") or {}).get("pressure") == "time":
-        score += 1
-    if event_beat and event_beat.get("turn"):
-        score += 1
-
-    if "tense" in style_text or "suspense" in style_text or "noir" in style_text:
-        score += 2
-    if "mystery" in genre_text:
-        score += 1
-
-    if score >= 5:
-        return "urgent"
-    if score >= 3:
-        return "measured"
-    return "breathing"
-
-
-def _tempo_label(tempo: str) -> str:
-    if tempo == "urgent":
-        return "紧绷"
-    if tempo == "measured":
-        return "稳压"
-    return "舒张"
-
-
-# ── closing sentence ─────────────────────────────────────────
-
-def _closing_sentence(tempo: str) -> str:
-    if tempo == "urgent":
-        return "章节末尾像刀锋骤然落下，谁也来不及把话说完。"
-    if tempo == "measured":
-        return "章节在一口被按住的呼吸里收住，真正的变化却已经开始。"
-    return "章节收束得很轻，可轻并不意味着风暴已经过去。"
-
-
-# ── resolve chapter title ────────────────────────────────────
-
 def _resolve_chapter_title(
     story: StoryState,
     chapter_number: int,
     conflict_summary: dict | None,
     chapter_title_override: str | None = None,
 ) -> str:
-    # 1. Explicit override (e.g. from DirectorDecision)
     if chapter_title_override:
         return chapter_title_override
 
-    # 2. Existing summary for this chapter
     for summary in story.chapter_summaries:
         if summary.chapter_number == chapter_number and summary.chapter_title:
             return summary.chapter_title
 
-    # 3. Build from conflict/topic
-    latest_next_focus = story.chapter_summaries[-1].next_focus if story.chapter_summaries else ""
-    return build_chapter_title(
-        chapter_number,
-        conflict_summary,
-        latest_next_focus,
-        genre=story.genre,
+    latest_focus = story.chapter_summaries[-1].next_focus if story.chapter_summaries else ""
+    return build_chapter_title(chapter_number, conflict_summary, latest_focus, genre=story.genre)
+
+
+def _tempo_label(cadence: str | None) -> str:
+    if cadence == "urgent":
+        return "紧绷"
+    if cadence == "breathing":
+        return "舒张"
+    return "稳压"
+
+
+def _lead(story: StoryState):
+    return story.characters[0] if story.characters else None
+
+
+def _first_goal(character) -> str:
+    if not character or not character.goals:
+        return "稳住当前局面"
+    return character.goals[0]
+
+
+def _is_game_novel(story: StoryState, event_plan: dict | None) -> bool:
+    haystack = " ".join(
+        [
+            story.genre,
+            story.style,
+            story.outline,
+            str((event_plan or {}).get("pivot", "")),
+            str((event_plan or {}).get("collision", "")),
+        ]
     )
+    return any(token in haystack for token in ("网游", "游戏", "新手村", "副本", "公会", "登录", "升级", "VRMMO"))
 
 
-# ── narrative sentence builders ──────────────────────────────
-
-def _narrate_lead(story: StoryState, chapter_number: int) -> str:
-    lead = story.characters[0] if story.characters else None
-    if lead is None:
-        return "主角继续向迷局深处推进。"
-    lead_goal = lead.goals[0] if lead.goals else "掌控局面"
-    location = lead.location if lead.location else "迷局深处"
-    direction = _goal_direction(lead.goals)
-
-    if direction == "adversarial":
-        return f"{lead.name}踏入{location}，目标只有一个：{lead_goal}。"
-    if direction == "cooperative":
-        return f"{lead.name}在{location}稳住阵脚，心里盘算着如何{lead_goal}。"
-    return f"{lead.name}继续向{location}推进，试图{lead_goal}。"
+def _world_anchor(story: StoryState, memory_constraints: dict | None) -> str:
+    if memory_constraints:
+        facts = memory_constraints.get("must_keep_facts", [])
+        if isinstance(facts, list) and facts:
+            return str(facts[0]).strip()
+    if story.world_facts:
+        return story.world_facts[-1]
+    return ""
 
 
-def _narrate_primary_conflict(conflict_summary: dict | None) -> str:
-    if not conflict_summary:
-        return ""
-    summary = conflict_summary.get("summary", "")
-    if not summary:
-        return ""
-    # Convert meta-description into narrative form
-    return summary
+def _pick_named_actions(event_plan: dict | None) -> list[dict]:
+    if not event_plan:
+        return []
+    actions = event_plan.get("ordered_actions", [])
+    if not isinstance(actions, list):
+        return []
+    cleaned: list[dict] = []
+    for item in actions[:4]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        cleaned.append(
+            {
+                "name": name,
+                "goal": str(item.get("goal", "")).strip(),
+                "action": str(item.get("action", "")).strip(),
+            }
+        )
+    return cleaned
 
 
-def _narrate_stakes(stakes: str | None) -> str:
+def _opening_paragraph(
+    story: StoryState,
+    conflict_summary: dict | None,
+    event_plan: dict | None,
+    memory_constraints: dict | None,
+) -> str:
+    lead = _lead(story)
+    lead_name = lead.name if lead else "主角"
+    goal = _first_goal(lead)
+    pivot = str((event_plan or {}).get("pivot", "")).strip()
+    collision = str((event_plan or {}).get("collision", "")).strip()
+    anchor = _world_anchor(story, memory_constraints)
+
+    if _is_game_novel(story, event_plan):
+        parts = [
+            f"{lead_name}重新上线的时候，天启之门的晨雾还没从新手村外散干净。",
+            f"他先确认了一遍今天最不能拖的事：{goal}。",
+        ]
+        if anchor:
+            parts.append(f"可真正让他不敢放松的，不是经验条涨得慢，而是那条已经摆在眼前的硬事实：{anchor}。")
+        if pivot:
+            parts.append(f"也正因为这样，原本该是平稳发育的一天，被{pivot}硬生生拽进了台前。")
+        elif collision:
+            parts.append(f"也正因为这样，局势很快顺着{collision}的方向压了过来。")
+        return "".join(parts)
+
+    parts = [f"{lead_name}一开始只是想先把手头最要紧的事处理掉：{goal}。"]
+    if anchor:
+        parts.append(f"可眼下最不容忽视的事实只有一个：{anchor}。")
+    if pivot:
+        parts.append(f"局面真正拧紧的地方，也正是{pivot}。")
+    return "".join(parts)
+
+
+def _stakes_paragraph(conflict_summary: dict | None) -> str:
+    stakes = str((conflict_summary or {}).get("stakes", "")).strip()
     if not stakes:
         return ""
-    return stakes
+    return f"苏叶心里很清楚，这一章真正危险的地方不在眼前谁赢谁输，而在于{stakes}。"
 
 
-def _narrate_secondary_pressure(detail: str | None) -> str:
-    if not detail:
-        return ""
-    return detail
+def _build_scene_paragraphs(story: StoryState, event_plan: dict | None) -> list[str]:
+    actions = _pick_named_actions(event_plan)
+    if not actions:
+        return []
+
+    lead_name = _lead(story).name if _lead(story) else ""
+    others = [item for item in actions if item["name"] != lead_name]
+    paragraphs: list[str] = []
+
+    if _is_game_novel(story, event_plan):
+        if others:
+            first = others[0]
+            paragraphs.append(
+                f"最先找上门的是{first['name']}。对方没有把话说得太透，可那种一步步把人往墙角逼的劲道却很明显，"
+                f"摆明了是冲着“{first['goal'] or first['action']}”来的。"
+            )
+        if lead_name:
+            paragraphs.append(
+                f"{lead_name}没有立刻翻脸，只是一边顺着任务面板和周围玩家的动静往下看，一边在心里重新摆正顺序。"
+                f"他知道，眼下每多说一句废话，都可能把本该属于自己的节奏拱手让出去。"
+            )
+        if len(others) > 1:
+            second = others[1]
+            paragraphs.append(
+                f"偏偏侧面也没有空出来。{second['name']}像是早就盯住了这条线，"
+                f"明里暗里都在给局面加压，逼得整件事越来越不像一次普通接触，反而更像试探后手的前哨。"
+            )
+        return paragraphs
+
+    for item in others[:2]:
+        paragraphs.append(
+            f"{item['name']}先动了。对方表面上还算克制，真正的力道却都藏在后手里，"
+            f"显然是想借着“{item['goal'] or item['action']}”把场面一点点拧紧。"
+        )
+    return paragraphs
 
 
-def _narrate_event_pivot(event_line: str | None) -> str:
-    if not event_line:
-        return ""
-    return event_line
+def _constraint_paragraphs(memory_constraints: dict | None) -> list[str]:
+    if not memory_constraints:
+        return []
+
+    paragraphs: list[str] = []
+    unresolved = memory_constraints.get("unresolved_threads", [])
+    if isinstance(unresolved, list) and unresolved:
+        paragraphs.append(f"更麻烦的是，那条还没真正收束的暗线始终压在众人头顶：{unresolved[0]}。")
+
+    foreshadowing = memory_constraints.get("protected_foreshadowing", [])
+    if isinstance(foreshadowing, list) and foreshadowing:
+        first = foreshadowing[0]
+        if isinstance(first, dict):
+            text = str(first.get("text", "")).strip()
+            if text:
+                paragraphs.append(f"那一点若有若无的预兆并没有消失，反而在这时候显得更刺眼：{text}。")
+
+    author_constraints = memory_constraints.get("author_constraints", [])
+    if isinstance(author_constraints, list):
+        cleaned = [str(item).strip() for item in author_constraints[:2] if str(item).strip()]
+        if cleaned:
+            paragraphs.append(
+                f"所以这一局没有侥幸，也没有天降答案。苏叶只能沿着既定规则一点点往前拱，"
+                f"每一步都得自己扛住：{'；'.join(cleaned)}。"
+            )
+
+    return paragraphs
 
 
-# ── main chapter body writer ─────────────────────────────────
+def _pivot_paragraph(event_beat: dict | None, event_plan: dict | None) -> str:
+    pivot = str((event_plan or {}).get("pivot", "")).strip() or str((event_beat or {}).get("pivot", "")).strip()
+    collision = str((event_plan or {}).get("collision", "")).strip()
+    if pivot and collision:
+        return f"等到场面真正撞响的时候，所有人都看明白了：{pivot}，而这背后牵出来的，正是{collision}。"
+    if pivot:
+        return f"真正把局面推到明处的，还是{pivot}。"
+    return ""
+
+
+def _closing_paragraph(story: StoryState, event_plan: dict | None) -> str:
+    next_focus = str((event_plan or {}).get("next_focus", "")).strip()
+    if not next_focus and story.chapter_summaries:
+        next_focus = story.chapter_summaries[-1].next_focus
+
+    if next_focus:
+        return f"这一章收住时，局面并没有真正落定。新的压力已经顺着缝隙渗出来，下一步绕不开的，正是{next_focus}。"
+    return "这一章收住时，表面上风平浪静，真正的变化却已经在水面下换了方向。"
+
 
 def write_chapter_body(
     story: StoryState,
@@ -244,42 +219,29 @@ def write_chapter_body(
     event_beat: dict | None = None,
     cadence: str | None = None,
     chapter_title_override: str | None = None,
+    event_plan: dict | None = None,
+    memory_constraints: dict | None = None,
 ) -> str:
     chapter_title = _resolve_chapter_title(story, chapter_number, conflict_summary, chapter_title_override)
-    tempo_value = _tempo(story, conflict_summary, event_beat, cadence=cadence)
-    tempo_label = _tempo_label(tempo_value)
+    tempo_label = _tempo_label(cadence)
 
-    opening_hook_line = _opening_hook_sentence(story)
-    relation_line = _relationship_sentence(story)
-    continuity_line = _continuity_sentence(story)
-    next_focus_line = _next_focus_sentence(story)
-
-    primary_conflict = _narrate_primary_conflict(conflict_summary)
-    stakes = _narrate_stakes(conflict_summary.get("stakes", "") if conflict_summary else "")
-    secondary_line = _narrate_secondary_pressure(
-        conflict_summary.get("secondary_conflict", {}).get("detail", "")
-        if conflict_summary
-        else ""
-    )
-    event_line = _narrate_event_pivot(event_beat.get("pivot", "") if event_beat else "")
-    detail_line = _detail_sentence(story, chapter_number)
-    closing_line = _closing_sentence(tempo_value)
-
-    lead_narrative = _narrate_lead(story, chapter_number)
-
-    parts = [
+    paragraphs: list[str] = [
         f"第{chapter_number}章《{chapter_title}》",
         f"（节奏：{tempo_label}）",
-        opening_hook_line,
-        lead_narrative,
-        primary_conflict,
-        stakes and f"这一局真正的代价在于：{stakes}",
-        secondary_line and f"旁侧压力也在同步逼近：{secondary_line}",
-        event_line,
-        relation_line,
-        continuity_line,
-        detail_line,
-        next_focus_line,
-        closing_line,
+        "",
+        _opening_paragraph(story, conflict_summary, event_plan, memory_constraints),
     ]
-    return " ".join(part for part in parts if part).strip()
+
+    stakes = _stakes_paragraph(conflict_summary)
+    if stakes:
+        paragraphs.append(stakes)
+
+    paragraphs.extend(_build_scene_paragraphs(story, event_plan))
+    paragraphs.extend(_constraint_paragraphs(memory_constraints))
+
+    pivot = _pivot_paragraph(event_beat, event_plan)
+    if pivot:
+        paragraphs.append(pivot)
+
+    paragraphs.append(_closing_paragraph(story, event_plan))
+    return "\n\n".join(part for part in paragraphs if part).strip()

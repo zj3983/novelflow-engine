@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from packages.story_core.book_import import normalize_book_source_path, scan_book_folder
+from packages.story_core.book_import import (
+    BookBootstrapCharacter,
+    BookCharacterProfile,
+    BookWorldBlueprint,
+    normalize_book_source_path,
+    scan_book_folder,
+)
 from packages.story_core.book_browser import (
     BookBrowserCatalogResponse,
     BookBrowserItem,
@@ -35,9 +42,15 @@ class BookFolderReportResponse(BaseModel):
 
 class BookBootstrapDraftResponse(BaseModel):
     source_path: str
+    title: str = ""
     outline: str = ""
     summary: str = ""
-    characters: list[str] = Field(default_factory=list)
+    world_summary: str = ""
+    current_focus: str = ""
+    author_constraints: list[str] = Field(default_factory=list)
+    characters: list[BookBootstrapCharacter] = Field(default_factory=list)
+    character_profiles: list[BookCharacterProfile] = Field(default_factory=list)
+    world_blueprint: BookWorldBlueprint = Field(default_factory=BookWorldBlueprint)
 
 
 class BookBootstrapResponse(BaseModel):
@@ -47,6 +60,18 @@ class BookBootstrapResponse(BaseModel):
 
 class BookBrowserCatalogRequest(BaseModel):
     source_path: str = Field(min_length=1)
+
+
+class FolderItem(BaseModel):
+    name: str
+    path: str
+    is_drive: bool = False
+
+
+class FolderListResponse(BaseModel):
+    drives: list[FolderItem] = Field(default_factory=list)
+    folders: list[FolderItem] = Field(default_factory=list)
+    current_path: str = ""
 
 
 def _resolve_source_dir(source_path: str) -> Path:
@@ -177,9 +202,15 @@ def bootstrap(payload: BookImportRequest) -> BookBootstrapResponse:
         report=_public_report(result.report),
         draft=BookBootstrapDraftResponse(
             source_path=result.bootstrap.source_path,
+            title=result.bootstrap.title,
             outline=result.bootstrap.outline,
             summary=result.bootstrap.summary,
+            world_summary=result.bootstrap.world_summary,
+            current_focus=result.bootstrap.current_focus,
+            author_constraints=list(result.bootstrap.author_constraints),
             characters=list(result.bootstrap.characters),
+            character_profiles=list(result.bootstrap.character_profiles),
+            world_blueprint=result.bootstrap.world_blueprint,
         ),
     )
 
@@ -189,6 +220,40 @@ def catalog(payload: BookBrowserCatalogRequest):
     base = _resolve_source_dir(payload.source_path)
     result = scan_book_folder(base)
     return _build_catalog(base, result.report)
+
+
+class FolderListRequest(BaseModel):
+    source_path: str = ""
+
+
+@router.post("/book-import/list-folders")
+def list_folders(payload: FolderListRequest) -> FolderListResponse:
+    """列出指定路径下的文件夹，用于前端文件夹选择器"""
+    target = payload.source_path.strip()
+
+    # 列出磁盘驱动器 (Windows)
+    if not target or target == "":
+        drives = []
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive_path = f"{letter}:\\"
+            if os.path.exists(drive_path):
+                drives.append(FolderItem(name=f"{letter}: 盘", path=drive_path, is_drive=True))
+        return FolderListResponse(drives=drives, current_path="")
+
+    # 列出目标路径下的文件夹
+    target_path = Path(target)
+    if not target_path.exists() or not target_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"路径不存在: {target}")
+
+    folders = []
+    try:
+        for item in sorted(target_path.iterdir()):
+            if item.is_dir():
+                folders.append(FolderItem(name=item.name, path=str(item)))
+    except PermissionError:
+        raise HTTPException(status_code=403, detail=f"无权限访问: {target}")
+
+    return FolderListResponse(folders=folders, current_path=str(target_path))
 
 
 def init_book_import_routes() -> APIRouter:

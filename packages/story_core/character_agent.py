@@ -5,7 +5,12 @@ import re
 import urllib.error
 from typing import Protocol
 
-from packages.story_core.agent_base import BaseOpenAIProvider
+from packages.story_core.agent_base import (
+    BaseOpenAIProvider,
+    compact_list,
+    compact_text,
+    parse_json_message_content,
+)
 from packages.story_core.models import CharacterProposal, CharacterState, StoryState
 from packages.story_core.runtime import record_agent_runtime
 
@@ -13,9 +18,21 @@ from packages.story_core.runtime import record_agent_runtime
 def _goal_topic(goal: str) -> str:
     goal_text = goal.lower()
     for candidate in (
-        "witness", "ledger", "truth", "forgery", "letter",
-        "archives", "archive", "secret", "artifact", "power",
-        "cultivation", "treasure", "legacy", "realm", "formation",
+        "witness",
+        "ledger",
+        "truth",
+        "forgery",
+        "letter",
+        "archives",
+        "archive",
+        "secret",
+        "artifact",
+        "power",
+        "cultivation",
+        "treasure",
+        "legacy",
+        "realm",
+        "formation",
     ):
         if candidate in goal_text:
             return candidate
@@ -25,10 +42,10 @@ def _goal_topic(goal: str) -> str:
 def _goal_action(goal: str) -> str:
     goal_text = goal.lower()
     if any(word in goal_text for word in ("protect", "save", "guard", "help")):
-        return f"tries to shield the fragile truth while attempting to {goal}"
+        return f"一边护住脆弱的真相，一边尝试{goal}"
     if any(word in goal_text for word in ("expose", "find", "accuse", "hunt")):
-        return f"pushes hard to {goal} before the opposition closes ranks"
-    return f"moves carefully to {goal} without losing leverage"
+        return f"抢在对手合围之前，强行推进{goal}"
+    return f"谨慎推进{goal}，同时不让自己失去筹码"
 
 
 def _emotion_drive(emotion: str) -> int:
@@ -97,14 +114,11 @@ def _latest_thread_boost(story: StoryState, character_name: str) -> int:
 
 
 def _new_character_candidates(character: CharacterState) -> list[str]:
-    # Generic: extract character name hints from secrets.
-    # Try to capture a preceding adjective/title modifier (e.g. "Old archivist" → "Old Archivist").
     candidates: list[str] = []
     for secret in character.secrets:
         secret_lower = secret.lower()
         for keyword in ("archivist", "keeper", "guardian", "elder", "master"):
             if keyword in secret_lower:
-                # Look for an optional preceding adjective (Old, Young, Blind, Silent, etc.)
                 match = re.search(r"\b([A-Za-z]+)\s+" + keyword, secret, re.IGNORECASE)
                 if match:
                     title = match.group(1).capitalize() + " " + keyword.capitalize()
@@ -113,6 +127,10 @@ def _new_character_candidates(character: CharacterState) -> list[str]:
                 if title not in candidates:
                     candidates.append(title)
     return candidates
+
+
+def _constraint_texts(story: StoryState) -> list[str]:
+    return [item.strip() for item in story.author_constraints if item.strip()]
 
 
 class CharacterProposalProvider(Protocol):
@@ -166,35 +184,41 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
             return []
 
         prompt = self._build_prompt(story, active_characters)
-        temperature = float(story.agent_settings.temperature)
-
         payload = {
             "model": story.agent_settings.character_model or story.agent_settings.global_model or "gpt-5.4",
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You are a character action planner for a novel engine. "
-                        "Return JSON only, with a top-level object containing a proposals array. "
+                        "You are a character action planner for an evolving Chinese novel project. "
+                        "Return JSON only with a top-level object containing a proposals array. "
                         "Each proposal must include name, goal, emotion, action, priority, and new_character_candidates."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
             "response_format": {"type": "json_object"},
-            "temperature": temperature,
+            "temperature": float(story.agent_settings.temperature),
+            "max_tokens": 700,
         }
 
         try:
             response = self._post_json("/chat/completions", payload, settings)
-            content = response["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-        except (KeyError, IndexError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, ValueError):
+            parsed = parse_json_message_content(response)
+            if parsed is None:
+                self._set_last_error("角色代理返回的内容不是有效 JSON")
+                return []
+            self._clear_last_error()
+        except urllib.error.HTTPError as exc:
+            self._set_last_error(f"角色代理 HTTP {exc.code}")
+            return []
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            self._set_last_error(f"角色代理请求失败：{exc}")
             return []
 
-        raw_proposals = parsed.get("proposals", []) if isinstance(parsed, dict) else []
+        raw_proposals = parsed.get("proposals", [])
         proposals: list[CharacterProposal] = []
-        for item in raw_proposals:
+        for item in raw_proposals if isinstance(raw_proposals, list) else []:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name", "")).strip()
@@ -219,29 +243,42 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
         return proposals
 
     def _build_prompt(self, story: StoryState, characters: list[CharacterState]) -> str:
-        current_summary = story.chapter_summaries[-1].summary if story.chapter_summaries else "No prior chapter."
-        character_lines = []
+        current_summary = compact_text(
+            story.chapter_summaries[-1].summary if story.chapter_summaries else "No prior chapter.",
+            220,
+        )
+        character_lines: list[str] = []
         for character in characters:
             relationships = ", ".join(
-                f"{relationship.target} (trust={relationship.trust}, tension={relationship.tension})"
-                for relationship in character.relationships.values()
+                compact_text(
+                    f"{relationship.target}(trust={relationship.trust}, tension={relationship.tension})",
+                    48,
+                )
+                for relationship in list(character.relationships.values())[:3]
             ) or "none"
-            goals = "; ".join(character.goals) or "hold the line"
-            secrets = "; ".join(character.secrets) or "none"
+            goals = "; ".join(compact_list(character.goals, max_items=2, item_chars=60)) or "hold the line"
+            secrets = "; ".join(compact_list(character.secrets, max_items=2, item_chars=50)) or "none"
             character_lines.append(
-                f"- {character.name} [{character.role}] goals: {goals}; emotion: {character.current_emotion}; relationships: {relationships}; secrets: {secrets}"
+                compact_text(
+                    f"- {character.name} [{character.role}] goals: {goals}; emotion: {character.current_emotion}; "
+                    f"location: {character.location or 'unknown'}; relationships: {relationships}; secrets: {secrets}",
+                    260,
+                )
             )
 
         return "\n".join(
             [
-                f"Story outline: {story.outline}",
+                f"Story outline: {compact_text(story.outline, 520)}",
                 f"Genre: {story.genre}",
                 f"Style: {story.style}",
+                f"Author constraints: {json.dumps(compact_list(_constraint_texts(story), max_items=4, item_chars=70), ensure_ascii=False)}",
                 f"Current chapter: {story.current_chapter}",
                 f"Latest chapter summary: {current_summary}",
                 "Active characters:",
                 *character_lines,
-                "Return JSON with the structure:",
+                "Treat author constraints as hard guardrails when proposing actions or suggesting new characters.",
+                "Prefer concrete next moves grounded in the current world state instead of abstract summaries.",
+                "Return JSON with this structure:",
                 '{ "proposals": [ { "name": "...", "goal": "...", "emotion": "...", "action": "...", "priority": 0, "new_character_candidates": [] } ] }',
             ]
         )
@@ -271,9 +308,12 @@ class CharacterAgent:
                     story.current_chapter,
                 )
                 return llm_proposals
-            fallback_reason = "LLM 生成没有可用提案"
+
+            fallback_reason = "LLM did not return usable proposals"
+            if hasattr(self.llm_provider, "last_error_reason"):
+                fallback_reason = self.llm_provider.last_error_reason() or fallback_reason
             if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                fallback_reason = "未配置 OPENAI_API_KEY"
+                fallback_reason = "Missing OPENAI_API_KEY"
             record_agent_runtime(
                 story,
                 "CharacterAgent",
@@ -281,13 +321,5 @@ class CharacterAgent:
                 "fallback",
                 story.current_chapter,
                 fallback_reason,
-            )
-        else:
-            record_agent_runtime(
-                story,
-                "CharacterAgent",
-                story.agent_settings.mode,
-                "rule-based",
-                story.current_chapter,
             )
         return self.rule_provider.propose_all(story)

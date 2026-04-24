@@ -13,11 +13,11 @@ import urllib.request
 
 class RetryConfig:
     """Configuration for retry behavior."""
-    max_retries: int = 3
-    initial_delay: float = 2.0  # seconds
+    max_retries: int = 1
+    initial_delay: float = 0.5  # seconds
     backoff_factor: float = 2.0
-    max_delay: float = 30.0
-    timeout: int = 120  # seconds (increased from 30 for long-form generation)
+    max_delay: float = 2.0
+    timeout: int = 75  # seconds; the current provider emits heavy reasoning tokens before returning text
     retry_on_status: tuple[int, ...] = (429, 500, 502, 503, 504)
 
 

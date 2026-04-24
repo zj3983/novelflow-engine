@@ -4,10 +4,27 @@ import json
 import urllib.error
 from typing import Protocol
 
-from packages.story_core.agent_base import BaseOpenAIProvider
+from packages.story_core.agent_base import (
+    BaseOpenAIProvider,
+    compact_list,
+    compact_text,
+    parse_json_message_content,
+)
 from packages.story_core.models import CharacterProposal, DirectorDecision, NewCharacterPolicy, StoryState
 from packages.story_core.planner import build_chapter_title, select_primary_pair
 from packages.story_core.runtime import record_agent_runtime
+
+
+def _constraint_texts(story: StoryState) -> list[str]:
+    return [item.strip() for item in story.author_constraints if item.strip()]
+
+
+def _blocks_new_characters(story: StoryState) -> bool:
+    return any(
+        keyword in constraint.lower()
+        for constraint in _constraint_texts(story)
+        for keyword in ("不要引入新角色", "禁止引入新角色", "no new character", "no new characters")
+    )
 
 
 def _character_candidates(
@@ -31,7 +48,6 @@ def _character_candidates(
                 approved.append(candidate)
                 continue
 
-            # Default: director review keeps a conservative allow-list.
             if candidate == "Old Archivist":
                 approved.append(candidate)
             else:
@@ -92,6 +108,11 @@ class RuleBasedDirectorDecisionProvider:
             proposals,
             story.agent_settings.new_character_policy,
         )
+        if _blocks_new_characters(story):
+            rejected.extend(approved)
+            rejected.extend(deferred)
+            approved = []
+            deferred = []
         next_focus = story.chapter_summaries[-1].next_focus if story.chapter_summaries else ""
         chapter_title = build_chapter_title(
             story.current_chapter,
@@ -126,32 +147,36 @@ class OpenAIDirectorDecisionProvider(BaseOpenAIProvider):
         if not settings.api_key:
             return None
 
-        prompt = self._build_prompt(story, proposals, conflict_summary, event_beat, cadence)
         payload = {
             "model": story.agent_settings.director_model or story.agent_settings.global_model or "gpt-5.4",
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You are the director agent for a novel engine. "
+                        "You are the director agent for an evolving Chinese novel project. "
                         "Return JSON only with primary_conflict, secondary_conflict, event_beat, cadence, chapter_title, "
                         "approved_new_characters, deferred_characters, rejected_characters, and next_focus."
                     ),
                 },
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": self._build_prompt(story, proposals, conflict_summary, event_beat, cadence)},
             ],
             "response_format": {"type": "json_object"},
             "temperature": float(story.agent_settings.temperature),
+            "max_tokens": 800,
         }
 
         try:
             response = self._post_json("/chat/completions", payload, settings)
-            content = response["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-        except (KeyError, IndexError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, ValueError):
+            parsed = parse_json_message_content(response)
+            if parsed is None:
+                self._set_last_error("导演代理返回的内容不是有效 JSON")
+                return None
+            self._clear_last_error()
+        except urllib.error.HTTPError as exc:
+            self._set_last_error(f"导演代理 HTTP {exc.code}")
             return None
-
-        if not isinstance(parsed, dict):
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            self._set_last_error(f"导演代理请求失败：{exc}")
             return None
 
         return DirectorDecision(
@@ -159,11 +184,11 @@ class OpenAIDirectorDecisionProvider(BaseOpenAIProvider):
             secondary_conflict=_nested_dict(parsed.get("secondary_conflict")),
             event_beat=_nested_dict(parsed.get("event_beat")),
             cadence=_normalize_cadence(parsed.get("cadence"), cadence),
-            chapter_title=str(parsed.get("chapter_title", "")).strip(),
+            chapter_title=compact_text(str(parsed.get("chapter_title", "")).strip(), 40),
             approved_new_characters=_string_list(parsed.get("approved_new_characters")),
             deferred_characters=_string_list(parsed.get("deferred_characters")),
             rejected_characters=_string_list(parsed.get("rejected_characters")),
-            next_focus=str(parsed.get("next_focus", "")).strip(),
+            next_focus=compact_text(str(parsed.get("next_focus", "")).strip(), 120),
         )
 
     def _build_prompt(
@@ -174,35 +199,53 @@ class OpenAIDirectorDecisionProvider(BaseOpenAIProvider):
         event_beat: dict,
         cadence: str,
     ) -> str:
-        latest_summary = story.chapter_summaries[-1].summary if story.chapter_summaries else "No prior chapter."
+        latest_summary = compact_text(
+            story.chapter_summaries[-1].summary if story.chapter_summaries else "No prior chapter.",
+            220,
+        )
         proposal_lines = []
-        for proposal in proposals:
+        for proposal in proposals[:4]:
             proposal_lines.append(
                 json.dumps(
                     {
                         "name": proposal.name,
-                        "goal": proposal.goal,
+                        "goal": compact_text(proposal.goal, 60),
                         "emotion": proposal.emotion,
-                        "action": proposal.action,
+                        "action": compact_text(proposal.action, 90),
                         "priority": proposal.priority,
-                        "new_character_candidates": proposal.new_character_candidates,
+                        "new_character_candidates": proposal.new_character_candidates[:2],
                     },
                     ensure_ascii=False,
                 )
             )
 
+        compact_conflict = {
+            "summary": compact_text(str(conflict_summary.get("summary", "")), 140),
+            "primary_conflict": conflict_summary.get("primary_conflict", {}),
+            "secondary_conflict": conflict_summary.get("secondary_conflict", {}),
+            "stakes": compact_text(str(conflict_summary.get("stakes", "")), 120),
+        }
+        compact_event = {
+            "turn": compact_text(str(event_beat.get("turn", "")), 80),
+            "pivot": compact_text(str(event_beat.get("pivot", "")), 100),
+            "closing": compact_text(str(event_beat.get("closing", "")), 80),
+        }
+
         return "\n".join(
             [
-                f"Story outline: {story.outline}",
+                f"Story outline: {compact_text(story.outline, 520)}",
                 f"Genre: {story.genre}",
                 f"Style: {story.style}",
                 f"Current chapter: {story.current_chapter}",
                 f"Latest chapter summary: {latest_summary}",
+                f"Author constraints: {json.dumps(compact_list(_constraint_texts(story), max_items=4, item_chars=70), ensure_ascii=False)}",
                 f"Suggested cadence: {cadence}",
-                f"Conflict summary: {json.dumps(conflict_summary, ensure_ascii=False)}",
-                f"Event beat: {json.dumps(event_beat, ensure_ascii=False)}",
+                f"Conflict summary: {json.dumps(compact_conflict, ensure_ascii=False)}",
+                f"Event beat: {json.dumps(compact_event, ensure_ascii=False)}",
                 "Character proposals:",
                 *proposal_lines,
+                "Treat author constraints as hard guardrails. Do not approve new characters if the constraints forbid them.",
+                "Choose one main conflict and one secondary pressure that can naturally produce a full chapter scene.",
                 "Return a JSON object with these keys:",
                 '{ "primary_conflict": {}, "secondary_conflict": {}, "event_beat": {}, "cadence": "measured", "chapter_title": "", "approved_new_characters": [], "deferred_characters": [], "rejected_characters": [], "next_focus": "" }',
             ]
@@ -243,9 +286,12 @@ class DirectorAgent:
                     story.current_chapter,
                 )
                 return llm_decision
-            fallback_reason = "LLM 生成没有可用裁决"
+
+            fallback_reason = "LLM did not return a usable director decision"
+            if hasattr(self.llm_provider, "last_error_reason"):
+                fallback_reason = self.llm_provider.last_error_reason() or fallback_reason
             if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                fallback_reason = "未配置 OPENAI_API_KEY"
+                fallback_reason = "Missing OPENAI_API_KEY"
             record_agent_runtime(
                 story,
                 "DirectorAgent",
@@ -253,14 +299,6 @@ class DirectorAgent:
                 "fallback",
                 story.current_chapter,
                 fallback_reason,
-            )
-        else:
-            record_agent_runtime(
-                story,
-                "DirectorAgent",
-                story.agent_settings.mode,
-                "rule-based",
-                story.current_chapter,
             )
         return self.rule_provider.decide(
             story,

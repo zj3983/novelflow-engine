@@ -61,8 +61,49 @@ def test_book_import_bootstrap_valid_folder_returns_draft_and_report(tmp_path: P
 
     draft = payload["draft"]
     assert "VOLUME" in draft["outline"]
-    assert "FOCUS" in draft["outline"]
-    assert draft["characters"] == ["Lin Yue", "Su Wan"]
+    assert "Start with the ink shop" in draft["outline"]
+    assert draft["characters"] == [
+        {"name": "Lin Yue", "goal": "investigator"},
+        {"name": "Su Wan", "goal": "witness"},
+    ]
+
+
+def test_book_import_bootstrap_returns_structured_world_blueprint(tmp_path: Path):
+    _write(tmp_path / "volume_outline.md", "VOLUME: A cautious reborn player builds early advantage.\n")
+    _write(tmp_path / "current_focus.md", "FOCUS: Secure the first hidden quest.\n")
+    _write(
+        tmp_path / "story_bible.md",
+        "\n".join(
+            [
+                "# Divine Gate Story Bible",
+                "- Game: Divine Gate is a 100% immersive global VRMMO.",
+                "- Rule: game currency can be exchanged with real money.",
+                "- Power: levels, skills, equipment, professions, and hidden quests shape advancement.",
+                "- Faction: the Dawn Guild hunts rare first-clear rewards.",
+                "- Location: Novice Village is the first resource bottleneck.",
+            ]
+        ),
+    )
+    _write(
+        tmp_path / "character_matrix.md",
+        "\n".join(
+            [
+                "## Su Ye",
+                "- **Role**: protagonist",
+                "- **Motivation**: Use rebirth knowledge without exposing the secret.",
+            ]
+        ),
+    )
+
+    response = client.post("/book-import/bootstrap", json={"source_path": str(tmp_path)})
+    assert response.status_code == 200
+
+    draft = response.json()["draft"]
+    assert draft["world_blueprint"]["premise"] == "Divine Gate Story Bible"
+    assert draft["world_blueprint"]["world_rules"] == ["game currency can be exchanged with real money."]
+    assert draft["world_blueprint"]["factions"][0]["name"] == "Dawn Guild"
+    assert draft["character_profiles"][0]["name"] == "Su Ye"
+    assert draft["character_profiles"][0]["motivation"] == "Use rebirth knowledge without exposing the secret."
 
 
 def test_book_import_bootstrap_ignores_relationship_table_headers(tmp_path: Path):

@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from packages.story_core.engine import ChapterBundle, StoryEngine
-from packages.story_core.models import NovelOutline, NovelStatus, StoryState, WorldBible
+from packages.story_core.models import NovelOutline, NovelProject, NovelStatus, StoryState, WorldBible
+from packages.story_core.runtime_config import get_runtime_strategy_settings
 
 
 # SQLite database path: next to this file, or override via env var
@@ -74,6 +75,21 @@ def _init_db(db_path: str) -> sqlite3.Connection:
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (story_id) REFERENCES stories(story_id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS novel_projects (
+            project_id TEXT PRIMARY KEY,
+            project_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS project_stories (
+            project_id TEXT NOT NULL,
+            story_id TEXT NOT NULL PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES novel_projects(project_id) ON DELETE CASCADE,
+            FOREIGN KEY (story_id) REFERENCES stories(story_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_stories_project
+            ON project_stories(project_id, created_at);
     """)
     conn.commit()
     return conn
@@ -102,6 +118,12 @@ class StoryRecord:
     branched_from_chapter: int | None = None
 
 
+class SimulationFailedError(RuntimeError):
+    def __init__(self, bundle: ChapterBundle) -> None:
+        self.bundle = bundle
+        super().__init__("simulation_failed")
+
+
 class SQLiteStoryStore:
     """SQLite-backed persistent story store.
 
@@ -121,13 +143,38 @@ class SQLiteStoryStore:
         return story.model_dump_json()
 
     def _deserialize_story(self, json_str: str) -> StoryState:
-        return StoryState.model_validate_json(json_str)
+        story = StoryState.model_validate_json(json_str)
+        self._apply_runtime_strategy_defaults(story)
+        return story
+
+    def _apply_runtime_strategy_defaults(self, story: StoryState) -> None:
+        current = story.agent_settings
+        if not (
+            current.global_model == "gpt-5.4"
+            and current.character_model == "gpt-5.4-mini"
+            and current.director_model == "gpt-5.4"
+            and current.writer_model == "gpt-5.4"
+            and current.memory_model == "gpt-5.4"
+            and float(current.temperature) == 0.7
+        ):
+            return
+
+        runtime_strategy = get_runtime_strategy_settings()
+        if runtime_strategy == current:
+            return
+        story.agent_settings = runtime_strategy.model_copy(deep=True)
 
     def _serialize_bundle(self, bundle: ChapterBundle) -> str:
         return bundle.model_dump_json()
 
     def _deserialize_bundle(self, json_str: str) -> ChapterBundle:
         return ChapterBundle.model_validate_json(json_str)
+
+    def _serialize_project(self, project: NovelProject) -> str:
+        return project.model_dump_json()
+
+    def _deserialize_project(self, json_str: str) -> NovelProject:
+        return NovelProject.model_validate_json(json_str)
 
     def _load_history(self, conn: sqlite3.Connection, story_id: str) -> list[ChapterBundle]:
         cursor = conn.execute(
@@ -180,6 +227,19 @@ class SQLiteStoryStore:
             VALUES (?, ?, ?)
             """,
             (story_id, bundle.chapter_number, self._serialize_bundle(bundle)),
+        )
+        conn.commit()
+
+    def _save_project(self, conn: sqlite3.Connection, project: NovelProject) -> None:
+        conn.execute(
+            """
+            INSERT INTO novel_projects (project_id, project_json, created_at, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(project_id) DO UPDATE SET
+                project_json = excluded.project_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (project.project_id, self._serialize_project(project)),
         )
         conn.commit()
 
@@ -284,7 +344,16 @@ class SQLiteStoryStore:
         if record is None:
             raise KeyError(story_id)
 
+        project_id = self.find_project_id_by_story(story_id)
+        if project_id:
+            project = self.get_project(project_id)
+            if project is not None:
+                record.story.author_constraints = list(project.author_constraints)
+
         bundle = engine.generate_next_chapter(record.story)
+
+        if not bundle.simulation_status.get("ok", False):
+            raise SimulationFailedError(bundle)
 
         # Update story state
         record.story = bundle.updated_story
@@ -380,6 +449,84 @@ class SQLiteStoryStore:
 
 
     # ── outline persistence ──────────────────────────────────
+
+    def create_project(self, project: NovelProject) -> NovelProject:
+        conn = self._conn()
+        self._save_project(conn, project)
+        return project
+
+    def get_project(self, project_id: str) -> NovelProject | None:
+        conn = self._conn()
+        cursor = conn.execute(
+            "SELECT project_json FROM novel_projects WHERE project_id = ?",
+            (project_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return self._deserialize_project(row[0])
+
+    def list_projects(self) -> list[NovelProject]:
+        conn = self._conn()
+        cursor = conn.execute(
+            "SELECT project_json FROM novel_projects ORDER BY updated_at DESC, created_at DESC"
+        )
+        return [self._deserialize_project(row[0]) for row in cursor.fetchall()]
+
+    def attach_story_to_project(self, project_id: str, story_id: str) -> None:
+        conn = self._conn()
+        conn.execute(
+            """
+            INSERT INTO project_stories (project_id, story_id)
+            VALUES (?, ?)
+            ON CONFLICT(story_id) DO UPDATE SET
+                project_id = excluded.project_id
+            """,
+            (project_id, story_id),
+        )
+        conn.commit()
+
+    def list_project_stories(self, project_id: str) -> list[StoryRecord]:
+        conn = self._conn()
+        cursor = conn.execute(
+            """
+            SELECT story_id
+            FROM project_stories
+            WHERE project_id = ?
+            ORDER BY created_at
+            """,
+            (project_id,),
+        )
+        records: list[StoryRecord] = []
+        for (story_id,) in cursor.fetchall():
+            record = self.get(story_id)
+            if record is not None:
+                records.append(record)
+        return records
+
+    def find_project_id_by_story(self, story_id: str) -> str | None:
+        conn = self._conn()
+        cursor = conn.execute(
+            "SELECT project_id FROM project_stories WHERE story_id = ?",
+            (story_id,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+    def set_project_active_story(self, project_id: str, story_id: str) -> NovelProject:
+        conn = self._conn()
+        project = self.get_project(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        project.active_story_id = story_id
+        project.status = "simulating"
+        self._save_project(conn, project)
+        return project
+
+    def update_project(self, project: NovelProject) -> NovelProject:
+        conn = self._conn()
+        self._save_project(conn, project)
+        return project
 
     def save_outline(self, story_id: str, outline: NovelOutline) -> None:
         conn = self._conn()

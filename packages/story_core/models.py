@@ -5,16 +5,47 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+def _contains_import_noise(text: str) -> bool:
+    lowered = text.lower()
+    return any(token in lowered for token in ("snapshots/", "author_intent", "story_bible", "book_rules", "current_focus"))
+
+
+def _sanitize_outline_text(text: str) -> str:
+    if not text:
+        return text
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _contains_import_noise(line):
+            continue
+        lines.append(line)
+        if len(lines) >= 24:
+            break
+    cleaned = "\n".join(lines).strip()
+    return cleaned or text[:1200]
+
+
+def _sanitize_character_goal(goal: str, role: str) -> str:
+    compact = " ".join(goal.split()).strip()
+    if not compact:
+        return ""
+    if len(compact) > 180 or _contains_import_noise(compact):
+        return "推进当前主线" if role == "protagonist" else "围绕当前主线行动"
+    return compact
+
+
 ForeshadowingStatus = Literal["open", "reinforced", "resolved", "expired"]
 Cadence = Literal["urgent", "measured", "breathing"]
 CharacterLifecycleState = Literal["proposed", "active", "rejected", "frozen"]
-AgentMode = Literal["Rule-based", "LLM-assisted"]
-AgentRuntimeSource = Literal["idle", "rule-based", "llm", "fallback"]
+AgentMode = Literal["LLM-assisted"]
+AgentRuntimeSource = Literal["idle", "llm", "fallback"]
 NewCharacterPolicy = Literal["Director review", "Auto-approve named candidates", "Manual review"]
 
 
 class AgentSettings(BaseModel):
-    mode: AgentMode = "Rule-based"
+    mode: AgentMode = "LLM-assisted"
     global_model: str = "gpt-5.4"
     character_model: str = "gpt-5.4-mini"
     director_model: str = "gpt-5.4"
@@ -23,12 +54,33 @@ class AgentSettings(BaseModel):
     temperature: float = 0.7
     new_character_policy: NewCharacterPolicy = "Director review"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_mode(cls, value):
+        if isinstance(value, dict) and value.get("mode") == "Rule-based":
+            next_value = dict(value)
+            next_value["mode"] = "LLM-assisted"
+            return next_value
+        return value
+
 
 class AgentRuntimeEntry(BaseModel):
-    mode: AgentMode = "Rule-based"
+    mode: AgentMode = "LLM-assisted"
     source: AgentRuntimeSource = "idle"
     fallback_reason: str = ""
     last_run_chapter: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_runtime(cls, value):
+        if isinstance(value, dict):
+            next_value = dict(value)
+            if next_value.get("mode") == "Rule-based":
+                next_value["mode"] = "LLM-assisted"
+            if next_value.get("source") == "rule-based":
+                next_value["source"] = "fallback"
+            return next_value
+        return value
 
 
 class AgentRuntimeState(BaseModel):
@@ -113,6 +165,7 @@ class CharacterState(BaseModel):
 
     @model_validator(mode="after")
     def _sync_frozen_lifecycle(self) -> "CharacterState":
+        self.goals = [_sanitize_character_goal(goal, self.role) for goal in self.goals if goal.strip()]
         if self.lifecycle_state == "frozen" or self.frozen:
             self.frozen = True
             self.lifecycle_state = "frozen"
@@ -194,6 +247,7 @@ class WorldBible(BaseModel):
 # ── Novel Status ─────────────────────────────────────────────
 
 NovelStatusType = Literal["draft", "outlining", "writing", "reviewing", "completed", "paused"]
+ProjectStatusType = Literal["draft", "simulating", "paused", "completed"]
 
 
 class NovelStatus(BaseModel):
@@ -219,8 +273,45 @@ class StoryState(BaseModel):
     current_chapter: int = 0
     agent_settings: AgentSettings = Field(default_factory=AgentSettings)
     agent_runtime: AgentRuntimeState = Field(default_factory=AgentRuntimeState)
+    author_constraints: list[str] = Field(default_factory=list)
     characters: list[CharacterState] = Field(default_factory=list)
     world_facts: list[str] = Field(default_factory=list)
     timeline: list[TimelineEvent] = Field(default_factory=list)
     foreshadowing: list[ForeshadowingState] = Field(default_factory=list)
     chapter_summaries: list[ChapterSummary] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _sanitize_imported_state(self) -> "StoryState":
+        if len(self.outline) > 3000 or _contains_import_noise(self.outline):
+            self.outline = _sanitize_outline_text(self.outline)
+        return self
+
+
+class NovelProject(BaseModel):
+    """Top-level novel project that owns one or more story branches."""
+
+    project_id: str
+    title: str
+    source_path: str = ""
+    seed_outline: str = ""
+    world_summary: str = ""
+    current_focus: str = ""
+    author_constraints: list[str] = Field(default_factory=list)
+    world_blueprint: dict = Field(default_factory=dict)
+    character_profiles: list[dict] = Field(default_factory=list)
+    relationship_graph: list[dict] = Field(default_factory=list)
+    status: ProjectStatusType = "draft"
+    active_story_id: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class NovelProjectSummary(BaseModel):
+    """Compact project view for workbench listings."""
+
+    project_id: str
+    title: str
+    status: ProjectStatusType = "draft"
+    active_story_id: str = ""
+    current_chapter: int = 0
+    source_path: str = ""

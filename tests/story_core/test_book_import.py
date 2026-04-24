@@ -93,4 +93,91 @@ def test_scan_book_folder_skips_markdown_alignment_rows(tmp_path: Path) -> None:
 
     result = scan_book_folder(tmp_path)
 
-    assert result.bootstrap.characters == ["Lin Yue", "Old Archivist"]
+    assert [character.name for character in result.bootstrap.characters] == ["Lin Yue", "Old Archivist"]
+
+
+def test_scan_book_folder_extracts_markdown_character_profiles(tmp_path: Path) -> None:
+    from packages.story_core.book_import import scan_book_folder
+
+    _write(tmp_path, "current_focus.md", "Current focus:\n- Keep the hero hidden.\n")
+    _write(tmp_path, "volume_outline.md", "Volume outline:\n- Act I\n")
+    _write(
+        tmp_path,
+        "story_bible.md",
+        "# Sample Story Bible\n\n## 01_World\n\n- **Core**: A game economy changes real life.\n",
+    )
+    _write(
+        tmp_path,
+        "character_matrix.md",
+        "\n".join(
+            [
+                "## Su Ye",
+                "- **定位**: 主角",
+                "- **当前**: Level 3, avoiding the guild patrol.",
+                "",
+                "## Zhao Pangzi",
+                "- **动机**: Profit from long-term equipment trading.",
+            ]
+        ),
+    )
+
+    result = scan_book_folder(tmp_path)
+
+    assert result.bootstrap.world_summary == "World：Core: A game economy changes real life."
+    assert [character.model_dump() for character in result.bootstrap.characters] == [
+        {"name": "Su Ye", "goal": "Level 3, avoiding the guild patrol."},
+        {"name": "Zhao Pangzi", "goal": "Profit from long-term equipment trading."},
+    ]
+
+
+def test_scan_book_folder_builds_structured_world_blueprint(tmp_path: Path) -> None:
+    from packages.story_core.book_import import scan_book_folder
+
+    _write(tmp_path, "current_focus.md", "FOCUS: Let the reborn player secure the first hidden quest.\n")
+    _write(tmp_path, "volume_outline.md", "VOLUME: Early arc follows a cautious solo start before guild conflict.\n")
+    _write(
+        tmp_path,
+        "story_bible.md",
+        "\n".join(
+            [
+                "# Divine Gate Story Bible",
+                "- Game: Divine Gate is a 100% immersive global VRMMO.",
+                "- Rule: game currency can be exchanged with real money.",
+                "- Power: levels, skills, equipment, professions, and hidden quests shape advancement.",
+                "- Faction: the Dawn Guild hunts rare first-clear rewards.",
+                "- Location: Novice Village is the first resource bottleneck.",
+                "- Arc: Su Ye uses rebirth knowledge to stay low-profile and seize compounding advantages.",
+            ]
+        ),
+    )
+    _write(
+        tmp_path,
+        "character_matrix.md",
+        "\n".join(
+            [
+                "## Su Ye",
+                "- **Role**: protagonist",
+                "- **Current**: Level 3 and avoiding guild scouts.",
+                "- **Motivation**: Use rebirth knowledge without exposing the secret.",
+                "- **Personality**: cautious, patient, opportunistic",
+                "- **Speech**: short and plain",
+                "",
+                "## Dawn Guild",
+                "- **Role**: antagonist faction",
+                "- **Goal**: monopolize the first hidden quest chain.",
+            ]
+        ),
+    )
+
+    result = scan_book_folder(tmp_path)
+
+    blueprint = result.bootstrap.world_blueprint
+    assert blueprint.premise == "Divine Gate Story Bible"
+    assert any("game currency can be exchanged with real money" in rule for rule in blueprint.world_rules)
+    assert "levels, skills, equipment" in blueprint.power_system[0]
+    assert blueprint.factions[0].name == "Dawn Guild"
+    assert blueprint.locations[0].name == "Novice Village"
+    assert blueprint.current_arc.startswith("Su Ye uses rebirth knowledge")
+    assert result.bootstrap.character_profiles[0].name == "Su Ye"
+    assert result.bootstrap.character_profiles[0].role == "protagonist"
+    assert result.bootstrap.character_profiles[0].motivation == "Use rebirth knowledge without exposing the secret."

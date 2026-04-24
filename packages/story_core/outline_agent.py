@@ -1,6 +1,6 @@
 """OutlineAgent — generate a full novel outline from a high-level concept.
 
-Supports Rule-based and LLM-assisted modes.
+Supports LLM-assisted mode.
 """
 
 from __future__ import annotations
@@ -364,13 +364,5 @@ class OutlineAgent:
                 "fallback",
                 story.current_chapter,
                 fallback_reason,
-            )
-        else:
-            record_agent_runtime(
-                story,
-                "OutlineAgent",
-                story.agent_settings.mode,
-                "rule-based",
-                story.current_chapter,
             )
         return self.rule_generator.generate(story, target_chapters)

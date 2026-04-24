@@ -11,6 +11,11 @@ class ChapterBundle(BaseModel):
     body: str
     chapter_title: str = ""
     cadence: str = "measured"
+    chapter_intent: dict = Field(default_factory=dict)
+    character_moves: list[dict] = Field(default_factory=list)
+    memory_constraints: dict = Field(default_factory=dict)
+    event_plan: dict = Field(default_factory=dict)
+    simulation_status: dict = Field(default_factory=dict)
     action_briefs: list[dict] = Field(default_factory=list)
     conflict_summary: dict = Field(default_factory=dict)
     event_beat: dict = Field(default_factory=dict)

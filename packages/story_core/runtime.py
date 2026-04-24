@@ -42,7 +42,6 @@ def record_agent_runtime(
     setattr(story.agent_runtime, _entry_attr(agent_name), entry)
     source_label = {
         "idle": "空闲",
-        "rule-based": "规则",
         "llm": "模型",
         "fallback": "回退",
     }.get(source, source)
