@@ -1,0 +1,44 @@
+{
+  "name": "novel-autogrowth",
+  "version": "0.1.0",
+  "description": "Codex plugin for operating the Novel Autogrowth Engine as a long-form Chinese webnovel writing system.",
+  "author": {
+    "name": "Novel Autogrowth Engine",
+    "email": "maintainers@example.com",
+    "url": "https://github.com/666ghj/MiroFish"
+  },
+  "homepage": "https://github.com/666ghj/MiroFish",
+  "repository": "https://github.com/666ghj/MiroFish",
+  "license": "MIT",
+  "keywords": [
+    "webnovel",
+    "novel-writing",
+    "codex",
+    "agent",
+    "worldbuilding"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Novel Autogrowth",
+    "shortDescription": "Generate, review, revise, and steer long-form Chinese webnovels.",
+    "longDescription": "Operate the Novel Autogrowth Engine through Codex: inspect project context, review chapters, revise drafts, patch worldbuilding, continue generation, and open the local writing dashboard.",
+    "developerName": "Novel Autogrowth Engine",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write",
+      "Review",
+      "Automation"
+    ],
+    "websiteURL": "https://github.com/666ghj/MiroFish",
+    "privacyPolicyURL": "https://github.com/666ghj/MiroFish",
+    "termsOfServiceURL": "https://github.com/666ghj/MiroFish",
+    "defaultPrompt": [
+      "审核当前小说最新章，并给出改稿建议。",
+      "根据我的反馈修正世界观规则。",
+      "继续生成下一章并自动复审。"
+    ],
+    "brandColor": "#9A4F2E"
+  }
+}

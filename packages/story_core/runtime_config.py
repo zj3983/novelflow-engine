@@ -9,7 +9,11 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from packages.story_core.models import AgentSettings
+from packages.story_core.env import load_environment_files
+from packages.story_core.models import AgentSettings, default_fast_model_name, default_model_name
+
+
+load_environment_files()
 
 
 AgentRuntimeName = Literal["character", "director", "writer", "memory"]
@@ -18,7 +22,56 @@ AGENT_RUNTIME_NAMES: tuple[AgentRuntimeName, ...] = ("character", "director", "w
 
 class OpenAIRuntimeSettings(BaseModel):
     api_key: str = ""
-    base_url: str = "https://api.openai.com/v1"
+    base_url: str = ""
+
+
+def _default_api_key() -> str:
+    return os.getenv("OPENAI_API_KEY") or os.getenv("DASHSCOPE_API_KEY", "")
+
+
+def _default_base_url() -> str:
+    return (
+        os.getenv("OPENAI_BASE_URL")
+        or os.getenv("NOVEL_AUTOGROWTH_BASE_URL")
+        or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
+
+
+def _with_env_runtime_defaults(settings: OpenAIRuntimeSettings) -> OpenAIRuntimeSettings:
+    configured_base = settings.base_url.rstrip("/") if settings.base_url else ""
+    default_base = _default_base_url().rstrip("/")
+    legacy_empty_openai_default = (
+        configured_base == "https://api.openai.com/v1"
+        and not settings.api_key
+        and default_base != "https://api.openai.com/v1"
+    )
+    return OpenAIRuntimeSettings(
+        api_key=settings.api_key or _default_api_key(),
+        base_url=default_base if not configured_base or legacy_empty_openai_default else configured_base,
+    )
+
+
+def _is_legacy_default_strategy(settings: AgentSettings) -> bool:
+    return (
+        settings.global_model == "gpt-5.4"
+        and settings.character_model == "gpt-5.4-mini"
+        and settings.director_model == "gpt-5.4"
+        and settings.writer_model == "gpt-5.4"
+        and settings.memory_model == "gpt-5.4"
+        and float(settings.temperature) == 0.7
+    )
+
+
+def _with_env_strategy_defaults(settings: AgentSettings) -> AgentSettings:
+    if not _is_legacy_default_strategy(settings):
+        return settings
+    next_settings = settings.model_copy(deep=True)
+    next_settings.global_model = default_model_name()
+    next_settings.character_model = default_fast_model_name()
+    next_settings.director_model = default_model_name()
+    next_settings.writer_model = default_model_name()
+    next_settings.memory_model = default_model_name()
+    return next_settings
 
 
 LEGACY_CONFIG_FILE = Path(os.path.dirname(os.path.abspath(__file__))) / "runtime_config.json"
@@ -30,8 +83,8 @@ CONFIG_FILE = Path(
 )
 
 _runtime_settings = OpenAIRuntimeSettings(
-    api_key=os.getenv("OPENAI_API_KEY", ""),
-    base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+    api_key=_default_api_key(),
+    base_url=_default_base_url(),
 )
 _agent_runtime_settings: dict[str, OpenAIRuntimeSettings] = {}
 _runtime_strategy_settings = AgentSettings()
@@ -40,6 +93,15 @@ _lock = RLock()
 
 def _empty_runtime_settings() -> OpenAIRuntimeSettings:
     return OpenAIRuntimeSettings(api_key="", base_url="")
+
+
+def _partial_runtime_settings(data: dict | None) -> OpenAIRuntimeSettings:
+    """Build settings from partial override data without injecting provider defaults."""
+    data = data or {}
+    return OpenAIRuntimeSettings(
+        api_key=data.get("api_key") or "",
+        base_url=data.get("base_url") or "",
+    )
 
 
 def _config_candidates() -> list[Path]:
@@ -62,13 +124,13 @@ def _load_config_from_file() -> None:
                 data = json.load(f)
 
             if "global" in data:
-                _runtime_settings = OpenAIRuntimeSettings.model_validate(data["global"])
+                _runtime_settings = _with_env_runtime_defaults(OpenAIRuntimeSettings.model_validate(data["global"]))
             if "agents" in data:
                 for agent_name, settings in data["agents"].items():
                     if agent_name in AGENT_RUNTIME_NAMES:
                         _agent_runtime_settings[agent_name] = OpenAIRuntimeSettings.model_validate(settings)
             if "strategy" in data:
-                _runtime_strategy_settings = AgentSettings.model_validate(data["strategy"])
+                _runtime_strategy_settings = _with_env_strategy_defaults(AgentSettings.model_validate(data["strategy"]))
 
             if config_path == LEGACY_CONFIG_FILE and config_path != CONFIG_FILE:
                 _save_config_to_file()
@@ -200,17 +262,18 @@ def resolve_openai_runtime_settings(
         global_settings = get_runtime_settings()
         agent_settings = get_agent_runtime_settings(agent_name) if agent_name else _empty_runtime_settings()
     else:
-        global_settings = OpenAIRuntimeSettings.model_validate(overrides.get("global", {}))
+        global_settings = _partial_runtime_settings(overrides.get("global"))
         agent_settings = (
-            OpenAIRuntimeSettings.model_validate(overrides.get("agents", {}).get(agent_name, {}))
+            _partial_runtime_settings((overrides.get("agents") or {}).get(agent_name))
             if agent_name
             else _empty_runtime_settings()
         )
     return OpenAIRuntimeSettings(
-        api_key=agent_settings.api_key or global_settings.api_key or os.getenv("OPENAI_API_KEY", ""),
+        api_key=agent_settings.api_key or global_settings.api_key or _default_api_key(),
+        # Agent-level base_url overrides global, then env/default provider URL.
         base_url=(
             agent_settings.base_url
             or global_settings.base_url
-            or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            or _default_base_url()
         ).rstrip("/"),
     )

@@ -10,6 +10,7 @@ type WorkbenchTopBarProps = {
   statusSummary: string;
   canStartGeneration: boolean;
   isGenerating: boolean;
+  generationStatus?: string | null;
   onGenerateNextChapter: () => void;
 };
 
@@ -21,9 +22,14 @@ export function WorkbenchTopBar({
   statusSummary,
   canStartGeneration,
   isGenerating,
+  generationStatus,
   onGenerateNextChapter,
 }: WorkbenchTopBarProps) {
-  const actionLabel = currentChapter > 0 ? "继续生成下一章" : "开始生成第一章";
+  const actionLabel = isGenerating
+    ? generationStatus ?? "生成中..."
+    : currentChapter > 0
+      ? "继续生成下一章"
+      : "开始生成第一章";
 
   return (
     <div className="workbench-topbar panel">

@@ -1,0 +1,331 @@
+from packages.story_core.chapter_seed import build_chapter_seed
+from packages.story_core.models import ChapterSummary, StoryState
+from packages.story_core.orchestrator import (
+    StoryOrchestrator,
+    _merge_writing_review_quality,
+    _review_chapter_body,
+    _scene_card_writing_protocol,
+    _sanitize_generated_body,
+)
+
+
+def test_game_chapter_seed_turns_rules_into_generation_contract():
+    story = StoryState(
+        story_id="s-seed-game",
+        outline="网游开服，主角靠千倍爆率低调发育。",
+        genre="网游",
+        style="升级流",
+        current_chapter=0,
+        author_constraints=["禁止单次低级材料交易暴露坐标或现实身份。"],
+        world_facts=[
+            "信息可见规则：交易行只能暴露价格、数量、批次和时间戳。",
+            "NPC硬规则：命名NPC需要地点、服务、利益诉求和信息边界。",
+        ],
+    )
+
+    seed = build_chapter_seed(story, 1)
+
+    assert seed["schema_version"] == "chapter-seed/v1"
+    assert seed["chapter_number"] == 1
+    assert "game_webnovel" in seed["genre_plugins"]
+    assert any("游戏ID" in beat for beat in seed["chapter_contract"]["required_beats"])
+    assert any("职业" in beat for beat in seed["chapter_contract"]["required_beats"])
+    assert any("闭合账本" in beat for beat in seed["chapter_contract"]["required_beats"])
+    assert any("坐标" in item for item in seed["chapter_contract"]["forbidden_moves"])
+    assert any("库存矛盾" in item for item in seed["chapter_contract"]["forbidden_moves"])
+    assert seed["simulation_axes"]["economy"]
+    assert seed["simulation_axes"]["npc"]
+
+
+def test_chapter_seed_carries_recent_continuity_and_ledger():
+    story = StoryState(
+        story_id="s-seed-continuity",
+        outline="夜烬继续推进元素回廊前置。",
+        genre="网游",
+        style="升级流",
+        current_chapter=1,
+        progression_ledger={
+            "protagonist": {"level": 1, "exp": "30/100", "class_path": "元素法师学徒"},
+            "economy": {"currency": "0金币0银币15铜币", "inventory": {"毒腺": 8}},
+            "equipment": {"weapon": "粗糙木杖", "durability": "9/10"},
+        },
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                summary="夜烬完成首次小额验证。",
+                facts=["经济锚点：毒腺挂单价9铜，余额15铜。"],
+                unresolved_threads=["交易行商人记录了时间戳。"],
+                next_focus="继续验证刷怪路线和交易行弱线索。",
+            )
+        ],
+    )
+
+    seed = build_chapter_seed(story, 2)
+
+    assert seed["continuity"]["latest_summary"] == "夜烬完成首次小额验证。"
+    assert "经济锚点：毒腺挂单价9铜，余额15铜。" in seed["continuity"]["must_keep_facts"]
+    assert seed["current_state"]["protagonist"]["class_path"] == "元素法师学徒"
+    assert any("不直接完成元素回廊" in item for item in seed["chapter_contract"]["forbidden_moves"])
+
+
+def test_orchestrator_prompts_use_chapter_seed_contract():
+    story = StoryState(
+        story_id="s-seed-prompt",
+        outline="网游开服，夜烬靠千倍爆率低调发育。",
+        genre="网游",
+        style="升级流",
+        current_chapter=0,
+        world_facts=["信息可见规则：交易行只暴露价格、数量、批次和时间戳。"],
+    )
+    orchestrator = StoryOrchestrator()
+
+    plan_prompt = orchestrator._plan_prompt(story, 1)
+    body_prompt = orchestrator._body_prompt(story, 1, {"event_plan": {}})
+
+    assert "chapter-seed/v1" in plan_prompt
+    assert "生成前世界推演契约" in plan_prompt
+    assert "chapter-seed/v1" in body_prompt
+    assert "禁止单次低级材料交易暴露坐标" in body_prompt
+
+
+def test_scene_card_writing_protocol_compiles_ordered_prose_contract():
+    scene_cards = [
+        {
+            "scene_id": "s1-character-create",
+            "template_id": "character_creation",
+            "location": "角色创建界面",
+            "purpose": "建立游戏ID、职业选择和第一版角色面板。",
+            "conflict": "职业选择必须解释后续路线。",
+            "must_show": ["游戏ID", "职业选择", "角色面板", "生命/法力"],
+            "must_not_explain": ["world_events", "state_delta", "爽点"],
+        },
+        {
+            "scene_id": "s2-market",
+            "template_id": "market_weak_trace",
+            "location": "交易行",
+            "purpose": "小额匿名寄售。",
+            "conflict": "交易只留下弱线索。",
+            "must_show": ["价格", "数量", "批次", "手续费", "到账"],
+            "must_not_explain": ["coordinate_lock", "real_identity_exposure"],
+        },
+    ]
+
+    protocol = _scene_card_writing_protocol(scene_cards)
+
+    assert "场景1" in protocol
+    assert "character_creation" in protocol
+    assert "角色创建界面" in protocol
+    assert "必须表面化：游戏ID、职业选择、角色面板、生命/法力" in protocol
+    assert "场景2" in protocol
+    assert "交易行" in protocol
+    assert "禁止写成后台解释：coordinate_lock、real_identity_exposure" in protocol
+
+
+def test_chapter_body_review_merges_anti_ai_style_review():
+    body = (
+        "霎时间，夜烬心中一紧，脸色一变。"
+        "这一段爽点已经兑现，读者能看懂节奏。"
+        "他不由得身形一闪，继续推进下一阶段剧情。"
+    )
+
+    review = _review_chapter_body(
+        1,
+        body,
+        {"world_reactions": ["交易行出现弱线索"], "next_focus": "继续低调验证"},
+        world_facts=[],
+        simulation_plan={},
+        world_events=[],
+        scene_cards=[],
+    )
+
+    assert not review["pass"]
+    assert review["scores"]["prose_style_cliche_terms"] < 8
+    assert review["scores"]["prose_style_meta_language"] < 8
+    assert any("AI高频套话" in issue for issue in review["issues"])
+
+
+def test_quality_merge_marks_any_writing_review_failure():
+    quality = {"ok": True, "issues": []}
+    writing_review = {
+        "pass": False,
+        "scores": {"prose_style_cliche_terms": 5},
+        "issues": ["AI高频套话进入正文：此刻。"],
+    }
+
+    merged = _merge_writing_review_quality(quality, writing_review)
+
+    assert merged["ok"] is False
+    assert "writing_review" in merged["issues"]
+
+
+def test_revision_prompt_contains_hard_fix_checklist_and_scene_protocol():
+    story = StoryState(
+        story_id="s-revision-prompt",
+        outline="网游开服，夜烬低调验证千倍爆率。",
+        genre="网游",
+        style="直白爽文",
+    )
+    plan = {
+        "scene_cards": [
+            {
+                "scene_id": "s1-character-create",
+                "template_id": "character_creation",
+                "location": "角色创建界面",
+                "purpose": "建立游戏ID、职业选择和第一版角色面板。",
+                "conflict": "职业选择必须解释后续路线。",
+                "must_show": ["游戏ID", "职业选择", "角色面板", "生命/法力", "基础属性"],
+                "must_not_explain": ["节奏", "生成", "审稿"],
+            }
+        ],
+        "world_events": [],
+    }
+    review = {
+        "pass": False,
+        "issues": [
+            "第一章缺少带职业栏的角色面板。",
+            "创作层术语进入正文：节奏、生成。",
+            "命名NPC出场缺少完整设定。",
+            "可见性越界：交易行小额寄售被正文升级成坐标、现实身份、隐藏天赋或刷怪点暴露。",
+        ],
+        "revision_plan": [
+            "补写角色面板。",
+            "删除节奏、生成。",
+            "补写NPC信息边界。",
+            "把交易行信息降回弱线索。",
+        ],
+    }
+
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文里有节奏和生成。", plan, review)
+
+    assert "硬性修复清单" in prompt
+    assert "场景卡到正文改稿协议" in prompt
+    assert "必须表面化：游戏ID、职业选择、角色面板、生命/法力、基础属性" in prompt
+    assert "正文禁词清单" in prompt
+    assert "节奏" in prompt and "生成" in prompt
+    assert "改完后自检" in prompt
+
+
+def test_chapter_seed_carries_longform_constraints_separately():
+    story = StoryState(
+        story_id="s-seed-longform",
+        outline="网游开服，主角靠千倍爆率低调发育。",
+        genre="网游",
+        style="升级流",
+        world_facts=[
+            "百万字框架：目标约1000000字，章节推演必须服从长期解锁顺序与阶段上限。",
+            "长期卷阶梯：1-30 - 灰烬村蛰伏；1-10级、千倍爆率小额验证；只能出现商人盯盘和公会外围弱试探",
+            "长期推演规则：每章只允许解锁当前卷范围内的世界层级。",
+        ],
+    )
+
+    seed = build_chapter_seed(story, 1)
+
+    assert seed["longform_constraints"]
+    assert seed["longform_constraints"][0].startswith("百万字框架")
+    assert any("当前卷范围" in item for item in seed["longform_constraints"])
+
+
+def test_review_splits_world_state_patch_plan_from_prose_issues():
+    body = (
+        "《天启之门》开服后，夜烬把低级狼皮匿名上架交易行。"
+        "白袍公会只看了一笔交易，就立刻锁定他的坐标和现实身份。"
+        "他又按1金币=100人民币计算收益，确认今天能还房租。"
+    ) * 40
+
+    review = _review_chapter_body(
+        1,
+        body,
+        {"world_reactions": ["公会外围开始注意。"]},
+        ["没有明确设定前，不得把金币直接换算成人民币。"],
+    )
+
+    world_review = review["world_state_review"]
+    assert any(item["surface"] == "economy" for item in world_review["issues"])
+    assert any(item["surface"] == "information_visibility" for item in world_review["issues"])
+    assert any("world_blueprint" in patch for patch in world_review["patch_plan"])
+
+
+def test_body_prompt_includes_style_coach_and_scene_card_guidance():
+    story = StoryState(
+        story_id="s-style-coach-prompt",
+        outline="网游开服，主角低调验证千倍爆率。",
+        genre="网游",
+        style="直白爽文",
+    )
+    plan = {
+        "style_guidance": {
+            "profile_id": "web_game_leveling_opening",
+            "chapter_pattern": "现实压力 -> 游戏入口 -> 异常伏笔 -> 小额验证 -> 交易弱线索",
+            "show_rules": ["交易规则通过界面、手续费、到账、批次号表现。"],
+            "avoid_rules": ["不要把交易行规则写成说明书。"],
+        },
+        "scene_cards": [
+            {
+                "scene_id": "s1-market",
+                "template_id": "market_weak_trace",
+                "location": "灰烬村交易行",
+                "purpose": "完成小额寄售并留下弱线索",
+                "conflict": "成交太快会被脚本记录",
+                "must_show": ["寄售数量", "手续费", "到账金额"],
+                "write_as": ["界面操作", "成交提示音"],
+                "avoid": ["解释市场规则"],
+                "fact_locks": ["寄售数量", "最终余额"],
+            }
+        ],
+    }
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, plan)
+
+    assert "写作教练 Style Coach" in prompt
+    assert "web_game_leveling_opening" in prompt
+    assert "场景卡到正文写作协议" in prompt
+    assert "写法：界面操作、成交提示音" in prompt
+    assert "事实锁：寄售数量、最终余额" in prompt
+    assert "禁止写成后台解释" in prompt
+
+
+def test_revision_prompt_includes_style_coach_and_fact_lock_rule():
+    story = StoryState(
+        story_id="s-style-coach-revision",
+        outline="网游开服，主角低调验证千倍爆率。",
+        genre="网游",
+        style="直白爽文",
+    )
+    plan = {
+        "style_guidance": {"profile_id": "web_game_leveling_opening"},
+        "scene_cards": [
+            {
+                "scene_id": "s1-create",
+                "template_id": "character_creation",
+                "location": "角色创建界面",
+                "purpose": "建立游戏ID、职业和面板",
+                "conflict": "职业选择影响后续路线",
+                "must_show": ["游戏ID", "职业", "角色面板"],
+                "write_as": ["角色创建界面", "成本权衡"],
+                "fact_locks": ["游戏ID", "职业", "等级", "基础属性"],
+            }
+        ],
+    }
+    review = {
+        "pass": False,
+        "issues": ["角色面板缺少属性。"],
+        "revision_plan": ["补齐面板，但不要改职业。"],
+    }
+
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文", plan, review)
+
+    assert "写作教练 Style Coach" in prompt
+    assert "web_game_leveling_opening" in prompt
+    assert "事实锁硬规则" in prompt
+    assert "职业、余额、库存、任务、装备和NPC信息边界" in prompt
+    assert "事实锁：游戏ID、职业、等级、基础属性" in prompt
+
+
+def test_sanitize_generated_body_removes_lone_ascii_question_marks_in_chinese_prose():
+    body = "角色创建界面展开。?输入ID。夜烬。?职业列表弹出。保留英文 URL query?a=1。"
+
+    cleaned = _sanitize_generated_body(body)
+
+    assert "。?输入" not in cleaned
+    assert "。?职业" not in cleaned
+    assert "query?a=1" in cleaned

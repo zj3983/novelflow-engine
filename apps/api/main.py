@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.routes.book_import import init_book_import_routes
 from apps.api.routes.outlines import init_outline_routes
 from apps.api.routes.stories import init_story_routes
+from packages.story_core.env import load_environment_files
 
 
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+load_environment_files()
+
+
+def _cors_origins() -> list[str]:
+    configured = os.getenv("NOVEL_AUTOGROWTH_CORS_ORIGINS") or os.getenv("CORS_ALLOW_ORIGINS")
+    if configured:
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return [
         "http://127.0.0.1:3000",
         "http://localhost:3000",
         "http://localhost:3001",
@@ -19,7 +26,13 @@ app.add_middleware(
         "http://localhost:3003",
         "http://localhost:3004",
         "http://localhost:3005",
-    ],
+    ]
+
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

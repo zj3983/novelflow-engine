@@ -1,19 +1,106 @@
 import urllib.error
+import json
+import threading
+import time
 
 import pytest
 
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
+from apps.api.routes.stories import _quality_context
 
 
 client = TestClient(app)
 
 
+def _mock_story_chat(self, story, prompt: str, *, max_tokens: int, json_mode: bool, agent: str = "director"):
+    chapter_number = getattr(story, "current_chapter", 0) or 1
+    active = [c for c in story.characters if c.lifecycle_state == "active" and not c.frozen]
+    lead = active[0].name if active else "主角"
+    opposition = active[-1].name if len(active) > 1 else "circumstance"
+    moves = [
+        {
+            "name": c.name,
+            "goal": c.goals[0] if c.goals else "推进主线",
+            "emotion": c.current_emotion or "alert",
+            "action": f"{c.name} 推进当前线索",
+            "priority": 1,
+            "new_character_candidates": ["Old Archivist"]
+            if any("archivist" in str(secret).lower() for secret in c.secrets)
+            else [],
+        }
+        for c in active
+    ]
+    if json_mode:
+        approved = ["Old Archivist"] if any(move["new_character_candidates"] for move in moves) else []
+        return json.dumps(
+            {
+                "character_moves": moves,
+                "chapter_intent": {
+                    "chapter_title": f"第{chapter_number}章 测试章节",
+                    "cadence": "measured",
+                    "next_focus": f"继续推进{lead}与{opposition}的线索",
+                    "primary_conflict": {
+                        "lead": lead,
+                        "opposition": opposition,
+                        "collision": f"{lead}与{opposition}围绕关键线索交锋",
+                    },
+                    "secondary_conflict": {"pressure": "time", "detail": "局势继续加压", "participants": []},
+                    "approved_new_characters": approved,
+                },
+                "event_plan": {
+                    "chapter_title": f"第{chapter_number}章 测试章节",
+                    "turn": f"{lead}发现新线索",
+                    "pivot": "局势发生转折",
+                    "collision": f"{lead}与{opposition}围绕关键线索交锋",
+                    "ordered_actions": moves,
+                    "world_reactions": ["外部势力注意到新的线索。"],
+                    "stakes": "如果失败，线索会断裂。",
+                    "next_focus": f"继续推进{lead}与{opposition}的线索",
+                },
+                "memory_constraints": {
+                    "must_keep_facts": ["主角正在推进关键事件"],
+                    "unresolved_threads": ["关键线索的真相仍未揭开"],
+                    "protected_characters": [],
+                    "protected_foreshadowing": [],
+                    "author_constraints": [],
+                    "current_focus": "调查",
+                    "conflict_anchor": "目标冲突",
+                    "event_guardrail": "保持紧张感",
+                },
+                "chapter_summary": {
+                    "summary": f"{lead}推进调查，发现重要线索。",
+                    "facts": ["发现关键证据"],
+                    "unresolved_threads": ["证据背后的真相"],
+                    "next_focus": f"继续推进{lead}与{opposition}的线索",
+                    "chapter_title": f"第{chapter_number}章 测试章节",
+                },
+            },
+            ensure_ascii=False,
+        ), ""
+    return (
+        f"第{chapter_number}章\n\n{lead}在压力中推进线索，{opposition}也被卷入同一场变化。"
+        "\n\n事实：主角发现了关键证据。\n真相：幕后仍未揭开。\n",
+        "",
+    )
+
+
 @pytest.fixture(autouse=True)
-def clean_db_and_restore_runtime_settings():
+def clean_db_and_restore_runtime_settings(monkeypatch, tmp_path):
     """Clean up persistent SQLite DB to ensure test isolation."""
     import os as _os
+    import apps.api.storage as storage
+    import apps.api.routes.stories as story_routes
+    test_db_path = tmp_path / "stories-test.db"
+    monkeypatch.setattr(storage, "_DB_PATH", str(test_db_path))
+    story_routes.store._db_path = str(test_db_path)
+    with story_routes._generation_jobs_lock:
+        story_routes._generation_jobs.clear()
+        story_routes._active_generation_jobs.clear()
+    with story_routes._automation_jobs_lock:
+        story_routes._automation_jobs.clear()
+        story_routes._active_automation_jobs.clear()
     from apps.api.storage import _get_db_path, _local
     db_path = _get_db_path()
     # Close all cached connections before deleting DB
@@ -38,6 +125,19 @@ def clean_db_and_restore_runtime_settings():
             conn.commit()
             conn.close()
     original = client.get("/runtime-settings").json()
+    client.put(
+        "/runtime-settings",
+        json={
+            "global": {"api_key": "", "base_url": "https://api.openai.com/v1"},
+            "agents": {
+                "character": {"api_key": "", "base_url": ""},
+                "director": {"api_key": "", "base_url": ""},
+                "writer": {"api_key": "", "base_url": ""},
+                "memory": {"api_key": "", "base_url": ""},
+            },
+        },
+    )
+    monkeypatch.setattr("packages.story_core.orchestrator.StoryOrchestrator._chat", _mock_story_chat)
     yield
     client.put("/runtime-settings", json=original)
 
@@ -65,6 +165,46 @@ def test_runtime_settings_can_be_saved_globally():
     assert loaded.status_code == 200
     assert loaded.json()["global"]["api_key"] == "sk-test-123"
     assert loaded.json()["global"]["base_url"] == "https://api.example.com/v1"
+
+
+def test_serialized_history_refreshes_stale_quality_report():
+    from apps.api.routes.stories import _serialize_chapter_bundle
+    from packages.story_core.engine import ChapterBundle
+    from packages.story_core.models import StoryState
+
+    story = StoryState(
+        story_id="s-refresh-quality",
+        outline="网游开服，主角靠千倍爆率低调发育。",
+        genre="网游",
+        style="升级流",
+        world_facts=["低级材料交易只能形成价格、数量、时间戳等弱线索。"],
+    )
+    body = (
+        "《天启之门》全沉浸开服当晚，苏叶在出租屋里看着账单登录游戏。"
+        "他是失业外包测试员，旧头盔神经接驳时出现协议异常，角色创建界面确认游戏ID：夜烬。"
+        "职业选择栏弹出后，他选择元素法师学徒。"
+        "【角色面板】游戏ID：夜烬；等级：1；职业：元素法师学徒；经验：0/100；主武器：新手法杖。"
+        "夜烬进入灰烬村，只看见公告栏写着新手外坡怪物密度偏高，路口玩家还在排队接任务。"
+        "他在低密度灰鼠坡小范围刷怪，验证混沌之种和千倍爆率后，把多余材料暂时压在背包里。"
+        "职业导师艾伦在木屋门口登记法师学徒，提醒元素回廊试炼需要先交十份毒腺。"
+        "夜烬没有急着处理材料，只记下任务门槛、法杖耐久和明天先登记的下一步。"
+    ) * 28
+    bundle = ChapterBundle(
+        chapter_number=1,
+        chapter_title="第1章 灰烬村的登录日志",
+        body=body,
+        next_outline="继续低调验证规则。",
+        updated_story=story,
+        event_plan={"world_reactions": ["NPC只记录任务登记。"], "next_focus": "下一次验证。"},
+        quality_report={"ok": False, "issues": ["stale"], "writing_review": {"issues": ["旧误判"]}},
+    )
+
+    payload = _serialize_chapter_bundle(bundle, story.world_facts)
+
+    assert payload["quality_report"]["writing_review"]["pass"] is True
+    assert payload["quality_report"]["writing_review"]["issues"] == []
+    assert "prose_quality_review" in payload["quality_report"]["writing_review"]
+    assert "adversarial_cut_review" in payload["quality_report"]["writing_review"]
 
 
 def test_runtime_settings_can_store_agent_overrides():
@@ -104,6 +244,163 @@ def test_runtime_settings_can_store_agent_overrides():
     assert payload["global"]["base_url"] == "https://api.global.example/v1"
     assert payload["agents"]["character"]["api_key"] == "sk-character"
     assert payload["agents"]["director"]["base_url"] == "https://api.director.example/v1"
+
+
+def test_project_writing_packet_and_manual_draft_roundtrip():
+    story_id = "s-writing-packet-api"
+    project_id = "p-writing-packet-api"
+    create_story = client.post(
+        "/stories",
+        json={
+            "story_id": story_id,
+            "outline": "网游开服，苏叶以夜烬身份低调验证千倍爆率。",
+            "genre": "网游",
+            "style": "升级流",
+            "characters": [{"name": "苏叶", "role": "主角", "game_id": "夜烬", "goals": ["安全升到10级"]}],
+        },
+    )
+    assert create_story.status_code == 200
+    create_project = client.post(
+        "/projects",
+        json={
+            "project_id": project_id,
+            "title": "荷在网游里成神",
+            "seed_outline": "网游开服，主角靠千倍爆率低调发育。",
+            "active_story_id": story_id,
+            "author_constraints": ["现实姓名和游戏ID必须分层。"],
+        },
+    )
+    assert create_project.status_code == 200
+    generated = client.post(f"/stories/{story_id}/generate")
+    assert generated.status_code == 200
+
+    packet_response = client.get(f"/projects/{project_id}/writing-packet?chapter_number=1")
+    assert packet_response.status_code == 200
+    packet = packet_response.json()
+    assert packet["schema_version"] == "codex-writing-packet/v1"
+    assert packet["governance_gate"]["reviewer"] == "chapter_governance_gate/v1"
+    assert packet["governance_gate"]["next_action"] == "write_or_revise_chapter"
+    assert packet["protagonist"]["real_name"] == "苏叶"
+    assert any("游戏ID：夜烬" in item or "现实姓名：苏叶" in item for item in packet["hard_locks"])
+    assert packet["scene_cards"]
+    assert any("灰鼠" in " ".join(card.get("must_show", []) + card.get("fact_locks", [])) for card in packet["scene_cards"]) or any(
+        "首杀" in str(card) or "验证" in str(card) for card in packet["scene_cards"]
+    )
+
+    manual_body = "\n\n".join(
+        [
+            "催租单压在键盘边，苏叶把旧头盔从抽屉里拖出来。他以前做过游戏经济模型外包，最熟的是材料产出、交易流水和异常账号曲线。现在余额只剩几十块，他需要的不是奇迹，而是一条能验证的路。",
+            "《天启之门》的登录界面亮起。苏叶输入游戏ID：夜烬。职业列表展开后，他没有选战士，也没有选游侠，而是点下元素法师学徒。面板很短：【角色：夜烬】【等级：Lv.1】【职业：元素法师学徒】【经验：0/100】【生命：100/100】【法力：80/80】【属性：力量5，敏捷8，体质9，智力9】【装备：新手木杖，粗布衣】【货币：0铜币】。",
+            "灰烬村外的灰鼠坡有几只灰鼠在草根下乱窜。夜烬先用微光弹试距离，第一发打偏，第二发命中，法力掉了一截，肩膀也被灰鼠抓掉三点血。第三发微光弹落下后，提示跳出：【击杀灰鼠。经验+15。】【获得：灰鼠毒腺×12。】【获得：灰鼠皮×3。】他没有笑，只把背包关上，转身回村。",
+            "药剂铺里，洛婶把灰鼠毒腺拿到鼻下闻了闻，说单卖一份两铜，清道夫委托要五份毒腺和三张灰鼠皮，奖励二十铜。她补了一句：单卖是材料价，委托价里算村务补贴。柜台旁的木牌写着一金币兑一百银币，一银币兑一百铜币。夜烬接下委托，却没有立刻提交。他看着背包里的材料，知道这东西能用，但不能急着暴露。",
+        ]
+    )
+    draft_response = client.post(
+        f"/projects/{project_id}/manual-draft",
+        json={"chapter_number": 1, "body": manual_body, "instructions": ["Codex手写样稿"], "include_body": True},
+    )
+    assert draft_response.status_code == 200
+    draft = draft_response.json()
+    assert draft["revision"]["source"] == "manual_draft"
+    assert draft["chapter"]["body"] == manual_body
+    assert draft["chapter"]["body_chars"] >= 1
+    assert "writing_review" in draft["review"]
+    refreshed = client.get(f"/stories/{story_id}").json()
+    assert refreshed["history"][0]["body"] == manual_body
+
+
+def test_project_manual_draft_can_append_next_chapter():
+    story_id = "s-manual-next-chapter-api"
+    project_id = "p-manual-next-chapter-api"
+    client.post(
+        "/stories",
+        json={
+            "story_id": story_id,
+            "outline": "A cautious player validates a game economy anomaly.",
+            "genre": "web-game",
+            "style": "progression",
+            "characters": [{"name": "Su Ye", "role": "protagonist", "game_id": "Night Ember"}],
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": project_id,
+            "title": "Manual Next Chapter",
+            "active_story_id": story_id,
+            "current_focus": "Chapter 2 should continue from the first task.",
+        },
+    )
+    generated = client.post(f"/stories/{story_id}/generate")
+    assert generated.status_code == 200
+
+    packet_response = client.get(f"/projects/{project_id}/writing-packet?chapter_number=2")
+    assert packet_response.status_code == 200
+    assert packet_response.json()["chapter_number"] == 2
+
+    chapter_two_body = "Chapter two starts from the task reward.\n\nThe player checks cost before fighting again."
+    draft_response = client.post(
+        f"/projects/{project_id}/manual-draft",
+        json={"chapter_number": 2, "body": chapter_two_body, "instructions": ["Codex manual chapter 2"], "include_body": True},
+    )
+
+    assert draft_response.status_code == 200
+    payload = draft_response.json()
+    assert payload["revision"]["source"] == "manual_draft"
+    assert payload["chapter"]["chapter_number"] == 2
+    assert payload["chapter"]["body"] == chapter_two_body
+    assert payload["chapter"]["quality_report"]["ok"] is True
+    assert payload["chapter"]["quality_report"]["issues"] == []
+    refreshed = client.get(f"/stories/{story_id}").json()
+    assert refreshed["current_chapter"] == 2
+    assert [chapter["chapter_number"] for chapter in refreshed["history"]][-2:] == [1, 2]
+    assert refreshed["history"][-1]["body"] == chapter_two_body
+
+
+def test_project_manual_segment_draft_replaces_one_paragraph_only():
+    story_id = "s-manual-segment-api"
+    project_id = "p-manual-segment-api"
+    client.post(
+        "/stories",
+        json={
+            "story_id": story_id,
+            "outline": "网游开服，苏叶以夜烬身份低调验证千倍爆率。",
+            "genre": "网游",
+            "style": "升级流",
+            "characters": [{"name": "苏叶", "role": "主角", "game_id": "夜烬", "goals": ["低调验证"]}],
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": project_id,
+            "title": "局部改稿测试",
+            "active_story_id": story_id,
+        },
+    )
+    client.post(f"/stories/{story_id}/generate")
+    original_body = "第一段保留。\n\n第二段需要局部重写。\n\n第三段保留。"
+    client.post(
+        f"/projects/{project_id}/manual-draft",
+        json={"chapter_number": 1, "body": original_body, "include_body": True},
+    )
+
+    response = client.post(
+        f"/projects/{project_id}/manual-segment-draft",
+        json={
+            "chapter_number": 1,
+            "segment_index": 1,
+            "body": "第二段已经被 Codex 单独改好。",
+            "include_body": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["revision"]["source"] == "manual_segment_draft"
+    assert payload["chapter"]["body"] == "第一段保留。\n\n第二段已经被 Codex 单独改好。\n\n第三段保留。"
+    refreshed = client.get(f"/stories/{story_id}").json()
+    assert refreshed["history"][0]["body"] == payload["chapter"]["body"]
 
 
 def test_runtime_settings_connection_can_be_tested_for_one_agent(monkeypatch):
@@ -158,6 +455,77 @@ def test_runtime_settings_connection_can_be_tested_for_one_agent(monkeypatch):
     assert captured["authorization"] == "Bearer sk-character"
     assert captured["content_type"] == "application/json"
     assert b'"model": "gpt-4.1-mini"' in captured["body"]
+
+
+def test_runtime_settings_connection_uses_strategy_model_when_model_name_missing(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout=30):
+        captured["url"] = request.full_url
+        captured["body"] = request.data
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        return _Response()
+
+    monkeypatch.setattr("apps.api.routes.stories.urllib.request.urlopen", fake_urlopen)
+    client.put(
+        "/runtime-strategy",
+        json={
+            "mode": "LLM-assisted",
+            "global_model": "global-model",
+            "character_model": "character-model",
+            "director_model": "director-model",
+            "writer_model": "writer-model",
+            "memory_model": "memory-model",
+            "temperature": 0.7,
+            "new_character_policy": "Director review",
+        },
+    )
+
+    response = client.post(
+        "/runtime-settings/test",
+        json={
+            "agent_name": "writer",
+            "runtime_settings": {
+                "global": {
+                    "api_key": "sk-global",
+                    "base_url": "https://api.global.example/v1",
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert captured["url"] == "https://api.global.example/v1/chat/completions"
+    assert b'"model": "writer-model"' in captured["body"]
+
+
+def test_runtime_settings_connection_treats_null_global_as_empty_config():
+    response = client.post(
+        "/runtime-settings/test",
+        json={
+            "agent_name": "character",
+            "runtime_settings": {
+                "global": None,
+                "agents": {},
+            },
+            "model_name": "gpt-4.1-mini",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert response.json()["agent_name"] == "character"
 
 
 def test_runtime_settings_connection_falls_back_to_models_when_chat_endpoint_missing(monkeypatch):
@@ -360,9 +728,9 @@ def test_agent_settings_influence_story_approval_flow():
             "style": "tense",
             "agent_settings": {
                 "mode": "LLM-assisted",
-                "character_model": "gpt-5.4-mini",
-                "director_model": "gpt-5.4",
-                "writer_model": "gpt-5.4",
+                "character_model": "qwen3.6-plus",
+                "director_model": "qwen3.6-plus",
+                "writer_model": "qwen3.6-plus",
                 "temperature": "0.85",
                 "new_character_policy": "Auto-approve named candidates",
             },
@@ -518,6 +886,561 @@ def test_story_can_branch_from_a_previous_chapter():
     list_resp = client.get("/stories")
     assert list_resp.status_code == 200
     assert {story["story_id"] for story in list_resp.json()} >= {"s-branch-root", "s-branch-alt"}
+
+
+def test_generation_job_completes_and_updates_story():
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-generation-job",
+            "outline": "A cautious player tests a strange login token.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+
+    start_resp = client.post("/stories/s-generation-job/generation-jobs")
+    assert start_resp.status_code == 200
+    job = start_resp.json()
+    assert job["story_id"] == "s-generation-job"
+    assert job["status"] in {"queued", "running", "completed"}
+    assert job["job_id"]
+
+    finished = job
+    for _ in range(50):
+        poll_resp = client.get(f"/stories/s-generation-job/generation-jobs/{job['job_id']}")
+        assert poll_resp.status_code == 200
+        finished = poll_resp.json()
+        if finished["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.02)
+
+    assert finished["status"] == "completed"
+    assert finished["chapter_number"] == 1
+    assert finished["error"] == ""
+
+    story_resp = client.get("/stories/s-generation-job")
+    assert story_resp.status_code == 200
+    story = story_resp.json()
+    assert story["current_chapter"] == 1
+    assert len(story["history"]) == 1
+
+
+def test_generation_job_reports_missing_story():
+    start_resp = client.post("/stories/s-missing/generation-jobs")
+
+    assert start_resp.status_code == 404
+    assert start_resp.json()["detail"] == "story_not_found"
+
+
+def test_generation_job_reconciles_when_story_already_advanced():
+    import apps.api.routes.stories as story_routes
+
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-generation-reconcile",
+            "outline": "A cautious player tests a strange login token.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+    client.post("/stories/s-generation-reconcile/generate")
+
+    with story_routes._generation_jobs_lock:
+        story_routes._generation_jobs["gj-stale"] = {
+            "job_id": "gj-stale",
+            "story_id": "s-generation-reconcile",
+            "status": "running",
+            "progress": "章节扩写中...",
+            "chapter_number": None,
+            "error": "",
+            "starting_chapter": 0,
+            "created_at": story_routes._now_iso(),
+            "updated_at": story_routes._now_iso(),
+        }
+        story_routes._active_generation_jobs["s-generation-reconcile"] = "gj-stale"
+
+    response = client.get("/stories/s-generation-reconcile/generation-jobs/gj-stale")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["chapter_number"] == 1
+    with story_routes._generation_jobs_lock:
+        assert "s-generation-reconcile" not in story_routes._active_generation_jobs
+
+
+def test_generation_job_exposes_pipeline_progress(monkeypatch):
+    from types import SimpleNamespace
+
+    import apps.api.routes.stories as story_routes
+    from packages.story_core.generation_progress import report_generation_progress
+
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-progress-job",
+            "outline": "A cautious player tests a strange login token.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+    progress_seen = threading.Event()
+    finish_generation = threading.Event()
+
+    def fake_generate_story_chapter(story_id: str):
+        report_generation_progress("剧情计划生成中...")
+        progress_seen.set()
+        assert finish_generation.wait(2)
+        report_generation_progress("正文生成中...")
+        return SimpleNamespace(chapter_number=1)
+
+    monkeypatch.setattr(story_routes, "_generate_story_chapter", fake_generate_story_chapter)
+
+    start_resp = client.post("/stories/s-progress-job/generation-jobs")
+    assert start_resp.status_code == 200
+    job = start_resp.json()
+
+    assert progress_seen.wait(2)
+    progress_resp = client.get(f"/stories/s-progress-job/generation-jobs/{job['job_id']}")
+    assert progress_resp.status_code == 200
+    assert progress_resp.json()["status"] == "running"
+    assert progress_resp.json()["progress"] == "剧情计划生成中..."
+
+    finish_generation.set()
+    finished = progress_resp.json()
+    for _ in range(50):
+        poll_resp = client.get(f"/stories/s-progress-job/generation-jobs/{job['job_id']}")
+        assert poll_resp.status_code == 200
+        finished = poll_resp.json()
+        if finished["status"] == "completed":
+            break
+        time.sleep(0.02)
+
+    assert finished["status"] == "completed"
+    assert finished["chapter_number"] == 1
+
+
+def test_project_agent_context_pack_exposes_current_workbench_state():
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-agent-context",
+            "outline": "网游开服，主角靠千倍爆率低调发育。",
+            "genre": "网游",
+            "style": "升级流",
+            "characters": [
+                {
+                    "name": "苏叶",
+                    "role": "protagonist",
+                    "goals": ["低调验证千倍爆率"],
+                    "game_id": "夜烬",
+                }
+            ],
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": "p-agent-context",
+            "title": "苟在网游里成神",
+            "seed_outline": "交易行变现会留下弱线索。",
+            "world_summary": "《天启之门》开服初期。",
+            "current_focus": "第2章继续验证收益。",
+            "author_constraints": ["网游币制默认使用 1金币=100银币=10000铜币。"],
+            "world_blueprint": {
+                "living_world": {
+                    "economy": {"resource_flow": ["低级材料由散人和商人消化"]},
+                    "information_visibility_rules": ["交易行只显示价格、数量、时间戳。"],
+                }
+            },
+            "active_story_id": "s-agent-context",
+        },
+    )
+    client.post("/stories/s-agent-context/generate")
+
+    response = client.get("/projects/p-agent-context/agent-context?recent_chapters=1")
+
+    assert response.status_code == 200
+    context = response.json()
+    assert context["schema_version"] == "agent-context/v1"
+    assert context["project"]["project_id"] == "p-agent-context"
+    assert context["project"]["active_story_id"] == "s-agent-context"
+    assert context["active_story"]["story_id"] == "s-agent-context"
+    assert context["active_story"]["current_chapter"] == 1
+    assert context["active_story"]["characters"][0]["game_id"] == "夜烬"
+    assert context["recent_chapters"][0]["chapter_number"] == 1
+    assert context["recent_chapters"][0]["body_chars"] > 0
+    assert "body" not in context["recent_chapters"][0]
+    assert any(gap["area"] == "npc_system" for gap in context["world"]["gaps"])
+    assert "review_chapter" in context["controls"]["suggested_tools"]
+
+
+def test_project_agent_context_pack_can_include_recent_chapter_body():
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-agent-context-body",
+            "outline": "A player tests a strange market clue.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": "p-agent-context-body",
+            "title": "Body Context",
+            "active_story_id": "s-agent-context-body",
+        },
+    )
+    client.post("/stories/s-agent-context-body/generate")
+
+    response = client.get("/projects/p-agent-context-body/agent-context?recent_chapters=1&include_body=true")
+
+    assert response.status_code == 200
+    chapter = response.json()["recent_chapters"][0]
+    assert chapter["body_chars"] == len(chapter["body"])
+    assert chapter["body"]
+
+
+def test_project_agent_review_returns_structured_chapter_review():
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-agent-review",
+            "outline": "网游开服，主角靠千倍爆率低调发育。",
+            "genre": "网游",
+            "style": "升级流",
+            "characters": [
+                {
+                    "name": "苏叶",
+                    "role": "protagonist",
+                    "goals": ["低调验证千倍爆率"],
+                    "game_id": "夜烬",
+                }
+            ],
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": "p-agent-review",
+            "title": "苟在网游里成神",
+            "world_summary": "《天启之门》开服初期。",
+            "author_constraints": ["网游币制默认使用 1金币=100银币=10000铜币。"],
+            "active_story_id": "s-agent-review",
+        },
+    )
+    client.post("/stories/s-agent-review/generate")
+
+    response = client.get("/projects/p-agent-review/agent-review?chapter_number=1")
+
+    assert response.status_code == 200
+    review = response.json()
+    assert review["schema_version"] == "agent-review/v1"
+    assert review["project"]["project_id"] == "p-agent-review"
+    assert review["story"]["story_id"] == "s-agent-review"
+    assert review["chapter"]["chapter_number"] == 1
+    assert review["chapter"]["body_chars"] > 0
+    assert "body" not in review["chapter"]
+    assert "writing_review" in review["review"]
+    assert "scores" in review["review"]["writing_review"]
+    assert "prose_quality_review" in review["review"]["writing_review"]
+    assert "adversarial_cut_review" in review["review"]["writing_review"]
+    assert review["controls"]["governance_gate"]["reviewer"] == "chapter_governance_gate/v1"
+    assert review["recommendation"]["action"] in {"continue", "revise"}
+    assert "revise_chapter" in review["controls"]["suggested_tools"]
+
+
+def test_quality_context_exposes_revision_safety_reports():
+    quality = {
+        "ok": False,
+        "issues": ["writing_review"],
+        "writing_review": {"pass": False, "scores": {}, "issues": [], "revision_plan": []},
+        "revision_safety": {
+            "reviewer": "revision_safety/v1",
+            "accepted": False,
+            "selected": "original",
+            "reason": "candidate_worse_than_original",
+        },
+        "segment_pipeline": {
+            "enabled": True,
+            "pass": False,
+            "segments": [
+                {
+                    "segment_key": "setup",
+                    "segment_title": "Opening",
+                    "pass": False,
+                    "segment_revision_safety": {
+                        "reviewer": "segment_revision_safety/v1",
+                        "accepted": False,
+                        "selected": "original",
+                        "reason": "candidate_worse_than_original",
+                    },
+                }
+            ],
+        },
+    }
+
+    context = _quality_context(quality)
+
+    assert context["revision_safety"]["selected"] == "original"
+    assert context["segment_pipeline"]["segments"][0]["segment_revision_safety"]["selected"] == "original"
+
+
+def test_project_agent_review_can_include_chapter_body():
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-agent-review-body",
+            "outline": "A player tests a strange market clue.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": "p-agent-review-body",
+            "title": "Review Body",
+            "active_story_id": "s-agent-review-body",
+        },
+    )
+    client.post("/stories/s-agent-review-body/generate")
+
+    response = client.get("/projects/p-agent-review-body/agent-review?include_body=true")
+
+    assert response.status_code == 200
+    chapter = response.json()["chapter"]
+    assert chapter["body"]
+    assert chapter["body_chars"] == len(chapter["body"])
+
+
+def test_project_agent_review_reports_missing_chapter():
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-agent-review-missing",
+            "outline": "A player tests a strange market clue.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": "p-agent-review-missing",
+            "title": "Review Missing",
+            "active_story_id": "s-agent-review-missing",
+        },
+    )
+
+    response = client.get("/projects/p-agent-review-missing/agent-review?chapter_number=9")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "chapter_not_found"
+
+
+def test_project_agent_revise_updates_latest_chapter(monkeypatch):
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-agent-revise",
+            "outline": "A player tests a strange market clue.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": "p-agent-revise",
+            "title": "Revise Latest",
+            "active_story_id": "s-agent-revise",
+        },
+    )
+    client.post("/stories/s-agent-revise/generate")
+    original = client.get("/stories/s-agent-revise").json()["history"][0]["body"]
+    revised_body = "REVISED CHAPTER BODY. " + ("market detail and character pressure. " * 130)
+
+    def fake_revision_chat(self, story, prompt: str, *, max_tokens: int, json_mode: bool, agent: str = "director"):
+        assert agent == "writer"
+        assert "strengthen market detail" in prompt
+        assert original in prompt
+        return revised_body, ""
+
+    monkeypatch.setattr("packages.story_core.orchestrator.StoryOrchestrator._chat", fake_revision_chat)
+
+    response = client.post(
+        "/projects/p-agent-revise/agent-revise",
+        json={
+            "chapter_number": 1,
+            "instructions": ["strengthen market detail"],
+            "include_body": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "agent-revision/v1"
+    assert payload["revision"]["changed"] is True
+    assert payload["revision"]["previous_body_chars"] == len(original)
+    assert payload["chapter"]["body"] == revised_body
+    assert payload["chapter"]["body_chars"] == len(revised_body)
+    assert payload["review"]["writing_review"]["scores"]
+
+    persisted = client.get("/stories/s-agent-revise").json()
+    assert persisted["history"][0]["body"] == revised_body
+
+
+def test_project_agent_revise_rejects_non_latest_chapter():
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-agent-revise-old",
+            "outline": "A player tests a strange market clue.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": "p-agent-revise-old",
+            "title": "Revise Old",
+            "active_story_id": "s-agent-revise-old",
+        },
+    )
+    client.post("/stories/s-agent-revise-old/generate")
+    client.post("/stories/s-agent-revise-old/generate")
+
+    response = client.post(
+        "/projects/p-agent-revise-old/agent-revise",
+        json={"chapter_number": 1, "instructions": ["do not rewrite downstream chapters"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "chapter_not_latest"
+
+
+def test_project_automation_job_generates_a_chapter_and_exposes_status():
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-automation-status",
+            "outline": "A player enters a game village and tests a market clue.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": "p-automation-status",
+            "title": "Automation Status",
+            "active_story_id": "s-automation-status",
+        },
+    )
+
+    response = client.post(
+        "/projects/p-automation-status/automation-jobs",
+        json={"max_revisions": 0, "review_provider": "local"},
+    )
+
+    assert response.status_code == 200
+    job = response.json()
+    assert job["status"] in {"queued", "running"}
+    assert job["phase"] in {"queued", "environment", "generating"}
+
+    finished = job
+    for _ in range(80):
+        poll = client.get(f"/projects/p-automation-status/automation-jobs/{job['job_id']}")
+        assert poll.status_code == 200
+        finished = poll.json()
+        if finished["status"] in {"completed", "paused", "failed"}:
+            break
+        time.sleep(0.02)
+
+    assert finished["status"] in {"completed", "paused"}
+    assert finished["project_id"] == "p-automation-status"
+    assert finished["story_id"] == "s-automation-status"
+    assert finished["chapter_number"] == 1
+    assert finished["revision_attempts"] == 0
+    assert finished["final_action"] in {"approve", "revise", "pause"}
+    assert finished["progress"]
+
+    story = client.get("/stories/s-automation-status").json()
+    assert story["current_chapter"] == 1
+    assert story["history"][0]["body"]
+
+
+def test_project_automation_job_revises_until_review_approves(monkeypatch):
+    import apps.api.routes.stories as story_routes
+
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-automation-revise",
+            "outline": "A player enters a game village and tests a market clue.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+    client.post(
+        "/projects",
+        json={
+            "project_id": "p-automation-revise",
+            "title": "Automation Revise",
+            "active_story_id": "s-automation-revise",
+        },
+    )
+
+    review_actions = ["revise", "approve"]
+
+    def fake_review_result(project, record, bundle, *, provider: str, include_body: bool):
+        action = review_actions.pop(0)
+        return {
+            "schema_version": "automation-review-result/v1",
+            "action": action,
+            "summary": f"{action} summary",
+            "must_fix": ["expand market scene"] if action == "revise" else [],
+            "revision_instructions": ["add one grounded NPC exchange"] if action == "revise" else [],
+            "risk_flags": [],
+        }
+
+    monkeypatch.setattr(story_routes, "_automation_review_result", fake_review_result, raising=False)
+
+    response = client.post(
+        "/projects/p-automation-revise/automation-jobs",
+        json={"max_revisions": 2, "review_provider": "local"},
+    )
+
+    assert response.status_code == 200
+    job = response.json()
+    finished = job
+    for _ in range(120):
+        poll = client.get(f"/projects/p-automation-revise/automation-jobs/{job['job_id']}")
+        assert poll.status_code == 200
+        finished = poll.json()
+        if finished["status"] in {"completed", "paused", "failed"}:
+            break
+        time.sleep(0.02)
+
+    assert finished["status"] == "completed"
+    assert finished["phase"] == "completed"
+    assert finished["revision_attempts"] == 1
+    assert finished["final_action"] == "approve"
+    assert finished["review_provider"] == "local"
+    assert finished["progress"] == "automation completed"
+
+
+def test_project_automation_job_normalizes_openclaw_provider_to_local():
+    from apps.api.routes.stories import ProjectAutomationJobRequest
+
+    request = ProjectAutomationJobRequest(max_revisions=1, review_provider="openclaw")
+
+    assert request.review_provider == "local"
 
 
 def test_branch_can_be_renamed_and_deleted():

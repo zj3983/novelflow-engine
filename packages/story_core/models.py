@@ -1,8 +1,22 @@
 from __future__ import annotations
 
+import os
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+from packages.story_core.env import load_environment_files
+
+
+load_environment_files()
+
+
+def default_model_name() -> str:
+    return os.getenv("NOVEL_AUTOGROWTH_DEFAULT_MODEL") or os.getenv("OPENAI_MODEL") or "qwen3.6-plus"
+
+
+def default_fast_model_name() -> str:
+    return os.getenv("NOVEL_AUTOGROWTH_FAST_MODEL") or default_model_name()
 
 
 def _contains_import_noise(text: str) -> bool:
@@ -46,11 +60,11 @@ NewCharacterPolicy = Literal["Director review", "Auto-approve named candidates",
 
 class AgentSettings(BaseModel):
     mode: AgentMode = "LLM-assisted"
-    global_model: str = "gpt-5.4"
-    character_model: str = "gpt-5.4-mini"
-    director_model: str = "gpt-5.4"
-    writer_model: str = "gpt-5.4"
-    memory_model: str = "gpt-5.4"
+    global_model: str = Field(default_factory=default_model_name)
+    character_model: str = Field(default_factory=default_fast_model_name)
+    director_model: str = Field(default_factory=default_model_name)
+    writer_model: str = Field(default_factory=default_model_name)
+    memory_model: str = Field(default_factory=default_model_name)
     temperature: float = 0.7
     new_character_policy: NewCharacterPolicy = "Director review"
 
@@ -124,6 +138,31 @@ class ChapterSummary(BaseModel):
     event_beat: dict = Field(default_factory=dict)
 
 
+class MemoryIndexEntry(BaseModel):
+    chapter_number: int
+    chapter_title: str = ""
+    summary: str = ""
+    tags: list[str] = Field(default_factory=list)
+    characters: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+    factions: list[str] = Field(default_factory=list)
+    quests: list[str] = Field(default_factory=list)
+    items: list[str] = Field(default_factory=list)
+    facts: list[str] = Field(default_factory=list)
+    unresolved_threads: list[str] = Field(default_factory=list)
+
+
+class ArcRecap(BaseModel):
+    start_chapter: int
+    end_chapter: int
+    recap: str = ""
+    key_threads: list[str] = Field(default_factory=list)
+    resolved_threads: list[str] = Field(default_factory=list)
+    open_threads: list[str] = Field(default_factory=list)
+    character_changes: list[str] = Field(default_factory=list)
+    ledger_snapshot: dict = Field(default_factory=dict)
+
+
 class CharacterProposal(BaseModel):
     name: str
     goal: str
@@ -145,11 +184,55 @@ class DirectorDecision(BaseModel):
     next_focus: str = ""
 
 
+class GamePanel(BaseModel):
+    """Track a web-game character panel as part of the character card."""
+
+    game_id: str = ""
+    level: int | str | None = None
+    class_path: str = ""
+    exp: str = ""
+    hp: str = ""
+    mp: str = ""
+    attributes: dict = Field(default_factory=dict)
+    skills: list[str] = Field(default_factory=list)
+    equipment: dict = Field(default_factory=dict)
+    inventory: dict = Field(default_factory=dict)
+    currency: str = ""
+    quests: dict = Field(default_factory=dict)
+    risk: dict = Field(default_factory=dict)
+    updated_chapter: int = 0
+
+
+class CharacterPerformanceProfile(BaseModel):
+    """How a character should behave on page, not just who they are."""
+
+    speech_style: str = ""
+    action_style: str = ""
+    risk_posture: str = ""
+    emotional_triggers: list[str] = Field(default_factory=list)
+    decision_rules: list[str] = Field(default_factory=list)
+    reveal_limits: list[str] = Field(default_factory=list)
+
+
+class NPCBehaviorProfile(BaseModel):
+    """Lightweight NPC boundaries for simulation and review."""
+
+    service_role: str = ""
+    authority_scope: list[str] = Field(default_factory=list)
+    information_limits: list[str] = Field(default_factory=list)
+    incentives: list[str] = Field(default_factory=list)
+    interaction_rules: list[str] = Field(default_factory=list)
+
+
 class CharacterState(BaseModel):
     """Mutable character state used by the story engine."""
 
     name: str
     role: str
+    game_id: str = ""
+    game_panel: GamePanel = Field(default_factory=GamePanel)
+    performance_profile: CharacterPerformanceProfile = Field(default_factory=CharacterPerformanceProfile)
+    npc_profile: NPCBehaviorProfile = Field(default_factory=NPCBehaviorProfile)
     traits: dict[str, float] = Field(default_factory=dict)
     goals: list[str] = Field(default_factory=list)
     memory: list[str] = Field(default_factory=list)
@@ -170,6 +253,56 @@ class CharacterState(BaseModel):
             self.frozen = True
             self.lifecycle_state = "frozen"
         return self
+
+
+class ChapterSimulationPlan(BaseModel):
+    """Unified scene simulation plan used by writer and reviewers."""
+
+    chapter_number: int
+    chapter_goal: str = ""
+    event_plan: dict = Field(default_factory=dict)
+    protagonist_strategy: dict = Field(default_factory=dict)
+    character_performance: list[dict] = Field(default_factory=list)
+    npc_boundaries: list[dict] = Field(default_factory=list)
+    information_visibility: list[str] = Field(default_factory=list)
+    economy_expectations: list[str] = Field(default_factory=list)
+    panel_expectations: list[str] = Field(default_factory=list)
+    longform_constraints: list[str] = Field(default_factory=list)
+    required_beats: list[str] = Field(default_factory=list)
+    forbidden_moves: list[str] = Field(default_factory=list)
+    review_focus: list[str] = Field(default_factory=list)
+
+
+class WorldEvent(BaseModel):
+    """A simulated world-side event before it is rendered as prose."""
+
+    event_id: str
+    template_id: str = ""
+    actor: str
+    action: str
+    target: str = ""
+    location: str = ""
+    cause: str = ""
+    visible_to: list[str] = Field(default_factory=list)
+    consequences: list[str] = Field(default_factory=list)
+    state_delta: dict = Field(default_factory=dict)
+    prose_priority: int = 0
+
+
+class SceneCard(BaseModel):
+    """A writeable scene extracted from simulated world events."""
+
+    scene_id: str
+    template_id: str = ""
+    location: str
+    pov: str
+    purpose: str
+    conflict: str
+    source_events: list[str] = Field(default_factory=list)
+    must_show: list[str] = Field(default_factory=list)
+    must_not_explain: list[str] = Field(default_factory=list)
+    state_delta: dict = Field(default_factory=dict)
+    ending_pressure: str = ""
 
 
 class ChapterOutline(BaseModel):
@@ -248,6 +381,16 @@ class WorldBible(BaseModel):
 
 NovelStatusType = Literal["draft", "outlining", "writing", "reviewing", "completed", "paused"]
 ProjectStatusType = Literal["draft", "simulating", "paused", "completed"]
+ProjectPipelineStage = Literal[
+    "imported",
+    "world_ready",
+    "environment_ready",
+    "chapter_planning",
+    "writing",
+    "simulating",
+    "paused",
+    "completed",
+]
 
 
 class NovelStatus(BaseModel):
@@ -276,9 +419,12 @@ class StoryState(BaseModel):
     author_constraints: list[str] = Field(default_factory=list)
     characters: list[CharacterState] = Field(default_factory=list)
     world_facts: list[str] = Field(default_factory=list)
+    progression_ledger: dict = Field(default_factory=dict)
     timeline: list[TimelineEvent] = Field(default_factory=list)
     foreshadowing: list[ForeshadowingState] = Field(default_factory=list)
     chapter_summaries: list[ChapterSummary] = Field(default_factory=list)
+    memory_index: list[MemoryIndexEntry] = Field(default_factory=list)
+    arc_recaps: list[ArcRecap] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _sanitize_imported_state(self) -> "StoryState":
@@ -301,6 +447,7 @@ class NovelProject(BaseModel):
     character_profiles: list[dict] = Field(default_factory=list)
     relationship_graph: list[dict] = Field(default_factory=list)
     status: ProjectStatusType = "draft"
+    pipeline_stage: ProjectPipelineStage = "imported"
     active_story_id: str = ""
     created_at: str = ""
     updated_at: str = ""
@@ -312,6 +459,7 @@ class NovelProjectSummary(BaseModel):
     project_id: str
     title: str
     status: ProjectStatusType = "draft"
+    pipeline_stage: ProjectPipelineStage = "imported"
     active_story_id: str = ""
     current_chapter: int = 0
     source_path: str = ""

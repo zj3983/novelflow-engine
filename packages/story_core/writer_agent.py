@@ -10,7 +10,7 @@ from packages.story_core.agent_base import (
     compact_text,
     parse_json_message_content,
 )
-from packages.story_core.models import DirectorDecision, StoryState
+from packages.story_core.models import DirectorDecision, StoryState, default_model_name
 from packages.story_core.runtime import record_agent_runtime
 from packages.story_core.writer import write_chapter_body
 
@@ -49,7 +49,7 @@ class OpenAIWriterTextProvider(BaseOpenAIProvider):
             return None
 
         payload = {
-            "model": story.agent_settings.writer_model or story.agent_settings.global_model or "gpt-5.4",
+            "model": story.agent_settings.writer_model or story.agent_settings.global_model or default_model_name(),
             "messages": [
                 {
                     "role": "system",
@@ -182,16 +182,28 @@ class WriterAgent:
         memory_constraints: dict | None = None,
     ) -> str:
         if story.agent_settings.mode == "LLM-assisted":
-            llm_body = self.llm_provider.write(
-                story,
-                chapter_number,
-                decision,
-                conflict_summary,
-                event_beat,
-                cadence,
-                event_plan,
-                memory_constraints,
-            )
+            try:
+                llm_body = self.llm_provider.write(
+                    story,
+                    chapter_number,
+                    decision,
+                    conflict_summary,
+                    event_beat,
+                    cadence,
+                    event_plan,
+                    memory_constraints,
+                )
+            except TypeError:
+                # Backward compatibility for older test/user providers that
+                # predate event_plan and memory_constraints.
+                llm_body = self.llm_provider.write(
+                    story,
+                    chapter_number,
+                    decision,
+                    conflict_summary,
+                    event_beat,
+                    cadence,
+                )
             if llm_body:
                 record_agent_runtime(
                     story,

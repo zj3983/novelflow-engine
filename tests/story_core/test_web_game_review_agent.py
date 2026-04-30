@@ -1,0 +1,426 @@
+from packages.story_core.web_game_review import review_web_game_chapter, web_game_review_rules
+from packages.story_core.orchestrator import _merge_writing_review_quality, _opening_writer_rules
+
+
+def test_web_game_review_rejects_real_name_as_game_identity():
+    body = (
+        "《天启之门》开服当晚，苏叶在出租屋里完成登录。"
+        "进入灰烬村后，交易行寄售界面直接显示卖家苏叶，论坛玩家也说苏叶在低价出货。"
+        "白袍公会外围把苏叶这个现实姓名写进观察名单。"
+    ) * 30
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"world_reactions": ["交易行商人盯盘。"]},
+        world_facts=["网游角色必须区分现实姓名和游戏ID。"],
+    )
+
+    assert review["pass"] is False
+    assert any("现实姓名和游戏ID" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_missing_named_npc_service_node():
+    body = (
+        "夜烬在灰烬村刷完狼皮后，只看见系统提示跳出来。"
+        "他没有去药剂铺、职业大厅、仓库或村长那里办理任何任务和服务。"
+        "交易行价格轻微波动，商人玩家开始盯时间戳。"
+    ) * 35
+
+    review = review_web_game_chapter(
+        chapter_number=2,
+        body=body,
+        event_plan={"npc_beats": ["通过NPC服务节点制造任务门槛。"]},
+        world_facts=["NPC硬规则：灰烬村村长、药剂师洛婶、职业导师艾伦、仓库管理员铁栓、修理匠老葛。"],
+    )
+
+    assert review["pass"] is False
+    assert any("命名NPC" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_single_trade_omniscient_tracking():
+    body = (
+        "夜烬把低级狼皮匿名上架交易行。"
+        "白袍公会只看了一笔交易，就立刻锁定他的坐标、现实身份和刷怪点。"
+        "公会频道宣布已经知道混沌之种就在夜烬身上。"
+    ) * 35
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"world_reactions": ["公会外围开始注意。"]},
+        world_facts=["低级材料交易只能形成价格、数量、时间戳等弱线索。"],
+    )
+
+    assert review["pass"] is False
+    assert any("单次" in issue and "锁定" in issue for issue in review["issues"])
+
+
+def test_web_game_review_allows_explicit_weak_signal_tracking():
+    body = (
+        "夜烬把低级狼皮匿名上架交易行，界面提示默认隐藏卖家ID与坐标。"
+        "药剂师洛婶在药剂铺按任务需求回收毒腺，提醒解毒剂材料正在降价。"
+        "白袍公会只记录价格波动、数量批次和时间戳，不查坐标，也不知道现实身份。"
+        "执事要求等模式重复三次，再通过论坛风向、资源点目击和NPC任务异常多源汇总。"
+    ) * 35
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"world_reactions": ["公会外围开始记录弱线索。"]},
+        world_facts=["低级材料交易只能形成价格、数量、时间戳等弱线索。"],
+    )
+
+    assert review["pass"] is True, review
+
+
+def test_web_game_review_allows_first_trade_notice_without_identity_tracking():
+    body = (
+        "夜烬把灰鼠毒腺拆成多笔匿名挂进灰烬村交易行。"
+        "不到十秒，第一笔交易提示亮起，系统只显示价格、数量批次和时间戳。"
+        "药剂师洛婶在药剂铺报价回收毒腺，提醒低级材料不要一次砸盘。"
+        "世界频道里白袍公会在资源点清场，但交易行没有坐标，没有ID，也不知道现实身份。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"world_reactions": ["商人脚本记录弱线索。"], "npc_beats": ["洛婶报价。"]},
+        world_facts=["低级材料交易只能形成价格、数量、时间戳等弱线索。"],
+    )
+
+    assert review["pass"] is True, review
+
+
+def test_web_game_review_allows_negated_tracking_language():
+    body = (
+        "夜烬把灰狼皮拆成多笔匿名挂进灰烬村交易行。"
+        "交易行公告写明：卖家坐标、身份标识和现实关联数据已做脱敏处理。"
+        "药剂师洛婶在药剂铺报价回收狼牙，提醒低级材料不要一次砸盘。"
+        "论坛商会脚本只记录价格、数量批次和时间戳，没有锁定坐标，也不会暴露现实身份。"
+        "白袍公会外围只能把这次流水标成弱线索，缺乏坐标锚点与身份关联。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"world_reactions": ["商人脚本记录弱线索。"], "npc_beats": ["洛婶报价。"]},
+        world_facts=["低级材料交易只能形成价格、数量、时间戳等弱线索。"],
+    )
+
+    assert review["pass"] is True, review
+
+
+def test_web_game_review_allows_bounded_realtime_visibility_language():
+    body = (
+        "夜烬把灰狼皮拆成多笔匿名挂进灰烬村交易行。"
+        "交易行规则写明：卖家身份、坐标、实时位置对买家不可见，买家只看价格和数量批次。"
+        "药剂师洛婶在药剂铺报价回收狼牙，提醒低级材料不要一次砸盘。"
+        "白袍公会外围只能记录时间戳，没有锁定坐标，也没有锁定身份。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"world_reactions": ["商人脚本记录弱线索。"], "npc_beats": ["洛婶报价。"]},
+        world_facts=["信息可见规则：交易行只能暴露价格、数量、批次和时间戳。"],
+    )
+
+    assert review["pass"] is True, review
+
+
+def test_web_game_review_rejects_unset_real_money_exchange_rate():
+    body = (
+        "夜烬卖出狼皮后看着到账提示。"
+        "他立刻按1金币=100人民币计算收益，确认今天已经能付房租。"
+        "交易行里其他玩家还在用铜币和银币询价。"
+    ) * 35
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={},
+        world_facts=["没有明确设定前，不得把金币直接换算成人民币。"],
+    )
+
+    assert review["pass"] is False
+    assert any("汇率" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_over_precise_market_prediction():
+    body = (
+        "夜烬打开灰烬村交易行，把灰鼠毒腺放进匿名寄售栏。"
+        "界面提示：低于均价33%，预计成交速度：快。"
+        "药剂师洛婶在药剂铺报价回收毒腺，提醒他低级材料只看品质和批次。"
+        "交易行只显示价格、数量和时间戳，不显示卖家坐标。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=2,
+        body=body,
+        event_plan={"world_reactions": ["交易行弱线索。"], "npc_beats": ["洛婶报价。"]},
+        world_facts=["交易行只能给出模糊行情，不给上帝视角成交预测。"],
+    )
+
+    assert review["pass"] is False
+    assert any("交易行提示过于精确" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rules_are_prompt_ready():
+    rules = web_game_review_rules()
+
+    assert any("游戏ID" in rule for rule in rules)
+    assert any("交易行" in rule for rule in rules)
+    assert any("NPC" in rule for rule in rules)
+    assert any("背景预算" in rule for rule in rules)
+    assert any("信息可见" in rule for rule in rules)
+
+
+def test_web_game_review_rejects_transaction_visibility_overreach():
+    body = (
+        "《天启之门》开服后，夜烬在灰烬村交易行匿名寄售低级狼皮。"
+        "药剂师洛婶在药剂铺回收毒腺，提醒解毒剂任务材料正在涨价。"
+        "交易行界面却直接显示卖家坐标、实时位置和真人身份，白袍公会立刻照着坐标追过去。"
+    ) * 35
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"world_reactions": ["交易行商人记录价格和时间戳。"]},
+        world_facts=["信息可见规则：交易行只能暴露价格、数量、批次和时间戳。"],
+    )
+
+    assert review["pass"] is False
+    assert any("信息可见" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_unnormalized_currency_display():
+    body = (
+        "《天启之门》开服后，夜烬在灰烬村交易行匿名寄售低级毒腺。"
+        "药剂师洛婶在药剂铺回收毒腺，提醒他手续费和价格都要算清。"
+        "第二批、第三批寄售已经成交，账户余额跳动：0金币3银币2100铜币。"
+        "交易行商人只记录价格、数量批次和时间戳，不知道他的现实身份。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=2,
+        body=body,
+        event_plan={"world_reactions": ["交易行商人记录价格和时间戳。"]},
+        world_facts=["网游币制默认使用 1金币=100银币=10000铜币。"],
+    )
+
+    assert review["pass"] is False
+    assert any("货币显示" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_mage_written_as_sword_primary():
+    body = (
+        "《天启之门》开服后，夜烬确认职业倾向是元素法师学徒，任务目标是元素回廊。"
+        "他没有使用法杖和基础火球术，而是抽出短剑冲进狼群，用短剑刺穿灰狼弱点。"
+        "修理匠老葛在铁匠铺修剑报价，交易行商人只记录价格和时间戳。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=2,
+        body=body,
+        event_plan={"npc_beats": ["修理匠老葛提供装备修理服务。"]},
+        world_facts=["职业路线：夜烬是元素法师学徒。"],
+    )
+
+    assert review["pass"] is False
+    assert any("职业与装备" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_mixed_first_chapter_monsters():
+    body = (
+        "《天启之门》开服后，夜烬在灰烬村外看到几只灰鼠在晨雾里晃动。"
+        "他选择元素法师学徒，面板写着基础火苗。"
+        "真正动手时，杖尖却对准狼的侧颈，狼爪擦过他的袖口，狼尸倒在地上。"
+        "系统提示：【击杀灰鼠。经验+15。】药剂师洛婶提醒灰鼠坡是低级怪物点。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"location_beats": ["灰鼠坡首次验证。"]},
+        world_facts=["第一章验证目标：灰鼠。"],
+    )
+
+    assert review["pass"] is False
+    assert any("怪物对象" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_panel_value_drift_inside_chapter():
+    body = (
+        "《天启之门》角色创建完成。角色面板显示：游戏ID：夜烬，职业：元素法师学徒，"
+        "生命：120/120，法力：280/280，智力：14，敏捷：8，体质：9。"
+        "药剂师洛婶在药剂铺报价回收毒腺，提醒他别乱卖。"
+        "章末夜烬再次打开角色面板：生命：92/100，法力：61/80，智力：9，敏捷：4，体质：5。"
+    ) * 20
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"npc_beats": ["药剂师洛婶报价。"]},
+        world_facts=["角色面板必须前后一致，变化需要正文解释。"],
+    )
+
+    assert review["pass"] is False
+    assert any("角色面板数值" in issue for issue in review["issues"])
+
+
+def test_web_game_review_allows_explained_hp_mp_drift():
+    body = (
+        "《天启之门》角色创建完成。角色面板显示：游戏ID：夜烬，职业：元素法师学徒，"
+        "生命：100/100，法力：80/80，基础属性：力量3，敏捷4，智力9，体质5。"
+        "灰鼠扑上来时抓破他的左臂，夜烬施放基础火苗，法力被抽走一截。"
+        "药剂师洛婶在药剂铺报价回收毒腺，提醒他别乱卖。"
+        "章末夜烬再次打开角色面板：生命：92/100，法力：61/80，基础属性：力量3，敏捷4，智力9，体质5。"
+    ) * 20
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"npc_beats": ["药剂师洛婶报价。"]},
+        world_facts=["角色面板必须前后一致，生命法力变化需要正文解释。"],
+    )
+
+    assert review["pass"] is True, review
+
+
+def test_web_game_review_rejects_mage_staff_melee_without_spell_reason():
+    body = (
+        "《天启之门》开服后，夜烬选择元素法师学徒，背着新手法杖进入灰鼠坡。"
+        "灰鼠扑上来时，他全程没有施法，只用杖尖砸肋骨、杖尾压鼻梁、杖头磕咽喉。"
+        "药剂师洛婶在药剂铺按七铜币回收毒腺，提醒他材料价格只看品质，不问来路。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"npc_beats": ["药剂师洛婶报价。"]},
+        world_facts=["职业路线：元素法师学徒，战斗需要体现基础法术或解释技能未解锁。"],
+    )
+
+    assert review["pass"] is False
+    assert any("法师战斗方式" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_named_npc_without_setting_boundary():
+    body = (
+        "《天启之门》开服后，夜烬进入灰烬村。"
+        "药剂师洛婶说任务奖励150铜币，夜烬接了任务就离开。"
+        "交易行商人只记录价格、数量批次和时间戳，不知道他的现实身份。"
+    ) * 35
+
+    review = review_web_game_chapter(
+        chapter_number=2,
+        body=body,
+        event_plan={"npc_beats": ["药剂师洛婶通过任务门槛影响选择。"]},
+        world_facts=["NPC设定：命名NPC需要地点、服务、利益诉求和信息边界。"],
+    )
+
+    assert review["pass"] is False
+    assert any("命名NPC出场缺少完整设定" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_first_chapter_npc_budget_overload():
+    body = (
+        "《天启之门》开服当晚，夜烬进入灰烬村。"
+        "药剂师洛婶在药剂铺发布解毒剂支线任务，讲清毒腺回收价格和库存压力。"
+        "职业导师艾伦又在职业大厅登记元素回廊试炼，说明法师技能学习和转职门槛。"
+        "仓库管理员铁栓随后开放仓库格扩展和寄售流水查询，提醒匿名寄售记录会进入系统风控。"
+        "交易行商人只记录价格、数量批次和时间戳，并不知道他的现实身份。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"npc_beats": ["第一章最多一个命名NPC服务节点完整出场。"]},
+        world_facts=["背景预算：第一章最多一个命名NPC完整出场，其他NPC只能一笔带过。"],
+    )
+
+    assert review["pass"] is False
+    assert any("背景预算" in issue for issue in review["issues"])
+
+
+def test_web_game_review_allows_one_npc_scene_with_other_nodes_as_signposts():
+    body = (
+        "《天启之门》开服当晚，夜烬进入灰烬村。"
+        "药剂师洛婶在药剂铺柜台后抬头，说破损毒腺只能按七铜币回收，"
+        "还提醒他解毒剂任务材料缺口大，想卖货就别一次砸盘。"
+        "夜烬记下价格，没有继续追问。职业大厅布告栏、仓库排队窗口和修理铺叮当声"
+        "只从视线边缘匆匆掠过，没有其他NPC上前办理服务。"
+        "交易行商人只记录价格、数量批次和时间戳，不知道他的现实身份。"
+    ) * 20
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"npc_beats": ["第一章只完整展开药剂师洛婶。"]},
+        world_facts=["背景预算：第一章最多一个命名NPC完整出场，其他NPC只能一笔带过。"],
+    )
+
+    assert review["pass"] is True, review
+
+
+def test_web_game_review_does_not_count_task_panel_npc_as_full_service_scene():
+    body = (
+        "《天启之门》开服当晚，夜烬进入灰烬村。"
+        "任务面板系统自动推送：职业导师艾伦发布前置任务，目标是收集灰狼毒腺。"
+        "药剂师洛婶在药剂铺柜台后抬头，说破损毒腺只能按七铜币回收，"
+        "还提醒他解毒剂任务材料缺口大，想卖货就别一次砸盘。"
+        "交易行商人只记录价格、数量批次和时间戳，不知道他的现实身份。"
+    ) * 20
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"npc_beats": ["第一章只完整展开药剂师洛婶。"]},
+        world_facts=["背景预算：第一章最多一个命名NPC完整出场，其他NPC只能一笔带过。"],
+    )
+
+    assert review["pass"] is True, review
+
+
+def test_web_game_review_does_not_count_light_npc_mentions_as_full_service_scene():
+    body = (
+        "《天启之门》开服当晚，夜烬进入灰烬村。"
+        "药剂师洛婶在柜台后隐约可见，职业导师艾伦的名字只出现在任务奖励列表里。"
+        "他没有上前插队，只扫过药剂铺、职业大厅、仓库窗口和修理铺的队伍。"
+        "交易行商人只记录价格、数量批次和时间戳，不知道他的现实身份。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"npc_beats": ["第一章需要一个命名NPC服务节点。"]},
+        world_facts=["NPC硬规则：命名NPC必须以服务、任务或价格影响选择。"],
+    )
+
+    assert review["pass"] is False
+    assert any("命名NPC" in issue for issue in review["issues"])
+
+
+def test_quality_report_fails_when_writing_review_fails():
+    quality = {"ok": True, "issues": [], "metrics": {"body_chars": 5200}}
+    writing_review = {
+        "pass": False,
+        "issues": ["第一章节奏过载。"],
+        "scores": {"genre_rules": 5, "web_game_market_logic": 5},
+        "revision_plan": ["拆分节奏。"],
+    }
+
+    merged = _merge_writing_review_quality(quality, writing_review)
+
+    assert merged["ok"] is False
+    assert "writing_review" in merged["issues"]
+    assert merged["writing_review"] == writing_review
+
+
+def test_opening_writer_rules_keep_first_chapter_narrow():
+    rules = "\n".join(_opening_writer_rules(1))
+
+    assert "最多一个命名NPC" in rules
+    assert "赵胖子" in rules
+    assert "白袍据点" in rules

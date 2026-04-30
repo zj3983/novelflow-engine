@@ -1,4 +1,17 @@
-from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.models import AgentSettings, CharacterState, StoryState
+
+
+def test_agent_settings_defaults_follow_environment_models(monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_DEFAULT_MODEL", "qwen3.6-plus")
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FAST_MODEL", "qwen3.6-plus-fast")
+
+    settings = AgentSettings()
+
+    assert settings.global_model == "qwen3.6-plus"
+    assert settings.director_model == "qwen3.6-plus"
+    assert settings.writer_model == "qwen3.6-plus"
+    assert settings.memory_model == "qwen3.6-plus"
+    assert settings.character_model == "qwen3.6-plus-fast"
 
 
 def test_story_state_can_store_outline_and_chapter_index():

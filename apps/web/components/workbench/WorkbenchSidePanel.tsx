@@ -80,6 +80,48 @@ function projectLibrary(projectSummaries: ProjectSummary[], currentProjectId: st
   return projectSummaries.filter((entry) => entry.project_id !== currentProjectId);
 }
 
+function formatPanelValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "";
+  if (Array.isArray(value)) return value.filter(Boolean).join("、");
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== null && entryValue !== undefined && entryValue !== "")
+      .map(([key, entryValue]) => `${key}:${formatPanelValue(entryValue)}`)
+      .join(" / ");
+  }
+  return String(value);
+}
+
+function gamePanelSummaryChips(character: StoryResponse["characters"][number]): string[] {
+  const panel = character.game_panel;
+  if (!panel) return [];
+  return [
+    panel.level !== undefined && panel.level !== null ? `Lv.${panel.level}` : "",
+    panel.class_path || "",
+    panel.exp ? `经验 ${panel.exp}` : "",
+    panel.currency || "",
+  ].filter(Boolean);
+}
+
+function gamePanelRows(character: StoryResponse["characters"][number]): Array<{ label: string; value: string }> {
+  const panel = character.game_panel;
+  if (!panel) return [];
+  const rows = [
+    { label: "生命", value: panel.hp || "" },
+    { label: "法力", value: panel.mp || "" },
+    { label: "基础属性", value: panel.attributes ? formatPanelValue(panel.attributes) : "" },
+    { label: "技能", value: panel.skills?.length ? panel.skills.join("、") : "" },
+    { label: "装备", value: panel.equipment ? formatPanelValue(panel.equipment) : "" },
+    { label: "背包", value: panel.inventory ? formatPanelValue(panel.inventory) : "" },
+    { label: "任务", value: panel.quests ? formatPanelValue(panel.quests) : "" },
+  ];
+  return rows.filter((row) => row.value);
+}
+
+function isProtagonist(character: StoryResponse["characters"][number]): boolean {
+  return character.role.includes("主角") || character.name === "苏叶" || character.game_panel?.game_id === "夜烬";
+}
+
 export function WorkbenchSidePanel({
   project,
   story,
@@ -101,22 +143,68 @@ export function WorkbenchSidePanel({
         <header className="panel__header">角色群像</header>
         <div className="panel__body workbench-sidepanel__stack">
           {story?.characters.length ? (
-            story.characters.map((character) => (
-              <article key={character.name} className="side-card side-card--character">
-                <div className="side-card__head">
-                  <strong>{character.name}</strong>
-                  <span className="side-card__badge">{lifecycleLabel(character.lifecycle_state)}</span>
-                </div>
-                <p className="hint">目标：{character.goals[0] ?? "待补全"}</p>
-                <div className="side-card__chips">
-                  <span className="side-chip">情绪：{character.current_emotion || "未知"}</span>
-                  <span className="side-chip">位置：{character.location || "未落位"}</span>
-                </div>
-                {character.relationships && Object.values(character.relationships)[0] ? (
-                  <p className="side-card__micro">牵引关系：{Object.values(character.relationships)[0].target}</p>
-                ) : null}
-              </article>
-            ))
+            story.characters.map((character) => {
+              const panelChips = gamePanelSummaryChips(character);
+              const panelRows = gamePanelRows(character);
+              const showFullPanel = isProtagonist(character) && panelRows.length > 0;
+              return (
+                <article key={character.name} className="side-card side-card--character">
+                  <div className="side-card__head">
+                    <strong>{character.name}</strong>
+                    <span className="side-card__badge">{lifecycleLabel(character.lifecycle_state)}</span>
+                  </div>
+                  {character.game_id || character.game_panel?.game_id ? (
+                    <p className="hint">游戏ID：{character.game_id || character.game_panel?.game_id}</p>
+                  ) : null}
+                  {panelChips.length ? (
+                    <div className="side-card__chips" aria-label={`${character.name} 游戏面板`}>
+                      {panelChips.map((chip) => (
+                        <span key={chip} className="side-chip">{chip}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {showFullPanel ? (
+                    <section className="game-panel-card" aria-label={`${character.name} 角色面板`}>
+                      <div className="game-panel-card__head">
+                        <span>角色面板</span>
+                        <strong>{character.game_panel?.game_id || character.game_id || character.name}</strong>
+                      </div>
+                      <dl className="game-panel-card__grid">
+                        {panelRows.map((row) => (
+                          <div key={row.label} className="game-panel-card__row">
+                            <dt>{row.label}</dt>
+                            <dd>{row.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </section>
+                  ) : null}
+                  <p className="hint">目标：{character.goals[0] ?? "待补全"}</p>
+                  {character.memory?.length ? (
+                    <p className="side-card__micro">
+                      {character.memory.find((item) => item.includes("动机")) ?? character.memory[0]}
+                    </p>
+                  ) : null}
+                  <div className="side-card__chips">
+                    <span className="side-chip">情绪：{character.current_emotion || "未知"}</span>
+                    <span className="side-chip">位置：{character.location || "未落位"}</span>
+                  </div>
+                  {character.secrets?.length ? (
+                    <div className="side-card__chips">
+                      {character.secrets.slice(0, 2).map((secret) => (
+                        <span key={secret} className="side-chip">秘密：{secret}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {character.relationships && Object.values(character.relationships)[0] ? (
+                    <p className="side-card__micro">
+                      牵引关系：{Object.values(character.relationships)[0].target}
+                      {Object.values(character.relationships)[0].bond ? ` · ${Object.values(character.relationships)[0].bond}` : ""}
+                    </p>
+                  ) : null}
+                </article>
+              );
+            })
           ) : (
             <p className="hint">还没有角色状态，先生成第一章或导入已有项目。</p>
           )}

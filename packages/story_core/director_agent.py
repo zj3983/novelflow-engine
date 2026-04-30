@@ -10,7 +10,7 @@ from packages.story_core.agent_base import (
     compact_text,
     parse_json_message_content,
 )
-from packages.story_core.models import CharacterProposal, DirectorDecision, NewCharacterPolicy, StoryState
+from packages.story_core.models import CharacterProposal, DirectorDecision, NewCharacterPolicy, StoryState, default_model_name
 from packages.story_core.planner import build_chapter_title, select_primary_pair
 from packages.story_core.runtime import record_agent_runtime
 
@@ -148,7 +148,7 @@ class OpenAIDirectorDecisionProvider(BaseOpenAIProvider):
             return None
 
         payload = {
-            "model": story.agent_settings.director_model or story.agent_settings.global_model or "gpt-5.4",
+            "model": story.agent_settings.director_model or story.agent_settings.global_model or default_model_name(),
             "messages": [
                 {
                     "role": "system",

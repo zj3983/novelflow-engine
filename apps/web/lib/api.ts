@@ -16,6 +16,7 @@
   characters?: Array<{
     name: string;
     role: string;
+    game_id?: string;
     goals: string[];
     frozen: boolean;
     lifecycle_state?: "proposed" | "active" | "rejected" | "frozen";
@@ -32,6 +33,23 @@
       }
     >;
   }>;
+};
+
+export type GamePanel = {
+  game_id?: string;
+  level?: number | string | null;
+  class_path?: string;
+  exp?: string;
+  hp?: string;
+  mp?: string;
+  attributes?: Record<string, unknown>;
+  skills?: string[];
+  equipment?: Record<string, unknown>;
+  inventory?: Record<string, unknown>;
+  currency?: string;
+  quests?: Record<string, unknown>;
+  risk?: Record<string, unknown>;
+  updated_chapter?: number;
 };
 
 export type AgentSettings = NonNullable<CreateStoryRequest["agent_settings"]>;
@@ -55,6 +73,56 @@ export type RuntimeConnectionResult = {
   ok: boolean;
   agent_name: RuntimeConnectionTarget;
   message: string;
+};
+
+export type GenerationJobStatus = "queued" | "running" | "completed" | "failed";
+
+export type GenerationJobResponse = {
+  job_id: string;
+  story_id: string;
+  status: GenerationJobStatus;
+  progress: string;
+  chapter_number: number | null;
+  error: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProjectAutomationJobStatus = "queued" | "running" | "completed" | "paused" | "failed";
+
+export type ProjectAutomationJobPhase =
+  | "queued"
+  | "environment"
+  | "generating"
+  | "reviewing"
+  | "revising"
+  | "completed"
+  | "paused"
+  | "failed";
+
+export type ProjectAutomationJobResponse = {
+  job_id: string;
+  project_id: string;
+  story_id: string;
+  status: ProjectAutomationJobStatus;
+  phase: ProjectAutomationJobPhase;
+  progress: string;
+  chapter_number: number | null;
+  revision_attempts: number;
+  max_revisions: number;
+  final_action: string;
+  review_provider: "local" | "openclaw" | string;
+  error: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProjectAutomationJobRequest = {
+  max_revisions?: number;
+  review_provider?: "local" | "self" | "codex";
+  include_body?: boolean;
+  openclaw_agent?: string;
+  openclaw_timeout?: number;
 };
 
 export type RuntimeSettingsPatch = {
@@ -218,10 +286,43 @@ export type ChapterBundle = {
     pivot?: string;
     collision?: string;
     ordered_actions?: Array<{ name?: string; goal?: string; action?: string; priority?: number }>;
+    exposition_beats?: string[];
+    npc_beats?: string[];
+    quest_beats?: string[];
+    location_beats?: string[];
+    world_reactions?: string[];
     stakes?: string;
     next_focus?: string;
     author_constraints?: string[];
   };
+  chapter_seed?: Record<string, unknown>;
+  simulation_plan?: Record<string, unknown>;
+    world_events?: Array<{
+      event_id?: string;
+      template_id?: string;
+      actor?: string;
+      action?: string;
+      target?: string;
+    location?: string;
+    cause?: string;
+    visible_to?: string[];
+    consequences?: string[];
+    state_delta?: Record<string, unknown>;
+    prose_priority?: number;
+    }>;
+    scene_cards?: Array<{
+      scene_id?: string;
+      template_id?: string;
+      location?: string;
+      pov?: string;
+    purpose?: string;
+    conflict?: string;
+    source_events?: string[];
+    must_show?: string[];
+    must_not_explain?: string[];
+    state_delta?: Record<string, unknown>;
+    ending_pressure?: string;
+  }>;
   conflict_summary?: {
     summary?: string;
     stakes?: string;
@@ -254,8 +355,45 @@ export type ChapterBundle = {
   quality_report?: {
     ok: boolean;
     issues: string[];
+    revision_safety?: RevisionSafetyReport;
+    segment_pipeline?: SegmentPipelineReport;
+    writing_review?: {
+      pass?: boolean;
+      scores?: Record<string, number>;
+      issues?: string[];
+      revision_plan?: string[];
+    };
   };
   updated_story?: unknown;
+};
+
+export type RevisionSafetyReport = {
+  reviewer?: string;
+  accepted?: boolean;
+  selected?: "candidate" | "original" | string;
+  reason?: string;
+  original_score?: number;
+  candidate_score?: number;
+  original_chars?: number;
+  candidate_chars?: number;
+};
+
+export type SegmentRevisionSafetyReport = RevisionSafetyReport & {
+  reviewer?: "segment_revision_safety/v1" | string;
+};
+
+export type SegmentPipelineReport = {
+  enabled?: boolean;
+  pass?: boolean;
+  segments?: Array<{
+    segment_key?: string;
+    segment_title?: string;
+    pass?: boolean;
+    issues?: string[];
+    revision_plan?: string[];
+    scores?: Record<string, number>;
+    segment_revision_safety?: SegmentRevisionSafetyReport;
+  }>;
 };
 
 export type StoryResponse = {
@@ -267,12 +405,17 @@ export type StoryResponse = {
   agent_settings: AgentSettings;
   agent_runtime: AgentRuntimeState;
   author_constraints?: string[];
+  world_facts?: string[];
   parent_story_id?: string | null;
   branched_from_chapter?: number | null;
   characters: Array<{
     name: string;
     role: string;
+    game_id?: string;
+    game_panel?: GamePanel;
     goals: string[];
+    memory?: string[];
+    secrets?: string[];
     current_emotion?: string;
     location?: string;
     frozen: boolean;
@@ -313,8 +456,110 @@ export type ImportedRelationshipEdge = {
   trust?: number;
 };
 
+export type ImportedGenrePlugin = {
+  id: string;
+  name: string;
+  core_promises?: string[];
+  ledger_fields?: string[];
+  quality_checks?: string[];
+};
+
+export type ImportedLivingWorld = {
+  daily_routines?: string[];
+  economy?: {
+    resource_flow?: string[];
+    pressure_points?: string[];
+  };
+  power_structure?: {
+    dominant_groups?: string[];
+    control_methods?: string[];
+  };
+  information_network?: {
+    channels?: string[];
+    rumors?: string[];
+  };
+  location_functions?: ImportedWorldEntry[];
+  timeline?: string[];
+  reaction_rules?: string[];
+};
+
+export type ImportedWorldSystems = {
+  material_base?: string[];
+  institutions?: ImportedWorldEntry[];
+  social_order?: string[];
+  conflict_engines?: string[];
+  causal_loops?: ImportedWorldEntry[];
+};
+
+export type ImportedNpcEntry = ImportedWorldEntry & {
+  role?: string;
+  location?: string;
+  services?: string[];
+  agenda?: string;
+  knowledge_limit?: string;
+  quest_hooks?: string[];
+  voice?: string;
+};
+
+export type ImportedNpcSystem = {
+  npcs?: ImportedNpcEntry[];
+  rules?: string[];
+};
+
+export type ImportedQuestChain = ImportedWorldEntry & {
+  stages?: string[];
+  npc_links?: string[];
+  risk?: string;
+  reward?: string;
+};
+
+export type ImportedQuestNetwork = {
+  quest_types?: string[];
+  active_chains?: ImportedQuestChain[];
+  reward_rules?: string[];
+  failure_costs?: string[];
+};
+
+export type ImportedServerRuntime = {
+  phase?: string;
+  channels?: string[];
+  announcement_rules?: string[];
+  gm_rules?: string[];
+  anti_cheat_rules?: string[];
+  instance_rules?: string[];
+};
+
+export type ImportedMapZone = ImportedWorldEntry & {
+  resources?: string[];
+  npcs?: string[];
+  player_density?: string;
+  risk?: string;
+  outputs?: string[];
+};
+
+export type ImportedMapEcology = {
+  zones?: ImportedMapZone[];
+  rules?: string[];
+};
+
+export type ImportedOpeningChapter = {
+  purpose?: string;
+  must_include?: string[];
+  exposition_beats?: string[];
+  ending_hook?: string;
+};
+
+export type ImportedOpeningArc = {
+  golden_three_chapters?: {
+    chapter_1?: ImportedOpeningChapter;
+    chapter_2?: ImportedOpeningChapter;
+    chapter_3?: ImportedOpeningChapter;
+  };
+};
+
 export type ImportedCharacterProfile = {
   name: string;
+  game_id?: string;
   role?: string;
   motivation?: string;
   current_state?: string;
@@ -333,6 +578,22 @@ export type ImportedWorldBlueprint = {
   factions?: ImportedWorldEntry[];
   current_arc?: string;
   constraints?: string[];
+  progression_rules?: string[];
+  economy_rules?: string[];
+  quest_rules?: string[];
+  faction_rules?: string[];
+  panel_rules?: string[];
+  chapter_formula?: string[];
+  forbidden_breaks?: string[];
+  genre_plugins?: ImportedGenrePlugin[];
+  genre_plugin_ids?: string[];
+  opening_arc?: ImportedOpeningArc;
+  world_systems?: ImportedWorldSystems;
+  living_world?: ImportedLivingWorld;
+  npc_system?: ImportedNpcSystem;
+  quest_network?: ImportedQuestNetwork;
+  server_runtime?: ImportedServerRuntime;
+  map_ecology?: ImportedMapEcology;
   relationship_graph?: ImportedRelationshipEdge[];
 };
 
@@ -347,8 +608,19 @@ export type CreateProjectRequest = {
   world_blueprint?: ImportedWorldBlueprint;
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
+  pipeline_stage?: ProjectPipelineStage;
   active_story_id?: string;
 };
+
+export type ProjectPipelineStage =
+  | "imported"
+  | "world_ready"
+  | "environment_ready"
+  | "chapter_planning"
+  | "writing"
+  | "simulating"
+  | "paused"
+  | "completed";
 
 export type UpdateProjectRequest = {
   title?: string;
@@ -361,6 +633,7 @@ export type UpdateProjectRequest = {
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
   status?: "draft" | "simulating" | "paused" | "completed";
+  pipeline_stage?: ProjectPipelineStage;
   active_story_id?: string;
 };
 
@@ -368,6 +641,7 @@ export type ProjectSummary = {
   project_id: string;
   title: string;
   status: "draft" | "simulating" | "paused" | "completed";
+  pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
   current_chapter: number;
   source_path: string;
@@ -385,8 +659,106 @@ export type ProjectResponse = {
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
   status: "draft" | "simulating" | "paused" | "completed";
+  pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
   branches: StorySummary[];
+};
+
+export type AgentReviseRequest = {
+  chapter_number?: number | null;
+  instructions: string[];
+  include_body?: boolean;
+};
+
+export type CodexWritingPacket = {
+  schema_version: "codex-writing-packet/v1";
+  chapter_number: number;
+  chapter_title?: string;
+  goal?: string;
+  target_chars?: {
+    min: number;
+    max: number;
+  };
+  story?: Record<string, unknown>;
+  protagonist?: Record<string, unknown>;
+  event_plan?: Record<string, unknown>;
+  scene_cards?: Array<Record<string, unknown>>;
+  hard_locks?: string[];
+  style_rules?: string[];
+  author_constraints?: string[];
+  world_facts?: string[];
+  continuity?: Record<string, unknown>;
+  submission_contract?: Record<string, unknown>;
+};
+
+export type ManualDraftRequest = {
+  chapter_number: number;
+  body: string;
+  instructions?: string[];
+  include_body?: boolean;
+};
+
+export type ManualSegmentDraftRequest = {
+  chapter_number: number;
+  segment_index: number;
+  body: string;
+  instructions?: string[];
+  include_body?: boolean;
+};
+
+export type AgentReviewResponse = {
+  schema_version: "agent-review/v1";
+  project: {
+    project_id?: string;
+    title?: string;
+    active_story_id?: string;
+  };
+  story: {
+    story_id?: string;
+    current_chapter?: number;
+  };
+  chapter: Partial<ChapterBundle> & {
+    chapter_number: number;
+    body_chars?: number;
+  };
+  review?: {
+    quality?: ChapterBundle["quality_report"];
+    writing_review?: NonNullable<ChapterBundle["quality_report"]>["writing_review"];
+  };
+  recommendation?: {
+    action?: "continue" | "revise" | string;
+    reason?: string;
+    must_fix?: string[];
+    revision_plan?: string[];
+  };
+};
+
+export type AgentRevisionResponse = {
+  schema_version: "agent-revision/v1";
+  project: {
+    project_id?: string;
+    title?: string;
+    active_story_id?: string;
+  };
+  story: {
+    story_id?: string;
+    current_chapter?: number;
+  };
+  chapter: Partial<ChapterBundle> & {
+    chapter_number: number;
+    body_chars?: number;
+  };
+  review?: {
+    quality?: ChapterBundle["quality_report"];
+    writing_review?: NonNullable<ChapterBundle["quality_report"]>["writing_review"];
+  };
+  revision?: {
+    changed?: boolean;
+    previous_body_chars?: number;
+    revised_body_chars?: number;
+    instructions?: string[];
+    source?: string;
+  };
 };
 
 export type DeleteStoryResponse = {
@@ -474,6 +846,7 @@ type MockStory = {
   agent_settings: AgentSettings;
   agent_runtime: AgentRuntimeState;
   author_constraints: string[];
+  world_facts?: string[];
   characters: StoryResponse["characters"];
   history: ChapterBundle[];
   initial_story: StoryResponse;
@@ -493,6 +866,7 @@ type MockProject = {
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
   status: "draft" | "simulating" | "paused" | "completed";
+  pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
   branches: string[];
 };
@@ -525,12 +899,7 @@ function saveMockStore(store: Map<string, MockStory>) {
 const mockStore = loadMockStore();
 
 function prefersMockProjects(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(MOCK_PROJECT_PREFERENCE_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 function setMockProjectPreference(enabled: boolean) {
@@ -597,11 +966,11 @@ function clone<T>(value: T): T {
 function defaultAgentSettings(): AgentSettings {
   return {
     mode: "LLM-assisted",
-    global_model: "gpt-5.4",
-    character_model: "gpt-5.4-mini",
-    director_model: "gpt-5.4",
-    writer_model: "gpt-5.4",
-    memory_model: "gpt-5.4",
+    global_model: "qwen3.6-plus",
+    character_model: "qwen3.6-plus",
+    director_model: "qwen3.6-plus",
+    writer_model: "qwen3.6-plus",
+    memory_model: "qwen3.6-plus",
     temperature: "0.7",
     new_character_policy: "Director review",
   };
@@ -614,7 +983,7 @@ export function createDefaultAgentSettings(): AgentSettings {
 function defaultRuntimeEndpoint(): RuntimeEndpoint {
   return {
     api_key: "",
-    base_url: "https://api.openai.com/v1",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   };
 }
 
@@ -812,6 +1181,8 @@ function syncMockStoryAuthorConstraints(story: MockStory): string[] {
   const authorConstraints = clone(project?.author_constraints ?? story.author_constraints ?? []);
   story.author_constraints = authorConstraints;
   story.initial_story.author_constraints = clone(authorConstraints);
+  story.world_facts = clone(story.world_facts ?? []);
+  story.initial_story.world_facts = clone(story.initial_story.world_facts ?? story.world_facts ?? []);
   return authorConstraints;
 }
 
@@ -825,6 +1196,7 @@ function persistStoryIntoMockStore(story: StoryResponse): StoryResponse {
     agent_settings: clone(story.agent_settings),
     agent_runtime: clone(story.agent_runtime),
     author_constraints: clone(story.author_constraints ?? []),
+    world_facts: clone(story.world_facts ?? []),
     characters: clone(story.characters),
     history: clone(story.history),
     initial_story: {
@@ -874,6 +1246,7 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     agent_settings: clone(agentSettings),
     agent_runtime: clone(agentRuntime),
     author_constraints: [],
+    world_facts: [],
     parent_story_id: null,
     branched_from_chapter: null,
     characters: normalizedCharacters,
@@ -889,6 +1262,7 @@ function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
     agent_settings: clone(agentSettings),
     agent_runtime: clone(agentRuntime),
     author_constraints: [],
+    world_facts: [],
     characters: clone(normalizedCharacters),
     history: [],
     initial_story: initialStory,
@@ -1053,6 +1427,7 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
       agent_settings: clone(story.agent_settings),
       agent_runtime: clone(story.agent_runtime),
       author_constraints: clone(authorConstraints),
+      world_facts: clone(story.world_facts ?? []),
       characters: story.characters,
       timeline: [
         {
@@ -1099,6 +1474,7 @@ function mockRollbackStory(storyId: string): StoryResponse {
     agent_settings: clone(story.agent_settings),
     agent_runtime: clone(story.agent_runtime),
     author_constraints: clone(story.author_constraints),
+    world_facts: clone(story.world_facts ?? []),
     characters: clone(story.characters),
     history: clone(story.history),
     parent_story_id: story.parent_story_id ?? null,
@@ -1118,6 +1494,7 @@ function mockFetchStory(storyId: string): StoryResponse {
     agent_settings: clone(story.agent_settings),
     agent_runtime: clone(story.agent_runtime),
     author_constraints: clone(syncMockStoryAuthorConstraints(story)),
+    world_facts: clone(story.world_facts ?? []),
     characters: clone(story.characters),
     history: clone(story.history),
     parent_story_id: story.parent_story_id ?? null,
@@ -1149,12 +1526,14 @@ function mockBranchStory(storyId: string, newStoryId: string, fromChapter: numbe
     agent_settings: clone(branchState.agent_settings),
     agent_runtime: clone(branchState.agent_runtime),
     author_constraints: clone(story.author_constraints),
+    world_facts: clone(story.world_facts ?? []),
     characters: clone(branchState.characters),
     history: branchHistory,
     initial_story: {
       ...clone(story.initial_story),
       story_id: newStoryId,
       author_constraints: clone(story.author_constraints),
+      world_facts: clone(story.world_facts ?? []),
     },
     parent_story_id: storyId,
     branched_from_chapter: fromChapter,
@@ -1300,7 +1679,7 @@ async function tryFetchJson(url: string, init: RequestInit, timeoutMs = 30000): 
   } catch (error) {
     console.error('[tryFetchJson] Error:', error);
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error(`${url} failed: request timed out (5s)`);
+      throw new Error(`${url} failed: request timed out (${Math.round(timeoutMs / 1000)}s)`);
     }
     throw error;
   } finally {
@@ -1438,7 +1817,45 @@ export async function createStory(payload: CreateStoryRequest): Promise<StoryRes
 export async function generateNextChapter(storyId: string): Promise<ChapterBundle> {
   return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/generate`, {
     method: "POST",
-  }, 120000);
+  }, 900000);
+}
+
+export async function startGenerationJob(storyId: string): Promise<GenerationJobResponse> {
+  return (await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs`, {
+    method: "POST",
+  })) as GenerationJobResponse;
+}
+
+export async function fetchGenerationJob(storyId: string, jobId: string): Promise<GenerationJobResponse> {
+  return (await tryFetchJson(
+    `${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: "GET",
+    },
+  )) as GenerationJobResponse;
+}
+
+export async function startProjectAutomationJob(
+  projectId: string,
+  payload: ProjectAutomationJobRequest = {},
+): Promise<ProjectAutomationJobResponse> {
+  return (await tryFetchJson(`${apiBase()}/projects/${encodeURIComponent(projectId)}/automation-jobs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  })) as ProjectAutomationJobResponse;
+}
+
+export async function fetchProjectAutomationJob(
+  projectId: string,
+  jobId: string,
+): Promise<ProjectAutomationJobResponse> {
+  return (await tryFetchJson(
+    `${apiBase()}/projects/${encodeURIComponent(projectId)}/automation-jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: "GET",
+    },
+  )) as ProjectAutomationJobResponse;
 }
 
 export async function rollbackStory(storyId: string): Promise<StoryResponse> {
@@ -1450,6 +1867,91 @@ export async function rollbackStory(storyId: string): Promise<StoryResponse> {
   } catch {
     return mockRollbackStory(storyId);
   }
+}
+
+export async function reviseProjectChapter(
+  projectId: string,
+  payload: AgentReviseRequest,
+): Promise<AgentRevisionResponse> {
+  return (await tryFetchJson(
+    `${apiBase()}/projects/${encodeURIComponent(projectId)}/agent-revise`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    180000,
+  )) as AgentRevisionResponse;
+}
+
+export async function fetchProjectAgentReview(
+  projectId: string,
+  chapterNumber?: number | null,
+  includeBody = true,
+): Promise<AgentReviewResponse> {
+  const params = new URLSearchParams();
+  if (chapterNumber != null) {
+    params.set("chapter_number", String(chapterNumber));
+  }
+  if (includeBody) {
+    params.set("include_body", "true");
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return (await tryFetchJson(
+    `${apiBase()}/projects/${encodeURIComponent(projectId)}/agent-review${suffix}`,
+    {
+      method: "GET",
+    },
+    180000,
+  )) as AgentReviewResponse;
+}
+
+export async function fetchProjectWritingPacket(
+  projectId: string,
+  chapterNumber?: number | null,
+): Promise<CodexWritingPacket> {
+  const params = new URLSearchParams();
+  if (chapterNumber != null) {
+    params.set("chapter_number", String(chapterNumber));
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return (await tryFetchJson(
+    `${apiBase()}/projects/${encodeURIComponent(projectId)}/writing-packet${suffix}`,
+    {
+      method: "GET",
+    },
+    120000,
+  )) as CodexWritingPacket;
+}
+
+export async function submitProjectManualDraft(
+  projectId: string,
+  payload: ManualDraftRequest,
+): Promise<AgentRevisionResponse> {
+  return (await tryFetchJson(
+    `${apiBase()}/projects/${encodeURIComponent(projectId)}/manual-draft`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    180000,
+  )) as AgentRevisionResponse;
+}
+
+export async function submitProjectManualSegmentDraft(
+  projectId: string,
+  payload: ManualSegmentDraftRequest,
+): Promise<AgentRevisionResponse> {
+  return (await tryFetchJson(
+    `${apiBase()}/projects/${encodeURIComponent(projectId)}/manual-segment-draft`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    180000,
+  )) as AgentRevisionResponse;
 }
 
 export async function fetchStory(storyId: string): Promise<StoryResponse> {
@@ -1498,6 +2000,7 @@ function mockCreateProject(payload: CreateProjectRequest): ProjectResponse {
     character_profiles: payload.character_profiles ?? [],
     relationship_graph: payload.relationship_graph ?? payload.world_blueprint?.relationship_graph ?? [],
     status: payload.active_story_id ? "simulating" : "draft",
+    pipeline_stage: payload.pipeline_stage ?? (payload.active_story_id ? "environment_ready" : "imported"),
     active_story_id: payload.active_story_id ?? "",
     branches: payload.active_story_id ? [payload.active_story_id] : [],
   };
@@ -1525,6 +2028,7 @@ function mockListProjects(): ProjectSummary[] {
     project_id: project.project_id,
     title: project.title,
     status: project.status,
+    pipeline_stage: project.pipeline_stage ?? "imported",
     active_story_id: project.active_story_id,
     current_chapter: mockStore.get(project.active_story_id)?.current_chapter ?? 0,
     source_path: project.source_path,
@@ -1560,6 +2064,7 @@ function persistProjectIntoMockStore(project: ProjectResponse): ProjectResponse 
     character_profiles: clone(project.character_profiles ?? []),
     relationship_graph: clone(project.relationship_graph ?? project.world_blueprint?.relationship_graph ?? []),
     status: project.status,
+    pipeline_stage: project.pipeline_stage ?? "imported",
     active_story_id: project.active_story_id,
     branches: project.branches.map((branch) => branch.story_id),
   };
@@ -1593,6 +2098,7 @@ function mockUpdateProject(projectId: string, payload: UpdateProjectRequest): Pr
     ...(payload.character_profiles !== undefined ? { character_profiles: payload.character_profiles } : {}),
     ...(payload.relationship_graph !== undefined ? { relationship_graph: payload.relationship_graph } : {}),
     ...(payload.status !== undefined ? { status: payload.status } : {}),
+    ...(payload.pipeline_stage !== undefined ? { pipeline_stage: payload.pipeline_stage } : {}),
     ...(payload.active_story_id !== undefined ? { active_story_id: payload.active_story_id } : {}),
   };
   mockProjectStore.set(projectId, nextProject);
@@ -1617,6 +2123,7 @@ function mockActivateProjectStory(projectId: string, storyId: string): ProjectRe
     active_story_id: storyId,
     branches: nextBranches,
     status: "simulating",
+    pipeline_stage: "environment_ready",
   };
   mockProjectStore.set(projectId, nextProject);
   const activeStory = mockStore.get(storyId);
@@ -1675,6 +2182,20 @@ export async function updateProject(projectId: string, payload: UpdateProjectReq
   } catch {
     return mockUpdateProject(projectId, payload);
   }
+}
+
+export async function enrichProjectWorld(projectId: string): Promise<ProjectResponse> {
+  const response = (await tryFetchJson(`${apiBase()}/projects/${encodeURIComponent(projectId)}/enrich-world`, {
+    method: "POST",
+  }, 180000)) as ProjectResponse;
+  return persistProjectIntoMockStore(response);
+}
+
+export async function enrichProjectRulebook(projectId: string): Promise<ProjectResponse> {
+  const response = (await tryFetchJson(`${apiBase()}/projects/${encodeURIComponent(projectId)}/enrich-rulebook`, {
+    method: "POST",
+  }, 180000)) as ProjectResponse;
+  return persistProjectIntoMockStore(response);
 }
 
 export async function activateProjectStory(projectId: string, storyId: string): Promise<ProjectResponse> {

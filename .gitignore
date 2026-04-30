@@ -1,7 +1,12 @@
 .worktrees/
+.codex-run/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Local environment
+.env
+.env.local
 
 # Node / Next.js
 node_modules/
@@ -10,6 +15,7 @@ test-results/
 playwright-report/
 
 # Local dev server logs
+*.log
 apps/web/dev-server.out.log
 apps/web/dev-server.err.log
 apps/web/web-*.log
@@ -18,6 +24,7 @@ apps/web/web-*.log
 apps/api/data/*.db
 apps/api/data/*.db-shm
 apps/api/data/*.db-wal
+data/*.sqlite3
 
 # Build artifacts
 apps/web/tsconfig.tsbuildinfo

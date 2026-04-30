@@ -1,0 +1,14 @@
+.git
+.pytest_cache
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.log
+.env
+.env.local
+apps/api/data
+apps/web/.next
+apps/web/node_modules
+apps/web/test-results
+test-results

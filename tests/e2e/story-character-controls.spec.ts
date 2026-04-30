@@ -164,14 +164,14 @@ test("config settings persist across reloads", async ({ page }) => {
   await page.route("http://127.0.0.1:8000/runtime-settings", (route) => route.abort());
   await page.goto("/config");
 
-  await page.locator("#config-global-model").fill("gpt-5.4");
-  await page.locator("#config-character-model").fill("gpt-5.4-mini");
-  await page.locator("#config-director-model").fill("gpt-5.4");
-  await page.locator("#config-writer-model").fill("gpt-5.4");
-  await page.locator("#config-memory-model").fill("gpt-5.4");
+  await page.locator("#config-global-model").fill("qwen3.6-plus");
+  await page.locator("#config-character-model").fill("qwen3.6-plus");
+  await page.locator("#config-director-model").fill("qwen3.6-plus");
+  await page.locator("#config-writer-model").fill("qwen3.6-plus");
+  await page.locator("#config-memory-model").fill("qwen3.6-plus");
   await page.getByRole("button", { name: "统一保存" }).click();
 
   await page.reload();
-  await expect(page.locator("#config-global-model")).toHaveValue("gpt-5.4");
-  await expect(page.locator("#config-character-model")).toHaveValue("gpt-5.4-mini");
+  await expect(page.locator("#config-global-model")).toHaveValue("qwen3.6-plus");
+  await expect(page.locator("#config-character-model")).toHaveValue("qwen3.6-plus");
 });

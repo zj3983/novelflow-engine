@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "novel-autogrowth": {
+      "command": "python",
+      "args": [
+        "./mcp/novel_autogrowth_mcp.py"
+      ],
+      "env": {
+        "NOVEL_AUTOGROWTH_API_BASE": "http://127.0.0.1:8000"
+      }
+    }
+  }
+}

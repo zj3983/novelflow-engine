@@ -11,7 +11,7 @@ from packages.story_core.agent_base import (
     compact_text,
     parse_json_message_content,
 )
-from packages.story_core.models import CharacterProposal, CharacterState, StoryState
+from packages.story_core.models import CharacterProposal, CharacterState, StoryState, default_fast_model_name
 from packages.story_core.runtime import record_agent_runtime
 
 
@@ -185,7 +185,7 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
 
         prompt = self._build_prompt(story, active_characters)
         payload = {
-            "model": story.agent_settings.character_model or story.agent_settings.global_model or "gpt-5.4",
+            "model": story.agent_settings.character_model or story.agent_settings.global_model or default_fast_model_name(),
             "messages": [
                 {
                     "role": "system",

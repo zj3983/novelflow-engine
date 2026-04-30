@@ -8,14 +8,395 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from packages.story_core.engine import ChapterBundle, StoryEngine
-from packages.story_core.models import NovelOutline, NovelProject, NovelStatus, StoryState, WorldBible
+from packages.story_core.generation_progress import report_generation_progress
+from packages.story_core.models import CharacterRelationship, CharacterState, NovelOutline, NovelProject, NovelStatus, StoryState, WorldBible
 from packages.story_core.runtime_config import get_runtime_strategy_settings
+
+
+def _project_world_facts(project: NovelProject) -> list[str]:
+    world = project.world_blueprint or {}
+    opening_arc = world.get("opening_arc") if isinstance(world.get("opening_arc"), dict) else {}
+    golden_three = opening_arc.get("golden_three_chapters") if isinstance(opening_arc.get("golden_three_chapters"), dict) else {}
+    systems = world.get("world_systems") if isinstance(world.get("world_systems"), dict) else {}
+    living_world = world.get("living_world") if isinstance(world.get("living_world"), dict) else {}
+    economy = living_world.get("economy") if isinstance(living_world.get("economy"), dict) else {}
+    power = living_world.get("power_structure") if isinstance(living_world.get("power_structure"), dict) else {}
+    info = living_world.get("information_network") if isinstance(living_world.get("information_network"), dict) else {}
+    npc_system = world.get("npc_system") if isinstance(world.get("npc_system"), dict) else {}
+    quest_network = world.get("quest_network") if isinstance(world.get("quest_network"), dict) else {}
+    server_runtime = world.get("server_runtime") if isinstance(world.get("server_runtime"), dict) else {}
+    map_ecology = world.get("map_ecology") if isinstance(world.get("map_ecology"), dict) else {}
+    volume_plan = world.get("volume_plan") if isinstance(world.get("volume_plan"), dict) else {}
+    longform = world.get("longform_framework") if isinstance(world.get("longform_framework"), dict) else {}
+    progression_ledger = world.get("progression_ledger") if isinstance(world.get("progression_ledger"), dict) else {}
+
+    facts: list[str] = []
+    if project.world_summary:
+        facts.append(f"世界摘要：{project.world_summary}")
+    if world.get("premise"):
+        facts.append(f"世界前提：{world['premise']}")
+    if volume_plan:
+        title = str(volume_plan.get("volume_title", "")).strip()
+        target = volume_plan.get("target_chapters")
+        if title and target:
+            facts.append(f"第一卷规划：{title}，目标约{target}章。")
+        core_goal = str(volume_plan.get("core_goal", "")).strip()
+        if core_goal:
+            facts.append(f"第一卷核心目标：{core_goal}")
+        for beat in volume_plan.get("phase_beats", []) if isinstance(volume_plan.get("phase_beats"), list) else []:
+            if isinstance(beat, dict):
+                range_text = str(beat.get("range", "")).strip()
+                purpose = str(beat.get("purpose", "")).strip()
+                if range_text and purpose:
+                    facts.append(f"卷纲阶段：{range_text} - {purpose}")
+        for thread in volume_plan.get("long_threads", []) if isinstance(volume_plan.get("long_threads"), list) else []:
+            text = str(thread).strip()
+            if text:
+                facts.append(f"长期线索：{text}")
+    if longform:
+        target_words = longform.get("target_words")
+        series_premise = str(longform.get("series_premise", "")).strip()
+        if target_words:
+            facts.append(f"百万字框架：目标约{target_words}字，章节推演必须服从长期解锁顺序与阶段上限。")
+        if series_premise:
+            facts.append(f"百万字总前提：{series_premise}")
+        for entry in longform.get("volume_ladder", []) if isinstance(longform.get("volume_ladder"), list) else []:
+            if isinstance(entry, dict):
+                label = str(entry.get("chapters") or entry.get("range") or entry.get("name") or "").strip()
+                name = str(entry.get("name", "")).strip()
+                unlocks = entry.get("unlocks") if isinstance(entry.get("unlocks"), list) else []
+                pressure_cap = str(entry.get("pressure_cap", "")).strip()
+                detail_parts = [part for part in [name, "、".join(str(item) for item in unlocks[:5]), pressure_cap] if part]
+                if label and detail_parts:
+                    facts.append(f"长期卷阶梯：{label} - {'；'.join(detail_parts)}")
+        for label, values in (
+            ("长期成长阶梯", longform.get("progression_ladder")),
+            ("长期势力阶梯", longform.get("faction_ladder")),
+            ("长期经济阶梯", longform.get("economy_ladder")),
+            ("现实线阶梯", longform.get("reality_ladder")),
+            ("真相揭露阶梯", longform.get("mystery_ladder")),
+            ("地图解锁阶梯", longform.get("map_ladder")),
+            ("NPC演化阶梯", longform.get("npc_evolution_ladder")),
+            ("长期推演规则", longform.get("simulation_rules")),
+        ):
+            if isinstance(values, list):
+                for value in values[:6]:
+                    text = str(value).strip()
+                    if text:
+                        facts.append(f"{label}：{text}")
+    if progression_ledger:
+        protagonist = progression_ledger.get("protagonist") if isinstance(progression_ledger.get("protagonist"), dict) else {}
+        economy_state = progression_ledger.get("economy") if isinstance(progression_ledger.get("economy"), dict) else {}
+        pressure_state = progression_ledger.get("pressure") if isinstance(progression_ledger.get("pressure"), dict) else {}
+        quests_state = progression_ledger.get("quests") if isinstance(progression_ledger.get("quests"), dict) else {}
+        if protagonist:
+            facts.append(
+                "成长账本："
+                f"等级{protagonist.get('level', protagonist.get('stage', '未知'))}，"
+                f"经验{protagonist.get('exp', '未知')}，"
+                f"路线{protagonist.get('class_path', protagonist.get('path', '未定'))}。"
+            )
+        if economy_state:
+            facts.append(
+                "经济账本："
+                f"{economy_state.get('currency', economy_state.get('resources', '未知'))}，"
+                f"市场异常{economy_state.get('market_anomaly', economy_state.get('risk', 0))}。"
+            )
+        if pressure_state:
+            facts.append(
+                "压力账本："
+                f"公会关注{pressure_state.get('guild_attention', pressure_state.get('external_attention', 0))}，"
+                f"金手指暴露{pressure_state.get('goldfinger_exposure', 0)}，"
+                f"系统风险{pressure_state.get('system_risk', 0)}。"
+            )
+        active_quests = quests_state.get("active") if isinstance(quests_state.get("active"), list) else []
+        if active_quests:
+            facts.append(f"任务账本：进行中 {', '.join(str(item) for item in active_quests[:5])}。")
+
+    economy_rules = world.get("economy_rules") if isinstance(world.get("economy_rules"), list) else []
+    for value in economy_rules:
+        text = str(value).strip()
+        if text and any(token in text for token in ("金币", "银币", "铜币", "汇率", "人民币", "兑换")):
+            facts.append(f"经济规则：{text}")
+
+    for label, values in (
+        ("玩家生态", living_world.get("player_ecology")),
+        ("信息可见规则", living_world.get("information_visibility_rules")),
+        ("世界反应阶梯", living_world.get("world_reaction_ladder")),
+    ):
+        if isinstance(values, list):
+            for value in values[:4]:
+                text = str(value).strip()
+                if text:
+                    facts.append(f"{label}：{text}")
+
+    for number, key in ((1, "chapter_1"), (2, "chapter_2"), (3, "chapter_3")):
+        chapter_plan = golden_three.get(key) if isinstance(golden_three.get(key), dict) else {}
+        purpose = str(chapter_plan.get("purpose", "")).strip()
+        if purpose:
+            facts.append(f"黄金三章第{number}章职责：{purpose}")
+        for mode in chapter_plan.get("conflict_modes", []) if isinstance(chapter_plan.get("conflict_modes"), list) else []:
+            text = str(mode).strip()
+            if text:
+                facts.append(f"第{number}章冲突模式：{text}")
+        for forbidden in chapter_plan.get("forbidden_conflicts", []) if isinstance(chapter_plan.get("forbidden_conflicts"), list) else []:
+            text = str(forbidden).strip()
+            if text:
+                facts.append(f"第{number}章禁止冲突：{text}")
+        for beat in chapter_plan.get("exposition_beats", []) if isinstance(chapter_plan.get("exposition_beats"), list) else []:
+            text = str(beat).strip()
+            if text:
+                facts.append(f"第{number}章背景节拍：{text}")
+        background_budget = chapter_plan.get("background_budget") if isinstance(chapter_plan.get("background_budget"), dict) else {}
+        for label, values in (
+            ("必写层", background_budget.get("required_layers")),
+            ("可写层", background_budget.get("allowed_layers")),
+            ("禁写层", background_budget.get("forbidden_layers")),
+        ):
+            if isinstance(values, list):
+                for value in values[:3]:
+                    text = str(value).strip()
+                    if text:
+                        facts.append(f"第{number}章背景预算-{label}：{text}")
+        hook = str(chapter_plan.get("ending_hook", "")).strip()
+        if hook:
+            facts.append(f"第{number}章章末钩子：{hook}")
+
+    for value in economy_rules:
+        text = str(value).strip()
+        if text and any(token in text for token in ("金币", "银币", "铜币", "汇率", "人民币", "兑换")):
+            facts.append(f"经济规则：{text}")
+
+    for label, values in (
+        ("经济规则", economy_rules),
+        ("资源基础", systems.get("material_base")),
+        ("社会秩序", systems.get("social_order")),
+        ("冲突引擎", systems.get("conflict_engines")),
+        ("日常运转", living_world.get("daily_routines")),
+        ("资源流动", economy.get("resource_flow")),
+        ("经济压力", economy.get("pressure_points")),
+        ("支配群体", power.get("dominant_groups")),
+        ("控制方式", power.get("control_methods")),
+        ("消息渠道", info.get("channels")),
+        ("流动传闻", info.get("rumors")),
+        ("玩家生态", living_world.get("player_ecology")),
+        ("信息可见规则", living_world.get("information_visibility_rules")),
+        ("世界反应阶梯", living_world.get("world_reaction_ladder")),
+        ("时间推进", living_world.get("timeline")),
+        ("世界反应", living_world.get("reaction_rules")),
+    ):
+        if isinstance(values, list):
+            for value in values[:4]:
+                text = str(value).strip()
+                if text:
+                    facts.append(f"{label}：{text}")
+
+    for entry in systems.get("institutions", []) if isinstance(systems.get("institutions"), list) else []:
+        if isinstance(entry, dict):
+            name = str(entry.get("name", "")).strip()
+            description = str(entry.get("description", "")).strip()
+            if name:
+                facts.append(f"制度机构：{name} - {description or name}")
+
+    for entry in systems.get("causal_loops", []) if isinstance(systems.get("causal_loops"), list) else []:
+        if isinstance(entry, dict):
+            name = str(entry.get("name", "")).strip()
+            description = str(entry.get("description", "")).strip()
+            if name:
+                facts.append(f"因果链：{name} - {description or name}")
+
+    for entry in living_world.get("location_functions", []) if isinstance(living_world.get("location_functions"), list) else []:
+        if isinstance(entry, dict):
+            name = str(entry.get("name", "")).strip()
+            description = str(entry.get("description", "")).strip()
+            if name:
+                facts.append(f"地点功能：{name} - {description or name}")
+
+    for entry in npc_system.get("npcs", []) if isinstance(npc_system.get("npcs"), list) else []:
+        if isinstance(entry, dict):
+            name = str(entry.get("name", "")).strip()
+            role = str(entry.get("role", "")).strip()
+            location = str(entry.get("location", "")).strip()
+            services = entry.get("services") if isinstance(entry.get("services"), list) else []
+            knowledge_limit = str(entry.get("knowledge_limit", "")).strip()
+            quest_hooks = entry.get("quest_hooks") if isinstance(entry.get("quest_hooks"), list) else []
+            if name:
+                parts = [role or name]
+                if location:
+                    parts.append(f"位置：{location}")
+                if services:
+                    parts.append(f"服务：{'、'.join(str(v) for v in services[:3])}")
+                if knowledge_limit:
+                    parts.append(f"信息边界：{knowledge_limit}")
+                if quest_hooks:
+                    parts.append(f"任务钩子：{'、'.join(str(v) for v in quest_hooks[:3])}")
+                facts.append(f"NPC：{name} - {'；'.join(parts)}")
+
+    for value in npc_system.get("rules", []) if isinstance(npc_system.get("rules"), list) else []:
+        text = str(value).strip()
+        if text:
+            facts.append(f"NPC规则：{text}")
+
+    for value in quest_network.get("quest_types", []) if isinstance(quest_network.get("quest_types"), list) else []:
+        text = str(value).strip()
+        if text:
+            facts.append(f"任务类型：{text}")
+
+    for entry in quest_network.get("active_chains", []) if isinstance(quest_network.get("active_chains"), list) else []:
+        if isinstance(entry, dict):
+            name = str(entry.get("name", "")).strip()
+            description = str(entry.get("description", "")).strip()
+            stages = entry.get("stages") if isinstance(entry.get("stages"), list) else []
+            npc_links = entry.get("npc_links") if isinstance(entry.get("npc_links"), list) else []
+            if name:
+                suffix = description or name
+                if stages:
+                    suffix += f"；阶段：{' -> '.join(str(v) for v in stages[:4])}"
+                if npc_links:
+                    suffix += f"；关联NPC：{'、'.join(str(v) for v in npc_links[:4])}"
+                facts.append(f"任务网络：{name} - {suffix}")
+
+    for label, values in (
+        ("任务奖励规则", quest_network.get("reward_rules")),
+        ("任务失败代价", quest_network.get("failure_costs")),
+        ("服务器公告规则", server_runtime.get("announcement_rules")),
+        ("系统监管规则", server_runtime.get("gm_rules")),
+        ("风控规则", server_runtime.get("anti_cheat_rules")),
+        ("副本门槛", server_runtime.get("instance_rules")),
+    ):
+        if isinstance(values, list):
+            for value in values[:3]:
+                text = str(value).strip()
+                if text:
+                    facts.append(f"{label}：{text}")
+
+    phase = str(server_runtime.get("phase", "")).strip()
+    if phase:
+        facts.append(f"服务器阶段：{phase}")
+    channels = server_runtime.get("channels") if isinstance(server_runtime.get("channels"), list) else []
+    if channels:
+        facts.append(f"服务器频道：{'、'.join(str(v) for v in channels[:6])}")
+
+    for entry in map_ecology.get("zones", []) if isinstance(map_ecology.get("zones"), list) else []:
+        if isinstance(entry, dict):
+            name = str(entry.get("name", "")).strip()
+            description = str(entry.get("description", "")).strip()
+            resources = entry.get("resources") if isinstance(entry.get("resources"), list) else []
+            npcs = entry.get("npcs") if isinstance(entry.get("npcs"), list) else []
+            risk = str(entry.get("risk", "")).strip()
+            if name:
+                parts = [description or name]
+                if resources:
+                    parts.append(f"资源：{'、'.join(str(v) for v in resources[:4])}")
+                if npcs:
+                    parts.append(f"NPC：{'、'.join(str(v) for v in npcs[:4])}")
+                if risk:
+                    parts.append(f"风险：{risk}")
+                facts.append(f"地图生态：{name} - {'；'.join(parts)}")
+
+    deduped: list[str] = []
+    for fact in facts:
+        if fact not in deduped:
+            deduped.append(fact)
+        if len(deduped) >= 120:
+            break
+    return deduped
+
+
+def _sync_project_character_profiles(story: StoryState, project: NovelProject) -> None:
+    """Keep runtime characters as rich as the imported/project character bible."""
+    profiles = [profile for profile in project.character_profiles if isinstance(profile, dict)]
+    if not profiles:
+        return
+
+    characters_by_name = {character.name: character for character in story.characters}
+    for profile in profiles:
+        name = str(profile.get("name", "")).strip()
+        if not name:
+            continue
+        if name not in characters_by_name:
+            character = CharacterState(name=name, role=str(profile.get("role", "")).strip() or "supporting")
+            story.characters.append(character)
+            characters_by_name[name] = character
+        else:
+            character = characters_by_name[name]
+
+        role = str(profile.get("role", "")).strip()
+        if role:
+            character.role = role
+
+        game_id = str(profile.get("game_id", "")).strip()
+        if game_id:
+            character.game_id = game_id
+
+        profile_goals = [str(goal).strip() for goal in profile.get("goals", []) if str(goal).strip()]
+        if profile_goals:
+            existing = [
+                goal
+                for goal in character.goals
+                if goal
+                and "正面撞上" not in goal
+                and "侧面压力" not in goal
+                and "核心资源的控制权" not in goal
+            ]
+            character.goals = [*profile_goals, *[goal for goal in existing if goal not in profile_goals]][:8]
+
+        secrets = [str(secret).strip() for secret in profile.get("secrets", []) if str(secret).strip()]
+        if secrets:
+            character.secrets = [*secrets, *[secret for secret in character.secrets if secret not in secrets]][:8]
+
+        profile_memory = []
+        for label, key in (
+            ("动机", "motivation"),
+            ("性格", "personality"),
+            ("说话方式", "speech_style"),
+            ("当前状态", "current_state"),
+        ):
+            value = str(profile.get(key, "")).strip()
+            if value:
+                profile_memory.append(f"角色档案-{label}：{value}")
+        if game_id:
+            profile_memory.append(f"角色档案-游戏ID：{game_id}")
+        hooks = [str(hook).strip() for hook in profile.get("conflict_hooks", []) if str(hook).strip()]
+        if hooks:
+            profile_memory.append(f"角色档案-冲突钩子：{' / '.join(hooks[:4])}")
+        if profile_memory:
+            cleaned_memory = [
+                memory
+                for memory in character.memory
+                if "正面撞上" not in memory
+                and "侧面压力" not in memory
+                and "核心资源的控制权" not in memory
+                and not memory.startswith("角色档案-")
+            ]
+            character.memory = [*profile_memory, *cleaned_memory][-12:]
+
+        current_state = str(profile.get("current_state", "")).strip()
+        if current_state:
+            character.location = current_state[:40]
+
+    for edge in project.relationship_graph:
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("source", "")).strip()
+        target = str(edge.get("target", "")).strip()
+        if not source or not target or source not in characters_by_name:
+            continue
+        characters_by_name[source].relationships[target] = CharacterRelationship(
+            target=target,
+            trust=float(edge.get("trust", 0.0) or 0.0),
+            tension=float(edge.get("tension", 0.0) or 0.0),
+            bond=str(edge.get("bond", "")).strip(),
+        )
 
 
 # SQLite database path: next to this file, or override via env var
 _DB_PATH = os.environ.get(
-    "STORY_DB_PATH",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "stories.db"),
+    "NOVEL_AUTOGROWTH_DB_PATH",
+    os.environ.get(
+        "STORY_DB_PATH",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "stories.db"),
+    ),
 )
 
 
@@ -178,15 +559,24 @@ class SQLiteStoryStore:
 
     def _load_history(self, conn: sqlite3.Connection, story_id: str) -> list[ChapterBundle]:
         cursor = conn.execute(
-            "SELECT bundle_json FROM chapter_bundles WHERE story_id = ? ORDER BY chapter_number",
+            "SELECT id, chapter_number, bundle_json FROM chapter_bundles WHERE story_id = ? ORDER BY id",
             (story_id,),
         )
-        return [self._deserialize_bundle(row[0]) for row in cursor.fetchall()]
+        latest_by_chapter: dict[int, tuple[int, ChapterBundle]] = {}
+        for row_id, chapter_number, bundle_json in cursor.fetchall():
+            latest_by_chapter[int(chapter_number)] = (int(row_id), self._deserialize_bundle(bundle_json))
+        return [
+            bundle
+            for _, bundle in sorted(
+                latest_by_chapter.values(),
+                key=lambda item: (item[1].chapter_number, item[0]),
+            )
+        ]
 
     def _save_record(self, conn: sqlite3.Connection, record: StoryRecord) -> None:
         # Use UPDATE to avoid ON DELETE CASCADE wiping chapter_bundles.
         # INSERT only if the row doesn't exist yet (e.g. after create).
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE stories
             SET story_state = ?, initial_state = ?, parent_story_id = ?,
@@ -201,7 +591,7 @@ class SQLiteStoryStore:
                 record.story.story_id,
             ),
         )
-        if conn.total_changes == 0:
+        if cursor.rowcount == 0:
             # Row didn't exist yet — insert it
             conn.execute(
                 """
@@ -221,6 +611,10 @@ class SQLiteStoryStore:
         conn.commit()
 
     def _save_bundle(self, conn: sqlite3.Connection, story_id: str, bundle: ChapterBundle) -> None:
+        conn.execute(
+            "DELETE FROM chapter_bundles WHERE story_id = ? AND chapter_number = ?",
+            (story_id, bundle.chapter_number),
+        )
         conn.execute(
             """
             INSERT INTO chapter_bundles (story_id, chapter_number, bundle_json)
@@ -349,6 +743,12 @@ class SQLiteStoryStore:
             project = self.get_project(project_id)
             if project is not None:
                 record.story.author_constraints = list(project.author_constraints)
+                record.story.world_facts = _project_world_facts(project)
+                if not record.story.progression_ledger:
+                    ledger = project.world_blueprint.get("progression_ledger") if isinstance(project.world_blueprint, dict) else None
+                    if isinstance(ledger, dict):
+                        record.story.progression_ledger = dict(ledger)
+                _sync_project_character_profiles(record.story, project)
 
         bundle = engine.generate_next_chapter(record.story)
 
@@ -359,11 +759,27 @@ class SQLiteStoryStore:
         record.story = bundle.updated_story
         record.history.append(bundle)
 
-        # Persist
+        report_generation_progress("写入故事中...")
         self._save_record(conn, record)
         self._save_bundle(conn, story_id, bundle)
 
         return bundle
+
+    def append_chapter_bundle(self, story_id: str, bundle: ChapterBundle) -> StoryRecord:
+        conn = self._conn()
+        record = self.get(story_id)
+        if record is None:
+            raise KeyError(story_id)
+
+        latest_chapter = record.history[-1].chapter_number if record.history else 0
+        if bundle.chapter_number != latest_chapter + 1:
+            raise IndexError(bundle.chapter_number)
+
+        record.story = bundle.updated_story.model_copy(deep=True)
+        record.history.append(bundle)
+        self._save_record(conn, record)
+        self._save_bundle(conn, story_id, bundle)
+        return record
 
     def rollback_last(self, story_id: str) -> StoryRecord:
         conn = self._conn()
@@ -388,6 +804,40 @@ class SQLiteStoryStore:
             self._save_record(conn, record)
             conn.commit()
 
+        return record
+
+    def replace_chapter_bundle(self, story_id: str, bundle: ChapterBundle) -> StoryRecord:
+        conn = self._conn()
+        record = self.get(story_id)
+        if record is None:
+            raise KeyError(story_id)
+
+        replace_index = next(
+            (index for index, existing in enumerate(record.history) if existing.chapter_number == bundle.chapter_number),
+            None,
+        )
+        if replace_index is None:
+            raise IndexError(bundle.chapter_number)
+
+        record.history = [
+            existing
+            for index, existing in enumerate(record.history)
+            if existing.chapter_number != bundle.chapter_number or index == replace_index
+        ]
+        replace_index = next(
+            index for index, existing in enumerate(record.history) if existing.chapter_number == bundle.chapter_number
+        )
+        record.history[replace_index] = bundle
+        if replace_index == len(record.history) - 1:
+            record.story = bundle.updated_story.model_copy(deep=True)
+
+        conn.execute(
+            "DELETE FROM chapter_bundles WHERE story_id = ? AND chapter_number = ?",
+            (story_id, bundle.chapter_number),
+        )
+        self._save_record(conn, record)
+        self._save_bundle(conn, story_id, bundle)
+        conn.commit()
         return record
 
     def branch_from(self, story_id: str, new_story_id: str, from_chapter: int) -> StoryRecord:
@@ -520,6 +970,7 @@ class SQLiteStoryStore:
             raise KeyError(project_id)
         project.active_story_id = story_id
         project.status = "simulating"
+        project.pipeline_stage = "environment_ready"
         self._save_project(conn, project)
         return project
 

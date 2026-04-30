@@ -29,6 +29,21 @@ def _tempo_label(cadence: str | None) -> str:
     return "稳压"
 
 
+def _infer_cadence(story: StoryState, conflict_summary: dict | None, event_beat: dict | None) -> str:
+    if not conflict_summary:
+        return "breathing" if len(story.characters) <= 1 else "measured"
+    secondary = conflict_summary.get("secondary_conflict", {})
+    participants = secondary.get("participants", []) if isinstance(secondary, dict) else []
+    primary = conflict_summary.get("primary_conflict", {})
+    has_primary_pair = bool(primary.get("lead") and primary.get("opposition"))
+    has_pressure_spike = "pressure" in str((event_beat or {}).get("turn", "")).lower()
+    if len(story.characters) >= 3 and has_primary_pair and (participants or has_pressure_spike):
+        return "urgent"
+    if len(story.characters) <= 1 and not participants:
+        return "breathing"
+    return "measured"
+
+
 def _lead(story: StoryState):
     return story.characters[0] if story.characters else None
 
@@ -112,6 +127,11 @@ def _opening_paragraph(
         return "".join(parts)
 
     parts = [f"{lead_name}一开始只是想先把手头最要紧的事处理掉：{goal}。"]
+    primary = (conflict_summary or {}).get("primary_conflict", {})
+    opposition = str(primary.get("opposition", "")).strip()
+    primary_collision = str(primary.get("collision", "")).strip()
+    if opposition and opposition not in ("circumstance", lead_name):
+        parts.append(f"可{opposition}也站在同一条线索的另一端，{primary_collision or '这场碰撞已经避不开'}。")
     if anchor:
         parts.append(f"可眼下最不容忽视的事实只有一个：{anchor}。")
     if pivot:
@@ -223,7 +243,8 @@ def write_chapter_body(
     memory_constraints: dict | None = None,
 ) -> str:
     chapter_title = _resolve_chapter_title(story, chapter_number, conflict_summary, chapter_title_override)
-    tempo_label = _tempo_label(cadence)
+    resolved_cadence = cadence or _infer_cadence(story, conflict_summary, event_beat)
+    tempo_label = _tempo_label(resolved_cadence)
 
     paragraphs: list[str] = [
         f"第{chapter_number}章《{chapter_title}》",
@@ -242,6 +263,9 @@ def write_chapter_body(
     pivot = _pivot_paragraph(event_beat, event_plan)
     if pivot:
         paragraphs.append(pivot)
+
+    if resolved_cadence == "urgent":
+        paragraphs.append("局势已经压到刀锋上，谁慢一步，下一次就可能连退路都看不见。")
 
     paragraphs.append(_closing_paragraph(story, event_plan))
     return "\n\n".join(part for part in paragraphs if part).strip()

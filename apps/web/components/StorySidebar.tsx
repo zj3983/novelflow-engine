@@ -4,6 +4,7 @@ import type { StoryResponse, StorySummary } from "../lib/api";
 
 export type StoryCharacterDraft = {
   name: string;
+  gameId?: string;
   goal: string;
   frozen: boolean;
   relationshipTarget: string;
@@ -82,8 +83,16 @@ export function StorySidebar({
               {story.characters.length ? (
                 <div className="story-sidebar__summary">
                   <p className="character-card__title">角色一览</p>
-                  <p className="hint">角色表：{story.characters.map((character) => character.name).join("、")}</p>
-                  <p className="hint">主角：{story.characters[0].name}</p>
+                  <p className="hint">
+                    角色表：
+                    {story.characters
+                      .map((character) => character.game_id ? `${character.name}（${character.game_id}）` : character.name)
+                      .join("、")}
+                  </p>
+                  <p className="hint">
+                    主角：{story.characters[0].name}
+                    {story.characters[0].game_id ? `（游戏ID：${story.characters[0].game_id}）` : ""}
+                  </p>
                   <p className="hint">冻结：{story.characters[0].frozen ? "是" : "否"}</p>
                 </div>
               ) : null}

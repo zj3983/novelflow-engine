@@ -1,0 +1,29 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file:
+      - .env.local
+    environment:
+      NOVEL_AUTOGROWTH_DB_PATH: /data/stories.db
+      NOVEL_AUTOGROWTH_RUNTIME_CONFIG_PATH: /data/runtime_config.json
+      NOVEL_AUTOGROWTH_CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
+    ports:
+      - "8000:8000"
+    volumes:
+      - novel-data:/data
+
+  web:
+    build:
+      context: apps/web
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  novel-data:

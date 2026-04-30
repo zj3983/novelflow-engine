@@ -24,18 +24,18 @@ export function WorkbenchShell({ topBar, nav, overview, history, detail, side }:
         </aside>
 
         <main className="creative-workbench__main">
-          <section className="creative-workbench__section" aria-label="故事总览">
+          <section className="creative-workbench__section creative-workbench__section--overview" aria-label="故事总览">
             {overview}
           </section>
-          <section className="creative-workbench__section" aria-label="章节历史">
-            {history}
-          </section>
-          <section className="creative-workbench__section" aria-label="章节详情">
+          <section className="creative-workbench__section creative-workbench__section--detail" aria-label="章节详情">
             {detail}
+          </section>
+          <section className="creative-workbench__section creative-workbench__section--history" aria-label="章节历史">
+            {history}
           </section>
         </main>
 
-        <aside className="creative-workbench__side" role="complementary" aria-label="创作侧栏">
+        <aside className="creative-workbench__side" role="complementary" aria-label="推演侧栏">
           {side}
         </aside>
       </div>

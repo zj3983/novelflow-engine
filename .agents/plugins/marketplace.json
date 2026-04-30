@@ -1,0 +1,20 @@
+{
+  "name": "novel-autogrowth-local",
+  "interface": {
+    "displayName": "Novel Autogrowth Local"
+  },
+  "plugins": [
+    {
+      "name": "novel-autogrowth",
+      "source": {
+        "source": "local",
+        "path": "./plugins/novel-autogrowth"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

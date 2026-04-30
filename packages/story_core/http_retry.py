@@ -17,7 +17,7 @@ class RetryConfig:
     initial_delay: float = 0.5  # seconds
     backoff_factor: float = 2.0
     max_delay: float = 2.0
-    timeout: int = 75  # seconds; the current provider emits heavy reasoning tokens before returning text
+    timeout: int = 360  # seconds; long webnovel chapters can require several minutes per LLM call
     retry_on_status: tuple[int, ...] = (429, 500, 502, 503, 504)
 
 

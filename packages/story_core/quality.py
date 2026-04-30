@@ -3,6 +3,8 @@ from __future__ import annotations
 
 def validate_bundle(bundle: dict) -> dict:
     issues: list[str] = []
+    body = str(bundle.get("body") or "")
+    compact_body = "".join(body.split())
 
     if not bundle.get("body"):
         issues.append("body")
@@ -35,4 +37,12 @@ def validate_bundle(bundle: dict) -> dict:
     if not chapter_summary.get("event_beat"):
         issues.append("event_beat")
 
-    return {"ok": not issues, "issues": issues}
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "metrics": {
+            "body_chars": len(compact_body),
+            "target_min_chars": 3800,
+            "target_range": "4200到5500字",
+        },
+    }

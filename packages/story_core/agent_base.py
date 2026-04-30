@@ -30,7 +30,9 @@ def compact_text(text: str, max_chars: int = 400) -> str:
     return f"{compact[: max_chars - 1].rstrip()}…"
 
 
-def compact_list(items: list[str], max_items: int = 4, item_chars: int = 80) -> list[str]:
+def compact_list(items: list[str] | str, max_items: int = 4, item_chars: int = 80) -> list[str]:
+    if isinstance(items, str):
+        items = [items]
     result: list[str] = []
     for item in items[:max_items]:
         cleaned = compact_text(str(item), item_chars)

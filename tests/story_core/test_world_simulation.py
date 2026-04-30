@@ -1,0 +1,79 @@
+from packages.story_core.chapter_seed import build_chapter_seed
+from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.simulation import build_chapter_simulation_plan
+from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
+
+
+def test_world_events_capture_visibility_and_state_delta_for_game_opening():
+    story = StoryState(
+        story_id="s-world-events",
+        outline="网游开服，苏叶以夜烬身份低调验证千倍爆率。",
+        genre="网游",
+        style="番茄升级流",
+        characters=[
+            CharacterState(
+                name="苏叶",
+                role="主角",
+                game_id="夜烬",
+                goals=["小额验证千倍爆率，不暴露现实身份"],
+            )
+        ],
+        progression_ledger={
+            "protagonist": {"level": 1, "class_path": "元素法师学徒", "exp": "0/100"},
+            "economy": {"currency": "0金币0银币0铜币", "inventory": {}},
+        },
+    )
+    seed = build_chapter_seed(story, 1)
+    plan = build_chapter_simulation_plan(story, 1, chapter_seed=seed).model_dump()
+
+    events = simulate_world_events(story, 1, chapter_seed=seed, simulation_plan=plan)
+
+    assert events
+    assert all(event.event_id for event in events)
+    assert any(event.actor == "夜烬" and "验证" in event.action for event in events)
+    assert not any("交易行" in event.location for event in events)
+    assert not any("寄售" in event.action or "成交" in event.action or "到账" in event.action for event in events)
+    next_step_event = next(event for event in events if event.event_id == "c1-next-step-hook")
+    assert next_step_event.visible_to == ["夜烬"]
+    assert next_step_event.state_delta.get("economy", {}).get("inventory_hint") == "保留低级材料"
+
+
+def test_scene_cards_turn_world_events_into_writeable_scenes():
+    story = StoryState(
+        story_id="s-scene-cards",
+        outline="网游开服，主角先建号，再小额验证千倍爆率。",
+        genre="网游",
+        style="番茄升级流",
+        characters=[CharacterState(name="苏叶", role="主角", game_id="夜烬")],
+    )
+    seed = build_chapter_seed(story, 1)
+    plan = build_chapter_simulation_plan(story, 1, chapter_seed=seed).model_dump()
+    events = simulate_world_events(story, 1, chapter_seed=seed, simulation_plan=plan)
+
+    scene_cards = select_scene_cards(events, chapter_seed=seed, simulation_plan=plan)
+
+    assert 3 <= len(scene_cards) <= 5
+    assert scene_cards[0].purpose
+    assert any("角色面板" in " ".join(card.must_show) for card in scene_cards)
+    assert not any("交易行" in card.location for card in scene_cards)
+    assert any("下一章目标" in card.purpose or "下一步目标" in card.conflict for card in scene_cards)
+    assert all("爽点" in " ".join(card.must_not_explain) for card in scene_cards)
+
+
+def test_scene_cards_do_not_surface_question_mark_identity_placeholders():
+    story = StoryState(
+        story_id="s-scene-cards-clean-id",
+        outline="网游开服，苏叶以夜烬身份低调验证千倍爆率。",
+        genre="网游",
+        style="升级流",
+        characters=[CharacterState(name="苏叶", role="主角", game_id="??")],
+    )
+    seed = build_chapter_seed(story, 1)
+    plan = build_chapter_simulation_plan(story, 1, chapter_seed=seed).model_dump()
+    events = simulate_world_events(story, 1, chapter_seed=seed, simulation_plan=plan)
+    scene_cards = select_scene_cards(events, chapter_seed=seed, simulation_plan=plan)
+
+    serialized = " ".join(card.model_dump_json() for card in scene_cards)
+
+    assert "??" not in serialized
+    assert any(card.pov == "夜烬" for card in scene_cards)

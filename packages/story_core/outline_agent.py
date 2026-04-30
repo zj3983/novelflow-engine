@@ -15,6 +15,7 @@ from packages.story_core.models import (
     ChapterOutline,
     NovelOutline,
     StoryState,
+    default_model_name,
 )
 from packages.story_core.runtime import record_agent_runtime
 
@@ -216,7 +217,7 @@ class OpenAIOutlineGenerator(BaseOpenAIProvider):
 
         prompt = self._build_prompt(story, target_chapters)
         payload = {
-            "model": story.agent_settings.director_model or story.agent_settings.global_model or "gpt-5.4",
+            "model": story.agent_settings.director_model or story.agent_settings.global_model or default_model_name(),
             "messages": [
                 {
                     "role": "system",

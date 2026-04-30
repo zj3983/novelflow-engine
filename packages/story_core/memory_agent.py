@@ -11,7 +11,7 @@ from packages.story_core.agent_base import (
     parse_json_message_content,
 )
 from packages.story_core.memory import apply_post_chapter_updates
-from packages.story_core.models import DirectorDecision, StoryState
+from packages.story_core.models import DirectorDecision, StoryState, default_model_name
 from packages.story_core.runtime import record_agent_runtime
 
 
@@ -47,7 +47,7 @@ class OpenAIMemorySummaryProvider(BaseOpenAIProvider):
             return None
 
         payload = {
-            "model": story.agent_settings.memory_model or story.agent_settings.global_model or "gpt-5.4",
+            "model": story.agent_settings.memory_model or story.agent_settings.global_model or default_model_name(),
             "messages": [
                 {
                     "role": "system",

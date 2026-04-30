@@ -9,6 +9,7 @@ import type {
   ProjectResponse,
   StoryResponse,
 } from "../../lib/api";
+import { WorldSimulationSketch } from "./WorldSimulationSketch";
 
 type WorldSimulationBoardProps = {
   project: ProjectResponse | null;
@@ -91,6 +92,12 @@ function CardList({
 export function WorldSimulationBoard({ project, story, bundle }: WorldSimulationBoardProps) {
   const hasGeneratedChapter = Boolean(story?.history.length || bundle);
   const world = importedWorld(project);
+  const worldSystems = world.world_systems ?? {};
+  const livingWorld = world.living_world ?? {};
+  const npcSystem = world.npc_system ?? {};
+  const questNetwork = world.quest_network ?? {};
+  const serverRuntime = world.server_runtime ?? {};
+  const mapEcology = world.map_ecology ?? {};
   const profiles = importedProfiles(project);
   const relationships = importedRelationships(project);
   const relationCards = relationSnapshot(story);
@@ -104,6 +111,99 @@ export function WorldSimulationBoard({ project, story, bundle }: WorldSimulation
     project?.author_constraints ??
     story?.author_constraints ??
     [];
+  const worldRuleItems = [
+    ...(world.world_rules ?? []),
+    ...(world.progression_rules ?? []),
+    ...(world.economy_rules ?? []),
+    ...(world.quest_rules ?? []),
+    ...(world.faction_rules ?? []),
+    ...(world.panel_rules ?? []),
+    ...(world.chapter_formula ?? []),
+  ];
+  const openingArc = world.opening_arc?.golden_three_chapters ?? {};
+  const openingArcItems = [
+    ...(openingArc.chapter_1?.purpose ? [{ title: "黄金三章第1章", text: openingArc.chapter_1.purpose }] : []),
+    ...(openingArc.chapter_1?.exposition_beats ?? []).map((text) => ({ title: "第1章背景节拍", text })),
+    ...(openingArc.chapter_2?.purpose ? [{ title: "黄金三章第2章", text: openingArc.chapter_2.purpose }] : []),
+    ...(openingArc.chapter_3?.purpose ? [{ title: "黄金三章第3章", text: openingArc.chapter_3.purpose }] : []),
+  ];
+  const expositionItems = [
+    ...(bundle?.event_plan?.exposition_beats ?? []).map((text) => ({ title: "本章背景节拍", text })),
+    ...openingArcItems,
+  ];
+  const dailyWorldItems = [
+    ...(livingWorld.daily_routines ?? []).map((text) => ({ title: "日常运转", text })),
+    ...(livingWorld.economy?.resource_flow ?? []).map((text) => ({ title: "资源流动", text })),
+    ...(livingWorld.economy?.pressure_points ?? []).map((text) => ({ title: "经济压力", text })),
+  ];
+  const worldSystemItems = [
+    ...(worldSystems.material_base ?? []).map((text) => ({ title: "资源基础", text })),
+    ...(worldSystems.institutions ?? []).map((entry) => ({ title: `制度机构：${entry.name}`, text: entry.description || entry.name })),
+    ...(worldSystems.social_order ?? []).map((text) => ({ title: "社会秩序", text })),
+    ...(worldSystems.conflict_engines ?? []).map((text) => ({ title: "冲突引擎", text })),
+  ];
+  const socialSystemItems = [
+    ...(livingWorld.power_structure?.dominant_groups ?? []).map((text) => ({ title: "支配群体", text })),
+    ...(livingWorld.power_structure?.control_methods ?? []).map((text) => ({ title: "控制方式", text })),
+    ...(livingWorld.information_network?.channels ?? []).map((text) => ({ title: "消息渠道", text })),
+    ...(livingWorld.information_network?.rumors ?? []).map((text) => ({ title: "正在流动的传闻", text })),
+  ];
+  const npcItems = [
+    ...(npcSystem.npcs ?? []).map((npc) => ({
+      title: `NPC：${npc.name}`,
+      text: [
+        npc.role,
+        npc.location ? `位置：${npc.location}` : "",
+        npc.services?.length ? `服务：${npc.services.slice(0, 3).join("、")}` : "",
+        npc.knowledge_limit ? `边界：${npc.knowledge_limit}` : "",
+      ]
+        .filter(Boolean)
+        .join("；"),
+    })),
+    ...(npcSystem.rules ?? []).map((text) => ({ title: "NPC规则", text })),
+  ];
+  const questItems = [
+    ...(questNetwork.active_chains ?? []).map((chain) => ({
+      title: `任务链：${chain.name}`,
+      text: [
+        chain.description,
+        chain.stages?.length ? `阶段：${chain.stages.slice(0, 4).join(" -> ")}` : "",
+        chain.npc_links?.length ? `关联NPC：${chain.npc_links.slice(0, 4).join("、")}` : "",
+      ]
+        .filter(Boolean)
+        .join("；"),
+    })),
+    ...(questNetwork.quest_types ?? []).slice(0, 4).map((text) => ({ title: "任务类型", text })),
+    ...(questNetwork.reward_rules ?? []).map((text) => ({ title: "奖励规则", text })),
+  ];
+  const runtimeItems = [
+    ...(serverRuntime.phase ? [{ title: "服务器阶段", text: serverRuntime.phase }] : []),
+    ...(serverRuntime.channels?.length ? [{ title: "信息频道", text: serverRuntime.channels.slice(0, 6).join("、") }] : []),
+    ...(serverRuntime.announcement_rules ?? []).map((text) => ({ title: "公告规则", text })),
+    ...(serverRuntime.anti_cheat_rules ?? []).map((text) => ({ title: "风控规则", text })),
+    ...(serverRuntime.instance_rules ?? []).map((text) => ({ title: "副本门槛", text })),
+  ];
+  const mapItems = [
+    ...(mapEcology.zones ?? []).map((zone) => ({
+      title: `地图：${zone.name}`,
+      text: [
+        zone.description,
+        zone.resources?.length ? `资源：${zone.resources.slice(0, 4).join("、")}` : "",
+        zone.npcs?.length ? `NPC：${zone.npcs.slice(0, 4).join("、")}` : "",
+        zone.risk ? `风险：${zone.risk}` : "",
+      ]
+        .filter(Boolean)
+        .join("；"),
+    })),
+    ...(mapEcology.rules ?? []).map((text) => ({ title: "地图规则", text })),
+  ];
+  const reactionItems = [
+    ...(bundle?.event_plan?.world_reactions ?? []).map((text) => ({ title: "本章世界反应", text })),
+    ...(worldSystems.causal_loops ?? []).map((entry) => ({ title: `因果链：${entry.name}`, text: entry.description || entry.name })),
+    ...(livingWorld.timeline ?? []).map((text) => ({ title: "时间推进", text })),
+    ...(livingWorld.reaction_rules ?? []).map((text) => ({ title: "世界反应", text })),
+    ...(livingWorld.location_functions ?? []).map((entry) => ({ title: `地点功能：${entry.name}`, text: entry.description || entry.name })),
+  ];
 
   const worldSituation = firstNonEmpty(
     bundle?.event_plan?.pivot,
@@ -148,6 +248,8 @@ export function WorldSimulationBoard({ project, story, bundle }: WorldSimulation
           </div>
         </section>
 
+        <WorldSimulationSketch project={project} story={story} bundle={bundle} />
+
         <div className="simulation-grid">
           <article className="simulation-card simulation-card--focus">
             <p className="simulation-card__label">{hasGeneratedChapter ? "本章意图" : "导入意图"}</p>
@@ -174,7 +276,7 @@ export function WorldSimulationBoard({ project, story, bundle }: WorldSimulation
             ) : (
               <CardList
                 empty="导入材料里还没有可识别的世界规则。"
-                items={world.world_rules?.length ? world.world_rules.slice(0, 4) : importedFocusLines}
+                items={worldRuleItems.length ? worldRuleItems.slice(0, 4) : importedFocusLines}
                 render={(item, index) => (
                   <div key={`${item}-${index}`} className="simulation-list__item">
                     <span className="simulation-list__index">0{index + 1}</span>
@@ -186,6 +288,150 @@ export function WorldSimulationBoard({ project, story, bundle }: WorldSimulation
                 )}
               />
             )}
+          </article>
+
+          <article className="simulation-card">
+            <p className="simulation-card__label">活世界日常</p>
+            <CardList
+              empty="还没有日常运转、资源流动或经济压力。"
+              items={dailyWorldItems.slice(0, 4)}
+              render={(item, index) => (
+                <div key={`${item.title}-${index}`} className="simulation-list__item simulation-list__item--soft">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              )}
+            />
+          </article>
+
+          <article className="simulation-card">
+            <p className="simulation-card__label">黄金三章</p>
+            <CardList
+              empty="还没有黄金三章职责或背景节拍。"
+              items={expositionItems.slice(0, 5)}
+              render={(item, index) => (
+                <div key={`${item.title}-${index}`} className="simulation-list__item simulation-list__item--soft">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              )}
+            />
+          </article>
+
+          <article className="simulation-card">
+            <p className="simulation-card__label">世界制度</p>
+            <CardList
+              empty="还没有资源基础、制度机构或冲突引擎。"
+              items={worldSystemItems.slice(0, 4)}
+              render={(item, index) => (
+                <div key={`${item.title}-${index}`} className="simulation-list__item simulation-list__item--soft">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              )}
+            />
+          </article>
+
+          <article className="simulation-card">
+            <p className="simulation-card__label">社会系统</p>
+            <CardList
+              empty="还没有权力结构或信息传播网络。"
+              items={socialSystemItems.slice(0, 4)}
+              render={(item, index) => (
+                <div key={`${item.title}-${index}`} className="simulation-list__item simulation-list__item--soft">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              )}
+            />
+          </article>
+
+          <article className="simulation-card">
+            <p className="simulation-card__label">NPC生态</p>
+            <CardList
+              empty="还没有 NPC 服务、信息边界或任务钩子。"
+              items={npcItems.slice(0, 5)}
+              render={(item, index) => (
+                <div key={`${item.title}-${index}`} className="simulation-list__item simulation-list__item--soft">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              )}
+            />
+          </article>
+
+          <article className="simulation-card">
+            <p className="simulation-card__label">任务网络</p>
+            <CardList
+              empty="还没有任务类型、任务链或奖励/失败规则。"
+              items={questItems.slice(0, 5)}
+              render={(item, index) => (
+                <div key={`${item.title}-${index}`} className="simulation-list__item simulation-list__item--soft">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              )}
+            />
+          </article>
+
+          <article className="simulation-card">
+            <p className="simulation-card__label">服务器规则</p>
+            <CardList
+              empty="还没有服务器阶段、公告频道或风控规则。"
+              items={runtimeItems.slice(0, 5)}
+              render={(item, index) => (
+                <div key={`${item.title}-${index}`} className="simulation-list__item simulation-list__item--soft">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              )}
+            />
+          </article>
+
+          <article className="simulation-card">
+            <p className="simulation-card__label">地图生态</p>
+            <CardList
+              empty="还没有地图资源、风险、玩家密度或地点产出。"
+              items={mapItems.slice(0, 5)}
+              render={(item, index) => (
+                <div key={`${item.title}-${index}`} className="simulation-list__item simulation-list__item--soft">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              )}
+            />
+          </article>
+
+          <article className="simulation-card">
+            <p className="simulation-card__label">连锁反应</p>
+            <CardList
+              empty="还没有时间推进或世界反应规则。"
+              items={reactionItems.slice(0, 4)}
+              render={(item, index) => (
+                <div key={`${item.title}-${index}`} className="simulation-list__item simulation-list__item--soft">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              )}
+            />
           </article>
 
           <article className="simulation-card">
@@ -225,9 +471,17 @@ export function WorldSimulationBoard({ project, story, bundle }: WorldSimulation
               empty="还没有可展示的地点、阵营或力量体系。"
               items={[
                 ...(world.power_system ?? []).slice(0, 2).map((text) => ({ title: "力量体系", text })),
+                ...(world.progression_rules ?? []).slice(0, 1).map((text) => ({ title: "升级规则", text })),
+                ...(world.economy_rules ?? []).slice(0, 1).map((text) => ({ title: "经济规则", text })),
+                ...(world.faction_rules ?? []).slice(0, 1).map((text) => ({ title: "势力规则", text })),
                 ...(world.locations ?? []).slice(0, 2).map((entry) => ({ title: `地点：${entry.name}`, text: entry.description || entry.name })),
                 ...(world.factions ?? []).slice(0, 2).map((entry) => ({ title: `阵营：${entry.name}`, text: entry.description || entry.name })),
-                ...(!world.power_system?.length && !world.locations?.length && !world.factions?.length
+                ...(!world.power_system?.length &&
+                !world.progression_rules?.length &&
+                !world.economy_rules?.length &&
+                !world.faction_rules?.length &&
+                !world.locations?.length &&
+                !world.factions?.length
                   ? importedOutlineLines.map((text, index) => ({ title: `设定 ${index + 1}`, text }))
                   : []),
               ].slice(0, 4)}

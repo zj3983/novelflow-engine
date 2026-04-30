@@ -46,6 +46,29 @@ def _latest_next_focus(story: StoryState) -> str:
     return story.chapter_summaries[-1].next_focus
 
 
+def _is_game_opening_chapter(story: StoryState) -> bool:
+    if story.current_chapter != 1:
+        return False
+    context = " ".join([story.genre, story.style, story.outline, *story.world_facts]).lower()
+    return any(token in context for token in ("网游", "vrmmo", "游戏", "game_webnovel", "天启之门"))
+
+
+def _is_game_opening_arc(story: StoryState) -> bool:
+    if story.current_chapter not in (1, 2, 3):
+        return False
+    context = " ".join([story.genre, story.style, story.outline, *story.world_facts]).lower()
+    return any(token in context for token in ("网游", "vrmmo", "游戏", "game_webnovel", "天启之门"))
+
+
+def _early_game_opposition(rival: dict) -> str:
+    name = str(rival.get("name", "")).strip()
+    if any(token in name for token in ("商人", "铁算盘", "赵胖子")):
+        return name
+    if any(token in name for token in ("公会", "白袍", "赤焰", "星河")):
+        return "公会外围与资源点秩序"
+    return "交易行、补给成本与公会外围"
+
+
 def _topic_zh(topic: str, genre: str = "") -> str:
     """Map English topic keywords to Chinese chapter title words.
     
@@ -249,6 +272,45 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
         for candidate in action_briefs[1:]
         if candidate["name"] != rival["name"]
     ]
+
+    if _is_game_opening_chapter(story):
+        return {
+            "summary": f"{lead['name']}想要完成首次收益闭环并隐藏异常优势，而{rival['name']}只能从交易行价格、匿名批次和时间戳里试探货源。",
+            "stakes": "第一章的风险不是正面夺资源，而是现实资金压力、隐藏优势变现和市场弱线索逐步叠加。",
+            "primary_conflict": {
+                "lead": lead["name"],
+                "opposition": rival["name"],
+                "collision": f"{lead['name']}必须低调拆单变现，{rival['name']}只能通过价格曲线和寄售时间戳形成初步怀疑。",
+            },
+            "secondary_conflict": {
+                "pressure": "market-signal",
+                "detail": "低级材料交易只会留下弱线索，公会需要重复出货、资源点传闻、NPC记录或风控汇总后才能逼近。",
+                "participants": secondary_candidates or [_participant_entry(rival["name"], rival["goal"])],
+            },
+        }
+
+    if _is_game_opening_arc(story):
+        opposition = _early_game_opposition(rival)
+        return {
+            "summary": (
+                f"{lead['name']}继续验证千倍爆率、补给成本和交易节奏，"
+                f"{opposition}只能通过材料价格、匿名批次、资源点目击和NPC服务记录逐步逼近。"
+            ),
+            "stakes": "第二、三章的压力应来自可见规则逐步收紧，而不是商人或公会突然全知全能。",
+            "primary_conflict": {
+                "lead": lead["name"],
+                "opposition": opposition,
+                "collision": (
+                    f"{lead['name']}必须在耐久、背包、手续费和任务门槛之间继续低调滚雪球，"
+                    f"{opposition}只能从价格曲线、寄售时间戳、补给流水和资源点传闻里缩小范围。"
+                ),
+            },
+            "secondary_conflict": {
+                "pressure": "market-signal",
+                "detail": "低级材料交易、NPC任务进度和补给消耗共同形成弱线索，公会只能外围试探，不能直接锁定真相。",
+                "participants": secondary_candidates or [_participant_entry(rival["name"], rival["goal"])],
+            },
+        }
 
     return {
         "summary": f"{lead['name']}想要{lead['goal']}，而{rival['name']}则试图{rival['goal']}。",
