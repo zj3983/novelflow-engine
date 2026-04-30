@@ -580,6 +580,10 @@ def _run_project_automation_job(job_id: str, payload: ProjectAutomationJobReques
     project_id = str(_automation_jobs[job_id]["project_id"])
     story_id = str(_automation_jobs[job_id]["story_id"])
     revision_attempts = 0
+
+    def report_progress(message: str) -> None:
+        _update_automation_job(job_id, status="running", progress=message)
+
     try:
         _update_automation_job(job_id, status="running", phase="environment", progress="preparing story environment")
         project = store.get_project(project_id)
@@ -590,7 +594,8 @@ def _run_project_automation_job(job_id: str, payload: ProjectAutomationJobReques
             raise RuntimeError("story_not_found")
 
         _update_automation_job(job_id, phase="generating", progress="generating chapter")
-        bundle = _generate_story_chapter(story_id)
+        with generation_progress(report_progress):
+            bundle = _generate_story_chapter(story_id)
         _update_automation_job(
             job_id,
             phase="reviewing",
@@ -1810,7 +1815,15 @@ def test_runtime_settings(payload: RuntimeSettingsTestRequest) -> RuntimeSetting
     if agent_name not in {"character", "director", "writer", "memory", "global"}:
         raise HTTPException(status_code=400, detail="invalid_agent_name")
 
-    overrides = payload.runtime_settings.model_dump(by_alias=True)
+    overrides = payload.runtime_settings.model_dump(by_alias=True, exclude_none=True)
+    if not (
+        overrides.get("api_key")
+        or overrides.get("base_url")
+        or overrides.get("global")
+        or overrides.get("agents")
+        or overrides.get("strategy")
+    ):
+        overrides = None
     if agent_name == "global":
         resolved = resolve_openai_runtime_settings(overrides=overrides)
     else:

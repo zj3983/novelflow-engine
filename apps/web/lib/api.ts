@@ -2151,9 +2151,6 @@ export async function listProjects(): Promise<ProjectSummary[]> {
     const response = (await tryFetchJson(`${apiBase()}/projects`, {
       method: "GET",
     })) as ProjectSummary[];
-    if (!response.length && mockProjectStore.size) {
-      return mockListProjects();
-    }
     return response;
   } catch {
     return mockListProjects();

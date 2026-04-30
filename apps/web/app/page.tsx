@@ -938,15 +938,9 @@ export default function Page() {
           cachedSummary?.project_id ??
           summaries[0]?.project_id;
         if (!preferredProjectId) {
-          const cachedProject = restoreSnapshot<ProjectResponse>(PROJECT_SNAPSHOT_STORAGE_KEY);
-          const cachedStory = restoreSnapshot<StoryResponse>(STORY_SNAPSHOT_STORAGE_KEY);
-          if (cachedProject) {
-            updateProject(cachedProject);
-          }
-          if (cachedStory) {
-            updateStory(cachedStory);
-            setSelectedChapter(cachedStory.history.at(-1)?.chapter_number ?? null);
-          }
+          updateProject(null);
+          updateStory(null);
+          setSelectedChapter(null);
           return;
         }
         const latestProject = await fetchProject(preferredProjectId);
