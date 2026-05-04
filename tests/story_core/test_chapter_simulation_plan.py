@@ -1,4 +1,9 @@
-from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.models import (
+    CharacterPerformanceProfile,
+    CharacterState,
+    StoryState,
+    VoiceSignature,
+)
 from packages.story_core.orchestrator import StoryOrchestrator
 from packages.story_core.simulation import build_chapter_simulation_plan
 
@@ -74,6 +79,40 @@ def test_orchestrator_bundle_contains_simulation_plan():
     assert any("must_show" in scene for scene in bundle.scene_cards)
 
 
+def test_character_voice_signature_flows_into_simulation_plan():
+    story = StoryState(
+        story_id="s-voice",
+        outline="网游开服，主角谨慎登录。",
+        genre="网游",
+        style="升级流",
+        characters=[
+            CharacterState(
+                name="苏叶",
+                role="主角",
+                game_id="夜烬",
+                performance_profile=CharacterPerformanceProfile(
+                    voice=VoiceSignature(
+                        signature_phrases=["先算账", "回报和成本得对得上"],
+                        lexicon=["成本", "回报", "拆单"],
+                        taboo=["命运", "天选", "热血"],
+                        sentence_rhythm="短句为主，少形容词",
+                        self_reference="我",
+                        subtext_habit="顾左右而言他，不直接表达情绪",
+                    ),
+                ),
+            )
+        ],
+    )
+
+    plan = build_chapter_simulation_plan(story, 1).model_dump()
+
+    voice = plan["character_performance"][0]["voice"]
+    assert "先算账" in voice["signature_phrases"]
+    assert "命运" in voice["taboo"]
+    assert voice["self_reference"] == "我"
+    assert "顾左右而言他" in voice["subtext_habit"]
+
+
 def test_simulation_plan_carries_longform_constraints():
     story = StoryState(
         story_id="s-sim-longform",
@@ -93,3 +132,37 @@ def test_simulation_plan_carries_longform_constraints():
     assert dumped["longform_constraints"]
     assert dumped["longform_constraints"][0].startswith("百万字框架")
     assert any("百万字长期框架" in item for item in dumped["review_focus"])
+
+
+def test_game_opening_plan_requires_wow_hook_and_reality_bridge():
+    story = StoryState(
+        story_id="s-opening-director-beats",
+        outline="网游开服，苏叶以夜烬身份低调验证千倍爆率，并背着现实催租压力。",
+        genre="网游",
+        style="番茄升级流",
+        characters=[
+            CharacterState(
+                name="苏叶",
+                role="主角",
+                game_id="夜烬",
+                goals=["验证千倍爆率", "找到游戏收益通向现实债务的路"],
+            )
+        ],
+    )
+
+    plan = build_chapter_simulation_plan(story, 1)
+    dumped = plan.model_dump()
+    event_plan = dumped["event_plan"]
+    required_text = "\n".join(dumped["required_beats"])
+
+    assert "wow_beat" in event_plan
+    assert "千倍爆率" in event_plan["wow_beat"]
+    assert "2-8倍" in event_plan["wow_beat"]
+    assert "explicit_chapter_end_hook" in event_plan
+    assert "下一章" in event_plan["explicit_chapter_end_hook"]
+    assert "reality_game_bridge" in event_plan
+    assert "现实" in event_plan["reality_game_bridge"]
+    assert "混沌之种" in event_plan["core_mystery_reinforcement"]
+    assert "wow_beat" in required_text
+    assert "explicit_chapter_end_hook" in required_text
+    assert "reality_game_bridge" in required_text

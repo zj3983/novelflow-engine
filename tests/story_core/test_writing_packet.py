@@ -36,6 +36,17 @@ def test_first_chapter_packet_contains_manual_drafting_contract():
     assert packet["target_chars"] == {"min": 4200, "max": 5500}
     assert packet["protagonist"]["real_name"] == "苏叶"
     assert packet["protagonist"]["game_id"] == "夜烬"
+    assert packet["prose_renderer"]["skill"] == "chinese-novelist"
+    assert packet["prose_renderer"]["role"] == "prose_renderer_only"
+    assert "world_simulation" in packet["prose_renderer"]["do_not_use_for"]
+    assert "review_verdicts" in packet["prose_renderer"]["do_not_use_for"]
+    assert any("少用比喻和形容词" in rule for rule in packet["style_rules"])
+    assert any("番茄爆款网文" in rule for rule in packet["style_rules"])
+    assert any("rhetoric sparse" in rule for rule in packet["prose_renderer"]["body_contract"])
+    assert any("Tomato-style webnovel language" in rule for rule in packet["prose_renderer"]["body_contract"])
+    assert packet["title_contract"]["style"] == "tomato_concrete_short_title"
+    assert any("真实章节目录" in rule for rule in packet["title_contract"]["rules"])
+    assert "清道夫委托" in packet["title_contract"]["examples"]
     assert any("现实姓名：苏叶" in item for item in packet["hard_locks"])
     assert any("1金币=100银币=10000铜币" in item for item in packet["hard_locks"])
     assert any(card["id"] == "validation" for card in packet["scene_cards"])
@@ -53,11 +64,13 @@ def test_packet_uses_existing_scene_cards_when_available():
             {
                 "template_id": "market-check",
                 "location": "交易行门口",
+                "pov": "夜烬",
                 "purpose": "确认价格而不暴露身份",
                 "conflict": "人多眼杂",
                 "must_show": ["匿名寄售规则"],
-                "avoid": ["精准暴露身份"],
-                "fact_locks": ["只允许弱线索"],
+                "must_not_explain": ["精准暴露身份"],
+                "ending_pressure": "下一笔交易必须更谨慎。",
+                "state_delta": {"economy": {"inventory_hint": "保留材料"}},
             }
         ],
     )
@@ -69,11 +82,16 @@ def test_packet_uses_existing_scene_cards_when_available():
             "index": 1,
             "id": "market-check",
             "location": "交易行门口",
+            "pov": "夜烬",
             "purpose": "确认价格而不暴露身份",
             "conflict": "人多眼杂",
             "must_show": ["匿名寄售规则"],
             "avoid": ["精准暴露身份"],
-            "fact_locks": ["只允许弱线索"],
+            "ending_pressure": "下一笔交易必须更谨慎。",
+            "state_delta": {"economy": {"inventory_hint": "保留材料"}},
+            "sensory_anchors": [],
+            "subtext": "",
+            "rhythm_hint": "",
         }
     ]
 
@@ -87,3 +105,24 @@ def test_packet_exposes_governance_quality_gate():
     assert packet["governance_gate"]["reviewer"] == "chapter_governance_gate/v1"
     assert packet["governance_gate"]["pass"] is True
     assert packet["governance_gate"]["next_action"] == "write_or_revise_chapter"
+
+
+def test_packet_exposes_director_wow_hook_and_reality_bridge():
+    story = StoryState(story_id="s-packet-director", outline="网游开服，千倍爆率。", genre="网游", style="番茄升级流")
+    bundle = ChapterBundle(
+        chapter_number=1,
+        body="",
+        next_outline="继续验证材料去向。",
+        updated_story=story,
+        event_plan={
+            "wow_beat": "wow_beat: 千倍爆率用一次稀有掉落兑现，不要只有2-8倍。",
+            "explicit_chapter_end_hook": "explicit_chapter_end_hook: 下一章去找散人收购渠道。",
+            "reality_game_bridge": "reality_game_bridge: 游戏材料价格第一次指向现实催租压力。",
+        },
+    )
+
+    packet = build_codex_writing_packet(story, bundle)
+
+    assert packet["event_plan"]["wow_beat"].startswith("wow_beat")
+    assert "下一章" in packet["event_plan"]["explicit_chapter_end_hook"]
+    assert "现实" in packet["event_plan"]["reality_game_bridge"]

@@ -79,3 +79,25 @@ def test_scene_cards_use_default_game_blueprint_when_seed_lacks_blueprint():
     assert [card.template_id for card in cards] == ["single_npc_service", "market_weak_trace"]
     market_card = next(card for card in cards if card.template_id == "market_weak_trace")
     assert any("价格" in item and "批次" in item for item in market_card.must_show)
+
+
+def test_game_opening_scene_cards_inherit_director_wow_and_end_hook():
+    story = StoryState(
+        story_id="s-game-director-scenes",
+        outline="网游开服，苏叶以夜烬身份验证千倍爆率。",
+        genre="网游",
+        style="番茄升级流",
+        characters=[CharacterState(name="苏叶", role="主角", game_id="夜烬")],
+    )
+    seed = build_chapter_seed(story, 1)
+    plan = build_chapter_simulation_plan(story, 1, chapter_seed=seed).model_dump()
+    events = simulate_world_events(story, 1, chapter_seed=seed, simulation_plan=plan)
+
+    cards = select_scene_cards(events, chapter_seed=seed, simulation_plan=plan)
+
+    verification_card = next(card for card in cards if card.template_id == "small_verification")
+    next_step_card = next(card for card in cards if card.template_id == "chapter_1_next_step")
+    assert any("wow_beat" in item for item in verification_card.must_show)
+    assert any("2-8倍" in item for item in verification_card.must_show)
+    assert any("explicit_chapter_end_hook" in item for item in next_step_card.must_show)
+    assert any("reality_game_bridge" in item for item in next_step_card.must_show)

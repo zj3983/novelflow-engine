@@ -18,15 +18,19 @@ def _usable_identity(value: str | None) -> str:
 
 
 def _fallback_game_id(story: StoryState, real_name: str) -> str:
+    """Generate a generic game ID from the character's real name."""
     story_text = f"{story.genre}\n{story.outline}\n{story.style}"
-    if real_name == "苏叶" and any(token in story_text for token in ("网游", "游戏", "《界域》", "天启之门")):
+    if real_name == "苏叶" and any(token in story_text for token in ("网游", "游戏", "《界域》", "天启之门", "VRMMO")):
         return "夜烬"
+    if real_name and any(token in story_text for token in ("网游", "游戏", "VRMMO")):
+        # Use last character of name as game ID (common convention)
+        return real_name[-1] if len(real_name) <= 2 else f"{real_name[-2]}{real_name[-1]}"
     return real_name
 
 
 def _lead_name(story: StoryState) -> tuple[str, str]:
     for character in story.characters:
-        if character.role in {"protagonist", "主角", "涓昏"}:
+        if character.role in {"protagonist", "主角"}:
             real_name = _usable_identity(character.name) or "主角"
             game_id = _usable_identity(character.game_id) or _usable_identity(character.game_panel.game_id)
             return real_name, game_id or _fallback_game_id(story, real_name)
@@ -36,6 +40,20 @@ def _lead_name(story: StoryState) -> tuple[str, str]:
         game_id = _usable_identity(character.game_id) or _usable_identity(character.game_panel.game_id)
         return real_name, game_id or _fallback_game_id(story, real_name)
     return "主角", "主角"
+
+
+def _lead_class_path(story: StoryState) -> str:
+    for character in story.characters:
+        if character.role in {"protagonist", "主角"}:
+            class_path = _usable_identity(character.game_panel.class_path)
+            if class_path:
+                return class_path
+            break
+    if story.characters:
+        class_path = _usable_identity(story.characters[0].game_panel.class_path)
+        if class_path:
+            return class_path
+    return "元素法师学徒"
 
 
 def _chapter_contract(chapter_seed: dict[str, Any]) -> dict[str, Any]:
@@ -132,6 +150,7 @@ def simulate_world_events(
     simulation_plan = simulation_plan or {}
     real_name, game_id = _lead_name(story)
     protagonist = game_id or real_name
+    class_path = _lead_class_path(story)
     contract = _chapter_contract(chapter_seed)
     required = " ".join(str(item) for item in contract.get("required_beats", []))
     is_game = is_game_story(story) or "game_webnovel" in chapter_seed.get("genre_plugins", [])
@@ -167,14 +186,14 @@ def simulate_world_events(
                     event_id="c1-character-create",
                     actor=protagonist,
                     action="完成建号、游戏ID与职业选择。",
-                    target="元素法师学徒",
+                    target=class_path,
                     location="角色创建界面",
                     visible_to=[protagonist, "系统界面"],
                     consequences=["角色面板获得职业、生命、法力、基础属性和初始装备。"],
                     state_delta={
                         "protagonist": {
                             "game_id": protagonist,
-                            "class_path": "元素法师学徒",
+                            "class_path": class_path,
                             "level": 1,
                         }
                     },
@@ -272,6 +291,49 @@ def simulate_world_events(
     return events
 
 
+_SCENE_TEXTURE_BY_TEMPLATE: dict[str, dict[str, Any]] = {
+    "reality_entry": {
+        "sensory_anchors": ["楼道里的潮味或楼下噪音", "手边一个具体物件的触感（账单/旧头盔/凉茶杯）", "光线偏暗的色温"],
+        "subtext": "表面是登录游戏，里子是不肯承认现实已经压过来了。",
+        "rhythm_hint": "breathing：节奏放慢，让现实的重量落在主角身上一两拍后再进入游戏。",
+    },
+    "character_creation": {
+        "sensory_anchors": ["视野里浮动的光面板/虚拟UI的微光", "选项切换时的细微反馈音", "指尖在虚拟按钮上的停留与犹豫"],
+        "subtext": "表面是选职业，里子是给自己留一条可撤的退路。",
+        "rhythm_hint": "staccato：选项→停顿→选项，短节拍，呈现计算与犹豫的交替。",
+    },
+    "small_verification": {
+        "sensory_anchors": ["怪物倒地时一个具体的声音/材料落地的反光", "主角呼吸或心跳的一次明显变化", "环境光在掉落物上的折射"],
+        "subtext": "表面是验证爆率，里子是怕这只是个错觉。",
+        "rhythm_hint": "dense：动作密度高，连续短句推进，给读者首次兑现的爽感。",
+    },
+    "single_npc_service": {
+        "sensory_anchors": ["NPC柜台/工位上一个反复出现的物件", "NPC一个标志性的小动作（贴标签/擦杯/翻账）", "店里某个底色气味（药/油/纸）"],
+        "subtext": "表面是问价或交任务，里子是观察NPC会不会记住自己。",
+        "rhythm_hint": "breathing：对话留白，NPC的口吻和细节先于内容信息。",
+    },
+    "chapter_1_next_step": {
+        "sensory_anchors": ["主角把材料收进背包时的一个动作", "环境里一个未解决的余响（脚步/远处招呼/天光变化）", "身体上一个轻微的疲劳信号"],
+        "subtext": "表面是收材料，里子是把决策推迟到下一章去赌。",
+        "rhythm_hint": "staccato：短句收束，留下未完成感，避免把张力一次性放完。",
+    },
+}
+
+_SCENE_TEXTURE_GENERIC = {
+    "sensory_anchors": [
+        "环境里一个反复出现的声音或气味",
+        "角色身体上一个具体的小动作（手指、呼吸、视线落点）",
+        "光线/温度/材质中可被身体记住的一处细节",
+    ],
+    "subtext": "表面在做眼前的事，里子在博弈一件主角不愿明说的事。",
+    "rhythm_hint": "根据本场是收益、抉择还是过渡决定密度：兑现密、抉择慢、过渡稀。",
+}
+
+
+def _scene_texture(template_id: str) -> dict[str, Any]:
+    return _SCENE_TEXTURE_BY_TEMPLATE.get(template_id, _SCENE_TEXTURE_GENERIC)
+
+
 def select_scene_cards(
     events: list[WorldEvent],
     *,
@@ -305,7 +367,17 @@ def select_scene_cards(
             must_show.append("交易行只显示价格、数量、批次、手续费、到账或时间戳。")
         if "NPC" in event.actor or "NPC" in event.action:
             must_show.append("NPC的地点、服务、利益诉求、口吻和信息边界。")
+        event_plan = simulation_plan.get("event_plan", {}) if isinstance(simulation_plan.get("event_plan"), dict) else {}
+        if event.template_id == "small_verification":
+            for key in ("wow_beat", "escalation_break"):
+                if event_plan.get(key):
+                    must_show.append(str(event_plan[key]))
+        if event.template_id == "chapter_1_next_step":
+            for key in ("core_mystery_reinforcement", "explicit_chapter_end_hook", "reality_game_bridge"):
+                if event_plan.get(key):
+                    must_show.append(str(event_plan[key]))
 
+        texture = _scene_texture(event.template_id)
         cards.append(
             SceneCard(
                 scene_id=f"s{len(cards) + 1}-{event.event_id}",
@@ -329,7 +401,10 @@ def select_scene_cards(
                 ],
                 state_delta=event.state_delta,
                 ending_pressure=(event.consequences[-1] if event.consequences else "留下下一步压力。"),
+                sensory_anchors=list(texture.get("sensory_anchors", [])),
+                subtext=str(texture.get("subtext", "")),
+                rhythm_hint=str(texture.get("rhythm_hint", "")),
             )
         )
 
-    return cards[:5]
+    return cards

@@ -2,27 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES
+from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.models import CharacterState, ChapterSimulationPlan, StoryState
 
 
-GAME_TOKENS = ("网游", "游戏", "系统", "等级", "公会", "交易行", "VRMMO", "副本", "NPC")
-LONGFORM_FACT_PREFIXES = (
-    "百万字",
-    "长期卷阶梯",
-    "长期成长阶梯",
-    "长期势力阶梯",
-    "长期经济阶梯",
-    "现实线阶梯",
-    "真相揭露阶梯",
-    "地图解锁阶梯",
-    "NPC演化阶梯",
-    "长期推演规则",
-)
-
-
 def is_game_story(story: StoryState) -> bool:
+    """Detect whether a story is game-themed, using the unified keyword set."""
     haystack = " ".join([story.genre, story.style, story.outline, *story.world_facts])
-    return any(token in haystack for token in GAME_TOKENS)
+    return is_game_genre(haystack)
 
 
 def _compact_list(items: Any, *, limit: int = 5, chars: int = 120) -> list[str]:
@@ -41,7 +29,7 @@ def _compact_list(items: Any, *, limit: int = 5, chars: int = 120) -> list[str]:
 
 def _lead_character(story: StoryState) -> CharacterState | None:
     for character in story.characters:
-        if character.role in {"protagonist", "主角", "涓昏"}:
+        if character.role in {"protagonist", "主角"}:
             return character
     return story.characters[0] if story.characters else None
 
@@ -65,8 +53,11 @@ def _default_performance(character: CharacterState, *, game_story: bool) -> dict
     profile = character.performance_profile
     goal = _character_goal(character)
     risk_posture = profile.risk_posture
-    if not risk_posture and character.role in {"protagonist", "主角", "涓昏"} and game_story:
-        risk_posture = "低调验证优势，避免一次性暴露收益、坐标、现实身份和隐藏天赋。"
+    if not risk_posture and character.role in {"protagonist", "主角"} and game_story:
+        risk_posture = (
+            "低调验证优势，避免一次性暴露收益、坐标、现实身份和隐藏天赋。"
+            "每次行动前计算成本、撤退路线和背包容量，不贪心、不主动接触陌生人。"
+        )
     elif not risk_posture:
         risk_posture = "围绕自身目标行动，不为推动剧情突然降智。"
 
@@ -87,6 +78,25 @@ def _default_performance(character: CharacterState, *, game_story: bool) -> dict
             "不主动解释全部设定。",
             "秘密只能通过可观察痕迹逐步暴露。",
         ],
+        "voice": _voice_dict(character),
+    }
+
+
+def _voice_dict(character: CharacterState) -> dict:
+    """Project a character's voice signature for the writer prompt.
+
+    Empty fields are kept (not omitted) so the writer prompt always shows the
+    full slot list — an empty signature_phrases is itself a signal that this
+    character has not yet earned a catchphrase.
+    """
+    voice = character.performance_profile.voice
+    return {
+        "signature_phrases": list(voice.signature_phrases),
+        "lexicon": list(voice.lexicon),
+        "taboo": list(voice.taboo),
+        "sentence_rhythm": voice.sentence_rhythm,
+        "self_reference": voice.self_reference,
+        "subtext_habit": voice.subtext_habit,
     }
 
 
@@ -122,16 +132,18 @@ def _default_npc_boundary(character: CharacterState) -> dict | None:
 def _game_visibility_rules() -> list[str]:
     return [
         "交易行低级材料匿名上架只能暴露价格、数量、批次和时间戳等弱线索。",
-        "公会只能通过重复模式、稀有物、资源点目击、NPC任务异常或多源风控逐步逼近。",
-        "单次小额掉落不能扰乱全服市场，也不能直接锁定主角坐标、现实身份或隐藏天赋。",
+        "十几个低级材料、几个铜币或十几枚铜币的小额交易属于新手村正常噪音，不触发交易行检查、风控记录、商人盯人或公会注意。",
+        "公会只能通过连续重复模式、明显超量出货、稀有物、资源点目击、NPC任务异常或多源信息汇总逐步逼近。",
+        "单次小额掉落不能扰乱全服市场，也不能直接锁定主角坐标、现实身份、刷怪点或隐藏天赋。",
     ]
 
 
 def _game_economy_rules() -> list[str]:
     return [
         "新手阶段收益优先使用铜币、银币、材料和询价，避免无依据写现实货币汇率。",
-        "大额收益必须拆单、考虑手续费、买家来源、压价、追踪和信誉风险。",
-        "市场反应应是局部价格波动、商人关注、普通玩家跟风或公会外围试探。",
+        "小额收益的主要代价应来自耐久、补给、背包容量、任务门槛、刷怪路线、时间成本和主角自我克制。",
+        "只有大额或重复收益才需要拆单、考虑手续费、买家来源、压价、追踪和信誉风险。",
+        "市场反应应按规模递进：小额交易无外部反应；多次重复才有局部价格波动或商人玩家留意；多源叠加后才有公会外围试探。",
     ]
 
 
@@ -142,7 +154,7 @@ def _game_required_beats(chapter_number: int) -> list[str]:
             "登录建号：写出游戏ID、职业选择和第一版角色面板，面板必须包含生命/法力和基础属性。",
             "小额验证：用低级怪、低级材料或任务反馈验证千倍爆率。",
             "一个NPC服务节点：只完整展开一个命名NPC，交代职责、服务和信息边界。",
-            "交易行弱钩子：只留下价格/批次/商人关注等弱线索，不升级为正面对抗。",
+            "交易行弱钩子：小额低级材料只体现手续费、到账、行情和主角谨慎，不出现检查、风控记录、商人盯人或公会注意。",
         ]
     if chapter_number == 2:
         return [
@@ -175,6 +187,51 @@ def _game_forbidden_moves(chapter_number: int) -> list[str]:
     return moves
 
 
+def _game_director_event_plan(event_plan: dict[str, Any], chapter_number: int) -> dict[str, Any]:
+    enriched = dict(event_plan)
+    if chapter_number != 1:
+        return enriched
+
+    enriched.setdefault(
+        "wow_beat",
+        (
+            "wow_beat: 必须让千倍爆率至少露一次可见马脚。不要只写成2-8倍收益；"
+            "用低概率额外掉落、非基准稀有材料、或系统统计异常兑现一次读者能算出来的'哇'时刻，"
+            "同时保持外部世界只看到小额噪音。"
+        ),
+    )
+    enriched.setdefault(
+        "escalation_break",
+        (
+            "连续刷怪/验证不能平均重复；至少一段发生质变事件，例如武器耐久骤降、怪物反扑、"
+            "路线被迫改变、或掉落物类型异常，让战斗节奏从重复动作升级为决策。"
+        ),
+    )
+    enriched.setdefault(
+        "core_mystery_reinforcement",
+        (
+            "混沌之种不能只在登录界面闪过；章内或章末必须再给一次短促、克制的提示，"
+            "只暗示底层机制已记录主角的小额操作，不解释真相。"
+        ),
+    )
+    enriched.setdefault(
+        "explicit_chapter_end_hook",
+        (
+            "explicit_chapter_end_hook: 章末必须留下具体下一章诱饵，而不是情绪闭环；"
+            "优先落在交易行/补给/NPC委托/散人渠道/白袍公会只收队内等可执行目标。"
+        ),
+    )
+    enriched.setdefault(
+        "reality_game_bridge",
+        (
+            "reality_game_bridge: 章末必须把游戏内收益和现实压力挂上第一根线，"
+            "例如传闻中的铜币收购、黑市比例、工作室收材料、或债务倒计时与游戏材料价格并置；"
+            "只给线索，不做正式提现。"
+        ),
+    )
+    return enriched
+
+
 def build_chapter_simulation_plan(
     story: StoryState,
     chapter_number: int,
@@ -188,6 +245,8 @@ def build_chapter_simulation_plan(
     event_plan = event_plan or {}
     memory_constraints = memory_constraints or {}
     chapter_seed = chapter_seed or {}
+    if game_story:
+        event_plan = _game_director_event_plan(event_plan, chapter_number)
 
     character_performance = [
         _default_performance(character, game_story=game_story)
@@ -211,6 +270,15 @@ def build_chapter_simulation_plan(
         economy_expectations = [*economy_expectations, *_game_economy_rules()]
         required_beats = [*required_beats, *_game_required_beats(chapter_number)]
         forbidden_moves = [*forbidden_moves, *_game_forbidden_moves(chapter_number)]
+        for key in (
+            "wow_beat",
+            "escalation_break",
+            "core_mystery_reinforcement",
+            "explicit_chapter_end_hook",
+            "reality_game_bridge",
+        ):
+            if event_plan.get(key):
+                required_beats.append(f"{key}: {event_plan[key]}")
 
     protagonist_strategy = {}
     if lead:
@@ -218,8 +286,13 @@ def build_chapter_simulation_plan(
             "name": lead.name,
             "game_id": lead.game_id or lead.game_panel.game_id,
             "goal": _character_goal(lead),
-            "risk_posture": lead.performance_profile.risk_posture
-            or ("低调验证、拆分收益、避免暴露。" if game_story else "按当前目标谨慎推进。"),
+            "risk_posture": lead.performance_profile.risk_posture or (
+                "低调验证、拆分收益、避免暴露坐标和现实身份。"
+                "每次行动先算成本和撤退路线，不贪、不炫、不主动接触陌生人。"
+                "小额收益伪装成普通玩家噪音，不留下可追踪的重复模式。"
+                if game_story
+                else "按当前目标谨慎推进。"
+            ),
             "known_panel": lead.game_panel.model_dump(),
         }
 
