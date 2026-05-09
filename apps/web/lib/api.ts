@@ -645,6 +645,7 @@ export type ProjectSummary = {
   active_story_id: string;
   current_chapter: number;
   source_path: string;
+  storage_source?: "sqlite" | "file";
 };
 
 export type ProjectResponse = {
@@ -662,6 +663,7 @@ export type ProjectResponse = {
   pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
   branches: StorySummary[];
+  storage_source?: "sqlite" | "file";
 };
 
 export type AgentReviseRequest = {
@@ -835,6 +837,18 @@ export type BookLibraryCatalogResponse = {
 
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+}
+
+function isFileProjectId(value: string): boolean {
+  return value.startsWith("file:");
+}
+
+function fileProjectPath(projectId: string): string {
+  return `${apiBase()}/file-projects/${encodeURIComponent(projectId)}`;
+}
+
+function fileStoryPath(storyId: string): string {
+  return `${apiBase()}/file-stories/${encodeURIComponent(storyId)}`;
 }
 
 type MockStory = {
@@ -1821,14 +1835,20 @@ export async function generateNextChapter(storyId: string): Promise<ChapterBundl
 }
 
 export async function startGenerationJob(storyId: string): Promise<GenerationJobResponse> {
-  return (await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs`, {
+  const path = isFileProjectId(storyId)
+    ? `${fileProjectPath(storyId)}/generation-jobs`
+    : `${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs`;
+  return (await tryFetchJson(path, {
     method: "POST",
   })) as GenerationJobResponse;
 }
 
 export async function fetchGenerationJob(storyId: string, jobId: string): Promise<GenerationJobResponse> {
+  const path = isFileProjectId(storyId)
+    ? `${fileProjectPath(storyId)}/generation-jobs/${encodeURIComponent(jobId)}`
+    : `${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs/${encodeURIComponent(jobId)}`;
   return (await tryFetchJson(
-    `${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs/${encodeURIComponent(jobId)}`,
+    path,
     {
       method: "GET",
     },
@@ -1956,7 +1976,10 @@ export async function submitProjectManualSegmentDraft(
 
 export async function fetchStory(storyId: string): Promise<StoryResponse> {
   try {
-    const response = (await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}`, {
+    const path = isFileProjectId(storyId)
+      ? fileStoryPath(storyId)
+      : `${apiBase()}/stories/${encodeURIComponent(storyId)}`;
+    const response = (await tryFetchJson(path, {
       method: "GET",
     })) as StoryResponse;
     return persistStoryIntoMockStore(response);
@@ -2151,15 +2174,25 @@ export async function listProjects(): Promise<ProjectSummary[]> {
     const response = (await tryFetchJson(`${apiBase()}/projects`, {
       method: "GET",
     })) as ProjectSummary[];
-    return response;
+    const fileProjects = (await tryFetchJson(`${apiBase()}/file-projects`, {
+      method: "GET",
+    }).catch(() => [])) as ProjectSummary[];
+    const seen = new Set(response.map((project) => project.project_id));
+    return [...response, ...fileProjects.filter((project) => !seen.has(project.project_id))];
   } catch {
-    return mockListProjects();
+    const fileProjects = (await tryFetchJson(`${apiBase()}/file-projects`, {
+      method: "GET",
+    }).catch(() => [])) as ProjectSummary[];
+    return [...mockListProjects(), ...fileProjects];
   }
 }
 
 export async function fetchProject(projectId: string): Promise<ProjectResponse> {
   try {
-    const response = (await tryFetchJson(`${apiBase()}/projects/${encodeURIComponent(projectId)}`, {
+    const path = isFileProjectId(projectId)
+      ? fileProjectPath(projectId)
+      : `${apiBase()}/projects/${encodeURIComponent(projectId)}`;
+    const response = (await tryFetchJson(path, {
       method: "GET",
     })) as ProjectResponse;
     return persistProjectIntoMockStore(response);

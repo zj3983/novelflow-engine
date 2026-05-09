@@ -1,0 +1,351 @@
+"use client";
+
+import Link from "next/link";
+
+import { PageHeader } from "../../../../components/ws/PageHeader";
+import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
+import type { ChapterBundle, StoryCharacter } from "../../../../lib/api";
+import { cleanLines } from "../../../../lib/worldDisplay";
+
+type Reaction = {
+  name: string;
+  role: string;
+  lines: string[];
+};
+
+type ActionLike = {
+  name?: string;
+  goal?: string;
+  action?: string;
+  priority?: number;
+  emotion?: string;
+};
+
+type SimulationPlan = {
+  character_performance?: Array<{
+    name?: string;
+    role?: string;
+    risk_posture?: string;
+    action_style?: string;
+    decision_rules?: string[];
+  }>;
+  npc_boundaries?: Array<{ name?: string; service_role?: string; interaction_rules?: string[] }>;
+  craft_pack?: Record<string, unknown>;
+};
+
+function compactText(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return `${value}`;
+  if (!value || typeof value !== "object") return fallback;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([key, item]) => {
+      if (typeof item === "string" || typeof item === "number") return `${key}: ${item}`;
+      if (Array.isArray(item)) return `${key}: ${item.join("、")}`;
+      return "";
+    })
+    .filter(Boolean);
+  return entries.join("；") || fallback;
+}
+
+function eventPlanLine(bundle: ChapterBundle): string {
+  const plan = bundle.event_plan;
+  return (
+    plan?.turn ||
+    plan?.pivot ||
+    plan?.collision ||
+    bundle.event_beat?.pivot ||
+    bundle.event_beat?.turn ||
+    bundle.chapter_intent?.next_focus ||
+    bundle.next_outline ||
+    ""
+  );
+}
+
+function orderedActions(bundle: ChapterBundle): ActionLike[] {
+  return (bundle.event_plan?.ordered_actions?.length ? bundle.event_plan.ordered_actions : bundle.character_moves ?? []) as ActionLike[];
+}
+
+function hasSimulation(bundle: ChapterBundle): boolean {
+  return Boolean(
+    bundle.chapter_intent ||
+      bundle.event_plan ||
+      bundle.simulation_plan ||
+      bundle.world_events?.length ||
+      bundle.scene_cards?.length ||
+      bundle.character_moves?.length ||
+      bundle.next_outline,
+  );
+}
+
+function addReaction(map: Map<string, Reaction>, name: string, role: string, line: string) {
+  const cleanName = name.trim();
+  const cleanLine = line.trim();
+  if (!cleanName || !cleanLine) return;
+  const current = map.get(cleanName) ?? { name: cleanName, role, lines: [] };
+  if (role && !current.role) current.role = role;
+  if (!current.lines.includes(cleanLine)) current.lines.push(cleanLine);
+  map.set(cleanName, current);
+}
+
+function addSurfaceReaction(map: Map<string, Reaction>, line: string) {
+  if (line.includes("交易行") || line.includes("木牌")) {
+    addReaction(map, "交易行告示牌", "市场机制", line);
+  }
+  if (line.includes("频道") || line.includes("玩家")) {
+    addReaction(map, "公共频道", "玩家群体", line);
+  }
+  if (line.includes("洛婶") || line.includes("药剂铺")) {
+    addReaction(map, "药剂师洛婶", "服务NPC", line);
+  }
+  if (line.includes("系统") || line.includes("预警") || line.includes("公告")) {
+    addReaction(map, "系统公告", "系统机制", line);
+  }
+}
+
+function chapterReactions(bundle: ChapterBundle, characters: StoryCharacter[]): Reaction[] {
+  const map = new Map<string, Reaction>();
+  const chapterNumber = bundle.chapter_number;
+  const actions = orderedActions(bundle);
+  const simulationPlan = (bundle.simulation_plan ?? {}) as SimulationPlan;
+
+  for (const action of actions) {
+    if (!action.name) continue;
+    const line = [action.emotion, action.goal, action.action].filter(Boolean).join("：");
+    addReaction(map, action.name, "角色", line);
+  }
+
+  for (const item of simulationPlan.character_performance ?? []) {
+    if (!item.name) continue;
+    const line = item.risk_posture || item.action_style || item.decision_rules?.join("；") || "";
+    addReaction(map, item.name, item.role || "角色", line);
+  }
+
+  for (const item of simulationPlan.npc_boundaries ?? []) {
+    if (!item.name) continue;
+    addReaction(map, item.name, item.service_role || "NPC", item.interaction_rules?.join("；") || item.service_role || "");
+  }
+
+  for (const event of bundle.world_events ?? []) {
+    if (event.actor) {
+      addReaction(
+        map,
+        event.actor,
+        event.actor.includes("系统") ? "系统机制" : "世界实体",
+        [event.action, event.target, event.location].filter(Boolean).join(" → "),
+      );
+    }
+  }
+
+  for (const line of bundle.event_plan?.world_reactions ?? []) {
+    addSurfaceReaction(map, line);
+  }
+
+  for (const character of characters) {
+    const role = character.role || character.lifecycle_state || "角色";
+    for (const memory of character.memory ?? []) {
+      if (memory.includes(`第${chapterNumber}章`) || memory.includes(`第 ${chapterNumber} 章`)) {
+        addReaction(map, character.name, role, memory);
+      }
+    }
+  }
+
+  return Array.from(map.values())
+    .map((reaction) => ({ ...reaction, lines: reaction.lines.slice(0, 4) }))
+    .filter((reaction) => reaction.lines.length > 0)
+    .slice(0, 12);
+}
+
+function craftHighlights(bundle: ChapterBundle): string[] {
+  const simulationPlan = (bundle.simulation_plan ?? {}) as SimulationPlan;
+  const pack = simulationPlan.craft_pack;
+  if (!pack) return [];
+  const lines: string[] = [];
+  const showTell = pack.show_vs_tell as { formula?: string } | undefined;
+  const beatShape = pack.scene_beat_shape as { shape?: string[] } | undefined;
+  const detailBudget = pack.detail_budget as { per_scene_new_world_details?: number; per_chapter_new_terms?: number } | undefined;
+  const microHooks = pack.micro_hooks as { interval_chars?: string; chapter_end_hook?: string } | undefined;
+  const repetition = pack.repetition_control as { near_duplicate_check?: string } | undefined;
+  if (showTell?.formula) lines.push(`显隐转换：${showTell.formula}`);
+  if (beatShape?.shape?.length) lines.push(`场景节拍：${beatShape.shape.join(" / ")}`);
+  if (detailBudget) {
+    lines.push(`细节预算：每场最多 ${detailBudget.per_scene_new_world_details ?? 2} 个新世界细节，每章最多 ${detailBudget.per_chapter_new_terms ?? 1} 个新名词`);
+  }
+  if (microHooks?.interval_chars) lines.push(`页内微钩子：每 ${microHooks.interval_chars} 字留一个未结算问题`);
+  if (repetition?.near_duplicate_check) lines.push(`复读检测：${repetition.near_duplicate_check}`);
+  return lines.slice(0, 5);
+}
+
+export default function SimulationPage() {
+  const { project, story, error, encodedProjectId } = useProjectWorkspace();
+  const bundles = story?.history ? [...story.history].filter(hasSimulation).reverse() : [];
+  const latest = story?.history?.at(-1);
+  const characters = story?.characters ?? [];
+
+  return (
+    <div className="ws-page">
+      <PageHeader
+        crumbs={[
+          { label: "我的作品", href: "/projects" },
+          { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
+        ]}
+        title="世界推演"
+        subtitle={project?.current_focus || latest?.next_outline || "按章节查看推演计划、人物反应、世界事件和场景卡。"}
+      />
+
+      {error ? (
+        <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
+          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{error}</p>
+        </div>
+      ) : null}
+
+      {bundles.length > 0 ? (
+        <div className="ws-sim-list">
+          {bundles.map((bundle) => {
+            const actions = orderedActions(bundle);
+            const reactions = chapterReactions(bundle, characters);
+            const scenes = bundle.scene_cards ?? [];
+            const events = bundle.world_events ?? [];
+            const facts = cleanLines(bundle.chapter_summary?.facts, 4);
+            const status = bundle.simulation_status;
+            const crafts = craftHighlights(bundle);
+
+            return (
+              <section className="ws-card ws-sim-chapter" key={bundle.chapter_number}>
+                <div className="ws-section-head">
+                  <div>
+                    <p className="ws-card__title">第 {bundle.chapter_number} 章推演</p>
+                    <h2 className="ws-sim-chapter__title">{bundle.chapter_title || bundle.chapter_intent?.chapter_title || "未命名"}</h2>
+                  </div>
+                  <Link href={`/projects/${encodedProjectId}/write?chapter=${bundle.chapter_number}`} className="ws-text-link">
+                    看正文
+                  </Link>
+                </div>
+
+                <p className="ws-card__hint">
+                  {bundle.chapter_summary?.summary || bundle.chapter_intent?.next_focus || bundle.next_outline || "暂无摘要。"}
+                </p>
+
+                <div className="ws-sim-grid">
+                  <div className="ws-simple-item">
+                    <strong>推演焦点</strong>
+                    <span>{eventPlanLine(bundle) || "暂无焦点。"}</span>
+                  </div>
+                  <div className="ws-simple-item">
+                    <strong>冲突 / 赌注</strong>
+                    <span>
+                      {bundle.conflict_summary?.stakes ||
+                        bundle.conflict_summary?.summary ||
+                        compactText(bundle.chapter_intent?.primary_conflict, "暂无冲突记录。")}
+                    </span>
+                  </div>
+                  <div className="ws-simple-item">
+                    <strong>运行状态</strong>
+                    <span>
+                      {status
+                        ? `${status.ok ? "完整推演" : "降级推演"} · ${status.mode || "unknown"}`
+                        : bundle.simulation_plan
+                          ? "完整推演"
+                          : "章节回填记录"}
+                    </span>
+                  </div>
+                </div>
+
+                {crafts.length > 0 ? (
+                  <div className="ws-character-block">
+                    <strong>写作技巧</strong>
+                    <ul>
+                      {crafts.map((line, index) => (
+                        <li key={`${line}-${index}`}>{line}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {reactions.length > 0 ? (
+                  <div className="ws-character-block">
+                    <strong>人物反应</strong>
+                    <div className="ws-reaction-list">
+                      {reactions.map((reaction) => (
+                        <article className="ws-reaction-item" key={reaction.name}>
+                          <h3>{reaction.name}</h3>
+                          <p>{reaction.role}</p>
+                          <ul>
+                            {reaction.lines.map((line, index) => (
+                              <li key={`${line}-${index}`}>{line}</li>
+                            ))}
+                          </ul>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {actions.length > 0 ? (
+                  <div className="ws-character-block">
+                    <strong>角色动作</strong>
+                    <ul>
+                      {actions.slice(0, 8).map((action, index) => (
+                        <li key={`${action.name || "action"}-${index}`}>
+                          {[action.name, action.goal, action.action].filter(Boolean).join("：")}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {scenes.length > 0 ? (
+                  <div className="ws-character-block">
+                    <strong>场景卡</strong>
+                    <ul>
+                      {scenes.slice(0, 8).map((scene, index) => (
+                        <li key={scene.scene_id || index}>
+                          {[scene.location, scene.purpose || scene.conflict || scene.ending_pressure].filter(Boolean).join("：")}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {events.length > 0 ? (
+                  <div className="ws-character-block">
+                    <strong>世界事件</strong>
+                    <ul>
+                      {events.slice(0, 8).map((event, index) => (
+                        <li key={event.event_id || index}>
+                          {[event.actor, event.action, event.target, event.location].filter(Boolean).join(" → ")}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {facts.length > 0 ? (
+                  <div className="ws-character-block">
+                    <strong>记忆事实</strong>
+                    <ul>
+                      {facts.map((fact, index) => (
+                        <li key={`${fact}-${index}`}>{fact}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {bundle.next_outline ? (
+                  <div className="ws-character-block">
+                    <strong>下一章焦点</strong>
+                    <p className="ws-card__hint">{bundle.next_outline}</p>
+                  </div>
+                ) : null}
+              </section>
+            );
+          })}
+        </div>
+      ) : (
+        <section className="ws-card">
+          <p className="ws-card__title">世界推演</p>
+          <p className="ws-card__hint">还没有章节推演记录。</p>
+        </section>
+      )}
+    </div>
+  );
+}
