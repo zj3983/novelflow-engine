@@ -71,3 +71,55 @@ def test_story_snapshot_and_simulation_status_surface_latest_world_pulse():
     assert snapshot["world_pulse"]["latest"]["pulse_index"] == pulse["pulse_index"]
     assert snapshot["visibility_inbox"][0]["visible_at_chapter"] == 2
     assert status["world_pulse"]["latest"]["visible_at_chapter"] == 2
+
+
+def test_world_pulse_builds_persistent_actor_subsystems():
+    story = _pulse_story()
+
+    pulse = advance_world_pulse(story, chapter_number=1)
+
+    persistent = story.progression_ledger["persistent_world"]
+    npc_memory = persistent["npc_memory"]["service_counter"]
+    assert npc_memory["stance"] == "watchful_service"
+    assert npc_memory["next_service_bias"] == "posted_thresholds_only"
+    assert npc_memory["memory_log"][-1]["batch_count"] == 14
+
+    market_state = persistent["market_state"]["newbie_materials"]
+    order_book = market_state["order_book"]
+    assert order_book["sell_pressure"] == "localized_batch_pressure"
+    assert order_book["buy_orders"][0]["price_copper"] == 5
+    assert order_book["buy_orders"][0]["quantity"] == 10
+    assert pulse["market_order_book"] == order_book
+
+    guild = persistent["guild_intel"]["white_robe_guild"]
+    assert guild["scouting_queue"][0]["target"] == "low_level_material_batches"
+    assert guild["scouting_queue"][0]["next_action"] == "watch_public_traces"
+    assert guild["confidence"] == "weak"
+    assert guild["suspicion_score"] > 0
+
+
+def test_world_pulse_accumulates_guild_suspicion_without_omniscience():
+    story = _pulse_story()
+    first = advance_world_pulse(story, chapter_number=1)
+    first_score = story.progression_ledger["persistent_world"]["guild_intel"]["white_robe_guild"]["suspicion_score"]
+    story.progression_ledger["systems"]["chaos_seed"]["anomaly_score"] = 18
+    story.progression_ledger["economy"]["inventory"]["venom_gland"] = 20
+
+    second = advance_world_pulse(story, chapter_number=2)
+
+    guild = story.progression_ledger["persistent_world"]["guild_intel"]["white_robe_guild"]
+    assert guild["suspicion_score"] > first_score
+    assert guild["knowledge_state"] == "correlated_weak_pattern"
+    assert guild["cannot_know"] == ["hidden_talent", "real_identity", "precise_coordinates"]
+    assert any(item["channel"] == "player_chatter" for item in second["visibility_inbox"])
+
+    leaked_text = " ".join(
+        [
+            str(guild),
+            " ".join(item["text"] for item in first["visibility_inbox"]),
+            " ".join(item["text"] for item in second["visibility_inbox"]),
+        ]
+    ).lower()
+    assert "coordinates locked" not in leaked_text
+    assert "real identity" not in leaked_text
+    assert "hidden talent" not in leaked_text

@@ -27,6 +27,90 @@ def _numeric_inventory_total(inventory: dict[str, Any]) -> int:
     return total
 
 
+def _npc_memory_update(
+    *,
+    npc_memory: dict[str, Any],
+    inventory_total: int,
+    pulse_index: int,
+    chapter_number: int,
+) -> None:
+    npc_memory["last_seen_batch_count"] = inventory_total
+    npc_memory["knowledge_boundary"] = "service_inputs_only"
+    npc_memory["stance"] = "watchful_service" if inventory_total >= 10 else "routine_service"
+    npc_memory["next_service_bias"] = "posted_thresholds_only"
+    memory_log = _as_list(npc_memory.get("memory_log"))
+    memory_log.append(
+        {
+            "pulse_index": pulse_index,
+            "chapter_number": chapter_number,
+            "batch_count": inventory_total,
+            "knows": ["material_count", "posted_thresholds", "queue_pressure"],
+            "cannot_know": ["hidden_talent", "real_identity", "complete_route"],
+        }
+    )
+    npc_memory["memory_log"] = memory_log[-12:]
+
+
+def _market_order_book(
+    *,
+    inventory_total: int,
+    price_copper: int,
+    supply: int,
+) -> dict[str, Any]:
+    bid = max(1, price_copper)
+    ask = max(bid + 1, price_copper + 2)
+    buy_quantity = min(10, max(1, inventory_total))
+    sell_pressure = "localized_batch_pressure" if inventory_total >= 10 else "normal_newbie_flow"
+    return {
+        "buy_orders": [
+            {
+                "buyer": "village_service_counter",
+                "quantity": buy_quantity,
+                "price_copper": bid,
+                "visibility": "posted_threshold",
+            }
+        ],
+        "sell_orders": [
+            {
+                "seller": "public_newbie_flow",
+                "quantity_hint": max(0, supply),
+                "price_copper": ask,
+                "visibility": "public_price_board",
+            }
+        ],
+        "spread_copper": {"bid": bid, "ask": ask},
+        "sell_pressure": sell_pressure,
+    }
+
+
+def _guild_intel_update(
+    *,
+    guild_intel: dict[str, Any],
+    inventory_total: int,
+    anomaly_score: int,
+) -> None:
+    prior_score = _as_int(guild_intel.get("suspicion_score"), 0)
+    increment = max(0, anomaly_score // 2)
+    if inventory_total >= 10:
+        increment += 1
+    suspicion_score = min(100, prior_score + increment)
+    confidence = "weak" if suspicion_score < 12 else "correlated"
+    knowledge_state = "weak_pattern_only" if confidence == "weak" else "correlated_weak_pattern"
+    guild_intel["knowledge_state"] = knowledge_state
+    guild_intel["confidence"] = confidence
+    guild_intel["suspicion_score"] = suspicion_score
+    guild_intel["cannot_know"] = ["hidden_talent", "real_identity", "precise_coordinates"]
+    guild_intel["scouting_queue"] = [
+        {
+            "target": "low_level_material_batches",
+            "confidence": confidence,
+            "evidence": ["price_board_wobble", "service_counter_batch", "route_noise"],
+            "required_evidence": ["repeat_batch", "rare_item", "eyewitness", "service_counter_anomaly"],
+            "next_action": "watch_public_traces",
+        }
+    ]
+
+
 def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, Any]:
     """Advance background world state once after a chapter settles.
 
@@ -54,17 +138,30 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
     visible_at_chapter = int(chapter_number) + 1
 
     npc_memory = persistent.setdefault("npc_memory", {}).setdefault("service_counter", {})
-    npc_memory["last_seen_batch_count"] = inventory_total
-    npc_memory["knowledge_boundary"] = "service_inputs_only"
+    _npc_memory_update(
+        npc_memory=npc_memory,
+        inventory_total=inventory_total,
+        pulse_index=pulse_index,
+        chapter_number=chapter_number,
+    )
 
     guild_intel = persistent.setdefault("guild_intel", {}).setdefault("white_robe_guild", {})
-    guild_intel["knowledge_state"] = "weak_pattern_only" if anomaly_score > 0 else "no_signal"
-    guild_intel["cannot_know"] = ["hidden_talent", "real_identity", "precise_coordinates"]
+    _guild_intel_update(
+        guild_intel=guild_intel,
+        inventory_total=inventory_total,
+        anomaly_score=anomaly_score,
+    )
 
     market_state = persistent.setdefault("market_state", {}).setdefault("newbie_materials", {})
     market_state["supply"] = supply
     market_state["price_copper"] = price_copper
     market_state["signal"] = "small_price_wobble" if price_copper else "unchanged"
+    order_book = _market_order_book(
+        inventory_total=inventory_total,
+        price_copper=price_copper,
+        supply=supply,
+    )
+    market_state["order_book"] = order_book
 
     background_events = [
         {
@@ -82,7 +179,7 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
         {
             "id": f"pulse-{pulse_index}-guild",
             "actor": "white_robe_guild",
-            "action": "keeps only weak route and batch suspicion",
+            "action": f"keeps {guild_intel['confidence']} route and batch suspicion",
             "visible_to": ["background_only"],
         },
     ]
@@ -103,6 +200,16 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
             "source_event": "local_market",
         },
     ]
+    if inventory_total >= 10:
+        visibility_inbox.append(
+            {
+                "id": f"pulse-{pulse_index}-player-chatter",
+                "visible_at_chapter": visible_at_chapter,
+                "channel": "player_chatter",
+                "text": "Nearby players only gossip about low-level material batches, price wobble, and route noise.",
+                "source_event": "route_noise",
+            }
+        )
 
     if "rent_due_days" in reality:
         due_days = max(0, _as_int(reality.get("rent_due_days"), 0) - 1)
@@ -136,6 +243,7 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
             "chaos_seed_anomaly_score": anomaly_score,
             "guild_knowledge_state": guild_intel["knowledge_state"],
         },
+        "market_order_book": order_book,
     }
 
     pulse_store = ledger.setdefault("world_pulse", {})
