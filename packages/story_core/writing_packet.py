@@ -38,12 +38,49 @@ def _extract_scene_cards(bundle: Any) -> list[dict[str, Any]]:
                 "avoid": _as_list(raw.get("must_not_explain") or raw.get("avoid"), max_items=8, item_chars=80),
                 "ending_pressure": compact_text(str(raw.get("ending_pressure") or ""), 160),
                 "state_delta": state_delta,
+                "scene_contract": raw.get("scene_contract") if isinstance(raw.get("scene_contract"), dict) else {},
                 "sensory_anchors": _as_list(raw.get("sensory_anchors"), max_items=4, item_chars=40),
                 "subtext": compact_text(str(raw.get("subtext") or ""), 120),
                 "rhythm_hint": compact_text(str(raw.get("rhythm_hint") or ""), 80),
             }
         )
+        if not result[-1]["scene_contract"]:
+            result[-1].pop("scene_contract", None)
     return result
+
+
+def _extract_scene_contracts(scene_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    contracts: list[dict[str, Any]] = []
+    for card in scene_cards:
+        contract = card.get("scene_contract") if isinstance(card.get("scene_contract"), dict) else {}
+        if contract:
+            contracts.append(contract)
+    return contracts
+
+
+def _extract_systemic_simulation(scene_cards: list[dict[str, Any]]) -> dict[str, Any]:
+    for card in scene_cards:
+        state_delta = card.get("state_delta") if isinstance(card.get("state_delta"), dict) else {}
+        game_world = state_delta.get("game_world_simulation") if isinstance(state_delta.get("game_world_simulation"), dict) else {}
+        systemic = game_world.get("systemic_simulation") if isinstance(game_world.get("systemic_simulation"), dict) else {}
+        if not systemic:
+            continue
+        ledger_delta = systemic.get("ledger_delta") if isinstance(systemic.get("ledger_delta"), dict) else {}
+        visibility_layers = systemic.get("visibility_layers") if isinstance(systemic.get("visibility_layers"), dict) else {}
+        return {
+            "schema_version": systemic.get("schema_version", "systemic-simulation/v1"),
+            "rules_fired": _as_list(systemic.get("rules_fired"), max_items=8, item_chars=80),
+            "causal_chain": _as_list(systemic.get("causal_chain"), max_items=8, item_chars=120),
+            "ledger_delta": ledger_delta,
+            "visibility_layers": {
+                "private": _as_list(visibility_layers.get("private"), max_items=5, item_chars=160),
+                "public": _as_list(visibility_layers.get("public"), max_items=5, item_chars=160),
+                "npc": _as_list(visibility_layers.get("npc"), max_items=5, item_chars=160),
+                "guild": _as_list(visibility_layers.get("guild"), max_items=5, item_chars=160),
+            },
+            "final_state": systemic.get("final_state") if isinstance(systemic.get("final_state"), dict) else {},
+        }
+    return {}
 
 
 def _default_first_chapter_scenes_game() -> list[dict[str, Any]]:
@@ -348,6 +385,7 @@ def prose_renderer_contract() -> dict[str, Any]:
             "do not output analysis, plans, rule explanations, or reviewer language",
             "do not replace scenes with abstract conclusions",
             "keep numbers, names, items, and UI state traceable to the packet",
+            "consume every scene_contract.visible_consequences item on page; if it is not visible to a reader, the scene is unfinished",
             "keep rhetoric sparse: avoid dense metaphors, adjective chains, and lyrical description",
             "use Tomato-style webnovel language: short direct sentences, clear goal, immediate payoff, visible cost, and an ending hook",
         ],
@@ -373,8 +411,11 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
     author_constraints = _as_list(getattr(story, "author_constraints", []), max_items=18, item_chars=160)
     existing_body = getattr(bundle, "body", "") if bundle is not None else ""
     scene_cards = _extract_scene_cards(bundle) if bundle is not None else []
+    systemic_simulation = _extract_systemic_simulation(scene_cards)
+    scene_contracts = _extract_scene_contracts(scene_cards)
     if target_chapter == 1 and not scene_cards:
         scene_cards = _default_first_chapter_scenes(game_genre)
+        scene_contracts = _extract_scene_contracts(scene_cards)
 
     protagonist_locks = _latest_panel_locks(story, game_genre=game_genre)
     hard_locks = _hard_locks(game_genre, target_chapter)
@@ -417,6 +458,8 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         "governance": governance,
         "governance_gate": governance_gate,
         "event_plan": _event_plan_summary(bundle) if bundle is not None else {},
+        "systemic_simulation": systemic_simulation,
+        "scene_contracts": scene_contracts,
         "scene_cards": scene_cards,
         "hard_locks": compact_list(hard_locks, max_items=16, item_chars=160),
         "style_rules": style_rules,

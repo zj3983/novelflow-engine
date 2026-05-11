@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from typing import Any
+
 import json
 import re
 import urllib.error
 from types import SimpleNamespace
-from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text, parse_json_message_content
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate, review_chapter_governance
 from packages.story_core.chapter_seed import build_chapter_seed
+from packages.story_core.craft import is_game_story
 from packages.story_core.generation_progress import report_generation_progress
-from packages.story_core.http_retry import post_json_with_retry
+from packages.story_core.http_retry import RetryConfig, post_json_with_retry
 from packages.story_core.memory import (
-    add_chapter_memory_index,
     apply_post_chapter_updates,
     build_character_cards,
     build_foreshadowing,
@@ -23,29 +26,62 @@ from packages.story_core.models import DirectorDecision, StoryState, TimelineEve
 from packages.story_core.planner import build_conflict_summary, build_event_beat, compute_chapter_cadence, plan_next_outline
 from packages.story_core.adversarial_cut_review import build_expression_patch_suggestions, review_adversarial_cuts
 from packages.story_core.prose_quality_review import review_prose_quality
+from packages.story_core.prose_rule_review import CRITICAL_PROMPT_RULES
 from packages.story_core.prose_style_review import anti_ai_style_rules, review_prose_style, sanitize_prose_style
 from packages.story_core.quality import validate_bundle
 from packages.story_core.runtime import record_agent_runtime
 from packages.story_core.runtime_config import get_runtime_strategy_settings, resolve_openai_runtime_settings
 from packages.story_core.revision_safety import choose_best_revision, choose_best_segment_revision
 from packages.story_core.segmented_writing import (
+    FIRST_CHAPTER_FORBIDDEN,
+    SegmentSpec,
     build_segment_prompt,
     build_segment_revision_prompt,
     build_segment_specs,
+    build_style_adapt_prompt,
     merge_segment_outputs,
     review_segment_output,
+    style_adapt_safety_check,
 )
 from packages.story_core.simulation import build_chapter_simulation_plan
 from packages.story_core.spot_fix_patch import apply_spot_fix_patches
 from packages.story_core.style_coach import build_style_guidance, enrich_performance_cards
+from packages.story_core.web_game_author_craft import format_web_game_director_card, plain_writer_phrase
 from packages.story_core.web_game_review import has_asserted_overreach, review_web_game_chapter, web_game_review_rules
 from packages.story_core.world_consistency_review import review_world_event_consistency
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
+from packages.story_core.review_report import format_review_report
 
 
 VALID_CADENCES = {"urgent", "measured", "breathing"}
 MIN_CHAPTER_CHARS = 4200
 TARGET_CHAPTER_CHARS = "4200到5500字"
+
+
+def _review_reports_enabled() -> bool:
+    value = os.getenv("NOVEL_AUTOGROWTH_REVIEW_REPORTS", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _review_report_output_dir() -> Path:
+    configured = os.getenv("NOVEL_AUTOGROWTH_REVIEW_REPORTS_DIR", "").strip()
+    return Path(configured) if configured else Path("chapter_exports")
+
+
+def _persist_review_report(chapter_number: int, body: str, writing_review: dict[str, Any]) -> Path | None:
+    if not _review_reports_enabled():
+        return None
+    try:
+        output_dir = _review_report_output_dir()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"review_ch{int(chapter_number):04d}.md"
+        output_path.write_text(
+            format_review_report(writing_review, chapter_number=chapter_number, body_chars=len(str(body or ""))),
+            encoding="utf-8",
+        )
+        return output_path
+    except Exception:
+        return None
 
 
 def _extract_text_message(response: dict) -> str:
@@ -142,10 +178,21 @@ def _revision_forbidden_terms(review: dict[str, Any], plan: dict[str, Any]) -> l
         if isinstance(raw_terms, list):
             terms.extend(str(term).strip() for term in raw_terms if str(term).strip())
     review_text = json.dumps(review, ensure_ascii=False)
+    for term in FIRST_CHAPTER_FORBIDDEN:
+        if term in review_text and term not in terms:
+            terms.append(term)
+    if "第一章提前展开交易线" in review_text:
+        for term in ("匿名寄售", "寄售成功", "上架成功", "成交", "到账", "手续费", "第一笔铜币落袋", "赵胖子", "盯盘", "商人"):
+            if term not in terms:
+                terms.append(term)
+    if "第一章外部压力过早" in review_text:
+        for term in ("白袍", "公会", "论坛", "清场", "后勤", "异常低价", "观察名单", "商人脚本"):
+            if term not in terms:
+                terms.append(term)
     for term in ("爽点", "钩子", "节奏", "读者", "网文规则", "生成", "审稿", "质量报告", "剧情需要", "下一阶段剧情"):
         if term in review_text and term not in terms:
             terms.append(term)
-    return compact_list(terms, max_items=16, item_chars=24)
+    return compact_list(terms, max_items=32, item_chars=24)
 
 
 def _revision_fix_checklist(review: dict[str, Any]) -> list[str]:
@@ -182,6 +229,39 @@ def _sanitize_generated_body(body: str) -> str:
     # lone ASCII question marks. Remove only question marks embedded in CJK prose.
     cleaned = re.sub(r"(?<=[\u4e00-\u9fff。！？】》])\?(?=[\u4e00-\u9fff【《])", "", cleaned)
     return cleaned
+
+
+def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
+    if chapter_number != 1 or not body:
+        return body
+    sentence_block_terms = (
+        "匿名寄售",
+        "寄售成功",
+        "上架成功",
+        "成交",
+        "到账",
+        "手续费",
+        "第一笔铜币落袋",
+        "赵胖子",
+        "盯盘",
+        "白袍",
+        "公会",
+        "论坛",
+        "清场",
+        "后勤",
+        "异常低价",
+        "观察名单",
+        "商人脚本",
+    )
+    kept_paragraphs: list[str] = []
+    for paragraph in re.split(r"\n{2,}", body):
+        pieces = re.findall(r"[^。！？\n]+[。！？]?", paragraph)
+        kept = [piece for piece in pieces if not any(term in piece for term in sentence_block_terms)]
+        cleaned = "".join(kept).strip()
+        if cleaned:
+            kept_paragraphs.append(cleaned)
+    sanitized = "\n\n".join(kept_paragraphs).strip()
+    return sanitized or body
 
 
 def _priority_world_facts(facts: list[str], *, max_items: int, item_chars: int) -> list[str]:
@@ -346,6 +426,14 @@ def _normalize_intent(raw_intent: object) -> dict:
 
 
 def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: StoryState) -> dict:
+    def _normalize_chapter_end_hook(raw_hook: object) -> dict[str, str | None] | None:
+        if not isinstance(raw_hook, dict):
+            return None
+        hook_type = str(raw_hook.get("type", "")).strip() or None
+        strength = str(raw_hook.get("strength", "")).strip().lower() or None
+        content = compact_text(str(raw_hook.get("content", "")).strip(), 180)
+        return {"type": hook_type, "strength": strength, "content": content}
+
     if not isinstance(raw_event_plan, dict):
         return {
             "chapter_number": chapter_number,
@@ -355,6 +443,8 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
             "npc_beats": [],
             "quest_beats": [],
             "location_beats": [],
+            "explicit_chapter_end_hook": "",
+            "chapter_end_hook": None,
             "author_constraints": list(story.author_constraints),
         }
     return {
@@ -371,6 +461,8 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
         "world_reactions": compact_list(raw_event_plan.get("world_reactions", []), max_items=6, item_chars=160),
         "stakes": compact_text(str(raw_event_plan.get("stakes", "")).strip(), 140),
         "next_focus": compact_text(str(raw_event_plan.get("next_focus", "")).strip(), 160),
+        "explicit_chapter_end_hook": compact_text(str(raw_event_plan.get("explicit_chapter_end_hook", "")).strip(), 180),
+        "chapter_end_hook": _normalize_chapter_end_hook(raw_event_plan.get("chapter_end_hook")),
         "author_constraints": list(story.author_constraints),
     }
 
@@ -429,6 +521,75 @@ def _collect_state_deltas(items: list[dict] | None) -> list[dict]:
     return deltas
 
 
+def _add_int(base: object, delta: object) -> int:
+    try:
+        return int(base or 0) + int(delta or 0)
+    except (TypeError, ValueError):
+        return int(delta or 0) if isinstance(delta, int) else 0
+
+
+def _add_mapping_counts(base: dict, updates: dict) -> dict:
+    result = dict(base)
+    for key, value in updates.items():
+        if isinstance(value, (int, float)) or str(value).lstrip("-").isdigit():
+            result[key] = _add_int(result.get(key), value)
+        elif value not in (None, "", [], {}):
+            result[key] = value
+    return result
+
+
+def _systemic_ledger_delta(delta: dict) -> dict:
+    game_world = delta.get("game_world_simulation") if isinstance(delta, dict) else None
+    if not isinstance(game_world, dict):
+        return {}
+    ledger_delta = game_world.get("ledger_delta")
+    return ledger_delta if isinstance(ledger_delta, dict) else {}
+
+
+def _apply_systemic_ledger_delta(story: StoryState, ledger_delta: dict) -> None:
+    if not isinstance(ledger_delta, dict) or not ledger_delta:
+        return
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
+
+    inventory_delta = ledger_delta.get("inventory_delta")
+    if isinstance(inventory_delta, dict) and inventory_delta:
+        economy = ledger.setdefault("economy", {})
+        inventory = economy.get("inventory") if isinstance(economy.get("inventory"), dict) else {}
+        economy["inventory"] = _add_mapping_counts(inventory, inventory_delta)
+
+    cost_delta = ledger_delta.get("cost_delta")
+    if isinstance(cost_delta, dict) and cost_delta:
+        protagonist = ledger.setdefault("protagonist", {})
+        protagonist["cost_delta"] = dict(cost_delta)
+
+    market_delta = ledger_delta.get("market_delta")
+    if isinstance(market_delta, dict) and market_delta:
+        market = ledger.setdefault("market", {}).setdefault("newbie_materials", {})
+        if "material_supply" in market_delta:
+            market["supply"] = _add_int(market.get("supply"), market_delta.get("material_supply"))
+        if market_delta.get("price_copper") not in (None, "", [], {}):
+            market["price_copper"] = market_delta["price_copper"]
+
+    hidden_delta = ledger_delta.get("hidden_system_delta")
+    if isinstance(hidden_delta, dict) and hidden_delta:
+        systems = ledger.setdefault("systems", {})
+        chaos = systems.setdefault("chaos_seed", {})
+        if hidden_delta.get("chaos_seed_anomaly_score") not in (None, "", [], {}):
+            chaos["anomaly_score"] = _add_int(chaos.get("anomaly_score"), hidden_delta["chaos_seed_anomaly_score"])
+
+    if ledger_delta.get("clock_minutes") not in (None, "", [], {}):
+        clock = ledger.setdefault("clock", {})
+        clock["elapsed_minutes"] = _add_int(clock.get("elapsed_minutes"), ledger_delta["clock_minutes"])
+
+    next_pressure = ledger_delta.get("next_pressure")
+    if isinstance(next_pressure, list) and next_pressure:
+        pressure = ledger.setdefault("pressure", {})
+        pressure["next"] = [str(item) for item in next_pressure if str(item).strip()]
+
+    story.progression_ledger = ledger
+    _normalize_progression_ledger(story.progression_ledger)
+
+
 def apply_simulated_state_deltas(
     story: StoryState,
     *,
@@ -440,6 +601,7 @@ def apply_simulated_state_deltas(
 
     for delta in [*_collect_state_deltas(world_events), *_collect_state_deltas(scene_cards)]:
         _apply_ledger_updates(story, delta)
+        _apply_systemic_ledger_delta(story, _systemic_ledger_delta(delta))
     _sync_character_game_panels(story, chapter_number)
 
 
@@ -856,25 +1018,27 @@ def _opening_phase_name(chapter_number: int) -> str:
 def _opening_writer_rules(chapter_number: int) -> list[str]:
     if chapter_number == 1:
         return [
-            "第一章承担读者入门职责：必须自然交代游戏背景、主角背景、交易行机制、公会生态和金手指风险。",
+            "第一章承担读者入门职责：必须自然交代现实压力、游戏入口、主角技能来源、金手指首次露头和一个低级服务门槛。",
             "500字内要出现强钩子；1000字内要让读者知道主角缺什么、怕什么、想要什么。",
             "番茄长篇节奏：第一章目标篇幅按4200到5500字写，不要压缩成3000字以内的信息摘要。",
-            "游戏背景要通过登录界面、系统公告、论坛热帖、玩家闲聊或场景观察写出来，不要用百科段落硬讲。",
+            "游戏背景要通过登录界面、系统公告、玩家闲聊、路牌或柜台观察写出来，不要用百科段落硬讲。",
             "主角背景要通过现实账单、出租屋细节、职业/工作状态、短暂记忆、行为习惯或心理压迫露出，不能只贴标签。",
             "必须说明主角现实职业、失业/兼职/外包状态或现实技能来源，并让这解释他为什么会谨慎、会算账、会拆单或熟悉网游经济。",
             "第一章必须写出网游开篇仪式：登录或角色创建、游戏ID“夜烬”、职业选择、角色面板。夜烬应选择元素法师学徒/元素法师路线，并说明这决定法杖、基础法术和10级元素回廊试炼门槛。",
-            "角色面板必须有职业栏，至少包含：游戏ID、等级、职业/路线、经验、主武器或基础技能、货币/背包关键项；面板要短，不要刷屏。",
-            "金手指不能凭空弹出：必须先有触发条件或伏笔，例如旧头盔、异常邀请码、神经接驳协议异常、角色创建选择、底层日志闪烁或现实技能与系统异常发生咬合。",
-            "第一章冲突应是“现实资金压力 + 隐藏优势变现风险 + 外部势力间接逼近”，不要写成赵胖子或公会和主角正面争夺核心资源。",
+            "角色面板必须有职业栏，至少包含：游戏ID、等级、职业/路线、经验、生命/法力、基础火球术、货币0铜、背包关键项；面板要短，不要刷屏。",
+            "初始货币锁死为0铜。第一章如果没有正文写出铜币掉落或任务奖励，章末就仍是0铜，不能凭空变成15铜。",
+            "职业和技能锁死：职业列表只点到战士、游侠、法师/元素法师学徒即可；初始技能统一写“基础火球术”，不要改名成元素弹。",
+            "现实钱语义锁死：27.60是银行卡余额或可用余额，不是最低还款额；不要把现实压力写轻。",
+            "金手指不能凭空弹出：必须先有旧头盔/底层日志/接驳异常等触发，再出现“底层协议校验通过”和“混沌之种：未解析”。",
+            "统一术语：本项目隐藏优势必须出现“千倍爆率”四个字；可以同时写掉落判定×1000，但不能只写异常或不正常。",
+            "第一章冲突是现实缺钱、旧设备、血蓝耐久、背包格和服务门槛；不要写成赵胖子或公会和主角正面争夺核心资源。",
             "第一章禁止越级冲突：公会不能精准锁定坐标/现实身份，不能围杀主角，不能直接抢世界BOSS或高阶副本。",
-            "第一章节奏不要塞满登录、完整刷怪、完整交易、商人正面登场和公会追查全过程；可以完成小额首次验证，把商人/公会反应留作章末弱钩子。",
-            "统一术语：本项目隐藏优势统一写作“千倍爆率”，不要混用“1000倍爆率”。",
-            "交易行要写清匿名寄售、手续费、流水记录、风控/异常标记、商人玩家盯盘的基本机制。",
-            "公会生态不能只有一个白袍公会，至少点到其他公会、商会或散人组织，让世界显得更大。",
-            "金手指首次验证必须同时带来收益和代价：掉落/经验/金币的爽点，以及身份暴露/市场异常/系统风控的风险。",
+            "第一章不要完成交易闭环：禁止寄售成功、成交、到账、手续费扣款、材料换成人民币；只允许看到交易行门口、价牌、批次或收购牌，作为下一章弱钩子。",
+            "交易行弱钩子要轻：主角可以看到价牌/入口/批次提示，知道东西也许有价，但本章不操作、不成交、不引来商人或公会。",
+            "金手指首次验证必须同时带来收益和代价：掉落变多的爽点，以及血量、法力、耐久、背包格、没铜币修理/寄存的具体麻烦。",
             "第一章必须收敛：最多一个命名NPC服务节点完整出场，例如药剂师洛婶或职业导师艾伦；其他NPC只能一笔带过。",
-            "第一章禁止赵胖子正面登场、禁止白袍据点视角、禁止公会完整追查戏；商人和公会只能以交易行弱线索、论坛热帖或一句外部反应出现。",
-            "第一章不要连续写药剂铺、职业大厅、修理铺、公会据点等多视角场景；优先完成现实压力、登录、首次验证和交易行弱钩子。",
+            "第一章禁止赵胖子正面登场、禁止白袍据点视角、禁止公会完整追查戏；商人和公会不要出场，最多留一个交易行价牌弱钩子。",
+            "第一章不要连续写药剂铺、职业大厅、修理铺、公会据点等多视角场景；优先完成现实压力、登录、首次验证、一个柜台门槛和交易行弱钩子。",
         ]
     if chapter_number in (2, 3):
         return [
@@ -1178,6 +1342,7 @@ def _review_chapter_body(
         body,
         world_events=world_events or [],
         scene_cards=scene_cards or [],
+        chapter_number=chapter_number,
     )
     style_review = review_prose_style(body)
     prose_quality_review = review_prose_quality(body)
@@ -1241,8 +1406,8 @@ def _merge_writing_review_quality(quality: dict, writing_review: dict) -> dict:
     merged = dict(quality)
     issues = list(merged.get("issues") or [])
     scores = writing_review.get("scores", {}) if isinstance(writing_review.get("scores"), dict) else {}
-    hard_review_prefixes = ("web_game_", "prose_style_")
-    writing_review_failed = any(
+    hard_review_prefixes = ("web_game_", "prose_style_", "prose_quality_")
+    writing_review_failed = not bool(writing_review.get("pass", True)) or bool(writing_review.get("issues")) or any(
         str(key).startswith(hard_review_prefixes) and int(value or 0) < 8 for key, value in scores.items()
     )
     if writing_review_failed:
@@ -1251,6 +1416,9 @@ def _merge_writing_review_quality(quality: dict, writing_review: dict) -> dict:
             issues.append("writing_review")
     merged["issues"] = issues
     merged["writing_review"] = writing_review
+    for key in ("critical_review", "hook_review", "pacing_review", "beats_review"):
+        if isinstance(writing_review.get(key), dict):
+            merged[key] = writing_review[key]
     return merged
 
 
@@ -1265,6 +1433,204 @@ def apply_expression_patches_from_review(body: str, writing_review: dict) -> tup
         "patches": patches,
         **result,
     }
+
+
+def _story_game_context(story: StoryState, plan: dict[str, Any] | None = None) -> bool:
+    plan = plan if isinstance(plan, dict) else {}
+    return is_game_story(
+        story,
+        plan.get("event_plan", {}),
+        plan.get("simulation_plan", {}),
+        plan.get("scene_cards", []),
+        plan.get("craft_pack", {}),
+    )
+
+
+def _plan_target_chars(plan: dict[str, Any] | None) -> str:
+    plan = plan if isinstance(plan, dict) else {}
+    target = plan.get("target_chars")
+    if isinstance(target, dict):
+        minimum = target.get("min")
+        maximum = target.get("max")
+        if minimum and maximum:
+            return f"{minimum}到{maximum}字"
+        if minimum:
+            return f"不少于{minimum}字"
+        if maximum:
+            return f"不超过{maximum}字"
+    if isinstance(target, int) and target > 0:
+        return f"约{target}字"
+    return TARGET_CHAPTER_CHARS
+
+
+def _compact_review_summary(review: dict[str, Any] | None) -> dict[str, Any]:
+    review = review if isinstance(review, dict) else {}
+    style_review = review.get("style_review") if isinstance(review.get("style_review"), dict) else {}
+    prose_review = review.get("prose_quality_review") if isinstance(review.get("prose_quality_review"), dict) else {}
+    summary: dict[str, Any] = {
+        "issues": compact_list(review.get("issues", []), max_items=6, item_chars=90),
+        "revision_plan": compact_list(review.get("revision_plan", []), max_items=6, item_chars=90),
+    }
+    style_issues = compact_list(style_review.get("issues", []), max_items=4, item_chars=90)
+    prose_issues = compact_list(prose_review.get("issues", []), max_items=4, item_chars=90)
+    if style_issues:
+        summary["style_issues"] = style_issues
+    if prose_issues:
+        summary["prose_issues"] = prose_issues
+    return summary
+
+
+def _plain_prompt_payload(value: Any) -> Any:
+    """Remove writer-dangerous backend wording from structured prompt payloads."""
+
+    if isinstance(value, str):
+        return plain_writer_phrase(value)
+    if isinstance(value, list):
+        return [_plain_prompt_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _plain_prompt_payload(item) for key, item in value.items()}
+    return value
+
+
+def _plain_prompt_json(value: Any) -> str:
+    return json.dumps(_plain_prompt_payload(value), ensure_ascii=False)
+
+
+def _chapter_prompt_spec(chapter_number: int, plan: dict[str, Any] | None) -> SegmentSpec:
+    plan = plan if isinstance(plan, dict) else {}
+    event_plan = plan.get("event_plan") if isinstance(plan.get("event_plan"), dict) else {}
+    title = compact_text(str(event_plan.get("chapter_title", "本章正文")).strip() or "本章正文", 60)
+    scene_cards = plan.get("scene_cards") if isinstance(plan.get("scene_cards"), list) else []
+    required_surface: list[str] = []
+    locations: list[str] = []
+    for card in scene_cards[:4]:
+        if not isinstance(card, dict):
+            continue
+        if card.get("location"):
+            locations.append(str(card.get("location")))
+        must_show = card.get("must_show") if isinstance(card.get("must_show"), list) else []
+        for item in must_show:
+            text = str(item).strip()
+            if text and text not in required_surface:
+                required_surface.append(text)
+    event_actions = event_plan.get("ordered_actions") if isinstance(event_plan.get("ordered_actions"), list) else []
+    actions = [compact_text(str(item.get("action") if isinstance(item, dict) else item).strip(), 60) for item in event_actions[:5] if str(item).strip()]
+    required = required_surface[:6] or actions[:4] or [title]
+    forbidden_moves = compact_list((plan.get("simulation_plan", {}) or {}).get("forbidden_moves", []), max_items=6, item_chars=40)
+    return SegmentSpec(
+        key="chapter_body",
+        title=plain_writer_phrase(title),
+        goal=plain_writer_phrase(compact_text(str((plan.get("simulation_plan", {}) or {}).get("chapter_goal") or event_plan.get("next_focus") or title), 160)),
+        required_surface=plain_writer_phrase("、".join(required)),
+        forbidden_surface="、".join(forbidden_moves),
+        entry_state="；".join(locations[:3]) or "沿用本章计划开场状态。",
+        exit_state=plain_writer_phrase(compact_text(str(event_plan.get("next_focus") or event_plan.get("stakes") or "留下下一章压力或新门槛。"), 140)),
+        handoff="本章收束后必须留下下一步压力，不得用总结句替代场景结尾。",
+        target_chars=max(1200, int(plan.get("target_chars", {}).get("min", MIN_CHAPTER_CHARS)) // 4) if isinstance(plan.get("target_chars"), dict) else 1400,
+    )
+
+
+def _prose_grounded_writing_plan(plan: dict[str, Any] | None) -> dict[str, Any]:
+    plan = plan if isinstance(plan, dict) else {}
+    event_plan = plan.get("event_plan") if isinstance(plan.get("event_plan"), dict) else {}
+    simulation_plan = plan.get("simulation_plan") if isinstance(plan.get("simulation_plan"), dict) else {}
+    scene_cards = plan.get("scene_cards") if isinstance(plan.get("scene_cards"), list) else []
+    scene_flow: list[str] = []
+    for item in event_plan.get("ordered_actions", []) if isinstance(event_plan.get("ordered_actions"), list) else []:
+        text = str(item.get("action") if isinstance(item, dict) else item).strip()
+        if text:
+            scene_flow.append(plain_writer_phrase(compact_text(text, 80)))
+    for card in scene_cards[:4]:
+        if not isinstance(card, dict):
+            continue
+        pieces = [str(card.get("location", "")).strip(), str(card.get("purpose", "")).strip(), str(card.get("ending_pressure", "")).strip()]
+        text = "｜".join(piece for piece in pieces if piece)
+        if text:
+            scene_flow.append(plain_writer_phrase(compact_text(text, 100)))
+    packet = {
+        "chapter_number": plan.get("chapter_number") or event_plan.get("chapter_number"),
+        "chapter_title": plain_writer_phrase(compact_text(str(event_plan.get("chapter_title", "")).strip(), 60)),
+        "scene_flow": scene_flow[:8],
+        "world_signals": [plain_writer_phrase(item) for item in compact_list(event_plan.get("world_reactions", []), max_items=6, item_chars=80)],
+        "required_beats": [plain_writer_phrase(item) for item in compact_list(simulation_plan.get("required_beats", []), max_items=6, item_chars=80)],
+        "forbidden_moves": [plain_writer_phrase(item) for item in compact_list(simulation_plan.get("forbidden_moves", []), max_items=6, item_chars=80)],
+    }
+    return {key: value for key, value in packet.items() if value not in (None, "", [], {})}
+
+
+def _style_adapt_enabled(plan: dict[str, Any] | None) -> bool:
+    plan = plan if isinstance(plan, dict) else {}
+    if str(plan.get("write_mode", "")).strip().lower() in {"fast", "speed", "rough"}:
+        return False
+    simulation_plan = plan.get("simulation_plan") if isinstance(plan.get("simulation_plan"), dict) else {}
+    return bool(
+        plan.get("style_adapt", True)
+        and (
+            plan.get("web_game_director_card")
+            or simulation_plan.get("web_game_director_card")
+            or simulation_plan.get("chapter_goal")
+        )
+    )
+
+
+def _game_genre_defaults(story: StoryState) -> dict[str, str]:
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
+    protagonist_ledger = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), dict) else {}
+    protagonist = next((c for c in story.characters if c.role == "protagonist"), None)
+    game_id = str(protagonist_ledger.get("game_id") or "").strip()
+    if not game_id and protagonist is not None:
+        game_id = str(getattr(protagonist, "game_id", "") or "").strip()
+    if not game_id:
+        game_id = "未命名角色"
+    class_path = str(protagonist_ledger.get("class_path") or "").strip()
+    if not class_path:
+        panel = getattr(protagonist, "game_panel", None) if protagonist is not None else None
+        class_path = str(getattr(panel, "profession", "") or "").strip()
+    if not class_path:
+        class_path = "当前职业"
+    return {"game_id": game_id, "class_path": class_path}
+
+
+def _chapter_prompt_method_block(
+    chapter_number: int,
+    plan: dict[str, Any] | None,
+    *,
+    governance: dict[str, Any] | None = None,
+    review: dict[str, Any] | None = None,
+) -> list[str]:
+    plan = plan if isinstance(plan, dict) else {}
+    spec = _chapter_prompt_spec(chapter_number, plan)
+    director_card = plan.get("web_game_director_card")
+    simulation_plan = plan.get("simulation_plan") if isinstance(plan.get("simulation_plan"), dict) else {}
+    if not isinstance(director_card, dict):
+        director_card = simulation_plan.get("web_game_director_card")
+    lines = [
+        "OUTPUT CONTRACT: prose only",
+        "写手身份：你只负责把本章写成可读正文，不输出标题、编号、解释、大纲、JSON 或审稿结论。",
+        "番茄白话风：用普通读者一眼能懂的话写，少用比喻和华丽修辞，少解释，多写动作、对话、面板、背包、耐久、药水和直接后果。",
+        "后台词翻译：不要在正文或标题里写后台硬词；把它们改成“试一把、问一嘴、柜台能不能办、先别卖、包快满、药水不够、法杖快断”。",
+        "第一章目标口语化：不要把目标写成后台硬词，要写成苏叶先试清楚这东西靠不靠谱、亏不亏、能不能带回去。",
+        "情绪暗线：本章至少三次把角色的担心、试探、犹豫、侥幸或欲望落到动作、停顿、视线、手势和错开的回答上。",
+        "硬词清零：不要写“边界、底层逻辑、基准、推演、结算链、审稿、场景卡”。用“能不能走、规矩、底价、试一把、柜台说法”替代。",
+        "写法施工单",
+        "本章按“进入压力 -> 尝试动作 -> 即时反馈 -> 选择代价 -> 余波/小钩子”推进",
+        "抽象判断必须落到具体物件或动作；对话必须改变筹码、知道的信息、价格、信任或能办的事。",
+        "硬性质量闸门",
+        f"一、视角：保持主角限知第三人称；章节：第{chapter_number}章。",
+        "二、后台术语和事实矛盾词不得进正文。审核术语、规则术语、推演词不得入正文。",
+        "三、主角不能听见玩家势力内部频道、他人私聊、后台记录或上帝视角宣告；这些信息只能通过可观察痕迹间接出现。",
+        f"四、目标篇幅：{_plan_target_chars(plan)}。",
+        f"五、本章导演简表：{_plain_prompt_json(_prose_grounded_writing_plan(plan))}",
+        f"六、关键场景职责：{spec.required_surface}",
+    ]
+    lines.extend(CRITICAL_PROMPT_RULES[:4])
+    if isinstance(governance, dict):
+        lines.append(_governance_prompt_section(governance))
+    if isinstance(review, dict):
+        lines.append(f"审稿摘要：{_plain_prompt_json(_compact_review_summary(review))}")
+    if isinstance(director_card, dict):
+        lines.append(format_web_game_director_card(director_card))
+    return lines
 
 
 def _governance_prompt_section(governance: dict[str, Any] | None) -> str:
@@ -1397,13 +1763,13 @@ def _build_simulation_status(story: StoryState) -> dict:
     }
 
 
-def _failed_bundle(story: StoryState, chapter_number: int):
+def _failed_bundle(story: StoryState, chapter_number: int, reason: str = ""):
     from packages.story_core.engine import ChapterBundle
 
     bundle = ChapterBundle(
         chapter_number=chapter_number,
-        body="",
-        chapter_title="",
+        body=f"生成失败：{reason}" if reason else "",
+        chapter_title=f"第{chapter_number}章生成失败" if reason else "",
         cadence="measured",
         chapter_intent={},
         character_moves=[],
@@ -1424,11 +1790,26 @@ def _failed_bundle(story: StoryState, chapter_number: int):
         chapter_summary={},
     )
     bundle.quality_report = validate_bundle(bundle.model_dump())
+    if reason:
+        bundle.quality_report["ok"] = False
+        issues = list(bundle.quality_report.get("issues") or [])
+        issues.append(reason)
+        bundle.quality_report["issues"] = issues
     return bundle
 
 
 class StoryOrchestrator:
-    def _chat(self, story: StoryState, prompt: str, *, max_tokens: int, json_mode: bool, agent: str = "director") -> tuple[str, str]:
+    def _chat(
+        self,
+        story: StoryState,
+        prompt: str,
+        *,
+        max_tokens: int,
+        json_mode: bool,
+        agent: str = "director",
+        stage: str = "",
+        timeout_seconds: int | None = None,
+    ) -> tuple[str, str]:
         settings = resolve_openai_runtime_settings(agent)
         if not settings.api_key:
             return "", "Missing OPENAI_API_KEY"
@@ -1463,68 +1844,101 @@ class StoryOrchestrator:
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
+        config = RetryConfig()
+        if timeout_seconds is not None:
+            config.timeout = int(timeout_seconds)
+        if stage:
+            report_generation_progress(f"{stage}：模型请求中（timeout={config.timeout}s）")
+
         try:
-            response = post_json_with_retry(settings.base_url, "/chat/completions", payload, settings.api_key)
+            response = post_json_with_retry(settings.base_url, "/chat/completions", payload, settings.api_key, config=config)
             if json_mode:
                 parsed = parse_json_message_content(response)
                 if parsed is None:
                     return "", "计划返回内容不是有效 JSON"
+                if stage:
+                    report_generation_progress(f"{stage}：模型返回")
                 return json.dumps(parsed, ensure_ascii=False), ""
             text = _extract_text_message(response)
+            if stage and text:
+                report_generation_progress(f"{stage}：模型返回")
             return text, "" if text else "正文返回为空"
         except urllib.error.HTTPError as exc:
+            if stage:
+                error = f"{stage} model_request_failed:模型 HTTP {exc.code}"
+                report_generation_progress(f"模型请求失败：{error}")
+                return "", error
             return "", f"模型 HTTP {exc.code}"
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            if stage:
+                error = f"{stage} model_request_failed:{exc}"
+                report_generation_progress(f"模型请求失败：{error}")
+                return "", error
             return "", f"模型请求失败：{exc}"
 
     def _plan_prompt(self, story: StoryState, chapter_number: int) -> str:
         snapshot = _story_snapshot(story)
         chapter_seed = build_chapter_seed(story, chapter_number)
         char_names = [c.name for c in story.characters if c.lifecycle_state == "active" and not c.frozen]
+        if not _story_game_context(story, {}):
+            return "\n".join(
+                [
+                    "请为中文长篇项目生成本章推演计划，只返回 JSON。",
+                    f"目标章节：第{chapter_number}章",
+                    f"章节阶段：{_opening_phase_name(chapter_number)}",
+                    f"项目快照：{_plain_prompt_json(snapshot)}",
+                    "输出字段：character_moves, chapter_intent, event_plan, memory_constraints, chapter_summary。",
+                    "event_plan 必须包含 chapter_title, turn, pivot, collision, ordered_actions, exposition_beats, npc_beats, quest_beats, location_beats, world_reactions, stakes, next_focus, explicit_chapter_end_hook, chapter_end_hook。",
+                    "chapter_end_hook 使用结构：{type, strength, content}；type 只能是危机钩、悬念钩、渴望钩、反转钩、余韵钩；strength 只能是 strong、medium、weak。",
+                    "要求：动作具体，焦点明确，事件链短但有效，不要写正文。",
+                ]
+            )
         web_game_rules = web_game_review_rules()
         return "\n".join(
             [
                 "请为中文网文项目生成本章推演计划，只返回 JSON。",
                 f"目标章节：第{chapter_number}章",
                 f"章节阶段：{_opening_phase_name(chapter_number)}",
-                f"项目快照：{json.dumps(snapshot, ensure_ascii=False)}",
-                f"生成前世界推演契约：{json.dumps(chapter_seed, ensure_ascii=False)}",
+                f"项目快照：{_plain_prompt_json(snapshot)}",
+                f"生成前世界推演契约：{_plain_prompt_json(chapter_seed)}",
                 "输出字段如下，注意 character_moves 必须是对象数组：",
                 '  character_moves: [{"name": "角色名", "goal": "目标", "emotion": "情绪", "action": "行动", "priority": 数字}]',
                 "  chapter_intent: {chapter_title, cadence, next_focus, primary_conflict, secondary_conflict}",
+                "  event_plan.chapter_end_hook: {type: 危机钩|悬念钩|渴望钩|反转钩|余韵钩, strength: strong|medium|weak, content: 章末具体诱饵}",
                 "  event_plan: {chapter_title, turn, pivot, collision, ordered_actions: [{name, goal, emotion, action, priority}], exposition_beats: [本章要自然写进正文的背景节拍], npc_beats: [NPC服务/信息边界/任务钩子], quest_beats: [任务链阶段/奖励/代价], location_beats: [地图资源/风险/玩家密度], world_reactions: [世界会如何反应], stakes, next_focus}",
                 "  memory_constraints: {must_keep_facts, unresolved_threads, protected_characters, protected_foreshadowing, author_constraints, current_focus, conflict_anchor, event_guardrail, ledger_updates}",
                 "  chapter_summary: {summary, facts, unresolved_threads, next_focus, chapter_title}",
                 "JSON长度要求：所有数组每项不超过80字；不要输出推理过程、不要重复字段、不要补充说明。",
                 f"活跃角色：{', '.join(char_names)}",
-                f"网游插件审稿规则：{json.dumps(web_game_rules, ensure_ascii=False)}",
+                f"网游插件审稿规则：{_plain_prompt_json(web_game_rules)}",
                 "硬性要求：必须使用 world_facts 里的黄金三章、活世界和世界制度信息。",
                 "硬性要求：必须优先遵守生成前世界推演契约里的 chapter_contract、simulation_axes、current_state 和 continuity。",
                 "背景预算硬规则：必须遵守 world_facts 里的第N章背景预算；只展开必写层和少量可写层，禁写层不得进入本章正戏。",
-                "信息可见硬规则：计划里的交易行、论坛、公会频道、NPC记录只能暴露规则允许的信息，不得直接公开坐标、现实身份或隐藏天赋。",
+                "信息可见硬规则：计划里的市场柜台、公共频道、玩家势力频道、NPC记录只能暴露规则允许的信息，不得直接公开坐标、现实身份或隐藏天赋。",
                 "长篇要求：必须参考 world_facts 里的第一卷规划、卷纲阶段、长期线索和成长/经济/压力/任务账本；不要只顾本章爽点破坏长期路线。",
-                "ledger_updates 必须只记录本章结束后的状态变化，例如等级、经验、游戏币、装备耐久、任务进度、公会关注、市场异常、金手指暴露度。",
+                "ledger_updates 必须只记录本章结束后的状态变化，例如等级、经验、游戏币、装备耐久、任务进度、势力关注、市场异常、金手指暴露度。",
                 "角色面板硬规则：主角最新游戏面板属于角色群像的一部分；每章结束必须让 ledger_updates 能同步出等级、职业、经验、货币、装备、背包、任务和风险状态。",
-                "经济连续性硬规则：必须继承 latest_facts、relevant_memories、progression_ledger 里的材料均价、主角挂单价、手续费、最终余额和库存；不得重新发明“昨天价格”或把价格锚点改成另一套。",
+                "经济连续性硬规则：必须继承 latest_facts、relevant_memories、progression_ledger 里的材料价格锚点、主角处理价格、扣费、最终余额和库存；不得重新发明“昨天价格”或把价格锚点改成另一套。",
                 "职业连续性硬规则：现实职业和游戏职业必须分层；苏叶现实职业固定为前外包经济模型/风控测试员，夜烬游戏路线固定为元素法师学徒/元素法师，不得写成战士、刺客或短剑主战。",
                 "装备账本硬规则：任何购买、替换、修理、耐久变化、消耗品购买和关键掉落，都必须写入 ledger_updates.equipment 或 ledger_updates.economy.inventory，并在章节摘要留下事实。",
-                "NPC设定硬规则：命名NPC首次或重点出场必须交代地点、职责/服务、利益诉求或口吻、信息边界；NPC不能只是发任务的牌子。",
-                "章节摘要硬规则：chapter_summary.facts 与 memory_constraints.must_keep_facts 必须记录本章出现的关键经济/职业/装备/NPC锚点，包括材料市场价、主角挂单价、手续费、最终余额、关键库存、职业路线、装备耐久和NPC服务边界。",
-                "冲突阶段硬规则：必须优先遵守 world_facts 里的“第N章冲突模式/禁止冲突”；冲突要从游戏规则、资源稀缺、任务门槛、交易痕迹、公会利益和NPC服务边界长出来，不要套玄幻式抢机缘。",
-                "第1-3章必须按黄金三章职责设计，尤其第1章要给出至少4条 exposition_beats：游戏背景、主角背景、交易行机制、公会/玩家生态。",
+                "NPC设定硬规则：命名NPC首次或重点出场必须交代地点、职责/服务、利益诉求或口吻、能知道什么/不知道什么；NPC不能只是发任务的牌子。",
+                "章节摘要硬规则：chapter_summary.facts 与 memory_constraints.must_keep_facts 必须记录本章出现的关键经济/职业/装备/NPC锚点，包括材料价格、处理门槛、最终余额、关键库存、职业路线、装备耐久和NPC能办什么。",
+                "冲突阶段硬规则：必须优先遵守 world_facts 里的“第N章冲突模式/禁止冲突”；冲突要从游戏规则、资源稀缺、任务门槛、可见痕迹、玩家势力利益和NPC柜台规矩长出来，不要套玄幻式抢机缘。",
+                "第1-3章必须按黄金三章职责设计，尤其第1章要给出至少4条 exposition_beats：现实压力、主角工作背景、登录建号、游戏ID/职业面板、第一次低级试水、一个NPC柜台门槛。",
                 "第一章主角背景必须包含现实职业/工作状态/现实技能来源；不要只写缺钱、房租、医疗账单。",
                 "第一章金手指必须先铺触发条件或伏笔，再首次验证；不能开场直接出现完整隐藏面板。",
-                "网游身份硬规则：计划中必须区分现实姓名和游戏ID；第1章要在登录/建号/角色面板里写出主角游戏ID，游戏内称呼、交易行、论坛和公会追踪优先使用游戏ID。",
-                "第一章冲突不要设计成正面对抗或争核心资源，应设计成现实压力、变现风险、交易行风控和公会间接逼近。",
-                "第一章收敛硬规则：只能选择一个命名NPC作为完整互动服务节点，推荐药剂师洛婶或仓库管理员铁栓；其他NPC和服务点只能作为路牌、排队窗口、公告板或玩家闲聊一笔带过，不要写出姓名。",
-                "第一章禁止规划赵胖子正面登场、白袍据点视角、完整公会追查、修理铺/药剂铺/职业大厅多视角连环戏。",
-                "第一章节奏必须留白：不要把登录、金手指发现、大量刷怪、完整回村交易、商人正面登场、公会追查全部压进一章；本章只完成小额首次验证和章末弱反应。",
+                "网游身份硬规则：计划中必须区分现实姓名和游戏ID；第1章要在登录/建号/角色面板里写出主角游戏ID，游戏内称呼优先使用游戏ID。",
+                "第一章冲突不要设计成正面对抗或争核心资源，应设计成现实压力、隐藏优势靠不靠谱、血蓝耐久/背包成本和NPC柜台门槛。",
+                "第一章表面必写：短角色面板必须出现职业栏、等级、经验、生命/法力、新手法杖或基础技能；首次试怪必须出现“千倍爆率”或“掉落判定×1000”的可见马脚。",
+                "第一章收敛硬规则：只能选择一个命名NPC作为完整互动柜台，推荐药剂师洛婶、仓库管理员铁栓或修理匠老葛；其他NPC和服务点只能作为路牌、排队窗口、公告板或玩家闲聊一笔带过，不要写出姓名。",
+                "第一章禁止规划现实债主正面登场、玩家势力据点视角、完整追查、修理铺/药剂铺/职业大厅多视角连环戏。",
+                "第一章节奏必须留白：不要把登录、金手指发现、大量刷怪、完整材料处理、市场玩家正面登场、玩家势力追过来全部压进一章；本章只完成第一次低级试水和一个柜台问题。",
                 "术语统一：隐藏优势统一写“千倍爆率”；不要输出“1000倍爆率”。若必须表示计算倍率，写“掉落判定×1000”。",
-                "第2章冲突优先从刷怪路线、补给/耐久/背包成本、NPC任务前置、交易批次异常和公会外围试探生成；第3章再升级到压价、拉拢、设局、职业试炼门槛或资源点秩序冲突。",
-                "网游交易行可见性规则：低级材料匿名上架只暴露价格、数量和时间戳等弱线索；不能单次暴露坐标、身份或刷怪点。公会介入必须来自重复模式、稀有物、公告榜单、资源点目击、NPC任务异常或多源风控汇总。",
-                "exposition_beats 必须能被写作 Agent 写成登录界面、现实细节、论坛热帖、交易行界面、玩家闲聊、公告或场景观察。",
-                "必须给出至少2条 world_reactions，具体到交易行价格、商人玩家、公会外围、普通玩家、NPC或传闻渠道。",
-                "如果题材是网游/游戏系统流，event_plan 必须给出至少1条 npc_beats、1条 quest_beats、1条 location_beats；NPC不能只讲设定，必须提供服务、门槛、任务反馈或信息边界。",
+                "第2章冲突优先从刷怪路线、补给/耐久/背包成本、NPC任务前置、材料处理批次异常和玩家势力外围试探生成；第3章再升级到压价、拉拢、设局、职业试炼门槛或资源点秩序冲突。",
+                "市场可见性规则：低级材料匿名处理只暴露价格、数量和时间戳等弱线索；不能单次暴露坐标、身份或刷怪点。玩家势力介入必须来自重复模式、稀有物、公告榜单、资源点目击、NPC任务异常或多源记录汇总。",
+                "exposition_beats 必须能被写作 Agent 写成登录界面、现实细节、公共频道零散噪音、市场柜台界面、玩家闲聊、公告或场景观察。",
+                "必须给出至少2条 world_reactions，但第1章只允许普通玩家表层误读、NPC柜台反馈或环境阻力，不允许正式市场/玩家势力/公共频道追过来。",
+                "如果题材是网游/游戏系统流，event_plan 必须给出至少1条 npc_beats、1条 quest_beats、1条 location_beats；NPC不能只讲设定，必须提供服务、门槛、任务反馈或能知道什么/不知道什么。",
                 "NPC硬规则：只能优先使用 world_facts 已建档的命名 NPC，例如灰烬村村长、药剂师洛婶、职业导师艾伦、仓库管理员铁栓、修理匠老葛；不要发明“新手村导师”“杂货商老约翰”这类无档案泛 NPC。",
                 "角色要求：每个主要角色都必须有私心、误判、底线或恐惧；character_moves 不能只写功能性动作，必须体现角色档案里的动机、秘密、关系张力和说话/处事方式。",
                 "关系要求：如果角色之间已有 trust/tension/bond，本章计划必须让至少一组关系发生可感知变化，例如试探、拉拢、隐瞒、交易、误会或威胁。",
@@ -1534,6 +1948,7 @@ class StoryOrchestrator:
         )
 
     def _body_prompt(self, story: StoryState, chapter_number: int, plan: dict) -> str:
+        plan = plan if isinstance(plan, dict) else {}
         hard_rules = compact_list(story.author_constraints, max_items=18, item_chars=220)
         living_world = _priority_world_facts(story.world_facts, max_items=42, item_chars=220)
         chapter_seed = build_chapter_seed(story, chapter_number)
@@ -1542,103 +1957,113 @@ class StoryOrchestrator:
         style_rules = anti_ai_style_rules()
         style_guidance = plan.get("style_guidance", {})
         scene_protocol = _scene_card_writing_protocol(plan.get("scene_cards", []))
-        governance_section = _governance_prompt_section(plan.get("governance"))
+        is_game = _story_game_context(story, plan)
+        if is_game:
+            game_defaults_for_seed = _game_genre_defaults(story)
+            chapter_seed_text = json.dumps(chapter_seed, ensure_ascii=False)
+            chapter_seed_text = (
+                chapter_seed_text.replace("元素法师学徒/元素法师", game_defaults_for_seed["class_path"])
+                .replace("元素法师学徒", game_defaults_for_seed["class_path"])
+                .replace("元素法师", game_defaults_for_seed["class_path"])
+            )
+            chapter_seed_for_prompt = _plain_prompt_payload(json.loads(chapter_seed_text))
+        else:
+            chapter_seed_for_prompt = {}
+        opening_rules = _opening_writer_rules(chapter_number) if is_game else []
+        if is_game:
+            game_defaults_for_rules = _game_genre_defaults(story)
+            opening_rules = [
+                str(rule)
+                .replace("元素法师学徒/元素法师", game_defaults_for_rules["class_path"])
+                .replace("元素法师学徒", game_defaults_for_rules["class_path"])
+                .replace("元素法师", game_defaults_for_rules["class_path"])
+                for rule in opening_rules
+            ]
+
+        method_block = _chapter_prompt_method_block(
+            chapter_number,
+            plan,
+            governance=plan.get("governance"),
+        )
+
+        game_specific: list[str] = []
+        if is_game:
+            game_defaults = _game_genre_defaults(story)
+            web_game_rules_for_prompt = [
+                str(rule)
+                .replace("元素法师学徒/元素法师", game_defaults["class_path"])
+                .replace("元素法师学徒", game_defaults["class_path"])
+                .replace("元素法师", game_defaults["class_path"])
+                .replace("法师战斗", "职业战斗")
+                for rule in web_game_rules
+            ]
+            game_specific.extend(
+                [
+                    f"游戏主角默认信息：游戏ID={game_defaults['game_id']}；职业路线={game_defaults['class_path']}。战斗、任务和成长必须围绕该职业路线展开，不得写成固定职业模板。",
+                    f"网游插件审稿规则：{_plain_prompt_json(web_game_rules_for_prompt)}",
+                    f"统一场景推演/表演蓝图：{_plain_prompt_json(plan.get('simulation_plan', {}))}",
+                    f"世界发生层 world_events：{_plain_prompt_json(plan.get('world_events', []))}",
+                    f"小说表演层 scene_cards：{_plain_prompt_json(plan.get('scene_cards', []))}",
+                    f"场景卡到正文写作协议：\n{plain_writer_phrase(scene_protocol)}",
+                    f"网游插件要求：每章至少出现一个能改变局势的 NPC 或 NPC 柜台；NPC要有自己的口吻、职责、可见信息和限制，不能全知全能。",
+                    f"术语统一要求：正文统一写“千倍爆率”，不要混用“1000倍爆率”；计算提示可写“掉落判定×1000”。",
+                ]
+            )
+
         return "\n".join(
             [
                 "根据下面的推演计划，写出一章完整中文网文正文。",
-                governance_section,
-                f"反AI味写作协议：{json.dumps(style_rules, ensure_ascii=False)}",
-                f"写作教练 Style Coach：{json.dumps(style_guidance, ensure_ascii=False)}",
+                *method_block,
                 f"题材：{story.genre}",
                 f"风格：{story.style}",
                 f"章节阶段：{_opening_phase_name(chapter_number)}",
-                f"第{chapter_number}章计划：{json.dumps(plan, ensure_ascii=False)}",
-                f"统一场景推演/表演蓝图：{json.dumps(plan.get('simulation_plan', {}), ensure_ascii=False)}",
-                f"世界发生层 world_events：{json.dumps(plan.get('world_events', []), ensure_ascii=False)}",
-                f"小说表演层 scene_cards：{json.dumps(plan.get('scene_cards', []), ensure_ascii=False)}",
-                f"场景卡到正文写作协议：\n{scene_protocol}",
-                f"生成前世界推演契约：{json.dumps(chapter_seed, ensure_ascii=False)}",
-                f"硬性世界规则与写作约束：{json.dumps(hard_rules, ensure_ascii=False)}",
-                f"活世界状态、黄金三章和反应机制：{json.dumps(living_world, ensure_ascii=False)}",
-                f"黄金三章/开篇写作规则：{json.dumps(opening_rules, ensure_ascii=False)}",
-                f"网游插件审稿规则：{json.dumps(web_game_rules, ensure_ascii=False)}",
-                f"篇幅要求：{TARGET_CHAPTER_CHARS}，不要写成摘要，不要只写几个片段。",
-                "番茄长篇要求：正文要有足够铺陈和呼吸感；不要用3000字左右压完所有开篇事件。",
-                "event_plan.exposition_beats 是本章必须写进正文的背景节拍；必须写成场景、界面、对话、论坛、公告、交易记录或人物观察，不能写成设定条目。",
-                "生成前世界推演契约是本章写作边界：required_beats 必须完成，forbidden_moves 绝对不能写，simulation_axes 用来决定世界如何反应。",
-                "统一蓝图是本章主约束：推演负责发生什么，表演负责角色为什么这样做、怎么说、NPC能看见什么；正文必须把两者写成同一个连续场景，不能割裂成设定解释。",
-                "world_events 只表示世界实际发生了什么、谁能看见什么、会造成什么状态变化；scene_cards 才是正文场景顺序。正文必须优先按 scene_cards 写，不要把 world_events 字段名、visible_to、state_delta、prose_priority 写进正文。",
-                "背景预算要求：严格遵守活世界状态里的第N章背景预算；第一章只完整展开现实入口、游戏入口、首次验证、一个命名NPC服务节点和交易行弱钩子，不要写成设定巡礼。",
-                "信息可见要求：交易行、论坛、公会频道、NPC记录只能显示可观察痕迹；不得直接显示卖家坐标、实时位置、现实身份或隐藏天赋。",
-                "event_plan.npc_beats、quest_beats、location_beats 必须写成具体场景：NPC服务窗口、任务接取/提交、地图资源与风险、玩家密度、路线成本或信息边界。",
-                "冲突写法要求：严格遵守当前章节的冲突模式和禁止冲突；网游冲突应来自规则、资源、任务、交易痕迹、公会秩序、NPC服务边界，不要写成玄幻式抢机缘或敌人突然全知。",
-                "网文规则要求：本章必须有目标、行动、收益反馈和新的压力；等级、经验、金币、装备、任务和势力反应必须前后一致。",
-                "角色群像面板要求：主角最新游戏面板必须在章节结尾自然更新，并通过 ledger_updates 同步到角色卡；不要只把面板写在正文里就丢掉。",
-                "职业连续性要求：现实职业和游戏职业分层；苏叶现实职业是前外包经济模型/风控测试员，夜烬游戏路线是元素法师学徒/元素法师。战斗核心应围绕法杖、法术、元素亲和和试炼门槛；短剑只能作为临时工具且必须解释限制，不能成为主战路线。",
-                "装备账本要求：写到购买、替换、修理、耐久、消耗品、装备掉落时，必须同步写清当前装备状态，并让计划的 ledger_updates 记录 weapon、armor、durability、inventory。",
-                "NPC设定要求：命名NPC重点出场时，必须自然交代其地点、职责/服务、价格或门槛、个人诉求/口吻、信息边界；不要只写“NPC发布任务”。",
-                "经济规则要求：没有世界档案明确给出的官方兑换或黑市行情时，不得写死金币与人民币汇率；新手村低级收益优先写铜币、银币、材料和市场询价。",
-                "经济连续性要求：必须继承前文已写明的材料市场价、主角挂单价、手续费、余额和库存；如果上一章已有具体价格，不得在本章改写成另一套“昨天/上次价格”。",
-                "货币显示要求：按 1金币=100银币=10000铜币 归一显示余额；铜币满100必须进位为银币，银币满100必须进位为金币。",
-                "现实变现要求：没有官方兑换或黑市行情前，可以写主角看见后续变现希望，但不能写成已经能偿还现实账单或直接解决现实资金缺口。",
-                "交易行要求：不要发明与后文矛盾的单笔限制；低级材料大额出货必须拆成多笔，每笔不超过50单位，并写出拆单、手续费、成交时间或风控成本。",
-                "交易行可见性要求：低级材料交易只能形成价格波动、商人盯盘、时间戳或批次弱线索；不得写成一次上架就被公会锁定坐标、真人身份或精确刷怪点。",
-                "活世界要求：主角行动必须引发至少一个外部群体的具体反应，例如市场波动、商人追踪、公会试探、散人跟风、NPC线索变化或传闻扩散。",
-                "如果涉及网游或系统流，必须把爆率/隐藏天赋/交易/公会/资源点/职业试炼等规则写进场景，而不是写成百科说明。",
-                "网游身份要求：现实段落可以称呼苏叶；进入游戏后优先使用游戏ID/网名，例如“夜烬”。交易行、论坛、玩家私聊、公会记录不能直接把游戏ID等同于现实身份。",
-                "网游插件要求：每章至少出现一个能改变局势的 NPC 或 NPC 服务节点；NPC要有自己的口吻、职责、可见信息和限制，不能全知全能。",
-                "第一章收敛要求：只能选一个命名NPC完整出场；禁止赵胖子正面登场、禁止白袍据点视角、禁止完整公会追查戏；商人/公会只能作为弱线索或章末一句外部反应。",
-                "第一章命名NPC要求：必须让灰烬村村长、药剂师洛婶、职业导师艾伦、仓库管理员铁栓或修理匠老葛中的一人完整互动，并以任务、服务、价格、仓储/寄售流水、修理耐久或职业试炼线索影响本章选择。",
-                "第一章命名NPC限制：除被选中的唯一命名NPC外，不要写出其他命名NPC姓名；职业大厅、仓库、修理铺、村务大厅等只能作为路牌、队伍、布告栏或窗口氛围一笔带过。",
-                "角色写法要求：同一类行动不能所有人一个腔调；必须写出角色的说话习惯、私心、风险判断和关系变化。主角要有计算与克制，赵胖子要有商人话术和账本逻辑，王宇要体现朋友/公会身份夹缝，白袍成员要体现组织化压迫而不是纯工具人。",
-                "系统面板反馈要短而关键；爽点必须伴随代价、身份风险、资源争夺或下一阶段门槛。",
-                "术语统一要求：正文统一写“千倍爆率”，不要混用“1000倍爆率”；计算提示可写“掉落判定×1000”。",
+                f"生成前世界推演契约：{_plain_prompt_json(chapter_seed_for_prompt)}",
+                f"硬性世界规则与写作约束：{_plain_prompt_json(hard_rules)}",
+                f"活世界状态、黄金三章和反应机制：{_plain_prompt_json(living_world)}",
+                f"黄金三章/开篇写作规则：{_plain_prompt_json(opening_rules)}",
+                f"反AI味写作协议：{_plain_prompt_json(style_rules)}",
+                f"写作教练 Style Coach：{_plain_prompt_json(style_guidance)}",
+                *game_specific,
+                f"篇幅要求：{_plan_target_chars(plan)}，不要写成摘要，不要只写几个片段。",
                 "必须把计划里的事件完整写成连续正文，可以分段，但不要输出大纲、标题列表、JSON 或解释。",
             ]
         )
 
     def _revision_prompt(self, story: StoryState, chapter_number: int, body: str, plan: dict, review: dict) -> str:
+        plan = plan if isinstance(plan, dict) else {}
+        review = review if isinstance(review, dict) else {}
         scene_protocol = _scene_card_writing_protocol(plan.get("scene_cards", []))
         forbidden_terms = _revision_forbidden_terms(review, plan)
         fix_checklist = _revision_fix_checklist(review)
         style_guidance = plan.get("style_guidance", {})
         governance_section = _governance_prompt_section(plan.get("governance"))
+        target_chars = _plan_target_chars(plan)
+
+        method_block = _chapter_prompt_method_block(
+            chapter_number,
+            plan,
+            governance=plan.get("governance"),
+            review=review,
+        )
+
         return "\n".join(
             [
                 "下面这章小说正文没有通过审稿，请在不改变核心剧情事实的前提下自动改稿。",
-                governance_section,
+                *method_block,
                 f"章节：第{chapter_number}章",
-                f"审稿结果：{json.dumps(review, ensure_ascii=False)}",
-                f"反AI味改稿协议：{json.dumps(anti_ai_style_rules(), ensure_ascii=False)}",
-                f"写作教练 Style Coach：{json.dumps(style_guidance, ensure_ascii=False)}",
-                f"硬性修复清单：{json.dumps(fix_checklist, ensure_ascii=False)}",
-                f"正文禁词清单：{json.dumps(forbidden_terms, ensure_ascii=False)}",
-                f"场景卡到正文改稿协议：\n{scene_protocol}",
-                f"推演计划：{json.dumps(plan, ensure_ascii=False)}",
-                f"黄金三章/开篇写作规则：{json.dumps(_opening_writer_rules(chapter_number), ensure_ascii=False)}",
-                "改稿限制：不得随意改变等级、经验、货币、掉落和任务结果；但如果是第一章节奏过载，必须删除或后移交易成交、商人、公会、论坛等越界世界反应。",
-                "事实锁硬规则：scene_cards.fact_locks 中的职业、余额、库存、任务、装备和NPC信息边界不得被润色改动；若不能确定，保留原文事实。",
-                "如果审稿指出汇率问题，必须删除固定人民币兑换比例，改成游戏内币价、行情未稳或商人猜测。",
-                "如果审稿指出价格连续性问题，必须继承前文材料均价、主角挂单价、手续费、余额和库存，不得重新编写昨天价格或账户金额。",
-                "如果审稿指出货币显示未归一，必须按 1金币=100银币=10000铜币 重算并进位余额，同时同步修正到账、支出和剩余金额。",
-                "如果审稿指出职业或装备不一致，必须把夜烬改回元素法师学徒路线：主武器使用法杖/法术，短剑只保留为备用工具或删除，并同步修正装备账本。",
-                "如果审稿指出装备更新缺失，必须补写当前装备面板、购买/修理/耐久变化，并在不改变剧情结果的前提下同步金额和库存。",
-                "如果审稿指出NPC设定不足，必须补出该NPC的地点、服务/价格、利益诉求或口吻、信息边界，让他/她推动任务、交易、仓储、修理或职业门槛。",
-                "如果审稿指出现实变现越界，必须把“现实账单已缓解/已能还钱”改为“看到后续变现希望/获得游戏内启动资金”。",
-                "如果审稿指出交易行上架数量问题，必须改成分批挂单，每笔不超过50单位，并同步重算手续费、到账和风控提示。",
-                "如果审稿指出 NPC 缺失，必须补入灰烬村村长、药剂师洛婶、职业导师艾伦、仓库管理员铁栓或修理匠老葛之一，并让其服务/任务/信息边界推动本章选择。",
-                "如果审稿指出主角现实职业/技能来源缺失，必须补入现实职业、失业/外包/兼职状态或相关技能经历，并让它解释主角的谨慎、算账、拆单或风控判断。",
-                "如果审稿指出金手指缺少触发伏笔，必须在隐藏天赋正式显示前补旧头盔、异常邀请码、神经接驳协议异常、角色创建选择或底层日志闪烁，并让主角先怀疑再验证。",
-                "如果审稿指出冲突越级，必须把冲突降回当前网游阶段：现实压力、规则验证、低级资源路线、交易弱线索、NPC任务门槛、公会外围试探。",
-                "如果审稿指出字数偏少，必须扩写到4200到5500字，增加场景、对话、行动过程、心理和网游规则细节，不要只重复原文。",
-                "如果审稿指出千倍爆率写法不统一，必须统一为“千倍爆率”，只在计算式里保留“×1000”。",
+                governance_section,
+                f"审稿摘要：{_plain_prompt_json(_compact_review_summary(review))}",
+                f"写作教练 Style Coach：{_plain_prompt_json(style_guidance)}",
+                f"硬性修复清单：{_plain_prompt_json(fix_checklist)}",
+                f"正文禁词清单（逐字删除，不能照抄到改稿正文）：{json.dumps(forbidden_terms, ensure_ascii=False)}",
+                f"场景卡到正文改稿协议：\n{plain_writer_phrase(scene_protocol)}",
+                f"推演简表：{_plain_prompt_json(_prose_grounded_writing_plan(plan))}",
+                f"篇幅要求：扩写到{target_chars}。",
+                "改稿限制：不得随意改变等级、经验、货币、掉落和任务结果；但如果是第一章节奏过载，必须删除或后移材料处理、市场玩家、玩家势力、公共频道等越界世界反应。",
+                "事实锁硬规则：scene_cards.fact_locks 中的职业、余额、库存、任务、装备和NPC能知道什么/不知道什么不得被润色改动；若不能确定，保留原文事实。",
+                "如果审稿指出字数偏少，必须扩写到目标篇幅，增加场景、对话、行动过程、心理和题材规则细节，不要只重复原文。",
                 "如果正文禁词清单非空，改稿后必须逐项自检，保证禁词不再出现在小说正文里；只能保留在本提示词中，不能输出到正文。",
-                "如果场景卡要求角色面板，必须补出短面板，至少包含游戏ID、等级、职业、生命/法力、基础属性、装备、背包或货币中的关键项。",
-                "如果改的是第一章，即使旧场景卡包含交易行，也只能改成章末下一步目标或路牌，不得写实际寄售、成交、到账、手续费扣款、赵胖子、商人盯盘、公会或论坛反应。",
-                "如果场景卡要求交易行弱线索且章节不是第一章，必须只写价格、数量、批次、手续费、到账、时间戳等可见痕迹，不得写坐标、现实身份、隐藏天赋或刷怪点暴露。",
-                "如果场景卡要求NPC服务节点，必须补出NPC地点、服务/价格或门槛、利益诉求/口吻、信息边界，并让NPC影响主角选择。",
                 "改完后自检：硬性修复清单逐条完成；正文禁词清单逐项清零；scene_cards 的 must_show 必须全部表面化；不要输出自检说明。",
-                "改稿重点：补背景、补主角动机、补职业面板、补一个NPC服务节点、补对话与场景细节，去掉百科式说明；第一章不要补交易行/公会生态。",
                 "只输出改稿后的完整小说正文，不要解释，不要列大纲。",
                 f"原正文：\n{body}",
             ]
@@ -1981,7 +2406,7 @@ class StoryOrchestrator:
         if body_error or not body.strip():
             _record_failure(working_story, f"统一写作失败：{body_error or '正文为空'}", chapter_number)
             return _failed_bundle(working_story, chapter_number)
-        body = _sanitize_generated_body(body)
+        body = _sanitize_first_chapter_scope(_sanitize_generated_body(body), chapter_number)
 
         if _chapter_char_count(body) < MIN_CHAPTER_CHARS:
             report_generation_progress("章节扩写中...")
@@ -2001,7 +2426,25 @@ class StoryOrchestrator:
                 agent="writer",
             )
             if not expand_error and _chapter_char_count(expanded_body) > _chapter_char_count(body):
-                body = _normalize_web_game_terms(expanded_body)
+                body = _sanitize_first_chapter_scope(_normalize_web_game_terms(expanded_body), chapter_number)
+
+        style_adapt_report = None
+        if _style_adapt_enabled(writer_plan):
+            report_generation_progress("风格适配中...")
+            adapted_body, adapt_error = self._chat(
+                working_story,
+                build_style_adapt_prompt(body, writer_plan),
+                max_tokens=7000,
+                json_mode=False,
+                agent="writer",
+            )
+            if not adapt_error and adapted_body.strip():
+                candidate_body = _sanitize_first_chapter_scope(_sanitize_generated_body(adapted_body), chapter_number)
+                style_adapt_report = style_adapt_safety_check(body, candidate_body)
+                if style_adapt_report.get("accept"):
+                    body = candidate_body
+            else:
+                style_adapt_report = {"accept": False, "reason": adapt_error or "candidate_empty"}
 
         writing_review = _review_chapter_body(
             chapter_number,
@@ -2036,7 +2479,7 @@ class StoryOrchestrator:
                 agent="writer",
             )
             if not revision_error and revised_body.strip():
-                candidate_body = _sanitize_generated_body(revised_body)
+                candidate_body = _sanitize_first_chapter_scope(_sanitize_generated_body(revised_body), chapter_number)
                 candidate_review = _review_chapter_body(
                     chapter_number,
                     candidate_body,
@@ -2199,6 +2642,8 @@ class StoryOrchestrator:
         )
         report_generation_progress("质量检查中...")
         bundle.quality_report = _merge_writing_review_quality(validate_bundle(bundle.model_dump()), writing_review)
+        if style_adapt_report:
+            bundle.quality_report["style_adapt"] = style_adapt_report
         if revision_safety_report:
             bundle.quality_report["revision_safety"] = revision_safety_report
         if segment_pipeline_used and segment_reviews:

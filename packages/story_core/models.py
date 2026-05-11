@@ -203,6 +203,17 @@ class GamePanel(BaseModel):
     updated_chapter: int = 0
 
 
+class VoiceSignature(BaseModel):
+    """On-page language fingerprint for a character."""
+
+    signature_phrases: list[str] = Field(default_factory=list)
+    lexicon: list[str] = Field(default_factory=list)
+    taboo: list[str] = Field(default_factory=list)
+    sentence_rhythm: str = ""
+    self_reference: str = ""
+    subtext_habit: str = ""
+
+
 class CharacterPerformanceProfile(BaseModel):
     """How a character should behave on page, not just who they are."""
 
@@ -212,6 +223,7 @@ class CharacterPerformanceProfile(BaseModel):
     emotional_triggers: list[str] = Field(default_factory=list)
     decision_rules: list[str] = Field(default_factory=list)
     reveal_limits: list[str] = Field(default_factory=list)
+    voice: VoiceSignature = Field(default_factory=VoiceSignature)
 
 
 class NPCBehaviorProfile(BaseModel):
@@ -266,6 +278,9 @@ class ChapterSimulationPlan(BaseModel):
     npc_boundaries: list[dict] = Field(default_factory=list)
     information_visibility: list[str] = Field(default_factory=list)
     economy_expectations: list[str] = Field(default_factory=list)
+    simulation_variant: dict = Field(default_factory=dict)
+    web_game_author_craft: dict = Field(default_factory=dict)
+    web_game_director_card: dict = Field(default_factory=dict)
     panel_expectations: list[str] = Field(default_factory=list)
     longform_constraints: list[str] = Field(default_factory=list)
     required_beats: list[str] = Field(default_factory=list)
@@ -302,6 +317,7 @@ class SceneCard(BaseModel):
     must_show: list[str] = Field(default_factory=list)
     must_not_explain: list[str] = Field(default_factory=list)
     state_delta: dict = Field(default_factory=dict)
+    scene_contract: dict = Field(default_factory=dict)
     ending_pressure: str = ""
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from packages.story_core.genre_plugins import GAME_WEBNOVEL, plugin_simulation_blueprint
+from packages.story_core.game_world_simulator import simulate_game_world
 from packages.story_core.models import SceneCard, StoryState, WorldEvent
 from packages.story_core.simulation import is_game_story
 
@@ -153,7 +154,19 @@ def simulate_world_events(
     class_path = _lead_class_path(story)
     contract = _chapter_contract(chapter_seed)
     required = " ".join(str(item) for item in contract.get("required_beats", []))
+    simulation_variant = simulation_plan.get("simulation_variant") if isinstance(simulation_plan.get("simulation_variant"), dict) else {}
+    variant_id = str(simulation_variant.get("id") or "").strip()
     is_game = is_game_story(story) or "game_webnovel" in chapter_seed.get("genre_plugins", [])
+    game_world = (
+        simulate_game_world(
+            story,
+            chapter_number,
+            chapter_seed=chapter_seed,
+            simulation_plan=simulation_plan,
+        )
+        if is_game
+        else {}
+    )
 
     if not is_game:
         chapter_goal = str(simulation_plan.get("chapter_goal") or "推进当前章节目标")
@@ -203,21 +216,51 @@ def simulate_world_events(
                 _event(
                     event_id="c1-small-verify",
                     actor=protagonist,
-                    action="通过低级怪物和任务材料小额验证千倍爆率。",
+                    action=(
+                        "通过背包容量和低级怪物掉落验证边界。"
+                        if variant_id == "boundary-inventory-route"
+                        else "通过装备耐久和低级怪物掉落验证边界。"
+                        if variant_id == "boundary-durability-route"
+                        else "通过低级怪物和任务材料小额验证千倍爆率。"
+                    ),
                     target="低级材料",
                     location="灰烬村外",
                     cause="必须先确认隐藏优势是否稳定。",
                     visible_to=[protagonist, "附近普通玩家"],
-                    consequences=["只产生个人收益和少量可见打怪痕迹，不足以扰动全服。"],
-                    state_delta={"economy": {"inventory_hint": "新增低级材料"}},
+                    consequences=[
+                        "只产生个人收益和少量可见打怪痕迹，不足以扰动全服。",
+                        str(game_world.get("chapter_pressure") or "低级验证留下补给与耐久压力。"),
+                    ],
+                    state_delta={
+                        "economy": {"inventory_hint": "新增低级材料"},
+                        "game_world_simulation": game_world,
+                    },
                     prose_priority=9,
                     template_id="small_verification",
                 ),
                 _event(
                     event_id="c1-npc-service",
-                    actor="命名NPC",
-                    action="以岗位服务、报价或任务门槛影响主角选择。",
-                    location="灰烬村",
+                    actor=(
+                        "仓库管理员铁栓"
+                        if variant_id == "boundary-inventory-route"
+                        else "修理匠老葛"
+                        if variant_id == "boundary-durability-route"
+                        else "药剂师洛婶"
+                    ),
+                    action=(
+                        "以仓储格、押金和背包容量边界影响主角选择。"
+                        if variant_id == "boundary-inventory-route"
+                        else "以修理费、法杖耐久和下一轮战斗风险影响主角选择。"
+                        if variant_id == "boundary-durability-route"
+                        else "以岗位服务、报价或任务门槛影响主角选择。"
+                    ),
+                    location=(
+                        "灰烬村仓库窗口"
+                        if variant_id == "boundary-inventory-route"
+                        else "灰烬村修理铺门口"
+                        if variant_id == "boundary-durability-route"
+                        else "灰烬村"
+                    ),
                     visible_to=[protagonist, "该NPC"],
                     consequences=["NPC只知道岗位范围内的信息，不知道隐藏天赋或现实身份。"],
                     prose_priority=8,
@@ -334,6 +377,179 @@ def _scene_texture(template_id: str) -> dict[str, Any]:
     return _SCENE_TEXTURE_BY_TEMPLATE.get(template_id, _SCENE_TEXTURE_GENERIC)
 
 
+def _game_world_surface_lines(simulation: dict[str, Any]) -> list[str]:
+    if not isinstance(simulation, dict) or not simulation.get("ticks"):
+        return []
+    lines: list[str] = []
+    for tick in simulation.get("ticks", []):
+        if not isinstance(tick, dict) or tick.get("kind") != "combat":
+            continue
+        index = str(tick.get("tick_id", "")).rsplit("-", 1)[-1]
+        drop = tick.get("drop_roll", {}).get("actual", {}) if isinstance(tick.get("drop_roll"), dict) else {}
+        drop_text = "、".join(f"{name}x{amount}" for name, amount in drop.items())
+        cost = tick.get("cost", {}) if isinstance(tick.get("cost"), dict) else {}
+        state_after = tick.get("state_after", {}) if isinstance(tick.get("state_after"), dict) else {}
+        lines.append(
+            f"第{index}只灰狼：{drop_text}；成本 hp{cost.get('hp', 0)}、mp{cost.get('mp', 0)}、耐久{cost.get('durability', 0)}；"
+            f"之后生命{state_after.get('hp', '?')}、法力{state_after.get('mp', '?')}、法杖{state_after.get('weapon_durability', '?')}。"
+        )
+    aggregate = simulation.get("aggregate", {}) if isinstance(simulation.get("aggregate"), dict) else {}
+    variant = str(simulation.get("simulation_variant") or "").strip()
+    if variant:
+        lines.append(f"推演变体：{variant}。本次重推必须围绕该变体改换验证路径、代价或NPC服务点。")
+    inventory = aggregate.get("inventory", {}) if isinstance(aggregate.get("inventory"), dict) else {}
+    if aggregate:
+        lines.append(
+            "最终："
+            f"生命{aggregate.get('hp')}，法力{aggregate.get('mp')}，法杖{aggregate.get('weapon_durability')}，"
+            f"毒腺{inventory.get('灰狼毒腺', 0)}，狼皮{inventory.get('粗糙狼皮', 0)}，{aggregate.get('currency')}。"
+        )
+    attention = simulation.get("external_attention", {}) if isinstance(simulation.get("external_attention"), dict) else {}
+    if attention:
+        lines.append(f"公会注意力{attention.get('guild', 0)}；市场注意力{attention.get('market', 0)}；NPC异常注意力{attention.get('npc', 0)}。")
+    observability = simulation.get("observability", {}) if isinstance(simulation.get("observability"), dict) else {}
+    if observability:
+        lines.append(
+            "可见性："
+            f"{observability.get('nearby_players', '')}；{observability.get('npc_service') or observability.get('npc_luoshen', '')}；"
+            f"公会信号{observability.get('guild_signal', 'none')}；市场信号{observability.get('market_signal', 'none')}。"
+        )
+    systemic = simulation.get("systemic_simulation") if isinstance(simulation.get("systemic_simulation"), dict) else {}
+    ledger_delta = systemic.get("ledger_delta") if isinstance(systemic.get("ledger_delta"), dict) else {}
+    if ledger_delta:
+        lines.append(
+            "SYSTEMIC_LEDGER: "
+            f"minutes={ledger_delta.get('clock_minutes')}; "
+            f"inventory_delta={ledger_delta.get('inventory_delta')}; "
+            f"cost_delta={ledger_delta.get('cost_delta')}; "
+            f"hidden={ledger_delta.get('hidden_system_delta')}."
+        )
+    causal_chain = systemic.get("causal_chain") if isinstance(systemic.get("causal_chain"), list) else []
+    if causal_chain:
+        lines.append("SYSTEMIC_CAUSE: " + " -> ".join(str(item) for item in causal_chain[:4]))
+    visibility_layers = systemic.get("visibility_layers") if isinstance(systemic.get("visibility_layers"), dict) else {}
+    if visibility_layers:
+        public = visibility_layers.get("public") if isinstance(visibility_layers.get("public"), list) else []
+        private = visibility_layers.get("private") if isinstance(visibility_layers.get("private"), list) else []
+        lines.append(
+            "SYSTEMIC_VISIBILITY: "
+            f"private={private[:2]}; public={public[:2]}; "
+            "NPC/guild knowledge must stay inside these layers."
+        )
+    return lines
+
+
+def _scene_contract_from_game_world(
+    *,
+    event: WorldEvent,
+    scene_id: str,
+    game_world: dict[str, Any],
+) -> dict[str, Any]:
+    systemic = game_world.get("systemic_simulation") if isinstance(game_world.get("systemic_simulation"), dict) else {}
+    if not systemic:
+        return {}
+
+    ledger_delta = systemic.get("ledger_delta") if isinstance(systemic.get("ledger_delta"), dict) else {}
+    visibility_layers = systemic.get("visibility_layers") if isinstance(systemic.get("visibility_layers"), dict) else {}
+    cost_delta = ledger_delta.get("cost_delta") if isinstance(ledger_delta.get("cost_delta"), dict) else {}
+    inventory_delta = ledger_delta.get("inventory_delta") if isinstance(ledger_delta.get("inventory_delta"), dict) else {}
+    hidden_delta = ledger_delta.get("hidden_system_delta") if isinstance(ledger_delta.get("hidden_system_delta"), dict) else {}
+
+    visible_consequences: list[dict[str, Any]] = []
+    if any(int(value or 0) < 0 for value in cost_delta.values()):
+        visible_consequences.append(
+            {
+                "id": "resource_cost_surface",
+                "description": "Show the simulated HP, mana, or durability cost in prose.",
+                "requires_any": [
+                    "mana",
+                    "mp",
+                    "MP",
+                    "low mana",
+                    "mana bottomed out",
+                    "health",
+                    "HP",
+                    "durability",
+                    "法力",
+                    "蓝量",
+                    "生命",
+                    "血量",
+                    "耐久",
+                ],
+                "revision": "Add a panel, body feedback, or equipment detail that makes the simulated resource cost visible.",
+            }
+        )
+    if inventory_delta:
+        visible_consequences.append(
+            {
+                "id": "inventory_delta_surface",
+                "description": "Show the material batch entering the protagonist inventory or backpack.",
+                "requires_any": [
+                    "backpack",
+                    "inventory",
+                    "loot",
+                    "drop",
+                    "material",
+                    "背包",
+                    "掉落",
+                    "获得",
+                    "材料",
+                ],
+                "revision": "Add loot feedback, backpack count, or material handling so the ledger delta reaches the page.",
+            }
+        )
+    if visibility_layers:
+        visible_consequences.append(
+            {
+                "id": "visibility_boundary_surface",
+                "description": "Keep outside observers inside the simulated visibility layer.",
+                "requires_any": [
+                    "weak trace",
+                    "weak public trace",
+                    "cannot know",
+                    "only see",
+                    "only saw",
+                    "只看到",
+                    "不能知道",
+                    "弱线索",
+                    "痕迹",
+                    "批次",
+                    "价格",
+                    "数量",
+                ],
+                "revision": "Show public knowledge as weak traces, route noise, batches, timestamps, prices, or service records.",
+            }
+        )
+
+    hidden_consequences = []
+    if hidden_delta:
+        hidden_consequences.append(f"Backend-only hidden_system_delta={hidden_delta}")
+    private_layer = visibility_layers.get("private") if isinstance(visibility_layers.get("private"), list) else []
+    hidden_consequences.extend(str(item) for item in private_layer[:3])
+
+    return {
+        "schema_version": "scene-contract/v1",
+        "scene_id": scene_id,
+        "source_event": event.event_id,
+        "required_state_changes": {
+            "clock_minutes": ledger_delta.get("clock_minutes", 0),
+            "inventory_delta": inventory_delta,
+            "cost_delta": cost_delta,
+            "market_delta": ledger_delta.get("market_delta", {}),
+            "hidden_system_delta": hidden_delta,
+            "next_pressure": ledger_delta.get("next_pressure", []),
+        },
+        "visible_consequences": visible_consequences,
+        "hidden_consequences": hidden_consequences,
+        "visibility_limits": {
+            "private": visibility_layers.get("private", []),
+            "public": visibility_layers.get("public", []),
+            "npc": visibility_layers.get("npc", []),
+            "guild": visibility_layers.get("guild", []),
+        },
+    }
+
+
 def select_scene_cards(
     events: list[WorldEvent],
     *,
@@ -367,6 +583,9 @@ def select_scene_cards(
             must_show.append("交易行只显示价格、数量、批次、手续费、到账或时间戳。")
         if "NPC" in event.actor or "NPC" in event.action:
             must_show.append("NPC的地点、服务、利益诉求、口吻和信息边界。")
+        game_world = event.state_delta.get("game_world_simulation") if isinstance(event.state_delta, dict) else None
+        if isinstance(game_world, dict):
+            must_show.extend(_game_world_surface_lines(game_world))
         event_plan = simulation_plan.get("event_plan", {}) if isinstance(simulation_plan.get("event_plan"), dict) else {}
         if event.template_id == "small_verification":
             for key in ("wow_beat", "escalation_break"):
@@ -377,10 +596,16 @@ def select_scene_cards(
                 if event_plan.get(key):
                     must_show.append(str(event_plan[key]))
 
+        scene_id = f"s{len(cards) + 1}-{event.event_id}"
+        scene_contract = (
+            _scene_contract_from_game_world(event=event, scene_id=scene_id, game_world=game_world)
+            if isinstance(game_world, dict)
+            else {}
+        )
         texture = _scene_texture(event.template_id)
         cards.append(
             SceneCard(
-                scene_id=f"s{len(cards) + 1}-{event.event_id}",
+                scene_id=scene_id,
                 template_id=event.template_id,
                 location=str(template.get("location") or event.location or "当前场景"),
                 pov=event.actor,
@@ -400,6 +625,7 @@ def select_scene_cards(
                     "不要把推演规则、审稿意见或后台术语写进正文。",
                 ],
                 state_delta=event.state_delta,
+                scene_contract=scene_contract,
                 ending_pressure=(event.consequences[-1] if event.consequences else "留下下一步压力。"),
                 sensory_anchors=list(texture.get("sensory_anchors", [])),
                 subtext=str(texture.get("subtext", "")),

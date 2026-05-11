@@ -22,20 +22,22 @@ SCENE_BEAT_ALIASES: dict[str, tuple[tuple[str, ...], ...]] = {
     "现实职业/技能来源": (("风控", "测试员", "外包", "工作", "项目"), ("概率", "流水", "模型", "漏洞", "规则")),
     "为什么登录游戏": (("房租", "停职", "余额", "缺钱", "变现", "下个月"),),
     "主角风险偏好": (("风险", "低调", "风控", "隔离", "封号"),),
+    "游戏ID": (("游戏ID", "ID：", "ID:", "夜烬", "输入名字", "角色名"),),
     "职业选择": (("职业列表", "职业选择", "点向法师", "选择职业", "元素法师学徒"),),
-    "角色面板": (("角色面板", "状态面板", "面板在视野", "【等级：", "【经验："),),
+    "角色面板": (("角色面板", "状态面板", "面板在视野", "【等级：", "【经验：", "等级：", "经验：", "职业：", "Lv.1"),),
     "基础属性": (("基础属性", "力量：", "力量", "敏捷：", "敏捷", "智力：", "智力", "体质：", "体质", "生命：", "生命", "法力：", "法力"),),
     "低级怪物": (("灰鼠", "灰狼", "低级怪", "1级"),),
     "掉落反馈": (("掉落", "提示音", "掉出", "获得"),),
-    "背包变化": (("背包",), ("跳到", "多了", "数量", "库存", "负重")),
-    "小额验证": (("先试", "试一次", "验证", "不是错觉", "小额"),),
+    "背包变化": (("背包",), ("跳到", "多了", "数量", "库存", "负重", "占了", "格子", "灰狼毒腺", "粗糙狼皮")),
+    "小额验证": (("先试", "试一次", "验证", "不是错觉", "小额", "灰狼", "低级怪", "第一只"), ("掉落", "千倍", "背包", "获得", "多了")),
     "NPC地点": (("药剂铺", "柜台", "灰烬村", "村口", "职业大厅", "仓库", "铁匠铺"),),
     "服务内容": (("收购", "解毒剂", "药剂", "修理", "仓储", "任务", "价格"),),
-    "信息边界": (("不问来源", "没追问", "没再多问", "继续给药瓶贴签", "交易记录", "流水", "记录", "不能看到", "只能看到", "信息边界"),),
-    "下一步目标": (("先交一组", "第一笔铜币", "去导师", "第二只灰鼠"),),
-    "材料暂不外露": (("往后压", "别人看不见", "不卖", "收回背包"),),
-    "NPC门槛": (("五份", "三组", "按牌子走", "今天这批药房只收三组"),),
-    "规则未明": (("不碰第二只", "先交一组", "灰色标记", "去导师"),),
+    "价格/门槛": (("价格", "报价", "铜", "押金", "门槛", "条件", "五份", "三组", "只收"),),
+    "信息边界": (("不问来源", "没追问", "没再多问", "继续给药瓶贴签", "交易记录", "流水", "记录", "不能看到", "只能看到", "只管", "只收", "别问", "问不了", "不知道", "柜台规矩", "信息边界"),),
+    "下一步目标": (("先交一组", "第一笔铜币", "去导师", "第二只灰鼠", "下一步", "明天", "回头", "先问", "先去"),),
+    "材料暂不外露": (("背包", "灰狼毒腺", "粗糙狼皮", "材料", "先收着", "不卖", "不处理", "暂不处理", "收回背包"),),
+    "NPC门槛": (("五份", "三组", "按牌子走", "今天这批药房只收三组", "报价", "押金", "条件", "只收", "先交"),),
+    "规则未明": (("不碰第二只", "先交一组", "灰色标记", "去导师", "没弄明白", "还没试清", "下一步", "先别"),),
 }
 
 EVENT_ACTION_ALIASES: tuple[tuple[tuple[str, ...], tuple[tuple[str, ...], ...]], ...] = (
@@ -146,11 +148,178 @@ def _missing_scene_card_beats(body: str, scene_cards: list[dict[str, Any]]) -> d
     return missing_by_scene
 
 
+def _systemic_blocks(scene_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for card in scene_cards:
+        if not isinstance(card, dict):
+            continue
+        state_delta = card.get("state_delta") if isinstance(card.get("state_delta"), dict) else {}
+        game_world = state_delta.get("game_world_simulation") if isinstance(state_delta.get("game_world_simulation"), dict) else {}
+        systemic = game_world.get("systemic_simulation") if isinstance(game_world.get("systemic_simulation"), dict) else {}
+        if systemic:
+            blocks.append(systemic)
+    return blocks
+
+
+def _scene_contracts(scene_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    contracts: list[dict[str, Any]] = []
+    for card in scene_cards:
+        if not isinstance(card, dict):
+            continue
+        contract = card.get("scene_contract") if isinstance(card.get("scene_contract"), dict) else {}
+        if contract:
+            contract = {**contract, "_scene_id": str(card.get("scene_id") or contract.get("scene_id") or "scene")}
+            contracts.append(contract)
+    return contracts
+
+
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(term.lower() in lowered for term in terms)
+
+
+def _review_scene_contract_consumption(
+    body: str,
+    scene_cards: list[dict[str, Any]],
+    *,
+    issues: list[str],
+    revision_plan: list[str],
+    scores: dict[str, int],
+) -> None:
+    for contract in _scene_contracts(scene_cards):
+        scene_id = str(contract.get("_scene_id") or contract.get("scene_id") or "scene")
+        visible_items = contract.get("visible_consequences") if isinstance(contract.get("visible_consequences"), list) else []
+        for item in visible_items:
+            if not isinstance(item, dict):
+                continue
+            requires_any = item.get("requires_any") if isinstance(item.get("requires_any"), list) else []
+            terms = tuple(str(term) for term in requires_any if str(term).strip())
+            if not terms or _contains_any(body, terms):
+                continue
+            consequence_id = str(item.get("id") or "visible_consequence")
+            description = str(item.get("description") or consequence_id)
+            revision = str(
+                item.get("revision")
+                or "Add visible prose evidence for this scene contract consequence before the scene can pass."
+            )
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="scene_contract_consumption",
+                issue=f"Scene contract not consumed: {scene_id} missing {consequence_id} ({description}).",
+                plan=revision,
+                score=5,
+            )
+
+
+def _review_systemic_consistency(
+    body: str,
+    scene_cards: list[dict[str, Any]],
+    *,
+    issues: list[str],
+    revision_plan: list[str],
+    scores: dict[str, int],
+) -> None:
+    for systemic in _systemic_blocks(scene_cards):
+        ledger_delta = systemic.get("ledger_delta") if isinstance(systemic.get("ledger_delta"), dict) else {}
+        cost_delta = ledger_delta.get("cost_delta") if isinstance(ledger_delta.get("cost_delta"), dict) else {}
+        visibility_layers = systemic.get("visibility_layers") if isinstance(systemic.get("visibility_layers"), dict) else {}
+
+        if int(cost_delta.get("mp") or 0) < 0 and _contains_any(
+            body,
+            ("full mana", "mana was full", "mana stayed full", "法力充足", "法力满", "满蓝"),
+        ):
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="systemic_consistency",
+                issue="Systemic ledger break: prose says mana is full after the simulation spent mana.",
+                plan="Show the simulated mana cost on page: low mana, emptied mana, or a panel/resource check that matches cost_delta.",
+                score=5,
+            )
+
+        if int(cost_delta.get("durability") or 0) < 0 and _contains_any(
+            body,
+            ("undamaged staff", "undamaged weapon", "durability untouched", "法杖完好", "耐久没掉", "耐久未损"),
+        ):
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="systemic_consistency",
+                issue="Systemic ledger break: prose says the weapon is undamaged after durability was spent.",
+                plan="Reflect the simulated durability cost through a red durability line, repair pressure, or a damaged weapon detail.",
+                score=5,
+            )
+
+        if int(cost_delta.get("hp") or 0) < 0 and _contains_any(
+            body,
+            ("full health", "unhurt", "not a scratch", "毫发无伤", "生命满", "血量满"),
+        ):
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="systemic_consistency",
+                issue="Systemic ledger break: prose erases simulated HP cost.",
+                plan="Reflect the HP loss through wound feedback, a panel change, or a cautious retreat decision.",
+                score=5,
+            )
+
+        if visibility_layers.get("guild") and _contains_any(
+            body,
+            (
+                "locked his coordinates",
+                "locked the coordinates",
+                "identified his hidden talent",
+                "identified the hidden talent",
+                "real identity",
+                "precise coordinates",
+                "锁定坐标",
+                "锁定他的坐标",
+                "现实身份",
+                "隐藏天赋",
+            ),
+        ):
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="systemic_consistency",
+                issue="Systemic visibility break: guild knowledge exceeds the simulation visibility layer.",
+                plan="Limit guild/public knowledge to route noise, timestamps, batches, prices, weak public traces, or repeated later evidence.",
+                score=5,
+            )
+
+        if visibility_layers.get("npc") and _contains_any(
+            body,
+            (
+                "npc knew hidden talent",
+                "npc knew his real identity",
+                "npc identified",
+                "NPC知道隐藏天赋",
+                "NPC知道现实身份",
+            ),
+        ):
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="systemic_consistency",
+                issue="Systemic visibility break: NPC knowledge exceeds the service boundary.",
+                plan="Keep NPC knowledge inside service inputs, posted thresholds, inventory, queue behavior, and public records.",
+                score=5,
+            )
+
+
 def review_world_event_consistency(
     body: str,
     *,
     world_events: list[dict[str, Any]] | None = None,
     scene_cards: list[dict[str, Any]] | None = None,
+    chapter_number: int | None = None,
 ) -> dict[str, Any]:
     """Review whether prose obeys simulated world-event boundaries."""
 
@@ -162,6 +331,8 @@ def review_world_event_consistency(
         "state_delta_surface": 8,
         "scene_card_coverage": 8,
         "surface_terms": 8,
+        "systemic_consistency": 8,
+        "scene_contract_consumption": 8,
     }
     issues: list[str] = []
     revision_plan: list[str] = []
@@ -171,6 +342,8 @@ def review_world_event_consistency(
         for event in world_events
         if "交易行" in _event_text(event) or "market_trace" in str(event.get("state_delta", ""))
     ]
+    if chapter_number == 1:
+        market_events = []
     if market_events and any(term in body for term in TRACKING_OVERREACH_TERMS):
         _append_issue(
             issues=issues,
@@ -247,6 +420,21 @@ def review_world_event_consistency(
             plan="补出交易行界面能显示的弱线索，例如价格、数量、批次、手续费、到账提示和时间戳。",
             score=6,
         )
+
+    _review_systemic_consistency(
+        body,
+        scene_cards,
+        issues=issues,
+        revision_plan=revision_plan,
+        scores=scores,
+    )
+    _review_scene_contract_consumption(
+        body,
+        scene_cards,
+        issues=issues,
+        revision_plan=revision_plan,
+        scores=scores,
+    )
 
     return {
         "pass": all(score >= 8 for score in scores.values()) and not issues,
