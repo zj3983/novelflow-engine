@@ -49,6 +49,7 @@ from packages.story_core.style_coach import build_style_guidance, enrich_perform
 from packages.story_core.web_game_author_craft import format_web_game_director_card, plain_writer_phrase
 from packages.story_core.web_game_review import has_asserted_overreach, review_web_game_chapter, web_game_review_rules
 from packages.story_core.world_consistency_review import review_world_event_consistency
+from packages.story_core.world_pulse import advance_world_pulse
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
 from packages.story_core.review_report import format_review_report
 from packages.story_core.scene_contract_repair import build_scene_contract_repair_plan
@@ -340,6 +341,12 @@ def _story_snapshot(story: StoryState) -> dict:
         "latest_facts": compact_list(latest.facts if latest else [], max_items=8, item_chars=130),
         "latest_threads": compact_list(latest.unresolved_threads if latest else [], max_items=3, item_chars=70),
         "current_focus": compact_text(latest.next_focus if latest else "", 120),
+        "world_pulse": story.progression_ledger.get("world_pulse", {})
+        if isinstance(story.progression_ledger, dict)
+        else {},
+        "visibility_inbox": story.progression_ledger.get("visibility_inbox", [])[-12:]
+        if isinstance(story.progression_ledger, dict) and isinstance(story.progression_ledger.get("visibility_inbox"), list)
+        else [],
         "characters": [
             {
                 "name": c.name,
@@ -1762,6 +1769,7 @@ def _record_failure(story: StoryState, reason: str, chapter_number: int) -> None
 
 
 def _build_simulation_status(story: StoryState) -> dict:
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
     agent_entries = {
         "character": story.agent_runtime.character_agent.model_dump(),
         "director": story.agent_runtime.director_agent.model_dump(),
@@ -1775,6 +1783,10 @@ def _build_simulation_status(story: StoryState) -> dict:
         "fallback_agents": fallback_agents,
         "recent_events": list(story.agent_runtime.recent_events),
         "agents": agent_entries,
+        "world_pulse": ledger.get("world_pulse", {}),
+        "visibility_inbox": ledger.get("visibility_inbox", [])[-12:]
+        if isinstance(ledger.get("visibility_inbox"), list)
+        else [],
     }
 
 
@@ -2181,6 +2193,7 @@ class StoryOrchestrator:
         )
         _apply_ledger_updates(updated_story, memory_constraints.get("ledger_updates", {}))
         _sync_character_game_panels(updated_story, chapter_number)
+        advance_world_pulse(updated_story, chapter_number=chapter_number)
         maybe_update_arc_recap(updated_story, chapter_number)
 
         if updated_story.chapter_summaries:
