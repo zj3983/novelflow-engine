@@ -6,7 +6,7 @@ from packages.story_core.genre_plugins import GAME_WEBNOVEL, plugin_simulation_b
 from packages.story_core.game_world_simulator import simulate_game_world
 from packages.story_core.models import SceneCard, StoryState, WorldEvent
 from packages.story_core.simulation import is_game_story
-from packages.story_core.world_pulse import visibility_inbox_for_chapter
+from packages.story_core.world_pulse import visibility_inbox_consumed_ids, visibility_inbox_for_chapter
 
 
 META_TERMS = ["爽点", "钩子", "节奏", "读者", "网文规则", "生成", "审稿"]
@@ -147,7 +147,11 @@ def _visibility_inbox_event(story: StoryState, chapter_number: int, protagonist:
         for item in inbox_items
         if str(item.get("text") or "").strip()
     )
-    consumed_ids = [str(item.get("id")) for item in inbox_items if str(item.get("id") or "").strip()]
+    newly_consumed_ids = [str(item.get("id")) for item in inbox_items if str(item.get("id") or "").strip()]
+    consumed_ids = [*visibility_inbox_consumed_ids(story)]
+    for item_id in newly_consumed_ids:
+        if item_id not in consumed_ids:
+            consumed_ids.append(item_id)
     return _event(
         event_id=f"c{chapter_number}-visibility-inbox",
         template_id="visibility_inbox_pressure",
@@ -165,6 +169,7 @@ def _visibility_inbox_event(story: StoryState, chapter_number: int, protagonist:
             "visibility_inbox_pressure": {
                 "items": inbox_items,
                 "consumed_ids": consumed_ids,
+                "newly_consumed_ids": newly_consumed_ids,
                 "visibility_limits": VISIBILITY_INBOX_FORBIDDEN,
             }
         },

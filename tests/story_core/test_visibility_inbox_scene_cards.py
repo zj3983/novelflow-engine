@@ -1,4 +1,5 @@
 from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.orchestrator import apply_simulated_state_deltas
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
 
 
@@ -90,3 +91,33 @@ def test_visibility_inbox_world_event_becomes_scene_card_pressure():
     assert "real_identity" in inbox_card.must_not_explain
     assert "precise_coordinates" in inbox_card.must_not_explain
     assert inbox_card.ending_pressure == "Treat these as next-scene pressure, not solved background exposition."
+
+
+def test_consumed_visibility_inbox_items_do_not_surface_twice():
+    story = _story_with_inbox()
+    first_events = simulate_world_events(
+        story,
+        2,
+        chapter_seed={"genre_plugins": ["game_webnovel"]},
+        simulation_plan={"chapter_goal": "Find a safe service route."},
+    )
+    inbox_event = next(event for event in first_events if event.template_id == "visibility_inbox_pressure")
+
+    apply_simulated_state_deltas(
+        story,
+        world_events=[inbox_event.model_dump()],
+        scene_cards=[],
+        chapter_number=2,
+    )
+    second_events = simulate_world_events(
+        story,
+        2,
+        chapter_seed={"genre_plugins": ["game_webnovel"]},
+        simulation_plan={"chapter_goal": "Find a safe service route."},
+    )
+
+    assert story.progression_ledger["visibility_inbox_pressure"]["consumed_ids"] == [
+        "pulse-1-price-board",
+        "pulse-1-rent",
+    ]
+    assert not any(event.template_id == "visibility_inbox_pressure" for event in second_events)

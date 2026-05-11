@@ -262,9 +262,13 @@ def visibility_inbox_for_chapter(
 ) -> list[dict[str, Any]]:
     ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
     inbox = _as_list(ledger.get("visibility_inbox"))
+    consumed = set(visibility_inbox_consumed_ids(story))
     due_items: list[dict[str, Any]] = []
     for item in inbox:
         if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        if item_id and item_id in consumed:
             continue
         if _as_int(item.get("visible_at_chapter"), -1) != int(chapter_number):
             continue
@@ -274,3 +278,14 @@ def visibility_inbox_for_chapter(
             continue
         due_items.append(dict(item))
     return due_items[:max_items]
+
+
+def visibility_inbox_consumed_ids(story: StoryState) -> list[str]:
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
+    pressure = _as_dict(ledger.get("visibility_inbox_pressure"))
+    consumed_ids: list[str] = []
+    for item in _as_list(pressure.get("consumed_ids")):
+        item_id = str(item).strip()
+        if item_id and item_id not in consumed_ids:
+            consumed_ids.append(item_id)
+    return consumed_ids
