@@ -6,6 +6,7 @@ from packages.story_core.genre_plugins import GAME_WEBNOVEL, plugin_simulation_b
 from packages.story_core.game_world_simulator import simulate_game_world
 from packages.story_core.models import SceneCard, StoryState, WorldEvent
 from packages.story_core.simulation import is_game_story
+from packages.story_core.world_pulse import visibility_inbox_for_chapter
 
 
 META_TERMS = ["爽点", "钩子", "节奏", "读者", "网文规则", "生成", "审稿"]
@@ -68,7 +69,10 @@ GAME_TEMPLATE_IDS = {
     "small_verification",
     "single_npc_service",
     "chapter_1_next_step",
+    "visibility_inbox_pressure",
 }
+
+VISIBILITY_INBOX_FORBIDDEN = ["hidden_talent", "real_identity", "precise_coordinates"]
 
 
 def _simulation_blueprint(chapter_seed: dict[str, Any], *, allow_default_game: bool = False) -> dict[str, Any]:
@@ -131,6 +135,40 @@ def _event(
         consequences=consequences or [],
         state_delta=state_delta or {},
         prose_priority=prose_priority,
+    )
+
+
+def _visibility_inbox_event(story: StoryState, chapter_number: int, protagonist: str) -> WorldEvent | None:
+    inbox_items = visibility_inbox_for_chapter(story, chapter_number)
+    if not inbox_items:
+        return None
+    surface = "; ".join(
+        f"{item.get('channel', 'visible_trace')}: {item.get('text', '')}"
+        for item in inbox_items
+        if str(item.get("text") or "").strip()
+    )
+    consumed_ids = [str(item.get("id")) for item in inbox_items if str(item.get("id") or "").strip()]
+    return _event(
+        event_id=f"c{chapter_number}-visibility-inbox",
+        template_id="visibility_inbox_pressure",
+        actor="world_pulse",
+        action=surface,
+        target="next_scene_pressure",
+        location="visible_world_surface",
+        cause="persistent world pulse produced player-visible traces",
+        visible_to=[protagonist],
+        consequences=[
+            "Treat these as next-scene pressure, not solved background exposition.",
+            "Do not upgrade weak traces into hidden talent, real identity, or precise coordinates.",
+        ],
+        state_delta={
+            "visibility_inbox_pressure": {
+                "items": inbox_items,
+                "consumed_ids": consumed_ids,
+                "visibility_limits": VISIBILITY_INBOX_FORBIDDEN,
+            }
+        },
+        prose_priority=8,
     )
 
 
@@ -285,6 +323,7 @@ def simulate_world_events(
             ]
         )
     else:
+        inbox_event = _visibility_inbox_event(story, chapter_number, protagonist)
         goal = str(simulation_plan.get("chapter_goal") or chapter_seed.get("phase") or "继续推进当前目标")
         events.extend(
             [
@@ -307,6 +346,8 @@ def simulate_world_events(
                 ),
             ]
         )
+        if inbox_event:
+            events.append(inbox_event)
 
         for index, reaction in enumerate(simulation_plan.get("event_plan", {}).get("world_reactions", [])[:3], start=1):
             events.append(
@@ -595,6 +636,16 @@ def select_scene_cards(
             for key in ("core_mystery_reinforcement", "explicit_chapter_end_hook", "reality_game_bridge"):
                 if event_plan.get(key):
                     must_show.append(str(event_plan[key]))
+        visibility_inbox_forbidden = (
+            VISIBILITY_INBOX_FORBIDDEN if event.template_id == "visibility_inbox_pressure" else []
+        )
+        if visibility_inbox_forbidden:
+            must_show.append("Only surface player-visible inbox channels; do not reveal background actor internals.")
+        ending_pressure = (
+            "Treat these as next-scene pressure, not solved background exposition."
+            if event.template_id == "visibility_inbox_pressure"
+            else (event.consequences[-1] if event.consequences else "留下下一步压力。")
+        )
 
         scene_id = f"s{len(cards) + 1}-{event.event_id}"
         scene_contract = (
@@ -622,11 +673,12 @@ def select_scene_cards(
                 must_not_explain=[
                     *META_TERMS,
                     *forbidden_conflicts,
+                    *visibility_inbox_forbidden,
                     "不要把推演规则、审稿意见或后台术语写进正文。",
                 ],
                 state_delta=event.state_delta,
                 scene_contract=scene_contract,
-                ending_pressure=(event.consequences[-1] if event.consequences else "留下下一步压力。"),
+                ending_pressure=ending_pressure,
                 sensory_anchors=list(texture.get("sensory_anchors", [])),
                 subtext=str(texture.get("subtext", "")),
                 rhythm_hint=str(texture.get("rhythm_hint", "")),

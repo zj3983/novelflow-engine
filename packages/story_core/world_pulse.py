@@ -252,3 +252,25 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
     pulse_store["history"] = [*history, pulse][-12:]
     ledger["visibility_inbox"] = [*_as_list(ledger.get("visibility_inbox")), *visibility_inbox]
     return pulse
+
+
+def visibility_inbox_for_chapter(
+    story: StoryState,
+    chapter_number: int,
+    *,
+    max_items: int = 4,
+) -> list[dict[str, Any]]:
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
+    inbox = _as_list(ledger.get("visibility_inbox"))
+    due_items: list[dict[str, Any]] = []
+    for item in inbox:
+        if not isinstance(item, dict):
+            continue
+        if _as_int(item.get("visible_at_chapter"), -1) != int(chapter_number):
+            continue
+        text = str(item.get("text") or "")
+        lowered = text.lower()
+        if any(term in lowered for term in ("hidden talent", "real identity", "precise coordinates", "coordinates locked")):
+            continue
+        due_items.append(dict(item))
+    return due_items[:max_items]
