@@ -51,6 +51,7 @@ from packages.story_core.web_game_review import has_asserted_overreach, review_w
 from packages.story_core.world_consistency_review import review_world_event_consistency
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
 from packages.story_core.review_report import format_review_report
+from packages.story_core.scene_contract_repair import build_scene_contract_repair_plan
 
 
 VALID_CADENCES = {"urgent", "measured", "breathing"}
@@ -1344,6 +1345,12 @@ def _review_chapter_body(
         scene_cards=scene_cards or [],
         chapter_number=chapter_number,
     )
+    scene_contract_failures = (
+        consistency_review.get("scene_contract_failures")
+        if isinstance(consistency_review.get("scene_contract_failures"), list)
+        else []
+    )
+    scene_repair_plan = build_scene_contract_repair_plan(consistency_review, scene_cards or [])
     style_review = review_prose_style(body)
     prose_quality_review = review_prose_quality(body)
     adversarial_cut_review = review_adversarial_cuts(body)
@@ -1399,6 +1406,8 @@ def _review_chapter_body(
         "prose_quality_review": prose_quality_review,
         "adversarial_cut_review": adversarial_cut_review,
         "world_state_review": world_state_review,
+        "scene_contract_failures": scene_contract_failures,
+        "scene_repair_plan": scene_repair_plan,
     }
 
 
@@ -1471,6 +1480,12 @@ def _compact_review_summary(review: dict[str, Any] | None) -> dict[str, Any]:
         "issues": compact_list(review.get("issues", []), max_items=6, item_chars=90),
         "revision_plan": compact_list(review.get("revision_plan", []), max_items=6, item_chars=90),
     }
+    scene_failures = compact_list(review.get("scene_contract_failures", []), max_items=6, item_chars=180)
+    scene_repair_plan = review.get("scene_repair_plan") if isinstance(review.get("scene_repair_plan"), dict) else {}
+    if scene_failures:
+        summary["scene_contract_failures"] = scene_failures
+    if scene_repair_plan:
+        summary["scene_repair_plan"] = scene_repair_plan
     style_issues = compact_list(style_review.get("issues", []), max_items=4, item_chars=90)
     prose_issues = compact_list(prose_review.get("issues", []), max_items=4, item_chars=90)
     if style_issues:
@@ -2038,6 +2053,9 @@ class StoryOrchestrator:
         style_guidance = plan.get("style_guidance", {})
         governance_section = _governance_prompt_section(plan.get("governance"))
         target_chars = _plan_target_chars(plan)
+        scene_repair_plan = review.get("scene_repair_plan") if isinstance(review.get("scene_repair_plan"), dict) else {}
+        if not scene_repair_plan:
+            scene_repair_plan = build_scene_contract_repair_plan(review, plan.get("scene_cards", []))
 
         method_block = _chapter_prompt_method_block(
             chapter_number,
@@ -2055,6 +2073,7 @@ class StoryOrchestrator:
                 f"审稿摘要：{_plain_prompt_json(_compact_review_summary(review))}",
                 f"写作教练 Style Coach：{_plain_prompt_json(style_guidance)}",
                 f"硬性修复清单：{_plain_prompt_json(fix_checklist)}",
+                f"scene_contract_repair_plan：{_plain_prompt_json(scene_repair_plan)}",
                 f"正文禁词清单（逐字删除，不能照抄到改稿正文）：{json.dumps(forbidden_terms, ensure_ascii=False)}",
                 f"场景卡到正文改稿协议：\n{plain_writer_phrase(scene_protocol)}",
                 f"推演简表：{_plain_prompt_json(_prose_grounded_writing_plan(plan))}",
@@ -2062,6 +2081,7 @@ class StoryOrchestrator:
                 "改稿限制：不得随意改变等级、经验、货币、掉落和任务结果；但如果是第一章节奏过载，必须删除或后移材料处理、市场玩家、玩家势力、公共频道等越界世界反应。",
                 "事实锁硬规则：scene_cards.fact_locks 中的职业、余额、库存、任务、装备和NPC能知道什么/不知道什么不得被润色改动；若不能确定，保留原文事实。",
                 "如果审稿指出字数偏少，必须扩写到目标篇幅，增加场景、对话、行动过程、心理和题材规则细节，不要只重复原文。",
+                "如果 scene_contract_repair_plan 非空，必须只重写失败场景：只补 failed_scenes 对应场景缺失的可见后果，其他场景保持事实、顺序和账本不变，只做必要衔接。",
                 "如果正文禁词清单非空，改稿后必须逐项自检，保证禁词不再出现在小说正文里；只能保留在本提示词中，不能输出到正文。",
                 "改完后自检：硬性修复清单逐条完成；正文禁词清单逐项清零；scene_cards 的 must_show 必须全部表面化；不要输出自检说明。",
                 "只输出改稿后的完整小说正文，不要解释，不要列大纲。",

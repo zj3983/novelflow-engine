@@ -185,6 +185,7 @@ def _review_scene_contract_consumption(
     issues: list[str],
     revision_plan: list[str],
     scores: dict[str, int],
+    scene_contract_failures: list[dict[str, Any]],
 ) -> None:
     for contract in _scene_contracts(scene_cards):
         scene_id = str(contract.get("_scene_id") or contract.get("scene_id") or "scene")
@@ -201,6 +202,16 @@ def _review_scene_contract_consumption(
             revision = str(
                 item.get("revision")
                 or "Add visible prose evidence for this scene contract consequence before the scene can pass."
+            )
+            scene_contract_failures.append(
+                {
+                    "scene_id": scene_id,
+                    "consequence_id": consequence_id,
+                    "description": description,
+                    "requires_any": list(terms),
+                    "revision": revision,
+                    "rewrite_scope": "scene_only",
+                }
             )
             _append_issue(
                 issues=issues,
@@ -336,6 +347,7 @@ def review_world_event_consistency(
     }
     issues: list[str] = []
     revision_plan: list[str] = []
+    scene_contract_failures: list[dict[str, Any]] = []
 
     market_events = [
         event
@@ -434,6 +446,7 @@ def review_world_event_consistency(
         issues=issues,
         revision_plan=revision_plan,
         scores=scores,
+        scene_contract_failures=scene_contract_failures,
     )
 
     return {
@@ -441,4 +454,5 @@ def review_world_event_consistency(
         "scores": scores,
         "issues": issues,
         "revision_plan": revision_plan,
+        "scene_contract_failures": scene_contract_failures,
     }
