@@ -1,7 +1,7 @@
 {
   "name": "novel-autogrowth",
   "version": "0.1.0",
-  "description": "Codex plugin for operating the Novel Autogrowth Engine as a long-form Chinese webnovel writing system.",
+  "description": "用于操作 Novel Autogrowth Engine 的 Codex 插件，面向长篇中文网文的生成、审稿、修订和世界观维护。",
   "author": {
     "name": "Novel Autogrowth Engine",
     "email": "maintainers@example.com",
@@ -21,8 +21,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Novel Autogrowth",
-    "shortDescription": "Generate, review, revise, and steer long-form Chinese webnovels.",
-    "longDescription": "Operate the Novel Autogrowth Engine through Codex: inspect project context, review chapters, revise drafts, patch worldbuilding, continue generation, and open the local writing dashboard.",
+    "shortDescription": "生成、审稿、修订并维护长篇中文网文项目。",
+    "longDescription": "通过 Codex 操作 Novel Autogrowth Engine：读取项目上下文、审核章节、修订草稿、修补世界观、继续生成，并打开本地写作工作台。",
     "developerName": "Novel Autogrowth Engine",
     "category": "Productivity",
     "capabilities": [
