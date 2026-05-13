@@ -1,65 +1,65 @@
-# First Chapter Whole-Body Prose Upgrade
+# 第一章整章正文质感升级
 
-## Goal
+## 目标
 
-Improve the first chapter of web-game openings when the system generates a whole chapter body. The change should reduce AI/report voice, avoid checklist prose, and make the opening read more like a concrete Tomato-style webnovel scene.
+优化网游开局第一章的整章正文生成效果。目标是减少 AI 味、报告腔和任务清单感，让第一章更像具体、可读、有反馈的番茄风网游正文。
 
-This design explicitly does not use segmented generation.
+本设计明确不使用分段生成。
 
-## Scope
+## 范围
 
-The first pass will target whole-chapter prompts and whole-chapter writing packets:
+第一轮只改整章正文提示词和整章写作包相关内容：
 
 - `packages/story_core/orchestrator.py`
 - `packages/story_core/writing_packet.py`
 - `packages/story_core/writing_taskbook.py`
 
-The world simulation, director planning, review pipeline, and segmented-writing path stay unchanged except for any shared writer-facing taskbook text they already consume.
+不改世界模拟、导演规划、审稿主流程，也不新增分段写作路径。已有分段逻辑如果共享写作任务书文案，可以自然继承部分文字，但本次不以分段为目标。
 
-## Reader-Facing Contract
+## 读者侧正文契约
 
-For chapter 1 of a web-game story, the whole chapter should naturally contain four beats:
+网游题材第一章的整章正文，应自然包含四个节奏块：
 
-1. Real-life pressure: a concrete money, rent, device, or body-detail moment that explains why the protagonist logs in now.
-2. Login and character creation: game ID, class choice, level 1 panel, initial weapon or skill, and opening-world texture.
-3. Low-level verification: one small fight or test that shows visible cost and feedback through HP/MP, durability, inventory, drops, task progress, and other players' slower baseline.
-4. Next-step hook: the protagonist does not cash out; the chapter ends with a specific task, equipment, skill, map, or NPC-service threshold that can pull chapter 2 forward.
+1. 现实压力：用具体的钱、房租、旧设备、身体反应或生活细节说明主角为什么现在必须登录。
+2. 登录建号：写清游戏 ID、职业选择、1 级面板、初始武器或技能，以及开服世界的现场质感。
+3. 低级验证：用一场小规模战斗或测试展示可见成本与即时反馈，例如血蓝、耐久、背包、掉落、任务进度，以及普通玩家更慢的对比。
+4. 下一步钩子：主角不把材料立刻变现，章末落到一个具体的任务、装备、技能、地图或 NPC 服务门槛，拉动第二章。
 
-The first chapter payoff is "I am one step ahead and can reach the next gate faster", not "I already made money and the world noticed".
+第一章的爽点是“我领先了一步，可以更快摸到下一个门槛”，不是“我已经赚钱并被全世界注意到”。
 
-## Anti-AI-Voice Rules
+## 反 AI 味规则
 
-The whole-chapter prompt should convert abstract instructions into concrete prose method:
+整章提示词要把抽象要求翻译成可执行写法：
 
-- Do not write backend terms such as boundary, inference, review, scene card, baseline, model, algorithm, variable, or rule being opened.
-- Do not explain that something "means" or "proves" a rule. Show it through panel feedback, inventory change, NPC response, price tag, task text, pain, hesitation, or another player's contrast.
-- Do not let professional background become report prose. A risk-control/testing background should surface as checking balance, counting copper, watching MP, touching staff durability, pausing before asking price, or refusing to cash out early.
-- Every major beat needs visible feedback and a small cost.
+- 不在正文里写后台词，例如边界、推演、审稿、场景卡、基准、模型、算法、变量、规则被撬开。
+- 不用“这意味着”“这说明”“证明了规则”来解释异常。要通过面板反馈、背包变化、NPC 回应、价牌、任务文本、疼痛、迟疑或其他玩家对比来呈现。
+- 主角的风控或测试背景不能写成报告腔。它应该落成看余额、数铜币、盯蓝耗、摸法杖耐久、问价前停顿、先不变现等动作。
+- 每个主要节奏块都要有可见反馈和小代价。
 
-## Implementation Shape
+## 实现形态
 
-Update the whole-chapter `_body_prompt` in `StoryOrchestrator` so its first-chapter web-game method is explicit before guardrails. It should keep the current "OUTPUT CONTRACT: prose only" behavior and continue using the taskbook section.
+更新 `StoryOrchestrator` 的整章 `_body_prompt`，让第一章网游写法在硬性守则之前出现。保留当前的 `OUTPUT CONTRACT: prose only` 行为，并继续注入写作任务书。
 
-Update the writing taskbook and writing packet so manual and whole-body flows share the same chapter-1 prose contract:
+更新写作任务书和写作包，让人工/Codex 手写整章、整章模型生成使用同一套第一章正文契约：
 
-- Stronger first-chapter global requirements.
-- A compact "whole chapter beat map" for chapter 1.
-- Clear prohibition against first-chapter cash-out, completed transaction, public channel spread, forum explosion, guild chase, or market-player pursuit.
-- Writer-facing examples of concrete replacements for abstract report language.
+- 强化第一章全章必守要求。
+- 增加紧凑的“整章四拍节奏图”。
+- 明确禁止第一章提前完成变现、成交、到账、公共频道扩散、论坛爆帖、公会追查或市场玩家盯盘。
+- 提供面向写手的具体替代表达，把抽象报告词改成动作、反馈、面板、背包、NPC 岗位回应。
 
-## Testing
+## 测试
 
-Add focused tests that do not call external models:
+新增不调用外部模型的聚焦测试：
 
-- Whole-body prompt for chapter 1 web-game stories includes the four-beat method and says not to use segmented generation.
-- Whole-body prompt places prose method before hard guardrails.
-- Writing packet exposes the same whole-chapter chapter-1 contract for manual drafting.
-- Existing segmented tests should continue to pass, but no new segmented behavior is required.
+- 网游第一章整章提示词包含四拍写法，并明确不使用分段生成。
+- 整章提示词把正文写法放在硬性质量闸门之前。
+- 写作包暴露同一套第一章整章正文契约，供手写/人工改稿使用。
+- 现有分段测试继续通过，但本次不新增分段行为。
 
-## Non-Goals
+## 非目标
 
-- No new model call.
-- No new style-adaptation pass.
-- No rewrite of world simulation or director planning.
-- No change to historical chapters.
-- No automatic commit of generated prose.
+- 不新增模型调用。
+- 不新增风格适配 pass。
+- 不重写世界模拟或导演规划。
+- 不修改历史章节。
+- 不自动提交生成正文。
