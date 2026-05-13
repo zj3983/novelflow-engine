@@ -7,6 +7,7 @@ from typing import Any
 import json
 import re
 import urllib.error
+from time import perf_counter
 from types import SimpleNamespace
 
 from packages.story_core.agent_base import compact_list, compact_text, parse_json_message_content
@@ -25,9 +26,11 @@ from packages.story_core.memory import (
 from packages.story_core.models import DirectorDecision, StoryState, TimelineEvent, default_model_name
 from packages.story_core.planner import build_conflict_summary, build_event_beat, compute_chapter_cadence, plan_next_outline
 from packages.story_core.adversarial_cut_review import build_expression_patch_suggestions, review_adversarial_cuts
+from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.prose_quality_review import review_prose_quality
-from packages.story_core.prose_rule_review import CRITICAL_PROMPT_RULES
+from packages.story_core.prose_rule_review import CRITICAL_PROMPT_RULES, review_critical_prose_rules
 from packages.story_core.prose_style_review import anti_ai_style_rules, review_prose_style, sanitize_prose_style
+from packages.story_core.progression_lead_review import review_progression_lead
 from packages.story_core.quality import validate_bundle
 from packages.story_core.runtime import record_agent_runtime
 from packages.story_core.runtime_config import get_runtime_strategy_settings, resolve_openai_runtime_settings
@@ -42,12 +45,18 @@ from packages.story_core.segmented_writing import (
     merge_segment_outputs,
     review_segment_output,
     style_adapt_safety_check,
+    trim_segment_to_contract,
 )
 from packages.story_core.simulation import build_chapter_simulation_plan
 from packages.story_core.spot_fix_patch import apply_spot_fix_patches
 from packages.story_core.style_coach import build_style_guidance, enrich_performance_cards
 from packages.story_core.web_game_author_craft import format_web_game_director_card, plain_writer_phrase
 from packages.story_core.web_game_review import has_asserted_overreach, review_web_game_chapter, web_game_review_rules
+from packages.story_core.writing_taskbook import (
+    ensure_writing_taskbook,
+    first_chapter_whole_body_contract,
+    format_taskbook_prompt_section,
+)
 from packages.story_core.world_consistency_review import review_world_event_consistency
 from packages.story_core.world_pulse import advance_world_pulse
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
@@ -57,6 +66,8 @@ from packages.story_core.scene_contract_repair import build_scene_contract_repai
 
 VALID_CADENCES = {"urgent", "measured", "breathing"}
 MIN_CHAPTER_CHARS = 4200
+REGENERATION_MIN_CHARS = 3500
+REGENERATION_FAST_MIN_CHARS = 3200
 TARGET_CHAPTER_CHARS = "4200到5500字"
 
 
@@ -227,10 +238,80 @@ def _normalize_web_game_terms(body: str) -> str:
 
 def _sanitize_generated_body(body: str) -> str:
     cleaned = _normalize_web_game_terms(sanitize_prose_style(body))
+    cleaned = cleaned.replace("基准", "参照")
     # Some model/API combinations occasionally turn UI quotes or line breaks into
     # lone ASCII question marks. Remove only question marks embedded in CJK prose.
     cleaned = re.sub(r"(?<=[\u4e00-\u9fff。！？】》])\?(?=[\u4e00-\u9fff【《])", "", cleaned)
     return cleaned
+
+
+def _scene_cards_spend_resource(scene_cards: list[dict] | None, resource: str) -> bool:
+    def visit(value: Any) -> bool:
+        if isinstance(value, dict):
+            cost_delta = value.get("cost_delta") if isinstance(value.get("cost_delta"), dict) else {}
+            if int(cost_delta.get(resource) or 0) < 0:
+                return True
+            return any(visit(item) for item in value.values())
+        if isinstance(value, list):
+            return any(visit(item) for item in value)
+        return False
+
+    return visit(scene_cards or [])
+
+
+def _sanitize_systemic_resource_contradictions(body: str, scene_cards: list[dict] | None) -> str:
+    cleaned = body
+    if _scene_cards_spend_resource(scene_cards, "mp"):
+        for old in ("法力满格", "法力满", "满蓝", "法力充足"):
+            cleaned = cleaned.replace(old, "法力只剩一截")
+    if _scene_cards_spend_resource(scene_cards, "durability"):
+        for old in ("法杖完好", "耐久没掉", "耐久未损"):
+            cleaned = cleaned.replace(old, "法杖耐久发红")
+    if _scene_cards_spend_resource(scene_cards, "hp"):
+        for old in ("毫发无伤", "生命满", "血量满"):
+            cleaned = cleaned.replace(old, "血量掉了一截")
+    return cleaned
+
+
+def _soften_repeated_paragraph_openers(body: str) -> str:
+    parts = re.split(r"(\n\s*\n)", body.replace("\r", "\n"))
+    counts: dict[str, int] = {}
+    run_opener = ""
+    run_count = 0
+    prefixes = ("这一次，", "下一刻，", "很快，", "片刻后，", "转眼，", "眼前，")
+    prefix_index = 0
+    softened: list[str] = []
+
+    for part in parts:
+        stripped = part.strip()
+        if not stripped or part.startswith("\n"):
+            softened.append(part)
+            continue
+        match = re.match(r"([\u4e00-\u9fff]{2})", stripped.lstrip("“‘「『【("))
+        opener = match.group(1) if match else ""
+        if opener:
+            counts[opener] = counts.get(opener, 0) + 1
+            if opener == run_opener:
+                run_count += 1
+            else:
+                run_opener = opener
+                run_count = 1
+        needs_prefix = bool(opener and (counts.get(opener, 0) > 6 or run_count >= 3))
+        if needs_prefix:
+            prefix = prefixes[prefix_index % len(prefixes)]
+            prefix_index += 1
+            leading = part[: len(part) - len(part.lstrip())]
+            part = f"{leading}{prefix}{part.lstrip()}"
+            run_opener = prefix[:2]
+            run_count = 1
+        softened.append(part)
+    return "".join(softened)
+
+
+def _sanitize_chapter_output(body: str, *, chapter_number: int, scene_cards: list[dict] | None = None) -> str:
+    cleaned = _sanitize_first_chapter_scope(_sanitize_generated_body(body), chapter_number)
+    cleaned = _sanitize_systemic_resource_contradictions(cleaned, scene_cards)
+    return _soften_repeated_paragraph_openers(cleaned)
 
 
 def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
@@ -254,15 +335,94 @@ def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
         "异常低价",
         "观察名单",
         "商人脚本",
+        "锁定坐标",
+        "精确坐标",
+        "精准定位",
+        "现实身份",
+        "隐藏天赋",
     )
+    service_closure_terms = (
+        "交清道夫委托",
+        "提交清道夫委托",
+        "任务完成",
+        "奖励三十铜",
+        "奖励30铜",
+        "获得：30铜",
+        "获得:30铜",
+        "扣除：30铜",
+        "扣除:30铜",
+        "修理铺",
+        "修理匠",
+        "修满",
+        "修完耐久",
+        "初级法力药水",
+        "两瓶药水",
+        "买药水",
+        "购买药水",
+    )
+    npc_alias_groups = (
+        ("灰烬村村长", "村长"),
+        ("药剂师洛婶", "洛婶"),
+        ("职业导师艾伦", "艾伦"),
+        ("仓库管理员铁栓", "铁栓"),
+        ("修理匠老葛", "老葛"),
+    )
+    kept_npc_group: tuple[str, ...] | None = None
+
+    def piece_npc_groups(piece: str) -> list[tuple[str, ...]]:
+        return [group for group in npc_alias_groups if any(alias in piece for alias in group)]
+
+    def is_negated(piece: str, term: str) -> bool:
+        index = piece.find(term)
+        if index < 0:
+            return False
+        window = piece[max(0, index - 4) : index]
+        return any(negator in window for negator in ("不", "未", "没", "没有", "别"))
+
     kept_paragraphs: list[str] = []
     for paragraph in re.split(r"\n{2,}", body):
         pieces = re.findall(r"[^。！？\n]+[。！？]?", paragraph)
-        kept = [piece for piece in pieces if not any(term in piece for term in sentence_block_terms)]
+        kept: list[str] = []
+        for piece in pieces:
+            if any(term in piece for term in sentence_block_terms):
+                continue
+            if any(term in piece and not is_negated(piece, term) for term in service_closure_terms):
+                continue
+            groups = piece_npc_groups(piece)
+            if groups:
+                if kept_npc_group is None:
+                    kept_npc_group = groups[0]
+                elif any(group != kept_npc_group for group in groups):
+                    continue
+            kept.append(piece)
         cleaned = "".join(kept).strip()
         if cleaned:
             kept_paragraphs.append(cleaned)
     sanitized = "\n\n".join(kept_paragraphs).strip()
+    if sanitized and (
+        ("掉落判定×1000" in sanitized or "千倍爆率" in sanitized or "混沌之种" in sanitized)
+        and not any(term in sanitized for term in ("元素回廊", "技能书", "路线", "门槛", "快一步", "领先"))
+    ):
+        sanitized = (
+            sanitized.rstrip()
+            + "\n\n夜烬没有去交委托，也没有把材料换成铜币。他只站在村口，看见职业导师那边的木牌被玩家围住，"
+            "上面写着元素回廊前置和灰狼毒腺的需求。别人还在坡下等第一份毒腺，他的背包已经快满了。"
+            "这一步，够他先摸到下一道门。"
+            "他要抢的不是这几块材料，而是任务门槛后面的技能书入口，是元素法师学徒第一条能拉开差距的职业路线。"
+            "普通玩家还在等掉落，他已经能先一步去问下一张牌。"
+        )
+    if sanitized and _chapter_char_count(sanitized) < REGENERATION_FAST_MIN_CHARS and (
+        "掉落判定×1000" in sanitized or "千倍爆率" in sanitized or "混沌之种" in sanitized
+    ):
+        sanitized = (
+            sanitized.rstrip()
+            + "\n\n他重新拉开面板。\n\n"
+            "等级还是Lv.1，货币还是0铜，清道夫委托也没有提交。血条、法力和法杖耐久都不好看，"
+            "背包格子却已经被低级掉落挤得发红。这个结果不够让他高枕无忧，却足够证明一件事："
+            "同样打一轮怪，别人拿到的是一两份材料，他拿到的是提前触碰门槛的资格。\n\n"
+            "夜烬把面板关掉，没往柜台走。他看了一眼坡下的人群，又看了一眼职业导师门口排起的队。"
+            "现在去领奖励太早，去卖材料也太早。先把这条路线摸清楚，才知道下一步该花哪一枚铜币。"
+        )
     return sanitized or body
 
 
@@ -1015,9 +1175,9 @@ def _normalize_chapter_summary(raw_summary: object, chapter_number: int) -> dict
 
 def _opening_phase_name(chapter_number: int) -> str:
     if chapter_number == 1:
-        return "黄金三章第1章：立世界、立主角、立金手指、立风险、完成第一次收益闭环"
+        return "黄金三章第1章：立世界、立主角、立千倍爆率、完成第一次领先验证"
     if chapter_number == 2:
-        return "黄金三章第2章：扩大收益、验证规则、让市场/商人/公会压力逼近"
+        return "黄金三章第2章：把千倍爆率转成任务、装备或路线领先"
     if chapter_number == 3:
         return "黄金三章第3章：第一个小高潮、明确敌对压力、确立长期成长路线"
     return "常规连载章节：目标、行动、收益、压力、钩子循环"
@@ -1026,7 +1186,7 @@ def _opening_phase_name(chapter_number: int) -> str:
 def _opening_writer_rules(chapter_number: int) -> list[str]:
     if chapter_number == 1:
         return [
-            "第一章承担读者入门职责：必须自然交代现实压力、游戏入口、主角技能来源、金手指首次露头和一个低级服务门槛。",
+            "第一章承担读者入门职责：必须自然交代现实压力、游戏入口、主角技能来源、金手指首次露头和下一步领先目标。",
             "500字内要出现强钩子；1000字内要让读者知道主角缺什么、怕什么、想要什么。",
             "番茄长篇节奏：第一章目标篇幅按4200到5500字写，不要压缩成3000字以内的信息摘要。",
             "游戏背景要通过登录界面、系统公告、玩家闲聊、路牌或柜台观察写出来，不要用百科段落硬讲。",
@@ -1039,20 +1199,20 @@ def _opening_writer_rules(chapter_number: int) -> list[str]:
             "现实钱语义锁死：27.60是银行卡余额或可用余额，不是最低还款额；不要把现实压力写轻。",
             "金手指不能凭空弹出：必须先有旧头盔/底层日志/接驳异常等触发，再出现“底层协议校验通过”和“混沌之种：未解析”。",
             "统一术语：本项目隐藏优势必须出现“千倍爆率”四个字；可以同时写掉落判定×1000，但不能只写异常或不正常。",
-            "第一章冲突是现实缺钱、旧设备、血蓝耐久、背包格和服务门槛；不要写成赵胖子或公会和主角正面争夺核心资源。",
+            "第一章冲突是现实缺钱、旧设备、首次验证成本和主角意识到自己能比普通玩家快一步；不要把焦点写成几颗材料怎么处理。",
             "第一章禁止越级冲突：公会不能精准锁定坐标/现实身份，不能围杀主角，不能直接抢世界BOSS或高阶副本。",
-            "第一章不要完成交易闭环：禁止寄售成功、成交、到账、手续费扣款、材料换成人民币；只允许看到交易行门口、价牌、批次或收购牌，作为下一章弱钩子。",
-            "交易行弱钩子要轻：主角可以看到价牌/入口/批次提示，知道东西也许有价，但本章不操作、不成交、不引来商人或公会。",
-            "金手指首次验证必须同时带来收益和代价：掉落变多的爽点，以及血量、法力、耐久、背包格、没铜币修理/寄存的具体麻烦。",
-            "第一章必须收敛：最多一个命名NPC服务节点完整出场，例如药剂师洛婶或职业导师艾伦；其他NPC只能一笔带过。",
+            "第一章不要完成交易闭环：禁止寄售成功、成交、到账、手续费扣款、材料换成人民币；交易行如果出现只能是背景，不是本章目标。",
+            "下一步钩子要落在进度领先上：主角意识到这些掉落能更快交任务、换装备、学技能或摸到下一条路线，而不是纠结几颗材料值多少钱。",
+            "金手指首次验证必须同时带来收益和代价：掉落变多的爽点要指向任务/装备/技能领先，血量、法力、耐久和背包只作为节奏摩擦。",
+            "第一章必须收敛：NPC、柜台、价牌和队伍只作为环境入口或下一章目标，不强制完整服务出场；如果出现命名NPC，只能一笔带过。",
             "第一章禁止赵胖子正面登场、禁止白袍据点视角、禁止公会完整追查戏；商人和公会不要出场，最多留一个交易行价牌弱钩子。",
-            "第一章不要连续写药剂铺、职业大厅、修理铺、公会据点等多视角场景；优先完成现实压力、登录、首次验证、一个柜台门槛和交易行弱钩子。",
+            "第一章不要连续写药剂铺、职业大厅、修理铺、公会据点等多视角场景；优先完成现实压力、登录、首次验证和下一步领先钩子。",
         ]
     if chapter_number in (2, 3):
         return [
             f"{_opening_phase_name(chapter_number)}。",
             "继续补足世界运行规则，但只通过行动、界面、对话、论坛、公告、交易记录和冲突自然露出。",
-            "冲突必须按阶段升级：第2章偏资源路线、NPC任务、市场批次和公会外围试探；第3章才允许更具体的压价、拉拢、设局或职业试炼门槛。",
+            "冲突必须按阶段升级：第2章偏任务领先、装备门槛和新路线入口；第3章再写更具体的资源点竞争或职业试炼门槛。",
             "第2章必须承接第一章账本：夜烬等级1、经验30/100、职业元素法师学徒、货币15铜、库存毒腺×8狼皮×5、粗糙木杖耐久9/10；本章可以推进材料与经验，但不能直接完成元素回廊前置、不能直接升级到2级，除非完整写出足够击杀、材料、经验和消耗账本。",
             "禁止越级：不要让敌人单次交易就知道隐藏天赋，不要让公会会长亲自围杀新手散人，不要提前写成服务器级大战。",
             "每个背景信息都必须服务当前目标、压力或爽点，不要停下来写设定说明书。",
@@ -1061,6 +1221,48 @@ def _opening_writer_rules(chapter_number: int) -> list[str]:
         "优先保持连载节奏：目标明确、行动具体、收益有代价、章末有新压力。",
         "必要背景只在影响本章选择、冲突或收益时补充。",
     ]
+
+
+def _review_protagonist_names(event_plan: dict[str, Any], simulation_plan: dict[str, Any] | None = None) -> tuple[str, ...]:
+    """Extract likely protagonist names for local prose reviewers.
+
+    The prose-rule reviewer can only detect "the protagonist never speaks" if
+    it knows which names belong to the lead. Director plans already carry this
+    in ordered_actions; keep the extraction narrow so NPC names do not flood
+    the speech gate.
+    """
+
+    names: list[str] = []
+
+    def add(value: object) -> None:
+        name = str(value or "").strip()
+        if not name or len(name) > 12:
+            return
+        if name in {"主角", "玩家", "散人", "NPC", "系统", "旁人", "众人"}:
+            return
+        if name not in names:
+            names.append(name)
+
+    def scan_plan(plan: dict[str, Any]) -> None:
+        primary = plan.get("primary_conflict")
+        if isinstance(primary, dict):
+            add(primary.get("lead"))
+        for action in plan.get("ordered_actions") or []:
+            if isinstance(action, dict):
+                add(action.get("name"))
+
+    if isinstance(event_plan, dict):
+        scan_plan(event_plan)
+    if isinstance(simulation_plan, dict):
+        nested_event_plan = simulation_plan.get("event_plan")
+        if isinstance(nested_event_plan, dict):
+            scan_plan(nested_event_plan)
+        performance = simulation_plan.get("character_performance")
+        if isinstance(performance, dict):
+            for name in performance.keys():
+                add(name)
+
+    return tuple(names[:4])
 
 
 def _review_chapter_body(
@@ -1080,10 +1282,11 @@ def _review_chapter_body(
         for token in ("《天启之门》", "VRMMO", "网游", "交易行", "混沌之种", "千倍爆率", "低级材料", "game_webnovel")
     )
     simulation_plan = simulation_plan or {}
+    min_chapter_chars = _chapter_review_min_chars(simulation_plan)
     issues: list[str] = []
     revision_plan: list[str] = []
     scores = {
-        "webnovel_hook": 8 if len(compact_body) >= MIN_CHAPTER_CHARS else 5,
+        "webnovel_hook": 8 if len(compact_body) >= min_chapter_chars else 5,
         "background_integration": 8,
         "protagonist_motivation": 8,
         "genre_rules": 8,
@@ -1098,9 +1301,9 @@ def _review_chapter_body(
             issues.append(issue)
             revision_plan.append(plan)
 
-    if len(compact_body) < MIN_CHAPTER_CHARS:
+    if len(compact_body) < min_chapter_chars:
         scores["webnovel_hook"] = min(scores["webnovel_hook"], 5)
-        issues.append(f"章节字数偏少：当前约{len(compact_body)}字，番茄长篇建议至少{MIN_CHAPTER_CHARS}字。")
+        issues.append(f"章节字数偏少：当前约{len(compact_body)}字，番茄长篇建议至少{min_chapter_chars}字。")
         revision_plan.append(f"扩写到{TARGET_CHAPTER_CHARS}，补足场景、对话、心理、交易过程、NPC服务边界和章末弱钩子，避免摘要化。")
 
     if chapter_number == 1 and game_context:
@@ -1214,7 +1417,7 @@ def _review_chapter_body(
         if (merchant_direct_pressure or guild_direct_pressure) and pacing_hits >= 5:
             scores["genre_rules"] = min(scores["genre_rules"], 5)
             issues.append("第一章节奏过载：登录、金手指、刷怪、回村交易、商人登场和公会追查被压进同一章。")
-            revision_plan.append("拆分开篇节奏：第一章只保留现实压力、登录建号、职业面板、金手指伏笔和小额验证；交易成交、商人正面试探、公会追查、论坛围观全部放到第2章以后。")
+            revision_plan.append("拆分开篇节奏：第一章只保留现实压力、登录建号、职业面板、金手指伏笔和首次领先验证；交易成交、商人正面试探、公会追查、论坛围观全部放到后面，并且必须等稀有物、榜单或多源证据出现后再升级。")
 
         first_chapter_trade_terms = (
             "匿名寄售",
@@ -1230,7 +1433,7 @@ def _review_chapter_body(
         if any(token in body for token in first_chapter_trade_terms):
             scores["genre_rules"] = min(scores["genre_rules"], 5)
             issues.append("第一章提前展开交易线：出现寄售、成交、到账、手续费、商人盯盘或赵胖子内容。")
-            revision_plan.append("删除第一章的实际交易和商人线，只保留背包材料、任务材料预留和章末“下一步去交易行/提交任务”的目标。")
+            revision_plan.append("删除第一章的实际交易和商人线，只保留掉落、任务材料预留和章末“下一步用高爆率抢任务/装备/技能门槛”的目标。")
 
         first_chapter_pressure_terms = ("白袍", "公会", "论坛", "清场", "后勤", "异常低价", "观察名单")
         if any(token in body for token in first_chapter_pressure_terms):
@@ -1254,8 +1457,8 @@ def _review_chapter_body(
         )
         if any(token in body for token in opening_overreach_terms):
             scores["genre_rules"] = min(scores["genre_rules"], 5)
-            issues.append("第一章冲突越级：开篇应以现实压力、登录建号、职业选择、规则验证和一个NPC服务门槛为主，不能写成公会/商人正面对抗或高阶资源争夺。")
-            revision_plan.append("把冲突降级为网游新手阶段：现实资金压力、职业选择成本、第一次打怪验证、NPC服务边界和背包材料如何处理。")
+            issues.append("第一章冲突越级：开篇应以现实压力、登录建号、职业选择、规则验证和背包材料暂时不能处理为主，不能写成公会/商人正面对抗或高阶资源争夺。")
+            revision_plan.append("把冲突降级为网游新手阶段：现实资金压力、职业选择成本、第一次打怪验证、血蓝耐久消耗和背包材料如何处理。")
 
     if "数量×1000" in body and re.search(r"获得：[^。\n】]*[×x]\s*100(?:[。】\n]|$)", body):
         scores["genre_rules"] = min(scores["genre_rules"], 5)
@@ -1263,7 +1466,7 @@ def _review_chapter_body(
         revision_plan.append("要么把天赋说明改为爆率/判定权重×1000，要么把首次掉落数量改为×1000，并同步后续背包、交易和市场反应。")
 
     if (
-        chapter_number <= 3
+        chapter_number in (2, 3)
         and ("NPC：" in facts_text or event_plan.get("npc_beats"))
         and not any(token in body for token in ("灰烬村村长", "药剂师洛婶", "职业导师艾伦", "仓库管理员铁栓", "修理匠老葛", "村长", "洛婶", "艾伦", "铁栓", "老葛"))
     ):
@@ -1320,7 +1523,25 @@ def _review_chapter_body(
             "在前1000字内明确展示混沌之种/千倍爆率的首次验证和代价。",
         )
         if any(token in body for token in ("隐藏天赋", "混沌之种", "千倍爆率", "爆率修正")) and not any(
-            token in body for token in ("异常邀请码", "旧头盔", "内测", "职业选择", "神经接驳", "协议异常", "角色创建", "触发条件", "底层日志", "灰色日志")
+            token in body
+            for token in (
+                "异常邀请码",
+                "旧头盔",
+                "内测",
+                "职业选择",
+                "神经接驳",
+                "接驳",
+                "协议异常",
+                "角色创建",
+                "创建角色",
+                "登录入口",
+                "登录界面",
+                "开服倒计时",
+                "全沉浸",
+                "触发条件",
+                "底层日志",
+                "灰色日志",
+            )
         ):
             scores["genre_rules"] = min(scores["genre_rules"], 5)
             issues.append("第一章金手指出现缺少触发条件或前置伏笔，读起来像凭空弹出。")
@@ -1361,6 +1582,17 @@ def _review_chapter_body(
     style_review = review_prose_style(body)
     prose_quality_review = review_prose_quality(body)
     adversarial_cut_review = review_adversarial_cuts(body)
+    ai_flavor_review = review_ai_flavor(body)
+    progression_lead_review = review_progression_lead(
+        chapter_number=chapter_number,
+        body=body,
+        event_plan=event_plan,
+        world_facts=world_facts or [],
+    )
+    critical_review = review_critical_prose_rules(
+        body,
+        protagonist_names=_review_protagonist_names(event_plan, simulation_plan),
+    )
     if simulation_plan:
         scores["simulation_plan_alignment"] = 8
         missing_review_focus = not simulation_plan.get("review_focus")
@@ -1402,6 +1634,30 @@ def _review_chapter_body(
     for item in style_review.get("revision_plan", []):
         if item not in revision_plan:
             revision_plan.append(item)
+    for key, score in critical_review.get("scores", {}).items():
+        scores[f"critical_{key}"] = score
+    for issue in critical_review.get("issues", []):
+        if issue not in issues:
+            issues.append(issue)
+    for item in critical_review.get("revision_plan", []):
+        if item not in revision_plan:
+            revision_plan.append(item)
+    for key, score in ai_flavor_review.get("scores", {}).items():
+        scores[f"ai_flavor_{key}"] = score
+    for issue in ai_flavor_review.get("issues", []):
+        if issue not in issues:
+            issues.append(issue)
+    for item in ai_flavor_review.get("revision_plan", []):
+        if item not in revision_plan:
+            revision_plan.append(item)
+    for key, score in progression_lead_review.get("scores", {}).items():
+        scores[f"progression_lead_{key}"] = score
+    for issue in progression_lead_review.get("issues", []):
+        if issue not in issues:
+            issues.append(issue)
+    for item in progression_lead_review.get("revision_plan", []):
+        if item not in revision_plan:
+            revision_plan.append(item)
 
     passed = all(score >= 8 for score in scores.values()) and not issues
     world_state_review = _build_world_state_review(issues, revision_plan)
@@ -1412,6 +1668,9 @@ def _review_chapter_body(
         "revision_plan": revision_plan,
         "prose_quality_review": prose_quality_review,
         "adversarial_cut_review": adversarial_cut_review,
+        "ai_flavor_review": ai_flavor_review,
+        "progression_lead_review": progression_lead_review,
+        "critical_review": critical_review,
         "world_state_review": world_state_review,
         "scene_contract_failures": scene_contract_failures,
         "scene_repair_plan": scene_repair_plan,
@@ -1432,7 +1691,7 @@ def _merge_writing_review_quality(quality: dict, writing_review: dict) -> dict:
             issues.append("writing_review")
     merged["issues"] = issues
     merged["writing_review"] = writing_review
-    for key in ("critical_review", "hook_review", "pacing_review", "beats_review"):
+    for key in ("critical_review", "hook_review", "pacing_review", "beats_review", "ai_flavor_review", "progression_lead_review"):
         if isinstance(writing_review.get(key), dict):
             merged[key] = writing_review[key]
     return merged
@@ -1580,11 +1839,45 @@ def _prose_grounded_writing_plan(plan: dict[str, Any] | None) -> dict[str, Any]:
     return {key: value for key, value in packet.items() if value not in (None, "", [], {})}
 
 
+def _simulation_variant_from_plan(plan: dict[str, Any] | None) -> dict[str, Any]:
+    plan = plan if isinstance(plan, dict) else {}
+    simulation_plan = plan.get("simulation_plan") if isinstance(plan.get("simulation_plan"), dict) else {}
+    simulation_variant = (
+        simulation_plan.get("simulation_variant") if isinstance(simulation_plan.get("simulation_variant"), dict) else {}
+    )
+    return simulation_variant
+
+
+def _simulation_variant_from_simulation_plan(simulation_plan: dict[str, Any] | None) -> dict[str, Any]:
+    simulation_plan = simulation_plan if isinstance(simulation_plan, dict) else {}
+    simulation_variant = (
+        simulation_plan.get("simulation_variant") if isinstance(simulation_plan.get("simulation_variant"), dict) else {}
+    )
+    return simulation_variant
+
+
+def _should_expand_chapter(body: str, plan: dict[str, Any] | None) -> bool:
+    if _simulation_variant_from_plan(plan).get("skip_expansion"):
+        return False
+    return _chapter_char_count(body) < MIN_CHAPTER_CHARS
+
+
+def _chapter_review_min_chars(simulation_plan: dict[str, Any] | None) -> int:
+    variant = _simulation_variant_from_simulation_plan(simulation_plan)
+    if variant.get("skip_expansion"):
+        return REGENERATION_FAST_MIN_CHARS
+    if variant:
+        return REGENERATION_MIN_CHARS
+    return MIN_CHAPTER_CHARS
+
+
 def _style_adapt_enabled(plan: dict[str, Any] | None) -> bool:
     plan = plan if isinstance(plan, dict) else {}
     if str(plan.get("write_mode", "")).strip().lower() in {"fast", "speed", "rough"}:
         return False
     simulation_plan = plan.get("simulation_plan") if isinstance(plan.get("simulation_plan"), dict) else {}
+    if _simulation_variant_from_plan(plan).get("skip_style_adapt"):
+        return False
     return bool(
         plan.get("style_adapt", True)
         and (
@@ -1593,6 +1886,21 @@ def _style_adapt_enabled(plan: dict[str, Any] | None) -> bool:
             or simulation_plan.get("chapter_goal")
         )
     )
+
+
+def _segment_needs_model_revision(review: dict[str, Any]) -> bool:
+    """Only spend another writer call on hard segment failures."""
+
+    if not isinstance(review, dict):
+        return False
+    scores = review.get("scores") if isinstance(review.get("scores"), dict) else {}
+    if int(scores.get("segment_scope", 8) or 0) < 8:
+        return True
+    if int(scores.get("segment_surface", 8) or 0) < 8:
+        return True
+    critical = review.get("critical_review") if isinstance(review.get("critical_review"), dict) else {}
+    severity = critical.get("severity_summary") if isinstance(critical.get("severity_summary"), dict) else {}
+    return bool(critical.get("hard_issues") or severity.get("has_hard_violation"))
 
 
 def _game_genre_defaults(story: StoryState) -> dict[str, str]:
@@ -1622,6 +1930,13 @@ def _chapter_prompt_method_block(
 ) -> list[str]:
     plan = plan if isinstance(plan, dict) else {}
     spec = _chapter_prompt_spec(chapter_number, plan)
+    taskbook = ensure_writing_taskbook(chapter_number, plan)
+    taskbook_section = format_taskbook_prompt_section(taskbook)
+    taskbook_scenes = taskbook.get("scenes") if isinstance(taskbook.get("scenes"), list) else []
+    game_first_chapter = chapter_number == 1 and any(
+        isinstance(scene, dict) and scene.get("key") == "entry_login" for scene in taskbook_scenes
+    )
+    whole_body_contract = first_chapter_whole_body_contract(game_genre=game_first_chapter)
     director_card = plan.get("web_game_director_card")
     simulation_plan = plan.get("simulation_plan") if isinstance(plan.get("simulation_plan"), dict) else {}
     if not isinstance(director_card, dict):
@@ -1632,11 +1947,26 @@ def _chapter_prompt_method_block(
         "番茄白话风：用普通读者一眼能懂的话写，少用比喻和华丽修辞，少解释，多写动作、对话、面板、背包、耐久、药水和直接后果。",
         "后台词翻译：不要在正文或标题里写后台硬词；把它们改成“试一把、问一嘴、柜台能不能办、先别卖、包快满、药水不够、法杖快断”。",
         "第一章目标口语化：不要把目标写成后台硬词，要写成苏叶先试清楚这东西靠不靠谱、亏不亏、能不能带回去。",
+        "第一章领先流：材料只是通行券，不是高潮；章末要指向任务、装备、技能或路线门槛上的提前一步，不要写成交任务、领取铜币、扣费修理或购买药水。",
         "情绪暗线：本章至少三次把角色的担心、试探、犹豫、侥幸或欲望落到动作、停顿、视线、手势和错开的回答上。",
         "硬词清零：不要写“边界、底层逻辑、基准、推演、结算链、审稿、场景卡”。用“能不能走、规矩、底价、试一把、柜台说法”替代。",
+        "职业背景落地：苏叶做过风控/测试，只能体现为先看余额、数铜币、看蓝耗、摸法杖耐久、停一下再问价；不要把职业背景直接写成数据模型、现金流、可量化、概率、止损线、变量、算法或后台数据异常。",
+        "报告腔禁用：不要写“意味着、这说明、规则被撬开、常规掉落池、系统把溢出部分折算、模型跑不动”。发现异常时，写成背包格变满、提示闪一下、手指停住、旁人看不懂或主角先收东西。",
         "写法施工单",
         "本章按“进入压力 -> 尝试动作 -> 即时反馈 -> 选择代价 -> 余波/小钩子”推进",
         "抽象判断必须落到具体物件或动作；对话必须改变筹码、知道的信息、价格、信任或能办的事。",
+        taskbook_section,
+        *(
+            [
+                "第一章整章写法契约：本次不用分段生成，按整章连续正文自然完成。",
+                f"整章四拍：{whole_body_contract['beat_map']}",
+                f"四拍要求：{_plain_prompt_json(whole_body_contract['beats'])}",
+                f"白描与自然对话：{_plain_prompt_json([*whole_body_contract['style'], *whole_body_contract['dialogue']])}",
+                f"整章禁区：{_plain_prompt_json(whole_body_contract['avoid'])}",
+            ]
+            if whole_body_contract
+            else []
+        ),
         "硬性质量闸门",
         f"一、视角：保持主角限知第三人称；章节：第{chapter_number}章。",
         "二、后台术语和事实矛盾词不得进正文。审核术语、规则术语、推演词不得入正文。",
@@ -1903,6 +2233,29 @@ class StoryOrchestrator:
                 return "", error
             return "", f"模型请求失败：{exc}"
 
+    def _timed_chat(
+        self,
+        story: StoryState,
+        prompt: str,
+        *,
+        max_tokens: int,
+        json_mode: bool,
+        agent: str = "director",
+        stage: str,
+    ) -> tuple[str, str]:
+        started = perf_counter()
+        text, error = self._chat(
+            story,
+            prompt,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            agent=agent,
+        )
+        elapsed = perf_counter() - started
+        suffix = "失败" if error else "完成"
+        report_generation_progress(f"{stage}耗时 {elapsed:.1f}s：{suffix}")
+        return text, error
+
     def _plan_prompt(self, story: StoryState, chapter_number: int) -> str:
         snapshot = _story_snapshot(story)
         chapter_seed = build_chapter_seed(story, chapter_number)
@@ -1949,23 +2302,24 @@ class StoryOrchestrator:
                 "职业连续性硬规则：现实职业和游戏职业必须分层；苏叶现实职业固定为前外包经济模型/风控测试员，夜烬游戏路线固定为元素法师学徒/元素法师，不得写成战士、刺客或短剑主战。",
                 "装备账本硬规则：任何购买、替换、修理、耐久变化、消耗品购买和关键掉落，都必须写入 ledger_updates.equipment 或 ledger_updates.economy.inventory，并在章节摘要留下事实。",
                 "NPC设定硬规则：命名NPC首次或重点出场必须交代地点、职责/服务、利益诉求或口吻、能知道什么/不知道什么；NPC不能只是发任务的牌子。",
-                "章节摘要硬规则：chapter_summary.facts 与 memory_constraints.must_keep_facts 必须记录本章出现的关键经济/职业/装备/NPC锚点，包括材料价格、处理门槛、最终余额、关键库存、职业路线、装备耐久和NPC能办什么。",
+                "章节摘要硬规则：chapter_summary.facts 与 memory_constraints.must_keep_facts 必须记录本章出现的关键进度/职业/装备/NPC锚点，包括任务进度、经验变化、关键库存、职业路线、装备耐久、下一步门槛和NPC能办什么。",
                 "冲突阶段硬规则：必须优先遵守 world_facts 里的“第N章冲突模式/禁止冲突”；冲突要从游戏规则、资源稀缺、任务门槛、可见痕迹、玩家势力利益和NPC柜台规矩长出来，不要套玄幻式抢机缘。",
-                "第1-3章必须按黄金三章职责设计，尤其第1章要给出至少4条 exposition_beats：现实压力、主角工作背景、登录建号、游戏ID/职业面板、第一次低级试水、一个NPC柜台门槛。",
+                "第1-3章必须按黄金三章职责设计，尤其第1章要给出至少4条 exposition_beats：现实压力、主角工作背景、登录建号、游戏ID/职业面板、第一次领先验证、下一步成长目标。",
                 "第一章主角背景必须包含现实职业/工作状态/现实技能来源；不要只写缺钱、房租、医疗账单。",
                 "第一章金手指必须先铺触发条件或伏笔，再首次验证；不能开场直接出现完整隐藏面板。",
                 "网游身份硬规则：计划中必须区分现实姓名和游戏ID；第1章要在登录/建号/角色面板里写出主角游戏ID，游戏内称呼优先使用游戏ID。",
-                "第一章冲突不要设计成正面对抗或争核心资源，应设计成现实压力、隐藏优势靠不靠谱、血蓝耐久/背包成本和NPC柜台门槛。",
+                "第一章冲突不要设计成正面对抗或争核心资源，应设计成现实压力、隐藏优势靠不靠谱、第一次领先验证和下一步任务/装备/技能门槛。",
                 "第一章表面必写：短角色面板必须出现职业栏、等级、经验、生命/法力、新手法杖或基础技能；首次试怪必须出现“千倍爆率”或“掉落判定×1000”的可见马脚。",
-                "第一章收敛硬规则：只能选择一个命名NPC作为完整互动柜台，推荐药剂师洛婶、仓库管理员铁栓或修理匠老葛；其他NPC和服务点只能作为路牌、排队窗口、公告板或玩家闲聊一笔带过，不要写出姓名。",
+                "第一章领先流硬规则：低级材料只作为提前满足门槛的证据；不得规划提交清道夫委托、领取30铜、修理铺扣费、购买药水或任何服务闭环。",
+                "第一章收敛硬规则：NPC、交易行、论坛和公会只作环境入口或下一章钩子；第一章不强制完整NPC柜台，如果出现命名NPC，只能作为路牌、排队窗口、公告板或一笔带过的价牌。",
                 "第一章禁止规划现实债主正面登场、玩家势力据点视角、完整追查、修理铺/药剂铺/职业大厅多视角连环戏。",
-                "第一章节奏必须留白：不要把登录、金手指发现、大量刷怪、完整材料处理、市场玩家正面登场、玩家势力追过来全部压进一章；本章只完成第一次低级试水和一个柜台问题。",
+                "第一章节奏必须留白：不要把登录、金手指发现、大量刷怪、完整材料处理、市场玩家正面登场、玩家势力追过来全部压进一章；本章只完成第一次领先验证和一个下一步成长目标。",
                 "术语统一：隐藏优势统一写“千倍爆率”；不要输出“1000倍爆率”。若必须表示计算倍率，写“掉落判定×1000”。",
-                "第2章冲突优先从刷怪路线、补给/耐久/背包成本、NPC任务前置、材料处理批次异常和玩家势力外围试探生成；第3章再升级到压价、拉拢、设局、职业试炼门槛或资源点秩序冲突。",
-                "市场可见性规则：低级材料匿名处理只暴露价格、数量和时间戳等弱线索；不能单次暴露坐标、身份或刷怪点。玩家势力介入必须来自重复模式、稀有物、公告榜单、资源点目击、NPC任务异常或多源记录汇总。",
-                "exposition_beats 必须能被写作 Agent 写成登录界面、现实细节、公共频道零散噪音、市场柜台界面、玩家闲聊、公告或场景观察。",
-                "必须给出至少2条 world_reactions，但第1章只允许普通玩家表层误读、NPC柜台反馈或环境阻力，不允许正式市场/玩家势力/公共频道追过来。",
-                "如果题材是网游/游戏系统流，event_plan 必须给出至少1条 npc_beats、1条 quest_beats、1条 location_beats；NPC不能只讲设定，必须提供服务、门槛、任务反馈或能知道什么/不知道什么。",
+                "第2章冲突优先从刷怪路线、补给/耐久、NPC任务前置、装备/技能门槛、普通玩家进度对比生成；第3章再升级到路线竞争、职业试炼门槛、资源点秩序或玩家势力外围试探。",
+                "市场可见性规则：低级材料是大型服务器噪音，只暴露普通价格、数量和时间戳等弱线索；不能单次暴露坐标、身份或刷怪点。玩家势力介入必须来自重复模式、稀有物、公告榜单、资源点目击、NPC任务异常或多源记录汇总。",
+                "exposition_beats 必须能被写作 Agent 写成登录界面、现实细节、公共频道零散噪音、任务柜台界面、玩家闲聊、公告或场景观察。",
+                "必须给出至少2条 world_reactions，但第1章只允许普通玩家表层误读、队伍/背包/任务门槛等环境阻力，不允许正式市场/玩家势力/公共频道追过来。",
+                "如果题材是网游/游戏系统流，第2章起 event_plan 必须给出至少1条 npc_beats、1条 quest_beats、1条 location_beats；NPC不能只讲设定，必须提供服务、门槛、任务反馈或能知道什么/不知道什么。",
                 "NPC硬规则：只能优先使用 world_facts 已建档的命名 NPC，例如灰烬村村长、药剂师洛婶、职业导师艾伦、仓库管理员铁栓、修理匠老葛；不要发明“新手村导师”“杂货商老约翰”这类无档案泛 NPC。",
                 "角色要求：每个主要角色都必须有私心、误判、底线或恐惧；character_moves 不能只写功能性动作，必须体现角色档案里的动机、秘密、关系张力和说话/处事方式。",
                 "关系要求：如果角色之间已有 trust/tension/bond，本章计划必须让至少一组关系发生可感知变化，例如试探、拉拢、隐瞒、交易、误会或威胁。",
@@ -1976,6 +2330,7 @@ class StoryOrchestrator:
 
     def _body_prompt(self, story: StoryState, chapter_number: int, plan: dict) -> str:
         plan = plan if isinstance(plan, dict) else {}
+        plan = {**plan, "writing_taskbook": ensure_writing_taskbook(chapter_number, plan, genre=story.genre, style=story.style)}
         hard_rules = compact_list(story.author_constraints, max_items=18, item_chars=220)
         living_world = _priority_world_facts(story.world_facts, max_items=42, item_chars=220)
         chapter_seed = build_chapter_seed(story, chapter_number)
@@ -1983,7 +2338,6 @@ class StoryOrchestrator:
         web_game_rules = web_game_review_rules()
         style_rules = anti_ai_style_rules()
         style_guidance = plan.get("style_guidance", {})
-        scene_protocol = _scene_card_writing_protocol(plan.get("scene_cards", []))
         is_game = _story_game_context(story, plan)
         if is_game:
             game_defaults_for_seed = _game_genre_defaults(story)
@@ -2028,11 +2382,12 @@ class StoryOrchestrator:
                 [
                     f"游戏主角默认信息：游戏ID={game_defaults['game_id']}；职业路线={game_defaults['class_path']}。战斗、任务和成长必须围绕该职业路线展开，不得写成固定职业模板。",
                     f"网游插件审稿规则：{_plain_prompt_json(web_game_rules_for_prompt)}",
-                    f"统一场景推演/表演蓝图：{_plain_prompt_json(plan.get('simulation_plan', {}))}",
-                    f"世界发生层 world_events：{_plain_prompt_json(plan.get('world_events', []))}",
-                    f"小说表演层 scene_cards：{_plain_prompt_json(plan.get('scene_cards', []))}",
-                    f"场景卡到正文写作协议：\n{plain_writer_phrase(scene_protocol)}",
-                    f"网游插件要求：每章至少出现一个能改变局势的 NPC 或 NPC 柜台；NPC要有自己的口吻、职责、可见信息和限制，不能全知全能。",
+                    "原始推演结构已经压缩进写作任务书；不要读取或复述后台结构名。",
+                    (
+                        "第一章网游要求：NPC、交易行、论坛、公会只作为下一章钩子或环境入口，不强制正面出场；本章只写登录、小验证和下一步决定。"
+                        if chapter_number == 1
+                        else "网游插件要求：每章至少出现一个能改变局势的 NPC 或 NPC 柜台；NPC要有自己的口吻、职责、可见信息和限制，不能全知全能。"
+                    ),
                     f"术语统一要求：正文统一写“千倍爆率”，不要混用“1000倍爆率”；计算提示可写“掉落判定×1000”。",
                 ]
             )
@@ -2058,8 +2413,8 @@ class StoryOrchestrator:
 
     def _revision_prompt(self, story: StoryState, chapter_number: int, body: str, plan: dict, review: dict) -> str:
         plan = plan if isinstance(plan, dict) else {}
+        plan = {**plan, "writing_taskbook": ensure_writing_taskbook(chapter_number, plan, genre=story.genre, style=story.style)}
         review = review if isinstance(review, dict) else {}
-        scene_protocol = _scene_card_writing_protocol(plan.get("scene_cards", []))
         forbidden_terms = _revision_forbidden_terms(review, plan)
         fix_checklist = _revision_fix_checklist(review)
         style_guidance = plan.get("style_guidance", {})
@@ -2087,15 +2442,16 @@ class StoryOrchestrator:
                 f"硬性修复清单：{_plain_prompt_json(fix_checklist)}",
                 f"scene_contract_repair_plan：{_plain_prompt_json(scene_repair_plan)}",
                 f"正文禁词清单（逐字删除，不能照抄到改稿正文）：{json.dumps(forbidden_terms, ensure_ascii=False)}",
-                f"场景卡到正文改稿协议：\n{plain_writer_phrase(scene_protocol)}",
+                f"写作任务书改稿协议：\n{format_taskbook_prompt_section(plan.get('writing_taskbook'), include_all_scenes=True)}",
                 f"推演简表：{_plain_prompt_json(_prose_grounded_writing_plan(plan))}",
                 f"篇幅要求：扩写到{target_chars}。",
                 "改稿限制：不得随意改变等级、经验、货币、掉落和任务结果；但如果是第一章节奏过载，必须删除或后移材料处理、市场玩家、玩家势力、公共频道等越界世界反应。",
-                "事实锁硬规则：scene_cards.fact_locks 中的职业、余额、库存、任务、装备和NPC能知道什么/不知道什么不得被润色改动；若不能确定，保留原文事实。",
+                "第一章改稿保护：修领先流问题时，不得删除现实职业来源、登录/建号、游戏ID夜烬、职业选择、元素法师学徒、短角色面板、基础火球术、混沌之种或掉落判定×1000。",
+                "事实锁硬规则：任务书和场景事实里的职业、余额、库存、任务、装备和NPC能知道什么/不知道什么不得被润色改动；若不能确定，保留原文事实。",
                 "如果审稿指出字数偏少，必须扩写到目标篇幅，增加场景、对话、行动过程、心理和题材规则细节，不要只重复原文。",
                 "如果 scene_contract_repair_plan 非空，必须只重写失败场景：只补 failed_scenes 对应场景缺失的可见后果，其他场景保持事实、顺序和账本不变，只做必要衔接。",
                 "如果正文禁词清单非空，改稿后必须逐项自检，保证禁词不再出现在小说正文里；只能保留在本提示词中，不能输出到正文。",
-                "改完后自检：硬性修复清单逐条完成；正文禁词清单逐项清零；scene_cards 的 must_show 必须全部表面化；不要输出自检说明。",
+                "改完后自检：硬性修复清单逐条完成；正文禁词清单逐项清零；任务书必写内容必须全部表面化；不要输出自检说明。",
                 "只输出改稿后的完整小说正文，不要解释，不要列大纲。",
                 f"原正文：\n{body}",
             ]
@@ -2113,7 +2469,7 @@ class StoryOrchestrator:
 
         for index, spec in enumerate(specs, start=1):
             report_generation_progress(f"分段写作中 {index}/{len(specs)}：{spec.title}")
-            segment_text, segment_error = self._chat(
+            segment_text, segment_error = self._timed_chat(
                 story,
                 build_segment_prompt(
                     chapter_number=chapter_number,
@@ -2124,17 +2480,22 @@ class StoryOrchestrator:
                 max_tokens=2600,
                 json_mode=False,
                 agent="writer",
+                stage=f"分段写作 {index}/{len(specs)}：{spec.title}",
             )
             if segment_error or not segment_text.strip():
                 return "", segment_error or f"segment_empty:{spec.key}", segment_reviews
 
-            segment_text = _sanitize_generated_body(segment_text)
+            segment_text = trim_segment_to_contract(
+                spec,
+                _sanitize_generated_body(segment_text),
+                chapter_number=chapter_number,
+            )
             review = review_segment_output(spec, segment_text, chapter_number=chapter_number)
-            if not review.get("pass"):
+            if not review.get("pass") and _segment_needs_model_revision(review):
                 report_generation_progress(f"局部改稿中 {index}/{len(specs)}：{spec.title}")
                 original_segment_text = segment_text
                 original_segment_review = review
-                revised_text, revised_error = self._chat(
+                revised_text, revised_error = self._timed_chat(
                     story,
                     build_segment_revision_prompt(
                         spec,
@@ -2146,9 +2507,14 @@ class StoryOrchestrator:
                     max_tokens=2600,
                     json_mode=False,
                     agent="writer",
+                    stage=f"局部改稿 {index}/{len(specs)}：{spec.title}",
                 )
                 if not revised_error and revised_text.strip():
-                    candidate_segment_text = _sanitize_generated_body(revised_text)
+                    candidate_segment_text = trim_segment_to_contract(
+                        spec,
+                        _sanitize_generated_body(revised_text),
+                        chapter_number=chapter_number,
+                    )
                     candidate_segment_review = review_segment_output(spec, candidate_segment_text, chapter_number=chapter_number)
                     segment_safety = choose_best_segment_revision(
                         original_text=original_segment_text,
@@ -2165,6 +2531,20 @@ class StoryOrchestrator:
 
         body = _sanitize_generated_body(merge_segment_outputs(segments))
         return body, "", segment_reviews
+
+    def _use_segmented_writing(self, chapter_number: int, plan: dict) -> bool:
+        """Segment drafting is opt-in only.
+
+        Segmenting remains available for experiments and focused tests, but the
+        production default is whole-chapter drafting. The segment pipeline has a
+        failure mode where later segments restart the chapter and merge into a
+        duplicated draft, so it should not be the default writer path.
+        """
+
+        settings = plan.get("writing_settings") if isinstance(plan, dict) else None
+        if isinstance(settings, dict):
+            return bool(settings.get("use_segmented_writing"))
+        return False
 
     def refresh_revised_bundle_metadata(self, base_story: StoryState, bundle: Any) -> Any:
         """Rebuild summary, ledger and memory surfaces after latest-chapter revision."""
@@ -2289,12 +2669,13 @@ class StoryOrchestrator:
                 )
                 return patched_body, patched_quality, ""
 
-        revised_body, error = self._chat(
+        revised_body, error = self._timed_chat(
             story,
             self._revision_prompt(story, bundle.chapter_number, bundle.body, plan, revision_review),
             max_tokens=7000,
             json_mode=False,
             agent="writer",
+            stage=f"自动改稿 第{bundle.chapter_number}章",
         )
         if error or not revised_body.strip():
             return "", {}, error or "revision_empty"
@@ -2339,12 +2720,13 @@ class StoryOrchestrator:
         working_story.current_chapter = chapter_number
 
         report_generation_progress("剧情计划生成中...")
-        plan_text, plan_error = self._chat(
+        plan_text, plan_error = self._timed_chat(
             working_story,
             self._plan_prompt(working_story, chapter_number),
             max_tokens=8000,
             json_mode=True,
             agent="director",
+            stage="剧情计划生成",
         )
         if plan_error:
             _record_failure(working_story, f"统一推演计划失败：{plan_error}", chapter_number)
@@ -2411,21 +2793,31 @@ class StoryOrchestrator:
             _governance_bundle_view(chapter_number, writer_plan),
             chapter_number=chapter_number,
         )
-
-        report_generation_progress("正文生成中...")
-        report_generation_progress("分段正文生成中...")
-        segment_reviews: list[dict[str, Any]] = []
-        segment_pipeline_used = True
-        body, body_error, segment_reviews = self._write_chapter_in_segments(
-            working_story,
+        writer_plan["writing_taskbook"] = ensure_writing_taskbook(
             chapter_number,
             writer_plan,
+            genre=working_story.genre,
+            style=working_story.style,
         )
+
+        report_generation_progress("正文生成中...")
+        report_generation_progress("整章正文生成中...")
+        segment_reviews: list[dict[str, Any]] = []
+        segment_pipeline_used = self._use_segmented_writing(chapter_number, writer_plan)
+        if segment_pipeline_used:
+            body, body_error, segment_reviews = self._write_chapter_in_segments(
+                working_story,
+                chapter_number,
+                writer_plan,
+            )
+        else:
+            body, body_error = "", ""
         if body_error or not body.strip():
-            segment_pipeline_used = False
             segment_reviews = []
-            report_generation_progress("分段生成失败，回退整章生成中...")
-            body, body_error = self._chat(
+            if segment_pipeline_used:
+                report_generation_progress("分段生成失败，回退整章生成中...")
+            segment_pipeline_used = False
+            body, body_error = self._timed_chat(
                 working_story,
                 self._body_prompt(
                     working_story,
@@ -2435,21 +2827,22 @@ class StoryOrchestrator:
                 max_tokens=7000,
                 json_mode=False,
                 agent="writer",
+                stage=f"整章写作 第{chapter_number}章",
             )
         if body_error or not body.strip():
             _record_failure(working_story, f"统一写作失败：{body_error or '正文为空'}", chapter_number)
             return _failed_bundle(working_story, chapter_number)
-        body = _sanitize_first_chapter_scope(_sanitize_generated_body(body), chapter_number)
+        body = _sanitize_chapter_output(body, chapter_number=chapter_number, scene_cards=scene_cards)
 
-        if _chapter_char_count(body) < MIN_CHAPTER_CHARS:
+        if _should_expand_chapter(body, writer_plan):
             report_generation_progress("章节扩写中...")
-            expanded_body, expand_error = self._chat(
+            expanded_body, expand_error = self._timed_chat(
                 working_story,
                 "\n".join(
                     [
                         "下面这章正文太短，请在不改变剧情事实和结尾钩子的前提下扩写成完整网文章节。",
                         f"目标篇幅：{TARGET_CHAPTER_CHARS}。",
-                        "扩写重点：补足场景调度、战斗/交易过程、人物对话、心理活动、系统面板反馈、背景节拍和章末压力。",
+                        "扩写重点：补足场景调度、战斗过程、任务/装备/技能/路线门槛、人物对话、心理活动、系统面板反馈、背景节拍和章末压力；第一章不要补成交易、提交委托、修理或买药水。",
                         "只输出扩写后的小说正文，不要解释，不要列大纲。",
                         f"原正文：\n{body}",
                     ]
@@ -2457,22 +2850,24 @@ class StoryOrchestrator:
                 max_tokens=7000,
                 json_mode=False,
                 agent="writer",
+                stage=f"章节扩写 第{chapter_number}章",
             )
             if not expand_error and _chapter_char_count(expanded_body) > _chapter_char_count(body):
-                body = _sanitize_first_chapter_scope(_normalize_web_game_terms(expanded_body), chapter_number)
+                body = _sanitize_chapter_output(expanded_body, chapter_number=chapter_number, scene_cards=scene_cards)
 
         style_adapt_report = None
         if _style_adapt_enabled(writer_plan):
             report_generation_progress("风格适配中...")
-            adapted_body, adapt_error = self._chat(
+            adapted_body, adapt_error = self._timed_chat(
                 working_story,
                 build_style_adapt_prompt(body, writer_plan),
                 max_tokens=7000,
                 json_mode=False,
                 agent="writer",
+                stage=f"风格适配 第{chapter_number}章",
             )
             if not adapt_error and adapted_body.strip():
-                candidate_body = _sanitize_first_chapter_scope(_sanitize_generated_body(adapted_body), chapter_number)
+                candidate_body = _sanitize_chapter_output(adapted_body, chapter_number=chapter_number, scene_cards=scene_cards)
                 style_adapt_report = style_adapt_safety_check(body, candidate_body)
                 if style_adapt_report.get("accept"):
                     body = candidate_body
@@ -2498,7 +2893,7 @@ class StoryOrchestrator:
                 "issues": pre_revision_review.get("issues", []),
                 "writing_review": pre_revision_review,
             }
-            revised_body, revision_error = self._chat(
+            revised_body, revision_error = self._timed_chat(
                 working_story,
                 self._revision_prompt(
                     working_story,
@@ -2510,9 +2905,10 @@ class StoryOrchestrator:
                 max_tokens=7000,
                 json_mode=False,
                 agent="writer",
+                stage=f"审稿改稿 第{chapter_number}章",
             )
             if not revision_error and revised_body.strip():
-                candidate_body = _sanitize_first_chapter_scope(_sanitize_generated_body(revised_body), chapter_number)
+                candidate_body = _sanitize_chapter_output(revised_body, chapter_number=chapter_number, scene_cards=scene_cards)
                 candidate_review = _review_chapter_body(
                     chapter_number,
                     candidate_body,

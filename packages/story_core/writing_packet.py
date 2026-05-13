@@ -5,6 +5,7 @@ from typing import Any
 from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES, compact_list, compact_text
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate
 from packages.story_core.simulation import is_game_story
+from packages.story_core.writing_taskbook import first_chapter_whole_body_contract
 
 
 def _as_list(value: Any, *, max_items: int = 8, item_chars: int = 120) -> list[str]:
@@ -124,7 +125,7 @@ def _default_first_chapter_scenes_game() -> list[dict[str, Any]]:
             "conflict": "主角必须确认异常是否真实，但不能表现得不像新手。",
             "must_show": ["低级怪物", "基础法术", "法力消耗/受伤/走位", "首杀经验", "材料掉落"],
             "avoid": ["全程法杖近战", "一次掉落引发全服市场风暴"],
-            "ending_pressure": "怪物类型前后一致；隐藏优势只做小额验证。",
+            "ending_pressure": "怪物类型前后一致；隐藏优势只做首次领先验证，重点是任务/装备/技能门槛被压短。",
             "state_delta": {},
             "sensory_anchors": ["怪物倒地时一个具体的声音/材料落地的反光", "主角呼吸或心跳的一次明显变化", "环境光在掉落物上的折射"],
             "subtext": "表面是验证爆率，里子是怕这只是个错觉。",
@@ -135,9 +136,9 @@ def _default_first_chapter_scenes_game() -> list[dict[str, Any]]:
             "id": "npc-landing",
             "location": "新手村服务点",
             "pov": "",
-            "purpose": "用一个NPC服务点落地任务、补给和币制，让下一章目标清楚。",
-            "conflict": "材料已经够交任务，但主角需要先确认价格、门槛和风险。",
-            "must_show": ["命名NPC", "材料单卖价", "清道夫委托", "补给价格", "币制轻量露出"],
+            "purpose": "只露出服务点、队伍或任务门槛，让下一章成长目标清楚。",
+            "conflict": "材料已经接近任务门槛，但主角需要先确认怎样把爆率优势转成经验、装备或技能路线。",
+            "must_show": ["服务点入口", "任务门槛", "清道夫委托或价牌", "补给价格", "币制轻量露出"],
             "avoid": ["实际寄售成交", "公会锁定身份", "交易行精确百分比预测"],
             "ending_pressure": "单卖价和任务奖励要解释清楚；金币只是大额单位，新手村主要用铜币。",
             "state_delta": {},
@@ -228,7 +229,7 @@ def _hard_locks(game_genre: bool, target_chapter: int) -> list[str]:
         if target_chapter == 1:
             locks.extend(
                 [
-                    "第一章只聚焦：现实压力、登录建号、职业面板、首杀验证、一个NPC服务点和章末下一步。",
+                    "第一章只聚焦：现实压力、登录建号、职业面板、首杀验证、爆率领先感和章末下一步。",
                     "第一章禁止实际寄售成交、到账、手续费结算、公会正面追查和论坛爆帖。",
                     "怪物类型前后一致。",
                 ]
@@ -455,6 +456,7 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         },
         "protagonist": protagonist_locks,
         "prose_renderer": prose_renderer_contract(),
+        "whole_chapter_contract": first_chapter_whole_body_contract(game_genre=game_genre) if target_chapter == 1 else {},
         "governance": governance,
         "governance_gate": governance_gate,
         "event_plan": _event_plan_summary(bundle) if bundle is not None else {},

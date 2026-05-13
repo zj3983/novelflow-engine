@@ -50,6 +50,11 @@ def test_first_chapter_packet_contains_manual_drafting_contract():
     assert any("现实姓名：苏叶" in item for item in packet["hard_locks"])
     assert any("1金币=100银币=10000铜币" in item for item in packet["hard_locks"])
     assert any(card["id"] == "validation" for card in packet["scene_cards"])
+    assert packet["whole_chapter_contract"]["mode"] == "whole_body_only"
+    assert "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子" in packet["whole_chapter_contract"]["beat_map"]
+    assert any("白描" in item for item in packet["whole_chapter_contract"]["style"])
+    assert any("自然对话" in item for item in packet["whole_chapter_contract"]["dialogue"])
+    assert any("谜语式" in item for item in packet["whole_chapter_contract"]["avoid"])
     assert packet["submission_contract"]["endpoint"] == "POST /projects/{project_id}/manual-draft"
 
 
