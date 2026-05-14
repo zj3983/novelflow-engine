@@ -37,6 +37,29 @@ def test_game_chapter_seed_turns_rules_into_generation_contract():
     assert seed["simulation_axes"]["npc"]
 
 
+def test_chapter_seed_preserves_regeneration_fast_path_flags():
+    story = StoryState(
+        story_id="s-seed-regeneration",
+        outline="game_webnovel retry",
+        genre="game_webnovel",
+        style="fast retry",
+        current_chapter=0,
+        progression_ledger={
+            "simulation_variant": {
+                "id": "boundary-inventory-route",
+                "skip_style_adapt": True,
+                "skip_expansion": True,
+            }
+        },
+    )
+
+    seed = build_chapter_seed(story, 1)
+
+    assert seed["simulation_variant"]["id"] == "boundary-inventory-route"
+    assert seed["simulation_variant"]["skip_style_adapt"] is True
+    assert seed["simulation_variant"]["skip_expansion"] is True
+
+
 def test_chapter_seed_carries_recent_continuity_and_ledger():
     story = StoryState(
         story_id="s-seed-continuity",
@@ -158,6 +181,27 @@ def test_quality_merge_marks_any_writing_review_failure():
     assert "writing_review" in merged["issues"]
 
 
+def test_quality_merge_exposes_layered_review_sections():
+    quality = {"ok": True, "issues": [], "metrics": {"body_chars": 4200}}
+    writing_review = {
+        "pass": True,
+        "scores": {},
+        "issues": [],
+        "critical_review": {"pass": True, "scores": {"diagnostic_terms": 10}},
+        "hook_review": {"pass": False, "scores": {"hook_landed": 5}},
+        "pacing_review": {"pass": True, "scores": {"arc_spacing": 8}},
+        "beats_review": {"pass": True, "scores": {"required_beats_completion": 9}},
+    }
+
+    merged = _merge_writing_review_quality(quality, writing_review)
+
+    assert merged["critical_review"] == writing_review["critical_review"]
+    assert merged["hook_review"] == writing_review["hook_review"]
+    assert merged["pacing_review"] == writing_review["pacing_review"]
+    assert merged["beats_review"] == writing_review["beats_review"]
+    assert merged["writing_review"] == writing_review
+
+
 def test_revision_prompt_contains_hard_fix_checklist_and_scene_protocol():
     story = StoryState(
         story_id="s-revision-prompt",
@@ -173,7 +217,7 @@ def test_revision_prompt_contains_hard_fix_checklist_and_scene_protocol():
                 "location": "角色创建界面",
                 "purpose": "建立游戏ID、职业选择和第一版角色面板。",
                 "conflict": "职业选择必须解释后续路线。",
-                "must_show": ["游戏ID", "职业选择", "角色面板", "生命/法力", "基础属性"],
+                    "must_show": ["游戏ID", "职业选择", "角色面板", "生命/法力", "基础技能"],
                 "must_not_explain": ["节奏", "生成", "审稿"],
             }
         ],
@@ -198,8 +242,9 @@ def test_revision_prompt_contains_hard_fix_checklist_and_scene_protocol():
     prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文里有节奏和生成。", plan, review)
 
     assert "硬性修复清单" in prompt
-    assert "场景卡到正文改稿协议" in prompt
-    assert "必须表面化：游戏ID、职业选择、角色面板、生命/法力、基础属性" in prompt
+    assert "写作任务书改稿协议" in prompt
+    assert "现实压力与登录建号" in prompt
+    assert "不要展开力量/敏捷/体质/智力" in prompt
     assert "正文禁词清单" in prompt
     assert "节奏" in prompt and "生成" in prompt
     assert "改完后自检" in prompt
@@ -274,14 +319,15 @@ def test_body_prompt_includes_style_coach_and_scene_card_guidance():
         ],
     }
 
-    prompt = StoryOrchestrator()._body_prompt(story, 1, plan)
+    prompt = StoryOrchestrator()._body_prompt(story, 2, plan)
 
     assert "写作教练 Style Coach" in prompt
     assert "web_game_leveling_opening" in prompt
-    assert "场景卡到正文写作协议" in prompt
-    assert "写法：界面操作、成交提示音" in prompt
-    assert "事实锁：寄售数量、最终余额" in prompt
-    assert "禁止写成后台解释" in prompt
+    assert "写作任务书" in prompt
+    assert "灰烬村交易行" in prompt
+    assert "界面操作" in prompt
+    assert "成交提示音" in prompt
+    assert "最终余额" in prompt
 
 
 def test_revision_prompt_includes_style_coach_and_fact_lock_rule():
@@ -312,13 +358,15 @@ def test_revision_prompt_includes_style_coach_and_fact_lock_rule():
         "revision_plan": ["补齐面板，但不要改职业。"],
     }
 
-    prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文", plan, review)
+    prompt = StoryOrchestrator()._revision_prompt(story, 2, "原正文", plan, review)
 
     assert "写作教练 Style Coach" in prompt
     assert "web_game_leveling_opening" in prompt
     assert "事实锁硬规则" in prompt
-    assert "职业、余额、库存、任务、装备和NPC信息边界" in prompt
-    assert "事实锁：游戏ID、职业、等级、基础属性" in prompt
+    assert "职业、余额、库存、任务、装备和NPC能知道什么/不知道什么" in prompt
+    assert "游戏ID" in prompt
+    assert "职业" in prompt
+    assert "等级" in prompt
 
 
 def test_sanitize_generated_body_removes_lone_ascii_question_marks_in_chinese_prose():

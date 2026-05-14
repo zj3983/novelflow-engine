@@ -92,6 +92,89 @@ def test_web_game_review_allows_first_trade_notice_without_identity_tracking():
     assert review["pass"] is True, review
 
 
+def test_web_game_review_rejects_boundary_chapter_drifting_to_money_exchange():
+    body = (
+        "《天启之门》开服后，夜烬选择元素法师学徒，在灰狼坡确认异常掉落。"
+        "他回村后立刻打开交易行寄售灰狼毒腺，成交提示跳出，到账扣了手续费。"
+        "药剂师洛婶只按任务数量说话，普通玩家不知道他的现实身份。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"chapter_intent": "第一章确认边界，不是赚钱。"},
+        world_facts=["第一章目标：确认边界，不换钱，不写交易行操作。"],
+    )
+
+    assert review["pass"] is False
+    assert any("边界章目标漂移" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_first_chapter_missing_core_anchors():
+    body = (
+        "《天启之门》开服，苏叶用夜烬建号，职业选择元素法师学徒。"
+        "角色面板显示等级Lv.1，经验0/100，货币：15铜，技能是元素弹。"
+        "他去灰狼坡刷怪，只看到掉落异常和不正常的材料数量。"
+        "回村后，他看见柜台排队，准备下一章再处理材料。"
+    ) * 30
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"chapter_intent": "第一章只试清楚游戏里的路，不换钱。"},
+        world_facts=["长期核心：混沌之种、底层协议校验通过、千倍爆率、基础火球术、初始0铜、进度领先钩子。"],
+    )
+
+    assert review["pass"] is False
+    issues = "\n".join(review["issues"])
+    assert "千倍爆率" in issues
+    assert "混沌之种" in issues
+    assert "底层协议校验通过" in issues
+    assert "基础火球术" in issues
+    assert "铜币账本漂移" in issues
+    assert "进度领先钩子" in issues
+
+
+def test_web_game_review_allows_first_chapter_trade_board_without_trade_completion():
+    body = (
+        "《天启之门》开服，银行卡余额只剩27.60，苏叶戴上旧头盔。"
+        "底层协议校验通过后，他用夜烬建号，选择元素法师学徒。"
+        "面板显示：职业元素法师学徒，Lv.1，经验0/100，货币0铜，基础火球术。"
+        "灰狼倒下时，提示闪过：混沌之种：未解析。掉落判定×1000，千倍爆率。"
+        "任务面板轻轻一跳，清道夫委托的任务门槛比旁人少跑了好几趟，下一步可以提前去问基础火球术强化。"
+        "仓库窗口后，仓库管理员铁栓敲了敲柜台，说这里只办理仓库寄存服务，规矩是先交押金，没铜币就不能办。"
+        "他回村只看见交易行门口的价牌和批次，不寄售，不成交，也没有到账。"
+    ) * 30
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"chapter_intent": "第一章只试清楚游戏里的路，不换钱。"},
+        world_facts=["长期核心：混沌之种、底层协议校验通过、千倍爆率、基础火球术、初始0铜、进度领先钩子。"],
+    )
+
+    assert review["pass"] is True, review
+
+
+def test_web_game_review_does_not_force_first_chapter_full_npc_service():
+    body = (
+        "《天启之门》开服，银行卡余额只剩27.60，苏叶戴上旧头盔。"
+        "底层协议校验通过后，他用夜烬建号，职业选择元素法师学徒。"
+        "角色面板显示：游戏ID夜烬，职业元素法师学徒，等级Lv.1，经验0/100，生命100/100，法力60/60，货币0铜，新手法杖，基础火球术。"
+        "灰狼倒下时，提示闪过：混沌之种：未解析。掉落判定×1000，千倍爆率。"
+        "背包里多出的毒腺把格子挤满，他没卖，只看见交易行门口的价牌和排队窗口，准备下一章再处理。"
+    ) * 15
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"chapter_intent": "第一章只做登录和小验证。"},
+        world_facts=["第一章不强制完整NPC柜台，交易行只留弱钩子。"],
+    )
+
+    assert review["pass"] is True, review
+
+
 def test_web_game_review_allows_negated_tracking_language():
     body = (
         "夜烬把灰狼皮拆成多笔匿名挂进灰烬村交易行。"
@@ -250,6 +333,44 @@ def test_web_game_review_rejects_mixed_first_chapter_monsters():
     assert any("怪物对象" in issue for issue in review["issues"])
 
 
+def test_web_game_review_rejects_gray_mouse_when_plan_locks_gray_wolf():
+    body = (
+        "《天启之门》开服后，夜烬选择元素法师学徒。"
+        "他沿着灰鼠坡往前走，第一只灰鼠从草根下窜出来。"
+        "系统提示：【获得：灰鼠毒腺×2，粗糙鼠皮×1】。"
+        "仓库管理员铁栓说背包格快满了。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"location_beats": ["灰狼坡首次验证。"]},
+        world_facts=["第一章验证目标：灰狼；材料：灰狼毒腺、粗糙狼皮。"],
+    )
+
+    assert review["pass"] is False
+    assert any("推演事实漂移" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_unplanned_real_background_expansion():
+    body = (
+        "房租催款短信还亮着，苏叶戴上旧头盔。"
+        "他前世做外包经济模型测试时养成的习惯又冒出来，靶向药费和网贷利息压在心口。"
+        "《天启之门》里，夜烬选择元素法师学徒，准备去灰狼坡验证掉落边界。"
+        "仓库管理员铁栓提醒他背包格有限。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"location_beats": ["灰狼坡首次验证。"]},
+        world_facts=["现实压力：房租、宽带、信用卡最低还款。"],
+    )
+
+    assert review["pass"] is False
+    assert any("现实背景擅自扩写" in issue for issue in review["issues"])
+
+
 def test_web_game_review_rejects_panel_value_drift_inside_chapter():
     body = (
         "《天启之门》角色创建完成。角色面板显示：游戏ID：夜烬，职业：元素法师学徒，"
@@ -392,9 +513,9 @@ def test_web_game_review_does_not_count_light_npc_mentions_as_full_service_scene
     ) * 25
 
     review = review_web_game_chapter(
-        chapter_number=1,
+        chapter_number=2,
         body=body,
-        event_plan={"npc_beats": ["第一章需要一个命名NPC服务节点。"]},
+        event_plan={"npc_beats": ["第二章需要一个命名NPC服务节点。"]},
         world_facts=["NPC硬规则：命名NPC必须以服务、任务或价格影响选择。"],
     )
 
@@ -421,6 +542,6 @@ def test_quality_report_fails_when_writing_review_fails():
 def test_opening_writer_rules_keep_first_chapter_narrow():
     rules = "\n".join(_opening_writer_rules(1))
 
-    assert "最多一个命名NPC" in rules
+    assert "NPC、柜台、价牌和队伍只作为环境入口" in rules
     assert "赵胖子" in rules
     assert "白袍据点" in rules

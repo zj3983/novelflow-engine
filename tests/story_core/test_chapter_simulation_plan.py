@@ -166,3 +166,27 @@ def test_game_opening_plan_requires_wow_hook_and_reality_bridge():
     assert "wow_beat" in required_text
     assert "explicit_chapter_end_hook" in required_text
     assert "reality_game_bridge" in required_text
+
+
+def test_game_simulation_plan_carries_author_craft_and_director_card():
+    story = StoryState(
+        story_id="s-web-game-craft",
+        outline="网游开服，苏叶以夜烬身份先确认灰狼坡掉落边界。",
+        genre="网游",
+        style="番茄升级流",
+        characters=[CharacterState(name="苏叶", role="主角", game_id="夜烬")],
+    )
+
+    plan = build_chapter_simulation_plan(
+        story,
+        1,
+        event_plan={"turn": "夜烬先确认边界，不急着赚钱"},
+    ).model_dump()
+
+    craft_text = "\n".join(plan["web_game_author_craft"]["craft_laws"])
+    director = plan["web_game_director_card"]
+
+    assert "规则靠操作显形" in craft_text
+    assert director["boundary_focus"] is True
+    assert "寄售" in director["boundary_chapter_bans"]
+    assert any("NPC" in item for item in director["reaction_ladder"])

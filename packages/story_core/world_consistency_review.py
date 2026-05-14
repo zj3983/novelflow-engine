@@ -26,16 +26,23 @@ SCENE_BEAT_ALIASES: dict[str, tuple[tuple[str, ...], ...]] = {
     "职业选择": (("职业列表", "职业选择", "点向法师", "选择职业", "元素法师学徒"),),
     "角色面板": (("角色面板", "状态面板", "面板在视野", "【等级：", "【经验：", "等级：", "经验：", "职业：", "Lv.1"),),
     "基础属性": (("基础属性", "力量：", "力量", "敏捷：", "敏捷", "智力：", "智力", "体质：", "体质", "生命：", "生命", "法力：", "法力"),),
+    "主武器或基础技能": (("新手法杖", "法杖", "主武器", "基础火球术", "基础技能", "技能："),),
+    "主武器": (("新手法杖", "法杖", "主武器"),),
+    "基础技能": (("基础火球术", "基础技能", "技能："),),
     "低级怪物": (("灰鼠", "灰狼", "低级怪", "1级"),),
     "掉落反馈": (("掉落", "提示音", "掉出", "获得"),),
     "背包变化": (("背包",), ("跳到", "多了", "数量", "库存", "负重", "占了", "格子", "灰狼毒腺", "粗糙狼皮")),
     "小额验证": (("先试", "试一次", "验证", "不是错觉", "小额", "灰狼", "低级怪", "第一只"), ("掉落", "千倍", "背包", "获得", "多了")),
+    "领先验证": (("更快", "领先", "少跑", "早一步", "任务", "门槛", "进度"), ("千倍", "掉落", "经验", "材料", "装备", "技能")),
+    "进度领先反馈": (("任务", "经验", "装备", "技能", "路线", "门槛", "清道夫"), ("更快", "少跑", "提前", "早一步", "凑齐", "完成")),
     "NPC地点": (("药剂铺", "柜台", "灰烬村", "村口", "职业大厅", "仓库", "铁匠铺"),),
     "服务内容": (("收购", "解毒剂", "药剂", "修理", "仓储", "任务", "价格"),),
     "价格/门槛": (("价格", "报价", "铜", "押金", "门槛", "条件", "五份", "三组", "只收"),),
     "信息边界": (("不问来源", "没追问", "没再多问", "继续给药瓶贴签", "交易记录", "流水", "记录", "不能看到", "只能看到", "只管", "只收", "别问", "问不了", "不知道", "柜台规矩", "信息边界"),),
-    "下一步目标": (("先交一组", "第一笔铜币", "去导师", "第二只灰鼠", "下一步", "明天", "回头", "先问", "先去"),),
+    "下一步目标": (("先交一组", "第一笔铜币", "去导师", "第二只灰鼠", "下一步", "明天", "回头", "先问", "先去", "先不卖", "先收着", "交易行", "价牌"),),
     "材料暂不外露": (("背包", "灰狼毒腺", "粗糙狼皮", "材料", "先收着", "不卖", "不处理", "暂不处理", "收回背包"),),
+    "材料处理门槛": (("材料", "背包", "毒腺", "狼皮"), ("先不卖", "先收着", "不处理", "交易行", "价牌", "排队", "押金", "明天", "下一步")),
+    "领先下一步": (("下一步", "任务", "装备", "技能", "路线", "委托", "门槛"), ("更快", "少跑", "提前", "早一步", "凑齐", "领先")),
     "NPC门槛": (("五份", "三组", "按牌子走", "今天这批药房只收三组", "报价", "押金", "条件", "只收", "先交"),),
     "规则未明": (("不碰第二只", "先交一组", "灰色标记", "去导师", "没弄明白", "还没试清", "下一步", "先别"),),
 }
@@ -46,7 +53,7 @@ EVENT_ACTION_ALIASES: tuple[tuple[tuple[str, ...], tuple[tuple[str, ...], ...]],
         (("出租屋", "催租", "余额", "账单", "头盔"), ("登录", "角色创建", "游戏ID", "职业")),
     ),
     (
-        ("低级怪物", "任务材料", "千倍爆率", "小额验证"),
+        ("低级怪物", "任务材料", "千倍爆率", "领先验证"),
         (("灰狼", "低级怪", "火苗术", "击杀"), ("掉落", "背包", "提示音", "获得", "千倍")),
     ),
     (
@@ -129,7 +136,7 @@ def _event_action_is_visible(body: str, action: str) -> bool:
     return False
 
 
-def _missing_scene_card_beats(body: str, scene_cards: list[dict[str, Any]]) -> dict[str, list[str]]:
+def _missing_scene_card_beats(body: str, scene_cards: list[dict[str, Any]], chapter_number: int | None = None) -> dict[str, list[str]]:
     missing_by_scene: dict[str, list[str]] = {}
     for card in scene_cards:
         if not isinstance(card, dict):
@@ -137,11 +144,14 @@ def _missing_scene_card_beats(body: str, scene_cards: list[dict[str, Any]]) -> d
         raw_beats = card.get("must_show", [])
         if not isinstance(raw_beats, list):
             continue
-        missing = [
-            beat
-            for beat in (str(item).strip() for item in raw_beats)
-            if _checkable_scene_beat(beat) and not _beat_is_visible(body, beat)
-        ]
+        beats = [str(item).strip() for item in raw_beats]
+        if chapter_number == 1:
+            beats = [
+                beat
+                for beat in beats
+                if beat not in {"NPC门槛", "一个NPC服务节点", "信息边界", "规则未明", "主角风险偏好"}
+            ]
+        missing = [beat for beat in beats if _checkable_scene_beat(beat) and not _beat_is_visible(body, beat)]
         if missing:
             scene_id = str(card.get("scene_id") or card.get("template_id") or "scene")
             missing_by_scene[scene_id] = missing
@@ -407,7 +417,7 @@ def review_world_event_consistency(
             plan="删除场景卡、推演字段名、审稿词和创作术语，改成角色视角内能看到、能听到、能判断的内容。",
         )
 
-    missing_by_scene = _missing_scene_card_beats(body, scene_cards)
+    missing_by_scene = _missing_scene_card_beats(body, scene_cards, chapter_number)
     for scene_id, missing in missing_by_scene.items():
         sample = "、".join(missing[:6])
         _append_issue(

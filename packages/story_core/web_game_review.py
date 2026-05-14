@@ -145,10 +145,13 @@ def web_game_review_rules() -> list[str]:
         "网游身份：现实姓名和游戏ID必须分层。现实段落可写苏叶；进入游戏后优先写游戏ID夜烬，交易行、论坛、公会记录不得直接暴露现实姓名。",
         "交易行逻辑：低级材料匿名上架只能形成价格、数量、批次、时间戳等弱线索；不能单次交易就锁定坐标、现实身份、刷怪点或隐藏天赋。",
         "交易行口径：交易行可以提示大致行情、价格偏低/偏高、容易/较难成交；不要给出低于均价33%、预计成交速度、精确成交概率等上帝视角预测。",
-        "NPC服务：每章至少让一个命名NPC或NPC服务节点影响选择，例如灰烬村村长、药剂师洛婶、职业导师艾伦、仓库管理员铁栓、修理匠老葛。",
+        "市场尺度：十几个低级材料、几枚铜币这种小额噪音不能触发交易行检查、商人盯盘或公会注意；旁人最多觉得主角运气好，第一卷关注必须等稀有物、榜单、连续高频记录或多源证据叠加。",
+        "成长爽点：千倍爆率的主要作用不是几颗材料本身，而是让主角更快完成任务、凑齐装备/技能门槛、提前摸到下一张地图或职业路线。",
+        "开篇摩擦：补给、耐久、背包容量是新手阶段的主要成本，必须服务任务/装备/技能/路线领先，不要喧宾夺主。",
+        "NPC服务：第2章起每章至少让一个命名NPC或NPC服务节点影响选择；第1章可以只露出柜台、价牌、队伍或下一章门槛，不强制完整办理业务。",
         "职业选择：第一章必须在登录、建号或职业大厅阶段写出游戏职业选择，并把职业写进角色面板；职业不能只在后文账本里突然出现。",
         "职业装备：现实职业和游戏职业必须分层；夜烬游戏路线固定为元素法师学徒/元素法师，主战应围绕法杖、法术和元素试炼，短剑只能是临时工具且必须解释限制。",
-        "角色面板：第一章至少出现一次简短角色面板，包含游戏ID、等级、职业/路线、经验、生命/法力、基础属性、主武器或基础技能、货币/背包中的关键项。",
+        "角色面板：第一章至少出现一次简短角色面板，包含游戏ID、等级、职业/路线、经验、生命/法力、主武器或基础技能、货币/背包中的关键项；不要为了凑面板反复展开力量/敏捷/体质等易漂移属性。",
         "事实锁定：同一章的首次刷怪目标、击杀提示、尸体/掉落材料必须指向同一种怪物；灰鼠、灰狼、西林狼不能在同一战斗里混用。",
         "面板一致：同一章内生命、法力、智力、敏捷、体质等面板数值不能无解释跳变；章节末角色群像必须继承正文最终面板。",
         "法师战斗：元素法师学徒的首次战斗必须体现基础法术、法力消耗或明确说明技能未解锁；不能全程只用法杖近战敲怪。",
@@ -158,7 +161,7 @@ def web_game_review_rules() -> list[str]:
         "NPC设定：命名NPC重点出场必须交代地点、服务/价格或门槛、利益诉求/口吻和信息边界，不能只作为任务牌子。",
         "经济规则：没有世界档案明确设定前，不得把金币直接换算成人民币；新手阶段优先使用铜币、银币、材料和市场询价。",
         "公会压迫：公会只能通过重复模式、稀有物、资源点目击、NPC任务异常、榜单或多源风控逐步逼近，不能全知全能。",
-        "背景预算：第一章只允许现实入口、游戏入口、首次小额验证、一个命名NPC服务节点和交易行弱钩子完整展开；不要塞多个NPC/地点/公会追查场景。",
+        "背景预算：第一章只完整展开现实入口、游戏入口、首次验证和领先预期；NPC服务、论坛、公会追查和实际交易后移。",
         "信息可见：交易行、论坛、公会频道和NPC记录都有可见性边界；低级交易不能直接显示卖家坐标、实时位置、现实身份或隐藏天赋。",
     ]
 
@@ -171,6 +174,107 @@ def _has_game_context(body: str, event_plan: dict[str, Any], world_facts: list[s
 
 def _has_any(text: str, tokens: tuple[str, ...]) -> bool:
     return any(token in text for token in tokens)
+
+
+def _has_asserted_plain_term(text: str, term: str) -> bool:
+    start = 0
+    while True:
+        index = text.find(term, start)
+        if index < 0:
+            return False
+        prefix = text[max(0, index - 4):index]
+        if not any(marker in prefix for marker in ("不", "没", "未", "禁止", "不要")):
+            return True
+        start = index + len(term)
+
+
+def _first_chapter_anchor_issues(body: str) -> list[tuple[str, str, str]]:
+    """Return hard continuity issues for the current web-game opening contract."""
+
+    issues: list[tuple[str, str, str]] = []
+    if "千倍爆率" not in body:
+        issues.append(
+            (
+                "class_equipment",
+                "第一章缺少长期金手指名“千倍爆率”；只写异常或×1000会让后续框架断裂。",
+                "补出“千倍爆率”四个字，并让它和掉落判定×1000指向同一个可见结果。",
+            )
+        )
+    if "混沌之种" not in body or "未解析" not in body:
+        issues.append(
+            (
+                "class_equipment",
+                "第一章缺少“混沌之种：未解析”钩子；长期金手指没有留下可承接入口。",
+                "在首次掉落异常后补一个短面板：混沌之种：未解析，保持主角不知道真相。",
+            )
+        )
+    if "底层协议校验通过" not in body:
+        issues.append(
+            (
+                "class_equipment",
+                "第一章缺少“底层协议校验通过”触发锚点，金手指显得像凭空出现。",
+                "把旧头盔/接驳异常和底层协议校验通过连起来，再进入千倍爆率验证。",
+            )
+        )
+    if "基础火球术" not in body:
+        issues.append(
+            (
+                "class_equipment",
+                "元素法师学徒的初始技能漂移：第一章没有写“基础火球术”。",
+                "统一技能名为基础火球术；不要改成元素弹、微光弹或其他临时技能名。",
+            )
+        )
+    if "元素弹" in body or "微光弹" in body:
+        issues.append(
+            (
+                "class_equipment",
+                "元素法师学徒的初始技能被改名，和长期职业账本冲突。",
+                "把元素弹/微光弹改回基础火球术，并同步法力消耗和技能栏。",
+            )
+        )
+    if re.search(r"(?:货币|铜币栏|钱袋|余额)[：: ]*15铜", body):
+        issues.append(
+            (
+                "economy_rules",
+                "第一章铜币账本漂移：没有写铜币获得过程，却出现15铜或类似余额。",
+                "初始货币锁为0铜；没有铜币掉落或任务奖励时，章末仍应是0铜。",
+            )
+        )
+    if "0铜" not in body and "零铜" not in body:
+        issues.append(
+            (
+                "economy_rules",
+                "第一章缺少初始0铜锚点，后续修理、寄存和交易门槛无法闭合。",
+                "在角色面板或钱袋里写清货币0铜，并用它压住章末选择。",
+            )
+        )
+    if ("二十七块六" in body or "27.60" in body) and not _has_any(body, ("余额", "银行卡", "可用")):
+        issues.append(
+            (
+                "economy_rules",
+                "现实金钱语义漂移：二十七块六必须是余额/可用钱，不是轻飘飘的最低还款额。",
+                "把27.60写成银行卡余额或可用余额；信用卡最低还款只保留倒计时压力，不写成金额很低。",
+            )
+        )
+    if not _has_any(body, ("任务进度", "任务门槛", "装备门槛", "技能门槛", "路线", "领先", "更快", "少跑", "早一步", "提前凑齐")):
+        issues.append(
+            (
+                "progression_payoff",
+                "第一章缺少进度领先钩子；千倍爆率不能只落在几颗材料上，必须让读者看到它会缩短任务、装备、技能或路线门槛。",
+                "补一个下一步成长目标：例如清道夫委托少跑几趟、装备材料提前凑齐、技能前置更早满足或下一张地图路线更早打开。",
+            )
+        )
+    actual_trade_terms = ("寄售成功", "上架成功", "成交", "到账", "手续费", "已售出")
+    actual_trade_hit = any(_has_asserted_plain_term(body, term) for term in actual_trade_terms)
+    if actual_trade_hit:
+        issues.append(
+            (
+                "market_logic",
+                "第一章提前完成交易闭环；当前目标是试清楚游戏里的路，不是把材料换成钱。",
+                "删除寄售成功、成交、到账和手续费，只保留价格入口或下一章处理材料的念头。",
+            )
+        )
+    return issues
 
 
 def has_asserted_overreach(body: str, phrases: tuple[str, ...]) -> bool:
@@ -549,6 +653,63 @@ def review_web_game_chapter(
     facts_text = "\n".join(world_facts or [])
     plan_text = str(event_plan)
     combined = "\n".join([body, plan_text, facts_text])
+    requires_opening_anchors = chapter_number == 1 and _has_any(
+        "\n".join([plan_text, facts_text]),
+        ("长期核心", "底层协议校验通过", "初始0铜", "余额27.60", "基础火球术、初始0铜"),
+    )
+    if requires_opening_anchors:
+        for score_key, issue, plan in _first_chapter_anchor_issues(body):
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key=score_key,
+                issue=issue,
+                plan=plan,
+            )
+    gray_wolf_planned = "灰狼" in "\n".join([plan_text, facts_text])
+    if gray_wolf_planned:
+        wrong_gray_mouse_terms = [term for term in ("灰鼠", "灰鼠坡", "灰鼠毒腺", "鼠皮", "毒囊") if term in body]
+        if wrong_gray_mouse_terms:
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="prose_surface",
+                issue=f"推演事实漂移：计划锁定灰狼/灰狼坡/灰狼毒腺，正文却出现 {'、'.join(wrong_gray_mouse_terms[:5])}。",
+                plan="把本章首次验证对象统一改回灰狼，地点统一灰狼坡，材料统一灰狼毒腺和粗糙狼皮；不要沿用旧版灰鼠模板。",
+            )
+
+    stray_background_terms = [term for term in ("前世", "穿越", "靶向药", "重病", "住院费", "网贷") if term in body]
+    if chapter_number == 1 and stray_background_terms and not _has_any(facts_text, stray_background_terms):
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="background_budget",
+            issue=f"现实背景擅自扩写：正文新增 {'、'.join(stray_background_terms[:5])}，但世界档案没有这些事实。",
+            plan="删除未授权的前世、穿越、疾病、网贷等背景；现实压力只写既有房租、宽带、信用卡最低还款和工作技能来源。",
+        )
+
+    boundary_chapter = chapter_number == 1 and _has_any(
+        combined,
+        ("确认边界", "边界章", "验证边界", "试探边界", "不是赚钱", "不换钱", "not money", "boundary"),
+    )
+    if boundary_chapter:
+        drift_terms = [
+            term
+            for term in ("寄售", "成交", "到账", "手续费", "换钱", "换人民币")
+            if _has_asserted_plain_term(body, term)
+        ]
+        if drift_terms:
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="market_logic",
+                issue=f"边界章目标漂移：第一章应确认规则边界，不应进入交易/变现正文，出现 {'、'.join(drift_terms[:5])}。",
+                plan="把寄售、成交、到账、手续费、换钱和交易行操作后移；第一章只写登录、职业、一次低级验证、背包/血蓝/耐久代价和下一章材料处理条件。",
+            )
 
     game_id_markers = ("游戏ID", "游戏昵称", "角色名", "网名", "ID：", "ID:", "夜烬", "铁算盘")
     if chapter_number == 1 and not _has_any(combined, game_id_markers):
@@ -606,8 +767,8 @@ def review_web_game_chapter(
             revision_plan=revision_plan,
             scores=scores,
             score_key="class_equipment",
-            issue="角色面板缺少网游基础属性；只有等级、职业和背包，读者无法判断职业路线和战斗成本。",
-            plan="在角色面板中补入生命/法力和基础属性，例如力量、体质、敏捷、智力、精神、幸运，并让法师路线体现智力/精神优势。",
+            issue="角色面板缺少生命/法力或战斗成本；只有等级、职业和背包，读者无法判断首次战斗能消耗什么。",
+            plan="在角色面板中补入生命/法力、主武器和基础技能即可；不要反复展开力量、体质、敏捷等扩展属性，避免前后数值漂移。",
         )
 
     meta_terms = ("爽点", "节奏", "读者", "网文规则", "审稿", "质量报告", "剧情需要")
@@ -668,6 +829,17 @@ def review_web_game_chapter(
             score_key="market_logic",
             issue="低级材料交易被写成单次上架就锁定坐标、现实身份、刷怪点或隐藏天赋，追踪强度不符合网游交易行逻辑。",
             plan="改成弱线索递进：价格波动、数量批次、时间戳、商人脚本、资源点目击和NPC任务异常多源汇总后才逐步缩小范围。",
+        )
+    micro_trade = _has_any(body, ("十几个低级材料", "几枚铜币", "小额材料", "小额交易"))
+    micro_overreaction = _has_any(body, ("交易行检查", "风控记录", "商人盯上", "公会也开始注意", "白袍公会也开始注意"))
+    if micro_trade and micro_overreaction and not _has_any(body, ("没有触发风控", "没有公会注意", "普通行情")):
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="market_logic",
+            issue="小额低级材料交易反应过度：十几个低级材料、几枚铜币只应是普通噪音，不能立刻触发交易行检查、商人盯盘或公会注意。",
+            plan="把外部反应降级为普通流水或匿名记录，把本章压力改回补给、耐久、背包和下一步验证成本。",
         )
 
     visibility_surface = _has_any(body, ("交易行", "寄售", "论坛", "公会频道", "玩家频道", "NPC记录", "仓库流水", "寄售流水"))
@@ -814,7 +986,7 @@ def review_web_game_chapter(
             plan="补写当前装备状态，例如武器、护甲、耐久、消耗品数量和支出，并让章节摘要或ledger_updates记录这些变化。",
         )
 
-    needs_npc = bool(event_plan.get("npc_beats")) or "NPC" in facts_text or chapter_number <= 3
+    needs_npc = chapter_number in (2, 3) or (chapter_number > 1 and (bool(event_plan.get("npc_beats")) or "NPC" in facts_text))
     service_npcs = _full_service_npcs(body)
     if needs_npc and not service_npcs:
         _append_issue(
@@ -825,7 +997,7 @@ def review_web_game_chapter(
             issue="网游章节缺少命名NPC的服务、任务、价格、仓储、修理或职业门槛，世界像只有玩家和系统。",
             plan="补入至少一个命名NPC服务节点，例如灰烬村村长、药剂师洛婶、职业导师艾伦、仓库管理员铁栓或修理匠老葛，并让其服务边界影响本章选择。",
         )
-    elif needs_npc and service_npcs and not any(_has_defined_npc_scene(body, npc) for npc in service_npcs):
+    elif service_npcs and not any(_has_defined_npc_scene(body, npc) for npc in service_npcs):
         _append_issue(
             issues=issues,
             revision_plan=revision_plan,
@@ -843,7 +1015,7 @@ def review_web_game_chapter(
                 scores=scores,
                 score_key="background_budget",
                 issue="第一章背景预算超载：多个命名NPC服务节点被完整展开，容易把黄金三章写成设定巡礼。",
-                plan="第一章只保留一个命名NPC服务节点完整出场；其他NPC改成路牌、排队窗口、公告板或玩家闲聊一笔带过，把职业大厅/仓库/修理铺等完整场景移到第2-3章。",
+                plan="第一章删到0-1个轻量NPC入口；命名NPC完整服务、职业大厅、仓库和修理铺等完整场景移到第2-3章。",
             )
 
     guild_omniscience = _has_any(body, ("公会会长亲自", "全服通缉", "直接知道真相", "立刻知道真相", "已经知道混沌之种"))

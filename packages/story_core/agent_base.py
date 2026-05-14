@@ -22,6 +22,45 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
+LONGFORM_FACT_PREFIXES = (
+    "百万字",
+    "长卷阶段",
+    "长期成长阶段",
+    "长期势力阶段",
+    "长期经济阶段",
+    "现实线阶段",
+    "真相揭露阶段",
+    "地图解锁阶段",
+    "NPC演化阶段",
+    "长期推演规则",
+)
+
+
+def find_protagonist(story: Any) -> Any | None:
+    """Return the protagonist ``CharacterState`` from a story, or ``None``.
+
+    Lookup order: explicit role tag (``"protagonist"`` / ``"主角"``) → first
+    active non-frozen character → first character. Used by writers and
+    reviewers that need the lead's name / game id / voice without coupling
+    to a specific data layout.
+    """
+    characters = getattr(story, "characters", None) or []
+    if not characters:
+        return None
+    for character in characters:
+        if getattr(character, "frozen", False):
+            continue
+        role = str(getattr(character, "role", "") or "")
+        if role in {"protagonist", "主角"}:
+            return character
+    for character in characters:
+        if getattr(character, "frozen", False):
+            continue
+        lifecycle = str(getattr(character, "lifecycle_state", "") or "")
+        if lifecycle in {"", "active", "proposed"}:
+            return character
+    return characters[0]
+
 
 def compact_text(text: str, max_chars: int = 400) -> str:
     compact = " ".join(str(text or "").split()).strip()

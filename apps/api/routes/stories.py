@@ -63,6 +63,21 @@ def _now_iso() -> str:
 
 def _serialize_chapter_bundle(bundle, world_facts: list[str]) -> dict:
     data = bundle.model_dump()
+    source = ""
+    if isinstance(data.get("chapter_intent"), dict):
+        source = str(data["chapter_intent"].get("source") or "")
+    if not source and isinstance(data.get("simulation_status"), dict):
+        source = str(data["simulation_status"].get("source") or "")
+    if source.startswith("manual"):
+        quality_report = validate_bundle(data)
+        quality_report["writing_review"] = {
+            "pass": bool(quality_report.get("ok")),
+            "issues": [],
+            "source": source,
+            "manual_review_bypass": True,
+        }
+        data["quality_report"] = quality_report
+        return data
     try:
         writing_review = _review_chapter_body(
             bundle.chapter_number,

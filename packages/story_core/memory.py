@@ -42,6 +42,30 @@ def _unique_matches(text: str, candidates: list[str]) -> list[str]:
     return result
 
 
+def _story_dynamic_keywords(story: StoryState) -> dict[str, list[str]]:
+    """Build memory keywords from the current story instead of demo defaults."""
+    keywords = {key: list(values) for key, values in MEMORY_KEYWORDS.items()}
+    for character in story.characters:
+        for value in (character.name, getattr(character, "game_id", "")):
+            value = str(value or "").strip()
+            if value and value not in keywords["characters"]:
+                keywords["characters"].append(value)
+    for fact in story.world_facts:
+        text = str(fact or "").strip()
+        if not text:
+            continue
+        if any(token in text for token in ("村", "城", "镇", "楼", "山", "谷", "门", "殿", "宫")) and "规则" not in text:
+            if text not in keywords["locations"]:
+                keywords["locations"].append(text)
+        if any(token in text for token in ("公会", "商会", "宗", "门派", "公司", "集团", "帝国", "学院")):
+            if text not in keywords["factions"]:
+                keywords["factions"].append(text)
+        if "任务" in text or "试炼" in text:
+            if text not in keywords["quests"]:
+                keywords["quests"].append(text)
+    return keywords
+
+
 def _memory_query_terms(query: str) -> set[str]:
     terms: set[str] = set()
     for candidates in MEMORY_KEYWORDS.values():
@@ -65,16 +89,17 @@ def add_chapter_memory_index(
     unresolved_threads: list[str] | None = None,
 ) -> None:
     text = "\n".join([chapter_title, summary, *(facts or []), *(unresolved_threads or [])])
+    keywords = _story_dynamic_keywords(story)
     entry = MemoryIndexEntry(
         chapter_number=chapter_number,
         chapter_title=chapter_title,
         summary=summary,
-        tags=_unique_matches(text, MEMORY_KEYWORDS["tags"]),
-        characters=_unique_matches(text, MEMORY_KEYWORDS["characters"]),
-        locations=_unique_matches(text, MEMORY_KEYWORDS["locations"]),
-        factions=_unique_matches(text, MEMORY_KEYWORDS["factions"]),
-        quests=_unique_matches(text, MEMORY_KEYWORDS["quests"]),
-        items=_unique_matches(text, MEMORY_KEYWORDS["items"]),
+        tags=_unique_matches(text, keywords["tags"]),
+        characters=_unique_matches(text, keywords["characters"]),
+        locations=_unique_matches(text, keywords["locations"]),
+        factions=_unique_matches(text, keywords["factions"]),
+        quests=_unique_matches(text, keywords["quests"]),
+        items=_unique_matches(text, keywords["items"]),
         facts=list(facts or [])[:6],
         unresolved_threads=list(unresolved_threads or [])[:6],
     )

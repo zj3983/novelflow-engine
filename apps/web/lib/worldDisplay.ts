@@ -23,6 +23,34 @@ function cleanText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+const NON_CHARACTER_ROLES = new Set(["信息源", "玩家群体", "市场机制", "任务线", "服务设施", "系统机制"]);
+const NON_CHARACTER_NAMES = new Set(["论坛", "公共频道", "交易行告示牌", "清道夫委托", "系统公告"]);
+
+function canonicalCharacterName(name: unknown): string {
+  const text = cleanText(name);
+  const aliases: Record<string, string> = {
+    药剂师NPC: "药剂师洛婶",
+    药剂师: "药剂师洛婶",
+    药剂铺老妇人: "药剂师洛婶",
+    灰头巾老妇人: "药剂师洛婶",
+    老妇人: "药剂师洛婶",
+    洛婶: "药剂师洛婶",
+    "补给商·铁栓": "仓库管理员铁栓",
+    补给商铁栓: "仓库管理员铁栓",
+    铁栓: "仓库管理员铁栓",
+  };
+  return aliases[text] ?? text;
+}
+
+function isCharacterLike(value: { name?: unknown; role?: unknown }): boolean {
+  const name = canonicalCharacterName(value.name);
+  const role = cleanText(value.role);
+  if (!name) return false;
+  if (NON_CHARACTER_NAMES.has(name)) return false;
+  if (NON_CHARACTER_ROLES.has(role)) return false;
+  return true;
+}
+
 export function isReadableLine(value: unknown): value is string {
   const text = cleanText(value);
   if (!text) return false;
@@ -55,16 +83,19 @@ export function mergeCharacters(
   const byName = new Map<string, DisplayCharacter>();
 
   for (const profile of (profiles ?? []) as ProfileWithRuntime[]) {
-    if (!profile.name) continue;
-    byName.set(profile.name, { ...profile });
+    if (!isCharacterLike(profile)) continue;
+    const name = canonicalCharacterName(profile.name);
+    byName.set(name, { ...profile, name });
   }
 
   for (const character of storyCharacters ?? []) {
-    if (!character.name) continue;
-    const previous = byName.get(character.name) ?? { name: character.name };
-    byName.set(character.name, {
+    if (!isCharacterLike(character)) continue;
+    const name = canonicalCharacterName(character.name);
+    const previous = byName.get(name) ?? { name };
+    byName.set(name, {
       ...previous,
       ...character,
+      name,
       role: character.role || previous.role,
       game_id: character.game_id || previous.game_id,
       goals: character.goals?.length ? character.goals : previous.goals,

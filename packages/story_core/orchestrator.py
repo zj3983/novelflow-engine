@@ -239,6 +239,19 @@ def _normalize_web_game_terms(body: str) -> str:
 def _sanitize_generated_body(body: str) -> str:
     cleaned = _normalize_web_game_terms(sanitize_prose_style(body))
     cleaned = cleaned.replace("基准", "参照")
+    replacements = {
+        "施法前摇": "抬手那一下",
+        "前摇": "抬手",
+        "验证逻辑": "试出来的规矩",
+        "验证路线": "下一步走法",
+        "收益路径": "换东西的路",
+        "收益曲线": "东西变多的样子",
+        "撕扯判定": "狼爪撕过来",
+        "收益": "到手的东西",
+        "逻辑": "规矩",
+    }
+    for old, new in replacements.items():
+        cleaned = cleaned.replace(old, new)
     # Some model/API combinations occasionally turn UI quotes or line breaks into
     # lone ASCII question marks. Remove only question marks embedded in CJK prose.
     cleaned = re.sub(r"(?<=[\u4e00-\u9fff。！？】》])\?(?=[\u4e00-\u9fff【《])", "", cleaned)
@@ -257,6 +270,41 @@ def _scene_cards_spend_resource(scene_cards: list[dict] | None, resource: str) -
         return False
 
     return visit(scene_cards or [])
+
+
+def _scene_cards_need_npc_window(scene_cards: list[dict] | None) -> bool:
+    for card in scene_cards or []:
+        if not isinstance(card, dict):
+            continue
+        scene_id = str(card.get("scene_id") or card.get("template_id") or "")
+        must_show = card.get("must_show") if isinstance(card.get("must_show"), list) else []
+        must_text = " ".join(str(item) for item in must_show)
+        if scene_id == "s4-c1-npc-service":
+            return True
+        if all(token in must_text for token in ("NPC地点", "服务内容", "信息边界")):
+            return True
+    return False
+
+
+def _body_has_npc_window_surface(body: str) -> bool:
+    return (
+        any(term in body for term in ("药剂铺", "柜台", "灰烬村", "村口", "职业大厅", "仓库", "铁匠铺"))
+        and any(term in body for term in ("服务", "任务", "价格", "门槛", "条件", "只收", "报价"))
+        and any(term in body for term in ("不问来源", "没追问", "不能看到", "只能看到", "只管", "不知道", "柜台规矩", "信息边界"))
+    )
+
+
+def _ensure_first_chapter_npc_window(body: str, scene_cards: list[dict] | None) -> str:
+    if not body or not _scene_cards_need_npc_window(scene_cards) or _body_has_npc_window_surface(body):
+        return body
+    window = (
+        "村口的任务牌旁边开着一个小柜台窗口，木牌上只写服务内容和门槛：灰狼毒腺可以登记，"
+        "补给价格另看柜台价牌。\n\n"
+        "窗口后的NPC没抬头，只管把牌子扶正，不问来源，也不知道谁的背包里有多少材料。"
+        "夜烬低声道：“先不办，我只看门槛。”\n\n"
+        "他记下价格和条件，把背包重新扣上。材料还在包里，货币仍是0铜。"
+    )
+    return f"{body.rstrip()}\n\n{window}"
 
 
 def _sanitize_systemic_resource_contradictions(body: str, scene_cards: list[dict] | None) -> str:
@@ -311,6 +359,8 @@ def _soften_repeated_paragraph_openers(body: str) -> str:
 def _sanitize_chapter_output(body: str, *, chapter_number: int, scene_cards: list[dict] | None = None) -> str:
     cleaned = _sanitize_first_chapter_scope(_sanitize_generated_body(body), chapter_number)
     cleaned = _sanitize_systemic_resource_contradictions(cleaned, scene_cards)
+    if chapter_number == 1:
+        cleaned = _ensure_first_chapter_npc_window(cleaned, scene_cards)
     return _soften_repeated_paragraph_openers(cleaned)
 
 
@@ -345,14 +395,19 @@ def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
         "交清道夫委托",
         "提交清道夫委托",
         "任务完成",
+        "任务已完成",
         "奖励三十铜",
         "奖励30铜",
+        "领取三十铜",
+        "领取30铜",
         "获得：30铜",
         "获得:30铜",
         "扣除：30铜",
         "扣除:30铜",
         "修理铺",
         "修理匠",
+        "修装备",
+        "修理装备",
         "修满",
         "修完耐久",
         "初级法力药水",
@@ -1175,7 +1230,7 @@ def _normalize_chapter_summary(raw_summary: object, chapter_number: int) -> dict
 
 def _opening_phase_name(chapter_number: int) -> str:
     if chapter_number == 1:
-        return "黄金三章第1章：立世界、立主角、立千倍爆率、完成第一次领先验证"
+        return "黄金三章第1章：立世界、立主角、立核心能力、完成第一次有效验证"
     if chapter_number == 2:
         return "黄金三章第2章：把千倍爆率转成任务、装备或路线领先"
     if chapter_number == 3:
@@ -1193,7 +1248,7 @@ def _opening_writer_rules(chapter_number: int) -> list[str]:
             "主角背景要通过现实账单、出租屋细节、职业/工作状态、短暂记忆、行为习惯或心理压迫露出，不能只贴标签。",
             "必须说明主角现实职业、失业/兼职/外包状态或现实技能来源，并让这解释他为什么会谨慎、会算账、会拆单或熟悉网游经济。",
             "第一章必须写出网游开篇仪式：登录或角色创建、游戏ID“夜烬”、职业选择、角色面板。夜烬应选择元素法师学徒/元素法师路线，并说明这决定法杖、基础法术和10级元素回廊试炼门槛。",
-            "角色面板必须有职业栏，至少包含：游戏ID、等级、职业/路线、经验、生命/法力、基础火球术、货币0铜、背包关键项；面板要短，不要刷屏。",
+            "角色面板必须在正文中写出“角色面板”四个字，并有职业栏，至少包含：游戏ID、等级、职业/路线、经验、生命/法力、基础火球术、货币0铜、背包关键项；面板要短，不要刷屏。",
             "初始货币锁死为0铜。第一章如果没有正文写出铜币掉落或任务奖励，章末就仍是0铜，不能凭空变成15铜。",
             "职业和技能锁死：职业列表只点到战士、游侠、法师/元素法师学徒即可；初始技能统一写“基础火球术”，不要改名成元素弹。",
             "现实钱语义锁死：27.60是银行卡余额或可用余额，不是最低还款额；不要把现实压力写轻。",
@@ -1205,6 +1260,8 @@ def _opening_writer_rules(chapter_number: int) -> list[str]:
             "下一步钩子要落在进度领先上：主角意识到这些掉落能更快交任务、换装备、学技能或摸到下一条路线，而不是纠结几颗材料值多少钱。",
             "金手指首次验证必须同时带来收益和代价：掉落变多的爽点要指向任务/装备/技能领先，血量、法力、耐久和背包只作为节奏摩擦。",
             "第一章必须收敛：NPC、柜台、价牌和队伍只作为环境入口或下一章目标，不强制完整服务出场；如果出现命名NPC，只能一笔带过。",
+            "第一章NPC信息边界：药剂师/药铺只能讲药材、库存、价格和她不知道的边界；不得由药剂师发布职业任务、讲职业试炼、解释全局市场或玩家生态。职业路线和技能门槛优先交给角色面板、职业导师木牌或任务牌。",
+            "第一章NPC窗口要求：可以写任务牌、柜台窗口或职业导师木牌来满足服务入口，但主角只能看见门槛、问一句或记下价格；不得提交材料、领取三十铜、修装备、买药水或完成办理。",
             "第一章禁止赵胖子正面登场、禁止白袍据点视角、禁止公会完整追查戏；商人和公会不要出场，最多留一个交易行价牌弱钩子。",
             "第一章不要连续写药剂铺、职业大厅、修理铺、公会据点等多视角场景；优先完成现实压力、登录、首次验证和下一步领先钩子。",
         ]
@@ -1537,7 +1594,6 @@ def _review_chapter_body(
                 "登录入口",
                 "登录界面",
                 "开服倒计时",
-                "全沉浸",
                 "触发条件",
                 "底层日志",
                 "灰色日志",
@@ -1949,9 +2005,11 @@ def _chapter_prompt_method_block(
         "第一章目标口语化：不要把目标写成后台硬词，要写成苏叶先试清楚这东西靠不靠谱、亏不亏、能不能带回去。",
         "第一章领先流：材料只是通行券，不是高潮；章末要指向任务、装备、技能或路线门槛上的提前一步，不要写成交任务、领取铜币、扣费修理或购买药水。",
         "情绪暗线：本章至少三次把角色的担心、试探、犹豫、侥幸或欲望落到动作、停顿、视线、手势和错开的回答上。",
+        "主角开口硬规则：本章必须至少有一次可识别的主角口头对话，用“夜烬问/说/低声道”连接台词；可以很短，例如“先不交，我只看门槛。”",
         "硬词清零：不要写“边界、底层逻辑、基准、推演、结算链、审稿、场景卡”。用“能不能走、规矩、底价、试一把、柜台说法”替代。",
         "职业背景落地：苏叶做过风控/测试，只能体现为先看余额、数铜币、看蓝耗、摸法杖耐久、停一下再问价；不要把职业背景直接写成数据模型、现金流、可量化、概率、止损线、变量、算法或后台数据异常。",
         "报告腔禁用：不要写“意味着、这说明、规则被撬开、常规掉落池、系统把溢出部分折算、模型跑不动”。发现异常时，写成背包格变满、提示闪一下、手指停住、旁人看不懂或主角先收东西。",
+        "战斗白描禁词：不要写施法前摇、验证路线、验证逻辑、收益路径、收益曲线；改成抬手慢半拍、蓝条少一截、背包快满、任务牌上还差几份。",
         "写法施工单",
         "本章按“进入压力 -> 尝试动作 -> 即时反馈 -> 选择代价 -> 余波/小钩子”推进",
         "抽象判断必须落到具体物件或动作；对话必须改变筹码、知道的信息、价格、信任或能办的事。",
@@ -1963,6 +2021,7 @@ def _chapter_prompt_method_block(
                 f"四拍要求：{_plain_prompt_json(whole_body_contract['beats'])}",
                 f"白描与自然对话：{_plain_prompt_json([*whole_body_contract['style'], *whole_body_contract['dialogue']])}",
                 f"整章禁区：{_plain_prompt_json(whole_body_contract['avoid'])}",
+                "NPC窗口补足：章末必须有一个可见但不办理的窗口，例如职业导师木牌、任务牌或柜台价牌；主角只看见门槛并说一句短话，不提交、不领奖、不修、不买。",
             ]
             if whole_body_contract
             else []
@@ -2274,6 +2333,7 @@ class StoryOrchestrator:
                 ]
             )
         web_game_rules = web_game_review_rules()
+        phase_name = _opening_phase_name(chapter_number)
         return "\n".join(
             [
                 "请为中文网文项目生成本章推演计划，只返回 JSON。",
@@ -2392,13 +2452,19 @@ class StoryOrchestrator:
                 ]
             )
 
+        phase_name = _opening_phase_name(chapter_number) if is_game else (
+            "开篇章节：立人物、立处境、立目标、完成第一次有效行动"
+            if chapter_number == 1
+            else "常规连载章节：目标、行动、反馈和章末新压力"
+        )
+
         return "\n".join(
             [
                 "根据下面的推演计划，写出一章完整中文网文正文。",
                 *method_block,
                 f"题材：{story.genre}",
                 f"风格：{story.style}",
-                f"章节阶段：{_opening_phase_name(chapter_number)}",
+                f"章节阶段：{phase_name}",
                 f"生成前世界推演契约：{_plain_prompt_json(chapter_seed_for_prompt)}",
                 f"硬性世界规则与写作约束：{_plain_prompt_json(hard_rules)}",
                 f"活世界状态、黄金三章和反应机制：{_plain_prompt_json(living_world)}",
@@ -2431,6 +2497,16 @@ class StoryOrchestrator:
             review=review,
         )
 
+        game_specific_revision = _story_game_context(story, plan)
+        game_revision_lines = (
+            [
+                "改稿限制：不得随意改变等级、经验、货币、掉落和任务结果；但如果是第一章节奏过载，必须删除或后移材料处理、市场玩家、玩家势力、公共频道等越界世界反应。",
+                "第一章改稿保护：修领先流问题时，不得删除现实职业来源、登录/建号、游戏ID夜烬、职业选择、元素法师学徒、短角色面板、基础火球术、混沌之种或掉落判定×1000。",
+            ]
+            if game_specific_revision
+            else ["改稿限制：不得随意改变已建立的人物、地点、时间、物件、承诺和事件结果。"]
+        )
+
         return "\n".join(
             [
                 "下面这章小说正文没有通过审稿，请在不改变核心剧情事实的前提下自动改稿。",
@@ -2445,8 +2521,7 @@ class StoryOrchestrator:
                 f"写作任务书改稿协议：\n{format_taskbook_prompt_section(plan.get('writing_taskbook'), include_all_scenes=True)}",
                 f"推演简表：{_plain_prompt_json(_prose_grounded_writing_plan(plan))}",
                 f"篇幅要求：扩写到{target_chars}。",
-                "改稿限制：不得随意改变等级、经验、货币、掉落和任务结果；但如果是第一章节奏过载，必须删除或后移材料处理、市场玩家、玩家势力、公共频道等越界世界反应。",
-                "第一章改稿保护：修领先流问题时，不得删除现实职业来源、登录/建号、游戏ID夜烬、职业选择、元素法师学徒、短角色面板、基础火球术、混沌之种或掉落判定×1000。",
+                *game_revision_lines,
                 "事实锁硬规则：任务书和场景事实里的职业、余额、库存、任务、装备和NPC能知道什么/不知道什么不得被润色改动；若不能确定，保留原文事实。",
                 "如果审稿指出字数偏少，必须扩写到目标篇幅，增加场景、对话、行动过程、心理和题材规则细节，不要只重复原文。",
                 "如果 scene_contract_repair_plan 非空，必须只重写失败场景：只补 failed_scenes 对应场景缺失的可见后果，其他场景保持事实、顺序和账本不变，只做必要衔接。",

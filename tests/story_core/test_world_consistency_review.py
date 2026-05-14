@@ -83,7 +83,7 @@ def test_world_consistency_review_flags_missing_scene_card_must_show_beats():
     assert not review["pass"]
     assert review["scores"]["scene_card_coverage"] < 8
     assert any("场景卡必写内容缺失" in issue for issue in review["issues"])
-    assert any("游戏ID" in item and "职业选择" in item for item in review["revision_plan"])
+    assert any("职业选择" in item and "角色面板" in item for item in review["revision_plan"])
 
 
 def test_world_consistency_review_accepts_scene_card_must_show_beats_when_surfaced():

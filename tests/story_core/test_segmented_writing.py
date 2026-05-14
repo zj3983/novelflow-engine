@@ -1,4 +1,5 @@
 from packages.story_core.segmented_writing import (
+    _compact_context,
     build_segment_prompt,
     build_segment_revision_prompt,
     build_segment_specs,
@@ -7,21 +8,40 @@ from packages.story_core.segmented_writing import (
 )
 
 
+def test_compact_context_respects_limit():
+    text = "a" * 200
+
+    compact = _compact_context(text, 45)
+
+    assert len(compact) <= 45
+    assert " ... " in compact
+
+
 def test_first_chapter_segments_keep_opening_scope():
     specs = build_segment_specs(1, {"event_plan": {"chapter_title": "灰烬村的登录"}})
 
-    assert [spec.key for spec in specs] == ["setup", "trigger", "validation", "landing"]
-    assert "现实压力" in specs[0].goal
-    assert "职业" in specs[1].required_surface
-    assert "交易成交" in specs[0].forbidden_surface
-    assert "公会追查" in specs[2].forbidden_surface
+    assert [spec.key for spec in specs] == ["entry_login", "small_verification", "decision_hook"]
+    assert "现实压力" in specs[0].title
+    assert "职业" in specs[0].required_surface
+    assert "夜烬建号完成" in specs[0].exit_state
+    assert specs[0].title == "现实压力与登录建号"
+    assert specs[1].title == "低级怪小验证"
+    assert specs[2].title == "先不卖，留个问题"
+    assert "小规模验证结束" in specs[1].exit_state
+    assert "材料先收住" in specs[2].goal
+    assert "确认边界" not in " ".join(spec.goal for spec in specs)
+    assert "验边界" not in " ".join(spec.title for spec in specs)
+    assert "材料处理成钱" in specs[0].forbidden_surface
+    assert "玩家势力追查" in specs[1].forbidden_surface
+    assert "寄售" not in " ".join(spec.forbidden_surface for spec in specs)
+    assert "完整NPC服务戏" in specs[2].forbidden_surface
 
 
 def test_segment_review_flags_only_local_first_chapter_overreach():
     specs = build_segment_specs(1, {})
     bad_text = "夜烬把毒腺挂到交易行，寄售成功后，白袍公会马上追查坐标。"
 
-    review = review_segment_output(specs[2], bad_text, chapter_number=1)
+    review = review_segment_output(specs[1], bad_text, chapter_number=1)
 
     assert not review["pass"]
     assert any("本段提前写出第一章禁用内容" in issue for issue in review["issues"])
@@ -38,6 +58,17 @@ def test_segment_review_flags_underfilled_segment_before_merge():
     assert any("当前片段偏短" in issue for issue in review["issues"])
 
 
+def test_segment_review_requires_exit_state_transition():
+    specs = build_segment_specs(1, {})
+    text = "夜烬在灰狼坡挥出火球，灰狼倒下，地上闪过掉落提示。"
+
+    review = review_segment_output(specs[1], text, chapter_number=1)
+
+    assert not review["pass"]
+    assert any("出场状态" in issue for issue in review["issues"])
+    assert any("资源变化" in item or "背包" in item for item in review["revision_plan"])
+
+
 def test_segment_revision_prompt_limits_rewrite_scope():
     specs = build_segment_specs(1, {})
     prompt = build_segment_revision_prompt(
@@ -50,6 +81,9 @@ def test_segment_revision_prompt_limits_rewrite_scope():
 
     assert "只重写当前段" in prompt
     assert "不要重写上一段" in prompt
+    assert "入场状态" in prompt
+    assert "出场状态" in prompt
+    assert "交接约束" in prompt
     assert "苏叶看着催租单。" in prompt
     assert "灰狼倒下。" in prompt
 
@@ -74,6 +108,9 @@ def test_segment_prompt_includes_governance_boundaries():
     )
 
     assert "分段输入治理" in prompt
+    assert "入场状态" in prompt
+    assert "出场状态" in prompt
+    assert "交接约束" in prompt
     assert "交易行实际成交" in prompt
     assert "怪物统一为灰鼠" in prompt
     assert "诊断词禁止入正文" in prompt
@@ -98,6 +135,17 @@ def test_segment_revision_prompt_includes_governance_boundaries():
     assert "表达权不等于事实权" in prompt
     assert "交易行实际成交" in prompt
     assert "诊断词禁止入正文" in prompt
+
+
+def test_segment_review_exposes_ai_flavor_review():
+    specs = build_segment_specs(1, {})
+    text = "他不是为了多拿一点，而是为了确认这件事是否成立。这不是选择，而是边界验证。"
+
+    review = review_segment_output(specs[1], text, chapter_number=1)
+
+    assert "ai_flavor_review" in review
+    assert review["ai_flavor_review"]["scores"]["ai_flavor"] < 8
+    assert review["ai_flavor_review"]["metrics"]["formula_count"] >= 1
 
 
 def test_merge_segment_outputs_strips_segment_labels():

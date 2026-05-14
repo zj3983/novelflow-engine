@@ -83,6 +83,20 @@ function scoreDeltaText(original?: number, candidate?: number): string {
   return `原稿 ${original} / 候选 ${candidate} / 差值 ${sign}${delta.toFixed(2)}`;
 }
 
+function formatAiScore(score: number | undefined): string {
+  return typeof score === "number" ? `${score}/8` : "未检测";
+}
+
+function formatAiMetric(metrics: Record<string, number> | undefined, key: string): number {
+  const value = metrics?.[key];
+  return typeof value === "number" ? value : 0;
+}
+
+function formatConcreteDensity(metrics: Record<string, number> | undefined): string {
+  const value = metrics?.concrete_density;
+  return typeof value === "number" ? `${Math.round(value * 100)}%` : "—";
+}
+
 export function ChapterBundleView({
   story,
   bundle,
@@ -124,6 +138,9 @@ export function ChapterBundleView({
     "导入书籍后，这里会成为当前章节的主工作区。";
   const writingReview = bundle?.quality_report?.writing_review;
   const reviewScores = writingReview?.scores ? Object.entries(writingReview.scores) : [];
+  const aiFlavorReview = bundle?.quality_report?.ai_flavor_review;
+  const aiFlavorMetrics = aiFlavorReview?.metrics;
+  const aiFlavorScore = aiFlavorReview?.scores?.ai_flavor;
   const revisionSafety = bundle?.quality_report?.revision_safety;
   const segmentSafetyReports = (bundle?.quality_report?.segment_pipeline?.segments ?? [])
     .map((segment, index) => ({
@@ -409,6 +426,16 @@ export function ChapterBundleView({
                 ) : null}
                 {writingReview?.revision_plan?.length ? (
                   <p className="hint">改稿计划：{writingReview.revision_plan.join("；")}</p>
+                ) : null}
+                {aiFlavorReview ? (
+                  <article className="chapter-panel__list-item">
+                    <strong>AI味：{formatAiScore(aiFlavorScore)}</strong>
+                    <p className="chapter-panel__summary-text">
+                      公式句 {formatAiMetric(aiFlavorMetrics, "formula_count")}；抽象词 {formatAiMetric(aiFlavorMetrics, "abstract_count")}；具体度{" "}
+                      {formatConcreteDensity(aiFlavorMetrics)}
+                    </p>
+                    {aiFlavorReview.issues?.[0] ? <p className="hint">{aiFlavorReview.issues[0]}</p> : null}
+                  </article>
                 ) : null}
                 <div className="chapter-panel__actions">
                   <button

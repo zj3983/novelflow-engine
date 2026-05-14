@@ -5,6 +5,7 @@ from typing import Any
 from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.models import CharacterState, ChapterSimulationPlan, StoryState
+from packages.story_core.web_game_author_craft import build_web_game_author_craft, build_web_game_director_card
 
 
 def is_game_story(story: StoryState) -> bool:
@@ -133,6 +134,7 @@ def _game_visibility_rules() -> list[str]:
     return [
         "交易行低级材料匿名上架只能暴露价格、数量、批次和时间戳等弱线索。",
         "十几个低级材料、几个铜币或十几枚铜币的小额交易属于新手村正常噪音，不触发交易行检查、风控记录、商人盯人或公会注意。",
+        "大型服务器会吞掉低级材料波动；旁人看到少量高掉落，最多理解为运气好、组队效率高或刷怪路线熟。",
         "公会只能通过连续重复模式、明显超量出货、稀有物、资源点目击、NPC任务异常或多源信息汇总逐步逼近。",
         "单次小额掉落不能扰乱全服市场，也不能直接锁定主角坐标、现实身份、刷怪点或隐藏天赋。",
     ]
@@ -141,9 +143,9 @@ def _game_visibility_rules() -> list[str]:
 def _game_economy_rules() -> list[str]:
     return [
         "新手阶段收益优先使用铜币、银币、材料和询价，避免无依据写现实货币汇率。",
-        "小额收益的主要代价应来自耐久、补给、背包容量、任务门槛、刷怪路线、时间成本和主角自我克制。",
+        "小额收益的主要作用是缩短任务、装备、技能和路线门槛；耐久、补给、背包容量只是节奏摩擦，不是主线焦点。",
         "只有大额或重复收益才需要拆单、考虑手续费、买家来源、压价、追踪和信誉风险。",
-        "市场反应应按规模递进：小额交易无外部反应；多次重复才有局部价格波动或商人玩家留意；多源叠加后才有公会外围试探。",
+        "外部反应应按规模递进：小额低级材料是服务器噪音；多章连续领先、稀有物、榜单、资源点目击或多源叠加后，才允许商人、玩家势力或论坛升级反应。",
     ]
 
 
@@ -151,16 +153,16 @@ def _game_required_beats(chapter_number: int) -> list[str]:
     if chapter_number == 1:
         return [
             "现实入口：说明主角现实职业/技能来源/压力，不只写缺钱。",
-            "登录建号：写出游戏ID、职业选择和第一版角色面板，面板必须包含生命/法力和基础属性。",
-            "小额验证：用低级怪、低级材料或任务反馈验证千倍爆率。",
-            "一个NPC服务节点：只完整展开一个命名NPC，交代职责、服务和信息边界。",
-            "交易行弱钩子：小额低级材料只体现手续费、到账、行情和主角谨慎，不出现检查、风控记录、商人盯人或公会注意。",
+            "登录建号：写出游戏ID、职业选择和第一版角色面板，面板必须包含生命/法力、主武器或基础技能，不展开扩展属性。",
+            "首次验证：用低级怪或任务反馈验证千倍爆率，让读者看到主角会比普通玩家更快凑齐任务/装备门槛。",
+            "交易行弱钩子：交易行只作背景入口或路牌，章末主钩子落在下一步任务、装备、技能或路线领先。",
+            "大型游戏噪音：本章不出现检查、风控记录、商人盯人或公会注意，旁人最多觉得他运气好。",
         ]
     if chapter_number == 2:
         return [
             "继承第一章价格、背包、装备、经验和任务状态。",
-            "通过路线、耐久、补给、NPC门槛或拆单成本放大压力。",
-            "让外部势力只看到弱线索，并产生试探而非全知追杀。",
+            "通过千倍爆率更快完成任务、修理装备、购买补给或触达新路线，写出相对普通玩家的领先。",
+            "让外部世界继续把低级收益当普通运气或新手噪音，不产生正式追查。",
         ]
     return [
         "继承前文账本和角色表演状态。",
@@ -197,7 +199,7 @@ def _game_director_event_plan(event_plan: dict[str, Any], chapter_number: int) -
         (
             "wow_beat: 必须让千倍爆率至少露一次可见马脚。不要只写成2-8倍收益；"
             "用低概率额外掉落、非基准稀有材料、或系统统计异常兑现一次读者能算出来的'哇'时刻，"
-            "同时保持外部世界只看到小额噪音。"
+            "并让读者明白这会让夜烬比普通玩家更快完成下一道任务或装备门槛。"
         ),
     )
     enriched.setdefault(
@@ -218,7 +220,7 @@ def _game_director_event_plan(event_plan: dict[str, Any], chapter_number: int) -
         "explicit_chapter_end_hook",
         (
             "explicit_chapter_end_hook: 章末必须留下具体下一章诱饵，而不是情绪闭环；"
-            "优先落在交易行/补给/NPC委托/散人渠道/白袍公会只收队内等可执行目标。"
+            "优先落在任务进度、技能门槛、装备门槛、地图入口或下一只更高收益怪上。"
         ),
     )
     enriched.setdefault(
@@ -247,6 +249,7 @@ def build_chapter_simulation_plan(
     chapter_seed = chapter_seed or {}
     if game_story:
         event_plan = _game_director_event_plan(event_plan, chapter_number)
+    simulation_variant = chapter_seed.get("simulation_variant") if isinstance(chapter_seed.get("simulation_variant"), dict) else {}
 
     character_performance = [
         _default_performance(character, game_story=game_story)
@@ -323,6 +326,17 @@ def build_chapter_simulation_plan(
         str(event_plan.get("turn") or event_plan.get("pivot") or memory_constraints.get("current_focus") or "").strip()
         or "推进当前章节目标"
     )
+    web_game_author_craft = build_web_game_author_craft(chapter_number, chapter_goal=chapter_goal) if game_story else {}
+    web_game_director_card = (
+        build_web_game_director_card(
+            chapter_number=chapter_number,
+            chapter_goal=chapter_goal,
+            simulation_plan={"chapter_goal": chapter_goal, "simulation_variant": simulation_variant},
+            event_plan=event_plan,
+        )
+        if game_story
+        else {}
+    )
 
     return ChapterSimulationPlan(
         chapter_number=chapter_number,
@@ -333,6 +347,12 @@ def build_chapter_simulation_plan(
         npc_boundaries=npc_boundaries,
         information_visibility=information_visibility[:10],
         economy_expectations=economy_expectations[:10],
+        # Controls regeneration diversity. A caller can rotate this id to
+        # force a different first-chapter route/NPC/cost shape while keeping
+        # the same hard story contract.
+        simulation_variant=simulation_variant,
+        web_game_author_craft=web_game_author_craft,
+        web_game_director_card=web_game_director_card,
         panel_expectations=panel_expectations,
         longform_constraints=longform_constraints,
         required_beats=required_beats[:12],

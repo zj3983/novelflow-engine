@@ -48,8 +48,8 @@ def _chapter_intent(chapter_number: int, bundle: Any) -> dict[str, Any]:
             "登录建号",
             "游戏ID与职业选择",
             "角色面板",
-            "首次灰鼠验证",
-            "一个NPC服务点",
+            "首次灰狼验证",
+            "千倍爆率带来的领先预期",
             "章末下一步目标",
         ]
         must_avoid = [
@@ -60,7 +60,7 @@ def _chapter_intent(chapter_number: int, bundle: Any) -> dict[str, Any]:
             "论坛爆帖",
             "第一章禁止把低级材料写成扰乱市场",
         ]
-        ending_change = "夜烬确认异常存在，但只完成小额验证，并获得下一章可执行目标。"
+        ending_change = "夜烬确认异常存在，并意识到千倍爆率能让自己在任务、装备或路线进度上领先一步。"
     else:
         must_include = [
             "承接上一章状态",
@@ -116,8 +116,8 @@ def _rule_stack(chapter_number: int) -> dict[str, list[str]]:
     if chapter_number == 1:
         hard_facts.extend(
             [
-                "怪物统一为灰鼠，不要写成狼或其他怪。",
-                "第一章只做小额验证，不写市场风暴。",
+                "怪物统一为灰狼，不要写成灰鼠或其他怪。",
+                "第一章只做首次验证，重点是看出千倍爆率会让夜烬比普通玩家更快完成任务/装备门槛，不写市场风暴。",
             ]
         )
 

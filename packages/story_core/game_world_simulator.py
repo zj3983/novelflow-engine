@@ -140,9 +140,9 @@ def simulate_game_world(
         "boundary-combat-cost": {
             "actor": "洛婶",
             "location": "灰烬村药剂铺",
-            "action": "按清道夫委托验药材，十份一收，不零收，不追问来源。",
+            "action": "药剂铺门口的委托牌写着十份毒腺可交清道夫委托，但本章不提交、不领奖励。",
             "knowledge_scope": ["药材数量", "委托规则", "药剂库存"],
-            "state_delta": {"quest_threshold": "灰狼毒腺10份", "reward": "30铜"},
+            "state_delta": {"quest_threshold": "灰狼毒腺10份", "reward_visible_only": "30铜", "submit_forbidden_this_chapter": True},
         },
         "boundary-inventory-route": {
             "actor": "仓库管理员铁栓",
@@ -200,6 +200,7 @@ def simulate_game_world(
             "weapon_durability": aggregate.get("weapon_durability", "4/10"),
             "inventory": drops or {"灰狼毒腺": 8, "粗糙狼皮": 5},
             "quest_progress": "清道夫委托0/10",
+            "opening_rule": "第一章只验证千倍爆率能让任务/装备/技能/路线提前一步；不提交委托、不领取铜币、不修理、不买药水。",
         },
         "systemic_simulation": systemic,
         "world_state": systemic["final_state"],
@@ -214,5 +215,5 @@ def simulate_game_world(
             "market_signal": "none",
         },
         "external_attention": {"guild": 0, "market": 0, "npc": 0},
-        "chapter_pressure": f"变体{variant}：生命{aggregate.get('hp', '46/100')}、法力{aggregate.get('mp', '0/60')}、法杖{aggregate.get('weapon_durability', '4/10')}，必须先处理边界代价。",
+        "chapter_pressure": f"变体{variant}：生命{aggregate.get('hp', '46/100')}、法力{aggregate.get('mp', '0/60')}、法杖{aggregate.get('weapon_durability', '4/10')}，材料只是通行券；章末要指向下一章任务/装备/技能或路线门槛，不办理服务闭环。",
     }

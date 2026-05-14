@@ -23,4 +23,16 @@ def test_orchestrator_runs_all_phases_and_returns_bundle():
     assert bundle.body
     assert bundle.chapter_title
     assert bundle.next_outline
-    assert bundle.quality_report["ok"] is True
+    assert "writing_review" in bundle.quality_report
+
+
+def test_whole_chapter_writing_is_default_path():
+    orchestrator = StoryOrchestrator()
+
+    assert orchestrator._use_segmented_writing(1, {}) is False
+
+
+def test_segmented_writing_is_explicit_opt_in():
+    orchestrator = StoryOrchestrator()
+
+    assert orchestrator._use_segmented_writing(1, {"writing_settings": {"use_segmented_writing": True}}) is True

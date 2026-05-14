@@ -173,6 +173,14 @@ def build_chapter_title(
     next_focus: str = "",
     genre: str = "",
 ) -> str:
+    genre_lower = (genre or "").lower()
+    source_probe = " ".join([str(next_focus or ""), str(conflict_summary or "")])
+    if any(token in genre_lower for token in ("网游", "game_webnovel", "vrmmo", "游戏")):
+        if any(token in source_probe for token in ("清道夫", "灰狼", "毒腺", "委托")):
+            return "清道夫委托"
+        if any(token in source_probe for token in ("补给", "耐久", "成本", "铜币", "寄售", "材料")):
+            return "回村补给"
+
     allowed_topics = {
         "witness", "ledger", "forgery", "letter",
         "archives", "archive", "truth", "secret",
@@ -189,7 +197,6 @@ def build_chapter_title(
     if not topic or topic not in allowed_topics:
         topic = "truth"
 
-    genre_lower = (genre or "").lower()
     if "mystery" in genre_lower or "suspense" in genre_lower:
         flavor = "疑云"
     elif "court" in genre_lower or "intrigue" in genre_lower or "political" in genre_lower:
@@ -276,15 +283,15 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
     if _is_game_opening_chapter(story):
         return {
             "summary": f"{lead['name']}想要完成首次收益闭环并隐藏异常优势，而{rival['name']}只能从交易行价格、匿名批次和时间戳里试探货源。",
-            "stakes": "第一章的风险不是正面夺资源，而是现实资金压力、隐藏优势变现和市场弱线索逐步叠加。",
+            "stakes": "第一章的风险不是正面夺资源，而是现实资金压力、隐藏优势是否可靠，以及主角能不能把高爆率转成进度领先。",
             "primary_conflict": {
                 "lead": lead["name"],
                 "opposition": rival["name"],
-                "collision": f"{lead['name']}必须低调拆单变现，{rival['name']}只能通过价格曲线和寄售时间戳形成初步怀疑。",
+                "collision": f"{lead['name']}必须先确认高爆率能否让自己少跑几趟、早一步完成任务或凑齐装备门槛，{rival['name']}此时最多只能看到价格曲线、时间戳、普通玩家误读或资源点传闻。",
             },
             "secondary_conflict": {
                 "pressure": "market-signal",
-                "detail": "低级材料交易只会留下弱线索，公会需要重复出货、资源点传闻、NPC记录或风控汇总后才能逼近。",
+                "detail": "低级材料只是大型服务器噪音；外部势力需要稀有物、榜单、资源点目击、NPC任务异常或多源记录汇总后才能逼近。",
                 "participants": secondary_candidates or [_participant_entry(rival["name"], rival["goal"])],
             },
         }
@@ -301,13 +308,13 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
                 "lead": lead["name"],
                 "opposition": opposition,
                 "collision": (
-                    f"{lead['name']}必须在耐久、背包、手续费和任务门槛之间继续低调滚雪球，"
-                    f"{opposition}只能从价格曲线、寄售时间戳、补给流水和资源点传闻里缩小范围。"
+                    f"{lead['name']}必须在耐久、背包、任务门槛和路线选择之间继续滚雪球，"
+                    f"{opposition}只能从价格曲线、补给流水、任务进度、资源点传闻、榜单变化和NPC反馈里慢慢缩小范围。"
                 ),
             },
             "secondary_conflict": {
                 "pressure": "market-signal",
-                "detail": "低级材料交易、NPC任务进度和补给消耗共同形成弱线索，公会只能外围试探，不能直接锁定真相。",
+                "detail": "NPC任务进度、补给消耗、资源点目击和普通玩家对比共同形成弱线索，公会只能外围试探，不能直接锁定真相。",
                 "participants": secondary_candidates or [_participant_entry(rival["name"], rival["goal"])],
             },
         }

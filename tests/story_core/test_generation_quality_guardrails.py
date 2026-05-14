@@ -6,9 +6,13 @@ from packages.story_core.orchestrator import (
     _extract_economy_anchors,
     _extract_equipment_ledger_updates,
     _extract_system_anchors,
+    _merge_writing_review_quality,
     _normalize_chapter_summary,
     _normalize_web_game_terms,
     _review_chapter_body,
+    _sanitize_chapter_output,
+    _should_expand_chapter,
+    _style_adapt_enabled,
 )
 from packages.story_core.world_enrichment import _merge_enrichment
 
@@ -141,6 +145,174 @@ def test_opening_review_rejects_short_fanqie_style_chapter():
 
     assert review["pass"] is False
     assert any("字数偏少" in issue for issue in review["issues"])
+
+
+def test_quality_report_fails_when_prose_texture_review_fails_even_without_hard_score_drop():
+    quality = {"ok": True, "issues": []}
+    writing_review = {
+        "pass": False,
+        "scores": {"web_game_identity_layer": 8, "prose_style_meta_language": 8, "prose_quality_texture": 5},
+        "prose_quality_review": {
+            "pass": False,
+            "overall": 68,
+            "issues": [{"type": "mechanical_explanation", "quote": "意味着"}],
+        },
+        "adversarial_cut_review": {"pass": True, "cuts": []},
+    }
+
+    merged = _merge_writing_review_quality(quality, writing_review)
+
+    assert merged["ok"] is False
+    assert "writing_review" in merged["issues"]
+
+
+def test_chapter_body_review_exposes_ai_flavor_critical_review():
+    body = (
+        "他不是为了多拿一点，而是为了确认这件事是否成立。"
+        "这不是一次选择，而是一次边界验证。"
+        "风险很清楚，逻辑也很完整。"
+        "他需要在可见性和稳定性之间找到答案。"
+    ) * 40
+
+    review = _review_chapter_body(
+        1,
+        body,
+        {"world_reactions": ["村口排队变长。"], "next_focus": "继续补材料。"},
+    )
+
+    assert "critical_review" in review
+    assert "ai_flavor_review" in review
+    assert review["critical_review"]["scores"]["ai_flavor"] < 8
+    assert review["ai_flavor_review"]["metrics"]["formula_count"] >= 2
+    assert any("AI味" in issue or "模型腔" in issue for issue in review["issues"])
+
+
+def test_chapter_body_review_uses_event_plan_protagonist_names_for_speech_gate():
+    body = "苏叶站在柜台前，把背包里的毒腺数了一遍。铁栓看他一眼，继续翻账本。\n\n" * 90
+
+    review = _review_chapter_body(
+        1,
+        body,
+        {
+            "ordered_actions": [{"name": "苏叶", "action": "询问仓库寄存"}],
+            "world_reactions": ["村口排队变长。"],
+            "next_focus": "继续补材料。",
+        },
+    )
+
+    assert review["critical_review"]["scores"]["protagonist_speech"] < 8
+    assert any("主角全章没有可识别的开口对话" in issue for issue in review["issues"])
+
+
+def test_style_adapt_defaults_on_for_normal_generation_plans():
+    assert (
+        _style_adapt_enabled(
+            {
+                "chapter_number": 1,
+                "simulation_plan": {
+                    "chapter_goal": "确认边界",
+                    "web_game_director_card": {"read_feel": "确认规则边界"},
+                },
+            }
+        )
+        is True
+    )
+    assert _style_adapt_enabled({"write_mode": "fast"}) is False
+    assert _style_adapt_enabled({"chapter_number": 1}) is False
+
+
+def test_style_adapt_disabled_for_regeneration_variants():
+    assert (
+        _style_adapt_enabled(
+            {
+                "chapter_number": 1,
+                "simulation_plan": {
+                    "chapter_goal": "重新推演第一章",
+                    "simulation_variant": {"id": "boundary-inventory-route", "skip_style_adapt": True},
+                },
+            }
+        )
+        is False
+    )
+
+
+def test_regeneration_fast_path_skips_whole_chapter_expansion():
+    short_body = "夜烬走到柜台前，把背包里的灰狼毒腺数了一遍。" * 120
+
+    assert (
+        _should_expand_chapter(
+            short_body,
+            {
+                "simulation_plan": {
+                    "simulation_variant": {
+                        "id": "boundary-inventory-route",
+                        "skip_expansion": True,
+                    }
+                }
+            },
+        )
+        is False
+    )
+
+
+def test_chapter_body_review_uses_lower_minimum_for_regeneration_fast_path():
+    body = "苏叶看着余额，夜烬进村问价，柜台只认铜币和任务牌。" * 150
+
+    review = _review_chapter_body(
+        1,
+        body,
+        {"world_reactions": ["村口排队变长。"], "next_focus": "继续补材料。"},
+        simulation_plan={"simulation_variant": {"skip_expansion": True}},
+    )
+
+    assert review["scores"]["webnovel_hook"] == 8
+    assert not any("字数偏少" in issue for issue in review["issues"])
+
+
+def test_sanitize_chapter_output_repairs_regeneration_surface_traps():
+    body = "\n\n".join(
+        [
+            "夜烬看着法力满格，继续往前走。",
+            "夜烬把灰狼毒腺收进背包。",
+            "夜烬没有急着笑。",
+            "夜烬回头看了一眼。",
+            "夜烬把法杖压低。",
+            "夜烬走到柜台前。",
+            "夜烬问了一句价格。",
+            "夜烬把背包扣上。",
+            "夜烬退到门边。",
+        ]
+    )
+    scene_cards = [
+        {
+            "state_delta": {
+                "game_world_simulation": {
+                    "systemic_simulation": {"ledger_delta": {"cost_delta": {"mp": -60}}}
+                }
+            }
+        }
+    ]
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=scene_cards)
+
+    assert "法力满" not in cleaned
+    assert "法力只剩一截" in cleaned
+    assert cleaned.count("\n\n夜烬") < body.count("\n\n夜烬")
+
+
+def test_sanitize_chapter_output_keeps_first_chapter_to_one_npc_and_no_guild_overreach():
+    body = (
+        "夜烬走到仓库管理员铁栓面前，问背包能不能寄存。\n\n"
+        "修理匠老葛也把修理价格和耐久规则说了一遍。\n\n"
+        "白袍公会很快锁定坐标，知道了他的隐藏天赋。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "铁栓" in cleaned
+    assert "老葛" not in cleaned
+    assert "锁定坐标" not in cleaned
+    assert "隐藏天赋" not in cleaned
 
 
 def test_opening_review_rejects_1000_times_wording_mixed_with_qianbei():

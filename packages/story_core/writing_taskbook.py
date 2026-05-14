@@ -35,7 +35,16 @@ WRITER_TERM_REPLACEMENTS = (
 )
 
 
-STYLE_CONTRACT = (
+GENERIC_STYLE_CONTRACT = (
+    "白话正文：普通读者一眼能懂，少比喻，少华丽修辞，少作者总结。",
+    "反馈要看得见：用动作、物件、对话、环境变化和角色反应承载信息。",
+    "情绪要落动作：不写“他很焦虑”，写手指停顿、视线躲开、没忍住又看一眼。",
+    "段落要有疏密：短句用于爆点和转折，关键场景必须有连续动作块。",
+    "视角限知：主角只能知道自己能看见、听见、问到、试出来的信息。",
+    "后台词翻译：不要写边界、推演、审稿、场景卡、结算链、基准、诊断等工作流词。",
+)
+
+GAME_STYLE_CONTRACT = (
     "白话爽文：普通读者一眼能懂，少比喻，少华丽修辞，少作者总结。",
     "反馈要看得见：面板、掉落、经验、任务进度、装备门槛、血蓝、耐久和玩家对比优先于解释。",
     "网游爽点落在领先感：普通玩家还在重复刷，主角已经更快凑齐任务、装备、技能或地图入口。",
@@ -54,24 +63,29 @@ def first_chapter_whole_body_contract(*, game_genre: bool) -> dict[str, Any]:
         "beat_map": "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子",
         "beats": [
             "现实压力：用余额、房租、旧设备、身体反应或生活细节说明为什么现在必须登录。",
-            "登录建号：写清游戏ID、职业选择、Lv.1短面板、初始武器或技能，以及开服现场质感。",
-            "低级验证：用一场小规模战斗或测试写出血蓝、耐久、背包、掉落、任务进度和普通玩家更慢的对比。",
-            "下一步钩子：材料先不卖，章末落到任务、装备、技能、地图或NPC服务门槛。",
+            "登录建号：必须出现“角色面板”四个字，写清游戏ID、职业选择、Lv.1短面板、初始武器或技能，以及开服现场质感。",
+            "低级验证：用一场小规模战斗或测试写出血蓝、耐久、背包、掉落、任务进度和普通玩家更慢的对比；不要写施法前摇、验证逻辑或收益曲线。",
+            "下一步钩子：材料先不卖，章末优先落到职业导师木牌、任务牌、装备、技能或地图入口门槛；可以有柜台/窗口，但只看门槛不办理。",
         ],
         "style": [
             "整体接近白描：句子清楚，动作具体，少修辞，少比喻。",
             "不要用华丽词语、夸张比喻或谜语式暗示制造气氛。",
             "读者要一眼知道角色在做什么、怕什么、想试什么、下一步去哪里。",
+            "少写验证、逻辑、收益、路线这种判断词，改成试一把、看一眼、包快满、门槛就在牌子上。",
         ],
         "dialogue": [
             "自然对话：人物说话要短、顺、接地气。",
+            "主角必须至少主动开口一次，格式要能被识别，例如“夜烬问/说/低声道：……”。",
             "台词不能替作者讲规则、讲设定或讲审稿结论。",
             "对话要推进价格、任务、信任、误会、信息或行动。",
         ],
         "avoid": [
             "不用分段生成；按整章连续正文自然写出四拍。",
             "不要提前完成变现、成交、到账、手续费扣款、公共频道扩散、论坛爆帖、公会追查或市场玩家盯盘。",
+            "第一章不要让药剂师或药铺承担职业任务、职业试炼、全局市场分析或玩家生态判断；药剂师若出现，只能讲药材、库存、价格和她不知道的边界。",
+            "第一章可以写NPC窗口、任务牌或职业导师木牌，但只能看见门槛；不得写主角提交材料、领取三十铜、修装备、购买药水或完成任何服务办理。",
             "不要写边界、推演、审稿、场景卡、模型、算法、变量、规则被撬开、这意味着、这说明。",
+            "不要写施法前摇、验证路线、验证逻辑、收益路径、收益曲线。",
             "不要写谜语式短句或故意绕弯的悬疑腔。",
         ],
     }
@@ -257,8 +271,8 @@ def _first_chapter_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
         ),
         WritingTaskScene(
             key="decision_hook",
-            title="先抢下一步",
-            goal="让苏叶把材料当成进度筹码，整理面板和任务进度，留下下一章抢先完成任务或摸到新路线的钩子。",
+            title="先不卖，留个问题",
+            goal="材料先收住，不卖不交；让苏叶把材料当成进度筹码，整理面板和任务进度，留下下一章抢先完成任务或摸到新路线的钩子。",
             required_surface="面板或背包更新、职业/等级/经验/生命/法力/耐久沿用前文不重开一套属性、材料先不卖、货币仍是0铜、清道夫委托仍未提交、现实压力仍在、下一章具体任务/装备/技能/地图门槛、章末一个不华丽的情绪动作如松一口气/没忍住看余额/把背包关了又打开",
             forbidden_surface=f"材料换成钱、提交清道夫委托、领取30铜、修理铺扣费、购买药水、交易完成反馈、扣费或收款反馈、完整NPC服务戏、公会/论坛/公共频道反应、{forbidden}",
             entry_state="苏叶刚完成小验证，手里有异常材料，但还没处理。",
@@ -358,7 +372,8 @@ def build_writing_taskbook(
     style: str = "",
 ) -> dict[str, Any]:
     plan = plan if isinstance(plan, dict) else {}
-    scenes = _first_chapter_scenes(plan) if chapter_number == 1 and _looks_like_game_context(plan, genre) else _generic_scenes(plan)
+    game_context = _looks_like_game_context(plan, genre)
+    scenes = _first_chapter_scenes(plan) if chapter_number == 1 and game_context else _generic_scenes(plan)
     simulation_plan = _simulation_plan(plan)
     event_plan = _event_plan(plan)
     governance = plan.get("governance") if isinstance(plan.get("governance"), dict) else {}
@@ -371,7 +386,7 @@ def build_writing_taskbook(
         *_as_list(simulation_plan.get("forbidden_moves"), max_items=8, item_chars=56),
         *_as_list(chapter_intent.get("must_avoid"), max_items=6, item_chars=56),
     ]
-    if chapter_number == 1:
+    if chapter_number == 1 and game_context:
         global_forbidden.extend(item for item in FIRST_CHAPTER_NOISE_BANS if item not in global_forbidden)
         global_required.append("第一章只完成登录、低级验证和领先预期；材料只是通行券，交易、论坛、公会追查后移，提交委托、修理和买药水也后移。")
         global_required.append("三段各至少一个情绪锚点：章首现实压力、战斗受伤/后怕、章末决定都要落到身体动作，不写空泛感慨。")
@@ -380,7 +395,7 @@ def build_writing_taskbook(
         chapter_title=_chapter_title(plan),
         chapter_goal=_chapter_goal(plan),
         target_chars=_target_chars_text(plan),
-        style_contract=list(STYLE_CONTRACT),
+        style_contract=list(GAME_STYLE_CONTRACT if game_context else GENERIC_STYLE_CONTRACT),
         global_required=global_required,
         global_forbidden=global_forbidden,
         scenes=scenes,

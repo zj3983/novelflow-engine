@@ -1,0 +1,131 @@
+from types import SimpleNamespace
+
+from packages.story_core.generation_progress import generation_progress
+from packages.story_core.models import StoryState
+from packages.story_core.orchestrator import StoryOrchestrator, _failed_bundle
+
+
+REAL_CHAT = StoryOrchestrator._chat
+
+
+def test_chat_passes_stage_timeout_and_reports_progress(monkeypatch):
+    captured = {}
+
+    def fake_post_json(base_url, path, payload, api_key, config=None):
+        captured["base_url"] = base_url
+        captured["path"] = path
+        captured["timeout"] = config.timeout if config else None
+        captured["model"] = payload["model"]
+        return {"choices": [{"message": {"content": "正文"}}]}
+
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.resolve_openai_runtime_settings",
+        lambda agent: SimpleNamespace(base_url="https://example.invalid/v1", api_key="key"),
+    )
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.get_runtime_strategy_settings",
+        lambda: SimpleNamespace(
+            director_model="",
+            writer_model="writer-model",
+            memory_model="",
+            global_model="",
+            temperature=0,
+        ),
+    )
+    monkeypatch.setattr("packages.story_core.orchestrator.post_json_with_retry", fake_post_json)
+    monkeypatch.setattr(StoryOrchestrator, "_chat", REAL_CHAT)
+
+    progress = []
+    story = StoryState(story_id="s-timeout-progress", outline="测试", genre="网文", style="简洁")
+    with generation_progress(progress.append):
+        text, error = StoryOrchestrator()._chat(
+            story,
+            "写一段正文",
+            max_tokens=4000,
+            json_mode=False,
+            agent="writer",
+            stage="分段写作 1/3",
+            timeout_seconds=123,
+        )
+
+    assert text == "正文"
+    assert error == ""
+    assert captured["timeout"] == 123
+    assert captured["model"] == "writer-model"
+    assert any("分段写作 1/3" in item and "123" in item for item in progress)
+    assert any("模型返回" in item for item in progress)
+
+
+def test_chat_returns_stage_specific_error_on_timeout(monkeypatch):
+    def fake_post_json(*args, **kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.resolve_openai_runtime_settings",
+        lambda agent: SimpleNamespace(base_url="https://example.invalid/v1", api_key="key"),
+    )
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.get_runtime_strategy_settings",
+        lambda: SimpleNamespace(
+            director_model="director-model",
+            writer_model="",
+            memory_model="",
+            global_model="",
+            temperature=0,
+        ),
+    )
+    monkeypatch.setattr("packages.story_core.orchestrator.post_json_with_retry", fake_post_json)
+    monkeypatch.setattr(StoryOrchestrator, "_chat", REAL_CHAT)
+
+    progress = []
+    story = StoryState(story_id="s-timeout-error", outline="测试", genre="网文", style="简洁")
+    with generation_progress(progress.append):
+        text, error = StoryOrchestrator()._chat(
+            story,
+            "规划",
+            max_tokens=8000,
+            json_mode=True,
+            agent="director",
+            stage="剧情计划：第3章",
+            timeout_seconds=5,
+        )
+
+    assert text == ""
+    assert "剧情计划：第3章" in error
+    assert "model_request_failed" in error
+    assert any("模型请求失败" in item for item in progress)
+
+
+def test_timed_chat_reports_elapsed_progress():
+    class FastOrchestrator(StoryOrchestrator):
+        def _chat(self, story, prompt: str, *, max_tokens: int, json_mode: bool, agent: str = "director"):
+            return "正文", ""
+
+    progress = []
+    story = StoryState(story_id="s-timed-chat", outline="测试", genre="网文", style="简洁")
+
+    with generation_progress(progress.append):
+        text, error = FastOrchestrator()._timed_chat(
+            story,
+            "写一段正文",
+            max_tokens=4000,
+            json_mode=False,
+            agent="writer",
+            stage="风格适配",
+        )
+
+    assert text == "正文"
+    assert error == ""
+    assert any("风格适配耗时" in item for item in progress)
+
+
+def test_failed_bundle_carries_visible_reason():
+    story = StoryState(story_id="s-visible-failure", outline="测试", genre="网文", style="简洁")
+
+    bundle = _failed_bundle(story, 3, "剧情计划：第3章 model_request_failed:timed out")
+
+    assert bundle.chapter_title == "第3章生成失败"
+    assert "生成失败" in bundle.body
+    assert "timed out" in bundle.body
+    assert bundle.quality_report["ok"] is False
+    assert any("timed out" in issue for issue in bundle.quality_report["issues"])

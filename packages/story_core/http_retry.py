@@ -6,6 +6,7 @@ All agents should use `post_json_with_retry` instead of raw urllib.request.urlop
 from __future__ import annotations
 
 import json
+import http.client
 import time
 import urllib.error
 import urllib.request
@@ -13,7 +14,7 @@ import urllib.request
 
 class RetryConfig:
     """Configuration for retry behavior."""
-    max_retries: int = 1
+    max_retries: int = 2
     initial_delay: float = 0.5  # seconds
     backoff_factor: float = 2.0
     max_delay: float = 2.0
@@ -74,7 +75,7 @@ def post_json_with_retry(
                         pass
                 time.sleep(delay)
                 delay = min(delay * cfg.backoff_factor, cfg.max_delay)
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.IncompleteRead, json.JSONDecodeError) as e:
             last_error = e
             if attempt < cfg.max_retries:
                 time.sleep(delay)

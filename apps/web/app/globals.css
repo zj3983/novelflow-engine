@@ -452,6 +452,12 @@ body {
   gap: 16px;
 }
 
+.ws-stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
 .ws-simple-item {
   border: 1px solid var(--ws-line);
   border-radius: 8px;

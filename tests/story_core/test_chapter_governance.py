@@ -42,7 +42,7 @@ def test_first_chapter_governance_separates_intent_context_and_rule_stack():
     assert "交易行" in "、".join(governance["chapter_intent"]["must_avoid"])
     assert governance["runtime_context"]["protagonist"]["real_name"] == "苏叶"
     assert governance["runtime_context"]["protagonist"]["game_id"] == "夜烬"
-    assert any("怪物统一为灰鼠" in item for item in governance["rule_stack"]["hard_facts"])
+    assert any("怪物统一为灰狼" in item for item in governance["rule_stack"]["hard_facts"])
     assert "爽点" in "、".join(governance["rule_stack"]["diagnostic_only"])
 
 

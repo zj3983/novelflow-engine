@@ -1,5 +1,6 @@
 from packages.story_core.revision_safety import choose_best_revision, choose_best_segment_revision, score_quality_report
 from packages.story_core.orchestrator import StoryOrchestrator
+from packages.story_core.segmented_writing import SegmentSpec
 from packages.story_core.engine import ChapterBundle
 from packages.story_core.models import CharacterState, StoryState
 
@@ -118,6 +119,21 @@ def test_choose_best_revision_rejects_severely_shorter_candidate_even_if_scores_
     assert result["report"]["candidate_chars"] < result["report"]["original_chars"]
 
 
+def test_choose_best_revision_rejects_chapter_rewrite_that_falls_below_minimum():
+    original = _quality(False, {"genre_rules": 6, "prose_style_meta_language": 6}, ["需要补写"])
+    candidate = _quality(True, {"genre_rules": 8, "prose_style_meta_language": 8})
+
+    result = choose_best_revision(
+        original_body="原稿正文" * 1200,
+        original_quality=original,
+        candidate_body="短稿正文" * 800,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["selected"] == "original"
+
+
 def test_choose_best_segment_revision_rejects_worse_local_rewrite():
     original_review = {"pass": False, "issues": ["偏短"], "scores": {"segment_scope": 8, "segment_surface": 5, "segment_style": 8}}
     candidate_review = {
@@ -213,3 +229,48 @@ def test_segment_pipeline_accepts_better_local_revision():
     assert body.split("\n\n")[0].startswith("夜烬把任务栏重新拉开")
     assert reviews[0]["segment_revision_safety"]["accepted"] is True
     assert reviews[0]["segment_revision_safety"]["selected"] == "candidate"
+
+
+def test_segment_pipeline_does_not_model_revise_soft_only_issues(monkeypatch):
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.build_segment_specs",
+        lambda chapter_number, plan: [
+            SegmentSpec(
+                key="soft",
+                title="软问题片段",
+                goal="完成当前动作",
+                required_surface="夜烬",
+                target_chars=120,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.review_segment_output",
+        lambda spec, text, *, chapter_number: {
+            "pass": False,
+            "issues": ["AI味偏重：同章多次使用解释句。"],
+            "revision_plan": ["后续整章统一处理语气。"],
+            "scores": {"segment_scope": 8, "segment_surface": 8, "segment_style": 5},
+            "critical_review": {"hard_issues": [], "soft_issues": ["AI味偏重"], "severity_summary": {"has_hard_violation": False}},
+            "segment_key": spec.key,
+            "segment_title": spec.title,
+        },
+    )
+
+    class SoftOnlyOrchestrator(StoryOrchestrator):
+        def __init__(self):
+            self.calls = 0
+
+        def _chat(self, story, prompt: str, *, max_tokens: int, json_mode: bool, agent: str = "director"):
+            self.calls += 1
+            return "夜烬站在柜台前，先把背包打开，又把任务牌看了一遍。", ""
+
+    story = StoryState(story_id="s-soft-only", outline="网游开服。", genre="网游", style="升级流")
+    orchestrator = SoftOnlyOrchestrator()
+
+    body, error, reviews = orchestrator._write_chapter_in_segments(story, 1, {})
+
+    assert error == ""
+    assert body.startswith("夜烬站在柜台前")
+    assert orchestrator.calls == 1
+    assert "segment_revision_safety" not in reviews[0]

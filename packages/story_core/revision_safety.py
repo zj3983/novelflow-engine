@@ -65,14 +65,22 @@ def choose_best_revision(
     candidate_score = score_quality_report(candidate_quality)
     original_chars = len("".join(str(original_body or "").split()))
     candidate_chars = len("".join(str(candidate_body or "").split()))
+    forced_reject_reason = ""
     if original_chars >= 1000 and candidate_chars < original_chars * 0.65:
+        forced_reject_reason = "candidate_severely_shorter"
         candidate_score -= 80.0
-    accepted = candidate_score >= original_score + min_delta
+    elif original_chars >= 3900 and candidate_chars < 3900:
+        forced_reject_reason = "candidate_below_chapter_minimum"
+        candidate_score -= 120.0
+    elif original_chars >= 3900 and candidate_chars < original_chars * 0.9:
+        forced_reject_reason = "candidate_shrank_too_much"
+        candidate_score -= 80.0
+    accepted = not forced_reject_reason and candidate_score >= original_score + min_delta
     report = {
         "reviewer": "revision_safety/v1",
         "accepted": accepted,
         "selected": "candidate" if accepted else "original",
-        "reason": "candidate_not_worse" if accepted else "candidate_worse_than_original",
+        "reason": "candidate_not_worse" if accepted else (forced_reject_reason or "candidate_worse_than_original"),
         "original_score": original_score,
         "candidate_score": round(candidate_score, 2),
         "min_delta": min_delta,

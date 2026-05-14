@@ -62,6 +62,22 @@ def test_prose_quality_review_flags_slogan_like_balanced_summary():
     assert review["scores"]["ai_trace"] < 8
 
 
+def test_prose_quality_review_flags_report_voice_from_protagonist_background():
+    body = (
+        "苏叶以前做数据建模，习惯把每一笔支出拆成数据模型，算概率，算止损线。"
+        "现在模型跑不动了，变量太多，现金流枯竭。"
+        "提示框一闪，这意味着系统把溢出部分折算进了常规掉落池。"
+    )
+
+    review = review_prose_quality(body)
+
+    assert not review["pass"]
+    assert review["scores"]["ai_trace"] < 8
+    quotes = " ".join(issue["quote"] for issue in review["issues"])
+    assert "数据模型" in quotes
+    assert "止损线" in quotes or "模型跑不动" in quotes
+
+
 def test_chapter_review_includes_separate_prose_quality_review():
     body = (
         "第1章 灰烬村的登录者。"

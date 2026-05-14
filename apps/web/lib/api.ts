@@ -247,6 +247,22 @@ export type NovelStatusResponse = {
   updated_at: string;
 };
 
+export type ReviewSection = {
+  reviewer?: string;
+  pass?: boolean;
+  scores?: Record<string, number>;
+  metrics?: Record<string, number>;
+  issues?: string[];
+  revision_plan?: string[];
+  cuts?: Array<{
+    type?: string;
+    target_text?: string;
+    reason?: string;
+    suggestion?: string;
+  }>;
+  hits?: Record<string, unknown>;
+};
+
 export type ChapterBundle = {
   chapter_number: number;
   body: string;
@@ -357,12 +373,12 @@ export type ChapterBundle = {
     issues: string[];
     revision_safety?: RevisionSafetyReport;
     segment_pipeline?: SegmentPipelineReport;
-    writing_review?: {
-      pass?: boolean;
-      scores?: Record<string, number>;
-      issues?: string[];
-      revision_plan?: string[];
-    };
+    writing_review?: ReviewSection;
+    critical_review?: ReviewSection;
+    hook_review?: ReviewSection;
+    pacing_review?: ReviewSection;
+    beats_review?: ReviewSection;
+    ai_flavor_review?: ReviewSection;
   };
   updated_story?: unknown;
 };
@@ -1843,6 +1859,21 @@ export async function startGenerationJob(storyId: string): Promise<GenerationJob
   })) as GenerationJobResponse;
 }
 
+export async function startFileProjectRegenerationJob(
+  projectId: string,
+  chapterNumber: number,
+  variant?: string,
+): Promise<GenerationJobResponse> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("regenerate_chapter_only_supports_file_projects");
+  }
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/generation-jobs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chapter_number: chapterNumber, variant }),
+  })) as GenerationJobResponse;
+}
+
 export async function fetchGenerationJob(storyId: string, jobId: string): Promise<GenerationJobResponse> {
   const path = isFileProjectId(storyId)
     ? `${fileProjectPath(storyId)}/generation-jobs/${encodeURIComponent(jobId)}`
@@ -1853,6 +1884,21 @@ export async function fetchGenerationJob(storyId: string, jobId: string): Promis
       method: "GET",
     },
   )) as GenerationJobResponse;
+}
+
+export async function regenerateFileProjectChapter(
+  projectId: string,
+  chapterNumber: number,
+  variant?: string,
+): Promise<{ project: ProjectResponse; story: StoryResponse; generated: Record<string, unknown> }> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("regenerate_chapter_only_supports_file_projects");
+  }
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/regenerate-chapter`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chapter_number: chapterNumber, variant }),
+  }, 900000)) as { project: ProjectResponse; story: StoryResponse; generated: Record<string, unknown> };
 }
 
 export async function startProjectAutomationJob(

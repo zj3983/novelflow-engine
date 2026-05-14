@@ -245,7 +245,7 @@ def simulate_world_events(
                     target=class_path,
                     location="角色创建界面",
                     visible_to=[protagonist, "系统界面"],
-                    consequences=["角色面板获得职业、生命、法力、基础属性和初始装备。"],
+                    consequences=["角色面板获得职业、生命、法力、初始装备和基础技能。"],
                     state_delta={
                         "protagonist": {
                             "game_id": protagonist,
@@ -259,20 +259,14 @@ def simulate_world_events(
                 _event(
                     event_id="c1-small-verify",
                     actor=protagonist,
-                    action=(
-                        "通过背包容量和低级怪物掉落验证边界。"
-                        if variant_id == "boundary-inventory-route"
-                        else "通过装备耐久和低级怪物掉落验证边界。"
-                        if variant_id == "boundary-durability-route"
-                        else "通过低级怪物和任务材料小额验证千倍爆率。"
-                    ),
-                    target="低级材料",
+                    action="通过低级怪物掉落验证千倍爆率，把普通刷怪流程压短成任务、装备、技能或路线门槛上的领先。",
+                    target="下一步门槛与经验进度",
                     location="灰烬村外",
-                    cause="必须先确认隐藏优势是否稳定。",
+                    cause="必须先确认高爆率能不能稳定转化为升级路线优势。",
                     visible_to=[protagonist, "附近普通玩家"],
                     consequences=[
-                        "只产生个人收益和少量可见打怪痕迹，不足以扰动全服。",
-                        str(game_world.get("chapter_pressure") or "低级验证留下补给与耐久压力。"),
+                        "只产生个人收益和少量可见打怪痕迹；旁人最多觉得运气好，不足以扰动全服。",
+                        str(game_world.get("chapter_pressure") or "首次验证留下下一步任务/装备/技能或路线门槛。"),
                     ],
                     state_delta={
                         "economy": {"inventory_hint": "新增低级材料"},
@@ -312,14 +306,14 @@ def simulate_world_events(
                 _event(
                     event_id="c1-next-step-hook",
                     actor=protagonist,
-                    action="保留首次验证得到的低级材料，把交易行、补给或任务提交作为下一章目标。",
-                    target="下一步目标",
+                    action="把首次验证得到的材料当成进度筹码，只看见门槛，不提交、不领奖、不修理、不买药水。",
+                    target="下一步领先目标",
                     location="灰烬村",
                     cause="第一章只完成登录建号和首次验证，不提前展开交易线。",
                     visible_to=[protagonist],
                     consequences=[
-                        "本章不发生寄售、成交、到账、提现或商人追踪。",
-                        "章末只留下材料如何变现或提交任务的选择压力。",
+                        "本章不发生寄售、成交、到账、提现、提交委托、领取铜币、扣费修理或买药水。",
+                        "章末只留下如何比普通玩家更快完成任务、补齐装备/技能门槛或摸到新路线的问题。",
                     ],
                     state_delta={"economy": {"inventory_hint": "保留低级材料"}},
                     prose_priority=9,
@@ -445,11 +439,15 @@ def _game_world_surface_lines(simulation: dict[str, Any]) -> list[str]:
         lines.append(f"推演变体：{variant}。本次重推必须围绕该变体改换验证路径、代价或NPC服务点。")
     inventory = aggregate.get("inventory", {}) if isinstance(aggregate.get("inventory"), dict) else {}
     if aggregate:
+        quest_progress = aggregate.get("quest_progress", "")
+        opening_rule = aggregate.get("opening_rule", "")
         lines.append(
             "最终："
             f"生命{aggregate.get('hp')}，法力{aggregate.get('mp')}，法杖{aggregate.get('weapon_durability')}，"
-            f"毒腺{inventory.get('灰狼毒腺', 0)}，狼皮{inventory.get('粗糙狼皮', 0)}，{aggregate.get('currency')}。"
+            f"毒腺{inventory.get('灰狼毒腺', 0)}，狼皮{inventory.get('粗糙狼皮', 0)}，{aggregate.get('currency')}，{quest_progress}。"
         )
+        if opening_rule:
+            lines.append(str(opening_rule))
     attention = simulation.get("external_attention", {}) if isinstance(simulation.get("external_attention"), dict) else {}
     if attention:
         lines.append(f"公会注意力{attention.get('guild', 0)}；市场注意力{attention.get('market', 0)}；NPC异常注意力{attention.get('npc', 0)}。")
@@ -555,8 +553,16 @@ def _scene_contract_from_game_world(
                     "cannot know",
                     "only see",
                     "only saw",
+                    "ordinary players",
+                    "luck",
                     "只看到",
                     "不能知道",
+                    "旁人",
+                    "运气好",
+                    "普通玩家",
+                    "路线熟",
+                    "没人注意",
+                    "没注意",
                     "弱线索",
                     "痕迹",
                     "批次",
@@ -607,6 +613,7 @@ def select_scene_cards(
     chapter_seed = chapter_seed or {}
     simulation_plan = simulation_plan or {}
     allow_default_game = any(event.template_id in GAME_TEMPLATE_IDS for event in events)
+    chapter_number = int(chapter_seed.get("chapter_number") or simulation_plan.get("chapter_number") or 0)
     templates = _template_by_id(chapter_seed, allow_default_game=allow_default_game)
     order_rank = _template_order(chapter_seed, allow_default_game=allow_default_game)
     forbidden_conflicts = _forbidden_conflicts(chapter_seed, allow_default_game=allow_default_game)
@@ -624,11 +631,14 @@ def select_scene_cards(
         if event.state_delta:
             must_show.append("把状态变化写成可回写账本的结果。")
         if "角色" in event.action or "面板" in " ".join(event.consequences):
-            must_show.append("短角色面板：ID、等级、职业、生命/法力、基础属性、装备、背包。")
+            must_show.append("短角色面板：ID、等级、职业、生命/法力、装备、背包；不要重复展开扩展属性。")
         if "交易行" in event.location:
             must_show.append("交易行只显示价格、数量、批次、手续费、到账或时间戳。")
         if "NPC" in event.actor or "NPC" in event.action:
-            must_show.append("NPC的地点、服务、利益诉求、口吻和信息边界。")
+            if chapter_number == 1:
+                must_show.append("NPC地点或窗口、服务内容和一句岗位口吻；不要展开完整柜台戏。")
+            else:
+                must_show.append("NPC的地点、服务、利益诉求、口吻和信息边界。")
         game_world = event.state_delta.get("game_world_simulation") if isinstance(event.state_delta, dict) else None
         if isinstance(game_world, dict):
             must_show.extend(_game_world_surface_lines(game_world))
