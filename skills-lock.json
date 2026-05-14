@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "skills": {
+    "Debug Issue": {
+      "source": "tirth8205/code-review-graph",
+      "sourceType": "github",
+      "skillPath": "skills/debug-issue/SKILL.md",
+      "computedHash": "3b45e2062531edb310d532d2cdf9a57c821f073044a6817bbdb84248ca7d864e"
+    },
+    "Explore Codebase": {
+      "source": "tirth8205/code-review-graph",
+      "sourceType": "github",
+      "skillPath": "skills/explore-codebase/SKILL.md",
+      "computedHash": "6e8d16d7ddbe5b3d0b19769045239d999970098d16fe32facff83f6d5eebbe34"
+    },
+    "Refactor Safely": {
+      "source": "tirth8205/code-review-graph",
+      "sourceType": "github",
+      "skillPath": "skills/refactor-safely/SKILL.md",
+      "computedHash": "e10d079235ad012b6635b3fd57e0f7eb219c9fad9a7ff2f242e9e6e46e9e017d"
+    },
+    "Review Changes": {
+      "source": "tirth8205/code-review-graph",
+      "sourceType": "github",
+      "skillPath": "skills/review-changes/SKILL.md",
+      "computedHash": "7fa86fe62a9eb06b4a4da2e9be4f4d3b7589b91d3e8bc8634427c62db037935a"
+    },
+    "build-graph": {
+      "source": "tirth8205/code-review-graph",
+      "sourceType": "github",
+      "skillPath": "skills/build-graph/SKILL.md",
+      "computedHash": "ae4760f61632866c69df9bdf6ecf54d1444a3e6bea012310e122d9175f3bd813"
+    },
+    "review-delta": {
+      "source": "tirth8205/code-review-graph",
+      "sourceType": "github",
+      "skillPath": "skills/review-delta/SKILL.md",
+      "computedHash": "39ccdc23a36b234bcd9d10bcd7dda377cdde04ad6618fda317f7dbdefc2976d4"
+    },
+    "review-pr": {
+      "source": "tirth8205/code-review-graph",
+      "sourceType": "github",
+      "skillPath": "skills/review-pr/SKILL.md",
+      "computedHash": "d7c759b1d1d57e83c48309d3ecefb9ae067388cca6339629b1e6a60c56543d05"
+    }
+  }
+}
