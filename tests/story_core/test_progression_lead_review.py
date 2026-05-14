@@ -111,4 +111,4 @@ def test_first_chapter_sanitizer_adds_npc_window_when_scene_card_requires_it():
     assert "柜台窗口" in cleaned
     assert "夜烬低声道" in cleaned
     assert review["scores"]["scene_card_coverage"] == 8
-    assert not review["scene_card_failures"]
+    assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
