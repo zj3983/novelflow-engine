@@ -256,7 +256,6 @@ def _sanitize_generated_body(body: str) -> str:
         "奖励30铜": "奖励还没领取",
         "扣除：30铜": "没有扣费",
         "扣除:30铜": "没有扣费",
-        "收益": "到手的东西",
         "逻辑": "规矩",
     }
     for old, new in replacements.items():
