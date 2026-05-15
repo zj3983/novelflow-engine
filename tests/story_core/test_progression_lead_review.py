@@ -128,3 +128,21 @@ def test_first_chapter_sanitizer_adds_reality_skill_source_when_scene_card_requi
     assert "外包测试员" in cleaned
     assert "项目日志" in cleaned
     assert "规则漏洞" in cleaned
+
+
+def test_first_chapter_sanitizer_removes_damage_numbers_and_current_currency_closure():
+    body = (
+        "《天启之门》开服，苏叶登录，游戏ID夜烬。"
+        "灰狼倒下时，伤害数字从15跳到12，混沌之种提示掉落判定×1000。"
+        "他看见面板写着当前货币：0铜，奖励三十铜还挂在任务牌后面。"
+        "修理匠问他要不要买两瓶药水，他摇头，又往职业导师门口看了一眼。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1)
+    review = review_progression_lead(chapter_number=1, body=cleaned, event_plan={}, world_facts=[])
+
+    assert "伤害数字" not in cleaned
+    assert "当前货币：0铜" not in cleaned
+    assert "奖励三十铜" not in cleaned
+    assert "买两瓶" not in cleaned
+    assert not any("服务闭环" in issue for issue in review["issues"])

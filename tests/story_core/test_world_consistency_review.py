@@ -115,6 +115,25 @@ def test_world_consistency_review_accepts_scene_card_must_show_beats_when_surfac
     assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
 
 
+def test_world_consistency_review_accepts_npc_location_or_window_alias():
+    scene_cards = [
+        {
+            "scene_id": "s4-c1-npc-service",
+            "must_show": ["NPC地点或窗口", "服务内容", "价格/门槛"],
+        }
+    ]
+    body = (
+        "村口的任务牌旁边开着一个小柜台窗口，木牌上只写服务内容和门槛："
+        "灰狼毒腺可以登记，补给价格另看柜台价牌。"
+        "窗口后的NPC只管把牌子扶正，不问来源，也不知道谁的背包里有多少材料。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=scene_cards, chapter_number=1)
+
+    assert review["scores"]["scene_card_coverage"] == 8
+    assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
+
+
 def test_world_consistency_review_accepts_event_action_alias_surface():
     world_events = [
         {
