@@ -286,10 +286,37 @@ def _scene_cards_need_npc_window(scene_cards: list[dict] | None) -> bool:
     return False
 
 
+def _scene_cards_need_reality_skill_source(scene_cards: list[dict] | None) -> bool:
+    for card in scene_cards or []:
+        if not isinstance(card, dict):
+            continue
+        scene_id = str(card.get("scene_id") or card.get("template_id") or "")
+        must_show = card.get("must_show") if isinstance(card.get("must_show"), list) else []
+        if scene_id == "s1-c1-reality-entry" or "现实职业/技能来源" in {str(item) for item in must_show}:
+            return True
+    return False
+
+
+def _body_has_reality_skill_source(body: str) -> bool:
+    return any(term in body for term in ("风控", "测试员", "外包", "工作", "项目")) and any(
+        term in body for term in ("概率", "流水", "模型", "漏洞", "规则")
+    )
+
+
+def _ensure_first_chapter_reality_skill_source(body: str, scene_cards: list[dict] | None) -> str:
+    if not body or not _scene_cards_need_reality_skill_source(scene_cards) or _body_has_reality_skill_source(body):
+        return body
+    prefix = (
+        "苏叶以前做过外包测试员，白天盯项目日志，晚上查流水和规则漏洞。"
+        "那点工作经验没让他富起来，只让他习惯先看余额、先算成本，再动手。\n\n"
+    )
+    return f"{prefix}{body.lstrip()}"
+
+
 def _body_has_npc_window_surface(body: str) -> bool:
     return (
-        any(term in body for term in ("药剂铺", "柜台", "灰烬村", "村口", "职业大厅", "仓库", "铁匠铺"))
-        and any(term in body for term in ("服务", "任务", "价格", "门槛", "条件", "只收", "报价"))
+        any(term in body for term in ("药剂铺", "柜台", "柜台窗口", "职业大厅", "仓库", "铁匠铺", "任务牌", "价牌"))
+        and any(term in body for term in ("服务", "价格", "门槛", "条件", "只收", "报价", "收购"))
         and any(term in body for term in ("不问来源", "没追问", "不能看到", "只能看到", "只管", "不知道", "柜台规矩", "信息边界"))
     )
 
@@ -360,6 +387,7 @@ def _sanitize_chapter_output(body: str, *, chapter_number: int, scene_cards: lis
     cleaned = _sanitize_first_chapter_scope(_sanitize_generated_body(body), chapter_number)
     cleaned = _sanitize_systemic_resource_contradictions(cleaned, scene_cards)
     if chapter_number == 1:
+        cleaned = _ensure_first_chapter_reality_skill_source(cleaned, scene_cards)
         cleaned = _ensure_first_chapter_npc_window(cleaned, scene_cards)
     return _soften_repeated_paragraph_openers(cleaned)
 

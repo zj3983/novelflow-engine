@@ -112,3 +112,19 @@ def test_first_chapter_sanitizer_adds_npc_window_when_scene_card_requires_it():
     assert "夜烬低声道" in cleaned
     assert review["scores"]["scene_card_coverage"] == 8
     assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
+
+
+def test_first_chapter_sanitizer_adds_reality_skill_source_when_scene_card_requires_it():
+    body = "苏叶看了一眼余额，戴上旧头盔进入《天启之门》。游戏ID夜烬。"
+    scene_cards = [
+        {
+            "scene_id": "s1-c1-reality-entry",
+            "must_show": ["现实职业/技能来源", "为什么登录游戏", "主角风险偏好"],
+        }
+    ]
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=scene_cards)
+
+    assert "外包测试员" in cleaned
+    assert "项目日志" in cleaned
+    assert "规则漏洞" in cleaned
