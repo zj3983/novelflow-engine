@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from packages.story_core.models import (
     ArcRecap,
     ChapterSummary,
@@ -426,19 +428,144 @@ def apply_post_chapter_updates(
         story.foreshadowing[0].status = "reinforced"
 
 
-def build_character_cards(story: StoryState) -> list[dict]:
-    return [
-        {
-            "name": c.name,
-            "role": c.role,
-            "memory": list(c.memory),
-            "current_emotion": c.current_emotion,
-            "location": c.location,
-            "goals": list(c.goals),
-            "relationships": {key: value.model_dump() for key, value in c.relationships.items()},
+def _is_protagonist(character: Any) -> bool:
+    return getattr(character, "role", "") in {"protagonist", "主角"} or getattr(character, "name", "") == "苏叶"
+
+
+def _is_game_story_for_cards(story: StoryState) -> bool:
+    text = " ".join(
+        [
+            str(getattr(story, "genre", "") or ""),
+            str(getattr(story, "style", "") or ""),
+            str(getattr(story, "outline", "") or ""),
+            " ".join(str(fact) for fact in getattr(story, "world_facts", [])[:12]),
+        ]
+    )
+    return any(token in text for token in ("网游", "游戏", "VRMMO", "爆率", "等级", "铜币", "任务"))
+
+
+def _clean_dict(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
+
+
+def _profile_defaults(character: Any, story: StoryState) -> dict[str, Any]:
+    if _is_protagonist(character) and _is_game_story_for_cards(story):
+        panel = getattr(character, "game_panel", None)
+        panel_data = panel.model_dump() if hasattr(panel, "model_dump") else {}
+        return {
+            "character_type": "gap-driven webgame protagonist; staged-goal protagonist",
+            "core_motivation": "现实压力没有解决前，先把游戏收益路径验证清楚；隐藏异常优势，靠信息差和节奏拉开差距。",
+            "behavior_logic": "先看成本、退路、背包格、耐久和可见风险；行动要落在排队、查价、试怪、留路线上，不写成分析报告。",
+            "interaction_mode": "对NPC只问业务边界；对普通玩家不炫耀、不解释底牌；回答用完整口语，别用装高手式短答。",
+            "poison_points": [
+                "装高手式短句",
+                "把谨慎写成只盯钱",
+                "公开暴露掉落异常",
+                "让NPC或路人全知隐藏机制",
+                "法师兄等生硬称呼",
+                "用规则说明替代动作和对话",
+            ],
+            "social_profile": {
+                "class_pressure": "现实余额、房租和欠费压着他，压力不能在开局被解决。",
+                "work_history": "做过外包测试，习惯先复核流程和边界。",
+                "equipment_reality": "旧头盔和有限现金让每一步投入都有重量。",
+            },
+            "psychological_profile": {
+                "desire": "找到一条能翻身但不立刻暴露的路。",
+                "fear": "赌错最后一点机会，或让异常优势过早被别人盯上。",
+                "defense": "先验证，再下注；紧张时会把话说慢说完整。",
+            },
+            "moral_profile": {
+                "bottom_line": "不主动坑普通新手，不拿没确认的收益骗自己。",
+                "gray_zone": "会利用信息差和地形，不把底牌交给别人。",
+            },
+            "story_function": "把隐藏爆率写成幕后领先和阶段爽点，而不是当众开挂炫耀。",
+            "chapter_role": "本章要用行动暴露处境、验证优势、留下下一步目标。",
+            "game_panel": _clean_dict(panel_data),
         }
-        for c in story.characters
-    ]
+    return {
+        "character_type": "function-anchored supporting character",
+        "core_motivation": "围绕自己的职位、利益或关系压力行动，不替主角解释世界。",
+        "behavior_logic": "先按本职工作和已知信息反应，再表现个性。",
+        "interaction_mode": "说话带生活口吻，只透露自己能知道的事。",
+        "poison_points": ["全知主角秘密", "纯工具人问答", "替作者讲设定"],
+        "story_function": "用小动作、态度和边界让场景落地。",
+        "chapter_role": "给主角制造信息、阻力、误会或交易边界。",
+    }
+
+
+def _character_card(character: Any, story: StoryState) -> dict[str, Any]:
+    defaults = _profile_defaults(character, story)
+    profile = getattr(character, "performance_profile", None)
+    voice = getattr(profile, "voice", None) if profile is not None else None
+    npc_profile = getattr(character, "npc_profile", None)
+    panel = getattr(character, "game_panel", None)
+    panel_data = panel.model_dump() if hasattr(panel, "model_dump") else {}
+    game_id = getattr(character, "game_id", "") or panel_data.get("game_id", "")
+    webnovel_profile = {
+        "character_type": getattr(character, "character_type", "") or defaults.get("character_type", ""),
+        "core_motivation": getattr(character, "core_motivation", "") or defaults.get("core_motivation", ""),
+        "behavior_logic": getattr(character, "behavior_logic", "") or defaults.get("behavior_logic", ""),
+        "interaction_mode": getattr(character, "interaction_mode", "") or defaults.get("interaction_mode", ""),
+        "poison_points": list(getattr(character, "poison_points", []) or defaults.get("poison_points", [])),
+    }
+    dimensions = {
+        "social": getattr(character, "social_profile", {}) or defaults.get("social_profile", {}),
+        "psychological": getattr(character, "psychological_profile", {}) or defaults.get("psychological_profile", {}),
+        "moral": getattr(character, "moral_profile", {}) or defaults.get("moral_profile", {}),
+    }
+    performance = {
+        "speech_style": getattr(profile, "speech_style", "") if profile is not None else "",
+        "action_style": getattr(profile, "action_style", "") if profile is not None else "",
+        "risk_posture": getattr(profile, "risk_posture", "") if profile is not None else "",
+        "emotional_triggers": list(getattr(profile, "emotional_triggers", []) if profile is not None else []),
+        "decision_rules": list(getattr(profile, "decision_rules", []) if profile is not None else []),
+        "reveal_limits": list(getattr(profile, "reveal_limits", []) if profile is not None else []),
+        "voice": voice.model_dump() if hasattr(voice, "model_dump") else {},
+    }
+    npc_boundary = npc_profile.model_dump() if hasattr(npc_profile, "model_dump") else {}
+    return {
+        "name": getattr(character, "name", ""),
+        "role": getattr(character, "role", ""),
+        "identity": {
+            "name": getattr(character, "name", ""),
+            "role": getattr(character, "role", ""),
+            "game_id": game_id,
+            "location": getattr(character, "location", ""),
+        },
+        "webnovel_profile": _clean_dict(webnovel_profile),
+        "three_dimensions": _clean_dict(dimensions),
+        "story_usage": _clean_dict(
+            {
+                "story_function": getattr(character, "story_function", "") or defaults.get("story_function", ""),
+                "chapter_role": getattr(character, "chapter_role", "") or defaults.get("chapter_role", ""),
+                "goals": list(getattr(character, "goals", [])),
+                "current_emotion": getattr(character, "current_emotion", ""),
+                "this_chapter_usage": {
+                    "status": getattr(character, "current_emotion", "") or "neutral",
+                    "drive": getattr(character, "core_motivation", "") or defaults.get("core_motivation", ""),
+                    "function": getattr(character, "chapter_role", "") or defaults.get("chapter_role", ""),
+                    "speech_tendency": getattr(profile, "speech_style", "") if profile is not None else defaults.get("interaction_mode", ""),
+                },
+            }
+        ),
+        "voice_and_action": _clean_dict(performance),
+        "continuity_locks": _clean_dict(
+            {
+                "memory": list(getattr(character, "memory", [])),
+                "secrets": list(getattr(character, "secrets", [])),
+                "relationships": {
+                    key: value.model_dump() for key, value in getattr(character, "relationships", {}).items()
+                },
+                "game_panel": _clean_dict(panel_data),
+                "npc_boundary": _clean_dict(npc_boundary),
+            }
+        ),
+    }
+
+
+def build_character_cards(story: StoryState) -> list[dict]:
+    return [_character_card(character, story) for character in story.characters]
 
 
 def build_foreshadowing(story: StoryState, chapter_number: int) -> list[dict]:

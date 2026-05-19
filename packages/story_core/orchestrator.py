@@ -714,6 +714,7 @@ def _story_snapshot(story: StoryState) -> dict:
             for c in story.characters[:6]
             if c.lifecycle_state == "active" and not c.frozen
         ],
+        "character_cards": build_character_cards(story)[:6],
     }
 
 

@@ -245,6 +245,16 @@ class CharacterState(BaseModel):
     game_panel: GamePanel = Field(default_factory=GamePanel)
     performance_profile: CharacterPerformanceProfile = Field(default_factory=CharacterPerformanceProfile)
     npc_profile: NPCBehaviorProfile = Field(default_factory=NPCBehaviorProfile)
+    character_type: str = ""
+    core_motivation: str = ""
+    behavior_logic: str = ""
+    interaction_mode: str = ""
+    poison_points: list[str] = Field(default_factory=list)
+    social_profile: dict = Field(default_factory=dict)
+    psychological_profile: dict = Field(default_factory=dict)
+    moral_profile: dict = Field(default_factory=dict)
+    story_function: str = ""
+    chapter_role: str = ""
     traits: dict[str, float] = Field(default_factory=dict)
     goals: list[str] = Field(default_factory=list)
     memory: list[str] = Field(default_factory=list)

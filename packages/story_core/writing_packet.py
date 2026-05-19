@@ -4,6 +4,7 @@ from typing import Any
 
 from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES, compact_list, compact_text
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate
+from packages.story_core.memory import build_character_cards
 from packages.story_core.simulation import is_game_story
 from packages.story_core.writing_taskbook import first_chapter_whole_body_contract
 
@@ -419,6 +420,7 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         scene_contracts = _extract_scene_contracts(scene_cards)
 
     protagonist_locks = _latest_panel_locks(story, game_genre=game_genre)
+    character_cards = build_character_cards(story)
     hard_locks = _hard_locks(game_genre, target_chapter)
     real_name = str(protagonist_locks.get("real_name") or "").strip()
     game_id = str(protagonist_locks.get("game_id") or "").strip()
@@ -455,6 +457,17 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
             "current_chapter": getattr(story, "current_chapter", 0),
         },
         "protagonist": protagonist_locks,
+        "character_cards": character_cards,
+        "protagonist_card": next(
+            (
+                card
+                for card in character_cards
+                if card.get("identity", {}).get("role") in {"protagonist", "主角"}
+                or card.get("identity", {}).get("name") == real_name
+                or card.get("identity", {}).get("game_id") == game_id
+            ),
+            {},
+        ),
         "prose_renderer": prose_renderer_contract(),
         "whole_chapter_contract": first_chapter_whole_body_contract(game_genre=game_genre) if target_chapter == 1 else {},
         "governance": governance,
