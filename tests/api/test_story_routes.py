@@ -14,6 +14,23 @@ from apps.api.routes.stories import _quality_context
 client = TestClient(app)
 
 
+def _make_file_project(root, *, project_id="p-file-api", state=None):
+    (root / ".story-system" / "chapters").mkdir(parents=True)
+    (root / ".story-system" / "reviews").mkdir(parents=True)
+    (root / ".webnovel").mkdir(parents=True)
+    (root / "chapters").mkdir(parents=True)
+    project = {"project_id": project_id, "title": "File API Novel", "active_story_id": "s-file-api"}
+    (root / ".story-system" / "MASTER_SETTING.json").write_text(
+        json.dumps({"schema_version": "story-system-master-setting/v1", "project": project}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (root / ".webnovel" / "project.json").write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    (root / ".webnovel" / "state.json").write_text(
+        json.dumps(state or {"story_id": "s-file-api", "current_chapter": 0, "world_facts": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 def _mock_story_chat(self, story, prompt: str, *, max_tokens: int, json_mode: bool, agent: str = "director"):
     chapter_number = getattr(story, "current_chapter", 0) or 1
     active = [c for c in story.characters if c.lifecycle_state == "active" and not c.frozen]
@@ -185,9 +202,9 @@ def test_serialized_history_refreshes_stale_quality_report():
         "职业选择栏弹出后，他选择元素法师学徒。"
         "【角色面板】游戏ID：夜烬；等级：1；职业：元素法师学徒；经验：0/100；主武器：新手法杖。"
         "夜烬进入灰烬村，只看见公告栏写着新手外坡怪物密度偏高，路口玩家还在排队接任务。"
-        "他在低密度灰鼠坡小范围刷怪，验证混沌之种和千倍爆率后，把多余材料暂时压在背包里。"
+        "他在低密度灰鼠坡小范围刷怪，击杀后看见掉落判定×1000，混沌之种未解析，获得灰鼠毒腺×12，任务进度一下推到清道夫前置只差一点。"
         "职业导师艾伦在木屋门口登记法师学徒，提醒元素回廊试炼需要先交十份毒腺。"
-        "夜烬没有急着处理材料，只记下任务门槛、法杖耐久和明天先登记的下一步。"
+        "普通玩家还在路口排队，只当夜烬运气好。夜烬没有急着处理材料，只记下前置任务、法杖耐久和下一步再刷一轮。"
     ) * 28
     bundle = ChapterBundle(
         chapter_number=1,
@@ -302,11 +319,13 @@ def test_project_writing_packet_and_manual_draft_roundtrip():
     assert draft_response.status_code == 200
     draft = draft_response.json()
     assert draft["revision"]["source"] == "manual_draft"
-    assert draft["chapter"]["body"] == manual_body
+    assert "货币：0铜币" not in draft["chapter"]["body"]
+    assert "钱袋：空" in draft["chapter"]["body"]
     assert draft["chapter"]["body_chars"] >= 1
     assert "writing_review" in draft["review"]
     refreshed = client.get(f"/stories/{story_id}").json()
-    assert refreshed["history"][0]["body"] == manual_body
+    assert "货币：0铜币" not in refreshed["history"][0]["body"]
+    assert "钱袋：空" in refreshed["history"][0]["body"]
 
 
 def test_project_manual_draft_can_append_next_chapter():
@@ -355,6 +374,30 @@ def test_project_manual_draft_can_append_next_chapter():
     assert refreshed["current_chapter"] == 2
     assert [chapter["chapter_number"] for chapter in refreshed["history"]][-2:] == [1, 2]
     assert refreshed["history"][-1]["body"] == chapter_two_body
+
+
+def test_file_project_regenerate_rejects_frozen_chapter(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "frozen-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-frozen-file",
+        state={
+            "story_id": "s-file-api",
+            "outline": "A grounded game story.",
+            "current_chapter": 1,
+            "world_facts": [],
+            "progression_ledger": {"continuity_lock": {"chapters_frozen": [1]}},
+        },
+    )
+
+    response = client.post(
+        "/file-projects/p-frozen-file/regenerate-chapter",
+        json={"chapter_number": 1},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "chapter_frozen:1:regenerate"
 
 
 def test_project_manual_segment_draft_replaces_one_paragraph_only():

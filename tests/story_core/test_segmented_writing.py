@@ -26,14 +26,14 @@ def test_first_chapter_segments_keep_opening_scope():
     assert "夜烬建号完成" in specs[0].exit_state
     assert specs[0].title == "现实压力与登录建号"
     assert specs[1].title == "低级怪小验证"
-    assert specs[2].title == "先不卖，留个问题"
+    assert specs[2].title == "暗中吃下第一笔"
     assert "小规模验证结束" in specs[1].exit_state
-    assert "材料先收住" in specs[2].goal
+    assert "至少兑现一个小收益闭环" in specs[2].goal
     assert "确认边界" not in " ".join(spec.goal for spec in specs)
     assert "验边界" not in " ".join(spec.title for spec in specs)
-    assert "材料处理成钱" in specs[0].forbidden_surface
+    assert "材料公开处理成大钱" in specs[0].forbidden_surface
     assert "玩家势力追查" in specs[1].forbidden_surface
-    assert "寄售" not in " ".join(spec.forbidden_surface for spec in specs)
+    assert "寄售成功" not in " ".join(spec.forbidden_surface for spec in specs)
     assert "完整NPC服务戏" in specs[2].forbidden_surface
 
 

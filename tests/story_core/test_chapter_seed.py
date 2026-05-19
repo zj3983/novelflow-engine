@@ -30,7 +30,7 @@ def test_game_chapter_seed_turns_rules_into_generation_contract():
     assert "game_webnovel" in seed["genre_plugins"]
     assert any("游戏ID" in beat for beat in seed["chapter_contract"]["required_beats"])
     assert any("职业" in beat for beat in seed["chapter_contract"]["required_beats"])
-    assert any("闭合账本" in beat for beat in seed["chapter_contract"]["required_beats"])
+    assert any("已兑现账本" in beat for beat in seed["chapter_contract"]["required_beats"])
     assert any("坐标" in item for item in seed["chapter_contract"]["forbidden_moves"])
     assert any("库存矛盾" in item for item in seed["chapter_contract"]["forbidden_moves"])
     assert seed["simulation_axes"]["economy"]
@@ -88,7 +88,119 @@ def test_chapter_seed_carries_recent_continuity_and_ledger():
     assert seed["continuity"]["latest_summary"] == "夜烬完成首次小额验证。"
     assert "经济锚点：毒腺挂单价9铜，余额15铜。" in seed["continuity"]["must_keep_facts"]
     assert seed["current_state"]["protagonist"]["class_path"] == "元素法师学徒"
-    assert any("不直接完成元素回廊" in item for item in seed["chapter_contract"]["forbidden_moves"])
+    assert any("直接完成元素回廊" in item for item in seed["chapter_contract"]["forbidden_moves"])
+
+
+def test_game_chapter_two_blocks_level_one_transfer_or_trial_task():
+    story = StoryState(
+        story_id="s-seed-ch2-level-gate",
+        outline="网游开服，夜烬靠千倍爆率低调发育。",
+        genre="网游",
+        style="升级流",
+        current_chapter=1,
+        progression_ledger={
+            "protagonist": {"level": 1, "exp": "30/100", "class_path": "元素法师学徒"},
+            "economy": {"currency": "0铜", "inventory": {"灰狼毒腺": 33, "粗糙狼皮": 28}},
+            "equipment": {"weapon": "新手法杖", "durability": "17/20"},
+        },
+    )
+
+    seed = build_chapter_seed(story, 2)
+
+    forbidden = "\n".join(seed["chapter_contract"]["forbidden_moves"])
+    required = "\n".join(seed["chapter_contract"]["required_beats"])
+    assert "Lv.1" in forbidden
+    assert "转职任务" in forbidden
+    assert "职业试炼" in forbidden
+    assert "10级" in forbidden
+    assert "新手村任务" in required
+
+
+def test_game_chapter_two_builds_actionable_writing_contract():
+    story = StoryState(
+        story_id="s-seed-ch2-writing-contract",
+        outline="网游开服，夜烬靠千倍爆率低调发育。",
+        genre="网游",
+        style="升级流",
+        current_chapter=1,
+        progression_ledger={
+            "protagonist": {"level": 1, "exp": "30/100", "class_path": "元素法师学徒"},
+            "economy": {"currency": "0铜", "inventory": {"灰狼毒腺": 33, "粗糙狼皮": 28}},
+            "equipment": {"weapon": "新手法杖", "durability": "17/20"},
+        },
+    )
+
+    seed = build_chapter_seed(story, 2)
+    writing_contract = seed["writing_contract"]
+
+    assert writing_contract["current_level"] == "Lv.1"
+    assert any("清道夫" in item for item in writing_contract["allowed_progress"])
+    assert any("基础火球术命中记录" in item for item in writing_contract["allowed_progress"])
+    assert any("转职任务" in item for item in writing_contract["forbidden_unlocks"])
+    assert any("后坡" in scene["goal"] for scene in writing_contract["scene_plan"])
+    assert all("职业试炼" not in scene["goal"] for scene in writing_contract["scene_plan"])
+    assert len(writing_contract["emotional_arc"]) >= 3
+    assert any("现实余额" in beat or "怕亏" in beat for beat in writing_contract["emotional_arc"])
+    assert any("收益" in beat or "修好" in beat or "补给" in beat for beat in writing_contract["emotional_arc"])
+    loop = writing_contract["satisfaction_loop"]
+    assert "可见收益" in loop["visible_payoff"] or "铜币" in loop["visible_payoff"]
+    assert "误判" in loop["outsider_misread"] or "运气好" in loop["outsider_misread"]
+    assert "下一章" in loop["next_hook"] or "下一轮" in loop["next_hook"]
+    craft = writing_contract["genre_craft"]
+    assert any("玩家行动" in item for item in craft["method_card"])
+    assert any("先写代价" in item and "收获" in item for item in craft["method_card"])
+    assert any("试一次" in item for item in craft["action_chain"])
+    assert any("本场用得上" in item for item in craft["panel_method"])
+    assert "weak" in craft["micro_example"] and "better" in craft["micro_example"]
+
+
+def test_game_low_level_later_chapter_still_uses_newbie_progression_gate():
+    story = StoryState(
+        story_id="s-seed-ch6-low-level-gate",
+        outline="网游开服，夜烬靠千倍爆率低调发育。",
+        genre="网游",
+        style="升级流",
+        current_chapter=5,
+        progression_ledger={
+            "protagonist": {"level": 4, "exp": "210/500", "class_path": "元素法师学徒"},
+            "economy": {"currency": "83铜", "inventory": {"灰狼毒腺": 18, "粗糙狼皮": 42}},
+            "equipment": {"weapon": "修过的新手法杖", "durability": "13/20"},
+        },
+    )
+
+    seed = build_chapter_seed(story, 6)
+    writing_contract = seed["writing_contract"]
+
+    assert writing_contract["progression_stage"] == "newbie_low"
+    assert writing_contract["current_level"] == "Lv.4"
+    assert any("新手村" in item for item in writing_contract["allowed_progress"])
+    assert any("10级前" in item and "转职任务" in item for item in writing_contract["forbidden_unlocks"])
+    assert all("职业试炼" not in scene["goal"] for scene in writing_contract["scene_plan"])
+
+
+def test_game_level_ten_contract_allows_trial_registration_without_free_completion():
+    story = StoryState(
+        story_id="s-seed-ch10-trial-ready",
+        outline="网游开服，夜烬靠千倍爆率低调发育。",
+        genre="网游",
+        style="升级流",
+        current_chapter=9,
+        progression_ledger={
+            "protagonist": {"level": 10, "exp": "0/1600", "class_path": "元素法师学徒"},
+            "economy": {"currency": "4银35铜", "inventory": {"灰狼毒腺": 20, "风干狼皮": 12}},
+            "equipment": {"weapon": "学徒法杖", "durability": "18/30"},
+        },
+    )
+
+    seed = build_chapter_seed(story, 10)
+    writing_contract = seed["writing_contract"]
+
+    assert writing_contract["progression_stage"] == "trial_ready"
+    assert writing_contract["current_level"] == "Lv.10"
+    assert any("职业导师" in item or "试炼登记" in item for item in writing_contract["allowed_progress"])
+    assert any("直接完成" in item and "元素回廊" in item for item in writing_contract["forbidden_unlocks"])
+    assert any("材料" in scene["goal"] or "费用" in scene["goal"] for scene in writing_contract["scene_plan"])
+    assert any("失败惩罚" in item for item in writing_contract["genre_craft"]["action_chain"])
 
 
 def test_orchestrator_prompts_use_chapter_seed_contract():
@@ -107,7 +219,17 @@ def test_orchestrator_prompts_use_chapter_seed_contract():
 
     assert "chapter-seed/v1" in plan_prompt
     assert "生成前世界推演契约" in plan_prompt
+    assert "emotional_arc" in plan_prompt
+    assert "genre_craft" in plan_prompt
+    assert "action_chain" in plan_prompt
+    assert "网游计划写法" in plan_prompt
     assert "chapter-seed/v1" in body_prompt
+    assert "emotional_arc" in body_prompt
+    assert "genre_craft" in body_prompt
+    assert "网游写法方法卡" in body_prompt
+    assert "玩家行动链" in body_prompt
+    assert "先写代价，再写收获" in body_prompt
+    assert "每个主要场景至少一拍情绪" in body_prompt
     assert "禁止单次低级材料交易暴露坐标" in body_prompt
 
 

@@ -83,6 +83,13 @@ def _store_for(project_id: str) -> FileProjectStore:
     raise HTTPException(status_code=404, detail="file_project_not_found")
 
 
+def _raise_file_project_error(exc: ValueError) -> None:
+    detail = str(exc)
+    if detail.startswith("chapter_frozen:"):
+        raise HTTPException(status_code=409, detail=detail) from exc
+    raise HTTPException(status_code=400, detail=detail) from exc
+
+
 def _story_id_for(store: FileProjectStore) -> str:
     return _file_id(store.root.name)
 
@@ -190,6 +197,32 @@ def _run_file_generation_job(job_id: str, project_id: str, *, chapter_number: in
 
 
 def _display_title(project: dict[str, Any], state: dict[str, Any], summary: dict[str, Any], fallback: str) -> str:
+    title_candidates = [
+        project.get("title"),
+        project.get("novel_title"),
+        project.get("book_title"),
+        project.get("name"),
+        summary.get("title"),
+        summary.get("novel_title"),
+        state.get("title"),
+        state.get("novel_title"),
+        state.get("book_title"),
+    ]
+    state_project = state.get("project")
+    if isinstance(state_project, dict):
+        title_candidates.extend(
+            [
+                state_project.get("title"),
+                state_project.get("novel_title"),
+                state_project.get("book_title"),
+                state_project.get("name"),
+            ]
+        )
+    for value in title_candidates:
+        title = str(value or "").strip()
+        if title and len(title) <= 40 and "，" not in title and "。" not in title:
+            return title
+
     for fact in state.get("world_facts") or []:
         text = str(fact or "")
         match = re.search(r"世界摘要：?《([^》]+)》", text)
@@ -296,7 +329,10 @@ def init_file_project_routes() -> APIRouter:
     @router.post("/file-projects/{project_id}/regenerate-chapter")
     def regenerate_file_project_chapter(project_id: str, payload: FileProjectRegenerateRequest) -> dict[str, Any]:
         store = _store_for(project_id)
-        generated = store.regenerate_chapter(payload.chapter_number, variant=payload.variant)
+        try:
+            generated = store.regenerate_chapter(payload.chapter_number, variant=payload.variant)
+        except ValueError as exc:
+            _raise_file_project_error(exc)
         return {
             "schema_version": "file-project-regenerate-response/v1",
             "project": _project_payload(store),

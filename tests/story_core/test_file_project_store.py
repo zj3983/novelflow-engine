@@ -1,7 +1,56 @@
 import json
 from types import SimpleNamespace
 
-from packages.story_core.file_project_store import FileProjectStore
+from packages.story_core.file_project_store import FileProjectStore, _regeneration_quality_blocking
+
+
+def _make_minimal_file_project(root, *, state=None, project=None):
+    (root / ".story-system" / "chapters").mkdir(parents=True)
+    (root / ".story-system" / "reviews").mkdir(parents=True)
+    (root / ".webnovel").mkdir(parents=True)
+    (root / "chapters").mkdir(parents=True)
+    (root / ".story-system" / "MASTER_SETTING.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "story-system-master-setting/v1",
+                "project": project or {"project_id": "p-file", "title": "File Novel", "active_story_id": "s-file"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (root / ".webnovel" / "project.json").write_text(
+        json.dumps(project or {"project_id": "p-file", "title": "File Novel", "active_story_id": "s-file"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (root / ".webnovel" / "state.json").write_text(
+        json.dumps(state or {"story_id": "s-file", "current_chapter": 0, "world_facts": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return FileProjectStore(root)
+
+
+def test_regeneration_quality_allows_soft_scene_coverage_warnings():
+    writing_review = {
+        "issues": [
+            "场景卡必写内容缺失：s3-c2-reaction-1 缺少 路人玩家抱怨爆率低。",
+            "Scene contract not consumed: s1-c2-inherit-ledger missing visibility_boundary_surface.",
+        ],
+        "critical_review": {"hard_issues": [], "severity_summary": {"has_hard_violation": False}},
+    }
+    quality_report = {"ok": False, "issues": ["writing_review"], "writing_review": writing_review}
+
+    assert _regeneration_quality_blocking(quality_report, writing_review) is False
+
+
+def test_regeneration_quality_still_blocks_progression_overreach():
+    writing_review = {
+        "issues": ["第二章推进过快：从第一章账本直接完成元素回廊前置或升级。"],
+        "critical_review": {"hard_issues": [], "severity_summary": {"has_hard_violation": False}},
+    }
+    quality_report = {"ok": False, "issues": ["writing_review"], "writing_review": writing_review}
+
+    assert _regeneration_quality_blocking(quality_report, writing_review) is True
 
 
 def test_file_project_store_writes_rewrites_and_commits(tmp_path, monkeypatch):
@@ -68,6 +117,10 @@ def test_file_project_store_writes_rewrites_and_commits(tmp_path, monkeypatch):
     assert any(item["path"] == "chapters/0001-Chapter One Revised.md" for item in latest_commit["manifest"])
     project_after_rewrite = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
     assert project_after_rewrite["world_blueprint"]["continuity_state"]["latest_title"] == "Chapter One Revised"
+    state_after_rewrite = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    world_facts_after_rewrite = "\n".join(state_after_rewrite["world_facts"])
+    assert "remove explanatory narrator voice" in world_facts_after_rewrite
+    assert "keep it grounded" not in world_facts_after_rewrite
     workflow_records = [json.loads(line) for line in workflow_log.read_text(encoding="utf-8").splitlines()]
     assert [record["operation"] for record in workflow_records] == ["write", "rewrite"]
     assert workflow_records[0]["chapter"] == 1
@@ -165,6 +218,114 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
     assert packet["state"]["time_state"]["current_scene_time"] == "第1章章末"
     latest_commit = json.loads((root / ".story-system" / "commits" / "latest_commit.json").read_text(encoding="utf-8"))
     assert latest_commit["operation"] == "generate"
+
+
+def test_persist_bundle_ignores_stale_bundle_updated_story(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": ["source:canonical"]},
+    )
+
+    bundle = SimpleNamespace(
+        chapter_number=1,
+        chapter_title="Fresh Chapter",
+        body="Night Ember keeps the current ledger clean.",
+        cadence="manual",
+        next_outline="Continue from fresh facts.",
+        updated_story={
+            "story_id": "s-file",
+            "current_chapter": 99,
+            "world_facts": ["stale fact should not return"],
+        },
+        chapter_summary={
+            "chapter_title": "Fresh Chapter",
+            "cadence": "manual",
+            "summary": "Fresh summary wins.",
+            "facts": ["fresh fact from summary"],
+            "next_focus": "Continue from fresh facts.",
+            "primary_conflict": "Clean state.",
+            "secondary_conflict": "Old snapshot.",
+            "event_beat": "Persist.",
+        },
+    )
+
+    store.persist_bundle(bundle)
+
+    state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    facts = "\n".join(state["world_facts"])
+    assert "fresh fact from summary" in facts
+    assert "Fresh summary wins." in facts
+    assert "stale fact should not return" not in facts
+    assert state["current_chapter"] == 1
+
+
+def test_rewrite_chapter_uses_canonical_state_not_embedded_snapshot(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={"story_id": "s-file", "current_chapter": 1, "world_facts": ["source:canonical"]},
+    )
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "Old Chapter",
+        "body": "Old body.",
+        "next_outline": "Old next.",
+        "updated_story": {
+            "story_id": "s-file",
+            "current_chapter": 1,
+            "world_facts": ["stale embedded snapshot"],
+        },
+        "chapter_summary": {
+            "chapter_title": "Old Chapter",
+            "cadence": "manual",
+            "summary": "Old summary.",
+            "facts": ["old fact"],
+            "next_focus": "Old next.",
+            "primary_conflict": "Old.",
+            "secondary_conflict": "Old.",
+            "event_beat": "Old.",
+        },
+    }
+    (root / ".story-system" / "chapters" / "0001.json").write_text(json.dumps(chapter, ensure_ascii=False), encoding="utf-8")
+    (root / ".story-system" / "reviews" / "0001.json").write_text(
+        json.dumps({"writing_review": {"pass": True, "issues": []}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (root / "chapters" / "0001-Old Chapter.md").write_text("Old body.", encoding="utf-8")
+
+    store.rewrite_chapter(
+        chapter_number=1,
+        title="Rewritten Chapter",
+        body="Night Ember rewrites only the live facts.",
+        instructions=["fresh rewrite fact"],
+    )
+
+    state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    facts = "\n".join(state["world_facts"])
+    assert "fresh rewrite fact" in facts
+    assert "stale embedded snapshot" not in facts
+
+
+def test_regenerate_blocks_frozen_chapter(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "current_chapter": 1,
+            "world_facts": [],
+            "progression_ledger": {"continuity_lock": {"chapters_frozen": [1]}},
+        },
+    )
+
+    try:
+        store.regenerate_chapter(1, engine=SimpleNamespace(generate_next_chapter=lambda story: None))
+    except ValueError as exc:
+        assert str(exc) == "chapter_frozen:1:regenerate"
+    else:
+        raise AssertionError("expected frozen chapter regeneration to fail")
 
 
 def test_file_project_store_dedupes_npc_aliases_and_filters_surface_entities(tmp_path):

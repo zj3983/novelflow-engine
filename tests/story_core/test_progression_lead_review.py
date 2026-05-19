@@ -24,9 +24,10 @@ def test_progression_lead_review_accepts_opening_that_turns_drops_into_route_lea
         "《天启之门》开服，苏叶登录，游戏ID夜烬，职业是元素法师学徒。"
         "第一只灰狼倒下时，提示【混沌之种：未解析】【掉落判定×1000】。"
         "普通玩家还在坡下等毒腺，他的背包已经亮红。"
-        "他没有提交清道夫委托，也没有去交易行。"
-        "他只是盯着职业导师门口的元素回廊前置牌：十份毒腺可换试炼资格。"
-        "这意味着下一章他能比别人快一步摸到技能书和元素回廊入口。"
+        "他只拿出十份毒腺交清道夫委托，任务完成，获得30铜。"
+        "排队的人只当他运气好，没人知道他背包底下还压着多余材料。"
+        "他用十二铜修好法杖，剩下的钱袋收进衣内。"
+        "下一轮他要凑够五十铜，去职业导师木牌前兑换基础技能书。"
     )
 
     review = review_progression_lead(chapter_number=1, body=body, event_plan={}, world_facts=[])
@@ -34,6 +35,8 @@ def test_progression_lead_review_accepts_opening_that_turns_drops_into_route_lea
     assert review["pass"]
     assert review["scores"]["progression_payoff"] == 8
     assert review["metrics"]["progression_payoff_count"] >= 2
+    assert review["metrics"]["concrete_payoff_count"] >= 2
+    assert review["metrics"]["outsider_misread_count"] >= 1
 
 
 def test_chapter_body_review_includes_progression_lead_review():
@@ -87,8 +90,8 @@ def test_first_chapter_sanitizer_removes_service_closure_and_adds_lead_hook():
     assert "获得：30铜" not in cleaned
     assert "修理铺" not in cleaned
     assert "买药水" not in cleaned
-    assert "元素回廊" in cleaned
-    assert "下一道门" in cleaned
+    assert "技能书" in cleaned or "后坡" in cleaned
+    assert "下一步" in cleaned or "凑够" in cleaned
 
 
 def test_first_chapter_sanitizer_adds_npc_window_when_scene_card_requires_it():
@@ -126,8 +129,8 @@ def test_first_chapter_sanitizer_adds_reality_skill_source_when_scene_card_requi
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=scene_cards)
 
     assert "外包测试员" in cleaned
-    assert "项目日志" in cleaned
-    assert "规则漏洞" in cleaned
+    assert "照表点功能" in cleaned
+    assert "先问价钱" in cleaned
 
 
 def test_first_chapter_sanitizer_removes_damage_numbers_and_current_currency_closure():

@@ -106,6 +106,12 @@ def test_fallback_body_prompt_includes_web_game_director_card():
     )
 
     assert "网游导演卡" in prompt
+    assert "网游写法方法卡" in prompt
+    assert "玩家行动链" in prompt
+    assert "satisfaction_loop" in prompt
+    assert "可见收益" in prompt
+    assert "外人误判" in prompt
+    assert "小样例" in prompt
     assert "试清楚能不能走，不急着赚钱" in prompt
     assert "第一章别写：把材料换成钱、市场玩家盯上主角、公共频道或玩家势力追过来" in prompt
     assert "寄售、成交、到账" not in prompt
@@ -117,6 +123,8 @@ def test_web_game_first_chapter_whole_body_prompt_has_plain_four_beat_contract()
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})
 
     assert "整章四拍" in prompt
+    assert "网游写法方法卡" in prompt
+    assert "先写代价，再写收获" in prompt
     assert "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子" in prompt
     assert "本次不用分段生成" in prompt
     assert "白描" in prompt
@@ -124,6 +132,15 @@ def test_web_game_first_chapter_whole_body_prompt_has_plain_four_beat_contract()
     assert "不要用华丽词语、夸张比喻或谜语式暗示" in prompt
     assert "台词不能替作者讲规则" in prompt
     assert prompt.index("整章四拍") < prompt.index("硬性质量闸门")
+
+
+def test_web_game_second_chapter_does_not_inherit_first_chapter_service_bans():
+    story = StoryState(story_id="s-ch2-method", outline="网游开服，千倍爆率。", genre="网游", style="番茄升级流")
+    prompt = StoryOrchestrator()._body_prompt(story, 2, {"event_plan": {"chapter_title": "清道夫柜台"}})
+
+    assert "网游写法方法卡" in prompt
+    assert "第一章领先流" not in prompt
+    assert "不要写成交任务、领取铜币、扣费修理或购买药水" not in prompt
 
 
 def test_revision_prompt_keeps_method_and_separates_viewpoint_rule():

@@ -50,7 +50,7 @@ def build_web_game_author_craft(chapter_number: int, *, chapter_goal: str = "") 
                 "公会内部频道",
                 "论坛全景热帖",
                 "商人正面盯盘",
-                "后台风控分析",
+                "后台分析",
                 "隐藏机制全解释",
             ],
         },

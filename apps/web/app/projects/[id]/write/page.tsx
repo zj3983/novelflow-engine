@@ -6,7 +6,7 @@ import { useSearchParams } from "next/navigation";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
-import { fetchGenerationJob, startFileProjectRegenerationJob, type ChapterBundle } from "../../../../lib/api";
+import { fetchGenerationJob, startFileProjectRegenerationJob, startGenerationJob, type ChapterBundle } from "../../../../lib/api";
 
 const PAGE_SIZE = 80;
 
@@ -46,6 +46,7 @@ export default function WritePage() {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [regenerating, setRegenerating] = useState(false);
+  const [generatingNext, setGeneratingNext] = useState(false);
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
 
@@ -68,8 +69,12 @@ export default function WritePage() {
   const totalPages = Math.max(1, Math.ceil(filteredBundles.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const visibleBundles = filteredBundles.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
-  const canRegenerate = Boolean(chapter && project?.storage_source === "file");
-  const aiFlavorReview = chapter?.quality_report?.ai_flavor_review;
+  const isFileProject = projectId.startsWith("file:") || project?.storage_source === "file";
+  const canRegenerate = Boolean(chapter && isFileProject);
+  const generationTargetId = isFileProject ? projectId : story?.story_id;
+  const canGenerateNext = Boolean(generationTargetId);
+  const writingReview = chapter?.quality_report?.writing_review;
+  const aiFlavorReview = chapter?.quality_report?.ai_flavor_review ?? writingReview?.ai_flavor_review;
   const aiFlavorMetrics = aiFlavorReview?.metrics;
   const aiFlavorScore = aiFlavorReview?.scores?.ai_flavor;
   const aiFlavorIssues = aiFlavorReview?.issues ?? [];
@@ -97,6 +102,32 @@ export default function WritePage() {
       setRegenerateError(err instanceof Error ? err.message : String(err));
     } finally {
       setRegenerating(false);
+      setRegenerateStatus(null);
+    }
+  }
+
+  async function handleGenerateNextChapter() {
+    if (!generationTargetId || !canGenerateNext) return;
+    setGeneratingNext(true);
+    setRegenerateStatus("排队中");
+    setRegenerateError(null);
+    try {
+      const job = await startGenerationJob(generationTargetId);
+      let currentJob = job;
+      setRegenerateStatus(currentJob.progress || currentJob.status);
+      while (currentJob.status === "queued" || currentJob.status === "running") {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        currentJob = await fetchGenerationJob(generationTargetId, currentJob.job_id);
+        setRegenerateStatus(currentJob.progress || currentJob.status);
+      }
+      if (currentJob.status === "failed") {
+        throw new Error(currentJob.error || "generate_next_failed");
+      }
+      refresh();
+    } catch (err) {
+      setRegenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingNext(false);
       setRegenerateStatus(null);
     }
   }
@@ -184,9 +215,17 @@ export default function WritePage() {
               </div>
               <div className="ws-toolbar">
                 <button
+                  className="ws-btn ws-btn--sm ws-btn--primary"
+                  type="button"
+                  disabled={!canGenerateNext || regenerating || generatingNext}
+                  onClick={() => void handleGenerateNextChapter()}
+                >
+                  {generatingNext ? "生成中..." : "生成下一章"}
+                </button>
+                <button
                   className="ws-btn ws-btn--sm"
                   type="button"
-                  disabled={!canRegenerate || regenerating}
+                  disabled={!canRegenerate || regenerating || generatingNext}
                   onClick={() => void handleRegenerateChapter()}
                 >
                   {regenerating ? "重新推演中..." : "重新推演本章"}
@@ -194,8 +233,8 @@ export default function WritePage() {
                 <span className="ws-badge">{chapterCharCount(chapter.body)} 字</span>
               </div>
             </header>
-            {regenerating && regenerateStatus ? <p className="ws-card__hint">重推进度：{regenerateStatus}</p> : null}
-            {regenerateError ? <p className="ws-error">重新推演失败：{regenerateError}</p> : null}
+            {(regenerating || generatingNext) && regenerateStatus ? <p className="ws-card__hint">任务进度：{regenerateStatus}</p> : null}
+            {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
             <div className="ws-reader__body">
               {chapter.body.split(/\n{2,}/).map((paragraph, index) => (
                 <p key={index}>{paragraph}</p>

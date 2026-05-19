@@ -483,6 +483,99 @@ def test_second_chapter_rejects_rushing_element_corridor_completion():
     assert any("第二章推进过快" in issue for issue in review["issues"])
 
 
+def test_second_chapter_rejects_level_one_transfer_or_trial_start():
+    body = (
+        "夜烬打开角色面板，等级：Lv.1，经验40/100，职业：元素法师学徒。"
+        "他拿着清道夫委托奖励去了法师塔，职业导师艾伦让他开始转职任务。"
+        "系统提示：职业试炼已开启，进入元素试炼区域。"
+        "短发玩家还在村口排队，夜烬已经踏进法师塔一层。"
+    ) * 35
+
+    review = _review_chapter_body(
+        2,
+        body,
+        {"world_reactions": ["普通玩家还在排队。"], "next_focus": "继续任务。"},
+        ["第2章必须承接第一章账本：夜烬仍是Lv.1，只能推进新手村任务。"],
+    )
+
+    assert review["pass"] is False
+    assert any("Lv.1越级" in issue for issue in review["issues"])
+
+
+def test_later_low_level_chapter_rejects_transfer_or_trial_start():
+    body = (
+        "夜烬打开角色面板，当前等级：4，经验210/500，职业：元素法师学徒。"
+        "他刚从后坡交完一轮材料，就被职业导师艾伦叫进法师塔。"
+        "系统提示：职业试炼已开启，进入元素试炼区域。"
+        "旁边玩家还在排队修装备，他已经开始转职任务。"
+    ) * 35
+
+    review = _review_chapter_body(
+        6,
+        body,
+        {"world_reactions": ["普通玩家还在新手村刷材料。"], "next_focus": "继续任务。"},
+        ["第6章账本：夜烬等级4，仍在新手村低级地图推进，10级前不能正式接取转职任务或职业试炼。"],
+    )
+
+    assert review["pass"] is False
+    assert any("低等级越级" in issue for issue in review["issues"])
+
+
+def test_game_review_rejects_unexplained_full_exp_without_level_up():
+    body = (
+        "夜烬打开角色面板，等级：Lv.1，职业：元素法师学徒，经验：100/100（未升级），钱袋：5铜。"
+        "他站在灰狼坡入口，旁边玩家还在交清道夫委托，洛婶只按十份毒腺验材料。"
+        "他点开面板，经验条卡在100/100，没跳，只好继续往坡上走。"
+    ) * 35
+
+    review = _review_chapter_body(
+        2,
+        body,
+        {"world_reactions": ["普通玩家还在新手村排队。"], "next_focus": "继续凑技能书钱。"},
+        ["第2章必须承接第一章账本：夜烬仍是Lv.1元素法师学徒。"],
+    )
+
+    assert review["pass"] is False
+    assert any("经验账本不清" in issue for issue in review["issues"])
+
+
+def test_game_review_rejects_task_submission_contradiction():
+    body = (
+        "夜烬打开角色面板，等级：Lv.1，职业：元素法师学徒，经验：15/100，钱袋：空。"
+        "他心里记着清道夫委托也没有提交，先绕到柜台前看价牌。"
+        "洛婶验完十份灰狼毒腺，提示跳出：清道夫委托完成，奖励三十铜。"
+    ) * 35
+
+    review = _review_chapter_body(
+        1,
+        body,
+        {"world_reactions": ["旁人只当他普通排队。"], "next_focus": "凑技能书钱。"},
+        ["网游新手村开局，夜烬选择元素法师学徒。"],
+    )
+
+    assert review["pass"] is False
+    assert any("任务账本自相矛盾" in issue for issue in review["issues"])
+
+
+def test_game_review_rejects_repeated_newbie_task_loop():
+    body = (
+        "夜烬回村，村口的任务牌前排着队。洛婶验完材料，提示跳出：清道夫委托完成，奖励三十铜。"
+        "他又回到灰狼坡刷怪，蓝条见底后再次回村，任务牌前的人少了一些。"
+        "洛婶又验十份毒腺，提示跳出：清道夫委托完成，奖励三十铜。"
+        "他第三次站到任务牌前，旁边玩家还在抱怨毒腺难出。"
+    ) * 25
+
+    review = _review_chapter_body(
+        2,
+        body,
+        {"world_reactions": ["散人只看见他排队交任务。"], "next_focus": "继续刷怪。"},
+        ["第2章仍在灰狼坡和灰烬村。"],
+    )
+
+    assert review["pass"] is False
+    assert any("新手章流程重复" in issue for issue in review["issues"])
+
+
 def test_game_world_enrichment_seeds_core_character_profiles():
     project = NovelProject(
         project_id="p-character-profiles",

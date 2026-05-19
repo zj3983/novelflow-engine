@@ -66,7 +66,7 @@ def _early_game_opposition(rival: dict) -> str:
         return name
     if any(token in name for token in ("公会", "白袍", "赤焰", "星河")):
         return "公会外围与资源点秩序"
-    return "交易行、补给成本与公会外围"
+    return "交易行、补给消耗与公会外围"
 
 
 def _topic_zh(topic: str, genre: str = "") -> str:
@@ -300,7 +300,7 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
         opposition = _early_game_opposition(rival)
         return {
             "summary": (
-                f"{lead['name']}继续验证千倍爆率、补给成本和交易节奏，"
+                f"{lead['name']}继续验证千倍爆率、补给消耗和交易节奏，"
                 f"{opposition}只能通过材料价格、匿名批次、资源点目击和NPC服务记录逐步逼近。"
             ),
             "stakes": "第二、三章的压力应来自可见规则逐步收紧，而不是商人或公会突然全知全能。",

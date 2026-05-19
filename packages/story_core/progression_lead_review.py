@@ -15,7 +15,7 @@ PROGRESSION_PAYOFF_TERMS = (
     "快一步",
     "先一步",
     "少跑",
-    "门槛",
+    "前置任务",
     "前置",
     "路线",
     "入口",
@@ -69,6 +69,55 @@ FIRST_CHAPTER_TRADE_CLOSURE_TERMS = (
     "手续费",
     "提现",
     "换算人民币",
+)
+
+CONCRETE_PAYOFF_TERMS = (
+    "获得",
+    "奖励",
+    "三十铜",
+    "30铜",
+    "修好",
+    "修理",
+    "买了",
+    "入包",
+    "任务完成",
+    "兑换",
+    "拿到",
+    "耐久回到",
+)
+
+OUTSIDER_MISREAD_TERMS = (
+    "只当",
+    "以为",
+    "没人知道",
+    "没人看见",
+    "只看见",
+    "看不见",
+    "没人多问",
+    "听过就忘",
+    "普通玩家",
+    "运气好",
+)
+
+NEXT_ACTION_HOOK_TERMS = (
+    "下一轮",
+    "下一步",
+    "再打",
+    "入口",
+    "后坡",
+    "凑够",
+    "试一次",
+    "等蓝",
+)
+
+REPORT_STYLE_TERMS = (
+    "风控",
+    "收益曲线",
+    "路线规划",
+    "控制变量",
+    "计算力",
+    "成本曲线",
+    "模型",
 )
 
 
@@ -139,6 +188,10 @@ def review_progression_lead(
     material_count = _count_terms(body, MATERIAL_LEDGER_TERMS)
     service_closure_count = _count_positive_terms(body, FIRST_CHAPTER_SERVICE_CLOSURE_TERMS)
     trade_closure_count = _count_positive_terms(body, FIRST_CHAPTER_TRADE_CLOSURE_TERMS)
+    concrete_payoff_count = _count_terms(body, CONCRETE_PAYOFF_TERMS)
+    outsider_misread_count = _count_terms(body, OUTSIDER_MISREAD_TERMS)
+    next_action_hook_count = _count_terms(body, NEXT_ACTION_HOOK_TERMS)
+    report_style_count = _count_terms(body, REPORT_STYLE_TERMS)
 
     if chapter_number == 1 and core_signal_count == 0:
         scores["core_signal"] = 5
@@ -148,17 +201,37 @@ def review_progression_lead(
     if chapter_number == 1 and payoff_count < 2:
         scores["progression_payoff"] = 5
         issues.append("第一章没有把千倍爆率转成明确领先感，只停留在掉落异常。")
-        revision_plan.append("把掉落结果改写成任务进度、装备门槛、技能书、职业试炼或地图入口上的提前一步；章末要让读者知道下一章抢什么。")
+        revision_plan.append("把掉落结果改写成任务进度、装备前置条件、技能书、职业试炼或地图入口上的提前一步；章末要让读者知道下一章抢什么。")
+
+    if chapter_number <= 3 and concrete_payoff_count < 2:
+        scores["progression_payoff"] = 5
+        issues.append("网游爽点没有落成可见收益：读者看不到主角具体拿到、修好、买入、兑换或推进了什么。")
+        revision_plan.append("补一个明确收益动作：递材料、收铜、修杖、买药、技能入包、任务完成或入口试通，并写出变化后的状态。")
+
+    if chapter_number <= 3 and outsider_misread_count == 0:
+        scores["opening_scope"] = 5
+        issues.append("缺少外人误判：主角虽然低调，但没有写出别人只看见普通动作这一层信息差。")
+        revision_plan.append("加一处旁人/NPC的表层反应：只当他运气好、路线熟、普通排队办事，不能看见背包余量和隐藏机制。")
+
+    if chapter_number <= 3 and next_action_hook_count == 0:
+        scores["progression_payoff"] = 5
+        issues.append("章尾缺少下一步动作钩子：结尾没有给出下章马上能执行的目标。")
+        revision_plan.append("章尾落到具体下一步：再刷一轮、凑够铜、买技能书、等蓝、试后坡入口或处理一个明确前置任务。")
+
+    if report_style_count:
+        scores["material_focus"] = 5
+        issues.append("正文有策略报告味：风控、模型、收益曲线或路线规划压过了玩家动作。")
+        revision_plan.append("删掉报告词，把判断改成可见动作：排队、数铜、递材料、摸耐久、退回安全线、把多余材料压进背包。")
 
     if chapter_number == 1 and material_count >= 14 and payoff_count < 5:
         scores["material_focus"] = 5
         issues.append("第一章材料账本过重，爽点被毒腺、狼皮、铜币、修理或药水这些小账拖走。")
-        revision_plan.append("压缩材料数量和铜币账，只保留材料作为证据；把篇幅转给普通玩家对比、门槛提前满足和下一步路线。")
+        revision_plan.append("压缩材料数量和铜币账，只保留材料作为证据；把篇幅转给普通玩家对比、前置任务提前满足和下一步路线。")
 
-    if chapter_number == 1 and service_closure_count:
+    if chapter_number == 1 and service_closure_count >= 4:
         scores["opening_scope"] = 5
-        issues.append("第一章提前办完服务闭环：出现交任务、领30铜、修满装备或买药水，焦点从领先验证滑回小账本。")
-        revision_plan.append("第一章只允许看见任务/修理/补给门槛，不提交清道夫委托、不领奖励、不扣费修理、不买药水；把这些放到第二章。")
+        issues.append("第一章服务闭环太满：任务、铜币、修理、药水一起铺开，焦点从幕后领先滑回小账本。")
+        revision_plan.append("第一章服务是否办成必须跟随项目账本；未允许时删掉任务提交、修理和补给，只保留价牌、队伍、前置条件和下一步目标。")
 
     if chapter_number == 1 and trade_closure_count:
         scores["opening_scope"] = 5
@@ -178,5 +251,9 @@ def review_progression_lead(
             "material_ledger_count": material_count,
             "service_closure_count": service_closure_count,
             "trade_closure_count": trade_closure_count,
+            "concrete_payoff_count": concrete_payoff_count,
+            "outsider_misread_count": outsider_misread_count,
+            "next_action_hook_count": next_action_hook_count,
+            "report_style_count": report_style_count,
         },
     }

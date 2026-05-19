@@ -254,6 +254,7 @@ export type ReviewSection = {
   metrics?: Record<string, number>;
   issues?: string[];
   revision_plan?: string[];
+  ai_flavor_review?: ReviewSection;
   cuts?: Array<{
     type?: string;
     target_text?: string;
@@ -899,6 +900,7 @@ type MockProject = {
   pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
   branches: string[];
+  storage_source?: "sqlite" | "file";
 };
 
 const MOCK_STORE_STORAGE_KEY = "novel-autogrowth-engine.stories";
@@ -2101,6 +2103,7 @@ function mockListProjects(): ProjectSummary[] {
     active_story_id: project.active_story_id,
     current_chapter: mockStore.get(project.active_story_id)?.current_chapter ?? 0,
     source_path: project.source_path,
+    storage_source: project.storage_source,
   }));
 }
 
@@ -2117,6 +2120,7 @@ function mockFetchProject(projectId: string): ProjectResponse {
       parent_story_id: mockStore.get(storyId)?.parent_story_id ?? null,
       branched_from_chapter: mockStore.get(storyId)?.branched_from_chapter ?? null,
     })),
+    storage_source: project.storage_source,
   };
 }
 
@@ -2136,6 +2140,7 @@ function persistProjectIntoMockStore(project: ProjectResponse): ProjectResponse 
     pipeline_stage: project.pipeline_stage ?? "imported",
     active_story_id: project.active_story_id,
     branches: project.branches.map((branch) => branch.story_id),
+    storage_source: project.storage_source,
   };
   mockProjectStore.set(project.project_id, mirroredProject);
   saveMockProjectStore(mockProjectStore);
@@ -2225,11 +2230,14 @@ export async function listProjects(): Promise<ProjectSummary[]> {
     }).catch(() => [])) as ProjectSummary[];
     const seen = new Set(response.map((project) => project.project_id));
     return [...response, ...fileProjects.filter((project) => !seen.has(project.project_id))];
-  } catch {
+  } catch (err) {
     const fileProjects = (await tryFetchJson(`${apiBase()}/file-projects`, {
       method: "GET",
     }).catch(() => [])) as ProjectSummary[];
-    return [...mockListProjects(), ...fileProjects];
+    if (fileProjects.length > 0) {
+      return fileProjects;
+    }
+    throw err;
   }
 }
 

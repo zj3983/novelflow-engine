@@ -36,5 +36,10 @@ packages/story_core/runtime_config.json
 chapter_exports/
 data/exported-projects/
 data/reset-backups/
+
+# Local one-off model trials / exported working copies
+scripts/*_trial.py
+scripts/export_ch1_resimulation.py
+苟在网游里成神/
 # Added by code-review-graph
 .code-review-graph/

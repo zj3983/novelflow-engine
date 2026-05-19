@@ -30,7 +30,7 @@ export default function ReviewPage() {
   }, [requestedChapter, story?.history]);
   const quality = chapter?.quality_report;
   const writingReview = quality?.writing_review;
-  const aiFlavorReview = quality?.ai_flavor_review;
+  const aiFlavorReview = quality?.ai_flavor_review ?? writingReview?.ai_flavor_review;
   const aiFlavorMetrics = aiFlavorReview?.metrics;
   const aiFlavorScore = aiFlavorReview?.scores?.ai_flavor;
   const aiFlavorIssues = aiFlavorReview?.issues ?? [];

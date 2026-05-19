@@ -20,6 +20,10 @@ SOFT_REGENERATION_ISSUE_MARKERS = (
     "AI味",
     "段首主语单调",
     "段落形态",
+    "推演事件未被正文场景化",
+    "场景卡必写内容缺失",
+    "Scene contract not consumed",
+    "命名NPC出场缺少完整设定",
 )
 
 
@@ -630,9 +634,16 @@ class FileProjectStore:
             summary,
             limit=240,
         )
+        chapter_fact_prefix = f"第{chapter_number}章事实："
+        chapter_summary_prefix = f"第{chapter_number}章摘要："
+        existing_world_facts = [
+            str(item)
+            for item in list(synced.get("world_facts") or [])
+            if not str(item).startswith(chapter_fact_prefix) and not str(item).startswith(chapter_summary_prefix)
+        ]
         facts = [f"第{chapter_number}章事实：{fact}" for fact in summary["facts"]]
         facts.append(f"第{chapter_number}章摘要：{summary['summary']}")
-        synced["world_facts"] = self._merge_unique(list(synced.get("world_facts") or []), facts, limit=260)
+        synced["world_facts"] = self._merge_unique(existing_world_facts, facts, limit=260)
         timeline_entry = {
             "chapter_number": chapter_number,
             "summary": summary["summary"],
@@ -686,6 +697,11 @@ class FileProjectStore:
         synced = dict(project)
         blueprint = dict(synced.get("world_blueprint") or {})
         continuity = dict(blueprint.get("continuity_state") or {})
+        previous_chapter_facts: list[str] = []
+        for item in continuity.get("chapter_facts", []) if isinstance(continuity.get("chapter_facts"), list) else []:
+            if isinstance(item, dict) and int(item.get("chapter_number") or 0) == chapter_number:
+                previous_chapter_facts = [str(fact) for fact in item.get("facts") or [] if str(fact).strip()]
+                break
         chapter_record = {
             "chapter_number": chapter_number,
             "chapter_title": summary["chapter_title"],
@@ -703,8 +719,13 @@ class FileProjectStore:
             chapter_record,
             limit=120,
         )
+        existing_running_facts = [
+            str(item)
+            for item in list(continuity.get("running_facts") or [])
+            if str(item) not in previous_chapter_facts
+        ]
         continuity["running_facts"] = self._merge_unique(
-            list(continuity.get("running_facts") or []),
+            existing_running_facts,
             summary["facts"],
             limit=160,
         )
@@ -761,13 +782,30 @@ class FileProjectStore:
 
     def _sync_after_chapter(self, chapter: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
         base_state = dict(state or self.state())
+        chapter["chapter_summary"] = self._chapter_summary_payload(chapter)
         synced_state = self._sync_state_after_chapter(base_state, chapter)
         chapter["updated_story"] = synced_state
-        chapter["chapter_summary"] = self._chapter_summary_payload(chapter)
         synced_project = self._sync_project_after_chapter(self.project(), synced_state, chapter)
         self._write_json(self.webnovel_dir / "state.json", synced_state)
         self._write_json(self.webnovel_dir / "project.json", synced_project)
         return synced_state
+
+    def _frozen_chapters(self) -> set[int]:
+        state = self.state()
+        ledger = state.get("progression_ledger") if isinstance(state.get("progression_ledger"), dict) else {}
+        lock = ledger.get("continuity_lock") if isinstance(ledger.get("continuity_lock"), dict) else {}
+        raw = lock.get("chapters_frozen") if isinstance(lock.get("chapters_frozen"), list) else []
+        frozen: set[int] = set()
+        for item in raw:
+            try:
+                frozen.add(int(item))
+            except (TypeError, ValueError):
+                continue
+        return frozen
+
+    def _assert_chapter_not_frozen(self, chapter_number: int, operation: str) -> None:
+        if chapter_number in self._frozen_chapters():
+            raise ValueError(f"chapter_frozen:{chapter_number}:{operation}")
 
     def exists(self) -> bool:
         return (self.story_system_dir / "MASTER_SETTING.json").exists() and (self.webnovel_dir / "state.json").exists()
@@ -907,6 +945,12 @@ class FileProjectStore:
             "cadence": "measured",
             "next_outline": next_outline or "continue",
             "chapter_summary": chapter_summary,
+            "event_plan": {
+                "chapter_number": chapter_number,
+                "next_focus": next_outline or "continue",
+                "stakes": summary or next_outline or "manual draft",
+                "world_reactions": chapter_summary["facts"][:3],
+            },
             "updated_story": updated_story,
             "manual_instructions": instructions or [],
         }
@@ -982,7 +1026,7 @@ class FileProjectStore:
             operation=operation,
         )
 
-        base_state = updated_story if isinstance(updated_story, dict) and updated_story else self.state()
+        base_state = self.state()
         chapter = self._hydrate_chapter_display_fields(chapter, base_state)
         self._sync_after_chapter(chapter, base_state)
 
@@ -1119,10 +1163,11 @@ class FileProjectStore:
 
         if chapter_number < 1:
             raise ValueError("chapter_number_must_be_positive")
+        self._assert_chapter_not_frozen(chapter_number, "regenerate")
 
         if chapter_number > 1:
             base_chapter = self.chapter(chapter_number - 1)
-            base_state = dict(base_chapter.get("updated_story") or self.state())
+            base_state = dict(self.state())
         else:
             base_state = self._reset_first_chapter_regeneration_state(dict(self.state()))
 
@@ -1135,14 +1180,14 @@ class FileProjectStore:
                 variant_payload.setdefault("axes", ["千倍爆率转化为任务/装备/技能/路线领先"])
                 variant_payload.setdefault(
                     "avoid",
-                    ["提交清道夫委托", "领取30铜", "扣费修理", "购买药水", "把材料账本写成第一章高潮"],
+                    ["公开炫耀清道夫委托", "市场玩家盯盘", "提现换算人民币", "公会追查", "把材料账本写成第一章公开高潮"],
                 )
                 variant_payload["skip_expansion"] = True
         # Regeneration should first prove the simulated facts can land cleanly.
         # Whole-chapter style adaptation is slow and can rewrite locked nouns,
         # so it is an explicit later pass instead of part of default retry.
         variant_payload.setdefault("skip_style_adapt", True)
-        variant_payload.setdefault("skip_expansion", chapter_number != 1)
+        variant_payload.setdefault("skip_expansion", False)
         ledger["simulation_variant"] = variant_payload
         base_state["progression_ledger"] = ledger
 
@@ -1205,8 +1250,11 @@ class FileProjectStore:
         summary = dict(chapter.get("chapter_summary") or {})
         summary["chapter_title"] = next_title
         summary.setdefault("cadence", chapter.get("cadence") or "measured")
-        summary.setdefault("summary", f"Manual rewrite chapter {chapter_number}.")
-        summary.setdefault("facts", ["manual rewrite"])
+        summary["summary"] = f"Manual rewrite chapter {chapter_number}."
+        if instructions:
+            summary["facts"] = [item for item in instructions if str(item).strip()]
+        else:
+            summary.setdefault("facts", ["manual rewrite"])
         summary.setdefault("next_focus", chapter.get("next_outline") or "continue")
         summary.setdefault("primary_conflict", "manual rewrite")
         summary.setdefault("secondary_conflict", "manual rewrite")
@@ -1214,7 +1262,22 @@ class FileProjectStore:
         chapter["chapter_summary"] = summary
         chapter.setdefault("cadence", "measured")
         chapter.setdefault("next_outline", summary.get("next_focus") or "continue")
-        updated_story = dict(chapter.get("updated_story") or self.state())
+        chapter["chapter_intent"] = {
+            "next_focus": chapter["next_outline"],
+            "primary_conflict": summary.get("primary_conflict") or "manual rewrite",
+        }
+        chapter["event_plan"] = {
+            "chapter_number": chapter_number,
+            "next_focus": chapter["next_outline"],
+            "summary": summary.get("summary") or f"Manual rewrite chapter {chapter_number}.",
+            "stakes": summary.get("summary") or chapter["next_outline"],
+            "world_reactions": summary.get("facts", [])[:3],
+        }
+        chapter["simulation_plan"] = {
+            "chapter_number": chapter_number,
+            "chapter_goal": chapter["next_outline"],
+        }
+        updated_story = dict(self.state())
         updated_story.setdefault("timeline", [f"chapter {chapter_number}: {next_title}"])
         updated_story.setdefault("chapter_summaries", [summary])
         chapter["updated_story"] = updated_story

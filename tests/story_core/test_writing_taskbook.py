@@ -25,10 +25,10 @@ def test_first_chapter_taskbook_keeps_only_three_useful_scenes():
     assert "NPC" not in scenes[2]["goal"]
     assert "不要展开力量/敏捷/体质/智力" in scenes[0]["required_surface"]
     assert "底层协议校验通过" in scenes[1]["required_surface"]
-    assert "材料先不卖" in scenes[2]["required_surface"]
+    assert "至少兑现一项" in scenes[2]["required_surface"]
     assert "交易、论坛、公会追查后移" in " ".join(taskbook["global_required"])
-    assert "材料处理成钱" in taskbook["global_forbidden"]
-    assert "扣费或收款反馈" in taskbook["global_forbidden"]
+    assert "材料公开处理成大钱" in taskbook["global_forbidden"]
+    assert "公开扣费或大额收款反馈" in taskbook["global_forbidden"]
 
 
 def test_taskbook_compiles_scene_cards_for_later_chapters():
