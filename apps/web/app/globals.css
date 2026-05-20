@@ -559,6 +559,82 @@ body {
   line-height: 1.7;
 }
 
+.ws-character-section-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.ws-character-mini {
+  border: 1px solid var(--ws-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.48);
+  padding: 12px;
+}
+
+.ws-character-mini strong,
+.ws-profile-column b {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ws-ink);
+}
+
+.ws-character-mini p {
+  margin: 0;
+  color: var(--ws-ink-muted);
+  line-height: 1.65;
+}
+
+.ws-profile-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ws-profile-column {
+  border: 1px solid var(--ws-line);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.44);
+}
+
+.ws-profile-column dl,
+.ws-profile-column dd {
+  margin: 0;
+}
+
+.ws-profile-column div + div {
+  margin-top: 10px;
+}
+
+.ws-profile-column dt {
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+}
+
+.ws-profile-column dd {
+  margin-top: 3px;
+  color: var(--ws-ink);
+  line-height: 1.55;
+}
+
+.ws-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ws-danger-tag {
+  border: 1px solid rgba(168, 76, 76, 0.28);
+  border-radius: 999px;
+  background: rgba(168, 76, 76, 0.08);
+  color: #7f3535;
+  font-size: 12px;
+  line-height: 1;
+  padding: 7px 10px;
+}
+
 @media (max-width: 900px) {
   .ws-shell {
     display: block;
@@ -594,7 +670,9 @@ body {
   .ws-reader__notes,
   .ws-overview-grid,
   .ws-review-grid,
-  .ws-sim-grid {
+  .ws-sim-grid,
+  .ws-character-section-grid,
+  .ws-profile-columns {
     grid-template-columns: 1fr;
   }
 

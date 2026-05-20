@@ -3,7 +3,7 @@
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { buildRuleCards } from "../../../../lib/ruleCards";
-import { cleanLines, compactRecord, mergeCharacters, panelRows, shortStatus } from "../../../../lib/worldDisplay";
+import { cleanLines, compactRecord, mergeCharacters, panelRows, richProfileEntries, shortStatus } from "../../../../lib/worldDisplay";
 
 export default function WorldPage() {
   const { project, story, error, encodedProjectId } = useProjectWorkspace();
@@ -39,6 +39,18 @@ export default function WorldPage() {
                   const attributes = compactRecord(panel?.attributes);
                   const equipment = compactRecord(panel?.equipment);
                   const inventory = compactRecord(panel?.inventory);
+                  const motiveRows = [
+                    ["人设类型", character.character_type],
+                    ["核心动机", character.core_motivation],
+                    ["行为逻辑", character.behavior_logic],
+                    ["互动模式", character.interaction_mode],
+                    ["故事功能", character.story_function],
+                    ["本章作用", character.chapter_role],
+                  ].filter(([, value]) => typeof value === "string" && value.trim());
+                  const socialRows = richProfileEntries(character.social_profile);
+                  const psychRows = richProfileEntries(character.psychological_profile);
+                  const moralRows = richProfileEntries(character.moral_profile);
+                  const poisonPoints = cleanLines(character.poison_points, 8);
 
                   return (
                     <article className="ws-character-card" key={character.name}>
@@ -68,6 +80,57 @@ export default function WorldPage() {
                             </div>
                           ))}
                         </dl>
+                      ) : null}
+
+                      {motiveRows.length > 0 ? (
+                        <div className="ws-character-section-grid">
+                          {motiveRows.map(([label, value]) => (
+                            <section className="ws-character-mini" key={label}>
+                              <strong>{label}</strong>
+                              <p>{value}</p>
+                            </section>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      {[socialRows, psychRows, moralRows].some((rows) => rows.length > 0) ? (
+                        <div className="ws-character-block">
+                          <strong>三维档案</strong>
+                          <div className="ws-profile-columns">
+                            {[
+                              ["社会面", socialRows],
+                              ["心理面", psychRows],
+                              ["底线面", moralRows],
+                            ].map(([title, entries]) =>
+                              Array.isArray(entries) && entries.length > 0 ? (
+                                <section className="ws-profile-column" key={title as string}>
+                                  <b>{title as string}</b>
+                                  <dl>
+                                    {entries.map(([label, value]) => (
+                                      <div key={label}>
+                                        <dt>{label}</dt>
+                                        <dd>{value}</dd>
+                                      </div>
+                                    ))}
+                                  </dl>
+                                </section>
+                              ) : null,
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {poisonPoints.length > 0 ? (
+                        <div className="ws-character-block">
+                          <strong>毒点</strong>
+                          <div className="ws-tag-row">
+                            {poisonPoints.map((point, index) => (
+                              <span className="ws-danger-tag" key={`${point}-${index}`}>
+                                {point}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
                       ) : null}
 
                       {character.goals?.length ? (

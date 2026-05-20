@@ -12,6 +12,16 @@ type ProfileWithRuntime = ImportedCharacterProfile & {
 
 export type DisplayCharacter = ProfileWithRuntime & {
   game_panel?: GamePanel;
+  character_type?: string;
+  core_motivation?: string;
+  behavior_logic?: string;
+  interaction_mode?: string;
+  poison_points?: string[];
+  social_profile?: Record<string, unknown>;
+  psychological_profile?: Record<string, unknown>;
+  moral_profile?: Record<string, unknown>;
+  story_function?: string;
+  chapter_role?: string;
   memory?: string[];
   goals?: string[];
   secrets?: string[];
@@ -98,6 +108,16 @@ export function mergeCharacters(
       name,
       role: character.role || previous.role,
       game_id: character.game_id || previous.game_id,
+      character_type: character.character_type || previous.character_type,
+      core_motivation: character.core_motivation || previous.core_motivation,
+      behavior_logic: character.behavior_logic || previous.behavior_logic,
+      interaction_mode: character.interaction_mode || previous.interaction_mode,
+      poison_points: character.poison_points?.length ? character.poison_points : previous.poison_points,
+      social_profile: character.social_profile ?? previous.social_profile,
+      psychological_profile: character.psychological_profile ?? previous.psychological_profile,
+      moral_profile: character.moral_profile ?? previous.moral_profile,
+      story_function: character.story_function || previous.story_function,
+      chapter_role: character.chapter_role || previous.chapter_role,
       goals: character.goals?.length ? character.goals : previous.goals,
       memory: character.memory?.length ? character.memory : previous.memory,
       secrets: character.secrets?.length ? character.secrets : previous.secrets,
@@ -147,4 +167,33 @@ export function compactRecord(value: Record<string, unknown> | undefined): strin
       return `${key}: ${item}`;
     })
     .filter(isReadableLine);
+}
+
+export function richProfileEntries(value: Record<string, unknown> | undefined): Array<[string, string]> {
+  if (!value) return [];
+  const labels: Record<string, string> = {
+    class_pressure: "现实压力",
+    work_history: "经历习惯",
+    equipment_reality: "手头条件",
+    desire: "想要什么",
+    fear: "怕什么",
+    defense: "自我保护",
+    bottom_line: "底线",
+    gray_zone: "灰度选择",
+  };
+  return Object.entries(value)
+    .map(([key, item]): [string, string] | null => {
+      const label = labels[key] ?? key;
+      if (Array.isArray(item)) return [label, item.map(String).filter(Boolean).join(" / ")];
+      if (item && typeof item === "object") {
+        return [
+          label,
+          Object.entries(item as Record<string, unknown>)
+            .map(([innerKey, innerValue]) => `${innerKey}: ${String(innerValue)}`)
+            .join("；"),
+        ];
+      }
+      return [label, String(item ?? "")];
+    })
+    .filter((entry): entry is [string, string] => Boolean(entry && isReadableLine(entry[1])));
 }
