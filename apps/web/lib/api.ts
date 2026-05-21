@@ -872,6 +872,14 @@ export type BookLibraryCatalogResponse = {
   sections: BookLibrarySection[];
 };
 
+export type BookDissectionReport = {
+  schema_version: "book-dissection/v1";
+  mode: "reference" | "project";
+  summary: string;
+  sections: Record<string, string[]>;
+  meta?: Record<string, unknown>;
+};
+
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 }
@@ -1851,6 +1859,32 @@ export async function listBookFolders(sourcePath: string): Promise<BookFolderLis
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ source_path: sourcePath }),
   })) as BookFolderListResponse;
+}
+
+export async function dissectReferenceText(payload: {
+  text: string;
+  genre?: string;
+  focus?: string;
+}): Promise<BookDissectionReport> {
+  return (await tryFetchJson(`${apiBase()}/book-dissection/reference`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })) as BookDissectionReport;
+}
+
+export async function dissectFileProjectChapter(
+  projectId: string,
+  chapterNumber?: number,
+): Promise<BookDissectionReport> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("book_dissection_only_supports_file_projects");
+  }
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/book-dissection/chapter`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chapter_number: chapterNumber }),
+  })) as BookDissectionReport;
 }
 
 export async function createStory(payload: CreateStoryRequest): Promise<StoryResponse> {
