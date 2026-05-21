@@ -328,6 +328,31 @@ body {
   margin-bottom: 14px;
 }
 
+.ws-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.ws-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.ws-form-grid__wide {
+  grid-column: 1 / -1;
+}
+
+.ws-textarea {
+  min-height: 320px;
+  resize: vertical;
+  line-height: 1.7;
+}
+
 .ws-toolbar__meta {
   color: var(--ws-ink-muted);
   font-size: 13px;
@@ -671,6 +696,7 @@ body {
   .ws-overview-grid,
   .ws-review-grid,
   .ws-sim-grid,
+  .ws-form-grid,
   .ws-character-section-grid,
   .ws-profile-columns {
     grid-template-columns: 1fr;
