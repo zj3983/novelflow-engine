@@ -83,13 +83,36 @@ export default function DissectionPage() {
   const [message, setMessage] = useState<string | null>(null);
 
   const chapters = useMemo(() => story?.history ?? [], [story?.history]);
+  const isFileProject = project?.project_id?.startsWith("file:") ?? false;
+  const defaultChapterNumber = useMemo(() => {
+    if (chapters.length === 0) return undefined;
+    const currentChapter = story?.current_chapter;
+    if (currentChapter && chapters.some((chapter) => chapter.chapter_number === currentChapter)) {
+      return currentChapter;
+    }
+    return chapters.at(-1)?.chapter_number;
+  }, [chapters, story?.current_chapter]);
 
   useEffect(() => {
-    if (chapterNumber !== undefined || chapters.length === 0) return;
-    setChapterNumber(story?.current_chapter || chapters.at(-1)?.chapter_number);
-  }, [chapterNumber, chapters, story?.current_chapter]);
+    if (chapters.length === 0) {
+      if (chapterNumber !== undefined) setChapterNumber(undefined);
+      return;
+    }
+    if (chapterNumber && chapters.some((chapter) => chapter.chapter_number === chapterNumber)) return;
+    setChapterNumber(defaultChapterNumber);
+  }, [chapterNumber, chapters, defaultChapterNumber]);
+
+  const hasValidChapter = chapterNumber !== undefined && chapters.some((chapter) => chapter.chapter_number === chapterNumber);
 
   async function runDissection() {
+    if (mode === "project" && !isFileProject) {
+      setMessage("本书体检暂时只支持文件项目；参考书拆解仍可使用。");
+      return;
+    }
+    if (mode === "project" && !hasValidChapter) {
+      setMessage("请先选择一个可用章节。");
+      return;
+    }
     setRunning(true);
     setMessage(null);
     try {
@@ -99,14 +122,18 @@ export default function DissectionPage() {
           : await dissectFileProjectChapter(project?.project_id || "", chapterNumber);
       setReport(nextReport);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "拆书失败，请稍后重试。");
+      if (err instanceof Error && err.message === "book_dissection_only_supports_file_projects") {
+        setMessage("本书体检暂时只支持文件项目；参考书拆解仍可使用。");
+      } else {
+        setMessage(err instanceof Error ? err.message : "拆书失败，请稍后重试。");
+      }
     } finally {
       setRunning(false);
     }
   }
 
   const canRunReference = referenceText.trim().length > 0;
-  const canRunProject = Boolean(project?.project_id && chapterNumber);
+  const canRunProject = Boolean(project?.project_id && isFileProject && hasValidChapter);
 
   return (
     <div className="ws-page">
@@ -177,13 +204,18 @@ export default function DissectionPage() {
               </div>
             ) : (
               <div className="ws-form-grid">
+                {!isFileProject ? (
+                  <p className="ws-card__hint ws-form-grid__wide">
+                    本书体检暂时只支持文件项目；参考书拆解仍可使用。
+                  </p>
+                ) : null}
                 <label className="ws-search ws-form-grid__wide">
                   <span>章节</span>
                   <select
                     className="ws-input"
                     value={chapterNumber ?? ""}
                     onChange={(event) => setChapterNumber(Number(event.target.value) || undefined)}
-                    disabled={chapters.length === 0}
+                    disabled={!isFileProject || chapters.length === 0}
                   >
                     {chapters.length === 0 ? <option value="">暂无章节</option> : null}
                     {chapters.map((chapter) => (
