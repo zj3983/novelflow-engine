@@ -27,7 +27,7 @@ def _compact_project_payload(project: NovelProject) -> dict[str, Any]:
         "seed_outline": compact_text(project.seed_outline, 2600),
         "world_summary": compact_text(project.world_summary, 1400),
         "current_focus": compact_text(project.current_focus, 1400),
-        "author_constraints": project.author_constraints[:16],
+        "author_constraints": project.author_constraints[:8],
         "world_blueprint": project.world_blueprint,
         "character_profiles": project.character_profiles[:24],
         "relationship_graph": project.relationship_graph[:48],
@@ -1346,7 +1346,7 @@ def _derive_author_constraints(world_blueprint: dict[str, Any]) -> list[str]:
         cleaned = compact_text(constraint, 180)
         if cleaned and cleaned not in deduped:
             deduped.append(cleaned)
-        if len(deduped) >= 24:
+        if len(deduped) >= 8:
             break
     return deduped
 
@@ -1415,7 +1415,7 @@ def _merge_enrichment(project: NovelProject, parsed: dict[str, Any]) -> NovelPro
         current_world.get("constraints"),
         project.author_constraints,
         derived_constraints,
-        limit=24,
+        limit=8,
         item_limit=200,
     )
 
@@ -1424,7 +1424,7 @@ def _merge_enrichment(project: NovelProject, parsed: dict[str, Any]) -> NovelPro
         project.author_constraints,
         world_blueprint["constraints"],
         derived_constraints,
-        limit=24,
+        limit=8,
         item_limit=200,
     )
     next_project.character_profiles = _as_character_profiles(

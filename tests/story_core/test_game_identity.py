@@ -18,6 +18,7 @@ def test_game_character_profiles_include_game_ids():
 
     assert suye["game_id"] == "夜烬"
     assert any("游戏ID" in item for item in enriched.author_constraints)
+    assert len(enriched.author_constraints) <= 8
 
 
 def test_sync_project_profiles_copies_game_id_to_character_state():
