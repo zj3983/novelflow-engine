@@ -12,6 +12,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from packages.story_core.book_dissection import diagnose_project_chapter, dissect_reference_text
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import AgentRuntimeState, AgentSettings
@@ -34,6 +35,16 @@ class FileProjectRegenerateRequest(BaseModel):
 class FileProjectGenerationJobRequest(BaseModel):
     chapter_number: int | None = None
     variant: str | None = None
+
+
+class BookDissectionReferenceRequest(BaseModel):
+    text: str
+    genre: str = ""
+    focus: str = ""
+
+
+class BookDissectionChapterRequest(BaseModel):
+    chapter_number: int | None = None
 
 
 def _now_iso() -> str:
@@ -307,6 +318,13 @@ def _summary_payload(store: FileProjectStore) -> dict[str, Any]:
 
 
 def init_file_project_routes() -> APIRouter:
+    @router.post("/book-dissection/reference")
+    def dissect_book_reference(payload: BookDissectionReferenceRequest) -> dict[str, Any]:
+        try:
+            return dissect_reference_text(payload.text, genre=payload.genre, focus=payload.focus)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @router.get("/file-projects")
     def list_file_projects() -> list[dict[str, Any]]:
         return [_summary_payload(store) for store in _stores()]
@@ -314,6 +332,17 @@ def init_file_project_routes() -> APIRouter:
     @router.get("/file-projects/{project_id}")
     def get_file_project(project_id: str) -> dict[str, Any]:
         return _project_payload(_store_for(project_id))
+
+    @router.post("/file-projects/{project_id}/book-dissection/chapter")
+    def dissect_file_project_chapter(project_id: str, payload: BookDissectionChapterRequest) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            chapter = store.chapter(payload.chapter_number)
+            return diagnose_project_chapter({"project": store.project(), "state": store.state()}, chapter)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.post("/file-projects/{project_id}/generate-next")
     def generate_file_project_next(project_id: str) -> dict[str, Any]:
