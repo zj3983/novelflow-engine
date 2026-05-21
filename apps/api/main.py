@@ -21,6 +21,11 @@ def _cors_origins() -> list[str]:
         return [origin.strip() for origin in configured.split(",") if origin.strip()]
     return [
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:3002",
+        "http://127.0.0.1:3003",
+        "http://127.0.0.1:3004",
+        "http://127.0.0.1:3005",
         "http://localhost:3000",
         "http://localhost:3001",
         "http://localhost:3002",
