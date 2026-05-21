@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -62,8 +63,12 @@ def dissect_reference_text(text: str, *, genre: str = "", focus: str = "") -> di
 
 
 def diagnose_project_chapter(project_context: dict[str, Any], chapter: dict[str, Any]) -> dict[str, Any]:
-    body = _validate_text(str(chapter.get("body", "")))
-    state = project_context.get("state", {}) if isinstance(project_context, dict) else {}
+    if not isinstance(chapter, Mapping):
+        raise ValueError("chapter_required")
+
+    body = _validate_chapter_body(chapter)
+    context = _as_dict(project_context)
+    state = _as_dict(context.get("state"))
     sections = _empty_sections(PROJECT_SECTION_KEYS)
 
     _detect_setting_conflicts(body, state, sections)
@@ -102,6 +107,23 @@ def _validate_text(text: str) -> str:
     if len(text) > 50000:
         raise ValueError("text_too_long")
     return text.strip()
+
+
+def _validate_chapter_body(chapter: Mapping[str, Any]) -> str:
+    body = chapter.get("body")
+    if body is None:
+        raise ValueError("body_required")
+    if not isinstance(body, str):
+        raise ValueError("body_must_be_string")
+    if not body.strip():
+        raise ValueError("body_required")
+    if len(body) > 50000:
+        raise ValueError("text_too_long")
+    return body.strip()
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _empty_sections(keys: tuple[str, ...]) -> dict[str, list[str]]:
@@ -185,7 +207,9 @@ def _learnable_method(genre: str, focus: str, task_lines: list[str], dialogue_li
 
 
 def _detect_setting_conflicts(body: str, state: dict[str, Any], sections: dict[str, list[str]]) -> None:
-    level = str(state.get("progression_ledger", {}).get("protagonist", {}).get("level", ""))
+    ledger = _as_dict(state.get("progression_ledger"))
+    protagonist = _as_dict(ledger.get("protagonist"))
+    level = str(protagonist.get("level", ""))
     level_one = "Lv.1" in level or re.search(r"(?:^|[^0-9])1级", body)
     if level_one and "转职任务" in body:
         _add_issue(sections, "设定冲突", "Lv.1直接接转职任务过早，转职门槛需要前置等级、导师或试炼条件。")

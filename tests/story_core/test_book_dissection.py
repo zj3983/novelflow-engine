@@ -63,3 +63,31 @@ def test_diagnose_project_chapter_flags_common_webgame_issues():
 def test_dissect_reference_text_rejects_empty_text():
     with pytest.raises(ValueError, match="text_required"):
         dissect_reference_text("   ")
+
+
+def test_diagnose_project_chapter_rejects_missing_body():
+    with pytest.raises(ValueError, match="body_required"):
+        diagnose_project_chapter({}, {"body": None})
+
+
+def test_diagnose_project_chapter_rejects_non_mapping_chapter():
+    with pytest.raises(ValueError, match="chapter_required"):
+        diagnose_project_chapter({}, None)
+
+
+def test_diagnose_project_chapter_rejects_non_string_body():
+    with pytest.raises(ValueError, match="body_must_be_string"):
+        diagnose_project_chapter({}, {"body": 123})
+
+
+@pytest.mark.parametrize(
+    "project_context",
+    [
+        {"state": None},
+        {"state": {"progression_ledger": None}},
+    ],
+)
+def test_diagnose_project_chapter_tolerates_malformed_optional_state(project_context):
+    report = diagnose_project_chapter(project_context, {"body": "夜烬绕开人群，先观察任务牌。"})
+
+    assert report["mode"] == "project"
