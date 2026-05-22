@@ -3,6 +3,28 @@ import { expect, test, type Page } from "@playwright/test";
 const PROJECT_ID = "file:dissection-smoke";
 const STORY_ID = "file:dissection-story";
 
+function cn(codes: number[]): string {
+  return String.fromCodePoint(...codes);
+}
+
+const ANALYZE = cn([0x5f00, 0x59cb, 0x5206, 0x6790]);
+const PROJECT_MODE = cn([0x672c, 0x4e66, 0x4f53, 0x68c0]);
+const PROGRESS_LINE = cn([
+  0x672c, 0x7ae0, 0x8fdb, 0x5c55, 0x5df2, 0x7ecf, 0x843d, 0x5230, 0x5177, 0x4f53, 0x8d26, 0x672c,
+  0xff1a, 0x7ecf, 0x9a8c, 0x33, 0x30, 0x2f, 0x31, 0x30, 0x30, 0xff0c, 0x751f, 0x547d, 0x34,
+  0x32, 0x2f, 0x31, 0x30, 0x30, 0xff0c, 0x6cd5, 0x529b, 0x30, 0x2f, 0x36, 0x30, 0x3002,
+]);
+const CONFLICT_LINE = cn([
+  0x6e05, 0x9053, 0x592b, 0x59d4, 0x6258, 0x8fd8, 0x5dee, 0x32, 0x4efd, 0xff0c, 0x4e0b,
+  0x4e00, 0x7ae0, 0x76ee, 0x6807, 0x6e05, 0x695a, 0x3002,
+]);
+const NEXT_LINE = cn([
+  0x4e0b, 0x4e00, 0x7ae0, 0x5148, 0x8865, 0x9f50, 0x32, 0x4efd, 0x6750, 0x6599, 0xff0c,
+  0x518d, 0x5904, 0x7406, 0x59d4, 0x6258, 0x3002,
+]);
+const NO_HIT = cn([0x6682, 0x672a, 0x547d, 0x4e2d]);
+const NO_HARD_ERROR = cn([0x672a, 0x53d1, 0x73b0, 0x786c, 0x6027, 0x9519, 0x8bef]);
+
 async function proxyDissectionRoutes(page: Page) {
   await page.route("**/file-projects/file%3Adissection-smoke", async (route) => {
     await route.fulfill({
@@ -84,8 +106,33 @@ async function proxyDissectionRoutes(page: Page) {
         mode: "reference",
         summary: "Reference chapter uses pressure, choice, and consequence.",
         sections: {
-          "节奏拆解": ["Opening pressure lands before explanation."],
-          "可学习写法": ["Let the price change show the rule."],
+          pacing: ["Opening pressure lands before explanation."],
+          method: ["Let the price change show the rule."],
+        },
+      }),
+    });
+  });
+
+  await page.route("**/file-projects/file%3Adissection-smoke/book-dissection/chapter", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    const payload = route.request().postDataJSON() as { chapter_number?: number };
+    expect(payload.chapter_number).toBe(1);
+
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
+      body: JSON.stringify({
+        schema_version: "book-dissection/v1",
+        mode: "project",
+        chapter_number: 1,
+        chapter_title: "Opening Trade",
+        sections: {
+          role: ["Opening function is visible."],
+          progress: [PROGRESS_LINE],
+          conflict: [CONFLICT_LINE],
+          issues: [],
+          setting: [],
+          next: [NEXT_LINE],
         },
       }),
     });
@@ -95,12 +142,28 @@ async function proxyDissectionRoutes(page: Page) {
 test("dissection page can submit a reference text and render the report", async ({ page }) => {
   await proxyDissectionRoutes(page);
 
-  await page.goto(`/projects/${encodeURIComponent(PROJECT_ID)}/dissection`, { waitUntil: "domcontentloaded" });
+  await page.goto(`/projects/${encodeURIComponent(PROJECT_ID)}/dissection`, { waitUntil: "networkidle" });
 
-  await page.getByPlaceholder(/参考章节|鍙傝€冪珷/).fill("The market stall price changes after the first anonymous order.");
-  await page.getByRole("button", { name: /开始分析|寮€濮嬪垎鏋?/ }).click();
+  await page.locator("textarea.ws-textarea").fill("The market stall price changes after the first anonymous order.");
+  await expect(page.getByRole("button", { name: ANALYZE })).toBeEnabled();
+  await page.getByRole("button", { name: ANALYZE }).click();
 
   await expect(page.getByText("Reference chapter uses pressure, choice, and consequence.")).toBeVisible();
   await expect(page.getByText("Opening pressure lands before explanation.")).toBeVisible();
   await expect(page.getByText("Let the price change show the rule.")).toBeVisible();
+});
+
+test("dissection page can inspect a project chapter without empty filler", async ({ page }) => {
+  await proxyDissectionRoutes(page);
+
+  await page.goto(`/projects/${encodeURIComponent(PROJECT_ID)}/dissection`, { waitUntil: "networkidle" });
+
+  await page.getByRole("tab", { name: PROJECT_MODE }).click();
+  await expect(page.getByRole("button", { name: ANALYZE })).toBeEnabled();
+  await page.getByRole("button", { name: ANALYZE }).click();
+
+  await expect(page.getByText(PROGRESS_LINE)).toBeVisible();
+  await expect(page.getByText(CONFLICT_LINE)).toBeVisible();
+  await expect(page.getByText(NO_HIT)).toHaveCount(0);
+  await expect(page.getByText(NO_HARD_ERROR)).toHaveCount(0);
 });

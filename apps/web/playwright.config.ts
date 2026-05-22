@@ -1,5 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
+const port = process.env.PLAYWRIGHT_PORT || "3100";
+const baseURL = process.env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${port}`;
+
 export default defineConfig({
   // We keep E2E tests in repo-root `tests/e2e` but also retain local UI shell tests in `apps/web/tests`.
   // testDir resolves relative to this config file (apps/web).
@@ -9,13 +12,13 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 5_000 },
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL,
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "npm run dev",
+    command: `npx next dev -p ${port}`,
     cwd: __dirname,
-    url: "http://127.0.0.1:3000",
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
