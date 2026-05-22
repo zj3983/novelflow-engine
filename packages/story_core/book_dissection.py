@@ -82,8 +82,8 @@ def diagnose_project_chapter(project_context: dict[str, Any], chapter: dict[str,
     _detect_repetitive_combat(body, sections)
     _detect_missing_progress(body, sections)
 
-    if not sections["主要问题"]:
-        sections["主要问题"].append("未发现硬性错误，但仍需要检查本章目标、成本和收益是否落到正文动作里。")
+    has_concrete_read = any(sections[key] for key in ("章节作用", "爽点来源", "主角进展", "冲突推进"))
+    has_problem = any(sections[key] for key in ("主要问题", "设定冲突", "对话问题", "说明感问题"))
     if not sections["章节作用"]:
         sections["章节作用"].append("本章需要明确承担开局、过渡、兑现收益或抬高冲突中的一种作用。")
     if not sections["爽点来源"]:
@@ -92,17 +92,11 @@ def diagnose_project_chapter(project_context: dict[str, Any], chapter: dict[str,
         sections["主角进展"].append("没有抽取到明确的经验、材料、任务或装备变化。")
     if not sections["冲突推进"]:
         sections["冲突推进"].append("冲突推进不够清楚，需要写出还差什么、卡在哪里、下一步怎么做。")
-    if not sections["不爽原因"]:
+    if has_problem and not sections["不爽原因"]:
         sections["不爽原因"].append("爽点需要同时具备可见阻力、明确成本和阶段性收益，避免只剩信息陈列。")
-    if not sections["设定冲突"]:
-        sections["设定冲突"].append("暂未命中常见硬设定冲突。")
-    if not sections["对话问题"]:
-        sections["对话问题"].append("暂未命中过短或重复对话问题。")
-    if not sections["说明感问题"]:
-        sections["说明感问题"].append("暂未命中面板直贴或后台术语问题。")
-    if not sections["下一版改法"]:
+    if not sections["下一版改法"] and (has_problem or not has_concrete_read):
         sections["下一版改法"].append("按目标-阻力-选择-代价-收益重排场景，让规则从动作和对话里露出。")
-    if not sections["可写入提示词"]:
+    if not sections["可写入提示词"] and (has_problem or not has_concrete_read):
         sections["可写入提示词"].append("重写时保留本章事实，只把说明句改成可见动作、界面反馈和角色问答。")
 
     return {

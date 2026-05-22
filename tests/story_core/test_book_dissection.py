@@ -122,3 +122,6 @@ def test_diagnose_project_chapter_extracts_concrete_webgame_progress():
     assert any("清道夫委托" in item and "还差2份" in item for item in section(report, "冲突推进"))
     assert any("掉落判定×1000" in item for item in section(report, "爽点来源"))
     assert any("等法力" in item or "补齐2份" in item for item in section(report, "下一版改法"))
+    joined = "\n".join(item for items in report["sections"].values() for item in items)
+    assert "暂未命中" not in joined
+    assert "未发现硬性错误" not in joined
