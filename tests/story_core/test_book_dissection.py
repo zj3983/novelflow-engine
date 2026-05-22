@@ -91,3 +91,34 @@ def test_diagnose_project_chapter_tolerates_malformed_optional_state(project_con
     report = diagnose_project_chapter(project_context, {"body": "夜烬绕开人群，先观察任务牌。"})
 
     assert report["mode"] == "project"
+
+
+def test_diagnose_project_chapter_extracts_concrete_webgame_progress():
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "灰狼坡试水",
+        "body": "\n".join(
+            [
+                "夜烬击杀第五只灰狼。",
+                "【经验：0/100】【生命：100/100】【法力：60/60】",
+                "【经验：30/100】",
+                "【获得：灰狼毒腺×58】【获得：粗糙狼皮×31】",
+                "Lv.1，经验30/100。生命42/100。法力0/60。新手法杖4/10。灰狼毒腺八份，粗糙狼皮七张。",
+                "【清道夫委托】",
+                "【前置任务：提交灰狼毒腺×10】",
+                "【奖励：30铜】",
+                "【底层协议校验通过】",
+                "【掉落判定×1000】",
+                "【混沌之种：未解析】",
+            ]
+        ),
+    }
+
+    report = diagnose_project_chapter({"state": {}}, chapter)
+
+    assert any("经验30/100" in item for item in section(report, "主角进展"))
+    assert not any("经验0/100" in item for item in section(report, "主角进展"))
+    assert any("毒腺8" in item or "毒腺八" in item for item in section(report, "主角进展"))
+    assert any("清道夫委托" in item and "还差2份" in item for item in section(report, "冲突推进"))
+    assert any("掉落判定×1000" in item for item in section(report, "爽点来源"))
+    assert any("等法力" in item or "补齐2份" in item for item in section(report, "下一版改法"))

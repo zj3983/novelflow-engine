@@ -20,6 +20,10 @@ REFERENCE_SECTION_KEYS = (
 )
 
 PROJECT_SECTION_KEYS = (
+    "章节作用",
+    "爽点来源",
+    "主角进展",
+    "冲突推进",
     "主要问题",
     "不爽原因",
     "设定冲突",
@@ -71,6 +75,7 @@ def diagnose_project_chapter(project_context: dict[str, Any], chapter: dict[str,
     state = _as_dict(context.get("state"))
     sections = _empty_sections(PROJECT_SECTION_KEYS)
 
+    _extract_project_craft_read(body, sections)
     _detect_setting_conflicts(body, state, sections)
     _detect_dialogue_issues(body, sections)
     _detect_exposition_issues(body, sections)
@@ -79,6 +84,14 @@ def diagnose_project_chapter(project_context: dict[str, Any], chapter: dict[str,
 
     if not sections["主要问题"]:
         sections["主要问题"].append("未发现硬性错误，但仍需要检查本章目标、成本和收益是否落到正文动作里。")
+    if not sections["章节作用"]:
+        sections["章节作用"].append("本章需要明确承担开局、过渡、兑现收益或抬高冲突中的一种作用。")
+    if not sections["爽点来源"]:
+        sections["爽点来源"].append("爽点还需要落到可见的进度、收益、领先或反差上。")
+    if not sections["主角进展"]:
+        sections["主角进展"].append("没有抽取到明确的经验、材料、任务或装备变化。")
+    if not sections["冲突推进"]:
+        sections["冲突推进"].append("冲突推进不够清楚，需要写出还差什么、卡在哪里、下一步怎么做。")
     if not sections["不爽原因"]:
         sections["不爽原因"].append("爽点需要同时具备可见阻力、明确成本和阶段性收益，避免只剩信息陈列。")
     if not sections["设定冲突"]:
@@ -218,6 +231,49 @@ def _detect_setting_conflicts(body: str, state: dict[str, Any], sections: dict[s
         _add_issue(sections, "下一版改法", "把转职改成听到线索、看到大厅门槛或领取前置试炼。")
 
 
+def _extract_project_craft_read(body: str, sections: dict[str, list[str]]) -> None:
+    exp = _last_match(body, r"经验[:：]?(\d+/\d+)")
+    hp = _last_match(body, r"生命[:：]?(\d+/\d+)")
+    mp = _last_match(body, r"法力[:：]?(\d+/\d+)")
+    durability = _first_match(body, r"新手法杖(\d+/\d+)")
+    venom = _extract_count(body, "灰狼毒腺")
+    pelt = _extract_count(body, "粗糙狼皮")
+    quest_need = _extract_count(body, "提交灰狼毒腺")
+    has_drop_boost = "掉落判定×1000" in body
+    has_protocol = "底层协议校验通过" in body
+    has_seed = "混沌之种：未解析" in body
+
+    if exp or venom is not None or pelt is not None:
+        parts = []
+        if exp:
+            parts.append(f"经验{exp}")
+        if hp:
+            parts.append(f"生命{hp}")
+        if mp:
+            parts.append(f"法力{mp}")
+        if durability:
+            parts.append(f"新手法杖{durability}")
+        if venom is not None:
+            parts.append(f"灰狼毒腺{venom}")
+        if pelt is not None:
+            parts.append(f"粗糙狼皮{pelt}")
+        _add_issue(sections, "主角进展", "本章进展已经落到具体账本：" + "，".join(parts) + "。")
+
+    if "清道夫委托" in body and quest_need:
+        if venom is not None and quest_need > venom:
+            _add_issue(sections, "冲突推进", f"清道夫委托前置任务需要{quest_need}份灰狼毒腺，当前毒腺{venom}，还差{quest_need - venom}份，下一章目标清楚。")
+        else:
+            _add_issue(sections, "冲突推进", f"清道夫委托前置任务需要{quest_need}份灰狼毒腺，任务门槛已经露出。")
+
+    if has_drop_boost:
+        _add_issue(sections, "爽点来源", "掉落判定×1000已经露出，爽点来自隐藏优势被主角确认，但还没有公开暴露。")
+    if has_protocol or has_seed:
+        _add_issue(sections, "章节作用", "本章承担开局验证作用：现实压力、游戏身份、五只灰狼样本和混沌之种异常都已经落地。")
+    if exp and venom is not None and quest_need and quest_need > venom:
+        _add_issue(sections, "下一版改法", f"下一章先承接空蓝和耐久压力，等法力回复后补齐{quest_need - venom}份灰狼毒腺，再处理清道夫委托。")
+        _add_issue(sections, "可写入提示词", f"承接章末账本：经验{exp}、灰狼毒腺{venom}、清道夫委托还差{quest_need - venom}份，不要跳到转职或高阶任务。")
+
+
 def _detect_dialogue_issues(body: str, sections: dict[str, list[str]]) -> None:
     quoted = re.findall(r"[\"“](.*?)[\"”]", body)
     short_quotes = [quote for quote in quoted if len(quote.strip()) <= 2]
@@ -226,6 +282,48 @@ def _detect_dialogue_issues(body: str, sections: dict[str, list[str]]) -> None:
         _add_issue(sections, "主要问题", "对话只剩应答，没有推动选择。")
         _add_issue(sections, "下一版改法", "让每句对话至少带出一个态度、条件、价格或误解。")
         _add_issue(sections, "可写入提示词", "避免连续“行/好/嗯”式短答，把短答扩成带动作和信息量的角色回应。")
+
+
+def _first_match(text: str, pattern: str) -> str:
+    match = re.search(pattern, text)
+    return match.group(1) if match else ""
+
+
+def _last_match(text: str, pattern: str) -> str:
+    matches = list(re.finditer(pattern, text))
+    return matches[-1].group(1) if matches else ""
+
+
+def _extract_count(text: str, label: str) -> int | None:
+    patterns = (
+        rf"{re.escape(label)}[×xX]?(\d+)",
+        rf"{re.escape(label)}([一二三四五六七八九十]+)份",
+        rf"{re.escape(label)}([一二三四五六七八九十]+)张",
+    )
+    values: list[tuple[int, int]] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            prefix = text[max(0, match.start() - 4) : match.start()]
+            if "提交" in prefix:
+                continue
+            raw = match.group(1)
+            parsed = int(raw) if raw.isdigit() else _chinese_number(raw)
+            if parsed is not None:
+                values.append((match.start(), parsed))
+    return max(values, key=lambda item: item[0])[1] if values else None
+
+
+def _chinese_number(value: str) -> int | None:
+    digits = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if value == "十":
+        return 10
+    if value.startswith("十") and len(value) == 2:
+        return 10 + digits.get(value[1], 0)
+    if value.endswith("十") and len(value) == 2:
+        return digits.get(value[0], 0) * 10
+    if "十" in value and len(value) == 3:
+        return digits.get(value[0], 0) * 10 + digits.get(value[2], 0)
+    return digits.get(value)
 
 
 def _detect_exposition_issues(body: str, sections: dict[str, list[str]]) -> None:
