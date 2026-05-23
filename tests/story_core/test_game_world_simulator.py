@@ -89,6 +89,37 @@ def test_game_world_simulator_exports_novel_simulation_ticks_not_plot_rules():
     assert "节奏" not in serialized
 
 
+def test_game_world_simulator_gives_chapter_two_concrete_quest_loop():
+    story = _game_story()
+    story.progression_ledger = {
+        "protagonist": {
+            "game_id": "夜烬",
+            "class_path": "元素法师学徒",
+            "level": "Lv.1",
+            "exp": "30/100",
+            "hp": "42/100",
+            "mp": "0/60",
+        },
+        "economy": {
+            "game_currency": "0铜",
+            "inventory": {"灰狼毒腺": 8, "粗糙狼皮": 7},
+        },
+        "equipment": {"weapon": "新手法杖", "durability": "4/10"},
+    }
+
+    result = simulate_game_world(story, 2)
+    surface = " ".join(str(tick) for tick in result["simulation_ticks"])
+
+    assert "补打一只灰狼" in surface
+    assert "递交十份灰狼毒腺" in surface
+    assert "短剑" not in surface
+    assert "新手法杖" in surface
+    assert result["ledger_delta"]["inventory_delta"]["灰狼毒腺"] == -8
+    assert result["ledger_delta"]["inventory_delta"]["初级法力药水"] == 2
+    assert result["ledger_delta"]["currency_delta"] == {"铜": 5}
+    assert any("路线熟或运气好" in item for item in result["ledger_delta"]["next_pressure"])
+
+
 def test_game_world_simulator_rotates_opening_variant():
     result = simulate_game_world(
         _game_story(),

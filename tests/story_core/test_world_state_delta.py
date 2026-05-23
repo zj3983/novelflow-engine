@@ -1,5 +1,9 @@
 from packages.story_core.models import CharacterState, StoryState
-from packages.story_core.orchestrator import _soften_repeated_paragraph_openers, apply_simulated_state_deltas
+from packages.story_core.orchestrator import (
+    _sanitize_chapter_output,
+    _soften_repeated_paragraph_openers,
+    apply_simulated_state_deltas,
+)
 
 
 def test_apply_simulated_state_deltas_merges_world_event_and_scene_card_state():
@@ -177,3 +181,39 @@ def test_repeated_paragraph_opener_softener_does_not_add_banned_time_crutches():
 
     for token in ("这一次，", "下一刻，", "很快，", "片刻后，", "转眼，", "眼前，"):
         assert token not in softened
+
+
+def test_second_chapter_sanitizer_adds_outsider_misread_and_emotion_anchors():
+    body = "\n\n".join(
+        [
+            "夜烬走到任务柜台前，把材料递过去。",
+            "他收起钱袋，转身去修理铺。",
+            "他又买了两瓶初级法力药水。",
+            "夜烬把背包扣上，准备回灰狼坡。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+
+    assert "路线挺熟" in cleaned
+    assert "运气好" in cleaned
+    assert "十五铜修杖" in cleaned
+    assert "二十七块六" in cleaned
+
+
+def test_second_chapter_sanitizer_adds_npc_boundary_and_removes_guide_terms():
+    body = "\n\n".join(
+        [
+            "夜烬把法杖横在身前，等灰狼的仇恨值转过来。",
+            "他回村修装备，又买了两瓶药。",
+            "夜烬把背包扣上，准备去后坡。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+
+    assert "仇恨值" not in cleaned
+    assert "灰狼的注意" in cleaned
+    assert "修理铺" in cleaned
+    assert "十五铜" in cleaned
+    assert "不问夜烬从哪儿弄来的毒腺" in cleaned

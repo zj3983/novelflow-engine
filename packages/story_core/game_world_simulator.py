@@ -102,6 +102,99 @@ def _opening_combat_ticks(game_id: str, *, variant: str = "boundary-combat-cost"
     ]
 
 
+def _chapter_two_progression_ticks(game_id: str) -> list[dict[str, Any]]:
+    """Concrete second-chapter service loop.
+
+    Chapter two must close the first small quest without inventing a different
+    weapon route: recover enough mana, add the missing venom, submit exactly ten,
+    then spend the reward on mage-appropriate upkeep.
+    """
+
+    return [
+        {
+            "tick_id": "c2-recover-mana",
+            "kind": "resource_wait",
+            "time_delta": "2分钟",
+            "actor": game_id,
+            "action": "靠村墙等基础回蓝到能放一次基础火球术",
+            "location": "灰烬村村墙下",
+            "cost": {"time_minutes": 2},
+            "result": {"state_after": {"mp": "12/60"}, "inventory_delta": {}},
+            "visible_to": [game_id],
+            "hidden_delta": {},
+            "next_pressure": ["只够打一轮，不能写成满蓝连刷"],
+        },
+        {
+            "tick_id": "c2-wolf-venom-gap",
+            "kind": "combat",
+            "time_delta": "5分钟",
+            "actor": game_id,
+            "action": "用基础火球术补打一只灰狼，只补清道夫委托缺的两份毒腺",
+            "location": "灰狼坡坡口",
+            "cost": {"hp": -4, "mp": -12, "durability": -1},
+            "state_after": {"hp": "38/100", "mp": "0/60", "weapon_durability": "3/10"},
+            "drop_roll": {
+                "baseline": "普通玩家常见结果为狼皮或少量毒腺。",
+                "actual": {"灰狼毒腺": 2},
+            },
+            "visible_to": [game_id, "附近普通玩家"],
+            "world_noise": ["旁人只看见他又打了一只灰狼，最多以为路线熟或运气好。"],
+            "hidden_delta": {"chaos_seed_anomaly_score": 1},
+            "next_pressure": ["毒腺凑到十份后必须先交清道夫委托，不要额外刷成材料炫耀"],
+        },
+        {
+            "tick_id": "c2-submit-scavenger",
+            "kind": "quest_service",
+            "time_delta": "6分钟",
+            "actor": game_id,
+            "action": "在任务柜台递交十份灰狼毒腺，完成清道夫委托",
+            "location": "灰烬村任务柜台",
+            "cost": {"inventory_delta": {"灰狼毒腺": -10}},
+            "result": {
+                "quest_delta": {"清道夫委托": "已提交"},
+                "currency_delta": {"铜": 30},
+                "state_after": {"game_currency": "30铜", "灰狼毒腺": 0},
+            },
+            "visible_to": [game_id, "任务柜台NPC", "排队玩家"],
+            "hidden_delta": {},
+            "next_pressure": ["30铜先修法杖和买蓝药，现实压力不能在本章解决"],
+        },
+        {
+            "tick_id": "c2-repair-staff",
+            "kind": "npc_service",
+            "time_delta": "5分钟",
+            "actor": "修理匠老葛",
+            "action": "在修理铺按耐久报价修新手法杖，只谈修理费和耐久，不知道隐藏爆率",
+            "location": "灰烬村修理铺",
+            "knowledge_scope": ["装备耐久", "修理价格", "柜台付款"],
+            "cannot_know": ["混沌之种", "完整掉落数量", "现实身份"],
+            "visible_to": [game_id, "修理匠老葛"],
+            "cost": {"currency_delta": {"铜": -15}},
+            "state_delta": {"equipment": {"weapon": "新手法杖", "durability": "10/10"}},
+            "result": {"state_after": {"game_currency": "15铜", "weapon_durability": "10/10"}},
+            "next_pressure": ["剩余铜币有限，只能买少量法力药水"],
+        },
+        {
+            "tick_id": "c2-buy-mana-potion",
+            "kind": "npc_service",
+            "time_delta": "4分钟",
+            "actor": "药剂师洛婶",
+            "action": "在药剂铺买两瓶初级法力药水，洛婶只按价牌和库存办事",
+            "location": "灰烬村药剂铺",
+            "knowledge_scope": ["药水价格", "药剂库存", "柜台付款"],
+            "cannot_know": ["混沌之种", "刷怪路线", "现实余额"],
+            "visible_to": [game_id, "药剂师洛婶"],
+            "cost": {"currency_delta": {"铜": -10}},
+            "state_delta": {"economy": {"inventory": {"初级法力药水": 2}, "game_currency": "5铜"}},
+            "result": {
+                "inventory_delta": {"初级法力药水": 2},
+                "state_after": {"game_currency": "5铜", "backpack_pressure": "接近满格"},
+            },
+            "next_pressure": ["后坡探路还需要前置任务或火球术熟练度，不能直接转职"],
+        },
+    ]
+
+
 def _novel_simulation_ticks(
     ticks: list[dict[str, Any]],
     systemic: dict[str, Any],
@@ -125,8 +218,10 @@ def _novel_simulation_ticks(
             continue
         kind = str(tick.get("kind") or "")
         result: dict[str, Any] = {}
-        hidden_delta: dict[str, Any] = {}
-        if kind == "combat":
+        hidden_delta: dict[str, Any] = tick.get("hidden_delta") if isinstance(tick.get("hidden_delta"), dict) else {}
+        if isinstance(tick.get("result"), dict):
+            result = dict(tick["result"])
+        elif kind == "combat":
             combat_seen += 1
             drop_roll = tick.get("drop_roll") if isinstance(tick.get("drop_roll"), dict) else {}
             actual_drop = drop_roll.get("actual") if isinstance(drop_roll.get("actual"), dict) else {}
@@ -157,7 +252,7 @@ def _novel_simulation_ticks(
                 "result": result,
                 "visible_to": tick.get("visible_to") if isinstance(tick.get("visible_to"), list) else [game_id],
                 "hidden_delta": hidden_delta,
-                "next_pressure": next_pressure,
+                "next_pressure": tick.get("next_pressure") if isinstance(tick.get("next_pressure"), list) else next_pressure,
             }
         )
 
@@ -198,18 +293,33 @@ def simulate_game_world(
     game_id = _lead_game_id(story)
     variant = _variant_id(chapter_seed, simulation_plan)
     if chapter_number != 1:
+        ticks = _chapter_two_progression_ticks(game_id) if chapter_number == 2 else []
         systemic = resolve_systemic_game_simulation(
             story,
             chapter_number,
             variant=variant,
-            ticks=[],
+            ticks=ticks,
         )
         simulation_ticks = _novel_simulation_ticks(
-            [],
+            ticks,
             systemic,
             game_id=game_id,
             chapter_number=chapter_number,
         )
+        if chapter_number == 2:
+            ledger_delta = dict(systemic.get("ledger_delta") or {})
+            ledger_delta["inventory_delta"] = {
+                "灰狼毒腺": -8,
+                "初级法力药水": 2,
+            }
+            ledger_delta["cost_delta"] = {"hp": -4, "mp": -12, "durability": -1}
+            ledger_delta["currency_delta"] = {"铜": 5}
+            ledger_delta["next_pressure"] = [
+                "后坡探路需要前置任务或火球术熟练度",
+                "现实余额27.60元仍未解决",
+                "外人只能误判夜烬路线熟或运气好",
+            ]
+            systemic = {**systemic, "ledger_delta": ledger_delta}
         chapter_goal = ""
         if isinstance(simulation_plan, dict):
             chapter_goal = str(simulation_plan.get("chapter_goal") or "").strip()
@@ -232,7 +342,7 @@ def simulate_game_world(
         return {
             "schema_version": "game-world-simulation/v1",
             "chapter_number": chapter_number,
-            "ticks": [],
+            "ticks": ticks,
             "simulation_ticks": simulation_ticks,
             "aggregate": {},
             "systemic_simulation": systemic,

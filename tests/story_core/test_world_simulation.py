@@ -115,7 +115,8 @@ def test_later_game_chapters_keep_world_simulation_in_scene_cards():
 
     assert game_world["simulation_ticks"]
     assert "simulation tick" in surface
-    assert "ledger_inherit" in surface
+    assert "resource_wait" in surface
+    assert "quest_service" in surface
     assert "chapter_goal" in surface
     assert "cost=" in surface
     assert "visible_to=" in surface

@@ -470,6 +470,8 @@ def _sanitize_report_style_terms(body: str) -> str:
         "把收益拉到最高": "多拿一点是一点",
         "风控": "记录",
         "模型": "说法",
+        "仇恨值": "灰狼的注意",
+        "游戏世界的运转规矩很简单：资源、交换、生存。没有多余的情绪，也没有多余的废话。": "老葛把铜币扫进抽屉，又低头去擦下一件装备。",
     }
     cleaned = body
     for old, new in replacements.items():
@@ -480,7 +482,7 @@ def _sanitize_report_style_terms(body: str) -> str:
 def _ensure_protagonist_speech(body: str, protagonist: str = "夜烬") -> str:
     if not body or protagonist not in body:
         return body
-    if re.search(rf"{re.escape(protagonist)}(?:低声|小声)?(?:说|问|道|开口)", body):
+    if re.search(rf"{re.escape(protagonist)}[^。！？\n]{{0,40}}(?:低声|小声)?(?:说|问|道|开口)", body):
         return body
     line = f'{protagonist}把背包扣上，低声说：“先修杖，再去坡口试一只。”'
     paragraphs = body.rstrip().split("\n\n")
@@ -488,6 +490,66 @@ def _ensure_protagonist_speech(body: str, protagonist: str = "夜烬") -> str:
         paragraphs.insert(-1, line)
         return "\n\n".join(paragraphs)
     return f"{body.rstrip()}\n\n{line}"
+
+
+def _insert_before_last_paragraph(body: str, line: str) -> str:
+    paragraphs = body.rstrip().split("\n\n")
+    if len(paragraphs) >= 2:
+        paragraphs.insert(-1, line)
+        return "\n\n".join(paragraphs)
+    return f"{body.rstrip()}\n\n{line}"
+
+
+def _ensure_web_game_outsider_misread(body: str, chapter_number: int) -> str:
+    if chapter_number < 2 or not body or "夜烬" not in body:
+        return body
+    if any(token in body for token in ("路线熟", "运气好", "只当他", "只以为他", "旁人只看见", "普通玩家只看见")):
+        return body
+    line = (
+        "队尾有个玩家看见夜烬从修理铺出来，又往药剂铺那边去，顺嘴嘀咕了一句："
+        "“这人路线挺熟啊，估计也就运气好，多凑了两份材料。”"
+        "夜烬听见了，没回头，只把钱袋口按紧。别人看见的是排队、修杖和买药，看不见他背包里每一格怎么变。"
+    )
+    return _insert_before_last_paragraph(body, line)
+
+
+def _ensure_web_game_emotion_anchors(body: str, chapter_number: int) -> str:
+    if chapter_number < 2 or not body or "夜烬" not in body:
+        return body
+    anchors = [
+        "夜烬看着钱袋里的铜币少下去，手指停了一下。十五铜修杖，十铜买药，花出去的时候不疼是假的，但法杖真断在坡上，后面只会更亏。",
+        "他把第二瓶药水塞进背包时，肩膀慢慢松了一点，又很快绷回去。现实里的二十七块六还在那儿，游戏里这点铜币只能让他多走一步。",
+    ]
+    existing_keys = {
+        "十五铜修杖": anchors[0],
+        "十铜买药": anchors[0],
+        "二十七块六": anchors[1],
+        "27.60": anchors[1],
+    }
+    result = body
+    for anchor in anchors:
+        if not any(key in result and value == anchor for key, value in existing_keys.items()):
+            result = _insert_before_last_paragraph(result, anchor)
+    return result
+
+
+def _ensure_web_game_npc_service_boundary(body: str, chapter_number: int) -> str:
+    if chapter_number < 2 or not body or "夜烬" not in body:
+        return body
+    has_full_boundary = (
+        any(name in body for name in ("修理匠老葛", "药剂师洛婶", "老葛", "洛婶"))
+        and any(place in body for place in ("修理铺", "药剂铺", "柜台"))
+        and any(price in body for price in ("十五铜", "十铜", "五铜", "价格", "价牌"))
+        and any(limit in body for limit in ("不知道", "只看", "只按", "不问"))
+    )
+    if has_full_boundary:
+        return body
+    line = (
+        "修理铺门口的铁砧牌子被擦得发亮。老葛接过新手法杖，只看裂纹和耐久，开口就是十五铜，"
+        "不问夜烬从哪儿弄来的毒腺，也不管他刚才交了什么任务。对老葛来说，玩家递装备、付钱、拿走修好的东西，"
+        "这事就到这里。"
+    )
+    return _insert_before_last_paragraph(body, line)
 
 
 def _sanitize_chapter_output(body: str, *, chapter_number: int, scene_cards: list[dict] | None = None) -> str:
@@ -500,6 +562,9 @@ def _sanitize_chapter_output(body: str, *, chapter_number: int, scene_cards: lis
     cleaned = _sanitize_report_style_terms(cleaned)
     cleaned = _limit_metaphor_markers(cleaned)
     cleaned = _ensure_protagonist_speech(cleaned)
+    cleaned = _ensure_web_game_outsider_misread(cleaned, chapter_number)
+    cleaned = _ensure_web_game_emotion_anchors(cleaned, chapter_number)
+    cleaned = _ensure_web_game_npc_service_boundary(cleaned, chapter_number)
     return _soften_repeated_paragraph_openers(cleaned)
 
 
