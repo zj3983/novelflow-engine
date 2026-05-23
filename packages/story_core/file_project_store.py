@@ -252,6 +252,30 @@ class FileProjectStore:
 
     def _sanitize_story_state(self, state: dict[str, Any]) -> dict[str, Any]:
         sanitized = dict(state)
+        ledger = sanitized.get("progression_ledger")
+        if isinstance(ledger, dict):
+            ledger = dict(ledger)
+            economy = ledger.get("economy") if isinstance(ledger.get("economy"), dict) else {}
+            if isinstance(economy.get("inventory"), dict):
+                ledger.pop("inventory", None)
+            if economy.get("game_currency") not in (None, "", [], {}):
+                ledger.pop("currency", None)
+            if isinstance(ledger.get("skills"), list):
+                ledger["skills"] = [item for item in ledger["skills"] if "熟练度" not in str(item)]
+                if not ledger["skills"]:
+                    ledger.pop("skills", None)
+            pressure = ledger.get("pressure") if isinstance(ledger.get("pressure"), dict) else {}
+            next_pressure = pressure.get("next") if isinstance(pressure, dict) else None
+            if isinstance(next_pressure, list):
+                pressure = dict(pressure)
+                pressure["next"] = [
+                    "后坡探路前置已满足，但等级和补给仍压着风险"
+                    if "熟练度" in str(item)
+                    else item
+                    for item in next_pressure
+                ]
+                ledger["pressure"] = pressure
+            sanitized["progression_ledger"] = ledger
         summaries: list[Any] = []
         changed = False
         for item in sanitized.get("chapter_summaries", []) if isinstance(sanitized.get("chapter_summaries"), list) else []:

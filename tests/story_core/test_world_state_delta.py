@@ -255,6 +255,21 @@ def test_second_chapter_sanitizer_adds_outsider_misread_and_emotion_anchors():
     assert "原本的八份凑成十份" in cleaned
 
 
+def test_second_chapter_sanitizer_does_not_insert_retroactive_venom_after_turn_in():
+    body = "\n\n".join(
+        [
+            "夜烬把十份灰狼毒腺放在柜台上。",
+            "洛婶数完材料，在册子上划了一笔。系统提示：清道夫委托已完成。铜币+30。",
+            "他转身去修理铺，准备修杖买药。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+
+    assert "回村前，夜烬只在坡口补打一只灰狼" not in cleaned
+    assert cleaned.count("清道夫委托") == 1
+
+
 def test_second_chapter_sanitizer_adds_npc_boundary_and_removes_guide_terms():
     body = "\n\n".join(
         [
@@ -312,7 +327,7 @@ def test_second_chapter_sanitizer_removes_stale_webgame_terms_and_prices():
             "夜烬看见灰鼠头顶飘出仇恨标识，旁边还有 footing（落脚点）不稳定的提示。",
             "每秒0.16点的恢复速率，从零到满需要整整六分钟。毒腺掉率基础值15%，受幸运值影响浮动。",
             "提示框弹出来：【后坡探路登记。条件未满足。需火球熟练度达到Lv.1，或携带高级法力药水×1。】",
-            "铁匠说：修到满要三铜。洛婶说：十五铜一瓶。两瓶二十八，省两铜。夜烬数出二十八枚铜币，钱袋里只剩两枚铜币。",
+            "铁匠说：三块铜。修完十成。钱袋里少了三枚铜币。洛婶说：十五铜一瓶。两瓶二十八，省两铜。夜烬数出二十八枚铜币，钱袋里只剩两枚铜币。",
             "夜烬准备继续。",
         ]
     )
@@ -327,6 +342,6 @@ def test_second_chapter_sanitizer_removes_stale_webgame_terms_and_prices():
     assert "掉率基础值15%" not in cleaned
     assert "熟练度" not in cleaned
     assert "清道夫委托已完成" in cleaned
-    assert "修到满要十五铜" in cleaned
+    assert "十五铜" in cleaned
     assert "五铜一瓶，两瓶十铜" in cleaned
     assert "钱袋里还剩五枚铜币" in cleaned

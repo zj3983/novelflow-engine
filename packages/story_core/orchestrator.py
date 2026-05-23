@@ -525,9 +525,11 @@ def _ensure_web_game_outsider_misread(body: str, chapter_number: int) -> str:
 def _ensure_chapter_two_missing_venom_scene(body: str, chapter_number: int) -> str:
     if chapter_number != 2 or not body or "夜烬" not in body:
         return body
+    if any(token in body for token in ("清道夫委托已完成", "委托已提交", "三十枚铜币", "铜币+30")):
+        return body
     has_gap_scene = (
-        any(token in body for token in ("补齐材料", "补齐毒腺", "还差两份", "差两份"))
-        and any(token in body for token in ("获得：灰狼毒腺×2", "灰狼毒腺×2", "两份毒腺"))
+        any(token in body for token in ("补齐材料", "补齐毒腺", "还差两份", "差两份", "凑成十份"))
+        and any(token in body for token in ("获得：灰狼毒腺×2", "灰狼毒腺×2", "两份毒腺", "灰狼毒腺跳到了10份"))
     )
     if has_gap_scene:
         return body
@@ -541,6 +543,8 @@ def _ensure_chapter_two_missing_venom_scene(body: str, chapter_number: int) -> s
 
 def _ensure_web_game_emotion_anchors(body: str, chapter_number: int) -> str:
     if chapter_number < 2 or not body or "夜烬" not in body:
+        return body
+    if any(token in body for token in ("修到满要三铜", "三块铜", "十二铜", "12铜", "二十四铜")):
         return body
     anchors = [
         "夜烬看着钱袋里的铜币少下去，手指停了一下。十五铜修杖，十铜买药，花出去的时候不疼是假的，但法杖真断在坡上，后面只会更亏。",
@@ -566,6 +570,8 @@ def _ensure_web_game_npc_service_boundary(body: str, chapter_number: int) -> str
         token in body
         for token in ("修理铺", "老葛", "十五铜", "只看裂纹和耐久", "不问夜烬从哪儿弄来的毒腺")
     )
+    if any(token in body for token in ("修到满要三铜", "三块铜", "十二铜", "12铜", "二十四铜")):
+        return body
     if has_full_boundary:
         if "洛婶" in body and "洛婶只按清单" not in body:
             return _insert_before_last_paragraph(
@@ -602,6 +608,13 @@ def _sanitize_chapter_two_webgame_terms(body: str, chapter_number: int) -> str:
         "熟练度到十，登记牌就能亮。": "再多练几次，登记牌才可能继续亮下去。",
         "后坡探路登记。条件未满足。需火球熟练度达到Lv.1，或携带高级法力药水×1。": "后坡探路登记。清道夫委托已完成，后坡记录已开放。建议等级Lv.2或组队进入。",
         "修到满要三铜。": "修到满要十五铜。",
+        "三块铜。修完十成。": "十五铜。修完十成。",
+        "钱袋里少了三枚铜币。": "钱袋里少了十五枚铜币。",
+        "12铜/瓶": "5铜/瓶",
+        "二十四铜": "十铜",
+        "三十铜减去三铜，还剩二十七。买两瓶，剩三铜。": "三十铜减去十五铜，还剩十五。买两瓶，剩五铜。",
+        "三十铜减去十五铜，还剩十五。买两瓶，剩三铜。": "三十铜减去十五铜，还剩十五。买两瓶，剩五铜。",
+        "钱袋彻底见底，只剩三枚铜币贴着底。": "钱袋里还剩五枚铜币。",
         "钱袋轻了三分。": "钱袋少了十五枚铜币。",
         "十五铜一瓶。两瓶二十八，省两铜。": "五铜一瓶，两瓶十铜。",
         "数出二十八枚铜币": "数出十枚铜币",
@@ -614,8 +627,8 @@ def _sanitize_chapter_two_webgame_terms(body: str, chapter_number: int) -> str:
     cleaned = body
     for source, target in replacements.items():
         cleaned = cleaned.replace(source, target)
-    has_goal_sequence = all(token in cleaned for token in ("试打后坡", "交委托", "修杖买药", "探路卡住"))
-    if not has_goal_sequence:
+    has_goal_sequence = all(token in cleaned for token in ("试打后坡", "交委托", "修杖买药", "探路"))
+    if not has_goal_sequence and not any(token in cleaned for token in ("登记牌", "后坡探路", "任务牌")):
         line = "他把这一趟在心里过了一遍：试打后坡只补两份毒腺，回村交委托，拿铜币修杖买药，再去登记牌前确认探路提示。走到最后一步，提示还是把他挡在坡口。"
         cleaned = _insert_before_last_paragraph(cleaned, line)
     return cleaned
@@ -1286,6 +1299,22 @@ def _normalize_progression_ledger(ledger: dict) -> None:
         for key in ("guild_attention", "goldfinger_exposure", "system_risk"):
             if key in ledger and ledger[key] not in (None, "", [], {}):
                 pressure[key] = ledger[key]
+        next_pressure = pressure.get("next")
+        if isinstance(next_pressure, list):
+            pressure["next"] = [
+                "后坡探路前置已满足，但等级和补给仍压着风险"
+                if "熟练度" in str(item)
+                else item
+                for item in next_pressure
+            ]
+    if isinstance(economy.get("inventory"), dict):
+        ledger.pop("inventory", None)
+    if economy.get("game_currency") not in (None, "", [], {}):
+        ledger.pop("currency", None)
+    if isinstance(ledger.get("skills"), list):
+        ledger["skills"] = [item for item in ledger["skills"] if "熟练度" not in str(item)]
+        if not ledger["skills"]:
+            ledger.pop("skills", None)
 
 
 def _merge_unique_compact(existing: object, additions: object, *, max_items: int = 8, item_chars: int = 140) -> list[str]:
