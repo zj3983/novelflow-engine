@@ -1919,6 +1919,7 @@ export async function startFileProjectRegenerationJob(
   projectId: string,
   chapterNumber: number,
   variant?: string,
+  guidance?: string,
 ): Promise<GenerationJobResponse> {
   if (!isFileProjectId(projectId)) {
     throw new Error("regenerate_chapter_only_supports_file_projects");
@@ -1926,7 +1927,7 @@ export async function startFileProjectRegenerationJob(
   return (await tryFetchJson(`${fileProjectPath(projectId)}/generation-jobs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chapter_number: chapterNumber, variant }),
+    body: JSON.stringify({ chapter_number: chapterNumber, variant, guidance }),
   })) as GenerationJobResponse;
 }
 
@@ -1946,6 +1947,7 @@ export async function regenerateFileProjectChapter(
   projectId: string,
   chapterNumber: number,
   variant?: string,
+  guidance?: string,
 ): Promise<{ project: ProjectResponse; story: StoryResponse; generated: Record<string, unknown> }> {
   if (!isFileProjectId(projectId)) {
     throw new Error("regenerate_chapter_only_supports_file_projects");
@@ -1953,7 +1955,7 @@ export async function regenerateFileProjectChapter(
   return (await tryFetchJson(`${fileProjectPath(projectId)}/regenerate-chapter`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chapter_number: chapterNumber, variant }),
+    body: JSON.stringify({ chapter_number: chapterNumber, variant, guidance }),
   }, 900000)) as { project: ProjectResponse; story: StoryResponse; generated: Record<string, unknown> };
 }
 

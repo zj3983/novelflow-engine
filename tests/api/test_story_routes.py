@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
+from apps.api.routes import file_projects
 from apps.api.routes.stories import _quality_context
 
 
@@ -398,6 +399,69 @@ def test_file_project_regenerate_rejects_frozen_chapter(tmp_path, monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["detail"] == "chapter_frozen:1:regenerate"
+
+
+def test_file_project_regenerate_accepts_temporary_guidance(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "guided-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-guided-file",
+        state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_regenerate(self, chapter_number, engine=None, *, variant=None, guidance=None, commit_message=None):
+        captured["chapter_number"] = chapter_number
+        captured["variant"] = variant
+        captured["guidance"] = guidance
+        return {"schema_version": "file-project-regenerate/v1", "chapter_number": chapter_number, "chapter_title": "Guided"}
+
+    monkeypatch.setattr("packages.story_core.file_project_store.FileProjectStore.regenerate_chapter", fake_regenerate)
+
+    response = client.post(
+        "/file-projects/p-guided-file/regenerate-chapter",
+        json={"chapter_number": 1, "variant": "progression-lead", "guidance": "keep the dissection ledger"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "chapter_number": 1,
+        "variant": "progression-lead",
+        "guidance": "keep the dissection ledger",
+    }
+
+
+def test_file_project_generation_job_accepts_temporary_guidance(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "guided-job-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-guided-job-file",
+        state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
+    )
+    submitted: dict[str, object] = {}
+
+    def fake_submit(fn, job_id, project_id, **kwargs):
+        submitted["fn"] = fn
+        submitted["job_id"] = job_id
+        submitted["project_id"] = project_id
+        submitted["kwargs"] = kwargs
+
+    monkeypatch.setattr(file_projects._file_generation_executor, "submit", fake_submit)
+
+    response = client.post(
+        "/file-projects/p-guided-job-file/generation-jobs",
+        json={"chapter_number": 1, "guidance": "use dissection guidance"},
+    )
+
+    assert response.status_code == 200
+    assert submitted["project_id"] == "p-guided-job-file"
+    assert submitted["kwargs"] == {
+        "chapter_number": 1,
+        "variant": None,
+        "guidance": "use dissection guidance",
+    }
 
 
 def test_project_manual_segment_draft_replaces_one_paragraph_only():

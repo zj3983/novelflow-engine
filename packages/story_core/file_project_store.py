@@ -1157,6 +1157,7 @@ class FileProjectStore:
         engine: Any | None = None,
         *,
         variant: str | None = None,
+        guidance: str | None = None,
         commit_message: str | None = None,
     ) -> dict[str, Any]:
         from packages.story_core.engine import StoryEngine
@@ -1188,6 +1189,9 @@ class FileProjectStore:
         # so it is an explicit later pass instead of part of default retry.
         variant_payload.setdefault("skip_style_adapt", True)
         variant_payload.setdefault("skip_expansion", False)
+        guidance_text = self._compact_text(guidance, 1200)
+        if guidance_text:
+            variant_payload["rewrite_guidance"] = {"source": "book_dissection", "text": guidance_text}
         ledger["simulation_variant"] = variant_payload
         base_state["progression_ledger"] = ledger
 

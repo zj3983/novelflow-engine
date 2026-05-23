@@ -49,6 +49,7 @@ export default function WritePage() {
   const [generatingNext, setGeneratingNext] = useState(false);
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
+  const [temporaryGuidance, setTemporaryGuidance] = useState("");
 
   useEffect(() => {
     setPage(1);
@@ -59,6 +60,28 @@ export default function WritePage() {
   const chapter = useMemo(() => {
     return history.find((bundle) => bundle.chapter_number === requestedChapter) ?? history.at(-1) ?? null;
   }, [history, requestedChapter]);
+  const guidanceStorageKey = chapter ? `book-dissection-guidance:${projectId}:${chapter.chapter_number}` : "";
+
+  useEffect(() => {
+    if (!chapter || searchParams?.get("guidance") !== "dissection") {
+      setTemporaryGuidance("");
+      return;
+    }
+    try {
+      const raw = window.sessionStorage.getItem(guidanceStorageKey);
+      const payload = raw ? JSON.parse(raw) : null;
+      setTemporaryGuidance(typeof payload?.guidance === "string" ? payload.guidance : "");
+    } catch {
+      setTemporaryGuidance("");
+    }
+  }, [chapter, guidanceStorageKey, searchParams]);
+
+  function clearTemporaryGuidance() {
+    if (guidanceStorageKey) {
+      window.sessionStorage.removeItem(guidanceStorageKey);
+    }
+    setTemporaryGuidance("");
+  }
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredBundles = useMemo(() => {
@@ -86,7 +109,7 @@ export default function WritePage() {
     setRegenerateStatus("排队中");
     setRegenerateError(null);
     try {
-      const job = await startFileProjectRegenerationJob(projectId, chapter.chapter_number);
+      const job = await startFileProjectRegenerationJob(projectId, chapter.chapter_number, undefined, temporaryGuidance || undefined);
       let currentJob = job;
       setRegenerateStatus(currentJob.progress || currentJob.status);
       while (currentJob.status === "queued" || currentJob.status === "running") {
@@ -97,6 +120,7 @@ export default function WritePage() {
       if (currentJob.status === "failed") {
         throw new Error(currentJob.error || "regenerate_failed");
       }
+      clearTemporaryGuidance();
       refresh();
     } catch (err) {
       setRegenerateError(err instanceof Error ? err.message : String(err));
@@ -235,6 +259,24 @@ export default function WritePage() {
             </header>
             {(regenerating || generatingNext) && regenerateStatus ? <p className="ws-card__hint">任务进度：{regenerateStatus}</p> : null}
             {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
+            {temporaryGuidance ? (
+              <section className="ws-card">
+                <div className="ws-section-head">
+                  <div>
+                    <p className="ws-card__title">本次重写提示</p>
+                    <p className="ws-card__hint">来自拆书报告，只影响这次重新推演，不会写入作者约束。</p>
+                  </div>
+                  <button className="ws-btn ws-btn--sm" type="button" onClick={clearTemporaryGuidance}>
+                    清除
+                  </button>
+                </div>
+                <ul className="ws-plain-list">
+                  {temporaryGuidance.split("\n").map((line, index) => (
+                    <li key={index}>{line}</li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
             <div className="ws-reader__body">
               {chapter.body.split(/\n{2,}/).map((paragraph, index) => (
                 <p key={index}>{paragraph}</p>

@@ -30,11 +30,13 @@ _file_generation_jobs_lock = Lock()
 class FileProjectRegenerateRequest(BaseModel):
     chapter_number: int
     variant: str | None = None
+    guidance: str | None = None
 
 
 class FileProjectGenerationJobRequest(BaseModel):
     chapter_number: int | None = None
     variant: str | None = None
+    guidance: str | None = None
 
 
 class BookDissectionReferenceRequest(BaseModel):
@@ -176,7 +178,14 @@ def _reconcile_file_generation_job_locked(job: dict[str, object]) -> None:
             _active_file_generation_jobs.pop(story_id, None)
 
 
-def _run_file_generation_job(job_id: str, project_id: str, *, chapter_number: int | None = None, variant: str | None = None) -> None:
+def _run_file_generation_job(
+    job_id: str,
+    project_id: str,
+    *,
+    chapter_number: int | None = None,
+    variant: str | None = None,
+    guidance: str | None = None,
+) -> None:
     def report_progress(message: str) -> None:
         _update_file_generation_job(job_id, status="running", progress=message)
 
@@ -186,7 +195,7 @@ def _run_file_generation_job(job_id: str, project_id: str, *, chapter_number: in
         store = _store_for(project_id)
         with generation_progress(report_progress):
             generated = (
-                store.regenerate_chapter(chapter_number, variant=variant)
+                store.regenerate_chapter(chapter_number, variant=variant, guidance=guidance)
                 if isinstance(chapter_number, int) and chapter_number > 0
                 else store.generate_next_chapter()
             )
@@ -359,7 +368,7 @@ def init_file_project_routes() -> APIRouter:
     def regenerate_file_project_chapter(project_id: str, payload: FileProjectRegenerateRequest) -> dict[str, Any]:
         store = _store_for(project_id)
         try:
-            generated = store.regenerate_chapter(payload.chapter_number, variant=payload.variant)
+            generated = store.regenerate_chapter(payload.chapter_number, variant=payload.variant, guidance=payload.guidance)
         except ValueError as exc:
             _raise_file_project_error(exc)
         return {
@@ -375,6 +384,7 @@ def init_file_project_routes() -> APIRouter:
         story_id = _story_id_for(store)
         target_chapter = payload.chapter_number if payload and isinstance(payload.chapter_number, int) else None
         variant = payload.variant if payload else None
+        guidance = payload.guidance if payload else None
         with _file_generation_jobs_lock:
             active_job_id = _active_file_generation_jobs.get(story_id)
             if active_job_id:
@@ -395,6 +405,7 @@ def init_file_project_routes() -> APIRouter:
                 "chapter_number": None,
                 "target_chapter": target_chapter,
                 "variant": variant or "",
+                "guidance": guidance or "",
                 "starting_chapter": int(store.summary().get("current_chapter") or 0),
                 "error": "",
                 "created_at": now,
@@ -404,7 +415,14 @@ def init_file_project_routes() -> APIRouter:
             _active_file_generation_jobs[story_id] = job_id
             response = _file_generation_job_response(job)
 
-        _file_generation_executor.submit(_run_file_generation_job, job_id, project_id, chapter_number=target_chapter, variant=variant)
+        _file_generation_executor.submit(
+            _run_file_generation_job,
+            job_id,
+            project_id,
+            chapter_number=target_chapter,
+            variant=variant,
+            guidance=guidance,
+        )
         return response
 
     @router.get("/file-projects/{project_id}/generation-jobs/{job_id}")

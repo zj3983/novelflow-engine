@@ -71,6 +71,24 @@ function ReportPanel({ report }: { report: BookDissectionReport | null }) {
   );
 }
 
+function buildRewriteGuidance(report: BookDissectionReport): string {
+  const preferred = ["主角进展", "冲突推进", "下一版改法", "可写入提示词"];
+  const lines: string[] = [];
+  for (const key of preferred) {
+    for (const item of report.sections[key] ?? []) {
+      if (item.trim() && !lines.includes(item.trim())) lines.push(item.trim());
+    }
+  }
+  if (lines.length === 0) {
+    for (const items of Object.values(report.sections)) {
+      for (const item of items) {
+        if (item.trim() && !lines.includes(item.trim())) lines.push(item.trim());
+      }
+    }
+  }
+  return lines.slice(0, 8).join("\n");
+}
+
 export default function DissectionPage() {
   const { project, story, error, encodedProjectId } = useProjectWorkspace();
   const [mode, setMode] = useState<DissectionMode>("reference");
@@ -134,6 +152,21 @@ export default function DissectionPage() {
 
   const canRunReference = referenceText.trim().length > 0;
   const canRunProject = Boolean(project?.project_id && isFileProject && hasValidChapter);
+  const rewriteGuidance = report && mode === "project" ? buildRewriteGuidance(report) : "";
+
+  function useReportForRewrite() {
+    if (!project?.project_id || !chapterNumber || !rewriteGuidance) return;
+    const storageKey = `book-dissection-guidance:${project.project_id}:${chapterNumber}`;
+    window.sessionStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        project_id: project.project_id,
+        chapter_number: chapterNumber,
+        guidance: rewriteGuidance,
+      }),
+    );
+    window.location.href = `/projects/${encodedProjectId}/write?chapter=${chapterNumber}&guidance=dissection`;
+  }
 
   return (
     <div className="ws-page">
@@ -237,6 +270,11 @@ export default function DissectionPage() {
               >
                 {running ? "分析中..." : "开始分析"}
               </button>
+              {mode === "project" && rewriteGuidance ? (
+                <button className="ws-btn" type="button" onClick={useReportForRewrite}>
+                  用于重写本章
+                </button>
+              ) : null}
               {message ? <span className="ws-toolbar__meta">{message}</span> : null}
             </div>
           </section>

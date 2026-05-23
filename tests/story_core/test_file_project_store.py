@@ -479,6 +479,57 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
     assert (root / "chapters" / "0001-背包快满了.md").exists()
 
 
+def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    store.write_chapter(chapter_number=1, title="Old One", body="Old body kept costs visible.", summary="Old summary.")
+    guidance = "Use the dissection report: keep exp 30/100 and do not jump to class change."
+    seen_guidance: list[dict] = []
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            temporary = story.progression_ledger["simulation_variant"]["rewrite_guidance"]
+            seen_guidance.append(temporary)
+            assert temporary["source"] == "book_dissection"
+            assert temporary["text"] == guidance
+            updated_story = story.model_copy(update={"current_chapter": 1})
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="Guided One",
+                body="Night Ember keeps exp 30/100 visible and stays away from class change.",
+                cadence="manual",
+                next_outline="Continue the guided path.",
+                updated_story=updated_story,
+                chapter_summary={
+                    "chapter_title": "Guided One",
+                    "cadence": "manual",
+                    "summary": "Guidance shaped the rewrite.",
+                    "facts": ["guided rewrite"],
+                    "next_focus": "Continue the guided path.",
+                    "primary_conflict": "cost",
+                    "secondary_conflict": "visibility",
+                    "event_beat": "guided",
+                },
+            )
+
+    regenerated = store.regenerate_chapter(1, engine=FakeEngine(), guidance=guidance)
+
+    assert seen_guidance == [{"source": "book_dissection", "text": guidance}]
+    assert regenerated["simulation_variant"]["rewrite_guidance"]["text"] == guidance
+    state_after = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    assert "rewrite_guidance" not in state_after.get("progression_ledger", {}).get("simulation_variant", {})
+
+
 def test_file_project_store_reads_exported_layout(tmp_path):
     root = tmp_path / "novel"
     (root / ".story-system" / "chapters").mkdir(parents=True)

@@ -9,6 +9,9 @@ function cn(codes: number[]): string {
 
 const ANALYZE = cn([0x5f00, 0x59cb, 0x5206, 0x6790]);
 const PROJECT_MODE = cn([0x672c, 0x4e66, 0x4f53, 0x68c0]);
+const USE_FOR_REWRITE = cn([0x7528, 0x4e8e, 0x91cd, 0x5199, 0x672c, 0x7ae0]);
+const TEMPORARY_REWRITE_HINT = cn([0x672c, 0x6b21, 0x91cd, 0x5199, 0x63d0, 0x793a]);
+const REGENERATE_THIS_CHAPTER = cn([0x91cd, 0x65b0, 0x63a8, 0x6f14, 0x672c, 0x7ae0]);
 const PROGRESS_LINE = cn([
   0x672c, 0x7ae0, 0x8fdb, 0x5c55, 0x5df2, 0x7ecf, 0x843d, 0x5230, 0x5177, 0x4f53, 0x8d26, 0x672c,
   0xff1a, 0x7ecf, 0x9a8c, 0x33, 0x30, 0x2f, 0x31, 0x30, 0x30, 0xff0c, 0x751f, 0x547d, 0x34,
@@ -166,4 +169,43 @@ test("dissection page can inspect a project chapter without empty filler", async
   await expect(page.getByText(CONFLICT_LINE)).toBeVisible();
   await expect(page.getByText(NO_HIT)).toHaveCount(0);
   await expect(page.getByText(NO_HARD_ERROR)).toHaveCount(0);
+});
+
+test("dissection guidance can be used for a one-off chapter rewrite", async ({ page }) => {
+  await proxyDissectionRoutes(page);
+  let requestedGuidance = "";
+  await page.route("**/file-projects/file%3Adissection-smoke/generation-jobs", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    const payload = route.request().postDataJSON() as { chapter_number?: number; guidance?: string };
+    expect(payload.chapter_number).toBe(1);
+    requestedGuidance = payload.guidance || "";
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
+      body: JSON.stringify({
+        job_id: "fgj-guided",
+        story_id: STORY_ID,
+        status: "completed",
+        progress: "generation completed",
+        chapter_number: 1,
+        error: "",
+        created_at: "2026-05-23T00:00:00Z",
+        updated_at: "2026-05-23T00:00:00Z",
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${encodeURIComponent(PROJECT_ID)}/dissection`, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: PROJECT_MODE }).click();
+  await page.getByRole("button", { name: ANALYZE }).click();
+  await expect(page.getByText(PROGRESS_LINE)).toBeVisible();
+
+  await page.getByRole("button", { name: USE_FOR_REWRITE }).click();
+  await expect(page).toHaveURL(new RegExp(`/write\\?chapter=1&guidance=dissection$`));
+  await expect(page.getByText(TEMPORARY_REWRITE_HINT)).toBeVisible();
+  await page.getByRole("button", { name: REGENERATE_THIS_CHAPTER }).click();
+
+  expect(requestedGuidance).toContain(PROGRESS_LINE);
+  expect(requestedGuidance).toContain(CONFLICT_LINE);
+  expect(requestedGuidance).toContain(NEXT_LINE);
 });
