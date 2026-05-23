@@ -81,7 +81,7 @@ def test_scene_cards_use_default_game_blueprint_when_seed_lacks_blueprint():
     assert any("价格" in item and "批次" in item for item in market_card.must_show)
 
 
-def test_game_opening_scene_cards_inherit_director_wow_and_end_hook():
+def test_game_opening_scene_cards_inherit_world_simulation_ticks():
     story = StoryState(
         story_id="s-game-director-scenes",
         outline="网游开服，苏叶以夜烬身份验证千倍爆率。",
@@ -97,7 +97,13 @@ def test_game_opening_scene_cards_inherit_director_wow_and_end_hook():
 
     verification_card = next(card for card in cards if card.template_id == "small_verification")
     next_step_card = next(card for card in cards if card.template_id == "chapter_1_next_step")
-    assert any("wow_beat" in item for item in verification_card.must_show)
-    assert any("2-8倍" in item for item in verification_card.must_show)
-    assert any("explicit_chapter_end_hook" in item for item in next_step_card.must_show)
-    assert any("reality_game_bridge" in item for item in next_step_card.must_show)
+    verification_surface = "\n".join(verification_card.must_show)
+    next_step_surface = "\n".join(next_step_card.must_show)
+
+    assert "simulation tick" in verification_surface
+    assert "cost=" in verification_surface
+    assert "visible_to=" in verification_surface
+    assert "hidden_delta=" in verification_surface
+    assert "wow_beat" not in verification_surface
+    assert "explicit_chapter_end_hook" not in next_step_surface
+    assert "reality_game_bridge" not in next_step_surface

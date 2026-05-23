@@ -73,6 +73,22 @@ def test_game_world_simulator_exports_systemic_state_and_visibility_layers():
     assert any("cannot know hidden talent" in item for item in result["visibility_layers"]["npc"])
 
 
+def test_game_world_simulator_exports_novel_simulation_ticks_not_plot_rules():
+    result = simulate_game_world(_game_story(), 1)
+
+    ticks = result["simulation_ticks"]
+
+    assert ticks
+    assert all({"actor", "action", "cost", "result", "visible_to", "hidden_delta", "next_pressure"} <= set(tick) for tick in ticks)
+    assert any(tick["cost"].get("mp") for tick in ticks)
+    assert any(tick["result"].get("inventory_delta") for tick in ticks)
+    assert any(tick["hidden_delta"].get("chaos_seed_anomaly_score") for tick in ticks)
+    serialized = " ".join(str(tick) for tick in ticks)
+    assert "爽点" not in serialized
+    assert "钩子" not in serialized
+    assert "节奏" not in serialized
+
+
 def test_game_world_simulator_rotates_opening_variant():
     result = simulate_game_world(
         _game_story(),

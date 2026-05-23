@@ -421,6 +421,20 @@ def _game_world_surface_lines(simulation: dict[str, Any]) -> list[str]:
     if not isinstance(simulation, dict) or not simulation.get("ticks"):
         return []
     lines: list[str] = []
+    simulation_ticks = simulation.get("simulation_ticks") if isinstance(simulation.get("simulation_ticks"), list) else []
+    for tick in simulation_ticks:
+        if not isinstance(tick, dict):
+            continue
+        lines.append(
+            "simulation tick: "
+            f"actor={tick.get('actor')}; "
+            f"action={tick.get('action')}; "
+            f"cost={tick.get('cost')}; "
+            f"result={tick.get('result')}; "
+            f"visible_to={tick.get('visible_to')}; "
+            f"hidden_delta={tick.get('hidden_delta')}; "
+            f"next_pressure={tick.get('next_pressure')}."
+        )
     for tick in simulation.get("ticks", []):
         if not isinstance(tick, dict) or tick.get("kind") != "combat":
             continue
@@ -649,11 +663,12 @@ def select_scene_cards(
         if isinstance(game_world, dict):
             must_show.extend(_game_world_surface_lines(game_world))
         event_plan = simulation_plan.get("event_plan", {}) if isinstance(simulation_plan.get("event_plan"), dict) else {}
-        if event.template_id == "small_verification":
+        has_simulation_ticks = isinstance(game_world, dict) and bool(game_world.get("simulation_ticks"))
+        if event.template_id == "small_verification" and not has_simulation_ticks:
             for key in ("wow_beat", "escalation_break"):
                 if event_plan.get(key):
                     must_show.append(str(event_plan[key]))
-        if event.template_id == "chapter_1_next_step":
+        if event.template_id == "chapter_1_next_step" and not has_simulation_ticks and chapter_number != 1:
             for key in ("core_mystery_reinforcement", "explicit_chapter_end_hook", "reality_game_bridge"):
                 if event_plan.get(key):
                     must_show.append(str(event_plan[key]))

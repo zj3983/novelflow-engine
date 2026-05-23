@@ -60,6 +60,29 @@ def test_scene_cards_turn_world_events_into_writeable_scenes():
     assert all("爽点" in " ".join(card.must_not_explain) for card in scene_cards)
 
 
+def test_scene_cards_surface_simulation_ticks_as_actions_not_author_rules():
+    story = StoryState(
+        story_id="s-scene-ticks",
+        outline="网游开服，主角先小额验证千倍爆率。",
+        genre="网游",
+        style="白描升级流",
+        characters=[CharacterState(name="苏叶", role="主角", game_id="夜烬")],
+    )
+    seed = build_chapter_seed(story, 1)
+    plan = build_chapter_simulation_plan(story, 1, chapter_seed=seed).model_dump()
+    events = simulate_world_events(story, 1, chapter_seed=seed, simulation_plan=plan)
+
+    scene_cards = select_scene_cards(events, chapter_seed=seed, simulation_plan=plan)
+    surface = "\n".join("\n".join(card.must_show) for card in scene_cards)
+
+    assert "simulation tick" in surface
+    assert "cost=" in surface
+    assert "visible_to=" in surface
+    assert "hidden_delta=" in surface
+    assert "爽点" not in surface
+    assert "钩子" not in surface
+
+
 def test_scene_cards_do_not_surface_question_mark_identity_placeholders():
     story = StoryState(
         story_id="s-scene-cards-clean-id",

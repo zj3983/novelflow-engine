@@ -102,6 +102,90 @@ def _opening_combat_ticks(game_id: str, *, variant: str = "boundary-combat-cost"
     ]
 
 
+def _novel_simulation_ticks(
+    ticks: list[dict[str, Any]],
+    systemic: dict[str, Any],
+    *,
+    game_id: str,
+    chapter_number: int,
+) -> list[dict[str, Any]]:
+    """Normalize mechanics into action ticks a novelist can dramatize.
+
+    The old scene layer mixed plot advice with mechanics. These ticks keep the
+    simulation readable as cause -> cost -> visible result -> hidden pressure.
+    """
+
+    ledger_delta = systemic.get("ledger_delta") if isinstance(systemic.get("ledger_delta"), dict) else {}
+    total_hidden_delta = ledger_delta.get("hidden_system_delta") if isinstance(ledger_delta.get("hidden_system_delta"), dict) else {}
+    next_pressure = ledger_delta.get("next_pressure") if isinstance(ledger_delta.get("next_pressure"), list) else []
+    normalized: list[dict[str, Any]] = []
+    combat_seen = 0
+    for tick in ticks:
+        if not isinstance(tick, dict):
+            continue
+        kind = str(tick.get("kind") or "")
+        result: dict[str, Any] = {}
+        hidden_delta: dict[str, Any] = {}
+        if kind == "combat":
+            combat_seen += 1
+            drop_roll = tick.get("drop_roll") if isinstance(tick.get("drop_roll"), dict) else {}
+            actual_drop = drop_roll.get("actual") if isinstance(drop_roll.get("actual"), dict) else {}
+            result = {
+                "state_after": tick.get("state_after", {}),
+                "inventory_delta": actual_drop,
+                "world_noise": tick.get("world_noise", []),
+            }
+            anomaly_score = max(0, sum(int(value or 0) for value in actual_drop.values()) - 1)
+            if anomaly_score:
+                hidden_delta = {"chaos_seed_anomaly_score": anomaly_score}
+        elif kind == "npc_service":
+            result = {
+                "service_state": tick.get("state_delta", {}),
+                "knowledge_scope": tick.get("knowledge_scope", []),
+            }
+        else:
+            result = {"state_delta": tick.get("state_delta", {})}
+
+        normalized.append(
+            {
+                "tick_id": tick.get("tick_id") or f"c{chapter_number}-tick-{len(normalized) + 1}",
+                "kind": kind or "world",
+                "actor": tick.get("actor") or game_id,
+                "action": tick.get("action") or "",
+                "location": tick.get("location") or "",
+                "cost": tick.get("cost") if isinstance(tick.get("cost"), dict) else {},
+                "result": result,
+                "visible_to": tick.get("visible_to") if isinstance(tick.get("visible_to"), list) else [game_id],
+                "hidden_delta": hidden_delta,
+                "next_pressure": next_pressure,
+            }
+        )
+
+    if not normalized:
+        normalized.append(
+            {
+                "tick_id": f"c{chapter_number}-ledger-inherit",
+                "kind": "ledger_inherit",
+                "actor": game_id,
+                "action": "inherit current game ledger before choosing the next concrete move",
+                "location": "",
+                "cost": {},
+                "result": {"world_state": systemic.get("final_state", {})},
+                "visible_to": [game_id],
+                "hidden_delta": total_hidden_delta,
+                "next_pressure": next_pressure,
+            }
+        )
+    elif total_hidden_delta and combat_seen:
+        # Keep aggregate hidden pressure available without forcing every tick to
+        # expose it. The writer should know it exists; outside actors should not.
+        normalized[-1]["hidden_delta"] = {
+            **(normalized[-1].get("hidden_delta") if isinstance(normalized[-1].get("hidden_delta"), dict) else {}),
+            "aggregate_hidden_system_delta": total_hidden_delta,
+        }
+    return normalized
+
+
 def simulate_game_world(
     story: StoryState,
     chapter_number: int,
@@ -124,6 +208,12 @@ def simulate_game_world(
             "schema_version": "game-world-simulation/v1",
             "chapter_number": chapter_number,
             "ticks": [],
+            "simulation_ticks": _novel_simulation_ticks(
+                [],
+                systemic,
+                game_id=game_id,
+                chapter_number=chapter_number,
+            ),
             "aggregate": {},
             "systemic_simulation": systemic,
             "world_state": systemic["final_state"],
@@ -190,6 +280,12 @@ def simulate_game_world(
         "chapter_number": 1,
         "simulation_variant": variant,
         "ticks": ticks,
+        "simulation_ticks": _novel_simulation_ticks(
+            ticks,
+            systemic,
+            game_id=game_id,
+            chapter_number=1,
+        ),
         "aggregate": {
             "level": 1,
             "exp": "30/100",
