@@ -204,16 +204,36 @@ def simulate_game_world(
             variant=variant,
             ticks=[],
         )
+        simulation_ticks = _novel_simulation_ticks(
+            [],
+            systemic,
+            game_id=game_id,
+            chapter_number=chapter_number,
+        )
+        chapter_goal = ""
+        if isinstance(simulation_plan, dict):
+            chapter_goal = str(simulation_plan.get("chapter_goal") or "").strip()
+        if chapter_goal:
+            ledger_delta = systemic.get("ledger_delta") if isinstance(systemic.get("ledger_delta"), dict) else {}
+            simulation_ticks.append(
+                {
+                    "tick_id": f"c{chapter_number}-chapter-goal",
+                    "kind": "chapter_goal",
+                    "actor": game_id,
+                    "action": chapter_goal,
+                    "location": "",
+                    "cost": {},
+                    "result": {"goal_pressure": chapter_goal},
+                    "visible_to": [game_id],
+                    "hidden_delta": {},
+                    "next_pressure": ledger_delta.get("next_pressure", []),
+                }
+            )
         return {
             "schema_version": "game-world-simulation/v1",
             "chapter_number": chapter_number,
             "ticks": [],
-            "simulation_ticks": _novel_simulation_ticks(
-                [],
-                systemic,
-                game_id=game_id,
-                chapter_number=chapter_number,
-            ),
+            "simulation_ticks": simulation_ticks,
             "aggregate": {},
             "systemic_simulation": systemic,
             "world_state": systemic["final_state"],

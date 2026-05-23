@@ -128,6 +128,9 @@ def _scene_card_writing_protocol(scene_cards: list[dict[str, Any]] | None) -> st
     lines = [
         "按 scene_cards 顺序写正文；每张卡必须成为一个可读场景或连续段落，不要写成规则解释。",
         "每个场景至少包含：地点、视角角色、行动选择、即时阻力、可见反馈和进入下一场的压力。",
+        "第2章起若有命名NPC重点出场，必须在同一场里写清地点、服务/价格或前置条件、口吻/利益诉求、信息边界；NPC只按岗位知道柜台、库存、任务或修理记录。",
+        "至少写一次外人误判：旁人只能看见排队、修理、买药、登记、刷怪或运气好，不能知道隐藏机制、完整掉落和主角账本。",
+        "段首不要反复使用“这一次、下一刻、很快、片刻后、转眼、眼前”；多用动作、物件、队伍、价牌、背包格或NPC台词自然起段。",
     ]
     for index, card in enumerate(scene_cards, start=1):
         if not isinstance(card, dict):
@@ -394,7 +397,16 @@ def _soften_repeated_paragraph_openers(body: str) -> str:
     counts: dict[str, int] = {}
     run_opener = ""
     run_count = 0
-    prefixes = ("这一次，", "下一刻，", "很快，", "片刻后，", "转眼，", "眼前，")
+    prefixes = (
+        "夜烬停了停，",
+        "他把面板关掉，",
+        "柜台前的人往前挪了一步，",
+        "背包格子亮了一下，",
+        "旁边有人低声抱怨，",
+        "任务牌被风吹得轻轻一晃，",
+        "钱袋在掌心沉了一下，",
+        "法杖磕在石阶边，",
+    )
     prefix_index = 0
     softened: list[str] = []
 
@@ -916,7 +928,10 @@ def _apply_systemic_ledger_delta(story: StoryState, ledger_delta: dict) -> None:
 
     market_delta = ledger_delta.get("market_delta")
     if isinstance(market_delta, dict) and market_delta:
-        market = ledger.setdefault("market", {}).setdefault("newbie_materials", {})
+        market_root = ledger.get("market") if isinstance(ledger.get("market"), dict) else {}
+        ledger["market"] = market_root
+        market = market_root.get("newbie_materials") if isinstance(market_root.get("newbie_materials"), dict) else {}
+        market_root["newbie_materials"] = market
         if "material_supply" in market_delta:
             market["supply"] = _add_int(market.get("supply"), market_delta.get("material_supply"))
         if market_delta.get("price_copper") not in (None, "", [], {}):
@@ -924,8 +939,10 @@ def _apply_systemic_ledger_delta(story: StoryState, ledger_delta: dict) -> None:
 
     hidden_delta = ledger_delta.get("hidden_system_delta")
     if isinstance(hidden_delta, dict) and hidden_delta:
-        systems = ledger.setdefault("systems", {})
-        chaos = systems.setdefault("chaos_seed", {})
+        systems = ledger.get("systems") if isinstance(ledger.get("systems"), dict) else {}
+        ledger["systems"] = systems
+        chaos = systems.get("chaos_seed") if isinstance(systems.get("chaos_seed"), dict) else {}
+        systems["chaos_seed"] = chaos
         if hidden_delta.get("chaos_seed_anomaly_score") not in (None, "", [], {}):
             chaos["anomaly_score"] = _add_int(chaos.get("anomaly_score"), hidden_delta["chaos_seed_anomaly_score"])
 
@@ -952,7 +969,8 @@ def apply_simulated_state_deltas(
     """Persist state changes created by the simulation layer."""
 
     for delta in [*_collect_state_deltas(world_events), *_collect_state_deltas(scene_cards)]:
-        _apply_ledger_updates(story, delta)
+        ledger_update = {key: value for key, value in delta.items() if key != "game_world_simulation"}
+        _apply_ledger_updates(story, ledger_update)
         _apply_systemic_ledger_delta(story, _systemic_ledger_delta(delta))
     _sync_character_game_panels(story, chapter_number)
 

@@ -332,7 +332,10 @@ def simulate_world_events(
                     action="继承上一章等级、职业、装备、库存和货币账本继续行动。",
                     visible_to=[protagonist],
                     consequences=["本章所有收益必须从既有账本变化而来。"],
-                    state_delta=story.progression_ledger,
+                    state_delta={
+                        **(story.progression_ledger if isinstance(story.progression_ledger, dict) else {}),
+                        "game_world_simulation": game_world,
+                    },
                     prose_priority=10,
                 ),
                 _event(
@@ -418,15 +421,18 @@ def _scene_texture(template_id: str) -> dict[str, Any]:
 
 
 def _game_world_surface_lines(simulation: dict[str, Any]) -> list[str]:
-    if not isinstance(simulation, dict) or not simulation.get("ticks"):
+    if not isinstance(simulation, dict):
+        return []
+    simulation_ticks = simulation.get("simulation_ticks") if isinstance(simulation.get("simulation_ticks"), list) else []
+    if not simulation.get("ticks") and not simulation_ticks:
         return []
     lines: list[str] = []
-    simulation_ticks = simulation.get("simulation_ticks") if isinstance(simulation.get("simulation_ticks"), list) else []
     for tick in simulation_ticks:
         if not isinstance(tick, dict):
             continue
         lines.append(
             "simulation tick: "
+            f"kind={tick.get('kind')}; "
             f"actor={tick.get('actor')}; "
             f"action={tick.get('action')}; "
             f"cost={tick.get('cost')}; "

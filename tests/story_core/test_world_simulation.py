@@ -83,6 +83,44 @@ def test_scene_cards_surface_simulation_ticks_as_actions_not_author_rules():
     assert "钩子" not in surface
 
 
+def test_later_game_chapters_keep_world_simulation_in_scene_cards():
+    story = StoryState(
+        story_id="s-later-scene-ticks",
+        outline="网游开服，夜烬低调滚雪球。",
+        genre="网游",
+        style="白描升级流",
+        characters=[CharacterState(name="苏叶", role="主角", game_id="夜烬")],
+        progression_ledger={
+            "protagonist": {
+                "game_id": "夜烬",
+                "level": "Lv.1",
+                "exp": "30/100",
+                "hp": "42/100",
+                "mp": "0/60",
+            },
+            "economy": {
+                "game_currency": "0铜",
+                "inventory": {"灰狼毒腺": 8, "粗糙狼皮": 7},
+            },
+        },
+    )
+    seed = build_chapter_seed(story, 2)
+    plan = build_chapter_simulation_plan(story, 2, chapter_seed=seed).model_dump()
+    events = simulate_world_events(story, 2, chapter_seed=seed, simulation_plan=plan)
+
+    ledger_event = next(event for event in events if event.event_id == "c2-inherit-ledger")
+    game_world = ledger_event.state_delta["game_world_simulation"]
+    scene_cards = select_scene_cards(events, chapter_seed=seed, simulation_plan=plan)
+    surface = "\n".join("\n".join(card.must_show) for card in scene_cards)
+
+    assert game_world["simulation_ticks"]
+    assert "simulation tick" in surface
+    assert "ledger_inherit" in surface
+    assert "chapter_goal" in surface
+    assert "cost=" in surface
+    assert "visible_to=" in surface
+
+
 def test_scene_cards_do_not_surface_question_mark_identity_placeholders():
     story = StoryState(
         story_id="s-scene-cards-clean-id",
