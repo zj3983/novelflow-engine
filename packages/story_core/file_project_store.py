@@ -269,6 +269,38 @@ class FileProjectStore:
             sanitized["chapter_summaries"] = summaries
         return sanitized
 
+    def _strip_temporary_generation_fields(self, state: dict[str, Any]) -> dict[str, Any]:
+        stripped = dict(state)
+        ledger = stripped.get("progression_ledger")
+        if not isinstance(ledger, dict):
+            return stripped
+        ledger = dict(ledger)
+        variant = ledger.get("simulation_variant")
+        if isinstance(variant, dict) and "rewrite_guidance" in variant:
+            variant = dict(variant)
+            variant.pop("rewrite_guidance", None)
+            ledger["simulation_variant"] = variant
+            stripped["progression_ledger"] = ledger
+        return stripped
+
+    def _usable_bundle_state(self, updated_story: Any, current_state: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(updated_story, dict) or not updated_story:
+            return current_state
+        if updated_story.get("story_id") != current_state.get("story_id"):
+            return current_state
+        has_runtime_state = any(
+            isinstance(updated_story.get(key), expected_type)
+            for key, expected_type in (
+                ("progression_ledger", dict),
+                ("characters", list),
+                ("chapter_summaries", list),
+                ("time_state", dict),
+            )
+        )
+        if not has_runtime_state:
+            return current_state
+        return self._strip_temporary_generation_fields(updated_story)
+
     def _chapter_summary_payload(self, chapter: dict[str, Any]) -> dict[str, Any]:
         chapter_number = int(chapter.get("chapter_number") or 0)
         summary = dict(chapter.get("chapter_summary") or {})
@@ -1026,7 +1058,7 @@ class FileProjectStore:
             operation=operation,
         )
 
-        base_state = self.state()
+        base_state = self._usable_bundle_state(updated_story, self.state())
         chapter = self._hydrate_chapter_display_fields(chapter, base_state)
         self._sync_after_chapter(chapter, base_state)
 

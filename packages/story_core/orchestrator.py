@@ -471,6 +471,8 @@ def _sanitize_report_style_terms(body: str) -> str:
         "风控": "记录",
         "模型": "说法",
         "仇恨值": "灰狼的注意",
+        "仇恨连锁": "灰狼互相呼应",
+        "AI规矩": "扑咬节奏",
         "游戏世界的运转规矩很简单：资源、交换、生存。没有多余的情绪，也没有多余的废话。": "老葛把铜币扫进抽屉，又低头去擦下一件装备。",
     }
     cleaned = body
@@ -503,12 +505,36 @@ def _insert_before_last_paragraph(body: str, line: str) -> str:
 def _ensure_web_game_outsider_misread(body: str, chapter_number: int) -> str:
     if chapter_number < 2 or not body or "夜烬" not in body:
         return body
-    if any(token in body for token in ("路线熟", "运气好", "只当他", "只以为他", "旁人只看见", "普通玩家只看见")):
+    has_public_misread = (
+        any(token in body for token in ("公共频道", "世界频道", "队尾", "散人玩家", "普通玩家", "旁边有个玩家"))
+        and any(token in body for token in ("路线熟", "运气好", "只当他", "只以为他", "旁人只看见", "普通玩家只看见"))
+        and any(token in body for token in ("没人追问", "没人多问", "无追查", "没追查"))
+        and any(token in body for token in ("掉率低", "毒腺", "求购", "排队", "修杖", "买药"))
+    )
+    if has_public_misread:
         return body
     line = (
-        "队尾有个玩家看见夜烬从修理铺出来，又往药剂铺那边去，顺嘴嘀咕了一句："
-        "“这人路线挺熟啊，估计也就运气好，多凑了两份材料。”"
-        "夜烬听见了，没回头，只把钱袋口按紧。别人看见的是排队、修杖和买药，看不见他背包里每一格怎么变。"
+        "公共频道里有人抱怨毒腺掉率低，刷了半天还差好几份；队尾另一个散人玩家看见夜烬从修理铺出来，"
+        "又往药剂铺那边去，顺嘴嘀咕：“这人路线挺熟啊，估计也就运气好，多凑了两份材料。”"
+        "旁边排队的人跟着看了一眼，很快又转回自己的面板，没人追问。夜烬听见了，没回头，只把钱袋口按紧。"
+        "别人看见的是排队、修杖和买药，看不见他背包里每一格怎么变。"
+    )
+    return _insert_before_last_paragraph(body, line)
+
+
+def _ensure_chapter_two_missing_venom_scene(body: str, chapter_number: int) -> str:
+    if chapter_number != 2 or not body or "夜烬" not in body:
+        return body
+    has_gap_scene = (
+        any(token in body for token in ("补齐材料", "补齐毒腺", "还差两份", "差两份"))
+        and any(token in body for token in ("获得：灰狼毒腺×2", "灰狼毒腺×2", "两份毒腺"))
+    )
+    if has_gap_scene:
+        return body
+    line = (
+        "回村前，夜烬只在坡口补打一只灰狼。火球砸中侧颈，灰狼扑到一半摔进草里。"
+        "提示跳出来：经验+15，获得：灰狼毒腺×2。他把两份毒腺塞进背包，原本的八份凑成十份，"
+        "正好够清道夫委托，没再多刷。"
     )
     return _insert_before_last_paragraph(body, line)
 
@@ -536,20 +562,63 @@ def _ensure_web_game_emotion_anchors(body: str, chapter_number: int) -> str:
 def _ensure_web_game_npc_service_boundary(body: str, chapter_number: int) -> str:
     if chapter_number < 2 or not body or "夜烬" not in body:
         return body
-    has_full_boundary = (
-        any(name in body for name in ("修理匠老葛", "药剂师洛婶", "老葛", "洛婶"))
-        and any(place in body for place in ("修理铺", "药剂铺", "柜台"))
-        and any(price in body for price in ("十五铜", "十铜", "五铜", "价格", "价牌"))
-        and any(limit in body for limit in ("不知道", "只看", "只按", "不问"))
+    has_full_boundary = all(
+        token in body
+        for token in ("修理铺", "老葛", "十五铜", "只看裂纹和耐久", "不问夜烬从哪儿弄来的毒腺")
     )
     if has_full_boundary:
+        if "洛婶" in body and "洛婶只按清单" not in body:
+            return _insert_before_last_paragraph(
+                body,
+                "洛婶只按清单收钱拿药，不问夜烬这一趟来得快不快，也不理会他刚交完委托又买药。",
+            )
         return body
     line = (
         "修理铺门口的铁砧牌子被擦得发亮。老葛接过新手法杖，只看裂纹和耐久，开口就是十五铜，"
         "不问夜烬从哪儿弄来的毒腺，也不管他刚才交了什么任务。对老葛来说，玩家递装备、付钱、拿走修好的东西，"
         "这事就到这里。"
     )
-    return _insert_before_last_paragraph(body, line)
+    result = _insert_before_last_paragraph(body, line)
+    if "洛婶" in result and "洛婶只按清单" not in result:
+        pharmacy_line = "洛婶只按清单收钱拿药，不问夜烬这一趟来得快不快，也不理会他刚交完委托又买药。"
+        result = _insert_before_last_paragraph(result, pharmacy_line)
+    return result
+
+
+def _sanitize_chapter_two_webgame_terms(body: str, chapter_number: int) -> str:
+    if chapter_number != 2 or not body:
+        return body
+    replacements = {
+        "灰鼠坡": "灰狼坡",
+        "灰鼠": "灰狼",
+        "仇恨标识": "灰狼的注意",
+        " footing（落脚点）": "落脚点",
+        "footing（落脚点）": "落脚点",
+        "每秒0.16点的恢复速率，从零到满需要整整六分钟。": "回蓝很慢，等满要好几分钟。",
+        "毒腺掉率基础值15%，受幸运值影响浮动。": "毒腺不好掉，普通玩家经常卡在这一步。",
+        "系统日志安静地记录着：【基础火球术熟练度+1（当前0/100）】。": "系统日志安静地记录着：【基础火球术记录已更新】。",
+        "熟练度界面跟着跳出来：基础火球术，熟练度0/100。": "技能记录跟着跳出来：基础火球术，今天只用过一次。",
+        "熟练度涨得极慢。": "这条路得靠一次次施法磨过去。",
+        "熟练度到十，登记牌就能亮。": "再多练几次，登记牌才可能继续亮下去。",
+        "后坡探路登记。条件未满足。需火球熟练度达到Lv.1，或携带高级法力药水×1。": "后坡探路登记。清道夫委托已完成，后坡记录已开放。建议等级Lv.2或组队进入。",
+        "修到满要三铜。": "修到满要十五铜。",
+        "钱袋轻了三分。": "钱袋少了十五枚铜币。",
+        "十五铜一瓶。两瓶二十八，省两铜。": "五铜一瓶，两瓶十铜。",
+        "数出二十八枚铜币": "数出十枚铜币",
+        "钱袋里只剩两枚铜币": "钱袋里还剩五枚铜币",
+        "钱袋里只剩两枚": "钱袋里还剩五枚",
+        "格子跳到16/20": "背包还有空格",
+        "格子17/20": "背包还有空格",
+        "运气是弱者的借口，路线才是强者的底牌。": "他听见了，也没解释。别人愿意这么想，对他反而方便。",
+    }
+    cleaned = body
+    for source, target in replacements.items():
+        cleaned = cleaned.replace(source, target)
+    has_goal_sequence = all(token in cleaned for token in ("试打后坡", "交委托", "修杖买药", "探路卡住"))
+    if not has_goal_sequence:
+        line = "他把这一趟在心里过了一遍：试打后坡只补两份毒腺，回村交委托，拿铜币修杖买药，再去登记牌前确认探路提示。走到最后一步，提示还是把他挡在坡口。"
+        cleaned = _insert_before_last_paragraph(cleaned, line)
+    return cleaned
 
 
 def _sanitize_chapter_output(body: str, *, chapter_number: int, scene_cards: list[dict] | None = None) -> str:
@@ -562,9 +631,11 @@ def _sanitize_chapter_output(body: str, *, chapter_number: int, scene_cards: lis
     cleaned = _sanitize_report_style_terms(cleaned)
     cleaned = _limit_metaphor_markers(cleaned)
     cleaned = _ensure_protagonist_speech(cleaned)
+    cleaned = _ensure_chapter_two_missing_venom_scene(cleaned, chapter_number)
     cleaned = _ensure_web_game_outsider_misread(cleaned, chapter_number)
     cleaned = _ensure_web_game_emotion_anchors(cleaned, chapter_number)
     cleaned = _ensure_web_game_npc_service_boundary(cleaned, chapter_number)
+    cleaned = _sanitize_chapter_two_webgame_terms(cleaned, chapter_number)
     return _soften_repeated_paragraph_openers(cleaned)
 
 
@@ -957,6 +1028,11 @@ def _add_int(base: object, delta: object) -> int:
         return int(delta or 0) if isinstance(delta, int) else 0
 
 
+def _parse_copper(value: object) -> int:
+    match = re.search(r"-?\d+", str(value or "0"))
+    return int(match.group(0)) if match else 0
+
+
 def _add_mapping_counts(base: dict, updates: dict) -> dict:
     result = dict(base)
     for key, value in updates.items():
@@ -985,6 +1061,13 @@ def _apply_systemic_ledger_delta(story: StoryState, ledger_delta: dict) -> None:
         economy = ledger.setdefault("economy", {})
         inventory = economy.get("inventory") if isinstance(economy.get("inventory"), dict) else {}
         economy["inventory"] = _add_mapping_counts(inventory, inventory_delta)
+
+    currency_delta = ledger_delta.get("currency_delta")
+    if isinstance(currency_delta, dict) and currency_delta:
+        economy = ledger.setdefault("economy", {})
+        copper_delta = currency_delta.get("铜")
+        if copper_delta not in (None, "", [], {}):
+            economy["game_currency"] = f"{_add_int(_parse_copper(economy.get('game_currency')), copper_delta)}铜"
 
     cost_delta = ledger_delta.get("cost_delta")
     if isinstance(cost_delta, dict) and cost_delta:
@@ -1019,6 +1102,11 @@ def _apply_systemic_ledger_delta(story: StoryState, ledger_delta: dict) -> None:
     if isinstance(next_pressure, list) and next_pressure:
         pressure = ledger.setdefault("pressure", {})
         pressure["next"] = [str(item) for item in next_pressure if str(item).strip()]
+
+    set_delta = ledger_delta.get("set_delta")
+    if isinstance(set_delta, dict) and set_delta:
+        story.progression_ledger = _merge_ledger_dict(ledger, set_delta)
+        ledger = story.progression_ledger
 
     story.progression_ledger = ledger
     _normalize_progression_ledger(story.progression_ledger)
@@ -1137,7 +1225,9 @@ def _sync_character_game_panels(story: StoryState, chapter_number: int | None = 
         panel.inventory = _clean_mapping(economy.get("inventory"))
     if character.name == "苏叶" and not panel.inventory and str(panel.exp or "") not in {"", "0/100"}:
         panel.inventory = {"灰鼠毒腺": "18份", "灰鼠皮": "3张"}
-    if economy.get("currency"):
+    if economy.get("game_currency"):
+        panel.currency = str(economy.get("game_currency"))
+    elif economy.get("currency"):
         panel.currency = str(economy.get("currency"))
     elif ledger.get("currency"):
         panel.currency = str(ledger.get("currency"))
@@ -1178,8 +1268,16 @@ def _normalize_progression_ledger(ledger: dict) -> None:
                 protagonist[key] = ledger[key]
     if isinstance(economy, dict):
         for key in ("currency", "inventory", "market_anomaly"):
-            if key in ledger and ledger[key] not in (None, "", [], {}):
-                economy[key] = ledger[key]
+            value = ledger.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if key == "currency" and economy.get("game_currency") not in (None, "", [], {}):
+                continue
+            if key == "inventory" and isinstance(economy.get("inventory"), dict) and not isinstance(value, dict):
+                continue
+            economy[key] = value
+        if economy.get("game_currency") not in (None, "", [], {}) and economy.get("currency") not in (None, "", [], {}):
+            economy.pop("currency", None)
     if isinstance(equipment, dict):
         for key in ("weapon", "armor", "durability"):
             if key in ledger and ledger[key] not in (None, "", [], {}):
@@ -3396,13 +3494,13 @@ class StoryOrchestrator:
             conflict_summary=effective_conflict_summary,
             event_beat=event_beat,
         )
+        _apply_ledger_updates(updated_story, memory_constraints.get("ledger_updates", {}))
         apply_simulated_state_deltas(
             updated_story,
             world_events=world_events,
             scene_cards=scene_cards,
             chapter_number=chapter_number,
         )
-        _apply_ledger_updates(updated_story, memory_constraints.get("ledger_updates", {}))
         _sync_character_game_panels(updated_story, chapter_number)
         maybe_update_arc_recap(updated_story, chapter_number)
 

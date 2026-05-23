@@ -314,8 +314,26 @@ def simulate_game_world(
             }
             ledger_delta["cost_delta"] = {"hp": -4, "mp": -12, "durability": -1}
             ledger_delta["currency_delta"] = {"铜": 5}
+            ledger_delta["set_delta"] = {
+                "protagonist": {
+                    "level": "Lv.1",
+                    "exp": "45/100",
+                    "hp": "38/100",
+                    "mp": "30/60",
+                    "weapon_durability": "10/10",
+                },
+                "economy": {
+                    "game_currency": "5铜",
+                    "inventory": {"灰狼毒腺": 0, "粗糙狼皮": 7, "初级法力药水": 2},
+                    "backpack": "9/20",
+                },
+                "equipment": {"weapon": "新手法杖", "durability": "10/10"},
+                "quests": {
+                    "清道夫委托": "已提交；奖励30铜已领取；后坡探路前置已满足但风险仍高"
+                },
+            }
             ledger_delta["next_pressure"] = [
-                "后坡探路需要前置任务或火球术熟练度",
+                "后坡探路前置已满足，但等级和补给仍压着风险",
                 "现实余额27.60元仍未解决",
                 "外人只能误判夜烬路线熟或运气好",
             ]

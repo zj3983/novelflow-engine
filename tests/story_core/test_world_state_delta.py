@@ -164,6 +164,55 @@ def test_apply_simulated_state_deltas_replaces_legacy_string_system_slots():
     assert story.progression_ledger["systems"]["chaos_seed"]["anomaly_score"] == 4
 
 
+def test_apply_simulated_state_deltas_applies_currency_and_final_set_delta():
+    story = StoryState(
+        story_id="s-systemic-final-set",
+        outline="VRMMO opening.",
+        genre="VRMMO",
+        style="systemic",
+        progression_ledger={
+            "protagonist": {"level": "Lv.1", "exp": "30/100"},
+            "currency": "0铜",
+            "inventory": "灰狼毒腺0份，粗糙狼皮7张，基础法力药水2瓶",
+            "economy": {
+                "game_currency": "0铜",
+                "inventory": {"灰狼毒腺": 8, "粗糙狼皮": 7},
+            },
+            "equipment": {"weapon": "新手法杖", "durability": "4/10"},
+        },
+    )
+    scene_cards = [
+        {
+            "state_delta": {
+                "game_world_simulation": {
+                    "ledger_delta": {
+                        "inventory_delta": {"灰狼毒腺": -8, "初级法力药水": 2},
+                        "currency_delta": {"铜": 5},
+                        "set_delta": {
+                            "protagonist": {"exp": "45/100", "mp": "30/60"},
+                            "economy": {
+                                "game_currency": "5铜",
+                                "inventory": {"灰狼毒腺": 0, "粗糙狼皮": 7, "初级法力药水": 2},
+                            },
+                            "equipment": {"durability": "10/10"},
+                        },
+                    }
+                }
+            }
+        }
+    ]
+
+    apply_simulated_state_deltas(story, world_events=[], scene_cards=scene_cards, chapter_number=2)
+
+    assert story.progression_ledger["protagonist"]["exp"] == "45/100"
+    assert story.progression_ledger["protagonist"]["mp"] == "30/60"
+    assert story.progression_ledger["economy"]["game_currency"] == "5铜"
+    assert story.progression_ledger["economy"]["inventory"]["灰狼毒腺"] == 0
+    assert story.progression_ledger["economy"]["inventory"]["初级法力药水"] == 2
+    assert "currency" not in story.progression_ledger["economy"]
+    assert story.progression_ledger["equipment"]["durability"] == "10/10"
+
+
 def test_repeated_paragraph_opener_softener_does_not_add_banned_time_crutches():
     body = "\n\n".join(
         [
@@ -197,14 +246,20 @@ def test_second_chapter_sanitizer_adds_outsider_misread_and_emotion_anchors():
 
     assert "路线挺熟" in cleaned
     assert "运气好" in cleaned
+    assert "没人追问" in cleaned
+    assert "公共频道" in cleaned
+    assert "掉率低" in cleaned
     assert "十五铜修杖" in cleaned
     assert "二十七块六" in cleaned
+    assert "获得：灰狼毒腺×2" in cleaned
+    assert "原本的八份凑成十份" in cleaned
 
 
 def test_second_chapter_sanitizer_adds_npc_boundary_and_removes_guide_terms():
     body = "\n\n".join(
         [
             "夜烬把法杖横在身前，等灰狼的仇恨值转过来。",
+            "群聚区的AI规矩和散怪完全不同，仇恨连锁会把人拖死。",
             "他回村修装备，又买了两瓶药。",
             "夜烬把背包扣上，准备去后坡。",
         ]
@@ -213,7 +268,65 @@ def test_second_chapter_sanitizer_adds_npc_boundary_and_removes_guide_terms():
     cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
 
     assert "仇恨值" not in cleaned
+    assert "AI规矩" not in cleaned
+    assert "仇恨连锁" not in cleaned
     assert "灰狼的注意" in cleaned
+    assert "灰狼互相呼应" in cleaned
     assert "修理铺" in cleaned
     assert "十五铜" in cleaned
+    assert "只看裂纹和耐久" in cleaned
     assert "不问夜烬从哪儿弄来的毒腺" in cleaned
+
+
+def test_second_chapter_sanitizer_does_not_accept_partial_npc_boundary():
+    body = "\n\n".join(
+        [
+            "夜烬去了修理铺，老葛说价格按牌子来。",
+            "夜烬买完药，准备去后坡。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+
+    assert "只看裂纹和耐久" in cleaned
+    assert "不问夜烬从哪儿弄来的毒腺" in cleaned
+
+
+def test_second_chapter_sanitizer_adds_luoshen_service_boundary():
+    body = "\n\n".join(
+        [
+            "夜烬到药剂铺买药，洛婶把药瓶放在柜台上。",
+            "夜烬收起药瓶，准备离开。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+
+    assert "洛婶只按清单收钱拿药" in cleaned
+    assert "不理会他刚交完委托又买药" in cleaned
+
+
+def test_second_chapter_sanitizer_removes_stale_webgame_terms_and_prices():
+    body = "\n\n".join(
+        [
+            "夜烬看见灰鼠头顶飘出仇恨标识，旁边还有 footing（落脚点）不稳定的提示。",
+            "每秒0.16点的恢复速率，从零到满需要整整六分钟。毒腺掉率基础值15%，受幸运值影响浮动。",
+            "提示框弹出来：【后坡探路登记。条件未满足。需火球熟练度达到Lv.1，或携带高级法力药水×1。】",
+            "铁匠说：修到满要三铜。洛婶说：十五铜一瓶。两瓶二十八，省两铜。夜烬数出二十八枚铜币，钱袋里只剩两枚铜币。",
+            "夜烬准备继续。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+
+    assert "仇恨标识" not in cleaned
+    assert "灰鼠" not in cleaned
+    assert "灰狼" in cleaned
+    assert "footing" not in cleaned
+    assert "每秒0.16" not in cleaned
+    assert "掉率基础值15%" not in cleaned
+    assert "熟练度" not in cleaned
+    assert "清道夫委托已完成" in cleaned
+    assert "修到满要十五铜" in cleaned
+    assert "五铜一瓶，两瓶十铜" in cleaned
+    assert "钱袋里还剩五枚铜币" in cleaned

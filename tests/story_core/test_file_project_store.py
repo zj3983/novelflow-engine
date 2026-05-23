@@ -260,6 +260,49 @@ def test_persist_bundle_ignores_stale_bundle_updated_story(tmp_path):
     assert state["current_chapter"] == 1
 
 
+def test_persist_bundle_uses_runtime_updated_story(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "current_chapter": 1,
+            "progression_ledger": {"economy": {"game_currency": "0铜"}},
+            "world_facts": ["source:canonical"],
+        },
+    )
+
+    bundle = SimpleNamespace(
+        chapter_number=2,
+        chapter_title="Ledger Chapter",
+        body="Night Ember turns the completed quest into a clean ledger.",
+        cadence="manual",
+        next_outline="Continue from the updated ledger.",
+        updated_story={
+            "story_id": "s-file",
+            "current_chapter": 2,
+            "progression_ledger": {"economy": {"game_currency": "5铜"}},
+            "world_facts": ["source:canonical"],
+        },
+        chapter_summary={
+            "chapter_title": "Ledger Chapter",
+            "cadence": "manual",
+            "summary": "The quest reward and costs settle into the ledger.",
+            "facts": ["ledger fact"],
+            "next_focus": "Continue from the updated ledger.",
+            "primary_conflict": "Clean state.",
+            "secondary_conflict": "Old snapshot.",
+            "event_beat": "Persist.",
+        },
+    )
+
+    store.persist_bundle(bundle)
+
+    state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    assert state["progression_ledger"]["economy"]["game_currency"] == "5铜"
+    assert state["current_chapter"] == 2
+
+
 def test_rewrite_chapter_uses_canonical_state_not_embedded_snapshot(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(

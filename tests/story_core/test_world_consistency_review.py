@@ -43,6 +43,58 @@ def test_world_consistency_review_accepts_weak_trade_trace():
     assert review["issues"] == []
 
 
+def test_world_consistency_review_accepts_outsider_misread_alias():
+    world_events = [
+        {
+            "event_id": "c2-outsider",
+            "actor": "普通玩家",
+            "action": "普通玩家觉得夜烬路线熟或运气好，无追查",
+            "location": "灰烬村队尾",
+            "visible_to": ["普通玩家"],
+        }
+    ]
+    body = (
+        "队尾另一个散人玩家看见夜烬从修理铺出来，顺嘴嘀咕：“这人路线挺熟啊，估计也就运气好。”"
+        "旁边排队的人很快又转回自己的面板，没人追问。"
+    )
+
+    review = review_world_event_consistency(body, world_events=world_events, scene_cards=[])
+
+    assert review["pass"]
+    assert review["issues"] == []
+
+
+def test_world_consistency_review_accepts_chapter_two_reaction_aliases():
+    scene_cards = [
+        {"scene_id": "reaction", "must_show": ["散人玩家抱怨灰狼毒腺掉率低", "洛婶按清单办事不理会夜烬频率"]}
+    ]
+    body = (
+        "公共频道里有人抱怨毒腺掉率低，刷了半天还差好几份。"
+        "洛婶只按清单收钱拿药，不问夜烬这一趟来得快不快，也不理会他刚交完委托又买药。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=scene_cards, chapter_number=2)
+
+    assert review["pass"]
+    assert review["issues"] == []
+
+
+def test_world_consistency_review_accepts_chapter_two_goal_sequence_alias():
+    scene_cards = [
+        {"scene_id": "goal", "must_show": ["试打后坡→交委托→修买→探路卡住", "从野外试打转向村内结算与补给"]}
+    ]
+    body = (
+        "他把这一趟在心里过了一遍：试打后坡只补两份毒腺，回村交委托，"
+        "拿铜币修杖买药，再去登记牌前确认探路提示。走到最后一步，提示还是把他挡在坡口。"
+        "后坡的野外试打结束后，他回到村内广场结算清道夫委托，三十铜到手，再去修理铺和药剂铺补给。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=scene_cards, chapter_number=2)
+
+    assert review["pass"]
+    assert review["issues"] == []
+
+
 def test_world_consistency_review_flags_scene_card_meta_leak():
     scene_cards = [
         {

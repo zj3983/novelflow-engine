@@ -48,6 +48,24 @@ def test_web_game_review_allows_closed_material_inventory():
     assert not any("材料账本不闭合" in issue for issue in review["issues"])
 
 
+def test_web_game_review_counts_chapter_two_bonus_venom_before_submission():
+    body = """
+夜烬打开背包，灰狼毒腺×8。
+他在坡口补打一只灰狼，摸出灰狼毒腺×2，原本的八份凑成十份。
+夜烬把十份毒腺递过去，清道夫委托完成。
+洛婶只按清单收钱拿药，不问夜烬这一趟来得快不快。
+"""
+
+    review = review_web_game_chapter(
+        chapter_number=2,
+        body=body,
+        event_plan={"npc_beats": ["清道夫委托提交。"]},
+        world_facts=["第一章章末灰狼毒腺8份，第二章补齐2份后提交10份。"],
+    )
+
+    assert not any("材料账本不闭合" in issue for issue in review["issues"])
+
+
 def test_web_game_review_flags_trade_payout_and_task_progress_mismatch():
     body = (
         "《天启之门》开服，夜烬清点库存，一共三十八枚毒腺。他点开寄售栏，数量填10。单价填4铜。"

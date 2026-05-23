@@ -409,6 +409,23 @@ def test_web_game_review_allows_explained_hp_mp_drift():
     assert review["pass"] is True, review
 
 
+def test_web_game_review_allows_hp_drift_from_visible_wolf_hit():
+    body = (
+        "夜烬靠着墙打开面板：生命：42/100，法力：12/60。"
+        "灰狼扑过来，前爪拍在他胸口，视野边缘跳出红色数字：-4，生命条掉了一截。"
+        "他退回村口，再看面板：生命：38/100，法力：0/60。"
+    ) * 25
+
+    review = review_web_game_chapter(
+        chapter_number=2,
+        body=body,
+        event_plan={"location_beats": ["灰狼坡补齐毒腺。"]},
+        world_facts=["本章允许战斗后生命从42/100降到38/100。"],
+    )
+
+    assert review["pass"] is True, review
+
+
 def test_web_game_review_rejects_mage_staff_melee_without_spell_reason():
     body = (
         "《天启之门》开服后，夜烬选择元素法师学徒，背着新手法杖进入灰鼠坡。"

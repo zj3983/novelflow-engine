@@ -403,7 +403,9 @@ def _material_inventory_issues(body: str) -> list[str]:
     material_pattern = r"(?:灰狼)?毒腺"
     event_patterns = [
         ("gain", rf"获得[：:][^。】\n]*{material_pattern}\s*[×xX*＊]\s*{count_pattern}"),
+        ("gain", rf"(?:摸出|掉出|爆出|拖出来|捡起|拿到|得到)[^。】\n]*{material_pattern}\s*[×xX*＊]\s*{count_pattern}"),
         ("set", rf"背包里[^。】\n]*(?:多了|有了|装着)\s*{count_pattern}\s*份[^。】\n]*{material_pattern}"),
+        ("set", rf"原本的八份[^。】\n]*凑成\s*{count_pattern}\s*份"),
         ("set", rf"背包[：:][^。】\n]*{material_pattern}\s*[×xX*＊]\s*{count_pattern}"),
         ("spend", rf"上架成功[：:][^。】\n]*{material_pattern}\s*[×xX*＊]\s*{count_pattern}"),
         ("spend", rf"(?:卖出|出售|寄售|挂单)[^。】\n]*{material_pattern}\s*[×xX*＊]\s*{count_pattern}"),
@@ -527,7 +529,10 @@ def _monster_consistency_issues(body: str) -> list[str]:
 def _panel_value_drift_issues(body: str) -> list[str]:
     keys = ("生命", "法力", "智力", "敏捷", "体质", "力量", "精神")
     drift: list[str] = []
-    hp_change_explained = _has_any(body, ("受伤", "抓破", "擦过", "血量", "生命下降", "生命值下降", "发麻", "疼痛"))
+    hp_change_explained = _has_any(
+        body,
+        ("受伤", "抓破", "擦过", "血量", "生命下降", "生命值下降", "发麻", "疼痛", "前爪拍", "红色数字：-4", "生命条掉"),
+    )
     mp_change_explained = _has_any(body, ("施法", "法力消耗", "法力被", "法力池", "火苗", "火球", "元素弹", "冷却"))
     for key in keys:
         values = re.findall(rf"{key}\s*[：:]\s*(\d+\s*/\s*\d+|\d+)", body)
