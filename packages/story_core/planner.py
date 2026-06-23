@@ -287,7 +287,7 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
             "primary_conflict": {
                 "lead": lead["name"],
                 "opposition": rival["name"],
-                "collision": f"{lead['name']}必须先确认高爆率能否让自己少跑几趟、早一步完成任务或凑齐装备门槛，{rival['name']}此时最多只能看到价格曲线、时间戳、普通玩家误读或资源点传闻。",
+                "collision": f"{lead['name']}必须先确认高爆率能否让自己少跑几趟、早一步完成前置任务或凑齐装备条件，{rival['name']}此时最多只能看到价格曲线、时间戳、普通玩家误读或资源点传闻。",
             },
             "secondary_conflict": {
                 "pressure": "market-signal",
@@ -308,7 +308,7 @@ def build_conflict_summary(story: StoryState, action_briefs: list[dict]) -> dict
                 "lead": lead["name"],
                 "opposition": opposition,
                 "collision": (
-                    f"{lead['name']}必须在耐久、背包、任务门槛和路线选择之间继续滚雪球，"
+                    f"{lead['name']}必须在耐久、背包、前置任务和路线选择之间继续滚雪球，"
                     f"{opposition}只能从价格曲线、补给流水、任务进度、资源点传闻、榜单变化和NPC反馈里慢慢缩小范围。"
                 ),
             },

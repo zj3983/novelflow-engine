@@ -26,6 +26,7 @@ from packages.story_core.models import (
 )
 from packages.story_core.orchestrator import _merge_writing_review_quality, _review_chapter_body
 from packages.story_core.quality import validate_bundle
+from packages.story_core.http_retry import RetryConfig, post_json_with_retry
 from packages.story_core.runtime_config import (
     OpenAIRuntimeSettings,
     get_all_runtime_settings,
@@ -147,6 +148,7 @@ class StoryResponse(BaseModel):
     agent_settings: dict = Field(default_factory=dict)
     agent_runtime: dict = Field(default_factory=dict)
     author_constraints: list[str] = Field(default_factory=list)
+    writing_lessons: list[str] = Field(default_factory=list)
     world_facts: list[str] = Field(default_factory=list)
     characters: list[dict] = Field(default_factory=list)
     history: list[dict] = Field(default_factory=list)
@@ -709,6 +711,7 @@ def _serialize_story(story_id: str) -> StoryResponse:
         agent_settings=record.story.agent_settings.model_dump(),
         agent_runtime=record.story.agent_runtime.model_dump(),
         author_constraints=list(record.story.author_constraints),
+        writing_lessons=list(record.story.writing_lessons),
         world_facts=list(record.story.world_facts),
         characters=[character.model_dump() for character in record.story.characters],
         history=[_serialize_chapter_bundle(bundle, record.story.world_facts) for bundle in record.history],
@@ -778,9 +781,15 @@ def _quality_context(quality_report: dict) -> dict:
             "prose_quality_review": writing_review.get("prose_quality_review", {}),
             "adversarial_cut_review": writing_review.get("adversarial_cut_review", {}),
             "world_state_review": writing_review.get("world_state_review", {}),
+            "reader_agent_review": writing_review.get("reader_agent_review", {}),
+            "editor_agent_review": writing_review.get("editor_agent_review", {}),
+            "reviewer_agent_review": writing_review.get("reviewer_agent_review", {}),
         },
     }
     if isinstance(quality_report, dict):
+        for key in ("reader_agent_review", "editor_agent_review", "reviewer_agent_review", "ai_flavor_review", "cold_reader_review"):
+            if isinstance(quality_report.get(key), dict):
+                context[key] = quality_report[key]
         revision_safety = quality_report.get("revision_safety")
         if isinstance(revision_safety, dict):
             context["revision_safety"] = revision_safety
@@ -1349,6 +1358,24 @@ def _probe_via_models(base_url: str, api_key: str) -> None:
         return None
 
 
+def _probe_via_codexcli(command: str, model_name: str) -> None:
+    config = RetryConfig()
+    config.timeout = 120
+    post_json_with_retry(
+        "",
+        "/chat/completions",
+        {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "只回复 pong"}],
+            "max_tokens": 8,
+        },
+        "",
+        config=config,
+        provider="codexcli",
+        codex_command=command,
+    )
+
+
 @router.post("/projects")
 def create_project(payload: CreateProjectRequest) -> ProjectResponse:
     project = NovelProject(
@@ -1834,6 +1861,8 @@ def test_runtime_settings(payload: RuntimeSettingsTestRequest) -> RuntimeSetting
     if not (
         overrides.get("api_key")
         or overrides.get("base_url")
+        or overrides.get("provider")
+        or overrides.get("codex_command")
         or overrides.get("global")
         or overrides.get("agents")
         or overrides.get("strategy")
@@ -1843,6 +1872,24 @@ def test_runtime_settings(payload: RuntimeSettingsTestRequest) -> RuntimeSetting
         resolved = resolve_openai_runtime_settings(overrides=overrides)
     else:
         resolved = resolve_openai_runtime_settings(agent_name=agent_name, overrides=overrides)
+
+    if resolved.provider == "codexcli":
+        try:
+            _probe_via_codexcli(
+                resolved.codex_command or "codex",
+                _runtime_model_for_target(agent_name, payload.model_name),
+            )
+        except Exception as exc:
+            return RuntimeSettingsTestResponse(
+                ok=False,
+                agent_name=agent_name,
+                message=f"Codex CLI 测试失败：{str(exc)[:200]}",
+            )
+        return RuntimeSettingsTestResponse(
+            ok=True,
+            agent_name=agent_name,
+            message=f"{_runtime_target_label(agent_name)} Codex CLI 正常",
+        )
 
     if not resolved.api_key or not resolved.base_url:
         return RuntimeSettingsTestResponse(

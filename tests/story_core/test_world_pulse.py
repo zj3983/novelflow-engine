@@ -1,5 +1,8 @@
 from packages.story_core.models import CharacterState, StoryState
-from packages.story_core.orchestrator import _build_simulation_status, _story_snapshot
+from packages.story_core.chapter_seed import build_chapter_seed
+from packages.story_core.orchestrator import StoryOrchestrator, _build_simulation_status, _story_snapshot
+from packages.story_core.simulation import build_chapter_simulation_plan
+from packages.story_core.writing_taskbook import build_writing_taskbook
 from packages.story_core.world_pulse import advance_world_pulse
 
 
@@ -123,3 +126,50 @@ def test_world_pulse_accumulates_guild_suspicion_without_omniscience():
     assert "coordinates locked" not in leaked_text
     assert "real identity" not in leaked_text
     assert "hidden talent" not in leaked_text
+
+
+def test_normal_generation_advances_world_pulse_for_next_chapter():
+    story = _pulse_story()
+
+    bundle = StoryOrchestrator().generate_next_chapter(story)
+
+    ledger = bundle.updated_story.progression_ledger
+    assert ledger["world_pulse"]["latest"]["chapter_number"] == 1
+    assert ledger["world_pulse"]["latest"]["visible_at_chapter"] == 2
+    assert any(item["visible_at_chapter"] == 2 for item in ledger["visibility_inbox"])
+
+    next_seed = build_chapter_seed(bundle.updated_story, 2)
+    assert next_seed["current_state"]["world_pulse"]["latest"]["pulse_index"] == 1
+
+
+def test_chapter_simulation_plan_carries_long_running_world_context():
+    story = _pulse_story()
+    pulse = advance_world_pulse(story, chapter_number=1)
+    seed = build_chapter_seed(story, 2)
+
+    plan = build_chapter_simulation_plan(story, 2, chapter_seed=seed).model_dump()
+
+    context = plan["world_context"]
+    assert context["latest_pulse"]["pulse_index"] == pulse["pulse_index"]
+    assert context["persistent_world"]["npc_memory"]["service_counter"]["last_seen_batch_count"] == 14
+    assert any(item["channel"] == "npc_counter" for item in context["visible_inbox"])
+    assert context["simulation_horizon"] == "long_running_world_then_chapter_slice"
+
+
+def test_writing_taskbook_turns_world_context_into_visibility_rules():
+    story = _pulse_story()
+    advance_world_pulse(story, chapter_number=1)
+    seed = build_chapter_seed(story, 2)
+    simulation_plan = build_chapter_simulation_plan(story, 2, chapter_seed=seed).model_dump()
+
+    taskbook = build_writing_taskbook(
+        chapter_number=2,
+        plan={"simulation_plan": simulation_plan},
+        genre="VRMMO",
+    )
+
+    required = "\n".join(taskbook["global_required"])
+    forbidden = "\n".join(taskbook["global_forbidden"])
+    assert "world pulse" in required
+    assert "npc_counter" in required
+    assert "hidden_state" in forbidden

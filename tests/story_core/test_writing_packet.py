@@ -112,6 +112,17 @@ def test_packet_exposes_governance_quality_gate():
     assert packet["governance_gate"]["next_action"] == "write_or_revise_chapter"
 
 
+def test_game_packet_requires_fast_visible_progression():
+    story = StoryState(story_id="s-fast-growth", outline="网游开服。", genre="网游", style="升级流")
+    bundle = ChapterBundle(chapter_number=5, body="", next_outline="继续验证。", updated_story=story)
+
+    packet = build_codex_writing_packet(story, bundle)
+
+    assert any("前10章节奏要快" in rule for rule in packet["style_rules"])
+    assert any("连续两章不能只拿线索不给成长" in rule for rule in packet["style_rules"])
+    assert any("等级、经验大幅推进、技能、装备、货币补给或任务权限" in rule for rule in packet["style_rules"])
+
+
 def test_packet_exposes_director_wow_hook_and_reality_bridge():
     story = StoryState(story_id="s-packet-director", outline="网游开服，千倍爆率。", genre="网游", style="番茄升级流")
     bundle = ChapterBundle(

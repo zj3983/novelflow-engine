@@ -20,6 +20,15 @@ function formatConcreteDensity(metrics: Record<string, number> | undefined): str
   return typeof value === "number" ? `${Math.round(value * 100)}%` : "—";
 }
 
+function formatReviewIssue(issue: unknown): string {
+  if (!issue) return "";
+  if (typeof issue === "string") return issue;
+  if (typeof issue === "object" && "reason" in issue) {
+    return String((issue as { reason?: unknown }).reason || "");
+  }
+  return String(issue);
+}
+
 export default function ReviewPage() {
   const searchParams = useSearchParams();
   const { project, story, error, encodedProjectId } = useProjectWorkspace();
@@ -35,7 +44,12 @@ export default function ReviewPage() {
   const aiFlavorScore = aiFlavorReview?.scores?.ai_flavor;
   const aiFlavorIssues = aiFlavorReview?.issues ?? [];
   const aiFlavorCuts = aiFlavorReview?.cuts ?? [];
-  const issues = Array.from(new Set([...(quality?.issues ?? []), ...(writingReview?.issues ?? []), ...aiFlavorIssues]));
+  const readerAgentReview = quality?.reader_agent_review ?? writingReview?.reader_agent_review;
+  const editorAgentReview = quality?.editor_agent_review ?? writingReview?.editor_agent_review;
+  const reviewerAgentReview = quality?.reviewer_agent_review ?? writingReview?.reviewer_agent_review;
+  const issues = Array.from(
+    new Set([...(quality?.issues ?? []), ...(writingReview?.issues ?? []), ...aiFlavorIssues].map(formatReviewIssue).filter(Boolean))
+  );
 
   return (
     <div className="ws-page">
@@ -77,6 +91,29 @@ export default function ReviewPage() {
               具体度 {formatConcreteDensity(aiFlavorMetrics)}
             </p>
           </div>
+          <div className="ws-card">
+            <p className="ws-card__title">读者 Agent</p>
+            <p className="ws-card__value">{readerAgentReview?.pass ? "通过" : "待修"}</p>
+            <p className="ws-card__hint">{readerAgentReview?.verdict || "暂无读者报告"}</p>
+          </div>
+          <div className="ws-card">
+            <p className="ws-card__title">编辑 Agent</p>
+            <p className="ws-card__value">{editorAgentReview?.pass ? "通过" : "待修"}</p>
+            <p className="ws-card__hint">{editorAgentReview?.verdict || "暂无编辑报告"}</p>
+          </div>
+          <div className="ws-card">
+            <p className="ws-card__title">审稿 Agent</p>
+            <p className="ws-card__value">{reviewerAgentReview?.pass ? "通过" : "待修"}</p>
+            <p className="ws-card__hint">{reviewerAgentReview?.verdict || "暂无审稿报告"}</p>
+          </div>
+          <section className="ws-card" style={{ gridColumn: "1 / -1" }}>
+            <p className="ws-card__title">Agent 分工意见</p>
+            <ul className="ws-plain-list">
+              <li>读者：{readerAgentReview?.issues?.[0] ? formatReviewIssue(readerAgentReview.issues[0]) : readerAgentReview?.verdict || "暂无"}</li>
+              <li>编辑：{editorAgentReview?.issues?.[0] ? formatReviewIssue(editorAgentReview.issues[0]) : editorAgentReview?.verdict || "暂无"}</li>
+              <li>审稿：{reviewerAgentReview?.issues?.[0] ? formatReviewIssue(reviewerAgentReview.issues[0]) : reviewerAgentReview?.verdict || "暂无"}</li>
+            </ul>
+          </section>
           <section className="ws-card" style={{ gridColumn: "1 / -1" }}>
             <p className="ws-card__title">审稿意见</p>
             {issues.length > 0 ? (

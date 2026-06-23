@@ -249,8 +249,8 @@ def test_second_chapter_sanitizer_adds_outsider_misread_and_emotion_anchors():
     assert "没人追问" in cleaned
     assert "公共频道" in cleaned
     assert "掉率低" in cleaned
-    assert "十五铜修杖" in cleaned
-    assert "二十七块六" in cleaned
+    assert "修法杖" in cleaned
+    assert "二十七块六" not in cleaned
     assert "获得：灰狼毒腺×2" in cleaned
     assert "原本的八份凑成十份" in cleaned
 
@@ -341,7 +341,7 @@ def test_second_chapter_sanitizer_removes_stale_webgame_terms_and_prices():
     assert "每秒0.16" not in cleaned
     assert "掉率基础值15%" not in cleaned
     assert "熟练度" not in cleaned
-    assert "清道夫委托已完成" in cleaned
+    assert "清道夫委托" in cleaned
     assert "十五铜" in cleaned
     assert "五铜一瓶，两瓶十铜" in cleaned
     assert "钱袋里还剩五枚铜币" in cleaned

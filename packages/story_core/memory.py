@@ -455,10 +455,10 @@ def _profile_defaults(character: Any, story: StoryState) -> dict[str, Any]:
         return {
             "character_type": "gap-driven webgame protagonist; staged-goal protagonist",
             "core_motivation": "现实压力没有解决前，先把游戏收益路径验证清楚；隐藏异常优势，靠信息差和节奏拉开差距。",
-            "behavior_logic": "先看成本、退路、背包格、耐久和可见风险；行动要落在排队、查价、试怪、留路线上，不写成分析报告。",
-            "interaction_mode": "对NPC只问业务边界；对普通玩家不炫耀、不解释底牌；回答用完整口语，别用装高手式短答。",
+            "behavior_logic": "有现实压力，但行动重点是暗中抢进度和藏住异常；多看公告、提示、NPC回话和别人忽略的细节，不写成凡事先看成本、先退、先问价。",
+            "interaction_mode": "对NPC只问业务边界；对普通玩家不炫耀、不解释底牌；回答用完整口语，别用装高手式省略回答。",
             "poison_points": [
-                "装高手式短句",
+                "装高手式省略回答",
                 "把谨慎写成只盯钱",
                 "公开暴露掉落异常",
                 "让NPC或路人全知隐藏机制",

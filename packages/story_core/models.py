@@ -282,7 +282,9 @@ class ChapterSimulationPlan(BaseModel):
 
     chapter_number: int
     chapter_goal: str = ""
+    world_context: dict = Field(default_factory=dict)
     event_plan: dict = Field(default_factory=dict)
+    plot_simulation: dict = Field(default_factory=dict)
     protagonist_strategy: dict = Field(default_factory=dict)
     character_performance: list[dict] = Field(default_factory=list)
     npc_boundaries: list[dict] = Field(default_factory=list)
@@ -443,6 +445,7 @@ class StoryState(BaseModel):
     agent_settings: AgentSettings = Field(default_factory=AgentSettings)
     agent_runtime: AgentRuntimeState = Field(default_factory=AgentRuntimeState)
     author_constraints: list[str] = Field(default_factory=list)
+    writing_lessons: list[str] = Field(default_factory=list)
     characters: list[CharacterState] = Field(default_factory=list)
     world_facts: list[str] = Field(default_factory=list)
     progression_ledger: dict = Field(default_factory=dict)

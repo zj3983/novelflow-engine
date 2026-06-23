@@ -58,6 +58,8 @@ export type RuntimeStrategySettings = AgentSettings;
 export type RuntimeEndpoint = {
   api_key: string;
   base_url: string;
+  provider: "codexcli" | "openai";
+  codex_command: string;
 };
 
 export type AgentRuntimeName = "character" | "director" | "writer" | "memory";
@@ -249,12 +251,19 @@ export type NovelStatusResponse = {
 
 export type ReviewSection = {
   reviewer?: string;
+  role?: string;
   pass?: boolean;
+  verdict?: string;
   scores?: Record<string, number>;
   metrics?: Record<string, number>;
-  issues?: string[];
+  issues?: Array<string | { type?: string; reason?: string; suggestion?: string }>;
   revision_plan?: string[];
   ai_flavor_review?: ReviewSection;
+  cold_reader_review?: ReviewSection;
+  reader_agent_review?: ReviewSection;
+  editor_agent_review?: ReviewSection;
+  reviewer_agent_review?: ReviewSection;
+  length_review?: LengthReview;
   cuts?: Array<{
     type?: string;
     target_text?: string;
@@ -262,6 +271,14 @@ export type ReviewSection = {
     suggestion?: string;
   }>;
   hits?: Record<string, unknown>;
+};
+
+export type LengthReview = {
+  pass?: boolean;
+  body_chars?: number;
+  min_chars?: number;
+  max_chars?: number;
+  issues?: string[];
 };
 
 export type ChapterBundle = {
@@ -359,6 +376,11 @@ export type ChapterBundle = {
     fallback_agents?: string[];
     recent_events?: string[];
     agents?: Record<string, { source?: string; fallback_reason?: string; last_run_chapter?: number }>;
+    world_pulse?: {
+      latest?: Record<string, unknown>;
+      history?: Array<Record<string, unknown>>;
+    };
+    visibility_inbox?: Array<Record<string, unknown>>;
   };
   character_cards?: unknown[];
   foreshadowing?: unknown[];
@@ -380,6 +402,11 @@ export type ChapterBundle = {
     pacing_review?: ReviewSection;
     beats_review?: ReviewSection;
     ai_flavor_review?: ReviewSection;
+    length_review?: LengthReview;
+    cold_reader_review?: ReviewSection;
+    reader_agent_review?: ReviewSection;
+    editor_agent_review?: ReviewSection;
+    reviewer_agent_review?: ReviewSection;
   };
   updated_story?: unknown;
 };
@@ -422,6 +449,7 @@ export type StoryResponse = {
   agent_settings: AgentSettings;
   agent_runtime: AgentRuntimeState;
   author_constraints?: string[];
+  writing_lessons?: string[];
   world_facts?: string[];
   parent_story_id?: string | null;
   branched_from_chapter?: number | null;
@@ -581,7 +609,14 @@ export type ImportedOpeningArc = {
     chapter_1?: ImportedOpeningChapter;
     chapter_2?: ImportedOpeningChapter;
     chapter_3?: ImportedOpeningChapter;
+    [key: string]: ImportedOpeningChapter | undefined;
   };
+  chapter_beats?: Array<{
+    chapter?: number;
+    title?: string;
+    required_payoff?: string;
+    ending_hook?: string;
+  }>;
 };
 
 export type ImportedCharacterProfile = {
@@ -622,6 +657,8 @@ export type ImportedWorldBlueprint = {
   panel_rules?: string[];
   chapter_formula?: string[];
   forbidden_breaks?: string[];
+  volume_plan?: Record<string, unknown>;
+  longform_framework?: Record<string, unknown>;
   genre_plugins?: ImportedGenrePlugin[];
   genre_plugin_ids?: string[];
   opening_arc?: ImportedOpeningArc;
@@ -721,6 +758,7 @@ export type CodexWritingPacket = {
   story?: Record<string, unknown>;
   protagonist?: Record<string, unknown>;
   event_plan?: Record<string, unknown>;
+  plot_simulation?: Record<string, unknown>;
   scene_cards?: Array<Record<string, unknown>>;
   hard_locks?: string[];
   style_rules?: string[];
@@ -1044,6 +1082,8 @@ function defaultRuntimeEndpoint(): RuntimeEndpoint {
   return {
     api_key: "",
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    provider: "codexcli",
+    codex_command: "codex",
   };
 }
 
@@ -1051,6 +1091,8 @@ function blankRuntimeEndpoint(): RuntimeEndpoint {
   return {
     api_key: "",
     base_url: "",
+    provider: "openai",
+    codex_command: "",
   };
 }
 
@@ -1153,6 +1195,8 @@ function normalizeRuntimeEndpoint(
   return {
     api_key: value?.api_key ?? "",
     base_url: value?.base_url ?? fallbackBaseUrl,
+    provider: value?.provider === "openai" ? "openai" : value?.provider === "codexcli" ? "codexcli" : "openai",
+    codex_command: value?.codex_command ?? "",
   };
 }
 
@@ -2039,8 +2083,11 @@ export async function fetchProjectWritingPacket(
     params.set("chapter_number", String(chapterNumber));
   }
   const suffix = params.toString() ? `?${params.toString()}` : "";
+  const path = isFileProjectId(projectId)
+    ? `${fileProjectPath(projectId)}/writing-packet${suffix}`
+    : `${apiBase()}/projects/${encodeURIComponent(projectId)}/writing-packet${suffix}`;
   return (await tryFetchJson(
-    `${apiBase()}/projects/${encodeURIComponent(projectId)}/writing-packet${suffix}`,
+    path,
     {
       method: "GET",
     },
@@ -2313,7 +2360,10 @@ export async function fetchProject(projectId: string): Promise<ProjectResponse> 
 
 export async function updateProject(projectId: string, payload: UpdateProjectRequest): Promise<ProjectResponse> {
   try {
-    const response = (await tryFetchJson(`${apiBase()}/projects/${encodeURIComponent(projectId)}`, {
+    const path = isFileProjectId(projectId)
+      ? fileProjectPath(projectId)
+      : `${apiBase()}/projects/${encodeURIComponent(projectId)}`;
+    const response = (await tryFetchJson(path, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),

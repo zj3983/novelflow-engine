@@ -190,7 +190,7 @@ def _chapter_two_progression_ticks(game_id: str) -> list[dict[str, Any]]:
                 "inventory_delta": {"初级法力药水": 2},
                 "state_after": {"game_currency": "5铜", "backpack_pressure": "接近满格"},
             },
-            "next_pressure": ["后坡探路还需要前置任务或火球术熟练度，不能直接转职"],
+            "next_pressure": ["后坡探路还需要前置任务或基础火球术记录，不能直接转职"],
         },
     ]
 

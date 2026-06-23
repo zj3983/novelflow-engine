@@ -16,6 +16,59 @@ def test_validate_bundle_flags_missing_continuity():
     assert "next_outline" in report["issues"]
 
 
+def test_validate_bundle_flags_body_over_target_range():
+    bundle = {
+        "chapter_number": 2,
+        "chapter_title": "过长章节",
+        "body": "字" * 5601,
+        "cadence": "measured",
+        "next_outline": "continue",
+        "updated_story": {"timeline": ["x"], "chapter_summaries": ["x"]},
+        "chapter_summary": {
+            "chapter_title": "过长章节",
+            "cadence": "measured",
+            "facts": ["x"],
+            "next_focus": "continue",
+            "primary_conflict": {"collision": "x"},
+            "secondary_conflict": {"detail": "x"},
+            "event_beat": {"turn": "x"},
+        },
+    }
+
+    report = validate_bundle(bundle)
+
+    assert report["ok"] is False
+    assert "body_too_long" in report["issues"]
+    assert report["metrics"]["target_max_chars"] == 5500
+
+
+def test_validate_bundle_flags_body_under_target_range():
+    bundle = {
+        "chapter_number": 1,
+        "chapter_title": "篇幅不足",
+        "body": "字" * 3799,
+        "enforce_target_chars": True,
+        "cadence": "measured",
+        "next_outline": "continue",
+        "updated_story": {"timeline": ["x"], "chapter_summaries": ["x"]},
+        "chapter_summary": {
+            "chapter_title": "篇幅不足",
+            "cadence": "measured",
+            "facts": ["x"],
+            "next_focus": "continue",
+            "primary_conflict": {"collision": "x"},
+            "secondary_conflict": {"detail": "x"},
+            "event_beat": {"turn": "x"},
+        },
+    }
+
+    report = validate_bundle(bundle)
+
+    assert report["ok"] is False
+    assert "body_too_short" in report["issues"]
+    assert report["metrics"]["target_min_chars"] == 3800
+
+
 def test_validate_bundle_accepts_engine_output_with_compressed_memory():
     story = StoryState(
         story_id="s-003",

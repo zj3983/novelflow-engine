@@ -5,9 +5,20 @@ def validate_bundle(bundle: dict) -> dict:
     issues: list[str] = []
     body = str(bundle.get("body") or "")
     compact_body = "".join(body.split())
+    target_min_chars = 3800
+    target_max_chars = 5500
+    enforce_min_chars = bool(
+        bundle.get("enforce_target_chars")
+        or bundle.get("manual_instructions")
+        or isinstance(bundle.get("target_chars"), dict)
+    )
 
     if not bundle.get("body"):
         issues.append("body")
+    elif enforce_min_chars and len(compact_body) < target_min_chars:
+        issues.append("body_too_short")
+    elif len(compact_body) > target_max_chars:
+        issues.append("body_too_long")
     if not bundle.get("chapter_title"):
         issues.append("chapter_title")
     if not bundle.get("cadence"):
@@ -42,7 +53,8 @@ def validate_bundle(bundle: dict) -> dict:
         "issues": issues,
         "metrics": {
             "body_chars": len(compact_body),
-            "target_min_chars": 3800,
+            "target_min_chars": target_min_chars,
+            "target_max_chars": target_max_chars,
             "target_range": "4200到5500字",
         },
     }

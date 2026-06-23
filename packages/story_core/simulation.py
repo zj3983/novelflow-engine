@@ -6,6 +6,7 @@ from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.models import CharacterState, ChapterSimulationPlan, StoryState
 from packages.story_core.web_game_author_craft import build_web_game_author_craft, build_web_game_director_card
+from packages.story_core.world_pulse import visibility_inbox_for_chapter
 
 
 def is_game_story(story: StoryState) -> bool:
@@ -125,7 +126,7 @@ def _default_npc_boundary(character: CharacterState) -> dict | None:
         "incentives": profile.incentives or ["维护岗位规则、声望、库存、任务秩序或村庄安全。"],
         "interaction_rules": profile.interaction_rules
         or [
-            "出场时必须通过服务、价格、门槛、口吻或信息边界影响主角选择。",
+            "出场时必须通过服务、价格、前置条件、口吻或信息边界影响主角选择。",
         ],
     }
 
@@ -143,7 +144,7 @@ def _game_visibility_rules() -> list[str]:
 def _game_economy_rules() -> list[str]:
     return [
         "新手阶段收益优先使用铜币、银币、材料和询价，避免无依据写现实货币汇率。",
-        "小额收益的主要作用是缩短任务、装备、技能和路线门槛；耐久、补给、背包容量只是节奏摩擦，不是主线焦点。",
+        "小额收益的主要作用是缩短前置任务、装备条件、技能条件和路线条件；耐久、补给、背包容量只是节奏摩擦，不是主线焦点。",
         "只有大额或重复收益才需要拆单、考虑手续费、买家来源、压价、追踪和信誉风险。",
         "外部反应应按规模递进：小额低级材料是服务器噪音；多章连续领先、稀有物、榜单、资源点目击或多源叠加后，才允许商人、玩家势力或论坛升级反应。",
     ]
@@ -154,7 +155,7 @@ def _game_required_beats(chapter_number: int) -> list[str]:
         return [
             "现实入口：说明主角现实职业/技能来源/压力，不只写缺钱。",
             "登录建号：写出游戏ID、职业选择和第一版角色面板，面板必须包含生命/法力、主武器或基础技能，不展开扩展属性。",
-            "首次验证：用低级怪或任务反馈验证千倍爆率，让读者看到主角会比普通玩家更快凑齐任务/装备门槛。",
+            "首次验证：用低级怪或任务反馈验证千倍爆率，让读者看到主角会比普通玩家更快凑齐前置任务或装备条件。",
             "交易行弱钩子：交易行只作背景入口或路牌，章末主钩子落在下一步任务、装备、技能或路线领先。",
             "大型游戏噪音：本章不出现检查、异常记录、商人盯人或公会注意，旁人最多觉得他运气好。",
         ]
@@ -199,7 +200,7 @@ def _game_director_event_plan(event_plan: dict[str, Any], chapter_number: int) -
         (
             "wow_beat: 必须让千倍爆率至少露一次可见马脚。不要只写成2-8倍收益；"
             "用低概率额外掉落、非基准稀有材料、或系统统计异常兑现一次读者能算出来的'哇'时刻，"
-            "并让读者明白这会让夜烬比普通玩家更快完成下一道任务或装备门槛。"
+            "并让读者明白这会让夜烬比普通玩家更快完成下一道前置任务或装备条件。"
         ),
     )
     enriched.setdefault(
@@ -220,7 +221,7 @@ def _game_director_event_plan(event_plan: dict[str, Any], chapter_number: int) -
         "explicit_chapter_end_hook",
         (
             "explicit_chapter_end_hook: 章末必须留下具体下一章诱饵，而不是情绪闭环；"
-            "优先落在任务进度、技能门槛、装备门槛、地图入口或下一只更高收益怪上。"
+            "优先落在任务进度、技能条件、装备条件、地图入口或下一只更高收益怪上。"
         ),
     )
     enriched.setdefault(
@@ -232,6 +233,111 @@ def _game_director_event_plan(event_plan: dict[str, Any], chapter_number: int) -
         ),
     )
     return enriched
+
+
+def _plot_simulation(
+    story: StoryState,
+    chapter_number: int,
+    *,
+    chapter_goal: str,
+    game_story: bool,
+) -> dict[str, Any]:
+    lead = _lead_character(story)
+    protagonist = ""
+    if lead is not None:
+        protagonist = lead.game_id or lead.game_panel.game_id or lead.name
+    protagonist = str(protagonist or "").strip()
+    if not protagonist or set(protagonist) <= {"?", "？"}:
+        protagonist = "主角"
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
+    protagonist_ledger = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), dict) else {}
+    economy = ledger.get("economy") if isinstance(ledger.get("economy"), dict) else {}
+    equipment = ledger.get("equipment") if isinstance(ledger.get("equipment"), dict) else {}
+    quests = ledger.get("quests") if isinstance(ledger.get("quests"), dict) else {}
+    level = str(protagonist_ledger.get("level") or "Lv.1")
+    hp = str(protagonist_ledger.get("hp") or "")
+    mp = str(protagonist_ledger.get("mp") or "")
+    currency = str(economy.get("game_currency") or economy.get("currency") or "")
+    durability = str(equipment.get("durability") or protagonist_ledger.get("weapon_durability") or "")
+    quest_text = "；".join(f"{name}{value}" for name, value in quests.items()) if quests else "当前任务未明"
+
+    if not game_story:
+        return {
+            "mode": "plot-first",
+            "reader_hook": "读者要看到主角这章面对一个具体问题，而不是阅读设定说明。",
+            "chapter_desire": f"{protagonist}想完成本章目标：{chapter_goal or '推进当前主线'}。",
+            "obstacle_chain": ["旧问题没有完全解决", "外部压力逼近", "主角必须做一个有代价的选择"],
+            "choice_point": "主角选择立刻处理眼前阻碍，还是保留资源等更稳的机会。",
+            "payoff": "本章至少兑现一个可见进展。",
+            "cost": "时间、关系、资源或暴露风险至少付出一项。",
+            "emotional_turn": "从被压力推着走，转成主动抓住一个小机会。",
+            "outsider_misread": "旁人只看到表层动作，看不到主角真正的判断。",
+            "ending_hook": "章末落到下一章马上能执行的一步。",
+        }
+
+    if chapter_number == 1:
+        desire = f"{protagonist}想先确认千倍爆率能不能变成实际领先。"
+        payoff = "第一次异常掉落让读者看到优势已经落袋，但外人只会当成运气好。"
+        ending = "章末落到补齐清道夫委托或下一步低级路线，不能提前跳到转职。"
+    elif "清道夫委托" in quest_text and "未" in quest_text:
+        desire = f"{protagonist}想把还差的材料补齐，低调完成清道夫委托。"
+        payoff = "把第一章的材料优势换成任务奖励、修理或补给资格。"
+        ending = "章末让后坡入口、补给压力或下一轮任务成为马上能接的目标。"
+    elif "后坡巡查" in quest_text:
+        desire = f"{protagonist}想在后坡巡查里多推进一格，同时不暴露掉落异常。"
+        payoff = "巡查进度、材料、经验或路线信息至少推进一项。"
+        ending = "章末留下最后一段巡查、血蓝补给或更高收益怪点。"
+    else:
+        desire = f"{protagonist}想把上一章的小优势滚成新的任务、装备或路线进度。"
+        payoff = "读者要看到经验、任务、补给、装备或路线里至少有一项实在变化。"
+        ending = "章末落到下一项具体前置任务或资源缺口。"
+
+    resource_line = "，".join(
+        item
+        for item in (
+            f"等级{level}" if level else "",
+            f"生命{hp}" if hp else "",
+            f"法力{mp}" if mp else "",
+            f"钱袋{currency}" if currency else "",
+            f"耐久{durability}" if durability else "",
+        )
+        if item
+    )
+    resource_line = resource_line or "资源状态必须从上一章承接"
+
+    return {
+        "mode": "plot-first",
+        "reader_hook": "读者要看到夜烬把隐藏优势藏在普通玩家动作里，悄悄滚出下一步领先。",
+        "chapter_desire": desire,
+        "obstacle_chain": [
+            f"先承接账本：{resource_line}。",
+            "再让血蓝、耐久、排队、NPC规矩、背包或旁人误判卡住行动。",
+            "最后用千倍爆率带来的小优势换成一个看得见的进度，但不让外人看懂来源。",
+        ],
+        "choice_point": "夜烬必须选择是立刻兑现收益，还是为了隐藏来源多绕一步、少拿一点表面好处。",
+        "payoff": payoff,
+        "cost": "付出血蓝、耐久、铜币、药水、等待时间或暴露风险中的至少一项。",
+        "emotional_turn": "从现实和资源都紧的压迫感，转成拿到一小步领先后的克制和警惕。",
+        "outsider_misread": "普通玩家或NPC只能看到他运气不错、路线熟、排队办事，不能知道千倍爆率和完整背包账本。",
+        "ending_hook": ending,
+    }
+
+
+def _world_context(story: StoryState, chapter_number: int) -> dict[str, Any]:
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
+    pulse_store = ledger.get("world_pulse") if isinstance(ledger.get("world_pulse"), dict) else {}
+    persistent_world = ledger.get("persistent_world") if isinstance(ledger.get("persistent_world"), dict) else {}
+    latest_pulse = pulse_store.get("latest") if isinstance(pulse_store.get("latest"), dict) else {}
+    history = pulse_store.get("history") if isinstance(pulse_store.get("history"), list) else []
+    return {
+        "schema_version": "world-context/v1",
+        "simulation_horizon": "long_running_world_then_chapter_slice",
+        "latest_pulse": latest_pulse,
+        "recent_pulses": history[-3:],
+        "persistent_world": persistent_world,
+        "visible_inbox": visibility_inbox_for_chapter(story, chapter_number, max_items=6),
+        "visibility_rule": "Only visible_inbox and protagonist-visible traces may enter prose; hidden_state stays off-page.",
+    }
 
 
 def build_chapter_simulation_plan(
@@ -326,6 +432,12 @@ def build_chapter_simulation_plan(
         str(event_plan.get("turn") or event_plan.get("pivot") or memory_constraints.get("current_focus") or "").strip()
         or "推进当前章节目标"
     )
+    plot_simulation = _plot_simulation(
+        story,
+        chapter_number,
+        chapter_goal=chapter_goal,
+        game_story=game_story,
+    )
     web_game_author_craft = build_web_game_author_craft(chapter_number, chapter_goal=chapter_goal) if game_story else {}
     web_game_director_card = (
         build_web_game_director_card(
@@ -341,7 +453,9 @@ def build_chapter_simulation_plan(
     return ChapterSimulationPlan(
         chapter_number=chapter_number,
         chapter_goal=chapter_goal,
+        world_context=_world_context(story, chapter_number),
         event_plan=event_plan,
+        plot_simulation=plot_simulation,
         protagonist_strategy=protagonist_strategy,
         character_performance=character_performance,
         npc_boundaries=npc_boundaries,

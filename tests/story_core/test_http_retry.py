@@ -34,3 +34,46 @@ def test_post_json_with_retry_retries_incomplete_read(monkeypatch):
 
     assert result == {"ok": True}
     assert calls["count"] == 2
+
+
+def test_post_json_with_retry_routes_codexcli(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["input"] = kwargs["input"]
+        output_path = args[args.index("--output-last-message") + 1]
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write('{"ok": true}')
+
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr("packages.story_core.codex_cli_provider.shutil.which", lambda command: command)
+    monkeypatch.setattr("packages.story_core.codex_cli_provider.subprocess.run", fake_run)
+    config = RetryConfig()
+    config.timeout = 5
+
+    result = post_json_with_retry(
+        "",
+        "/chat/completions",
+        {
+            "model": "qwen3.6-plus",
+            "messages": [{"role": "user", "content": "ping"}],
+            "response_format": {"type": "json_object"},
+        },
+        "",
+        config=config,
+        provider="codexcli",
+        codex_command="codex",
+    )
+
+    assert result["choices"][0]["message"]["content"] == '{"ok": true}'
+    assert captured["args"][:2] == ["codex", "exec"]
+    assert captured["args"][-1] == "-"
+    assert "--model" not in captured["args"]
+    assert "合法 JSON 对象" in captured["input"]

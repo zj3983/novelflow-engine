@@ -5,7 +5,7 @@ def test_anti_ai_style_rules_include_generation_and_revision_constraints():
     rules = anti_ai_style_rules()
 
     assert any("拒绝华丽辞藻堆砌" in rule for rule in rules)
-    assert any("短句为主" in rule for rule in rules)
+    assert any("人物说话要完整自然" in rule for rule in rules)
     assert any("一章分3到4个叙事段落" in rule for rule in rules)
     assert any("动作 + 微表情 + 细微生理反应" in rule for rule in rules)
     assert any("番茄白话风" in rule for rule in rules)
@@ -109,3 +109,13 @@ def test_prose_style_review_flags_stiff_backend_language():
     assert not review["pass"]
     assert review["scores"]["plain_tomato_language"] < 8
     assert any("后台硬词" in issue for issue in review["issues"])
+
+
+def test_prose_style_review_flags_unnatural_staff_shorthand():
+    body = "夜烬修杖花了十八铜，又握杖退到墙边，杖尖抵着地面。裂纹杖芯还在背包里。"
+
+    review = review_prose_style(body)
+
+    assert not review["pass"]
+    assert review["scores"]["game_term_precision"] < 8
+    assert any("装备称呼不自然" in issue for issue in review["issues"])

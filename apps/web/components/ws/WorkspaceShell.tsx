@@ -29,7 +29,7 @@ function projectNav(projectId: string): NavItem[] {
     { href: base, label: "概览", exact: true },
     { href: `${base}/write`, label: "章节" },
     { href: `${base}/dissection`, label: "拆书" },
-    { href: `${base}/sim`, label: "世界推演" },
+    { href: `${base}/sim`, label: "剧情推演" },
     { href: `${base}/world`, label: "角色卡" },
   ];
 }

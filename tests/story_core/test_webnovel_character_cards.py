@@ -18,7 +18,7 @@ def test_build_character_cards_uses_webnovel_writer_style_axes():
                 game_id="夜烬",
                 goals=["先确认灰狼掉落异常", "不要暴露混沌之种"],
                 performance_profile=CharacterPerformanceProfile(
-                    speech_style="说完整口语，不用装高手式短答",
+                    speech_style="说完整口语，不用装高手式省略回答",
                     action_style="先看成本和退路，再动手验证",
                     risk_posture="隐藏在幕后，不当众炫耀爆率",
                 ),
@@ -32,11 +32,11 @@ def test_build_character_cards_uses_webnovel_writer_style_axes():
     assert "core_motivation" in card["webnovel_profile"]
     assert "behavior_logic" in card["webnovel_profile"]
     assert "interaction_mode" in card["webnovel_profile"]
-    assert "装高手式短句" in card["webnovel_profile"]["poison_points"]
+    assert "装高手式省略回答" in card["webnovel_profile"]["poison_points"]
     assert "social" in card["three_dimensions"]
     assert "psychological" in card["three_dimensions"]
     assert "moral" in card["three_dimensions"]
-    assert card["story_usage"]["this_chapter_usage"]["speech_tendency"] == "说完整口语，不用装高手式短答"
+    assert card["story_usage"]["this_chapter_usage"]["speech_tendency"] == "说完整口语，不用装高手式省略回答"
     assert card["voice_and_action"]["risk_posture"] == "隐藏在幕后，不当众炫耀爆率"
 
 

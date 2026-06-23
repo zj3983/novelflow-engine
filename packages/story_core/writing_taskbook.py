@@ -36,7 +36,7 @@ GENERIC_STYLE_CONTRACT = (
     "白话正文：普通读者一眼能懂，少比喻，少华丽修辞，少作者总结。",
     "反馈要看得见：用动作、物件、对话、环境变化和角色反应承载信息。",
     "情绪要落动作：不写“他很焦虑”，写手指停顿、视线躲开、没忍住又看一眼。",
-    "段落要有疏密：短句用于爆点和转折，关键场景必须有连续动作块。",
+    "段落要有疏密：爆点和转折要有清楚落点，关键场景必须有连续动作块。",
     "视角限知：主角只能知道自己能看见、听见、问到、试出来的信息。",
     "后台词翻译：不要写边界、推演、审稿、场景卡、结算链、基准、诊断等工作流词。",
 )
@@ -46,7 +46,7 @@ GAME_STYLE_CONTRACT = (
     "反馈要看得见：面板、掉落、经验、任务进度、装备前置条件、血蓝、耐久和玩家对比优先于解释。",
     "网游爽点落在领先感：普通玩家还在重复刷，主角已经更快凑齐任务、装备、技能或地图入口。",
     "情绪要落动作：不写“他很焦虑”，写手指停顿、视线躲开、没忍住又看余额。",
-    "段落要有疏密：短句用于爆点和转折，关键场景必须有连续动作块。",
+    "段落要有疏密：爆点和转折要有清楚落点，关键场景必须有连续动作块。",
     "视角限知：主角只能知道自己能看见、听见、问到、试出来的信息。",
     "后台词翻译：不要写边界、推演、审稿、场景卡、结算链、基准、诊断等工作流词。",
 )
@@ -60,8 +60,8 @@ def first_chapter_whole_body_contract(*, game_genre: bool) -> dict[str, Any]:
         "beat_map": "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子",
         "beats": [
             "现实压力：用余额、房租、旧设备、身体反应或生活细节说明为什么现在必须登录。",
-            "登录建号：必须出现“角色面板”四个字，写清游戏ID、职业选择、Lv.1短面板、初始武器或技能，以及开服现场质感。",
-            "低级验证：用一场小规模战斗或测试写出血蓝、耐久、背包、掉落、任务进度和普通玩家更慢的对比；不要写施法前摇、验证逻辑或抽象收益词。",
+            "登录建号：必须出现“角色面板”四个字，写清游戏ID、统一初始身份见习冒险者（未转职）、Lv.1短面板、初始武器或技能，以及开服现场质感。",
+            "低级验证：用一场小规模战斗或测试写出血蓝、耐久、可堆叠背包、掉落、任务进度和普通玩家更慢的对比；不要写施法前摇、验证逻辑或抽象收益词。",
             "下一步钩子：材料分开处理，章末优先落到职业导师木牌、任务牌、装备、技能或地图入口的前置任务；可以有柜台/窗口，也可以暗中办理一项小服务，但外人只看见普通排队。",
         ],
         "style": [
@@ -71,7 +71,7 @@ def first_chapter_whole_body_contract(*, game_genre: bool) -> dict[str, Any]:
             "少写验证、逻辑、收益、路线这种判断词，改成试一把、看一眼、包快满、前置任务还没做完。",
         ],
         "dialogue": [
-            "自然对话：人物说话要顺、接地气，可以有半句抱怨、解释和接话，不要全是口令式短句。",
+            "自然对话：人物说话要顺、接地气，可以有半句抱怨、解释和接话，不要全是口令式回答。",
             "主角必须至少主动开口一次，格式要能被识别，例如“夜烬问/说/低声道：……”；但不要只补一句装冷静，要让他说清一个理由或选择。",
             "每章至少有一轮连续问答：别人问/催/提醒，主角回答并给原因，对方再有一句反应；这轮对话要改变价钱、任务、误会或下一步行动。",
             "台词不能替作者讲规则、讲设定或讲审稿结论。",
@@ -82,9 +82,10 @@ def first_chapter_whole_body_contract(*, game_genre: bool) -> dict[str, Any]:
             "不要提前完成变现、成交、到账、手续费扣款、公共频道扩散、论坛爆帖、公会追查或市场玩家盯盘。",
             "第一章不要让药剂师或药铺承担职业任务、职业试炼、全局市场分析或玩家生态判断；药剂师若出现，只能讲药材、库存、价格和她不知道的边界。",
             "第一章可以写NPC窗口、任务牌或职业导师木牌；是否提交材料、领取铜币、修装备或买药水必须跟随项目账本/章节计划，未允许时只露出前置条件和下一步目标。",
+            "不要把开局身份写成独有职业；第一章所有玩家都是见习冒险者，夜烬只是选了法杖和基础火球术。背包同类材料堆叠，灰狼毒腺×8、粗糙狼皮×7应写成占用两个材料格或2/20。",
             "不要写边界、推演、审稿、场景卡、模型、算法、变量、规则被撬开、这意味着、这说明。",
             "不要写施法前摇、验证路线、验证逻辑、收益路径或抽象收益词。",
-            "不要写谜语式短句或故意绕弯的悬疑腔。",
+            "不要写谜语式省略回答或故意绕弯的悬疑腔。",
         ],
     }
 
@@ -188,6 +189,38 @@ def _simulation_plan(plan: dict[str, Any]) -> dict[str, Any]:
     return plan.get("simulation_plan") if isinstance(plan.get("simulation_plan"), dict) else {}
 
 
+def _plot_simulation(simulation_plan: dict[str, Any]) -> dict[str, Any]:
+    plot = simulation_plan.get("plot_simulation") if isinstance(simulation_plan.get("plot_simulation"), dict) else {}
+    return plot
+
+
+def _plot_required_lines(plot: dict[str, Any]) -> list[str]:
+    if not plot:
+        return []
+    lines: list[str] = []
+    for key, label in (
+        ("reader_hook", "剧情主线"),
+        ("chapter_desire", "主角目标"),
+        ("choice_point", "选择点"),
+        ("payoff", "爽点兑现"),
+        ("cost", "代价"),
+        ("emotional_turn", "情绪转折"),
+        ("outsider_misread", "外人误判"),
+        ("ending_hook", "章末钩子"),
+    ):
+        text = _text(plot.get(key), 90)
+        if text:
+            lines.append(f"{label}：{text}")
+    obstacles = _as_list(plot.get("obstacle_chain"), max_items=5, item_chars=38)
+    if obstacles:
+        lines.append(f"阻碍：{'；'.join(obstacles)}")
+    return lines
+
+
+def _plot_text(plot: dict[str, Any], key: str, limit: int = 100) -> str:
+    return _text(plot.get(key), limit) if plot else ""
+
+
 def _scene_cards(plan: dict[str, Any]) -> list[dict[str, Any]]:
     cards = plan.get("scene_cards")
     return [card for card in cards if isinstance(card, dict)] if isinstance(cards, list) else []
@@ -196,14 +229,42 @@ def _scene_cards(plan: dict[str, Any]) -> list[dict[str, Any]]:
 def _chapter_goal(plan: dict[str, Any]) -> str:
     event_plan = _event_plan(plan)
     simulation_plan = _simulation_plan(plan)
+    plot = _plot_simulation(simulation_plan)
     return _text(
-        simulation_plan.get("chapter_goal")
+        plot.get("chapter_desire")
+        or simulation_plan.get("chapter_goal")
         or event_plan.get("next_focus")
         or event_plan.get("stakes")
         or event_plan.get("chapter_title")
         or "完成本章推进",
         140,
     )
+
+
+def _world_context_requirements(simulation_plan: dict[str, Any]) -> tuple[list[str], list[str]]:
+    context = simulation_plan.get("world_context") if isinstance(simulation_plan.get("world_context"), dict) else {}
+    if not context:
+        return [], []
+    visible_items = context.get("visible_inbox") if isinstance(context.get("visible_inbox"), list) else []
+    channels: list[str] = []
+    for item in visible_items:
+        if not isinstance(item, dict):
+            continue
+        channel = _text(item.get("channel"), 40)
+        if channel and channel not in channels:
+            channels.append(channel)
+    required = [
+        "Use world pulse as long-running background state first, then write only this chapter's visible slice.",
+    ]
+    if channels:
+        required.append(f"Visible world pulse channels for this chapter: {', '.join(channels)}.")
+    forbidden = [
+        "Do not write hidden_state, persistent_world internals, guild_intel internals, or background-only world pulse logic into prose.",
+    ]
+    rule = _text(context.get("visibility_rule"), 160)
+    if rule:
+        forbidden.append(rule)
+    return required, forbidden
 
 
 def _chapter_title(plan: dict[str, Any]) -> str:
@@ -236,6 +297,64 @@ def _scene_source_id(card: dict[str, Any], index: int) -> str:
     return str(card.get("template_id") or card.get("scene_id") or card.get("id") or f"scene_{index}")
 
 
+def _apply_plot_to_scenes(scenes: list[WritingTaskScene], plot: dict[str, Any]) -> list[WritingTaskScene]:
+    if not plot:
+        return scenes
+
+    reader_hook = _plot_text(plot, "reader_hook", 100)
+    desire = _plot_text(plot, "chapter_desire", 100)
+    obstacles = _as_list(plot.get("obstacle_chain"), max_items=5, item_chars=34)
+    obstacle_text = "；".join(obstacles)
+    choice = _plot_text(plot, "choice_point", 100)
+    payoff = _plot_text(plot, "payoff", 90)
+    cost = _plot_text(plot, "cost", 90)
+    emotional_turn = _plot_text(plot, "emotional_turn", 90)
+    outsider_misread = _plot_text(plot, "outsider_misread", 90)
+    ending_hook = _plot_text(plot, "ending_hook", 100)
+
+    result: list[WritingTaskScene] = []
+    for scene in scenes:
+        updates: dict[str, Any] = {}
+        if scene.key == "opening" and (desire or reader_hook):
+            updates["goal"] = " ".join(item for item in (desire, reader_hook) if item)
+            updates["required_surface"] = _join(
+                [scene.required_surface, f"主角目标必须落地：{desire}" if desire else ""],
+                scene.required_surface,
+            )
+        elif scene.key == "pressure" and obstacle_text:
+            updates["goal"] = f"让阻碍具体出现：{obstacle_text}。"
+            updates["required_surface"] = f"阻碍必须可见：{obstacle_text}。用NPC回答、面板、背包、路况、价格、血蓝或耐久承载，不写后台解释。"
+        elif scene.key == "choice" and (choice or payoff or cost):
+            updates["goal"] = choice or scene.goal
+            updates["required_surface"] = _join(
+                [
+                    scene.required_surface,
+                    payoff and f"爽点兑现：{payoff}",
+                    cost and f"代价：{cost}",
+                ],
+                scene.required_surface,
+            )
+            if payoff or cost:
+                updates["exit_state"] = f"选择完成，{payoff or '收益'}和{cost or '代价'}落到账本、关系或路线里。"
+        elif scene.key == "hook" and (ending_hook or emotional_turn or outsider_misread):
+            updates["goal"] = f"收住本章事件，更新状态，并把章末落到：{ending_hook}" if ending_hook else scene.goal
+            updates["required_surface"] = _join(
+                [
+                    scene.required_surface,
+                    emotional_turn and f"情绪转折：{emotional_turn}",
+                    outsider_misread and f"外人误判：{outsider_misread}",
+                ],
+                scene.required_surface,
+            )
+            if ending_hook:
+                updates["exit_state"] = ending_hook
+        if updates:
+            result.append(WritingTaskScene(**{**asdict(scene), **updates}))
+        else:
+            result.append(scene)
+    return result
+
+
 def _first_chapter_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
     target = max(4200, _target_chars_int(plan, fallback=4200))
     first = max(950, int(target * 0.34))
@@ -246,8 +365,8 @@ def _first_chapter_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
         WritingTaskScene(
             key="entry_login",
             title="现实压力与登录建号",
-            goal="用一个具体生活瞬间压住苏叶的处境，再让他戴上旧设备进入《天启之门》，完成建号和职业选择。",
-            required_surface="27.60元或可用余额、催缴压力、旧头盔或登录入口、《天启之门》开服、全沉浸/开服倒计时/玩家涌入/登录公告至少一个可见背景入口、游戏ID夜烬、职业选择、Lv.1短面板必须含职业/等级/经验/生命/法力/钱袋为空或背包为空/新手法杖/基础火球术、章首一个具体情绪动作如手指停顿/喉咙发紧/苦笑半秒；不要展开力量/敏捷/体质/智力等扩展属性",
+            goal="用一个具体生活瞬间压住苏叶的处境，再让他戴上旧设备进入《天启之门》，完成建号、初始身份确认和武器/基础技能选择。",
+            required_surface="27.60元或可用余额、催缴压力、旧头盔或登录入口、《天启之门》开服、全沉浸/开服倒计时/玩家涌入/登录公告至少一个可见背景入口、游戏ID夜烬、初始身份见习冒险者（未转职）、Lv.1短面板固定为经验0/100、生命100/100、法力60/60、钱袋为空或背包为空、新手法杖10/10、基础火球术、章首一个具体情绪动作如手指停顿/喉咙发紧/苦笑半秒；不要展开力量/敏捷/体质/智力等扩展属性",
             forbidden_surface=f"首次打怪、掉落、NPC长谈、交易操作、{forbidden}",
             entry_state="现实出租屋，苏叶还没进游戏。",
             exit_state="夜烬建号完成，职业、等级、经验、血蓝、货币和初始装备可见。",
@@ -284,9 +403,10 @@ def _first_chapter_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
 
 def _generic_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
     cards = _scene_cards(plan)
+    plot = _plot_simulation(_simulation_plan(plan))
     if not cards:
         total = _target_chars_int(plan)
-        return [
+        scenes = [
             WritingTaskScene(
                 key="opening",
                 title="承接与目标",
@@ -328,6 +448,7 @@ def _generic_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
                 target_chars=max(700, total // 4),
             ),
         ]
+        return _apply_plot_to_scenes(scenes, plot)
 
     total = _target_chars_int(plan)
     per_scene = max(750, total // max(1, min(len(cards), 5)))
@@ -377,6 +498,7 @@ def build_writing_taskbook(
     governance = plan.get("governance") if isinstance(plan.get("governance"), dict) else {}
     chapter_intent = governance.get("chapter_intent") if isinstance(governance.get("chapter_intent"), dict) else {}
     global_required = [
+        *_plot_required_lines(_plot_simulation(simulation_plan)),
         *_as_list(simulation_plan.get("required_beats"), max_items=6, item_chars=50),
         *_as_list(event_plan.get("exposition_beats"), max_items=4, item_chars=50),
     ]
@@ -384,6 +506,9 @@ def build_writing_taskbook(
         *_as_list(simulation_plan.get("forbidden_moves"), max_items=8, item_chars=56),
         *_as_list(chapter_intent.get("must_avoid"), max_items=6, item_chars=56),
     ]
+    world_required, world_forbidden = _world_context_requirements(simulation_plan)
+    global_required.extend(world_required)
+    global_forbidden.extend(world_forbidden)
     if chapter_number == 1 and game_context:
         global_forbidden.extend(item for item in FIRST_CHAPTER_NOISE_BANS if item not in global_forbidden)
         global_required.append("第一章只完成登录、低级验证和领先预期；材料只是通行券，交易、论坛、公会追查后移，提交委托、修理和买药水也后移。")

@@ -81,6 +81,110 @@ def test_file_project_book_dissection_chapter_uses_store(tmp_path: Path, monkeyp
     assert any("转职" in item for item in payload["sections"]["设定冲突"])
 
 
+def test_file_project_list_ignores_backup_directories(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    for name in [
+        "p-main",
+        "p-main.backup-20260623-222859",
+        "p-main.before-outline-20260623-223951",
+        "_backups",
+    ]:
+        project_root = export_root / name
+        _write_json(
+            project_root / ".story-system" / "MASTER_SETTING.json",
+            {"project": {"project_id": name, "title": "Same Title"}},
+        )
+        _write_json(project_root / ".webnovel" / "state.json", {"current_chapter": 1})
+        _write_json(project_root / ".webnovel" / "project.json", {"project_id": name, "title": "Same Title"})
+
+    response = client.get("/file-projects")
+
+    assert response.status_code == 200
+    projects = response.json()
+    assert [project["project_id"] for project in projects] == ["file:p-main"]
+
+
+def test_file_project_update_persists_outline_for_file_project(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "outline-fixture"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(project_root / ".story-system" / "MASTER_SETTING.json", {"project": {"title": "Outline Fixture"}})
+    _write_json(project_root / ".webnovel" / "state.json", {"story_id": "s-file", "current_chapter": 4})
+    _write_json(
+        project_root / ".webnovel" / "project.json",
+        {"project_id": "outline-fixture", "title": "Outline Fixture", "world_blueprint": {}},
+    )
+
+    response = client.put(
+        "/file-projects/file:outline-fixture",
+        json={
+            "current_focus": "第5章写白河仓库收购方追问材料来源。",
+            "world_blueprint": {
+                "current_arc": "新手村交易线",
+                "opening_arc": {
+                    "chapter_beats": [
+                        {
+                            "chapter": 5,
+                            "title": "担保名单",
+                            "required_payoff": "确认白河仓库收购规则",
+                            "ending_hook": "收购方追问材料来源",
+                        }
+                    ]
+                },
+                "forbidden_breaks": ["不能让收购方直接知道千倍爆率。"],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["current_focus"] == "第5章写白河仓库收购方追问材料来源。"
+    project = json.loads((project_root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
+    state = json.loads((project_root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    assert project["world_blueprint"]["opening_arc"]["chapter_beats"][0]["title"] == "担保名单"
+    assert state["current_focus"] == "第5章写白河仓库收购方追问材料来源。"
+
+
+def test_file_project_writing_packet_uses_file_outline_and_character_cards(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "packet-fixture"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(project_root / ".story-system" / "MASTER_SETTING.json", {"project": {"title": "Packet Fixture"}})
+    _write_json(project_root / ".webnovel" / "state.json", {"story_id": "s-file", "current_chapter": 4, "world_facts": []})
+    _write_json(
+        project_root / ".webnovel" / "project.json",
+        {
+            "project_id": "packet-fixture",
+            "title": "Packet Fixture",
+            "current_focus": "第5章确认白河仓库收购规则，收购方开始追问材料来源。",
+            "world_blueprint": {
+                "current_arc": "新手村交易线",
+                "opening_arc": {
+                    "chapter_beats": [
+                        {
+                            "chapter": 5,
+                            "title": "担保名单",
+                            "required_payoff": "确认白河仓库收购规则",
+                            "ending_hook": "收购方追问材料来源",
+                        }
+                    ]
+                },
+            },
+        },
+    )
+
+    response = client.get("/file-projects/file:packet-fixture/writing-packet?chapter_number=5")
+
+    assert response.status_code == 200
+    packet = response.json()
+    assert packet["schema_version"] == "file-writing-packet/v1"
+    assert packet["target_chapter"] == 5
+    assert packet["outline_constraints"]["opening_arc"]["chapter_beats"][0]["title"] == "担保名单"
+    buyer = next(character for character in packet["state"]["characters"] if character["name"] == "白河仓库收购方")
+    assert buyer["lifecycle_state"] == "proposed"
+
+
 def test_file_project_book_dissection_returns_concrete_progress_without_filler(tmp_path: Path, monkeypatch):
     export_root = tmp_path / "exported-projects"
     project_root = export_root / "dissection-progress"

@@ -263,8 +263,8 @@ def build_craft_pack(
             "cliche_blacklist": CLICHE_BLACKLIST,
         },
         "paragraph_rhythm": {
-            "rule": "重要短句前后用较长动作段衬托；高潮处短句密，结算处留半拍。",
-            "weights": {"setup": "breathing", "pressure": "staccato", "payoff": "dense", "aftermath": "breathing"},
+            "rule": "关键反应前后用较长动作段衬托；高潮处节奏紧，结算处留半拍。",
+            "weights": {"setup": "breathing", "pressure": "tight", "payoff": "dense", "aftermath": "breathing"},
         },
         "repetition_control": {
             "near_duplicate_check": "同一判断、同一金句、同一成本总结不得在相邻800字内换皮复读。",

@@ -39,6 +39,19 @@ class FileProjectGenerationJobRequest(BaseModel):
     guidance: str | None = None
 
 
+class FileProjectUpdateRequest(BaseModel):
+    title: str | None = None
+    seed_outline: str | None = None
+    world_summary: str | None = None
+    current_focus: str | None = None
+    author_constraints: list[str] | None = None
+    world_blueprint: dict[str, Any] | None = None
+    character_profiles: list[dict[str, Any]] | None = None
+    relationship_graph: list[dict[str, Any]] | None = None
+    status: str | None = None
+    pipeline_stage: str | None = None
+
+
 class BookDissectionReferenceRequest(BaseModel):
     text: str
     genre: str = ""
@@ -72,13 +85,24 @@ def _public_project_id(store: FileProjectStore) -> str:
     return _file_id(store.root.name)
 
 
+def _is_hidden_file_project_dir(path: Path) -> bool:
+    name = path.name
+    return (
+        name.startswith("_")
+        or ".backup-" in name
+        or ".before-" in name
+        or name.endswith(".bak")
+        or name.endswith(".backup")
+    )
+
+
 def _stores() -> list[FileProjectStore]:
     root = _export_root()
     if not root.exists():
         return []
     stores: list[FileProjectStore] = []
     for child in sorted(root.iterdir()):
-        if not child.is_dir():
+        if not child.is_dir() or _is_hidden_file_project_dir(child):
             continue
         store = FileProjectStore(child)
         if store.exists():
@@ -303,6 +327,7 @@ def _story_payload(store: FileProjectStore) -> dict[str, Any]:
         "agent_settings": state.get("agent_settings") or AgentSettings().model_dump(),
         "agent_runtime": state.get("agent_runtime") or AgentRuntimeState().model_dump(),
         "author_constraints": state.get("author_constraints") or [],
+        "writing_lessons": state.get("writing_lessons") or [],
         "world_facts": state.get("world_facts") or [],
         "characters": state.get("characters") or [],
         "history": history,
@@ -341,6 +366,17 @@ def init_file_project_routes() -> APIRouter:
     @router.get("/file-projects/{project_id}")
     def get_file_project(project_id: str) -> dict[str, Any]:
         return _project_payload(_store_for(project_id))
+
+    @router.put("/file-projects/{project_id}")
+    def update_file_project(project_id: str, payload: FileProjectUpdateRequest) -> dict[str, Any]:
+        store = _store_for(project_id)
+        store.update_project(payload.model_dump(exclude_unset=True))
+        return _project_payload(store)
+
+    @router.get("/file-projects/{project_id}/writing-packet")
+    def get_file_project_writing_packet(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:
+        store = _store_for(project_id)
+        return store.writing_packet(chapter_number)
 
     @router.post("/file-projects/{project_id}/book-dissection/chapter")
     def dissect_file_project_chapter(project_id: str, payload: BookDissectionChapterRequest) -> dict[str, Any]:

@@ -105,10 +105,17 @@ def _compact_segment_plan(plan: dict[str, Any]) -> dict[str, Any]:
     plan = plan if isinstance(plan, dict) else {}
     event_plan = plan.get("event_plan") if isinstance(plan.get("event_plan"), dict) else {}
     simulation_plan = plan.get("simulation_plan") if isinstance(plan.get("simulation_plan"), dict) else {}
+    plot = simulation_plan.get("plot_simulation") if isinstance(simulation_plan.get("plot_simulation"), dict) else {}
     cards = plan.get("scene_cards") if isinstance(plan.get("scene_cards"), list) else []
+    plot_spine = []
+    for key in ("reader_hook", "chapter_desire", "choice_point", "payoff", "cost", "ending_hook"):
+        value = plain_writer_phrase(str(plot.get(key) or "")) if plot else ""
+        if value:
+            plot_spine.append(value)
     return {
         "simulation_variant": simulation_plan.get("simulation_variant"),
         "chapter_goal": plain_writer_phrase(str(simulation_plan.get("chapter_goal") or "")) or None,
+        "剧情主线": plot_spine,
         "chapter_title": plain_writer_phrase(str(event_plan.get("chapter_title") or "")) or None,
         "next_focus": plain_writer_phrase(str(event_plan.get("next_focus") or "")) or None,
         "ordered_actions": [plain_writer_phrase(item) for item in _compact_items(event_plan.get("ordered_actions"), max_items=5)],
@@ -189,8 +196,8 @@ def build_segment_prompt(
             "第一章目标口语化：不要把目标写成后台硬词，要写成苏叶先试清楚这东西靠不靠谱、亏不亏、能不能带回去。",
             "第一章领先流：材料要兑现成下一步前置任务或账本优势，不是公开高潮；是否交任务、领取铜币、修理或买药水必须跟随项目账本/章节计划，未允许时不能擅自结算。",
             "情绪暗线：本段必须让角色有可感的担心、试探、隐瞒或欲望。",
-            "职业背景落地：苏叶做过外包测试，只能体现为先看余额、数铜币、看蓝耗、摸法杖耐久、停一下再问价；不要把职业背景直接写成报表口吻、现金流、可量化、概率、止损线、变量、算法或后台数据异常。",
-            "技术腔禁用：正文不要写测试员的职业病、边界、溢出、概率、变量、数据流、衰减曲线、测试用例、把收益拉到最高；改成看余额、问价、数铜、等蓝、摸耐久、背包快满。",
+            "职业背景落地：苏叶做过外包测试，只能体现为多看公告、提示、NPC回话和别人忽略的异常细节；不要写成凡事先看成本、先问价、先退，也不要把职业背景直接写成报表口吻、现金流、可量化、概率、止损线、变量、算法或后台数据异常。",
+            "技术腔禁用：正文不要写测试员的职业病、边界、溢出、概率、变量、数据流、衰减曲线、测试用例、把收益拉到最高；改成公告停顿、提示闪烁、背包格变化、NPC回话前后不一致、旁人误判。",
             "口语化对话：如果本段有对话，至少写成一来一回再接一句反应；不要只写“修。”“不组。”“先走。”这种口令。",
             "比喻限额：本段最多1处使用“像”，不要写仿佛、犹如、宛如；能写动作就写动作。",
             "报告腔禁用：不要写“意味着、这说明、规则被撬开、常规掉落池、系统把溢出部分折算、模型跑不动”。发现异常时，写成背包格变满、提示闪一下、手指停住、旁人看不懂或主角先收东西。",
@@ -209,7 +216,7 @@ def build_segment_prompt(
             f"必须自然写到：{spec.required_surface}",
             f"禁止写到：{spec.forbidden_surface or '无额外禁项'}",
             director_card_text,
-            f"目标篇幅：约{spec.target_chars}字；短句为主，少解释腔，少套话。",
+            f"目标篇幅：约{spec.target_chars}字；句子按场面自然长短，少解释腔，少套话。",
             "分段写作规则：本段只完成自己的戏剧职责，不要提前替后续片段收束，不要把设定写成条目。",
             "事实锁定：沿用本章计划里的怪物、地点、职业、面板数值和背包账本；不得把计划中的怪物、材料、NPC改名，也不要让生命/法力/属性无原因跳变。",
             f"变体事实锁：{'；'.join(fact_locks) if fact_locks else '沿用导演卡和推演计划，不新增背景病费、前世或新怪物。'}",
@@ -495,7 +502,7 @@ def build_style_adapt_prompt(body: str, plan: dict[str, Any]) -> str:
             "2. 说明腔 → 场面：把作者宣告/百科段改成主角能看见、听见、触到的物件、价格、对话、面板反馈",
             "3. 机械腔 → 人感：连续段首主语相同时换成动作/物件/对话/环境开头；判断句拐杖换成具体反应",
             "4. 比喻配额：删减明显堆砌的'像/仿佛'，但保留 1-2 个有效比喻",
-            "5. 段落推进：在重要短句前后补 4-6 句的连续动作块",
+            "5. 段落推进：在关键反应前后补 4-6 句的连续动作块",
             "6. 报告腔禁词必须清零：不要保留模型拆规则时常用的抽象判断词",
             "",
             "硬禁止（违反任一就视作失败）：",

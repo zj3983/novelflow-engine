@@ -138,7 +138,8 @@ class BaseOpenAIProvider:
         return resolve_openai_runtime_settings(self.runtime_key)
     
     def available(self) -> bool:
-        return bool(self._runtime_settings().api_key)
+        settings = self._runtime_settings()
+        return settings.provider == "codexcli" or bool(settings.api_key)
 
     def _set_last_error(self, reason: str) -> None:
         self._last_error = compact_text(reason, 160)
@@ -152,7 +153,12 @@ class BaseOpenAIProvider:
     def _post_json(self, path: str, payload: dict, settings: Any | None = None) -> dict:
         settings = settings or self._runtime_settings()
         return post_json_with_retry(
-            settings.base_url, path, payload, settings.api_key,
+            settings.base_url,
+            path,
+            payload,
+            settings.api_key,
+            provider=settings.provider,
+            codex_command=settings.codex_command,
         )
 
 
@@ -225,7 +231,7 @@ class BaseLLMAgent(Generic[T]):
     def call_llm(self, story: StoryState, **kwargs: Any) -> T | None:
         """Call the LLM and return the parsed result, or None on failure."""
         settings = self._runtime_settings(story)
-        if not settings.api_key:
+        if settings.provider != "codexcli" and not settings.api_key:
             return None
         
         model = self._resolve_model(story)
@@ -241,7 +247,12 @@ class BaseLLMAgent(Generic[T]):
         
         try:
             response = post_json_with_retry(
-                settings.base_url, "/chat/completions", payload, settings.api_key,
+                settings.base_url,
+                "/chat/completions",
+                payload,
+                settings.api_key,
+                provider=settings.provider,
+                codex_command=settings.codex_command,
             )
             content = response["choices"][0]["message"]["content"]
             parsed = json.loads(content)

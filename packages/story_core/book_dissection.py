@@ -177,8 +177,8 @@ def _conflict_movement(combat_lines: list[str], task_lines: list[str]) -> str:
     if combat_lines:
         return "冲突从观察目标推进到出手，适合学习小阻力推动小收益。"
     if task_lines:
-        return "冲突由任务门槛推动，材料差额天然制造下一场行动。"
-    return "冲突推进较轻，需要检查是否有明确对手、门槛或时间压力。"
+        return "冲突由任务前置推动，材料差额天然制造下一场行动。"
+    return "冲突推进较轻，需要检查是否有明确对手、前置条件或时间压力。"
 
 
 def _dialogue_function(dialogue_lines: list[str]) -> str:
@@ -219,13 +219,15 @@ def _detect_setting_conflicts(body: str, state: dict[str, Any], sections: dict[s
     level = str(protagonist.get("level", ""))
     level_one = "Lv.1" in level or re.search(r"(?:^|[^0-9])1级", body)
     if level_one and "转职任务" in body:
-        _add_issue(sections, "设定冲突", "Lv.1直接接转职任务过早，转职门槛需要前置等级、导师或试炼条件。")
+        _add_issue(sections, "设定冲突", "Lv.1直接接转职任务过早，转职需要前置等级、导师或试炼条件。")
         _add_issue(sections, "主要问题", "等级进度与转职节点冲突。")
-        _add_issue(sections, "不爽原因", "读者还没看到积累和门槛，提前转职会像跳进度。")
-        _add_issue(sections, "下一版改法", "把转职改成听到线索、看到大厅门槛或领取前置试炼。")
+        _add_issue(sections, "不爽原因", "读者还没看到积累和前置条件，提前转职会像跳进度。")
+        _add_issue(sections, "下一版改法", "把转职改成听到线索、看到大厅条件或领取前置试炼。")
 
 
 def _extract_project_craft_read(body: str, sections: dict[str, list[str]]) -> None:
+    if _extract_project_craft_read_chinese(body, sections):
+        return
     exp = _last_match(body, r"经验[:：]?(\d+/\d+)")
     hp = _last_match(body, r"生命[:：]?(\d+/\d+)")
     mp = _last_match(body, r"法力[:：]?(\d+/\d+)")
@@ -257,7 +259,7 @@ def _extract_project_craft_read(body: str, sections: dict[str, list[str]]) -> No
         if venom is not None and quest_need > venom:
             _add_issue(sections, "冲突推进", f"清道夫委托前置任务需要{quest_need}份灰狼毒腺，当前毒腺{venom}，还差{quest_need - venom}份，下一章目标清楚。")
         else:
-            _add_issue(sections, "冲突推进", f"清道夫委托前置任务需要{quest_need}份灰狼毒腺，任务门槛已经露出。")
+            _add_issue(sections, "冲突推进", f"清道夫委托前置任务需要{quest_need}份灰狼毒腺，下一步条件已经露出。")
 
     if has_drop_boost:
         _add_issue(sections, "爽点来源", "掉落判定×1000已经露出，爽点来自隐藏优势被主角确认，但还没有公开暴露。")
@@ -268,14 +270,126 @@ def _extract_project_craft_read(body: str, sections: dict[str, list[str]]) -> No
         _add_issue(sections, "可写入提示词", f"承接章末账本：经验{exp}、灰狼毒腺{venom}、清道夫委托还差{quest_need - venom}份，不要跳到转职或高阶任务。")
 
 
+def _extract_project_craft_read_chinese(body: str, sections: dict[str, list[str]]) -> bool:
+    if not any(token in body for token in ("经验", "生命", "法力", "背包", "清道夫委托", "后坡巡查")):
+        return False
+
+    exp = _last_match(body, r"经验[：:]?\s*(\d+\s*/\s*\d+)")
+    hp = _last_match(body, r"生命[：:]?\s*(\d+\s*/\s*\d+)")
+    mp = _last_match(body, r"法力[：:]?\s*(\d+\s*/\s*\d+)")
+    durability = _last_match(body, r"新手法杖[：:]?\s*(\d+\s*/\s*\d+)")
+    backpack_line = _last_match(body, r"背包[：:]\s*([^\n。]+)")
+
+    inventory: dict[str, int] = {}
+    if backpack_line:
+        for item, count in re.findall(r"([\u4e00-\u9fffA-Za-z0-9_]+)\s*[×xX*]\s*(\d+)", backpack_line):
+            inventory[item] = int(count)
+    for item, unit in (("灰狼毒腺", "份"), ("粗糙狼皮", "张")):
+        count = _last_chinese_item_count(body, item, unit)
+        if count is not None and item not in inventory:
+            inventory[item] = count
+    if "清道夫委托已完成" in body and "灰狼毒腺" not in inventory:
+        inventory["灰狼毒腺"] = 0
+
+    parts: list[str] = []
+    if exp:
+        parts.append(f"经验{exp.replace(' ', '')}")
+    if hp:
+        parts.append(f"生命{hp.replace(' ', '')}")
+    if mp:
+        parts.append(f"法力{mp.replace(' ', '')}")
+    if durability:
+        parts.append(f"新手法杖{durability.replace(' ', '')}")
+    for item in ("灰狼毒腺", "粗糙狼皮", "小法力药水"):
+        if item in inventory:
+            parts.append(f"{item}{inventory[item]}")
+    if parts:
+        _add_issue(sections, "主角进展", "本章进展落到章末账本：" + "，".join(parts) + "。")
+
+    if "清道夫委托已完成" in body:
+        _add_issue(sections, "章节作用", "本章兑现第一章留下的清道夫委托：补齐毒腺、领取30铜，再把收益拆成修法杖、蓝药和后坡押金。")
+        _add_issue(sections, "爽点来源", "爽点来自隐藏爆率带来的任务领先，但表面上只像会挑残血、会省耐久和运气好。")
+
+    patrol_progress = _last_match(body, r"后坡巡查[：:]\s*(\d+\s*/\s*\d+)")
+    if patrol_progress:
+        _add_issue(sections, "章节作用", f"本章把后坡巡查推进到{patrol_progress.replace(' ', '')}，同时保留血蓝、药水和钱袋压力。")
+
+    quest_need = _last_chinese_item_count(body, "提交灰狼毒腺", "份") or _last_numeric_item_count(body, "提交灰狼毒腺")
+    if patrol_progress and patrol_progress.replace(" ", "") != "3/3":
+        _add_issue(
+            sections,
+            "冲突推进",
+            f"后坡巡查卡在{patrol_progress.replace(' ', '')}：章末血蓝低、药水用完、钱袋为空，下一步必须先补给或等恢复，再进第一格内侧刻标记。",
+        )
+        _add_issue(
+            sections,
+            "可写入提示词",
+            f"下一章承接：夜烬仍是Lv.1，后坡巡查{patrol_progress.replace(' ', '')}，钱袋空，血蓝不足；先解决补给，再完成最后一段。",
+        )
+    elif "后坡巡查未登记" in body or ("失败不退押金" in body and "倒木" in body):
+        _add_issue(
+            sections,
+            "冲突推进",
+            "冲突已经从清道夫委托转到后坡巡查：押金已交、钱袋归零、血蓝未满、倒木旁两只狼卡路，下一步要等蓝后摸路牌碎片。",
+        )
+    elif quest_need and inventory.get("灰狼毒腺", 0) < quest_need:
+        missing = quest_need - inventory.get("灰狼毒腺", 0)
+        _add_issue(sections, "冲突推进", f"清道夫委托需要{quest_need}份灰狼毒腺，当前灰狼毒腺{inventory.get('灰狼毒腺', 0)}，还差{missing}份，下一步目标清楚。")
+        _add_issue(sections, "下一版改法", f"下一章先承接空蓝和耐久压力，等法力恢复后补齐{missing}份灰狼毒腺，再处理清道夫委托。")
+    elif "清道夫委托" in body:
+        _add_issue(sections, "冲突推进", "清道夫委托作为本章前置任务推动行动，材料、修理费和药水价格共同限制下一步。")
+
+    if "掉落判定×1000" in body:
+        _add_issue(sections, "爽点来源", "掉落判定×1000仍只对夜烬可见，旁人只能从排队、残血捡漏和运气好来误判。")
+    elif "混沌之种" in body:
+        _add_issue(sections, "爽点来源", "混沌之种异常仍只对夜烬可见，旁人只能从排队、残血捡漏和运气好来误判。")
+
+    if "后坡巡查未登记" in body:
+        _add_issue(sections, "可写入提示词", "下一章承接：夜烬仍是Lv.1，钱袋0铜，法力12/60，后坡巡查未登记；先等蓝，再试倒木旁路牌碎片。")
+    return True
+
+
+def _last_numeric_item_count(text: str, label: str) -> int | None:
+    values = [int(match.group(1)) for match in re.finditer(rf"{re.escape(label)}\s*[×xX*]\s*(\d+)", text)]
+    return values[-1] if values else None
+
+
+def _last_chinese_item_count(text: str, label: str, unit: str) -> int | None:
+    pattern = rf"{re.escape(label)}\s*([零一二三四五六七八九十两\d]+)\s*{re.escape(unit)}"
+    values: list[int] = []
+    for match in re.finditer(pattern, text):
+        prefix = text[max(0, match.start() - 8) : match.start()]
+        if "获得" in prefix:
+            continue
+        raw = match.group(1)
+        parsed = int(raw) if raw.isdigit() else _parse_simple_chinese_number(raw)
+        if parsed is not None:
+            values.append(parsed)
+    return values[-1] if values else None
+
+
+def _parse_simple_chinese_number(value: str) -> int | None:
+    digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if value.isdigit():
+        return int(value)
+    if value == "十":
+        return 10
+    if "十" in value:
+        left, _, right = value.partition("十")
+        tens = digits.get(left, 1 if not left else 0)
+        ones = digits.get(right, 0) if right else 0
+        return tens * 10 + ones
+    return digits.get(value)
+
+
 def _detect_dialogue_issues(body: str, sections: dict[str, list[str]]) -> None:
     quoted = re.findall(r"[\"“](.*?)[\"”]", body)
     short_quotes = [quote for quote in quoted if len(quote.strip()) <= 2]
     if len(short_quotes) >= 2:
-        _add_issue(sections, "对话问题", "连续短句对话过短，不像角色在交换目标、价格或风险。")
+        _add_issue(sections, "对话问题", "连续省略回答过多，不像角色在交换目标、价格或风险。")
         _add_issue(sections, "主要问题", "对话只剩应答，没有推动选择。")
         _add_issue(sections, "下一版改法", "让每句对话至少带出一个态度、条件、价格或误解。")
-        _add_issue(sections, "可写入提示词", "避免连续“行/好/嗯”式短答，把短答扩成带动作和信息量的角色回应。")
+        _add_issue(sections, "可写入提示词", "避免连续“行/好/嗯”式省略回答，把回答扩成带动作和信息量的角色回应。")
 
 
 def _first_match(text: str, pattern: str) -> str:
@@ -343,7 +457,7 @@ def _detect_repetitive_combat(body: str, sections: dict[str, list[str]]) -> None
 def _detect_missing_progress(body: str, sections: dict[str, list[str]]) -> None:
     if not _has_any(body, PROGRESS_TERMS):
         _add_issue(sections, "主要问题", "本章缺少明确进展，读者不容易判断主角推进了什么。")
-        _add_issue(sections, "不爽原因", "没有可见收益或新门槛，章节读完容易像原地打转。")
+        _add_issue(sections, "不爽原因", "没有可见收益或新条件，章节读完容易像原地打转。")
         _add_issue(sections, "下一版改法", "补出至少一个可记账变化：材料、经验、任务阶段、装备耐久或NPC态度。")
         _add_issue(sections, "可写入提示词", "章节末必须写清本章新增收益、剩余缺口和下一步行动。")
 

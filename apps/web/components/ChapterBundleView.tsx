@@ -97,6 +97,15 @@ function formatConcreteDensity(metrics: Record<string, number> | undefined): str
   return typeof value === "number" ? `${Math.round(value * 100)}%` : "—";
 }
 
+function formatReviewIssue(issue: unknown): string {
+  if (!issue) return "";
+  if (typeof issue === "string") return issue;
+  if (typeof issue === "object" && "reason" in issue) {
+    return String((issue as { reason?: unknown }).reason || "");
+  }
+  return String(issue);
+}
+
 export function ChapterBundleView({
   story,
   bundle,
@@ -409,10 +418,10 @@ export function ChapterBundleView({
                   {writingReview?.pass
                     ? "审稿通过：本章已覆盖网文钩子、背景融入、主角动机、类型规则、世界反应和章末钩子。"
                     : writingReview?.issues?.length
-                      ? writingReview.issues.join("；")
+                      ? writingReview.issues.map(formatReviewIssue).join("；")
                       : bundle.quality_report.ok
                         ? "本章状态正常。"
-                        : bundle.quality_report.issues.join("；")}
+                        : bundle.quality_report.issues.map(formatReviewIssue).join("；")}
                 </p>
                 {reviewScores.length ? (
                   <div className="chapter-panel__list">
@@ -434,7 +443,7 @@ export function ChapterBundleView({
                       公式句 {formatAiMetric(aiFlavorMetrics, "formula_count")}；抽象词 {formatAiMetric(aiFlavorMetrics, "abstract_count")}；具体度{" "}
                       {formatConcreteDensity(aiFlavorMetrics)}
                     </p>
-                    {aiFlavorReview.issues?.[0] ? <p className="hint">{aiFlavorReview.issues[0]}</p> : null}
+                    {aiFlavorReview.issues?.[0] ? <p className="hint">{formatReviewIssue(aiFlavorReview.issues[0])}</p> : null}
                   </article>
                 ) : null}
                 <div className="chapter-panel__actions">

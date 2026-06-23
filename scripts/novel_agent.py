@@ -67,6 +67,8 @@ def _writing_packet_url(api_base: str, project_id: str, chapter_number: int | No
         query_params["chapter_number"] = chapter_number
     query = urllib.parse.urlencode(query_params)
     suffix = f"?{query}" if query else ""
+    if project_id.startswith("file:"):
+        return f"{base}/file-projects/{encoded_project_id}/writing-packet{suffix}"
     return f"{base}/projects/{encoded_project_id}/writing-packet{suffix}"
 
 

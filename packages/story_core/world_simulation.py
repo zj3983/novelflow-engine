@@ -55,7 +55,7 @@ def _lead_class_path(story: StoryState) -> str:
         class_path = _usable_identity(story.characters[0].game_panel.class_path)
         if class_path:
             return class_path
-    return "元素法师学徒"
+    return "见习冒险者（未转职）"
 
 
 def _chapter_contract(chapter_seed: dict[str, Any]) -> dict[str, Any]:
@@ -241,7 +241,7 @@ def simulate_world_events(
                 _event(
                     event_id="c1-character-create",
                     actor=protagonist,
-                    action="完成建号、游戏ID与职业选择。",
+                    action="完成建号、游戏ID、初始身份与武器/基础技能选择。",
                     target=class_path,
                     location="角色创建界面",
                     visible_to=[protagonist, "系统界面"],
@@ -259,14 +259,14 @@ def simulate_world_events(
                 _event(
                     event_id="c1-small-verify",
                     actor=protagonist,
-                    action="通过低级怪物掉落验证千倍爆率，把普通刷怪流程压短成任务、装备、技能或路线门槛上的领先。",
-                    target="下一步门槛与经验进度",
+                    action="通过低级怪物掉落验证千倍爆率，把普通刷怪流程压短成前置任务、装备、技能或路线条件上的领先。",
+                    target="下一步前置任务与经验进度",
                     location="灰烬村外",
                     cause="必须先确认高爆率能不能稳定转化为升级路线优势。",
                     visible_to=[protagonist, "附近普通玩家"],
                     consequences=[
                         "只产生个人收益和少量可见打怪痕迹；旁人最多觉得运气好，不足以扰动全服。",
-                        str(game_world.get("chapter_pressure") or "首次验证留下下一步任务/装备/技能或路线门槛。"),
+                        str(game_world.get("chapter_pressure") or "首次验证留下下一步前置任务、装备条件、技能条件或路线条件。"),
                     ],
                     state_delta={
                         "economy": {"inventory_hint": "新增低级材料"},
@@ -289,7 +289,7 @@ def simulate_world_events(
                         if variant_id == "boundary-inventory-route"
                         else "以修理费、法杖耐久和下一轮战斗风险影响主角选择。"
                         if variant_id == "boundary-durability-route"
-                        else "以岗位服务、报价或任务门槛影响主角选择。"
+                        else "以岗位服务、报价或前置任务影响主角选择。"
                     ),
                     location=(
                         "灰烬村仓库窗口"
@@ -386,12 +386,12 @@ _SCENE_TEXTURE_BY_TEMPLATE: dict[str, dict[str, Any]] = {
     "character_creation": {
         "sensory_anchors": ["视野里浮动的光面板/虚拟UI的微光", "选项切换时的细微反馈音", "指尖在虚拟按钮上的停留与犹豫"],
         "subtext": "表面是选职业，里子是给自己留一条可撤的退路。",
-        "rhythm_hint": "staccato：选项→停顿→选项，短节拍，呈现计算与犹豫的交替。",
+        "rhythm_hint": "紧凑推进：选项→停顿→选项，呈现计算与犹豫的交替。",
     },
     "small_verification": {
         "sensory_anchors": ["怪物倒地时一个具体的声音/材料落地的反光", "主角呼吸或心跳的一次明显变化", "环境光在掉落物上的折射"],
         "subtext": "表面是验证爆率，里子是怕这只是个错觉。",
-        "rhythm_hint": "dense：动作密度高，连续短句推进，给读者首次兑现的爽感。",
+        "rhythm_hint": "dense：动作密度高，连续动作推进，给读者首次兑现的爽感。",
     },
     "single_npc_service": {
         "sensory_anchors": ["NPC柜台/工位上一个反复出现的物件", "NPC一个标志性的小动作（贴标签/擦杯/翻账）", "店里某个底色气味（药/油/纸）"],
@@ -401,7 +401,7 @@ _SCENE_TEXTURE_BY_TEMPLATE: dict[str, dict[str, Any]] = {
     "chapter_1_next_step": {
         "sensory_anchors": ["主角把材料收进背包时的一个动作", "环境里一个未解决的余响（脚步/远处招呼/天光变化）", "身体上一个轻微的疲劳信号"],
         "subtext": "表面是收材料，里子是把决策推迟到下一章去赌。",
-        "rhythm_hint": "staccato：短句收束，留下未完成感，避免把张力一次性放完。",
+        "rhythm_hint": "紧凑收束，留下未完成感，避免把张力一次性放完。",
     },
 }
 
@@ -648,7 +648,36 @@ def select_scene_cards(
         key=lambda event: (order_rank.get(event.template_id, 999), -event.prose_priority),
     )
     cards: list[SceneCard] = []
-    for event in sorted_events[:5]:
+    plot = simulation_plan.get("plot_simulation") if isinstance(simulation_plan.get("plot_simulation"), dict) else {}
+    if plot:
+        cards.append(
+            SceneCard(
+                scene_id="s0-plot-simulation",
+                template_id="plot_simulation",
+                location="本章剧情线",
+                pov=str(plot.get("pov") or plot.get("protagonist") or "主角"),
+                purpose=f"剧情推演：下一章目标从这里落地；{plot.get('reader_hook') or '先定读者期待和本章推进'}",
+                conflict=f"下一步目标：{plot.get('choice_point') or '主角必须在收益、代价和暴露风险之间做选择'}",
+                source_events=[],
+                must_show=[
+                    str(plot.get("chapter_desire") or ""),
+                    *[str(item) for item in plot.get("obstacle_chain", []) if str(item).strip()],
+                    str(plot.get("payoff") or ""),
+                    str(plot.get("cost") or ""),
+                    str(plot.get("emotional_turn") or ""),
+                    str(plot.get("outsider_misread") or ""),
+                    str(plot.get("ending_hook") or ""),
+                ],
+                must_not_explain=[
+                    *META_TERMS,
+                    "不要把剧情推演、读者期待、爽点、钩子这些后台词写进正文。",
+                    "不要把本卡写成规则说明；要落成角色动作、对话、代价和结果。",
+                ],
+                ending_pressure=str(plot.get("ending_hook") or ""),
+            )
+        )
+    remaining_slots = max(0, (6 if plot else 5) - len(cards))
+    for event in sorted_events[:remaining_slots]:
         template = templates.get(event.template_id, {})
         must_show = [event.action, *event.consequences[:2]]
         template_must_show = template.get("must_show")

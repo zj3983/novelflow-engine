@@ -20,7 +20,7 @@ CRITICAL_PROMPT_RULES = [
     "【系统提示：】每章最多4次；普通掉落、消耗和状态变化优先写成角色看到的界面反馈或动作后果。",
     "新名词配额：本章新地名/新人物/新道具/新概念合计不超过4个；已有概念优先复用并赋予新功能。",
     "背景和世界局势不得用全知宣告总结；必须落到主角能看见的价格、队伍、公告、对话、物件和环境变化。",
-    "已知demo复读句不得照抄：'成本已经先到了'、'第一笔账还没赚到'、'第一笔委托还没交'、'账还没赚到'。这是LLM跨稿粘性短句，找新的章末收束方式。",
+    "已知demo复读句不得照抄：'成本已经先到了'、'第一笔账还没赚到'、'第一笔委托还没交'、'账还没赚到'。这是LLM跨稿粘性句，找新的章末收束方式。",
     "情绪配额：主角内心必须有至少3处微小情绪溢出（不爽/疲惫/犹豫/侥幸/委屈/苦笑/咬牙/没忍住/眉头一皱/喉头紧 等任一类），分散在章首、章中、章末。"
     "情绪不是宣告'他很愤怒'，也不是删掉——必须落到具体身体动作（手指攥紧/视线移开/苦笑半秒/走神看了下窗外）或一个不合时宜的小念头上。"
     "重大节点（首次兑现/重大失误/章末决断）必须各有一拍情绪锚，不能只剩数字和判断。",
@@ -289,7 +289,7 @@ def review_paragraph_form(text: str, *, min_long_per_block: int = 1, block_size:
             f"段落形态过碎：共{len(paragraphs)}段，仅{long_para_count}段含4句以上连续动作或观察，"
             f"短段占比{int(short_ratio * 100)}%。"
         )
-        revision_plan.append("把若干相邻短段合成4-6句的连续块（环境观察、连续动作、对话回合），让短句的强调真有重量。")
+        revision_plan.append("把若干相邻短段合成4-6句的连续块（环境观察、连续动作、对话回合），让重点反应有足够铺垫。")
 
     return {
         "pass": not issues,
@@ -608,7 +608,7 @@ def review_refrain_traps(text: str) -> dict[str, Any]:
     revision_plan: list[str] = []
     if hits:
         issues.append(f"正文照抄了已知demo复读句：{'、'.join(hits[:3])}。")
-        revision_plan.append("换章末收束方式：用动作、物件、未结算数字或半句对话代替这组粘性短句。")
+        revision_plan.append("换章末收束方式：用动作、物件、未结算数字或半句对话代替这组粘性句。")
     return {
         "pass": not issues,
         "issues": issues,
@@ -636,6 +636,7 @@ HARD_REVIEWERS: frozenset[str] = frozenset({
     "hook_landed",                # 章末钩子未在正文末段落地
     "pacing_stagnation",          # 跨章节连续无推进（HARD-003 等价）
     "required_beats_critical",    # >50% required_beats 未在正文落地
+    "plot_spine_critical",
 })
 
 SOFT_REVIEWERS: frozenset[str] = frozenset({
@@ -651,6 +652,7 @@ SOFT_REVIEWERS: frozenset[str] = frozenset({
     "pacing_emotion_gap",         # 情感线断档过久
     "pacing_transition_run",      # 过渡章连发过多
     "required_beats_partial",     # required_beats 部分覆盖或少量缺失
+    "plot_spine_partial",
 })
 
 SOFT_REVISION_THRESHOLD = 3

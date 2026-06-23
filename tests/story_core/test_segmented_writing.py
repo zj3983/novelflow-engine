@@ -22,7 +22,7 @@ def test_first_chapter_segments_keep_opening_scope():
 
     assert [spec.key for spec in specs] == ["entry_login", "small_verification", "decision_hook"]
     assert "现实压力" in specs[0].title
-    assert "职业" in specs[0].required_surface
+    assert "初始身份" in specs[0].required_surface
     assert "夜烬建号完成" in specs[0].exit_state
     assert specs[0].title == "现实压力与登录建号"
     assert specs[1].title == "低级怪小验证"

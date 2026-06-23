@@ -43,6 +43,16 @@ def test_regeneration_quality_allows_soft_scene_coverage_warnings():
     assert _regeneration_quality_blocking(quality_report, writing_review) is False
 
 
+def test_regeneration_quality_blocks_short_chapter():
+    writing_review = {
+        "issues": ["章节字数偏少：当前约3061字，最低要求3800字。"],
+        "critical_review": {"hard_issues": [], "severity_summary": {"has_hard_violation": False}},
+    }
+    quality_report = {"ok": False, "issues": ["writing_review"], "writing_review": writing_review}
+
+    assert _regeneration_quality_blocking(quality_report, writing_review) is True
+
+
 def test_regeneration_quality_still_blocks_progression_overreach():
     writing_review = {
         "issues": ["第二章推进过快：从第一章账本直接完成元素回廊前置或升级。"],
@@ -91,7 +101,13 @@ def test_file_project_store_writes_rewrites_and_commits(tmp_path, monkeypatch):
     )
 
     assert written["schema_version"] == "file-project-write/v1"
-    assert written["review"]["writing_review"]["pass"] is True
+    assert "ai_flavor_review" in written["review"]
+    assert "cold_reader_review" in written["review"]
+    assert "cold_reader_review" in written["review"]["writing_review"]
+    assert written["review"]["length_review"]["pass"] is False
+    assert written["review"]["length_review"]["body_chars"] < written["review"]["length_review"]["min_chars"]
+    assert written["review"]["writing_review"]["pass"] is False
+    assert any("章节字数偏少" in issue for issue in written["review"]["writing_review"]["issues"])
     assert (root / ".story-system" / "chapters" / "0001.json").exists()
     assert (root / "chapters" / "0001-Chapter One.md").read_text(encoding="utf-8").startswith("Night Ember")
     assert store.summary()["current_chapter"] == 1
@@ -109,7 +125,9 @@ def test_file_project_store_writes_rewrites_and_commits(tmp_path, monkeypatch):
     )
 
     assert rewritten["schema_version"] == "file-project-rewrite/v1"
-    assert rewritten["review"]["writing_review"]["pass"] is True
+    assert "ai_flavor_review" in rewritten["review"]
+    assert "cold_reader_review" in rewritten["review"]
+    assert "cold_reader_review" in rewritten["review"]["writing_review"]
     assert not (root / "chapters" / "0001-Chapter One.md").exists()
     assert (root / "chapters" / "0001-Chapter One Revised.md").read_text(encoding="utf-8").startswith("Night Ember")
     latest_commit = json.loads((root / ".story-system" / "commits" / "latest_commit.json").read_text(encoding="utf-8"))
@@ -218,6 +236,286 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
     assert packet["state"]["time_state"]["current_scene_time"] == "第1章章末"
     latest_commit = json.loads((root / ".story-system" / "commits" / "latest_commit.json").read_text(encoding="utf-8"))
     assert latest_commit["operation"] == "generate"
+
+
+def test_file_project_store_persists_writing_lessons_from_reviews(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(root)
+
+    store.write_chapter(
+        chapter_number=1,
+        title="Lesson",
+        body="Night Ember walked to the slope.",
+        next_outline="Continue.",
+        summary="Short weak scene.",
+    )
+
+    state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    project = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
+    assert state["writing_lessons"]
+    assert project["world_blueprint"]["writing_learning"]["lessons"] == state["writing_lessons"][-8:]
+
+
+def test_file_project_writing_packet_requires_fast_visible_progression(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "genre": "webgame",
+            "current_chapter": 4,
+            "current_focus": "Turn the hidden route into a visible level gain.",
+            "world_facts": [],
+        },
+    )
+
+    packet = store.writing_packet(5)
+
+    assert any("前10章节奏要快" in rule for rule in packet["style_rules"])
+    assert any("连续两章不能只拿线索不给成长" in rule for rule in packet["style_rules"])
+    assert packet["state"]["current_focus"] == "Turn the hidden route into a visible level gain."
+
+
+def test_file_project_writing_packet_exposes_outline_constraints(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "current_focus": "Follow the arc.",
+            "world_blueprint": {
+                "current_arc": "Opening arc.",
+                "opening_arc": {
+                    "golden_three_chapters": {"1": {"payoff": "first sale"}},
+                    "chapter_beats": [
+                        {
+                            "chapter": 2,
+                            "title": "First Sale",
+                            "required_payoff": "finish first sale",
+                            "ending_hook": "buyer asks source",
+                        }
+                    ],
+                },
+                "volume_plan": {"volume_title": "Newbie Village"},
+                "longform_framework": {"progression_ladder": ["Lv.1-5"]},
+                "chapter_formula": ["goal-cost-payoff-hook"],
+                "progression_rules": ["visible gain every chapter"],
+                "forbidden_breaks": ["do not skip the outline"],
+            },
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": []},
+    )
+
+    packet = store.writing_packet(2)
+
+    assert packet["target_chars"] == {"min": 3800, "max": 5500}
+    assert packet["chapter_number"] == 2
+    assert any("正文必须满足目标字数区间" in lock for lock in packet["hard_locks"])
+    assert any("当前主线焦点：Follow the arc." in lock for lock in packet["hard_locks"])
+    assert packet["scene_cards"][0]["title"] == "First Sale"
+    assert packet["scene_cards"][0]["purpose"] == "finish first sale"
+    assert packet["scene_cards"][0]["ending_hook"] == "buyer asks source"
+    assert isinstance(packet["character_cards"], list)
+    constraints = packet["outline_constraints"]
+    assert constraints["current_arc"] == "Opening arc."
+    assert constraints["opening_arc"]["golden_three_chapters"]["1"]["payoff"] == "first sale"
+    assert constraints["opening_arc"]["chapter_beats"][0]["required_payoff"] == "finish first sale"
+    assert constraints["volume_plan"]["volume_title"] == "Newbie Village"
+    assert constraints["longform_framework"]["progression_ladder"] == ["Lv.1-5"]
+    assert constraints["chapter_formula"] == ["goal-cost-payoff-hook"]
+    assert constraints["progression_rules"] == ["visible gain every chapter"]
+    assert constraints["forbidden_breaks"] == ["do not skip the outline"]
+    assert isinstance(packet["state"]["characters"], list)
+
+
+def test_state_restores_protagonist_character_card_from_ledger(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "current_chapter": 4,
+            "world_facts": [],
+            "characters": [
+                {
+                    "name": "药剂师洛婶",
+                    "role": "服务NPC",
+                    "goals": ["收任务材料"],
+                    "memory": ["药剂铺NPC。"],
+                }
+            ],
+            "progression_ledger": {
+                "protagonist": {
+                    "real_name": "苏叶",
+                    "game_id": "夜烬",
+                    "class_path": "见习冒险者（未转职）",
+                    "level": "Lv.3",
+                    "exp": "196/300",
+                    "hp": "91/140",
+                    "mp": "22/80",
+                    "skills": ["基础火球术", "火线牵引"],
+                },
+                "economy": {"game_currency": "空", "inventory": {"灰狼毒腺": 11}},
+                "equipment": {"weapon": "新手法杖", "durability": "10/12"},
+            },
+        },
+    )
+
+    characters = store.state()["characters"]
+    protagonist = next(character for character in characters if character["name"] == "苏叶")
+
+    assert protagonist["role"] == "protagonist"
+    assert protagonist["game_id"] == "夜烬"
+    assert protagonist["game_panel"]["level"] == "Lv.3"
+    assert protagonist["game_panel"]["inventory"]["灰狼毒腺"] == 11
+
+
+def test_state_adds_proposed_character_card_before_outline_appearance(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "current_focus": "第5章按大纲写担保名单：确认白河仓库收购规则和交易风险，收购方开始追问材料来源。",
+            "world_blueprint": {
+                "opening_arc": {
+                    "chapter_beats": [
+                        {
+                            "chapter": 5,
+                            "title": "担保名单",
+                            "required_payoff": "确认白河仓库收购规则和交易风险",
+                            "ending_hook": "收购方开始追问材料来源",
+                        }
+                    ]
+                }
+            },
+        },
+        state={"story_id": "s-file", "current_chapter": 4, "world_facts": []},
+    )
+
+    characters = store.state()["characters"]
+    proposed = next(character for character in characters if character["name"] == "白河仓库收购方")
+
+    assert proposed["lifecycle_state"] == "proposed"
+    assert proposed["last_proposed_chapter"] == 5
+    assert "材料来源" in proposed["memory"][0]
+
+
+def test_chapter_entity_keeps_white_river_buyer_proposed_until_real_appearance(tmp_path):
+    store = FileProjectStore(tmp_path / "novel")
+
+    mention_only = store._chapter_entity_cards(
+        {
+            "chapter_number": 1,
+            "chapter_title": "灰狼坡到账",
+            "body": "帖子里的收购人ID叫白河仓库，认证是材料商。",
+        }
+    )
+    proposed = next(card for card in mention_only if card["name"] == "白河仓库收购方")
+
+    assert proposed["lifecycle_state"] == "proposed"
+    assert proposed["last_approved_chapter"] == 0
+
+    real_appearance = store._chapter_entity_cards(
+        {
+            "chapter_number": 5,
+            "chapter_title": "担保名单",
+            "body": "白河仓库的人追问材料来源，收购方问这批灰粉是不是从灰石裂缝来的。",
+        }
+    )
+    active = next(card for card in real_appearance if card["name"] == "白河仓库收购方")
+
+    assert active["lifecycle_state"] == "active"
+    assert active["last_approved_chapter"] == 5
+
+
+def test_state_sanitizes_placeholder_facts_from_writing_context(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "current_chapter": 2,
+            "world_facts": ["manual draft", "第2章事实：夜烬仍为Lv.1见习冒险者（未转职）", "fresh fact"],
+            "chapter_summaries": [
+                {
+                    "chapter_number": 2,
+                    "chapter_title": "Chapter Two",
+                    "facts": ["manual draft", "fresh chapter fact"],
+                    "primary_conflict": "manual draft",
+                    "secondary_conflict": {"note": "manual draft", "source": "secondary_conflict"},
+                    "event_beat": {"turn": "real beat"},
+                }
+            ],
+            "memory_index": [
+                {"chapter_number": 2, "chapter_title": "Chapter Two", "facts": ["夜烬仍为Lv.1见习冒险者", "clean memory"]}
+            ],
+        },
+    )
+
+    state = store.state()
+
+    assert state["world_facts"] == ["fresh fact"]
+    assert state["chapter_summaries"][0]["facts"] == ["fresh chapter fact"]
+    assert state["chapter_summaries"][0]["primary_conflict"] == {}
+    assert state["chapter_summaries"][0]["secondary_conflict"] == {}
+    assert state["chapter_summaries"][0]["event_beat"] == {"turn": "real beat"}
+    assert state["memory_index"][0]["facts"] == ["clean memory"]
+
+
+def test_rewrite_latest_chapter_keeps_canonical_state_and_summary(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 0,
+            "world_facts": [],
+        },
+    )
+    for number in range(1, 5):
+        store.write_chapter(
+            chapter_number=number,
+            title=f"Chapter {number}",
+            body=f"Night Ember chapter {number}.",
+            summary=f"Accepted summary {number}.",
+        )
+    chapter3_path = root / ".story-system" / "chapters" / "0003.json"
+    chapter3 = json.loads(chapter3_path.read_text(encoding="utf-8"))
+    chapter3["updated_story"] = {
+        "story_id": "s-file",
+        "outline": "A grounded game story.",
+        "genre": "webgame",
+        "style": "plain",
+        "current_chapter": 3,
+        "progression_ledger": {"protagonist": {"level": "Lv.1"}},
+    }
+    chapter3_path.write_text(json.dumps(chapter3, ensure_ascii=False), encoding="utf-8")
+    state_path = root / ".webnovel" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["current_chapter"] = 4
+    state["progression_ledger"] = {"protagonist": {"level": "Lv.2"}}
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    store.rewrite_chapter(
+        chapter_number=4,
+        title="Chapter 4",
+        body="Night Ember keeps the hidden route and returns to repair.",
+        instructions=["hidden route remains"],
+    )
+
+    state_after = json.loads(state_path.read_text(encoding="utf-8"))
+    chapter4 = json.loads((root / ".story-system" / "chapters" / "0004.json").read_text(encoding="utf-8"))
+    assert state_after["progression_ledger"]["protagonist"]["level"] == "Lv.2"
+    assert chapter4["chapter_summary"]["summary"] == "Accepted summary 4."
+    assert chapter4["chapter_summary"]["summary"] != "Manual rewrite chapter 4."
 
 
 def test_persist_bundle_ignores_stale_bundle_updated_story(tmp_path):
@@ -371,6 +669,83 @@ def test_regenerate_blocks_frozen_chapter(tmp_path):
         raise AssertionError("expected frozen chapter regeneration to fail")
 
 
+def test_freeze_opening_baseline_rebuilds_state_and_blocks_rewrites(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "Opening test.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 3,
+            "world_facts": [],
+            "timeline": ["chapter 1: stale shell"],
+            "chapter_summaries": [
+                {"chapter_title": "One", "summary": "stale unnumbered shell"},
+                {"chapter_number": 2, "chapter_title": "Old Two", "summary": "stale two"},
+            ],
+        },
+    )
+    store.write_chapter(chapter_number=1, title="One", body="Night Ember sees the grey prompt.", summary="First accepted.")
+    store.write_chapter(
+        chapter_number=2,
+        title="Two",
+        body="Night Ember submits 清道夫委托已提交 and 等级升到Lv.2. 钱袋：空。背包：粗糙狼皮×7，小法力药水×1。",
+        summary="Second accepted.",
+        instructions=["等级升到Lv.2", "钱袋：空", "灰狼毒腺×0", "粗糙狼皮×7", "小法力药水×1"],
+    )
+    store.write_chapter(chapter_number=3, title="Three", body="Night Ember reaches 后坡登记 and 灰石裂缝.", summary="Third accepted.")
+
+    frozen = store.freeze_opening_baseline(through_chapter=3)
+
+    assert frozen["chapters_frozen"] == [1, 2, 3]
+    assert frozen["preflight"]["ok"] is True
+    state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    assert [item["chapter_number"] for item in state["chapter_summaries"]] == [1, 2, 3]
+    assert "stale unnumbered shell" not in json.dumps(state, ensure_ascii=False)
+    assert state["progression_ledger"]["protagonist"]["level"] == "Lv.2"
+    assert state["progression_ledger"]["economy"]["game_currency"] == "空"
+    assert state["progression_ledger"]["economy"]["inventory"]["灰狼毒腺"] == 0
+    assert state["progression_ledger"]["continuity_lock"]["opening_baseline"]["next_chapter"] == 4
+    project = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
+    continuity = project["world_blueprint"]["continuity_state"]
+    assert [item["chapter_number"] for item in continuity["chapter_facts"]] == [1, 2, 3]
+    assert "stale two" not in json.dumps(project, ensure_ascii=False)
+
+    try:
+        store.write_chapter(chapter_number=1, title="Bad Rewrite", body="Should not write.", overwrite=True)
+    except ValueError as exc:
+        assert str(exc) == "chapter_frozen:1:write"
+    else:
+        raise AssertionError("expected frozen write to fail")
+
+
+def test_opening_preflight_reports_stale_tokens_after_baseline(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "Opening test.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 0,
+            "world_facts": [],
+        },
+    )
+    store.write_chapter(chapter_number=1, title="One", body="Night Ember starts.", summary="First.")
+    store.freeze_opening_baseline(through_chapter=1)
+    state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    state["world_facts"].append("旧设定：元素法师学徒。")
+    (root / ".webnovel" / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    report = FileProjectStore(root).opening_preflight(next_chapter=2)
+
+    assert report["ok"] is False
+    assert "元素法师学徒" in report["issues"][0]
+
+
 def test_file_project_store_dedupes_npc_aliases_and_filters_surface_entities(tmp_path):
     store = FileProjectStore(tmp_path / "novel")
     chapter = {
@@ -453,7 +828,7 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
                 "genre": "网游",
                 "style": "番茄升级流",
                 "current_chapter": 1,
-                "world_facts": ["世界摘要：保留。", "第1章事实：灰鼠毒腺x18。"],
+                "world_facts": ["世界摘要：保留。", "第1章事实：灰鼠毒腺x18。", "第4章章末：巡夜人残牌和废井污染源。"],
                 "progression_ledger": {
                     "inventory": ["灰鼠毒腺18份"],
                     "simulation_variant": {"id": "old"},
@@ -464,7 +839,7 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
                         "role": "主角",
                         "game_id": "夜烬",
                         "game_panel": {"game_id": "夜烬", "inventory": {"灰鼠毒腺": "18份"}},
-                        "memory": ["第1章灰鼠毒腺。", "现实压力。"],
+                        "memory": ["第1章灰鼠毒腺。", "第4章章末有巡夜人残牌。", "现实压力。"],
                     },
                     {"name": "公共频道", "role": "玩家群体", "memory": ["旧噪音。"]},
                 ],
@@ -487,9 +862,15 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
             seen_variants.append(variant)
             assert simulation_variant["skip_style_adapt"] is True
             assert simulation_variant["skip_expansion"] is False
-            assert "灰鼠" not in json.dumps(story.model_dump(mode="json"), ensure_ascii=False)
+            dumped_story = json.dumps(story.model_dump(mode="json"), ensure_ascii=False)
+            assert "灰鼠" not in dumped_story
+            assert "巡夜人残牌" not in dumped_story
+            assert "第4章" not in dumped_story
+            assert "废井" not in dumped_story
             assert story.chapter_summaries == []
             assert [character.name for character in story.characters] == ["苏叶"]
+            assert story.characters[0].game_panel.game_id == "夜烬"
+            assert story.characters[0].game_panel.inventory == {}
             updated_story = story.model_copy(update={"current_chapter": 1})
             return SimpleNamespace(
                 chapter_number=1,

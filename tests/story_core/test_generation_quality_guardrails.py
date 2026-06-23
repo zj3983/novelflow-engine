@@ -1,4 +1,5 @@
 from packages.story_core.agent_base import compact_list
+from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.models import NovelProject
 from packages.story_core.models import StoryState
 from packages.story_core.orchestrator import (
@@ -14,11 +15,211 @@ from packages.story_core.orchestrator import (
     _should_expand_chapter,
     _style_adapt_enabled,
 )
+from packages.story_core.prose_rule_review import review_emotion_quota, review_paragraph_form
 from packages.story_core.world_enrichment import _merge_enrichment
 
 
 def test_compact_list_treats_single_string_as_one_item():
     assert compact_list("混沌之种已经完成首次验证。", max_items=5) == ["混沌之种已经完成首次验证。"]
+
+
+def test_first_chapter_sanitizer_adds_emotion_anchors():
+    body = "\n\n".join(
+        [
+            "苏叶打开《天启之门》，给角色取名夜烬。",
+            "夜烬选择元素法师学徒，拿到新手法杖。",
+            "夜烬在灰狼坡试打一只灰狼，确认掉落判定×1000。",
+            "夜烬看着背包里的灰狼毒腺，决定先不声张。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    review = review_emotion_quota(cleaned)
+
+    assert review["scores"]["emotion_quota"] >= 8
+    assert "喉咙发紧" in cleaned
+    assert "掌心全是汗" in cleaned
+    assert "不敢真的松下来" in cleaned
+
+
+def test_first_chapter_sanitizer_normalizes_panel_values_and_report_phrase():
+    body = (
+        "角色面板亮起：ID：夜烬等级：Lv.1经验：0/100生命：100/100法力：20/80"
+        "主武器：新手法杖（耐久10/10）基础技能：基础火球术背包：空钱袋：空。\n\n"
+        "面板边缘泛着微光，数据很干净。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "法力：60/60" in cleaned
+    assert "数据很干净" not in cleaned
+    assert "生命：100/100；法力" in cleaned
+
+
+def test_first_chapter_sanitizer_adds_progression_hook_without_turning_in_quest():
+    body = "\n\n".join(
+        [
+            "苏叶进入《天启之门》，游戏ID是夜烬。",
+            "夜烬在灰狼坡击杀五只灰狼，背包里多了八份灰狼毒腺。",
+            "他把背包关上，准备先回村。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "清道夫委托" in cleaned
+    assert "只差两份" in cleaned
+    assert "后坡探路" in cleaned
+    assert "没有伸手接" in cleaned
+
+
+def test_first_chapter_sanitizer_removes_premature_rewards_and_services():
+    body = "\n\n".join(
+        [
+            "夜烬把灰狼毒腺递给窗口，钱袋里多了5枚铜币。",
+            "夜烬把法杖递给铁匠，耐久条从6/10跳回9/10，扣掉3铜币。",
+            "他走到药剂铺门口，看了一眼价牌。初级蓝药，10铜币一瓶。",
+            "技能书残页还差九份。下一步，换技能书。",
+            "夜烬回到村口，背包里还有灰狼毒腺八份。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "钱袋里多了" not in cleaned
+    assert "扣掉" not in cleaned
+    assert "买了药水" not in cleaned
+    assert "买下药水" not in cleaned
+    assert "技能书" not in cleaned
+    assert "清道夫委托" in cleaned
+
+
+def test_first_chapter_sanitizer_truncates_service_overrun():
+    body = "\n\n".join(
+        [
+            "苏叶进入《天启之门》，游戏ID夜烬。夜烬在灰狼坡击杀五只灰狼，背包里有八份灰狼毒腺。",
+            "回到村口，登记窗口前的人少了一半。他走过去，把两份毒腺放在柜台上。",
+            "NPC说：清道夫委托完成。奖励铜币×50，经验×100。后坡通行木牌也给了他。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "清道夫委托完成" not in cleaned
+    assert "奖励铜币" not in cleaned
+    assert "后坡通行" not in cleaned
+    assert "没有伸手接" in cleaned
+    assert "八份毒腺" in cleaned
+    assert "只差两份" in cleaned
+
+
+def test_first_chapter_review_blocks_premature_rewards_and_services():
+    body = (
+        "《天启之门》开服，苏叶现实余额27.60元。夜烬完成角色创建，职业元素法师学徒。"
+        "角色面板显示：游戏ID夜烬，Lv.1，职业元素法师学徒，经验0/100，生命100/100，法力60/60，钱袋空。"
+        "他击杀灰狼后看见千倍爆率，灰狼毒腺掉进背包。"
+        "窗口NPC盖章，钱袋里多了5枚铜币。夜烬又把法杖修好，想着下一步换技能书。"
+    )
+
+    review = _review_chapter_body(1, body, {}, ["网游"], {}, [], [])
+
+    assert review["pass"] is False
+    assert any("第一章账本越界" in issue for issue in review["issues"])
+
+
+def test_first_chapter_review_allows_visible_prices_as_future_goal():
+    body = (
+        "《天启之门》开服，苏叶现实余额27.60元。夜烬完成角色创建，职业元素法师学徒。"
+        "角色面板显示：游戏ID夜烬，Lv.1，职业元素法师学徒，经验0/100，生命100/100，法力60/60，钱袋空。"
+        "村口任务牌写着清道夫委托：提交灰狼毒腺十份，奖励三十铜。旁边价牌挂着修理费和基础法力药水价格，"
+        "但夜烬没有交材料，也没有买药水，只把背包扣紧。"
+        "他击杀五只灰狼后看见千倍爆率，背包里有灰狼毒腺八份和粗糙狼皮七张，还差两份才能提交委托。"
+    )
+
+    review = _review_chapter_body(1, body, {}, ["网游"], {}, [], [])
+
+    assert not any("第一章账本越界" in issue for issue in review["issues"])
+
+
+def test_first_chapter_sanitizer_preserves_price_and_precondition_surface():
+    body = (
+        "村口任务牌写着清道夫委托：提交灰狼毒腺十份，奖励三十铜。"
+        "旁边价牌挂着修理费和基础法力药水价格，但夜烬没有交材料，也没有买药水。"
+        "背包里现在只有灰狼毒腺八份，还差两份才能提交委托，后坡探路只是后续前置。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "基础法力药水价格" in cleaned
+    assert "灰狼毒腺十份" in cleaned
+    assert "奖励三十铜" in cleaned
+    assert "还差两份" in cleaned
+    assert "后坡探路" in cleaned
+
+
+def test_first_chapter_sanitizer_inserts_safe_protagonist_speech():
+    body = (
+        "苏叶进入游戏，角色面板显示职业是元素法师学徒。"
+        "任务牌写着清道夫委托需要灰狼毒腺十份。"
+        "背包里现在只有灰狼毒腺八份，还差两份。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "夜烬把背包扣上，低声说" in cleaned
+    assert "先不交" in cleaned
+    assert "先修杖" not in cleaned
+
+
+def test_first_chapter_review_allows_negated_arrival_wording():
+    body = (
+        "《天启之门》开服，苏叶现实余额27.60元。夜烬完成角色创建，职业元素法师学徒。"
+        "任务牌写着清道夫委托需要灰狼毒腺十份，奖励三十铜。"
+        "夜烬没有交材料，没有到账，也没有把材料挂出去，只把灰狼毒腺八份压进背包。"
+    )
+
+    review = _review_chapter_body(1, body, {}, ["网游"], {}, [], [])
+
+    assert not any("第一章提前展开交易线" in issue for issue in review["issues"])
+
+
+def test_first_chapter_sanitizer_merges_overfragmented_paragraphs():
+    body = "\n\n".join([f"夜烬看了一眼背包{i}。" for i in range(90)])
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert len([part for part in cleaned.split("\n\n") if part.strip()]) < 90
+
+
+def test_first_chapter_sanitizer_merges_sentence_shards_until_paragraph_form_passes():
+    body = "\n\n".join([f"法力栏见底{i}。夜烬退到石头后面。" for i in range(100)])
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    form_review = review_paragraph_form(cleaned)
+
+    assert form_review["pass"] is True
+    assert not any("段落形态过碎" in issue for issue in form_review["issues"])
+
+
+def test_first_chapter_sanitizer_softens_repeated_state_openers():
+    body = "\n\n".join([f"法力栏见底{i}。夜烬退到石头后面。" for i in range(30)])
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    review = _review_chapter_body(1, cleaned, {}, ["网游"], {}, [], [])
+
+    assert not any("段首主语过度单调" in issue and "法力" in issue for issue in review["issues"])
+
+
+def test_first_chapter_sanitizer_adds_protocol_anchor_even_when_login_exists():
+    body = (
+        "苏叶打开登录界面，完成角色创建，游戏ID夜烬。\n\n"
+        "第一次击杀灰狼后，背包里多出几份毒腺。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "底层协议校验通过" in cleaned
+    assert "混沌之种：未解析" in cleaned
 
 
 def test_chapter_summary_string_fields_are_not_split_into_characters():
@@ -185,6 +386,50 @@ def test_chapter_body_review_exposes_ai_flavor_critical_review():
     assert review["critical_review"]["scores"]["ai_flavor"] < 8
     assert review["ai_flavor_review"]["metrics"]["formula_count"] >= 2
     assert any("AI味" in issue or "模型腔" in issue for issue in review["issues"])
+
+
+def test_sanitizer_removes_ai_formula_and_report_clarity_phrase():
+    body = (
+        "不是一张皮，也不是一颗毒腺，而是好几份材料挤在一起。"
+        "疼痛不重，却很清楚，像被钝刀刮了一下。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    ai_review = review_ai_flavor(cleaned)
+
+    assert "不是一张皮" not in cleaned
+    assert "而是" not in cleaned
+    assert "很清楚" not in cleaned
+    assert not any("不是X而是Y" in issue for issue in ai_review["issues"])
+
+
+def test_sanitizer_inserts_protagonist_speech_when_name_action_is_not_dialogue():
+    body = "\n\n".join(
+        [
+            "夜烬说完规则以后，把背包里的毒腺数了一遍。",
+            "旁边的人还在问清道夫委托要几份材料。",
+            "他没有递材料，也没有领铜币。",
+        ]
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "夜烬把背包扣上，低声说：“先不交，我还差两份，回去补齐再说。”" in cleaned
+
+
+def test_first_chapter_sanitizer_normalizes_starting_identity_and_stackable_bag():
+    body = (
+        "角色面板显示：游戏ID夜烬，职业元素法师学徒，Lv.1，背包：15/20。"
+        "背包格子一下子亮了好几格，灰狼毒腺×8，粗糙狼皮×7。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "元素法师学徒" not in cleaned
+    assert "见习冒险者（未转职）" in cleaned
+    assert "背包：15/20" not in cleaned
+    assert "背包：2/20" in cleaned
+    assert "数量叠在图标角上" in cleaned
 
 
 def test_chapter_body_review_uses_event_plan_protagonist_names_for_speech_gate():
@@ -588,3 +833,23 @@ def test_game_world_enrichment_seeds_core_character_profiles():
     names = {profile["name"] for profile in enriched.character_profiles}
 
     assert {"苏叶", "赵胖子", "药剂师洛婶", "职业导师艾伦", "白袍公会外围队长"}.issubset(names)
+
+
+def test_sanitizer_rewrites_reader_facing_bad_game_terms():
+    body = (
+        "夜烬看见任务门槛还没满足，只能先修杖。"
+        "他握杖退后，杖尖对着灰狼，系统提示火球术熟练度还差一点。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+
+    assert "门槛" not in cleaned
+    assert "修杖" not in cleaned
+    assert "握杖" not in cleaned
+    assert "杖尖" not in cleaned
+    assert "熟练度" not in cleaned
+    assert "任务前置" in cleaned
+    assert "修法杖" in cleaned
+    assert "握着法杖" in cleaned
+    assert "法杖前端" in cleaned
+    assert "基础火球术记录" in cleaned

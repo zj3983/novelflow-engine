@@ -40,6 +40,15 @@ function formatConcreteDensity(metrics: Record<string, number> | undefined): str
   return typeof value === "number" ? `${Math.round(value * 100)}%` : "—";
 }
 
+function formatReviewIssue(issue: unknown): string {
+  if (!issue) return "";
+  if (typeof issue === "string") return issue;
+  if (typeof issue === "object" && "reason" in issue) {
+    return String((issue as { reason?: unknown }).reason || "");
+  }
+  return String(issue);
+}
+
 export default function WritePage() {
   const searchParams = useSearchParams();
   const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
@@ -97,11 +106,24 @@ export default function WritePage() {
   const generationTargetId = isFileProject ? projectId : story?.story_id;
   const canGenerateNext = Boolean(generationTargetId);
   const writingReview = chapter?.quality_report?.writing_review;
+  const lengthReview = chapter?.quality_report?.length_review ?? writingReview?.length_review;
+  const bodyChars = lengthReview?.body_chars ?? chapterCharCount(chapter?.body);
+  const minChars = lengthReview?.min_chars ?? 3800;
+  const maxChars = lengthReview?.max_chars ?? 5500;
+  const lengthPassed = lengthReview?.pass ?? bodyChars >= minChars;
+  const lengthIssues = lengthReview?.issues ?? [];
   const aiFlavorReview = chapter?.quality_report?.ai_flavor_review ?? writingReview?.ai_flavor_review;
   const aiFlavorMetrics = aiFlavorReview?.metrics;
   const aiFlavorScore = aiFlavorReview?.scores?.ai_flavor;
   const aiFlavorIssues = aiFlavorReview?.issues ?? [];
   const aiFlavorCuts = aiFlavorReview?.cuts ?? [];
+  const coldReaderReview = chapter?.quality_report?.cold_reader_review ?? writingReview?.cold_reader_review;
+  const coldReaderScores = coldReaderReview?.scores ?? {};
+  const coldReaderIssues = coldReaderReview?.issues ?? [];
+  const readerAgentReview = chapter?.quality_report?.reader_agent_review ?? writingReview?.reader_agent_review;
+  const editorAgentReview = chapter?.quality_report?.editor_agent_review ?? writingReview?.editor_agent_review;
+  const reviewerAgentReview = chapter?.quality_report?.reviewer_agent_review ?? writingReview?.reviewer_agent_review;
+  const writingLessons = story?.writing_lessons ?? [];
 
   async function handleRegenerateChapter() {
     if (!chapter || !canRegenerate) return;
@@ -292,6 +314,21 @@ export default function WritePage() {
                 <p className="ws-card__hint">{chapter.next_outline || "暂无下一章焦点。"}</p>
               </div>
               <div>
+                <p className="ws-card__title">写作学习</p>
+                {writingLessons.length ? (
+                  <p className="ws-card__hint">{writingLessons.slice(-2).join("；")}</p>
+                ) : (
+                  <p className="ws-card__hint">暂无项目写作经验。</p>
+                )}
+              </div>
+              <div>
+                <p className="ws-card__title">字数检查</p>
+                <p className="ws-card__hint">
+                  {bodyChars} / {minChars}-{maxChars} 字；{lengthPassed ? "通过" : "未达标"}
+                </p>
+                {lengthIssues[0] ? <p className="ws-card__hint">{lengthIssues[0]}</p> : null}
+              </div>
+              <div>
                 <p className="ws-card__title">AI味检测</p>
                 {aiFlavorReview ? (
                   <>
@@ -299,13 +336,60 @@ export default function WritePage() {
                       评分 {formatAiScore(aiFlavorScore)}；公式句 {formatAiMetric(aiFlavorMetrics, "formula_count")}；抽象词{" "}
                       {formatAiMetric(aiFlavorMetrics, "abstract_count")}；具体度 {formatConcreteDensity(aiFlavorMetrics)}
                     </p>
-                    {aiFlavorIssues[0] ? <p className="ws-card__hint">{aiFlavorIssues[0]}</p> : null}
+                    {aiFlavorIssues[0] ? <p className="ws-card__hint">{formatReviewIssue(aiFlavorIssues[0])}</p> : null}
                     {!aiFlavorIssues[0] && aiFlavorCuts[0]?.target_text ? (
                       <p className="ws-card__hint">留意：{aiFlavorCuts[0].target_text}</p>
                     ) : null}
                   </>
                 ) : (
                   <p className="ws-card__hint">暂无AI味报告。</p>
+                )}
+              </div>
+              <div>
+                <p className="ws-card__title">冷读体验</p>
+                {coldReaderReview ? (
+                  <>
+                    <p className="ws-card__hint">
+                      追读 {coldReaderScores.page_turn ?? "未检"}；共情 {coldReaderScores.empathy_connection ?? "未检"}；负担{" "}
+                      {coldReaderScores.cognitive_load ?? "未检"}；节奏 {coldReaderScores.pace_feel ?? "未检"}
+                    </p>
+                    {coldReaderIssues[0] ? <p className="ws-card__hint">{formatReviewIssue(coldReaderIssues[0])}</p> : null}
+                  </>
+                ) : (
+                  <p className="ws-card__hint">暂无冷读报告。</p>
+                )}
+              </div>
+              <div>
+                <p className="ws-card__title">读者 Agent</p>
+                {readerAgentReview ? (
+                  <>
+                    <p className="ws-card__hint">{readerAgentReview.verdict || (readerAgentReview.pass ? "通过" : "待修")}</p>
+                    {readerAgentReview.issues?.[0] ? <p className="ws-card__hint">{formatReviewIssue(readerAgentReview.issues[0])}</p> : null}
+                  </>
+                ) : (
+                  <p className="ws-card__hint">暂无读者报告。</p>
+                )}
+              </div>
+              <div>
+                <p className="ws-card__title">编辑 Agent</p>
+                {editorAgentReview ? (
+                  <>
+                    <p className="ws-card__hint">{editorAgentReview.verdict || (editorAgentReview.pass ? "通过" : "待修")}</p>
+                    {editorAgentReview.issues?.[0] ? <p className="ws-card__hint">{formatReviewIssue(editorAgentReview.issues[0])}</p> : null}
+                  </>
+                ) : (
+                  <p className="ws-card__hint">暂无编辑报告。</p>
+                )}
+              </div>
+              <div>
+                <p className="ws-card__title">审稿 Agent</p>
+                {reviewerAgentReview ? (
+                  <>
+                    <p className="ws-card__hint">{reviewerAgentReview.verdict || (reviewerAgentReview.pass ? "通过" : "待修")}</p>
+                    {reviewerAgentReview.issues?.[0] ? <p className="ws-card__hint">{formatReviewIssue(reviewerAgentReview.issues[0])}</p> : null}
+                  </>
+                ) : (
+                  <p className="ws-card__hint">暂无审稿报告。</p>
                 )}
               </div>
             </section>

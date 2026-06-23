@@ -27,11 +27,16 @@ from packages.story_core.models import DirectorDecision, StoryState, TimelineEve
 from packages.story_core.planner import build_conflict_summary, build_event_beat, compute_chapter_cadence, plan_next_outline
 from packages.story_core.adversarial_cut_review import build_expression_patch_suggestions, review_adversarial_cuts
 from packages.story_core.ai_flavor_review import review_ai_flavor
+from packages.story_core.cold_reader_review import review_cold_reader_experience
+from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.prose_quality_review import review_prose_quality
 from packages.story_core.prose_rule_review import CRITICAL_PROMPT_RULES, review_critical_prose_rules
 from packages.story_core.prose_style_review import anti_ai_style_rules, review_prose_style, sanitize_prose_style
 from packages.story_core.progression_lead_review import review_progression_lead
+from packages.story_core.plot_spine_review import review_plot_spine_completion
 from packages.story_core.quality import validate_bundle
+from packages.story_core.reader_agent import review_reader_agent
+from packages.story_core.reviewer_agent import review_reviewer_agent
 from packages.story_core.runtime import record_agent_runtime
 from packages.story_core.runtime_config import get_runtime_strategy_settings, resolve_openai_runtime_settings
 from packages.story_core.revision_safety import choose_best_revision, choose_best_segment_revision
@@ -52,6 +57,7 @@ from packages.story_core.spot_fix_patch import apply_spot_fix_patches
 from packages.story_core.style_coach import build_style_guidance, enrich_performance_cards
 from packages.story_core.web_game_author_craft import format_web_game_director_card, plain_writer_phrase
 from packages.story_core.web_game_review import has_asserted_overreach, review_web_game_chapter, web_game_review_rules
+from packages.story_core.writing_learning import learning_snapshot, lessons_from_quality_report, merge_writing_lessons
 from packages.story_core.writing_taskbook import (
     ensure_writing_taskbook,
     first_chapter_whole_body_contract,
@@ -250,6 +256,15 @@ def _sanitize_generated_body(body: str) -> str:
         "收益路径": "换东西的路",
         "收益曲线": "东西变多的样子",
         "撕扯判定": "狼爪撕过来",
+        "元素法师学徒": "见习冒险者（未转职）",
+        "元素回廊前置": "基础法术强化前置",
+        "元素回廊": "基础法术强化",
+        "职业路线确认：见习冒险者（未转职）": "初始身份确认：见习冒险者（未转职）",
+        "正面对抗": "抢在别人前面做事",
+        "正面撞上": "撞见",
+        "抢核心资源": "抢任务材料",
+        "争夺核心资源": "抢任务材料",
+        "核心资源": "任务材料",
         "伤害数字": "跳出的数值",
         "当前货币：0铜": "货币栏还是空的",
         "当前货币:0铜": "货币栏还是空的",
@@ -257,14 +272,34 @@ def _sanitize_generated_body(body: str) -> str:
         "货币:0铜": "钱袋：空",
         "获得：30铜": "奖励栏还没亮",
         "获得:30铜": "奖励栏还没亮",
-        "奖励三十铜": "奖励还没领取",
-        "奖励30铜": "奖励还没领取",
         "扣除：30铜": "没有扣费",
         "扣除:30铜": "没有扣费",
         "逻辑": "规矩",
     }
     for old, new in replacements.items():
         cleaned = cleaned.replace(old, new)
+    reader_term_replacements = (
+        ("火球术熟练度", "基础火球术记录"),
+        ("熟练度", "施法记录"),
+        ("修杖", "修法杖"),
+        ("握杖", "握着法杖"),
+        ("抬杖", "抬起法杖"),
+        ("木杖", "新手法杖"),
+        ("杖身", "法杖"),
+        ("杖尖", "法杖前端"),
+        ("不换杖芯", "不换法杖芯件"),
+        ("任务门槛", "任务前置"),
+        ("职业门槛", "职业前置"),
+        ("装备门槛", "装备前置"),
+        ("技能门槛", "技能前置"),
+        ("NPC门槛", "NPC条件"),
+        ("门槛", "前置条件"),
+    )
+    for old, new in reader_term_replacements:
+        cleaned = cleaned.replace(old, new)
+    cleaned = re.sub(r"背包[格子]*一下子亮了好几格", "灰狼毒腺和狼皮各占一格，数量叠在图标角上", cleaned)
+    cleaned = re.sub(r"背包里([一二三四五六七八九十\d]+)个格子已经被材料塞住", "背包里两个材料格已经亮起，数量叠在图标角上", cleaned)
+    cleaned = re.sub(r"背包：(\d+)/20", "背包：2/20", cleaned)
     # Some model/API combinations occasionally turn UI quotes or line breaks into
     # lone ASCII question marks. Remove only question marks embedded in CJK prose.
     cleaned = re.sub(r"(?<=[\u4e00-\u9fff。！？】》])\?(?=[\u4e00-\u9fff【《])", "", cleaned)
@@ -321,7 +356,7 @@ def _ensure_first_chapter_reality_skill_source(body: str, scene_cards: list[dict
         return body
     prefix = (
         "苏叶以前接过游戏外包测试员的活，白天照表点功能，晚上核对几笔小流水。"
-        "那点工作经验没让他富起来，只让他习惯先看余额、先问价钱，再动手。\n\n"
+        "那点工作经验没让他富起来，只让他进游戏后会多看一眼提示和别人忽略的细节。\n\n"
     )
     return f"{prefix}{body.lstrip()}"
 
@@ -329,26 +364,8 @@ def _ensure_first_chapter_reality_skill_source(body: str, scene_cards: list[dict
 def _ensure_first_chapter_trigger_anchor(body: str) -> str:
     if not body:
         return body
-    has_finger = any(token in body for token in ("千倍爆率", "混沌之种", "隐藏天赋", "爆率修正"))
-    has_trigger = any(
-        token in body
-        for token in (
-            "旧头盔",
-            "异常邀请码",
-            "神经接驳",
-            "接驳",
-            "协议异常",
-            "角色创建",
-            "创建角色",
-            "登录入口",
-            "登录界面",
-            "开服倒计时",
-            "触发条件",
-            "底层日志",
-            "灰色日志",
-        )
-    )
-    if not has_finger or has_trigger:
+    has_protocol = any(token in body for token in ("底层协议校验通过", "混沌之种：未解析", "混沌之种未解析"))
+    if has_protocol:
         return body
     prefix = (
         "旧头盔接上电源时，登录界面先卡了一下。角落里闪过一行灰色日志："
@@ -372,8 +389,8 @@ def _ensure_first_chapter_npc_window(body: str, scene_cards: list[dict] | None) 
         "村口的任务牌旁边开着一个小柜台窗口，木牌上只写服务内容和前置条件：灰狼毒腺可以登记，"
         "补给价格另看柜台价牌。\n\n"
         "窗口后的NPC没抬头，只管把牌子扶正，不问来源，也不知道谁的背包里有多少材料。"
-        "夜烬低声道：“先交一份，别的我再看看。”\n\n"
-        "他只递出够数的一小包材料，剩下的重新扣进背包。窗口按牌价结了一笔，排队的人只当他运气不错。"
+        "夜烬只看了一眼价牌，把背包重新扣上，没有登记，也没有递材料。\n\n"
+        "排队的人还在问毒腺要几份，窗口只按牌子上的前置条件答话，没人知道他背包里已经压着一小堆材料。"
     )
     return f"{body.rstrip()}\n\n{window}"
 
@@ -398,14 +415,26 @@ def _soften_repeated_paragraph_openers(body: str) -> str:
     run_opener = ""
     run_count = 0
     prefixes = (
-        "夜烬停了停，",
-        "他把面板关掉，",
+        "木牌下方，",
+        "状态栏一闪，",
         "柜台前的人往前挪了一步，",
-        "背包格子亮了一下，",
+        "格子边缘亮了一下，",
         "旁边有人低声抱怨，",
         "任务牌被风吹得轻轻一晃，",
-        "钱袋在掌心沉了一下，",
+        "空钱袋贴着掌心，",
         "法杖磕在石阶边，",
+        "坡口的草叶晃了晃，",
+        "断墙后面，",
+        "系统小字淡下去，",
+        "队伍里有人催了一声，",
+        "价牌挂在窗口边，",
+        "血条还压在低处，",
+        "法力条已经见底，",
+        "狼尸旁的白光散开，",
+        "村口的吵声挤过来，",
+        "石缝里的尘土落下去，",
+        "手心的汗还没干，",
+        "窗口后的NPC抬了下眼，",
     )
     prefix_index = 0
     softened: list[str] = []
@@ -461,6 +490,7 @@ def _sanitize_report_style_terms(body: str) -> str:
         "衰减曲线": "声音慢慢变低",
         "测试用例": "旧活儿",
         "数据流": "暖流",
+        "数据很干净": "几行字一眼就能看完",
         "概率": "运气",
         "变量": "麻烦",
         "边界": "规矩",
@@ -478,15 +508,18 @@ def _sanitize_report_style_terms(body: str) -> str:
     cleaned = body
     for old, new in replacements.items():
         cleaned = cleaned.replace(old, new)
+    cleaned = re.sub(r"不是[^。！？\n]{1,80}而是", "", cleaned)
+    cleaned = re.sub(r"不只是[^。！？\n]{1,80}而是", "", cleaned)
+    cleaned = cleaned.replace("很清楚", "实打实")
     return cleaned
 
 
 def _ensure_protagonist_speech(body: str, protagonist: str = "夜烬") -> str:
-    if not body or protagonist not in body:
+    if not body:
         return body
-    if re.search(rf"{re.escape(protagonist)}[^。！？\n]{{0,40}}(?:低声|小声)?(?:说|问|道|开口)", body):
+    if re.search(rf"{re.escape(protagonist)}[^。！？\n]{{0,40}}(?:低声|小声)?(?:说|问|道|开口)[^。！？\n]{{0,8}}[“\"「『]", body):
         return body
-    line = f'{protagonist}把背包扣上，低声说：“先修杖，再去坡口试一只。”'
+    line = f'{protagonist}把背包扣上，低声说：“先不交，我还差两份，回去补齐再说。”'
     paragraphs = body.rstrip().split("\n\n")
     if len(paragraphs) >= 2:
         paragraphs.insert(-1, line)
@@ -502,8 +535,63 @@ def _insert_before_last_paragraph(body: str, line: str) -> str:
     return f"{body.rstrip()}\n\n{line}"
 
 
+def _insert_after_first_paragraph(body: str, line: str) -> str:
+    paragraphs = body.rstrip().split("\n\n")
+    if len(paragraphs) >= 2:
+        paragraphs.insert(1, line)
+        return "\n\n".join(paragraphs)
+    return f"{line}\n\n{body.rstrip()}"
+
+
+def _insert_near_middle_paragraph(body: str, line: str) -> str:
+    paragraphs = body.rstrip().split("\n\n")
+    if len(paragraphs) >= 4:
+        paragraphs.insert(max(2, len(paragraphs) // 2), line)
+        return "\n\n".join(paragraphs)
+    return _insert_before_last_paragraph(body, line)
+
+
+def _merge_overfragmented_paragraphs(body: str) -> str:
+    paragraphs = [part.strip() for part in body.replace("\r", "\n").split("\n\n") if part.strip()]
+    if len(paragraphs) < 40:
+        return body
+    sentence_marks = re.compile(r"[。！？!?]")
+
+    def sentence_count(paragraph: str) -> int:
+        return len([piece for piece in sentence_marks.split(paragraph) if piece.strip()])
+
+    short_count = sum(1 for part in paragraphs if sentence_count(part) <= 2)
+    if short_count / max(1, len(paragraphs)) < 0.45:
+        return body
+
+    merged: list[str] = []
+    buffer: list[str] = []
+    buffer_sentences = 0
+
+    def flush() -> None:
+        nonlocal buffer, buffer_sentences
+        if buffer:
+            merged.append("".join(buffer))
+            buffer = []
+            buffer_sentences = 0
+
+    for paragraph in paragraphs:
+        sentences = sentence_count(paragraph)
+        is_opening_dialogue = paragraph.startswith(("“", "「", "『"))
+        if sentences <= 2 and not is_opening_dialogue:
+            buffer.append(paragraph)
+            buffer_sentences += max(1, sentences)
+            if buffer_sentences >= 4 or sum(len(item) for item in buffer) >= 260 or len(buffer) >= 5:
+                flush()
+            continue
+        flush()
+        merged.append(paragraph)
+    flush()
+    return "\n\n".join(merged)
+
+
 def _ensure_web_game_outsider_misread(body: str, chapter_number: int) -> str:
-    if chapter_number < 2 or not body or "夜烬" not in body:
+    if chapter_number > 3 or not body:
         return body
     has_public_misread = (
         any(token in body for token in ("公共频道", "世界频道", "队尾", "散人玩家", "普通玩家", "旁边有个玩家"))
@@ -513,11 +601,17 @@ def _ensure_web_game_outsider_misread(body: str, chapter_number: int) -> str:
     )
     if has_public_misread:
         return body
+    if chapter_number == 1:
+        line = (
+            "队伍里有个玩家看见夜烬反复数背包，只当他运气好，多摸到几份材料，随口说了句别挡窗口。"
+            "旁人只看见他没交任务、没领铜币，也没往柜台递东西；没人知道他背包里的灰狼毒腺已经够到清道夫委托的前置边缘。"
+        )
+        return _insert_before_last_paragraph(body, line)
     line = (
         "公共频道里有人抱怨毒腺掉率低，刷了半天还差好几份；队尾另一个散人玩家看见夜烬从修理铺出来，"
         "又往药剂铺那边去，顺嘴嘀咕：“这人路线挺熟啊，估计也就运气好，多凑了两份材料。”"
         "旁边排队的人跟着看了一眼，很快又转回自己的面板，没人追问。夜烬听见了，没回头，只把钱袋口按紧。"
-        "别人看见的是排队、修杖和买药，看不见他背包里每一格怎么变。"
+        "别人看见的是排队、修法杖和买药，看不见他背包里每一格怎么变。"
     )
     return _insert_before_last_paragraph(body, line)
 
@@ -547,20 +641,100 @@ def _ensure_web_game_emotion_anchors(body: str, chapter_number: int) -> str:
     if any(token in body for token in ("修到满要三铜", "三块铜", "十二铜", "12铜", "二十四铜")):
         return body
     anchors = [
-        "夜烬看着钱袋里的铜币少下去，手指停了一下。十五铜修杖，十铜买药，花出去的时候不疼是假的，但法杖真断在坡上，后面只会更亏。",
-        "他把第二瓶药水塞进背包时，肩膀慢慢松了一点，又很快绷回去。现实里的二十七块六还在那儿，游戏里这点铜币只能让他多走一步。",
+        "夜烬看着钱袋里的铜币少下去，手指停了一下。十五铜修法杖，十铜买药，花出去的时候不疼是假的，但法杖真断在坡上，后面只会更亏。",
     ]
     existing_keys = {
-        "十五铜修杖": anchors[0],
+        "十五铜修法杖": anchors[0],
         "十铜买药": anchors[0],
-        "二十七块六": anchors[1],
-        "27.60": anchors[1],
     }
     result = body
     for anchor in anchors:
         if not any(key in result and value == anchor for key, value in existing_keys.items()):
             result = _insert_before_last_paragraph(result, anchor)
     return result
+
+
+def _ensure_first_chapter_emotion_anchors(body: str, chapter_number: int) -> str:
+    if chapter_number != 1 or not body or "夜烬" not in body:
+        return body
+    result = body
+    opening_anchor = (
+        "苏叶把手机扣回桌面，喉咙发紧了一下。二十七块六不是不能看，是看多了会让人忍不住算，"
+        "今晚要不要连泡面都省一包。"
+    )
+    combat_anchor = (
+        "灰狼扑近的那一下，夜烬肩膀先缩了一下，火球脱手后才发现掌心全是汗。"
+        "他不是不怕死，是怕这一趟只换来一具尸体，连那行异常提示都来不及看清。"
+    )
+    ending_anchor = (
+        "他把背包关上，又没忍住重新打开看了一眼。材料还在，法杖耐久也是真的往下掉，"
+        "这让他松了一口气，又不敢真的松下来。"
+    )
+    if not any(token in result for token in ("喉咙发紧", "今晚要不要连泡面都省一包")):
+        result = _insert_after_first_paragraph(result, opening_anchor)
+    if not any(token in result for token in ("掌心全是汗", "不是不怕死", "白打")):
+        result = _insert_near_middle_paragraph(result, combat_anchor)
+    if not any(token in result for token in ("又没忍住重新打开", "不敢真的松下来")):
+        result = _insert_before_last_paragraph(result, ending_anchor)
+    return result
+
+
+def _sanitize_first_chapter_panel_values(body: str, chapter_number: int) -> str:
+    if chapter_number != 1 or not body:
+        return body
+    cleaned = body
+    cleaned = re.sub(r"(法力[：:]\s*\d+)/80", r"\1/60", cleaned)
+    cleaned = re.sub(r"(法力[：:]\s*)20/60(?=[^\n。；]{0,80}(?:主武器|基础技能|背包|钱袋))", r"\g<1>60/60", cleaned)
+    cleaned = cleaned.replace("生命：100/100法力：", "生命：100/100；法力：")
+    cleaned = cleaned.replace("经验：0/100生命：", "经验：0/100；生命：")
+    return cleaned
+
+
+def _ensure_first_chapter_progression_hook(body: str, chapter_number: int) -> str:
+    if chapter_number != 1 or not body:
+        return body
+    if "清道夫委托" in body and ("还差两份" in body or "差两份" in body) and "后坡" in body:
+        return body
+    hook = (
+        "村口任务牌最下方挂着一行小字：清道夫委托，提交灰狼毒腺十份，奖励三十铜；"
+        "完成后开放后坡探路的前置任务登记。夜烬没有伸手接，只把背包里的八份毒腺重新数了一遍。"
+        "普通玩家还在为第一份毒腺排队抱怨，他已经只差两份，任务进度就能先一步贴近后坡入口，下一步只要补齐材料就能去试路线。"
+    )
+    return _insert_before_last_paragraph(body, hook)
+
+
+def _truncate_first_chapter_service_overrun(body: str, chapter_number: int) -> str:
+    if chapter_number != 1 or not body:
+        return body
+    overrun_terms = (
+        "登记窗口前",
+        "把两份毒腺放在柜台上",
+        "后坡路线已登记",
+        "后坡通行",
+        "清道夫委托完成",
+        "奖励铜币",
+        "奖励：铜币",
+        "奖励铜币×",
+        "奖励铜币x",
+        "经验×100",
+        "经验x100",
+        "钱袋。50",
+        "50枚铜币",
+    )
+    indexes = [body.find(term) for term in overrun_terms if body.find(term) >= 0]
+    if not indexes:
+        return body
+    cut_at = min(indexes)
+    safe_body = body[:cut_at].rstrip()
+    canonical = (
+        "村口任务牌最下方挂着一行小字：清道夫委托，提交灰狼毒腺十份，奖励三十铜；"
+        "完成后开放后坡探路的前置任务登记。夜烬没有伸手接，也没有往柜台递材料，"
+        "只把背包里的八份毒腺重新数了一遍。普通玩家还在为第一份毒腺排队抱怨，"
+        "他已经只差两份，任务进度就能先一步贴近后坡入口，下一步只要补齐材料就能去试路线。"
+    )
+    if canonical in safe_body:
+        return safe_body
+    return f"{safe_body}\n\n{canonical}"
 
 
 def _ensure_web_game_npc_service_boundary(body: str, chapter_number: int) -> str:
@@ -627,9 +801,9 @@ def _sanitize_chapter_two_webgame_terms(body: str, chapter_number: int) -> str:
     cleaned = body
     for source, target in replacements.items():
         cleaned = cleaned.replace(source, target)
-    has_goal_sequence = all(token in cleaned for token in ("试打后坡", "交委托", "修杖买药", "探路"))
+    has_goal_sequence = all(token in cleaned for token in ("试打后坡", "交委托", "修法杖买药", "探路"))
     if not has_goal_sequence and not any(token in cleaned for token in ("登记牌", "后坡探路", "任务牌")):
-        line = "他把这一趟在心里过了一遍：试打后坡只补两份毒腺，回村交委托，拿铜币修杖买药，再去登记牌前确认探路提示。走到最后一步，提示还是把他挡在坡口。"
+        line = "他把这一趟在心里过了一遍：试打后坡只补两份毒腺，回村交委托，拿铜币修法杖买药，再去登记牌前确认探路提示。走到最后一步，提示还是把他挡在坡口。"
         cleaned = _insert_before_last_paragraph(cleaned, line)
     return cleaned
 
@@ -640,7 +814,11 @@ def _sanitize_chapter_output(body: str, *, chapter_number: int, scene_cards: lis
     if chapter_number == 1:
         cleaned = _ensure_first_chapter_trigger_anchor(cleaned)
         cleaned = _ensure_first_chapter_reality_skill_source(cleaned, scene_cards)
+        cleaned = _truncate_first_chapter_service_overrun(cleaned, chapter_number)
         cleaned = _ensure_first_chapter_npc_window(cleaned, scene_cards)
+        cleaned = _ensure_first_chapter_emotion_anchors(cleaned, chapter_number)
+        cleaned = _sanitize_first_chapter_panel_values(cleaned, chapter_number)
+        cleaned = _ensure_first_chapter_progression_hook(cleaned, chapter_number)
     cleaned = _sanitize_report_style_terms(cleaned)
     cleaned = _limit_metaphor_markers(cleaned)
     cleaned = _ensure_protagonist_speech(cleaned)
@@ -649,6 +827,7 @@ def _sanitize_chapter_output(body: str, *, chapter_number: int, scene_cards: lis
     cleaned = _ensure_web_game_emotion_anchors(cleaned, chapter_number)
     cleaned = _ensure_web_game_npc_service_boundary(cleaned, chapter_number)
     cleaned = _sanitize_chapter_two_webgame_terms(cleaned, chapter_number)
+    cleaned = _merge_overfragmented_paragraphs(cleaned)
     return _soften_repeated_paragraph_openers(cleaned)
 
 
@@ -660,7 +839,8 @@ def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
         "寄售成功",
         "上架成功",
         "成交",
-        "到账",
+        "到账铜币",
+        "到账：",
         "手续费",
         "第一笔铜币落袋",
         "赵胖子",
@@ -684,8 +864,6 @@ def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
         "提交清道夫委托",
         "任务完成",
         "任务已完成",
-        "奖励三十铜",
-        "奖励30铜",
         "领取三十铜",
         "领取30铜",
         "获得：30铜",
@@ -696,15 +874,26 @@ def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
         "当前货币:0铜",
         "修理铺",
         "修理匠",
+        "修一下",
+        "修好",
         "修装备",
         "修理装备",
         "修满",
         "修完耐久",
+        "钱袋里多了",
+        "钱袋里还剩",
+        "扣掉",
+        "扣除",
+        "买了蓝药",
+        "买下蓝药",
+        "技能书残页",
+        "技能书",
         "买两瓶",
-        "初级法力药水",
+        "初级法力药水×",
         "两瓶药水",
-        "买药水",
-        "购买药水",
+        "买了药水",
+        "买下药水",
+        "购买了药水",
     )
     npc_alias_groups = (
         ("灰烬村村长", "村长"),
@@ -752,9 +941,9 @@ def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
         sanitized = (
             sanitized.rstrip()
             + "\n\n夜烬没有急着把材料全交出去。他站在村口，看见职业导师那边的木牌被玩家围住，"
-            "上面写着基础技能书和后坡登记的价钱。别人还在坡下等第一份毒腺，他的背包已经快满了。"
-            "他先把多余材料压在背包底下，只交够一份任务。旁人看见的只是普通结算，看不见他还留着下一轮的底。"
-            "普通玩家还在等掉落，他已经能先一步去问技能书和入口前置任务。"
+            "上面写着后坡登记的前置条件。别人还在坡下等第一份毒腺，他的背包已经快满了。"
+            "他先把多余材料压在背包底下，没有接任务，也没有往柜台递。"
+            "普通玩家还在等掉落，他已经知道自己再补两份，就能先一步去问入口前置任务。"
         )
     if sanitized and _chapter_char_count(sanitized) < REGENERATION_FAST_MIN_CHARS and (
         "掉落判定×1000" in sanitized or "千倍爆率" in sanitized or "混沌之种" in sanitized
@@ -765,7 +954,7 @@ def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
             "等级还是Lv.1，钱袋仍是空的。血条、法力和法杖耐久都不好看，"
             "背包格子却已经被低级掉落挤得发红。别人打一轮只攒两三份材料，他已经能凑出一份清道夫委托。\n\n"
             "夜烬把面板关掉，先没往柜台挤。他看了一眼坡下的人群，又看了一眼职业导师门口排起的队。"
-            "任务奖励、修理费和技能书价钱都要算清楚，下一步才不会把刚到手的铜币花错。"
+            "任务奖励和修理费都要等下一章再算，眼下最要紧的是把还差的两份毒腺补齐。"
         )
     return sanitized or body
 
@@ -1405,13 +1594,17 @@ def _extract_system_anchors(body: str, *, max_items: int = 10) -> list[str]:
         return []
     normalized = body.replace("\r", "\n").replace("`", "")
     anchor_terms = (
+        "初始身份",
+        "身份栏",
+        "身份：",
         "职业倾向",
-        "职业路线",
         "职业：",
         "元素法师",
-        "法师学徒",
+        "法师",
+        "见习冒险者",
+        "未转职",
         "基础火球术",
-        "元素亲和",
+        "技能栏",
         "武器栏",
         "装备栏",
         "装备",
@@ -1438,8 +1631,11 @@ def _extract_system_anchors(body: str, *, max_items: int = 10) -> list[str]:
             chunk = chunk.strip(" ，,")
             if not chunk or not any(term in chunk for term in anchor_terms):
                 continue
-            if any(term in chunk for term in ("职业倾向", "职业路线", "职业：", "元素法师", "法师学徒", "基础火球术", "元素亲和")):
+            if any(term in chunk for term in ("职业倾向", "职业：", "元素法师", "法师")):
                 label = "职业锚点"
+                rank = 0
+            elif any(term in chunk for term in ("初始身份", "身份栏", "身份：", "见习冒险者", "未转职", "基础火球术", "新手法杖")):
+                label = "身份锚点"
                 rank = 0
             elif any(term in chunk for term in ("武器栏", "装备栏", "装备", "法杖", "短剑", "布衣", "护甲", "耐久", "修理", "购买")):
                 label = "装备锚点"
@@ -1460,8 +1656,8 @@ def _extract_equipment_ledger_updates(body: str) -> dict:
     protagonist: dict[str, str | int] = {}
     economy: dict[str, object] = {}
     equipment: dict[str, str] = {}
-    if any(token in body for token in ("元素法师", "法师学徒", "基础火球术", "元素亲和", "元素回廊")):
-        protagonist["class_path"] = "元素法师学徒"
+    if any(token in body for token in ("见习冒险者", "未转职", "基础火球术", "新手法杖")):
+        protagonist["class_path"] = "见习冒险者（未转职）"
     level_matches = re.findall(r"(?:当前等级|等级)[：:]\s*(\d{1,3})", body)
     if level_matches:
         protagonist["level"] = int(level_matches[-1])
@@ -1586,10 +1782,11 @@ def _opening_writer_rules(chapter_number: int) -> list[str]:
             "游戏背景要通过登录界面、系统公告、玩家闲聊、路牌或柜台观察写出来，不要用百科段落硬讲。",
             "主角背景要通过现实账单、出租屋细节、职业/工作状态、短暂记忆、行为习惯或心理压迫露出，不能只贴标签。",
             "必须说明主角现实职业、失业/兼职/外包状态或现实技能来源，并让这解释他为什么会谨慎、会算账、会拆单或熟悉网游经济。",
-            "第一章必须写出网游开篇仪式：登录或角色创建、游戏ID“夜烬”、职业选择、角色面板。夜烬应选择元素法师学徒/元素法师路线，并说明这决定法杖、基础法术和10级元素回廊试炼前置。",
+            "第一章必须写出网游开篇仪式：登录或角色创建、游戏ID“夜烬”、初始身份、武器/基础技能选择、角色面板。开局所有玩家都是见习冒险者（未转职），夜烬只是选新手法杖和基础火球术，不要写成独有职业。",
+            "第一章初始短面板固定锚点：游戏ID夜烬，Lv.1，身份见习冒险者（未转职），经验0/100，生命100/100，法力60/60，新手法杖10/10，基础火球术，背包空或钱袋空。",
             "角色面板必须在正文中写出“角色面板”四个字，并有职业栏，至少包含：游戏ID、等级、职业/路线、经验、生命/法力、基础火球术、背包或钱袋关键项；不要写“货币：0铜”；面板要短，不要刷屏。",
             "初始钱袋锁死为空。第一章如果没有正文写出铜币掉落或任务奖励，章末就仍是一枚铜都没有，不能凭空变成15铜。",
-            "职业和技能锁死：职业列表只点到战士、游侠、法师/元素法师学徒即可；初始技能统一写“基础火球术”，不要改名成元素弹。",
+            "初始身份和技能锁死：开局不要写任何正式职业；统一写见习冒险者（未转职），夜烬只是在新手武器里选法杖，并拿到基础火球术，不要改名成元素弹。",
             "现实钱语义锁死：27.60是银行卡余额或可用余额，不是最低还款额；不要把现实压力写轻。",
             "金手指不能凭空弹出：必须先有旧头盔/底层日志/接驳异常等触发，再出现“底层协议校验通过”和“混沌之种：未解析”。",
             "统一术语：本项目隐藏优势必须出现“千倍爆率”四个字；可以同时写掉落判定×1000，但不能只写异常或不正常。",
@@ -1609,8 +1806,8 @@ def _opening_writer_rules(chapter_number: int) -> list[str]:
             f"{_opening_phase_name(chapter_number)}。",
             "继续补足世界运行规则，但只通过行动、界面、对话、论坛、公告、交易记录和冲突自然露出。",
             "冲突必须按阶段升级：第2章偏任务领先、装备前置和新路线入口；第3章再写更具体的资源点竞争或职业试炼前置。",
-            "第2章必须承接第一章账本：夜烬仍是Lv.1元素法师学徒；本章留在新手村任务、灰狼坡/后坡、补给和基础火球术记录里推进。禁止Lv.1接取或开始转职任务、职业试炼、元素回廊试炼、法师塔试炼；10级之前只能看见远期线索或前置任务，不能正式办理。",
-            "第2章账本要按上一章章末状态继承，等级、经验、钱袋、背包、生命/法力、装备耐久和任务状态都从项目账本读取；清道夫、买技能、修杖、买药等动作必须在正文里逐项落账。不要写经验100/100却未升级，也不要同章反复刷怪、回村、交同一个任务来凑进度。",
+            "第2章必须承接第一章账本：夜烬仍是Lv.1见习冒险者（未转职）；本章留在新手村任务、灰狼坡/后坡、补给和基础火球术记录里推进。禁止Lv.1接取或开始转职任务、职业试炼、元素回廊试炼、法师塔试炼；10级之前只能看见远期线索或前置任务，不能正式办理。",
+            "第2章账本要按上一章章末状态继承，等级、经验、钱袋、背包、生命/法力、装备耐久和任务状态都从项目账本读取；清道夫、买技能、修法杖、买药等动作必须在正文里逐项落账。不要写经验100/100却未升级，也不要同章反复刷怪、回村、交同一个任务来凑进度。",
             "禁止越级：不要让敌人单次交易就知道隐藏天赋，不要让公会会长亲自围杀新手散人，不要提前写成服务器级大战。",
             "每个背景信息都必须服务当前目标、压力或爽点，不要停下来写设定说明书。",
         ]
@@ -1840,7 +2037,8 @@ def _review_chapter_body(
             "寄售成功",
             "上架成功",
             "成交",
-            "到账",
+            "到账铜币",
+            "到账：",
             "手续费",
             "第一笔铜币落袋",
             "赵胖子",
@@ -1850,6 +2048,28 @@ def _review_chapter_body(
             scores["genre_rules"] = min(scores["genre_rules"], 5)
             issues.append("第一章提前展开交易线：出现寄售、成交、到账、手续费、商人盯盘或赵胖子内容。")
             revision_plan.append("删除第一章的实际交易和商人线，只保留掉落、任务材料预留和章末“下一步用高爆率抢任务/装备/技能前置”的目标。")
+
+        first_chapter_service_closure_terms = (
+            "钱袋里多了",
+            "钱袋里还剩",
+            "扣掉",
+            "修好",
+            "把法杖修好",
+            "法杖修好",
+            "买了药水",
+            "买下药水",
+            "初级蓝药×",
+            "初级法力药水×",
+            "技能书残页",
+            "换技能书",
+            "旧城区入口",
+            "巡夜人残牌",
+        )
+        if any(token in body for token in first_chapter_service_closure_terms):
+            scores["genre_rules"] = min(scores["genre_rules"], 5)
+            scores["continuity"] = min(scores["continuity"], 5)
+            issues.append("第一章账本越界：出现拿铜币、修法杖、买药水、技能书残页或旧城区入口等后续阶段内容。")
+            revision_plan.append("第一章只保留首次打灰狼、掉落异常、血蓝耐久消耗、背包材料和清道夫委托前置；不得交任务、拿铜币、修法杖、买药水或开启技能书/旧城区线。")
 
         first_chapter_pressure_terms = ("白袍", "公会", "论坛", "清场", "后勤", "异常低价", "观察名单")
         if any(token in body for token in first_chapter_pressure_terms):
@@ -1873,8 +2093,8 @@ def _review_chapter_body(
         )
         if any(token in body for token in opening_overreach_terms):
             scores["genre_rules"] = min(scores["genre_rules"], 5)
-            issues.append("第一章冲突越级：开篇应以现实压力、登录建号、职业选择、规则验证和背包材料暂时不能处理为主，不能写成公会/商人正面对抗或高阶资源争夺。")
-            revision_plan.append("把冲突降级为网游新手阶段：现实资金压力、职业选择成本、第一次打怪验证、血蓝耐久消耗和背包材料如何处理。")
+            issues.append("第一章冲突越级：开篇应以现实压力、登录建号、初始身份、规则验证和背包材料暂时不能处理为主，不能写成公会/商人正面对抗或高阶资源争夺。")
+            revision_plan.append("把冲突降级为网游新手阶段：现实资金压力、武器/基础技能选择成本、第一次打怪验证、血蓝耐久消耗和背包材料如何处理。")
 
     if "数量×1000" in body and re.search(r"获得：[^。\n】]*[×x]\s*100(?:[。】\n]|$)", body):
         scores["genre_rules"] = min(scores["genre_rules"], 5)
@@ -1911,9 +2131,9 @@ def _review_chapter_body(
         )
         require(
             "genre_rules",
-            ("职业选择", "选择职业", "职业：", "职业栏", "职业路线", "元素法师学徒", "法师学徒", "职业大厅", "职业导师", "艾伦"),
-            "第一章没有写出角色创建/登录阶段的职业选择或职业路线确认。",
-            "补出夜烬选择元素法师学徒/元素法师路线的过程，并让该选择关联法杖、基础法术、10级元素回廊试炼和后续成长前置。",
+            ("初始身份", "身份：", "身份栏", "见习冒险者", "未转职", "新手法杖", "基础火球术", "武器选择", "技能选择"),
+            "第一章没有写出角色创建/登录阶段的初始身份、武器或基础技能确认。",
+            "补出夜烬开局身份为见习冒险者（未转职），所有玩家初始一样；他只是选择新手法杖和基础火球术，用这个解释第一章的战斗成本。",
         )
         panel_surface_markers = (
             "角色面板",
@@ -1927,11 +2147,11 @@ def _review_chapter_body(
             "【生命：",
         )
         if not any(token in body for token in panel_surface_markers) or not any(
-            token in body for token in ("职业：", "职业栏", "职业路线", "元素法师学徒", "法师学徒")
+            token in body for token in ("身份：", "身份栏", "见习冒险者", "未转职", "新手法杖", "基础火球术")
         ):
             scores["genre_rules"] = min(scores["genre_rules"], 5)
-            issues.append("第一章缺少带职业栏的角色面板，等级/经验/职业/主武器或基础技能没有形成可追踪账本。")
-            revision_plan.append("补一个简短角色面板：游戏ID夜烬、等级1、职业元素法师学徒、经验0/100、新手法杖、基础火球术或技能未解锁、初始货币/背包。")
+            issues.append("第一章缺少带身份栏的角色面板，等级/经验/初始身份/主武器或基础技能没有形成可追踪账本。")
+            revision_plan.append("补一个简短角色面板：游戏ID夜烬、等级1、身份见习冒险者（未转职）、经验0/100、新手法杖、基础火球术、初始背包或钱袋。")
         require(
             "webnovel_hook",
             ("混沌之种", "千倍", "爆率", "隐藏天赋"),
@@ -1944,7 +2164,7 @@ def _review_chapter_body(
                 "异常邀请码",
                 "旧头盔",
                 "内测",
-                "职业选择",
+                "初始身份",
                 "神经接驳",
                 "接驳",
                 "协议异常",
@@ -2023,7 +2243,7 @@ def _review_chapter_body(
             issues.append("经验账本不清：正文写到100/100却又说未升级或没跳，读者会以为等级规则坏了。")
             revision_plan.append("把经验改成未满，或明确写出需要回村登记/手动升级的规则，并让角色按这个规则行动。")
 
-        submitted_task = any(token in body for token in ("清道夫委托完成", "奖励三十铜", "奖励30铜", "奖励：30铜", "奖励三十枚铜"))
+        submitted_task = any(token in body for token in ("清道夫委托完成", "委托已提交", "领取三十铜", "领取30铜", "奖励：30铜", "奖励三十枚铜到账"))
         says_not_submitted = any(token in body for token in ("清道夫委托也没有提交", "清道夫委托没提交", "没有提交清道夫"))
         if submitted_task and says_not_submitted:
             scores["continuity"] = min(scores["continuity"], 5)
@@ -2069,15 +2289,52 @@ def _review_chapter_body(
     prose_quality_review = review_prose_quality(body)
     adversarial_cut_review = review_adversarial_cuts(body)
     ai_flavor_review = review_ai_flavor(body)
+    cold_reader_review = review_cold_reader_experience(
+        body,
+        previous_summary=str(
+            (simulation_plan or {}).get("previous_summary")
+            or (event_plan or {}).get("previous_summary")
+            or (event_plan or {}).get("summary")
+            or ""
+        ),
+    )
     progression_lead_review = review_progression_lead(
         chapter_number=chapter_number,
         body=body,
         event_plan=event_plan,
         world_facts=world_facts or [],
     )
+    plot_spine_review = review_plot_spine_completion(body, simulation_plan)
     critical_review = review_critical_prose_rules(
         body,
         protagonist_names=_review_protagonist_names(event_plan, simulation_plan),
+        extra_subreviews=[plot_spine_review],
+    )
+    reader_agent_review = review_reader_agent(
+        body,
+        previous_summary=str(
+            (simulation_plan or {}).get("previous_summary")
+            or (event_plan or {}).get("previous_summary")
+            or (event_plan or {}).get("summary")
+            or ""
+        ),
+        cold_reader_review=cold_reader_review,
+    )
+    editor_agent_review = review_editor_agent(
+        body,
+        prose_quality_review=prose_quality_review,
+        prose_style_review=style_review,
+        ai_flavor_review=ai_flavor_review,
+    )
+    reviewer_agent_review = review_reviewer_agent(
+        chapter_number=chapter_number,
+        body=body,
+        event_plan=event_plan,
+        world_facts=world_facts or [],
+        protagonist_names=_review_protagonist_names(event_plan, simulation_plan),
+        critical_review=critical_review,
+        web_game_review=web_game_review,
+        progression_lead_review=progression_lead_review,
     )
     if simulation_plan:
         scores["simulation_plan_alignment"] = 8
@@ -2136,6 +2393,16 @@ def _review_chapter_body(
     for item in ai_flavor_review.get("revision_plan", []):
         if item not in revision_plan:
             revision_plan.append(item)
+    cold_reader_pass = bool(cold_reader_review.get("pass", True))
+    for key, score in cold_reader_review.get("scores", {}).items():
+        scores[f"cold_reader_{key}"] = 8 if cold_reader_pass and int(score or 0) >= 3 else min(7, int(score or 0))
+    for issue in cold_reader_review.get("issues", []):
+        reason = issue.get("reason") if isinstance(issue, dict) else str(issue)
+        if reason and reason not in issues:
+            issues.append(reason)
+    for item in cold_reader_review.get("revision_plan", []):
+        if item not in revision_plan:
+            revision_plan.append(item)
     for key, score in progression_lead_review.get("scores", {}).items():
         scores[f"progression_lead_{key}"] = score
     for issue in progression_lead_review.get("issues", []):
@@ -2144,6 +2411,26 @@ def _review_chapter_body(
     for item in progression_lead_review.get("revision_plan", []):
         if item not in revision_plan:
             revision_plan.append(item)
+    for key, score in plot_spine_review.get("scores", {}).items():
+        scores[key] = score
+    for issue in plot_spine_review.get("issues", []):
+        if issue not in issues:
+            issues.append(issue)
+    for item in plot_spine_review.get("revision_plan", []):
+        if item not in revision_plan:
+            revision_plan.append(item)
+    for prefix, agent_review in (
+        ("reader_agent", reader_agent_review),
+        ("editor_agent", editor_agent_review),
+        ("reviewer_agent", reviewer_agent_review),
+    ):
+        scores[f"{prefix}_pass"] = 8 if agent_review.get("pass", True) else 5
+        for issue in agent_review.get("issues", []):
+            if issue and issue not in issues:
+                issues.append(issue)
+        for item in agent_review.get("revision_plan", []):
+            if item and item not in revision_plan:
+                revision_plan.append(item)
 
     passed = all(score >= 8 for score in scores.values()) and not issues
     world_state_review = _build_world_state_review(issues, revision_plan)
@@ -2154,8 +2441,13 @@ def _review_chapter_body(
         "revision_plan": revision_plan,
         "prose_quality_review": prose_quality_review,
         "adversarial_cut_review": adversarial_cut_review,
+        "reader_agent_review": reader_agent_review,
+        "editor_agent_review": editor_agent_review,
+        "reviewer_agent_review": reviewer_agent_review,
         "ai_flavor_review": ai_flavor_review,
+        "cold_reader_review": cold_reader_review,
         "progression_lead_review": progression_lead_review,
+        "plot_spine_review": plot_spine_review,
         "critical_review": critical_review,
         "world_state_review": world_state_review,
         "scene_contract_failures": scene_contract_failures,
@@ -2177,7 +2469,18 @@ def _merge_writing_review_quality(quality: dict, writing_review: dict) -> dict:
             issues.append("writing_review")
     merged["issues"] = issues
     merged["writing_review"] = writing_review
-    for key in ("critical_review", "hook_review", "pacing_review", "beats_review", "ai_flavor_review", "progression_lead_review"):
+    for key in (
+        "critical_review",
+        "hook_review",
+        "pacing_review",
+        "beats_review",
+        "reader_agent_review",
+        "editor_agent_review",
+        "reviewer_agent_review",
+        "ai_flavor_review",
+        "cold_reader_review",
+        "progression_lead_review",
+    ):
         if isinstance(writing_review.get(key), dict):
             merged[key] = writing_review[key]
     return merged
@@ -2436,8 +2739,8 @@ def _chapter_prompt_method_block(
         "主角开口硬规则：本章必须至少有一次可识别的主角口头对话，用“夜烬问/说/低声道”连接台词；不能只补一句装冷静，要说清一个理由、拒绝原因或下一步选择。",
         "口语化对话硬规则：每章至少写一轮连续问答，结构是别人问/催/抱怨 -> 夜烬正常回答并给原因 -> 对方接一句反应；台词可以短，但不能断成口令，不能每句都只有几个字。",
         "硬词清零：不要写“边界、底层逻辑、基准、推演、结算链、审稿、场景卡”。用“能不能走、规矩、底价、试一把、柜台说法”替代。",
-        "职业背景落地：苏叶做过外包测试，只能体现为先看余额、数铜币、看蓝耗、摸法杖耐久、停一下再问价；不要把职业背景直接写成报表口吻、现金流、可量化、概率、止损线、变量、算法或后台数据异常。",
-        "技术腔禁用：正文不要写测试员的职业病、边界、溢出、概率、变量、数据流、衰减曲线、测试用例、把收益拉到最高；改成看余额、问价、数铜、等蓝、摸耐久、背包快满。",
+        "职业背景落地：苏叶做过外包测试，只能体现为多看公告、提示、NPC回话和别人忽略的异常细节；不要写成凡事先看成本、先问价、先退，也不要写成报表口吻、现金流、可量化、概率、止损线、变量、算法或后台数据异常。",
+        "技术腔禁用：正文不要写测试员的职业病、边界、溢出、概率、变量、数据流、衰减曲线、测试用例、把收益拉到最高；改成公告停顿、提示闪烁、背包格变化、NPC回话前后不一致、旁人误判。",
         "报告腔禁用：不要写“意味着、这说明、规则被撬开、常规掉落池、系统把溢出部分折算、模型跑不动”。发现异常时，写成背包格变满、提示闪一下、手指停住、旁人看不懂或主角先收东西。",
         "战斗白描禁词：不要写施法前摇、验证路线、验证逻辑、收益路径或抽象收益词；改成抬手慢半拍、蓝条少一截、背包快满、任务牌上还差几份。",
         "比喻限额：全章最多1处使用“像”，不要写仿佛、犹如、宛如；能写动作就写动作。",
@@ -2468,7 +2771,7 @@ def _chapter_prompt_method_block(
     if chapter_number == 1:
         lines[4:4] = [
             "第一章目标口语化：不要把目标写成后台硬词，要写成苏叶先试清楚这东西能不能让他活下去、赚到第一口气、藏住来源。",
-            "第一章领先流：爽点要兑现成账本优势或下一步前置任务；是否完成任务、拿铜币、修杖或买药必须跟随项目账本/章节计划，未允许时不要擅自结算。",
+            "第一章领先流：爽点要兑现成账本优势或下一步前置任务；是否完成任务、拿铜币、修法杖或买药必须跟随项目账本/章节计划，未允许时不要擅自结算。",
         ]
     lines.extend(CRITICAL_PROMPT_RULES[:4])
     if isinstance(governance, dict):
@@ -2681,7 +2984,9 @@ class StoryOrchestrator:
         timeout_seconds: int | None = None,
     ) -> tuple[str, str]:
         settings = resolve_openai_runtime_settings(agent)
-        if not settings.api_key:
+        provider = getattr(settings, "provider", "openai")
+        codex_command = getattr(settings, "codex_command", "")
+        if provider != "codexcli" and not settings.api_key:
             return "", "Missing OPENAI_API_KEY"
 
         strategy = get_runtime_strategy_settings()
@@ -2721,7 +3026,26 @@ class StoryOrchestrator:
             report_generation_progress(f"{stage}：模型请求中（timeout={config.timeout}s）")
 
         try:
-            response = post_json_with_retry(settings.base_url, "/chat/completions", payload, settings.api_key, config=config)
+            try:
+                response = post_json_with_retry(
+                    settings.base_url,
+                    "/chat/completions",
+                    payload,
+                    settings.api_key,
+                    config=config,
+                    provider=provider,
+                    codex_command=codex_command,
+                )
+            except TypeError as exc:
+                if "unexpected keyword argument" not in str(exc):
+                    raise
+                response = post_json_with_retry(
+                    settings.base_url,
+                    "/chat/completions",
+                    payload,
+                    settings.api_key,
+                    config=config,
+                )
             if json_mode:
                 parsed = parse_json_message_content(response)
                 if parsed is None:
@@ -2818,7 +3142,7 @@ class StoryOrchestrator:
                 "ledger_updates 必须只记录本章结束后的状态变化，例如等级、经验、游戏币、装备耐久、任务进度、势力关注、市场异常、金手指暴露度。",
                 "角色面板硬规则：主角最新游戏面板属于角色群像的一部分；每章结束必须让 ledger_updates 能同步出等级、职业、经验、货币、装备、背包、任务和风险状态。",
                 "经济连续性硬规则：必须继承 latest_facts、relevant_memories、progression_ledger 里的材料价格锚点、主角处理价格、扣费、最终余额和库存；不得重新发明“昨天价格”或把价格锚点改成另一套。",
-                "职业连续性硬规则：现实职业和游戏职业必须分层；苏叶现实职业固定为前外包测试员，夜烬游戏路线固定为元素法师学徒/元素法师，不得写成战士、刺客或短剑主战。",
+                "职业连续性硬规则：现实职业和游戏身份必须分层；苏叶现实职业固定为前外包测试员，夜烬开局身份固定为见习冒险者（未转职），只是选择新手法杖和基础火球术；正式职业路线只能后续转职再确认，不得提前写成正式法师职业、战士、刺客或短剑主战。",
                 "装备账本硬规则：任何购买、替换、修理、耐久变化、消耗品购买和关键掉落，都必须写入 ledger_updates.equipment 或 ledger_updates.economy.inventory，并在章节摘要留下事实。",
                 "NPC设定硬规则：命名NPC首次或重点出场必须交代地点、职责/服务、利益诉求或口吻、能知道什么/不知道什么；NPC不能只是发任务的牌子。",
                 "章节摘要硬规则：chapter_summary.facts 与 memory_constraints.must_keep_facts 必须记录本章出现的关键进度/职业/装备/NPC锚点，包括任务进度、经验变化、关键库存、职业路线、装备耐久、下一步前置任务和NPC能办什么。",
@@ -2851,6 +3175,7 @@ class StoryOrchestrator:
         plan = plan if isinstance(plan, dict) else {}
         plan = {**plan, "writing_taskbook": ensure_writing_taskbook(chapter_number, plan, genre=story.genre, style=story.style)}
         hard_rules = compact_list(story.author_constraints, max_items=18, item_chars=220)
+        writing_learning = learning_snapshot(getattr(story, "writing_lessons", []), max_items=8)
         living_world = _priority_world_facts(story.world_facts, max_items=42, item_chars=220)
         chapter_seed = build_chapter_seed(story, chapter_number)
         opening_rules = _opening_writer_rules(chapter_number)
@@ -2932,15 +3257,16 @@ class StoryOrchestrator:
                 f"章节阶段：{phase_name}",
                 f"生成前世界推演契约：{_plain_prompt_json(chapter_seed_for_prompt)}",
                 f"硬性世界规则与写作约束：{_plain_prompt_json(hard_rules)}",
+                f"项目写作学习记录：{_plain_prompt_json(writing_learning)}",
                 f"活世界状态、黄金三章和反应机制：{_plain_prompt_json(living_world)}",
                 f"黄金三章/开篇写作规则：{_plain_prompt_json(opening_rules)}",
                 f"反AI味写作协议：{_plain_prompt_json(style_rules)}",
                 f"写作教练 Style Coach：{_plain_prompt_json(style_guidance)}",
                 *game_specific,
-                "网游章节写法：正文按 writing_contract.genre_craft.action_chain 走，先写代价，再写收获；每个面板/提示后面接主角选择或现场后果。",
+                "网游章节写法：正文按 writing_contract.genre_craft.action_chain 走，先给阻力，再写主角怎么用信息差行动，最后兑现收获；每个面板/提示后面接主角选择或现场后果。",
                 "本章写作合同用法：执行生成前世界推演契约里的 writing_contract.satisfaction_loop、scene_plan、emotional_arc 和 genre_craft；正文按 current_level 和 progression_stage 写，只写 allowed_progress；条件不满足时只能看见、询问或被拒。",
                 "爽点落地写法：每章必须有一个可见收益闭环，一个外人误判，一个章末下一步。收益要写成动作和结果，例如递材料、收铜、修好、买入、技能入包、入口试通；不要写成路线分析或报告口吻。",
-                "情绪落点写法：每个主要场景至少一拍情绪，但不要抒情；用停顿、看余额、数铜币、摸耐久、话说一半、没忍住回头、松一口气又收住来写。",
+                "情绪落点写法：每个主要场景至少一拍情绪，但不要抒情；用停顿、错开视线、手指悬在按钮上、话说一半、没忍住回头、松一口气又收住来写。",
                 f"篇幅要求：{_plan_target_chars(plan)}，不要写成摘要，不要只写几个片段。",
                 "必须把计划里的事件完整写成连续正文，可以分段，但不要输出大纲、标题列表、JSON 或解释。",
             ]
@@ -2953,6 +3279,7 @@ class StoryOrchestrator:
         forbidden_terms = _revision_forbidden_terms(review, plan)
         fix_checklist = _revision_fix_checklist(review)
         style_guidance = plan.get("style_guidance", {})
+        writing_learning = learning_snapshot(getattr(story, "writing_lessons", []), max_items=8)
         governance_section = _governance_prompt_section(plan.get("governance"))
         target_chars = _plan_target_chars(plan)
         scene_repair_plan = review.get("scene_repair_plan") if isinstance(review.get("scene_repair_plan"), dict) else {}
@@ -2970,7 +3297,7 @@ class StoryOrchestrator:
         game_revision_lines = (
             [
                 "改稿限制：不得随意改变等级、经验、货币、掉落和任务结果；但如果是第一章节奏过载，必须删除或后移材料处理、市场玩家、玩家势力、公共频道等越界世界反应。",
-                "第一章改稿保护：修领先流问题时，不得删除现实职业来源、登录/建号、游戏ID夜烬、职业选择、元素法师学徒、短角色面板、基础火球术、混沌之种或掉落判定×1000。",
+                "第一章改稿保护：修领先流问题时，不得删除现实职业来源、登录/建号、游戏ID夜烬、初始身份见习冒险者（未转职）、新手法杖、短角色面板、基础火球术、混沌之种或掉落判定×1000。",
             ]
             if game_specific_revision
             else ["改稿限制：不得随意改变已建立的人物、地点、时间、物件、承诺和事件结果。"]
@@ -2983,6 +3310,8 @@ class StoryOrchestrator:
                 f"章节：第{chapter_number}章",
                 governance_section,
                 f"审稿摘要：{_plain_prompt_json(_compact_review_summary(review))}",
+                f"用户改稿指令与审稿修复项：{_plain_prompt_json(review.get('revision_plan', []))}",
+                f"项目写作学习记录：{_plain_prompt_json(writing_learning)}",
                 f"写作教练 Style Coach：{_plain_prompt_json(style_guidance)}",
                 f"硬性修复清单：{_plain_prompt_json(fix_checklist)}",
                 f"scene_contract_repair_plan：{_plain_prompt_json(scene_repair_plan)}",
@@ -3531,6 +3860,7 @@ class StoryOrchestrator:
             chapter_number=chapter_number,
         )
         _sync_character_game_panels(updated_story, chapter_number)
+        advance_world_pulse(updated_story, chapter_number=chapter_number)
         maybe_update_arc_recap(updated_story, chapter_number)
 
         latest_summary = updated_story.chapter_summaries[-1]
@@ -3618,6 +3948,11 @@ class StoryOrchestrator:
         )
         report_generation_progress("质量检查中...")
         bundle.quality_report = _merge_writing_review_quality(validate_bundle(bundle.model_dump()), writing_review)
+        updated_story.writing_lessons = merge_writing_lessons(
+            updated_story.writing_lessons,
+            lessons_from_quality_report(bundle.quality_report),
+        )
+        bundle.updated_story = updated_story
         if style_adapt_report:
             bundle.quality_report["style_adapt"] = style_adapt_report
         if revision_safety_report:

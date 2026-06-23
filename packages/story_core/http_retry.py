@@ -28,6 +28,8 @@ def post_json_with_retry(
     payload: dict,
     api_key: str,
     config: RetryConfig | None = None,
+    provider: str = "openai",
+    codex_command: str = "",
 ) -> dict:
     """POST JSON to an API endpoint with exponential backoff retry.
     
@@ -45,6 +47,15 @@ def post_json_with_retry(
         urllib.error.URLError: After all retries exhausted
         json.JSONDecodeError: If response is not valid JSON
     """
+    if provider == "codexcli":
+        from packages.story_core.codex_cli_provider import post_json_via_codex_cli
+
+        return post_json_via_codex_cli(
+            payload,
+            command=codex_command or "codex",
+            config=config,
+        )
+
     cfg = config or RetryConfig()
     url = f"{base_url}{path}"
     headers = {

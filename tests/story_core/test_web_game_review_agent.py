@@ -138,10 +138,10 @@ def test_web_game_review_rejects_first_chapter_missing_core_anchors():
 def test_web_game_review_allows_first_chapter_trade_board_without_trade_completion():
     body = (
         "《天启之门》开服，银行卡余额只剩27.60，苏叶戴上旧头盔。"
-        "底层协议校验通过后，他用夜烬建号，选择元素法师学徒。"
-        "面板显示：职业元素法师学徒，Lv.1，经验0/100，货币0铜，基础火球术。"
+        "底层协议校验通过后，他用夜烬建号，确认初始身份为见习冒险者（未转职），选择新手法杖和基础火球术。"
+        "角色面板显示：身份见习冒险者（未转职），Lv.1，经验0/100，生命100/100，法力60/60，钱袋为空，新手法杖，基础火球术。"
         "灰狼倒下时，提示闪过：混沌之种：未解析。掉落判定×1000，千倍爆率。"
-        "任务面板轻轻一跳，清道夫委托的任务门槛比旁人少跑了好几趟，下一步可以提前去问基础火球术强化。"
+        "任务面板轻轻一跳，清道夫委托的任务前置比旁人少跑了好几趟，下一步可以提前去问基础火球术强化。"
         "仓库窗口后，仓库管理员铁栓敲了敲柜台，说这里只办理仓库寄存服务，规矩是先交押金，没铜币就不能办。"
         "他回村只看见交易行门口的价牌和批次，不寄售，不成交，也没有到账。"
     ) * 30
@@ -298,7 +298,7 @@ def test_web_game_review_rejects_unnormalized_currency_display():
 
 def test_web_game_review_rejects_mage_written_as_sword_primary():
     body = (
-        "《天启之门》开服后，夜烬确认职业倾向是元素法师学徒，任务目标是元素回廊。"
+        "《天启之门》开服后，夜烬确认初始身份是见习冒险者（未转职），主武器是新手法杖，任务目标是元素回廊。"
         "他没有使用法杖和基础火球术，而是抽出短剑冲进狼群，用短剑刺穿灰狼弱点。"
         "修理匠老葛在铁匠铺修剑报价，交易行商人只记录价格和时间戳。"
     ) * 25
@@ -307,11 +307,11 @@ def test_web_game_review_rejects_mage_written_as_sword_primary():
         chapter_number=2,
         body=body,
         event_plan={"npc_beats": ["修理匠老葛提供装备修理服务。"]},
-        world_facts=["职业路线：夜烬是元素法师学徒。"],
+        world_facts=["初始身份：夜烬是见习冒险者（未转职），主武器是新手法杖，基础技能是基础火球术。"],
     )
 
     assert review["pass"] is False
-    assert any("职业与装备" in issue for issue in review["issues"])
+    assert any("武器与战斗方式" in issue for issue in review["issues"])
 
 
 def test_web_game_review_rejects_mixed_first_chapter_monsters():
@@ -373,7 +373,7 @@ def test_web_game_review_rejects_unplanned_real_background_expansion():
 
 def test_web_game_review_rejects_panel_value_drift_inside_chapter():
     body = (
-        "《天启之门》角色创建完成。角色面板显示：游戏ID：夜烬，职业：元素法师学徒，"
+        "《天启之门》角色创建完成。角色面板显示：游戏ID：夜烬，身份：见习冒险者（未转职），主武器：新手法杖，基础技能：基础火球术，"
         "生命：120/120，法力：280/280，智力：14，敏捷：8，体质：9。"
         "药剂师洛婶在药剂铺报价回收毒腺，提醒他别乱卖。"
         "章末夜烬再次打开角色面板：生命：92/100，法力：61/80，智力：9，敏捷：4，体质：5。"
@@ -392,8 +392,8 @@ def test_web_game_review_rejects_panel_value_drift_inside_chapter():
 
 def test_web_game_review_allows_explained_hp_mp_drift():
     body = (
-        "《天启之门》角色创建完成。角色面板显示：游戏ID：夜烬，职业：元素法师学徒，"
-        "生命：100/100，法力：80/80，基础属性：力量3，敏捷4，智力9，体质5。"
+        "《天启之门》角色创建完成。角色面板显示：游戏ID：夜烬，身份：见习冒险者（未转职），"
+        "等级：Lv.1，经验：0/100，主武器：新手法杖，基础技能：基础火球术，生命：100/100，法力：80/80，钱袋为空，基础属性：力量3，敏捷4，智力9，体质5。"
         "灰鼠扑上来时抓破他的左臂，夜烬施放基础火苗，法力被抽走一截。"
         "药剂师洛婶在药剂铺报价回收毒腺，提醒他别乱卖。"
         "章末夜烬再次打开角色面板：生命：92/100，法力：61/80，基础属性：力量3，敏捷4，智力9，体质5。"
@@ -428,7 +428,7 @@ def test_web_game_review_allows_hp_drift_from_visible_wolf_hit():
 
 def test_web_game_review_rejects_mage_staff_melee_without_spell_reason():
     body = (
-        "《天启之门》开服后，夜烬选择元素法师学徒，背着新手法杖进入灰鼠坡。"
+        "《天启之门》开服后，夜烬确认初始身份是见习冒险者（未转职），背着新手法杖进入灰鼠坡。"
         "灰鼠扑上来时，他全程没有施法，只用杖尖砸肋骨、杖尾压鼻梁、杖头磕咽喉。"
         "药剂师洛婶在药剂铺按七铜币回收毒腺，提醒他材料价格只看品质，不问来路。"
     ) * 25
@@ -437,11 +437,11 @@ def test_web_game_review_rejects_mage_staff_melee_without_spell_reason():
         chapter_number=1,
         body=body,
         event_plan={"npc_beats": ["药剂师洛婶报价。"]},
-        world_facts=["职业路线：元素法师学徒，战斗需要体现基础法术或解释技能未解锁。"],
+        world_facts=["战斗需要体现基础火球术、法力消耗或解释技能未解锁。"],
     )
 
     assert review["pass"] is False
-    assert any("法师战斗方式" in issue for issue in review["issues"])
+    assert any("法杖战斗方式" in issue for issue in review["issues"])
 
 
 def test_web_game_review_rejects_named_npc_without_setting_boundary():

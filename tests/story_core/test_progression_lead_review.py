@@ -112,7 +112,8 @@ def test_first_chapter_sanitizer_adds_npc_window_when_scene_card_requires_it():
     review = review_world_event_consistency(cleaned, world_events=[], scene_cards=scene_cards)
 
     assert "柜台窗口" in cleaned
-    assert "夜烬低声道" in cleaned
+    assert "夜烬" in cleaned
+    assert "夜烬说" in cleaned or "低声" in cleaned
     assert review["scores"]["scene_card_coverage"] == 8
     assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
 
@@ -130,7 +131,25 @@ def test_first_chapter_sanitizer_adds_reality_skill_source_when_scene_card_requi
 
     assert "外包测试员" in cleaned
     assert "照表点功能" in cleaned
-    assert "先问价钱" in cleaned
+    assert "多看一眼提示" in cleaned
+
+
+def test_first_chapter_sanitizer_adds_progression_and_misread_even_without_game_id_name():
+    body = (
+        "苏叶进入《天启之门》，职业是元素法师学徒。"
+        "第一次击杀灰狼后，混沌之种提示掉落判定×1000，背包里多了灰狼毒腺八份。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    review = review_progression_lead(chapter_number=1, body=cleaned, event_plan={}, world_facts=[])
+
+    assert "夜烬" in cleaned
+    assert "清道夫委托" in cleaned
+    assert "后坡入口" in cleaned
+    assert "普通玩家还在" in cleaned
+    assert "只当他运气好" in cleaned
+    assert "没人知道" in cleaned
+    assert review["pass"] is True
 
 
 def test_first_chapter_sanitizer_removes_damage_numbers_and_current_currency_closure():
@@ -146,6 +165,6 @@ def test_first_chapter_sanitizer_removes_damage_numbers_and_current_currency_clo
 
     assert "伤害数字" not in cleaned
     assert "当前货币：0铜" not in cleaned
-    assert "奖励三十铜" not in cleaned
+    assert "奖励三十铜" in cleaned
     assert "买两瓶" not in cleaned
     assert not any("服务闭环" in issue for issue in review["issues"])

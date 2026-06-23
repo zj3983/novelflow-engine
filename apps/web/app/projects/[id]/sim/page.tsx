@@ -21,7 +21,20 @@ type ActionLike = {
   emotion?: string;
 };
 
+type PlotSimulation = {
+  reader_hook?: string;
+  chapter_desire?: string;
+  obstacle_chain?: string[];
+  choice_point?: string;
+  payoff?: string;
+  cost?: string;
+  emotional_turn?: string;
+  outsider_misread?: string;
+  ending_hook?: string;
+};
+
 type SimulationPlan = {
+  plot_simulation?: PlotSimulation;
   character_performance?: Array<{
     name?: string;
     role?: string;
@@ -31,6 +44,24 @@ type SimulationPlan = {
   }>;
   npc_boundaries?: Array<{ name?: string; service_role?: string; interaction_rules?: string[] }>;
   craft_pack?: Record<string, unknown>;
+};
+
+type WorldPulseLatest = {
+  pulse_index?: number;
+  chapter_number?: number;
+  visible_at_chapter?: number;
+  public_traces?: string[];
+  pressure_points?: string[];
+  summary?: string;
+};
+
+type VisibilityInboxItem = {
+  channel?: string;
+  visible_at_chapter?: number;
+  source_chapter?: number;
+  hint?: string;
+  trace?: string;
+  summary?: string;
 };
 
 function compactText(value: unknown, fallback = ""): string {
@@ -45,6 +76,32 @@ function compactText(value: unknown, fallback = ""): string {
     })
     .filter(Boolean);
   return entries.join("；") || fallback;
+}
+
+function asTextList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => compactText(item)).filter(Boolean).slice(0, 5);
+}
+
+function worldPulseLatest(bundle: ChapterBundle): WorldPulseLatest | null {
+  const latest = bundle.simulation_status?.world_pulse?.latest;
+  if (!latest || typeof latest !== "object") return null;
+  return latest as WorldPulseLatest;
+}
+
+function visibilityInbox(bundle: ChapterBundle): VisibilityInboxItem[] {
+  const inbox = bundle.simulation_status?.visibility_inbox;
+  if (!Array.isArray(inbox)) return [];
+  return inbox.filter((item): item is VisibilityInboxItem => Boolean(item && typeof item === "object")).slice(-6);
+}
+
+function worldPulseLine(pulse: WorldPulseLatest): string {
+  const parts = [
+    typeof pulse.pulse_index === "number" ? `脉冲 ${pulse.pulse_index}` : "",
+    typeof pulse.chapter_number === "number" ? `源自第 ${pulse.chapter_number} 章` : "",
+    typeof pulse.visible_at_chapter === "number" ? `第 ${pulse.visible_at_chapter} 章可见` : "",
+  ].filter(Boolean);
+  return parts.join(" / ") || pulse.summary || "暂无长期世界脉冲。";
 }
 
 function eventPlanLine(bundle: ChapterBundle): string {
@@ -175,6 +232,26 @@ function craftHighlights(bundle: ChapterBundle): string[] {
   return lines.slice(0, 5);
 }
 
+function plotSimulation(bundle: ChapterBundle): PlotSimulation | null {
+  const simulationPlan = (bundle.simulation_plan ?? {}) as SimulationPlan;
+  const plot = simulationPlan.plot_simulation;
+  if (!plot || typeof plot !== "object") return null;
+  return plot;
+}
+
+function plotLineItems(plot: PlotSimulation): Array<{ label: string; value: string }> {
+  return [
+    { label: "读者钩子", value: compactText(plot.reader_hook) },
+    { label: "主角目标", value: compactText(plot.chapter_desire) },
+    { label: "选择点", value: compactText(plot.choice_point) },
+    { label: "爽点兑现", value: compactText(plot.payoff) },
+    { label: "代价", value: compactText(plot.cost) },
+    { label: "情绪转折", value: compactText(plot.emotional_turn) },
+    { label: "外人误判", value: compactText(plot.outsider_misread) },
+    { label: "章末钩子", value: compactText(plot.ending_hook) },
+  ].filter((item) => item.value);
+}
+
 export default function SimulationPage() {
   const { project, story, error, encodedProjectId } = useProjectWorkspace();
   const bundles = story?.history ? [...story.history].filter(hasSimulation).reverse() : [];
@@ -188,8 +265,8 @@ export default function SimulationPage() {
           { label: "我的作品", href: "/projects" },
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
-        title="世界推演"
-        subtitle={project?.current_focus || latest?.next_outline || "按章节查看推演计划、人物反应、世界事件和场景卡。"}
+        title="剧情推演"
+        subtitle={project?.current_focus || latest?.next_outline || "先看本章剧情目标、阻碍、爽点、代价和章末钩子，再用世界账本校验。"}
       />
 
       {error ? (
@@ -208,6 +285,11 @@ export default function SimulationPage() {
             const facts = cleanLines(bundle.chapter_summary?.facts, 4);
             const status = bundle.simulation_status;
             const crafts = craftHighlights(bundle);
+            const pulse = worldPulseLatest(bundle);
+            const inbox = visibilityInbox(bundle);
+            const publicTraces = asTextList(pulse?.public_traces);
+            const pressurePoints = asTextList(pulse?.pressure_points);
+            const plot = plotSimulation(bundle);
 
             return (
               <section className="ws-card ws-sim-chapter" key={bundle.chapter_number}>
@@ -227,7 +309,7 @@ export default function SimulationPage() {
 
                 <div className="ws-sim-grid">
                   <div className="ws-simple-item">
-                    <strong>推演焦点</strong>
+                    <strong>剧情焦点</strong>
                     <span>{eventPlanLine(bundle) || "暂无焦点。"}</span>
                   </div>
                   <div className="ws-simple-item">
@@ -249,6 +331,59 @@ export default function SimulationPage() {
                     </span>
                   </div>
                 </div>
+
+                {plot ? (
+                  <div className="ws-character-block">
+                    <strong>剧情推演</strong>
+                    <div className="ws-sim-grid">
+                      {plotLineItems(plot).map((item) => (
+                        <div className="ws-simple-item" key={item.label}>
+                          <strong>{item.label}</strong>
+                          <span>{item.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                    {plot.obstacle_chain?.length ? (
+                      <ul>
+                        {plot.obstacle_chain.slice(0, 5).map((line, index) => (
+                          <li key={`${line}-${index}`}>{line}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {pulse || inbox.length > 0 ? (
+                  <div className="ws-character-block">
+                    <strong>长期世界脉冲</strong>
+                    <p className="ws-card__hint">{pulse ? worldPulseLine(pulse) : "本章暂无新的长期世界脉冲。"}</p>
+                    {publicTraces.length > 0 ? (
+                      <ul>
+                        {publicTraces.map((line, index) => (
+                          <li key={`trace-${index}`}>{line}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {pressurePoints.length > 0 ? (
+                      <ul>
+                        {pressurePoints.map((line, index) => (
+                          <li key={`pressure-${index}`}>{line}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {inbox.length > 0 ? (
+                      <ul>
+                        {inbox.map((item, index) => (
+                          <li key={`${item.channel || "inbox"}-${index}`}>
+                            {[item.channel, item.hint || item.trace || item.summary, item.visible_at_chapter ? `第 ${item.visible_at_chapter} 章可见` : ""]
+                              .filter(Boolean)
+                              .join("：")}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {crafts.length > 0 ? (
                   <div className="ws-character-block">
@@ -342,7 +477,7 @@ export default function SimulationPage() {
         </div>
       ) : (
         <section className="ws-card">
-          <p className="ws-card__title">世界推演</p>
+          <p className="ws-card__title">剧情推演</p>
           <p className="ws-card__hint">还没有章节推演记录。</p>
         </section>
       )}

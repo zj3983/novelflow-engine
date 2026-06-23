@@ -52,7 +52,7 @@ def test_scene_cards_turn_world_events_into_writeable_scenes():
 
     scene_cards = select_scene_cards(events, chapter_seed=seed, simulation_plan=plan)
 
-    assert 3 <= len(scene_cards) <= 5
+    assert 3 <= len(scene_cards) <= 6
     assert scene_cards[0].purpose
     assert any("角色面板" in " ".join(card.must_show) for card in scene_cards)
     assert not any("交易行" in card.location for card in scene_cards)

@@ -49,23 +49,31 @@ FIRST_CHAPTER_SERVICE_CLOSURE_TERMS = (
     "任务完成",
     "获得：30铜",
     "获得:30铜",
-    "奖励三十铜",
-    "奖励30铜",
+    "领取三十铜",
+    "领取30铜",
+    "奖励：30铜",
+    "奖励三十枚铜到账",
     "扣除：30铜",
     "扣除:30铜",
     "当前货币：0铜",
     "修满",
     "修完耐久",
+    "修好法杖",
+    "把法杖修好",
     "买两瓶",
     "两瓶药水",
-    "初级法力药水，什么价",
+    "买了药水",
+    "买下药水",
+    "初级法力药水×",
 )
 
 FIRST_CHAPTER_TRADE_CLOSURE_TERMS = (
     "寄售",
     "上架",
     "成交",
-    "到账",
+    "到账铜币",
+    "到账：",
+    "钱袋里多了",
     "手续费",
     "提现",
     "换算人民币",
@@ -206,7 +214,7 @@ def review_progression_lead(
     if chapter_number <= 3 and concrete_payoff_count < 2:
         scores["progression_payoff"] = 5
         issues.append("网游爽点没有落成可见收益：读者看不到主角具体拿到、修好、买入、兑换或推进了什么。")
-        revision_plan.append("补一个明确收益动作：递材料、收铜、修杖、买药、技能入包、任务完成或入口试通，并写出变化后的状态。")
+        revision_plan.append("补一个明确收益动作：递材料、收铜、修法杖、买药、技能入包、任务完成或入口试通，并写出变化后的状态。")
 
     if chapter_number <= 3 and outsider_misread_count == 0:
         scores["opening_scope"] = 5

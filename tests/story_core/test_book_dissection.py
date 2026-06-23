@@ -125,3 +125,54 @@ def test_diagnose_project_chapter_extracts_concrete_webgame_progress():
     joined = "\n".join(item for items in report["sections"].values() for item in items)
     assert "暂未命中" not in joined
     assert "未发现硬性错误" not in joined
+def test_diagnose_project_chapter_reads_utf8_chapter_tail_ledger():
+    chapter = {
+        "chapter_number": 2,
+        "chapter_title": "十份毒腺",
+        "body": "\n".join(
+            [
+                "夜烬交完清道夫委托，拿到三十铜，修好新手法杖，又买了一瓶小法力药水。",
+                "旁人只当他会挑残血、会省耐久和运气好，没人知道掉落判定×1000。",
+                "后坡巡查：探查入口三十步，带回破损路牌碎片×1。失败不退押金。",
+                "左边倒木旁边有两只狼会一起动，他没有登记，只在旁边看了一眼入口。",
+                "生命：45/100。法力：12/60。新手法杖：9/10。经验：36/100。",
+                "背包：粗糙狼皮×4，占用1/20。任务：清道夫委托已完成；后坡巡查未登记。",
+            ]
+        ),
+    }
+
+    report = diagnose_project_chapter({"state": {}}, chapter)
+
+    assert any("经验36/100" in item for item in section(report, "主角进展"))
+    assert any("灰狼毒腺0" in item for item in section(report, "主角进展"))
+    assert any("后坡巡查" in item and "钱袋归零" in item for item in section(report, "冲突推进"))
+    assert not section(report, "主要问题")
+    assert not section(report, "对话问题")
+
+
+def test_diagnose_project_chapter_reads_patrol_progress_as_conflict():
+    chapter = {
+        "chapter_number": 3,
+        "chapter_title": "后坡第一格",
+        "body": "\n".join(
+            [
+                "夜烬没有去市场柜台，只在任务牌边上停住。",
+                "【经验：42/100】",
+                "【生命：18/100】",
+                "【法力：4/60】",
+                "【新手法杖：7/10】",
+                "【钱袋：空】",
+                "【背包：灰狼毒腺×8，粗糙狼皮×7】",
+                "【占用：2/20】",
+                "【后坡巡查：2/3】",
+                "他只剩红血，没有药水，第三段还要进第一格内侧刻标记。",
+                "旁人只当他路线熟，没人知道掉落判定×1000。",
+            ]
+        ),
+    }
+
+    report = diagnose_project_chapter({"state": {}}, chapter)
+
+    assert any("后坡巡查推进到2/3" in item for item in section(report, "章节作用"))
+    assert any("后坡巡查卡在2/3" in item for item in section(report, "冲突推进"))
+    assert any("钱袋空" in item or "补给" in item for item in section(report, "可写入提示词"))

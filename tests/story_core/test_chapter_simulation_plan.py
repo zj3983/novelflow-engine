@@ -95,7 +95,7 @@ def test_character_voice_signature_flows_into_simulation_plan():
                         signature_phrases=["先算账", "回报和成本得对得上"],
                         lexicon=["成本", "回报", "拆单"],
                         taboo=["命运", "天选", "热血"],
-                        sentence_rhythm="短句为主，少形容词",
+                        sentence_rhythm="句子按场面自然长短，少形容词",
                         self_reference="我",
                         subtext_habit="顾左右而言他，不直接表达情绪",
                     ),

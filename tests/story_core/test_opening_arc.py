@@ -188,7 +188,7 @@ def test_opening_review_rejects_unforeshadowed_goldfinger():
     review = _review_chapter_body(
         1,
         body,
-        {"world_reactions": ["NPC只记录任务登记。"], "next_focus": "继续验证规则。"},
+        {"world_reactions": ["NPC只记录任务登记。"], "next_focus": "继续摸后坡入口。"},
     )
 
     assert review["pass"] is False
@@ -205,7 +205,7 @@ def test_project_character_profiles_enrich_runtime_characters():
                 "role": "主角",
                 "motivation": "缺钱但必须隐藏千倍爆率。",
                 "personality": "谨慎、计算、极度厌恶失控。",
-                "speech_style": "短句，先报数字再说结论。",
+                "speech_style": "先报数字再说结论，话要完整。",
                 "goals": ["安全升至10级", "建立隐蔽变现渠道"],
                 "secrets": ["千倍爆率"],
                 "conflict_hooks": ["被公会识破"],
@@ -260,7 +260,7 @@ def test_opening_review_requires_background_and_motivation():
     review = _review_chapter_body(
         1,
         body,
-        {"world_reactions": ["NPC只记录任务登记。"], "next_focus": "继续验证规则。"},
+        {"world_reactions": ["NPC只记录任务登记。"], "next_focus": "继续摸后坡入口。"},
     )
 
     assert review["pass"] is True

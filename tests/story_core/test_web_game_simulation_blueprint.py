@@ -42,7 +42,8 @@ def test_scene_cards_follow_web_game_template_order_and_conflict_ladder():
 
     cards = select_scene_cards(events, chapter_seed=seed, simulation_plan=plan)
 
-    assert [card.template_id for card in cards[:5]] == [
+    assert [card.template_id for card in cards[:6]] == [
+        "plot_simulation",
         "reality_entry",
         "character_creation",
         "small_verification",

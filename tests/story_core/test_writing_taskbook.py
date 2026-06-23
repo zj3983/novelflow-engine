@@ -77,3 +77,63 @@ def test_taskbook_prompt_section_is_writer_facing_not_json_dump():
     assert "NOISENOISE" not in section
     assert "unused_big_blob" not in section
     assert "scene_cards" not in section
+
+
+def test_taskbook_turns_plot_simulation_into_narrative_spine():
+    taskbook = build_writing_taskbook(
+        chapter_number=2,
+        plan={
+            "target_chars": 3600,
+            "simulation_plan": {
+                "chapter_goal": "完成清道夫委托",
+                "plot_simulation": {
+                    "reader_hook": "读者要看到夜烬暗中把优势滚起来。",
+                    "chapter_desire": "夜烬想补齐清道夫委托还差的两份毒腺。",
+                    "obstacle_chain": ["蓝量不够", "法杖耐久快见底", "旁边玩家会误判他的路线"],
+                    "choice_point": "他要决定先交任务，还是先把来源藏住。",
+                    "payoff": "清道夫委托进度必须有明确变化。",
+                    "cost": "至少付出蓝量、耐久或铜币中的一项。",
+                    "emotional_turn": "从缺资源的紧绷转成小领先后的警惕。",
+                    "outsider_misread": "外人只能以为他运气好。",
+                    "ending_hook": "章末落到后坡巡查前置任务。",
+                },
+            },
+        },
+        genre="网游",
+        style="白描",
+    )
+
+    required = "\n".join(taskbook["global_required"])
+    scenes = "\n".join(scene["goal"] + "\n" + scene["required_surface"] + "\n" + scene["exit_state"] for scene in taskbook["scenes"])
+
+    assert "剧情主线：读者要看到夜烬暗中把优势滚起来。" in required
+    assert "主角目标：夜烬想补齐清道夫委托还差的两份毒腺。" in required
+    assert "阻碍：蓝量不够；法杖耐久快见底；旁边玩家会误判他的路线" in required
+    assert "夜烬想补齐清道夫委托还差的两份毒腺" in scenes
+    assert "清道夫委托进度必须有明确变化" in scenes
+    assert "章末落到后坡巡查前置任务" in scenes
+
+
+def test_taskbook_prompt_uses_plot_words_not_backend_key():
+    taskbook = ensure_writing_taskbook(
+        2,
+        {
+            "simulation_plan": {
+                "chapter_goal": "完成清道夫委托",
+                "plot_simulation": {
+                    "reader_hook": "读者要看到具体领先。",
+                    "chapter_desire": "夜烬想补齐材料。",
+                    "payoff": "任务进度变化。",
+                    "ending_hook": "后坡巡查前置任务露出。",
+                },
+            }
+        },
+        genre="网游",
+        style="白描",
+    )
+
+    section = format_taskbook_prompt_section(taskbook)
+
+    assert "剧情主线" in section
+    assert "读者要看到具体领先" in section
+    assert "plot_simulation" not in section

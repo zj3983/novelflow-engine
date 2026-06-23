@@ -27,6 +27,39 @@ export function GlobalApiConfigCard({
 
       <div className="config-stack">
         <div className="field">
+          <label htmlFor="config-global-provider">模型来源</label>
+          <select
+            id="config-global-provider"
+            aria-label="模型来源"
+            className="text-input"
+            value={value.provider}
+            onChange={(event) =>
+              onChange({
+                ...value,
+                provider: event.target.value as typeof value.provider,
+              })
+            }
+          >
+            <option value="codexcli">Codex CLI</option>
+            <option value="openai">OpenAI 兼容 API</option>
+          </select>
+        </div>
+
+        {value.provider === "codexcli" ? (
+          <div className="field">
+            <label htmlFor="config-global-codex-command">Codex CLI 命令</label>
+            <input
+              id="config-global-codex-command"
+              aria-label="Codex CLI 命令"
+              className="text-input"
+              value={value.codex_command}
+              onChange={(event) => onChange({ ...value, codex_command: event.target.value })}
+              placeholder="codex"
+            />
+          </div>
+        ) : null}
+
+        <div className="field">
           <label htmlFor="config-global-api-key">全局 API 密钥</label>
           <input
             id="config-global-api-key"
@@ -34,6 +67,7 @@ export function GlobalApiConfigCard({
             type="password"
             className="text-input"
             value={value.api_key}
+            disabled={value.provider === "codexcli"}
             onChange={(event) => onChange({ ...value, api_key: event.target.value })}
           />
         </div>
@@ -45,6 +79,7 @@ export function GlobalApiConfigCard({
             aria-label="全局接口地址"
             className="text-input"
             value={value.base_url}
+            disabled={value.provider === "codexcli"}
             onChange={(event) => onChange({ ...value, base_url: event.target.value })}
           />
         </div>

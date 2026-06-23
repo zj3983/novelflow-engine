@@ -6,6 +6,7 @@ from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES, compact_list,
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate
 from packages.story_core.memory import build_character_cards
 from packages.story_core.simulation import is_game_story
+from packages.story_core.writing_learning import learning_snapshot
 from packages.story_core.writing_taskbook import first_chapter_whole_body_contract
 
 
@@ -107,15 +108,15 @@ def _default_first_chapter_scenes_game() -> list[dict[str, Any]]:
             "id": "login",
             "location": "角色创建界面 / 新手村入口",
             "pov": "",
-            "purpose": "完成登录、游戏ID、职业选择和简短角色面板。",
-            "conflict": "选定职业路线前期容错低，但前几级花钱少，适合一点点滚起来。",
-            "must_show": ["游戏ID", "职业", "Lv.1", "经验0/100", "生命/法力/基础属性", "新手武器/粗布衣"],
+            "purpose": "完成登录、游戏ID、统一初始身份、武器/技能选择和简短角色面板。",
+            "conflict": "开局所有玩家都是见习冒险者，夜烬只是选了法杖和基础火球术，前期容错低但能拉开距离。",
+            "must_show": ["游戏ID", "见习冒险者（未转职）", "Lv.1", "经验0/100", "生命/法力/基础属性", "新手武器/粗布衣"],
             "avoid": ["隐藏职业", "开局满级", "多NPC同时登场"],
             "ending_pressure": "现实段落用现实姓名，游戏内优先用游戏ID。",
             "state_delta": {},
             "sensory_anchors": ["视野里浮动的光面板/虚拟UI的微光", "选项切换时的细微反馈音", "指尖在虚拟按钮上的停留与犹豫"],
-            "subtext": "表面是选职业，里子是给自己留一条可撤的退路。",
-            "rhythm_hint": "staccato：选项→停顿→选项，短节拍呈现计算与犹豫。",
+            "subtext": "表面是选法杖和基础技能，里子是给自己留一条可撤的退路。",
+            "rhythm_hint": "紧凑推进：选项→停顿→选项，呈现计算与犹豫。",
         },
         {
             "index": 3,
@@ -126,20 +127,20 @@ def _default_first_chapter_scenes_game() -> list[dict[str, Any]]:
             "conflict": "主角必须确认异常是否真实，但不能表现得不像新手。",
             "must_show": ["低级怪物", "基础法术", "法力消耗/受伤/走位", "首杀经验", "材料掉落"],
             "avoid": ["全程法杖近战", "一次掉落引发全服市场风暴"],
-            "ending_pressure": "怪物类型前后一致；隐藏优势只做首次领先验证，重点是任务/装备/技能门槛被压短。",
+            "ending_pressure": "怪物类型前后一致；隐藏优势只做首次领先验证，重点是前置任务、装备条件或技能条件被压短。",
             "state_delta": {},
             "sensory_anchors": ["怪物倒地时一个具体的声音/材料落地的反光", "主角呼吸或心跳的一次明显变化", "环境光在掉落物上的折射"],
             "subtext": "表面是验证爆率，里子是怕这只是个错觉。",
-            "rhythm_hint": "dense：动作密度高，连续短句推进，给读者首次兑现的爽感。",
+            "rhythm_hint": "dense：动作密度高，连续动作推进，给读者首次兑现的爽感。",
         },
         {
             "index": 4,
             "id": "npc-landing",
             "location": "新手村服务点",
             "pov": "",
-            "purpose": "只露出服务点、队伍或任务门槛，让下一章成长目标清楚。",
-            "conflict": "材料已经接近任务门槛，但主角需要先确认怎样把爆率优势转成经验、装备或技能路线。",
-            "must_show": ["服务点入口", "任务门槛", "清道夫委托或价牌", "补给价格", "币制轻量露出"],
+            "purpose": "只露出服务点、队伍或前置任务，让下一章成长目标清楚。",
+            "conflict": "材料已经接近前置任务要求，但主角需要先确认怎样把爆率优势转成经验、装备或技能路线。",
+            "must_show": ["服务点入口", "前置任务", "清道夫委托或价牌", "补给价格", "币制轻量露出"],
             "avoid": ["实际寄售成交", "公会锁定身份", "交易行精确百分比预测"],
             "ending_pressure": "单卖价和任务奖励要解释清楚；金币只是大额单位，新手村主要用铜币。",
             "state_delta": {},
@@ -180,7 +181,7 @@ def _default_first_chapter_scenes_generic() -> list[dict[str, Any]]:
             "state_delta": {},
             "sensory_anchors": ["对手身上一个细节（口吻、表情、配饰、节奏）", "环境里能加强压迫感的一处声/光/触", "主角身体一个紧张反应（手汗、屏息、肩线）"],
             "subtext": "表面在博弈眼前的事，里子是双方在试探彼此的底牌。",
-            "rhythm_hint": "staccato：短句切短句，对话和动作交错，呈现拉锯。",
+            "rhythm_hint": "紧凑推进：对话和动作交错，呈现拉锯。",
         },
         {
             "index": 3,
@@ -210,7 +211,7 @@ def _default_first_chapter_scenes_generic() -> list[dict[str, Any]]:
             "state_delta": {},
             "sensory_anchors": ["章末环境的一处余响（脚步、灯熄、风停）", "主角身体上一个未完成的动作", "新出现的物件/讯息留下的具体痕迹"],
             "subtext": "表面是收束，里子是新的不安已经在角落生根。",
-            "rhythm_hint": "staccato：短句收束，结尾留半口气。",
+            "rhythm_hint": "紧凑收束，结尾留半口气。",
         },
     ]
 
@@ -223,7 +224,8 @@ def _hard_locks(game_genre: bool, target_chapter: int) -> list[str]:
     if game_genre:
         locks = [
             "现实姓名和游戏ID必须分层；现实段落可称现实姓名，游戏内行动优先称游戏ID。",
-            "主角职业路线必须前后一致，战斗核心围绕已确立的武器/法术、法力消耗和试炼门槛。",
+            "开局玩家初始身份统一为见习冒险者（未转职）；主角只是选择法杖和基础火球术，战斗核心围绕已确立的武器/法术和法力消耗。",
+            "背包按同类道具堆叠计算格子，灰狼毒腺×8和粗糙狼皮×7只占两个材料格，章末背包应写2/20或占用两个材料格。",
             "新手阶段主要用铜币；币制是 1金币=100银币=10000铜币，金币只作为大额单位轻量露出。",
             "低级材料不会一次扰乱市场；交易行、公会、商人只能看到价格波动、批次、时间戳等弱线索。",
         ]
@@ -255,9 +257,9 @@ def _hard_locks(game_genre: bool, target_chapter: int) -> list[str]:
 
 def _style_rules(game_genre: bool) -> list[str]:
     base = [
-        "短句为主，长短交错；少成语套话，少华丽辞藻。",
+        "句子按场面自然长短；人物对话要像正常说话，不能把理由压成几个词。少成语套话，少华丽辞藻。",
         "少用比喻和形容词，不堆意象；优先写动作、选择、即时后果和具体细节。",
-        "语言贴近番茄爆款网文：短句、强目标、强反馈、少解释；每个场景都要有目标、阻力、收益或危机。",
+        '语言贴近番茄爆款网文的白话节奏：目标清楚、反馈直接、少解释；每个场景都要有目标、阻力、收益或危机。句子按场面自然长短，对话必须把原因、条件或态度说完整。',
         "章节标题贴近番茄常见短章名：4到10字左右，优先用具体事件、地点、道具、关系或冲突；不要写营销句、说明句或后台账本。",
         "用动作、对话、环境细节表现设定，不要停下来写说明书。",
         "人物说话要接地气，配角有自己的立场和口吻，但不要全知。",
@@ -267,6 +269,7 @@ def _style_rules(game_genre: bool) -> list[str]:
             [
                 "数值必须可追踪：等级、经验、货币、背包、装备、任务奖励前后一致。",
                 "奖励差异必须解释清楚：单卖材料价、任务打包价、声望或村务补贴不能混在一起。",
+                "前10章节奏要快，连续两章不能只拿线索不给成长；下一章至少兑现一个可见成长：等级、经验大幅推进、技能、装备、货币补给或任务权限。",
             ]
         )
     else:
@@ -276,7 +279,7 @@ def _style_rules(game_genre: bool) -> list[str]:
 
 def _title_examples(game_genre: bool) -> list[str]:
     if game_genre:
-        return ["灰烬村登录", "法师学徒", "清道夫委托", "灰狼坡", "回村补给"]
+        return ["灰烬村登录", "见习冒险者", "清道夫委托", "灰狼坡", "回村补给"]
     return ["旧楼回信", "雨夜来客", "未送出的礼物", "第三次约见", "门口的影子"]
 
 
@@ -370,6 +373,7 @@ def prose_renderer_contract() -> dict[str, Any]:
                 "protagonist",
                 "governance",
                 "event_plan",
+                "plot_simulation",
                 "scene_cards",
                 "hard_locks",
                 "style_rules",
@@ -389,7 +393,7 @@ def prose_renderer_contract() -> dict[str, Any]:
             "keep numbers, names, items, and UI state traceable to the packet",
             "consume every scene_contract.visible_consequences item on page; if it is not visible to a reader, the scene is unfinished",
             "keep rhetoric sparse: avoid dense metaphors, adjective chains, and lyrical description",
-            "use Tomato-style webnovel language: short direct sentences, clear goal, immediate payoff, visible cost, and an ending hook",
+            "use Tomato-style webnovel language: clear goal, immediate payoff, visible cost, natural sentence length, and an ending hook",
         ],
     }
 
@@ -411,8 +415,15 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         item_chars=140,
     )
     author_constraints = _as_list(getattr(story, "author_constraints", []), max_items=18, item_chars=160)
+    writing_learning = learning_snapshot(getattr(story, "writing_lessons", []), max_items=8)
     existing_body = getattr(bundle, "body", "") if bundle is not None else ""
     scene_cards = _extract_scene_cards(bundle) if bundle is not None else []
+    simulation_plan = getattr(bundle, "simulation_plan", {}) if bundle is not None else {}
+    plot_simulation = (
+        simulation_plan.get("plot_simulation")
+        if isinstance(simulation_plan, dict) and isinstance(simulation_plan.get("plot_simulation"), dict)
+        else {}
+    )
     systemic_simulation = _extract_systemic_simulation(scene_cards)
     scene_contracts = _extract_scene_contracts(scene_cards)
     if target_chapter == 1 and not scene_cards:
@@ -473,11 +484,13 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         "governance": governance,
         "governance_gate": governance_gate,
         "event_plan": _event_plan_summary(bundle) if bundle is not None else {},
+        "plot_simulation": plot_simulation,
         "systemic_simulation": systemic_simulation,
         "scene_contracts": scene_contracts,
         "scene_cards": scene_cards,
         "hard_locks": compact_list(hard_locks, max_items=16, item_chars=160),
         "style_rules": style_rules,
+        "writing_learning": writing_learning,
         "author_constraints": author_constraints,
         "world_facts": world_facts,
         "continuity": {

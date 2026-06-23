@@ -717,7 +717,7 @@ def _default_opening_arc(project: NovelProject, genre_plugins: list[dict[str, An
                     "must_include": [
                         "《天启之门》作为全沉浸VRMMO的开服背景、玩家涌入原因和现实影响。",
                         "苏叶的现实压力、职业/工作状态、现实技能来源，以及他为什么必须低调变强或变现。",
-                        "角色创建或登录阶段必须完成游戏ID与职业选择：夜烬选择元素法师学徒/元素法师路线。",
+                        "角色创建或登录阶段必须完成游戏ID、初始身份与武器/基础技能选择：开局所有玩家都是见习冒险者（未转职），夜烬只是选择新手法杖和基础火球术。",
                         "第一章必须出现一次简短角色面板，写清游戏ID、等级、职业/路线、经验、主武器或基础技能、货币/背包关键项。",
                         "金手指出现前必须有触发条件或伏笔，例如旧头盔、异常邀请码、神经接驳协议异常、角色创建选择或底层日志闪烁。",
                         "混沌之种/千倍爆率的首次验证，必须同时展示收益和具体代价。",
@@ -727,7 +727,7 @@ def _default_opening_arc(project: NovelProject, genre_plugins: list[dict[str, An
                     ],
                     "exposition_beats": [
                         "通过登录界面、系统公告或玩家频道交代《天启之门》全沉浸开服背景。",
-                        "通过角色创建界面写出职业选择，明确夜烬选择元素法师学徒而不是战士、刺客或短剑主战路线。",
+                        "通过角色创建界面写出初始身份和新手装备选择，明确夜烬开局不是特殊职业，只是选择法杖和基础火球术而不是短剑主战路线。",
                         "通过角色面板把职业栏、等级、经验、新手法杖、基础技能和初始货币写进可追踪账本。",
                         "通过现实账单、出租屋细节、外包测试经历或求职失败交代苏叶缺钱和谨慎的原因。",
                         "通过旧头盔校验、异常邀请码、角色创建界面或底层日志闪烁铺垫混沌之种的触发。",
@@ -737,8 +737,8 @@ def _default_opening_arc(project: NovelProject, genre_plugins: list[dict[str, An
                     "background_budget": {
                         "required_layers": [
                             "现实入口：现实职业/账单压力必须在可感细节中出现。",
-                            "游戏入口：游戏名、开服状态、游戏ID、登录/建号界面和职业选择必须清楚。",
-                            "角色入口：第一章必须有一次短角色面板，职业栏写明元素法师学徒/元素法师路线。",
+                            "游戏入口：游戏名、开服状态、游戏ID、登录/建号界面和初始身份必须清楚。",
+                            "角色入口：第一章必须有一次短角色面板，身份栏写明见习冒险者（未转职），并写出新手法杖和基础火球术。",
                             "规则入口：只展开千倍爆率首次领先验证和下一步成长目标。",
                         ],
                         "allowed_layers": [
@@ -1144,7 +1144,7 @@ def _merge_longform_framework(project: NovelProject, incoming_world: dict[str, A
 def _default_progression_ledger(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
     if _has_game_plugin(genre_plugins):
         return {
-            "protagonist": {"level": 1, "exp": "0/100", "class_path": "法师学徒", "location": "灰烬村"},
+            "protagonist": {"level": 1, "exp": "0/100", "class_path": "见习冒险者（未转职）", "location": "灰烬村"},
             "economy": {"currency": "0金币0银币0铜币", "inventory": [], "market_anomaly": 0},
             "equipment": {"weapon": "新手法杖", "armor": "布衣", "durability": "正常"},
             "skills": {"active": [], "locked": ["元素回廊试炼"]},
@@ -1461,7 +1461,14 @@ def _call_world_enrichment_model(project: NovelProject, *, rules_only: bool) -> 
         "max_tokens": 6000,
         "parameters": {"enable_thinking": False},
     }
-    response = post_json_with_retry(settings.base_url, "/chat/completions", payload, settings.api_key)
+    response = post_json_with_retry(
+        settings.base_url,
+        "/chat/completions",
+        payload,
+        settings.api_key,
+        provider=settings.provider,
+        codex_command=settings.codex_command,
+    )
     parsed = parse_json_message_content(response)
     if not parsed:
         raise WorldEnrichmentError("invalid_llm_response")

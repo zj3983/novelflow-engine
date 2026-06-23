@@ -18,11 +18,14 @@ load_environment_files()
 
 AgentRuntimeName = Literal["character", "director", "writer", "memory"]
 AGENT_RUNTIME_NAMES: tuple[AgentRuntimeName, ...] = ("character", "director", "writer", "memory")
+RuntimeProvider = Literal["openai", "codexcli"]
 
 
 class OpenAIRuntimeSettings(BaseModel):
     api_key: str = ""
     base_url: str = ""
+    provider: RuntimeProvider = "openai"
+    codex_command: str = ""
 
 
 def _default_api_key() -> str:
@@ -37,6 +40,15 @@ def _default_base_url() -> str:
     )
 
 
+def _default_provider() -> RuntimeProvider:
+    provider = os.getenv("NOVEL_LLM_PROVIDER", "codexcli").strip().lower()
+    return "openai" if provider in {"openai", "http", "api"} else "codexcli"
+
+
+def _default_codex_command() -> str:
+    return os.getenv("NOVEL_CODEX_COMMAND", "codex")
+
+
 def _with_env_runtime_defaults(settings: OpenAIRuntimeSettings) -> OpenAIRuntimeSettings:
     configured_base = settings.base_url.rstrip("/") if settings.base_url else ""
     default_base = _default_base_url().rstrip("/")
@@ -48,6 +60,8 @@ def _with_env_runtime_defaults(settings: OpenAIRuntimeSettings) -> OpenAIRuntime
     return OpenAIRuntimeSettings(
         api_key=settings.api_key or _default_api_key(),
         base_url=default_base if not configured_base or legacy_empty_openai_default else configured_base,
+        provider=settings.provider or _default_provider(),
+        codex_command=settings.codex_command or _default_codex_command(),
     )
 
 
@@ -85,6 +99,8 @@ CONFIG_FILE = Path(
 _runtime_settings = OpenAIRuntimeSettings(
     api_key=_default_api_key(),
     base_url=_default_base_url(),
+    provider=_default_provider(),
+    codex_command=_default_codex_command(),
 )
 _agent_runtime_settings: dict[str, OpenAIRuntimeSettings] = {}
 _runtime_strategy_settings = AgentSettings()
@@ -101,6 +117,8 @@ def _partial_runtime_settings(data: dict | None) -> OpenAIRuntimeSettings:
     return OpenAIRuntimeSettings(
         api_key=data.get("api_key") or "",
         base_url=data.get("base_url") or "",
+        provider=data.get("provider") or "openai",
+        codex_command=data.get("codex_command") or "",
     )
 
 
@@ -124,7 +142,12 @@ def _load_config_from_file() -> None:
                 data = json.load(f)
 
             if "global" in data:
-                _runtime_settings = _with_env_runtime_defaults(OpenAIRuntimeSettings.model_validate(data["global"]))
+                global_data = dict(data["global"] or {})
+                if "provider" not in global_data:
+                    global_data["provider"] = _default_provider()
+                if "codex_command" not in global_data:
+                    global_data["codex_command"] = _default_codex_command()
+                _runtime_settings = _with_env_runtime_defaults(OpenAIRuntimeSettings.model_validate(global_data))
             if "agents" in data:
                 for agent_name, settings in data["agents"].items():
                     if agent_name in AGENT_RUNTIME_NAMES:
@@ -276,4 +299,6 @@ def resolve_openai_runtime_settings(
             or global_settings.base_url
             or _default_base_url()
         ).rstrip("/"),
+        provider=agent_settings.provider if agent_settings.provider != "openai" else global_settings.provider,
+        codex_command=agent_settings.codex_command or global_settings.codex_command or _default_codex_command(),
     )

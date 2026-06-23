@@ -6,6 +6,7 @@ from typing import Any
 
 HOOK_TERMS = (
     "下一章",
+    "下一步",
     "散人",
     "收购",
     "黑市",
@@ -15,18 +16,24 @@ HOOK_TERMS = (
     "倒计时",
     "未鉴定",
     "提示",
+    "前置任务",
+    "隐藏",
 )
 
 CARE_TERMS = (
     "房租",
+    "账单",
     "催租",
     "停职",
-    "债",
+    "失业",
+    "欠",
     "倒计时",
     "余额",
     "现实",
     "必须",
     "只剩",
+    "药水",
+    "耐久",
 )
 
 PAYOFF_TERMS = (
@@ -37,7 +44,8 @@ PAYOFF_TERMS = (
     "千倍",
     "异常",
     "隐藏",
-    "隐藏优势",
+    "掉落",
+    "协议",
 )
 
 OVERLOAD_TERMS = (
@@ -121,8 +129,8 @@ def review_cold_reader_experience(body: str, *, previous_summary: str = "") -> d
         issues.append(
             _issue(
                 "cognitive_overload",
-                f"冷读者一次看到 {concept_count} 个陌生高概念，认知负荷过高。",
-                "删减或后移未服务当前冲突的概念；第一章最多保留3个新概念，并先用场景呈现。",
+                f"冷读者一次看到 {concept_count} 个陌生高概念，认知负担过高。",
+                "删减或后移未服务当前冲突的概念；第一章最多保留1个新概念，并先用场景呈现。",
             )
         )
 

@@ -94,13 +94,13 @@ export default function ProjectOverviewPage() {
 
           <section className="ws-card">
             <div className="ws-section-head">
-              <h2 className="ws-section-title">世界推演</h2>
+              <h2 className="ws-section-title">剧情推演</h2>
               <Link href={`/projects/${encodedProjectId}/sim`} className="ws-text-link">
                 查看
               </Link>
             </div>
             <p className="ws-card__hint">
-              {latest?.next_outline || project.current_focus || latest?.chapter_summary?.summary || "暂无推演焦点。"}
+              {latest?.next_outline || project.current_focus || latest?.chapter_summary?.summary || "暂无剧情焦点。"}
             </p>
             {sceneCards.length > 0 ? (
               <ul className="ws-plain-list">
