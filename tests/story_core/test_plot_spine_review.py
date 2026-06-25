@@ -19,6 +19,20 @@ def _plot_plan():
     }
 
 
+def _longform_plan():
+    plan = _plot_plan()
+    plan["longform_plot_contract"] = {
+        "payoff_requirement": "每章至少让一项账本向前滚：等级、技能、装备、铜币、任务权限、材料渠道或现实收入。",
+        "anti_drag_rule": "不要连续铺垫，只观察不兑现。",
+        "future_use_rule": "本章新增道具、人物、任务和线索都要说明能怎样继续推动后续。",
+        "reader_reason_to_continue": "章末必须留下下一章立刻能执行的动作。",
+    }
+    plan["plot_simulation"]["payoff_requirement"] = plan["longform_plot_contract"]["payoff_requirement"]
+    plan["plot_simulation"]["future_use_rule"] = plan["longform_plot_contract"]["future_use_rule"]
+    plan["plot_simulation"]["reader_reason_to_continue"] = plan["longform_plot_contract"]["reader_reason_to_continue"]
+    return plan
+
+
 def test_plot_spine_review_fails_when_core_plot_beats_are_missing():
     body = "夜烬站在村口看了一会儿，觉得后坡还可以去。他没有多说，转身走了。"
 
@@ -49,6 +63,38 @@ def test_plot_spine_review_passes_when_goal_cost_payoff_and_hook_land():
 def test_plot_spine_scores_are_classified_for_revision_gate():
     assert "plot_spine_critical" in HARD_REVIEWERS
     assert "plot_spine_partial" in SOFT_REVIEWERS
+    assert "longform_payoff_missing" in HARD_REVIEWERS
+    assert "longform_followup_weak" in SOFT_REVIEWERS
+
+
+def test_longform_contract_fails_when_chapter_only_observes_without_payoff():
+    body = (
+        "夜烬沿着村墙看了一圈，把后坡入口和任务牌都记下来。"
+        "他没有急着交任务，也没有买东西，只是确认这里以后能用。"
+        "旁边玩家还在排队，他转身离开，准备再看看情况。"
+    )
+
+    review = review_plot_spine_completion(body, _longform_plan())
+
+    assert review["pass"] is False
+    assert review["scores"]["longform_payoff_missing"] == 4
+    assert "本章兑现" in review["diagnostics"]["contract_missing"]
+
+
+def test_longform_contract_passes_when_payoff_and_followup_land():
+    body = (
+        "夜烬把十份灰狼毒腺递进窗口，清道夫委托的进度当场亮满。"
+        "洛婶按牌子发了30铜，任务完成的经验也跳出来，他升到Lv.2。"
+        "他没有在柜台前多停，把铜币拆成修理费和两瓶小法力药水。"
+        "旁边玩家只当他运气好，没人知道多出来的材料还压在背包里。"
+        "任务牌最下方，后坡巡查的前置条件亮了一行，他下一步就能去登记。"
+    )
+
+    review = review_plot_spine_completion(body, _longform_plan())
+
+    assert review["pass"] is True
+    assert "longform_payoff_missing" not in review["scores"]
+    assert review["diagnostics"]["contract_missing"] == []
 
 
 def test_chapter_body_review_exposes_plot_spine_review():

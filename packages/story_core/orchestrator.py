@@ -7,6 +7,7 @@ from typing import Any
 import json
 import re
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 from types import SimpleNamespace
 
@@ -72,9 +73,38 @@ from packages.story_core.scene_contract_repair import build_scene_contract_repai
 
 VALID_CADENCES = {"urgent", "measured", "breathing"}
 MIN_CHAPTER_CHARS = 4200
+MAX_CHAPTER_CHARS = 5500
 REGENERATION_MIN_CHARS = 3500
 REGENERATION_FAST_MIN_CHARS = 3200
 TARGET_CHAPTER_CHARS = "4200到5500字"
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _expansion_timeout_seconds() -> int:
+    return _env_int("NOVEL_EXPANSION_TIMEOUT_SECONDS", 720)
+
+
+def _should_compress_chapter(body: str) -> bool:
+    return _chapter_char_count(body) > MAX_CHAPTER_CHARS
+
+
+def _review_exception_result(name: str, exc: Exception) -> dict[str, Any]:
+    return {
+        "pass": False,
+        "scores": {f"{name}_exception": 4},
+        "issues": [f"审稿器{name}异常：{exc}"],
+        "revision_plan": [f"修复审稿器{name}异常后重新审核。"],
+    }
 
 
 def _review_reports_enabled() -> bool:
@@ -2267,75 +2297,77 @@ def _review_chapter_body(
             issues.append("新手章流程重复：同章反复刷怪、回村、交同一个清道夫任务，会把爽点写成流水账。")
             revision_plan.append("保留一次完整结算，把第二轮压成章末目标或下一章开场；用技能、修理、入口前置或旁人反应承接爽点。")
 
-    web_game_review = review_web_game_chapter(
-        chapter_number=chapter_number,
-        body=body,
-        event_plan=event_plan,
-        world_facts=world_facts,
+    # --- Parallel review Round 1: independent reviews ---
+    _indep_reviews: dict[str, Any] = {}
+    _previous_summary = str(
+        (simulation_plan or {}).get("previous_summary")
+        or (event_plan or {}).get("previous_summary")
+        or (event_plan or {}).get("summary")
+        or ""
     )
-    consistency_review = review_world_event_consistency(
-        body,
-        world_events=world_events or [],
-        scene_cards=scene_cards or [],
-        chapter_number=chapter_number,
-    )
+    _protagonist_names = _review_protagonist_names(event_plan, simulation_plan)
+
+    with ThreadPoolExecutor(max_workers=6) as _pool:
+        _futures = {
+            "web_game": _pool.submit(review_web_game_chapter, chapter_number=chapter_number, body=body, event_plan=event_plan, world_facts=world_facts),
+            "consistency": _pool.submit(review_world_event_consistency, body, world_events=world_events or [], scene_cards=scene_cards or [], chapter_number=chapter_number),
+            "style": _pool.submit(review_prose_style, body),
+            "prose_quality": _pool.submit(review_prose_quality, body),
+            "adversarial_cut": _pool.submit(review_adversarial_cuts, body),
+            "ai_flavor": _pool.submit(review_ai_flavor, body),
+            "cold_reader": _pool.submit(review_cold_reader_experience, body, previous_summary=_previous_summary),
+            "progression_lead": _pool.submit(review_progression_lead, chapter_number=chapter_number, body=body, event_plan=event_plan, world_facts=world_facts or []),
+            "plot_spine": _pool.submit(review_plot_spine_completion, body, simulation_plan),
+        }
+        for _name, _fut in _futures.items():
+            try:
+                _indep_reviews[_name] = _fut.result()
+            except Exception as _exc:
+                report_generation_progress(f"review[{_name}] exception: {_exc}")
+                _indep_reviews[_name] = _review_exception_result(_name, _exc)
+
+    web_game_review = _indep_reviews.get("web_game", {})
+    consistency_review = _indep_reviews.get("consistency", {})
+    style_review = _indep_reviews.get("style", {})
+    prose_quality_review = _indep_reviews.get("prose_quality", {})
+    adversarial_cut_review = _indep_reviews.get("adversarial_cut", {})
+    ai_flavor_review = _indep_reviews.get("ai_flavor", {})
+    cold_reader_review = _indep_reviews.get("cold_reader", {})
+    progression_lead_review = _indep_reviews.get("progression_lead", {})
+    plot_spine_review = _indep_reviews.get("plot_spine", {})
+
     scene_contract_failures = (
         consistency_review.get("scene_contract_failures")
         if isinstance(consistency_review.get("scene_contract_failures"), list)
         else []
     )
     scene_repair_plan = build_scene_contract_repair_plan(consistency_review, scene_cards or [])
-    style_review = review_prose_style(body)
-    prose_quality_review = review_prose_quality(body)
-    adversarial_cut_review = review_adversarial_cuts(body)
-    ai_flavor_review = review_ai_flavor(body)
-    cold_reader_review = review_cold_reader_experience(
-        body,
-        previous_summary=str(
-            (simulation_plan or {}).get("previous_summary")
-            or (event_plan or {}).get("previous_summary")
-            or (event_plan or {}).get("summary")
-            or ""
-        ),
-    )
-    progression_lead_review = review_progression_lead(
-        chapter_number=chapter_number,
-        body=body,
-        event_plan=event_plan,
-        world_facts=world_facts or [],
-    )
-    plot_spine_review = review_plot_spine_completion(body, simulation_plan)
+
+    # --- Round 2: critical_review (depends on plot_spine) ---
     critical_review = review_critical_prose_rules(
         body,
-        protagonist_names=_review_protagonist_names(event_plan, simulation_plan),
+        protagonist_names=_protagonist_names,
         extra_subreviews=[plot_spine_review],
     )
-    reader_agent_review = review_reader_agent(
-        body,
-        previous_summary=str(
-            (simulation_plan or {}).get("previous_summary")
-            or (event_plan or {}).get("previous_summary")
-            or (event_plan or {}).get("summary")
-            or ""
-        ),
-        cold_reader_review=cold_reader_review,
-    )
-    editor_agent_review = review_editor_agent(
-        body,
-        prose_quality_review=prose_quality_review,
-        prose_style_review=style_review,
-        ai_flavor_review=ai_flavor_review,
-    )
-    reviewer_agent_review = review_reviewer_agent(
-        chapter_number=chapter_number,
-        body=body,
-        event_plan=event_plan,
-        world_facts=world_facts or [],
-        protagonist_names=_review_protagonist_names(event_plan, simulation_plan),
-        critical_review=critical_review,
-        web_game_review=web_game_review,
-        progression_lead_review=progression_lead_review,
-    )
+
+    # --- Round 3: agent reviews (depend on earlier reviews, parallel) ---
+    _agent_reviews: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=3) as _pool:
+        _agent_futs = {
+            "reader_agent": _pool.submit(review_reader_agent, body, previous_summary=_previous_summary, cold_reader_review=cold_reader_review),
+            "editor_agent": _pool.submit(review_editor_agent, body, prose_quality_review=prose_quality_review, prose_style_review=style_review, ai_flavor_review=ai_flavor_review),
+            "reviewer_agent": _pool.submit(review_reviewer_agent, chapter_number=chapter_number, body=body, event_plan=event_plan, world_facts=world_facts or [], protagonist_names=_protagonist_names, critical_review=critical_review, web_game_review=web_game_review, progression_lead_review=progression_lead_review),
+        }
+        for _name, _fut in _agent_futs.items():
+            try:
+                _agent_reviews[_name] = _fut.result()
+            except Exception as _exc:
+                report_generation_progress(f"review[{_name}] exception: {_exc}")
+                _agent_reviews[_name] = _review_exception_result(_name, _exc)
+
+    reader_agent_review = _agent_reviews.get("reader_agent", {})
+    editor_agent_review = _agent_reviews.get("editor_agent", {})
+    reviewer_agent_review = _agent_reviews.get("reviewer_agent", {})
     if simulation_plan:
         scores["simulation_plan_alignment"] = 8
         missing_review_focus = not simulation_plan.get("review_focus")
@@ -2432,10 +2464,38 @@ def _review_chapter_body(
             if item and item not in revision_plan:
                 revision_plan.append(item)
 
-    passed = all(score >= 8 for score in scores.values()) and not issues
+    # --- Graded review: core (hard gate) vs soft (advisory, non-blocking) ---
+    # Core = local rules (genre_rules/continuity/etc) + web_game + world_event + critical + prose_style
+    # Soft = AI flavor, cold reader, progression lead, plot spine, adversarial cut, agent reviews
+    _core_score_keys = {"webnovel_hook", "background_integration", "protagonist_motivation",
+                        "genre_rules", "world_reaction", "chapter_ending_hook", "continuity",
+                        "simulation_plan_alignment"}
+    _soft_score_keys = {"cold_reader_pass", "reader_agent_pass", "editor_agent_pass", "reviewer_agent_pass"}
+    _core_passed = all(
+        score >= 8 for key, score in scores.items()
+        if key in _core_score_keys or any(key.startswith(p) for p in ("web_game_", "world_event_", "critical_", "prose_style_", "prose_rule_"))
+    )
+    _soft_passed = all(
+        score >= 6 for key, score in scores.items()
+        if key not in _core_score_keys and not any(key.startswith(p) for p in ("web_game_", "world_event_", "critical_", "prose_style_", "prose_rule_"))
+        and key not in _soft_score_keys
+    )
+    passed = _core_passed
+    if not _soft_passed:
+        _soft_low = [
+            (key, value)
+            for key, value in scores.items()
+            if key not in _core_score_keys
+            and not any(key.startswith(p) for p in ("web_game_", "world_event_", "critical_", "prose_style_", "prose_rule_"))
+            and key not in _soft_score_keys
+            and value < 6
+        ]
+        if _soft_low:
+            report_generation_progress(f"Soft review low scores (non-blocking): {_soft_low}")
     world_state_review = _build_world_state_review(issues, revision_plan)
     return {
         "pass": passed,
+        "review_summary": {"core_passed": _core_passed, "soft_passed": _soft_passed},
         "scores": scores,
         "issues": issues,
         "revision_plan": revision_plan,
@@ -3079,15 +3139,23 @@ class StoryOrchestrator:
         json_mode: bool,
         agent: str = "director",
         stage: str,
+        timeout_seconds: int | None = None,
     ) -> tuple[str, str]:
         started = perf_counter()
-        text, error = self._chat(
-            story,
-            prompt,
-            max_tokens=max_tokens,
-            json_mode=json_mode,
-            agent=agent,
-        )
+        chat_kwargs: dict[str, Any] = {
+            "max_tokens": max_tokens,
+            "json_mode": json_mode,
+            "agent": agent,
+        }
+        if timeout_seconds is not None:
+            chat_kwargs["timeout_seconds"] = timeout_seconds
+        try:
+            text, error = self._chat(story, prompt, **chat_kwargs)
+        except TypeError as exc:
+            if timeout_seconds is None or "timeout_seconds" not in str(exc):
+                raise
+            chat_kwargs.pop("timeout_seconds", None)
+            text, error = self._chat(story, prompt, **chat_kwargs)
         elapsed = perf_counter() - started
         suffix = "失败" if error else "完成"
         report_generation_progress(f"{stage}耗时 {elapsed:.1f}s：{suffix}")
@@ -3343,7 +3411,21 @@ class StoryOrchestrator:
         segments: list[str] = []
         segment_reviews: list[dict[str, Any]] = []
 
-        for index, spec in enumerate(specs, start=1):
+        # --- Checkpoint: recover previously completed segments on retry ---
+        _checkpoint = getattr(self, "_segment_checkpoint", None)
+        if _checkpoint and _checkpoint.get("chapter") == chapter_number and _checkpoint.get("story_id") == story.story_id:
+            completed = _checkpoint.get("segments", [])
+            c_reviews = _checkpoint.get("reviews", [])
+            segments.extend(completed)
+            segment_reviews.extend(c_reviews)
+            start_index = len(completed) + 1
+            report_generation_progress(f"断点恢复：从第{start_index}段继续")
+            self._segment_checkpoint = None
+        else:
+            start_index = 1
+
+        for index in range(start_index, len(specs) + 1):
+            spec = specs[index - 1]
             report_generation_progress(f"分段写作中 {index}/{len(specs)}：{spec.title}")
             segment_text, segment_error = self._timed_chat(
                 story,
@@ -3359,6 +3441,13 @@ class StoryOrchestrator:
                 stage=f"分段写作 {index}/{len(specs)}：{spec.title}",
             )
             if segment_error or not segment_text.strip():
+                # Save checkpoint before returning
+                self._segment_checkpoint = {
+                    "story_id": story.story_id,
+                    "chapter": chapter_number,
+                    "segments": list(segments),
+                    "reviews": list(segment_reviews),
+                }
                 return "", segment_error or f"segment_empty:{spec.key}", segment_reviews
 
             segment_text = trim_segment_to_contract(
@@ -3405,6 +3494,8 @@ class StoryOrchestrator:
             segment_reviews.append(review)
             segments.append(segment_text)
 
+        # Clear checkpoint on success
+        self._segment_checkpoint = None
         body = _sanitize_generated_body(merge_segment_outputs(segments))
         return body, "", segment_reviews
 
@@ -3727,8 +3818,13 @@ class StoryOrchestrator:
                 json_mode=False,
                 agent="writer",
                 stage=f"章节扩写 第{chapter_number}章",
+                timeout_seconds=_expansion_timeout_seconds(),
             )
-            if not expand_error and _chapter_char_count(expanded_body) > _chapter_char_count(body):
+            if expand_error:
+                reason = f"章节扩写失败：{expand_error}"
+                _record_failure(working_story, reason, chapter_number)
+                return _failed_bundle(working_story, chapter_number, reason)
+            if _chapter_char_count(expanded_body) > _chapter_char_count(body):
                 body = _sanitize_chapter_output(expanded_body, chapter_number=chapter_number, scene_cards=scene_cards)
 
         style_adapt_report = None
@@ -3810,6 +3906,41 @@ class StoryOrchestrator:
                 selected_review = selected_quality.get("writing_review") if isinstance(selected_quality.get("writing_review"), dict) else pre_revision_review
                 writing_review = selected_review
                 revision_safety_report = safety["report"]
+
+        if _should_compress_chapter(body):
+            report_generation_progress("章节压缩中...")
+            compressed_body, compress_error = self._timed_chat(
+                working_story,
+                "\n".join(
+                    [
+                        "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。",
+                        f"目标篇幅：保留完整网文章节感，但压到4300到5000字之间，绝对不要超过{MAX_CHAPTER_CHARS}字。",
+                        "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。",
+                        "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。",
+                        "只输出压缩后的小说正文，不要解释，不要列大纲。",
+                        f"原正文：\n{body}",
+                    ]
+                ),
+                max_tokens=5500,
+                json_mode=False,
+                agent="writer",
+                stage=f"章节压缩 第{chapter_number}章",
+                timeout_seconds=_expansion_timeout_seconds(),
+            )
+            if not compress_error and compressed_body.strip():
+                candidate_body = _sanitize_chapter_output(compressed_body, chapter_number=chapter_number, scene_cards=scene_cards)
+                candidate_chars = _chapter_char_count(candidate_body)
+                if MIN_CHAPTER_CHARS <= candidate_chars <= _chapter_char_count(body):
+                    body = candidate_body
+                    writing_review = _review_chapter_body(
+                        chapter_number,
+                        body,
+                        event_plan,
+                        story.world_facts,
+                        simulation_plan,
+                        world_events,
+                        scene_cards,
+                    )
 
         continuity_anchors = _inject_continuity_anchors(memory_constraints, chapter_summary_data, body)
 

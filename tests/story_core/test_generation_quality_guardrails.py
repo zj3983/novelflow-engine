@@ -42,6 +42,46 @@ def test_first_chapter_sanitizer_adds_emotion_anchors():
     assert "不敢真的松下来" in cleaned
 
 
+def test_review_chapter_body_handles_soft_low_scores_without_name_error(monkeypatch):
+    def low_ai_flavor(body):
+        return {
+            "reviewer": "ai_flavor/v1",
+            "pass": False,
+            "scores": {"ai_flavor": 5},
+            "issues": ["soft low"],
+            "revision_plan": [],
+        }
+
+    monkeypatch.setattr("packages.story_core.orchestrator.review_ai_flavor", low_ai_flavor)
+
+    review = _review_chapter_body(
+        1,
+        "《天启之门》开服，夜烬用新手法杖试打一只灰狼，混沌之种提示掉落判定×1000。旁边玩家只当他运气好，他把材料压进背包，下一步准备再刷一轮。",
+        {"summary": "夜烬试打灰狼", "next_focus": "再刷一轮"},
+        world_facts=["网游开服，夜烬低调验证千倍爆率。"],
+    )
+
+    assert "review_summary" in review
+    assert review["review_summary"]["soft_passed"] is False
+
+
+def test_review_chapter_body_treats_review_exception_as_failure(monkeypatch):
+    def broken_web_game_review(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("packages.story_core.orchestrator.review_web_game_chapter", broken_web_game_review)
+
+    review = _review_chapter_body(
+        1,
+        "《天启之门》开服，夜烬用新手法杖试打一只灰狼，混沌之种提示掉落判定×1000。旁边玩家只当他运气好，他把材料压进背包，下一步准备再刷一轮。",
+        {"summary": "夜烬试打灰狼", "next_focus": "再刷一轮"},
+        world_facts=["网游开服，夜烬低调验证千倍爆率。"],
+    )
+
+    assert review["pass"] is False
+    assert any("审稿器web_game异常" in issue for issue in review["issues"])
+
+
 def test_first_chapter_sanitizer_normalizes_panel_values_and_report_phrase():
     body = (
         "角色面板亮起：ID：夜烬等级：Lv.1经验：0/100生命：100/100法力：20/80"

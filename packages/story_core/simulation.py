@@ -5,6 +5,7 @@ from typing import Any
 from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.models import CharacterState, ChapterSimulationPlan, StoryState
+from packages.story_core.plot_contract import build_longform_plot_contract
 from packages.story_core.web_game_author_craft import build_web_game_author_craft, build_web_game_director_card
 from packages.story_core.world_pulse import visibility_inbox_for_chapter
 
@@ -438,6 +439,20 @@ def build_chapter_simulation_plan(
         chapter_goal=chapter_goal,
         game_story=game_story,
     )
+    longform_plot_contract = build_longform_plot_contract(
+        story,
+        chapter_number,
+        chapter_goal=chapter_goal,
+        game_story=game_story,
+    )
+    plot_simulation = {
+        **plot_simulation,
+        "longform_position": longform_plot_contract.get("arc_window", {}),
+        "payoff_requirement": longform_plot_contract.get("payoff_requirement", ""),
+        "anti_drag_rule": longform_plot_contract.get("anti_drag_rule", ""),
+        "future_use_rule": longform_plot_contract.get("future_use_rule", ""),
+        "reader_reason_to_continue": longform_plot_contract.get("reader_reason_to_continue", ""),
+    }
     web_game_author_craft = build_web_game_author_craft(chapter_number, chapter_goal=chapter_goal) if game_story else {}
     web_game_director_card = (
         build_web_game_director_card(
@@ -456,6 +471,7 @@ def build_chapter_simulation_plan(
         world_context=_world_context(story, chapter_number),
         event_plan=event_plan,
         plot_simulation=plot_simulation,
+        longform_plot_contract=longform_plot_contract,
         protagonist_strategy=protagonist_strategy,
         character_performance=character_performance,
         npc_boundaries=npc_boundaries,

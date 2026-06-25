@@ -52,6 +52,20 @@ GAME_STYLE_CONTRACT = (
 )
 
 
+GENERIC_CRAFT_TEMPLATES = (
+    "选择场面：先写角色看见一个具体东西（信、门、价牌、队伍、伤口、物件），再写这个东西带来的麻烦，最后让角色做一个小决定；不要直接写“他权衡利弊”。",
+    "对话场面：一人问/催/提醒，主角用完整句子给表面理由，对方再接一句生活化反应；台词必须改变信息、关系、价格、风险或下一步行动。",
+    "情绪场面：不要写抽象感慨，写手指停住、视线移开、话说到一半、笑意收住、把东西重新放回去这类能看见的动作。",
+)
+
+GAME_CRAFT_TEMPLATES = (
+    "选择场面：先写夜烬看见一个具体东西（价牌、角色面板、背包格、任务牌、队伍、怪物位置），再写麻烦（钱不够、蓝不够、法杖快坏、背包快满、别人会抢），最后做一个小决定；不要直接写“控制成本/规划路线”。",
+    "对话场面：别人问、催或提醒；夜烬用完整句子给表面理由，比如钱、蓝、耐久、材料、排队或前置任务；对方再有一句像普通玩家的反应。夜烬不能只说两个字装高手，也不能说出隐藏机制。",
+    "战斗场面：怪怎么来，夜烬先被逼一下或犯一个小错，消耗落到血蓝和法杖耐久，掉落异常出现后先写他的动作反应；不要只写火球命中、怪倒地、掉落入包。",
+    "爽点场面：先写普通玩家还卡在哪里，再写夜烬因为异常掉落提前够到什么前置，接着写他为什么不能公开用，章末让读者知道下一章能抢什么。",
+)
+
+
 def first_chapter_whole_body_contract(*, game_genre: bool) -> dict[str, Any]:
     if not game_genre:
         return {}
@@ -111,6 +125,7 @@ class WritingTaskBook:
     chapter_goal: str = ""
     target_chars: str = ""
     style_contract: list[str] = field(default_factory=list)
+    craft_templates: list[str] = field(default_factory=list)
     global_required: list[str] = field(default_factory=list)
     global_forbidden: list[str] = field(default_factory=list)
     scenes: list[WritingTaskScene] = field(default_factory=list)
@@ -214,6 +229,49 @@ def _plot_required_lines(plot: dict[str, Any]) -> list[str]:
     obstacles = _as_list(plot.get("obstacle_chain"), max_items=5, item_chars=38)
     if obstacles:
         lines.append(f"阻碍：{'；'.join(obstacles)}")
+    arc = plot.get("longform_position") if isinstance(plot.get("longform_position"), dict) else {}
+    arc_name = _text(arc.get("name"), 40)
+    arc_purpose = _text(arc.get("purpose"), 90)
+    arc_bound = _text(arc.get("upper_bound"), 100)
+    if arc_name or arc_purpose:
+        lines.append(f"长篇位置：{arc_name}；{arc_purpose}".strip("；"))
+    if arc_bound:
+        lines.append(f"阶段上限：{arc_bound}")
+    for key, label in (
+        ("payoff_requirement", "本章必须兑现"),
+        ("anti_drag_rule", "防拖沓"),
+        ("future_use_rule", "后续用途"),
+        ("reader_reason_to_continue", "追读理由"),
+    ):
+        text = _text(plot.get(key), 110)
+        if text:
+            lines.append(f"{label}：{text}")
+    return lines
+
+
+def _longform_contract_required_lines(contract: dict[str, Any]) -> list[str]:
+    if not contract:
+        return []
+    lines: list[str] = []
+    arc = contract.get("arc_window") if isinstance(contract.get("arc_window"), dict) else {}
+    arc_name = _text(arc.get("name"), 40)
+    arc_purpose = _text(arc.get("purpose"), 90)
+    arc_bound = _text(arc.get("upper_bound"), 100)
+    if arc_name or arc_purpose:
+        lines.append(f"长篇阶段：{arc_name}；{arc_purpose}".strip("；"))
+    if arc_bound:
+        lines.append(f"本阶段不能越界：{arc_bound}")
+    for key, label in (
+        ("payoff_requirement", "本章兑现"),
+        ("anti_drag_rule", "不能拖"),
+        ("future_use_rule", "新增内容要有后续用途"),
+        ("reader_reason_to_continue", "章末追读"),
+    ):
+        text = _text(contract.get(key), 120)
+        if text:
+            lines.append(f"{label}：{text}")
+    lines.extend(f"滚雪球：{item}" for item in _as_list(contract.get("snowball_logic"), max_items=4, item_chars=90))
+    lines.extend(f"网游爽感：{item}" for item in _as_list(contract.get("webgame_satisfaction"), max_items=3, item_chars=90))
     return lines
 
 
@@ -499,6 +557,11 @@ def build_writing_taskbook(
     chapter_intent = governance.get("chapter_intent") if isinstance(governance.get("chapter_intent"), dict) else {}
     global_required = [
         *_plot_required_lines(_plot_simulation(simulation_plan)),
+        *_longform_contract_required_lines(
+            simulation_plan.get("longform_plot_contract")
+            if isinstance(simulation_plan.get("longform_plot_contract"), dict)
+            else {}
+        ),
         *_as_list(simulation_plan.get("required_beats"), max_items=6, item_chars=50),
         *_as_list(event_plan.get("exposition_beats"), max_items=4, item_chars=50),
     ]
@@ -519,6 +582,7 @@ def build_writing_taskbook(
         chapter_goal=_chapter_goal(plan),
         target_chars=_target_chars_text(plan),
         style_contract=list(GAME_STYLE_CONTRACT if game_context else GENERIC_STYLE_CONTRACT),
+        craft_templates=list(GAME_CRAFT_TEMPLATES if game_context else GENERIC_CRAFT_TEMPLATES),
         global_required=global_required,
         global_forbidden=global_forbidden,
         scenes=scenes,
@@ -584,6 +648,10 @@ def format_taskbook_prompt_section(
         "风格合同：",
     ]
     lines.extend(f"- {item}" for item in _as_list(taskbook.get("style_contract"), max_items=8, item_chars=120))
+    craft_templates = _as_list(taskbook.get("craft_templates"), max_items=6, item_chars=160)
+    if craft_templates:
+        lines.append("场面写法模板：")
+        lines.extend(f"- {item}" for item in craft_templates)
     required = _as_list(taskbook.get("global_required"), max_items=8, item_chars=80)
     forbidden = _as_list(taskbook.get("global_forbidden"), max_items=10, item_chars=80)
     if required:

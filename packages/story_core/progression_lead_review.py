@@ -149,6 +149,35 @@ def _count_positive_terms(body: str, terms: tuple[str, ...]) -> int:
     return total
 
 
+def _count_trade_closure_terms(body: str) -> int:
+    total = 0
+    informational_markers = (
+        "公告",
+        "公示",
+        "说法",
+        "规则",
+        "提示",
+        "价牌",
+        "入口",
+        "尚未开放",
+        "将在",
+        "只保留",
+        "没有",
+        "不",
+    )
+    for term in FIRST_CHAPTER_TRADE_CLOSURE_TERMS:
+        start = 0
+        while True:
+            index = body.find(term, start)
+            if index < 0:
+                break
+            window = body[max(0, index - 12) : index + len(term) + 12]
+            if not any(marker in window for marker in informational_markers):
+                total += 1
+            start = index + len(term)
+    return total
+
+
 def _has_any(body: str, terms: tuple[str, ...]) -> bool:
     return any(term in body for term in terms)
 
@@ -195,7 +224,7 @@ def review_progression_lead(
     payoff_count = _count_terms(body, PROGRESSION_PAYOFF_TERMS)
     material_count = _count_terms(body, MATERIAL_LEDGER_TERMS)
     service_closure_count = _count_positive_terms(body, FIRST_CHAPTER_SERVICE_CLOSURE_TERMS)
-    trade_closure_count = _count_positive_terms(body, FIRST_CHAPTER_TRADE_CLOSURE_TERMS)
+    trade_closure_count = _count_trade_closure_terms(body)
     concrete_payoff_count = _count_terms(body, CONCRETE_PAYOFF_TERMS)
     outsider_misread_count = _count_terms(body, OUTSIDER_MISREAD_TERMS)
     next_action_hook_count = _count_terms(body, NEXT_ACTION_HOOK_TERMS)

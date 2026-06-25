@@ -40,6 +40,19 @@ def test_game_simulation_plan_carries_plot_simulation_for_writing():
     assert plot["emotional_turn"]
     assert plot["outsider_misread"]
     assert plot["ending_hook"]
+    assert plan["longform_plot_contract"]["mode"] == "longform-plot-first"
+    assert plan["longform_plot_contract"]["pace_contract"]["must_payoff"]
+    assert "必须兑现" in plot["payoff_requirement"] or plot["payoff_requirement"]
+
+
+def test_game_simulation_plan_has_longform_snowball_contract():
+    plan = build_chapter_simulation_plan(_story(), 4).model_dump()
+    contract = plan["longform_plot_contract"]
+
+    assert contract["arc_window"]["name"] == "新手村滚雪球"
+    assert "每章至少让一项账本向前滚" in contract["payoff_requirement"]
+    assert any("苟不是不拿好处" in item for item in contract["snowball_logic"])
+    assert any("低等级不能硬开高等级转职线" in item for item in contract["webgame_satisfaction"])
 
 
 def test_scene_cards_use_plot_simulation_as_writing_spine():

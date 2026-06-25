@@ -374,6 +374,7 @@ def prose_renderer_contract() -> dict[str, Any]:
                 "governance",
                 "event_plan",
                 "plot_simulation",
+                "longform_plot_contract",
                 "scene_cards",
                 "hard_locks",
                 "style_rules",
@@ -422,6 +423,11 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
     plot_simulation = (
         simulation_plan.get("plot_simulation")
         if isinstance(simulation_plan, dict) and isinstance(simulation_plan.get("plot_simulation"), dict)
+        else {}
+    )
+    longform_plot_contract = (
+        simulation_plan.get("longform_plot_contract")
+        if isinstance(simulation_plan, dict) and isinstance(simulation_plan.get("longform_plot_contract"), dict)
         else {}
     )
     systemic_simulation = _extract_systemic_simulation(scene_cards)
@@ -485,6 +491,7 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         "governance_gate": governance_gate,
         "event_plan": _event_plan_summary(bundle) if bundle is not None else {},
         "plot_simulation": plot_simulation,
+        "longform_plot_contract": longform_plot_contract,
         "systemic_simulation": systemic_simulation,
         "scene_contracts": scene_contracts,
         "scene_cards": scene_cards,

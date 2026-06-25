@@ -285,6 +285,7 @@ class ChapterSimulationPlan(BaseModel):
     world_context: dict = Field(default_factory=dict)
     event_plan: dict = Field(default_factory=dict)
     plot_simulation: dict = Field(default_factory=dict)
+    longform_plot_contract: dict = Field(default_factory=dict)
     protagonist_strategy: dict = Field(default_factory=dict)
     character_performance: list[dict] = Field(default_factory=list)
     npc_boundaries: list[dict] = Field(default_factory=list)

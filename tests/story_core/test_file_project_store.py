@@ -1,7 +1,13 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from packages.story_core.file_project_store import FileProjectStore, _regeneration_quality_blocking
+
+
+def _long_test_body(label: str = "Night Ember keeps the chapter grounded.") -> str:
+    return (label + " He checks the task, pays a visible cost, gains a result, and leaves a next step.\n") * 80
 
 
 def _make_minimal_file_project(root, *, state=None, project=None):
@@ -198,7 +204,7 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
             return SimpleNamespace(
                 chapter_number=1,
                 chapter_title="Generated One",
-                body="Night Ember checked the quest counter and left quietly.",
+                body=_long_test_body("Night Ember checked the quest counter and left quietly."),
                 cadence="manual",
                 next_outline="Check costs.",
                 updated_story=updated_story,
@@ -528,7 +534,7 @@ def test_persist_bundle_ignores_stale_bundle_updated_story(tmp_path):
     bundle = SimpleNamespace(
         chapter_number=1,
         chapter_title="Fresh Chapter",
-        body="Night Ember keeps the current ledger clean.",
+        body=_long_test_body("Night Ember keeps the current ledger clean."),
         cadence="manual",
         next_outline="Continue from fresh facts.",
         updated_story={
@@ -573,7 +579,7 @@ def test_persist_bundle_uses_runtime_updated_story(tmp_path):
     bundle = SimpleNamespace(
         chapter_number=2,
         chapter_title="Ledger Chapter",
-        body="Night Ember turns the completed quest into a clean ledger.",
+        body=_long_test_body("Night Ember turns the completed quest into a clean ledger."),
         cadence="manual",
         next_outline="Continue from the updated ledger.",
         updated_story={
@@ -875,7 +881,7 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
             return SimpleNamespace(
                 chapter_number=1,
                 chapter_title=f"新版-{variant}",
-                body=f"正文使用变体 {variant}。",
+                body=_long_test_body(f"正文使用变体 {variant}。"),
                 cadence="manual",
                 next_outline="继续确认边界。",
                 updated_story=updated_story,
@@ -930,7 +936,7 @@ def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):
             return SimpleNamespace(
                 chapter_number=1,
                 chapter_title="Guided One",
-                body="Night Ember keeps exp 30/100 visible and stays away from class change.",
+                body=_long_test_body("Night Ember keeps exp 30/100 visible and stays away from class change."),
                 cadence="manual",
                 next_outline="Continue the guided path.",
                 updated_story=updated_story,
@@ -952,6 +958,145 @@ def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):
     assert regenerated["simulation_variant"]["rewrite_guidance"]["text"] == guidance
     state_after = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
     assert "rewrite_guidance" not in state_after.get("progression_ledger", {}).get("simulation_variant", {})
+
+
+def test_file_project_store_blocks_short_generated_bundle(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 0,
+            "world_facts": [],
+        },
+    )
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            updated_story = story.model_copy(update={"current_chapter": 1})
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="Too Short",
+                body="Night Ember only looks around.",
+                cadence="manual",
+                next_outline="Continue.",
+                updated_story=updated_story,
+                chapter_summary={
+                    "chapter_title": "Too Short",
+                    "cadence": "manual",
+                    "summary": "Too short.",
+                    "facts": ["too short"],
+                    "next_focus": "Continue.",
+                    "primary_conflict": "cost",
+                    "secondary_conflict": "visibility",
+                    "event_beat": "short",
+                },
+            )
+
+    with pytest.raises(ValueError, match="generate_length_failed"):
+        store.generate_next_chapter(engine=FakeEngine())
+
+    assert not (root / ".story-system" / "chapters" / "0001.json").exists()
+
+
+def test_file_project_store_blocks_failed_generated_quality_report(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 0,
+            "world_facts": [],
+        },
+    )
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            updated_story = story.model_copy(update={"current_chapter": 1})
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="Bad Trade",
+                body=_long_test_body("Night Ember keeps the body long enough but closes the trade too early."),
+                cadence="manual",
+                next_outline="Continue.",
+                updated_story=updated_story,
+                chapter_summary={
+                    "chapter_title": "Bad Trade",
+                    "cadence": "manual",
+                    "summary": "Quality should block this generated chapter.",
+                    "facts": ["bad trade closure"],
+                    "next_focus": "Continue.",
+                    "primary_conflict": "cost",
+                    "secondary_conflict": "visibility",
+                    "event_beat": "blocked",
+                },
+                quality_report={
+                    "ok": False,
+                    "issues": ["writing_review"],
+                    "writing_review": {
+                        "pass": False,
+                        "issues": ["第一章提前展开交易闭环：出现寄售、上架、成交、到账、手续费或提现。"],
+                    },
+                },
+            )
+
+    with pytest.raises(ValueError, match="generate_quality_failed"):
+        store.generate_next_chapter(engine=FakeEngine())
+
+    assert not (root / ".story-system" / "chapters" / "0001.json").exists()
+
+
+def test_file_project_store_normalizes_generated_chapter_title_prefix(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 0,
+            "world_facts": [],
+        },
+    )
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            updated_story = story.model_copy(update={"current_chapter": 1})
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="第1章 夜烬",
+                body=_long_test_body("Night Ember keeps the body long enough and clean."),
+                cadence="manual",
+                next_outline="Continue.",
+                updated_story=updated_story,
+                chapter_summary={
+                    "chapter_title": "第1章 夜烬",
+                    "cadence": "manual",
+                    "summary": "Title should be normalized.",
+                    "facts": ["title normalized"],
+                    "next_focus": "Continue.",
+                    "primary_conflict": "cost",
+                    "secondary_conflict": "visibility",
+                    "event_beat": "title",
+                },
+                quality_report={
+                    "ok": True,
+                    "issues": [],
+                    "writing_review": {"pass": True, "issues": []},
+                },
+            )
+
+    generated = store.generate_next_chapter(engine=FakeEngine())
+
+    assert generated["chapter_title"] == "夜烬"
+    assert (root / "chapters" / "0001-夜烬.md").exists()
 
 
 def test_file_project_store_reads_exported_layout(tmp_path):

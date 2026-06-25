@@ -54,6 +54,19 @@ def _chapter_length_review(body: str) -> dict[str, Any]:
     }
 
 
+def _assert_auto_chapter_length(body: str, *, operation: str) -> None:
+    """Reject generated chapters that cannot satisfy the file-project length gate."""
+
+    length_review = _chapter_length_review(body)
+    if length_review.get("pass", True):
+        return
+    body_chars = int(length_review.get("body_chars") or 0)
+    min_chars = int(length_review.get("min_chars") or FILE_CHAPTER_MIN_CHARS)
+    if body_chars < min_chars:
+        issue = "; ".join(str(item) for item in length_review.get("issues", []) if str(item).strip())
+        raise ValueError(f"{operation}_length_failed:{issue or f'body_chars {body_chars} < {min_chars}'}")
+
+
 def _regeneration_quality_blocking(quality_report: dict[str, Any], writing_review: dict[str, Any] | None) -> bool:
     if not writing_review:
         return True
@@ -70,6 +83,31 @@ def _regeneration_quality_blocking(quality_report: dict[str, Any], writing_revie
         if not any(marker in issue for marker in SOFT_REGENERATION_ISSUE_MARKERS):
             return True
     return False
+
+
+def _assert_auto_chapter_quality(
+    quality_report: dict[str, Any],
+    *,
+    operation: str,
+) -> None:
+    if operation not in {"generate", "regenerate"}:
+        return
+    if not isinstance(quality_report, dict) or quality_report.get("ok") is not False:
+        return
+    writing_review = quality_report.get("writing_review") if isinstance(quality_report.get("writing_review"), dict) else None
+    issues = list(quality_report.get("issues") or [])
+    if isinstance(writing_review, dict):
+        issues.extend(writing_review.get("issues") or [])
+    issue_text = "; ".join(str(item) for item in issues[:6] if str(item).strip())
+    if _regeneration_quality_blocking(quality_report, writing_review):
+        raise ValueError(f"{operation}_quality_failed:{issue_text or 'quality_report_not_ok'}")
+
+
+def _normalize_chapter_title(title: str, chapter_number: int) -> str:
+    cleaned = str(title or "").strip()
+    cleaned = re.sub(rf"^\s*第\s*{chapter_number}\s*章[：:\s、.-]*", "", cleaned).strip()
+    cleaned = re.sub(r"^\s*第\s*[零一二三四五六七八九十百千万]+\s*章[：:\s、.-]*", "", cleaned).strip()
+    return cleaned or str(title or "").strip() or f"Chapter {chapter_number}"
 
 
 def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
@@ -2024,10 +2062,14 @@ class FileProjectStore:
         chapter_number = int(chapter.get("chapter_number") or 0)
         if chapter_number <= 0:
             raise ValueError("chapter_number_must_be_positive")
-        title = str(chapter.get("chapter_title") or f"Chapter {chapter_number}")
+        title = _normalize_chapter_title(str(chapter.get("chapter_title") or f"Chapter {chapter_number}"), chapter_number)
+        chapter["chapter_title"] = title
+        if isinstance(chapter.get("chapter_summary"), dict):
+            chapter["chapter_summary"]["chapter_title"] = title
         body = str(chapter.get("body") or "")
         if not body.strip():
             raise ValueError("body_required")
+        _assert_auto_chapter_length(body, operation=operation)
 
         updated_story = chapter.get("updated_story")
         if hasattr(updated_story, "model_dump"):
@@ -2046,6 +2088,26 @@ class FileProjectStore:
                 "quality_report": quality_report,
             }
             chapter["quality_report"] = review
+
+        try:
+            _assert_auto_chapter_quality(review, operation=operation)
+        except ValueError:
+            failed_dir = self.root / ".story-system" / "failed-drafts"
+            failed_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            failed_path = failed_dir / f"{stamp}-{operation}-ch{chapter_number}.json"
+            self._write_json(
+                failed_path,
+                {
+                    "schema_version": "file-project-failed-draft/v1",
+                    "operation": operation,
+                    "chapter_number": chapter_number,
+                    "chapter_title": title,
+                    "body": body,
+                    "review": review,
+                },
+            )
+            raise
 
         self._append_workflow_log(
             chapter_number=chapter_number,
@@ -2243,7 +2305,7 @@ class FileProjectStore:
                     "avoid",
                     ["公开炫耀清道夫委托", "市场玩家盯盘", "提现换算人民币", "公会追查", "把材料账本写成第一章公开高潮"],
                 )
-                variant_payload["skip_expansion"] = True
+                variant_payload["skip_expansion"] = False
         # Regeneration should first prove the simulated facts can land cleanly.
         # Whole-chapter style adaptation is slow and can rewrite locked nouns,
         # so it is an explicit later pass instead of part of default retry.

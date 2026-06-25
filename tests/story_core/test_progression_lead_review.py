@@ -39,6 +39,21 @@ def test_progression_lead_review_accepts_opening_that_turns_drops_into_route_lea
     assert review["metrics"]["outsider_misread_count"] >= 1
 
 
+def test_progression_lead_review_does_not_treat_trade_notice_as_closure():
+    body = (
+        "《天启之门》开服公告写着材料处理功能将在开服次日夜间开放测试，提现相关说法同步公示。"
+        "苏叶登录游戏，游戏ID夜烬。第一只灰狼倒下时，混沌之种闪了一下，掉落判定×1000。"
+        "普通玩家还在等毒腺，夜烬已经拿到灰狼毒腺和粗糙狼皮，但他没有寄售，没有成交，也没有到账。"
+        "他只把材料压进背包，下一步准备再刷一轮，先凑出清道夫委托和后坡入口的前置。"
+        "旁边玩家只当他运气好，没人知道背包里多出来的材料。"
+    )
+
+    review = review_progression_lead(chapter_number=1, body=body, event_plan={}, world_facts=[])
+
+    assert review["metrics"]["trade_closure_count"] == 0
+    assert not any("交易闭环" in issue for issue in review["issues"])
+
+
 def test_chapter_body_review_includes_progression_lead_review():
     body = (
         "《天启之门》开服，苏叶在出租屋里戴上旧头盔，游戏ID夜烬，职业是元素法师学徒。"

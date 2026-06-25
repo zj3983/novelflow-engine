@@ -637,6 +637,7 @@ HARD_REVIEWERS: frozenset[str] = frozenset({
     "pacing_stagnation",          # 跨章节连续无推进（HARD-003 等价）
     "required_beats_critical",    # >50% required_beats 未在正文落地
     "plot_spine_critical",
+    "longform_payoff_missing",
 })
 
 SOFT_REVIEWERS: frozenset[str] = frozenset({
@@ -653,6 +654,7 @@ SOFT_REVIEWERS: frozenset[str] = frozenset({
     "pacing_transition_run",      # 过渡章连发过多
     "required_beats_partial",     # required_beats 部分覆盖或少量缺失
     "plot_spine_partial",
+    "longform_followup_weak",
 })
 
 SOFT_REVISION_THRESHOLD = 3

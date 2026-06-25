@@ -14,7 +14,32 @@ _FIELD_LABELS = {
 }
 
 _COST_RESOURCE_TERMS = ("蓝量", "蓝条", "法力", "耐久", "铜币", "药水", "补药", "修理")
-_COST_ACTION_TERMS = ("付出", "花", "耗", "掉", "剩", "红字", "快裂", "见底", "补")
+_COST_ACTION_TERMS = ("付出", "花", "耗", "掉", "剩", "红字", "快裂", "见底", "补", "修理费", "买药", "拆成", "扣")
+_PAYOFF_TERMS = (
+    "升级",
+    "升到",
+    "经验",
+    "任务完成",
+    "完成委托",
+    "奖励",
+    "铜币",
+    "到账",
+    "余额",
+    "修好",
+    "买了",
+    "入包",
+    "获得",
+    "拿到",
+    "学会",
+    "技能",
+    "装备",
+    "前置",
+    "权限",
+    "通行",
+    "路线",
+    "登记",
+)
+_FOLLOWUP_TERMS = ("下一步", "下一章", "前置", "入口", "还差", "继续", "明天", "后坡", "任务牌", "登记", "通行")
 
 _STOP_TERMS = {
     "读者",
@@ -63,11 +88,20 @@ def _field_is_covered(key: str, body: str, text: str, threshold: float) -> tuple
     if ratio >= threshold:
         return True, ratio
     if key == "cost":
-        has_resource = any(term in body for term in _COST_RESOURCE_TERMS)
+        resource_hits = [term for term in _COST_RESOURCE_TERMS if term in body]
+        has_resource = bool(resource_hits)
         has_action = any(term in body for term in _COST_ACTION_TERMS)
-        if has_resource and has_action:
+        if has_resource and (has_action or len(resource_hits) >= 2):
             return True, max(ratio, threshold)
     return False, ratio
+
+
+def _contract_payoff_landed(body: str) -> bool:
+    return any(term in body for term in _PAYOFF_TERMS)
+
+
+def _contract_followup_landed(body: str) -> bool:
+    return any(term in body for term in _FOLLOWUP_TERMS)
 
 
 def review_plot_spine_completion(
@@ -79,8 +113,11 @@ def review_plot_spine_completion(
     if not isinstance(simulation_plan, dict):
         return {"pass": True, "issues": [], "revision_plan": [], "scores": {}}
     plot = simulation_plan.get("plot_simulation")
-    if not isinstance(plot, dict) or not plot:
+    contract = simulation_plan.get("longform_plot_contract")
+    contract = contract if isinstance(contract, dict) else {}
+    if (not isinstance(plot, dict) or not plot) and not contract:
         return {"pass": True, "issues": [], "revision_plan": [], "scores": {}}
+    plot = plot if isinstance(plot, dict) else {}
 
     missing: list[str] = []
     covered: list[str] = []
@@ -97,7 +134,7 @@ def review_plot_spine_completion(
             missing.append(label)
 
     if not ratios:
-        return {"pass": True, "issues": [], "revision_plan": [], "scores": {}}
+        ratios = {}
 
     scores: dict[str, int] = {}
     issues: list[str] = []
@@ -114,6 +151,37 @@ def review_plot_spine_completion(
         issues.append(f"剧情主线部分缺失：缺少{'、'.join(missing)}。")
         revision_plan.append("补齐缺失的剧情主线，不要只写账本或移动过程。")
 
+    contract_missing: list[str] = []
+    contract_partial: list[str] = []
+    payoff_requirement = str(contract.get("payoff_requirement") or plot.get("payoff_requirement") or "").strip()
+    future_use_rule = str(contract.get("future_use_rule") or plot.get("future_use_rule") or "").strip()
+    reader_reason = str(contract.get("reader_reason_to_continue") or plot.get("reader_reason_to_continue") or "").strip()
+    anti_drag_rule = str(contract.get("anti_drag_rule") or plot.get("anti_drag_rule") or "").strip()
+
+    payoff_landed = _contract_payoff_landed(body) or "爽点兑现" in covered
+    followup_landed = _contract_followup_landed(body) or "章末钩子" in covered
+
+    if payoff_requirement and not payoff_landed:
+        contract_missing.append("本章兑现")
+    if (future_use_rule or reader_reason) and not followup_landed:
+        contract_partial.append("后续用途/追读动作")
+    if anti_drag_rule and len(body) >= 800 and not payoff_landed:
+        contract_missing.append("防拖沓")
+
+    if contract_missing:
+        scores["longform_payoff_missing"] = 4
+        labels = "、".join(dict.fromkeys(contract_missing))
+        issues.append(f"长篇推进没有兑现：缺少{labels}。")
+        revision_plan.append(
+            "按长篇剧情合同改：本章必须把一项收获写成可见结果，"
+            "例如等级/经验、任务完成、技能、装备、铜币、现实余额、路线权限或材料渠道变化。"
+        )
+    if contract_partial:
+        scores["longform_followup_weak"] = 6
+        labels = "、".join(dict.fromkeys(contract_partial))
+        issues.append(f"长篇后续承接偏弱：缺少{labels}。")
+        revision_plan.append("补一处章末可执行动作，让本章新增道具、任务、人物或线索能推动下一章。")
+
     return {
         "pass": not issues,
         "issues": issues,
@@ -122,6 +190,8 @@ def review_plot_spine_completion(
         "diagnostics": {
             "covered_labels": covered,
             "missing_labels": missing,
+            "contract_missing": list(dict.fromkeys(contract_missing)),
+            "contract_partial": list(dict.fromkeys(contract_partial)),
             "coverage": ratios,
         },
     }

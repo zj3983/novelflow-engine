@@ -29,6 +29,13 @@ def test_first_chapter_taskbook_keeps_only_three_useful_scenes():
     assert "交易、论坛、公会追查后移" in " ".join(taskbook["global_required"])
     assert "材料公开处理成大钱" in taskbook["global_forbidden"]
     assert "公开扣费或大额收款反馈" in taskbook["global_forbidden"]
+    templates = "\n".join(taskbook["craft_templates"])
+    assert "选择场面" in templates
+    assert "对话场面" in templates
+    assert "战斗场面" in templates
+    assert "爽点场面" in templates
+    assert "夜烬不能只说两个字装高手" in templates
+    assert "不要只写火球命中、怪倒地、掉落入包" in templates
 
 
 def test_taskbook_compiles_scene_cards_for_later_chapters():
@@ -74,6 +81,9 @@ def test_taskbook_prompt_section_is_writer_facing_not_json_dump():
     assert "## 写作任务书" in section
     assert "只按这份任务书写正文" in section
     assert "低级怪小验证" in section
+    assert "场面写法模板" in section
+    assert "别人问、催或提醒" in section
+    assert "不要只写火球命中、怪倒地、掉落入包" in section
     assert "NOISENOISE" not in section
     assert "unused_big_blob" not in section
     assert "scene_cards" not in section
@@ -112,6 +122,40 @@ def test_taskbook_turns_plot_simulation_into_narrative_spine():
     assert "夜烬想补齐清道夫委托还差的两份毒腺" in scenes
     assert "清道夫委托进度必须有明确变化" in scenes
     assert "章末落到后坡巡查前置任务" in scenes
+
+
+def test_taskbook_includes_longform_plot_contract():
+    taskbook = build_writing_taskbook(
+        chapter_number=4,
+        plan={
+            "simulation_plan": {
+                "chapter_goal": "把清道夫奖励换成下一轮升级准备",
+                "longform_plot_contract": {
+                    "arc_window": {
+                        "name": "新手村滚雪球",
+                        "purpose": "把掉落优势换成等级、技能、装备和任务优势。",
+                        "upper_bound": "不能直接揭开千倍爆率。",
+                    },
+                    "payoff_requirement": "每章至少让一项账本向前滚。",
+                    "anti_drag_rule": "不要把耐久、蓝量、排队写成整章主线。",
+                    "future_use_rule": "新增道具、人物、任务和线索都要说明能怎样继续推动后续。",
+                    "reader_reason_to_continue": "章末必须留下下一章立刻能执行的动作。",
+                    "snowball_logic": ["苟不是不拿好处，而是拆开拿、换壳拿。"],
+                    "webgame_satisfaction": ["爽感落在暗中领先。"],
+                },
+            },
+        },
+        genre="网游",
+        style="白描",
+    )
+
+    required = "\n".join(taskbook["global_required"])
+
+    assert "长篇阶段：新手村滚雪球" in required
+    assert "本章兑现：每章至少让一项账本向前滚。" in required
+    assert "不能拖：不要把耐久、蓝量、排队写成整章主线。" in required
+    assert "新增内容要有后续用途" in required
+    assert "滚雪球：苟不是不拿好处" in required
 
 
 def test_taskbook_prompt_uses_plot_words_not_backend_key():
