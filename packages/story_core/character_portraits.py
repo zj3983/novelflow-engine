@@ -6,20 +6,30 @@ from packages.story_core.models import CharacterState, PersonalityPortrait
 
 
 _PROTAGONIST_ROLES = ("protagonist", "lead", "主角", "男主", "女主")
+_RECURRING_ROLES = ("recurring", "long-term", "long term", "长期", "常驻")
 _SERVICE_ROLES = (
-    "npc",
+    "service npc",
+    "service-npc",
     "service",
     "clerk",
     "vendor",
     "merchant",
     "receptionist",
     "guard",
+    "mentor",
+    "repairer",
+    "mechanic",
     "服务",
-    "店员",
+    "药剂师",
     "商人",
+    "登记员",
+    "修理匠",
+    "店员",
     "掌柜",
     "前台",
     "门卫",
+    "守卫",
+    "导师",
 )
 
 
@@ -29,9 +39,12 @@ def _first(*values: str, fallback: str) -> str:
 
 def _portrait_kind(character: CharacterState, story_function: str) -> str:
     role = character.role.casefold()
+    character_type = character.character_type.casefold()
     function = story_function.casefold()
     if any(marker in role for marker in _PROTAGONIST_ROLES):
         return "protagonist"
+    if any(marker in role or marker in character_type for marker in _RECURRING_ROLES):
+        return "recurring_support"
     if character.npc_profile.service_role or any(
         marker in role or marker in function for marker in _SERVICE_ROLES
     ):
@@ -203,18 +216,19 @@ def _recurring_support_template(inputs: dict[str, str | list[str]]) -> Personali
 
 def _service_npc_template(inputs: dict[str, str | list[str]]) -> PersonalityPortrait:
     function = str(inputs["function"])
+    motivation = str(inputs["motivation"])
     behavior = str(inputs["behavior"])
     return PersonalityPortrait.model_validate(
         {
             "temperament": {
-                "outward_impression": f"以{function}的岗位标准待人，熟练但不额外热情",
+                "outward_impression": f"在{inputs['setting']}环境中以{function}的岗位标准待人，熟练但不额外热情",
                 "core_traits": ["重视岗位利益", "按权限办事", "会看人调整态度"],
                 "inner_contradiction": "既想把事情快速办完，又不愿为陌生人承担越权风险",
                 "values": ["手续清楚", "责任可追溯"],
                 "bottom_line": f"不为人情突破{function}的权限边界",
             },
             "psychology": {
-                "desire": f"守住{function}的岗位利益，并让当班事务顺利结束",
+                "desire": f"{motivation}；同时守住{function}的岗位利益，让当班事务顺利结束",
                 "fear": "替别人背下越权或失职的责任",
                 "blind_spot": "容易把不熟悉流程的人也视作潜在麻烦",
                 "defense": "反复引用流程、权限和上级要求，把个人判断藏在岗位话术后面",
@@ -273,7 +287,6 @@ def _fill_empty(existing: Any, defaults: Any) -> Any:
 
 def complete_character_portrait(
     character: CharacterState,
-    *,
     genre: str = "",
     story_function: str = "",
 ) -> CharacterState:

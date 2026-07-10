@@ -63,6 +63,62 @@ def test_service_npc_uses_a_distinct_job_boundary_template():
     assert portrait.emotion.mannerisms
 
 
+def test_recurring_npc_is_classified_as_recurring_support():
+    character = CharacterState(
+        name="Mara",
+        role="recurring NPC",
+        character_type="long-term NPC",
+        story_function="maintains an independent alliance with the lead",
+    )
+
+    completed = complete_character_portrait(character, genre="mystery")
+
+    assert completed.personality_portrait.temperament.core_traits == [
+        "有自己的利害判断",
+        "重视关系中的对等",
+    ]
+    assert "岗位利益" not in completed.personality_portrait.temperament.core_traits
+
+
+def test_service_npc_template_absorbs_motivation_and_genre():
+    fantasy_clerk = complete_character_portrait(
+        CharacterState(
+            name="Mara",
+            role="登记员",
+            core_motivation="保住家族留下的登记册",
+            behavior_logic="先核对凭据，再决定开放哪一层记录",
+        ),
+        genre="奇幻",
+        story_function="档案登记员",
+    )
+    science_fiction_clerk = complete_character_portrait(
+        CharacterState(
+            name="Mara",
+            role="登记员",
+            core_motivation="保住家族留下的登记册",
+            behavior_logic="先核对凭据，再决定开放哪一层记录",
+        ),
+        genre="科幻",
+        story_function="档案登记员",
+    )
+
+    fantasy_portrait = fantasy_clerk.personality_portrait
+    assert "保住家族留下的登记册" in (
+        fantasy_portrait.psychology.desire + fantasy_portrait.behavior.decision_tendency
+    )
+    assert fantasy_portrait != science_fiction_clerk.personality_portrait
+
+
+def test_complete_character_portrait_accepts_positional_context_arguments():
+    completed = complete_character_portrait(
+        CharacterState(name="Mara", role="商人"),
+        "历史",
+        "经营驿站",
+    )
+
+    assert completed.personality_portrait.psychology.desire
+
+
 def test_completion_preserves_every_non_empty_user_field():
     portrait = PersonalityPortrait.model_validate(
         {
