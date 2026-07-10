@@ -236,6 +236,71 @@ class NPCBehaviorProfile(BaseModel):
     interaction_rules: list[str] = Field(default_factory=list)
 
 
+class TemperamentPortrait(BaseModel):
+    outward_impression: str = ""
+    core_traits: list[str] = Field(default_factory=list)
+    inner_contradiction: str = ""
+    values: list[str] = Field(default_factory=list)
+    bottom_line: str = ""
+
+
+class PsychologyPortrait(BaseModel):
+    desire: str = ""
+    fear: str = ""
+    blind_spot: str = ""
+    defense: str = ""
+    shame_point: str = ""
+
+
+class BehaviorPortrait(BaseModel):
+    normal_mode: str = ""
+    pressure_mode: str = ""
+    conflict_response: str = ""
+    failure_response: str = ""
+    decision_tendency: str = ""
+
+
+class EmotionPortrait(BaseModel):
+    triggers: list[str] = Field(default_factory=list)
+    restraint_style: str = ""
+    loss_of_control: str = ""
+    mannerisms: list[str] = Field(default_factory=list)
+
+
+class SocialPortrait(BaseModel):
+    strangers: str = ""
+    friends: str = ""
+    authority: str = ""
+    enemies: str = ""
+
+
+class CharacterVoicePortrait(BaseModel):
+    common_words: list[str] = Field(default_factory=list)
+    sentence_habit: str = ""
+    avoided_topics: list[str] = Field(default_factory=list)
+    lying_style: str = ""
+    anger_style: str = ""
+    relaxed_style: str = ""
+
+
+class GrowthPortrait(BaseModel):
+    initial_flaw: str = ""
+    invariants: list[str] = Field(default_factory=list)
+    change_conditions: list[str] = Field(default_factory=list)
+    stage_direction: str = ""
+
+
+class PersonalityPortrait(BaseModel):
+    temperament: TemperamentPortrait = Field(default_factory=TemperamentPortrait)
+    psychology: PsychologyPortrait = Field(default_factory=PsychologyPortrait)
+    behavior: BehaviorPortrait = Field(default_factory=BehaviorPortrait)
+    emotion: EmotionPortrait = Field(default_factory=EmotionPortrait)
+    social: SocialPortrait = Field(default_factory=SocialPortrait)
+    voice: CharacterVoicePortrait = Field(default_factory=CharacterVoicePortrait)
+    growth: GrowthPortrait = Field(default_factory=GrowthPortrait)
+    writing_limits: list[str] = Field(default_factory=list)
+
+
 class CharacterState(BaseModel):
     """Mutable character state used by the story engine."""
 
@@ -245,6 +310,7 @@ class CharacterState(BaseModel):
     game_panel: GamePanel = Field(default_factory=GamePanel)
     performance_profile: CharacterPerformanceProfile = Field(default_factory=CharacterPerformanceProfile)
     npc_profile: NPCBehaviorProfile = Field(default_factory=NPCBehaviorProfile)
+    personality_portrait: PersonalityPortrait = Field(default_factory=PersonalityPortrait)
     character_type: str = ""
     core_motivation: str = ""
     behavior_logic: str = ""
