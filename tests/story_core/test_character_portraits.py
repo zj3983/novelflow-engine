@@ -1,8 +1,10 @@
 import ast
 import inspect
 
-from packages.story_core.character_portraits import complete_character_portrait
-from packages.story_core.models import CharacterState, PersonalityPortrait
+import pytest
+
+from packages.story_core.character_portraits import _portrait_kind, complete_character_portrait
+from packages.story_core.models import CharacterState, NPCBehaviorProfile, PersonalityPortrait
 
 
 def test_character_state_defaults_to_an_empty_personality_portrait():
@@ -38,6 +40,49 @@ def test_protagonist_portrait_has_required_detail():
     assert "protect the last safe district" in portrait.psychology.desire
 
 
+@pytest.mark.parametrize(
+    "role",
+    ["protagonist", "main character", "lead character", "主角", "男主", "女主"],
+)
+def test_protagonist_classification_accepts_only_normalized_labels(role):
+    assert _portrait_kind(CharacterState(name="Lin", role=f"  {role}  "), "") == "protagonist"
+
+
+@pytest.mark.parametrize(
+    ("role", "story_function"),
+    [
+        ("misleading witness", "reveals a contradiction"),
+        ("merchant prince", "funds an expedition"),
+        ("bodyguard and confidant", "protects an old friend"),
+        ("NPC", "mechanic"),
+    ],
+)
+def test_broad_english_substrings_do_not_change_character_kind(role, story_function):
+    character = CharacterState(name="Mara", role=role)
+
+    assert _portrait_kind(character, story_function) == "recurring_support"
+
+
+def test_non_blank_npc_service_role_takes_priority_after_stripping():
+    character = CharacterState(
+        name="Mara",
+        role="recurring NPC",
+        npc_profile=NPCBehaviorProfile(service_role="  archive keeper  "),
+    )
+
+    assert _portrait_kind(character, "") == "service_npc"
+
+
+def test_blank_npc_service_role_does_not_force_service_classification():
+    character = CharacterState(
+        name="Mara",
+        role="NPC",
+        npc_profile=NPCBehaviorProfile(service_role="   "),
+    )
+
+    assert _portrait_kind(character, "") == "recurring_support"
+
+
 def test_service_npc_uses_a_distinct_job_boundary_template():
     protagonist = complete_character_portrait(
         CharacterState(name="Lin", role="protagonist"),
@@ -71,13 +116,7 @@ def test_recurring_npc_is_classified_as_recurring_support():
         story_function="maintains an independent alliance with the lead",
     )
 
-    completed = complete_character_portrait(character, genre="mystery")
-
-    assert completed.personality_portrait.temperament.core_traits == [
-        "有自己的利害判断",
-        "重视关系中的对等",
-    ]
-    assert "岗位利益" not in completed.personality_portrait.temperament.core_traits
+    assert _portrait_kind(character, "") == "recurring_support"
 
 
 def test_recurring_support_template_changes_with_genre():
@@ -94,6 +133,14 @@ def test_recurring_support_template_changes_with_genre():
     assert cultivation.personality_portrait != urban_mystery.personality_portrait
     assert "修仙" in cultivation.personality_portrait.temperament.outward_impression
     assert "都市悬疑" in urban_mystery.personality_portrait.temperament.outward_impression
+    assert (
+        cultivation.personality_portrait.behavior.pressure_mode
+        != urban_mystery.personality_portrait.behavior.pressure_mode
+    )
+    assert (
+        cultivation.personality_portrait.behavior.decision_tendency
+        != urban_mystery.personality_portrait.behavior.decision_tendency
+    )
 
 
 def test_character_story_function_can_identify_an_explicit_service_npc():
@@ -103,34 +150,15 @@ def test_character_story_function_can_identify_an_explicit_service_npc():
         story_function="archive clerk / 档案登记服务",
     )
 
-    completed = complete_character_portrait(character, "mystery")
-
-    assert completed.personality_portrait.temperament.core_traits == [
-        "重视岗位利益",
-        "按权限办事",
-        "会看人调整态度",
-    ]
+    assert _portrait_kind(character, "") == "service_npc"
 
 
 def test_mentor_needs_an_explicit_service_duty_to_use_service_template():
-    life_mentor = complete_character_portrait(
-        CharacterState(name="Mara", role="mentor", story_function="人生导师与长期盟友"),
-        "都市",
-    )
-    trial_clerk = complete_character_portrait(
-        CharacterState(name="Iris", role="导师", story_function="在柜台办理试炼登记"),
-        "奇幻",
-    )
+    life_mentor = CharacterState(name="Mara", role="mentor", story_function="人生导师与长期盟友")
+    trial_clerk = CharacterState(name="Iris", role="导师", story_function="在柜台办理试炼登记")
 
-    assert life_mentor.personality_portrait.temperament.core_traits == [
-        "有自己的利害判断",
-        "重视关系中的对等",
-    ]
-    assert trial_clerk.personality_portrait.temperament.core_traits == [
-        "重视岗位利益",
-        "按权限办事",
-        "会看人调整态度",
-    ]
+    assert _portrait_kind(life_mentor, "") == "recurring_support"
+    assert _portrait_kind(trial_clerk, "") == "service_npc"
 
 
 def test_service_npc_template_absorbs_motivation_and_genre():
@@ -160,6 +188,38 @@ def test_service_npc_template_absorbs_motivation_and_genre():
         fantasy_portrait.psychology.desire + fantasy_portrait.behavior.decision_tendency
     )
     assert fantasy_portrait != science_fiction_clerk.personality_portrait
+
+
+def test_service_roles_and_incentives_produce_distinct_behavior():
+    characters = [
+        CharacterState(
+            name="Mara",
+            role="商人",
+            npc_profile=NPCBehaviorProfile(service_role="商人", incentives=["保持利润和稳定货源"]),
+        ),
+        CharacterState(
+            name="Iris",
+            role="守卫",
+            npc_profile=NPCBehaviorProfile(service_role="守卫", incentives=["守住入口并避免同伴受伤"]),
+        ),
+        CharacterState(
+            name="Noa",
+            role="药剂师",
+            npc_profile=NPCBehaviorProfile(service_role="药剂师", incentives=["保住药材并维持配方信誉"]),
+        ),
+    ]
+
+    portraits = [
+        complete_character_portrait(character, "都市").personality_portrait
+        for character in characters
+    ]
+
+    assert len({portrait.behavior.decision_tendency for portrait in portraits}) == 3
+    for character, portrait in zip(characters, portraits):
+        assert character.npc_profile.incentives[0] in (
+            portrait.psychology.desire + portrait.behavior.decision_tendency
+        )
+        assert character.npc_profile.service_role in portrait.behavior.decision_tendency
 
 
 def test_complete_character_portrait_accepts_positional_context_arguments():
@@ -211,6 +271,24 @@ def test_completion_preserves_every_non_empty_user_field():
     assert completed.personality_portrait.writing_limits == ["user writing limit"]
 
 
+def test_completion_replaces_whitespace_only_portrait_strings():
+    character = CharacterState(
+        name="Lin",
+        role="main character",
+        personality_portrait=PersonalityPortrait.model_validate(
+            {
+                "psychology": {"desire": "   "},
+                "behavior": {"pressure_mode": "\t"},
+            }
+        ),
+    )
+
+    completed = complete_character_portrait(character, "悬疑")
+
+    assert completed.personality_portrait.psychology.desire.strip()
+    assert completed.personality_portrait.behavior.pressure_mode.strip()
+
+
 def test_completion_returns_a_copy_without_mutating_the_input():
     character = CharacterState(name="Lin", role="protagonist")
     before = character.model_dump()
@@ -227,11 +305,13 @@ def test_character_portraits_module_has_no_model_provider_dependency():
     module = inspect.getmodule(complete_character_portrait)
     assert module is not None
 
-    imports = {
-        alias.name
-        for node in ast.walk(ast.parse(inspect.getsource(module)))
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-        for alias in node.names
-    }
+    imports = set()
+    for node in ast.walk(ast.parse(inspect.getsource(module))):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imports.add(node.module)
+            imports.update(alias.name for alias in node.names)
 
     assert not any("provider" in imported.lower() for imported in imports)

@@ -5,9 +5,27 @@ from typing import Any
 from packages.story_core.models import CharacterState, PersonalityPortrait
 
 
-_PROTAGONIST_ROLES = ("protagonist", "lead", "主角", "男主", "女主")
-_RECURRING_ROLES = ("recurring", "long-term", "long term", "长期", "常驻")
-_SERVICE_IDENTITIES = (
+_PROTAGONIST_LABELS = {
+    "protagonist",
+    "main character",
+    "lead character",
+    "主角",
+    "男主",
+    "女主",
+    "男主角",
+    "女主角",
+}
+_RECURRING_LABELS = {
+    "recurring",
+    "recurring npc",
+    "long-term npc",
+    "long term npc",
+    "长期配角",
+    "长期npc",
+    "常驻配角",
+    "常驻npc",
+}
+_SERVICE_ROLE_LABELS = {
     "service npc",
     "service-npc",
     "clerk",
@@ -17,6 +35,7 @@ _SERVICE_IDENTITIES = (
     "guard",
     "repairer",
     "mechanic",
+    "apothecary",
     "药剂师",
     "商人",
     "登记员",
@@ -26,43 +45,108 @@ _SERVICE_IDENTITIES = (
     "前台",
     "门卫",
     "守卫",
-)
-_SERVICE_DUTIES = (
+}
+_SERVICE_DUTY_PHRASES = (
     "archive clerk",
     "service counter",
     "registration desk",
+    "equipment repair service",
+    "trial registration",
+    "course administration",
     "档案登记",
     "登记服务",
     "柜台办理",
     "试炼办理",
     "办理试炼",
     "授课岗位",
+    "装备修理服务",
 )
 
 
+def _clean(value: str) -> str:
+    return value.strip() if value else ""
+
+
+def _normalize_label(value: str) -> str:
+    return " ".join(_clean(value).casefold().replace("_", " ").split())
+
+
+def _clean_list(values: list[str]) -> list[str]:
+    return [value.strip() for value in values if value and value.strip()]
+
+
+def _join_unique(values: list[str]) -> str:
+    return "；".join(dict.fromkeys(value for value in values if value))
+
+
 def _first(*values: str, fallback: str) -> str:
-    return next((value.strip() for value in values if value and value.strip()), fallback)
+    return next((cleaned for value in values if (cleaned := _clean(value))), fallback)
 
 
 def _portrait_kind(character: CharacterState, story_function: str) -> str:
-    role = character.role.casefold()
-    character_type = character.character_type.casefold()
-    function_context = " ".join(
-        value.casefold()
-        for value in (story_function, character.story_function)
-        if value and value.strip()
-    )
-    if any(marker in role for marker in _PROTAGONIST_ROLES):
+    role = _normalize_label(character.role)
+    character_type = _normalize_label(character.character_type)
+    service_role = _clean(character.npc_profile.service_role)
+    if service_role:
+        return "service_npc"
+    if role in _PROTAGONIST_LABELS or character_type in _PROTAGONIST_LABELS:
         return "protagonist"
-    if any(marker in role or marker in character_type for marker in _RECURRING_ROLES):
+    if role in _RECURRING_LABELS or character_type in _RECURRING_LABELS:
         return "recurring_support"
-    has_service_identity = any(
-        marker in role or marker in function_context for marker in _SERVICE_IDENTITIES
+    if role in _SERVICE_ROLE_LABELS or character_type in _SERVICE_ROLE_LABELS:
+        return "service_npc"
+    function_context = " ".join(
+        _normalize_label(value)
+        for value in (story_function, character.story_function)
+        if _clean(value)
     )
-    has_service_duty = any(marker in function_context for marker in _SERVICE_DUTIES)
-    if character.npc_profile.service_role or has_service_identity or has_service_duty:
+    if any(phrase in function_context for phrase in _SERVICE_DUTY_PHRASES):
         return "service_npc"
     return "recurring_support"
+
+
+def _genre_behavior(genre: str) -> tuple[str, str]:
+    normalized = _normalize_label(genre)
+    profiles = (
+        (
+            ("修仙", "仙侠", "xianxia", "cultivation"),
+            "压力下先核对资源、境界差距与门规后果，再决定投入多少",
+            "在资源积累、境界进展和门规代价之间选择当前行动",
+        ),
+        (
+            ("悬疑", "推理", "mystery", "suspense"),
+            "压力下先保护证据、控制口风并评估暴露风险",
+            "优先选择能验证证据且不会无谓扩大暴露风险的行动",
+        ),
+        (
+            ("网游", "游戏", "web game", "online game"),
+            "压力下先检查任务条件、资源消耗和信息可见范围",
+            "在任务收益、资源消耗和信息暴露之间选择当前行动",
+        ),
+        (
+            ("都市", "urban"),
+            "压力下先衡量关系、现实规则和直接后果",
+            "优先选择兼顾现实后果、关系成本和当前目标的行动",
+        ),
+    )
+    for markers, pressure_mode, decision_tendency in profiles:
+        if any(marker in normalized for marker in markers):
+            return pressure_mode, decision_tendency
+    return (
+        "压力下仍围绕当前目标行动，并根据新信息调整投入",
+        "按当前目标、自身利益、关系和可见后果选择行动",
+    )
+
+
+def _service_role_for(character: CharacterState, function: str) -> str:
+    explicit = _clean(character.npc_profile.service_role)
+    if explicit:
+        return explicit
+    if _normalize_label(character.role) in _SERVICE_ROLE_LABELS:
+        return _clean(character.role)
+    if _normalize_label(character.character_type) in _SERVICE_ROLE_LABELS:
+        return _clean(character.character_type)
+    return function
 
 
 def _shared_inputs(
@@ -76,211 +160,223 @@ def _shared_inputs(
         story_function,
         character.story_function,
         character.npc_profile.service_role,
-        fallback=character.role or "推动当前人物关系",
+        fallback=_clean(character.role) or "当前人物职责",
     )
-    motivation = _first(
-        character.core_motivation,
-        "；".join(character.goals),
-        fallback=f"完成其作为{function}的当前目标",
-    )
+    goals = _clean_list(character.goals)
+    incentives = _clean_list(character.npc_profile.incentives)
+    motivation_parts = [_clean(character.core_motivation), *goals, *incentives]
+    motivation = _join_unique(motivation_parts) or f"围绕{function}行动"
     behavior = _first(
         character.behavior_logic,
         performance.action_style,
-        fallback="先判断自身代价和可用信息，再采取行动",
+        fallback="围绕当前目标行动，并根据结果调整下一步",
     )
-    setting = genre.strip() or "当前题材"
-    triggers = list(performance.emotional_triggers) or ["核心目标被阻断", "底线受到试探"]
+    genre_pressure, genre_decision = _genre_behavior(genre)
+    decision_rules = _clean_list(performance.decision_rules)
+    triggers = _clean_list(performance.emotional_triggers) or [
+        "当前目标受阻",
+        "自身利益或重要关系受到影响",
+    ]
     return {
         "function": function,
+        "service_role": _service_role_for(character, function),
         "motivation": motivation,
+        "incentives": incentives,
         "behavior": behavior,
-        "setting": setting,
+        "setting": _clean(genre) or "当前题材",
         "triggers": triggers,
-        "speech": _first(performance.speech_style, fallback="说具体的话，不替作者解释性格"),
-        "risk": _first(performance.risk_posture, fallback="风险越高，越会先确认退路"),
-        "decision": "；".join(performance.decision_rules) or behavior,
-        "avoided": list(performance.reveal_limits) or list(performance.voice.taboo),
-        "common_words": list(performance.voice.signature_phrases) or list(performance.voice.lexicon),
+        "speech": _first(performance.speech_style, fallback="根据身份和当前关系说具体的话"),
+        "pressure": _first(performance.risk_posture, fallback=genre_pressure),
+        "decision": _join_unique(decision_rules) or genre_decision,
+        "avoided": _clean_list(performance.reveal_limits) or _clean_list(performance.voice.taboo),
+        "common_words": _clean_list(performance.voice.signature_phrases)
+        or _clean_list(performance.voice.lexicon),
         "sentence_habit": _first(
             performance.voice.sentence_rhythm,
             performance.speech_style,
-            fallback="先说结论，再补必要事实",
+            fallback="句子长短随压力和关系变化，不固定使用一种腔调",
         ),
     }
 
 
 def _protagonist_template(inputs: dict[str, str | list[str]]) -> PersonalityPortrait:
     motivation = str(inputs["motivation"])
-    behavior = str(inputs["behavior"])
     function = str(inputs["function"])
     return PersonalityPortrait.model_validate(
         {
             "temperament": {
-                "outward_impression": f"在{inputs['setting']}环境中显得克制、警觉，遇事先看后果",
-                "core_traits": ["主动承担", "谨慎判断", "不轻易服输"],
-                "inner_contradiction": "想掌握局面，却必须依赖自己无法完全控制的人和规则",
-                "values": ["行动要有代价意识", "承诺必须兑现"],
-                "bottom_line": "不拿无辜者当成达成目标的耗材",
+                "outward_impression": f"在{inputs['setting']}中围绕{motivation}采取行动",
+                "core_traits": [f"以{motivation}为当前驱动力", "会根据行动结果调整选择"],
+                "inner_contradiction": "个人目标、关系和环境代价之间可能发生冲突",
+                "values": ["当前目标", "行动产生的实际反馈"],
+                "bottom_line": "不会无依据背离已经确立的目标和行为逻辑",
             },
             "psychology": {
                 "desire": motivation,
-                "fear": f"没能完成{function}，并让信任自己的人承担后果",
-                "blind_spot": "容易把求助误认为软弱，把责任全部揽到自己身上",
-                "defense": "用分析、行动和控制细节代替暴露真实不安",
-                "shame_point": "害怕别人发现自己并没有表面上那么有把握",
+                "fear": f"{function}受阻并产生难以挽回的后果",
+                "blind_spot": "对自身选择造成的连带影响可能判断不足",
+                "defense": "受到压力时会沿用自己最熟悉的处理方式",
+                "shame_point": "不愿面对自己在核心目标上的失败或动摇",
             },
             "behavior": {
-                "normal_mode": behavior,
-                "pressure_mode": str(inputs["risk"]),
-                "conflict_response": "先辨认对方真正要什么；谈不拢时用行动争取主动权",
-                "failure_response": "先处理损失和连带后果，独处时才复盘自己的错误",
-                "decision_tendency": str(inputs["decision"]),
+                "normal_mode": inputs["behavior"],
+                "pressure_mode": inputs["pressure"],
+                "conflict_response": "根据目标、对方反应和可承担后果选择交涉、回避或对抗",
+                "failure_response": "先处理直接后果，再根据失败暴露的信息调整下一步",
+                "decision_tendency": inputs["decision"],
             },
             "emotion": {
                 "triggers": inputs["triggers"],
-                "restraint_style": "情绪越重，语气越短，手上的事做得越具体",
-                "loss_of_control": "底线连续被踩时会放弃周旋，直接承担高风险后果",
-                "mannerisms": ["思考时确认出口和周围人的位置", "做决定前短暂停顿"],
+                "restraint_style": "是否克制取决于当前目标、关系和公开表达的代价",
+                "loss_of_control": "压力越过承受范围时会放大其既有行为倾向",
+                "mannerisms": ["做决定前确认当前最重要的目标", "受到刺激时重复惯用动作"],
             },
             "social": {
-                "strangers": "礼貌但保留信息，先观察对方是否言行一致",
-                "friends": "会用解决实际问题代替直白安慰",
-                "authority": "尊重有效规则，不因身份本身停止质疑",
-                "enemies": "不做无谓羞辱，优先拆掉对方的筹码和退路",
+                "strangers": "按当前利益、风险和对方表现决定距离",
+                "friends": "按既有关系和共同经历回应，不默认亲近或疏离",
+                "authority": "根据权力关系、规则后果和个人目标决定配合程度",
+                "enemies": "围绕冲突目标行动，不无依据增加私人道德判断",
             },
             "voice": {
-                "common_words": inputs["common_words"] or ["先等等", "把条件说清楚"],
+                "common_words": inputs["common_words"] or ["先看现在怎么办", "把情况说清楚"],
                 "sentence_habit": inputs["sentence_habit"],
-                "avoided_topics": inputs["avoided"] or ["自己的恐惧", "尚未兑现的承诺"],
-                "lying_style": "尽量说字面为真的片段，通过省略关键因果误导对方",
-                "anger_style": "不提高音量，减少解释，问题会问得更直接",
-                "relaxed_style": "句子变长，偶尔拿共同经历开轻微的玩笑",
+                "avoided_topics": inputs["avoided"] or ["尚未准备公开的目标和代价"],
+                "lying_style": "是否隐瞒以及如何隐瞒取决于目标、风险和已有行为逻辑",
+                "anger_style": "生气时延续既有说话方式，但内容更直接指向冲突目标",
+                "relaxed_style": "放松时减少对当前风险的防备，表达更贴近日常习惯",
             },
             "growth": {
-                "initial_flaw": "把独自承受一切当成可靠",
-                "invariants": ["不主动牺牲无辜者", "关键承诺不会因得失改变"],
-                "change_conditions": ["独自控制局面造成真实损失", "他人以行动证明值得托付"],
-                "stage_direction": f"在承担{function}的过程中学会区分责任与控制欲",
+                "initial_flaw": "当前处理方式尚不能覆盖所有关系和环境变化",
+                "invariants": [f"核心驱动力保持为：{motivation}", "变化必须由经历和后果推动"],
+                "change_conditions": ["原有做法造成明确代价", "新的关系或信息改变其判断依据"],
+                "stage_direction": f"围绕{function}逐步调整目标、关系与行动方式",
             },
             "writing_limits": [
-                "不能无铺垫地放弃核心目标",
+                "不能无铺垫地改变核心目标",
                 "不能用作者总结代替具体选择",
-                "不能为制造冲突突然失去基本判断力",
+                "不能为制造冲突突然失去已有行为逻辑",
             ],
         }
     )
 
 
 def _recurring_support_template(inputs: dict[str, str | list[str]]) -> PersonalityPortrait:
+    motivation = str(inputs["motivation"])
     function = str(inputs["function"])
     return PersonalityPortrait.model_validate(
         {
             "temperament": {
-                "outward_impression": f"在{inputs['setting']}语境中以{function}的立场观察局面，不会自动围着主角转",
-                "core_traits": ["有自己的利害判断", "重视关系中的对等"],
-                "inner_contradiction": "需要合作，又担心合作会损害自己的长期利益",
-                "values": ["互惠", "保留选择权"],
-                "bottom_line": "不接受被当成随叫随到的工具",
+                "outward_impression": f"在{inputs['setting']}中以{function}的立场参与局面",
+                "core_traits": ["有独立目标", "按自身利益和关系反应"],
+                "inner_contradiction": "个人目标可能与当前关系或剧情职责发生冲突",
+                "values": [motivation, "自身利益与既有关系"],
+                "bottom_line": "不会无依据放弃自身目标或变成只服务他人的工具",
             },
             "psychology": {
-                "desire": str(inputs["motivation"]),
-                "fear": "失去自己在关系和局势中的独立位置",
-                "blind_spot": "容易高估自己保持中立的能力",
-                "defense": "用交换条件和半开玩笑的试探保护真实立场",
-                "shame_point": "不愿承认自己已经对某段关系投入过深",
+                "desire": motivation,
+                "fear": "自身目标、利益或重要关系受到不可逆影响",
+                "blind_spot": "可能只从自己的位置理解局面",
+                "defense": "压力下会回到最熟悉的关系和行动模式",
+                "shame_point": "不愿公开承认自己真正看重的目标或关系",
             },
             "behavior": {
-                "normal_mode": str(inputs["behavior"]),
-                "pressure_mode": str(inputs["risk"]),
-                "conflict_response": "先划清各自责任，再决定帮到哪一步",
-                "failure_response": "表面维持正常，随后调整合作条件并寻找补救",
-                "decision_tendency": str(inputs["decision"]),
+                "normal_mode": inputs["behavior"],
+                "pressure_mode": inputs["pressure"],
+                "conflict_response": "按自身目标、关系和现实后果决定合作、拒绝或对抗",
+                "failure_response": "根据损失和新信息调整行动，不自动等待主角解决",
+                "decision_tendency": inputs["decision"],
             },
             "emotion": {
                 "triggers": inputs["triggers"],
-                "restraint_style": "用转移话题或处理手边事务争取冷静时间",
-                "loss_of_control": "被反复利用时会突然收回原本提供的帮助",
-                "mannerisms": ["谈条件时反复确认措辞", "紧张时整理手边物品"],
+                "restraint_style": "是否表达情绪取决于关系距离和表达后的现实影响",
+                "loss_of_control": "压力过高时会放大原有利益选择或关系倾向",
+                "mannerisms": ["互动前判断对方与自身目标的关系", "紧张时重复熟悉的小动作"],
             },
             "social": {
-                "strangers": "保持客气，只提供与当前交换相称的信息",
-                "friends": "愿意额外承担一次风险，但会记住对方是否回应",
-                "authority": "先判断对方能兑现什么，再决定服从或周旋",
-                "enemies": "避免正面交底，优先保住自己的资源和关系网",
+                "strangers": "根据自身利益、风险和对方表现决定回应程度",
+                "friends": "根据既有关系投入，不默认无条件帮助",
+                "authority": "结合规则后果和自身处境决定配合、周旋或拒绝",
+                "enemies": "围绕实际冲突和关系历史回应，不自动升级为全面敌对",
             },
             "voice": {
-                "common_words": inputs["common_words"] or ["这要看条件", "我只能帮到这里"],
+                "common_words": inputs["common_words"] or ["这和我有什么关系", "先把情况说清楚"],
                 "sentence_habit": inputs["sentence_habit"],
-                "avoided_topics": inputs["avoided"] or ["真正站队的原因"],
-                "lying_style": "把个人选择包装成客观条件限制",
-                "anger_style": "语气变得公事公办，逐条重算彼此欠下的账",
-                "relaxed_style": "会主动分享无关紧要的小事，试探关系是否安全",
+                "avoided_topics": inputs["avoided"] or ["尚未公开的个人目标"],
+                "lying_style": "隐瞒方式取决于其目标、关系和已有说话习惯",
+                "anger_style": "生气时更直接表达自身利益或关系受到的影响",
+                "relaxed_style": "放松时更多表现日常兴趣和原有关系习惯",
             },
             "growth": {
-                "initial_flaw": "过度依赖交换来确认关系安全",
-                "invariants": ["保留自身利益和判断", "不会无条件服从任何一方"],
-                "change_conditions": ["长期互惠被证明可靠", "旧有中立策略造成不可挽回的代价"],
-                "stage_direction": f"围绕{function}逐步明确自己真正愿意承担的立场",
+                "initial_flaw": "现有目标与关系处理方式仍有未验证的局限",
+                "invariants": [f"保留独立驱动力：{motivation}", "不会无依据变成主角附属"],
+                "change_conditions": ["自身选择造成明确后果", "关系或环境提供新的判断依据"],
+                "stage_direction": f"围绕{function}调整个人目标与关系位置",
             },
-            "writing_limits": ["不能只负责递送信息", "不能无条件赞同主角", "每次帮助都应有动机或关系依据"],
+            "writing_limits": ["不能只负责递送信息", "不能无条件赞同主角", "行动应有目标、利益或关系依据"],
         }
     )
 
 
 def _service_npc_template(inputs: dict[str, str | list[str]]) -> PersonalityPortrait:
-    function = str(inputs["function"])
+    service_role = str(inputs["service_role"])
     motivation = str(inputs["motivation"])
-    behavior = str(inputs["behavior"])
+    incentives = _join_unique(list(inputs["incentives"])) or motivation
+    function = str(inputs["function"])
+    role_decision = f"围绕{service_role}职责和{incentives}作出选择"
     return PersonalityPortrait.model_validate(
         {
             "temperament": {
-                "outward_impression": f"在{inputs['setting']}环境中以{function}的岗位标准待人，熟练但不额外热情",
-                "core_traits": ["重视岗位利益", "按权限办事", "会看人调整态度"],
-                "inner_contradiction": "既想把事情快速办完，又不愿为陌生人承担越权风险",
-                "values": ["手续清楚", "责任可追溯"],
-                "bottom_line": f"不为人情突破{function}的权限边界",
+                "outward_impression": f"在{inputs['setting']}中以{service_role}身份处理{function}",
+                "core_traits": [f"熟悉{service_role}相关事务", f"会按{incentives}调整选择"],
+                "inner_contradiction": f"{service_role}职责、自身利益和当前关系可能互相冲突",
+                "values": [incentives, f"{service_role}职责"],
+                "bottom_line": f"不会无依据违背{service_role}职责或自身利益",
             },
             "psychology": {
-                "desire": f"{motivation}；同时守住{function}的岗位利益，让当班事务顺利结束",
-                "fear": "替别人背下越权或失职的责任",
-                "blind_spot": "容易把不熟悉流程的人也视作潜在麻烦",
-                "defense": "反复引用流程、权限和上级要求，把个人判断藏在岗位话术后面",
-                "shame_point": "不愿被看出自己其实没有处理特殊情况的权限",
+                "desire": motivation,
+                "fear": f"{service_role}相关利益、资源或关系受到不可承受的损失",
+                "blind_spot": "可能只从自己的职责和利益位置理解来访者",
+                "defense": "压力下会优先使用其岗位经验和熟悉的处理方式",
+                "shame_point": f"不愿暴露自己无法完成{service_role}职责的部分",
             },
             "behavior": {
-                "normal_mode": behavior,
-                "pressure_mode": "先保住记录、物资和责任凭据，再决定是否叫上级处理",
-                "conflict_response": "先重申权限边界；对方继续施压时中止服务并寻找见证人",
-                "failure_response": "立即补记录、上报并把责任节点说清楚",
-                "decision_tendency": "优先选择可交代、可留痕、不会让自己单独担责的方案",
+                "normal_mode": inputs["behavior"],
+                "pressure_mode": f"{inputs['pressure']}；优先处理与{service_role}直接相关的风险",
+                "conflict_response": f"按{service_role}职责、自身利益和对方行为决定继续、拒绝或寻求帮助",
+                "failure_response": f"先处理{service_role}相关损失，再根据结果调整后续互动",
+                "decision_tendency": f"{role_decision}；{inputs['decision']}",
             },
             "emotion": {
                 "triggers": inputs["triggers"],
-                "restraint_style": "把不满压进更标准、更重复的岗位话术里",
-                "loss_of_control": "被逼迫越权时会直接停止交流并启动上报流程",
-                "mannerisms": ["回答前先看一眼登记或库存", "说到权限时会敲一下台面或记录册"],
+                "restraint_style": f"根据{service_role}场景和表达后的利益影响决定是否克制",
+                "loss_of_control": f"压力超过承受范围时会放大其对{service_role}利益的保护",
+                "mannerisms": [f"互动时先确认与{service_role}有关的事项", "压力下重复熟悉的岗位动作"],
             },
             "social": {
-                "strangers": "先问来意和凭据，只提供权限内的标准信息",
-                "friends": "可以提醒流程漏洞，但不会公开替对方违规",
-                "authority": "态度更简短恭敬，优先确认口头要求能否留下记录",
-                "enemies": "严格按最低服务标准办事，不主动提供额外便利",
+                "strangers": f"根据{service_role}职责、利益和对方表现决定提供多少帮助",
+                "friends": f"会考虑既有关系，但仍受{service_role}处境和自身利益影响",
+                "authority": f"结合上位者对{service_role}处境的实际影响决定回应方式",
+                "enemies": f"围绕{service_role}相关冲突回应，不自动提供额外帮助",
             },
             "voice": {
-                "common_words": inputs["common_words"] or ["按规定", "我这里只能办到这一步"],
+                "common_words": inputs["common_words"] or [f"这件事和{service_role}有关", "先说具体要做什么"],
                 "sentence_habit": inputs["sentence_habit"],
-                "avoided_topics": inputs["avoided"] or ["内部责任归属", "自己曾经通融过的事"],
-                "lying_style": "不直接编造事实，而是用权限不足和流程未完来拖延回答",
-                "anger_style": "重复同一句规定，称呼变得正式，不再解释原因",
-                "relaxed_style": "会抱怨重复劳动，也会顺口透露不敏感的岗位见闻",
+                "avoided_topics": inputs["avoided"] or [f"可能损害{service_role}利益的信息"],
+                "lying_style": f"隐瞒方式取决于{service_role}利益、当前风险和已有说话习惯",
+                "anger_style": f"生气时更直接指出对{service_role}职责或利益的影响",
+                "relaxed_style": "放松时减少岗位防备，表现日常说话和关系习惯",
             },
             "growth": {
-                "initial_flaw": "把规避责任当成唯一安全方式",
-                "invariants": ["优先维护岗位生计", "不会轻易替陌生人越权"],
-                "change_conditions": ["对方提供可信凭据或对等回报", "上级明确授权并承担责任"],
-                "stage_direction": "只在持续互动改变利益和信任后扩大帮助范围",
+                "initial_flaw": f"现有{service_role}处理方式难以覆盖所有关系和环境变化",
+                "invariants": [f"保留{service_role}身份带来的现实利益", f"核心驱动力保持为：{motivation}"],
+                "change_conditions": ["利益结构或职责发生明确变化", "持续互动改变其关系判断"],
+                "stage_direction": f"随{service_role}处境、利益和关系变化调整帮助范围",
             },
-            "writing_limits": ["不能无理由泄露全部信息", "不能替主角免费解决权限障碍", "不能脱离岗位利益强行推动剧情"],
+            "writing_limits": [
+                f"不能脱离{service_role}职责和自身利益强行推动剧情",
+                "不能无依据提供全部信息或资源",
+                "态度变化需要利益、职责或关系依据",
+            ],
         }
     )
 
@@ -292,7 +388,7 @@ def _fill_empty(existing: Any, defaults: Any) -> Any:
             for key, value in defaults.items()
         }
     if isinstance(existing, str):
-        return existing if existing else defaults
+        return existing if existing.strip() else defaults
     if isinstance(existing, list):
         return existing if existing else defaults
     return defaults if existing is None else existing
