@@ -7,19 +7,16 @@ from packages.story_core.models import CharacterState, PersonalityPortrait
 
 _PROTAGONIST_ROLES = ("protagonist", "lead", "主角", "男主", "女主")
 _RECURRING_ROLES = ("recurring", "long-term", "long term", "长期", "常驻")
-_SERVICE_ROLES = (
+_SERVICE_IDENTITIES = (
     "service npc",
     "service-npc",
-    "service",
     "clerk",
     "vendor",
     "merchant",
     "receptionist",
     "guard",
-    "mentor",
     "repairer",
     "mechanic",
-    "服务",
     "药剂师",
     "商人",
     "登记员",
@@ -29,7 +26,17 @@ _SERVICE_ROLES = (
     "前台",
     "门卫",
     "守卫",
-    "导师",
+)
+_SERVICE_DUTIES = (
+    "archive clerk",
+    "service counter",
+    "registration desk",
+    "档案登记",
+    "登记服务",
+    "柜台办理",
+    "试炼办理",
+    "办理试炼",
+    "授课岗位",
 )
 
 
@@ -40,14 +47,20 @@ def _first(*values: str, fallback: str) -> str:
 def _portrait_kind(character: CharacterState, story_function: str) -> str:
     role = character.role.casefold()
     character_type = character.character_type.casefold()
-    function = story_function.casefold()
+    function_context = " ".join(
+        value.casefold()
+        for value in (story_function, character.story_function)
+        if value and value.strip()
+    )
     if any(marker in role for marker in _PROTAGONIST_ROLES):
         return "protagonist"
     if any(marker in role or marker in character_type for marker in _RECURRING_ROLES):
         return "recurring_support"
-    if character.npc_profile.service_role or any(
-        marker in role or marker in function for marker in _SERVICE_ROLES
-    ):
+    has_service_identity = any(
+        marker in role or marker in function_context for marker in _SERVICE_IDENTITIES
+    )
+    has_service_duty = any(marker in function_context for marker in _SERVICE_DUTIES)
+    if character.npc_profile.service_role or has_service_identity or has_service_duty:
         return "service_npc"
     return "recurring_support"
 
@@ -163,7 +176,7 @@ def _recurring_support_template(inputs: dict[str, str | list[str]]) -> Personali
     return PersonalityPortrait.model_validate(
         {
             "temperament": {
-                "outward_impression": f"以{function}的立场观察局面，不会自动围着主角转",
+                "outward_impression": f"在{inputs['setting']}语境中以{function}的立场观察局面，不会自动围着主角转",
                 "core_traits": ["有自己的利害判断", "重视关系中的对等"],
                 "inner_contradiction": "需要合作，又担心合作会损害自己的长期利益",
                 "values": ["互惠", "保留选择权"],

@@ -80,6 +80,59 @@ def test_recurring_npc_is_classified_as_recurring_support():
     assert "岗位利益" not in completed.personality_portrait.temperament.core_traits
 
 
+def test_recurring_support_template_changes_with_genre():
+    character = CharacterState(
+        name="Mara",
+        role="recurring NPC",
+        character_type="long-term NPC",
+        core_motivation="查清旧友失踪的真相",
+    )
+
+    cultivation = complete_character_portrait(character, "修仙")
+    urban_mystery = complete_character_portrait(character, "都市悬疑")
+
+    assert cultivation.personality_portrait != urban_mystery.personality_portrait
+    assert "修仙" in cultivation.personality_portrait.temperament.outward_impression
+    assert "都市悬疑" in urban_mystery.personality_portrait.temperament.outward_impression
+
+
+def test_character_story_function_can_identify_an_explicit_service_npc():
+    character = CharacterState(
+        name="Mara",
+        role="NPC",
+        story_function="archive clerk / 档案登记服务",
+    )
+
+    completed = complete_character_portrait(character, "mystery")
+
+    assert completed.personality_portrait.temperament.core_traits == [
+        "重视岗位利益",
+        "按权限办事",
+        "会看人调整态度",
+    ]
+
+
+def test_mentor_needs_an_explicit_service_duty_to_use_service_template():
+    life_mentor = complete_character_portrait(
+        CharacterState(name="Mara", role="mentor", story_function="人生导师与长期盟友"),
+        "都市",
+    )
+    trial_clerk = complete_character_portrait(
+        CharacterState(name="Iris", role="导师", story_function="在柜台办理试炼登记"),
+        "奇幻",
+    )
+
+    assert life_mentor.personality_portrait.temperament.core_traits == [
+        "有自己的利害判断",
+        "重视关系中的对等",
+    ]
+    assert trial_clerk.personality_portrait.temperament.core_traits == [
+        "重视岗位利益",
+        "按权限办事",
+        "会看人调整态度",
+    ]
+
+
 def test_service_npc_template_absorbs_motivation_and_genre():
     fantasy_clerk = complete_character_portrait(
         CharacterState(
