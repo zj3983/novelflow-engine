@@ -468,14 +468,9 @@ def _body_summary(body: str, *, limit: int = 240, sentence_limit: int = 3) -> st
     return text[:end].strip() if end else text[:limit].strip()
 
 
-def fallback_post_draft_memory(
-    body: str,
-    *,
-    previous_next_focus: str = "",
-) -> dict[str, Any]:
+def fallback_post_draft_memory(body: str) -> dict[str, Any]:
     """Return body-derived memory without inventing character or ledger state."""
 
     result = _empty_result()
     result["summary"] = _body_summary(body)
-    result["next_focus"] = _text(previous_next_focus)
     return result

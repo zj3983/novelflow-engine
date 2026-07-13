@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-import json
 import urllib.error
 from typing import Protocol
 
 from packages.story_core.agent_base import (
     BaseOpenAIProvider,
-    compact_list,
     compact_text,
     parse_json_message_content,
 )
 from packages.story_core.memory import apply_post_chapter_updates
 from packages.story_core.models import DirectorDecision, StoryState, default_model_name
+from packages.story_core.post_draft_memory import (
+    build_post_draft_memory_prompt,
+    fallback_post_draft_memory,
+    normalize_post_draft_memory,
+)
 from packages.story_core.runtime import record_agent_runtime
 
 
@@ -53,8 +56,8 @@ class OpenAIMemorySummaryProvider(BaseOpenAIProvider):
                     "role": "system",
                     "content": (
                         "You are the memory agent for an evolving Chinese novel project. "
-                        "Return JSON only with summary, facts, unresolved_threads, next_focus, chapter_title, "
-                        "timeline_summary, timeline_impact, foreshadowing, and character_memory_notes."
+                        "Return JSON only. Every fact, unresolved thread, character update and ledger leaf "
+                        "must include literal evidence from the final chapter body."
                     ),
                 },
                 {
@@ -100,52 +103,22 @@ class OpenAIMemorySummaryProvider(BaseOpenAIProvider):
         event_beat: dict,
         cadence: str,
     ) -> str:
-        latest_summary = compact_text(
-            story.chapter_summaries[-1].summary if story.chapter_summaries else "No prior chapter.",
-            220,
+        return build_post_draft_memory_prompt(
+            body,
+            previous_summary=(story.chapter_summaries[-1].summary if story.chapter_summaries else ""),
+            existing_character_names={character.name for character in story.characters},
+            genre=story.genre,
+            fact_locks={
+                "chapter_number": chapter_number,
+                "director_decision": {
+                    "chapter_title": compact_text(decision.chapter_title, 40),
+                    "next_focus": compact_text(decision.next_focus, 120),
+                },
+                "conflict": compact_text(str(conflict_summary.get("summary", "")), 140),
+                "event": compact_text(str(event_beat.get("turn", "")), 100),
+                "cadence": cadence,
+            },
         )
-        compact_decision = {
-            "chapter_title": compact_text(decision.chapter_title, 40),
-            "next_focus": compact_text(decision.next_focus, 120),
-            "primary_conflict": decision.primary_conflict,
-            "secondary_conflict": decision.secondary_conflict,
-        }
-        compact_conflict = {
-            "summary": compact_text(str(conflict_summary.get("summary", "")), 140),
-            "stakes": compact_text(str(conflict_summary.get("stakes", "")), 120),
-        }
-        compact_event = {
-            "turn": compact_text(str(event_beat.get("turn", "")), 80),
-            "pivot": compact_text(str(event_beat.get("pivot", "")), 100),
-            "closing": compact_text(str(event_beat.get("closing", "")), 80),
-        }
-        return "\n".join(
-            [
-                f"Story outline: {compact_text(story.outline, 480)}",
-                f"Genre: {story.genre}",
-                f"Style: {story.style}",
-                f"Author constraints: {json.dumps(compact_list(story.author_constraints, max_items=4, item_chars=70), ensure_ascii=False)}",
-                f"Current chapter: {chapter_number}",
-                f"Latest chapter summary: {latest_summary}",
-                f"Chapter body: {compact_text(body, 1200)}",
-                f"Director decision: {json.dumps(compact_decision, ensure_ascii=False)}",
-                f"Conflict summary: {json.dumps(compact_conflict, ensure_ascii=False)}",
-                f"Event beat: {json.dumps(compact_event, ensure_ascii=False)}",
-                f"Cadence: {cadence}",
-                "Keep only durable story memory: facts that should matter next chapter, unresolved threads, and explicit timeline impact.",
-                "Return a JSON object with summary, facts, unresolved_threads, next_focus, chapter_title, timeline_summary, timeline_impact, foreshadowing, and character_memory_notes.",
-            ]
-        )
-
-
-def _string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _string_text(value: object) -> str:
-    return str(value).strip() if value is not None else ""
 
 
 class MemoryAgent:
@@ -162,17 +135,8 @@ class MemoryAgent:
         event_beat: dict,
         cadence: str,
     ) -> StoryState:
-        apply_post_chapter_updates(
-            story,
-            body,
-            chapter_number,
-            conflict_summary=conflict_summary,
-            event_beat=event_beat,
-        )
-        story.chapter_summaries[-1].cadence = cadence
-        if decision.chapter_title:
-            story.chapter_summaries[-1].chapter_title = decision.chapter_title
-
+        memory = None
+        memory_is_verified = False
         if story.agent_settings.mode == "LLM-assisted":
             analysis = self.llm_provider.summarize(
                 story,
@@ -184,6 +148,12 @@ class MemoryAgent:
                 cadence,
             )
             if analysis:
+                memory = normalize_post_draft_memory(
+                    analysis,
+                    body=body,
+                    existing_character_names={character.name for character in story.characters},
+                )
+                memory_is_verified = True
                 record_agent_runtime(
                     story,
                     "MemoryAgent",
@@ -191,53 +161,6 @@ class MemoryAgent:
                     "llm",
                     story.current_chapter,
                 )
-                summary = _string_text(analysis.get("summary"))
-                if summary:
-                    story.chapter_summaries[-1].summary = summary
-
-                facts = _string_list(analysis.get("facts"))
-                if facts:
-                    story.chapter_summaries[-1].facts = facts
-
-                unresolved_threads = _string_list(analysis.get("unresolved_threads"))
-                if unresolved_threads:
-                    story.chapter_summaries[-1].unresolved_threads = unresolved_threads
-
-                next_focus = _string_text(analysis.get("next_focus"))
-                if next_focus:
-                    story.chapter_summaries[-1].next_focus = next_focus
-
-                chapter_title = _string_text(analysis.get("chapter_title"))
-                if chapter_title:
-                    story.chapter_summaries[-1].chapter_title = chapter_title
-
-                timeline_summary = _string_text(analysis.get("timeline_summary"))
-                timeline_impact = _string_text(analysis.get("timeline_impact"))
-                if timeline_summary or timeline_impact:
-                    story.timeline[-1].summary = timeline_summary or story.timeline[-1].summary
-                    story.timeline[-1].impact = timeline_impact or story.timeline[-1].impact
-
-                foreshadowing = analysis.get("foreshadowing")
-                if isinstance(foreshadowing, list) and foreshadowing:
-                    first = foreshadowing[0]
-                    if isinstance(first, dict):
-                        text = _string_text(first.get("text"))
-                        status = _string_text(first.get("status"))
-                        if text:
-                            story.foreshadowing[0].text = text
-                        if status:
-                            story.foreshadowing[0].status = status  # type: ignore[assignment]
-
-                notes = analysis.get("character_memory_notes")
-                if isinstance(notes, list):
-                    by_name = {character.name: character for character in story.characters}
-                    for note in notes:
-                        if not isinstance(note, dict):
-                            continue
-                        name = _string_text(note.get("name"))
-                        memory = _string_text(note.get("memory"))
-                        if name and memory and name in by_name:
-                            by_name[name].memory.append(memory)
             else:
                 fallback_reason = "LLM did not return a usable memory summary"
                 if hasattr(self.llm_provider, "last_error_reason"):
@@ -252,5 +175,19 @@ class MemoryAgent:
                     story.current_chapter,
                     fallback_reason,
                 )
+
+        if memory is None:
+            memory = fallback_post_draft_memory(body)
+        apply_post_chapter_updates(
+            story,
+            body,
+            chapter_number,
+            conflict_summary=conflict_summary if memory_is_verified else {},
+            event_beat=event_beat if memory_is_verified else {},
+            post_draft_memory=memory,
+        )
+        story.chapter_summaries[-1].cadence = cadence
+        if memory_is_verified and decision.chapter_title and not memory.get("chapter_title"):
+            story.chapter_summaries[-1].chapter_title = decision.chapter_title
 
         return story

@@ -26,9 +26,14 @@ from packages.story_core.memory import (
     maybe_update_arc_recap,
     retrieve_relevant_memories,
 )
-from packages.story_core.models import DirectorDecision, StoryState, TimelineEvent, default_model_name
+from packages.story_core.models import DirectorDecision, StoryState, default_model_name
 from packages.story_core.novel_type_catalog import normalize_novel_type_id
 from packages.story_core.planner import build_chapter_title, build_conflict_summary, build_event_beat, compute_chapter_cadence, plan_next_outline
+from packages.story_core.post_draft_memory import (
+    build_post_draft_memory_prompt,
+    fallback_post_draft_memory,
+    normalize_post_draft_memory,
+)
 from packages.story_core.adversarial_cut_review import build_expression_patch_suggestions, review_adversarial_cuts
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
@@ -4383,6 +4388,57 @@ class StoryOrchestrator:
         """Production generation always writes one continuous chapter."""
         return False
 
+    def _extract_final_body_memory(
+        self,
+        story: StoryState,
+        body: str,
+        chapter_number: int,
+        *,
+        fact_locks: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        previous_summary = story.chapter_summaries[-1] if story.chapter_summaries else None
+        prompt = build_post_draft_memory_prompt(
+            body,
+            previous_summary=previous_summary.summary if previous_summary else "",
+            existing_character_names={character.name for character in story.characters},
+            genre=story.genre,
+            fact_locks=fact_locks or {},
+        )
+        report_generation_progress("最终正文记忆提取中...")
+        memory_text, memory_error = self._timed_chat(
+            story,
+            prompt,
+            max_tokens=2200,
+            json_mode=True,
+            agent="memory",
+            stage=f"最终正文记忆 第{chapter_number}章",
+        )
+        if memory_error:
+            return fallback_post_draft_memory(body), {
+                "status": "fallback",
+                "rejected_count": 0,
+                "reason": compact_text(memory_error, 120),
+            }
+        try:
+            payload = json.loads(memory_text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+        if not isinstance(payload, dict):
+            return fallback_post_draft_memory(body), {
+                "status": "fallback",
+                "rejected_count": 0,
+                "reason": "memory_invalid_json",
+            }
+        memory = normalize_post_draft_memory(
+            payload,
+            body=body,
+            existing_character_names={character.name for character in story.characters},
+        )
+        return memory, {
+            "status": "ok",
+            "rejected_count": len(memory.get("rejected_updates", [])),
+        }
+
     def refresh_revised_bundle_metadata(self, base_story: StoryState, bundle: Any) -> Any:
         """Rebuild summary, ledger and memory surfaces after latest-chapter revision."""
         refreshed_bundle = bundle.model_copy(deep=True)
@@ -4392,53 +4448,64 @@ class StoryOrchestrator:
         working_story.current_chapter = chapter_number
 
         memory_constraints = _normalize_memory_constraints(refreshed_bundle.memory_constraints, working_story)
-        # Revision can invalidate old planned facts and ledger values; rebuild them from the revised body.
         memory_constraints["must_keep_facts"] = []
         memory_constraints["ledger_updates"] = {}
-        chapter_summary_data = _normalize_chapter_summary(refreshed_bundle.chapter_summary, chapter_number)
-        continuity_anchors = _inject_continuity_anchors(memory_constraints, chapter_summary_data, refreshed_bundle.body)
-
-        updated_story = working_story.model_copy(deep=True)
         conflict_summary = refreshed_bundle.conflict_summary if isinstance(refreshed_bundle.conflict_summary, dict) else {}
         event_beat = refreshed_bundle.event_beat if isinstance(refreshed_bundle.event_beat, dict) else {}
+        post_draft_memory, memory_sync = self._extract_final_body_memory(
+            working_story,
+            refreshed_bundle.body,
+            chapter_number,
+            fact_locks={"previous_chapter_summary": refreshed_bundle.chapter_summary},
+        )
+        memory_is_verified = memory_sync.get("status") == "ok"
+        persisted_conflict = conflict_summary if memory_is_verified else {}
+        persisted_event_beat = event_beat if memory_is_verified else {}
+
+        updated_story = working_story.model_copy(deep=True)
         apply_post_chapter_updates(
             updated_story,
             refreshed_bundle.body,
             chapter_number,
-            conflict_summary=conflict_summary,
-            event_beat=event_beat,
+            conflict_summary=persisted_conflict,
+            event_beat=persisted_event_beat,
+            post_draft_memory=post_draft_memory,
         )
-        _apply_ledger_updates(updated_story, memory_constraints.get("ledger_updates", {}))
+        _apply_ledger_updates(updated_story, post_draft_memory.get("ledger_updates", {}))
         _sync_character_game_panels(updated_story, chapter_number)
         advance_world_pulse(updated_story, chapter_number=chapter_number)
         maybe_update_arc_recap(updated_story, chapter_number)
 
         if updated_story.chapter_summaries:
             latest_summary = updated_story.chapter_summaries[-1]
-            latest_summary.summary = chapter_summary_data.get("summary") or compact_text(refreshed_bundle.body, 220)
-            latest_summary.facts = _merge_unique_compact([], continuity_anchors or latest_summary.facts, max_items=14, item_chars=150)
-            latest_summary.unresolved_threads = chapter_summary_data.get("unresolved_threads") or latest_summary.unresolved_threads
-            latest_summary.next_focus = chapter_summary_data.get("next_focus") or latest_summary.next_focus
+            revised_title_focus = compact_text(
+                f"{working_story.outline} {refreshed_bundle.body} {latest_summary.next_focus}",
+                240,
+            )
             latest_summary.chapter_title = _repair_generic_chapter_title(
-                chapter_summary_data.get("chapter_title") or latest_summary.chapter_title,
+                latest_summary.chapter_title,
                 chapter_number=chapter_number,
-                next_focus=str(refreshed_bundle.event_plan.get("next_focus") or latest_summary.next_focus),
-                conflict_summary=conflict_summary,
+                next_focus=revised_title_focus,
+                conflict_summary=persisted_conflict,
                 genre=working_story.genre,
             )
-            if isinstance(refreshed_bundle.chapter_intent, dict):
-                primary = refreshed_bundle.chapter_intent.get("primary_conflict")
-                secondary = refreshed_bundle.chapter_intent.get("secondary_conflict")
-                if isinstance(primary, dict):
-                    latest_summary.primary_conflict = primary
-                if isinstance(secondary, dict):
-                    latest_summary.secondary_conflict = secondary
-            latest_summary.event_beat = event_beat
             latest_summary.cadence = refreshed_bundle.cadence  # type: ignore[assignment]
             refreshed_bundle.chapter_title = latest_summary.chapter_title
             refreshed_bundle.chapter_summary = latest_summary.model_dump()
 
         refreshed_bundle.memory_constraints = memory_constraints
+        refreshed_bundle.simulation_plan = (
+            dict(refreshed_bundle.simulation_plan)
+            if isinstance(refreshed_bundle.simulation_plan, dict)
+            else {}
+        )
+        refreshed_bundle.simulation_plan["memory_sync"] = memory_sync
+        refreshed_bundle.quality_report = (
+            dict(refreshed_bundle.quality_report)
+            if isinstance(refreshed_bundle.quality_report, dict)
+            else {}
+        )
+        refreshed_bundle.quality_report["memory_sync"] = memory_sync
         refreshed_bundle.updated_story = updated_story
         refreshed_bundle.simulation_status = _build_simulation_status(updated_story)
         refreshed_bundle.character_cards = build_character_cards(updated_story)
@@ -4446,7 +4513,7 @@ class StoryOrchestrator:
         refreshed_bundle.next_outline = plan_next_outline(
             updated_story,
             chapter_number,
-            conflict_summary=conflict_summary,
+            conflict_summary=persisted_conflict,
             cadence=refreshed_bundle.cadence,
         )
         return refreshed_bundle
@@ -4847,7 +4914,16 @@ class StoryOrchestrator:
                         scene_cards,
                     )
 
-        continuity_anchors = _inject_continuity_anchors(memory_constraints, chapter_summary_data, body)
+        post_draft_memory, memory_sync = self._extract_final_body_memory(
+            working_story,
+            body,
+            chapter_number,
+            fact_locks={
+                "must_keep_facts": memory_constraints.get("must_keep_facts", []),
+                "planned_summary": chapter_summary_data,
+            },
+        )
+        simulation_plan["memory_sync"] = memory_sync
 
         decision = DirectorDecision(
             primary_conflict=chapter_intent.get("primary_conflict", {}) or conflict_summary.get("primary_conflict", {}),
@@ -4881,68 +4957,38 @@ class StoryOrchestrator:
         }
 
         report_generation_progress("记忆回写中...")
+        memory_is_verified = memory_sync.get("status") == "ok"
         apply_post_chapter_updates(
             updated_story,
             body,
             chapter_number,
-            conflict_summary=effective_conflict_summary,
-            event_beat=event_beat,
+            conflict_summary=effective_conflict_summary if memory_is_verified else {},
+            event_beat=event_beat if memory_is_verified else {},
+            post_draft_memory=post_draft_memory,
         )
-        _apply_ledger_updates(updated_story, memory_constraints.get("ledger_updates", {}))
-        apply_simulated_state_deltas(
-            updated_story,
-            world_events=world_events,
-            scene_cards=scene_cards,
-            chapter_number=chapter_number,
-        )
+        _apply_ledger_updates(updated_story, post_draft_memory.get("ledger_updates", {}))
         _sync_character_game_panels(updated_story, chapter_number)
         advance_world_pulse(updated_story, chapter_number=chapter_number)
         maybe_update_arc_recap(updated_story, chapter_number)
 
         latest_summary = updated_story.chapter_summaries[-1]
-        latest_summary.summary = chapter_summary_data.get("summary") or compact_text(body, 220)
-        latest_summary.facts = chapter_summary_data.get("facts") or latest_summary.facts
-        if continuity_anchors:
-            latest_summary.facts = _merge_unique_compact(latest_summary.facts, continuity_anchors, max_items=14, item_chars=150)
-        latest_summary.unresolved_threads = chapter_summary_data.get("unresolved_threads") or latest_summary.unresolved_threads
-        latest_summary.next_focus = chapter_summary_data.get("next_focus") or decision.next_focus or latest_summary.next_focus
+        title_conflict = effective_conflict_summary if memory_is_verified else {}
+        title_next_focus = compact_text(
+            f"{updated_story.outline} {body} "
+            f"{latest_summary.next_focus if memory_is_verified else ''}",
+            240,
+        )
         latest_summary.chapter_title = _repair_generic_chapter_title(
-            chapter_summary_data.get("chapter_title") or decision.chapter_title or latest_summary.chapter_title,
+            latest_summary.chapter_title or (decision.chapter_title if memory_is_verified else ""),
             chapter_number=chapter_number,
-            next_focus=str(event_plan.get("next_focus") or latest_summary.next_focus),
-            conflict_summary=effective_conflict_summary,
+            next_focus=title_next_focus,
+            conflict_summary=title_conflict,
             genre=updated_story.genre,
         )
-        latest_summary.primary_conflict = decision.primary_conflict
-        latest_summary.secondary_conflict = decision.secondary_conflict
-        latest_summary.event_beat = event_beat
+        latest_summary.primary_conflict = decision.primary_conflict if memory_is_verified else {}
+        latest_summary.secondary_conflict = decision.secondary_conflict if memory_is_verified else {}
+        latest_summary.event_beat = event_beat if memory_is_verified else {}
         latest_summary.cadence = cadence  # type: ignore[assignment]
-
-        if updated_story.timeline:
-            updated_story.timeline[-1] = TimelineEvent(
-                chapter_number=chapter_number,
-                summary=compact_text(chapter_summary_data.get("summary") or latest_summary.summary, 160),
-                impact=compact_text(event_plan.get("stakes", "") or "本章推动了主线局势。", 160),
-            )
-
-        conflict_participants = {
-            decision.primary_conflict.get("lead"),
-            decision.primary_conflict.get("opposition"),
-            *[
-                participant.get("name")
-                for participant in decision.secondary_conflict.get("participants", [])
-                if isinstance(participant, dict)
-            ],
-        } - {None, ""}
-        for move in action_briefs:
-            for character in updated_story.characters:
-                if character.name == move["name"]:
-                    if character.name in conflict_participants:
-                        break
-                    character.current_emotion = move.get("emotion", character.current_emotion)
-                    if move.get("goal"):
-                        character.goals = [move["goal"], *[goal for goal in character.goals if goal != move["goal"]]]
-                    break
 
         _record_success(updated_story)
 
@@ -4990,6 +5036,7 @@ class StoryOrchestrator:
         )
         report_generation_progress("质量检查中...")
         bundle.quality_report = _merge_writing_review_quality(validate_bundle(bundle.model_dump()), writing_review)
+        bundle.quality_report["memory_sync"] = memory_sync
         updated_story.writing_lessons = merge_writing_lessons(
             updated_story.writing_lessons,
             lessons_from_quality_report(bundle.quality_report),

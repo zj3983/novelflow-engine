@@ -1,5 +1,5 @@
 from packages.story_core.memory import add_chapter_memory_index, retrieve_relevant_memories
-from packages.story_core.models import MemoryIndexEntry, StoryState
+from packages.story_core.models import CharacterState, MemoryIndexEntry, StoryState
 from packages.story_core.orchestrator import _story_snapshot
 
 
@@ -133,3 +133,61 @@ def test_post_chapter_updates_write_memory_index():
     assert story.memory_index[0].chapter_number == 1
     assert "交易行" in story.memory_index[0].tags
     assert "白袍公会" in story.memory_index[0].factions
+
+
+def test_post_chapter_updates_apply_only_validated_final_memory():
+    from packages.story_core.memory import apply_post_chapter_updates
+
+    story = StoryState(
+        story_id="s-memory-final-prose",
+        outline="林照看守断香炉。",
+        genre="xuanhuan",
+        style="白描",
+        characters=[
+            CharacterState(name="林照", role="主角", current_emotion="平静", location="祖祠"),
+            CharacterState(name="周执事", role="配角", current_emotion="冷淡", location="外院"),
+        ],
+    )
+    memory = {
+        "summary": "林照把断香炉搬回偏殿，并被要求明早去账房。",
+        "facts": ["断香炉已搬回偏殿"],
+        "unresolved_threads": ["账房为何找林照"],
+        "next_focus": "明早去账房",
+        "chapter_title": "搬炉",
+        "character_updates": [
+            {
+                "name": "林照",
+                "goal": "明早去账房",
+                "location": "偏殿",
+                "evidence": "林照把断香炉搬回偏殿",
+            }
+        ],
+        "ledger_updates": {},
+        "rejected_updates": [],
+    }
+
+    apply_post_chapter_updates(
+        story,
+        "林照把断香炉搬回偏殿。周执事让他明早去账房。",
+        1,
+        post_draft_memory=memory,
+        conflict_summary={
+            "primary_conflict": {"lead": "林照", "opposition": "周执事", "collision": "断香炉"}
+        },
+    )
+
+    summary = story.chapter_summaries[-1]
+    assert summary.summary == memory["summary"]
+    assert summary.facts == memory["facts"]
+    assert summary.unresolved_threads == memory["unresolved_threads"]
+    assert summary.next_focus == memory["next_focus"]
+    assert story.characters[0].location == "偏殿"
+    assert story.characters[0].goals[0] == "明早去账房"
+    assert story.characters[0].current_emotion == "平静"
+    assert story.characters[1].current_emotion == "冷淡"
+    assert story.characters[1].location == "外院"
+    dumped = story.model_dump_json()
+    assert "调查仍在继续推进" not in dumped
+    assert "迷局深处" not in dumped
+    assert '"alert"' not in dumped
+    assert '"wary"' not in dumped

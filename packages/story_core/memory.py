@@ -5,8 +5,6 @@ from typing import Any
 from packages.story_core.models import (
     ArcRecap,
     ChapterSummary,
-    CharacterRelationship,
-    ForeshadowingState,
     MemoryIndexEntry,
     StoryState,
     TimelineEvent,
@@ -14,6 +12,7 @@ from packages.story_core.models import (
 from packages.story_core.character_portraits import complete_character_portrait
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.planner import build_chapter_title
+from packages.story_core.post_draft_memory import fallback_post_draft_memory
 
 
 MEMORY_KEYWORDS = {
@@ -329,80 +328,67 @@ def apply_post_chapter_updates(
     chapter_number: int,
     conflict_summary: dict | None = None,
     event_beat: dict | None = None,
+    post_draft_memory: dict[str, Any] | None = None,
 ) -> None:
-    fact = f"第{chapter_number}章确认调查仍在继续推进。"
-    unresolved = f"第{chapter_number}章之后，谁会先掌控核心线索？"
-    inherited_next_focus = story.chapter_summaries[-1].next_focus if story.chapter_summaries else ""
-
-    participant_map = {character.name: character for character in story.characters}
+    memory = (
+        post_draft_memory
+        if isinstance(post_draft_memory, dict)
+        else fallback_post_draft_memory(body)
+    )
+    summary_text = str(memory.get("summary") or "").strip() or body.strip()[:240]
+    facts = [str(item).strip() for item in memory.get("facts", []) if str(item).strip()][:12]
+    unresolved_threads = [
+        str(item).strip() for item in memory.get("unresolved_threads", []) if str(item).strip()
+    ][:8]
+    next_focus = str(memory.get("next_focus") or "").strip()
     primary = (conflict_summary or {}).get("primary_conflict", {})
     secondary = (conflict_summary or {}).get("secondary_conflict", {})
-    primary_names = {primary.get("lead"), primary.get("opposition")} - {None, ""}
-    secondary_participants = [
-        _normalize_participant(item) for item in secondary.get("participants", [])
-    ]
-    secondary_names = {item["name"] for item in secondary_participants}
-    secondary_goals = {item["name"]: item.get("goal", "") for item in secondary_participants}
-
-    for character in story.characters:
-        if character.frozen:
+    by_name = {character.name: character for character in story.characters}
+    for update in memory.get("character_updates", []):
+        if not isinstance(update, dict):
             continue
+        character = by_name.get(str(update.get("name") or "").strip())
+        if character is None or character.frozen:
+            continue
+        emotion = str(update.get("emotion") or "").strip()
+        goal = str(update.get("goal") or "").strip()
+        location = str(update.get("location") or "").strip()
+        evidence = str(update.get("evidence") or "").strip()
+        if emotion:
+            character.current_emotion = emotion
+        if goal:
+            _promote_goal(character, goal)
+        if location:
+            character.location = location
+        if evidence:
+            note = f"第{chapter_number}章：{evidence}"
+            if note not in character.memory:
+                character.memory.append(note)
 
-        touched = False
-        if character.name in primary_names:
-            collision = primary.get("collision", "the main clash")
-            character.memory.append(
-                f'第{chapter_number}章中，{character.name}因自身利益被卷入"{_goal_topic(collision)}"冲突，下一步会按自己的底线和风险判断行动。'
-            )
-            _promote_goal(character, _primary_follow_up_intent(character.name, primary))
-            character.current_emotion = "alert"
-            touched = True
-        elif character.name in secondary_names:
-            detail = secondary.get("detail", "side pressure")
-            goal = secondary_goals.get(character.name, "hold the line")
-            character.memory.append(
-                f'第{chapter_number}章中，{character.name}承受"{_goal_topic(detail)}"侧面压力，行动目标是{goal}。'
-            )
-            _promote_goal(character, _secondary_follow_up_intent(goal, secondary))
-            character.current_emotion = "wary"
-            touched = True
-
-        if touched and not character.location:
-            character.location = "迷局深处"
-
-        if character.name == story.characters[0].name and character.relationships:
-            key = next(iter(character.relationships))
-            relation = character.relationships[key]
-            trust_delta, tension_delta = _relationship_shift(character.goals)
-            character.relationships[key] = CharacterRelationship(
-                target=relation.target,
-                trust=max(0.0, min(1.0, round(relation.trust + trust_delta, 2))),
-                tension=max(0.0, min(1.0, round(relation.tension + tension_delta, 2))),
-                bond=relation.bond,
-            )
-
-    story.world_facts.append(fact)
+    for fact in facts:
+        if fact not in story.world_facts:
+            story.world_facts.append(fact)
     story.timeline.append(
         TimelineEvent(
             chapter_number=chapter_number,
-            summary=f"第{chapter_number}章把核心谜团继续向前推进。",
-            impact="主要角色承受的整体压力继续上升",
+            summary=summary_text,
+            impact=(facts[0] if facts else (unresolved_threads[0] if unresolved_threads else summary_text)),
         )
     )
 
     chapter_summary = ChapterSummary(
         chapter_number=chapter_number,
-        chapter_title=build_chapter_title(
+        chapter_title=str(memory.get("chapter_title") or "").strip()
+        or build_chapter_title(
             chapter_number,
             conflict_summary or {},
-            inherited_next_focus or _build_next_focus(chapter_number, primary, secondary, [unresolved]),
+            next_focus,
             genre=story.genre,
         ),
-        summary=body,
-        facts=[fact],
-        unresolved_threads=[unresolved],
-        next_focus=inherited_next_focus
-        or _build_next_focus(chapter_number, primary, secondary, [unresolved]),
+        summary=summary_text,
+        facts=facts,
+        unresolved_threads=unresolved_threads,
+        next_focus=next_focus,
         primary_conflict=primary,
         secondary_conflict=secondary,
         event_beat=event_beat or {},
@@ -412,22 +398,10 @@ def apply_post_chapter_updates(
         story,
         chapter_number=chapter_number,
         chapter_title=chapter_summary.chapter_title,
-        summary=body,
+        summary=summary_text,
         facts=chapter_summary.facts,
         unresolved_threads=chapter_summary.unresolved_threads,
     )
-
-    # Genre-agnostic foreshadowing
-    if not story.foreshadowing:
-        story.foreshadowing.append(
-            ForeshadowingState(
-                text=_generic_foreshadowing_text(chapter_number),
-                first_chapter=chapter_number,
-                status="open",
-            )
-        )
-    else:
-        story.foreshadowing[0].status = "reinforced"
 
 
 def _is_protagonist(character: Any) -> bool:

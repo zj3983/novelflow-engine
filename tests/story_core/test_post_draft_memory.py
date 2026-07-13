@@ -223,14 +223,11 @@ def test_missing_evidence_is_rejected_without_raising():
 def test_fallback_uses_only_final_body_and_keeps_no_state_updates():
     body = "林照把断香炉搬回偏殿。周执事让他明早去账房回话。"
 
-    result = fallback_post_draft_memory(
-        body,
-        previous_next_focus="去账房回话",
-    )
+    result = fallback_post_draft_memory(body)
 
     assert result["summary"]
     assert result["summary"] in body
-    assert result["next_focus"] == "去账房回话"
+    assert result["next_focus"] == ""
     assert result["character_updates"] == []
     assert result["ledger_updates"] == {}
 
