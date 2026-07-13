@@ -102,7 +102,7 @@ def test_first_chapter_sanitizer_does_not_rewrite_service_closure_or_add_hook():
     cleaned = _sanitize_chapter_output(body, chapter_number=1)
 
     assert "任务完成" in cleaned
-    assert "奖励栏还没亮" in cleaned
+    assert "获得：30铜" in cleaned
     assert "修理铺" in cleaned
     assert "买药水" in cleaned
     assert "技能书" not in cleaned

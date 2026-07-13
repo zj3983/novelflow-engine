@@ -349,10 +349,6 @@ def _sanitize_generated_body(body: str) -> str:
         "当前货币:0铜": "货币栏还是空的",
         "货币：0铜": "钱袋：空",
         "货币:0铜": "钱袋：空",
-        "获得：30铜": "奖励栏还没亮",
-        "获得:30铜": "奖励栏还没亮",
-        "扣除：30铜": "没有扣费",
-        "扣除:30铜": "没有扣费",
         "逻辑": "规矩",
     }
     for old, new in replacements.items():
@@ -4775,8 +4771,9 @@ class StoryOrchestrator:
             scene_cards,
         )
         revision_safety_report = None
+        accepted_revision_actions: list[str] = []
         review_gate = build_simplified_review({"writing_review": writing_review})
-        if review_gate["has_hard_errors"]:
+        if review_gate["needs_revision"]:
             report_generation_progress("审稿改稿中...")
             pre_revision_body = body
             pre_revision_review = writing_review
@@ -4831,6 +4828,14 @@ class StoryOrchestrator:
                 selected_review = selected_quality.get("writing_review") if isinstance(selected_quality.get("writing_review"), dict) else pre_revision_review
                 writing_review = selected_review
                 revision_safety_report = safety["report"]
+                if safety.get("accepted"):
+                    accepted_revision_actions = [
+                        str(item.get("suggestion") or "").strip()
+                        for item in review_gate.get("issues", [])
+                        if isinstance(item, dict)
+                        and item.get("category") in {"hard", "dialogue", "ai_flavor"}
+                        and str(item.get("suggestion") or "").strip()
+                    ]
 
         if _should_compress_chapter(body):
             report_generation_progress("章节压缩中...")
@@ -4994,13 +4999,15 @@ class StoryOrchestrator:
         report_generation_progress("质量检查中...")
         bundle.quality_report = _merge_writing_review_quality(validate_bundle(bundle.model_dump()), writing_review)
         bundle.quality_report["memory_sync"] = memory_sync
+        if style_adapt_report:
+            bundle.quality_report["style_adapt"] = style_adapt_report
+        if revision_safety_report:
+            bundle.quality_report["revision_safety"] = revision_safety_report
+        if accepted_revision_actions:
+            bundle.quality_report["accepted_revision_actions"] = accepted_revision_actions
         updated_story.writing_lessons = merge_writing_lessons(
             updated_story.writing_lessons,
             lessons_from_quality_report(bundle.quality_report),
         )
         bundle.updated_story = updated_story
-        if style_adapt_report:
-            bundle.quality_report["style_adapt"] = style_adapt_report
-        if revision_safety_report:
-            bundle.quality_report["revision_safety"] = revision_safety_report
         return bundle

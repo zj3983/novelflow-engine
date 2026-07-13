@@ -47,22 +47,17 @@ def _lesson_from_review(agent_name: str, review: dict[str, Any]) -> str | None:
 
 
 def lessons_from_quality_report(quality_report: dict[str, Any], *, max_lessons: int = 6) -> list[str]:
-    """Extract reusable writing lessons from layered agent reports."""
-
+    """Keep only changes that an accepted revision proved useful."""
     quality = _as_dict(quality_report)
-    writing = _as_dict(quality.get("writing_review"))
+    revision_safety = _as_dict(quality.get("revision_safety"))
+    if not revision_safety.get("accepted") or revision_safety.get("selected") != "candidate":
+        return []
+
     lessons: list[str] = []
-    for key in AGENT_REVIEW_KEYS:
-        review = _as_dict(quality.get(key)) or _as_dict(writing.get(key))
-        lesson = _lesson_from_review(key, review)
-        if lesson and lesson not in lessons:
-            lessons.append(lesson)
-        if len(lessons) >= max_lessons:
-            return lessons
-    for item in _as_list(writing.get("revision_plan")):
+    for item in _as_list(quality.get("accepted_revision_actions")):
         text = _text(item)
         if text:
-            lesson = f"复审经验：下次写前先做到：{text}"
+            lesson = f"已验证改法：{text}"
             if lesson not in lessons:
                 lessons.append(lesson)
         if len(lessons) >= max_lessons:

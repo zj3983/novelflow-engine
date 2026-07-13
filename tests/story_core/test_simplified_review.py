@@ -12,8 +12,9 @@ def test_simplified_review_only_blocks_hard_errors():
     assert report["pass"] is False
     assert report["has_hard_errors"] is True
     assert report["categories"]["hard"]["count"] == 1
-    assert report["categories"]["prose"]["count"] == 1
+    assert report["categories"]["dialogue"]["count"] == 1
     assert report["categories"]["ai_flavor"]["count"] == 1
+    assert report["needs_revision"] is True
 
 
 def test_simplified_review_keeps_advisory_issues_non_blocking():
@@ -23,7 +24,28 @@ def test_simplified_review_keeps_advisory_issues_non_blocking():
 
     assert report["pass"] is True
     assert report["has_hard_errors"] is False
+    assert report["needs_revision"] is True
+    assert report["categories"]["dialogue"]["count"] == 1
     assert all(item["severity"] == "advisory" for item in report["issues"])
+
+
+def test_simplified_review_does_not_revise_for_ordinary_prose_advice():
+    report = build_simplified_review(
+        {"writing_review": {"pass": False, "issues": ["章末动作还可以更具体。"]}}
+    )
+
+    assert report["pass"] is True
+    assert report["needs_revision"] is False
+    assert report["categories"]["prose"]["count"] == 1
+
+
+def test_simplified_review_revises_ai_flavor_once():
+    report = build_simplified_review(
+        {"writing_review": {"pass": False, "issues": ["AI味偏重：报告腔明显。"]}}
+    )
+
+    assert report["needs_revision"] is True
+    assert report["categories"]["ai_flavor"]["count"] == 1
 
 
 def test_simplified_review_deduplicates_and_limits_main_issues():

@@ -4,7 +4,7 @@ from packages.story_core.writing_learning import learning_snapshot, lessons_from
 from packages.story_core.writing_packet import build_codex_writing_packet
 
 
-def test_lessons_from_quality_report_extracts_agent_feedback():
+def test_lessons_from_quality_report_ignores_unaccepted_feedback():
     quality = {
         "writing_review": {
             "editor_agent_review": {
@@ -22,8 +22,30 @@ def test_lessons_from_quality_report_extracts_agent_feedback():
 
     lessons = lessons_from_quality_report(quality)
 
-    assert any("读者 Agent" in lesson and "章末没有明确下一步" in lesson for lesson in lessons)
-    assert any("编辑 Agent" in lesson and "合并相邻短段" in lesson for lesson in lessons)
+    assert lessons == []
+
+
+def test_lessons_from_quality_report_records_only_accepted_revision_actions():
+    quality = {
+        "revision_safety": {"accepted": True, "selected": "candidate"},
+        "accepted_revision_actions": ["把对话改成角色会说的完整口语。", "删除抽象总结。"],
+    }
+
+    lessons = lessons_from_quality_report(quality)
+
+    assert lessons == [
+        "已验证改法：把对话改成角色会说的完整口语。",
+        "已验证改法：删除抽象总结。",
+    ]
+
+
+def test_lessons_from_quality_report_rejects_actions_when_candidate_was_not_accepted():
+    quality = {
+        "revision_safety": {"accepted": False, "selected": "original"},
+        "accepted_revision_actions": ["删除抽象总结。"],
+    }
+
+    assert lessons_from_quality_report(quality) == []
 
 
 def test_merge_writing_lessons_keeps_recent_unique_items():

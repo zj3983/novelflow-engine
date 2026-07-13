@@ -54,6 +54,16 @@ def test_sanitizer_does_not_author_missing_story_content():
     assert "低声说" not in cleaned
 
 
+def test_sanitizer_preserves_completed_reward_and_payment_events():
+    body = "任务完成。系统提示：获得：30铜。随后修理装备，扣除：30铜。"
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+
+    assert cleaned == body
+    assert "奖励栏还没亮" not in cleaned
+    assert "没有扣费" not in cleaned
+
+
 def test_first_chapter_sanitizer_leaves_missing_emotion_for_review():
     body = "\n\n".join(
         [

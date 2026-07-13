@@ -278,3 +278,85 @@ def test_memory_extraction_uses_selected_revision_body(monkeypatch):
     assert [item[0] for item in calls] == ["director", "writer", "writer", "memory"]
     assert bundle.body == revised_body
     assert bundle.chapter_summary["facts"] == ["断香炉已搬回偏殿"]
+
+
+def test_dialogue_issue_triggers_one_revision_and_learns_only_after_acceptance(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator_module, "_style_adapt_enabled", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
+    initial_body = "林照问：“账房？”周执事说：“明早。”"
+    revised_body = "林照把断香炉搬回偏殿。周执事让他明早去账房回话。"
+
+    def review(_chapter, body, *_args, **_kwargs):
+        if body == initial_body:
+            return {"pass": False, "issues": ["对话不够自然，人物只说短句。"]}
+        return {"pass": True, "issues": []}
+
+    monkeypatch.setattr(orchestrator_module, "_review_chapter_body", review)
+    story = StoryState(
+        story_id="s-dialogue-revision",
+        outline="林照看守断香炉。",
+        genre="xuanhuan",
+        style="白描",
+        characters=[CharacterState(name="林照", role="主角")],
+    )
+    orchestrator = StoryOrchestrator()
+    calls = []
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        calls.append((agent, stage))
+        if agent == "director":
+            return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
+        if agent == "writer" and "审稿改稿" not in stage:
+            return initial_body, ""
+        if agent == "writer":
+            return revised_body, ""
+        if agent == "memory":
+            return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+    bundle = orchestrator.generate_next_chapter(story)
+
+    assert [agent for agent, _stage in calls] == ["director", "writer", "writer", "memory"]
+    assert bundle.body == revised_body
+    assert bundle.quality_report["revision_safety"]["accepted"] is True
+    assert any("已验证改法" in lesson and "对话" in lesson for lesson in bundle.updated_story.writing_lessons)
+
+
+def test_ordinary_prose_advice_does_not_trigger_revision_or_learning(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator_module, "_style_adapt_enabled", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
+    body = "林照把断香炉搬回偏殿。周执事让他明早去账房回话。"
+    monkeypatch.setattr(
+        orchestrator_module,
+        "_review_chapter_body",
+        lambda *_args, **_kwargs: {"pass": False, "issues": ["章末动作还可以更具体。"]},
+    )
+    story = StoryState(
+        story_id="s-prose-advice",
+        outline="林照看守断香炉。",
+        genre="xuanhuan",
+        style="白描",
+        characters=[CharacterState(name="林照", role="主角")],
+    )
+    orchestrator = StoryOrchestrator()
+    calls = []
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        calls.append((agent, stage))
+        if agent == "director":
+            return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
+        if agent == "writer":
+            return body, ""
+        if agent == "memory":
+            return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+    bundle = orchestrator.generate_next_chapter(story)
+
+    assert [agent for agent, _stage in calls] == ["director", "writer", "memory"]
+    assert "revision_safety" not in bundle.quality_report
+    assert bundle.updated_story.writing_lessons == []
