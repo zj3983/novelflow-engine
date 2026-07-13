@@ -4949,8 +4949,8 @@ class StoryOrchestrator:
             updated_story,
             body,
             chapter_number,
-            conflict_summary=effective_conflict_summary if memory_is_verified else {},
-            event_beat=event_beat if memory_is_verified else {},
+            conflict_summary={},
+            event_beat={},
             post_draft_memory=post_draft_memory,
         )
         _apply_ledger_updates(updated_story, post_draft_memory.get("ledger_updates", {}))
@@ -4965,7 +4965,7 @@ class StoryOrchestrator:
             f"{latest_summary.next_focus if memory_is_verified else ''}"
         )
         latest_summary.chapter_title = _repair_generic_chapter_title(
-            latest_summary.chapter_title or (decision.chapter_title if memory_is_verified else ""),
+            latest_summary.chapter_title,
             chapter_number=chapter_number,
             next_focus=title_next_focus,
             conflict_summary=title_conflict,

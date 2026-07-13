@@ -174,6 +174,52 @@ def test_orchestrator_memory_failure_uses_body_fallback_without_planned_state(mo
     assert "计划中的错误摘要" not in bundle.updated_story.model_dump_json()
 
 
+def test_grounded_memory_without_title_does_not_use_director_conflict_for_title(monkeypatch):
+    _disable_optional_writing_passes(monkeypatch)
+    plan = _post_draft_plan()
+    plan["character_moves"] = [
+        {"name": "夜烬", "goal": "回村补给并购买药水", "emotion": "平静", "action": "回村", "priority": 1}
+    ]
+    plan["chapter_intent"]["chapter_title"] = "导演计划标题"
+    plan["chapter_intent"]["next_focus"] = "回村补给并购买药水"
+    plan["event_plan"]["next_focus"] = "回村补给并购买药水"
+    body = "夜烬打倒灰狼。"
+    memory = {
+        "summary": body,
+        "facts": [{"text": "夜烬打倒灰狼", "evidence": "夜烬打倒灰狼"}],
+        "unresolved_threads": [],
+        "next_focus": "",
+        "chapter_title": "",
+        "character_updates": [],
+        "ledger_updates": {},
+        "ledger_evidence": {},
+    }
+    story = StoryState(
+        story_id="s-title-from-body-only",
+        outline="夜烬在新手村打灰狼。",
+        genre="game_webnovel",
+        style="白描",
+        characters=[CharacterState(name="夜烬", role="主角")],
+    )
+    orchestrator = StoryOrchestrator()
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        if agent == "director":
+            return json.dumps(plan, ensure_ascii=False), ""
+        if agent == "writer":
+            return body, ""
+        if agent == "memory":
+            return json.dumps(memory, ensure_ascii=False), ""
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+    bundle = orchestrator.generate_next_chapter(story)
+
+    assert bundle.quality_report["memory_sync"]["status"] == "ok"
+    assert bundle.chapter_title != "导演计划标题"
+    assert bundle.chapter_title != "回村补给"
+
+
 def test_refresh_revised_bundle_reextracts_memory_from_revised_body(monkeypatch):
     _disable_optional_writing_passes(monkeypatch)
     base_story = StoryState(
