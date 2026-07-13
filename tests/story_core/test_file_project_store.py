@@ -416,7 +416,7 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
     assert latest_commit["operation"] == "generate"
 
 
-def test_file_project_store_persists_writing_lessons_from_reviews(tmp_path):
+def test_file_project_store_does_not_persist_unaccepted_review_lessons(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(root)
 
@@ -430,8 +430,8 @@ def test_file_project_store_persists_writing_lessons_from_reviews(tmp_path):
 
     state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
     project = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
-    assert state["writing_lessons"]
-    assert project["world_blueprint"]["writing_learning"]["lessons"] == state["writing_lessons"][-8:]
+    assert state["writing_lessons"] == []
+    assert project["world_blueprint"]["writing_learning"]["lessons"] == []
 
 
 def test_file_project_writing_packet_requires_fast_visible_progression(tmp_path):

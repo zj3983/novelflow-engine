@@ -1138,8 +1138,8 @@ def test_rollback_restores_previous_story_state():
     assert len(story["history"]) == 1
     assert story["history"][0]["chapter_number"] == 1
     relation = story["characters"][0]["relationships"]["Su Wan"]
-    assert relation["trust"] == 0.3
-    assert relation["tension"] == 1.0
+    assert relation["trust"] == 0.4
+    assert relation["tension"] == 0.9
 
 
 def test_story_can_branch_from_a_previous_chapter():
@@ -1545,10 +1545,12 @@ def test_project_agent_revise_updates_latest_chapter(monkeypatch):
     revised_body = "REVISED CHAPTER BODY. " + ("market detail and character pressure. " * 130)
 
     def fake_revision_chat(self, story, prompt: str, *, max_tokens: int, json_mode: bool, agent: str = "director"):
-        assert agent == "writer"
-        assert "strengthen market detail" in prompt
-        assert original in prompt
-        return revised_body, ""
+        if agent == "writer":
+            assert "strengthen market detail" in prompt
+            assert original in prompt
+            return revised_body, ""
+        assert agent == "memory"
+        return "", "memory unavailable"
 
     monkeypatch.setattr("packages.story_core.orchestrator.StoryOrchestrator._chat", fake_revision_chat)
 

@@ -117,10 +117,11 @@ def test_validate_bundle_preserves_multi_agent_summary_fields():
 
     assert report["ok"] is True
     assert bundle.chapter_summary["cadence"] in {"urgent", "measured", "breathing"}
-    assert bundle.chapter_summary["next_focus"]
-    assert bundle.chapter_summary["primary_conflict"]
-    assert bundle.chapter_summary["secondary_conflict"]
-    assert bundle.chapter_summary["event_beat"]
+    assert bundle.chapter_summary["summary"]
+    assert bundle.chapter_summary["next_focus"] == ""
+    assert bundle.chapter_summary["primary_conflict"] == {}
+    assert bundle.chapter_summary["secondary_conflict"] == {}
+    assert bundle.chapter_summary["event_beat"] == {}
     assert bundle.updated_story.characters[0].lifecycle_state in {
         "proposed",
         "active",

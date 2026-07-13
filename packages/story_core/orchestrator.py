@@ -4389,6 +4389,22 @@ class StoryOrchestrator:
             body=body,
             existing_character_names={character.name for character in story.characters},
         )
+        has_grounded_memory = any(
+            memory.get(key)
+            for key in (
+                "summary",
+                "facts",
+                "unresolved_threads",
+                "character_updates",
+                "ledger_updates",
+            )
+        )
+        if not has_grounded_memory:
+            return fallback_post_draft_memory(body), {
+                "status": "fallback",
+                "rejected_count": len(memory.get("rejected_updates", [])),
+                "reason": "memory_has_no_grounded_updates",
+            }
         return memory, {
             "status": "ok",
             "rejected_count": len(memory.get("rejected_updates", [])),
@@ -4414,8 +4430,8 @@ class StoryOrchestrator:
             fact_locks={"previous_chapter_summary": refreshed_bundle.chapter_summary},
         )
         memory_is_verified = memory_sync.get("status") == "ok"
-        persisted_conflict = conflict_summary if memory_is_verified else {}
-        persisted_event_beat = event_beat if memory_is_verified else {}
+        persisted_conflict: dict[str, Any] = {}
+        persisted_event_beat: dict[str, Any] = {}
 
         updated_story = working_story.model_copy(deep=True)
         apply_post_chapter_updates(
@@ -4822,6 +4838,7 @@ class StoryOrchestrator:
                     original_quality=pre_revision_quality,
                     candidate_body=candidate_body,
                     candidate_quality=candidate_quality,
+                    min_delta=0.01,
                 )
                 body = str(safety["body"])
                 selected_quality = safety["quality"] if isinstance(safety.get("quality"), dict) else pre_revision_quality
@@ -4829,11 +4846,18 @@ class StoryOrchestrator:
                 writing_review = selected_review
                 revision_safety_report = safety["report"]
                 if safety.get("accepted"):
+                    candidate_gate = build_simplified_review({"writing_review": candidate_review})
+                    unresolved_categories = {
+                        category
+                        for category in ("hard", "dialogue", "ai_flavor")
+                        if int(candidate_gate.get("categories", {}).get(category, {}).get("count") or 0) > 0
+                    }
                     accepted_revision_actions = [
                         str(item.get("suggestion") or "").strip()
                         for item in review_gate.get("issues", [])
                         if isinstance(item, dict)
                         and item.get("category") in {"hard", "dialogue", "ai_flavor"}
+                        and item.get("category") not in unresolved_categories
                         and str(item.get("suggestion") or "").strip()
                     ]
 
@@ -4935,7 +4959,7 @@ class StoryOrchestrator:
         maybe_update_arc_recap(updated_story, chapter_number)
 
         latest_summary = updated_story.chapter_summaries[-1]
-        title_conflict = effective_conflict_summary if memory_is_verified else {}
+        title_conflict: dict[str, Any] = {}
         title_next_focus = (
             f"{updated_story.outline} {body} "
             f"{latest_summary.next_focus if memory_is_verified else ''}"
@@ -4947,9 +4971,9 @@ class StoryOrchestrator:
             conflict_summary=title_conflict,
             genre=updated_story.genre,
         )
-        latest_summary.primary_conflict = decision.primary_conflict if memory_is_verified else {}
-        latest_summary.secondary_conflict = decision.secondary_conflict if memory_is_verified else {}
-        latest_summary.event_beat = event_beat if memory_is_verified else {}
+        latest_summary.primary_conflict = {}
+        latest_summary.secondary_conflict = {}
+        latest_summary.event_beat = {}
         latest_summary.cadence = cadence  # type: ignore[assignment]
 
         _record_success(updated_story)
@@ -4990,7 +5014,7 @@ class StoryOrchestrator:
             next_outline=plan_next_outline(
                 updated_story,
                 chapter_number,
-                conflict_summary=effective_conflict_summary,
+                conflict_summary={},
                 cadence=cadence,
             ),
             updated_story=updated_story,

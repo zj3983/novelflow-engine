@@ -222,8 +222,8 @@ def test_orchestrator_prompts_use_chapter_seed_contract():
     assert "生成前世界推演契约" not in plan_prompt
     assert "writing_contract" not in plan_prompt
     assert "本章可用材料" in body_prompt
-    assert "情绪走向" in body_prompt
-    assert "行动顺序" in body_prompt
+    assert "人物情绪" in body_prompt
+    assert "整章四拍" in body_prompt
     assert "chapter-seed/v1" not in body_prompt
     assert "生成前世界推演契约" not in body_prompt
     assert "emotional_arc" not in body_prompt

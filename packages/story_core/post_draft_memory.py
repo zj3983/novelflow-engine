@@ -423,9 +423,14 @@ def normalize_post_draft_memory(
 
     body_text = body if isinstance(body, str) else ""
     rejected = result["rejected_updates"]
-    result["summary"] = _text(payload.get("summary"))
-    result["next_focus"] = _text(payload.get("next_focus"))
-    result["chapter_title"] = _text(payload.get("chapter_title"))
+    for field in ("summary", "next_focus", "chapter_title"):
+        value = _text(payload.get(field))
+        if not value:
+            continue
+        if _evidence_matches(body_text, value):
+            result[field] = value
+        else:
+            rejected.append({"kind": field, "reason": "value_not_in_body"})
     result["facts"] = _normalize_evidenced_items(
         payload.get("facts"),
         body=body_text,

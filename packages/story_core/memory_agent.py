@@ -136,7 +136,6 @@ class MemoryAgent:
         cadence: str,
     ) -> StoryState:
         memory = None
-        memory_is_verified = False
         if story.agent_settings.mode == "LLM-assisted":
             analysis = self.llm_provider.summarize(
                 story,
@@ -153,7 +152,6 @@ class MemoryAgent:
                     body=body,
                     existing_character_names={character.name for character in story.characters},
                 )
-                memory_is_verified = True
                 record_agent_runtime(
                     story,
                     "MemoryAgent",
@@ -182,12 +180,10 @@ class MemoryAgent:
             story,
             body,
             chapter_number,
-            conflict_summary=conflict_summary if memory_is_verified else {},
-            event_beat=event_beat if memory_is_verified else {},
+            conflict_summary={},
+            event_beat={},
             post_draft_memory=memory,
         )
         story.chapter_summaries[-1].cadence = cadence
-        if memory_is_verified and decision.chapter_title and not memory.get("chapter_title"):
-            story.chapter_summaries[-1].chapter_title = decision.chapter_title
 
         return story

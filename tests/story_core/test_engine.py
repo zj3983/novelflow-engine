@@ -26,11 +26,11 @@ def test_generate_chapter_updates_state_and_returns_bundle():
     assert bundle.body
     assert bundle.next_outline
     assert bundle.updated_story.current_chapter == 1
-    assert bundle.updated_story.characters[0].memory
+    assert bundle.updated_story.characters[0].memory == []
     assert bundle.updated_story.timeline
     assert bundle.updated_story.chapter_summaries
-    assert bundle.updated_story.foreshadowing
-    assert bundle.updated_story.chapter_summaries[0].facts
+    assert bundle.updated_story.foreshadowing == []
+    assert bundle.updated_story.chapter_summaries[0].summary
 
 
 def test_generate_chapter_reports_visible_progress_stages():
@@ -141,7 +141,7 @@ def test_generate_chapter_does_not_mutate_frozen_character_state():
     assert frozen_character.location == "sealed vault"
 
 
-def test_generate_chapter_evolves_lead_relationships():
+def test_generate_chapter_does_not_apply_planned_relationship_changes():
     story = StoryState(
         story_id="s-011",
         outline="Two investigators circle the same ledger from opposite ends of the court.",
@@ -173,13 +173,13 @@ def test_generate_chapter_evolves_lead_relationships():
     bundle = StoryEngine().generate_next_chapter(story)
     relationship = bundle.updated_story.characters[0].relationships["Su Wan"]
 
-    assert relationship.trust == 0.3
-    assert relationship.tension == 1.0
+    assert relationship.trust == 0.4
+    assert relationship.tension == 0.9
     # Body includes conflict participant names (may be transliterated)
     assert "Lin Yue" in bundle.body or "Lin" in bundle.body
 
 
-def test_generate_chapter_can_reduce_tension_for_protective_goal():
+def test_generate_chapter_does_not_infer_relationship_change_from_goal():
     story = StoryState(
         story_id="s-012",
         outline="A clerk protects an ally while hiding the ledger.",
@@ -206,8 +206,8 @@ def test_generate_chapter_can_reduce_tension_for_protective_goal():
     bundle = StoryEngine().generate_next_chapter(story)
     relationship = bundle.updated_story.characters[0].relationships["Su Wan"]
 
-    assert relationship.trust == 0.5
-    assert relationship.tension == 0.5
+    assert relationship.trust == 0.4
+    assert relationship.tension == 0.6
     assert "Pei An" in bundle.body or "Pei" in bundle.body
 
 
@@ -307,7 +307,7 @@ def test_generate_chapter_body_reflects_selected_conflict():
     assert "见证" in bundle.body or "witness" in bundle.body or "证" in bundle.body
 
 
-def test_next_outline_reflects_primary_and_secondary_conflicts():
+def test_next_outline_does_not_copy_planned_secondary_conflict():
     story = StoryState(
         story_id="s-016",
         outline="A censor and a magistrate race to control a witness.",
@@ -333,9 +333,7 @@ def test_next_outline_reflects_primary_and_secondary_conflicts():
     bundle = StoryEngine().generate_next_chapter(story)
 
     assert "Lin Yue" in bundle.next_outline
-    assert "Su Wan" in bundle.next_outline
-    # Secondary conflict pressure (time) is mentioned
-    assert "Lin Yue" in bundle.next_outline and "Su Wan" in bundle.next_outline
+    assert bundle.next_outline
 
 
 def test_director_selects_primary_conflict_by_goal_collision():
@@ -415,7 +413,7 @@ def test_director_selects_secondary_conflict_and_event_beat():
     assert bundle.body
 
 
-def test_post_chapter_updates_touch_multiple_conflict_participants():
+def test_post_chapter_updates_do_not_touch_characters_without_body_evidence():
     story = StoryState(
         story_id="s-019",
         outline="Three factions collide over a witness and a ledger.",
@@ -447,15 +445,15 @@ def test_post_chapter_updates_touch_multiple_conflict_participants():
     bundle = StoryEngine().generate_next_chapter(story)
 
     by_name = {character.name: character for character in bundle.updated_story.characters}
-    assert by_name["Lin Yue"].memory
-    assert by_name["Su Wan"].memory
-    assert by_name["Pei An"].memory
-    assert by_name["Lin Yue"].current_emotion == "alert"
-    assert by_name["Su Wan"].current_emotion == "alert"
-    assert by_name["Pei An"].current_emotion == "wary"
+    assert by_name["Lin Yue"].memory == []
+    assert by_name["Su Wan"].memory == []
+    assert by_name["Pei An"].memory == []
+    assert by_name["Lin Yue"].current_emotion == "grim"
+    assert by_name["Su Wan"].current_emotion == "defiant"
+    assert by_name["Pei An"].current_emotion == "guarded"
 
 
-def test_post_chapter_updates_write_role_specific_memories():
+def test_post_chapter_updates_do_not_invent_role_specific_memories():
     story = StoryState(
         story_id="s-020",
         outline="A witness cracks while three players fight over the truth.",
@@ -487,16 +485,12 @@ def test_post_chapter_updates_write_role_specific_memories():
     bundle = StoryEngine().generate_next_chapter(story)
     by_name = {character.name: character for character in bundle.updated_story.characters}
 
-    # Memory is now in Chinese format; check key content exists
-    assert by_name["Lin Yue"].memory[-1]
-    assert by_name["Su Wan"].memory[-1]
-    assert by_name["Pei An"].memory[-1]
-    assert "Lin Yue" in by_name["Lin Yue"].memory[-1] or "主角" in by_name["Lin Yue"].memory[-1]
-    assert "Su Wan" in by_name["Su Wan"].memory[-1]
-    assert "ledger" in by_name["Pei An"].memory[-1] or "账" in by_name["Pei An"].memory[-1] or "Pei An" in by_name["Pei An"].memory[-1]
+    assert by_name["Lin Yue"].memory == []
+    assert by_name["Su Wan"].memory == []
+    assert by_name["Pei An"].memory == []
 
 
-def test_post_chapter_updates_seed_role_specific_follow_up_goals():
+def test_post_chapter_updates_keep_existing_goals_without_body_evidence():
     story = StoryState(
         story_id="s-021",
         outline="A witness cracks while three players fight over the truth.",
@@ -528,14 +522,9 @@ def test_post_chapter_updates_seed_role_specific_follow_up_goals():
     bundle = StoryEngine().generate_next_chapter(story)
     by_name = {character.name: character for character in bundle.updated_story.characters}
 
-    # Goals are now in Chinese format; check they were updated
-    assert by_name["Lin Yue"].goals[0]
-    assert by_name["Su Wan"].goals[0]
-    assert by_name["Pei An"].goals[0]
-    # Goals should reference the primary conflict
-    assert "Lin Yue" in by_name["Lin Yue"].goals[0] or "Su Wan" in by_name["Lin Yue"].goals[0]
-    assert "Su Wan" in by_name["Su Wan"].goals[0] or "Lin Yue" in by_name["Su Wan"].goals[0]
-    assert "ledger" in by_name["Pei An"].goals[0] or "账" in by_name["Pei An"].goals[0] or "Pei An" in by_name["Pei An"].goals[0]
+    assert by_name["Lin Yue"].goals == ["find the witness"]
+    assert by_name["Su Wan"].goals == ["protect the witness"]
+    assert by_name["Pei An"].goals == ["hide the ledger"]
 
 
 def test_action_briefs_prioritize_urgent_follow_up_intents_over_character_order():
@@ -574,7 +563,7 @@ def test_action_briefs_prioritize_urgent_follow_up_intents_over_character_order(
     assert briefs[0]["priority"] > briefs[-1]["priority"]
 
 
-def test_chapter_summary_captures_conflict_and_event_structure():
+def test_chapter_summary_does_not_persist_planned_conflict_or_event_structure():
     story = StoryState(
         story_id="s-023",
         outline="A witness and a ledger pull different players into the same night.",
@@ -606,17 +595,14 @@ def test_chapter_summary_captures_conflict_and_event_structure():
     bundle = StoryEngine().generate_next_chapter(story)
     summary = bundle.chapter_summary
 
-    assert summary["primary_conflict"]["lead"] == "Lin Yue"
-    assert summary["primary_conflict"]["opposition"] == "Su Wan"
-    assert "Pei An" in [item["name"] for item in summary["secondary_conflict"]["participants"]]
-    assert summary["event_beat"]["turn"] == "pressure spike"
-    # event_beat pivot now in Chinese
-    assert summary["event_beat"]["pivot"]
-    assert summary["next_focus"]
-    assert "Lin Yue" in summary["next_focus"] or "Su Wan" in summary["next_focus"]
+    assert summary["primary_conflict"] == {}
+    assert summary["secondary_conflict"] == {}
+    assert summary["event_beat"] == {}
+    assert summary["next_focus"] == ""
+    assert summary["summary"]
 
 
-def test_chapter_summary_next_focus_points_to_primary_conflict_follow_up():
+def test_chapter_summary_does_not_copy_planned_next_focus():
     story = StoryState(
         story_id="s-026",
         outline="A witness and a ledger pull different players into the same night.",
@@ -648,9 +634,7 @@ def test_chapter_summary_next_focus_points_to_primary_conflict_follow_up():
     bundle = StoryEngine().generate_next_chapter(story)
     summary = bundle.chapter_summary
 
-    assert summary["next_focus"]
-    assert "Lin Yue" in summary["next_focus"]
-    assert "Su Wan" in summary["next_focus"]
+    assert summary["next_focus"] == ""
 
 
 def test_next_chapter_body_echoes_previous_summary_next_focus():
@@ -774,7 +758,7 @@ def test_next_chapter_body_uses_next_focus_as_opening_hook():
     assert "Su Wan" in bundle.body or "Su" in bundle.body
 
 
-def test_next_outline_uses_previous_summary_next_focus():
+def test_next_outline_does_not_copy_previous_focus_after_memory_fallback():
     story = StoryState(
         story_id="s-029",
         outline="A prior chapter should shape the next planning pass.",
@@ -831,7 +815,7 @@ def test_next_outline_uses_previous_summary_next_focus():
     bundle = StoryEngine().generate_next_chapter(story)
 
     assert "Lin Yue" in bundle.next_outline
-    assert "Su Wan" in bundle.next_outline
+    assert "Return to Lin Yue and Su Wan" not in bundle.next_outline
 
 
 def test_chapter_bundle_includes_generated_chapter_title():
@@ -1198,7 +1182,7 @@ def test_story_engine_compatibility_path_generates_complete_bundle_with_lifecycl
     assert bundle.cadence in {"urgent", "measured", "breathing"}
     assert bundle.next_outline
     assert "writing_review" in bundle.quality_report
-    assert bundle.chapter_summary["next_focus"]
+    assert bundle.chapter_summary["next_focus"] == ""
     assert bundle.updated_story.chapter_summaries[-1].cadence
     assert bundle.updated_story.characters[0].lifecycle_state in {
         "proposed",

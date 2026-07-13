@@ -126,6 +126,9 @@ def test_orchestrator_persists_only_memory_extracted_after_final_body(monkeypatc
     assert "spirit_stones" not in bundle.updated_story.progression_ledger["protagonist"]
     assert bundle.updated_story.characters[0].location == "偏殿"
     assert bundle.updated_story.characters[0].current_emotion == "平静"
+    assert bundle.chapter_summary["primary_conflict"] == {}
+    assert bundle.chapter_summary["secondary_conflict"] == {}
+    assert bundle.chapter_summary["event_beat"] == {}
     assert "计划中的错误摘要" not in bundle.updated_story.model_dump_json()
     assert "九十九枚灵石" not in bundle.updated_story.model_dump_json()
     assert bundle.simulation_plan["memory_sync"]["status"] == "ok"
@@ -359,4 +362,42 @@ def test_ordinary_prose_advice_does_not_trigger_revision_or_learning(monkeypatch
 
     assert [agent for agent, _stage in calls] == ["director", "writer", "memory"]
     assert "revision_safety" not in bundle.quality_report
+    assert bundle.updated_story.writing_lessons == []
+
+
+def test_unresolved_dialogue_revision_is_rejected_and_not_learned(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator_module, "_style_adapt_enabled", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
+    body = "林照问：“账房？”周执事说：“明早。”"
+    monkeypatch.setattr(
+        orchestrator_module,
+        "_review_chapter_body",
+        lambda *_args, **_kwargs: {"pass": False, "issues": ["对话不够自然，人物只说短句。"]},
+    )
+    story = StoryState(
+        story_id="s-unresolved-dialogue",
+        outline="林照看守断香炉。",
+        genre="xuanhuan",
+        style="白描",
+        characters=[CharacterState(name="林照", role="主角")],
+    )
+    orchestrator = StoryOrchestrator()
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        if agent == "director":
+            return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
+        if agent == "writer":
+            return body, ""
+        if agent == "memory":
+            return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+    bundle = orchestrator.generate_next_chapter(story)
+
+    assert bundle.body == body
+    assert bundle.quality_report["revision_safety"]["accepted"] is False
+    assert bundle.quality_report["revision_safety"]["selected"] == "original"
+    assert "accepted_revision_actions" not in bundle.quality_report
     assert bundle.updated_story.writing_lessons == []

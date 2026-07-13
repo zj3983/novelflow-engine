@@ -142,12 +142,12 @@ def test_memory_agent_uses_injected_llm_provider_when_assisted_mode_is_enabled()
         cadence=decision.cadence,
     )
 
-    assert updated.chapter_summaries[-1].summary == "Lin Yue secures the witness and is asked to return at dawn."
+    assert updated.chapter_summaries[-1].summary == "Lin Yue secures the witness in the west hall. Su Wan asks Lin Yue to return at dawn."
     assert updated.chapter_summaries[-1].facts == ["The witness is secure in the west hall"]
     assert updated.chapter_summaries[-1].unresolved_threads == ["Why must Lin Yue return at dawn"]
     assert updated.chapter_summaries[-1].next_focus == "return at dawn"
-    assert updated.chapter_summaries[-1].chapter_title == "Chapter 2: LLM Memory Dossier"
-    assert updated.chapter_summaries[-1].event_beat == decision.event_beat
+    assert updated.chapter_summaries[-1].chapter_title != "Chapter 2: LLM Memory Dossier"
+    assert updated.chapter_summaries[-1].event_beat == {}
     assert updated.timeline[-1].summary == updated.chapter_summaries[-1].summary
     assert updated.timeline[-1].impact == "The witness is secure in the west hall"
     assert not updated.foreshadowing

@@ -43,6 +43,9 @@ def test_post_draft_memory_keeps_only_body_grounded_updates():
         existing_character_names={"林照", "周执事"},
     )
 
+    assert result["summary"] == ""
+    assert result["next_focus"] == "明早去账房"
+    assert result["chapter_title"] == "断香炉"
     assert result["facts"] == ["断香炉已搬到偏殿"]
     assert result["unresolved_threads"] == ["账房为何找林照"]
     assert [item["name"] for item in result["character_updates"]] == ["林照"]

@@ -137,7 +137,7 @@ def test_body_prompt_uses_writer_facing_material_not_backend_contract_keys():
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})
 
     assert "本章可用材料" in prompt
-    assert "这章可以兑现的小进展" in prompt
+    assert "看得见的小进展" in prompt
     assert "生成前世界推演契约" not in prompt
     assert "writing_contract" not in prompt
     assert "allowed_progress" not in prompt
