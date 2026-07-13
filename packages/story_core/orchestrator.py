@@ -1364,8 +1364,13 @@ def _writer_seed_summary(seed: Any) -> dict[str, Any]:
         return {}
     writing_contract = compacted.get("writing_contract") if isinstance(compacted.get("writing_contract"), dict) else {}
     chapter_contract = compacted.get("chapter_contract") if isinstance(compacted.get("chapter_contract"), dict) else {}
+    continuity = compacted.get("continuity") if isinstance(compacted.get("continuity"), dict) else {}
     return {
         "章节": compacted.get("chapter_number"),
+        "上一章": compact_text(str(continuity.get("latest_summary") or ""), 160),
+        "必须承接": compact_list(continuity.get("must_keep_facts", []), max_items=4, item_chars=90),
+        "未解线索": compact_list(continuity.get("unresolved_threads", []), max_items=4, item_chars=90),
+        "下一步": compact_text(str(continuity.get("next_focus") or ""), 100),
         "当前状态": compact_list(
             [
                 str(chapter_contract.get("current_level") or "").strip(),
@@ -1385,6 +1390,36 @@ def _writer_seed_summary(seed: Any) -> dict[str, Any]:
         "正文要露出": compact_list(compacted.get("must_show", []), max_items=3, item_chars=70),
         "正文别写": compact_list(compacted.get("must_not_write", []), max_items=3, item_chars=70),
     }
+
+
+def _director_characters(story: StoryState, *, limit: int = 4) -> list[Any]:
+    latest = story.chapter_summaries[-1] if story.chapter_summaries else None
+    relevance_text = " ".join(
+        [
+            story.outline,
+            latest.summary if latest else "",
+            " ".join(latest.unresolved_threads) if latest else "",
+            latest.next_focus if latest else "",
+        ]
+    )
+    ranked: list[tuple[int, int, Any]] = []
+    for index, character in enumerate(story.characters):
+        if character.lifecycle_state != "active" or character.frozen:
+            continue
+        score = 0
+        if character.role in {"protagonist", "主角"}:
+            score += 100
+        if character.chapter_role:
+            score += 25
+        if character.name and character.name in relevance_text:
+            score += 40
+        if character.game_id and character.game_id in relevance_text:
+            score += 35
+        if any(token in character.role for token in ("本章", "相关", "核心")):
+            score += 15
+        ranked.append((score, -index, character))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in ranked[:limit]]
 
 
 def _story_snapshot(story: StoryState) -> dict:
@@ -1460,8 +1495,7 @@ def _story_snapshot(story: StoryState) -> dict:
                     for relation in list(c.relationships.values())[:4]
                 ],
             }
-            for c in story.characters[:2]
-            if c.lifecycle_state == "active" and not c.frozen
+            for c in _director_characters(story)
         ],
     }
 
@@ -1498,6 +1532,12 @@ def _director_snapshot_summary(snapshot: dict) -> dict:
                 "name": item.get("name"),
                 "role": item.get("role"),
                 "goals": compact_list(item.get("goals", []), max_items=2, item_chars=60),
+                "emotion": compact_text(str(item.get("emotion") or ""), 40),
+                "location": compact_text(str(item.get("location") or ""), 60),
+                "memory": compact_list(item.get("memory", []), max_items=2, item_chars=70),
+                "relationships": item.get("relationships", [])[:3]
+                if isinstance(item.get("relationships"), list)
+                else [],
             }
             for item in characters[:4]
             if isinstance(item, dict)
@@ -4084,6 +4124,7 @@ class StoryOrchestrator:
                     f"目标章节：第{chapter_number}章",
                     f"章节阶段：{_opening_phase_name(chapter_number, is_game=False)}",
                     f"项目快照：{_plain_prompt_json(snapshot)}",
+                    f"本章连续性材料：{_plain_prompt_json(chapter_seed)}",
                     "输出字段：character_moves, chapter_intent, event_plan, memory_constraints, chapter_summary。",
                     "event_plan 必须包含 chapter_title, turn, pivot, collision, ordered_actions, exposition_beats, npc_beats, quest_beats, location_beats, world_reactions, stakes, next_focus, explicit_chapter_end_hook, chapter_end_hook。",
                     "chapter_end_hook 使用结构：{type, strength, content}；type 只能是危机钩、悬念钩、渴望钩、反转钩、余韵钩；strength 只能是 strong、medium、weak。",

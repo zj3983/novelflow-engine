@@ -1,4 +1,5 @@
 from packages.story_core.models import (
+    ChapterSummary,
     CharacterPerformanceProfile,
     CharacterState,
     StoryState,
@@ -132,6 +133,42 @@ def test_simulation_plan_carries_longform_constraints():
     assert dumped["longform_constraints"]
     assert dumped["longform_constraints"][0].startswith("百万字框架")
     assert any("百万字长期框架" in item for item in dumped["review_focus"])
+
+
+def test_non_game_simulation_uses_previous_next_focus_instead_of_placeholder_goal():
+    story = StoryState(
+        story_id="s-sim-xuanhuan-focus",
+        outline="林照要查清断香炉为何熄灭。",
+        genre="xuanhuan",
+        style="白描",
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                summary="林照在炉底找到半枚旧印。",
+                next_focus="林照拿旧印去问周执事。",
+            )
+        ],
+    )
+
+    plan = build_chapter_simulation_plan(story, 2).model_dump()
+
+    assert plan["chapter_goal"] == "林照拿旧印去问周执事。"
+    assert plan["longform_plot_contract"]["chapter_goal"] == "林照拿旧印去问周执事。"
+
+
+def test_explicit_non_game_genre_overrides_game_words_in_outline():
+    story = StoryState(
+        story_id="s-sim-explicit-xuanhuan",
+        outline="林照追查古族留下的游戏系统图样，确认它为何会记录族人名字。",
+        genre="xuanhuan",
+        style="白描",
+    )
+
+    plan = build_chapter_simulation_plan(story, 1).model_dump()
+
+    assert plan["longform_plot_contract"]["genre_mode"] == "xuanhuan"
+    assert plan["web_game_author_craft"] == {}
+    assert "千倍爆率" not in str(plan["longform_plot_contract"])
 
 
 def test_game_opening_plan_requires_wow_hook_and_reality_bridge():

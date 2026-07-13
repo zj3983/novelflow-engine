@@ -5,6 +5,7 @@ from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
 from packages.story_core.models import StoryState
+from packages.story_core.novel_type_catalog import normalize_novel_type_id
 
 
 def _ledger_value(story: StoryState, *path: str) -> Any:
@@ -32,7 +33,50 @@ def _level_number(story: StoryState) -> int | None:
     return None
 
 
-def _arc_window(chapter_number: int) -> dict[str, str]:
+def _genre_mode(story: StoryState, game_story: bool) -> str:
+    genre_id = normalize_novel_type_id(story.genre)
+    if genre_id == "game_webnovel":
+        return "game_webnovel"
+    if genre_id in {"xuanhuan", "xianxia"}:
+        return genre_id
+    if genre_id:
+        return "unknown"
+    if game_story:
+        return "game_webnovel"
+    return "unknown"
+
+
+def _arc_window(chapter_number: int, *, genre_mode: str) -> dict[str, str]:
+    if genre_mode == "xuanhuan":
+        if chapter_number <= 3:
+            return {
+                "name": "开篇立足",
+                "purpose": "立住主角身份、力量体系的可见反馈、势力压力，以及机缘对应的代价。",
+                "upper_bound": "先兑现眼前处境和小反馈，不擅自命名境界，也不提前送出完整传承。",
+            }
+        return {
+            "name": "阶段成长",
+            "purpose": "让身份、力量、资源和势力关系随行动一起变化，机缘必须继续带来代价。",
+            "upper_bound": "只推进大纲已经允许的世界层级，不擅造境界名或跳过成长条件。",
+        }
+    if genre_mode == "xianxia":
+        if chapter_number <= 3:
+            return {
+                "name": "开篇立因",
+                "purpose": "从具体差事立住修行处境、因果牵连、宗门或社会秩序和资源代价。",
+                "upper_bound": "先给可验证的小反馈，不擅自命名境界，也不直接送出完整传承。",
+            }
+        return {
+            "name": "因果推进",
+            "purpose": "让修行选择、资源代价、关系和秩序反应互相推动。",
+            "upper_bound": "只推进大纲已明确的修行层级，不擅造境界名或跳过因果代价。",
+        }
+    if genre_mode == "unknown":
+        return {
+            "name": "当前剧情阶段",
+            "purpose": "推动目标、关系、信息、资源和风险发生可见变化。",
+            "upper_bound": "只使用大纲和既有事实，不套用未选择题材的成长体系。",
+        }
     if chapter_number <= 3:
         return {
             "name": "黄金三章",
@@ -58,7 +102,25 @@ def _arc_window(chapter_number: int) -> dict[str, str]:
     }
 
 
-def _pace_contract(chapter_number: int, level: int | None) -> dict[str, str]:
+def _pace_contract(chapter_number: int, level: int | None, *, genre_mode: str) -> dict[str, str]:
+    if genre_mode == "xuanhuan":
+        return {
+            "pace": "每章都要有具体推进",
+            "must_payoff": "身份、力量体系反馈、势力压力、机缘或代价至少有一项发生可见变化。",
+            "must_not_drag": "不能只解释设定；变化必须由人物行动和后果完成。",
+        }
+    if genre_mode == "xianxia":
+        return {
+            "pace": "每章都要推进选择与后果",
+            "must_payoff": "修行、因果、宗门或社会秩序、资源代价至少有一项发生可见变化。",
+            "must_not_drag": "不能只讲规则和背景；选择必须在本章产生结果。",
+        }
+    if genre_mode == "unknown":
+        return {
+            "pace": "每章都要改变局面",
+            "must_payoff": "目标、关系、信息、资源或风险至少有一项发生可见变化。",
+            "must_not_drag": "不能用背景说明替代人物行动和本章结果。",
+        }
     level_text = f"Lv.{level}" if level is not None else "当前等级未明"
     if chapter_number == 1:
         return {
@@ -85,7 +147,25 @@ def _pace_contract(chapter_number: int, level: int | None) -> dict[str, str]:
     }
 
 
-def _snowball_logic(chapter_number: int) -> list[str]:
+def _snowball_logic(chapter_number: int, *, genre_mode: str) -> list[str]:
+    if genre_mode == "xuanhuan":
+        return [
+            "本章得到的力量反馈、资源或人情必须在后续继续有用。",
+            "势力只能依据看得见的行动和利益作出反应，不能无故看穿秘密。",
+            "机缘带来的收益要和代价一起进入后续剧情。",
+        ]
+    if genre_mode == "xianxia":
+        return [
+            "本章的修行所得、资源消耗和人情因果必须留到后续继续发生作用。",
+            "宗门与他人只能依据可见行为、秩序和利益作出反应。",
+            "每次选择都要留下可追踪的因果或资源代价。",
+        ]
+    if genre_mode == "unknown":
+        return [
+            "本章目标的结果必须改变下一步行动。",
+            "关系、信息、资源和风险变化要在后续继续发生作用。",
+            "外部反应只能来自人物已经看见或能够查到的事实。",
+        ]
     if chapter_number == 1:
         return [
             "别人看到的是普通玩家卖材料或办服务，读者看到的是夜烬把异常掉落换成第一口喘息。",
@@ -112,6 +192,16 @@ def _snowball_logic(chapter_number: int) -> list[str]:
     ]
 
 
+def _future_use_rule(genre_mode: str) -> str:
+    if genre_mode == "unknown":
+        return "本章目标、关系、信息、资源和风险的变化都要继续推动后续，不能当章用完就丢。"
+    if genre_mode == "xuanhuan":
+        return "本章新增的力量反馈、人物、机缘、资源和代价都要继续推动后续，不能只为当章圆场。"
+    if genre_mode == "xianxia":
+        return "本章新增的修行所得、人物、因果和资源代价都要继续推动后续，不能只为当章圆场。"
+    return "本章新增道具、人物、任务和线索都要说明能怎样继续推动后续，不能只为当章圆场。"
+
+
 def build_longform_plot_contract(
     story: StoryState,
     chapter_number: int,
@@ -127,28 +217,37 @@ def build_longform_plot_contract(
     """
 
     level = _level_number(story)
-    arc = _arc_window(chapter_number)
-    pace = _pace_contract(chapter_number, level)
+    genre_mode = _genre_mode(story, game_story)
+    arc = _arc_window(chapter_number, genre_mode=genre_mode)
+    pace = _pace_contract(chapter_number, level, genre_mode=genre_mode)
     longform_facts = [
         fact
         for fact in getattr(story, "world_facts", [])
         if str(fact).startswith(("百万字", "长卷阶段", "长期成长阶段", "长期经济阶段", "现实线阶段", "真相揭露阶段", "地图解锁阶段"))
     ]
-    visible_goal = chapter_goal or (story.chapter_summaries[-1].next_focus if story.chapter_summaries else "") or "推进当前章节目标"
+    previous_next_focus = story.chapter_summaries[-1].next_focus if story.chapter_summaries else ""
+    visible_goal = chapter_goal or previous_next_focus or story.outline or "推进当前章节目标"
     contract = {
         "schema_version": "longform-plot-contract/v1",
         "mode": "longform-plot-first",
+        "genre_mode": genre_mode,
         "arc_window": arc,
         "chapter_goal": compact_text(visible_goal, 180),
         "pace_contract": pace,
-        "snowball_logic": _snowball_logic(chapter_number if game_story else 99),
+        "snowball_logic": _snowball_logic(chapter_number, genre_mode=genre_mode),
         "payoff_requirement": pace["must_payoff"],
         "anti_drag_rule": pace["must_not_drag"],
-        "future_use_rule": "本章新增道具、人物、任务和线索都要说明能怎样继续推动后续，不能只为当章圆场。",
+        "future_use_rule": _future_use_rule(genre_mode),
         "reader_reason_to_continue": "章末必须留下一个下一章立刻能执行的动作，并且这个动作来自本章已经兑现的收获或新压力。",
         "longform_references": compact_list(longform_facts, max_items=8, item_chars=180),
+        "story_priority": {
+            "outline": compact_text(story.outline, 240),
+            "previous_next_focus": compact_text(previous_next_focus, 160),
+            "chapter_goal": compact_text(visible_goal, 180),
+            "rule": "用户大纲、本章目标和上一章下一步高于章节号默认节奏。",
+        },
     }
-    if game_story:
+    if genre_mode == "game_webnovel":
         contract["webgame_satisfaction"] = [
             "爽感落在暗中领先：任务更快、资源更多、现实压力被缓解，外人只看见普通动作。",
             "数值和物品必须能进账本；可堆叠背包、货币、经验、耐久、法力和任务状态都要可追踪。",

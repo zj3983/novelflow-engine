@@ -9,8 +9,8 @@ from packages.story_core.genre_plugins import (
     plugin_simulation_blueprint,
     select_genre_plugins,
 )
-from packages.story_core.models import NovelProject, StoryState
-from packages.story_core.orchestrator import StoryOrchestrator, _genre_context_for_prompt, _review_chapter_body
+from packages.story_core.models import ChapterSummary, CharacterState, NovelProject, StoryState
+from packages.story_core.orchestrator import StoryOrchestrator, _genre_context_for_prompt, _review_chapter_body, _story_snapshot
 from packages.story_core.web_game_review import _has_game_context
 from packages.story_core import novel_type_catalog
 from packages.story_core.novel_type_catalog import (
@@ -27,18 +27,76 @@ def test_xuanhuan_prompt_uses_non_game_phase_and_subtype_method():
         genre="xuanhuan",
         style="白描、现代中文",
         world_facts=["小说类型：xuanhuan"],
+        characters=[
+            CharacterState(name="林照", role="主角"),
+            CharacterState(name="陆青禾", role="相关配角", goals=["查清断香炉的旧事"]),
+        ],
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                summary="上一章陆青禾在炉灰里发现了半枚旧印。",
+                unresolved_threads=["陆青禾仍未说明旧印来自何处。"],
+                next_focus="林照与陆青禾核对旧印。",
+            )
+        ],
     )
 
     plan_prompt = StoryOrchestrator()._plan_prompt(story, 2)
     genre_context = _genre_context_for_prompt(story, 2)
     method_text = "\n".join(genre_context["genre_method"])
 
+    assert "本章连续性材料" in plan_prompt
+    assert "上一章陆青禾在炉灰里发现了半枚旧印" in plan_prompt
+    assert "陆青禾" in plan_prompt
     assert "千倍爆率" not in plan_prompt
+    assert "铜币" not in plan_prompt
     assert "推进当前核心矛盾" in plan_prompt
     assert genre_context["genre_family"] == "xuanhuan"
     assert "自创力量" in method_text
     assert "渡劫" not in method_text
     assert "飞升" not in method_text
+
+
+def test_director_snapshot_prioritizes_chapter_relevant_characters_and_caps_detailed_cards():
+    story = StoryState(
+        story_id="s-director-relevant-characters",
+        outline="林照追查断香炉，陆青禾掌握关键旧事。",
+        genre="xuanhuan",
+        style="白描",
+        characters=[
+            CharacterState(name="闲人甲", role="旧配角"),
+            CharacterState(name="闲人乙", role="旧配角"),
+            CharacterState(name="林照", role="主角", goals=["查清断香炉"]),
+            CharacterState(
+                name="陆青禾",
+                role="相关配角",
+                goals=["隐瞒旧印来历"],
+                current_emotion="戒备",
+                memory=["见过同样的旧印"],
+            ),
+            CharacterState(name="执事周衡", role="本章施压者", chapter_role="阻止查炉"),
+        ],
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=4,
+                summary="陆青禾带林照避开闲人甲，执事周衡随后封了炉房。",
+                unresolved_threads=["陆青禾为何认得旧印"],
+                next_focus="林照找陆青禾追问，设法绕过执事周衡。",
+            )
+        ],
+    )
+
+    cards = _story_snapshot(story)["characters"]
+
+    assert len(cards) <= 4
+    assert {"林照", "陆青禾", "执事周衡"}.issubset({card["name"] for card in cards})
+    lu_card = next(card for card in cards if card["name"] == "陆青禾")
+    assert lu_card["emotion"] == "戒备"
+    assert "见过同样的旧印" in lu_card["memory"]
+
+    prompt = StoryOrchestrator()._plan_prompt(story, 5)
+    assert "戒备" in prompt
+    assert "见过同样的旧印" in prompt
 
 
 def test_novel_type_catalog_exposes_selectable_genres():

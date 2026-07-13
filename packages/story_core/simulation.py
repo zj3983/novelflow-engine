@@ -6,6 +6,7 @@ from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES
 from packages.story_core.chapter_direction import normalize_chapter_direction_choice
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.models import CharacterState, ChapterSimulationPlan, StoryState
+from packages.story_core.novel_type_catalog import normalize_novel_type_id
 from packages.story_core.plot_contract import build_longform_plot_contract
 from packages.story_core.web_game_author_craft import build_web_game_author_craft, build_web_game_director_card
 from packages.story_core.world_pulse import visibility_inbox_for_chapter
@@ -13,6 +14,9 @@ from packages.story_core.world_pulse import visibility_inbox_for_chapter
 
 def is_game_story(story: StoryState) -> bool:
     """Detect whether a story is game-themed, using the unified keyword set."""
+    explicit_genre = normalize_novel_type_id(story.genre)
+    if explicit_genre:
+        return explicit_genre == "game_webnovel"
     haystack = " ".join([story.genre, story.style, story.outline, *story.world_facts])
     return is_game_genre(haystack)
 
@@ -444,10 +448,13 @@ def build_chapter_simulation_plan(
             ]
         )
 
+    previous_next_focus = story.chapter_summaries[-1].next_focus if story.chapter_summaries else ""
     chapter_goal = (
         str(selected_direction.get("chapter_goal") or "").strip()
         or
         str(event_plan.get("turn") or event_plan.get("pivot") or memory_constraints.get("current_focus") or "").strip()
+        or str(previous_next_focus or "").strip()
+        or str(story.outline or "").strip()
         or "推进当前章节目标"
     )
     if selected_direction:
