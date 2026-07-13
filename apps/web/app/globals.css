@@ -316,6 +316,25 @@ body {
   grid-template-columns: 300px minmax(0, 1fr);
 }
 
+.ws-prompt-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.ws-prompt-main {
+  min-width: 0;
+  display: grid;
+  gap: 18px;
+}
+
+.ws-prompt-section {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
 .ws-sidepanel {
   min-width: 0;
 }
@@ -411,6 +430,119 @@ body {
 .ws-chapter-list__item--active {
   border-color: rgba(155, 63, 43, 0.36);
   background: var(--ws-accent-soft);
+}
+
+.ws-prompt-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.ws-prompt-card__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  cursor: pointer;
+}
+
+.ws-prompt-card__summary span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ws-prompt-card__summary strong {
+  color: var(--ws-ink);
+  font-size: 15px;
+}
+
+.ws-prompt-card__summary small,
+.ws-prompt-card__meta {
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+}
+
+.ws-prompt-card > .ws-card__hint,
+.ws-prompt-card__meta {
+  margin: 0;
+  padding: 0 18px 12px;
+}
+
+.ws-prompt-text {
+  max-height: 620px;
+  margin: 0;
+  padding: 18px;
+  overflow: auto;
+  border-top: 1px solid var(--ws-line);
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--ws-ink);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ws-prompt-text--source {
+  max-height: 420px;
+  border-top: 0;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.ws-prompt-source-body {
+  border-top: 1px solid var(--ws-line);
+  background: rgba(155, 63, 43, 0.04);
+}
+
+.ws-module-catalog {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ws-module-catalog__item {
+  border: 1px solid var(--ws-border);
+  padding: 12px;
+  background: var(--ws-surface);
+}
+
+.ws-module-catalog__item strong,
+.ws-module-catalog__item small,
+.ws-module-catalog__item p {
+  display: block;
+}
+
+.ws-module-catalog__item small {
+  margin-top: 4px;
+  color: var(--ws-muted);
+}
+
+.ws-module-catalog__item p {
+  margin: 8px 0 0;
+  color: var(--ws-muted);
+}
+
+@media (max-width: 760px) {
+  .ws-module-catalog {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ws-prompt-source-body summary {
+  padding: 12px 18px;
+  color: var(--ws-ink-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ws-prompt-hidden-source {
+  margin: 0;
+  padding: 12px 18px;
+  color: var(--ws-ink-muted);
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .ws-pagination {
@@ -650,6 +782,153 @@ body {
   gap: 8px;
 }
 
+.ws-character-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ws-button {
+  min-height: 34px;
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  padding: 6px 11px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ws-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.ws-button:hover:not(:disabled) {
+  border-color: var(--ws-accent);
+  background: var(--ws-paper);
+}
+
+.ws-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.ws-button--primary {
+  border-color: var(--ws-accent);
+  background: var(--ws-accent);
+  color: white;
+}
+
+.ws-inline-message {
+  margin: 0 0 14px;
+  color: var(--ws-ink-muted);
+}
+
+.ws-error-text {
+  margin: 0;
+  color: var(--ws-danger);
+}
+
+.ws-character-portrait-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.ws-character-portrait-section {
+  border-top: 2px solid var(--ws-accent-soft);
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.ws-character-portrait-section h3 {
+  margin: 0 0 10px;
+  color: var(--ws-ink);
+  font-size: 15px;
+}
+
+.ws-character-portrait-line + .ws-character-portrait-line {
+  margin-top: 10px;
+}
+
+.ws-character-portrait-line b,
+.ws-character-portrait-section label span {
+  display: block;
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+}
+
+.ws-character-portrait-line p {
+  margin: 3px 0 0;
+  color: var(--ws-ink);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.ws-character-portrait-section label {
+  display: block;
+  margin-top: 10px;
+}
+
+.ws-character-portrait-section textarea {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  padding: 8px;
+  resize: vertical;
+  background: var(--ws-paper);
+  color: var(--ws-ink);
+  font: inherit;
+  line-height: 1.5;
+}
+
+.ws-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.ws-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.ws-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ws-ink-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.ws-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ws-accent);
+}
+
+.ws-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ws-tag {
+  border: 1px solid var(--ws-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+  line-height: 1;
+  padding: 7px 10px;
+}
+
 .ws-danger-tag {
   border: 1px solid rgba(168, 76, 76, 0.28);
   border-radius: 999px;
@@ -660,9 +939,84 @@ body {
   padding: 7px 10px;
 }
 
+.ws-skill-pack-list {
+  display: grid;
+  gap: 18px;
+}
+
+.ws-skill-pack {
+  display: grid;
+  gap: 16px;
+}
+
+.ws-skill-pack__desc {
+  margin: 0;
+  color: var(--ws-ink);
+  line-height: 1.7;
+}
+
+.ws-skill-module-list {
+  display: grid;
+  gap: 12px;
+}
+
+.ws-skill-module {
+  display: grid;
+  gap: 8px;
+  padding: 14px 0 0;
+  border-top: 1px solid rgba(31, 29, 26, 0.1);
+}
+
+.ws-skill-module__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ws-skill-module__title {
+  margin: 0;
+  color: var(--ws-ink);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.ws-skill-module__usage {
+  flex: 0 0 auto;
+  max-width: 360px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(182, 75, 50, 0.09);
+  color: #8d3d2b;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.ws-skill-module__intro,
+.ws-skill-module__summary {
+  margin: 0;
+  color: #4d4039;
+  line-height: 1.7;
+}
+
+.ws-skill-module__summary {
+  color: #74645c;
+  font-size: 14px;
+}
+
 @media (max-width: 900px) {
   .ws-shell {
     display: block;
+  }
+
+  .ws-skill-module__head {
+    flex-direction: column;
+  }
+
+  .ws-skill-module__usage {
+    max-width: 100%;
+    text-align: left;
   }
 
   .ws-nav {
@@ -2387,51 +2741,6 @@ body {
   box-shadow: 0 0 0 4px rgba(182, 75, 50, 0.1);
 }
 
-.chapter-panel__manual-draft--segment {
-  min-height: 180px;
-}
-
-.chapter-panel__segment-editor {
-  display: grid;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid rgba(31, 29, 26, 0.1);
-  border-radius: 16px;
-  background: rgba(255, 252, 246, 0.72);
-}
-
-.chapter-panel__segments {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 8px;
-  max-height: 260px;
-  overflow: auto;
-  padding-right: 4px;
-}
-
-.chapter-panel__segment-btn {
-  display: grid;
-  gap: 4px;
-  text-align: left;
-  border: 1px solid rgba(31, 29, 26, 0.1);
-  border-radius: 12px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--ink);
-  cursor: pointer;
-}
-
-.chapter-panel__segment-btn:hover,
-.chapter-panel__segment-btn--active {
-  border-color: rgba(182, 75, 50, 0.4);
-  background: rgba(182, 75, 50, 0.1);
-}
-
-.chapter-panel__segment-btn small {
-  color: var(--muted);
-  line-height: 1.45;
-}
-
 .chapter-panel__summary-text {
   margin: 6px 0 0 0;
   line-height: 1.6;
@@ -3531,5 +3840,15 @@ body {
   .chapter-panel__article-head {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .ws-character-card__head,
+  .ws-character-card__actions {
+    align-items: flex-start;
+    justify-content: flex-start;
+  }
+
+  .ws-character-portrait-grid {
+    grid-template-columns: 1fr;
   }
 }

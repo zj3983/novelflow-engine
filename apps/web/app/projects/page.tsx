@@ -4,12 +4,15 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { PageHeader } from "../../components/ws/PageHeader";
-import { listProjects, type ProjectSummary } from "../../lib/api";
+import { listProjects, type ProjectStatus, type ProjectSummary } from "../../lib/api";
 
 const LAST_PROJECT_STORAGE_KEY = "novel-autogrowth.last-project-id";
 
-const STATUS_META: Record<ProjectSummary["status"], { label: string; badge: string }> = {
+const STATUS_META: Record<string, { label: string; badge: string }> = {
   draft: { label: "草稿", badge: "ws-badge" },
+  outlining: { label: "大纲中", badge: "ws-badge" },
+  writing: { label: "写作中", badge: "ws-badge ws-badge--success" },
+  reviewing: { label: "审核中", badge: "ws-badge ws-badge--warn" },
   simulating: { label: "推演中", badge: "ws-badge ws-badge--success" },
   paused: { label: "已暂停", badge: "ws-badge ws-badge--warn" },
   completed: { label: "已完成", badge: "ws-badge" },
@@ -22,6 +25,11 @@ const SOURCE_LABEL: Record<NonNullable<ProjectSummary["storage_source"]>, string
 
 function projectHref(projectId: string): string {
   return `/projects/${encodeURIComponent(projectId)}`;
+}
+
+function statusMeta(status: ProjectStatus | undefined): { label: string; badge: string } {
+  const key = String(status || "draft");
+  return STATUS_META[key] ?? { label: key, badge: "ws-badge ws-badge--warn" };
 }
 
 export default function ProjectsListPage() {
@@ -94,7 +102,7 @@ export default function ProjectsListPage() {
           </thead>
           <tbody>
             {projects.map((project) => {
-              const status = STATUS_META[project.status];
+              const status = statusMeta(project.status);
               const sourceLabel = project.storage_source ? SOURCE_LABEL[project.storage_source] : "数据库";
               return (
                 <tr key={project.project_id}>

@@ -1,4 +1,4 @@
-import type { GamePanel, ImportedCharacterProfile, StoryCharacter } from "./api";
+import type { CharacterPortrait, GamePanel, ImportedCharacterProfile, StoryCharacter } from "./api";
 
 type ProfileWithRuntime = ImportedCharacterProfile & {
   game_panel?: GamePanel;
@@ -7,6 +7,7 @@ type ProfileWithRuntime = ImportedCharacterProfile & {
   current_location?: string;
   location?: string;
   lifecycle_state?: string;
+  personality_portrait?: CharacterPortrait;
   latest_chapter?: number;
 };
 
@@ -124,6 +125,7 @@ export function mergeCharacters(
       location: character.location || previous.location || previous.current_location,
       game_panel: character.game_panel ?? previous.game_panel,
       lifecycle_state: character.lifecycle_state || previous.lifecycle_state,
+      personality_portrait: character.personality_portrait ?? previous.personality_portrait,
     });
   }
 

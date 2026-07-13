@@ -30,7 +30,11 @@ function projectNav(projectId: string): NavItem[] {
     { href: `${base}/write`, label: "章节" },
     { href: `${base}/dissection`, label: "拆书" },
     { href: `${base}/sim`, label: "剧情推演" },
-    { href: `${base}/world`, label: "角色卡" },
+    { href: `${base}/prompts`, label: "提示词" },
+    { href: `${base}/skills`, label: "Skills" },
+    { href: `${base}/outline`, label: "大纲" },
+    { href: `${base}/world`, label: "世界观" },
+    { href: `${base}/characters`, label: "角色卡" },
   ];
 }
 

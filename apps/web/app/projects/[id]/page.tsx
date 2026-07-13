@@ -5,15 +5,23 @@ import { useMemo } from "react";
 
 import { PageHeader } from "../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../components/ws/ProjectWorkspaceProvider";
-import type { ProjectResponse } from "../../../lib/api";
+import type { ProjectStatus } from "../../../lib/api";
 import { cleanLines, mergeCharacters, shortStatus } from "../../../lib/worldDisplay";
 
-const STATUS_LABEL: Record<ProjectResponse["status"], string> = {
+const STATUS_LABEL: Record<string, string> = {
   draft: "草稿",
+  outlining: "大纲中",
+  writing: "写作中",
+  reviewing: "审核中",
   simulating: "推演中",
   paused: "已暂停",
   completed: "已完成",
 };
+
+function statusLabel(status: ProjectStatus | undefined): string {
+  const key = String(status || "draft");
+  return STATUS_LABEL[key] ?? key;
+}
 
 function chapterCharCount(body: string | undefined): number {
   if (!body) return 0;
@@ -56,7 +64,7 @@ export default function ProjectOverviewPage() {
           <section className="ws-card">
             <p className="ws-card__title">状态</p>
             <p className="ws-card__hint">
-              第 {currentChapter} 章 · {formatNumber(totalWords)} 字 · {STATUS_LABEL[project.status]}
+              第 {currentChapter} 章 · {formatNumber(totalWords)} 字 · {statusLabel(project.status)}
             </p>
           </section>
 
@@ -113,8 +121,18 @@ export default function ProjectOverviewPage() {
 
           <section className="ws-card">
             <div className="ws-section-head">
+              <h2 className="ws-section-title">大纲</h2>
+              <Link href={`/projects/${encodedProjectId}/outline`} className="ws-text-link">
+                查看
+              </Link>
+            </div>
+            <p className="ws-card__hint">{project.current_focus || latest?.next_outline || "暂无当前大纲焦点。"}</p>
+          </section>
+
+          <section className="ws-card">
+            <div className="ws-section-head">
               <h2 className="ws-section-title">角色卡</h2>
-              <Link href={`/projects/${encodedProjectId}/world`} className="ws-text-link">
+              <Link href={`/projects/${encodedProjectId}/characters`} className="ws-text-link">
                 查看
               </Link>
             </div>
@@ -134,7 +152,12 @@ export default function ProjectOverviewPage() {
           </section>
 
           <section className="ws-card">
-            <h2 className="ws-section-title">世界事实</h2>
+            <div className="ws-section-head">
+              <h2 className="ws-section-title">世界事实</h2>
+              <Link href={`/projects/${encodedProjectId}/world`} className="ws-text-link">
+                查看
+              </Link>
+            </div>
             {worldFacts.length > 0 ? (
               <ul className="ws-plain-list">
                 {worldFacts.map((fact, index) => (

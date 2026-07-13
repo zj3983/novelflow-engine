@@ -6,7 +6,16 @@ import { useSearchParams } from "next/navigation";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
-import { fetchGenerationJob, startFileProjectRegenerationJob, startGenerationJob, type ChapterBundle } from "../../../../lib/api";
+import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
+import {
+  fetchGenerationJob,
+  fetchProjectWritingPacket,
+  startFileProjectRegenerationJob,
+  startGenerationJob,
+  type ChapterBundle,
+  type ChapterDirectionOption,
+  type CodexWritingPacket,
+} from "../../../../lib/api";
 
 const PAGE_SIZE = 80;
 
@@ -26,29 +35,6 @@ function chapterSearchText(bundle: ChapterBundle): string {
     .toLowerCase();
 }
 
-function formatAiScore(score: number | undefined): string {
-  return typeof score === "number" ? `${score}/8` : "未检测";
-}
-
-function formatAiMetric(metrics: Record<string, number> | undefined, key: string): number {
-  const value = metrics?.[key];
-  return typeof value === "number" ? value : 0;
-}
-
-function formatConcreteDensity(metrics: Record<string, number> | undefined): string {
-  const value = metrics?.concrete_density;
-  return typeof value === "number" ? `${Math.round(value * 100)}%` : "—";
-}
-
-function formatReviewIssue(issue: unknown): string {
-  if (!issue) return "";
-  if (typeof issue === "string") return issue;
-  if (typeof issue === "object" && "reason" in issue) {
-    return String((issue as { reason?: unknown }).reason || "");
-  }
-  return String(issue);
-}
-
 export default function WritePage() {
   const searchParams = useSearchParams();
   const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
@@ -59,6 +45,8 @@ export default function WritePage() {
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
   const [temporaryGuidance, setTemporaryGuidance] = useState("");
+  const [nextWritingPacket, setNextWritingPacket] = useState<CodexWritingPacket | null>(null);
+  const [selectedDirectionId, setSelectedDirectionId] = useState("");
 
   useEffect(() => {
     setPage(1);
@@ -105,6 +93,39 @@ export default function WritePage() {
   const canRegenerate = Boolean(chapter && isFileProject);
   const generationTargetId = isFileProject ? projectId : story?.story_id;
   const canGenerateNext = Boolean(generationTargetId);
+  const nextChapterNumber = (story?.current_chapter ?? 0) + 1;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isFileProject || !projectId) {
+      setNextWritingPacket(null);
+      setSelectedDirectionId("");
+      return;
+    }
+    fetchProjectWritingPacket(projectId, nextChapterNumber)
+      .then((packet) => {
+        if (cancelled) return;
+        const options = packet.chapter_direction_options;
+        setNextWritingPacket(packet);
+        setSelectedDirectionId((current) => {
+          if (current && options?.options.some((item) => item.id === current)) {
+            return current;
+          }
+          return options?.recommended_id || options?.options[0]?.id || "";
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setNextWritingPacket(null);
+        setSelectedDirectionId("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isFileProject, nextChapterNumber, projectId]);
+
+  const directionOptions = nextWritingPacket?.chapter_direction_options?.options ?? [];
+  const selectedDirection = directionOptions.find((option) => option.id === selectedDirectionId) ?? directionOptions[0] ?? null;
   const writingReview = chapter?.quality_report?.writing_review;
   const lengthReview = chapter?.quality_report?.length_review ?? writingReview?.length_review;
   const bodyChars = lengthReview?.body_chars ?? chapterCharCount(chapter?.body);
@@ -112,17 +133,6 @@ export default function WritePage() {
   const maxChars = lengthReview?.max_chars ?? 5500;
   const lengthPassed = lengthReview?.pass ?? bodyChars >= minChars;
   const lengthIssues = lengthReview?.issues ?? [];
-  const aiFlavorReview = chapter?.quality_report?.ai_flavor_review ?? writingReview?.ai_flavor_review;
-  const aiFlavorMetrics = aiFlavorReview?.metrics;
-  const aiFlavorScore = aiFlavorReview?.scores?.ai_flavor;
-  const aiFlavorIssues = aiFlavorReview?.issues ?? [];
-  const aiFlavorCuts = aiFlavorReview?.cuts ?? [];
-  const coldReaderReview = chapter?.quality_report?.cold_reader_review ?? writingReview?.cold_reader_review;
-  const coldReaderScores = coldReaderReview?.scores ?? {};
-  const coldReaderIssues = coldReaderReview?.issues ?? [];
-  const readerAgentReview = chapter?.quality_report?.reader_agent_review ?? writingReview?.reader_agent_review;
-  const editorAgentReview = chapter?.quality_report?.editor_agent_review ?? writingReview?.editor_agent_review;
-  const reviewerAgentReview = chapter?.quality_report?.reviewer_agent_review ?? writingReview?.reviewer_agent_review;
   const writingLessons = story?.writing_lessons ?? [];
 
   async function handleRegenerateChapter() {
@@ -158,7 +168,7 @@ export default function WritePage() {
     setRegenerateStatus("排队中");
     setRegenerateError(null);
     try {
-      const job = await startGenerationJob(generationTargetId);
+      const job = await startGenerationJob(generationTargetId, isFileProject ? selectedDirection?.id : undefined);
       let currentJob = job;
       setRegenerateStatus(currentJob.progress || currentJob.status);
       while (currentJob.status === "queued" || currentJob.status === "running") {
@@ -281,6 +291,43 @@ export default function WritePage() {
             </header>
             {(regenerating || generatingNext) && regenerateStatus ? <p className="ws-card__hint">任务进度：{regenerateStatus}</p> : null}
             {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
+            {directionOptions.length > 0 ? (
+              <section className="ws-card">
+                <div className="ws-section-head">
+                  <div>
+                    <p className="ws-card__title">下一章方向</p>
+                    <p className="ws-card__hint">生成前先选剧情分支，系统会锁定本章目标、哇点和章末钩子。</p>
+                  </div>
+                  {selectedDirection ? <span className="ws-badge">已选：{selectedDirection.name}</span> : null}
+                </div>
+                <div className="ws-simple-grid">
+                  {directionOptions.map((option: ChapterDirectionOption) => {
+                    const active = option.id === selectedDirectionId;
+                    return (
+                      <button
+                        key={option.id}
+                        className={`ws-simple-item${active ? " ws-simple-item--active" : ""}`}
+                        type="button"
+                        onClick={() => setSelectedDirectionId(option.id)}
+                        style={{
+                          textAlign: "left",
+                          cursor: "pointer",
+                          borderColor: active ? "var(--ws-accent)" : undefined,
+                        }}
+                      >
+                        <strong>
+                          {option.name}
+                          {option.recommended ? " · 推荐" : ""}
+                        </strong>
+                        <span>{option.reader_promise}</span>
+                        <small>{option.ending_hook}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+                {selectedDirection ? <p className="ws-card__hint">本章目标：{selectedDirection.chapter_goal}</p> : null}
+              </section>
+            ) : null}
             {temporaryGuidance ? (
               <section className="ws-card">
                 <div className="ws-section-head">
@@ -328,70 +375,7 @@ export default function WritePage() {
                 </p>
                 {lengthIssues[0] ? <p className="ws-card__hint">{lengthIssues[0]}</p> : null}
               </div>
-              <div>
-                <p className="ws-card__title">AI味检测</p>
-                {aiFlavorReview ? (
-                  <>
-                    <p className="ws-card__hint">
-                      评分 {formatAiScore(aiFlavorScore)}；公式句 {formatAiMetric(aiFlavorMetrics, "formula_count")}；抽象词{" "}
-                      {formatAiMetric(aiFlavorMetrics, "abstract_count")}；具体度 {formatConcreteDensity(aiFlavorMetrics)}
-                    </p>
-                    {aiFlavorIssues[0] ? <p className="ws-card__hint">{formatReviewIssue(aiFlavorIssues[0])}</p> : null}
-                    {!aiFlavorIssues[0] && aiFlavorCuts[0]?.target_text ? (
-                      <p className="ws-card__hint">留意：{aiFlavorCuts[0].target_text}</p>
-                    ) : null}
-                  </>
-                ) : (
-                  <p className="ws-card__hint">暂无AI味报告。</p>
-                )}
-              </div>
-              <div>
-                <p className="ws-card__title">冷读体验</p>
-                {coldReaderReview ? (
-                  <>
-                    <p className="ws-card__hint">
-                      追读 {coldReaderScores.page_turn ?? "未检"}；共情 {coldReaderScores.empathy_connection ?? "未检"}；负担{" "}
-                      {coldReaderScores.cognitive_load ?? "未检"}；节奏 {coldReaderScores.pace_feel ?? "未检"}
-                    </p>
-                    {coldReaderIssues[0] ? <p className="ws-card__hint">{formatReviewIssue(coldReaderIssues[0])}</p> : null}
-                  </>
-                ) : (
-                  <p className="ws-card__hint">暂无冷读报告。</p>
-                )}
-              </div>
-              <div>
-                <p className="ws-card__title">读者 Agent</p>
-                {readerAgentReview ? (
-                  <>
-                    <p className="ws-card__hint">{readerAgentReview.verdict || (readerAgentReview.pass ? "通过" : "待修")}</p>
-                    {readerAgentReview.issues?.[0] ? <p className="ws-card__hint">{formatReviewIssue(readerAgentReview.issues[0])}</p> : null}
-                  </>
-                ) : (
-                  <p className="ws-card__hint">暂无读者报告。</p>
-                )}
-              </div>
-              <div>
-                <p className="ws-card__title">编辑 Agent</p>
-                {editorAgentReview ? (
-                  <>
-                    <p className="ws-card__hint">{editorAgentReview.verdict || (editorAgentReview.pass ? "通过" : "待修")}</p>
-                    {editorAgentReview.issues?.[0] ? <p className="ws-card__hint">{formatReviewIssue(editorAgentReview.issues[0])}</p> : null}
-                  </>
-                ) : (
-                  <p className="ws-card__hint">暂无编辑报告。</p>
-                )}
-              </div>
-              <div>
-                <p className="ws-card__title">审稿 Agent</p>
-                {reviewerAgentReview ? (
-                  <>
-                    <p className="ws-card__hint">{reviewerAgentReview.verdict || (reviewerAgentReview.pass ? "通过" : "待修")}</p>
-                    {reviewerAgentReview.issues?.[0] ? <p className="ws-card__hint">{formatReviewIssue(reviewerAgentReview.issues[0])}</p> : null}
-                  </>
-                ) : (
-                  <p className="ws-card__hint">暂无审稿报告。</p>
-                )}
-              </div>
+              <SimplifiedReview report={chapter.quality_report?.simplified_review} compact />
             </section>
           </article>
         </div>

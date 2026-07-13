@@ -52,6 +52,17 @@ export type GamePanel = {
   updated_chapter?: number;
 };
 
+export type CharacterPortrait = {
+  temperament?: { outward_impression?: string; core_traits?: string[]; inner_contradiction?: string; values?: string[]; bottom_line?: string };
+  psychology?: { desire?: string; fear?: string; blind_spot?: string; defense?: string; shame_point?: string };
+  behavior?: { normal_mode?: string; pressure_mode?: string; conflict_response?: string; failure_response?: string; decision_tendency?: string };
+  emotion?: { triggers?: string[]; restraint_style?: string; loss_of_control?: string; mannerisms?: string[] };
+  social?: { strangers?: string; friends?: string; authority?: string; enemies?: string };
+  voice?: { common_words?: string[]; sentence_habit?: string; avoided_topics?: string[]; lying_style?: string; anger_style?: string; relaxed_style?: string };
+  growth?: { initial_flaw?: string; invariants?: string[]; change_conditions?: string[]; stage_direction?: string };
+  writing_limits?: string[];
+};
+
 export type AgentSettings = NonNullable<CreateStoryRequest["agent_settings"]>;
 export type RuntimeStrategySettings = AgentSettings;
 
@@ -281,6 +292,25 @@ export type LengthReview = {
   issues?: string[];
 };
 
+export type SimplifiedReview = {
+  schema_version: "simplified-review/v1" | string;
+  pass: boolean;
+  has_hard_errors: boolean;
+  summary: string;
+  categories: {
+    hard: { label: string; count: number };
+    prose: { label: string; count: number };
+    ai_flavor: { label: string; count: number };
+  };
+  issues: Array<{
+    category: "hard" | "prose" | "ai_flavor" | string;
+    severity: "blocking" | "advisory" | string;
+    message: string;
+    suggestion: string;
+  }>;
+  total_issues: number;
+};
+
 export type ChapterBundle = {
   chapter_number: number;
   body: string;
@@ -395,7 +425,6 @@ export type ChapterBundle = {
     ok: boolean;
     issues: string[];
     revision_safety?: RevisionSafetyReport;
-    segment_pipeline?: SegmentPipelineReport;
     writing_review?: ReviewSection;
     critical_review?: ReviewSection;
     hook_review?: ReviewSection;
@@ -407,6 +436,7 @@ export type ChapterBundle = {
     reader_agent_review?: ReviewSection;
     editor_agent_review?: ReviewSection;
     reviewer_agent_review?: ReviewSection;
+    simplified_review?: SimplifiedReview;
   };
   updated_story?: unknown;
 };
@@ -420,24 +450,6 @@ export type RevisionSafetyReport = {
   candidate_score?: number;
   original_chars?: number;
   candidate_chars?: number;
-};
-
-export type SegmentRevisionSafetyReport = RevisionSafetyReport & {
-  reviewer?: "segment_revision_safety/v1" | string;
-};
-
-export type SegmentPipelineReport = {
-  enabled?: boolean;
-  pass?: boolean;
-  segments?: Array<{
-    segment_key?: string;
-    segment_title?: string;
-    pass?: boolean;
-    issues?: string[];
-    revision_plan?: string[];
-    scores?: Record<string, number>;
-    segment_revision_safety?: SegmentRevisionSafetyReport;
-  }>;
 };
 
 export type StoryResponse = {
@@ -466,6 +478,8 @@ export type StoryResponse = {
     social_profile?: Record<string, unknown>;
     psychological_profile?: Record<string, unknown>;
     moral_profile?: Record<string, unknown>;
+    personality_portrait?: CharacterPortrait;
+    performance_profile?: Record<string, unknown>;
     story_function?: string;
     chapter_role?: string;
     goals: string[];
@@ -682,6 +696,7 @@ export type CreateProjectRequest = {
   world_blueprint?: ImportedWorldBlueprint;
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
+  enabled_skill_ids?: string[];
   pipeline_stage?: ProjectPipelineStage;
   active_story_id?: string;
 };
@@ -696,6 +711,8 @@ export type ProjectPipelineStage =
   | "paused"
   | "completed";
 
+export type ProjectStatus = "draft" | "outlining" | "writing" | "reviewing" | "simulating" | "paused" | "completed" | string;
+
 export type UpdateProjectRequest = {
   title?: string;
   source_path?: string;
@@ -706,7 +723,8 @@ export type UpdateProjectRequest = {
   world_blueprint?: ImportedWorldBlueprint;
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
-  status?: "draft" | "simulating" | "paused" | "completed";
+  enabled_skill_ids?: string[];
+  status?: ProjectStatus;
   pipeline_stage?: ProjectPipelineStage;
   active_story_id?: string;
 };
@@ -714,7 +732,7 @@ export type UpdateProjectRequest = {
 export type ProjectSummary = {
   project_id: string;
   title: string;
-  status: "draft" | "simulating" | "paused" | "completed";
+  status: ProjectStatus;
   pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
   current_chapter: number;
@@ -733,7 +751,8 @@ export type ProjectResponse = {
   world_blueprint?: ImportedWorldBlueprint;
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
-  status: "draft" | "simulating" | "paused" | "completed";
+  enabled_skill_ids?: string[];
+  status: ProjectStatus;
   pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
   branches: StorySummary[];
@@ -746,8 +765,51 @@ export type AgentReviseRequest = {
   include_body?: boolean;
 };
 
+export type ChapterDirectionOption = {
+  id: string;
+  name: string;
+  recommended?: boolean;
+  chapter_goal: string;
+  reader_promise: string;
+  main_scenes: string[];
+  wow_beat: string;
+  ending_hook: string;
+  state_delta: string;
+  risk: string;
+};
+
+export type SkillPackModuleSummary = {
+  module_id: string;
+  title: string;
+  description?: string;
+  summary?: string;
+  purposes?: string[];
+  relative_path?: string;
+  content?: string;
+};
+
+export type SkillPackSummary = {
+  schema_version: "skill-pack/v1" | string;
+  skill_id: string;
+  name: string;
+  version: string;
+  author?: string;
+  description?: string;
+  module_count: number;
+  modules: SkillPackModuleSummary[];
+  root_skill?: string;
+};
+
+export type ChapterDirectionOptions = {
+  schema_version: "chapter-direction-options/v1";
+  chapter_number: number;
+  recommended_id: string;
+  selection_rule?: string;
+  options: ChapterDirectionOption[];
+};
+
 export type CodexWritingPacket = {
-  schema_version: "codex-writing-packet/v1";
+  schema_version: "codex-writing-packet/v1" | "file-writing-packet/v1";
   chapter_number: number;
   chapter_title?: string;
   goal?: string;
@@ -766,18 +828,48 @@ export type CodexWritingPacket = {
   world_facts?: string[];
   continuity?: Record<string, unknown>;
   submission_contract?: Record<string, unknown>;
+  chapter_direction_options?: ChapterDirectionOptions;
+};
+
+export type PromptPreviewEntry = {
+  key: string;
+  title: string;
+  agent: string;
+  stage: string;
+  source: string;
+  description?: string;
+  content: string;
+  chars: number;
+  module_keys?: string[];
+};
+
+export type PromptPreviewResponse = {
+  schema_version: "file-project-prompt-preview/v1" | "project-prompt-preview/v1";
+  project_id: string;
+  chapter_number: number;
+  chapter_title?: string;
+  source: string;
+  has_chapter: boolean;
+  module_catalog?: PromptModuleSpec[];
+  stage_modules?: Record<string, string[]>;
+  modules?: PromptPreviewEntry[];
+  prompts: PromptPreviewEntry[];
+};
+
+export type PromptModuleSpec = {
+  key: string;
+  title: string;
+  owner: string;
+  stage: string;
+  purpose: string;
+  description: string;
+  depends_on: string[];
+  role: string;
+  replaceable: boolean;
 };
 
 export type ManualDraftRequest = {
   chapter_number: number;
-  body: string;
-  instructions?: string[];
-  include_body?: boolean;
-};
-
-export type ManualSegmentDraftRequest = {
-  chapter_number: number;
-  segment_index: number;
   body: string;
   instructions?: string[];
   include_body?: boolean;
@@ -844,6 +936,34 @@ export type DeleteStoryResponse = {
 };
 
 export type StoryCharacter = StoryResponse["characters"][number];
+
+export async function fetchFileProjectCharacters(projectId: string): Promise<StoryCharacter[]> {
+  return (await tryFetchJson(`${apiBase()}/file-projects/${encodeURIComponent(projectId)}/characters`, {
+    method: "GET",
+  })) as StoryCharacter[];
+}
+
+export async function updateFileProjectCharacter(
+  projectId: string,
+  characterName: string,
+  patch: Partial<StoryCharacter>,
+): Promise<StoryCharacter> {
+  return (await tryFetchJson(
+    `${apiBase()}/file-projects/${encodeURIComponent(projectId)}/characters/${encodeURIComponent(characterName)}`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  )) as StoryCharacter;
+}
+
+export async function completeFileProjectCharacterPortrait(projectId: string, characterName: string): Promise<StoryCharacter> {
+  return (await tryFetchJson(
+    `${apiBase()}/file-projects/${encodeURIComponent(projectId)}/characters/${encodeURIComponent(characterName)}/complete-portrait`,
+    { method: "POST" },
+  )) as StoryCharacter;
+}
 
 export type BookImportScanRequest = {
   source_path: string;
@@ -962,7 +1082,8 @@ type MockProject = {
   world_blueprint?: ImportedWorldBlueprint;
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
-  status: "draft" | "simulating" | "paused" | "completed";
+  enabled_skill_ids?: string[];
+  status: ProjectStatus;
   pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
   branches: string[];
@@ -1950,13 +2071,16 @@ export async function generateNextChapter(storyId: string): Promise<ChapterBundl
   }, 900000);
 }
 
-export async function startGenerationJob(storyId: string): Promise<GenerationJobResponse> {
+export async function startGenerationJob(storyId: string, chapterDirectionId?: string): Promise<GenerationJobResponse> {
   const path = isFileProjectId(storyId)
     ? `${fileProjectPath(storyId)}/generation-jobs`
     : `${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs`;
-  return (await tryFetchJson(path, {
-    method: "POST",
-  })) as GenerationJobResponse;
+  const init: RequestInit = { method: "POST" };
+  if (isFileProjectId(storyId) && chapterDirectionId) {
+    init.headers = { "content-type": "application/json" };
+    init.body = JSON.stringify({ chapter_direction_id: chapterDirectionId });
+  }
+  return (await tryFetchJson(path, init)) as GenerationJobResponse;
 }
 
 export async function startFileProjectRegenerationJob(
@@ -2095,27 +2219,61 @@ export async function fetchProjectWritingPacket(
   )) as CodexWritingPacket;
 }
 
+export async function fetchProjectPromptPreview(
+  projectId: string,
+  chapterNumber?: number | null,
+): Promise<PromptPreviewResponse> {
+  const params = new URLSearchParams();
+  if (chapterNumber != null) {
+    params.set("chapter_number", String(chapterNumber));
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const path = isFileProjectId(projectId)
+    ? `${fileProjectPath(projectId)}/prompt-preview${suffix}`
+    : `${apiBase()}/projects/${encodeURIComponent(projectId)}/prompt-preview${suffix}`;
+  return (await tryFetchJson(
+    path,
+    {
+      method: "GET",
+    },
+    120000,
+  )) as PromptPreviewResponse;
+}
+
+export async function listSkillPacks(): Promise<SkillPackSummary[]> {
+  return (await tryFetchJson(`${apiBase()}/skill-packs`, {
+    method: "GET",
+  })) as SkillPackSummary[];
+}
+
+export async function fetchSkillPack(skillId: string): Promise<SkillPackSummary> {
+  return (await tryFetchJson(`${apiBase()}/skill-packs/${encodeURIComponent(skillId)}`, {
+    method: "GET",
+  })) as SkillPackSummary;
+}
+
+export async function importSkillPackFromPath(sourcePath: string): Promise<SkillPackSummary> {
+  return (await tryFetchJson(`${apiBase()}/skill-packs/import`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source_path: sourcePath }),
+  })) as SkillPackSummary;
+}
+
+export async function uploadSkillPackZip(file: File): Promise<SkillPackSummary> {
+  return (await tryFetchJson(`${apiBase()}/skill-packs/upload`, {
+    method: "POST",
+    headers: { "content-type": "application/zip" },
+    body: await file.arrayBuffer(),
+  })) as SkillPackSummary;
+}
+
 export async function submitProjectManualDraft(
   projectId: string,
   payload: ManualDraftRequest,
 ): Promise<AgentRevisionResponse> {
   return (await tryFetchJson(
     `${apiBase()}/projects/${encodeURIComponent(projectId)}/manual-draft`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    },
-    180000,
-  )) as AgentRevisionResponse;
-}
-
-export async function submitProjectManualSegmentDraft(
-  projectId: string,
-  payload: ManualSegmentDraftRequest,
-): Promise<AgentRevisionResponse> {
-  return (await tryFetchJson(
-    `${apiBase()}/projects/${encodeURIComponent(projectId)}/manual-segment-draft`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -2173,6 +2331,7 @@ function mockCreateProject(payload: CreateProjectRequest): ProjectResponse {
     world_blueprint: payload.world_blueprint ?? {},
     character_profiles: payload.character_profiles ?? [],
     relationship_graph: payload.relationship_graph ?? payload.world_blueprint?.relationship_graph ?? [],
+    enabled_skill_ids: payload.enabled_skill_ids ?? [],
     status: payload.active_story_id ? "simulating" : "draft",
     pipeline_stage: payload.pipeline_stage ?? (payload.active_story_id ? "environment_ready" : "imported"),
     active_story_id: payload.active_story_id ?? "",
@@ -2239,6 +2398,7 @@ function persistProjectIntoMockStore(project: ProjectResponse): ProjectResponse 
     world_blueprint: clone(project.world_blueprint ?? {}),
     character_profiles: clone(project.character_profiles ?? []),
     relationship_graph: clone(project.relationship_graph ?? project.world_blueprint?.relationship_graph ?? []),
+    enabled_skill_ids: clone(project.enabled_skill_ids ?? []),
     status: project.status,
     pipeline_stage: project.pipeline_stage ?? "imported",
     active_story_id: project.active_story_id,
@@ -2274,6 +2434,7 @@ function mockUpdateProject(projectId: string, payload: UpdateProjectRequest): Pr
     ...(payload.world_blueprint !== undefined ? { world_blueprint: payload.world_blueprint } : {}),
     ...(payload.character_profiles !== undefined ? { character_profiles: payload.character_profiles } : {}),
     ...(payload.relationship_graph !== undefined ? { relationship_graph: payload.relationship_graph } : {}),
+    ...(payload.enabled_skill_ids !== undefined ? { enabled_skill_ids: payload.enabled_skill_ids } : {}),
     ...(payload.status !== undefined ? { status: payload.status } : {}),
     ...(payload.pipeline_stage !== undefined ? { pipeline_stage: payload.pipeline_stage } : {}),
     ...(payload.active_story_id !== undefined ? { active_story_id: payload.active_story_id } : {}),
