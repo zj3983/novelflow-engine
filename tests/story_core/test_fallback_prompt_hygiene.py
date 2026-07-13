@@ -28,10 +28,14 @@ def test_body_prompt_does_not_dump_full_plan_or_game_rules_into_non_game_story()
     assert "法师学徒" not in prompt
     assert "千倍爆率" not in prompt
     assert "旧楼门口" in prompt
-    assert "写作任务书" in prompt
-    assert "硬性质量闸门" in prompt
-    assert "段首主语不得连续3段相同" in prompt
-    assert "玩家势力内部频道" in prompt
+    assert "## 本章方向" in prompt
+    assert "悬疑写法" in prompt
+    assert "genre_family" not in prompt
+    assert "网游写法方法卡" not in prompt
+    assert "## 正文写法" in prompt
+    assert "段落写法：长短段交替" in prompt
+    assert "玩家势力内部频道" not in prompt
+    assert "人物不能全知" in prompt
 
 
 def test_body_prompt_uses_dynamic_game_class_in_fallback_packet():
@@ -55,6 +59,21 @@ def test_body_prompt_uses_dynamic_game_class_in_fallback_packet():
     assert "法师学徒用基础法术" not in prompt
 
 
+def test_explicit_game_genre_wins_over_generic_marker_in_project_context():
+    story = StoryState(
+        story_id="s-game-explicit",
+        outline="网游开服，主角低调推进任务。",
+        genre="网游升级文",
+        style="白描",
+        world_facts=["题材目录同时保留 generic_webnovel 通用模块。"],
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "开服"}})
+
+    assert "网游写法方法卡" in prompt
+    assert "隐藏优势只在幕后起作用" in prompt
+
+
 def test_revision_prompt_does_not_inject_game_rules_into_non_game_story():
     story = StoryState(
         story_id="s-non-game-revision",
@@ -74,10 +93,10 @@ def test_revision_prompt_does_not_inject_game_rules_into_non_game_story():
     assert "第一章改稿特别规则" not in prompt
     assert "网游" not in prompt
     assert "千倍爆率" not in prompt
-    assert "写作任务书" in prompt
+    assert "## 本章方向" in prompt
     assert "scene_cards" not in prompt
-    assert "硬性质量闸门" in prompt
-    assert "后台术语和事实矛盾词不得进正文" in prompt
+    assert "## 正文写法" in prompt
+    assert "规则从动作和反馈里露出来" in prompt
 
 
 def test_plan_prompt_does_not_inject_game_rules_into_non_game_story():
@@ -122,7 +141,7 @@ def test_revision_prompt_uses_compact_review_and_packet_target_chars():
     prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文", plan, review)
 
     assert "扩写到1800到2400字" in prompt
-    assert "审稿摘要" in prompt
+    assert "修改意见" in prompt
     assert "webnovel_hook" not in prompt
     assert "background_integration" not in prompt
     assert "套话偏多" in prompt

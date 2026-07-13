@@ -32,7 +32,7 @@ def test_whole_chapter_writing_is_default_path():
     assert orchestrator._use_segmented_writing(1, {}) is False
 
 
-def test_segmented_writing_is_explicit_opt_in():
+def test_segmented_writing_is_disabled_in_production():
     orchestrator = StoryOrchestrator()
 
-    assert orchestrator._use_segmented_writing(1, {"writing_settings": {"use_segmented_writing": True}}) is True
+    assert orchestrator._use_segmented_writing(1, {"writing_settings": {"use_segmented_writing": True}}) is False

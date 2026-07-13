@@ -52,10 +52,30 @@ def post_json_via_codex_cli(
 ) -> dict:
     cfg = config or RetryConfig()
     prompt = _build_prompt(payload)
-    model = str(payload.get("model") or "").strip()
+    payload_model = str(payload.get("model") or "").strip()
+    model = os.getenv("NOVEL_CODEX_MODEL", "").strip() or "gpt-5.4"
+    if payload_model and os.getenv("NOVEL_CODEX_USE_PAYLOAD_MODEL", "").strip().lower() in {"1", "true", "yes"}:
+        model = payload_model
     command = command or "codex"
 
     with tempfile.TemporaryDirectory(prefix="novel_codexcli_") as temp_dir:
+        isolated_codex_home = Path(temp_dir) / "codex_home"
+        isolated_codex_home.mkdir()
+        source_codex_home = Path(os.getenv("CODEX_HOME") or (Path.home() / ".codex"))
+        source_auth = source_codex_home / "auth.json"
+        if source_auth.is_file():
+            shutil.copy2(source_auth, isolated_codex_home / "auth.json")
+        for filename in ("cap_sid", "installation_id"):
+            source_file = source_codex_home / filename
+            if source_file.is_file():
+                shutil.copy2(source_file, isolated_codex_home / filename)
+        source_models_cache = source_codex_home / "models_cache.json"
+        if source_models_cache.is_file():
+            cache_text = source_models_cache.read_text(encoding="utf-8")
+            cache_text = cache_text.replace('"effort": "max"', '"effort": "high"')
+            (isolated_codex_home / "models_cache.json").write_text(cache_text, encoding="utf-8")
+        subprocess_env = os.environ.copy()
+        subprocess_env["CODEX_HOME"] = str(isolated_codex_home)
         output_path = Path(temp_dir) / "last_message.txt"
         resolved_command = shutil.which(command) or command
         command_prefix = (
@@ -66,6 +86,9 @@ def post_json_via_codex_cli(
         args = [
             *command_prefix,
             "exec",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--ephemeral",
             "--sandbox",
             "read-only",
             "--skip-git-repo-check",
@@ -74,7 +97,7 @@ def post_json_via_codex_cli(
             "--color",
             "never",
         ]
-        if model and os.getenv("NOVEL_CODEX_USE_PAYLOAD_MODEL", "").strip() in {"1", "true", "yes"}:
+        if model:
             args.extend(["--model", model])
         args.append("-")
 
@@ -87,6 +110,7 @@ def post_json_via_codex_cli(
             capture_output=True,
             timeout=cfg.timeout,
             cwd=os.getcwd(),
+            env=subprocess_env,
         )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "").strip()

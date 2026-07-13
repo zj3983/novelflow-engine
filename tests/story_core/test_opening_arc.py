@@ -263,8 +263,10 @@ def test_opening_review_requires_background_and_motivation():
         {"world_reactions": ["NPC只记录任务登记。"], "next_focus": "继续摸后坡入口。"},
     )
 
-    assert review["pass"] is True
+    assert review["pass"] is False
     assert review["scores"]["background_integration"] >= 8
+    assert review["scores"]["protagonist_motivation"] >= 8
+    assert review["scores"]["reader_feel_patchwork"] <= 5
 
 
 def test_opening_review_rejects_invented_real_money_exchange_rate():

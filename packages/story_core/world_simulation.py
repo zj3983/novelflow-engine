@@ -192,6 +192,7 @@ def simulate_world_events(
 
     chapter_seed = chapter_seed or {}
     simulation_plan = simulation_plan or {}
+    game_story = "game_webnovel" in chapter_seed.get("genre_plugins", [])
     real_name, game_id = _lead_name(story)
     protagonist = game_id or real_name
     class_path = _lead_class_path(story)
@@ -639,6 +640,12 @@ def select_scene_cards(
     chapter_seed = chapter_seed or {}
     simulation_plan = simulation_plan or {}
     allow_default_game = any(event.template_id in GAME_TEMPLATE_IDS for event in events)
+    game_story = (
+        "game_webnovel" in chapter_seed.get("genre_plugins", [])
+        or allow_default_game
+        or bool(simulation_plan.get("web_game_director_card"))
+        or bool(simulation_plan.get("web_game_author_craft"))
+    )
     chapter_number = int(chapter_seed.get("chapter_number") or simulation_plan.get("chapter_number") or 0)
     templates = _template_by_id(chapter_seed, allow_default_game=allow_default_game)
     order_rank = _template_order(chapter_seed, allow_default_game=allow_default_game)
@@ -649,7 +656,7 @@ def select_scene_cards(
     )
     cards: list[SceneCard] = []
     plot = simulation_plan.get("plot_simulation") if isinstance(simulation_plan.get("plot_simulation"), dict) else {}
-    if plot:
+    if plot and game_story:
         cards.append(
             SceneCard(
                 scene_id="s0-plot-simulation",

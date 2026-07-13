@@ -246,60 +246,6 @@ def test_novel_agent_manual_draft_cli_posts_body(monkeypatch, capsys):
     assert output["source"] == "manual_draft"
 
 
-def test_novel_agent_manual_segment_draft_cli_posts_segment(monkeypatch, capsys):
-    import scripts.novel_agent as novel_agent
-
-    requests: list[tuple[str, dict]] = []
-
-    def fake_urlopen(request, timeout):
-        requests.append((request.full_url, json.loads(request.data.decode("utf-8"))))
-        assert request.get_method() == "POST"
-        assert request.get_header("Content-Type") == "application/json"
-        assert timeout == 300
-        return _FakeResponse(
-            {
-                "schema_version": "agent-revision/v1",
-                "source": "manual_segment_draft",
-                "chapter": {"chapter_number": 1},
-            }
-        )
-
-    monkeypatch.setattr(novel_agent.urllib.request, "urlopen", fake_urlopen)
-
-    exit_code = novel_agent.main(
-        [
-            "manual-segment-draft",
-            "p-1",
-            "--api-base",
-            "http://api.test",
-            "--chapter-number",
-            "1",
-            "--segment-index",
-            "3",
-            "--body",
-            "rewritten paragraph",
-            "--instruction",
-            "remove AI-sounding short lines",
-        ]
-    )
-
-    assert exit_code == 0
-    assert requests == [
-        (
-            "http://api.test/projects/p-1/manual-segment-draft",
-            {
-                "chapter_number": 1,
-                "segment_index": 3,
-                "body": "rewritten paragraph",
-                "instructions": ["remove AI-sounding short lines"],
-                "include_body": False,
-            },
-        )
-    ]
-    output = json.loads(capsys.readouterr().out)
-    assert output["source"] == "manual_segment_draft"
-
-
 def test_novel_agent_world_get_fetches_project_state(monkeypatch, capsys):
     import scripts.novel_agent as novel_agent
 

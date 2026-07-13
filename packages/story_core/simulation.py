@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES
+from packages.story_core.chapter_direction import normalize_chapter_direction_choice
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.models import CharacterState, ChapterSimulationPlan, StoryState
 from packages.story_core.plot_contract import build_longform_plot_contract
@@ -356,7 +357,21 @@ def build_chapter_simulation_plan(
     chapter_seed = chapter_seed or {}
     if game_story:
         event_plan = _game_director_event_plan(event_plan, chapter_number)
-    simulation_variant = chapter_seed.get("simulation_variant") if isinstance(chapter_seed.get("simulation_variant"), dict) else {}
+    simulation_variant = dict(chapter_seed.get("simulation_variant")) if isinstance(chapter_seed.get("simulation_variant"), dict) else {}
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
+    selected_direction = normalize_chapter_direction_choice(
+        chapter_seed.get("selected_chapter_direction") or ledger.get("chapter_direction")
+    )
+    if selected_direction:
+        simulation_variant["chapter_direction"] = selected_direction
+        event_plan = {
+            **event_plan,
+            "chapter_direction": selected_direction,
+            "wow_beat": selected_direction.get("wow_beat") or event_plan.get("wow_beat", ""),
+            "explicit_chapter_end_hook": selected_direction.get("ending_hook")
+            or event_plan.get("explicit_chapter_end_hook", ""),
+            "reality_game_bridge": selected_direction.get("state_delta") or event_plan.get("reality_game_bridge", ""),
+        }
 
     character_performance = [
         _default_performance(character, game_story=game_story)
@@ -430,9 +445,25 @@ def build_chapter_simulation_plan(
         )
 
     chapter_goal = (
+        str(selected_direction.get("chapter_goal") or "").strip()
+        or
         str(event_plan.get("turn") or event_plan.get("pivot") or memory_constraints.get("current_focus") or "").strip()
         or "推进当前章节目标"
     )
+    if selected_direction:
+        main_scenes = selected_direction.get("main_scenes") if isinstance(selected_direction.get("main_scenes"), list) else []
+        required_beats.extend(
+            [
+                f"selected_chapter_direction: {selected_direction.get('name') or selected_direction.get('id')}",
+                f"direction_reader_promise: {selected_direction.get('reader_promise')}",
+                f"direction_wow_beat: {selected_direction.get('wow_beat')}",
+                f"direction_ending_hook: {selected_direction.get('ending_hook')}",
+                f"direction_state_delta: {selected_direction.get('state_delta')}",
+                *[f"direction_scene: {scene}" for scene in main_scenes[:4]],
+            ]
+        )
+        if selected_direction.get("risk"):
+            forbidden_moves.append(str(selected_direction["risk"]))
     plot_simulation = _plot_simulation(
         story,
         chapter_number,

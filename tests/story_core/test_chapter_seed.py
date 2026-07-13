@@ -217,20 +217,22 @@ def test_orchestrator_prompts_use_chapter_seed_contract():
     plan_prompt = orchestrator._plan_prompt(story, 1)
     body_prompt = orchestrator._body_prompt(story, 1, {"event_plan": {}})
 
-    assert "chapter-seed/v1" in plan_prompt
-    assert "生成前世界推演契约" in plan_prompt
-    assert "emotional_arc" in plan_prompt
-    assert "genre_craft" in plan_prompt
-    assert "action_chain" in plan_prompt
     assert "网游计划写法" in plan_prompt
-    assert "chapter-seed/v1" in body_prompt
-    assert "emotional_arc" in body_prompt
-    assert "genre_craft" in body_prompt
+    assert "本章连续性材料" in plan_prompt
+    assert "生成前世界推演契约" not in plan_prompt
+    assert "writing_contract" not in plan_prompt
+    assert "本章可用材料" in body_prompt
+    assert "情绪走向" in body_prompt
+    assert "行动顺序" in body_prompt
+    assert "chapter-seed/v1" not in body_prompt
+    assert "生成前世界推演契约" not in body_prompt
+    assert "emotional_arc" not in body_prompt
+    assert "genre_craft" not in body_prompt
     assert "网游写法方法卡" in body_prompt
-    assert "玩家行动链" in body_prompt
-    assert "先写代价，再写收获" in body_prompt
-    assert "每个主要场景至少一拍情绪" in body_prompt
-    assert "禁止单次低级材料交易暴露坐标" in body_prompt
+    assert "眼前目标" in body_prompt
+    assert "遇到阻力后付出代价" in body_prompt
+    assert "情绪放在动作、停顿和回答里" in body_prompt
+    assert "隐藏优势只在幕后起作用" in body_prompt
 
 
 def test_scene_card_writing_protocol_compiles_ordered_prose_contract():
@@ -363,13 +365,13 @@ def test_revision_prompt_contains_hard_fix_checklist_and_scene_protocol():
 
     prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文里有节奏和生成。", plan, review)
 
-    assert "硬性修复清单" in prompt
-    assert "写作任务书改稿协议" in prompt
+    assert "必须改到" in prompt
+    assert "## 本章方向" in prompt
     assert "现实压力与登录建号" in prompt
-    assert "不要展开力量/敏捷/体质/智力" in prompt
-    assert "正文禁词清单" in prompt
+    assert "角色面板" in prompt
+    assert "需要删掉的词" in prompt
     assert "节奏" in prompt and "生成" in prompt
-    assert "改完后自检" in prompt
+    assert "改完后检查" in prompt
 
 
 def test_chapter_seed_carries_longform_constraints_separately():
@@ -443,9 +445,10 @@ def test_body_prompt_includes_style_coach_and_scene_card_guidance():
 
     prompt = StoryOrchestrator()._body_prompt(story, 2, plan)
 
-    assert "写作教练 Style Coach" in prompt
+    assert "表达提醒" in prompt
+    assert "写作教练 Style Coach" not in prompt
     assert "web_game_leveling_opening" in prompt
-    assert "写作任务书" in prompt
+    assert "## 本章方向" in prompt
     assert "灰烬村交易行" in prompt
     assert "界面操作" in prompt
     assert "成交提示音" in prompt
@@ -482,7 +485,8 @@ def test_revision_prompt_includes_style_coach_and_fact_lock_rule():
 
     prompt = StoryOrchestrator()._revision_prompt(story, 2, "原正文", plan, review)
 
-    assert "写作教练 Style Coach" in prompt
+    assert "表达提醒" in prompt
+    assert "写作教练 Style Coach" not in prompt
     assert "web_game_leveling_opening" in prompt
     assert "事实锁硬规则" in prompt
     assert "职业、余额、库存、任务、装备和NPC能知道什么/不知道什么" in prompt

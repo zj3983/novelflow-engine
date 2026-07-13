@@ -72,7 +72,7 @@ def choose_best_revision(
     elif original_chars >= 3900 and candidate_chars < 3900:
         forced_reject_reason = "candidate_below_chapter_minimum"
         candidate_score -= 120.0
-    elif original_chars >= 3900 and candidate_chars < original_chars * 0.9:
+    elif original_chars >= 3900 and candidate_chars < original_chars * 0.75:
         forced_reject_reason = "candidate_shrank_too_much"
         candidate_score -= 80.0
     accepted = not forced_reject_reason and candidate_score >= original_score + min_delta

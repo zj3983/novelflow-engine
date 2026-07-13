@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -40,6 +41,29 @@ STIFF_DIALOGUE_TERMS = (
     "休要",
     "岂能",
     "诸位且听我一言",
+)
+
+MODERN_CHINESE_DIALOGUE_PROBLEMS = (
+    "先试，不深入",
+    "先试，不进",
+    "先看，不打",
+    "暂缓提交",
+    "确认收益",
+    "验证路线",
+    "柜台不认",
+    "系统不允许",
+    "条件未满足",
+    "背包里没有",
+)
+
+OLD_SLOGAN_PAYOFF_TERMS = (
+    "三十年河东",
+    "三十年河西",
+    "莫欺少年穷",
+    "今日之辱",
+    "来日必还",
+    "终有一日",
+    "我命由我不由天",
 )
 
 MECHANICAL_EXPLANATION_TERMS = (
@@ -125,11 +149,14 @@ def anti_ai_style_rules() -> list[str]:
 
     return [
         '拒绝华丽辞藻堆砌、拒绝成语套话、拒绝书面生硬表达、拒绝流水账、不要模板化心理描写、用词口语化生活化、句子按场面自然长短、人物说话要完整自然、人物行为符合人设、前后逻辑严谨、不要重复句式。',
+        "白描不是把句子全部切短：写清人物正在做什么、为什么这么做，以及动作带来的结果；情绪落在停顿、手势、语气和选择里。",
+        "白描示例：他走到门口，先听了听里面的动静，才抬手敲门；不要写成‘他谨慎判断后决定进入’。",
         "固定文风：默认偏直白爽文；如项目指定古风氛围感或细腻日常，则贴合指定风格。句子长短错落，少长难句，不用千篇一律的玄幻套话。",
         "一章分3到4个叙事段落推进：开局铺垫、冲突发生、高潮互动、结尾留钩子；不要一次性把事件压成流水账。",
         "生成后自检第一步：替换心中一紧、五味杂陈、脸色一变、眸光一凝、身形一闪、霎时间、此刻、见状、不由得、殊不知、与此同时等AI高频套话。",
         "用动作 + 微表情 + 细微生理反应替代抽象心理；例如用指尖收紧、肩线绷住、笑意变淡，而不是直接写心中一紧。",
         "打散句式：叙述可以拆短，但对话不要拆成口令；调换主语顺序，删除无意义修饰和注水形容词。",
+        "少解释只针对旁白：对白不能省略连接词和因果，不要写成‘窗坏、瓦落、门锁坏，先报我’这类名词清单加命令的电报句。",
         "增加专属生活化细节：人物小习惯、环境气味/声音/光线、道具使用痕迹、口头禅、过往小阴影或偏执小习惯。",
         "修正逻辑并防吃设定：核对实力、身份、伏笔、时间、地点、道具、装备、货币和任务状态；删除强行降智、强行巧合、强行煽情。",
         "改写对话：配角说话要符合身份，接地气，别绕太远；加说话动作，删除像念台词的空洞废话。",
@@ -166,6 +193,28 @@ def _append_issue(
 
 def _repeated_terms(body: str, terms: tuple[str, ...]) -> list[str]:
     return [term for term in terms if term in body]
+
+
+def _modern_chinese_dialogue_problems(body: str) -> list[str]:
+    problems = _repeated_terms(body, MODERN_CHINESE_DIALOGUE_PROBLEMS)
+    quoted_lines = re.findall(r"[“\"]([^”\"]{1,300})[”\"]", body, flags=re.DOTALL)
+    for line in quoted_lines:
+        inner = line.strip()
+        if re.fullmatch(r"[\u4e00-\u9fff]{2,4}[，,][\u4e00-\u9fff]{2,4}", inner):
+            problems.append(inner)
+        for sentence in re.split(r"[。！？!?]", inner):
+            if sentence.count("、") >= 2 and sentence.count("，") >= 2:
+                problems.append(f"清单式短句“{sentence}”")
+                continue
+            fragments = [fragment.strip() for fragment in re.split(r"[，,、]", sentence) if fragment.strip()]
+            compact_fragments = [re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", fragment) for fragment in fragments]
+            if len(compact_fragments) >= 3 and all(1 <= len(fragment) <= 6 for fragment in compact_fragments):
+                problems.append(f"清单式短句“{sentence.strip()}”")
+    result: list[str] = []
+    for item in problems:
+        if item not in result:
+            result.append(item)
+    return result
 
 
 def _mechanical_short_paragraph_ratio(body: str) -> float:
@@ -231,6 +280,32 @@ def review_prose_style(body: str) -> dict[str, Any]:
             issue=f"对话偏书面或模板化：{sample}。",
             plan="按角色身份改写对白：口语、带动作、意思完整；莽夫别文绉绉，商人要算账，NPC要有岗位口吻。",
             score=6,
+        )
+
+    modern_dialogue = _modern_chinese_dialogue_problems(body)
+    if modern_dialogue:
+        sample = "、".join(modern_dialogue[:6])
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="dialogue_texture",
+            issue=f"现代中文对话不自然：{sample}。台词像提纲句、翻译腔或系统说明，不像人物顺嘴说话。",
+            plan="少解释只针对旁白，不是让人物省略连接词。把清单式短句改成完整口语；例如“窗坏、瓦落、门锁坏，先报我”改成“要是窗子、屋瓦或者门锁出了问题，你先来报我”。“先试，不深入”改成“我就在坡口打两只看看，不往里走”；“柜台不认”改成“你手里没毒腺，接了也交不了”。",
+            score=5,
+        )
+
+    old_slogans = _repeated_terms(body, OLD_SLOGAN_PAYOFF_TERMS)
+    if old_slogans:
+        sample = "、".join(old_slogans[:6])
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="dialogue_texture",
+            issue=f"章末反打写成旧式口号：{sample}。这类句子脱离当章具体矛盾，容易显得装。",
+            plan="改成白话、贴当章具体矛盾的压句；例如从材料、任务牌、抢怪、前置任务或误判里落一句，不套成语、不喊口号。",
+            score=5,
         )
 
     mechanical_terms = _repeated_terms(body, MECHANICAL_EXPLANATION_TERMS)

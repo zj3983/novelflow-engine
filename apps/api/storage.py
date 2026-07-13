@@ -9,7 +9,20 @@ from pathlib import Path
 
 from packages.story_core.engine import ChapterBundle, StoryEngine
 from packages.story_core.generation_progress import report_generation_progress
-from packages.story_core.models import CharacterRelationship, CharacterState, NovelOutline, NovelProject, NovelStatus, StoryState, WorldBible
+from packages.story_core.models import (
+    CharacterPerformanceProfile,
+    CharacterRelationship,
+    CharacterState,
+    GamePanel,
+    NPCBehaviorProfile,
+    NovelOutline,
+    NovelProject,
+    NovelStatus,
+    PersonalityPortrait,
+    StoryState,
+    WorldBible,
+)
+from packages.story_core.novel_type_catalog import normalize_novel_type_ids
 from packages.story_core.runtime_config import get_runtime_strategy_settings
 
 
@@ -31,8 +44,13 @@ def _project_world_facts(project: NovelProject) -> list[str]:
     progression_ledger = world.get("progression_ledger") if isinstance(world.get("progression_ledger"), dict) else {}
 
     facts: list[str] = []
+    genre_ids = world.get("genre_plugin_ids") if isinstance(world.get("genre_plugin_ids"), list) else []
+    if genre_ids:
+        facts.append(f"小说类型：{genre_ids[0]}")
     if project.world_summary:
         facts.append(f"世界摘要：{project.world_summary}")
+    if project.current_focus:
+        facts.append(f"当前焦点：{project.current_focus}")
     if world.get("premise"):
         facts.append(f"世界前提：{world['premise']}")
     if volume_plan:
@@ -303,11 +321,28 @@ def _project_world_facts(project: NovelProject) -> list[str]:
     return deduped
 
 
+def _project_genre_selection(project: NovelProject) -> tuple[list[str], bool]:
+    world = project.world_blueprint if isinstance(project.world_blueprint, dict) else {}
+    raw = world.get("genre_plugin_ids")
+    if isinstance(raw, str):
+        has_explicit_value = bool(raw.strip())
+    elif isinstance(raw, list):
+        has_explicit_value = any(str(item).strip() for item in raw)
+    else:
+        has_explicit_value = False
+    return normalize_novel_type_ids(raw), has_explicit_value
+
+
 def _sync_project_character_profiles(story: StoryState, project: NovelProject) -> None:
     """Keep runtime characters as rich as the imported/project character bible."""
     profiles = [profile for profile in project.character_profiles if isinstance(profile, dict)]
     if not profiles:
         return
+    genre_ids, has_explicit_genre_value = _project_genre_selection(project)
+    story_genre_ids = normalize_novel_type_ids(story.genre) if not has_explicit_genre_value else []
+    effective_genre_ids = genre_ids or story_genre_ids
+    is_game_story = "game_webnovel" in effective_genre_ids
+    should_clear_game_state = bool(effective_genre_ids) and not is_game_story
 
     characters_by_name = {character.name: character for character in story.characters}
     for profile in profiles:
@@ -326,8 +361,41 @@ def _sync_project_character_profiles(story: StoryState, project: NovelProject) -
             character.role = role
 
         game_id = str(profile.get("game_id", "")).strip()
-        if game_id:
+        if should_clear_game_state:
+            character.game_id = ""
+            character.game_panel = GamePanel()
+        elif game_id:
             character.game_id = game_id
+
+        motivation = str(profile.get("motivation", "")).strip()
+        personality = str(profile.get("personality", "")).strip()
+        speech_style = str(profile.get("speech_style", "")).strip()
+        if motivation:
+            character.core_motivation = motivation
+        if personality:
+            character.behavior_logic = personality
+        if speech_style:
+            character.interaction_mode = speech_style
+
+        if should_clear_game_state:
+            existing_text = json.dumps(character.model_dump(), ensure_ascii=False)
+            legacy_terms = ("游戏", "网游", "玩家", "爆率", "余额", "法师", "铜币", "掉落")
+            if any(term in existing_text for term in legacy_terms):
+                character.performance_profile = CharacterPerformanceProfile()
+                character.npc_profile = NPCBehaviorProfile()
+                character.personality_portrait = PersonalityPortrait()
+                character.social_profile = {}
+                character.psychological_profile = {}
+                character.moral_profile = {}
+                character.poison_points = []
+                character.story_function = ""
+                character.chapter_role = ""
+                if motivation:
+                    character.core_motivation = motivation
+                if personality:
+                    character.behavior_logic = personality
+                if speech_style:
+                    character.interaction_mode = speech_style
 
         profile_goals = [str(goal).strip() for goal in profile.get("goals", []) if str(goal).strip()]
         if profile_goals:
@@ -388,6 +456,59 @@ def _sync_project_character_profiles(story: StoryState, project: NovelProject) -
             tension=float(edge.get("tension", 0.0) or 0.0),
             bond=str(edge.get("bond", "")).strip(),
         )
+
+
+def _default_story_style_for_genre(plugin_id: str) -> str:
+    if plugin_id == "game_webnovel":
+        return "升级流"
+    return "白描、现代中文"
+
+
+def _sync_project_generation_context(story: StoryState, project: NovelProject, *, has_history: bool) -> None:
+    story.author_constraints = list(project.author_constraints)
+    story.world_facts = _project_world_facts(project)
+    story.enabled_skill_ids = list(project.enabled_skill_ids)
+
+    genre_ids, _ = _project_genre_selection(project)
+    primary_genre = genre_ids[0] if genre_ids else ""
+    if primary_genre and primary_genre != "game_webnovel":
+        game_only_terms = ("交易行", "公会", "玩家", "NPC", "背包", "法杖", "铜币", "掉落", "网游", "游戏面板")
+        game_memory_terms = (*game_only_terms, "角色面板", "见习冒险者")
+        story.writing_lessons = [
+            lesson for lesson in story.writing_lessons if not any(term in lesson for term in game_only_terms)
+        ]
+        for character in story.characters:
+            character.game_id = ""
+            character.game_panel = GamePanel()
+            character.goals = [
+                goal for goal in character.goals if not any(term in goal for term in game_only_terms)
+            ]
+            character.memory = [
+                memory for memory in character.memory if not any(term in memory for term in game_memory_terms)
+            ]
+    # A freshly created story can already carry a placeholder chapter number
+    # from the simulation flow. History, not that number, decides whether the
+    # project is still initializing the story context.
+    first_generation = not has_history
+    outline_compact = "".join(story.outline.split())
+    placeholder_outline = not outline_compact or set(outline_compact) <= {"?", "？"}
+    style_compact = "".join(story.style.split())
+    placeholder_style = not style_compact or set(style_compact) <= {"?", "？"}
+    if project.seed_outline and (first_generation or placeholder_outline):
+        story.outline = project.seed_outline
+    if primary_genre:
+        story.genre = primary_genre
+    if primary_genre and (not story.style or first_generation or placeholder_style):
+        story.style = _default_story_style_for_genre(primary_genre)
+    elif not story.style or first_generation or placeholder_style:
+        story.style = "白描、现代中文"
+
+    ledger = project.world_blueprint.get("progression_ledger") if isinstance(project.world_blueprint, dict) else None
+    ledger_keys = set(ledger) if isinstance(ledger, dict) else set()
+    story_ledger_keys = set(story.progression_ledger) if isinstance(story.progression_ledger, dict) else set()
+    incompatible_ledger = bool(ledger_keys) and not ledger_keys.intersection(story_ledger_keys)
+    if isinstance(ledger, dict) and (first_generation or not story.progression_ledger or incompatible_ledger):
+        story.progression_ledger = dict(ledger)
 
 
 # SQLite database path: next to this file, or override via env var
@@ -742,12 +863,7 @@ class SQLiteStoryStore:
         if project_id:
             project = self.get_project(project_id)
             if project is not None:
-                record.story.author_constraints = list(project.author_constraints)
-                record.story.world_facts = _project_world_facts(project)
-                if not record.story.progression_ledger:
-                    ledger = project.world_blueprint.get("progression_ledger") if isinstance(project.world_blueprint, dict) else None
-                    if isinstance(ledger, dict):
-                        record.story.progression_ledger = dict(ledger)
+                _sync_project_generation_context(record.story, project, has_history=bool(record.history))
                 _sync_project_character_profiles(record.story, project)
 
         bundle = engine.generate_next_chapter(record.story)
@@ -916,12 +1032,45 @@ class SQLiteStoryStore:
             return None
         return self._deserialize_project(row[0])
 
+    def sync_project_context(self, project_id: str) -> StoryRecord | None:
+        """Synchronize project settings into its active story before inspection."""
+        project = self.get_project(project_id)
+        if project is None or not project.active_story_id:
+            return None
+        record = self.get(project.active_story_id)
+        if record is None:
+            return None
+        _sync_project_generation_context(record.story, project, has_history=bool(record.history))
+        _sync_project_character_profiles(record.story, project)
+        self._save_record(self._conn(), record)
+        return record
+
     def list_projects(self) -> list[NovelProject]:
         conn = self._conn()
         cursor = conn.execute(
             "SELECT project_json FROM novel_projects ORDER BY updated_at DESC, created_at DESC"
         )
         return [self._deserialize_project(row[0]) for row in cursor.fetchall()]
+
+    def delete_project(self, project_id: str, *, delete_stories: bool = True) -> NovelProject:
+        """Delete a project and, by default, all story branches owned by it."""
+        conn = self._conn()
+        project = self.get_project(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        story_ids = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT story_id FROM project_stories WHERE project_id = ?",
+                (project_id,),
+            ).fetchall()
+        ]
+        conn.execute("DELETE FROM novel_projects WHERE project_id = ?", (project_id,))
+        if delete_stories:
+            for story_id in story_ids:
+                conn.execute("DELETE FROM stories WHERE story_id = ?", (story_id,))
+        conn.commit()
+        return project
 
     def attach_story_to_project(self, project_id: str, story_id: str) -> None:
         conn = self._conn()

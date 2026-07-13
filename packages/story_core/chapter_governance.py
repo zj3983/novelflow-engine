@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
+from packages.story_core.genre_plugins import is_game_genre
+from packages.story_core.novel_type_catalog import normalize_novel_type_id
 
 
 def _as_list(value: Any, *, max_items: int = 8, item_chars: int = 120) -> list[str]:
@@ -40,9 +42,51 @@ def _event_plan(bundle: Any) -> dict[str, Any]:
     return plan if isinstance(plan, dict) else {}
 
 
-def _chapter_intent(chapter_number: int, bundle: Any) -> dict[str, Any]:
+def _story_text(story: Any) -> str:
+    return "\n".join(
+        [
+            str(getattr(story, "genre", "") or ""),
+            str(getattr(story, "style", "") or ""),
+            str(getattr(story, "outline", "") or ""),
+            "\n".join(str(item) for item in (getattr(story, "world_facts", []) or [])[:40]),
+            "\n".join(str(item) for item in (getattr(story, "author_constraints", []) or [])[:12]),
+        ]
+    )
+
+
+def _is_game_context(story: Any) -> bool:
+    return is_game_genre(_story_text(story))
+
+
+def _explicit_story_type(story: Any) -> str:
+    genre_id = normalize_novel_type_id(getattr(story, "genre", ""))
+    if genre_id:
+        return genre_id
+    for fact in (getattr(story, "world_facts", []) or [])[:40]:
+        text = str(fact)
+        if text.startswith(("小说类型：", "小说类型:")):
+            return normalize_novel_type_id(text.split("：", 1)[-1].split(":", 1)[-1])
+    return ""
+
+
+def _is_xuanhuan_context(story: Any) -> bool:
+    return _explicit_story_type(story) == "xuanhuan"
+
+
+def _is_xianxia_context(story: Any) -> bool:
+    return _explicit_story_type(story) == "xianxia"
+
+
+def _chapter_intent(
+    chapter_number: int,
+    bundle: Any,
+    *,
+    game_context: bool,
+    xuanhuan_context: bool,
+    xianxia_context: bool,
+) -> dict[str, Any]:
     event_plan = _event_plan(bundle)
-    if chapter_number == 1:
+    if game_context and chapter_number == 1:
         must_include = [
             "现实压力",
             "登录建号",
@@ -61,6 +105,60 @@ def _chapter_intent(chapter_number: int, bundle: Any) -> dict[str, Any]:
             "第一章禁止把低级材料写成扰乱市场",
         ]
         ending_change = "夜烬确认异常存在，并意识到千倍爆率能让自己在任务、装备或路线进度上领先一步。"
+    elif xuanhuan_context and chapter_number == 1:
+        must_include = [
+            "主角当前的低位处境",
+            "当章具体压力",
+            "核心异物或自创力量线索",
+            "资源限制或使用代价",
+            "主角做出一个有代价的小选择",
+            "只兑现一个小反馈",
+            "章末下一步麻烦",
+        ]
+        must_avoid = [
+            "无代价获得完整力量",
+            "一章解开异物全部秘密",
+            "路人全员嘲讽",
+            "旧式逆袭口号",
+            "大段讲力量等级表或世界历史",
+            "套用网游面板、任务、掉落、背包或货币模板",
+        ]
+        ending_change = compact_text(str(event_plan.get("next_focus") or getattr(bundle, "next_outline", "")), 180)
+    elif xianxia_context and chapter_number == 1:
+        must_include = [
+            "外门处境或低位身份",
+            "当章具体压力",
+            "宗门差事的来处和没人愿接的原因",
+            "题材核心物件或地点",
+            "主角做出一个有代价的小选择",
+            "只兑现一个小反馈",
+            "章末下一步麻烦",
+        ]
+        must_avoid = [
+            "废丹房捡漏",
+            "一章顿悟大功法",
+            "长老无理由送核心资源",
+            "路人全员嘲讽",
+            "旧式逆袭口号",
+            "大段讲境界表、宗门史或功法说明",
+            "套用网游面板、任务、掉落、背包或货币模板",
+        ]
+        ending_change = compact_text(str(event_plan.get("next_focus") or getattr(bundle, "next_outline", "")), 180)
+    elif chapter_number == 1:
+        must_include = [
+            "主角当前处境",
+            "当章具体压力",
+            "题材核心物件或地点",
+            "主角做出一个有代价的小选择",
+            "章末下一步目标",
+        ]
+        must_avoid = [
+            "套用其他题材的面板、任务、掉落或交易规则",
+            "无铺垫直接变强",
+            "旧式逆袭口号",
+            "把后台规则写成正文说明",
+        ]
+        ending_change = compact_text(str(event_plan.get("next_focus") or getattr(bundle, "next_outline", "")), 180)
     else:
         must_include = [
             "承接上一章状态",
@@ -90,7 +188,12 @@ def _chapter_intent(chapter_number: int, bundle: Any) -> dict[str, Any]:
 
 def _runtime_context(story: Any, bundle: Any, chapter_number: int) -> dict[str, Any]:
     event_plan = _event_plan(bundle)
-    latest = (getattr(story, "chapter_summaries", []) or [])[-1] if getattr(story, "chapter_summaries", []) else None
+    previous = [
+        summary
+        for summary in (getattr(story, "chapter_summaries", []) or [])
+        if int(getattr(summary, "chapter_number", 0) or 0) < chapter_number
+    ]
+    latest = max(previous, key=lambda summary: int(getattr(summary, "chapter_number", 0) or 0), default=None)
     return {
         "chapter_number": chapter_number,
         "protagonist": _protagonist_context(story),
@@ -106,21 +209,49 @@ def _runtime_context(story: Any, bundle: Any, chapter_number: int) -> dict[str, 
     }
 
 
-def _rule_stack(chapter_number: int) -> dict[str, list[str]]:
-    hard_facts = [
-        "现实姓名：苏叶；游戏ID：夜烬；现实段落可称苏叶，游戏内行动优先称夜烬。",
-        "开局玩家初始身份统一为见习冒险者（未转职）；夜烬只是选择法杖和基础火球术倾向，不是隐藏职业或特殊职业。",
-        "背包按同类道具堆叠计算格子：灰狼毒腺×8和粗糙狼皮×7只占两个材料格，章末背包应写2/20或占用两个材料格。",
-        "灰烬村新手阶段主要用铜币；币制是 1金币=100银币=10000铜币，金币只作为大额单位轻量露出。",
-        "低级材料不会一次扰乱市场；交易行、公会、商人只能看到价格波动、批次、时间戳等弱线索。",
-    ]
-    if chapter_number == 1:
-        hard_facts.extend(
-            [
-                "怪物统一为灰狼，不要写成灰鼠或其他怪。",
-                "第一章只做首次验证，重点是看出千倍爆率会让夜烬比普通玩家更快完成任务/装备门槛，不写市场风暴。",
-            ]
-        )
+def _rule_stack(
+    chapter_number: int,
+    *,
+    game_context: bool,
+    xuanhuan_context: bool,
+    xianxia_context: bool,
+) -> dict[str, list[str]]:
+    if game_context:
+        hard_facts = [
+            "现实姓名：苏叶；游戏ID：夜烬；现实段落可称苏叶，游戏内行动优先称夜烬。",
+            "开局玩家初始身份统一为见习冒险者（未转职）；夜烬只是选择法杖和基础火球术倾向，不是隐藏职业或特殊职业。",
+            "背包按同类道具堆叠计算格子：灰狼毒腺×8和粗糙狼皮×7只占两个材料格，章末背包应写2/20或占用两个材料格。",
+            "灰烬村新手阶段主要用铜币；币制是 1金币=100银币=10000铜币，金币只作为大额单位轻量露出。",
+            "低级材料不会一次扰乱市场；交易行、公会、商人只能看到价格波动、批次、时间戳等弱线索。",
+        ]
+        if chapter_number == 1:
+            hard_facts.extend(
+                [
+                    "怪物统一为灰狼，不要写成灰鼠或其他怪。",
+                    "第一章只做首次验证，重点是看出千倍爆率会让夜烬比普通玩家更快完成任务/装备门槛，不写市场风暴。",
+                ]
+            )
+    elif xuanhuan_context:
+        hard_facts = [
+            "东方玄幻规则只从本项目世界观、作者约束和当章计划中来，不套用网游或其他题材模板。",
+            "自创力量和异常物件必须有可见反馈、成长条件和使用代价，不能直接解决所有问题。",
+            "资源成长、势力反应和世界秘密要随主角行动逐步推进，不一次讲完力量体系。",
+            "章末钩子必须来自当章具体矛盾，不套旧式逆袭口号。",
+        ]
+    elif xianxia_context:
+        hard_facts = [
+            "修仙题材规则只从本项目世界观、作者约束和当章计划中来，不套用网游面板、任务、掉落、背包或货币模板。",
+            "主角的身份、境界、资源、差事和机缘必须沿用本书设定，不得改成其他题材默认职业。",
+            "残缺机缘只能逐步反馈：先给异常、线索、小物件或一息变化，不直接送完整传承或大境界突破。",
+            "宗门差事必须有具体利益关系：谁安排、谁不愿接、为什么没油水或有忌讳，都要落到场面里。",
+            "章末钩子必须来自当章具体矛盾，不套旧式逆袭口号。",
+        ]
+    else:
+        hard_facts = [
+            "题材规则只从本项目世界观、作者约束和当章计划中来，不套用网游面板、任务、掉落、背包或货币模板。",
+            "主角的能力、身份、资源和处境必须沿用本书设定，不得改成其他题材默认职业。",
+            "章末钩子必须来自当章具体矛盾，不套旧式口号。",
+        ]
 
     return {
         "hard_facts": hard_facts,
@@ -207,7 +338,14 @@ def review_chapter_governance(governance: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    if chapter_number == 1:
+    hard_text = "、".join(hard_facts)
+    game_first_chapter = chapter_number == 1 and (
+        "见习冒险者" in hard_text
+        or "灰烬村" in hard_text
+        or "千倍爆率" in hard_text
+        or "怪物统一" in hard_text
+    )
+    if game_first_chapter:
         missing = [ban for ban in FIRST_CHAPTER_REQUIRED_BANS if not any(ban in item for item in must_avoid)]
         if missing:
             issues.append(
@@ -242,11 +380,25 @@ def governance_quality_gate(governance: dict[str, Any]) -> dict[str, Any]:
 
 def build_chapter_governance(story: Any, bundle: Any | None = None, *, chapter_number: int | None = None) -> dict[str, Any]:
     target_chapter = int(chapter_number or getattr(bundle, "chapter_number", None) or (getattr(story, "current_chapter", 0) + 1))
+    game_context = _is_game_context(story)
+    xuanhuan_context = (not game_context) and _is_xuanhuan_context(story)
+    xianxia_context = (not game_context) and _is_xianxia_context(story)
     governance = {
         "schema_version": "chapter-governance/v1",
-        "chapter_intent": _chapter_intent(target_chapter, bundle),
+        "chapter_intent": _chapter_intent(
+            target_chapter,
+            bundle,
+            game_context=game_context,
+            xuanhuan_context=xuanhuan_context,
+            xianxia_context=xianxia_context,
+        ),
         "runtime_context": _runtime_context(story, bundle, target_chapter),
-        "rule_stack": _rule_stack(target_chapter),
+        "rule_stack": _rule_stack(
+            target_chapter,
+            game_context=game_context,
+            xuanhuan_context=xuanhuan_context,
+            xianxia_context=xianxia_context,
+        ),
     }
     governance["governance_review"] = review_chapter_governance(governance)
     return governance

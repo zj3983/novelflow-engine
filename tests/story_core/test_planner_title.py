@@ -23,3 +23,15 @@ def test_web_game_chapter_title_prioritizes_cost_or_risk():
     assert title == "回村补给"
     assert "铜币" not in title
     assert len(title) <= 10
+
+
+def test_xianxia_chapter_title_uses_the_concrete_chapter_object():
+    title = build_chapter_title(
+        1,
+        next_focus="林照接下祖祠守炉差事，换到残香的第一个可验证反馈。",
+        genre="xianxia",
+    )
+
+    assert title == "断香炉开口"
+    assert "真相" not in title
+    assert "道韵" not in title

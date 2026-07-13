@@ -180,6 +180,15 @@ def build_chapter_title(
             return "清道夫委托"
         if any(token in source_probe for token in ("补给", "耐久", "成本", "铜币", "寄售", "材料")):
             return "回村补给"
+    if any(token in genre_lower for token in ("xianxia", "cultivation", "仙侠", "修仙", "修真")):
+        if any(token in source_probe for token in ("残香", "断香炉")) and any(
+            token in source_probe for token in ("反馈", "开口", "提醒", "回应")
+        ):
+            return "断香炉开口"
+        if "青砖" in source_probe:
+            return "第三块青砖"
+        if any(token in source_probe for token in ("祖祠", "守炉")):
+            return "祖祠守炉"
 
     allowed_topics = {
         "witness", "ledger", "forgery", "letter",

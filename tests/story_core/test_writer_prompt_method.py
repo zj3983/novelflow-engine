@@ -7,16 +7,13 @@ def test_segment_prompt_puts_scene_method_before_guardrails():
     spec = build_segment_specs(1, {})[0]
     prompt = build_segment_prompt(chapter_number=1, spec=spec, plan={})
 
-    assert "OUTPUT CONTRACT: prose only" in prompt
-    assert "写手身份：你只负责把本段写成可读正文" in prompt
-    assert "番茄白话风" in prompt
-    assert "不要在正文或标题里写后台硬词" in prompt
-    assert "不要把目标写成后台硬词" in prompt
-    assert "情绪暗线" in prompt
-    assert "写法施工单" in prompt
-    assert "进入压力 -> 尝试动作 -> 即时反馈 -> 选择代价 -> 余波/小钩子" in prompt
-    assert "抽象判断必须落到具体物件或动作" in prompt
-    assert prompt.index("写法施工单") < prompt.index("硬性质量闸门")
+    assert "输出要求：只写连续小说正文" in prompt
+    assert "把这一场写成白话小说" in prompt
+    assert "要有完整来回" in prompt
+    assert "情绪放进动作、停顿和回答里" in prompt
+    assert "写法施工单" not in prompt
+    assert "本段收住自己的场面" in prompt
+    assert prompt.index("## 本章方向") < prompt.index("写作保护线")
 
 
 def test_segment_prompt_uses_web_game_director_card_not_full_plan_dump():
@@ -77,12 +74,12 @@ def test_fallback_body_prompt_uses_same_scene_method():
     story = StoryState(story_id="s-method", outline="都市悬疑", genre="悬疑", style="克制")
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "旧楼"}})
 
-    assert "OUTPUT CONTRACT: prose only" in prompt
-    assert "写手身份：你只负责把本章写成可读正文" in prompt
-    assert "情绪暗线" in prompt
-    assert "写法施工单" in prompt
-    assert "本章按“进入压力 -> 尝试动作 -> 即时反馈 -> 选择代价 -> 余波/小钩子”推进" in prompt
-    assert prompt.index("写法施工单") < prompt.index("硬性质量闸门")
+    assert "## 输出要求" in prompt
+    assert "写成一章顺着人物行动自然展开的白话小说" in prompt
+    assert "人物说话要有来有回" in prompt
+    assert "## 本章方向" in prompt
+    assert "写法施工单" not in prompt
+    assert prompt.index("## 本章方向") < prompt.index("## 本章事实")
 
 
 def test_fallback_body_prompt_includes_web_game_director_card():
@@ -105,16 +102,16 @@ def test_fallback_body_prompt_includes_web_game_director_card():
         },
     )
 
-    assert "网游导演卡" in prompt
+    assert "## 本章方向" in prompt
     assert "网游写法方法卡" in prompt
-    assert "玩家行动链" in prompt
-    assert "satisfaction_loop" in prompt
-    assert "可见收益" in prompt
-    assert "外人误判" in prompt
-    assert "小样例" in prompt
+    assert "眼前目标" in prompt
+    assert "看得见的小进展" in prompt
+    assert "隐藏优势只在幕后起作用" in prompt
+    assert "## 本章方向" in prompt
+    assert "小样例" not in prompt
     assert "试清楚能不能走，不急着赚钱" in prompt
-    assert "第一章别写：把材料换成钱、市场玩家盯上主角、公共频道或玩家势力追过来" in prompt
-    assert "寄售、成交、到账" not in prompt
+    assert "本章先不写" in prompt
+    assert all(term in prompt for term in ("寄售", "成交", "到账"))
     assert "边界章禁写" not in prompt
 
 
@@ -124,14 +121,136 @@ def test_web_game_first_chapter_whole_body_prompt_has_plain_four_beat_contract()
 
     assert "整章四拍" in prompt
     assert "网游写法方法卡" in prompt
-    assert "先写代价，再写收获" in prompt
+    assert "遇到阻力后付出代价" in prompt
     assert "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子" in prompt
     assert "本次不用分段生成" in prompt
     assert "白描" in prompt
     assert "自然对话" in prompt
-    assert "不要用华丽词语、夸张比喻或谜语式暗示" in prompt
-    assert "台词不能替作者讲规则" in prompt
-    assert prompt.index("整章四拍") < prompt.index("硬性质量闸门")
+    assert "白描不是把句子全部切短" in prompt
+    assert "句子清楚，动作具体，台词像正常人说话" in prompt
+    assert "规则从动作和反馈里露出来" in prompt
+    assert prompt.index("整章四拍") < prompt.index("## 本章事实")
+
+
+def test_body_prompt_uses_writer_facing_material_not_backend_contract_keys():
+    story = StoryState(story_id="s-writer-facing", outline="网游开服，千倍爆率。", genre="网游", style="番茄升级流")
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})
+
+    assert "本章可用材料" in prompt
+    assert "这章可以兑现的小进展" in prompt
+    assert "生成前世界推演契约" not in prompt
+    assert "writing_contract" not in prompt
+    assert "allowed_progress" not in prompt
+    assert "chapter_contract" not in prompt
+    assert "current_level" not in prompt
+    assert "progression_stage" not in prompt
+    assert "must_show" not in prompt
+    assert "must_not_write" not in prompt
+
+
+def test_body_prompt_prefers_positive_craft_guidance_over_rule_scolding():
+    story = StoryState(story_id="s-positive-guidance", outline="网游开服，千倍爆率。", genre="网游", style="番茄升级流")
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})
+
+    assert "段落写法：长短段交替" in prompt
+    assert "人物说话要有来有回" in prompt
+    assert "段落形态：禁止" not in prompt
+    assert "后台术语和事实矛盾词不得进正文" not in prompt
+    assert prompt.count("不要") <= 8
+    assert prompt.count("禁止") <= 2
+    assert prompt.count("不得") <= 2
+
+
+def test_body_prompt_loads_only_enabled_skill_purposes(monkeypatch):
+    from packages.story_core import orchestrator as orchestrator_module
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "skill_pack_prompt_context",
+        lambda skill_ids, *, purpose, max_chars_per_pack: [{"purpose": purpose, "skill_ids": skill_ids}],
+    )
+    story = StoryState(
+        story_id="s-skill-stage",
+        outline="都市故事",
+        genre="都市",
+        style="白描",
+        enabled_skill_ids=["plain-webnovel"],
+    )
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {})
+
+    assert "启用 Skill 模块摘要" in prompt
+    assert "plain-webnovel" in prompt
+
+
+def test_body_prompt_does_not_teach_by_checklist_or_imitation_sample():
+    story = StoryState(story_id="s-compact-method", outline="网游开服，千倍爆率。", genre="网游", style="番茄升级流")
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})
+
+    assert "写法施工单" not in prompt
+    assert "小样例" not in prompt
+    assert "进入压力 -> 尝试动作 -> 即时反馈 -> 选择代价 -> 余波/小钩子" not in prompt
+
+
+def test_body_prompt_has_five_writer_facing_sections_without_duplicate_style_rules():
+    story = StoryState(story_id="s-five", outline="外门守炉", genre="xianxia", style="白描")
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        1,
+        {"event_plan": {"chapter_title": "守炉", "character_moves": [{"name": "林照"}]}},
+    )
+
+    headings = ["## 输出要求", "## 本章方向", "## 本章事实", "## 出场人物", "## 正文写法"]
+    assert all(heading in prompt for heading in headings)
+    assert [prompt.index(heading) for heading in headings] == sorted(prompt.index(heading) for heading in headings)
+    assert prompt.count("第三人称有限视角") == 1
+    assert "event_plan" not in prompt
+    assert "character_moves" not in prompt
+    assert "每句台词" not in prompt
+    assert "全面禁用" not in prompt
+
+
+def test_body_prompt_translates_planning_jargon_into_natural_chinese():
+    story = StoryState(story_id="s-natural-direction", outline="外门守炉", genre="xianxia", style="白描")
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        1,
+        {
+            "writing_taskbook": {
+                "chapter_number": 1,
+                "chapter_goal": "让世界根据主角行动给出可见反应",
+                "scenes": [
+                    {
+                        "key": "test",
+                        "title": "库房",
+                        "goal": "确认关键账本或状态",
+                        "required_surface": "NPC/环境/任务/对手反应",
+                        "exit_state": "收益和代价落收到反馈本或关系里",
+                    }
+                ],
+            }
+        },
+    )
+
+    for jargon in (
+        "关键账本或状态",
+        "让世界根据主角行动给出可见反应",
+        "NPC/环境/任务/对手反应",
+        "收益和代价落收到反馈本或关系里",
+    ):
+        assert jargon not in prompt
+    assert "主角动手以后，马上出现一个具体结果或麻烦" in prompt
+    assert "现场人物、环境或对手的反应" in prompt
+
+
+def test_body_prompt_keeps_normal_chinese_connectors_available():
+    story = StoryState(story_id="s-connectors", outline="外门守炉", genre="xianxia", style="白描")
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "守炉"}})
+
+    assert "禁用‘但是’" not in prompt
+    assert "禁用‘虽然’" not in prompt
+    assert "正常的接话、解释和情绪变化" in prompt
+    assert "不要把多个判断压成逗号清单" in prompt
+    assert "没好处，没奖励，地方偏" in prompt
 
 
 def test_web_game_second_chapter_does_not_inherit_first_chapter_service_bans():
@@ -153,11 +272,38 @@ def test_revision_prompt_keeps_method_and_separates_viewpoint_rule():
         {"pass": False, "issues": ["视角越界"], "revision_plan": ["改回主角限知"]},
     )
 
-    assert "OUTPUT CONTRACT: prose only" in prompt
-    assert "写手身份：你只负责把本章写成可读正文" in prompt
-    assert "写法施工单" in prompt
-    assert "一、视角：保持主角限知第三人称" in prompt
-    assert "审核术语、规则术语、推演词不得入正文" in prompt
-    assert "上帝视角。审核术语" not in prompt
+    assert "## 输出要求" in prompt
+    assert "写成一章顺着人物行动自然展开的白话小说" in prompt
+    assert "写法施工单" not in prompt
+    assert "第三人称有限视角" in prompt
+    assert "## 修改目标" in prompt
+    assert "## 原正文" in prompt
+    assert "上帝视角。工作流词" not in prompt
+
+
+def test_revision_prompt_reuses_five_sections_and_adds_only_revision_material():
+    story = StoryState(story_id="s-revision-five", outline="外门守炉", genre="xianxia", style="白描")
+    prompt = StoryOrchestrator()._revision_prompt(
+        story,
+        1,
+        "林照关上门。",
+        {"event_plan": {"chapter_title": "守炉"}},
+        {"issues": ["对话太短"], "revision_plan": ["补成完整来回"]},
+    )
+
+    headings = [
+        "## 输出要求",
+        "## 本章方向",
+        "## 本章事实",
+        "## 出场人物",
+        "## 正文写法",
+        "## 修改目标",
+        "## 原正文",
+    ]
+    assert all(heading in prompt for heading in headings)
+    assert [prompt.index(heading) for heading in headings] == sorted(prompt.index(heading) for heading in headings)
+    assert "对话太短" in prompt
+    assert "林照关上门。" in prompt
+    assert "scores" not in prompt
 
 

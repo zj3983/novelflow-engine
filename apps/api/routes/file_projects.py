@@ -16,6 +16,7 @@ from packages.story_core.book_dissection import diagnose_project_chapter, dissec
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import AgentRuntimeState, AgentSettings
+from packages.story_core.simplified_review import build_simplified_review
 
 
 router = APIRouter()
@@ -33,10 +34,15 @@ class FileProjectRegenerateRequest(BaseModel):
     guidance: str | None = None
 
 
+class FileProjectGenerateNextRequest(BaseModel):
+    chapter_direction_id: str | None = None
+
+
 class FileProjectGenerationJobRequest(BaseModel):
     chapter_number: int | None = None
     variant: str | None = None
     guidance: str | None = None
+    chapter_direction_id: str | None = None
 
 
 class FileProjectUpdateRequest(BaseModel):
@@ -48,6 +54,7 @@ class FileProjectUpdateRequest(BaseModel):
     world_blueprint: dict[str, Any] | None = None
     character_profiles: list[dict[str, Any]] | None = None
     relationship_graph: list[dict[str, Any]] | None = None
+    enabled_skill_ids: list[str] | None = None
     status: str | None = None
     pipeline_stage: str | None = None
 
@@ -209,6 +216,7 @@ def _run_file_generation_job(
     chapter_number: int | None = None,
     variant: str | None = None,
     guidance: str | None = None,
+    chapter_direction_id: str | None = None,
 ) -> None:
     def report_progress(message: str) -> None:
         _update_file_generation_job(job_id, status="running", progress=message)
@@ -221,7 +229,7 @@ def _run_file_generation_job(
             generated = (
                 store.regenerate_chapter(chapter_number, variant=variant, guidance=guidance)
                 if isinstance(chapter_number, int) and chapter_number > 0
-                else store.generate_next_chapter()
+                else store.generate_next_chapter(chapter_direction_id=chapter_direction_id)
             )
     except Exception as exc:  # pragma: no cover - background safety net
         _update_file_generation_job(job_id, status="failed", progress="generation failed", error=str(exc))
@@ -299,6 +307,7 @@ def _project_payload(store: FileProjectStore) -> dict[str, Any]:
         "world_blueprint": project.get("world_blueprint") or state.get("world_blueprint") or {},
         "character_profiles": project.get("character_profiles") or [],
         "relationship_graph": project.get("relationship_graph") or [],
+        "enabled_skill_ids": project.get("enabled_skill_ids") or state.get("enabled_skill_ids") or [],
         "status": project.get("status") or "simulating",
         "pipeline_stage": project.get("pipeline_stage") or ("simulating" if current_chapter else "environment_ready"),
         "active_story_id": _story_id_for(store),
@@ -316,7 +325,13 @@ def _project_payload(store: FileProjectStore) -> dict[str, Any]:
 
 def _story_payload(store: FileProjectStore) -> dict[str, Any]:
     state = store.state()
-    history = [store.chapter(number) for number in store.chapter_numbers()]
+    history = []
+    for number in store.chapter_numbers():
+        chapter = dict(store.chapter(number))
+        quality = dict(chapter.get("quality_report") or {})
+        quality["simplified_review"] = build_simplified_review(quality)
+        chapter["quality_report"] = quality
+        history.append(chapter)
     current_chapter = int(state.get("current_chapter") or (history[-1].get("chapter_number") if history else 0) or 0)
     return {
         "story_id": _story_id_for(store),
@@ -367,6 +382,31 @@ def init_file_project_routes() -> APIRouter:
     def get_file_project(project_id: str) -> dict[str, Any]:
         return _project_payload(_store_for(project_id))
 
+    @router.get("/file-projects/{project_id}/characters")
+    def get_file_project_characters(project_id: str) -> list[dict[str, Any]]:
+        store = _store_for(project_id)
+        return [item for item in store.state().get("characters", []) if isinstance(item, dict)]
+
+    @router.put("/file-projects/{project_id}/characters/{character_name}")
+    def update_file_project_character(project_id: str, character_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.update_character(character_name, payload)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/file-projects/{project_id}/characters/{character_name}/complete-portrait")
+    def complete_file_project_character_portrait(project_id: str, character_name: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.complete_character_portrait(character_name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @router.put("/file-projects/{project_id}")
     def update_file_project(project_id: str, payload: FileProjectUpdateRequest) -> dict[str, Any]:
         store = _store_for(project_id)
@@ -377,6 +417,11 @@ def init_file_project_routes() -> APIRouter:
     def get_file_project_writing_packet(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:
         store = _store_for(project_id)
         return store.writing_packet(chapter_number)
+
+    @router.get("/file-projects/{project_id}/prompt-preview")
+    def get_file_project_prompt_preview(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:
+        store = _store_for(project_id)
+        return store.prompt_preview(chapter_number)
 
     @router.post("/file-projects/{project_id}/book-dissection/chapter")
     def dissect_file_project_chapter(project_id: str, payload: BookDissectionChapterRequest) -> dict[str, Any]:
@@ -390,9 +435,9 @@ def init_file_project_routes() -> APIRouter:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.post("/file-projects/{project_id}/generate-next")
-    def generate_file_project_next(project_id: str) -> dict[str, Any]:
+    def generate_file_project_next(project_id: str, payload: FileProjectGenerateNextRequest | None = None) -> dict[str, Any]:
         store = _store_for(project_id)
-        generated = store.generate_next_chapter()
+        generated = store.generate_next_chapter(chapter_direction_id=payload.chapter_direction_id if payload else None)
         return {
             "schema_version": "file-project-generate-next-response/v1",
             "project": _project_payload(store),
@@ -421,6 +466,7 @@ def init_file_project_routes() -> APIRouter:
         target_chapter = payload.chapter_number if payload and isinstance(payload.chapter_number, int) else None
         variant = payload.variant if payload else None
         guidance = payload.guidance if payload else None
+        chapter_direction_id = payload.chapter_direction_id if payload else None
         with _file_generation_jobs_lock:
             active_job_id = _active_file_generation_jobs.get(story_id)
             if active_job_id:
@@ -442,6 +488,7 @@ def init_file_project_routes() -> APIRouter:
                 "target_chapter": target_chapter,
                 "variant": variant or "",
                 "guidance": guidance or "",
+                "chapter_direction_id": chapter_direction_id or "",
                 "starting_chapter": int(store.summary().get("current_chapter") or 0),
                 "error": "",
                 "created_at": now,
@@ -451,14 +498,14 @@ def init_file_project_routes() -> APIRouter:
             _active_file_generation_jobs[story_id] = job_id
             response = _file_generation_job_response(job)
 
-        _file_generation_executor.submit(
-            _run_file_generation_job,
-            job_id,
-            project_id,
-            chapter_number=target_chapter,
-            variant=variant,
-            guidance=guidance,
-        )
+        job_kwargs: dict[str, object] = {
+            "chapter_number": target_chapter,
+            "variant": variant,
+            "guidance": guidance,
+        }
+        if chapter_direction_id:
+            job_kwargs["chapter_direction_id"] = chapter_direction_id
+        _file_generation_executor.submit(_run_file_generation_job, job_id, project_id, **job_kwargs)
         return response
 
     @router.get("/file-projects/{project_id}/generation-jobs/{job_id}")

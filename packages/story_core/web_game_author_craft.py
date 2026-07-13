@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
+from packages.story_core.writing_taskbook import writer_facing_text
 
 
 def build_web_game_author_craft(chapter_number: int, *, chapter_goal: str = "") -> dict[str, Any]:
@@ -154,7 +155,7 @@ def plain_writer_phrase(text: str) -> str:
     result = text
     for old, new in replacements:
         result = result.replace(old, new)
-    return result
+    return writer_facing_text(result)
 
 
 def _plain_writer_phrase(text: str) -> str:
@@ -247,10 +248,10 @@ def format_web_game_director_card(card: dict[str, Any] | None) -> str:
         lines.append("生态反应阶梯：" + "；".join(reactions))
     rules = compact_list([_plain_writer_phrase(str(item)) for item in (card.get("write_rules") or [])], max_items=4, item_chars=80)
     if rules:
-        lines.append("写法硬规：" + "；".join(rules))
+        lines.append("写法提醒：" + "；".join(rules))
     bans = compact_list(card.get("boundary_chapter_bans") or [], max_items=8, item_chars=20)
     if bans:
-        lines.append("第一章别写：把材料换成钱、市场玩家盯上主角、公共频道或玩家势力追过来")
+        lines.append("第一章先放后面：材料换钱、市场玩家盯上主角、公共频道扩散、玩家势力追过来")
     fact_locks = compact_list([_plain_writer_phrase(str(item)) for item in (card.get("fact_locks") or [])], max_items=6, item_chars=100)
     if fact_locks:
         lines.append("变体事实锁：" + "；".join(fact_locks))

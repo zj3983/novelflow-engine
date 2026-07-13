@@ -419,3 +419,43 @@ def complete_character_portrait(
         update={"personality_portrait": completed},
         deep=True,
     )
+
+
+def build_scene_portrait_slice(card: dict[str, Any], *, max_chars: int = 480) -> dict[str, Any]:
+    """Extract only the behavior needed for the current scene prompt."""
+
+    portrait = card.get("personality_portrait") if isinstance(card.get("personality_portrait"), dict) else {}
+    behavior = portrait.get("behavior") if isinstance(portrait.get("behavior"), dict) else {}
+    emotion = portrait.get("emotion") if isinstance(portrait.get("emotion"), dict) else {}
+    social = portrait.get("social") if isinstance(portrait.get("social"), dict) else {}
+    voice = portrait.get("voice") if isinstance(portrait.get("voice"), dict) else {}
+    usage = card.get("story_usage") if isinstance(card.get("story_usage"), dict) else {}
+    chapter_usage = usage.get("this_chapter_usage") if isinstance(usage.get("this_chapter_usage"), dict) else {}
+    performance = card.get("voice_and_action") if isinstance(card.get("voice_and_action"), dict) else {}
+
+    result = {
+        "drive": str(chapter_usage.get("drive") or card.get("webnovel_profile", {}).get("core_motivation") or "").strip(),
+        "current_emotion": str(usage.get("current_emotion") or chapter_usage.get("status") or "neutral").strip(),
+        "pressure_behavior": str(behavior.get("pressure_mode") or performance.get("action_style") or "").strip(),
+        "conflict_response": str(behavior.get("conflict_response") or "").strip(),
+        "social_stance": str(social.get("authority") or social.get("strangers") or "").strip(),
+        "triggers": [str(item).strip() for item in emotion.get("triggers", []) if str(item).strip()][:3],
+        "mannerisms": [str(item).strip() for item in emotion.get("mannerisms", []) if str(item).strip()][:3],
+        "voice": str(voice.get("sentence_habit") or performance.get("speech_style") or "").strip(),
+        "writing_limits": [str(item).strip() for item in portrait.get("writing_limits", []) if str(item).strip()][:4],
+    }
+    # Keep each signal present and bounded without changing the structured card.
+    string_limits = {
+        "drive": 90,
+        "current_emotion": 30,
+        "pressure_behavior": 100,
+        "conflict_response": 90,
+        "social_stance": 70,
+        "voice": 100,
+    }
+    for key, limit in string_limits.items():
+        result[key] = result[key][:limit]
+    result["triggers"] = [item[:40] for item in result["triggers"]]
+    result["mannerisms"] = [item[:40] for item in result["mannerisms"]]
+    result["writing_limits"] = [item[:55] for item in result["writing_limits"]]
+    return result

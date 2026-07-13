@@ -104,6 +104,71 @@ def test_revise_chapter_body_keeps_original_when_llm_revision_scores_worse():
     assert quality["revision_safety"]["selected"] == "original"
 
 
+def test_manual_revision_instructions_are_not_short_circuited_by_local_patch(monkeypatch):
+    story = StoryState(
+        story_id="s-manual-revision-priority",
+        outline="林照看守断香炉。",
+        genre="xianxia",
+        style="白描",
+        current_chapter=1,
+        characters=[CharacterState(name="林照", role="protagonist")],
+    )
+    original_body = "昨晚那句话是真的，今晚这句也是真的。" * 300
+    bundle = ChapterBundle(
+        chapter_number=1,
+        chapter_title="断香炉开口",
+        body=original_body,
+        next_outline="赵管事带人清点祖祠。",
+        event_plan={"next_focus": "赵管事带人清点祖祠。"},
+        updated_story=story,
+    )
+
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.apply_expression_patches_from_review",
+        lambda body, review: (body.replace("昨晚", "前夜", 1), {"applied": True}),
+    )
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator._review_chapter_body",
+        lambda *args, **kwargs: {"pass": True, "issues": [], "scores": {}, "adversarial_cut_review": {"pass": True}},
+    )
+
+    class TrackingOrchestrator(StoryOrchestrator):
+        chat_called = False
+
+        def _chat(self, story, prompt: str, *, max_tokens: int, json_mode: bool, agent: str = "director"):
+            self.chat_called = True
+            return original_body.replace("昨晚那句话是真的，今晚这句也是真的。", "门外传来脚步声。"), ""
+
+    orchestrator = TrackingOrchestrator()
+    orchestrator.revise_chapter_body(story, bundle, {"revision_plan": []}, ["章末加入赵管事清点祖祠。"])
+
+    assert orchestrator.chat_called is True
+
+
+def test_refresh_revised_metadata_replaces_generic_xianxia_title():
+    story = StoryState(
+        story_id="s-revised-title",
+        outline="林照看守断香炉。",
+        genre="xianxia",
+        style="白描",
+        characters=[CharacterState(name="林照", role="protagonist")],
+    )
+    bundle = ChapterBundle(
+        chapter_number=1,
+        chapter_title="真相道韵",
+        body="林照接下祖祠守炉差事，夜里听见残香开口提醒。" * 100,
+        next_outline="有人来试门。",
+        event_plan={"next_focus": "残香给出第一个反馈，有人夜里来试门。"},
+        chapter_summary={"chapter_number": 1, "chapter_title": "真相道韵", "summary": "林照守炉。"},
+        updated_story=story,
+    )
+
+    refreshed = StoryOrchestrator().refresh_revised_bundle_metadata(story, bundle)
+
+    assert refreshed.chapter_title == "断香炉开口"
+    assert refreshed.chapter_summary["chapter_title"] == "断香炉开口"
+
+
 def test_choose_best_revision_rejects_severely_shorter_candidate_even_if_scores_tie():
     original = _quality(False, {"genre_rules": 6, "prose_style_meta_language": 6}, ["需要补写"])
     candidate = _quality(False, {"genre_rules": 6, "prose_style_meta_language": 6}, ["需要补写"])
@@ -132,6 +197,21 @@ def test_choose_best_revision_rejects_chapter_rewrite_that_falls_below_minimum()
 
     assert result["accepted"] is False
     assert result["selected"] == "original"
+
+
+def test_choose_best_revision_accepts_smoother_chapter_after_removing_repetition():
+    original = _quality(False, {"reader_feel_patchwork": 5, "genre_rules": 8}, ["段落重复，正文有明显拼补感。"])
+    candidate = _quality(True, {"reader_feel_patchwork": 8, "genre_rules": 8})
+
+    result = choose_best_revision(
+        original_body="原稿正文" * 1250,
+        original_quality=original,
+        candidate_body="顺畅正文" * 1050,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is True
+    assert result["selected"] == "candidate"
 
 
 def test_choose_best_segment_revision_rejects_worse_local_rewrite():
@@ -208,11 +288,25 @@ class _GoodSegmentRevisionOrchestrator(StoryOrchestrator):
         self.calls += 1
         if self.calls == 1:
             return "短段", ""
-        return (
-            "夜烬把任务栏重新拉开，上一章留下的材料还在背包里。他先看等级，再看经验，最后看法力值。"
-            "村口的木牌被风吹得轻轻晃动，清道夫委托挂在最下面一行，奖励和要求写得很清楚。"
-            "他没有急着接，只把新手法杖转到掌心，确认耐久没有继续掉。"
-        ) * 20, ""
+        return "".join(
+            [
+                "夜烬把任务栏重新拉开，上一章留下的材料还在背包里。他先看等级，再看经验，最后看法力值。",
+                "村口的木牌旁挤着十几个玩家，清道夫委托挂在最下面，奖励和要求写得很清楚。",
+                "他没有急着接，只把新手法杖转到掌心，确认耐久足够支撑下一轮战斗。",
+                "排在前面的剑士交齐材料，柜台后的登记员盖了章，又把一张后坡路线图递过去。",
+                "夜烬这才明白，委托给的经验只是明面奖励，真正有用的是后面的前置任务。",
+                "短发玩家回头问他是不是也差毒腺，他说自己还要核对背包，免得交错任务材料。",
+                "对方提醒他后坡的狼更密，法师一个人过去容易被两只怪同时贴住。",
+                "夜烬顺着他指的方向看了一眼，把坡口的石头、木栅栏和退路记了下来。",
+                "轮到他时，登记员先核对等级，又问他是否完成村口的清理记录。",
+                "他把材料递过去，没有多说来源，只问完成以后能不能登记后坡探路。",
+                "登记员收走规定数量，把剩下的退回去，告诉他路线图要等任务结算后才能领取。",
+                "铜币和经验到账，夜烬升了一级，法力上限也跟着增加，但背包里的多余材料还在。",
+                "他让开柜台，先去修理铺补好新手法杖，又买了一瓶最便宜的回蓝药。",
+                "修理匠收钱时随口说后坡今天死了不少新人，让他别仗着刚升级就往里面冲。",
+                "夜烬答应了一声，把药水放到顺手的位置，随后沿村墙走向后坡入口。",
+            ]
+        ), ""
 
 
 def test_segment_pipeline_accepts_better_local_revision():

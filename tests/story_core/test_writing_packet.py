@@ -58,6 +58,29 @@ def test_first_chapter_packet_contains_manual_drafting_contract():
     assert packet["submission_contract"]["endpoint"] == "POST /projects/{project_id}/manual-draft"
 
 
+def test_non_game_packet_does_not_leak_webgame_terms():
+    story = StoryState(
+        story_id="s-xianxia-packet",
+        outline="林照被分去祖祠看守断香炉，残香里藏着宗门旧账。",
+        genre="修仙",
+        style="白描、现代中文",
+        current_chapter=0,
+        author_constraints=["不要写游戏面板、背包、铜币、掉落、任务牌或玩家生态。"],
+    )
+    bundle = ChapterBundle(chapter_number=1, body="", next_outline="掀开第三块青砖。", updated_story=story)
+
+    packet = build_codex_writing_packet(story, bundle)
+    text = str(packet)
+
+    assert "UI panels" not in text
+    assert "service counters" not in text
+    assert "UI state" not in text
+    assert "NPC服务点" not in text
+    assert "委托名" not in text
+    assert "铜币账目" not in text
+    assert "清道夫委托" not in packet["title_contract"]["examples"]
+
+
 def test_packet_uses_existing_scene_cards_when_available():
     story = StoryState(story_id="s-existing-scenes", outline="宫廷调查", genre="fantasy", style="plain")
     bundle = ChapterBundle(

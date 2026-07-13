@@ -4,8 +4,9 @@ import re
 from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
-from packages.story_core.genre_plugins import merge_plugin_rulebooks, plugin_simulation_blueprint, select_genre_plugins
+from packages.story_core.genre_plugins import is_game_genre, merge_plugin_rulebooks, plugin_simulation_blueprint, select_genre_plugins
 from packages.story_core.models import NovelProject, StoryState
+from packages.story_core.novel_type_catalog import normalize_novel_type_id
 
 
 LONGFORM_FACT_PREFIXES = (
@@ -24,6 +25,12 @@ LONGFORM_FACT_PREFIXES = (
 
 def _proxy_project(story: StoryState) -> NovelProject:
     latest = story.chapter_summaries[-1] if story.chapter_summaries else None
+    explicit_genre = normalize_novel_type_id(story.genre)
+    if not explicit_genre:
+        type_fact = next((fact for fact in story.world_facts if str(fact).startswith(("小说类型：", "小说类型:"))), "")
+        if type_fact:
+            explicit_genre = normalize_novel_type_id(re.split("[：:]", str(type_fact), maxsplit=1)[-1])
+    genre_ids = [explicit_genre] if explicit_genre else (["game_webnovel"] if _is_game_story(story) else [])
     return NovelProject(
         project_id=story.story_id,
         title=story.outline[:80] or story.story_id,
@@ -31,7 +38,7 @@ def _proxy_project(story: StoryState) -> NovelProject:
         world_summary="\n".join(story.world_facts[:24]),
         current_focus=(latest.next_focus if latest else ""),
         author_constraints=list(story.author_constraints),
-        world_blueprint={"genre_plugin_ids": ["game_webnovel"]} if _is_game_story(story) else {},
+        world_blueprint={"genre_plugin_ids": genre_ids} if genre_ids else {},
     )
 
 
@@ -45,10 +52,14 @@ def _is_game_story(story: StoryState) -> bool:
             "\n".join(story.author_constraints[:12]),
         ]
     )
-    return any(token in text for token in ("网游", "游戏", "VRMMO", "交易行", "公会", "爆率", "职业"))
+    return is_game_genre(text)
 
 
-def _phase(chapter_number: int) -> str:
+def _phase(chapter_number: int, *, is_game: bool = True) -> str:
+    if not is_game:
+        if chapter_number <= 3:
+            return f"黄金三章第{chapter_number}章：推进当前核心矛盾，兑现一个具体进展，并留下下一步行动。"
+        return "常规连载章节：目标、行动、结果、代价和章末钩子。"
     if chapter_number == 1:
         return "黄金三章第1章：立主角、立游戏入口、立千倍爆率，让读者看到主角会比普通玩家快一步。"
     if chapter_number == 2:
@@ -460,7 +471,7 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
     return {
         "schema_version": "chapter-seed/v1",
         "chapter_number": chapter_number,
-        "phase": _phase(chapter_number),
+        "phase": _phase(chapter_number, is_game=is_game),
         "genre_plugins": plugin_ids,
         "core_promises": compact_list(
             [promise for plugin in plugins for promise in plugin.core_promises],

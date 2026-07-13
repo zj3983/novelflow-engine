@@ -11,6 +11,8 @@ from packages.story_core.models import (
     StoryState,
     TimelineEvent,
 )
+from packages.story_core.character_portraits import complete_character_portrait
+from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.planner import build_chapter_title
 
 
@@ -441,7 +443,8 @@ def _is_game_story_for_cards(story: StoryState) -> bool:
             " ".join(str(fact) for fact in getattr(story, "world_facts", [])[:12]),
         ]
     )
-    return any(token in text for token in ("网游", "游戏", "VRMMO", "爆率", "等级", "铜币", "任务"))
+    # Explicit genre IDs win over negative constraints such as “不写游戏”.
+    return is_game_genre(text)
 
 
 def _clean_dict(value: dict[str, Any]) -> dict[str, Any]:
@@ -495,6 +498,11 @@ def _profile_defaults(character: Any, story: StoryState) -> dict[str, Any]:
 
 
 def _character_card(character: Any, story: StoryState) -> dict[str, Any]:
+    character = complete_character_portrait(
+        character,
+        genre=str(getattr(story, "genre", "") or ""),
+        story_function=str(getattr(character, "story_function", "") or ""),
+    )
     defaults = _profile_defaults(character, story)
     profile = getattr(character, "performance_profile", None)
     voice = getattr(profile, "voice", None) if profile is not None else None
@@ -550,6 +558,7 @@ def _character_card(character: Any, story: StoryState) -> dict[str, Any]:
             }
         ),
         "voice_and_action": _clean_dict(performance),
+        "personality_portrait": character.personality_portrait.model_dump(),
         "continuity_locks": _clean_dict(
             {
                 "memory": list(getattr(character, "memory", [])),

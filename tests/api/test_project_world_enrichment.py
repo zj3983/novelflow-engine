@@ -3,7 +3,8 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from apps.api.routes import stories as story_routes
 from apps.api.storage import SQLiteStoryStore, _project_world_facts
-from packages.story_core.models import NovelProject
+from packages.story_core.engine import ChapterBundle
+from packages.story_core.models import NovelProject, StoryState
 
 
 def test_project_world_enrichment_updates_project(monkeypatch, tmp_path):
@@ -135,3 +136,59 @@ def test_project_world_facts_include_living_world_reactions():
     assert "日常运转：商人玩家每天盯交易行价差。" in facts
     assert "消息渠道：交易行价格榜" in facts
     assert "世界反应：大量低价材料会引起公会外围追踪。" in facts
+
+
+def test_project_generation_syncs_explicit_xianxia_context_before_engine(tmp_path):
+    store = SQLiteStoryStore(str(tmp_path / "stories.db"))
+    story_id = "s-xianxia-sync"
+    project_id = "p-xianxia-sync"
+    story = StoryState(
+        story_id=story_id,
+        outline="网游开服，主角登录游戏验证千倍爆率。",
+        genre="网游",
+        style="升级流",
+        progression_ledger={"market": {"newbie_materials": {}}, "systems": {"chaos_seed": {}}},
+    )
+    project = NovelProject(
+        project_id=project_id,
+        title="我替宗门看守断香炉",
+        seed_outline="林照被分去祖祠看守断香炉。",
+        world_summary="林照刚入外门，被分去祖祠看守快熄灭的断香炉。",
+        current_focus="第一章写祖祠守炉，不写游戏登录。",
+        active_story_id=story_id,
+        author_constraints=["不写网游面板、背包、掉落、铜币或玩家生态。"],
+        world_blueprint={
+            "genre_plugin_ids": ["xianxia"],
+            "premise": "断香炉只给零碎反馈。",
+            "progression_ledger": {"cultivation": {"realm": "外门候选"}},
+        },
+    )
+    captured: dict[str, StoryState] = {}
+
+    class FakeEngine:
+        def generate_next_chapter(self, incoming: StoryState) -> ChapterBundle:
+            captured["story"] = incoming.model_copy(deep=True)
+            incoming.current_chapter = 1
+            return ChapterBundle(
+                chapter_number=1,
+                chapter_title="第1章 守炉",
+                body="林照守着断香炉。",
+                next_outline="继续查旧册。",
+                updated_story=incoming,
+                simulation_status={"ok": True},
+            )
+
+    store.create(story)
+    store.create_project(project)
+    store.attach_story_to_project(project_id, story_id)
+
+    store.generate_next(story_id, FakeEngine())
+
+    synced = captured["story"]
+    assert synced.outline == "林照被分去祖祠看守断香炉。"
+    assert synced.genre == "xianxia"
+    assert synced.style == "白描、现代中文"
+    assert "小说类型：xianxia" in synced.world_facts
+    assert "当前焦点：第一章写祖祠守炉，不写游戏登录。" in synced.world_facts
+    assert synced.author_constraints == ["不写网游面板、背包、掉落、铜币或玩家生态。"]
+    assert synced.progression_ledger == {"cultivation": {"realm": "外门候选"}}

@@ -12,7 +12,13 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from apps.api.storage import SQLiteStoryStore, SimulationFailedError
+from apps.api.storage import (
+    SQLiteStoryStore,
+    SimulationFailedError,
+    _project_world_facts,
+    _sync_project_character_profiles,
+    _sync_project_generation_context,
+)
 from packages.story_core.engine import ChapterBundle, StoryEngine
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.models import (
@@ -35,6 +41,8 @@ from packages.story_core.runtime_config import (
     set_runtime_strategy_settings,
     set_all_runtime_settings,
 )
+from packages.story_core.skill_packs import skill_pack_prompt_context
+from packages.story_core.simplified_review import build_simplified_review
 from packages.story_core.writing_packet import build_codex_writing_packet
 from packages.story_core.world_enrichment import WorldEnrichmentError, enrich_project_rulebook, enrich_project_world
 
@@ -77,22 +85,10 @@ def _serialize_chapter_bundle(bundle, world_facts: list[str]) -> dict:
             "source": source,
             "manual_review_bypass": True,
         }
-        data["quality_report"] = quality_report
-        return data
-    try:
-        writing_review = _review_chapter_body(
-            bundle.chapter_number,
-            bundle.body,
-            bundle.event_plan,
-            world_facts,
-            getattr(bundle, "simulation_plan", {}),
-            getattr(bundle, "world_events", []),
-            getattr(bundle, "scene_cards", []),
-        )
-        data["quality_report"] = _merge_writing_review_quality(validate_bundle(data), writing_review)
-    except Exception:
-        # Serialization should never make a saved chapter unreadable.
-        data["quality_report"] = bundle.quality_report
+    else:
+        quality_report = dict(bundle.quality_report) if isinstance(bundle.quality_report, dict) else validate_bundle(data)
+    quality_report["simplified_review"] = build_simplified_review(quality_report)
+    data["quality_report"] = quality_report
     return data
 
 
@@ -116,6 +112,7 @@ class CreateProjectRequest(BaseModel):
     world_blueprint: dict = Field(default_factory=dict)
     character_profiles: list[dict] = Field(default_factory=list)
     relationship_graph: list[dict] = Field(default_factory=list)
+    enabled_skill_ids: list[str] = Field(default_factory=list)
     pipeline_stage: str = "imported"
     active_story_id: str = ""
 
@@ -134,6 +131,7 @@ class UpdateProjectRequest(BaseModel):
     world_blueprint: dict | None = None
     character_profiles: list[dict] | None = None
     relationship_graph: list[dict] | None = None
+    enabled_skill_ids: list[str] | None = None
     status: str | None = None
     pipeline_stage: str | None = None
     active_story_id: str | None = None
@@ -189,6 +187,7 @@ class ProjectResponse(BaseModel):
     world_blueprint: dict = Field(default_factory=dict)
     character_profiles: list[dict] = Field(default_factory=list)
     relationship_graph: list[dict] = Field(default_factory=list)
+    enabled_skill_ids: list[str] = Field(default_factory=list)
     status: str = "draft"
     pipeline_stage: str = "imported"
     active_story_id: str = ""
@@ -202,6 +201,12 @@ class RenameStoryRequest(BaseModel):
 class DeleteStoryResponse(BaseModel):
     deleted: bool
     story_id: str
+
+
+class DeleteProjectResponse(BaseModel):
+    deleted: bool
+    project_id: str
+    deleted_story_ids: list[str] = Field(default_factory=list)
 
 
 class RuntimeSettingsResponse(BaseModel):
@@ -276,14 +281,6 @@ class AgentReviseRequest(BaseModel):
 
 class ManualDraftRequest(BaseModel):
     chapter_number: int
-    body: str = Field(min_length=1)
-    instructions: list[str] = Field(default_factory=list)
-    include_body: bool = True
-
-
-class ManualSegmentDraftRequest(BaseModel):
-    chapter_number: int
-    segment_index: int = Field(ge=0)
     body: str = Field(min_length=1)
     instructions: list[str] = Field(default_factory=list)
     include_body: bool = True
@@ -483,6 +480,24 @@ def _generate_story_chapter(story_id: str):
     bundle = store.generate_next(story_id, engine)
     _mark_project_simulating(story_id)
     return bundle
+
+
+def _sync_project_context_for_story(project: NovelProject, story: StoryState, *, has_history: bool = False) -> None:
+    """Make project settings authoritative before any context is displayed."""
+    _sync_project_generation_context(story, project, has_history=has_history)
+    _sync_project_character_profiles(story, project)
+
+
+def _story_state_before_chapter(record, chapter_number: int) -> StoryState:
+    """Return the story snapshot that existed immediately before a chapter."""
+
+    target = max(1, int(chapter_number))
+    if target == 1 or not record.history:
+        return record.initial_story.model_copy(deep=True)
+    previous = [bundle for bundle in record.history if bundle.chapter_number < target]
+    if not previous:
+        return record.initial_story.model_copy(deep=True)
+    return max(previous, key=lambda bundle: bundle.chapter_number).updated_story.model_copy(deep=True)
 
 
 def _run_generation_job(job_id: str, story_id: str) -> None:
@@ -742,6 +757,7 @@ def _serialize_project(project: NovelProject) -> ProjectResponse:
         world_blueprint=project.world_blueprint,
         character_profiles=project.character_profiles,
         relationship_graph=project.relationship_graph,
+        enabled_skill_ids=project.enabled_skill_ids,
         status=project.status,
         pipeline_stage=project.pipeline_stage,
         active_story_id=project.active_story_id,
@@ -785,6 +801,7 @@ def _quality_context(quality_report: dict) -> dict:
             "editor_agent_review": writing_review.get("editor_agent_review", {}),
             "reviewer_agent_review": writing_review.get("reviewer_agent_review", {}),
         },
+        "simplified_review": build_simplified_review(quality_report),
     }
     if isinstance(quality_report, dict):
         for key in ("reader_agent_review", "editor_agent_review", "reviewer_agent_review", "ai_flavor_review", "cold_reader_review"):
@@ -793,9 +810,6 @@ def _quality_context(quality_report: dict) -> dict:
         revision_safety = quality_report.get("revision_safety")
         if isinstance(revision_safety, dict):
             context["revision_safety"] = revision_safety
-        segment_pipeline = quality_report.get("segment_pipeline")
-        if isinstance(segment_pipeline, dict):
-            context["segment_pipeline"] = segment_pipeline
     return context
 
 
@@ -882,6 +896,8 @@ def _build_agent_context(project: NovelProject, *, recent_chapters: int, include
     branches = [_serialize_story_summary(record).model_dump() for record in store.list_project_stories(project.project_id)]
     active_record = store.get(project.active_story_id) if project.active_story_id else None
     active_story = active_record.story if active_record else None
+    if active_story is not None:
+        _sync_project_context_for_story(project, active_story, has_history=bool(active_record.history))
     recent = []
     if active_record is not None:
         recent = [_chapter_context(bundle, include_body=include_body) for bundle in active_record.history[-recent_limit:]]
@@ -938,24 +954,14 @@ def _select_review_chapter(record, chapter_number: int | None):
 
 
 def _review_recommendation(quality_report: dict) -> dict:
-    writing_review = quality_report.get("writing_review", {}) if isinstance(quality_report, dict) else {}
-    if not isinstance(writing_review, dict):
-        writing_review = {}
-    writing_issues = writing_review.get("issues", [])
-    quality_issues = quality_report.get("issues", []) if isinstance(quality_report, dict) else []
-    issues = writing_issues if isinstance(writing_issues, list) and writing_issues else quality_issues
-    if not isinstance(issues, list):
-        issues = []
-    revision_plan = writing_review.get("revision_plan", [])
-    if not isinstance(revision_plan, list):
-        revision_plan = []
-    passed = bool(writing_review.get("pass", quality_report.get("ok", False)))
-    action = "continue" if passed and not issues else "revise"
+    simplified = build_simplified_review(quality_report)
+    blocking = [item["message"] for item in simplified["issues"] if item.get("severity") == "blocking"]
+    action = "revise" if simplified["has_hard_errors"] else "continue"
     return {
         "action": action,
         "reason": "章节审稿通过，可以继续生成。" if action == "continue" else "章节存在需要优先修正的问题。",
-        "must_fix": issues[:8],
-        "revision_plan": revision_plan[:8],
+        "must_fix": blocking,
+        "revision_plan": [item["suggestion"] for item in simplified["issues"] if item.get("severity") == "blocking"],
     }
 
 
@@ -966,7 +972,9 @@ def _build_agent_review(project: NovelProject, record, bundle, *, include_body: 
         quality_report = {}
     chapter = _chapter_context(bundle, include_body=include_body)
     chapter["quality_report"] = _quality_context(quality_report)
-    writing_packet = build_codex_writing_packet(record.story, bundle, chapter_number=bundle.chapter_number)
+    packet_story = _story_state_before_chapter(record, bundle.chapter_number)
+    _sync_project_context_for_story(project, packet_story, has_history=bundle.chapter_number > 1)
+    writing_packet = build_codex_writing_packet(packet_story, bundle, chapter_number=bundle.chapter_number)
     governance_gate = writing_packet.get("governance_gate", {}) if isinstance(writing_packet, dict) else {}
     return AgentReviewResponse(
         project={
@@ -1089,6 +1097,7 @@ def _revise_latest_chapter(project: NovelProject, record, bundle, payload: Agent
         base_story = record.initial_story.model_copy(deep=True)
     else:
         base_story = record.history[bundle.chapter_number - 2].updated_story.model_copy(deep=True)
+    _sync_project_context_for_story(project, base_story, has_history=bundle.chapter_number > 1)
     revised_bundle = engine.orchestrator.refresh_revised_bundle_metadata(base_story, revised_bundle)
     updated_record = store.replace_chapter_bundle(record.story.story_id, revised_bundle)
     return _build_agent_revision_response(
@@ -1130,6 +1139,7 @@ def _replace_latest_chapter_with_manual_body(
         base_story = record.initial_story.model_copy(deep=True)
     else:
         base_story = record.history[bundle.chapter_number - 2].updated_story.model_copy(deep=True)
+    _sync_project_context_for_story(project, base_story, has_history=bundle.chapter_number > 1)
     manual_bundle = engine.orchestrator.refresh_revised_bundle_metadata(base_story, manual_bundle)
     manual_bundle.chapter_title = _manual_chapter_title(cleaned_body, payload.chapter_number, manual_bundle.chapter_title)
     manual_bundle.event_plan = _manual_event_plan(project, manual_bundle.event_plan)
@@ -1165,6 +1175,7 @@ def _append_manual_chapter(
         raise HTTPException(status_code=400, detail="empty_body")
 
     base_story = record.story.model_copy(deep=True)
+    _sync_project_context_for_story(project, base_story, has_history=bool(record.history))
     chapter_title = _manual_chapter_title(cleaned_body, payload.chapter_number, "")
     event_plan = _manual_event_plan(project, {"next_focus": project.current_focus})
     manual_bundle = ChapterBundle(
@@ -1286,10 +1297,6 @@ def _complete_manual_bundle_metadata(project: NovelProject, bundle: ChapterBundl
     return bundle
 
 
-def _split_manual_body_segments(body: str) -> list[str]:
-    return [segment.strip() for segment in body.split("\n\n") if segment.strip()]
-
-
 def _serialize_runtime_settings() -> dict[str, object]:
     runtime = get_all_runtime_settings()
     return {
@@ -1389,6 +1396,7 @@ def create_project(payload: CreateProjectRequest) -> ProjectResponse:
         world_blueprint=payload.world_blueprint,
         character_profiles=payload.character_profiles,
         relationship_graph=payload.relationship_graph,
+        enabled_skill_ids=payload.enabled_skill_ids,
         status="simulating" if payload.active_story_id else "draft",
         pipeline_stage=payload.pipeline_stage if not payload.active_story_id else "environment_ready",
         active_story_id=payload.active_story_id,
@@ -1396,6 +1404,7 @@ def create_project(payload: CreateProjectRequest) -> ProjectResponse:
     store.create_project(project)
     if payload.active_story_id:
         store.attach_story_to_project(payload.project_id, payload.active_story_id)
+        store.sync_project_context(payload.project_id)
     return _serialize_project(project)
 
 
@@ -1404,8 +1413,19 @@ def list_projects() -> list[ProjectSummaryResponse]:
     return [_serialize_project_summary(project) for project in store.list_projects()]
 
 
+@router.delete("/projects/{project_id}")
+def delete_project(project_id: str) -> DeleteProjectResponse:
+    project = store.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project_not_found")
+    story_ids = [record.story.story_id for record in store.list_project_stories(project_id)]
+    store.delete_project(project_id, delete_stories=True)
+    return DeleteProjectResponse(deleted=True, project_id=project_id, deleted_story_ids=story_ids)
+
+
 @router.get("/projects/{project_id}")
 def get_project(project_id: str) -> ProjectResponse:
+    store.sync_project_context(project_id)
     project = store.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="project_not_found")
@@ -1418,6 +1438,7 @@ def get_project_agent_context(
     recent_chapters: int = 3,
     include_body: bool = False,
 ) -> AgentContextResponse:
+    store.sync_project_context(project_id)
     project = store.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="project_not_found")
@@ -1457,7 +1478,244 @@ def get_project_writing_packet(project_id: str, chapter_number: int | None = Non
             bundle = record.history[-1]
         else:
             raise HTTPException(status_code=400, detail="target_chapter_too_far")
-    return build_codex_writing_packet(record.story, bundle, chapter_number=target_chapter)
+    packet_story = _story_state_before_chapter(record, target_chapter)
+    _sync_project_context_for_story(project, packet_story, has_history=target_chapter > 1)
+    packet = build_codex_writing_packet(packet_story, bundle, chapter_number=target_chapter)
+    skill_context = {
+        purpose: skill_pack_prompt_context(project.enabled_skill_ids, purpose=purpose, max_chars_per_pack=2600)
+        for purpose in ("writer", "dialogue", "style", "genre", "continuity", "reviewer")
+    }
+    packet["skill_context"] = {key: value for key, value in skill_context.items() if value}
+    return packet
+
+
+@router.get("/projects/{project_id}/prompt-preview")
+def get_project_prompt_preview(project_id: str, chapter_number: int | None = None) -> dict:
+    from packages.story_core.orchestrator import (
+        StoryOrchestrator,
+        _character_context_for_prompt,
+        _genre_context_for_prompt,
+        _story_snapshot,
+    )
+    from packages.story_core.prompt_modules import modules_for_stage, prompt_module_catalog
+    from packages.story_core.style_adaptation import build_style_adapt_prompt
+    from packages.story_core.writing_taskbook import format_taskbook_brief_section
+
+    project = store.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project_not_found")
+    record = store.sync_project_context(project_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="story_not_found")
+
+    target = int(chapter_number or record.story.current_chapter or 1)
+    bundle = next((item for item in record.history if item.chapter_number == target), None)
+    if bundle is None and target > record.story.current_chapter + 1:
+        raise HTTPException(status_code=400, detail="target_chapter_too_far")
+    preview_story = _story_state_before_chapter(record, target)
+    _sync_project_context_for_story(project, preview_story, has_history=target > 1)
+
+    bundle_data = bundle.model_dump() if bundle is not None else {}
+    plan = {
+        key: bundle_data.get(key)
+        for key in (
+            "character_moves",
+            "chapter_intent",
+            "memory_constraints",
+            "event_plan",
+            "chapter_seed",
+            "simulation_plan",
+            "world_events",
+            "scene_cards",
+        )
+        if bundle_data.get(key) not in (None, "", [], {})
+    }
+    taskbook = plan.get("writing_taskbook")
+    body = str(bundle_data.get("body") or "")
+    review = bundle_data.get("quality_report") if isinstance(bundle_data.get("quality_report"), dict) else {}
+    packet = build_codex_writing_packet(preview_story, bundle, chapter_number=target)
+    packet_preview = {
+        key: packet.get(key)
+        for key in (
+            "chapter_number",
+            "chapter_title",
+            "goal",
+            "target_chars",
+            "story",
+            "plot_simulation",
+            "scene_contracts",
+            "hard_locks",
+            "style_rules",
+            "author_constraints",
+            "world_facts",
+            "continuity",
+        )
+        if packet.get(key) not in (None, "", [], {})
+    }
+
+    def entry(
+        *,
+        key: str,
+        title: str,
+        agent: str,
+        stage: str,
+        content: str,
+        source: str,
+        description: str,
+        module_keys: list[str] | None = None,
+    ) -> dict:
+        return {
+            "key": key,
+            "title": title,
+            "agent": agent,
+            "stage": stage,
+            "source": source,
+            "description": description,
+            "content": content,
+            "chars": len(content),
+            "module_keys": module_keys or [],
+        }
+
+    modules = [
+        entry(
+            key="core_context",
+            title="核心上下文模块",
+            agent="context",
+            stage="核心上下文",
+            content=json.dumps(_story_snapshot(preview_story), ensure_ascii=False, indent=2),
+            source="orchestrator._story_snapshot",
+            description="主线、世界事实、账本和最近记忆。",
+        ),
+        entry(
+            key="character_context",
+            title="本章人物模块",
+            agent="context",
+            stage="人物角色卡",
+            content=json.dumps(_character_context_for_prompt(preview_story, plan), ensure_ascii=False, indent=2),
+            source="orchestrator._character_context_for_prompt",
+            description="只提取当前章节需要的人物侧写。",
+        ),
+        entry(
+            key="genre_context",
+            title="题材写法模块",
+            agent="context",
+            stage="题材写法",
+            content=json.dumps(_genre_context_for_prompt(preview_story, target, plan), ensure_ascii=False, indent=2),
+            source="orchestrator._genre_context_for_prompt",
+            description="按当前小说类型选择写法，不混用其他题材规则。",
+        ),
+        entry(
+            key="packet_context",
+            title="写作包预览模块",
+            agent="codex",
+            stage="写作包",
+            content=json.dumps(packet_preview, ensure_ascii=False, indent=2),
+            source="writing_packet.compact_preview",
+            description="面板使用的压缩写作包，不展示原正文全文。",
+        ),
+    ]
+    if isinstance(review, dict) and review:
+        modules.append(
+            entry(
+                key="review_context",
+                title="审稿报告模块",
+                agent="review",
+                stage="审稿报告",
+                content=json.dumps(review, ensure_ascii=False, indent=2),
+                source="chapter.quality_report",
+                description="只在改稿阶段读取。",
+            )
+        )
+    if isinstance(taskbook, dict):
+        modules.append(
+            entry(
+                key="writing_taskbook",
+                title="本章方向模块",
+                agent="context",
+                stage="本章方向",
+                content=format_taskbook_brief_section(taskbook),
+                source="chapter.writing_taskbook",
+                description="只保留本章目标、场面推进和收束，不重复通用风格规则。",
+            )
+        )
+
+    orchestrator = StoryOrchestrator()
+    prompts = [
+        entry(
+            key="director_plan",
+            title="导演/剧情计划 Prompt",
+            agent="director",
+            stage="剧情计划生成",
+            content=orchestrator._plan_prompt(preview_story, target),
+            source="rebuilt_from_database_story",
+            description="生成本章结构化剧情计划。",
+            module_keys=["core_context", "genre_context"],
+        ),
+        entry(
+            key="writer_body",
+            title="整章正文 Prompt",
+            agent="writer",
+            stage="整章正文生成",
+            content=orchestrator._body_prompt(preview_story, target, plan),
+            source="rebuilt_from_database_story",
+            description="整章正文实际提示词，按输出要求、本章方向、本章事实、出场人物和正文写法五块装配。",
+            module_keys=["core_context", "character_context", "genre_context", "writing_taskbook"],
+        ),
+    ]
+    if body.strip():
+        body_placeholder = f"[原正文由 source_body 注入；面板不展示正文全文；当前正文 {len(body)} 字。]"
+        prompts.extend(
+            [
+                entry(
+                    key="revision",
+                    title="审稿改稿 Prompt",
+                    agent="writer",
+                    stage="审稿改稿",
+                    content=orchestrator._revision_prompt(preview_story, target, body_placeholder, plan, review),
+                    source="rebuilt_from_database_chapter",
+                    description="章节审稿未通过时使用。",
+                    module_keys=["core_context", "character_context", "genre_context", "review_context"],
+                ),
+                entry(
+                    key="style_adapt",
+                    title="风格适配 Prompt",
+                    agent="writer",
+                    stage="风格适配",
+                    content=build_style_adapt_prompt(body_placeholder, plan),
+                    source="rebuilt_conditional_prompt",
+                    description="只调整表达，不改变章节事实。",
+                    module_keys=["source_body", "writing_taskbook"],
+                ),
+            ]
+        )
+    prompts.append(
+        entry(
+            key="review_agents",
+            title="读者/编辑/审稿 Agent 说明",
+            agent="review",
+            stage="质量审稿",
+            content="读者、编辑和审稿 Agent 读取章节正文与质量报告执行检查；当前没有额外隐藏正文提示词。",
+            source="local_rule_based_review",
+            description="说明审稿阶段读取什么。",
+            module_keys=["review_context"],
+        )
+    )
+
+    return {
+        "schema_version": "project-prompt-preview/v1",
+        "project_id": project_id,
+        "chapter_number": target,
+        "chapter_title": bundle.chapter_title if bundle is not None else "",
+        "source": "rebuilt_from_database_project",
+        "has_chapter": bundle is not None,
+        "module_catalog": prompt_module_catalog(),
+        "stage_modules": {
+            stage: [module.key for module in modules_for_stage(stage)]
+            for stage in ("planning", "writing", "revision", "validation")
+        },
+        "modules": modules,
+        "prompts": prompts,
+    }
 
 
 @router.post("/projects/{project_id}/manual-draft")
@@ -1473,40 +1731,6 @@ def submit_project_manual_draft(project_id: str, payload: ManualDraftRequest) ->
         return _append_manual_chapter(project, record, payload)
     bundle = _select_review_chapter(record, payload.chapter_number)
     return _replace_latest_chapter_with_manual_body(project, record, bundle, payload)
-
-
-@router.post("/projects/{project_id}/manual-segment-draft")
-def submit_project_manual_segment_draft(project_id: str, payload: ManualSegmentDraftRequest) -> AgentRevisionResponse:
-    project = store.get_project(project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="project_not_found")
-    record = store.get(project.active_story_id) if project.active_story_id else None
-    if record is None:
-        raise HTTPException(status_code=404, detail="story_not_found")
-    bundle = _select_review_chapter(record, payload.chapter_number)
-
-    segments = _split_manual_body_segments(bundle.body or "")
-    if payload.segment_index >= len(segments):
-        raise HTTPException(status_code=400, detail="segment_index_out_of_range")
-    replacement = payload.body.strip()
-    if not replacement:
-        raise HTTPException(status_code=400, detail="empty_body")
-
-    segments[payload.segment_index] = replacement
-    full_body = "\n\n".join(segments)
-    draft_payload = ManualDraftRequest(
-        chapter_number=payload.chapter_number,
-        body=full_body,
-        instructions=payload.instructions or [f"manual_segment_{payload.segment_index}"],
-        include_body=payload.include_body,
-    )
-    return _replace_latest_chapter_with_manual_body(
-        project,
-        record,
-        bundle,
-        draft_payload,
-        source="manual_segment_draft",
-    )
 
 
 @router.post("/projects/{project_id}/agent-revise")
@@ -1603,6 +1827,8 @@ def update_project(project_id: str, payload: UpdateProjectRequest) -> ProjectRes
         project.character_profiles = payload.character_profiles
     if payload.relationship_graph is not None:
         project.relationship_graph = payload.relationship_graph
+    if payload.enabled_skill_ids is not None:
+        project.enabled_skill_ids = payload.enabled_skill_ids
     if payload.status is not None:
         project.status = payload.status
     if payload.pipeline_stage is not None:

@@ -112,8 +112,9 @@ def test_revision_prompt_includes_targeted_scene_contract_repair_plan():
 
     prompt = StoryOrchestrator()._revision_prompt(story, 1, "old body", plan, review)
 
-    assert "scene_contract_repair_plan" in prompt
-    assert "failed_scenes_only" in prompt
+    assert "局部补写范围" in prompt
+    assert "scene_contract_repair_plan" not in prompt
+    assert "failed_scenes_only" not in prompt
     assert "s3-small-verify" in prompt
-    assert "只重写失败场景" in prompt
+    assert "只补这些场景" in prompt
     assert "Add a panel/resource check that shows spent mana." in prompt

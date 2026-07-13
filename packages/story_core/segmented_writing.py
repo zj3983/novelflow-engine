@@ -9,8 +9,16 @@ from typing import Any
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.prose_rule_review import review_critical_prose_rules
 from packages.story_core.prose_style_review import review_prose_style
+from packages.story_core.reader_feel_review import review_reader_feel
 from packages.story_core.web_game_author_craft import format_web_game_director_card, plain_writer_phrase
-from packages.story_core.writing_taskbook import ensure_writing_taskbook, format_taskbook_prompt_section, taskbook_segment_specs
+from packages.story_core.writing_taskbook import (
+    ensure_writing_taskbook,
+    format_taskbook_brief_section,
+    taskbook_segment_specs,
+)
+# Compatibility exports for older integrations; production code imports the
+# whole-chapter style pass from style_adaptation directly.
+from packages.story_core.style_adaptation import build_style_adapt_prompt, style_adapt_safety_check
 
 
 @dataclass(frozen=True)
@@ -93,9 +101,9 @@ def _compact_items(value: Any, *, max_items: int = 6) -> list[str]:
 
 def _plain_prompt_value(value: Any) -> Any:
     if isinstance(value, str):
-        return plain_writer_phrase(value)
+        return _compact_context(plain_writer_phrase(value), 180)
     if isinstance(value, list):
-        return [plain_writer_phrase(str(item)) for item in value if str(item).strip()]
+        return [_compact_context(plain_writer_phrase(str(item)), 160) for item in value if str(item).strip()][:6]
     if isinstance(value, dict):
         return {str(key): _plain_prompt_value(item) for key, item in value.items() if item not in (None, "", [], {})}
     return value
@@ -111,22 +119,23 @@ def _compact_segment_plan(plan: dict[str, Any]) -> dict[str, Any]:
     for key in ("reader_hook", "chapter_desire", "choice_point", "payoff", "cost", "ending_hook"):
         value = plain_writer_phrase(str(plot.get(key) or "")) if plot else ""
         if value:
-            plot_spine.append(value)
+            plot_spine.append(_compact_context(value, 120))
+    simulation_variant = simulation_plan.get("simulation_variant") if isinstance(simulation_plan.get("simulation_variant"), dict) else {}
     return {
-        "simulation_variant": simulation_plan.get("simulation_variant"),
-        "chapter_goal": plain_writer_phrase(str(simulation_plan.get("chapter_goal") or "")) or None,
+        "simulation_variant": simulation_variant.get("id") if isinstance(simulation_variant, dict) else None,
+        "chapter_goal": _compact_context(plain_writer_phrase(str(simulation_plan.get("chapter_goal") or "")), 180) or None,
         "剧情主线": plot_spine,
-        "chapter_title": plain_writer_phrase(str(event_plan.get("chapter_title") or "")) or None,
-        "next_focus": plain_writer_phrase(str(event_plan.get("next_focus") or "")) or None,
-        "ordered_actions": [plain_writer_phrase(item) for item in _compact_items(event_plan.get("ordered_actions"), max_items=5)],
-        "world_reactions": [plain_writer_phrase(item) for item in _compact_items(event_plan.get("world_reactions"), max_items=5)],
+        "chapter_title": _compact_context(plain_writer_phrase(str(event_plan.get("chapter_title") or "")), 80) or None,
+        "next_focus": _compact_context(plain_writer_phrase(str(event_plan.get("next_focus") or "")), 140) or None,
+        "ordered_actions": [_compact_context(plain_writer_phrase(item), 120) for item in _compact_items(event_plan.get("ordered_actions"), max_items=4)],
+        "world_reactions": [_compact_context(plain_writer_phrase(item), 120) for item in _compact_items(event_plan.get("world_reactions"), max_items=3)],
         "visible_scenes": [
             {
                 key: _plain_prompt_value(card.get(key))
                 for key in ("location", "purpose", "conflict", "must_show", "ending_pressure")
                 if isinstance(card, dict) and card.get(key) not in (None, "", [], {})
             }
-            for card in cards[:5]
+            for card in cards[:3]
             if isinstance(card, dict)
         ],
     }
@@ -153,18 +162,16 @@ def _scene_state_terms(value: str) -> list[str]:
 
 def _segment_governance_section(governance: dict[str, Any] | None) -> str:
     if not isinstance(governance, dict) or not governance:
-        return "分段输入治理：未提供；仍须遵守事实锁，不得输出后台字段或审稿术语。"
+        return "本段事实边界：按已有事实写，不输出工作流字段或说明文字。"
     intent = governance.get("chapter_intent", {}) if isinstance(governance.get("chapter_intent"), dict) else {}
     rules = governance.get("rule_stack", {}) if isinstance(governance.get("rule_stack"), dict) else {}
     hard_facts = _compact_items(rules.get("hard_facts"), max_items=8)
     must_avoid = _compact_items(intent.get("must_avoid"), max_items=8)
-    diagnostic_only = _compact_items(rules.get("diagnostic_only"), max_items=4)
     return "\n".join(
         [
-            "分段输入治理：表达权不等于事实权，本段只能把推演事实写成场景，不得新增或篡改事实。",
-            f"本章禁止提前写：{'；'.join(must_avoid) if must_avoid else '无额外禁项'}",
-            f"硬事实：{'；'.join(hard_facts) if hard_facts else '沿用本章计划'}",
-            f"诊断词禁止入正文：{'；'.join(diagnostic_only) if diagnostic_only else '后台词不得入正文'}",
+            "本段事实边界：本段只把已确认事实写成场景，不新增或篡改事实。",
+            f"不要提前写：{'；'.join(must_avoid) if must_avoid else '无额外禁项'}",
+            f"不能改的事实：{'；'.join(hard_facts) if hard_facts else '沿用本章计划'}",
         ]
     )
 
@@ -186,26 +193,14 @@ def build_segment_prompt(
         fact_locks = [str(item).strip() for item in director_card.get("fact_locks", []) if str(item).strip()]
     compact_plan = _compact_segment_plan(plan)
     taskbook = ensure_writing_taskbook(chapter_number, plan)
-    taskbook_section = format_taskbook_prompt_section(taskbook, segment_key=spec.key)
+    taskbook_section = format_taskbook_brief_section(taskbook, max_scenes=1, segment_key=spec.key)
     return "\n".join(
         [
-            "OUTPUT CONTRACT: prose only",
-            "写手身份：你只负责把本段写成可读正文，不输出片段标题、编号、解释或大纲。",
-            "番茄白话风：用普通读者一眼能懂的话写，少用比喻和华丽修辞，少解释，多写动作、对话、面板、背包、耐久、药水和直接后果。",
-            "后台词翻译：不要在正文或标题里写后台硬词；把它们改成“试一把、问一嘴、柜台能不能办、先别卖、包快满、药水不够、法杖快断”。",
-            "第一章目标口语化：不要把目标写成后台硬词，要写成苏叶先试清楚这东西靠不靠谱、亏不亏、能不能带回去。",
-            "第一章领先流：材料要兑现成下一步前置任务或账本优势，不是公开高潮；是否交任务、领取铜币、修理或买药水必须跟随项目账本/章节计划，未允许时不能擅自结算。",
-            "情绪暗线：本段必须让角色有可感的担心、试探、隐瞒或欲望。",
-            "职业背景落地：苏叶做过外包测试，只能体现为多看公告、提示、NPC回话和别人忽略的异常细节；不要写成凡事先看成本、先问价、先退，也不要把职业背景直接写成报表口吻、现金流、可量化、概率、止损线、变量、算法或后台数据异常。",
-            "技术腔禁用：正文不要写测试员的职业病、边界、溢出、概率、变量、数据流、衰减曲线、测试用例、把收益拉到最高；改成公告停顿、提示闪烁、背包格变化、NPC回话前后不一致、旁人误判。",
-            "口语化对话：如果本段有对话，至少写成一来一回再接一句反应；不要只写“修。”“不组。”“先走。”这种口令。",
-            "比喻限额：本段最多1处使用“像”，不要写仿佛、犹如、宛如；能写动作就写动作。",
-            "报告腔禁用：不要写“意味着、这说明、规则被撬开、常规掉落池、系统把溢出部分折算、模型跑不动”。发现异常时，写成背包格变满、提示闪一下、手指停住、旁人看不懂或主角先收东西。",
-            "写法施工单",
-            "进入压力 -> 尝试动作 -> 即时反馈 -> 选择代价 -> 余波/小钩子",
-            "抽象判断必须落到具体物件或动作；对话必须改变筹码、知道的信息、价格、信任或能办的事。",
+            "输出要求：只写连续小说正文",
+            "把这一场写成白话小说，顺着人物当下的目标和动作往前走。旁白少做抽象解释，对话不能省略连接词和因果。",
+            "现代中文对话：话题先摆出来，再接判断和行动；要有完整来回，人物把理由说清楚。提纲句、翻译腔和系统腔改成普通说法，情绪放进动作、停顿和回答里。",
             taskbook_section,
-            "硬性质量闸门",
+            "写作保护线",
             governance_section,
             f"章节：第{chapter_number}章",
             f"当前片段：{spec.title} / {spec.key}",
@@ -216,12 +211,10 @@ def build_segment_prompt(
             f"必须自然写到：{spec.required_surface}",
             f"禁止写到：{spec.forbidden_surface or '无额外禁项'}",
             director_card_text,
-            f"目标篇幅：约{spec.target_chars}字；句子按场面自然长短，少解释腔，少套话。",
-            "分段写作规则：本段只完成自己的戏剧职责，不要提前替后续片段收束，不要把设定写成条目。",
-            "事实锁定：沿用本章计划里的怪物、地点、职业、面板数值和背包账本；不得把计划中的怪物、材料、NPC改名，也不要让生命/法力/属性无原因跳变。",
+            f"目标篇幅：约{spec.target_chars}字；句子按场面自然长短，少套话。",
+            "分段规则：本段收住自己的场面，后续内容留给下一段；设定要落成动作和对话。",
+            "事实锁定：沿用本章计划里的怪物、地点、职业、面板数值和背包账本，不得改名或让数值无原因跳变。",
             f"变体事实锁：{'；'.join(fact_locks) if fact_locks else '沿用导演卡和推演计划，不新增背景病费、前世或新怪物。'}",
-            "硬禁表达：不得使用报告腔词；改成手指停顿、余额栏、耐久红字、NPC报价、疼痛和路线选择。",
-            "文风规则：拒绝华丽辞藻堆砌、拒绝成语套话、拒绝流水账、不要模板化心理描写，用动作、对话和具体细节写。",
             f"已写前文摘要：{previous or '无'}",
             f"本章可见导演简表：{json.dumps(compact_plan, ensure_ascii=False)}",
         ]
@@ -275,20 +268,29 @@ def review_segment_output(spec: SegmentSpec, text: str, *, chapter_number: int) 
     # protagonist arc on their own.
     critical_review = review_critical_prose_rules(text, protagonist_names=())
     ai_flavor_review = review_ai_flavor(text)
+    reader_feel_review = review_reader_feel(text)
     for key, score in critical_review.get("scores", {}).items():
         scores[f"segment_critical_{key}"] = int(score)
     for key, score in ai_flavor_review.get("scores", {}).items():
         scores[f"segment_ai_flavor_{key}"] = int(score)
+    for key, score in reader_feel_review.get("scores", {}).items():
+        scores[f"segment_reader_feel_{key}"] = int(score)
     for issue in critical_review.get("issues", []):
         if issue not in issues:
             issues.append(issue)
     for issue in ai_flavor_review.get("issues", []):
         if issue not in issues:
             issues.append(issue)
+    for issue in reader_feel_review.get("issues", []):
+        if issue not in issues:
+            issues.append(issue)
     for item in critical_review.get("revision_plan", []):
         if item not in revision_plan:
             revision_plan.append(item)
     for item in ai_flavor_review.get("revision_plan", []):
+        if item not in revision_plan:
+            revision_plan.append(item)
+    for item in reader_feel_review.get("revision_plan", []):
         if item not in revision_plan:
             revision_plan.append(item)
 
@@ -301,6 +303,7 @@ def review_segment_output(spec: SegmentSpec, text: str, *, chapter_number: int) 
         "segment_title": spec.title,
         "critical_review": critical_review,
         "ai_flavor_review": ai_flavor_review,
+        "reader_feel_review": reader_feel_review,
     }
 
 
@@ -430,171 +433,3 @@ def trim_segment_to_contract(spec: SegmentSpec, text: str, *, chapter_number: in
         kept = paragraphs
 
     return "\n\n".join(kept or paragraphs).strip()
-
-
-# ---------------------------------------------------------------------------
-# Stage 2B: whole-chapter style adaptation (facts-frozen)
-# ---------------------------------------------------------------------------
-# Inspired by lingfengQAQ/webnovel-writer Step 2B. Drafting (2A) and style
-# adaptation (2B) are deliberately separated so that drafting can stay
-# fact-focused while style work has a single dedicated pass that is explicitly
-# forbidden from changing facts. Step 4 (review/polish) remains downstream and
-# only fixes issues flagged by reviewers.
-
-
-def _style_brief(plan: dict[str, Any]) -> dict[str, Any]:
-    """Pluck the small subset of craft/voice fields the 2B pass actually needs."""
-    plan = plan if isinstance(plan, dict) else {}
-    craft = plan.get("craft_pack")
-    if not isinstance(craft, dict):
-        sim = plan.get("simulation_plan")
-        if isinstance(sim, dict):
-            craft = sim.get("craft_pack")
-    if not isinstance(craft, dict):
-        craft = {}
-
-    show_tell = craft.get("show_vs_tell") if isinstance(craft.get("show_vs_tell"), dict) else {}
-    sentence_craft = craft.get("sentence_craft") if isinstance(craft.get("sentence_craft"), dict) else {}
-    paragraph_rhythm = craft.get("paragraph_rhythm") if isinstance(craft.get("paragraph_rhythm"), dict) else {}
-    transition_limits = craft.get("transition_crutch_limits") if isinstance(craft.get("transition_crutch_limits"), dict) else {}
-
-    voices: list[dict[str, Any]] = []
-    protagonist = plan.get("protagonist") if isinstance(plan.get("protagonist"), dict) else None
-    if protagonist:
-        voice = protagonist.get("voice") if isinstance(protagonist.get("voice"), dict) else None
-        if voice:
-            voices.append({"name": protagonist.get("name") or "主角", "voice": voice})
-    for card in plan.get("character_cards") if isinstance(plan.get("character_cards"), list) else []:
-        if not isinstance(card, dict):
-            continue
-        voice = card.get("voice") if isinstance(card.get("voice"), dict) else None
-        if voice:
-            voices.append({"name": card.get("name") or "?", "voice": voice})
-        if len(voices) >= 3:
-            break
-
-    brief = {
-        "show_vs_tell_conversions": show_tell.get("conversions", []),
-        "sentence_craft": sentence_craft,
-        "paragraph_rhythm": paragraph_rhythm,
-        "transition_crutch_limits": transition_limits,
-        "voice_guidance": voices,
-    }
-    return {key: value for key, value in brief.items() if value not in (None, "", [], {})}
-
-
-def build_style_adapt_prompt(body: str, plan: dict[str, Any]) -> str:
-    """Build a whole-chapter style-adaptation prompt.
-
-    Strict contract: only expression-layer rewrites allowed. Names, numbers,
-    panel data, currency, inventory, dialogue content, event order, and
-    setting rules must be preserved verbatim.
-    """
-    brief_json = json.dumps(_plain_prompt_value(_style_brief(plan)), ensure_ascii=False, separators=(",", ":"))
-    return "\n".join(
-        [
-            "请对下面这章中文网文正文做**风格适配（不改事实）**。",
-            "",
-            "唯一目的：把模板腔/说明腔/机械腔改成可读场面，不动任何事实。",
-            "",
-            "允许的改写（只能改'怎么说'，不能改'说什么'）：",
-            "1. 模板腔 → 具象动作：'他很谨慎'→具体动作；'他很疲惫'→具体身体细节",
-            "2. 说明腔 → 场面：把作者宣告/百科段改成主角能看见、听见、触到的物件、价格、对话、面板反馈",
-            "3. 机械腔 → 人感：连续段首主语相同时换成动作/物件/对话/环境开头；判断句拐杖换成具体反应",
-            "4. 比喻配额：删减明显堆砌的'像/仿佛'，但保留 1-2 个有效比喻",
-            "5. 段落推进：在关键反应前后补 4-6 句的连续动作块",
-            "6. 报告腔禁词必须清零：不要保留模型拆规则时常用的抽象判断词",
-            "",
-            "硬禁止（违反任一就视作失败）：",
-            "- 改名字、地名、ID、职业、装备、技能、道具、NPC 名",
-            "- 改数字（等级/经验/血量/法力/铜银金/耐久/库存数量/价格/距离）",
-            "- 改面板数据（任何形如 【X：Y】的系统标签内容）",
-            "- 改 NPC 台词的事实内容（'十份。'不能改成'八份。'；'5铜'不能改成'3铜'）",
-            "- 改事件顺序、场景顺序、章节结构",
-            "- 删除整个场景或新增整个场景",
-            "- 改主角的关键决策（接/拒任务、出/不出村、买/不买药）",
-            "- 保留报告腔词和后台判断词",
-            "",
-            "执行原则：保守改写。能不改就不改。改一句也是 OK 的，关键是不动事实。",
-            "如果原章已经写得不错，可以原样输出。",
-            "",
-            f"风格参考（只看这些字段，不要展开 craft_pack 全部）：{brief_json}",
-            "",
-            "原章正文：",
-            body,
-            "",
-            "只输出适配后的完整正文，不要加任何说明、标题、前言或评论。",
-        ]
-    )
-
-
-_NUMBER_PATTERN = re.compile(r"\d+")
-_PANEL_TAG_PATTERN = re.compile(r"【[^】]{1,40}】")
-
-
-def style_adapt_safety_check(original: str, candidate: str) -> dict[str, Any]:
-    """Verify the 2B candidate didn't violate the facts-frozen contract.
-
-    Returns dict with ``accept: bool``, ``reason: str``, and optional
-    ``mismatch`` detail. Caller should fall back to the original draft when
-    accept=False — never block generation on a failed style pass.
-    """
-    if not candidate or not candidate.strip():
-        return {"accept": False, "reason": "candidate_empty"}
-
-    orig_compact_len = len("".join(original.split()))
-    cand_compact_len = len("".join(candidate.split()))
-    if cand_compact_len < orig_compact_len * 0.7:
-        return {
-            "accept": False,
-            "reason": "candidate_too_short",
-            "mismatch": {"original_chars": orig_compact_len, "candidate_chars": cand_compact_len},
-        }
-    if cand_compact_len > orig_compact_len * 1.4:
-        return {
-            "accept": False,
-            "reason": "candidate_too_long",
-            "mismatch": {"original_chars": orig_compact_len, "candidate_chars": cand_compact_len},
-        }
-
-    orig_numbers = _NUMBER_PATTERN.findall(original)
-    cand_numbers = _NUMBER_PATTERN.findall(candidate)
-    orig_number_counts = Counter(orig_numbers)
-    cand_number_counts = Counter(cand_numbers)
-    invented = sorted((cand_number_counts - orig_number_counts).elements())
-    missing = sorted((orig_number_counts - cand_number_counts).elements())
-    if invented:
-        return {
-            "accept": False,
-            "reason": "invented_numbers",
-            "mismatch": {"invented": invented[:8]},
-        }
-    if missing:
-        return {
-            "accept": False,
-            "reason": "deleted_numbers",
-            "mismatch": {"missing": missing[:8]},
-        }
-
-    orig_tags = sorted(_PANEL_TAG_PATTERN.findall(original))
-    cand_tags = sorted(_PANEL_TAG_PATTERN.findall(candidate))
-    if orig_tags and orig_tags != cand_tags:
-        return {
-            "accept": False,
-            "reason": "panel_tags_changed",
-            "mismatch": {
-                "original_tag_count": len(orig_tags),
-                "candidate_tag_count": len(cand_tags),
-            },
-        }
-
-    return {
-        "accept": True,
-        "reason": "ok",
-        "stats": {
-            "original_chars": orig_compact_len,
-            "candidate_chars": cand_compact_len,
-            "panel_tag_count": len(orig_tags),
-            "number_count": len(orig_numbers),
-        },
-    }

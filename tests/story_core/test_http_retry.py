@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.client
+from pathlib import Path
 
 from packages.story_core.http_retry import RetryConfig, post_json_with_retry
 
@@ -42,6 +43,8 @@ def test_post_json_with_retry_routes_codexcli(monkeypatch, tmp_path):
     def fake_run(args, **kwargs):
         captured["args"] = args
         captured["input"] = kwargs["input"]
+        captured["env"] = kwargs["env"]
+        captured["isolated_auth_exists"] = (Path(kwargs["env"]["CODEX_HOME"]) / "auth.json").exists()
         output_path = args[args.index("--output-last-message") + 1]
         with open(output_path, "w", encoding="utf-8") as f:
             f.write('{"ok": true}')
@@ -55,6 +58,10 @@ def test_post_json_with_retry_routes_codexcli(monkeypatch, tmp_path):
 
     monkeypatch.setattr("packages.story_core.codex_cli_provider.shutil.which", lambda command: command)
     monkeypatch.setattr("packages.story_core.codex_cli_provider.subprocess.run", fake_run)
+    source_codex_home = tmp_path / "source-codex-home"
+    source_codex_home.mkdir()
+    (source_codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(source_codex_home))
     config = RetryConfig()
     config.timeout = 5
 
@@ -75,5 +82,10 @@ def test_post_json_with_retry_routes_codexcli(monkeypatch, tmp_path):
     assert result["choices"][0]["message"]["content"] == '{"ok": true}'
     assert captured["args"][:2] == ["codex", "exec"]
     assert captured["args"][-1] == "-"
-    assert "--model" not in captured["args"]
+    assert "--ignore-user-config" in captured["args"]
+    assert "--ignore-rules" in captured["args"]
+    assert "--ephemeral" in captured["args"]
+    assert captured["args"][captured["args"].index("--model") + 1] == "gpt-5.4"
+    assert captured["env"]["CODEX_HOME"] != str(source_codex_home)
+    assert captured["isolated_auth_exists"] is True
     assert "合法 JSON 对象" in captured["input"]

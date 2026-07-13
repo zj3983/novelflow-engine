@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from packages.story_core.file_project_store import FileProjectStore, _regeneration_quality_blocking
+from packages.story_core.skill_packs import import_skill_pack_from_path
 
 
 def _long_test_body(label: str = "Night Ember keeps the chapter grounded.") -> str:
@@ -34,6 +35,75 @@ def _make_minimal_file_project(root, *, state=None, project=None):
         encoding="utf-8",
     )
     return FileProjectStore(root)
+
+
+def _character_portrait_state():
+    return {
+        "story_id": "s-file",
+        "current_chapter": 0,
+        "genre": "都市悬疑",
+        "world_facts": [],
+        "characters": [
+            {
+                "name": "林月",
+                "role": "药剂师",
+                "game_id": "月见",
+                "npc_profile": {"service_role": "药剂师", "incentives": ["维持药材供应"]},
+                "personality_portrait": {
+                    "temperament": {"core_traits": ["嘴硬心软"]},
+                    "voice": {"sentence_habit": "先问来意，再说规矩。"},
+                },
+            }
+        ],
+    }
+
+
+def test_state_exposes_completed_character_portrait_without_writing_old_project(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(root, state=_character_portrait_state())
+    state_path = root / ".webnovel" / "state.json"
+    before = state_path.read_text(encoding="utf-8")
+
+    character = store.state()["characters"][0]
+
+    assert character["personality_portrait"]["temperament"]["core_traits"] == ["嘴硬心软"]
+    assert character["personality_portrait"]["behavior"]["pressure_mode"]
+    assert state_path.read_text(encoding="utf-8") == before
+
+
+def test_update_character_merges_nested_portrait_and_finds_game_id(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel", state=_character_portrait_state())
+
+    updated = store.update_character(
+        "月见",
+        {"personality_portrait": {"psychology": {"fear": "欠下人情"}}},
+    )
+
+    assert updated["name"] == "林月"
+    assert updated["personality_portrait"]["temperament"]["core_traits"] == ["嘴硬心软"]
+    assert updated["personality_portrait"]["psychology"]["fear"] == "欠下人情"
+    persisted = store._read_json(store.webnovel_dir / "state.json")
+    assert persisted["characters"][0]["personality_portrait"]["psychology"]["fear"] == "欠下人情"
+
+
+def test_complete_character_portrait_persists_without_overwriting_user_fields(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel", state=_character_portrait_state())
+
+    completed = store.complete_character_portrait("林月")
+
+    assert completed["personality_portrait"]["temperament"]["core_traits"] == ["嘴硬心软"]
+    assert completed["personality_portrait"]["growth"]["invariants"]
+    persisted = store._read_json(store.webnovel_dir / "state.json")
+    assert persisted["characters"][0]["personality_portrait"]["growth"]["invariants"]
+
+
+def test_update_character_rejects_unknown_name_and_renaming(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel", state=_character_portrait_state())
+
+    with pytest.raises(KeyError, match="character_not_found"):
+        store.update_character("不存在", {"core_motivation": "x"})
+    with pytest.raises(ValueError, match="character_name_immutable"):
+        store.update_character("林月", {"name": "其他人"})
 
 
 def test_regeneration_quality_allows_soft_scene_coverage_warnings():
@@ -149,6 +219,108 @@ def test_file_project_store_writes_rewrites_and_commits(tmp_path, monkeypatch):
     assert [record["operation"] for record in workflow_records] == ["write", "rewrite"]
     assert workflow_records[0]["chapter"] == 1
     assert workflow_records[1]["chapter_title"] == "Chapter One Revised"
+
+
+def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded webgame story.",
+            "genre": "网游",
+            "style": "白描",
+            "current_chapter": 1,
+            "world_facts": ["夜烬用新手法杖验证灰狼坡。"],
+            "characters": [{"name": "苏叶", "role": "protagonist", "goal": "低调验证机会"}],
+        },
+    )
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "灰狼坡试水",
+        "body": _long_test_body("Night Ember tests the wolf slope."),
+        "event_plan": {"chapter_title": "灰狼坡试水", "next_focus": "回村接清道夫委托"},
+        "writing_taskbook": {
+            "chapter_number": 1,
+            "chapter_title": "灰狼坡试水",
+            "chapter_goal": "验证灰狼掉落",
+            "target_chars": "3800到5500字",
+            "style_contract": ["白描"],
+            "craft_templates": ["对话场面：别人问、催或提醒；夜烬用完整句子给表面理由。"],
+            "global_required": ["写出新手法杖"],
+            "global_forbidden": ["不要公开暴露千倍爆率"],
+            "scenes": [
+                {
+                    "key": "entry_login",
+                    "title": "登录建号",
+                    "goal": "夜烬进入灰烬村",
+                    "required_surface": "游戏ID夜烬、新手法杖",
+                    "forbidden_surface": "转职",
+                    "entry_state": "现实余额紧张",
+                    "exit_state": "进入村口",
+                    "handoff": "去灰狼坡",
+                    "target_chars": 900,
+                }
+            ],
+        },
+        "quality_report": {"writing_review": {"pass": False, "issues": ["对话不够自然"], "revision_plan": ["补完整对话"]}},
+    }
+    store._write_json(root / ".story-system" / "chapters" / "0001.json", chapter)
+    store._write_json(root / ".story-system" / "reviews" / "0001.json", chapter["quality_report"])
+
+    preview = store.prompt_preview(1)
+
+    assert preview["schema_version"] == "file-project-prompt-preview/v1"
+    modules = {item["key"]: item for item in preview["modules"]}
+    assert {"core_context", "character_context", "genre_context", "writing_taskbook", "packet_context"}.issubset(modules)
+    assert "source_body" not in modules
+    keys = {item["key"] for item in preview["prompts"]}
+    assert {"director_plan", "writer_body", "revision", "writing_taskbook", "review_agents"}.issubset(keys)
+    by_key = {item["key"]: item for item in preview["prompts"]}
+    assert "## 输出要求" in by_key["writer_body"]["content"]
+    assert "## 本章方向" in by_key["writer_body"]["content"]
+    assert "## 本章事实" in by_key["writer_body"]["content"]
+    assert "## 出场人物" in by_key["writer_body"]["content"]
+    assert "## 正文写法" in by_key["writer_body"]["content"]
+    assert "character_cards" not in modules["core_context"]["content"]
+    assert "苏叶" in by_key["writer_body"]["content"]
+    assert "character_context" in by_key["writer_body"]["module_keys"]
+    assert "网游写法方法卡" in by_key["writer_body"]["content"]
+    assert "genre_context" in by_key["writer_body"]["module_keys"]
+    assert "web_game" in modules["genre_context"]["content"]
+    assert "验证灰狼掉落" in by_key["writing_taskbook"]["content"]
+    assert "对话场面" not in by_key["writing_taskbook"]["content"]
+    assert "补完整对话" in by_key["revision"]["content"]
+    assert "file-writing-packet/v1" in modules["packet_context"]["content"]
+    assert modules["packet_context"]["source"] == "file_project_store.writing_packet_compact_preview"
+    assert "完整写作包仍由 writing_packet 接口返回" in modules["packet_context"]["content"]
+    assert "game_world_simulation" not in by_key["writer_body"]["content"]
+    assert by_key["writer_body"]["chars"] < 18000
+    assert modules["packet_context"]["chars"] < 12000
+
+
+def test_file_project_writing_packet_includes_enabled_skill_context(tmp_path, monkeypatch):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={"story_id": "s-file", "outline": "A grounded webgame story.", "genre": "网游", "current_chapter": 0},
+    )
+    pack = tmp_path / "skill-pack"
+    (pack / "skills" / "writer").mkdir(parents=True)
+    (pack / "SKILL.md").write_text("---\nname: local-pack\n---\n\n# Local Pack", encoding="utf-8")
+    (pack / "skills" / "writer" / "SKILL.md").write_text(
+        "---\nname: writer\ndescription: 正文写作\n---\n\n写出自然对话。",
+        encoding="utf-8",
+    )
+    registry = tmp_path / "registry"
+    import_skill_pack_from_path(pack, root=registry)
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(registry))
+
+    store.update_project({"enabled_skill_ids": ["local-pack"]})
+    packet = store.writing_packet(1)
+
+    assert packet["skill_context"]["writer"][0]["skill_id"] == "local-pack"
+    assert packet["skill_context"]["writer"][0]["modules"][0]["module_id"] == "writer"
 
 
 def test_file_project_store_generates_next_chapter_without_api(tmp_path):
@@ -280,6 +452,86 @@ def test_file_project_writing_packet_requires_fast_visible_progression(tmp_path)
     assert any("前10章节奏要快" in rule for rule in packet["style_rules"])
     assert any("连续两章不能只拿线索不给成长" in rule for rule in packet["style_rules"])
     assert packet["state"]["current_focus"] == "Turn the hidden route into a visible level gain."
+
+
+def test_file_project_writing_packet_exposes_next_chapter_direction_options(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "网游开服，夜烬低调验证千倍爆率。",
+            "genre": "网游",
+            "style": "番茄升级流",
+            "current_chapter": 1,
+            "world_facts": ["现实催租压力未解决。"],
+            "progression_ledger": {
+                "economy": {"game_currency": "0铜", "inventory": {"灰狼毒腺": 8}},
+                "quests": {"清道夫委托": "未完成，还差2份毒腺"},
+            },
+        },
+    )
+
+    packet = store.writing_packet(2)
+
+    choices = packet["chapter_direction_options"]
+    assert choices["recommended_id"] == "trade-bridge"
+    assert [item["id"] for item in choices["options"]] == [
+        "trade-bridge",
+        "chaos-seed-trace",
+        "guild-ecology",
+    ]
+    assert any("现实" in item["reader_promise"] for item in choices["options"])
+
+
+def test_file_project_generate_next_accepts_selected_chapter_direction(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "网游开服，夜烬低调验证千倍爆率。",
+            "genre": "网游",
+            "style": "番茄升级流",
+            "current_chapter": 1,
+            "world_facts": ["现实催租压力未解决。"],
+            "progression_ledger": {
+                "economy": {"game_currency": "0铜", "inventory": {"灰狼毒腺": 8}},
+                "quests": {"清道夫委托": "未完成，还差2份毒腺"},
+            },
+        },
+    )
+    captured = {}
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            captured["direction"] = story.progression_ledger["chapter_direction"]
+            updated_story = story.model_copy(update={"current_chapter": 2})
+            return SimpleNamespace(
+                chapter_number=2,
+                chapter_title="混沌再闪",
+                body=_long_test_body("Night Ember hid the strange fragment and counted the cost."),
+                cadence="manual",
+                next_outline="Check the recorded trace.",
+                updated_story=updated_story,
+                chapter_summary={
+                    "chapter_title": "混沌再闪",
+                    "cadence": "manual",
+                    "summary": "Night Ember sees a hidden trace.",
+                    "facts": ["Selected chaos direction."],
+                    "next_focus": "Check the recorded trace.",
+                    "primary_conflict": "Hidden trace.",
+                    "secondary_conflict": "No one else can know.",
+                    "event_beat": "Trace appears.",
+                },
+                quality_report={"ok": True},
+            )
+
+    generated = store.generate_next_chapter(engine=FakeEngine(), chapter_direction_id="chaos-seed-trace")
+
+    assert generated["chapter_number"] == 2
+    assert captured["direction"]["id"] == "chaos-seed-trace"
+    assert "未解析" in captured["direction"]["wow_beat"] or "残片" in captured["direction"]["wow_beat"]
 
 
 def test_file_project_writing_packet_exposes_outline_constraints(tmp_path):

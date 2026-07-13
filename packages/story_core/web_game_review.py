@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from packages.story_core.genre_plugins import is_game_genre
+
 
 GAME_CONTEXT_TOKENS = (
     "《天启之门》",
@@ -170,7 +172,8 @@ def web_game_review_rules() -> list[str]:
 def _has_game_context(body: str, event_plan: dict[str, Any], world_facts: list[str] | None) -> bool:
     plan_text = str(event_plan)
     facts_text = "\n".join(world_facts or [])
-    return any(token in body or token in plan_text or token in facts_text for token in GAME_CONTEXT_TOKENS)
+    combined = "\n".join([body, plan_text, facts_text])
+    return is_game_genre(combined)
 
 
 def _has_any(text: str, tokens: tuple[str, ...]) -> bool:

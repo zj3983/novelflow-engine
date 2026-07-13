@@ -7,17 +7,22 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from packages.story_core.chapter_direction import build_chapter_direction_options
+from packages.story_core.character_portraits import complete_character_portrait as complete_portrait
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
-from packages.story_core.models import StoryState
+from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.prose_style_review import review_prose_style
+from packages.story_core.reader_feel_review import review_reader_feel
 from packages.story_core.quality import validate_bundle
 from packages.story_core.reader_agent import review_reader_agent
 from packages.story_core.reviewer_agent import review_reviewer_agent
 from packages.story_core.workflow_telemetry import append_workflow_telemetry
 from packages.story_core.writing_learning import learning_snapshot, lessons_from_quality_report, merge_writing_lessons
 from packages.story_core.writing_packet import prose_renderer_contract
+from packages.story_core.skill_packs import skill_pack_prompt_context
+from packages.story_core.writing_taskbook import format_taskbook_brief_section
 
 
 SOFT_REGENERATION_ISSUE_MARKERS = (
@@ -115,6 +120,7 @@ def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
     body = str(chapter.get("body") or "")
     length_review = _chapter_length_review(body)
     ai_flavor_review = review_ai_flavor(body)
+    reader_feel_review = review_reader_feel(body)
     prose_style_review = review_prose_style(body)
     cold_reader_review = review_cold_reader_experience(
         body,
@@ -151,6 +157,7 @@ def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
     scores: dict[str, Any] = {}
     for prefix, report in (
         ("ai_flavor", ai_flavor_review),
+        ("reader_feel", reader_feel_review),
         ("prose_style", prose_style_review),
         ("cold_reader", cold_reader_review),
     ):
@@ -170,6 +177,7 @@ def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
         bool(quality_report.get("ok"))
         and bool(length_review.get("pass", True))
         and bool(ai_flavor_review.get("pass", True))
+        and bool(reader_feel_review.get("pass", True))
         and bool(prose_style_review.get("pass", True))
         and bool(cold_reader_review.get("pass", True))
         and bool(reader_agent_review.get("pass", True))
@@ -182,6 +190,7 @@ def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
         "scores": scores,
         "length_review": length_review,
         "ai_flavor_review": ai_flavor_review,
+        "reader_feel_review": reader_feel_review,
         "prose_style_review": prose_style_review,
         "cold_reader_review": cold_reader_review,
         "reader_agent_review": reader_agent_review,
@@ -189,6 +198,7 @@ def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
         "reviewer_agent_review": reviewer_agent_review,
         "revision_plan": _merge_revision_plans(
             ai_flavor_review.get("revision_plan", []),
+            reader_feel_review.get("revision_plan", []),
             prose_style_review.get("revision_plan", []),
             cold_reader_review.get("revision_plan", []),
             reader_agent_review.get("revision_plan", []),
@@ -202,6 +212,7 @@ def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
         "quality_report": quality_report,
         "length_review": length_review,
         "ai_flavor_review": ai_flavor_review,
+        "reader_feel_review": reader_feel_review,
         "prose_style_review": prose_style_review,
         "cold_reader_review": cold_reader_review,
         "reader_agent_review": reader_agent_review,
@@ -1859,6 +1870,7 @@ class FileProjectStore:
             "author_constraints",
             "character_profiles",
             "relationship_graph",
+            "enabled_skill_ids",
             "status",
             "pipeline_stage",
         ):
@@ -1878,6 +1890,96 @@ class FileProjectStore:
         self._write_json(self.webnovel_dir / "state.json", state)
         return project
 
+    @staticmethod
+    def _merge_character_patch(current: Any, patch: Any) -> Any:
+        if isinstance(current, dict) and isinstance(patch, dict):
+            merged = dict(current)
+            for key, value in patch.items():
+                merged[key] = FileProjectStore._merge_character_patch(merged.get(key), value)
+            return merged
+        return patch
+
+    @staticmethod
+    def _character_matches(card: dict[str, Any], identifier: str) -> bool:
+        target = str(identifier or "").strip()
+        if not target:
+            return False
+        panel = card.get("game_panel") if isinstance(card.get("game_panel"), dict) else {}
+        return target in {
+            str(card.get("name") or "").strip(),
+            str(card.get("game_id") or "").strip(),
+            str(panel.get("game_id") or "").strip(),
+        }
+
+    def _completed_character_card(self, card: dict[str, Any], *, genre: str = "") -> dict[str, Any]:
+        def drop_none(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {key: drop_none(item) for key, item in value.items() if item is not None}
+            if isinstance(value, list):
+                return [drop_none(item) for item in value]
+            return value
+
+        card = drop_none(card)
+        validated = CharacterState.model_validate(card)
+        completed = complete_portrait(
+            validated,
+            genre=genre,
+            story_function=str(card.get("story_function") or ""),
+        )
+        return self._merge_character_patch(
+            card,
+            completed.model_dump(exclude_defaults=True, exclude_none=True),
+        )
+
+    def update_character(self, name: str, patch: dict[str, Any]) -> dict[str, Any]:
+        identifier = str(name or "").strip()
+        if not identifier:
+            raise KeyError("character_not_found:")
+        patch = dict(patch or {})
+
+        visible_state = self.state()
+        visible_cards = visible_state.get("characters") if isinstance(visible_state.get("characters"), list) else []
+        current = next(
+            (dict(item) for item in visible_cards if isinstance(item, dict) and self._character_matches(item, identifier)),
+            None,
+        )
+        if current is None:
+            raise KeyError(f"character_not_found:{identifier}")
+        canonical_name = str(current.get("name") or "").strip()
+        if patch.get("name") and str(patch["name"]).strip() != canonical_name:
+            raise ValueError("character_name_immutable")
+
+        merged = self._merge_character_patch(current, patch)
+        merged["name"] = canonical_name
+        completed = self._completed_character_card(merged, genre=str(visible_state.get("genre") or ""))
+
+        raw_state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
+        raw_cards = [dict(item) for item in raw_state.get("characters", []) if isinstance(item, dict)]
+        raw_index = next(
+            (index for index, item in enumerate(raw_cards) if self._character_matches(item, canonical_name)),
+            None,
+        )
+        if raw_index is None:
+            raw_cards.append(completed)
+        else:
+            raw_cards[raw_index] = self._merge_character_patch(raw_cards[raw_index], completed)
+        raw_state["characters"] = raw_cards
+        self._write_json(self.webnovel_dir / "state.json", raw_state)
+        return completed
+
+    def complete_character_portrait(self, name: str) -> dict[str, Any]:
+        identifier = str(name or "").strip()
+        visible_state = self.state()
+        cards = visible_state.get("characters") if isinstance(visible_state.get("characters"), list) else []
+        current = next(
+            (dict(item) for item in cards if isinstance(item, dict) and self._character_matches(item, identifier)),
+            None,
+        )
+        if current is None:
+            raise KeyError(f"character_not_found:{identifier}")
+        completed = self._completed_character_card(current, genre=str(visible_state.get("genre") or ""))
+        return self.update_character(str(completed.get("name") or identifier), completed)
+
     def state(self) -> dict[str, Any]:
         state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
         sanitized = self._sanitize_story_state(state)
@@ -1896,6 +1998,13 @@ class FileProjectStore:
                 additions.extend(self._chapter_entity_cards(chapter))
         if additions:
             sanitized["characters"] = self._merge_character_cards(list(sanitized.get("characters") or []), additions)
+        characters = sanitized.get("characters") if isinstance(sanitized.get("characters"), list) else []
+        genre = str(sanitized.get("genre") or project.get("genre") or "")
+        sanitized["characters"] = [
+            self._completed_character_card(dict(item), genre=genre)
+            for item in characters
+            if isinstance(item, dict) and self._is_character_card(item)
+        ]
         return sanitized
 
     def chapter_numbers(self) -> list[int]:
@@ -2140,10 +2249,25 @@ class FileProjectStore:
             "commit": commit,
         }
 
-    def generate_next_chapter(self, engine: Any | None = None, *, commit_message: str | None = None) -> dict[str, Any]:
+    def generate_next_chapter(
+        self,
+        engine: Any | None = None,
+        *,
+        chapter_direction_id: str | None = None,
+        commit_message: str | None = None,
+    ) -> dict[str, Any]:
         from packages.story_core.engine import StoryEngine
 
-        story = StoryState.model_validate(self.state())
+        state = self.state()
+        project = self.project()
+        target_chapter = int(state.get("current_chapter") or 0) + 1
+        chapter_direction = self._resolve_chapter_direction(state, project, target_chapter, chapter_direction_id)
+        if chapter_direction:
+            state = dict(state)
+            ledger = dict(state.get("progression_ledger") or {})
+            ledger["chapter_direction"] = chapter_direction
+            state["progression_ledger"] = ledger
+        story = StoryState.model_validate(self._story_state_payload_for_direction(state, project))
         generator = engine or StoryEngine()
         bundle = generator.generate_next_chapter(story)
         persisted = self.persist_bundle(bundle, operation="generate", commit_message=commit_message)
@@ -2152,6 +2276,7 @@ class FileProjectStore:
             "root": str(self.root),
             "chapter_number": persisted["chapter_number"],
             "chapter_title": persisted["chapter_title"],
+            "chapter_direction": chapter_direction,
             "persisted": persisted,
         }
 
@@ -2504,6 +2629,55 @@ class FileProjectStore:
             "results": results,
         }
 
+    @staticmethod
+    def _story_state_payload_for_direction(state: dict[str, Any], project: dict[str, Any]) -> dict[str, Any]:
+        characters: list[dict[str, Any]] = []
+        for item in state.get("characters", []) if isinstance(state.get("characters"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            panel = item.get("game_panel") if isinstance(item.get("game_panel"), dict) else {}
+            characters.append(
+                {
+                    "name": str(item.get("name") or panel.get("game_id") or "主角"),
+                    "role": str(item.get("role") or "protagonist"),
+                    "game_id": str(item.get("game_id") or panel.get("game_id") or ""),
+                }
+            )
+            if len(characters) >= 4:
+                break
+        return {
+            "story_id": str(state.get("story_id") or project.get("active_story_id") or project.get("project_id") or "file-project"),
+            "outline": str(state.get("outline") or project.get("seed_outline") or project.get("title") or ""),
+            "genre": str(state.get("genre") or project.get("genre") or ""),
+            "style": str(state.get("style") or project.get("style") or ""),
+            "current_chapter": int(state.get("current_chapter") or 0),
+            "enabled_skill_ids": list(project.get("enabled_skill_ids") or state.get("enabled_skill_ids") or []),
+            "author_constraints": list(state.get("author_constraints") or []),
+            "world_facts": list(state.get("world_facts") or []),
+            "progression_ledger": dict(state.get("progression_ledger") or {}),
+            "characters": characters,
+        }
+
+    def _chapter_direction_options(self, state: dict[str, Any], project: dict[str, Any], chapter_number: int) -> dict[str, Any]:
+        story = StoryState.model_validate(self._story_state_payload_for_direction(state, project))
+        return build_chapter_direction_options(story, chapter_number)
+
+    def _resolve_chapter_direction(
+        self,
+        state: dict[str, Any],
+        project: dict[str, Any],
+        chapter_number: int,
+        chapter_direction_id: str | None,
+    ) -> dict[str, Any]:
+        direction_id = str(chapter_direction_id or "").strip()
+        if not direction_id:
+            return {}
+        options = self._chapter_direction_options(state, project, chapter_number)
+        for option in options.get("options", []):
+            if isinstance(option, dict) and str(option.get("id") or "") == direction_id:
+                return option
+        raise ValueError(f"unknown_chapter_direction:{direction_id}")
+
     def writing_packet(self, chapter_number: int | None = None) -> dict[str, Any]:
         state = self.state()
         project = self.project()
@@ -2587,6 +2761,16 @@ class FileProjectStore:
         hard_locks.extend(str(item) for item in progression_rules[:4] if str(item).strip())
         hard_locks.extend(str(item) for item in forbidden_breaks[:4] if str(item).strip())
         characters = state.get("characters", []) if isinstance(state.get("characters"), list) else []
+        chapter_direction_options = self._chapter_direction_options(state, project, int(target or 0))
+        enabled_skill_ids = [
+            str(item).strip()
+            for item in (project.get("enabled_skill_ids") or state.get("enabled_skill_ids") or [])
+            if str(item).strip()
+        ]
+        skill_context = {
+            purpose: skill_pack_prompt_context(enabled_skill_ids, purpose=purpose, max_chars_per_pack=2600)
+            for purpose in ("writer", "dialogue", "style", "genre", "continuity", "reviewer")
+        }
         return {
             "schema_version": "file-writing-packet/v1",
             "root": str(self.root),
@@ -2615,7 +2799,7 @@ class FileProjectStore:
                 ],
             },
             "style_rules": [
-                '语言贴近番茄爆款网文的白话节奏：目标清楚、反馈直接、少解释；每个场景都要有目标、阻力、收益或危机。句子按场面自然长短，对话必须把原因、条件或态度说完整。',
+                '语言贴近番茄爆款网文的白话节奏：目标清楚、反馈直接，旁白少做抽象解释；每个场景都要有目标、阻力、收益或危机。少解释只针对旁白，对话不能省略连接词和因果，必须把原因、条件或态度说完整。',
                 "正文少用比喻和形容词链，优先写动作、数值、道具消耗、位置变化和直接后果。",
                 "每个场景都要有目标、阻力、收益或危机，结尾必须留下下一步问题。",
                 "前10章节奏要快，连续两章不能只拿线索不给成长；下一章至少兑现一个可见成长：等级、经验大幅推进、技能、装备、货币补给或任务权限。",
@@ -2646,4 +2830,440 @@ class FileProjectStore:
             "recent_chapters": recent,
             "latest_review": self.review(None) if numbers else {},
             "latest_event_plan": latest_chapter.get("event_plan", {}) if isinstance(latest_chapter, dict) else {},
+            "chapter_direction_options": chapter_direction_options,
+            "skill_context": {key: value for key, value in skill_context.items() if value},
+        }
+
+    def _prompt_plan_from_chapter(self, chapter: dict[str, Any]) -> dict[str, Any]:
+        plan: dict[str, Any] = {}
+        for key in (
+            "character_moves",
+            "chapter_intent",
+            "event_plan",
+            "memory_constraints",
+            "chapter_seed",
+            "simulation_plan",
+            "world_events",
+            "scene_cards",
+            "style_guidance",
+            "governance",
+            "writing_taskbook",
+        ):
+            value = chapter.get(key)
+            if value not in (None, "", [], {}):
+                plan[key] = value
+        return plan
+
+    @staticmethod
+    def _prompt_entry(
+        *,
+        key: str,
+        title: str,
+        agent: str,
+        stage: str,
+        content: str,
+        source: str,
+        description: str = "",
+        module_keys: list[str] | None = None,
+    ) -> dict[str, Any]:
+        text = str(content or "")
+        return {
+            "key": key,
+            "title": title,
+            "agent": agent,
+            "stage": stage,
+            "source": source,
+            "description": description,
+            "content": text,
+            "chars": len(text),
+            "module_keys": list(module_keys or []),
+        }
+
+    @staticmethod
+    def _prompt_review_payload(review: Any) -> dict[str, Any]:
+        if not isinstance(review, dict):
+            return {}
+        nested = review.get("writing_review") if isinstance(review.get("writing_review"), dict) else None
+        if nested:
+            merged = dict(nested)
+            for key in ("ok", "pass", "issues", "revision_plan", "scores"):
+                if key in review and key not in merged:
+                    merged[key] = review[key]
+            return merged
+        return review
+
+    def _slim_prompt_preview_value(self, value: Any, *, depth: int = 0) -> Any:
+        if depth > 4:
+            return self._compact_text(value, 160)
+        if isinstance(value, str):
+            return self._compact_text(value, 180)
+        if isinstance(value, list):
+            return [self._slim_prompt_preview_value(item, depth=depth + 1) for item in value[:8]]
+        if isinstance(value, dict):
+            result: dict[str, Any] = {}
+            for key, item in value.items():
+                if item in (None, "", [], {}):
+                    continue
+                result[str(key)] = self._slim_prompt_preview_value(item, depth=depth + 1)
+            return result
+        return value
+
+    def _compact_prompt_preview_packet(self, packet: Any) -> dict[str, Any]:
+        if not isinstance(packet, dict):
+            return {}
+
+        state = packet.get("state") if isinstance(packet.get("state"), dict) else {}
+        outline_constraints = packet.get("outline_constraints") if isinstance(packet.get("outline_constraints"), dict) else {}
+        latest_review = packet.get("latest_review") if isinstance(packet.get("latest_review"), dict) else {}
+        latest_event_plan = packet.get("latest_event_plan") if isinstance(packet.get("latest_event_plan"), dict) else {}
+        characters = state.get("characters") if isinstance(state.get("characters"), list) else []
+        recent_chapters = packet.get("recent_chapters") if isinstance(packet.get("recent_chapters"), list) else []
+
+        return {
+            "schema_version": packet.get("schema_version"),
+            "target_chapter": packet.get("target_chapter"),
+            "instruction": self._compact_text(packet.get("instruction"), 260),
+            "hard_locks": [self._compact_text(item, 160) for item in packet.get("hard_locks", [])[:10]],
+            "scene_cards": self._slim_prompt_preview_value(packet.get("scene_cards", [])[:6]),
+            "title_contract": self._slim_prompt_preview_value(packet.get("title_contract")),
+            "style_rules": [self._compact_text(item, 180) for item in packet.get("style_rules", [])[:6]],
+            "outline_constraints": {
+                "current_arc": self._compact_text(outline_constraints.get("current_arc"), 260),
+                "opening_arc": self._slim_prompt_preview_value(outline_constraints.get("opening_arc")),
+                "progression_rules": self._slim_prompt_preview_value(outline_constraints.get("progression_rules", [])[:6]),
+                "forbidden_breaks": self._slim_prompt_preview_value(outline_constraints.get("forbidden_breaks", [])[:8]),
+            },
+            "state": {
+                "story_id": state.get("story_id"),
+                "genre": state.get("genre"),
+                "style": state.get("style"),
+                "current_chapter": state.get("current_chapter"),
+                "current_focus": self._compact_text(state.get("current_focus"), 260),
+                "time_state": self._slim_prompt_preview_value(state.get("time_state")),
+                "author_constraints": [self._compact_text(item, 160) for item in state.get("author_constraints", [])[:8]],
+                "world_facts": [self._compact_text(item, 180) for item in state.get("world_facts", [])[-10:]],
+                "characters": [
+                    {
+                        "name": item.get("name"),
+                        "role": item.get("role"),
+                        "location": self._compact_text(item.get("location"), 80),
+                        "goal": self._compact_text(item.get("goal"), 140),
+                    }
+                    for item in characters[:6]
+                    if isinstance(item, dict)
+                ],
+            },
+            "recent_chapters": [
+                {
+                    "chapter_number": item.get("chapter_number"),
+                    "chapter_title": item.get("chapter_title"),
+                    "summary": self._compact_text(item.get("summary") or item.get("body"), 220),
+                    "next_focus": self._compact_text(item.get("next_focus"), 160),
+                }
+                for item in recent_chapters[-3:]
+                if isinstance(item, dict)
+            ],
+            "latest_event_plan": self._slim_prompt_preview_value(
+                {
+                    "chapter_title": latest_event_plan.get("chapter_title"),
+                    "turn": latest_event_plan.get("turn"),
+                    "pivot": latest_event_plan.get("pivot"),
+                    "collision": latest_event_plan.get("collision"),
+                    "stakes": latest_event_plan.get("stakes"),
+                    "next_focus": latest_event_plan.get("next_focus"),
+                    "chapter_end_hook": latest_event_plan.get("chapter_end_hook"),
+                }
+            ),
+            "latest_review": self._slim_prompt_preview_value(
+                {
+                    "ok": latest_review.get("ok") if "ok" in latest_review else latest_review.get("pass"),
+                    "issues": latest_review.get("issues", [])[:8],
+                    "revision_plan": latest_review.get("revision_plan", [])[:8],
+                    "scores": latest_review.get("scores"),
+                }
+            ),
+            "note": "提示词面板显示压缩写作包；完整写作包仍由 writing_packet 接口返回。",
+        }
+
+    def prompt_preview(self, chapter_number: int | None = None) -> dict[str, Any]:
+        from packages.story_core.orchestrator import (
+            MAX_CHAPTER_CHARS,
+            TARGET_CHAPTER_CHARS,
+            StoryOrchestrator,
+            _character_context_for_prompt,
+            _genre_context_for_prompt,
+            _story_snapshot,
+        )
+        from packages.story_core.prompt_modules import modules_for_stage, prompt_module_catalog
+        from packages.story_core.style_adaptation import build_style_adapt_prompt
+
+        numbers = self.chapter_numbers()
+        latest_number = numbers[-1] if numbers else 0
+        state = self.state()
+        project = self.project()
+        target = int(chapter_number or state.get("current_chapter") or latest_number or 1)
+        chapter: dict[str, Any] = {}
+        try:
+            chapter = self.chapter(target)
+        except FileNotFoundError:
+            chapter = {}
+
+        story = StoryState.model_validate(self._state_before_chapter(target))
+        orchestrator = StoryOrchestrator()
+        plan = self._prompt_plan_from_chapter(chapter)
+        body = str(chapter.get("body") or "")
+        review = chapter.get("quality_report") if isinstance(chapter.get("quality_report"), dict) else {}
+        if not review and chapter:
+            try:
+                review = self.review(target)
+            except FileNotFoundError:
+                review = {}
+        review = self._prompt_review_payload(review)
+
+        core_context = _story_snapshot(story)
+        character_context = _character_context_for_prompt(story, plan)
+        genre_context = _genre_context_for_prompt(story, target, plan)
+        modules: list[dict[str, Any]] = [
+            self._prompt_entry(
+                key="core_context",
+                title="核心上下文模块",
+                agent="context",
+                stage="核心上下文",
+                content=json.dumps(core_context, ensure_ascii=False, indent=2),
+                source="orchestrator._story_snapshot",
+                description="主线、世界事实、账本、最近记忆和活世界信号；不包含完整人物角色卡。",
+            ),
+            self._prompt_entry(
+                key="character_context",
+                title="本章人物模块",
+                agent="context",
+                stage="人物角色卡",
+                content=json.dumps(character_context, ensure_ascii=False, indent=2),
+                source="orchestrator._character_context_for_prompt",
+                description="按本章计划提取出场人物的角色卡；不是全量人物库。",
+            ),
+            self._prompt_entry(
+                key="genre_context",
+                title="题材写法模块",
+                agent="context",
+                stage="题材写法",
+                content=json.dumps(genre_context, ensure_ascii=False, indent=2),
+                source="orchestrator._genre_context_for_prompt",
+                description="按项目题材单独选择写法。当前网游项目加载网游模块，其他题材加载对应模块。",
+            ),
+        ]
+        enabled_skill_ids = [
+            str(item).strip()
+            for item in (project.get("enabled_skill_ids") or state.get("enabled_skill_ids") or [])
+            if str(item).strip()
+        ]
+        for purpose, title in (
+            ("writer", "正文写作 Skill"),
+            ("dialogue", "对话 Skill"),
+            ("style", "风格 Skill"),
+            ("genre", "题材 Skill"),
+            ("continuity", "连续性 Skill"),
+            ("reviewer", "审稿 Skill"),
+        ):
+            skill_context = skill_pack_prompt_context(enabled_skill_ids, purpose=purpose, max_chars_per_pack=2600)
+            if not skill_context:
+                continue
+            modules.append(
+                self._prompt_entry(
+                    key=f"skill_context_{purpose}",
+                    title=title,
+                    agent="context",
+                    stage="Skill",
+                    content=json.dumps(skill_context, ensure_ascii=False, indent=2),
+                    source=f"skill_packs.enabled_skill_ids.{purpose}",
+                    description="按用途裁剪后的本地 skill 包内容；只在相关阶段读取。",
+                )
+            )
+        if isinstance(review, dict) and review:
+            modules.append(
+                self._prompt_entry(
+                    key="review_context",
+                    title="审稿报告模块",
+                    agent="review",
+                    stage="审稿报告",
+                    content=json.dumps(review, ensure_ascii=False, indent=2),
+                    source="chapter.quality_report",
+                    description="改稿阶段才读取的审稿问题和修复清单。",
+                )
+            )
+        packet_preview = self._compact_prompt_preview_packet(self.writing_packet(target))
+        modules.append(
+            self._prompt_entry(
+                key="packet_context",
+                title="写作包预览模块",
+                agent="codex",
+                stage="写作包",
+                content=json.dumps(packet_preview, ensure_ascii=False, indent=2),
+                source="file_project_store.writing_packet_compact_preview",
+                description="给人工/Codex查看的压缩写作包；完整写作包仍由写作包接口返回。",
+            )
+        )
+
+        prompts: list[dict[str, Any]] = [
+            self._prompt_entry(
+                key="director_plan",
+                title="导演/剧情计划 Prompt",
+                agent="director",
+                stage="剧情计划生成",
+                content=orchestrator._plan_prompt(story, target),
+                source="rebuilt_from_state_before_chapter",
+                description="生成 event_plan、chapter_intent、scene_cards 等结构化剧情计划。",
+                module_keys=["core_context", "outline_context"],
+            ),
+            self._prompt_entry(
+                key="writer_body",
+                title="整章正文 Prompt",
+                agent="writer",
+                stage="整章正文生成",
+                content=orchestrator._body_prompt(story, target, plan),
+                source="rebuilt_from_chapter_plan",
+                description="整章正文实际提示词，按输出要求、本章方向、本章事实、出场人物和正文写法五块装配。",
+                module_keys=[
+                    "core_context",
+                    "outline_context",
+                    "chapter_plan",
+                    "character_context",
+                    "genre_context",
+                    "style_context",
+                    "skill_context_writer",
+                    "skill_context_dialogue",
+                    "skill_context_style",
+                    "skill_context_genre",
+                    "writing_taskbook",
+                ],
+            ),
+        ]
+
+        taskbook = plan.get("writing_taskbook")
+        if isinstance(taskbook, dict):
+            taskbook_module = self._prompt_entry(
+                key="writing_taskbook",
+                title="本章方向模块",
+                agent="context",
+                stage="本章方向",
+                content=format_taskbook_brief_section(taskbook),
+                source="chapter.writing_taskbook",
+                description="只保留本章目标、场面推进和收束，不重复通用风格规则。",
+            )
+            modules.append(taskbook_module)
+            prompts.append(
+                self._prompt_entry(
+                    key="writing_taskbook",
+                    title="写作任务书 Prompt 片段",
+                    agent="writer",
+                    stage="写作任务书",
+                    content=taskbook_module["content"],
+                    source="chapter.writing_taskbook",
+                    description="整章正文读取的场景任务、风格合同和场面写法模板。",
+                    module_keys=["writing_taskbook"],
+                )
+            )
+
+        if body.strip():
+            source_body_placeholder = f"[原正文由 source_body 注入；面板不展示正文全文；当前正文 {len(body)} 字。]"
+            prompts.extend(
+                [
+                    self._prompt_entry(
+                        key="revision",
+                        title="审稿改稿 Prompt",
+                        agent="writer",
+                        stage="审稿改稿",
+                        content=orchestrator._revision_prompt(
+                            story,
+                            target,
+                            source_body_placeholder,
+                            plan,
+                            review if isinstance(review, dict) else {},
+                        ),
+                        source="rebuilt_from_chapter_body_and_review",
+                        description="章节未通过写作审稿时，用于自动改稿的完整提示词。",
+                        module_keys=["core_context", "character_context", "genre_context", "writing_taskbook", "review_context"],
+                    ),
+                    self._prompt_entry(
+                        key="expansion",
+                        title="章节扩写 Prompt",
+                        agent="writer",
+                        stage="章节扩写",
+                        content="\n".join(
+                            [
+                                "下面这章正文太短，请在不改变剧情事实和结尾钩子的前提下扩写成完整网文章节。",
+                                f"目标篇幅：{TARGET_CHAPTER_CHARS}。",
+                                "扩写重点：补足场景调度、战斗过程、任务/装备/技能/路线前置任务、人物对话、心理活动、系统面板反馈、背景节拍和章末压力；第一章不要补成交易、提交委托、修理或买药水。",
+                                "只输出扩写后的小说正文，不要解释，不要列大纲。",
+                                f"原正文：\n{source_body_placeholder}",
+                            ]
+                        ),
+                        source="rebuilt_conditional_prompt",
+                        description="正文低于目标篇幅时触发。",
+                        module_keys=["source_body"],
+                    ),
+                    self._prompt_entry(
+                        key="compression",
+                        title="章节压缩 Prompt",
+                        agent="writer",
+                        stage="章节压缩",
+                        content="\n".join(
+                            [
+                                "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。",
+                                f"目标篇幅：保留完整网文章节感，但压到4300到5000字之间，绝对不要超过{MAX_CHAPTER_CHARS}字。",
+                                "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。",
+                                "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。",
+                                "只输出压缩后的小说正文，不要解释，不要列大纲。",
+                                f"原正文：\n{source_body_placeholder}",
+                            ]
+                        ),
+                        source="rebuilt_conditional_prompt",
+                        description="正文超过目标篇幅时触发。",
+                        module_keys=["source_body"],
+                    ),
+                    self._prompt_entry(
+                        key="style_adapt",
+                        title="风格适配 Prompt",
+                        agent="writer",
+                        stage="风格适配",
+                        content=build_style_adapt_prompt(source_body_placeholder, plan),
+                        source="rebuilt_conditional_prompt",
+                        description="启用风格适配时触发，用于把已生成正文改成项目文风。",
+                        module_keys=["writing_taskbook", "source_body"],
+                    ),
+                ]
+            )
+
+        prompts.append(
+            self._prompt_entry(
+                key="review_agents",
+                title="读者/编辑/审稿 Agent 说明",
+                agent="review",
+                stage="质量审稿",
+                content="\n".join(
+                    [
+                        "读者 agent、编辑 agent、审稿 agent 当前主要读取章节正文和质量报告执行本地规则/函数检查。",
+                        "它们不是独立调用 LLM 的隐藏提示词；如果后续接入 LLM 审稿，应把对应 prompt 也写入本接口。",
+                    ]
+                ),
+                source="local_rule_based_review",
+                description="说明为什么这里没有额外隐藏 prompt。",
+                module_keys=["review_context"],
+            )
+        )
+
+        return {
+            "schema_version": "file-project-prompt-preview/v1",
+            "project_id": self.project().get("project_id") or self.root.name,
+            "chapter_number": target,
+            "chapter_title": chapter.get("chapter_title") or "",
+            "source": "rebuilt_from_current_project_files",
+            "has_chapter": bool(chapter),
+            "module_catalog": prompt_module_catalog(),
+            "stage_modules": {
+                stage: [module.key for module in modules_for_stage(stage)]
+                for stage in ("planning", "writing", "revision", "validation")
+            },
+            "modules": modules,
+            "prompts": prompts,
         }

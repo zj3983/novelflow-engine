@@ -8,6 +8,7 @@ from packages.story_core.orchestrator import (
     _extract_equipment_ledger_updates,
     _extract_system_anchors,
     _merge_writing_review_quality,
+    _limit_metaphor_markers,
     _normalize_chapter_summary,
     _normalize_web_game_terms,
     _review_chapter_body,
@@ -21,6 +22,16 @@ from packages.story_core.world_enrichment import _merge_enrichment
 
 def test_compact_list_treats_single_string_as_one_item():
     assert compact_list("混沌之种已经完成首次验证。", max_items=5) == ["混沌之种已经完成首次验证。"]
+
+
+def test_metaphor_limiter_never_rewrites_like_into_ungrammatical_gen():
+    body = "他像没看见。烟像有人牵着。门外像有人开口。那缕烟像是在提醒他。"
+
+    cleaned = _limit_metaphor_markers(body, max_like=1)
+
+    assert cleaned == body
+    assert "跟有人" not in cleaned
+    assert "跟是在" not in cleaned
 
 
 def test_first_chapter_sanitizer_adds_emotion_anchors():
@@ -63,6 +74,31 @@ def test_review_chapter_body_handles_soft_low_scores_without_name_error(monkeypa
 
     assert "review_summary" in review
     assert review["review_summary"]["soft_passed"] is False
+
+
+def test_review_chapter_body_blocks_patchwork_reader_feel(monkeypatch):
+    def patchwork_review(body):
+        return {
+            "reviewer": "reader_feel/v1",
+            "pass": False,
+            "scores": {"patchwork": 5, "panel_balance": 8},
+            "issues": ["段落重复，正文有明显拼补感。"],
+            "revision_plan": ["合并重复段落，只保留一次信息。"],
+            "metrics": {"near_duplicate_count": 1},
+        }
+
+    monkeypatch.setattr("packages.story_core.orchestrator.review_reader_feel", patchwork_review)
+
+    review = _review_chapter_body(
+        1,
+        "《天启之门》开服，夜烬用新手法杖试打一只灰狼，混沌之种提示掉落判定×1000。旁边玩家只当他运气好，他把材料压进背包，下一步准备再刷一轮。",
+        {"summary": "夜烬试打灰狼", "next_focus": "再刷一轮"},
+        world_facts=["网游开服，夜烬低调验证千倍爆率。"],
+    )
+
+    assert review["pass"] is False
+    assert review["scores"]["reader_feel_patchwork"] == 5
+    assert review["reader_feel_review"]["metrics"]["near_duplicate_count"] == 1
 
 
 def test_review_chapter_body_treats_review_exception_as_failure(monkeypatch):
@@ -893,3 +929,12 @@ def test_sanitizer_rewrites_reader_facing_bad_game_terms():
     assert "握着法杖" in cleaned
     assert "法杖前端" in cleaned
     assert "基础火球术记录" in cleaned
+def test_sanitize_chapter_output_does_not_inject_webgame_text_into_xianxia():
+    body = "林照守在祖祠里，等第三块青砖后面的人露出破绽。"
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[], game_story=False)
+
+    assert cleaned == body
+    assert "夜烬" not in cleaned
+    assert "灰狼" not in cleaned
+    assert "法杖" not in cleaned

@@ -78,12 +78,15 @@ def test_taskbook_prompt_section_is_writer_facing_not_json_dump():
 
     section = format_taskbook_prompt_section(taskbook, segment_key="small_verification")
 
-    assert "## 写作任务书" in section
-    assert "只按这份任务书写正文" in section
+    assert "## 本章写法材料" in section
+    assert "下面是给作者的场面材料" in section
     assert "低级怪小验证" in section
-    assert "场面写法模板" in section
+    assert "场面参考" in section
     assert "别人问、催或提醒" in section
     assert "不要只写火球命中、怪倒地、掉落入包" in section
+    assert "写作任务书" not in section
+    assert "必写：" not in section
+    assert "禁写：" not in section
     assert "NOISENOISE" not in section
     assert "unused_big_blob" not in section
     assert "scene_cards" not in section
@@ -181,3 +184,5 @@ def test_taskbook_prompt_uses_plot_words_not_backend_key():
     assert "剧情主线" in section
     assert "读者要看到具体领先" in section
     assert "plot_simulation" not in section
+    assert "全章必守" not in section
+    assert "全章禁区" not in section

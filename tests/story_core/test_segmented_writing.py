@@ -107,13 +107,14 @@ def test_segment_prompt_includes_governance_boundaries():
         },
     )
 
-    assert "分段输入治理" in prompt
+    assert "本段事实边界" in prompt
     assert "入场状态" in prompt
     assert "出场状态" in prompt
     assert "交接约束" in prompt
     assert "交易行实际成交" in prompt
     assert "怪物统一为灰鼠" in prompt
-    assert "诊断词禁止入正文" in prompt
+    assert "诊断词禁止入正文" not in prompt
+    assert "diagnostic_only" not in prompt
 
 
 def test_segment_revision_prompt_includes_governance_boundaries():
@@ -131,10 +132,10 @@ def test_segment_revision_prompt_includes_governance_boundaries():
         },
     )
 
-    assert "分段输入治理" in prompt
-    assert "表达权不等于事实权" in prompt
+    assert "本段事实边界" in prompt
     assert "交易行实际成交" in prompt
-    assert "诊断词禁止入正文" in prompt
+    assert "诊断词禁止入正文" not in prompt
+    assert "diagnostic_only" not in prompt
 
 
 def test_segment_review_exposes_ai_flavor_review():
@@ -146,6 +147,20 @@ def test_segment_review_exposes_ai_flavor_review():
     assert "ai_flavor_review" in review
     assert review["ai_flavor_review"]["scores"]["ai_flavor"] < 8
     assert review["ai_flavor_review"]["metrics"]["formula_count"] >= 1
+
+
+def test_segment_review_exposes_patchwork_reader_feel():
+    specs = build_segment_specs(1, {})
+    text = (
+        "旁人只看见他没交任务、没领铜币，也没往柜台递东西。"
+        "夜烬收起法杖，绕到队伍后面。"
+        "旁人只看见他没有交任务、没有领铜币，也没有往柜台递东西。"
+    )
+
+    review = review_segment_output(specs[1], text, chapter_number=1)
+
+    assert "reader_feel_review" in review
+    assert review["reader_feel_review"]["scores"]["patchwork"] <= 5
 
 
 def test_merge_segment_outputs_strips_segment_labels():

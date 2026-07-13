@@ -1,4 +1,4 @@
-from packages.story_core.genre_plugins import merge_plugin_rulebooks, select_genre_plugins
+from packages.story_core.genre_plugins import merge_plugin_rulebooks, plugin_simulation_blueprint, select_genre_plugins
 from packages.story_core.models import NovelProject
 from packages.story_core.world_enrichment import _merge_enrichment
 from packages.story_core.orchestrator import _normalize_event_plan, _story_snapshot
@@ -26,7 +26,7 @@ def test_selects_xianxia_plugin_for_cultivation_project():
         seed_outline="少年进入宗门，凭残缺功法争夺灵石和秘境机缘，逐步突破境界。",
     )
 
-    assert "xianxia" in plugin_ids(project)
+    assert plugin_ids(project) == ["generic_webnovel", "eastern_fantasy", "xianxia"]
 
 
 def test_merge_enrichment_adds_genre_plugin_rules():
@@ -132,3 +132,179 @@ def test_explicit_plugin_ids_prevent_accidental_secondary_genres():
     )
 
     assert plugin_ids(project) == ["generic_webnovel", "game_webnovel"]
+
+
+def test_specific_genre_plugins_live_in_separate_modules():
+    from packages.story_core.genre_types.game_webnovel import GAME_WEBNOVEL
+    from packages.story_core.genre_types.xianxia import XIANXIA
+
+    assert GAME_WEBNOVEL.plugin_id == "game_webnovel"
+    assert XIANXIA.plugin_id == "xianxia"
+    assert "网游" in GAME_WEBNOVEL.keywords
+    assert "修仙" in XIANXIA.keywords
+
+
+def test_legacy_genre_plugins_entrypoint_uses_split_modules():
+    from packages.story_core import genre_plugins
+    from packages.story_core.genre_types import EASTERN_FANTASY
+
+    project = NovelProject(
+        project_id="p-split-entry",
+        title="我替宗门看守断香炉",
+        seed_outline="外门弟子被分去祖祠守炉，断香炉只给残缺机缘。",
+        world_blueprint={"genre_plugin_ids": ["xianxia"]},
+    )
+
+    plugins = genre_plugins.select_genre_plugins(project)
+
+    assert [plugin.plugin_id for plugin in plugins] == ["generic_webnovel", "eastern_fantasy", "xianxia"]
+    assert any("残缺机缘" in rule for rule in EASTERN_FANTASY.rulebook["chapter_formula"])
+
+
+def test_eastern_fantasy_subtype_plugins_and_shared_blueprint_are_exported():
+    from packages.story_core.genre_types import (
+        EASTERN_FANTASY,
+        EASTERN_FANTASY_SIMULATION_BLUEPRINT,
+        XIANXIA,
+        XUANHUAN,
+    )
+
+    assert EASTERN_FANTASY.plugin_id == "eastern_fantasy"
+    assert XUANHUAN.plugin_id == "xuanhuan"
+    assert XIANXIA.plugin_id == "xianxia"
+    assert EASTERN_FANTASY_SIMULATION_BLUEPRINT["plugin_id"] == "eastern_fantasy"
+    assert EASTERN_FANTASY_SIMULATION_BLUEPRINT["opening_scene_templates"]
+    shared_promises = "\n".join(EASTERN_FANTASY.core_promises)
+    assert "残缺机缘" in shared_promises
+    assert "宗门差事" in shared_promises
+    assert any("残缺机缘" in rule for rule in EASTERN_FANTASY.rulebook["chapter_formula"])
+    assert "宗门差事" in EASTERN_FANTASY.quality_checks
+
+
+def test_legacy_xianxia_blueprint_is_an_isolated_compatibility_copy():
+    from packages.story_core.genre_types import EASTERN_FANTASY_SIMULATION_BLUEPRINT
+    from packages.story_core.genre_types.xianxia import XIANXIA_SIMULATION_BLUEPRINT
+
+    assert EASTERN_FANTASY_SIMULATION_BLUEPRINT["plugin_id"] == "eastern_fantasy"
+    assert XIANXIA_SIMULATION_BLUEPRINT["plugin_id"] == "xianxia"
+    assert XIANXIA_SIMULATION_BLUEPRINT is not EASTERN_FANTASY_SIMULATION_BLUEPRINT
+    assert (
+        XIANXIA_SIMULATION_BLUEPRINT["opening_scene_templates"]
+        is not EASTERN_FANTASY_SIMULATION_BLUEPRINT["opening_scene_templates"]
+    )
+
+    xianxia_marker = "仅兼容模板可见"
+    shared_marker = "仅共享模板可见"
+    xianxia_must_show = XIANXIA_SIMULATION_BLUEPRINT["opening_scene_templates"][0]["must_show"]
+    shared_must_show = EASTERN_FANTASY_SIMULATION_BLUEPRINT["opening_scene_templates"][0]["must_show"]
+    try:
+        xianxia_must_show.append(xianxia_marker)
+        assert xianxia_marker not in shared_must_show
+
+        shared_must_show.append(shared_marker)
+        assert shared_marker not in xianxia_must_show
+    finally:
+        xianxia_must_show.remove(xianxia_marker)
+        shared_must_show.remove(shared_marker)
+
+
+def test_eastern_fantasy_subtypes_keep_their_default_promises_separate():
+    from packages.story_core.genre_types import XIANXIA, XUANHUAN
+
+    xuanhuan_promises = "\n".join(XUANHUAN.core_promises)
+    assert "自创力量" in xuanhuan_promises
+    assert "异常物件" in xuanhuan_promises
+    assert {"血脉", "体质", "武魂", "异火", "遗物"}.issubset(XUANHUAN.keywords)
+    for xianxia_term in ("灵根", "渡劫", "飞升", "长生求道"):
+        assert xianxia_term not in xuanhuan_promises
+        assert xianxia_term not in XUANHUAN.keywords
+        assert all(xianxia_term not in field for field in XUANHUAN.ledger_fields)
+
+    assert XIANXIA.name == "修仙仙侠"
+    xianxia_promises = "\n".join(XIANXIA.core_promises)
+    assert {"灵根", "剑修", "炼丹", "法宝", "天劫", "渡劫", "飞升"}.issubset(XIANXIA.keywords)
+    assert "道法因果" in xianxia_promises
+    assert "渡劫飞升" in xianxia_promises
+    for xianxia_path in ("剑修", "炼丹", "法宝"):
+        assert xianxia_path in xianxia_promises
+    assert "剑修" in "\n".join(XIANXIA.rulebook["progression_rules"])
+    assert "炼丹" in "\n".join(XIANXIA.rulebook["economy_rules"])
+    assert "法宝" in XIANXIA.ledger_fields
+    for xuanhuan_term in ("武魂", "血脉觉醒"):
+        assert xuanhuan_term not in xianxia_promises
+        assert xuanhuan_term not in XIANXIA.keywords
+        assert all(xuanhuan_term not in field for field in XIANXIA.ledger_fields)
+
+
+def test_explicit_eastern_fantasy_subtypes_include_shared_plugin_once():
+    for subtype in ("xuanhuan", "xianxia"):
+        project = NovelProject(
+            project_id=f"p-{subtype}-explicit",
+            title="东方幻想测试",
+            seed_outline="主角从一件低位差事中发现异常。",
+            world_blueprint={"genre_plugin_ids": [subtype]},
+        )
+
+        assert plugin_ids(project) == ["generic_webnovel", "eastern_fantasy", subtype]
+
+
+def test_inferred_eastern_fantasy_subtype_includes_shared_plugin_once():
+    project = NovelProject(
+        project_id="p-xuanhuan-inferred",
+        title="血脉遗物",
+        seed_outline="少年凭特殊体质唤醒古族血脉，并追查遗物后的世界秘密。",
+    )
+
+    ids = plugin_ids(project)
+
+    assert ids == ["generic_webnovel", "eastern_fantasy", "xuanhuan"]
+    assert ids.count("eastern_fantasy") == 1
+
+
+def test_subtype_simulation_blueprints_are_isolated_shared_copies():
+    from packages.story_core.genre_types import EASTERN_FANTASY_SIMULATION_BLUEPRINT
+
+    blueprints = {}
+    for subtype in ("xuanhuan", "xianxia"):
+        project = NovelProject(
+            project_id=f"p-{subtype}-blueprint",
+            title="东方幻想测试",
+            seed_outline="主角接下一件低位差事。",
+            world_blueprint={"genre_plugin_ids": [subtype]},
+        )
+        blueprints[subtype] = plugin_simulation_blueprint(select_genre_plugins(project))
+
+    assert blueprints["xuanhuan"]["plugin_id"] == "xuanhuan"
+    assert blueprints["xianxia"]["plugin_id"] == "xianxia"
+    assert blueprints["xuanhuan"] is not EASTERN_FANTASY_SIMULATION_BLUEPRINT
+    assert blueprints["xianxia"] is not EASTERN_FANTASY_SIMULATION_BLUEPRINT
+    assert blueprints["xuanhuan"]["opening_scene_templates"] is not blueprints["xianxia"]["opening_scene_templates"]
+
+    marker = "只写入玄幻副本"
+    blueprints["xuanhuan"]["opening_scene_templates"][0]["must_show"].append(marker)
+    assert marker not in blueprints["xianxia"]["opening_scene_templates"][0]["must_show"]
+    assert marker not in EASTERN_FANTASY_SIMULATION_BLUEPRINT["opening_scene_templates"][0]["must_show"]
+
+
+def test_game_simulation_blueprint_returns_isolated_nested_copies():
+    from packages.story_core.genre_types import GAME_WEBNOVEL_SIMULATION_BLUEPRINT
+
+    project = NovelProject(
+        project_id="p-game-blueprint-copy",
+        title="网游测试",
+        seed_outline="玩家进入游戏，通过爆率优势推进任务。",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+
+    first = plugin_simulation_blueprint(select_genre_plugins(project))
+    second = plugin_simulation_blueprint(select_genre_plugins(project))
+
+    assert first["plugin_id"] == "game_webnovel"
+    assert first is not GAME_WEBNOVEL_SIMULATION_BLUEPRINT
+    assert first is not second
+    assert first["opening_scene_templates"] is not second["opening_scene_templates"]
+
+    marker = "只写入当前网游蓝图副本"
+    first["opening_scene_templates"][0]["must_show"].append(marker)
+    assert marker not in second["opening_scene_templates"][0]["must_show"]
+    assert marker not in GAME_WEBNOVEL_SIMULATION_BLUEPRINT["opening_scene_templates"][0]["must_show"]

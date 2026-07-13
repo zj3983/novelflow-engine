@@ -259,7 +259,7 @@ def _style_rules(game_genre: bool) -> list[str]:
     base = [
         "句子按场面自然长短；人物对话要像正常说话，不能把理由压成几个词。少成语套话，少华丽辞藻。",
         "少用比喻和形容词，不堆意象；优先写动作、选择、即时后果和具体细节。",
-        '语言贴近番茄爆款网文的白话节奏：目标清楚、反馈直接、少解释；每个场景都要有目标、阻力、收益或危机。句子按场面自然长短，对话必须把原因、条件或态度说完整。',
+        '语言贴近番茄爆款网文的白话节奏：目标清楚、反馈直接，旁白少做抽象解释；每个场景都要有目标、阻力、收益或危机。少解释只针对旁白，对话不能省略连接词和因果，必须把原因、条件或态度说完整。',
         "章节标题贴近番茄常见短章名：4到10字左右，优先用具体事件、地点、道具、关系或冲突；不要写营销句、说明句或后台账本。",
         "用动作、对话、环境细节表现设定，不要停下来写说明书。",
         "人物说话要接地气，配角有自己的立场和口吻，但不要全知。",
@@ -357,7 +357,7 @@ def prose_renderer_contract() -> dict[str, Any]:
         "role": "prose_renderer_only",
         "use_for": [
             "render approved scene cards into Chinese webnovel prose",
-            "show facts through action, dialogue, UI panels, service counters, and physical constraints",
+            "show facts through action, dialogue, visible objects, local procedures, and physical constraints",
             "polish rhythm and chapter hook after continuity facts are fixed",
         ],
         "do_not_use_for": [
@@ -391,7 +391,7 @@ def prose_renderer_contract() -> dict[str, Any]:
             "write chapter body only",
             "do not output analysis, plans, rule explanations, or reviewer language",
             "do not replace scenes with abstract conclusions",
-            "keep numbers, names, items, and UI state traceable to the packet",
+            "keep numbers, names, objects, places, and visible state traceable to the packet",
             "consume every scene_contract.visible_consequences item on page; if it is not visible to a reader, the scene is unfinished",
             "keep rhetoric sparse: avoid dense metaphors, adjective chains, and lyrical description",
             "use Tomato-style webnovel language: clear goal, immediate payoff, visible cost, natural sentence length, and an ending hook",
@@ -458,9 +458,9 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
             "style": "tomato_concrete_short_title",
             "rules": [
                 "4到10字左右，像真实章节目录，不像广告文案",
-                "优先使用具体事件、地点、道具、职业、NPC服务点或委托名",
+                "优先使用具体事件、地点、道具、身份、人物关系或当章冲突",
                 "可以有悬念，但不要用“他/别人/没人知道”这类营销句式",
-                "避免材料数量、铜币账目、抽象核算、后台规则和说明句",
+                "避免材料数量、账目明细、抽象核算、后台规则和说明句",
             ],
             "examples": _title_examples(game_genre),
         },

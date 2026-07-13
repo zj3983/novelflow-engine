@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apps.api.routes.book_import import init_book_import_routes
 from apps.api.routes.file_projects import init_file_project_routes
 from apps.api.routes.outlines import init_outline_routes
+from apps.api.routes.skill_packs import init_skill_pack_routes
 from apps.api.routes.stories import init_story_routes
 from packages.story_core.env import load_environment_files
 
@@ -47,6 +48,7 @@ app.include_router(init_story_routes())
 app.include_router(init_file_project_routes())
 app.include_router(init_book_import_routes())
 app.include_router(init_outline_routes())
+app.include_router(init_skill_pack_routes())
 
 
 @app.get("/health")

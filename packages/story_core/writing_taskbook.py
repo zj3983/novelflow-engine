@@ -19,13 +19,17 @@ FIRST_CHAPTER_NOISE_BANS = (
 )
 
 WRITER_TERM_REPLACEMENTS = (
+    ("让世界根据主角行动给出可见反应", "主角动手以后，马上出现一个具体结果或麻烦"),
+    ("收益和代价落收到反馈本或关系里", "让收获和代价都能看见，并改变下一步或人物关系"),
+    ("NPC/环境/任务/对手反应", "现场人物、环境或对手的反应"),
+    ("关键账本或状态", "眼前最要紧的东西或处境"),
     ("确认边界", "试清楚能不能走"),
     ("验边界", "试清楚"),
     ("边界", "规矩"),
     ("底层逻辑", "规矩"),
     ("推演", "计划"),
     ("审稿", "检查"),
-    ("场景卡", "场景任务"),
+    ("场景卡", "场面材料"),
     ("结算链", "账"),
     ("基准", "底线"),
     ("诊断", "检查"),
@@ -35,6 +39,8 @@ WRITER_TERM_REPLACEMENTS = (
 GENERIC_STYLE_CONTRACT = (
     "白话正文：普通读者一眼能懂，少比喻，少华丽修辞，少作者总结。",
     "反馈要看得见：用动作、物件、对话、环境变化和角色反应承载信息。",
+    "现代中文对话：台词要能顺口念出来，话题先摆出来，再接判断或行动；不要把后台事实直译成台词。",
+    "少解释只针对旁白，不是让人物省略连接词和因果；不要写成名词清单加命令的电报句。",
     "情绪要落动作：不写“他很焦虑”，写手指停顿、视线躲开、没忍住又看一眼。",
     "段落要有疏密：爆点和转折要有清楚落点，关键场景必须有连续动作块。",
     "视角限知：主角只能知道自己能看见、听见、问到、试出来的信息。",
@@ -45,6 +51,8 @@ GAME_STYLE_CONTRACT = (
     "白话爽文：普通读者一眼能懂，少比喻，少华丽修辞，少作者总结。",
     "反馈要看得见：面板、掉落、经验、任务进度、装备前置条件、血蓝、耐久和玩家对比优先于解释。",
     "网游爽点落在领先感：普通玩家还在重复刷，主角已经更快凑齐任务、装备、技能或地图入口。",
+    "现代中文对话：台词要能顺口念出来，话题先摆出来，再接判断或行动；不要把后台事实直译成台词。",
+    "少解释只针对旁白，不是让人物省略连接词和因果；不要写成名词清单加命令的电报句。",
     "情绪要落动作：不写“他很焦虑”，写手指停顿、视线躲开、没忍住又看余额。",
     "段落要有疏密：爆点和转折要有清楚落点，关键场景必须有连续动作块。",
     "视角限知：主角只能知道自己能看见、听见、问到、试出来的信息。",
@@ -55,12 +63,16 @@ GAME_STYLE_CONTRACT = (
 GENERIC_CRAFT_TEMPLATES = (
     "选择场面：先写角色看见一个具体东西（信、门、价牌、队伍、伤口、物件），再写这个东西带来的麻烦，最后让角色做一个小决定；不要直接写“他权衡利弊”。",
     "对话场面：一人问/催/提醒，主角用完整句子给表面理由，对方再接一句生活化反应；台词必须改变信息、关系、价格、风险或下一步行动。",
+    "现代中文对话：不要把后台事实直译成台词；“先试，不深入”要改成“我就在门口看一眼，不往里走”，“柜台不认”要改成“没材料也交不了”。",
+    "章末压句：如果本章有误判、羞辱、卡任务或资源压力，结尾允许一句白话反打承诺；必须来自当章具体矛盾，不套成语、不喊口号。",
     "情绪场面：不要写抽象感慨，写手指停住、视线移开、话说到一半、笑意收住、把东西重新放回去这类能看见的动作。",
 )
 
 GAME_CRAFT_TEMPLATES = (
     "选择场面：先写夜烬看见一个具体东西（价牌、角色面板、背包格、任务牌、队伍、怪物位置），再写麻烦（钱不够、蓝不够、法杖快坏、背包快满、别人会抢），最后做一个小决定；不要直接写“控制成本/规划路线”。",
     "对话场面：别人问、催或提醒；夜烬用完整句子给表面理由，比如钱、蓝、耐久、材料、排队或前置任务；对方再有一句像普通玩家的反应。夜烬不能只说两个字装高手，也不能说出隐藏机制。",
+    "现代中文对话：不要把后台事实直译成台词；“先试，不深入”要改成“我就在坡口打两只看看，不往里走”，“柜台不认/背包里没有毒腺”要改成“你手里没毒腺，接了也交不了”。",
+    "章末压句：如果本章有误判、卡任务或资源压力，结尾允许一句白话反打承诺；必须来自当章具体矛盾，不套成语、不喊口号。例：先让他们抢。等他们卡在任务牌前，就该轮到他往前走了。",
     "战斗场面：怪怎么来，夜烬先被逼一下或犯一个小错，消耗落到血蓝和法杖耐久，掉落异常出现后先写他的动作反应；不要只写火球命中、怪倒地、掉落入包。",
     "爽点场面：先写普通玩家还卡在哪里，再写夜烬因为异常掉落提前够到什么前置，接着写他为什么不能公开用，章末让读者知道下一章能抢什么。",
 )
@@ -90,6 +102,8 @@ def first_chapter_whole_body_contract(*, game_genre: bool) -> dict[str, Any]:
             "每章至少有一轮连续问答：别人问/催/提醒，主角回答并给原因，对方再有一句反应；这轮对话要改变价钱、任务、误会或下一步行动。",
             "台词不能替作者讲规则、讲设定或讲审稿结论。",
             "对话要推进价格、任务、信任、误会、信息或行动。",
+            "先判断关系和场合再定语气：陌生人客气试探，普通熟人可以轻微调侃，亲近关系才允许接梗或互相损；没有关系依据时不要突然开玩笑。",
+            "关键台词要带一层人物情绪或关系目的：想隐瞒、怕被看轻、替自己找台阶、试探对方、压住火气或故意缓和气氛。",
         ],
         "avoid": [
             "不用分段生成；按整章连续正文自然写出四拍。",
@@ -132,11 +146,17 @@ class WritingTaskBook:
     source: str = "compiled_from_plan"
 
 
-def _text(value: Any, limit: int = 160) -> str:
+def writer_facing_text(value: Any) -> str:
+    """Translate planning language before it reaches an author or model."""
+
     raw = str(value or "").strip()
     for old, new in WRITER_TERM_REPLACEMENTS:
         raw = raw.replace(old, new)
-    raw = re.sub(r"\s+", " ", raw)
+    return re.sub(r"\s+", " ", raw)
+
+
+def _text(value: Any, limit: int = 160) -> str:
+    raw = writer_facing_text(value)
     if len(raw) <= limit:
         return raw
     return raw[: max(0, limit - 1)].rstrip() + "…"
@@ -613,14 +633,14 @@ def taskbook_segment_specs(chapter_number: int, plan: dict[str, Any] | None) -> 
 
 def _scene_lines(scene: dict[str, Any], index: int) -> list[str]:
     return [
-        f"场景{index} [{scene.get('key')}] {scene.get('title')}",
-        f"- 目标：{scene.get('goal')}",
-        f"- 入场：{scene.get('entry_state')}",
-        f"- 必写：{scene.get('required_surface')}",
-        f"- 禁写：{scene.get('forbidden_surface')}",
-        f"- 出场：{scene.get('exit_state')}",
-        f"- 交接：{scene.get('handoff')}",
-        f"- 目标篇幅：约{scene.get('target_chars')}字",
+        f"场面{index} [{scene.get('key')}] {scene.get('title')}",
+        f"- 这一场要推进：{scene.get('goal')}",
+        f"- 开场状态：{scene.get('entry_state')}",
+        f"- 读者要看见：{scene.get('required_surface')}",
+        f"- 先别写：{scene.get('forbidden_surface')}",
+        f"- 收束到：{scene.get('exit_state')}",
+        f"- 下一场接住：{scene.get('handoff')}",
+        f"- 大约：{scene.get('target_chars')}字",
     ]
 
 
@@ -639,28 +659,64 @@ def format_taskbook_prompt_section(
     if not include_all_scenes and not segment_key:
         scene_block = scenes[:3]
     lines = [
-        "## 写作任务书",
-        "只按这份任务书写正文；不要展开原始 plan 字典，不要把推演字段、审稿字段或 JSON 键名写进正文。",
+        "## 本章写法材料",
+        "下面是给作者的场面材料；写正文时只吸收内容，不输出这些提示。",
         f"章节：第{taskbook.get('chapter_number') or ''}章",
         f"标题参考：{taskbook.get('chapter_title') or '由正文自然生成'}",
-        f"本章目标：{taskbook.get('chapter_goal') or '完成本章推进'}",
+        f"这一章要推进：{taskbook.get('chapter_goal') or '完成本章推进'}",
         f"篇幅：{taskbook.get('target_chars') or '按目标字数'}",
-        "风格合同：",
+        "文字口径：",
     ]
     lines.extend(f"- {item}" for item in _as_list(taskbook.get("style_contract"), max_items=8, item_chars=120))
     craft_templates = _as_list(taskbook.get("craft_templates"), max_items=6, item_chars=160)
     if craft_templates:
-        lines.append("场面写法模板：")
+        lines.append("场面参考：")
         lines.extend(f"- {item}" for item in craft_templates)
     required = _as_list(taskbook.get("global_required"), max_items=8, item_chars=80)
     forbidden = _as_list(taskbook.get("global_forbidden"), max_items=10, item_chars=80)
     if required:
-        lines.append("全章必守：")
+        lines.append("这一章要让读者看到：")
         lines.extend(f"- {item}" for item in required)
     if forbidden:
-        lines.append("全章禁区：")
+        lines.append("先别写这些：")
         lines.extend(f"- {item}" for item in forbidden)
-    lines.append("场景任务：")
+    lines.append("场面安排：")
     for index, scene in enumerate(scene_block, start=1):
         lines.extend(_scene_lines(scene, index))
+    return "\n".join(str(line) for line in lines if str(line).strip())
+
+
+def format_taskbook_brief_section(
+    taskbook: dict[str, Any] | None,
+    *,
+    max_scenes: int = 3,
+    segment_key: str | None = None,
+) -> str:
+    taskbook = taskbook if isinstance(taskbook, dict) else {}
+    scenes_all = [scene for scene in taskbook.get("scenes", []) if isinstance(scene, dict)]
+    if segment_key:
+        scenes = [scene for scene in scenes_all if scene.get("key") == segment_key][:1]
+    else:
+        scenes = scenes_all[:max_scenes]
+    lines = [
+        "## 本章方向",
+        f"这一章要推进：{writer_facing_text(taskbook.get('chapter_goal') or '完成本章推进')}",
+        f"篇幅：{taskbook.get('target_chars') or '按目标字数'}",
+    ]
+    required = _as_list(taskbook.get("global_required"), max_items=4, item_chars=70)
+    forbidden = _as_list(taskbook.get("global_forbidden"), max_items=4, item_chars=70)
+    if required:
+        lines.append("读者要看见：")
+        lines.extend(f"- {item}" for item in required)
+    if forbidden:
+        lines.append("先别写：")
+        lines.extend(f"- {item}" for item in forbidden)
+    if scenes:
+        lines.append("场面：")
+        for index, scene in enumerate(scenes, start=1):
+            lines.append(
+                f"{index}. {scene.get('title') or scene.get('key')}: "
+                f"{_text(scene.get('goal'), 70)}；读者要看见：{_text(scene.get('required_surface'), 90)}；"
+                f"收束到：{_text(scene.get('exit_state') or scene.get('handoff'), 70)}"
+            )
     return "\n".join(str(line) for line in lines if str(line).strip())

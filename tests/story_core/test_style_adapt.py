@@ -1,5 +1,5 @@
 """Tests for whole-chapter style adaptation (Stage 2B)."""
-from packages.story_core.segmented_writing import (
+from packages.story_core.style_adaptation import (
     build_style_adapt_prompt,
     style_adapt_safety_check,
 )

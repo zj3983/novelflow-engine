@@ -1,6 +1,6 @@
 from packages.story_core.chapter_governance import build_chapter_governance
 from packages.story_core.engine import ChapterBundle
-from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.models import ChapterSummary, CharacterState, StoryState
 from packages.story_core.writing_packet import build_codex_writing_packet
 
 
@@ -82,3 +82,55 @@ def test_later_chapter_governance_uses_latest_context_without_first_chapter_bans
     assert any("承接上一章" in item for item in governance["chapter_intent"]["must_include"])
     assert not any("第一章禁止" in item for item in governance["chapter_intent"]["must_avoid"])
     assert governance["runtime_context"]["next_focus"] == "确认补给成本和任务回报。"
+
+
+def test_governance_previous_summary_never_reads_target_or_future_chapters():
+    story = StoryState(
+        story_id="s-governance-history",
+        outline="林照看守断香炉。",
+        genre="xianxia",
+        style="白描",
+        chapter_summaries=[
+            ChapterSummary(chapter_number=1, summary="第一章摘要"),
+            ChapterSummary(chapter_number=2, summary="第二章未来摘要"),
+        ],
+    )
+    bundle = ChapterBundle(chapter_number=1, body="", next_outline="", updated_story=story)
+
+    first = build_chapter_governance(story, bundle, chapter_number=1)
+    second = build_chapter_governance(story, bundle, chapter_number=2)
+
+    assert first["runtime_context"]["previous_summary"] == ""
+    assert second["runtime_context"]["previous_summary"] == "第一章摘要"
+
+
+def test_xianxia_first_chapter_governance_uses_genre_specific_opening_rules():
+    story = StoryState(
+        story_id="s-xianxia-governance",
+        outline="林照被分去祖祠看守断香炉，第三块青砖下藏着旧木牌。",
+        genre="修仙",
+        style="白描",
+        world_facts=["小说类型：xianxia", "世界前提：断香炉只给零碎反馈。"],
+        author_constraints=["不要写网游面板、背包、铜币、掉落、任务牌或玩家生态。"],
+    )
+    bundle = ChapterBundle(
+        chapter_number=1,
+        body="",
+        next_outline="林照发现旧木牌后被人盯上。",
+        updated_story=story,
+    )
+
+    governance = build_chapter_governance(story, bundle, chapter_number=1)
+
+    include_text = "、".join(governance["chapter_intent"]["must_include"])
+    avoid_text = "、".join(governance["chapter_intent"]["must_avoid"])
+    hard_text = "、".join(governance["rule_stack"]["hard_facts"])
+
+    assert "外门处境" in include_text
+    assert "题材核心物件" in include_text
+    assert "只兑现一个小反馈" in include_text
+    assert "一章顿悟大功法" in avoid_text
+    assert "废丹房捡漏" in avoid_text
+    assert "修仙题材" in hard_text
+    assert "残缺机缘" in hard_text
+    assert "见习冒险者" not in hard_text

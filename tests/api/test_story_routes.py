@@ -185,7 +185,7 @@ def test_runtime_settings_can_be_saved_globally():
     assert loaded.json()["global"]["base_url"] == "https://api.example.com/v1"
 
 
-def test_serialized_history_refreshes_stale_quality_report():
+def test_serialized_history_uses_saved_quality_and_adds_simplified_review(monkeypatch):
     from apps.api.routes.stories import _serialize_chapter_bundle
     from packages.story_core.engine import ChapterBundle
     from packages.story_core.models import StoryState
@@ -217,12 +217,32 @@ def test_serialized_history_refreshes_stale_quality_report():
         quality_report={"ok": False, "issues": ["stale"], "writing_review": {"issues": ["旧误判"]}},
     )
 
+    monkeypatch.setattr(
+        "apps.api.routes.stories._review_chapter_body",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("chapter reads must not rerun review")),
+    )
+
     payload = _serialize_chapter_bundle(bundle, story.world_facts)
 
-    assert payload["quality_report"]["writing_review"]["pass"] is True
-    assert payload["quality_report"]["writing_review"]["issues"] == []
-    assert "prose_quality_review" in payload["quality_report"]["writing_review"]
-    assert "adversarial_cut_review" in payload["quality_report"]["writing_review"]
+    assert payload["quality_report"]["writing_review"]["issues"] == ["旧误判"]
+    assert payload["quality_report"]["simplified_review"]["schema_version"] == "simplified-review/v1"
+    assert payload["quality_report"]["simplified_review"]["total_issues"] == 2
+
+
+def test_review_recommendation_only_revises_for_hard_errors():
+    from apps.api.routes.stories import _review_recommendation
+
+    advisory = _review_recommendation(
+        {"writing_review": {"pass": False, "issues": ["对话不够自然。", "章末动作不够具体。"]}}
+    )
+    blocking = _review_recommendation(
+        {"issues": ["body_too_short"], "writing_review": {"issues": ["对话不够自然。"]}}
+    )
+
+    assert advisory["action"] == "continue"
+    assert advisory["must_fix"] == []
+    assert blocking["action"] == "revise"
+    assert blocking["must_fix"] == ["body_too_short"]
 
 
 def test_runtime_settings_can_store_agent_overrides():
@@ -329,6 +349,169 @@ def test_project_writing_packet_and_manual_draft_roundtrip():
     assert "钱袋：空" in refreshed["history"][0]["body"]
 
 
+def test_project_writing_packet_uses_explicit_non_game_project_type():
+    story_id = "s-xianxia-packet-api"
+    project_id = "p-xianxia-packet-api"
+    create_story = client.post(
+        "/stories",
+        json={
+            "story_id": story_id,
+            "outline": "林照被分去祖祠看守断香炉。",
+            "genre": "修仙",
+            "style": "白描",
+            "characters": [{"name": "林照", "role": "protagonist"}],
+        },
+    )
+    assert create_story.status_code == 200
+    create_project = client.post(
+        "/projects",
+        json={
+            "project_id": project_id,
+            "title": "我替宗门看守断香炉",
+            "seed_outline": "外门弟子看守断香炉。",
+            "active_story_id": story_id,
+            "author_constraints": ["不要写网游面板、背包、铜币、掉落、任务牌或玩家生态。"],
+            "world_blueprint": {
+                "genre_plugin_ids": ["xianxia"],
+                "premise": "断香炉里有未了因果。",
+                "constraints": ["第一章只打开断香炉异常，不直接变强。"],
+            },
+        },
+    )
+    assert create_project.status_code == 200
+
+    packet_response = client.get(f"/projects/{project_id}/writing-packet?chapter_number=1")
+
+    assert packet_response.status_code == 200
+    packet = packet_response.json()
+    text = json.dumps(packet, ensure_ascii=False)
+    assert "小说类型：xianxia" in packet["world_facts"]
+    assert packet["whole_chapter_contract"] == {}
+    assert "现实压力 -> 登录建号" not in text
+    assert "见习冒险者（未转职）" not in text
+    assert "清道夫委托" not in text
+
+
+def test_existing_first_chapter_packet_uses_story_state_before_that_chapter():
+    story_id = "s-first-chapter-snapshot"
+    project_id = "p-first-chapter-snapshot"
+    assert client.post(
+        "/stories",
+        json={
+            "story_id": story_id,
+            "outline": "林照看守祖祠断香炉。",
+            "genre": "xianxia",
+            "style": "白描",
+            "characters": [{"name": "林照", "role": "protagonist"}],
+        },
+    ).status_code == 200
+    assert client.post(
+        "/projects",
+        json={
+            "project_id": project_id,
+            "title": "断香炉快照测试",
+            "active_story_id": story_id,
+            "world_blueprint": {"genre_plugin_ids": ["xianxia"]},
+        },
+    ).status_code == 200
+    assert client.post(
+        f"/projects/{project_id}/manual-draft",
+        json={"chapter_number": 1, "body": "林照接下守炉差事。"},
+    ).status_code == 200
+    assert client.post(
+        f"/projects/{project_id}/manual-draft",
+        json={"chapter_number": 2, "body": "第二章未来污染标记。"},
+    ).status_code == 200
+
+    packet_response = client.get(f"/projects/{project_id}/writing-packet?chapter_number=1")
+
+    assert packet_response.status_code == 200
+    packet = packet_response.json()
+    text = json.dumps(packet, ensure_ascii=False)
+    assert packet["story"]["current_chapter"] == 0
+    assert packet["continuity"]["previous_summary"] == ""
+    assert packet["governance"]["runtime_context"]["previous_summary"] == ""
+    assert "第二章未来污染标记" not in text
+
+
+def test_project_delete_removes_owned_story_and_project():
+    project_id = "p-delete-project"
+    story_id = "s-delete-project"
+    story_response = client.post(
+        "/stories",
+        json={
+            "story_id": story_id,
+            "outline": "林照看守祖祠断香炉。",
+            "genre": "xianxia",
+            "style": "白描、现代中文",
+        },
+    )
+    assert story_response.status_code == 200
+    project_response = client.post(
+        "/projects",
+        json={
+            "project_id": project_id,
+            "title": "待删除修仙项目",
+            "seed_outline": "林照看守祖祠断香炉。",
+            "active_story_id": story_id,
+            "world_blueprint": {"genre_plugin_ids": ["xianxia"]},
+        },
+    )
+    assert project_response.status_code == 200
+
+    delete_response = client.delete(f"/projects/{project_id}")
+
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {
+        "deleted": True,
+        "project_id": project_id,
+        "deleted_story_ids": [story_id],
+    }
+    assert client.get(f"/projects/{project_id}").status_code == 404
+    assert client.get(f"/stories/{story_id}").status_code == 404
+
+
+def test_database_project_prompt_preview_exposes_modular_prompts():
+    project_id = "p-prompt-preview"
+    story_id = "s-prompt-preview"
+    assert client.post(
+        "/stories",
+        json={
+            "story_id": story_id,
+            "outline": "林照看守祖祠断香炉。",
+            "genre": "xianxia",
+            "style": "白描、现代中文",
+            "characters": [{"name": "林照", "role": "protagonist"}],
+        },
+    ).status_code == 200
+    assert client.post(
+        "/projects",
+        json={
+            "project_id": project_id,
+            "title": "断香炉",
+            "seed_outline": "林照看守祖祠断香炉。",
+            "active_story_id": story_id,
+            "world_blueprint": {"genre_plugin_ids": ["xianxia"]},
+        },
+    ).status_code == 200
+
+    response = client.get(f"/projects/{project_id}/prompt-preview?chapter_number=1")
+
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["schema_version"] == "project-prompt-preview/v1"
+    assert preview["project_id"] == project_id
+    assert preview["chapter_number"] == 1
+    assert {module["key"] for module in preview["modules"]} >= {"core_context", "character_context", "genre_context"}
+    assert {prompt["key"] for prompt in preview["prompts"]} >= {"director_plan", "writer_body", "review_agents"}
+    writer_prompt = next(prompt for prompt in preview["prompts"] if prompt["key"] == "writer_body")
+    assert all(
+        heading in writer_prompt["content"]
+        for heading in ("## 输出要求", "## 本章方向", "## 本章事实", "## 出场人物", "## 正文写法")
+    )
+    assert "五块装配" in writer_prompt["description"]
+
+
 def test_project_manual_draft_can_append_next_chapter():
     story_id = "s-manual-next-chapter-api"
     project_id = "p-manual-next-chapter-api"
@@ -432,6 +615,32 @@ def test_file_project_regenerate_accepts_temporary_guidance(tmp_path, monkeypatc
     }
 
 
+def test_file_project_generate_next_accepts_chapter_direction_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "direction-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-direction-file",
+        state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_generate_next(self, engine=None, *, chapter_direction_id=None, commit_message=None):
+        captured["chapter_direction_id"] = chapter_direction_id
+        return {"schema_version": "file-project-generate-next/v1", "chapter_number": 2, "chapter_title": "Direction"}
+
+    monkeypatch.setattr("packages.story_core.file_project_store.FileProjectStore.generate_next_chapter", fake_generate_next)
+
+    response = client.post(
+        "/file-projects/p-direction-file/generate-next",
+        json={"chapter_direction_id": "chaos-seed-trace"},
+    )
+
+    assert response.status_code == 200
+    assert captured["chapter_direction_id"] == "chaos-seed-trace"
+    assert response.json()["generated"]["chapter_title"] == "Direction"
+
+
 def test_file_project_generation_job_accepts_temporary_guidance(tmp_path, monkeypatch):
     monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
     project_root = tmp_path / "guided-job-file-project"
@@ -464,50 +673,32 @@ def test_file_project_generation_job_accepts_temporary_guidance(tmp_path, monkey
     }
 
 
-def test_project_manual_segment_draft_replaces_one_paragraph_only():
-    story_id = "s-manual-segment-api"
-    project_id = "p-manual-segment-api"
-    client.post(
-        "/stories",
-        json={
-            "story_id": story_id,
-            "outline": "网游开服，苏叶以夜烬身份低调验证千倍爆率。",
-            "genre": "网游",
-            "style": "升级流",
-            "characters": [{"name": "苏叶", "role": "主角", "game_id": "夜烬", "goals": ["低调验证"]}],
-        },
+def test_file_project_generation_job_accepts_chapter_direction_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "direction-job-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-direction-job-file",
+        state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
     )
-    client.post(
-        "/projects",
-        json={
-            "project_id": project_id,
-            "title": "局部改稿测试",
-            "active_story_id": story_id,
-        },
-    )
-    client.post(f"/stories/{story_id}/generate")
-    original_body = "第一段保留。\n\n第二段需要局部重写。\n\n第三段保留。"
-    client.post(
-        f"/projects/{project_id}/manual-draft",
-        json={"chapter_number": 1, "body": original_body, "include_body": True},
-    )
+    submitted: dict[str, object] = {}
+
+    def fake_submit(fn, job_id, project_id, **kwargs):
+        submitted["fn"] = fn
+        submitted["job_id"] = job_id
+        submitted["project_id"] = project_id
+        submitted["kwargs"] = kwargs
+
+    monkeypatch.setattr(file_projects._file_generation_executor, "submit", fake_submit)
 
     response = client.post(
-        f"/projects/{project_id}/manual-segment-draft",
-        json={
-            "chapter_number": 1,
-            "segment_index": 1,
-            "body": "第二段已经被 Codex 单独改好。",
-            "include_body": True,
-        },
+        "/file-projects/p-direction-job-file/generation-jobs",
+        json={"chapter_direction_id": "guild-ecology"},
     )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["revision"]["source"] == "manual_segment_draft"
-    assert payload["chapter"]["body"] == "第一段保留。\n\n第二段已经被 Codex 单独改好。\n\n第三段保留。"
-    refreshed = client.get(f"/stories/{story_id}").json()
-    assert refreshed["history"][0]["body"] == payload["chapter"]["body"]
+    assert submitted["project_id"] == "p-direction-job-file"
+    assert submitted["kwargs"]["chapter_direction_id"] == "guild-ecology"
 
 
 def test_runtime_settings_connection_can_be_tested_for_one_agent(monkeypatch):
@@ -1271,29 +1462,11 @@ def test_quality_context_exposes_revision_safety_reports():
             "selected": "original",
             "reason": "candidate_worse_than_original",
         },
-        "segment_pipeline": {
-            "enabled": True,
-            "pass": False,
-            "segments": [
-                {
-                    "segment_key": "setup",
-                    "segment_title": "Opening",
-                    "pass": False,
-                    "segment_revision_safety": {
-                        "reviewer": "segment_revision_safety/v1",
-                        "accepted": False,
-                        "selected": "original",
-                        "reason": "candidate_worse_than_original",
-                    },
-                }
-            ],
-        },
     }
 
     context = _quality_context(quality)
 
     assert context["revision_safety"]["selected"] == "original"
-    assert context["segment_pipeline"]["segments"][0]["segment_revision_safety"]["selected"] == "original"
 
 
 def test_project_agent_review_can_include_chapter_body():
@@ -1585,3 +1758,51 @@ def test_branch_can_be_renamed_and_deleted():
 
     fetch_deleted = client.get("/stories/s-branch-admin-shadow")
     assert fetch_deleted.status_code == 404
+
+
+def test_file_project_character_routes_read_update_and_complete(monkeypatch):
+    class FakeStore:
+        def __init__(self):
+            self.card = {"name": "林月", "personality_portrait": {"growth": {"invariants": ["守住药铺"]}}}
+
+        def state(self):
+            return {"characters": [self.card]}
+
+        def update_character(self, name, patch):
+            self.card = {**self.card, **patch}
+            return self.card
+
+        def complete_character_portrait(self, name):
+            self.card["personality_portrait"]["behavior"] = {"pressure_mode": "先护住药铺，再谈别的。"}
+            return self.card
+
+    store = FakeStore()
+    monkeypatch.setattr(file_projects, "_store_for", lambda project_id: store)
+
+    read = client.get("/file-projects/file:p-test/characters")
+    update = client.put(
+        "/file-projects/file:p-test/characters/林月",
+        json={"personality_portrait": {"temperament": {"core_traits": ["嘴硬"]}}},
+    )
+    complete = client.post("/file-projects/file:p-test/characters/林月/complete-portrait")
+
+    assert read.status_code == 200
+    assert update.status_code == 200
+    assert update.json()["personality_portrait"]["temperament"]["core_traits"] == ["嘴硬"]
+    assert complete.status_code == 200
+    assert complete.json()["personality_portrait"]["behavior"]["pressure_mode"]
+
+
+def test_file_project_character_routes_return_404_for_unknown_character(monkeypatch):
+    class FakeStore:
+        def update_character(self, name, patch):
+            raise KeyError(f"character_not_found:{name}")
+
+        def complete_character_portrait(self, name):
+            raise KeyError(f"character_not_found:{name}")
+
+    monkeypatch.setattr(file_projects, "_store_for", lambda project_id: FakeStore())
+
+    response = client.put("/file-projects/file:p-test/characters/不存在", json={})
+
+    assert response.status_code == 404

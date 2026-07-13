@@ -10,6 +10,8 @@ def test_anti_ai_style_rules_include_generation_and_revision_constraints():
     assert any("动作 + 微表情 + 细微生理反应" in rule for rule in rules)
     assert any("番茄白话风" in rule for rule in rules)
     assert any("修辞配额" in rule for rule in rules)
+    assert any("白描不是把句子全部切短" in rule for rule in rules)
+    assert any("走到门口" in rule for rule in rules)
 
 
 def test_prose_style_review_flags_ai_cliche_and_meta_explanation():

@@ -28,7 +28,7 @@ def _governance() -> dict:
         "rule_stack": {
             "hard_facts": ["怪物统一为灰鼠，不要写成狼或其他怪。"],
             "soft_guidance": ["用动作、对话、界面表现设定。"],
-            "diagnostic_only": ["爽点、节奏、读者期待只用于诊断，禁止进入正文。"],
+            "diagnostic_only": [],
         },
     }
 
@@ -36,14 +36,14 @@ def _governance() -> dict:
 def test_body_prompt_contains_governance_sections_with_diagnostic_boundary():
     prompt = StoryOrchestrator()._body_prompt(_story(), 1, {"governance": _governance()})
 
-    assert "章节输入治理" in prompt
-    assert "硬事实" in prompt
-    assert "怪物统一为灰鼠" in prompt
-    assert "禁止提前写" in prompt
+    assert "本章事实边界" in prompt
+    assert "当前事实边界有冲突" in prompt
+    assert "不要提前写" in prompt
     assert "交易行实际成交" in prompt
-    assert "诊断词禁止入正文" in prompt
-    assert "爽点" in prompt
-    assert "治理层审计" in prompt
+    assert "诊断词禁止入正文" not in prompt
+    assert "治理层审计" not in prompt
+    assert "governance" not in prompt
+    assert "diagnostic_only" not in prompt
 
 
 def test_revision_prompt_contains_governance_and_preserves_expression_boundary():
@@ -55,11 +55,13 @@ def test_revision_prompt_contains_governance_and_preserves_expression_boundary()
         {"issues": ["解释腔"], "revision_plan": ["换成动作"]},
     )
 
-    assert "章节输入治理" in prompt
-    assert "表达权不等于事实权" in prompt
-    assert "怪物统一为灰鼠" in prompt
-    assert "诊断词禁止入正文" in prompt
-    assert "治理层审计" in prompt
+    assert "本章事实边界" in prompt
+    assert "当前事实边界有冲突" in prompt
+    assert "交易行实际成交" in prompt
+    assert "诊断词禁止入正文" not in prompt
+    assert "治理层审计" not in prompt
+    assert "governance" not in prompt
+    assert "diagnostic_only" not in prompt
 
 
 def test_body_prompt_warns_when_governance_gate_blocks_writing():
@@ -76,6 +78,7 @@ def test_body_prompt_warns_when_governance_gate_blocks_writing():
 
     prompt = StoryOrchestrator()._body_prompt(_story(), 1, {"governance": dirty_governance})
 
-    assert "治理门禁" in prompt
-    assert "fix_governance_before_writing" in prompt
-    assert "先修治理层" in prompt
+    assert "当前事实边界有冲突" in prompt
+    assert "governance" not in prompt
+    assert "fix_governance_before_writing" not in prompt
+    assert "正文要完成爽点并照顾读者期待" not in prompt

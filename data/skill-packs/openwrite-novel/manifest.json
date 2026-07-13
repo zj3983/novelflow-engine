@@ -1,0 +1,7 @@
+﻿{
+    "skill_id":  "openwrite-novel",
+    "author":  "LiPu-jpg/Openwrite_skill",
+    "name":  "OpenWrite Novel",
+    "version":  "5.4.0",
+    "description":  "OpenWrite 风格的长篇小说 skill 包，包含 Goethe/Dante、写作、审稿、风格、对话、真相文件、伏笔和工作流子技能。"
+}

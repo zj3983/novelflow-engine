@@ -30,7 +30,6 @@ def test_mcp_lists_novel_autogrowth_tools():
         "review_chapter",
         "revise_chapter",
         "submit_manual_draft",
-        "submit_segment_draft",
         "patch_world",
         "continue_generation",
     }
@@ -118,33 +117,6 @@ def test_mcp_submit_manual_draft_calls_agent_manual_draft(monkeypatch):
 
     assert calls == [("http://api.test", "p-1", 1, "manual chapter body", ["keep panel consistent"], True)]
     assert _text_payload(result)["source"] == "manual_draft"
-
-
-def test_mcp_submit_segment_draft_calls_agent_segment_draft(monkeypatch):
-    mcp = _load_mcp_module()
-
-    calls: list[tuple[str, str, int, int, str, list[str], bool]] = []
-
-    def fake_post_manual_segment_draft(api_base, project_id, chapter_number, segment_index, body, instructions, include_body):
-        calls.append((api_base, project_id, chapter_number, segment_index, body, instructions, include_body))
-        return {"schema_version": "agent-revision/v1", "source": "manual_segment_draft"}
-
-    monkeypatch.setattr(mcp.novel_agent, "post_manual_segment_draft", fake_post_manual_segment_draft)
-
-    result = mcp.call_tool(
-        "submit_segment_draft",
-        {
-            "api_base": "http://api.test",
-            "project_id": "p-1",
-            "chapter_number": 1,
-            "segment_index": 3,
-            "body": "rewritten paragraph",
-            "instructions": "remove AI texture",
-        },
-    )
-
-    assert calls == [("http://api.test", "p-1", 1, 3, "rewritten paragraph", ["remove AI texture"], True)]
-    assert _text_payload(result)["source"] == "manual_segment_draft"
 
 
 def test_mcp_patch_world_accepts_single_author_constraint(monkeypatch):
