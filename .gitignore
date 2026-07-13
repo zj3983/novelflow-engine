@@ -24,9 +24,13 @@ apps/web/web-*.log
 apps/api/data/*.db
 apps/api/data/*.db-shm
 apps/api/data/*.db-wal
+# Local SQLite backups and nested database snapshots
+apps/api/data/backups/
+apps/api/data/**/*.db
 data/*.sqlite3
 
 # Build artifacts
+apps/web/.next-dev/
 apps/web/tsconfig.tsbuildinfo
 packages/story_core/runtime_config.json
 
