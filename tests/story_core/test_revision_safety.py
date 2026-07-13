@@ -169,6 +169,28 @@ def test_refresh_revised_metadata_replaces_generic_xianxia_title():
     assert refreshed.chapter_summary["chapter_title"] == "断香炉开口"
 
 
+def test_refresh_revised_metadata_uses_final_body_after_long_outline_for_title():
+    story = StoryState(
+        story_id="s-revised-title-long-outline",
+        outline="林照留在祖祠查旧账。" * 80,
+        genre="xianxia",
+        style="白描",
+        characters=[CharacterState(name="林照", role="protagonist")],
+    )
+    bundle = ChapterBundle(
+        chapter_number=1,
+        chapter_title="真相道韵",
+        body=("林照守到后半夜，始终没有动静。" * 30) + "最后一缕残香忽然开口提醒他。",
+        next_outline="有人来试门。",
+        chapter_summary={"chapter_number": 1, "chapter_title": "真相道韵", "summary": "林照守炉。"},
+        updated_story=story,
+    )
+
+    refreshed = StoryOrchestrator().refresh_revised_bundle_metadata(story, bundle)
+
+    assert refreshed.chapter_title == "断香炉开口"
+
+
 def test_choose_best_revision_rejects_severely_shorter_candidate_even_if_scores_tie():
     original = _quality(False, {"genre_rules": 6, "prose_style_meta_language": 6}, ["需要补写"])
     candidate = _quality(False, {"genre_rules": 6, "prose_style_meta_language": 6}, ["需要补写"])

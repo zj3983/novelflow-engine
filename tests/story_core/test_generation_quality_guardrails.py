@@ -34,7 +34,27 @@ def test_metaphor_limiter_never_rewrites_like_into_ungrammatical_gen():
     assert "跟是在" not in cleaned
 
 
-def test_first_chapter_sanitizer_adds_emotion_anchors():
+def test_sanitizer_does_not_author_missing_story_content():
+    body = (
+        "苏叶进入《天启之门》，角色名是夜烬。\n\n"
+        "夜烬打倒一只灰狼，收起材料以后回到村口。"
+    )
+    scene_cards = [
+        {"scene_id": "s1-c1-reality-entry", "must_show": ["现实职业/技能来源"]},
+        {"scene_id": "s4-c1-npc-service", "must_show": ["NPC地点", "信息边界"]},
+    ]
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=scene_cards)
+
+    assert cleaned == body
+    assert "底层协议校验通过" not in cleaned
+    assert "外包测试员" not in cleaned
+    assert "柜台窗口" not in cleaned
+    assert "清道夫委托" not in cleaned
+    assert "低声说" not in cleaned
+
+
+def test_first_chapter_sanitizer_leaves_missing_emotion_for_review():
     body = "\n\n".join(
         [
             "苏叶打开《天启之门》，给角色取名夜烬。",
@@ -47,10 +67,10 @@ def test_first_chapter_sanitizer_adds_emotion_anchors():
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
     review = review_emotion_quota(cleaned)
 
-    assert review["scores"]["emotion_quota"] >= 8
-    assert "喉咙发紧" in cleaned
-    assert "掌心全是汗" in cleaned
-    assert "不敢真的松下来" in cleaned
+    assert review["scores"]["emotion_quota"] < 8
+    assert "喉咙发紧" not in cleaned
+    assert "掌心全是汗" not in cleaned
+    assert "不敢真的松下来" not in cleaned
 
 
 def test_review_chapter_body_handles_soft_low_scores_without_name_error(monkeypatch):
@@ -132,7 +152,7 @@ def test_first_chapter_sanitizer_normalizes_panel_values_and_report_phrase():
     assert "生命：100/100；法力" in cleaned
 
 
-def test_first_chapter_sanitizer_adds_progression_hook_without_turning_in_quest():
+def test_first_chapter_sanitizer_does_not_add_progression_hook():
     body = "\n\n".join(
         [
             "苏叶进入《天启之门》，游戏ID是夜烬。",
@@ -143,13 +163,12 @@ def test_first_chapter_sanitizer_adds_progression_hook_without_turning_in_quest(
 
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
 
-    assert "清道夫委托" in cleaned
-    assert "只差两份" in cleaned
-    assert "后坡探路" in cleaned
-    assert "没有伸手接" in cleaned
+    assert cleaned == body
+    assert "清道夫委托" not in cleaned
+    assert "后坡探路" not in cleaned
 
 
-def test_first_chapter_sanitizer_removes_premature_rewards_and_services():
+def test_first_chapter_sanitizer_does_not_rewrite_premature_story_events():
     body = "\n\n".join(
         [
             "夜烬把灰狼毒腺递给窗口，钱袋里多了5枚铜币。",
@@ -162,15 +181,14 @@ def test_first_chapter_sanitizer_removes_premature_rewards_and_services():
 
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
 
-    assert "钱袋里多了" not in cleaned
-    assert "扣掉" not in cleaned
-    assert "买了药水" not in cleaned
-    assert "买下药水" not in cleaned
-    assert "技能书" not in cleaned
-    assert "清道夫委托" in cleaned
+    assert cleaned == body
+    assert "钱袋里多了" in cleaned
+    assert "扣掉" in cleaned
+    assert "技能书" in cleaned
+    assert "清道夫委托" not in cleaned
 
 
-def test_first_chapter_sanitizer_truncates_service_overrun():
+def test_first_chapter_sanitizer_does_not_truncate_service_overrun():
     body = "\n\n".join(
         [
             "苏叶进入《天启之门》，游戏ID夜烬。夜烬在灰狼坡击杀五只灰狼，背包里有八份灰狼毒腺。",
@@ -181,12 +199,11 @@ def test_first_chapter_sanitizer_truncates_service_overrun():
 
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
 
-    assert "清道夫委托完成" not in cleaned
-    assert "奖励铜币" not in cleaned
-    assert "后坡通行" not in cleaned
-    assert "没有伸手接" in cleaned
-    assert "八份毒腺" in cleaned
-    assert "只差两份" in cleaned
+    assert cleaned == body
+    assert "清道夫委托完成" in cleaned
+    assert "奖励铜币" in cleaned
+    assert "后坡通行" in cleaned
+    assert "没有伸手接" not in cleaned
 
 
 def test_first_chapter_review_blocks_premature_rewards_and_services():
@@ -233,7 +250,7 @@ def test_first_chapter_sanitizer_preserves_price_and_precondition_surface():
     assert "后坡探路" in cleaned
 
 
-def test_first_chapter_sanitizer_inserts_safe_protagonist_speech():
+def test_first_chapter_sanitizer_does_not_insert_protagonist_speech():
     body = (
         "苏叶进入游戏，角色面板显示职业是元素法师学徒。"
         "任务牌写着清道夫委托需要灰狼毒腺十份。"
@@ -242,9 +259,8 @@ def test_first_chapter_sanitizer_inserts_safe_protagonist_speech():
 
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
 
-    assert "夜烬把背包扣上，低声说" in cleaned
-    assert "先不交" in cleaned
-    assert "先修杖" not in cleaned
+    assert "夜烬把背包扣上，低声说" not in cleaned
+    assert "先不交" not in cleaned
 
 
 def test_first_chapter_review_allows_negated_arrival_wording():
@@ -286,7 +302,7 @@ def test_first_chapter_sanitizer_softens_repeated_state_openers():
     assert not any("段首主语过度单调" in issue and "法力" in issue for issue in review["issues"])
 
 
-def test_first_chapter_sanitizer_adds_protocol_anchor_even_when_login_exists():
+def test_first_chapter_sanitizer_does_not_add_protocol_anchor():
     body = (
         "苏叶打开登录界面，完成角色创建，游戏ID夜烬。\n\n"
         "第一次击杀灰狼后，背包里多出几份毒腺。"
@@ -294,8 +310,9 @@ def test_first_chapter_sanitizer_adds_protocol_anchor_even_when_login_exists():
 
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
 
-    assert "底层协议校验通过" in cleaned
-    assert "混沌之种：未解析" in cleaned
+    assert cleaned == body
+    assert "底层协议校验通过" not in cleaned
+    assert "混沌之种：未解析" not in cleaned
 
 
 def test_chapter_summary_string_fields_are_not_split_into_characters():
@@ -479,7 +496,7 @@ def test_sanitizer_removes_ai_formula_and_report_clarity_phrase():
     assert not any("不是X而是Y" in issue for issue in ai_review["issues"])
 
 
-def test_sanitizer_inserts_protagonist_speech_when_name_action_is_not_dialogue():
+def test_sanitizer_does_not_turn_name_action_into_dialogue():
     body = "\n\n".join(
         [
             "夜烬说完规则以后，把背包里的毒腺数了一遍。",
@@ -490,7 +507,8 @@ def test_sanitizer_inserts_protagonist_speech_when_name_action_is_not_dialogue()
 
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
 
-    assert "夜烬把背包扣上，低声说：“先不交，我还差两份，回去补齐再说。”" in cleaned
+    assert cleaned == body
+    assert "低声说" not in cleaned
 
 
 def test_first_chapter_sanitizer_normalizes_starting_identity_and_stackable_bag():
@@ -618,10 +636,10 @@ def test_sanitize_chapter_output_repairs_regeneration_surface_traps():
 
     assert "法力满" not in cleaned
     assert "法力只剩一截" in cleaned
-    assert cleaned.count("\n\n夜烬") < body.count("\n\n夜烬")
+    assert cleaned.count("\n\n夜烬") == body.count("\n\n夜烬")
 
 
-def test_sanitize_chapter_output_keeps_first_chapter_to_one_npc_and_no_guild_overreach():
+def test_sanitize_chapter_output_does_not_delete_npcs_or_guild_events():
     body = (
         "夜烬走到仓库管理员铁栓面前，问背包能不能寄存。\n\n"
         "修理匠老葛也把修理价格和耐久规则说了一遍。\n\n"
@@ -631,9 +649,9 @@ def test_sanitize_chapter_output_keeps_first_chapter_to_one_npc_and_no_guild_ove
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
 
     assert "铁栓" in cleaned
-    assert "老葛" not in cleaned
-    assert "锁定坐标" not in cleaned
-    assert "隐藏天赋" not in cleaned
+    assert "老葛" in cleaned
+    assert "锁定坐标" in cleaned
+    assert "隐藏天赋" in cleaned
 
 
 def test_opening_review_rejects_1000_times_wording_mixed_with_qianbei():

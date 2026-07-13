@@ -90,7 +90,7 @@ def test_quality_report_exposes_progression_lead_review():
     assert "progression_lead_review" in merged
 
 
-def test_first_chapter_sanitizer_removes_service_closure_and_adds_lead_hook():
+def test_first_chapter_sanitizer_does_not_rewrite_service_closure_or_add_hook():
     body = (
         "《天启之门》开服，苏叶登录，游戏ID夜烬，职业是元素法师学徒。"
         "【等级：Lv.1】【职业：元素法师学徒】【经验：0/100】【货币：0铜】"
@@ -101,15 +101,15 @@ def test_first_chapter_sanitizer_removes_service_closure_and_adds_lead_hook():
 
     cleaned = _sanitize_chapter_output(body, chapter_number=1)
 
-    assert "任务完成" not in cleaned
-    assert "获得：30铜" not in cleaned
-    assert "修理铺" not in cleaned
-    assert "买药水" not in cleaned
-    assert "技能书" in cleaned or "后坡" in cleaned
-    assert "下一步" in cleaned or "凑够" in cleaned
+    assert "任务完成" in cleaned
+    assert "奖励栏还没亮" in cleaned
+    assert "修理铺" in cleaned
+    assert "买药水" in cleaned
+    assert "技能书" not in cleaned
+    assert "后坡" not in cleaned
 
 
-def test_first_chapter_sanitizer_adds_npc_window_when_scene_card_requires_it():
+def test_first_chapter_sanitizer_leaves_missing_npc_window_for_review():
     body = (
         "《天启之门》开服，苏叶登录，游戏ID夜烬，职业是元素法师学徒。"
         "角色面板：【等级：Lv.1】【职业：元素法师学徒】【经验：0/100】【生命：100/100】【法力：60/60】【货币：0铜】"
@@ -126,14 +126,14 @@ def test_first_chapter_sanitizer_adds_npc_window_when_scene_card_requires_it():
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=scene_cards)
     review = review_world_event_consistency(cleaned, world_events=[], scene_cards=scene_cards)
 
-    assert "柜台窗口" in cleaned
+    assert "柜台窗口" not in cleaned
     assert "夜烬" in cleaned
-    assert "夜烬说" in cleaned or "低声" in cleaned
-    assert review["scores"]["scene_card_coverage"] == 8
-    assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
+    assert "夜烬说" in cleaned
+    assert review["scores"]["scene_card_coverage"] < 8
+    assert any("场景卡必写内容缺失" in issue for issue in review["issues"])
 
 
-def test_first_chapter_sanitizer_adds_reality_skill_source_when_scene_card_requires_it():
+def test_first_chapter_sanitizer_does_not_add_reality_skill_source():
     body = "苏叶看了一眼余额，戴上旧头盔进入《天启之门》。游戏ID夜烬。"
     scene_cards = [
         {
@@ -144,12 +144,12 @@ def test_first_chapter_sanitizer_adds_reality_skill_source_when_scene_card_requi
 
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=scene_cards)
 
-    assert "外包测试员" in cleaned
-    assert "照表点功能" in cleaned
-    assert "多看一眼提示" in cleaned
+    assert cleaned == body
+    assert "外包测试员" not in cleaned
+    assert "照表点功能" not in cleaned
 
 
-def test_first_chapter_sanitizer_adds_progression_and_misread_even_without_game_id_name():
+def test_first_chapter_sanitizer_leaves_missing_progression_and_misread_for_review():
     body = (
         "苏叶进入《天启之门》，职业是元素法师学徒。"
         "第一次击杀灰狼后，混沌之种提示掉落判定×1000，背包里多了灰狼毒腺八份。"
@@ -158,16 +158,14 @@ def test_first_chapter_sanitizer_adds_progression_and_misread_even_without_game_
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
     review = review_progression_lead(chapter_number=1, body=cleaned, event_plan={}, world_facts=[])
 
-    assert "夜烬" in cleaned
-    assert "清道夫委托" in cleaned
-    assert "后坡入口" in cleaned
-    assert "普通玩家还在" in cleaned
-    assert "只当他运气好" in cleaned
-    assert "没人知道" in cleaned
-    assert review["pass"] is True
+    assert "夜烬" not in cleaned
+    assert "清道夫委托" not in cleaned
+    assert "后坡入口" not in cleaned
+    assert "只当他运气好" not in cleaned
+    assert review["pass"] is False
 
 
-def test_first_chapter_sanitizer_removes_damage_numbers_and_current_currency_closure():
+def test_first_chapter_sanitizer_does_not_delete_damage_or_currency_events():
     body = (
         "《天启之门》开服，苏叶登录，游戏ID夜烬。"
         "灰狼倒下时，伤害数字从15跳到12，混沌之种提示掉落判定×1000。"
@@ -178,8 +176,8 @@ def test_first_chapter_sanitizer_removes_damage_numbers_and_current_currency_clo
     cleaned = _sanitize_chapter_output(body, chapter_number=1)
     review = review_progression_lead(chapter_number=1, body=cleaned, event_plan={}, world_facts=[])
 
-    assert "伤害数字" not in cleaned
-    assert "当前货币：0铜" not in cleaned
+    assert "跳出的数值" in cleaned
+    assert "货币栏还是空的" in cleaned
     assert "奖励三十铜" in cleaned
-    assert "买两瓶" not in cleaned
-    assert not any("服务闭环" in issue for issue in review["issues"])
+    assert "买两瓶" in cleaned
+    assert "清道夫委托" not in cleaned

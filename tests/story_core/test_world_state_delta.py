@@ -232,7 +232,7 @@ def test_repeated_paragraph_opener_softener_does_not_add_banned_time_crutches():
         assert token not in softened
 
 
-def test_second_chapter_sanitizer_adds_outsider_misread_and_emotion_anchors():
+def test_second_chapter_sanitizer_does_not_add_outsider_or_emotion_scenes():
     body = "\n\n".join(
         [
             "夜烬走到任务柜台前，把材料递过去。",
@@ -244,15 +244,12 @@ def test_second_chapter_sanitizer_adds_outsider_misread_and_emotion_anchors():
 
     cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
 
-    assert "路线挺熟" in cleaned
-    assert "运气好" in cleaned
-    assert "没人追问" in cleaned
-    assert "公共频道" in cleaned
-    assert "掉率低" in cleaned
-    assert "修法杖" in cleaned
+    assert cleaned == body
+    assert "路线挺熟" not in cleaned
+    assert "运气好" not in cleaned
+    assert "公共频道" not in cleaned
     assert "二十七块六" not in cleaned
-    assert "获得：灰狼毒腺×2" in cleaned
-    assert "原本的八份凑成十份" in cleaned
+    assert "获得：灰狼毒腺×2" not in cleaned
 
 
 def test_second_chapter_sanitizer_does_not_insert_retroactive_venom_after_turn_in():
@@ -270,7 +267,7 @@ def test_second_chapter_sanitizer_does_not_insert_retroactive_venom_after_turn_i
     assert cleaned.count("清道夫委托") == 1
 
 
-def test_second_chapter_sanitizer_adds_npc_boundary_and_removes_guide_terms():
+def test_second_chapter_sanitizer_normalizes_guide_terms_without_adding_npc_scene():
     body = "\n\n".join(
         [
             "夜烬把法杖横在身前，等灰狼的仇恨值转过来。",
@@ -287,13 +284,12 @@ def test_second_chapter_sanitizer_adds_npc_boundary_and_removes_guide_terms():
     assert "仇恨连锁" not in cleaned
     assert "灰狼的注意" in cleaned
     assert "灰狼互相呼应" in cleaned
-    assert "修理铺" in cleaned
-    assert "十五铜" in cleaned
-    assert "只看裂纹和耐久" in cleaned
-    assert "不问夜烬从哪儿弄来的毒腺" in cleaned
+    assert "修理铺" not in cleaned
+    assert "十五铜" not in cleaned
+    assert "只看裂纹和耐久" not in cleaned
 
 
-def test_second_chapter_sanitizer_does_not_accept_partial_npc_boundary():
+def test_second_chapter_sanitizer_does_not_complete_partial_npc_boundary():
     body = "\n\n".join(
         [
             "夜烬去了修理铺，老葛说价格按牌子来。",
@@ -303,11 +299,12 @@ def test_second_chapter_sanitizer_does_not_accept_partial_npc_boundary():
 
     cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
 
-    assert "只看裂纹和耐久" in cleaned
-    assert "不问夜烬从哪儿弄来的毒腺" in cleaned
+    assert cleaned == body
+    assert "只看裂纹和耐久" not in cleaned
+    assert "不问夜烬从哪儿弄来的毒腺" not in cleaned
 
 
-def test_second_chapter_sanitizer_adds_luoshen_service_boundary():
+def test_second_chapter_sanitizer_does_not_add_luoshen_service_boundary():
     body = "\n\n".join(
         [
             "夜烬到药剂铺买药，洛婶把药瓶放在柜台上。",
@@ -317,8 +314,9 @@ def test_second_chapter_sanitizer_adds_luoshen_service_boundary():
 
     cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
 
-    assert "洛婶只按清单收钱拿药" in cleaned
-    assert "不理会他刚交完委托又买药" in cleaned
+    assert cleaned == body
+    assert "洛婶只按清单收钱拿药" not in cleaned
+    assert "不理会他刚交完委托又买药" not in cleaned
 
 
 def test_second_chapter_sanitizer_removes_stale_webgame_terms_and_prices():
@@ -341,7 +339,8 @@ def test_second_chapter_sanitizer_removes_stale_webgame_terms_and_prices():
     assert "每秒0.16" not in cleaned
     assert "掉率基础值15%" not in cleaned
     assert "熟练度" not in cleaned
-    assert "清道夫委托" in cleaned
+    assert "清道夫委托" not in cleaned
     assert "十五铜" in cleaned
     assert "五铜一瓶，两瓶十铜" in cleaned
     assert "钱袋里还剩五枚铜币" in cleaned
+    assert "他把这一趟在心里过了一遍" not in cleaned

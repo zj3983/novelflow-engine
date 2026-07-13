@@ -872,10 +872,6 @@ def _sanitize_chapter_two_webgame_terms(body: str, chapter_number: int) -> str:
     cleaned = body
     for source, target in replacements.items():
         cleaned = cleaned.replace(source, target)
-    has_goal_sequence = all(token in cleaned for token in ("试打后坡", "交委托", "修法杖买药", "探路"))
-    if not has_goal_sequence and not any(token in cleaned for token in ("登记牌", "后坡探路", "任务牌")):
-        line = "他把这一趟在心里过了一遍：试打后坡只补两份毒腺，回村交委托，拿铜币修法杖买药，再去登记牌前确认探路提示。走到最后一步，提示还是把他挡在坡口。"
-        cleaned = _insert_before_last_paragraph(cleaned, line)
     return cleaned
 
 
@@ -888,28 +884,14 @@ def _sanitize_chapter_output(
 ) -> str:
     cleaned = _sanitize_generated_body(body)
     if game_story:
-        cleaned = _sanitize_first_chapter_scope(cleaned, chapter_number)
-    if game_story:
         cleaned = _sanitize_systemic_resource_contradictions(cleaned, scene_cards)
     if game_story and chapter_number == 1:
-        cleaned = _ensure_first_chapter_trigger_anchor(cleaned)
-        cleaned = _ensure_first_chapter_reality_skill_source(cleaned, scene_cards)
-        cleaned = _truncate_first_chapter_service_overrun(cleaned, chapter_number)
-        cleaned = _ensure_first_chapter_npc_window(cleaned, scene_cards)
-        cleaned = _ensure_first_chapter_emotion_anchors(cleaned, chapter_number)
         cleaned = _sanitize_first_chapter_panel_values(cleaned, chapter_number)
-        cleaned = _ensure_first_chapter_progression_hook(cleaned, chapter_number)
     cleaned = _sanitize_report_style_terms(cleaned)
     cleaned = _limit_metaphor_markers(cleaned)
     if game_story:
-        cleaned = _ensure_protagonist_speech(cleaned)
-        cleaned = _ensure_chapter_two_missing_venom_scene(cleaned, chapter_number)
-        cleaned = _ensure_web_game_outsider_misread(cleaned, chapter_number)
-        cleaned = _ensure_web_game_emotion_anchors(cleaned, chapter_number)
-        cleaned = _ensure_web_game_npc_service_boundary(cleaned, chapter_number)
         cleaned = _sanitize_chapter_two_webgame_terms(cleaned, chapter_number)
-    cleaned = _merge_overfragmented_paragraphs(cleaned)
-    return _soften_repeated_paragraph_openers(cleaned) if game_story else cleaned
+    return _merge_overfragmented_paragraphs(cleaned)
 
 
 def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
@@ -1014,30 +996,7 @@ def _sanitize_first_chapter_scope(body: str, chapter_number: int) -> str:
         cleaned = "".join(kept).strip()
         if cleaned:
             kept_paragraphs.append(cleaned)
-    sanitized = "\n\n".join(kept_paragraphs).strip()
-    if sanitized and (
-        ("掉落判定×1000" in sanitized or "千倍爆率" in sanitized or "混沌之种" in sanitized)
-        and not any(term in sanitized for term in ("元素回廊", "技能书", "路线", "前置", "条件", "快一步", "领先"))
-    ):
-        sanitized = (
-            sanitized.rstrip()
-            + "\n\n夜烬没有急着把材料全交出去。他站在村口，看见职业导师那边的木牌被玩家围住，"
-            "上面写着后坡登记的前置条件。别人还在坡下等第一份毒腺，他的背包已经快满了。"
-            "他先把多余材料压在背包底下，没有接任务，也没有往柜台递。"
-            "普通玩家还在等掉落，他已经知道自己再补两份，就能先一步去问入口前置任务。"
-        )
-    if sanitized and _chapter_char_count(sanitized) < REGENERATION_FAST_MIN_CHARS and (
-        "掉落判定×1000" in sanitized or "千倍爆率" in sanitized or "混沌之种" in sanitized
-    ):
-        sanitized = (
-            sanitized.rstrip()
-            + "\n\n他重新拉开面板。\n\n"
-            "等级还是Lv.1，钱袋仍是空的。血条、法力和法杖耐久都不好看，"
-            "背包格子却已经被低级掉落挤得发红。别人打一轮只攒两三份材料，他已经能凑出一份清道夫委托。\n\n"
-            "夜烬把面板关掉，先没往柜台挤。他看了一眼坡下的人群，又看了一眼职业导师门口排起的队。"
-            "任务奖励和修理费都要等下一章再算，眼下最要紧的是把还差的两份毒腺补齐。"
-        )
-    return sanitized or body
+    return "\n\n".join(kept_paragraphs).strip() or body
 
 
 def _priority_world_facts(facts: list[str], *, max_items: int, item_chars: int) -> list[str]:
@@ -4478,9 +4437,8 @@ class StoryOrchestrator:
 
         if updated_story.chapter_summaries:
             latest_summary = updated_story.chapter_summaries[-1]
-            revised_title_focus = compact_text(
-                f"{working_story.outline} {refreshed_bundle.body} {latest_summary.next_focus}",
-                240,
+            revised_title_focus = (
+                f"{working_story.outline} {refreshed_bundle.body} {latest_summary.next_focus}"
             )
             latest_summary.chapter_title = _repair_generic_chapter_title(
                 latest_summary.chapter_title,
@@ -4973,10 +4931,9 @@ class StoryOrchestrator:
 
         latest_summary = updated_story.chapter_summaries[-1]
         title_conflict = effective_conflict_summary if memory_is_verified else {}
-        title_next_focus = compact_text(
+        title_next_focus = (
             f"{updated_story.outline} {body} "
-            f"{latest_summary.next_focus if memory_is_verified else ''}",
-            240,
+            f"{latest_summary.next_focus if memory_is_verified else ''}"
         )
         latest_summary.chapter_title = _repair_generic_chapter_title(
             latest_summary.chapter_title or (decision.chapter_title if memory_is_verified else ""),
