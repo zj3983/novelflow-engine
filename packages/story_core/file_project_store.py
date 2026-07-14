@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -258,6 +260,32 @@ class FileProjectStore:
     def _write_json(self, path: Path, payload: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _write_json_atomic(self, path: Path, payload: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+        fd: int | None = None
+        temp_path: Path | None = None
+        try:
+            fd, temp_name = tempfile.mkstemp(
+                dir=str(path.parent),
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+            )
+            temp_path = Path(temp_name)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = None
+                handle.write(serialized)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+        finally:
+            try:
+                if fd is not None:
+                    os.close(fd)
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
 
     def _write_text(self, path: Path, text: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1869,8 +1897,10 @@ class FileProjectStore:
         return {**outline_from_legacy_project(self.project()), "source": "legacy"}
 
     def update_project_outline(self, payload: dict[str, Any]) -> dict[str, Any]:
-        normalized = normalize_project_outline(payload)
-        self._write_json(self.webnovel_dir / "outline.json", normalized)
+        outline_payload = dict(payload)
+        outline_payload.pop("source", None)
+        normalized = normalize_project_outline(outline_payload)
+        self._write_json_atomic(self.webnovel_dir / "outline.json", normalized)
         return {**normalized, "source": "saved"}
 
     def update_project(self, patch: dict[str, Any]) -> dict[str, Any]:

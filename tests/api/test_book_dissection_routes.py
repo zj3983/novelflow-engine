@@ -1,9 +1,12 @@
 import json
+import os
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
+from packages.story_core.file_project_store import FileProjectStore
 
 
 client = TestClient(app)
@@ -254,6 +257,82 @@ def test_file_project_outline_put_persists_canonical_data_and_gets_it_back(tmp_p
 
     assert loaded.status_code == 200
     assert loaded.json() == saved_payload
+
+
+def test_file_project_outline_get_response_can_be_put_back_unchanged(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "outline-round-trip"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(project_root / ".story-system" / "MASTER_SETTING.json", {"project": {"title": "Outline Round Trip"}})
+    _write_json(project_root / ".webnovel" / "state.json", {"story_id": "s-outline-round-trip"})
+    _write_json(project_root / ".webnovel" / "project.json", {"project_id": "outline-round-trip"})
+    outline_path = project_root / ".webnovel" / "outline.json"
+    _write_json(
+        outline_path,
+        {
+            "schema_version": "project-outline/v1",
+            "overall": {"story": "A courier follows the caravan's trail."},
+            "arcs": [
+                {
+                    "id": "border-town",
+                    "title": "Border Town",
+                    "start_chapter": 1,
+                    "end_chapter": 6,
+                    "goal": "Identify the caravan's attacker.",
+                }
+            ],
+            "chapters": [{"chapter_number": 2, "goal": "Search the stable."}],
+        },
+    )
+
+    loaded = client.get("/file-projects/file:outline-round-trip/outline")
+    saved = client.put("/file-projects/file:outline-round-trip/outline", json=loaded.json())
+
+    assert loaded.status_code == 200
+    assert loaded.json()["source"] == "saved"
+    assert saved.status_code == 200
+    assert saved.json() == loaded.json()
+    assert "source" not in json.loads(outline_path.read_text(encoding="utf-8"))
+
+    unknown = client.put(
+        "/file-projects/file:outline-round-trip/outline",
+        json={**loaded.json(), "unexpected_response_field": True},
+    )
+    assert unknown.status_code == 422
+    assert "unexpected_response_field" in unknown.json()["detail"]
+
+
+def test_file_project_outline_atomic_write_failure_preserves_existing_file(tmp_path: Path, monkeypatch):
+    project_root = tmp_path / "outline-atomic"
+    outline_path = project_root / ".webnovel" / "outline.json"
+    _write_json(
+        outline_path,
+        {
+            "schema_version": "project-outline/v1",
+            "overall": {"story": "The existing saved outline."},
+            "arcs": [],
+            "chapters": [],
+        },
+    )
+    original_bytes = outline_path.read_bytes()
+    store = FileProjectStore(project_root)
+
+    def fail_replace(source, destination):
+        raise OSError("replace failed for test")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed for test"):
+        store.update_project_outline(
+            {
+                "overall": {"story": "The replacement outline."},
+                "arcs": [],
+                "chapters": [],
+            }
+        )
+
+    assert outline_path.read_bytes() == original_bytes
+    assert list(outline_path.parent.iterdir()) == [outline_path]
 
 
 def test_file_project_outline_put_rejects_duplicate_chapter_without_overwriting(tmp_path: Path, monkeypatch):
