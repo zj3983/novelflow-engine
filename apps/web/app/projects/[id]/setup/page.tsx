@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
@@ -33,15 +33,36 @@ export default function OpeningSetupPage() {
   const [selectedId, setSelectedId] = useState("");
   const [pending, setPending] = useState<PendingRequest>(null);
   const [errorSource, setErrorSource] = useState<ErrorSource>(null);
+  const mountedRef = useRef(false);
+  const requestTokenRef = useRef(0);
+  const currentProjectIdRef = useRef(projectId);
+  currentProjectIdRef.current = projectId;
+
+  const isCurrentRequest = useCallback((requestToken: number, requestProjectId: string) => {
+    return (
+      mountedRef.current &&
+      requestTokenRef.current === requestToken &&
+      currentProjectIdRef.current === requestProjectId
+    );
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      requestTokenRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    const requestProjectId = projectId;
+    const requestToken = ++requestTokenRef.current;
     setPhase("loading");
     setErrorSource(null);
 
     fetchOpeningSetup(projectId)
       .then((response) => {
-        if (cancelled) return;
+        if (!isCurrentRequest(requestToken, requestProjectId)) return;
         setSetup(response);
         if (response.selected_id) {
           setPhase("selected");
@@ -51,48 +72,61 @@ export default function OpeningSetupPage() {
         setPhase(response.directions.length > 0 ? "candidates" : "no-candidates");
       })
       .catch(() => {
-        if (!cancelled) {
-          setErrorSource("load");
-          setPhase("error");
-        }
+        if (!isCurrentRequest(requestToken, requestProjectId)) return;
+        setErrorSource("load");
+        setPhase("error");
       });
 
     return () => {
-      cancelled = true;
+      if (requestTokenRef.current === requestToken) {
+        requestTokenRef.current += 1;
+      }
     };
-  }, [projectId, router]);
+  }, [isCurrentRequest, projectId, router]);
 
   async function generateDirections() {
     if (pending) return;
+    const requestProjectId = projectId;
+    const requestToken = ++requestTokenRef.current;
     setPending("generate");
     setErrorSource(null);
     try {
       const response = await generateOpeningDirections(projectId);
+      if (!isCurrentRequest(requestToken, requestProjectId)) return;
       setSetup(response);
       setSelectedId("");
       setPhase(response.directions.length > 0 ? "candidates" : "no-candidates");
     } catch {
+      if (!isCurrentRequest(requestToken, requestProjectId)) return;
       setErrorSource("generate");
       setPhase("error");
     } finally {
-      setPending(null);
+      if (isCurrentRequest(requestToken, requestProjectId)) {
+        setPending(null);
+      }
     }
   }
 
   async function adoptDirection() {
     if (pending || !selectedId) return;
+    const requestProjectId = projectId;
+    const requestToken = ++requestTokenRef.current;
     setPending("select");
     setErrorSource(null);
     try {
       const response = await selectOpeningDirection(projectId, selectedId);
+      if (!isCurrentRequest(requestToken, requestProjectId)) return;
       setSetup(response);
       setPhase("selected");
       router.push(response.next_path);
     } catch {
+      if (!isCurrentRequest(requestToken, requestProjectId)) return;
       setErrorSource("select");
       setPhase("error");
     } finally {
-      setPending(null);
+      if (isCurrentRequest(requestToken, requestProjectId)) {
+        setPending(null);
+      }
     }
   }
 

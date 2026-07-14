@@ -493,6 +493,59 @@ test("opening setup generates three plain radio sections and selects the second 
   );
 });
 
+test("opening setup ignores a delayed select response after navigating away", async ({ page }) => {
+  let markSelectStarted: (() => void) | undefined;
+  let markSelectFulfilled: (() => void) | undefined;
+  let releaseSelect: (() => void) | undefined;
+  const selectStarted = new Promise<void>((resolve) => {
+    markSelectStarted = resolve;
+  });
+  const selectReleased = new Promise<void>((resolve) => {
+    releaseSelect = resolve;
+  });
+  const selectFulfilled = new Promise<void>((resolve) => {
+    markSelectFulfilled = resolve;
+  });
+  await routeProjectLists(page, []);
+  await routeOpeningProject(page, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(openingSetupPayload({ directions: openingDirections })),
+      });
+      return;
+    }
+    markSelectStarted?.();
+    await selectReleased;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        openingSetupPayload({
+          directions: openingDirections,
+          selectedId: "direction-2",
+          nextPath: `${OPENING_PROJECT_PATH}/outline`,
+        }),
+      ),
+    });
+    markSelectFulfilled?.();
+  });
+
+  await page.goto(`${OPENING_PROJECT_PATH}/setup`);
+  await page.getByRole("radio", { name: /夜班追债/ }).check();
+  await page.getByRole("button", { name: "采用这个方向" }).click();
+  await selectStarted;
+  await page.getByRole("link", { name: "我的作品" }).click();
+  await expect(page).toHaveURL("/projects");
+
+  releaseSelect?.();
+  await selectFulfilled;
+  await page.waitForTimeout(500);
+  await expect(page).toHaveURL("/projects");
+});
+
 test("opening setup preserves the brief and offers recovery after a 502 generation error", async ({ page }) => {
   await routeOpeningProject(page, async (route) => {
     if (route.request().method() === "GET") {
