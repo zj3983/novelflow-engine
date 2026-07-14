@@ -1960,6 +1960,9 @@ class FileProjectStore:
         }
 
     def generate_opening_directions(self, generator: Any) -> dict[str, Any]:
+        existing = self.opening_directions()
+        if existing and existing.get("selected_id"):
+            raise ValueError("direction_already_selected")
         brief = OpeningBrief.model_validate(self.opening_brief())
         result = generator.generate(brief)
         try:

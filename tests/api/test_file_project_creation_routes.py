@@ -44,6 +44,20 @@ def test_blank_file_project_creation_returns_201_and_is_readable(creation_api):
     legacy_create.assert_not_called()
 
 
+def test_file_project_list_ignores_in_progress_dot_directories(creation_api):
+    client, _, _ = creation_api
+    response = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Hidden Temp", "novel_type_id": "urban"},
+    )
+    assert response.status_code == 201
+
+    root = Path(response.json()["source_path"])
+    root.rename(root.with_name(f".{root.name}.tmp-in-progress"))
+
+    assert client.get("/file-projects").json() == []
+
+
 def test_inspiration_file_project_creation_returns_setup_path_and_opening_brief(creation_api):
     client, _, legacy_create = creation_api
 
@@ -409,3 +423,29 @@ def test_select_unknown_and_repeated_direction_returns_404_then_409(creation_api
     assert selected.status_code == 200
     assert repeated.status_code == 409
     assert repeated.json()["detail"] == "direction_already_selected"
+
+
+def test_selected_opening_direction_cannot_be_regenerated(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project, root = _create_inspiration_project(client)
+    generator = _FakeOpeningDirectionGenerator()
+    monkeypatch.setattr(file_project_routes, "opening_direction_generator", generator)
+
+    assert client.post(f"/file-projects/{project['project_id']}/opening-directions").status_code == 200
+    assert client.post(
+        f"/file-projects/{project['project_id']}/opening-directions/direction-1/select"
+    ).status_code == 200
+    tracked = {
+        path: path.read_bytes()
+        for path in (
+            root / ".webnovel" / "project.json",
+            root / ".webnovel" / "outline.json",
+            root / ".webnovel" / "opening_directions.json",
+        )
+    }
+
+    response = client.post(f"/file-projects/{project['project_id']}/opening-directions")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "direction_already_selected"
+    assert {path: path.read_bytes() for path in tracked} == tracked

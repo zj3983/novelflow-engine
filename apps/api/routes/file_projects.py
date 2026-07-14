@@ -98,7 +98,7 @@ def _public_project_id(store: FileProjectStore) -> str:
 def _is_hidden_file_project_dir(path: Path) -> bool:
     name = path.name
     return (
-        name.startswith("_")
+        name.startswith((".", "_"))
         or ".backup-" in name
         or ".before-" in name
         or name.endswith(".bak")
