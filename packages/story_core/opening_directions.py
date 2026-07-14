@@ -89,11 +89,14 @@ class LLMOpeningDirectionGenerator:
         self._runtime_resolver = runtime_resolver
         self._strategy_resolver = strategy_resolver
 
-    def generate(self, brief: OpeningBrief) -> OpeningDirectionSet:
+    def generate(self, brief: OpeningBrief, *, guidance: str = "") -> OpeningDirectionSet:
         validated_brief = OpeningBrief.model_validate(brief)
         genre = NOVEL_TYPE_CATALOG.get(validated_brief.novel_type_id)
         if genre is None:
             raise ValueError("invalid_novel_type")
+        normalized_guidance = guidance.strip()
+        if len(normalized_guidance) > 1000:
+            raise ValueError("regeneration_guidance_too_long")
 
         try:
             runtime = self._runtime_resolver("director")
@@ -108,6 +111,7 @@ class LLMOpeningDirectionGenerator:
                 "genre_description": genre.description,
                 "working_title": validated_brief.working_title,
                 "idea": validated_brief.idea,
+                "regeneration_guidance": normalized_guidance,
             }
             payload = {
                 "model": strategy.director_model,

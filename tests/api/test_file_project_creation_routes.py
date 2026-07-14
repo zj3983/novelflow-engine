@@ -183,9 +183,11 @@ class _FakeOpeningDirectionGenerator:
     def __init__(self, payload=None):
         self.payload = payload if payload is not None else _opening_direction_payload()
         self.calls = 0
+        self.guidance_calls = []
 
-    def generate(self, brief):
+    def generate(self, brief, *, guidance=""):
         self.calls += 1
+        self.guidance_calls.append(guidance)
         return self.payload
 
 
@@ -291,6 +293,64 @@ def test_generate_and_select_direction_only_updates_allowed_fields(creation_api,
     persisted_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert persisted_state["characters"] == []
     assert persisted_state["world_facts"] == []
+
+
+def test_generate_opening_directions_accepts_trimmed_one_time_guidance(
+    creation_api, monkeypatch
+):
+    client, _, _ = creation_api
+    project, root = _create_inspiration_project(client)
+    generator = _FakeOpeningDirectionGenerator()
+    monkeypatch.setattr(file_project_routes, "opening_direction_generator", generator)
+    secret = "ONLY_FOR_THIS_REQUEST"
+
+    response = client.post(
+        f"/file-projects/{project['project_id']}/opening-directions",
+        json={"guidance": f"  {secret}  "},
+    )
+
+    assert response.status_code == 200
+    assert generator.guidance_calls == [secret]
+    persisted = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("*.json"))
+    assert secret not in persisted
+
+
+def test_generate_opening_directions_without_body_uses_empty_guidance(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project, _ = _create_inspiration_project(client)
+    generator = _FakeOpeningDirectionGenerator()
+    monkeypatch.setattr(file_project_routes, "opening_direction_generator", generator)
+
+    response = client.post(f"/file-projects/{project['project_id']}/opening-directions")
+
+    assert response.status_code == 200
+    assert generator.guidance_calls == [""]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"guidance": "x" * 1001},
+        {"guidance": "valid", "unexpected": "field"},
+        {"guidance": 123},
+        {"guidance": None},
+    ],
+)
+def test_generate_opening_directions_rejects_invalid_guidance_request(
+    creation_api, monkeypatch, payload
+):
+    client, _, _ = creation_api
+    project, _ = _create_inspiration_project(client)
+    generator = _FakeOpeningDirectionGenerator()
+    monkeypatch.setattr(file_project_routes, "opening_direction_generator", generator)
+
+    response = client.post(
+        f"/file-projects/{project['project_id']}/opening-directions",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert generator.calls == 0
 
 
 def test_invalid_model_output_returns_502_and_preserves_previous_candidates(creation_api, monkeypatch):

@@ -40,7 +40,7 @@ class StaticDirectionGenerator:
     def __init__(self, payload=None):
         self.payload = payload if payload is not None else direction_set()
 
-    def generate(self, brief):
+    def generate(self, brief, *, guidance=""):
         return self.payload
 
 
@@ -136,7 +136,7 @@ def test_project_pipeline_types_accept_opening_stages(pipeline_stage):
     assert NovelProjectSummary.model_validate(payload).pipeline_stage == pipeline_stage
 
 
-def test_generator_prompt_contains_only_brief_and_genre():
+def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     captured = {}
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
@@ -170,13 +170,82 @@ def test_generator_prompt_contains_only_brief_and_genre():
     assert captured["payload"]["model"] == "direction-test-model"
     assert captured["payload"]["response_format"] == {"type": "json_object"}
     prompt_context = json.loads(captured["payload"]["messages"][1]["content"])
-    assert set(prompt_context) == {"genre_label", "genre_description", "working_title", "idea"}
+    assert set(prompt_context) == {
+        "genre_label",
+        "genre_description",
+        "working_title",
+        "idea",
+        "regeneration_guidance",
+    }
     assert prompt_context["idea"] == "SECRET_IDEA"
     assert prompt_context["working_title"] == "SECRET_WORKING_TITLE"
+    assert prompt_context["regeneration_guidance"] == ""
     entire_prompt = json.dumps(captured["payload"]["messages"], ensure_ascii=False)
     assert "SECRET_CHARACTER_CARD" not in entire_prompt
     assert "SECRET_HISTORY_CHAPTER" not in entire_prompt
     assert "SECRET_SKILL" not in entire_prompt
+
+
+def test_generator_adds_trimmed_one_time_guidance_to_prompt():
+    captured = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["payload"] = payload
+        return {
+            "choices": [
+                {"message": {"content": json.dumps({"directions": direction_set()["directions"]})}}
+            ]
+        }
+
+    generator = LLMOpeningDirectionGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _: OpenAIRuntimeSettings(
+            provider="codexcli", base_url="http://runtime.test", codex_command="codex-test"
+        ),
+        strategy_resolver=lambda: AgentSettings(director_model="direction-test-model"),
+    )
+
+    generator.generate(
+        OpeningBrief(novel_type_id="urban", idea="Original idea"),
+        guidance="  ONLY_FOR_THIS_REGENERATION  ",
+    )
+
+    prompt = json.loads(captured["payload"]["messages"][1]["content"])
+    assert prompt["regeneration_guidance"] == "ONLY_FOR_THIS_REGENERATION"
+
+
+def test_generator_rejects_guidance_longer_than_1000_after_trimming():
+    runtime_calls = []
+    generator = LLMOpeningDirectionGenerator(
+        runtime_resolver=lambda name: runtime_calls.append(name),
+    )
+
+    with pytest.raises(ValueError, match="^regeneration_guidance_too_long$"):
+        generator.generate(
+            OpeningBrief(novel_type_id="urban", idea="Original idea"),
+            guidance=f"  {'x' * 1001}  ",
+        )
+
+    assert runtime_calls == []
+
+
+def test_store_passes_trimmed_guidance_without_persisting_it(tmp_path):
+    store = make_opening_store(tmp_path)
+    secret = "ONLY_FOR_THIS_REGENERATION"
+    calls = []
+
+    class RecordingGenerator:
+        def generate(self, brief, *, guidance=""):
+            calls.append(guidance)
+            return direction_set()
+
+    store.generate_opening_directions(RecordingGenerator(), guidance=f"  {secret}  ")
+
+    assert calls == [secret]
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8") for path in store.root.rglob("*.json")
+    )
+    assert secret not in persisted
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from packages.story_core.book_dissection import diagnose_project_chapter, dissect_reference_text
 from packages.story_core.file_project_creation import FileProjectCreateSpec, create_file_project
@@ -39,6 +39,17 @@ class FileProjectRegenerateRequest(BaseModel):
 
 class FileProjectGenerateNextRequest(BaseModel):
     chapter_direction_id: str | None = None
+
+
+class OpeningDirectionGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    guidance: str = Field(default="", max_length=1000)
+
+    @field_validator("guidance", mode="before")
+    @classmethod
+    def trim_guidance(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
 
 class FileProjectGenerationJobRequest(BaseModel):
@@ -398,9 +409,16 @@ def init_file_project_routes() -> APIRouter:
         return _store_for(project_id).opening_setup()
 
     @router.post("/file-projects/{project_id}/opening-directions")
-    def generate_opening_directions(project_id: str) -> dict[str, Any]:
+    def generate_opening_directions(
+        project_id: str,
+        payload: OpeningDirectionGenerationRequest | None = None,
+    ) -> dict[str, Any]:
         try:
-            return _store_for(project_id).generate_opening_directions(opening_direction_generator)
+            guidance = payload.guidance if payload is not None else ""
+            return _store_for(project_id).generate_opening_directions(
+                opening_direction_generator,
+                guidance=guidance,
+            )
         except ValueError as exc:
             status_code = 502 if str(exc) == "opening_direction_generation_failed" else 422
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
