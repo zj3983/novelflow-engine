@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from packages.story_core.book_dissection import diagnose_project_chapter, dissect_reference_text
+from packages.story_core.file_project_creation import FileProjectCreateSpec, create_file_project
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import AgentRuntimeState, AgentSettings
@@ -377,6 +378,14 @@ def init_file_project_routes() -> APIRouter:
     @router.get("/file-projects")
     def list_file_projects() -> list[dict[str, Any]]:
         return [_summary_payload(store) for store in _stores()]
+
+    @router.post("/file-projects", status_code=201)
+    def create_new_file_project(payload: FileProjectCreateSpec) -> dict[str, Any]:
+        try:
+            created = create_file_project(_export_root(), payload)
+        except (ValueError, FileExistsError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {**_project_payload(FileProjectStore(created.root)), "next_path": created.next_path}
 
     @router.get("/file-projects/{project_id}")
     def get_file_project(project_id: str) -> dict[str, Any]:
