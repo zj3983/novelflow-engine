@@ -303,6 +303,9 @@ def test_generate_opening_directions_accepts_trimmed_one_time_guidance(
     generator = _FakeOpeningDirectionGenerator()
     monkeypatch.setattr(file_project_routes, "opening_direction_generator", generator)
     secret = "ONLY_FOR_THIS_REQUEST"
+    secret_bytes = secret.encode("utf-8")
+    files_before = {path for path in root.rglob("*") if path.is_file()}
+    assert all(secret_bytes not in path.read_bytes() for path in files_before)
 
     response = client.post(
         f"/file-projects/{project['project_id']}/opening-directions",
@@ -311,8 +314,9 @@ def test_generate_opening_directions_accepts_trimmed_one_time_guidance(
 
     assert response.status_code == 200
     assert generator.guidance_calls == [secret]
-    persisted = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("*.json"))
-    assert secret not in persisted
+    files_after = {path for path in root.rglob("*") if path.is_file()}
+    assert root / ".webnovel" / "opening_directions.json" in files_after - files_before
+    assert all(secret_bytes not in path.read_bytes() for path in files_after)
 
 
 def test_generate_opening_directions_without_body_uses_empty_guidance(creation_api, monkeypatch):

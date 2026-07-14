@@ -232,6 +232,7 @@ def test_generator_rejects_guidance_longer_than_1000_after_trimming():
 def test_store_passes_trimmed_guidance_without_persisting_it(tmp_path):
     store = make_opening_store(tmp_path)
     secret = "ONLY_FOR_THIS_REGENERATION"
+    secret_bytes = secret.encode("utf-8")
     calls = []
 
     class RecordingGenerator:
@@ -239,13 +240,15 @@ def test_store_passes_trimmed_guidance_without_persisting_it(tmp_path):
             calls.append(guidance)
             return direction_set()
 
+    files_before = {path for path in store.root.rglob("*") if path.is_file()}
+    assert all(secret_bytes not in path.read_bytes() for path in files_before)
+
     store.generate_opening_directions(RecordingGenerator(), guidance=f"  {secret}  ")
 
     assert calls == [secret]
-    persisted = "\n".join(
-        path.read_text(encoding="utf-8") for path in store.root.rglob("*.json")
-    )
-    assert secret not in persisted
+    files_after = {path for path in store.root.rglob("*") if path.is_file()}
+    assert store.webnovel_dir / "opening_directions.json" in files_after - files_before
+    assert all(secret_bytes not in path.read_bytes() for path in files_after)
 
 
 @pytest.mark.parametrize(
