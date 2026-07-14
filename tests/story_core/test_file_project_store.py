@@ -576,10 +576,15 @@ def test_file_project_writing_packet_exposes_outline_constraints(tmp_path):
     assert packet["scene_cards"][0]["purpose"] == "finish first sale"
     assert packet["scene_cards"][0]["ending_hook"] == "buyer asks source"
     assert isinstance(packet["character_cards"], list)
+    outline_context = packet["outline_context"]
+    assert set(outline_context) == {"overall", "active_arc", "chapter"}
+    assert outline_context["active_arc"]["goal"] == "Opening arc."
+    assert outline_context["chapter"]["chapter_number"] == 2
+    assert outline_context["chapter"]["payoff"] == "finish first sale"
+    assert outline_context["chapter"]["ending_hook"] == "buyer asks source"
     constraints = packet["outline_constraints"]
-    assert constraints["current_arc"] == "Opening arc."
-    assert constraints["opening_arc"]["golden_three_chapters"]["1"]["payoff"] == "first sale"
-    assert constraints["opening_arc"]["chapter_beats"][0]["required_payoff"] == "finish first sale"
+    assert "current_arc" not in constraints
+    assert "opening_arc" not in constraints
     assert constraints["volume_plan"]["volume_title"] == "Newbie Village"
     assert constraints["longform_framework"]["progression_ladder"] == ["Lv.1-5"]
     assert constraints["chapter_formula"] == ["goal-cost-payoff-hook"]
