@@ -687,6 +687,22 @@ body {
   gap: 10px;
 }
 
+.ws-opening-guidance {
+  display: grid;
+  flex: 1 0 100%;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ws-ink-muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ws-opening-guidance__input {
+  min-width: 0;
+  resize: vertical;
+  line-height: 1.6;
+}
+
 .ws-opening-actions .ws-text-link {
   margin-right: auto;
 }

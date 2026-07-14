@@ -407,6 +407,7 @@ test("opening setup GET keeps the inspiration visible without auto-generation or
   await expect(page.getByRole("heading", { name: "选择开篇方向" })).toBeVisible();
   await expect(page.getByText(openingBrief.idea)).toBeVisible();
   await expect(page.getByRole("button", { name: "生成故事方向" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "本次补充要求" })).toHaveCount(0);
   await expect(page.getByRole("radio")).toHaveCount(0);
   expect(openingMethods.length).toBeGreaterThan(0);
   expect(openingMethods.every((method) => method === "GET")).toBe(true);
@@ -415,6 +416,87 @@ test("opening setup GET keeps the inspiration visible without auto-generation or
     scrollWidth: document.documentElement.scrollWidth,
   }));
   expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth);
+});
+
+test("opening setup sends one-time regeneration guidance and clears it after success", async ({ page }) => {
+  const generationBodies: unknown[] = [];
+  const generationContentTypes: string[] = [];
+  let releaseGeneration: (() => void) | undefined;
+  const generationReleased = new Promise<void>((resolve) => {
+    releaseGeneration = resolve;
+  });
+  await routeOpeningProject(page, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(openingSetupPayload({ directions: openingDirections })),
+      });
+      return;
+    }
+    generationBodies.push(request.postDataJSON());
+    generationContentTypes.push(request.headers()["content-type"] ?? "");
+    await generationReleased;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(openingSetupPayload({ directions: openingDirections })),
+    });
+  });
+  await page.setViewportSize({ width: 375, height: 667 });
+
+  await page.goto(`${OPENING_PROJECT_PATH}/setup`);
+  const guidance = page.getByRole("textbox", { name: "本次补充要求" });
+  const regenerateButton = page.locator(".ws-opening-actions > button").first();
+  await expect(guidance).toBeVisible();
+  await expect(guidance).toHaveAttribute("maxlength", "1000");
+  await expect(guidance).toHaveAttribute("rows", "3");
+  await guidance.fill("  增强悬念，让主角更早陷入两难  ");
+  await regenerateButton.click();
+  await expect(guidance).toBeDisabled();
+  await regenerateButton.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => generationBodies.length).toBe(1);
+  expect(generationBodies).toEqual([{ guidance: "增强悬念，让主角更早陷入两难" }]);
+  expect(generationContentTypes).toEqual(["application/json"]);
+
+  releaseGeneration?.();
+  await expect(guidance).toBeEnabled();
+  await expect(guidance).toHaveValue("");
+  const viewport = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth);
+});
+
+test("opening setup retains regeneration guidance after generation failure", async ({ page }) => {
+  await routeOpeningProject(page, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(openingSetupPayload({ directions: openingDirections })),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "opening_direction_generation_failed" }),
+    });
+  });
+
+  await page.goto(`${OPENING_PROJECT_PATH}/setup`);
+  const guidance = page.getByRole("textbox", { name: "本次补充要求" });
+  await guidance.fill("保留都市感，减少玄幻设定");
+  await page.getByRole("button", { name: "重新生成" }).click();
+
+  await expect(page.getByRole("alert").filter({ hasText: "故事方向暂时生成失败" })).toBeVisible();
+  await expect(guidance).toHaveValue("保留都市感，减少玄幻设定");
 });
 
 test("opening setup generates three plain radio sections and selects the second direction once", async ({ page }) => {

@@ -31,6 +31,7 @@ export default function OpeningSetupPage() {
   const [phase, setPhase] = useState<SetupPhase>("loading");
   const [setup, setSetup] = useState<OpeningSetup | null>(null);
   const [selectedId, setSelectedId] = useState("");
+  const [guidance, setGuidance] = useState("");
   const [pending, setPending] = useState<PendingRequest>(null);
   const [errorSource, setErrorSource] = useState<ErrorSource>(null);
   const mountedRef = useRef(false);
@@ -59,6 +60,7 @@ export default function OpeningSetupPage() {
     const requestToken = ++requestTokenRef.current;
     setPhase("loading");
     setErrorSource(null);
+    setGuidance("");
 
     fetchOpeningSetup(projectId)
       .then((response) => {
@@ -91,10 +93,11 @@ export default function OpeningSetupPage() {
     setPending("generate");
     setErrorSource(null);
     try {
-      const response = await generateOpeningDirections(projectId);
+      const response = await generateOpeningDirections(projectId, guidance.trim());
       if (!isCurrentRequest(requestToken, requestProjectId)) return;
       setSetup(response);
       setSelectedId("");
+      setGuidance("");
       setPhase(response.directions.length > 0 ? "candidates" : "no-candidates");
     } catch {
       if (!isCurrentRequest(requestToken, requestProjectId)) return;
@@ -203,6 +206,20 @@ export default function OpeningSetupPage() {
 
         {phase !== "loading" && phase !== "selected" ? (
           <div className="ws-opening-actions">
+            {directions.length > 0 || errorSource === "generate" ? (
+              <label className="ws-opening-guidance">
+                <span>本次补充要求</span>
+                <textarea
+                  className="ws-input ws-opening-guidance__input"
+                  value={guidance}
+                  maxLength={1000}
+                  rows={3}
+                  disabled={requestPending}
+                  onChange={(event) => setGuidance(event.target.value)}
+                  placeholder="例如：增强悬念，减少背景说明"
+                />
+              </label>
+            ) : null}
             <button
               className="ws-btn"
               type="button"

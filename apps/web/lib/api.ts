@@ -2403,10 +2403,14 @@ export async function fetchOpeningSetup(projectId: string): Promise<OpeningSetup
   })) as OpeningSetup;
 }
 
-export async function generateOpeningDirections(projectId: string): Promise<OpeningSetup> {
+export async function generateOpeningDirections(projectId: string, guidance: string = ""): Promise<OpeningSetup> {
   return (await tryFetchJson(
     `${fileProjectPath(projectId)}/opening-directions`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ guidance }),
+    },
     180000,
   )) as OpeningSetup;
 }
