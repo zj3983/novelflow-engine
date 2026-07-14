@@ -1396,6 +1396,7 @@ def _story_snapshot(story: StoryState) -> dict:
     prompt_ledger = _compact_prompt_ledger(story.progression_ledger)
     return {
         "outline": compact_text(story.outline, 700),
+        "outline_context": story.outline_context,
         "genre": story.genre,
         "style": story.style,
         "current_chapter": story.current_chapter,
@@ -1467,6 +1468,7 @@ def _director_snapshot_summary(snapshot: dict) -> dict:
     characters = snapshot.get("characters") if isinstance(snapshot.get("characters"), list) else []
     return {
         "outline": compact_text(str(snapshot.get("outline") or ""), 180),
+        "outline_context": snapshot.get("outline_context") if isinstance(snapshot.get("outline_context"), dict) else {},
         "genre": snapshot.get("genre"),
         "style": compact_text(str(snapshot.get("style") or ""), 120),
         "current_chapter": snapshot.get("current_chapter"),

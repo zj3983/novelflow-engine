@@ -516,6 +516,7 @@ class StoryState(BaseModel):
     characters: list[CharacterState] = Field(default_factory=list)
     world_facts: list[str] = Field(default_factory=list)
     progression_ledger: dict = Field(default_factory=dict)
+    outline_context: dict = Field(default_factory=dict, exclude=True)
     timeline: list[TimelineEvent] = Field(default_factory=list)
     foreshadowing: list[ForeshadowingState] = Field(default_factory=list)
     chapter_summaries: list[ChapterSummary] = Field(default_factory=list)

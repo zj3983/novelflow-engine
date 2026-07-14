@@ -16,7 +16,7 @@ from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.prose_style_review import review_prose_style
-from packages.story_core.project_outline import normalize_project_outline, outline_from_legacy_project
+from packages.story_core.project_outline import normalize_project_outline, outline_from_legacy_project, select_outline_context
 from packages.story_core.reader_feel_review import review_reader_feel
 from packages.story_core.quality import validate_bundle
 from packages.story_core.reader_agent import review_reader_agent
@@ -2309,7 +2309,7 @@ class FileProjectStore:
             ledger = dict(state.get("progression_ledger") or {})
             ledger["chapter_direction"] = chapter_direction
             state["progression_ledger"] = ledger
-        story = StoryState.model_validate(self._story_state_payload_for_direction(state, project))
+        story = StoryState.model_validate(self._story_state_payload_for_direction(state, project, target_chapter))
         generator = engine or StoryEngine()
         bundle = generator.generate_next_chapter(story)
         persisted = self.persist_bundle(bundle, operation="generate", commit_message=commit_message)
@@ -2484,7 +2484,14 @@ class FileProjectStore:
         ledger["simulation_variant"] = variant_payload
         base_state["progression_ledger"] = ledger
 
-        story = StoryState.model_validate(base_state)
+        project = self.project()
+        story_payload = dict(base_state)
+        story_payload["outline_context"] = self._story_state_payload_for_direction(
+            base_state,
+            project,
+            chapter_number,
+        )["outline_context"]
+        story = StoryState.model_validate(story_payload)
         generator = engine or StoryEngine()
         bundle = generator.generate_next_chapter(story)
         if int(getattr(bundle, "chapter_number", 0) or 0) != chapter_number:
@@ -2671,8 +2678,14 @@ class FileProjectStore:
             "results": results,
         }
 
-    @staticmethod
-    def _story_state_payload_for_direction(state: dict[str, Any], project: dict[str, Any]) -> dict[str, Any]:
+    def _story_state_payload_for_direction(
+        self,
+        state: dict[str, Any],
+        project: dict[str, Any],
+        target_chapter: int,
+    ) -> dict[str, Any]:
+        project_outline = dict(self.project_outline())
+        project_outline.pop("source", None)
         characters: list[dict[str, Any]] = []
         for item in state.get("characters", []) if isinstance(state.get("characters"), list) else []:
             if not isinstance(item, dict):
@@ -2698,10 +2711,11 @@ class FileProjectStore:
             "world_facts": list(state.get("world_facts") or []),
             "progression_ledger": dict(state.get("progression_ledger") or {}),
             "characters": characters,
+            "outline_context": select_outline_context(project_outline, target_chapter),
         }
 
     def _chapter_direction_options(self, state: dict[str, Any], project: dict[str, Any], chapter_number: int) -> dict[str, Any]:
-        story = StoryState.model_validate(self._story_state_payload_for_direction(state, project))
+        story = StoryState.model_validate(self._story_state_payload_for_direction(state, project, chapter_number))
         return build_chapter_direction_options(story, chapter_number)
 
     def _resolve_chapter_direction(
@@ -2724,14 +2738,21 @@ class FileProjectStore:
         state = self.state()
         project = self.project()
         world_blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
-        opening_arc = world_blueprint.get("opening_arc") if isinstance(world_blueprint.get("opening_arc"), dict) else {}
-        chapter_beats = opening_arc.get("chapter_beats") if isinstance(opening_arc.get("chapter_beats"), list) else []
         forbidden_breaks = world_blueprint.get("forbidden_breaks") if isinstance(world_blueprint.get("forbidden_breaks"), list) else []
         progression_rules = world_blueprint.get("progression_rules") if isinstance(world_blueprint.get("progression_rules"), list) else []
         numbers = self.chapter_numbers()
         latest_number = numbers[-1] if numbers else 0
         latest_chapter = self.chapter(latest_number) if latest_number else {}
         target = chapter_number or int(state.get("current_chapter") or latest_number or 0) + 1
+        project_outline = dict(self.project_outline())
+        project_outline.pop("source", None)
+        selected_outline = select_outline_context(project_outline, int(target or 0))
+        outline_context = {
+            "overall": selected_outline.get("overall"),
+            "active_arc": selected_outline.get("active_arc"),
+            "chapter": selected_outline.get("chapter"),
+        }
+        chapter_outline = outline_context["chapter"] if isinstance(outline_context.get("chapter"), dict) else {}
         recent = []
         for number in numbers[-3:]:
             item = self.chapter(number)
@@ -2743,44 +2764,27 @@ class FileProjectStore:
                     "next_focus": item.get("next_outline") or (item.get("event_plan") or {}).get("next_focus"),
                 }
             )
-        target_beat = next(
-            (
-                beat
-                for beat in chapter_beats
-                if isinstance(beat, dict) and int(beat.get("chapter") or 0) == int(target or 0)
-            ),
-            {},
-        )
         scene_cards: list[dict[str, Any]] = []
-        for beat in chapter_beats:
-            if not isinstance(beat, dict):
-                continue
-            chapter = int(beat.get("chapter") or 0)
-            if target and chapter and chapter != int(target):
-                continue
-            title = self._compact_text(beat.get("title"), 80) or f"第{chapter or target}章剧情点"
-            purpose = self._compact_text(beat.get("required_payoff") or beat.get("payoff") or beat.get("summary"), 220)
-            hook = self._compact_text(beat.get("ending_hook") or beat.get("hook"), 180)
+        if chapter_outline:
+            chapter = int(chapter_outline.get("chapter_number") or target or 0)
+            title = self._compact_text(chapter_outline.get("title"), 80) or f"第{chapter}章剧情点"
+            goal = self._compact_text(chapter_outline.get("goal"), 220)
+            action = self._compact_text(chapter_outline.get("action"), 220)
+            payoff = self._compact_text(chapter_outline.get("payoff"), 220)
+            turn = self._compact_text(chapter_outline.get("turn"), 220)
+            hook = self._compact_text(chapter_outline.get("ending_hook"), 180)
             scene_cards.append(
                 {
-                    "id": f"outline-beat-{chapter or target}",
+                    "id": f"outline-beat-{chapter}",
                     "title": title,
-                    "purpose": purpose or "按大纲推进本章明确收益，不只铺线索。",
+                    "purpose": payoff or goal or action or turn or "按大纲推进本章明确结果。",
+                    "goal": goal,
+                    "action": action,
+                    "payoff": payoff,
+                    "turn": turn,
                     "ending_hook": hook,
-                    "chapter": chapter or target,
-                    "source": "outline_constraints.opening_arc.chapter_beats",
-                }
-            )
-        if not scene_cards and target_beat:
-            scene_cards.append(
-                {
-                    "id": f"outline-beat-{target}",
-                    "title": self._compact_text(target_beat.get("title"), 80) or f"第{target}章剧情点",
-                    "purpose": self._compact_text(target_beat.get("required_payoff") or target_beat.get("payoff"), 220)
-                    or "按本章大纲完成可见推进。",
-                    "ending_hook": self._compact_text(target_beat.get("ending_hook"), 180),
-                    "chapter": target,
-                    "source": "outline_constraints.opening_arc.chapter_beats",
+                    "chapter": chapter,
+                    "source": "outline_context.chapter",
                 }
             )
         hard_locks = [
@@ -2793,9 +2797,12 @@ class FileProjectStore:
         current_focus = state.get("current_focus") or project.get("current_focus")
         if current_focus:
             hard_locks.append(f"当前主线焦点：{self._compact_text(current_focus, 220)}")
-        if target_beat:
-            payoff = self._compact_text(target_beat.get("required_payoff") or target_beat.get("payoff"), 220)
-            hook = self._compact_text(target_beat.get("ending_hook") or target_beat.get("hook"), 180)
+        if chapter_outline:
+            goal = self._compact_text(chapter_outline.get("goal"), 220)
+            payoff = self._compact_text(chapter_outline.get("payoff"), 220)
+            hook = self._compact_text(chapter_outline.get("ending_hook"), 180)
+            if goal:
+                hard_locks.append(f"第{target}章目标：{goal}")
             if payoff:
                 hard_locks.append(f"第{target}章必须兑现：{payoff}")
             if hook:
@@ -2813,6 +2820,12 @@ class FileProjectStore:
             purpose: skill_pack_prompt_context(enabled_skill_ids, purpose=purpose, max_chars_per_pack=2600)
             for purpose in ("writer", "dialogue", "style", "genre", "continuity", "reviewer")
         }
+        packet_project = dict(project)
+        if isinstance(project.get("world_blueprint"), dict):
+            packet_blueprint = dict(world_blueprint)
+            packet_blueprint.pop("current_arc", None)
+            packet_blueprint.pop("opening_arc", None)
+            packet_project["world_blueprint"] = packet_blueprint
         return {
             "schema_version": "file-writing-packet/v1",
             "root": str(self.root),
@@ -2823,6 +2836,7 @@ class FileProjectStore:
             "target_chars": {"min": FILE_CHAPTER_MIN_CHARS, "max": FILE_CHAPTER_MAX_CHARS},
             "hard_locks": hard_locks,
             "scene_cards": scene_cards,
+            "outline_context": outline_context,
             "character_cards": characters,
             "title_contract": {
                 "style": "tomato_concrete_short_title",
@@ -2849,15 +2863,13 @@ class FileProjectStore:
                 "人物先行：本章要出场的新NPC必须先在角色卡里有候选卡；模型只能提出建议，不能直接改写既有角色主档。",
             ],
             "outline_constraints": {
-                "current_arc": world_blueprint.get("current_arc") or project.get("current_focus") or state.get("outline"),
-                "opening_arc": opening_arc,
                 "volume_plan": world_blueprint.get("volume_plan") or {},
                 "longform_framework": world_blueprint.get("longform_framework") or {},
                 "chapter_formula": world_blueprint.get("chapter_formula") or [],
                 "progression_rules": progression_rules,
                 "forbidden_breaks": forbidden_breaks,
             },
-            "project": project,
+            "project": packet_project,
             "state": {
                 "story_id": state.get("story_id"),
                 "genre": state.get("genre"),
@@ -2967,11 +2979,13 @@ class FileProjectStore:
             "instruction": self._compact_text(packet.get("instruction"), 260),
             "hard_locks": [self._compact_text(item, 160) for item in packet.get("hard_locks", [])[:10]],
             "scene_cards": self._slim_prompt_preview_value(packet.get("scene_cards", [])[:6]),
+            "outline_context": self._slim_prompt_preview_value(packet.get("outline_context")),
             "title_contract": self._slim_prompt_preview_value(packet.get("title_contract")),
             "style_rules": [self._compact_text(item, 180) for item in packet.get("style_rules", [])[:6]],
             "outline_constraints": {
-                "current_arc": self._compact_text(outline_constraints.get("current_arc"), 260),
-                "opening_arc": self._slim_prompt_preview_value(outline_constraints.get("opening_arc")),
+                "volume_plan": self._slim_prompt_preview_value(outline_constraints.get("volume_plan")),
+                "longform_framework": self._slim_prompt_preview_value(outline_constraints.get("longform_framework")),
+                "chapter_formula": self._slim_prompt_preview_value(outline_constraints.get("chapter_formula", [])[:8]),
                 "progression_rules": self._slim_prompt_preview_value(outline_constraints.get("progression_rules", [])[:6]),
                 "forbidden_breaks": self._slim_prompt_preview_value(outline_constraints.get("forbidden_breaks", [])[:8]),
             },
@@ -3050,7 +3064,14 @@ class FileProjectStore:
         except FileNotFoundError:
             chapter = {}
 
-        story = StoryState.model_validate(self._state_before_chapter(target))
+        state_before_chapter = self._state_before_chapter(target)
+        story_payload = dict(state_before_chapter)
+        story_payload["outline_context"] = self._story_state_payload_for_direction(
+            state_before_chapter,
+            project,
+            target,
+        )["outline_context"]
+        story = StoryState.model_validate(story_payload)
         orchestrator = StoryOrchestrator()
         plan = self._prompt_plan_from_chapter(chapter)
         body = str(chapter.get("body") or "")

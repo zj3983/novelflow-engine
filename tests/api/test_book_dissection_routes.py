@@ -418,43 +418,151 @@ def test_file_project_outline_routes_keep_unknown_project_404(tmp_path: Path, mo
     assert put_response.json()["detail"] == "file_project_not_found"
 
 
-def test_file_project_writing_packet_uses_file_outline_and_character_cards(tmp_path: Path, monkeypatch):
+def test_file_project_writing_packet_scopes_saved_outline_to_target_chapter(tmp_path: Path, monkeypatch):
     export_root = tmp_path / "exported-projects"
     project_root = export_root / "packet-fixture"
     monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
     _write_json(project_root / ".story-system" / "MASTER_SETTING.json", {"project": {"title": "Packet Fixture"}})
-    _write_json(project_root / ".webnovel" / "state.json", {"story_id": "s-file", "current_chapter": 4, "world_facts": []})
+    _write_json(
+        project_root / ".webnovel" / "state.json",
+        {
+            "story_id": "s-file",
+            "outline": "旧的一句话梗概",
+            "genre": "网游",
+            "style": "白描",
+            "current_chapter": 11,
+            "world_facts": [],
+        },
+    )
     _write_json(
         project_root / ".webnovel" / "project.json",
         {
             "project_id": "packet-fixture",
             "title": "Packet Fixture",
-            "current_focus": "第5章确认白河仓库收购规则，收购方开始追问材料来源。",
+            "current_focus": "第12章确认白河仓库收购规则，收购方开始追问材料来源。",
             "world_blueprint": {
-                "current_arc": "新手村交易线",
+                "current_arc": "LEGACY-ARC-MUST-NOT-LEAK",
                 "opening_arc": {
                     "chapter_beats": [
                         {
-                            "chapter": 5,
-                            "title": "担保名单",
+                            "chapter": 12,
+                            "title": "LEGACY-CHAPTER-12",
                             "required_payoff": "确认白河仓库收购规则",
                             "ending_hook": "收购方追问材料来源",
-                        }
+                        },
+                        {"chapter": 13, "title": "LEGACY-CHAPTER-13-LEAK"},
                     ]
                 },
+                "progression_rules": ["PROGRESSION-RULE"],
+                "forbidden_breaks": ["FORBIDDEN-BREAK"],
+                "volume_plan": {"volume": "VOLUME-PLAN"},
+                "longform_framework": {"framework": "LONGFORM-FRAMEWORK"},
+                "chapter_formula": ["CHAPTER-FORMULA"],
             },
         },
     )
+    _write_json(
+        project_root / ".webnovel" / "outline.json",
+        {
+            "schema_version": "project-outline/v1",
+            "overall": {"story": "总纲内容"},
+            "arcs": [
+                {
+                    "id": "phase-2",
+                    "title": "仓库交易阶段",
+                    "start_chapter": 11,
+                    "end_chapter": 20,
+                    "goal": "本阶段目标：建立仓库交易线",
+                },
+                {
+                    "id": "other-phase",
+                    "title": "OTHER-PHASE-LEAK",
+                    "start_chapter": 21,
+                    "end_chapter": 30,
+                    "goal": "OTHER-PHASE-GOAL-LEAK",
+                },
+            ],
+            "chapters": [
+                {"chapter_number": 3, "title": "CHAPTER-3-LEAK"},
+                {
+                    "chapter_number": 12,
+                    "title": "担保名单",
+                    "goal": "本章目标：确认收购规则",
+                    "action": "夜烬核对担保名单",
+                    "turn": "收购方认出旧印章",
+                    "payoff": "拿到白河仓库报价",
+                    "ending_hook": "收购方追问材料来源",
+                },
+                {"chapter_number": 13, "title": "CHAPTER-13-LEAK", "goal": "CHAPTER-13-GOAL-LEAK"},
+            ],
+        },
+    )
+    _write_json(
+        project_root / ".story-system" / "chapters" / "0011.json",
+        {"chapter_number": 11, "chapter_title": "上一章", "updated_story": {}},
+    )
 
-    response = client.get("/file-projects/file:packet-fixture/writing-packet?chapter_number=5")
+    response = client.get("/file-projects/file:packet-fixture/writing-packet?chapter_number=12")
 
     assert response.status_code == 200
     packet = response.json()
     assert packet["schema_version"] == "file-writing-packet/v1"
-    assert packet["target_chapter"] == 5
-    assert packet["outline_constraints"]["opening_arc"]["chapter_beats"][0]["title"] == "担保名单"
+    assert packet["target_chapter"] == 12
+    assert set(packet["outline_context"]) == {"overall", "active_arc", "chapter"}
+    assert packet["outline_context"]["overall"]["story"] == "总纲内容"
+    assert packet["outline_context"]["active_arc"]["id"] == "phase-2"
+    assert packet["outline_context"]["chapter"]["chapter_number"] == 12
+    scoped_text = json.dumps(packet["outline_context"], ensure_ascii=False)
+    assert "arcs" not in packet["outline_context"]
+    assert "chapters" not in packet["outline_context"]
+    assert "OTHER-PHASE-LEAK" not in scoped_text
+    assert "CHAPTER-13-LEAK" not in scoped_text
+    packet_text = json.dumps(packet, ensure_ascii=False)
+    assert "opening_arc" not in packet_text
+    assert "LEGACY-CHAPTER-13-LEAK" not in packet_text
+    assert "OTHER-PHASE-LEAK" not in packet_text
+    assert "CHAPTER-13-LEAK" not in packet_text
+    assert packet["scene_cards"][0]["title"] == "担保名单"
+    assert packet["scene_cards"][0]["goal"] == "本章目标：确认收购规则"
+    assert packet["scene_cards"][0]["action"] == "夜烬核对担保名单"
+    assert packet["scene_cards"][0]["turn"] == "收购方认出旧印章"
+    assert packet["scene_cards"][0]["payoff"] == "拿到白河仓库报价"
+    assert packet["scene_cards"][0]["ending_hook"] == "收购方追问材料来源"
+    assert set(packet["outline_constraints"]) == {
+        "volume_plan",
+        "longform_framework",
+        "chapter_formula",
+        "progression_rules",
+        "forbidden_breaks",
+    }
+    hard_locks = "\n".join(packet["hard_locks"])
+    assert "本章目标：确认收购规则" in hard_locks
+    assert "拿到白河仓库报价" in hard_locks
+    assert "收购方追问材料来源" in hard_locks
+    assert "夜烬核对担保名单" not in hard_locks
+    assert "收购方认出旧印章" not in hard_locks
     buyer = next(character for character in packet["state"]["characters"] if character["name"] == "白河仓库收购方")
     assert buyer["lifecycle_state"] == "proposed"
+
+    preview_response = client.get("/file-projects/file:packet-fixture/prompt-preview?chapter_number=12")
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    packet_module = next(module for module in preview["modules"] if module["key"] == "packet_context")
+    preview_packet = json.loads(packet_module["content"])
+    assert set(preview_packet["outline_context"]) == {"overall", "active_arc", "chapter"}
+    assert preview_packet["outline_context"]["overall"]["story"] == "总纲内容"
+    assert preview_packet["outline_context"]["active_arc"]["id"] == "phase-2"
+    assert preview_packet["outline_context"]["chapter"]["chapter_number"] == 12
+    preview_context_text = json.dumps(preview_packet["outline_context"], ensure_ascii=False)
+    assert "OTHER-PHASE-LEAK" not in preview_context_text
+    assert "CHAPTER-13-LEAK" not in preview_context_text
+    assert "current_arc" not in preview_packet["outline_constraints"]
+    assert "opening_arc" not in preview_packet["outline_constraints"]
+    director_prompt = next(item["content"] for item in preview["prompts"] if item["key"] == "director_plan")
+    assert "本阶段目标：建立仓库交易线" in director_prompt
+    assert "本章目标：确认收购规则" in director_prompt
+    assert "OTHER-PHASE-LEAK" not in director_prompt
+    assert "CHAPTER-13-LEAK" not in director_prompt
 
 
 def test_file_project_book_dissection_returns_concrete_progress_without_filler(tmp_path: Path, monkeypatch):
