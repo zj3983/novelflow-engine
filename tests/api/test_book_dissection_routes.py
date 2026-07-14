@@ -146,6 +146,199 @@ def test_file_project_update_persists_outline_for_file_project(tmp_path: Path, m
     assert state["current_focus"] == "第5章写白河仓库收购方追问材料来源。"
 
 
+def test_file_project_outline_get_projects_legacy_data_without_writing(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "outline-legacy"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    master_path = project_root / ".story-system" / "MASTER_SETTING.json"
+    state_path = project_root / ".webnovel" / "state.json"
+    project_path = project_root / ".webnovel" / "project.json"
+    outline_path = project_root / ".webnovel" / "outline.json"
+    _write_json(master_path, {"project": {"title": "Outline Legacy"}})
+    _write_json(state_path, {"story_id": "s-outline-legacy", "current_chapter": 2})
+    _write_json(
+        project_path,
+        {
+            "project_id": "outline-legacy",
+            "title": "Outline Legacy",
+            "seed_outline": "A courier investigates a vanished caravan.",
+            "world_blueprint": {
+                "current_arc": "Trace the caravan through the border town.",
+                "opening_arc": {
+                    "chapter_beats": [
+                        {
+                            "chapter": 3,
+                            "title": "The Empty Stable",
+                            "required_payoff": "Find the caravan seal.",
+                            "ending_hook": "The seal is still warm.",
+                        }
+                    ]
+                },
+            },
+        },
+    )
+    original_files = {
+        path: path.read_bytes()
+        for path in (master_path, project_path, state_path)
+    }
+
+    response = client.get("/file-projects/file:outline-legacy/outline")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "legacy"
+    assert payload["schema_version"] == "project-outline/v1"
+    assert payload["overall"]["story"] == "A courier investigates a vanished caravan."
+    assert payload["arcs"][0]["goal"] == "Trace the caravan through the border town."
+    assert payload["chapters"] == [
+        {
+            "chapter_number": 3,
+            "title": "The Empty Stable",
+            "goal": "",
+            "obstacle": "",
+            "action": "",
+            "turn": "",
+            "payoff": "Find the caravan seal.",
+            "ending_hook": "The seal is still warm.",
+        }
+    ]
+    assert not outline_path.exists()
+    assert {path: path.read_bytes() for path in original_files} == original_files
+
+
+def test_file_project_outline_put_persists_canonical_data_and_gets_it_back(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "outline-saved"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(project_root / ".story-system" / "MASTER_SETTING.json", {"project": {"title": "Outline Saved"}})
+    _write_json(project_root / ".webnovel" / "state.json", {"story_id": "s-outline-saved"})
+    _write_json(project_root / ".webnovel" / "project.json", {"project_id": "outline-saved"})
+    outline_path = project_root / ".webnovel" / "outline.json"
+    request_payload = {
+        "overall": {
+            "story": "A courier investigates a vanished caravan.",
+            "protagonist_goal": "Bring the missing drivers home.",
+        },
+        "arcs": [
+            {
+                "id": "border-town",
+                "title": "Border Town",
+                "start_chapter": 1,
+                "end_chapter": 6,
+                "goal": "Identify the caravan's attacker.",
+            }
+        ],
+        "chapters": [
+            {
+                "chapter_number": 2,
+                "title": "The Empty Stable",
+                "goal": "Search the stable.",
+                "ending_hook": "A fresh hoofprint points north.",
+            }
+        ],
+    }
+
+    saved = client.put("/file-projects/file:outline-saved/outline", json=request_payload)
+
+    assert saved.status_code == 200
+    saved_payload = saved.json()
+    assert saved_payload["source"] == "saved"
+    assert saved_payload["overall"]["story"] == request_payload["overall"]["story"]
+    assert saved_payload["arcs"][0]["id"] == "border-town"
+    assert saved_payload["chapters"][0]["chapter_number"] == 2
+    persisted = json.loads(outline_path.read_text(encoding="utf-8"))
+    assert "source" not in persisted
+    assert persisted == {key: value for key, value in saved_payload.items() if key != "source"}
+
+    loaded = client.get("/file-projects/file:outline-saved/outline")
+
+    assert loaded.status_code == 200
+    assert loaded.json() == saved_payload
+
+
+def test_file_project_outline_put_rejects_duplicate_chapter_without_overwriting(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "outline-duplicate"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(project_root / ".story-system" / "MASTER_SETTING.json", {"project": {"title": "Outline Duplicate"}})
+    _write_json(project_root / ".webnovel" / "state.json", {"story_id": "s-outline-duplicate"})
+    _write_json(project_root / ".webnovel" / "project.json", {"project_id": "outline-duplicate"})
+    outline_path = project_root / ".webnovel" / "outline.json"
+    _write_json(
+        outline_path,
+        {
+            "schema_version": "project-outline/v1",
+            "overall": {"story": "The valid saved outline."},
+            "arcs": [],
+            "chapters": [{"chapter_number": 1, "goal": "Begin the search."}],
+        },
+    )
+    original_bytes = outline_path.read_bytes()
+
+    response = client.put(
+        "/file-projects/file:outline-duplicate/outline",
+        json={
+            "overall": {"story": "This update is invalid."},
+            "chapters": [
+                {"chapter_number": 2, "goal": "Search the stable."},
+                {"chapter_number": 2, "goal": "Search it again."},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "duplicate_chapter_outline" in response.json()["detail"]
+    assert outline_path.read_bytes() == original_bytes
+
+
+def test_file_project_outline_get_rejects_corrupt_file_without_rewriting(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "outline-corrupt"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(project_root / ".story-system" / "MASTER_SETTING.json", {"project": {"title": "Outline Corrupt"}})
+    _write_json(project_root / ".webnovel" / "state.json", {"story_id": "s-outline-corrupt"})
+    _write_json(project_root / ".webnovel" / "project.json", {"project_id": "outline-corrupt"})
+    outline_path = project_root / ".webnovel" / "outline.json"
+    corrupt_bytes = b'{"schema_version":"project-outline/v1","chapters":['
+    outline_path.write_bytes(corrupt_bytes)
+
+    response = client.get("/file-projects/file:outline-corrupt/outline")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]
+    assert outline_path.read_bytes() == corrupt_bytes
+
+
+def test_file_project_outline_get_rejects_unsupported_schema_without_rewriting(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "outline-unsupported"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(project_root / ".story-system" / "MASTER_SETTING.json", {"project": {"title": "Outline Unsupported"}})
+    _write_json(project_root / ".webnovel" / "state.json", {"story_id": "s-outline-unsupported"})
+    _write_json(project_root / ".webnovel" / "project.json", {"project_id": "outline-unsupported"})
+    outline_path = project_root / ".webnovel" / "outline.json"
+    _write_json(outline_path, {"schema_version": "project-outline/v2"})
+    original_bytes = outline_path.read_bytes()
+
+    response = client.get("/file-projects/file:outline-unsupported/outline")
+
+    assert response.status_code == 422
+    assert "project-outline/v1" in response.json()["detail"]
+    assert outline_path.read_bytes() == original_bytes
+
+
+def test_file_project_outline_routes_keep_unknown_project_404(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path / "exported-projects"))
+
+    get_response = client.get("/file-projects/file:missing-outline/outline")
+    put_response = client.put("/file-projects/file:missing-outline/outline", json={})
+
+    assert get_response.status_code == 404
+    assert get_response.json()["detail"] == "file_project_not_found"
+    assert put_response.status_code == 404
+    assert put_response.json()["detail"] == "file_project_not_found"
+
+
 def test_file_project_writing_packet_uses_file_outline_and_character_cards(tmp_path: Path, monkeypatch):
     export_root = tmp_path / "exported-projects"
     project_root = export_root / "packet-fixture"

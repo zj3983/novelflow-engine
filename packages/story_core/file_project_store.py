@@ -14,6 +14,7 @@ from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.prose_style_review import review_prose_style
+from packages.story_core.project_outline import normalize_project_outline, outline_from_legacy_project
 from packages.story_core.reader_feel_review import review_reader_feel
 from packages.story_core.quality import validate_bundle
 from packages.story_core.reader_agent import review_reader_agent
@@ -1860,6 +1861,17 @@ class FileProjectStore:
 
     def project(self) -> dict[str, Any]:
         return self._read_json(self.webnovel_dir / "project.json", {}) or self.master_setting().get("project", {}) or {}
+
+    def project_outline(self) -> dict[str, Any]:
+        path = self.webnovel_dir / "outline.json"
+        if path.exists():
+            return {**normalize_project_outline(self._read_json(path, {})), "source": "saved"}
+        return {**outline_from_legacy_project(self.project()), "source": "legacy"}
+
+    def update_project_outline(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = normalize_project_outline(payload)
+        self._write_json(self.webnovel_dir / "outline.json", normalized)
+        return {**normalized, "source": "saved"}
 
     def update_project(self, patch: dict[str, Any]) -> dict[str, Any]:
         project = dict(self.project())

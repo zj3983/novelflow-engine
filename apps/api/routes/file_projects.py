@@ -382,6 +382,22 @@ def init_file_project_routes() -> APIRouter:
     def get_file_project(project_id: str) -> dict[str, Any]:
         return _project_payload(_store_for(project_id))
 
+    @router.get("/file-projects/{project_id}/outline")
+    def get_file_project_outline(project_id: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.project_outline()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.put("/file-projects/{project_id}/outline")
+    def update_file_project_outline(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.update_project_outline(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @router.get("/file-projects/{project_id}/characters")
     def get_file_project_characters(project_id: str) -> list[dict[str, Any]]:
         store = _store_for(project_id)
