@@ -774,6 +774,30 @@ export type NewFileProjectResponse = ProjectResponse & {
   next_path: string;
 };
 
+export type OpeningDirection = {
+  id: string;
+  title: string;
+  hook: string;
+  protagonist_goal: string;
+  main_conflict: string;
+  growth_path: string;
+  opening_promise: string;
+};
+
+export type OpeningSetup = {
+  brief: {
+    schema_version: "opening-brief/v1";
+    mode: "inspiration";
+    novel_type_id: string;
+    idea: string;
+    working_title: string;
+  };
+  directions: OpeningDirection[];
+  selected_id: string;
+  pipeline_stage: ProjectPipelineStage;
+  next_path: string;
+};
+
 export type ProjectOutlineOverall = {
   story: string;
   protagonist_goal: string;
@@ -2371,6 +2395,27 @@ export async function createFileProject(payload: NewFileProjectRequest): Promise
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   })) as NewFileProjectResponse;
+}
+
+export async function fetchOpeningSetup(projectId: string): Promise<OpeningSetup> {
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/opening-directions`, {
+    method: "GET",
+  })) as OpeningSetup;
+}
+
+export async function generateOpeningDirections(projectId: string): Promise<OpeningSetup> {
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/opening-directions`,
+    { method: "POST" },
+    180000,
+  )) as OpeningSetup;
+}
+
+export async function selectOpeningDirection(projectId: string, directionId: string): Promise<OpeningSetup> {
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/opening-directions/${encodeURIComponent(directionId)}/select`,
+    { method: "POST" },
+  )) as OpeningSetup;
 }
 
 function mockListStories(): StorySummary[] {

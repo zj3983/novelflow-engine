@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 
 const FIXTURE_PATH = path.resolve(__dirname, "../../../tests/fixtures/book-import-sample");
 
@@ -127,6 +127,100 @@ async function routeProjectLists(page: Page, projects: unknown[]) {
   });
   await page.route("**/file-projects", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+}
+
+const OPENING_PROJECT_ID = "file:opening-setup";
+const OPENING_PROJECT_PATH = `/projects/${encodeURIComponent(OPENING_PROJECT_ID)}`;
+
+const openingBrief = {
+  schema_version: "opening-brief/v1",
+  mode: "inspiration",
+  novel_type_id: "urban",
+  idea: "失业律师替陌生人追一笔旧账",
+  working_title: "",
+};
+
+const openingDirections = [
+  {
+    id: "direction-1",
+    title: "雨夜遗嘱",
+    hook: "陌生人的遗嘱在雨夜生效。",
+    protagonist_goal: "查清旧账的真正债主。",
+    main_conflict: "律师必须对抗伪造证据的前同事。",
+    growth_path: "从自保走向承担真相的代价。",
+    opening_promise: "每笔旧账都会牵出一段被改写的人生。",
+  },
+  {
+    id: "direction-2",
+    title: "夜班追债",
+    hook: "午夜委托人只留下明天才会出现的欠条。",
+    protagonist_goal: "在欠条兑现前找到失踪的委托人。",
+    main_conflict: "旧律所和神秘债主同时封锁线索。",
+    growth_path: "从不再相信任何人到重新选择同盟。",
+    opening_promise: "追债过程不断反转债务人与受害者的身份。",
+  },
+  {
+    id: "direction-3",
+    title: "无名账本",
+    hook: "一本没有姓名的账本记录着城市里尚未发生的交易。",
+    protagonist_goal: "阻止下一笔致命交易。",
+    main_conflict: "主角每改动一笔账，现实就会索取新的代价。",
+    growth_path: "从利用规则翻身到主动打破规则。",
+    opening_promise: "账本的每一页都将制造一次现实选择题。",
+  },
+];
+
+function openingSetupPayload(
+  {
+    directions = [],
+    selectedId = "",
+    nextPath = `${OPENING_PROJECT_PATH}/setup`,
+  }: { directions?: typeof openingDirections; selectedId?: string; nextPath?: string } = {},
+) {
+  return {
+    brief: openingBrief,
+    directions,
+    selected_id: selectedId,
+    pipeline_stage: selectedId ? "outlining" : directions.length > 0 ? "direction_ready" : "idea_pending",
+    next_path: nextPath,
+  };
+}
+
+async function routeOpeningProject(page: Page, handleOpeningRequest: (route: Route) => Promise<void>) {
+  await page.route("**/file-projects/**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.includes("/opening-directions")) {
+      await handleOpeningRequest(route);
+      return;
+    }
+    if (request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          project_id: OPENING_PROJECT_ID,
+          title: "未命名作品",
+          source_path: "",
+          seed_outline: openingBrief.idea,
+          world_summary: "",
+          current_focus: "",
+          author_constraints: [],
+          world_blueprint: {},
+          character_profiles: [],
+          relationship_graph: [],
+          enabled_skill_ids: [],
+          status: "draft",
+          pipeline_stage: "idea_pending",
+          active_story_id: "",
+          branches: [],
+          storage_source: "file",
+        }),
+      });
+      return;
+    }
+    await route.abort();
   });
 }
 
@@ -298,6 +392,156 @@ test("projects page creates an inspiration novel and preserves input after failu
     { mode: "inspiration", title: "", novel_type_id: "urban", idea: "失业律师替陌生人追一笔旧账" },
     { mode: "inspiration", title: "", novel_type_id: "urban", idea: "失业律师替陌生人追一笔旧账" },
   ]);
+});
+
+test("opening setup GET keeps the inspiration visible without auto-generation or mobile overflow", async ({ page }) => {
+  const openingMethods: string[] = [];
+  await routeOpeningProject(page, async (route) => {
+    openingMethods.push(route.request().method());
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(openingSetupPayload()) });
+  });
+  await page.setViewportSize({ width: 375, height: 667 });
+
+  await page.goto(`${OPENING_PROJECT_PATH}/setup`);
+
+  await expect(page.getByRole("heading", { name: "选择开篇方向" })).toBeVisible();
+  await expect(page.getByText(openingBrief.idea)).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成故事方向" })).toBeVisible();
+  await expect(page.getByRole("radio")).toHaveCount(0);
+  expect(openingMethods.length).toBeGreaterThan(0);
+  expect(openingMethods.every((method) => method === "GET")).toBe(true);
+  const viewport = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth);
+});
+
+test("opening setup generates three plain radio sections and selects the second direction once", async ({ page }) => {
+  let generateRequests = 0;
+  const selectionUrls: string[] = [];
+  await routeOpeningProject(page, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(openingSetupPayload()) });
+      return;
+    }
+    if (new URL(request.url()).pathname.endsWith("/select")) {
+      selectionUrls.push(request.url());
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          openingSetupPayload({
+            directions: openingDirections,
+            selectedId: "direction-2",
+            nextPath: `${OPENING_PROJECT_PATH}/outline`,
+          }),
+        ),
+      });
+      return;
+    }
+    generateRequests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(openingSetupPayload({ directions: openingDirections })),
+    });
+  });
+
+  await page.goto(`${OPENING_PROJECT_PATH}/setup`);
+  const generateButton = page.getByRole("button", { name: /生成/ });
+  await generateButton.click();
+  await expect(generateButton).toBeDisabled();
+  await generateButton.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+
+  const sections = page.locator("section.ws-opening-direction");
+  await expect(sections).toHaveCount(3);
+  await expect(page.getByRole("radio")).toHaveCount(3);
+  await expect(page.locator(".ws-opening-direction.ws-card")).toHaveCount(0);
+  expect(generateRequests).toBe(1);
+  for (const [index, direction] of openingDirections.entries()) {
+    const section = sections.nth(index);
+    await expect(section).toContainText(direction.title);
+    await expect(section).toContainText(`开篇钩子${direction.hook}`);
+    await expect(section).toContainText(`主角目标${direction.protagonist_goal}`);
+    await expect(section).toContainText(`主线冲突${direction.main_conflict}`);
+    await expect(section).toContainText(`成长路径${direction.growth_path}`);
+    await expect(section).toContainText(`开篇承诺${direction.opening_promise}`);
+  }
+
+  const adoptButton = page.getByRole("button", { name: /采用/ });
+  await expect(adoptButton).toBeDisabled();
+  await page.getByRole("radio", { name: /夜班追债/ }).check();
+  await expect(adoptButton).toBeEnabled();
+  await adoptButton.click();
+  await expect(adoptButton).toBeDisabled();
+  await adoptButton.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+
+  await expect(page).toHaveURL(`${OPENING_PROJECT_PATH}/outline`);
+  expect(selectionUrls).toHaveLength(1);
+  expect(decodeURIComponent(new URL(selectionUrls[0]).pathname)).toContain(
+    `/file-projects/${OPENING_PROJECT_ID}/opening-directions/direction-2/select`,
+  );
+});
+
+test("opening setup preserves the brief and offers recovery after a 502 generation error", async ({ page }) => {
+  await routeOpeningProject(page, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(openingSetupPayload()) });
+      return;
+    }
+    await route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "opening_direction_generation_failed" }),
+    });
+  });
+
+  await page.goto(`${OPENING_PROJECT_PATH}/setup`);
+  await page.getByRole("button", { name: "生成故事方向" }).click();
+
+  await expect(page.getByText(openingBrief.idea)).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "故事方向暂时生成失败" })).toHaveText(
+    "故事方向暂时生成失败，请稍后重新试一次。",
+  );
+  await expect(page.getByRole("button", { name: "重新生成" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "手动填写总纲" })).toHaveAttribute(
+    "href",
+    `${OPENING_PROJECT_PATH}/outline`,
+  );
+});
+
+test("opening setup immediately replaces the route when GET is already selected", async ({ page }) => {
+  const openingMethods: string[] = [];
+  await routeOpeningProject(page, async (route) => {
+    openingMethods.push(route.request().method());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        openingSetupPayload({
+          directions: openingDirections,
+          selectedId: "direction-2",
+          nextPath: `${OPENING_PROJECT_PATH}/outline`,
+        }),
+      ),
+    });
+  });
+
+  await page.goto(`${OPENING_PROJECT_PATH}/setup`);
+
+  await expect(page).toHaveURL(`${OPENING_PROJECT_PATH}/outline`);
+  expect(openingMethods.length).toBeGreaterThan(0);
+  expect(openingMethods.every((method) => method === "GET")).toBe(true);
 });
 
 test("homepage foregrounds story status and history before import", async ({ page }) => {
