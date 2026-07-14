@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { FormEvent, useMemo, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useMemo, useRef, useState } from "react";
 
 import { PageHeader } from "../../../components/ws/PageHeader";
 import { createFileProject } from "../../../lib/api";
@@ -11,6 +11,8 @@ type CreationMode = "inspiration" | "blank";
 
 export default function NewProjectPage() {
   const router = useRouter();
+  const inspirationTabRef = useRef<HTMLButtonElement>(null);
+  const blankTabRef = useRef<HTMLButtonElement>(null);
   const [mode, setMode] = useState<CreationMode>("inspiration");
   const [title, setTitle] = useState("");
   const [novelTypeId, setNovelTypeId] = useState(DEFAULT_NOVEL_TYPE_ID);
@@ -26,6 +28,24 @@ export default function NewProjectPage() {
   function selectMode(nextMode: CreationMode) {
     setMode(nextMode);
     setError("");
+  }
+
+  function focusMode(nextMode: CreationMode) {
+    selectMode(nextMode);
+    const nextTab = nextMode === "inspiration" ? inspirationTabRef : blankTabRef;
+    nextTab.current?.focus();
+  }
+
+  function handleModeKeyDown(event: KeyboardEvent<HTMLButtonElement>, currentMode: CreationMode) {
+    let nextMode: CreationMode | null = null;
+    if (event.key === "Home") nextMode = "inspiration";
+    if (event.key === "End") nextMode = "blank";
+    if (event.key === "ArrowRight") nextMode = currentMode === "inspiration" ? "blank" : "inspiration";
+    if (event.key === "ArrowLeft") nextMode = currentMode === "inspiration" ? "blank" : "inspiration";
+    if (!nextMode) return;
+
+    event.preventDefault();
+    focusMode(nextMode);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -59,26 +79,32 @@ export default function NewProjectPage() {
       />
 
       <section className="ws-project-create" aria-label="新建小说表单">
-        <div className="ws-project-create__tabs" role="tablist" aria-label="创建方式">
+        <div className="ws-project-create__tabs" role="tablist" aria-label="创建方式" aria-orientation="horizontal">
           <button
+            ref={inspirationTabRef}
             id="creation-mode-inspiration"
             type="button"
             role="tab"
             aria-selected={mode === "inspiration"}
             aria-controls="creation-form"
+            tabIndex={mode === "inspiration" ? 0 : -1}
             className={`ws-project-create__tab${mode === "inspiration" ? " is-active" : ""}`}
             onClick={() => selectMode("inspiration")}
+            onKeyDown={(event) => handleModeKeyDown(event, "inspiration")}
           >
             从灵感开书
           </button>
           <button
+            ref={blankTabRef}
             id="creation-mode-blank"
             type="button"
             role="tab"
             aria-selected={mode === "blank"}
             aria-controls="creation-form"
+            tabIndex={mode === "blank" ? 0 : -1}
             className={`ws-project-create__tab${mode === "blank" ? " is-active" : ""}`}
             onClick={() => selectMode("blank")}
+            onKeyDown={(event) => handleModeKeyDown(event, "blank")}
           >
             建立空白小说
           </button>

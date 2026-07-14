@@ -159,6 +159,59 @@ test("projects page creates entry in the empty state", async ({ page }) => {
   await expect(page.getByRole("link", { name: "新建小说" })).toHaveCount(2);
 });
 
+test("projects page creates tabs with complete keyboard navigation", async ({ page }) => {
+  await page.goto("/projects/new");
+
+  const inspirationTab = page.getByRole("tab", { name: "从灵感开书" });
+  const blankTab = page.getByRole("tab", { name: "建立空白小说" });
+  const tabpanel = page.getByRole("tabpanel");
+
+  await expect(inspirationTab).toHaveAttribute("tabindex", "0");
+  await expect(blankTab).toHaveAttribute("tabindex", "-1");
+  await expect(inspirationTab).toHaveAttribute("aria-controls", "creation-form");
+  await expect(blankTab).toHaveAttribute("aria-controls", "creation-form");
+  await expect(tabpanel).toHaveAttribute("aria-labelledby", "creation-mode-inspiration");
+
+  await inspirationTab.focus();
+  await inspirationTab.press("ArrowRight");
+  await expect(blankTab).toBeFocused();
+  await expect(blankTab).toHaveAttribute("aria-selected", "true");
+  await expect(blankTab).toHaveAttribute("tabindex", "0");
+  await expect(inspirationTab).toHaveAttribute("tabindex", "-1");
+  await expect(tabpanel).toHaveAttribute("aria-labelledby", "creation-mode-blank");
+
+  await blankTab.press("ArrowRight");
+  await expect(inspirationTab).toBeFocused();
+  await inspirationTab.press("ArrowLeft");
+  await expect(blankTab).toBeFocused();
+  await blankTab.press("Home");
+  await expect(inspirationTab).toBeFocused();
+  await inspirationTab.press("End");
+  await expect(blankTab).toBeFocused();
+});
+
+test("projects page creates a single-column form without mobile overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.goto("/projects/new");
+
+  const layout = await page.locator(".ws-project-create__form").evaluate((form) => {
+    const bounds = form.getBoundingClientRect();
+    const root = document.documentElement;
+    return {
+      columns: getComputedStyle(form).gridTemplateColumns.trim().split(/\s+/),
+      clientWidth: root.clientWidth,
+      scrollWidth: root.scrollWidth,
+      formLeft: bounds.left,
+      formRight: bounds.right,
+    };
+  });
+
+  expect(layout.columns).toHaveLength(1);
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  expect(layout.formLeft).toBeGreaterThanOrEqual(0);
+  expect(layout.formRight).toBeLessThanOrEqual(layout.clientWidth);
+});
+
 test("projects page creates a blank file novel", async ({ page }) => {
   const requests: unknown[] = [];
   await page.route("**/file-projects", async (route) => {
