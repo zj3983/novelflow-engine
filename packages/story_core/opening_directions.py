@@ -90,9 +90,12 @@ class LLMOpeningDirectionGenerator:
         self._strategy_resolver = strategy_resolver
 
     def generate(self, brief: OpeningBrief) -> OpeningDirectionSet:
+        validated_brief = OpeningBrief.model_validate(brief)
+        genre = NOVEL_TYPE_CATALOG.get(validated_brief.novel_type_id)
+        if genre is None:
+            raise ValueError("invalid_novel_type")
+
         try:
-            validated_brief = OpeningBrief.model_validate(brief)
-            genre = NOVEL_TYPE_CATALOG[validated_brief.novel_type_id]
             runtime = self._runtime_resolver("director")
             strategy = self._strategy_resolver()
             if runtime.provider != "codexcli" and not runtime.api_key:

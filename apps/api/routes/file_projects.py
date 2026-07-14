@@ -402,7 +402,8 @@ def init_file_project_routes() -> APIRouter:
         try:
             return _store_for(project_id).generate_opening_directions(opening_direction_generator)
         except ValueError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            status_code = 502 if str(exc) == "opening_direction_generation_failed" else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     @router.post("/file-projects/{project_id}/opening-directions/{direction_id}/select")
     def select_opening_direction(project_id: str, direction_id: str) -> dict[str, Any]:

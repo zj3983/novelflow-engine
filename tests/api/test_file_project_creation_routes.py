@@ -9,6 +9,9 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from apps.api.routes import file_projects as file_project_routes
 from apps.api.routes import stories as story_routes
+from packages.story_core.models import AgentSettings
+from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
+from packages.story_core.runtime_config import OpenAIRuntimeSettings
 
 
 @pytest.fixture
@@ -300,6 +303,85 @@ def test_invalid_model_output_returns_502_and_preserves_previous_candidates(crea
     assert response.status_code == 502
     assert response.json()["detail"] == "opening_direction_generation_failed"
     assert (directions_path.read_bytes(), project_path.read_bytes()) == before
+
+
+@pytest.mark.parametrize("brief_problem", ["missing", "corrupt", "invalid_novel_type"])
+def test_invalid_local_opening_brief_returns_422_without_calling_model(
+    creation_api,
+    monkeypatch,
+    brief_problem,
+):
+    client, _, _ = creation_api
+    project, root = _create_inspiration_project(client)
+    brief_path = root / ".webnovel" / "opening_brief.json"
+    if brief_problem == "missing":
+        brief_path.unlink()
+    elif brief_problem == "corrupt":
+        brief_path.write_text("{not-json", encoding="utf-8")
+    else:
+        brief = json.loads(brief_path.read_text(encoding="utf-8"))
+        brief["novel_type_id"] = "unknown-type"
+        brief_path.write_text(json.dumps(brief), encoding="utf-8")
+
+    calls = {"runtime": 0, "post": 0}
+
+    def forbidden_runtime(name):
+        calls["runtime"] += 1
+        raise AssertionError("runtime must not be resolved for invalid local opening data")
+
+    def forbidden_post(*args, **kwargs):
+        calls["post"] += 1
+        raise AssertionError("model must not be called for invalid local opening data")
+
+    monkeypatch.setattr(
+        file_project_routes,
+        "opening_direction_generator",
+        LLMOpeningDirectionGenerator(
+            post_json=forbidden_post,
+            runtime_resolver=forbidden_runtime,
+            strategy_resolver=lambda: AgentSettings(director_model="unused-model"),
+        ),
+    )
+
+    response = client.post(f"/file-projects/{project['project_id']}/opening-directions")
+
+    assert response.status_code == 422
+    if brief_problem == "invalid_novel_type":
+        assert response.json()["detail"] == "invalid_novel_type"
+    assert calls == {"runtime": 0, "post": 0}
+
+
+@pytest.mark.parametrize("failure_kind", ["runtime", "http", "output"])
+def test_generation_failures_remain_502_with_stable_detail(creation_api, monkeypatch, failure_kind):
+    client, _, _ = creation_api
+    project, _ = _create_inspiration_project(client)
+    runtime = OpenAIRuntimeSettings(
+        provider="openai" if failure_kind == "runtime" else "codexcli",
+        api_key="" if failure_kind == "runtime" else "test-key",
+        codex_command="codex-test",
+    )
+
+    def fake_post(*args, **kwargs):
+        if failure_kind == "http":
+            raise OSError("model unavailable")
+        if failure_kind == "output":
+            return {"choices": [{"message": {"content": "not-json"}}]}
+        raise AssertionError("missing runtime must not call the model")
+
+    monkeypatch.setattr(
+        file_project_routes,
+        "opening_direction_generator",
+        LLMOpeningDirectionGenerator(
+            post_json=fake_post,
+            runtime_resolver=lambda name: runtime,
+            strategy_resolver=lambda: AgentSettings(director_model="direction-test-model"),
+        ),
+    )
+
+    response = client.post(f"/file-projects/{project['project_id']}/opening-directions")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "opening_direction_generation_failed"
 
 
 def test_select_unknown_and_repeated_direction_returns_404_then_409(creation_api, monkeypatch):
