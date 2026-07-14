@@ -70,11 +70,16 @@ export default function ProjectsListPage() {
         title="我的作品"
         subtitle="选择作品进入工作台。"
         actions={
-          lastProject ? (
-            <Link href={projectHref(lastProject.project_id)} className="ws-btn ws-btn--primary">
-              继续上次作品
+          <div className="ws-action-row ws-action-row--flush">
+            {lastProject ? (
+              <Link href={projectHref(lastProject.project_id)} className="ws-btn">
+                继续上次作品
+              </Link>
+            ) : null}
+            <Link href="/projects/new" className="ws-btn ws-btn--primary">
+              新建小说
             </Link>
-          ) : null
+          </div>
         }
       />
 
@@ -88,6 +93,9 @@ export default function ProjectsListPage() {
         <div className="ws-empty">
           <p className="ws-empty__title">还没有作品</p>
           <p className="ws-empty__hint">作品创建后会出现在这里。</p>
+          <Link href="/projects/new" className="ws-btn">
+            新建小说
+          </Link>
         </div>
       ) : (
         <table className="ws-table">

@@ -702,6 +702,10 @@ export type CreateProjectRequest = {
 };
 
 export type ProjectPipelineStage =
+  | "draft"
+  | "idea_pending"
+  | "direction_ready"
+  | "outlining"
   | "imported"
   | "world_ready"
   | "environment_ready"
@@ -757,6 +761,17 @@ export type ProjectResponse = {
   active_story_id: string;
   branches: StorySummary[];
   storage_source?: "sqlite" | "file";
+};
+
+export type NewFileProjectRequest = {
+  mode: "blank" | "inspiration";
+  title: string;
+  novel_type_id: string;
+  idea: string;
+};
+
+export type NewFileProjectResponse = ProjectResponse & {
+  next_path: string;
 };
 
 export type ProjectOutlineOverall = {
@@ -2348,6 +2363,14 @@ export async function createProject(payload: CreateProjectRequest): Promise<Proj
   } catch {
     return mockCreateProject(payload);
   }
+}
+
+export async function createFileProject(payload: NewFileProjectRequest): Promise<NewFileProjectResponse> {
+  return (await tryFetchJson(`${apiBase()}/file-projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  })) as NewFileProjectResponse;
 }
 
 function mockListStories(): StorySummary[] {

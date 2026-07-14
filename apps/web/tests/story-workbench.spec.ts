@@ -117,6 +117,136 @@ async function seedMinimalDraft(page: Page) {
   await page.getByLabel("Character Goal 1").fill("find the hidden ledger");
 }
 
+async function routeProjectLists(page: Page, projects: unknown[]) {
+  await page.route("**/projects", async (route) => {
+    if (route.request().resourceType() === "document") {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(projects) });
+  });
+  await page.route("**/file-projects", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+}
+
+test("projects page creates entry beside the recent project", async ({ page }) => {
+  const recentProject = {
+    project_id: "file:p-recent",
+    title: "照夜行",
+    status: "draft",
+    pipeline_stage: "draft",
+    active_story_id: "file:p-recent",
+    current_chapter: 0,
+    source_path: "",
+    storage_source: "file",
+  };
+  await page.addInitScript(() => window.localStorage.setItem("novel-autogrowth.last-project-id", "file:p-recent"));
+  await routeProjectLists(page, [recentProject]);
+
+  await page.goto("/projects");
+
+  await expect(page.getByRole("link", { name: "新建小说" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "继续上次作品" })).toBeVisible();
+});
+
+test("projects page creates entry in the empty state", async ({ page }) => {
+  await routeProjectLists(page, []);
+
+  await page.goto("/projects");
+
+  await expect(page.getByText("还没有作品")).toBeVisible();
+  await expect(page.getByRole("link", { name: "新建小说" })).toHaveCount(2);
+});
+
+test("projects page creates a blank file novel", async ({ page }) => {
+  const requests: unknown[] = [];
+  await page.route("**/file-projects", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+      return;
+    }
+    requests.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        project_id: "file:p-blank",
+        title: "照夜行",
+        storage_source: "file",
+        status: "draft",
+        pipeline_stage: "draft",
+        current_chapter: 0,
+        next_path: "/projects/file%3Ap-blank/outline",
+      }),
+    });
+  });
+
+  await page.goto("/projects/new");
+  await expect(page.getByRole("tablist", { name: "创建方式" })).toBeVisible();
+  await page.getByRole("tab", { name: "建立空白小说" }).click();
+  await expect(page.getByRole("textbox", { name: /^灵感/ })).toHaveCount(0);
+  await expect(page.getByLabel("小说名")).toHaveAttribute("maxlength", "120");
+  await page.getByLabel("小说名").fill("照夜行");
+  await page.getByLabel("小说类型").selectOption("xuanhuan");
+  await page.getByRole("button", { name: "创建小说" }).click();
+
+  await expect(page).toHaveURL(/file%3Ap-blank\/outline$/);
+  expect(requests).toEqual([{ mode: "blank", title: "照夜行", novel_type_id: "xuanhuan", idea: "" }]);
+});
+
+test("projects page creates an inspiration novel and preserves input after failure", async ({ page }) => {
+  const requests: unknown[] = [];
+  let attempt = 0;
+  await page.route("**/file-projects", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+      return;
+    }
+    requests.push(route.request().postDataJSON());
+    attempt += 1;
+    if (attempt === 1) {
+      await route.fulfill({
+        status: 422,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "暂时无法建立作品" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        project_id: "file:p-idea",
+        title: "未命名作品",
+        storage_source: "file",
+        status: "draft",
+        pipeline_stage: "idea_pending",
+        current_chapter: 0,
+        next_path: "/projects/file%3Ap-idea/setup",
+      }),
+    });
+  });
+
+  await page.goto("/projects/new");
+  await expect(page.getByRole("tab", { name: "从灵感开书" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("textbox", { name: /^灵感/ })).toHaveAttribute("maxlength", "1000");
+  await expect(page.getByRole("button", { name: "创建小说" })).toBeDisabled();
+  await page.getByLabel("小说类型").selectOption("urban");
+  await page.getByRole("textbox", { name: /^灵感/ }).fill("失业律师替陌生人追一笔旧账");
+  await page.getByRole("button", { name: "创建小说" }).click();
+
+  await expect(page.getByRole("alert").filter({ hasText: "创建失败" })).toHaveText("创建失败：暂时无法建立作品");
+  await expect(page.getByRole("textbox", { name: /^灵感/ })).toHaveValue("失业律师替陌生人追一笔旧账");
+  await page.getByRole("button", { name: "创建小说" }).click();
+
+  await expect(page).toHaveURL(/file%3Ap-idea\/setup$/);
+  expect(requests).toEqual([
+    { mode: "inspiration", title: "", novel_type_id: "urban", idea: "失业律师替陌生人追一笔旧账" },
+    { mode: "inspiration", title: "", novel_type_id: "urban", idea: "失业律师替陌生人追一笔旧账" },
+  ]);
+});
+
 test("homepage foregrounds story status and history before import", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
 
