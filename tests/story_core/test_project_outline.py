@@ -27,6 +27,7 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         ),
         arcs=[
             ArcOutline(
+                id="opening",
                 title="祖祠失火",
                 start_chapter=1,
                 end_chapter=8,
@@ -83,43 +84,64 @@ def test_models_expose_the_canonical_outline_fields() -> None:
     }
 
 
-def test_normalize_returns_json_serializable_sorted_data_with_stable_ids() -> None:
-    normalized = normalize_project_outline(
-        {
-            "arcs": [
-                {"title": "后段", "start_chapter": 11, "end_chapter": 20},
-                {"id": "opening", "title": "开篇", "start_chapter": 1, "end_chapter": 10},
-                {"id": "short", "title": "短阶段", "start_chapter": 1, "end_chapter": 3},
-            ],
-            "chapters": [
-                {"chapter_number": 12, "goal": "通过内门考核"},
-                {"chapter_number": 2, "goal": "查祖祠"},
-            ],
-        }
-    )
+def test_normalize_is_deterministic_non_mutating_json_serializable_and_sorted() -> None:
+    payload = {
+        "arcs": [
+            {"id": "later", "title": "后段", "start_chapter": 11, "end_chapter": 20},
+            {"id": "opening", "title": "开篇", "start_chapter": 1, "end_chapter": 10},
+            {"id": "short", "title": "短阶段", "start_chapter": 1, "end_chapter": 3},
+        ],
+        "chapters": [
+            {"chapter_number": 12, "goal": "通过内门考核"},
+            {"chapter_number": 2, "goal": "查祖祠"},
+        ],
+    }
+    original = deepcopy(payload)
 
-    generated_id = normalized["arcs"][2]["id"]
+    normalized = normalize_project_outline(payload)
 
-    assert [arc["id"] for arc in normalized["arcs"][:2]] == ["short", "opening"]
+    assert [arc["id"] for arc in normalized["arcs"]] == ["short", "opening", "later"]
     assert [chapter["chapter_number"] for chapter in normalized["chapters"]] == [2, 12]
-    assert isinstance(generated_id, str) and generated_id
-    assert normalize_project_outline(normalized)["arcs"][2]["id"] == generated_id
+    assert normalize_project_outline(payload) == normalized
+    assert payload == original
     assert json.loads(json.dumps(normalized, ensure_ascii=False)) == normalized
 
 
-@pytest.mark.parametrize(
-    "start_chapter,end_chapter",
-    [(0, 1), (3, 2)],
-)
-def test_invalid_arc_ranges_report_explicit_error(
-    start_chapter: int,
-    end_chapter: int,
-) -> None:
+def test_inverted_arc_range_reports_explicit_error() -> None:
     with pytest.raises(ValueError, match="invalid_arc_chapter_range"):
         normalize_project_outline(
             {
                 "arcs": [
                     {
+                        "id": "inverted",
+                        "start_chapter": 3,
+                        "end_chapter": 2,
+                    }
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize("chapter_number", [0, True, 1.0, 1.5])
+def test_chapter_number_requires_a_strict_positive_integer(chapter_number: object) -> None:
+    with pytest.raises(ValueError):
+        normalize_project_outline({"chapters": [{"chapter_number": chapter_number}]})
+
+
+@pytest.mark.parametrize(
+    "start_chapter,end_chapter",
+    [(0, 1), (1, 0), (True, 2), (1, False), (1.0, 2), (1, 2.0), (1.5, 2)],
+)
+def test_arc_boundaries_require_strict_positive_integers(
+    start_chapter: object,
+    end_chapter: object,
+) -> None:
+    with pytest.raises(ValueError):
+        normalize_project_outline(
+            {
+                "arcs": [
+                    {
+                        "id": "strict-range",
                         "start_chapter": start_chapter,
                         "end_chapter": end_chapter,
                     }
@@ -128,9 +150,64 @@ def test_invalid_arc_ranges_report_explicit_error(
         )
 
 
-def test_invalid_chapter_number_reports_explicit_error() -> None:
-    with pytest.raises(ValueError, match="invalid_chapter_number"):
-        normalize_project_outline({"chapters": [{"chapter_number": 0}]})
+@pytest.mark.parametrize("payload", [[], "", 0, False])
+def test_normalize_rejects_invalid_root_types(payload: object) -> None:
+    with pytest.raises(ValueError):
+        normalize_project_outline(payload)
+
+
+def test_normalize_treats_only_none_as_an_empty_outline() -> None:
+    assert normalize_project_outline(None) == normalize_project_outline({})
+
+
+def test_arc_id_is_required() -> None:
+    with pytest.raises(ValueError, match="Field required"):
+        normalize_project_outline(
+            {"arcs": [{"start_chapter": 1, "end_chapter": 2}]}
+        )
+
+
+@pytest.mark.parametrize("arc_id", ["", " ", "\t\n"])
+def test_arc_id_must_not_be_blank(arc_id: str) -> None:
+    with pytest.raises(ValueError, match="invalid_arc_id"):
+        normalize_project_outline(
+            {
+                "arcs": [
+                    {"id": arc_id, "start_chapter": 1, "end_chapter": 2}
+                ]
+            }
+        )
+
+
+def test_arc_ids_must_be_unique() -> None:
+    with pytest.raises(ValueError, match="duplicate_arc_id"):
+        normalize_project_outline(
+            {
+                "arcs": [
+                    {"id": "same", "start_chapter": 1, "end_chapter": 2},
+                    {"id": "same", "start_chapter": 3, "end_chapter": 4},
+                ]
+            }
+        )
+
+
+def test_schema_version_rejects_future_versions() -> None:
+    with pytest.raises(ValueError, match="project-outline/v1"):
+        normalize_project_outline({"schema_version": "project-outline/v2"})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"unknown": "project"},
+        {"overall": {"unknown": "overall"}},
+        {"arcs": [{"id": "arc", "unknown": "arc"}]},
+        {"chapters": [{"chapter_number": 1, "unknown": "chapter"}]},
+    ],
+)
+def test_all_canonical_models_reject_unknown_fields(payload: dict) -> None:
+    with pytest.raises(ValueError, match="extra_forbidden"):
+        normalize_project_outline(payload)
 
 
 def test_duplicate_chapter_outlines_report_explicit_error() -> None:
@@ -238,6 +315,22 @@ def test_selection_returns_only_active_arc_and_target_chapter() -> None:
     assert context["chapter"]["chapter_number"] == 12
     assert "arcs" not in context
     assert "chapters" not in context
+
+
+def test_selection_overlap_tiebreakers_do_not_depend_on_input_order() -> None:
+    arcs = [
+        {"id": "broad", "start_chapter": 1, "end_chapter": 20},
+        {"id": "wider-late", "start_chapter": 5, "end_chapter": 10},
+        {"id": "beta", "start_chapter": 5, "end_chapter": 8},
+        {"id": "alpha", "start_chapter": 5, "end_chapter": 8},
+    ]
+
+    selected_ids = [
+        select_outline_context({"arcs": ordered_arcs}, 6)["active_arc"]["id"]
+        for ordered_arcs in (arcs, list(reversed(arcs)))
+    ]
+
+    assert selected_ids == ["alpha", "alpha"]
 
 
 def test_selection_returns_none_when_chapter_has_no_matching_details() -> None:

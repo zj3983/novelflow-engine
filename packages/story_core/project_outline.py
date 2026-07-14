@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
-from uuid import uuid4
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-class OverallOutline(BaseModel):
+class _OutlineModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class OverallOutline(_OutlineModel):
     story: str = ""
     protagonist_goal: str = ""
     main_conflict: str = ""
@@ -14,25 +17,39 @@ class OverallOutline(BaseModel):
     ending_direction: str = ""
 
 
-class ArcOutline(BaseModel):
-    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+class ArcOutline(_OutlineModel):
+    id: str = Field(strict=True)
     title: str = ""
-    start_chapter: int = 1
-    end_chapter: int = 1
+    start_chapter: int = Field(default=1, ge=1, strict=True)
+    end_chapter: int = Field(default=1, ge=1, strict=True)
     goal: str = ""
     obstacle: str = ""
     payoff: str = ""
     end_state: str = ""
 
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("invalid_arc_id")
+        return value
+
+    @field_validator("start_chapter", "end_chapter", mode="before")
+    @classmethod
+    def validate_positive_boundary(cls, value: Any) -> Any:
+        if isinstance(value, int) and not isinstance(value, bool) and value < 1:
+            raise ValueError("invalid_arc_chapter_range")
+        return value
+
     @model_validator(mode="after")
     def validate_range(self) -> "ArcOutline":
-        if self.start_chapter < 1 or self.end_chapter < self.start_chapter:
+        if self.end_chapter < self.start_chapter:
             raise ValueError("invalid_arc_chapter_range")
         return self
 
 
-class ChapterPlan(BaseModel):
-    chapter_number: int
+class ChapterPlan(_OutlineModel):
+    chapter_number: int = Field(ge=1, strict=True)
     title: str = ""
     goal: str = ""
     obstacle: str = ""
@@ -41,31 +58,38 @@ class ChapterPlan(BaseModel):
     payoff: str = ""
     ending_hook: str = ""
 
-    @model_validator(mode="after")
-    def validate_chapter(self) -> "ChapterPlan":
-        if self.chapter_number < 1:
+    @field_validator("chapter_number", mode="before")
+    @classmethod
+    def validate_chapter(cls, value: Any) -> Any:
+        if isinstance(value, int) and not isinstance(value, bool) and value < 1:
             raise ValueError("invalid_chapter_number")
-        return self
+        return value
 
 
-class ProjectOutline(BaseModel):
-    schema_version: str = "project-outline/v1"
+class ProjectOutline(_OutlineModel):
+    schema_version: Literal["project-outline/v1"] = "project-outline/v1"
     overall: OverallOutline = Field(default_factory=OverallOutline)
     arcs: list[ArcOutline] = Field(default_factory=list)
     chapters: list[ChapterPlan] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_and_sort(self) -> "ProjectOutline":
+    def validate_unique_ids_and_chapters(self) -> "ProjectOutline":
+        arc_ids = [arc.id for arc in self.arcs]
+        if len(arc_ids) != len(set(arc_ids)):
+            raise ValueError("duplicate_arc_id")
         chapter_numbers = [chapter.chapter_number for chapter in self.chapters]
         if len(chapter_numbers) != len(set(chapter_numbers)):
             raise ValueError("duplicate_chapter_outline")
-        self.arcs.sort(key=lambda arc: (arc.start_chapter, arc.end_chapter))
-        self.chapters.sort(key=lambda chapter: chapter.chapter_number)
         return self
 
 
 def normalize_project_outline(payload: Any) -> dict[str, Any]:
-    return ProjectOutline.model_validate(payload or {}).model_dump()
+    normalized = ProjectOutline.model_validate({} if payload is None else payload).model_dump()
+    normalized["arcs"].sort(
+        key=lambda arc: (arc["start_chapter"], arc["end_chapter"], arc["id"])
+    )
+    normalized["chapters"].sort(key=lambda chapter: chapter["chapter_number"])
+    return normalized
 
 
 def outline_from_legacy_project(project: dict[str, Any]) -> dict[str, Any]:
@@ -134,9 +158,13 @@ def select_outline_context(
         for arc in normalized["arcs"]
         if arc["start_chapter"] <= chapter_number <= arc["end_chapter"]
     ]
-    active_arc = max(
+    active_arc = min(
         matching_arcs,
-        key=lambda arc: arc["start_chapter"],
+        key=lambda arc: (
+            -arc["start_chapter"],
+            arc["end_chapter"] - arc["start_chapter"],
+            arc["id"],
+        ),
         default=None,
     )
     chapter = next(
