@@ -479,6 +479,8 @@ ProjectStatusType = Literal["draft", "simulating", "paused", "completed"]
 ProjectPipelineStage = Literal[
     "draft",
     "idea_pending",
+    "direction_ready",
+    "outlining",
     "imported",
     "world_ready",
     "environment_ready",

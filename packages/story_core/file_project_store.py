@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from packages.story_core.chapter_direction import build_chapter_direction_options
 from packages.story_core.character_portraits import complete_character_portrait as complete_portrait
@@ -15,6 +16,7 @@ from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.opening_directions import OpeningBrief, OpeningDirectionSet
 from packages.story_core.prose_style_review import review_prose_style
 from packages.story_core.project_outline import normalize_project_outline, outline_from_legacy_project, select_outline_context
 from packages.story_core.reader_feel_review import review_reader_feel
@@ -286,6 +288,47 @@ class FileProjectStore:
             finally:
                 if temp_path is not None:
                     temp_path.unlink(missing_ok=True)
+
+    def _replace_json_transaction(self, payloads: dict[Path, Any]) -> None:
+        targets = [(Path(path), payload) for path, payload in payloads.items()]
+        snapshots: dict[Path, bytes | None] = {
+            path: path.read_bytes() if path.exists() else None for path, _ in targets
+        }
+        prepared: dict[Path, Path] = {}
+        try:
+            for path, payload in targets:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                fd, temp_name = tempfile.mkstemp(
+                    dir=str(path.parent),
+                    prefix=f".{path.name}.",
+                    suffix=".tmp",
+                )
+                temp_path = Path(temp_name)
+                prepared[path] = temp_path
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+
+            for path, _ in targets:
+                os.replace(prepared[path], path)
+        except Exception as exc:
+            rollback_errors: list[Exception] = []
+            for path, snapshot in snapshots.items():
+                try:
+                    if snapshot is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(snapshot)
+                except Exception as rollback_exc:  # pragma: no cover - catastrophic filesystem failure
+                    rollback_errors.append(rollback_exc)
+            if rollback_errors:
+                raise RuntimeError("json_transaction_rollback_failed") from exc
+            raise
+        finally:
+            for temp_path in prepared.values():
+                temp_path.unlink(missing_ok=True)
 
     def _write_text(self, path: Path, text: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1889,6 +1932,90 @@ class FileProjectStore:
 
     def project(self) -> dict[str, Any]:
         return self._read_json(self.webnovel_dir / "project.json", {}) or self.master_setting().get("project", {}) or {}
+
+    def opening_brief(self) -> dict[str, Any]:
+        payload = self._read_json(self.webnovel_dir / "opening_brief.json", {})
+        return OpeningBrief.model_validate(payload).model_dump(mode="json")
+
+    def opening_directions(self) -> dict[str, Any] | None:
+        path = self.webnovel_dir / "opening_directions.json"
+        if not path.exists():
+            return None
+        return OpeningDirectionSet.model_validate(self._read_json(path, {})).model_dump(mode="json")
+
+    def opening_setup(self) -> dict[str, Any]:
+        project = self.project()
+        candidates = self.opening_directions()
+        project_id = str(project.get("project_id") or self.root.name)
+        public_project_id = project_id if project_id.startswith("file:") else f"file:{project_id}"
+        selected_id = str((candidates or {}).get("selected_id") or "")
+        pipeline_stage = str(project.get("pipeline_stage") or "idea_pending")
+        next_page = "outline" if selected_id or pipeline_stage == "outlining" else "setup"
+        return {
+            "brief": self.opening_brief(),
+            "directions": list((candidates or {}).get("directions") or []),
+            "selected_id": selected_id,
+            "pipeline_stage": pipeline_stage,
+            "next_path": f"/projects/{quote(public_project_id, safe='')}/{next_page}",
+        }
+
+    def generate_opening_directions(self, generator: Any) -> dict[str, Any]:
+        brief = OpeningBrief.model_validate(self.opening_brief())
+        result = generator.generate(brief)
+        try:
+            directions = OpeningDirectionSet.model_validate(result)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("opening_direction_generation_failed") from exc
+        project = {**self.project(), "pipeline_stage": "direction_ready"}
+        self._replace_json_transaction(
+            {
+                self.webnovel_dir / "project.json": project,
+                self.webnovel_dir / "opening_directions.json": directions.model_dump(mode="json"),
+            }
+        )
+        return self.opening_setup()
+
+    def select_opening_direction(self, direction_id: str) -> dict[str, Any]:
+        payload = self.opening_directions()
+        if payload is None:
+            raise KeyError("direction_not_found")
+        directions = OpeningDirectionSet.model_validate(payload)
+        if directions.selected_id:
+            raise ValueError("direction_already_selected")
+        selected = next(
+            (direction for direction in directions.directions if direction.id == direction_id),
+            None,
+        )
+        if selected is None:
+            raise KeyError("direction_not_found")
+
+        project = {
+            **self.project(),
+            "title": selected.title,
+            "pipeline_stage": "outlining",
+        }
+        outline = normalize_project_outline(
+            {
+                "overall": {
+                    "story": selected.hook,
+                    "protagonist_goal": selected.protagonist_goal,
+                    "main_conflict": selected.main_conflict,
+                    "growth_path": selected.growth_path,
+                    "ending_direction": selected.opening_promise,
+                },
+                "arcs": [],
+                "chapters": [],
+            }
+        )
+        selected_directions = directions.model_copy(update={"selected_id": selected.id})
+        self._replace_json_transaction(
+            {
+                self.webnovel_dir / "project.json": project,
+                self.webnovel_dir / "outline.json": outline,
+                self.webnovel_dir / "opening_directions.json": selected_directions.model_dump(mode="json"),
+            }
+        )
+        return self.opening_setup()
 
     def project_outline(self) -> dict[str, Any]:
         path = self.webnovel_dir / "outline.json"

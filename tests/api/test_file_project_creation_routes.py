@@ -136,3 +136,194 @@ def test_file_project_creation_leaves_unexpected_disk_errors_as_500(creation_api
     assert not export_root.exists() or list(export_root.iterdir()) == []
     assert client.get("/file-projects").json() == []
     legacy_create.assert_not_called()
+
+
+def _opening_direction(direction_id: str, title: str) -> dict[str, str]:
+    return {
+        "id": direction_id,
+        "title": title,
+        "hook": f"Hook {direction_id}",
+        "protagonist_goal": f"Goal {direction_id}",
+        "main_conflict": f"Conflict {direction_id}",
+        "growth_path": f"Growth {direction_id}",
+        "opening_promise": f"Promise {direction_id}",
+    }
+
+
+def _opening_direction_payload() -> dict:
+    return {
+        "schema_version": "opening-directions/v1",
+        "directions": [
+            _opening_direction("direction-1", "First direction"),
+            _opening_direction("direction-2", "Second direction"),
+            _opening_direction("direction-3", "Third direction"),
+        ],
+        "selected_id": "",
+    }
+
+
+class _FakeOpeningDirectionGenerator:
+    def __init__(self, payload=None):
+        self.payload = payload if payload is not None else _opening_direction_payload()
+        self.calls = 0
+
+    def generate(self, brief):
+        self.calls += 1
+        return self.payload
+
+
+def _create_inspiration_project(client) -> tuple[dict, Path]:
+    response = client.post(
+        "/file-projects",
+        json={
+            "mode": "inspiration",
+            "novel_type_id": "urban",
+            "idea": "A night-shift courier receives tomorrow's missing-person report.",
+            "title": "Working title",
+        },
+    )
+    assert response.status_code == 201
+    project = response.json()
+    return project, Path(project["source_path"])
+
+
+def _file_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_get_opening_directions_has_no_generation_or_file_side_effects(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project, root = _create_inspiration_project(client)
+    generator = _FakeOpeningDirectionGenerator()
+    monkeypatch.setattr(file_project_routes, "opening_direction_generator", generator)
+    before = _file_snapshot(root)
+
+    response = client.get(f"/file-projects/{project['project_id']}/opening-directions")
+
+    assert response.status_code == 200
+    assert response.json()["brief"]["idea"].startswith("A night-shift courier")
+    assert response.json()["directions"] == []
+    assert response.json()["selected_id"] == ""
+    assert response.json()["pipeline_stage"] == "idea_pending"
+    assert response.json()["next_path"].endswith("/setup")
+    assert generator.calls == 0
+    assert _file_snapshot(root) == before
+
+
+def test_generate_and_select_direction_only_updates_allowed_fields(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project_response, root = _create_inspiration_project(client)
+    project_path = root / ".webnovel" / "project.json"
+    outline_path = root / ".webnovel" / "outline.json"
+    state_path = root / ".webnovel" / "state.json"
+    master_path = root / ".story-system" / "MASTER_SETTING.json"
+    original_project = json.loads(project_path.read_text(encoding="utf-8"))
+    original_state = state_path.read_bytes()
+    original_master = master_path.read_bytes()
+    monkeypatch.setattr(
+        file_project_routes,
+        "opening_direction_generator",
+        _FakeOpeningDirectionGenerator(),
+    )
+
+    generated = client.post(f"/file-projects/{project_response['project_id']}/opening-directions")
+
+    assert generated.status_code == 200
+    assert len(generated.json()["directions"]) == 3
+    generated_project = json.loads(project_path.read_text(encoding="utf-8"))
+    assert generated_project == {**original_project, "pipeline_stage": "direction_ready"}
+
+    selected = client.post(
+        f"/file-projects/{project_response['project_id']}/opening-directions/direction-2/select"
+    )
+
+    assert selected.status_code == 200
+    assert selected.json()["selected_id"] == "direction-2"
+    assert selected.json()["next_path"].endswith("/outline")
+    persisted_project = json.loads(project_path.read_text(encoding="utf-8"))
+    assert persisted_project == {
+        **original_project,
+        "title": "Second direction",
+        "pipeline_stage": "outlining",
+    }
+    outline = json.loads(outline_path.read_text(encoding="utf-8"))
+    assert outline == {
+        "schema_version": "project-outline/v1",
+        "overall": {
+            "story": "Hook direction-2",
+            "protagonist_goal": "Goal direction-2",
+            "main_conflict": "Conflict direction-2",
+            "growth_path": "Growth direction-2",
+            "ending_direction": "Promise direction-2",
+        },
+        "arcs": [],
+        "chapters": [],
+    }
+    directions = json.loads(
+        (root / ".webnovel" / "opening_directions.json").read_text(encoding="utf-8")
+    )
+    assert directions["selected_id"] == "direction-2"
+    assert persisted_project["world_summary"] == ""
+    assert persisted_project["character_profiles"] == []
+    assert state_path.read_bytes() == original_state
+    assert master_path.read_bytes() == original_master
+    persisted_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted_state["characters"] == []
+    assert persisted_state["world_facts"] == []
+
+
+def test_invalid_model_output_returns_502_and_preserves_previous_candidates(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project, root = _create_inspiration_project(client)
+    monkeypatch.setattr(
+        file_project_routes,
+        "opening_direction_generator",
+        _FakeOpeningDirectionGenerator(),
+    )
+    first = client.post(f"/file-projects/{project['project_id']}/opening-directions")
+    assert first.status_code == 200
+    directions_path = root / ".webnovel" / "opening_directions.json"
+    project_path = root / ".webnovel" / "project.json"
+    before = (directions_path.read_bytes(), project_path.read_bytes())
+    monkeypatch.setattr(
+        file_project_routes,
+        "opening_direction_generator",
+        _FakeOpeningDirectionGenerator({"directions": [_opening_direction("only", "Only one")]}),
+    )
+
+    response = client.post(f"/file-projects/{project['project_id']}/opening-directions")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "opening_direction_generation_failed"
+    assert (directions_path.read_bytes(), project_path.read_bytes()) == before
+
+
+def test_select_unknown_and_repeated_direction_returns_404_then_409(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project, _ = _create_inspiration_project(client)
+    monkeypatch.setattr(
+        file_project_routes,
+        "opening_direction_generator",
+        _FakeOpeningDirectionGenerator(),
+    )
+    assert client.post(f"/file-projects/{project['project_id']}/opening-directions").status_code == 200
+
+    unknown = client.post(
+        f"/file-projects/{project['project_id']}/opening-directions/missing/select"
+    )
+    selected = client.post(
+        f"/file-projects/{project['project_id']}/opening-directions/direction-1/select"
+    )
+    repeated = client.post(
+        f"/file-projects/{project['project_id']}/opening-directions/direction-1/select"
+    )
+
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "direction_not_found"
+    assert selected.status_code == 200
+    assert repeated.status_code == 409
+    assert repeated.json()["detail"] == "direction_already_selected"

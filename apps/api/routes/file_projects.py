@@ -17,10 +17,12 @@ from packages.story_core.file_project_creation import FileProjectCreateSpec, cre
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import AgentRuntimeState, AgentSettings
+from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.simplified_review import build_simplified_review
 
 
 router = APIRouter()
+opening_direction_generator = LLMOpeningDirectionGenerator()
 FILE_ID_PREFIX = "file:"
 FILE_GENERATION_JOB_STALE_SECONDS = 15 * 60
 _file_generation_executor = ThreadPoolExecutor(max_workers=1)
@@ -390,6 +392,27 @@ def init_file_project_routes() -> APIRouter:
     @router.get("/file-projects/{project_id}")
     def get_file_project(project_id: str) -> dict[str, Any]:
         return _project_payload(_store_for(project_id))
+
+    @router.get("/file-projects/{project_id}/opening-directions")
+    def get_opening_directions(project_id: str) -> dict[str, Any]:
+        return _store_for(project_id).opening_setup()
+
+    @router.post("/file-projects/{project_id}/opening-directions")
+    def generate_opening_directions(project_id: str) -> dict[str, Any]:
+        try:
+            return _store_for(project_id).generate_opening_directions(opening_direction_generator)
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @router.post("/file-projects/{project_id}/opening-directions/{direction_id}/select")
+    def select_opening_direction(project_id: str, direction_id: str) -> dict[str, Any]:
+        try:
+            return _store_for(project_id).select_opening_direction(direction_id)
+        except KeyError as exc:
+            detail = str(exc.args[0]) if exc.args else "direction_not_found"
+            raise HTTPException(status_code=404, detail=detail) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.get("/file-projects/{project_id}/outline")
     def get_file_project_outline(project_id: str) -> dict[str, Any]:
