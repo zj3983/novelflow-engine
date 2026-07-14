@@ -759,6 +759,46 @@ export type ProjectResponse = {
   storage_source?: "sqlite" | "file";
 };
 
+export type ProjectOutlineOverall = {
+  story: string;
+  protagonist_goal: string;
+  main_conflict: string;
+  growth_path: string;
+  ending_direction: string;
+};
+
+export type ProjectOutlineArc = {
+  id: string;
+  title: string;
+  start_chapter: number;
+  end_chapter: number;
+  goal: string;
+  obstacle: string;
+  payoff: string;
+  end_state: string;
+};
+
+export type ProjectChapterOutline = {
+  chapter_number: number;
+  title: string;
+  goal: string;
+  obstacle: string;
+  action: string;
+  turn: string;
+  payoff: string;
+  ending_hook: string;
+};
+
+export type ProjectOutline = {
+  schema_version: "project-outline/v1";
+  source: "saved" | "legacy";
+  overall: ProjectOutlineOverall;
+  arcs: ProjectOutlineArc[];
+  chapters: ProjectChapterOutline[];
+};
+
+export type ProjectOutlineUpdate = Omit<ProjectOutline, "source">;
+
 export type AgentReviseRequest = {
   chapter_number?: number | null;
   instructions: string[];
@@ -2533,6 +2573,24 @@ export async function updateProject(projectId: string, payload: UpdateProjectReq
   } catch {
     return mockUpdateProject(projectId, payload);
   }
+}
+
+export async function fetchProjectOutline(projectId: string): Promise<ProjectOutline> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("three_level_outline_requires_file_project");
+  }
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/outline`, { method: "GET" })) as ProjectOutline;
+}
+
+export async function updateProjectOutline(projectId: string, payload: ProjectOutlineUpdate): Promise<ProjectOutline> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("three_level_outline_requires_file_project");
+  }
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/outline`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  })) as ProjectOutline;
 }
 
 export async function enrichProjectWorld(projectId: string): Promise<ProjectResponse> {

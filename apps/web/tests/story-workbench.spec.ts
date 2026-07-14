@@ -135,6 +135,131 @@ test("homepage top bar shows writing progress and core actions", async ({ page }
   await expect(page.getByRole("banner").getByRole("link", { name: /查看配置/ })).toBeVisible();
 });
 
+test("file project outline edits three independent levels", async ({ page }) => {
+  let savedBody: Record<string, unknown> | null = null;
+  const outline = {
+    schema_version: "project-outline/v1",
+    source: "saved",
+    overall: {
+      story: "林照追查祖祠旧案。",
+      protagonist_goal: "",
+      main_conflict: "宗门有人阻止他追查。",
+      growth_path: "从杂役成长为内门弟子。",
+      ending_direction: "查清旧案。",
+    },
+    arcs: [
+      {
+        id: "opening",
+        title: "祖祠阶段",
+        start_chapter: 1,
+        end_chapter: 8,
+        goal: "找出纵火者",
+        obstacle: "管事阻挠",
+        payoff: "拿到旧名册",
+        end_state: "进入外门调查",
+      },
+    ],
+    chapters: [
+      {
+        chapter_number: 1,
+        title: "守炉",
+        goal: "检查断香炉",
+        obstacle: "值夜弟子不配合",
+        action: "核对香灰和名册",
+        turn: "香灰里有内门令牌碎片",
+        payoff: "确认有人来过",
+        ending_hook: "脚印通向后山",
+      },
+    ],
+  };
+  const project = {
+    project_id: "file:outline-fixture",
+    title: "Outline Fixture",
+    source_path: "",
+    seed_outline: outline.overall.story,
+    world_summary: "",
+    current_focus: "",
+    author_constraints: [],
+    world_blueprint: {},
+    character_profiles: [],
+    relationship_graph: [],
+    enabled_skill_ids: [],
+    status: "simulating",
+    pipeline_stage: "simulating",
+    active_story_id: "file:outline-fixture",
+    branches: [],
+    storage_source: "file",
+  };
+
+  await page.route("**/file-projects/file%3Aoutline-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-projects/file%3Aoutline-fixture/outline", async (route) => {
+    if (route.request().method() === "PUT") {
+      savedBody = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...savedBody, source: "saved" }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(outline) });
+  });
+  await page.route("**/file-stories/file%3Aoutline-fixture", async (route) => {
+    const runtimeEntry = { mode: "LLM-assisted", source: "idle", fallback_reason: "", last_run_chapter: 0 };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        story_id: "file:outline-fixture",
+        outline: outline.overall.story,
+        genre: "玄幻",
+        style: "白描",
+        current_chapter: 0,
+        agent_settings: {
+          mode: "LLM-assisted",
+          global_model: "qwen3.6-plus",
+          character_model: "qwen3.6-plus",
+          director_model: "qwen3.6-plus",
+          writer_model: "qwen3.6-plus",
+          memory_model: "qwen3.6-plus",
+          temperature: 0.7,
+          new_character_policy: "Director review",
+        },
+        agent_runtime: {
+          character_agent: runtimeEntry,
+          director_agent: runtimeEntry,
+          writer_agent: runtimeEntry,
+          memory_agent: runtimeEntry,
+          outline_agent: runtimeEntry,
+          recent_events: [],
+        },
+        author_constraints: [],
+        world_facts: [],
+        characters: [],
+        history: [],
+        parent_story_id: null,
+        branched_from_chapter: null,
+      }),
+    });
+  });
+
+  await page.goto("/projects/file%3Aoutline-fixture/outline");
+  await expect(page.getByRole("tab", { name: "总纲", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "阶段大纲", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "章节大纲", exact: true })).toBeVisible();
+  await page.getByLabel("主角长期目标").fill("洗清父亲旧案");
+  await page.getByRole("tab", { name: "阶段大纲", exact: true }).click();
+  await expect(page.getByLabel("阶段名称")).toHaveValue("祖祠阶段");
+  await page.getByRole("tab", { name: "章节大纲", exact: true }).click();
+  await expect(page.getByLabel("暂定标题")).toHaveValue("守炉");
+  await page.getByRole("button", { name: "保存大纲" }).click();
+
+  expect(savedBody).toMatchObject({
+    overall: { protagonist_goal: "洗清父亲旧案" },
+    arcs: outline.arcs,
+    chapters: outline.chapters,
+  });
+  expect(savedBody).not.toHaveProperty("source");
+});
+
 test("imported book still exposes a browsable source panel", async ({ page }) => {
   await proxyBookImportRoutes(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });

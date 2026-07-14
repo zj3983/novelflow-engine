@@ -227,6 +227,95 @@ body {
   line-height: 1.7;
 }
 
+.ws-outline-workspace {
+  border-top: 1px solid var(--ws-line);
+  padding-top: 20px;
+}
+
+.ws-outline-tabs {
+  display: flex;
+  gap: 24px;
+  margin: 20px 0 24px;
+  border-bottom: 1px solid var(--ws-line);
+}
+
+.ws-outline-tab {
+  min-height: 42px;
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ws-ink-muted);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.ws-outline-tab.is-active {
+  border-bottom-color: var(--ws-accent);
+  color: var(--ws-accent);
+}
+
+.ws-outline-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 20px;
+}
+
+.ws-outline-field {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ws-ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.ws-outline-field--wide {
+  grid-column: 1 / -1;
+}
+
+.ws-outline-range {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ws-outline-list {
+  border-top: 1px solid var(--ws-line);
+  margin-bottom: 18px;
+}
+
+.ws-outline-item {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--ws-line);
+}
+
+.ws-outline-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.ws-outline-message,
+.ws-outline-warning {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--ws-success);
+  background: var(--ws-success-soft);
+  color: var(--ws-success);
+  line-height: 1.6;
+}
+
+.ws-outline-warning {
+  border-left-color: var(--ws-warn);
+  background: var(--ws-warn-soft);
+  color: var(--ws-warn);
+}
+
 .ws-table {
   width: 100%;
   border-collapse: collapse;
@@ -1052,8 +1141,15 @@ body {
   .ws-sim-grid,
   .ws-form-grid,
   .ws-character-section-grid,
-  .ws-profile-columns {
+  .ws-profile-columns,
+  .ws-outline-grid,
+  .ws-outline-range {
     grid-template-columns: 1fr;
+  }
+
+  .ws-outline-tabs {
+    gap: 18px;
+    overflow-x: auto;
   }
 
   .ws-page__head {
