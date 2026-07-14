@@ -11,6 +11,7 @@ from packages.story_core.file_project_creation import (
     create_file_project,
 )
 from packages.story_core.file_project_store import FileProjectStore
+from packages.story_core.models import NovelProject, NovelProjectSummary
 from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG
 from packages.story_core.project_outline import normalize_project_outline
 
@@ -77,6 +78,8 @@ def test_create_blank_project_writes_clean_complete_project(tmp_path):
         "status": "draft",
         "pipeline_stage": "draft",
     }
+    assert NovelProject.model_validate(project).pipeline_stage == "draft"
+    assert NovelProjectSummary.model_validate(project).pipeline_stage == "draft"
     assert state["story_id"] == "file:p-test-blank"
     assert state["outline"] == ""
     assert state["genre"] == NOVEL_TYPE_CATALOG["xuanhuan"].label
@@ -117,6 +120,8 @@ def test_create_inspiration_project_keeps_idea_isolated(tmp_path):
     assert created.next_path == "/projects/file%3Ap-test-idea/setup"
     assert project["title"] == "旧账"
     assert project["pipeline_stage"] == "idea_pending"
+    assert NovelProject.model_validate(project).pipeline_stage == "idea_pending"
+    assert NovelProjectSummary.model_validate(project).pipeline_stage == "idea_pending"
     assert brief == {
         "schema_version": "opening-brief/v1",
         "mode": "inspiration",

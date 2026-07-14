@@ -477,6 +477,8 @@ class WorldBible(BaseModel):
 NovelStatusType = Literal["draft", "outlining", "writing", "reviewing", "completed", "paused"]
 ProjectStatusType = Literal["draft", "simulating", "paused", "completed"]
 ProjectPipelineStage = Literal[
+    "draft",
+    "idea_pending",
     "imported",
     "world_ready",
     "environment_ready",
