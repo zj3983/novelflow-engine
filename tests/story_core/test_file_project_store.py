@@ -224,6 +224,52 @@ def test_extend_generated_plan_requires_and_appends_next_five_chapters(tmp_path)
     assert any(item["name"] == "新档房弟子" for item in saved["characters"])
 
 
+def test_writing_packet_uses_planned_cast_and_hides_long_term_secrets(tmp_path):
+    root = tmp_path / "novel"
+    characters = [
+        _planning_card("林照", "protagonist", age=19),
+        _planning_card("赵衡", "stage_antagonist"),
+        _planning_card("周满", "supporting"),
+        {
+            **_planning_card("顾长老", "long_term_antagonist"),
+            "story_drive": {
+                "immediate_goal": "让赵衡清掉旧档",
+                "failure_stakes": "旧案牵出自己",
+                "hidden_matters": ["亲手换掉旧名册"],
+            },
+            "secrets": ["真实身份是执法堂首座"],
+        },
+    ]
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "断香炉",
+            "character_profiles": characters,
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={
+            "story_id": "s-file",
+            "current_chapter": 0,
+            "world_facts": [],
+            "characters": characters,
+        },
+    )
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["chapters"][0]["cast"] = ["林照", "赵衡", "顾长老"]
+    (root / ".webnovel" / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
+
+    packet = store.writing_packet(1)
+
+    assert [card["name"] for card in packet["character_cards"]] == ["林照", "赵衡", "顾长老"]
+    assert [card["name"] for card in packet["state"]["characters"]] == ["林照", "赵衡", "顾长老"]
+    assert [card["name"] for card in packet["project"]["character_profiles"]] == ["林照", "赵衡", "顾长老"]
+    serialized = json.dumps(packet, ensure_ascii=False)
+    assert "亲手换掉旧名册" not in serialized
+    assert "真实身份是执法堂首座" not in serialized
+    assert packet["outline_context"]["active_arc"]["long_term_antagonist_traces"] == ["旧名册被换过"]
+
+
 def _character_portrait_state():
     return {
         "story_id": "s-file",

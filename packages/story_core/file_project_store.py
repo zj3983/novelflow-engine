@@ -12,7 +12,11 @@ from urllib.parse import quote
 
 from packages.story_core.chapter_direction import build_chapter_direction_options
 from packages.story_core.character_portraits import complete_character_portrait as complete_portrait
-from packages.story_core.character_profiles import merge_character_profile, normalize_character_profile
+from packages.story_core.character_profiles import (
+    merge_character_profile,
+    normalize_character_profile,
+    project_character_for_writer,
+)
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
@@ -2213,6 +2217,52 @@ class FileProjectStore:
         plan = generator.generate(self._planning_brief(), mode=mode, guidance=guidance.strip())
         return self.save_generated_outline_plan(plan, mode=mode)
 
+    def _writer_character_cards(
+        self,
+        state: dict[str, Any],
+        selected_outline: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        characters = [
+            dict(item)
+            for item in state.get("characters", [])
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+        chapter = selected_outline.get("chapter") if isinstance(selected_outline.get("chapter"), dict) else {}
+        cast = [str(item).strip() for item in chapter.get("cast", []) if str(item).strip()]
+
+        protagonist = next(
+            (
+                card
+                for card in characters
+                if str(card.get("character_tier") or "").strip() == "protagonist"
+                or str(card.get("role") or "").strip().lower() in {"protagonist", "主角"}
+            ),
+            None,
+        )
+        wanted = list(cast)
+        if protagonist:
+            protagonist_name = str(protagonist.get("name") or "").strip()
+            if protagonist_name and protagonist_name not in wanted:
+                wanted.insert(0, protagonist_name)
+        if not wanted:
+            wanted = [str(card.get("name") or "").strip() for card in characters[:6]]
+
+        selected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for identifier in wanted:
+            card = next(
+                (item for item in characters if self._character_matches(item, identifier)),
+                None,
+            )
+            if card is None:
+                continue
+            name = str(card.get("name") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            selected.append(project_character_for_writer(card))
+        return selected
+
     def update_project(self, patch: dict[str, Any]) -> dict[str, Any]:
         project = dict(self.project())
         state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
@@ -3119,7 +3169,7 @@ class FileProjectStore:
                 hard_locks.append(f"第{target}章结尾钩子：{hook}")
         hard_locks.extend(str(item) for item in progression_rules[:4] if str(item).strip())
         hard_locks.extend(str(item) for item in forbidden_breaks[:4] if str(item).strip())
-        characters = state.get("characters", []) if isinstance(state.get("characters"), list) else []
+        characters = self._writer_character_cards(state, selected_outline)
         chapter_direction_options = self._chapter_direction_options(state, project, int(target or 0))
         enabled_skill_ids = [
             str(item).strip()
@@ -3131,6 +3181,7 @@ class FileProjectStore:
             for purpose in ("writer", "dialogue", "style", "genre", "continuity", "reviewer")
         }
         packet_project = dict(project)
+        packet_project["character_profiles"] = characters
         if isinstance(project.get("world_blueprint"), dict):
             packet_blueprint = dict(world_blueprint)
             packet_blueprint.pop("current_arc", None)
@@ -3189,7 +3240,7 @@ class FileProjectStore:
                 "time_state": state.get("time_state") or world_blueprint.get("time_state", {}),
                 "author_constraints": state.get("author_constraints", []),
                 "world_facts": state.get("world_facts", [])[-20:],
-                "characters": state.get("characters", []),
+                "characters": characters,
             },
             "recent_chapters": recent,
             "latest_review": self.review(None) if numbers else {},
