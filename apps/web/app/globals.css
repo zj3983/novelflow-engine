@@ -2965,8 +2965,9 @@ body {
 
 .config-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 520px);
-  gap: 20px;
+  grid-template-columns: minmax(0, 920px);
+  justify-content: center;
+  gap: 14px;
   align-items: flex-start;
 }
 
@@ -3000,7 +3001,7 @@ body {
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
   flex-wrap: wrap;
 }
 
@@ -3048,6 +3049,12 @@ body {
   border: 1px solid rgba(182, 75, 50, 0.14);
 }
 
+.config-card__note--inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
 .config-card__footer {
   display: flex;
   justify-content: space-between;
@@ -3070,6 +3077,61 @@ body {
   gap: 10px;
   flex-wrap: wrap;
   margin: 0;
+}
+
+.config-advanced {
+  padding: 0;
+}
+
+.config-advanced__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.config-advanced__summary::-webkit-details-marker {
+  display: none;
+}
+
+.config-advanced__summary .config-card__title,
+.config-advanced__summary .config-card__subtitle {
+  display: block;
+}
+
+.config-advanced__summary .config-card__subtitle {
+  margin-top: 4px;
+}
+
+.config-advanced__chevron {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.config-advanced[open] .config-advanced__summary {
+  border-bottom: 1px solid var(--edge);
+}
+
+.config-advanced[open] .config-advanced__chevron {
+  visibility: hidden;
+  position: relative;
+}
+
+.config-advanced[open] .config-advanced__chevron::after {
+  content: "收起";
+  visibility: visible;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+.config-advanced>.config-grid {
+  padding: 18px 22px 22px;
 }
 
 @media (max-width: 960px) {

@@ -70,7 +70,7 @@ export function ConfigPageClient() {
         setRuntimeSettings(settings);
         setRuntimeStrategy(strategy);
         setPageStatus("idle");
-        setPageMessage("配置已载入，可以单独调整全局默认、Agent 覆盖和运行策略。");
+        setPageMessage("配置已载入。");
       } catch (error) {
         if (!active) {
           return;
@@ -158,7 +158,7 @@ export function ConfigPageClient() {
         return;
       }
       setPageStatus("success");
-      setPageMessage("全局默认 API、Agent 覆盖和运行策略已统一保存。");
+      setPageMessage("配置已保存。");
       saveResetTimeoutRef.current = setTimeout(() => {
         if (isMountedRef.current) {
           setPageStatus("idle");
@@ -186,6 +186,7 @@ export function ConfigPageClient() {
             ? runtimeStrategy.writer_model
             : runtimeStrategy.memory_model,
   }));
+  const usesOpenAICompatibleApi = runtimeSettings.global.provider === "openai";
 
   return (
     <main className="config-shell">
@@ -198,26 +199,15 @@ export function ConfigPageClient() {
           onTest={() => void testConnection("global")}
         />
 
-        <RuntimeStrategyCard value={runtimeStrategy} onChange={setRuntimeStrategy} />
-      </div>
-
-      <div className="config-shell__secondary">
-        <AgentOverrideGrid
-          agents={runtimeSettings.agents}
-          inherited={runtimeSettings.global}
-          statuses={connectionMap}
-          meta={agentCards}
-          onChange={updateAgent}
-          onTest={(agent) => void testConnection(agent)}
-        />
+        {usesOpenAICompatibleApi ? (
+          <RuntimeStrategyCard value={runtimeStrategy} onChange={setRuntimeStrategy} />
+        ) : null}
 
         <section className="config-card config-card--spacious" aria-label="统一保存">
           <div className="config-card__header">
             <div>
-              <p className="config-card__eyebrow">保存</p>
               <h2 className="config-card__title">统一保存</h2>
             </div>
-            <p className="config-card__subtitle">同时保存后端 runtime settings 和运行策略。</p>
           </div>
 
           <div className="config-savebar">
@@ -241,6 +231,19 @@ export function ConfigPageClient() {
           </div>
         </section>
       </div>
+
+      {usesOpenAICompatibleApi ? (
+        <div className="config-shell__secondary">
+          <AgentOverrideGrid
+            agents={runtimeSettings.agents}
+            inherited={runtimeSettings.global}
+            statuses={connectionMap}
+            meta={agentCards}
+            onChange={updateAgent}
+            onTest={(agent) => void testConnection(agent)}
+          />
+        </div>
+      ) : null}
     </main>
   );
 }

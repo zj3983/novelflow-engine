@@ -23,15 +23,14 @@ export function AgentConfigCard({
 }: AgentConfigCardProps) {
   const effectiveBaseUrl = value.base_url.trim() || inherited.base_url;
   const effectiveApiKey = value.api_key.trim() || inherited.api_key;
+  const hasOverride = Boolean(value.api_key.trim() || value.base_url.trim());
 
   return (
     <article className="config-card config-card--compact" aria-label={label}>
       <div className="config-card__header">
         <div>
-          <p className="config-card__eyebrow">{label}</p>
           <h3 className="config-card__title">{label}</h3>
         </div>
-        <p className="config-card__subtitle">留空则回退到全局默认配置。</p>
       </div>
 
       <div className="config-stack">
@@ -58,10 +57,11 @@ export function AgentConfigCard({
           />
         </div>
 
-        <div className="config-card__note">
-          <p className="hint">测试时会使用当前运行策略里的模型：{modelName || "未填写"}</p>
-          <p className="hint">继承后的地址：{effectiveBaseUrl || "未设置"}</p>
-          <p className="hint">继承后的密钥：{effectiveApiKey ? "已配置" : "未配置"}</p>
+        <div className="config-card__note config-card__note--inline">
+          <p className="hint">{hasOverride ? "使用独立覆盖" : "继承全局默认"}</p>
+          <p className="hint">模型：{modelName || "未填写"}</p>
+          <p className="hint">地址：{effectiveBaseUrl || "未设置"}</p>
+          <p className="hint">密钥：{effectiveApiKey ? "已配置" : "未配置"}</p>
         </div>
 
         <div className="config-card__footer">
