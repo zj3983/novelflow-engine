@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 import pytest
 from pydantic import ValidationError
@@ -383,8 +384,14 @@ def test_dict_catalog_conversion_keeps_one_snapshot_across_runtime_crud(
     class MutatingCatalog(Mapping[str, object]):
         def keys(self):
             keys = NOVEL_TYPE_CATALOG.keys()
-            NovelTypeLibrary().update("xuanhuan", {"name": "转换后的玄幻名"})
-            NovelTypeLibrary().delete(CUSTOM_ID)
+            writer = threading.Thread(
+                target=lambda: (
+                    NovelTypeLibrary().update("xuanhuan", {"name": "转换后的玄幻名"}),
+                    NovelTypeLibrary().delete(CUSTOM_ID),
+                )
+            )
+            writer.start()
+            writer.join()
             return keys
 
         def __getitem__(self, key):
@@ -404,11 +411,32 @@ def test_dict_catalog_conversion_keeps_one_snapshot_across_runtime_crud(
     assert CUSTOM_ID not in dict(NOVEL_TYPE_CATALOG.items())
 
 
+def test_saved_catalog_keys_refresh_after_same_thread_update_and_delete(
+    runtime_type_library,
+) -> None:
+    saved_keys = list(NOVEL_TYPE_CATALOG.keys())
+    first_key = saved_keys[0]
+
+    NovelTypeLibrary().update(str(first_key), {"name": "同线程立即改名"})
+
+    assert NOVEL_TYPE_CATALOG[first_key].label == "同线程立即改名"
+
+    saved_keys = list(NOVEL_TYPE_CATALOG.keys())
+    NovelTypeLibrary().delete(CUSTOM_ID)
+
+    for key in saved_keys:
+        if key == CUSTOM_ID:
+            with pytest.raises(KeyError):
+                NOVEL_TYPE_CATALOG[key]
+        else:
+            assert NOVEL_TYPE_CATALOG[key].plugin_id == key
+
+
 def test_catalog_snapshot_detects_external_file_replacement(runtime_type_library) -> None:
-    assert NOVEL_TYPE_CATALOG["xuanhuan"].label == XUANHUAN_NAME
+    saved_key = list(NOVEL_TYPE_CATALOG.keys())[0]
     path = runtime_type_library.path
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["overrides"]["xuanhuan"]["name"] = "外部进程改名"
+    payload["overrides"].setdefault(str(saved_key), {})["name"] = "外部进程改名"
     previous_stat = path.stat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.utime(
@@ -416,7 +444,7 @@ def test_catalog_snapshot_detects_external_file_replacement(runtime_type_library
         ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns + 1_000_000_000),
     )
 
-    assert NOVEL_TYPE_CATALOG["xuanhuan"].label == "外部进程改名"
+    assert NOVEL_TYPE_CATALOG[saved_key].label == "外部进程改名"
 
 
 def test_build_chapter_seed_reuses_runtime_type_snapshot(

@@ -53,12 +53,17 @@ _PATH_LOCKS: dict[str, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
 _LIBRARY_REVISION = 0
 _LIBRARY_REVISION_LOCK = threading.Lock()
+_LIBRARY_REVISION_WRITER_THREAD_ID: int | None = None
+_LIBRARY_WRITER_REVISIONS: dict[int, int] = {}
 
 
 def _bump_library_revision() -> None:
-    global _LIBRARY_REVISION
+    global _LIBRARY_REVISION, _LIBRARY_REVISION_WRITER_THREAD_ID
     with _LIBRARY_REVISION_LOCK:
         _LIBRARY_REVISION += 1
+        writer_thread_id = threading.get_ident()
+        _LIBRARY_REVISION_WRITER_THREAD_ID = writer_thread_id
+        _LIBRARY_WRITER_REVISIONS[writer_thread_id] = _LIBRARY_REVISION
 
 
 def _string_tuple(value: Any) -> tuple[str, ...]:
@@ -383,6 +388,8 @@ def novel_type_library_snapshot_token() -> tuple[Any, ...]:
     library = NovelTypeLibrary()
     with _LIBRARY_REVISION_LOCK:
         revision = _LIBRARY_REVISION
+        writer_thread_id = _LIBRARY_REVISION_WRITER_THREAD_ID
+        writer_revisions = tuple(sorted(_LIBRARY_WRITER_REVISIONS.items()))
 
     def fingerprint(path: Path) -> tuple[Any, ...]:
         try:
@@ -396,7 +403,13 @@ def novel_type_library_snapshot_token() -> tuple[Any, ...]:
             getattr(stat, "st_ino", 0),
         )
 
-    return revision, fingerprint(library.path), fingerprint(library.backup_path)
+    return (
+        revision,
+        writer_thread_id,
+        writer_revisions,
+        fingerprint(library.path),
+        fingerprint(library.backup_path),
+    )
 
 
 def get_novel_type(type_id: str) -> NovelTypeRecord | None:

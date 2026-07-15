@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from collections.abc import ItemsView, Iterator, KeysView, Mapping, ValuesView
 from copy import deepcopy
 from dataclasses import dataclass
@@ -39,35 +40,46 @@ _SNAPSHOT_TOKEN: tuple[Any, ...] | None = None
 _RECORD_SNAPSHOT: dict[str, Any] = {}
 _CATALOG_SNAPSHOT: dict[str, NovelType] = {}
 _CONVERSION_KEYS = threading.local()
+_CONVERSION_PIN_TTL_SECONDS = 0.25
 
 
-def _refresh_snapshot() -> tuple[dict[str, Any], dict[str, NovelType]]:
+def _current_snapshot_token() -> tuple[Any, ...]:
     from packages.story_core.novel_type_library import (
         list_novel_types,
         novel_type_library_snapshot_token,
     )
 
+    return (*novel_type_library_snapshot_token(), id(list_novel_types))
+
+
+def _refresh_snapshot() -> tuple[
+    dict[str, Any],
+    dict[str, NovelType],
+    tuple[Any, ...] | None,
+]:
+    from packages.story_core.novel_type_library import list_novel_types
+
     global _SNAPSHOT_TOKEN, _RECORD_SNAPSHOT, _CATALOG_SNAPSHOT
     with _SNAPSHOT_LOCK:
         for _ in range(3):
-            token = (*novel_type_library_snapshot_token(), id(list_novel_types))
+            token = _current_snapshot_token()
             if token == _SNAPSHOT_TOKEN:
-                return _RECORD_SNAPSHOT, _CATALOG_SNAPSHOT
+                return _RECORD_SNAPSHOT, _CATALOG_SNAPSHOT, token
             records = list_novel_types()
-            final_token = (*novel_type_library_snapshot_token(), id(list_novel_types))
+            final_token = _current_snapshot_token()
             if final_token == token:
                 _RECORD_SNAPSHOT = {record.id: record for record in records}
                 _CATALOG_SNAPSHOT = {
                     record.id: _catalog_item(record) for record in records
                 }
                 _SNAPSHOT_TOKEN = token
-                return _RECORD_SNAPSHOT, _CATALOG_SNAPSHOT
+                return _RECORD_SNAPSHOT, _CATALOG_SNAPSHOT, token
 
         record_snapshot = {record.id: record for record in records}
         catalog_snapshot = {
             record.id: _catalog_item(record) for record in records
         }
-        return record_snapshot, catalog_snapshot
+        return record_snapshot, catalog_snapshot, None
 
 
 def _record_snapshot() -> dict[str, Any]:
@@ -78,26 +90,76 @@ def _catalog_snapshot() -> dict[str, NovelType]:
     return _refresh_snapshot()[1]
 
 
+def _catalog_snapshot_with_token() -> tuple[
+    dict[str, NovelType],
+    tuple[Any, ...] | None,
+]:
+    _, snapshot, token = _refresh_snapshot()
+    return snapshot, token
+
+
 def _fresh_key(key: str) -> str:
     return bytes(key, "utf-8").decode("utf-8")
 
 
-def _pin_conversion_key(key: str, snapshot: dict[str, NovelType]) -> None:
-    registry = getattr(_CONVERSION_KEYS, "registry", None)
-    if registry is None:
-        registry = {}
-        _CONVERSION_KEYS.registry = registry
-    registry[id(key)] = (key, snapshot)
+@dataclass
+class _ConversionPin:
+    snapshot: dict[str, NovelType]
+    token: tuple[Any, ...]
+    keys: dict[int, str]
+    expected_key_ids: list[int]
+    remaining_key_count: int
+    next_key_index: int
+    expires_at: float
+
+
+def _writer_revision(token: tuple[Any, ...], thread_id: int) -> int:
+    return dict(token[2]).get(thread_id, 0)
+
+
+def _pin_allows_current_token(
+    pin: _ConversionPin,
+    current_token: tuple[Any, ...],
+) -> bool:
+    if current_token == pin.token:
+        return True
+    if current_token[-1] != pin.token[-1]:
+        return False
+    current_thread_id = threading.get_ident()
+    if _writer_revision(current_token, current_thread_id) != _writer_revision(
+        pin.token, current_thread_id
+    ):
+        return False
+    return current_token[0] > pin.token[0]
 
 
 def _conversion_snapshot_for_key(key: str) -> dict[str, NovelType] | None:
-    registry = getattr(_CONVERSION_KEYS, "registry", None)
-    if not registry:
+    pin = getattr(_CONVERSION_KEYS, "pin", None)
+    if pin is None:
         return None
-    entry = registry.pop(id(key), None)
-    if entry is None or entry[0] is not key:
+    if time.monotonic() > pin.expires_at:
+        _CONVERSION_KEYS.pin = None
         return None
-    return entry[1]
+    entry = pin.keys.get(id(key))
+    if entry is None or entry is not key:
+        _CONVERSION_KEYS.pin = None
+        return None
+    if (
+        pin.next_key_index >= len(pin.expected_key_ids)
+        or pin.expected_key_ids[pin.next_key_index] != id(key)
+    ):
+        _CONVERSION_KEYS.pin = None
+        return None
+    if not _pin_allows_current_token(pin, _current_snapshot_token()):
+        _CONVERSION_KEYS.pin = None
+        return None
+
+    pin.next_key_index += 1
+    pin.remaining_key_count -= 1
+    snapshot = pin.snapshot
+    if pin.remaining_key_count == 0:
+        _CONVERSION_KEYS.pin = None
+    return snapshot
 
 
 class _CatalogKeysView(KeysView[str]):
@@ -105,16 +167,28 @@ class _CatalogKeysView(KeysView[str]):
         self,
         mapping: Mapping[str, NovelType],
         snapshot: dict[str, NovelType],
+        token: tuple[Any, ...] | None,
     ) -> None:
         super().__init__(mapping)
         self._snapshot = snapshot
+        self._token = token
+        self._expires_at = time.monotonic() + _CONVERSION_PIN_TTL_SECONDS
 
     def __iter__(self) -> Iterator[str]:
-        _CONVERSION_KEYS.registry = {}
-        for key in self._snapshot:
-            conversion_key = _fresh_key(key)
-            _pin_conversion_key(conversion_key, self._snapshot)
-            yield conversion_key
+        conversion_keys = [_fresh_key(key) for key in self._snapshot]
+        if self._token is not None and time.monotonic() <= self._expires_at:
+            _CONVERSION_KEYS.pin = _ConversionPin(
+                snapshot=self._snapshot,
+                token=self._token,
+                keys={id(key): key for key in conversion_keys},
+                expected_key_ids=[id(key) for key in conversion_keys],
+                remaining_key_count=len(conversion_keys),
+                next_key_index=0,
+                expires_at=self._expires_at,
+            )
+        else:
+            _CONVERSION_KEYS.pin = None
+        yield from conversion_keys
 
 
 
@@ -139,8 +213,8 @@ class _RuntimeNovelTypeCatalog(Mapping[str, NovelType]):
         return _catalog_snapshot().values()
 
     def keys(self) -> KeysView[str]:
-        snapshot = _catalog_snapshot()
-        return _CatalogKeysView(snapshot, snapshot)
+        snapshot, token = _catalog_snapshot_with_token()
+        return _CatalogKeysView(snapshot, snapshot, token)
 
     def copy(self) -> dict[str, NovelType]:
         return dict(_catalog_snapshot())

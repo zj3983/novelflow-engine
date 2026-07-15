@@ -192,6 +192,21 @@ def test_dict_runtime_catalog_uses_one_library_snapshot(monkeypatch):
     assert all(key == item.plugin_id for key, item in converted.items())
 
 
+def test_runtime_catalog_conversion_pin_has_count_and_short_expiry(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(novel_type_catalog.time, "monotonic", lambda: clock[0])
+
+    saved_keys = list(NOVEL_TYPE_CATALOG.keys())
+    pin = novel_type_catalog._CONVERSION_KEYS.pin
+
+    assert pin.remaining_key_count == len(saved_keys)
+    assert pin.expires_at == 100.0 + novel_type_catalog._CONVERSION_PIN_TTL_SECONDS
+    clock[0] = pin.expires_at + 0.001
+
+    assert NOVEL_TYPE_CATALOG[saved_keys[0]].plugin_id == saved_keys[0]
+    assert novel_type_catalog._CONVERSION_KEYS.pin is None
+
+
 def test_eastern_fantasy_catalog_options_explain_their_distinct_promises():
     xuanhuan = NOVEL_TYPE_CATALOG["xuanhuan"]
     xianxia = NOVEL_TYPE_CATALOG["xianxia"]
