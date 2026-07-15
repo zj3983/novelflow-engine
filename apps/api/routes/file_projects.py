@@ -6,7 +6,7 @@ import os
 import re
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -18,11 +18,13 @@ from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import AgentRuntimeState, AgentSettings
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
+from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
 from packages.story_core.simplified_review import build_simplified_review
 
 
 router = APIRouter()
 opening_direction_generator = LLMOpeningDirectionGenerator()
+outline_planning_generator = LLMOutlinePlanningGenerator()
 FILE_ID_PREFIX = "file:"
 FILE_GENERATION_JOB_STALE_SECONDS = 15 * 60
 _file_generation_executor = ThreadPoolExecutor(max_workers=1)
@@ -44,6 +46,18 @@ class FileProjectGenerateNextRequest(BaseModel):
 class OpeningDirectionGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    guidance: str = Field(default="", max_length=1000)
+
+    @field_validator("guidance", mode="before")
+    @classmethod
+    def trim_guidance(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+class OutlinePlanGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    mode: Literal["initial", "regenerate", "extend"] = "initial"
     guidance: str = Field(default="", max_length=1000)
 
     @field_validator("guidance", mode="before")
@@ -440,6 +454,22 @@ def init_file_project_routes() -> APIRouter:
             return store.project_outline()
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/file-projects/{project_id}/outline/generate")
+    def generate_file_project_outline_plan(
+        project_id: str,
+        payload: OutlinePlanGenerationRequest,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.generate_outline_plan(
+                outline_planning_generator,
+                mode=payload.mode,
+                guidance=payload.guidance,
+            )
+        except ValueError as exc:
+            status_code = 502 if str(exc) == "outline_planning_generation_failed" else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     @router.put("/file-projects/{project_id}/outline")
     def update_file_project_outline(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
