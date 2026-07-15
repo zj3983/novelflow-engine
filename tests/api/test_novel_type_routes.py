@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from apps.api.main import app
+from apps.api.routes import stories as story_routes
+from apps.api.storage import SQLiteStoryStore
+from packages.story_core.models import NovelProject
+
+
+@pytest.fixture
+def novel_type_api(tmp_path: Path, monkeypatch):
+    types_path = tmp_path / "novel-types.json"
+    file_projects_dir = tmp_path / "file-projects"
+    sqlite_store = SQLiteStoryStore(str(tmp_path / "stories.db"))
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_NOVEL_TYPES_PATH", str(types_path))
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(file_projects_dir))
+    monkeypatch.setattr(story_routes, "store", sqlite_store)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client, sqlite_store, file_projects_dir
+
+
+def _custom_payload(type_id: str = "sports") -> dict:
+    return {
+        "id": type_id,
+        "name": "  Sports fiction  ",
+        "description": "  Competition and team growth.  ",
+        "keywords": ["  league  ", "championship"],
+        "core_promises": ["Every match changes the standings."],
+        "ledger_fields": ["ranking"],
+        "rulebook": {
+            "progression_rules": ["Training has a visible cost."],
+            "economy_rules": [],
+            "quest_rules": [],
+            "faction_rules": ["Teams pursue conflicting goals."],
+            "panel_rules": [],
+            "chapter_formula": ["Prepare, compete, recover."],
+            "forbidden_breaks": ["No unexplained power spikes."],
+        },
+        "quality_checks": ["The result changes future choices."],
+        "trope_templates": [{"name": "underdog season", "beats": ["loss", "rebuild"]}],
+    }
+
+
+def _create_file_project(root: Path, project_id: str, genre_ids: list[str]) -> None:
+    project_root = root / project_id
+    story_system = project_root / ".story-system"
+    webnovel = project_root / ".webnovel"
+    story_system.mkdir(parents=True)
+    webnovel.mkdir(parents=True)
+    (story_system / "MASTER_SETTING.json").write_text("{}", encoding="utf-8")
+    (webnovel / "state.json").write_text(
+        json.dumps({"world_blueprint": {"genre_plugin_ids": genre_ids}}),
+        encoding="utf-8",
+    )
+    (webnovel / "project.json").write_text(
+        json.dumps(
+            {
+                "project_id": project_id,
+                "title": project_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_get_returns_complete_types_in_stable_order(novel_type_api):
+    client, _, _ = novel_type_api
+
+    first = client.get("/novel-types")
+    second = client.get("/novel-types")
+
+    assert first.status_code == 200
+    assert first.json() == second.json()
+    assert [item["id"] for item in first.json()] == [
+        "generic_webnovel",
+        "game_webnovel",
+        "xuanhuan",
+        "xianxia",
+        "urban",
+        "romance",
+        "suspense",
+        "rules_mystery",
+    ]
+    assert set(first.json()[0]) == {
+        "id",
+        "name",
+        "description",
+        "keywords",
+        "core_promises",
+        "ledger_fields",
+        "rulebook",
+        "quality_checks",
+        "trope_templates",
+        "builtin",
+    }
+
+
+def test_create_edit_and_delete_unused_custom_type(novel_type_api):
+    client, _, _ = novel_type_api
+
+    created = client.post("/novel-types", json=_custom_payload())
+
+    assert created.status_code == 201
+    assert created.json()["id"] == "sports"
+    assert created.json()["name"] == "Sports fiction"
+    assert created.json()["keywords"] == ["league", "championship"]
+    assert created.json()["builtin"] is False
+
+    updated_payload = _custom_payload()
+    updated_payload["name"] = "Sports drama"
+    updated = client.put("/novel-types/sports", json=updated_payload)
+
+    assert updated.status_code == 200
+    assert updated.json()["id"] == "sports"
+    assert updated.json()["name"] == "Sports drama"
+    assert client.delete("/novel-types/sports").status_code == 204
+    assert all(item["id"] != "sports" for item in client.get("/novel-types").json())
+
+
+def test_builtin_can_be_edited_but_not_renamed_or_deleted(novel_type_api):
+    client, _, _ = novel_type_api
+    original = next(
+        item for item in client.get("/novel-types").json() if item["id"] == "xuanhuan"
+    )
+    original["name"] = "Edited xuanhuan"
+    original.pop("builtin")
+
+    edited = client.put("/novel-types/xuanhuan", json=original)
+    renamed = client.put("/novel-types/xuanhuan", json={**original, "id": "renamed"})
+    deleted = client.delete("/novel-types/xuanhuan")
+
+    assert edited.status_code == 200
+    assert edited.json()["id"] == "xuanhuan"
+    assert edited.json()["name"] == "Edited xuanhuan"
+    assert renamed.status_code == 422
+    assert deleted.status_code == 409
+    assert "built-in" in deleted.json()["detail"]
+
+
+def test_unknown_duplicate_and_custom_id_conflict_errors(novel_type_api):
+    client, _, _ = novel_type_api
+    assert client.put("/novel-types/missing", json=_custom_payload("missing")).status_code == 404
+    assert client.delete("/novel-types/missing").status_code == 404
+
+    assert client.post("/novel-types", json=_custom_payload()).status_code == 201
+    duplicate = client.post("/novel-types", json=_custom_payload())
+    mismatched = client.put("/novel-types/sports", json=_custom_payload("history"))
+
+    assert duplicate.status_code == 409
+    assert mismatched.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {**_custom_payload(), "unknown": "ignored"},
+        {**_custom_payload(), "name": "   "},
+        {**_custom_payload(), "keywords": ["valid", "   "]},
+        {**_custom_payload(), "rulebook": {"unknown_rules": ["no"]}},
+        {**_custom_payload(), "keywords": "league"},
+    ],
+)
+def test_create_rejects_unknown_or_invalid_fields(novel_type_api, payload):
+    client, _, _ = novel_type_api
+
+    response = client.post("/novel-types", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_delete_rejects_custom_type_used_by_sqlite_project(novel_type_api):
+    client, sqlite_store, _ = novel_type_api
+    assert client.post("/novel-types", json=_custom_payload()).status_code == 201
+    sqlite_store.create_project(
+        NovelProject(
+            project_id="sqlite-project",
+            title="SQLite project",
+            world_blueprint={"genre_plugin_ids": ["urban", "sports"]},
+        )
+    )
+
+    response = client.delete("/novel-types/sports")
+
+    assert response.status_code == 409
+    assert "sqlite-project" in response.json()["detail"]
+    assert "sports" in {item["id"] for item in client.get("/novel-types").json()}
+
+
+def test_delete_rejects_custom_type_used_by_file_project(novel_type_api):
+    client, _, file_projects_dir = novel_type_api
+    assert client.post("/novel-types", json=_custom_payload()).status_code == 201
+    _create_file_project(file_projects_dir, "file-project", ["sports"])
+
+    response = client.delete("/novel-types/sports")
+
+    assert response.status_code == 409
+    assert "file-project" in response.json()["detail"]
+    assert "sports" in {item["id"] for item in client.get("/novel-types").json()}
