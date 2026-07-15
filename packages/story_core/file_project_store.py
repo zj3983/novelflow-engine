@@ -21,7 +21,7 @@ from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.models import CharacterState, StoryState
-from packages.story_core.novel_type_catalog import normalize_novel_type_ids
+from packages.story_core.novel_type_catalog import normalize_novel_type_ids, runtime_novel_type
 from packages.story_core.opening_directions import OpeningBrief, OpeningDirectionSet
 from packages.story_core.outline_planning import GeneratedOutlinePlan, validate_generated_opening_plan
 from packages.story_core.outline_planning_generation import OutlinePlanningBrief
@@ -2364,7 +2364,23 @@ class FileProjectStore:
             project["seed_outline"] = patch["seed_outline"]
             state["outline"] = patch["seed_outline"]
         if patch.get("world_blueprint") is not None:
-            project["world_blueprint"] = patch["world_blueprint"]
+            world_blueprint = patch["world_blueprint"]
+            project["world_blueprint"] = world_blueprint
+            if isinstance(world_blueprint, dict) and "genre_plugin_ids" in world_blueprint:
+                raw_genre_ids = world_blueprint.get("genre_plugin_ids")
+                genre_plugin_ids = normalize_novel_type_ids(raw_genre_ids)
+                explicitly_empty = raw_genre_ids in (None, "", []) or (
+                    isinstance(raw_genre_ids, list)
+                    and not any(str(item or "").strip() for item in raw_genre_ids)
+                )
+                if genre_plugin_ids:
+                    state["genre_plugin_ids"] = genre_plugin_ids
+                    primary_type = runtime_novel_type(genre_plugin_ids[0])
+                    if primary_type is not None:
+                        state["genre"] = primary_type.name
+                elif explicitly_empty:
+                    state["genre_plugin_ids"] = []
+                    state["genre"] = ""
         if patch.get("current_focus") is not None:
             project["current_focus"] = patch["current_focus"]
             state["current_focus"] = patch["current_focus"]

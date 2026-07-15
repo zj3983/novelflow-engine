@@ -185,6 +185,73 @@ def test_file_project_store_story_state_and_chapter_seed_preserve_runtime_type_i
     assert rule in seed["rulebook"]["chapter_formula"]
 
 
+def test_update_project_switches_persisted_story_state_and_seed_to_custom_type(
+    runtime_type_library,
+    tmp_path,
+) -> None:
+    created = create_file_project(
+        tmp_path / "projects",
+        FileProjectCreateSpec(
+            mode="blank",
+            title="类型切换写作链路",
+            novel_type_id="xuanhuan",
+        ),
+        project_id_factory=lambda: "p-switch-to-sports",
+    )
+    store = FileProjectStore(created.root)
+
+    store.update_project(
+        {
+            "world_blueprint": {
+                "genre_plugin_ids": [" SPORTS "],
+                "settings_marker": "preserved replacement payload",
+            }
+        }
+    )
+
+    project = store.project()
+    state = store.state()
+    story = StoryState.model_validate(
+        store._story_state_payload_for_direction(state, project, 1)
+    )
+    seed = build_chapter_seed(story, 1)
+
+    assert project["world_blueprint"] == {
+        "genre_plugin_ids": [" SPORTS "],
+        "settings_marker": "preserved replacement payload",
+    }
+    assert state["genre_plugin_ids"] == [CUSTOM_ID]
+    assert story.genre_plugin_ids == [CUSTOM_ID]
+    assert seed["genre_plugins"] == ["generic_webnovel", CUSTOM_ID]
+    assert CUSTOM_PROMISE in seed["core_promises"]
+    assert CUSTOM_RULE in seed["rulebook"]["chapter_formula"]
+    assert XUANHUAN_PROMISE not in seed["core_promises"]
+    assert XUANHUAN_RULE not in seed["rulebook"]["chapter_formula"]
+
+
+def test_update_project_explicit_type_clear_does_not_leave_stale_state_id(
+    runtime_type_library,
+    tmp_path,
+) -> None:
+    created = create_file_project(
+        tmp_path / "projects",
+        FileProjectCreateSpec(mode="blank", title="清空类型", novel_type_id="xuanhuan"),
+        project_id_factory=lambda: "p-clear-runtime-type",
+    )
+    store = FileProjectStore(created.root)
+
+    store.update_project({"world_blueprint": {"genre_plugin_ids": []}})
+
+    state = store.state()
+    story = StoryState.model_validate(
+        store._story_state_payload_for_direction(state, store.project(), 1)
+    )
+    seed = build_chapter_seed(story, 1)
+    assert state["genre_plugin_ids"] == []
+    assert story.genre_plugin_ids == []
+    assert "xuanhuan" not in seed["genre_plugins"]
+
+
 def test_catalog_is_dynamic_view_of_library_bootstrap(runtime_type_library) -> None:
     assert not isinstance(NOVEL_TYPE_CATALOG, dict)
     assert NOVEL_TYPE_CATALOG["xuanhuan"].label == XUANHUAN_NAME

@@ -9,7 +9,10 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from apps.api.routes import file_projects as file_project_routes
 from apps.api.routes import stories as story_routes
-from packages.story_core.models import AgentSettings
+from packages.story_core.chapter_seed import build_chapter_seed
+from packages.story_core.file_project_store import FileProjectStore
+from packages.story_core.models import AgentSettings, StoryState
+from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.runtime_config import OpenAIRuntimeSettings
 
@@ -42,6 +45,49 @@ def test_blank_file_project_creation_returns_201_and_is_readable(creation_api):
         key: value for key, value in project.items() if key != "next_path"
     }
     legacy_create.assert_not_called()
+
+
+def test_file_project_settings_update_syncs_runtime_genre_id_to_state(
+    creation_api,
+    monkeypatch,
+    tmp_path,
+):
+    client, _, _ = creation_api
+    monkeypatch.setenv(
+        "NOVEL_AUTOGROWTH_NOVEL_TYPES_PATH",
+        str(tmp_path / "settings-novel-types.json"),
+    )
+    NovelTypeLibrary().create(
+        {
+            "id": "sports",
+            "name": "竞技体育",
+            "core_promises": ["设置页竞技承诺"],
+            "rulebook": {"chapter_formula": ["设置页竞技规则"]},
+        }
+    )
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Settings Type Switch", "novel_type_id": "xuanhuan"},
+    ).json()
+
+    response = client.put(
+        f"/file-projects/{created['project_id']}",
+        json={"world_blueprint": {"genre_plugin_ids": [" SPORTS "]}},
+    )
+
+    assert response.status_code == 200
+    store = FileProjectStore(Path(created["source_path"]))
+    project = store.project()
+    state = store.state()
+    story = StoryState.model_validate(
+        store._story_state_payload_for_direction(state, project, 1)
+    )
+    seed = build_chapter_seed(story, 1)
+    assert project["world_blueprint"]["genre_plugin_ids"] == [" SPORTS "]
+    assert state["genre_plugin_ids"] == ["sports"]
+    assert seed["genre_plugins"] == ["generic_webnovel", "sports"]
+    assert "设置页竞技承诺" in seed["core_promises"]
+    assert "设置页竞技规则" in seed["rulebook"]["chapter_formula"]
 
 
 def test_file_project_list_ignores_in_progress_dot_directories(creation_api):
