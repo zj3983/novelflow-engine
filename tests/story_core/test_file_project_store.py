@@ -132,6 +132,66 @@ def test_save_generated_plan_updates_outline_project_and_state_together(tmp_path
     assert list((root / ".story-system" / "plans").glob("*-initial.json"))
 
 
+def test_save_generated_plan_builds_canonical_relationship_graph(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    payload = _generated_opening_plan().model_dump(mode="json")
+    payload["characters"][0]["relationship_notes"] = [
+        {
+            "target": payload["characters"][1]["name"],
+            "relation_type": "上下级",
+            "current_attitude": "彼此提防",
+            "shared_interest_or_conflict": "旧名册",
+        }
+    ]
+
+    store.save_generated_outline_plan(payload, mode="initial")
+
+    graph = store.project()["relationship_graph"]
+    assert len(graph) == 1
+    assert graph[0]["source"] == payload["characters"][0]["name"]
+    assert graph[0]["target"] == payload["characters"][1]["name"]
+    assert graph[0]["relation_type"] == "上下级"
+    assert graph[0]["id"].startswith("rel-")
+
+
+def test_project_derives_legacy_character_relations_without_writing_file(tmp_path):
+    project = {
+        "project_id": "p-file",
+        "title": "Legacy",
+        "character_profiles": [
+            {
+                "name": "Lin Zhao",
+                "role": "protagonist",
+                "relationship_notes": [{"target": "Zhao Heng", "relation_type": "rivals"}],
+            }
+        ],
+    }
+    store = _make_minimal_file_project(tmp_path / "novel", project=project)
+    project_path = store.webnovel_dir / "project.json"
+    before = project_path.read_text(encoding="utf-8")
+
+    loaded = store.project()
+
+    assert loaded["relationship_graph"][0]["relation_type"] == "rivals"
+    assert project_path.read_text(encoding="utf-8") == before
+
+    store.update_project({"relationship_graph": []})
+
+    assert store.project()["relationship_graph"] == []
+
+
+def test_update_project_normalizes_relationship_graph(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+
+    updated = store.update_project(
+        {"relationship_graph": [{"source": "Lin Zhao", "target": "Zhao Heng", "bond": "rivals", "trust": 140}]}
+    )
+
+    assert updated["relationship_graph"][0]["id"].startswith("rel-")
+    assert updated["relationship_graph"][0]["relation_type"] == "rivals"
+    assert updated["relationship_graph"][0]["trust"] == 100
+
+
 def test_generated_plan_transaction_restores_old_files_on_replace_failure(tmp_path, monkeypatch):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(root)
@@ -284,6 +344,39 @@ def test_writing_packet_uses_planned_cast_and_hides_long_term_secrets(tmp_path):
     assert "亲手换掉旧名册" not in serialized
     assert "真实身份是执法堂首座" not in serialized
     assert packet["outline_context"]["active_arc"]["long_term_antagonist_traces"] == ["旧名册被换过"]
+
+
+def test_writing_packet_only_includes_relationships_within_chapter_cast(tmp_path):
+    characters = [
+        _planning_card("Lin Zhao", "protagonist", age=19),
+        _planning_card("Zhao Heng", "stage_antagonist"),
+        _planning_card("Zhou Man", "supporting"),
+    ]
+    project = {
+        "project_id": "p-file",
+        "title": "Relations",
+        "character_profiles": characters,
+        "relationship_graph": [
+            {"source": "Lin Zhao", "target": "Zhao Heng", "bond": "rivals", "private_notes": ["hidden patron"]},
+            {"source": "Lin Zhao", "target": "Zhou Man", "bond": "friends"},
+        ],
+    }
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project=project,
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": [], "characters": characters},
+    )
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["chapters"][0]["cast"] = ["Lin Zhao", "Zhao Heng"]
+    (store.webnovel_dir / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
+
+    packet = store.writing_packet(1)
+
+    assert [(item["source"], item["target"]) for item in packet["relationship_context"]] == [
+        ("Lin Zhao", "Zhao Heng")
+    ]
+    assert "private_notes" not in packet["relationship_context"][0]
+    assert "relationship_graph" not in packet["project"]
 
 
 def _character_portrait_state():
@@ -1313,6 +1406,43 @@ def test_file_project_store_filters_stale_non_character_profiles(tmp_path):
     names = [profile["name"] for profile in synced["character_profiles"]]
     assert names == ["药剂师洛婶"]
     assert synced["character_profiles"][0]["memory"][-1] == "第1章：委托十份一批。"
+
+
+def test_sync_project_after_chapter_applies_relationship_state_changes(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    project = {
+        "project_id": "p-file",
+        "relationship_graph": [
+            {"source": "Lin Zhao", "target": "Zhao Heng", "origin": "first meeting", "trust": 40, "tension": 20}
+        ],
+    }
+    state = {
+        "characters": [
+            {
+                "name": "Lin Zhao",
+                "role": "protagonist",
+                "relationships": {
+                    "Zhao Heng": {"target": "Zhao Heng", "bond": "open rivals", "trust": 10, "tension": 85}
+                },
+            }
+        ]
+    }
+    chapter = {
+        "chapter_number": 3,
+        "chapter_title": "Public conflict",
+        "body": "Lin Zhao leaves evidence in public.",
+        "chapter_summary": {"summary": "Lin Zhao leaves evidence in public.", "facts": [], "next_focus": "continue"},
+    }
+
+    synced = store._sync_project_after_chapter(project, state, chapter)
+
+    edge = synced["relationship_graph"][0]
+    assert edge["origin"] == "first meeting"
+    assert edge["bond"] == "open rivals"
+    assert edge["trust"] == 10
+    assert edge["tension"] == 85
+    assert edge["last_changed_chapter"] == 3
+    assert edge["changes"][-1]["chapter_number"] == 3
 
 
 def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp_path):

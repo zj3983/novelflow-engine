@@ -204,7 +204,6 @@ export default function CharactersPage() {
         current_life_profile: draft.current_life_profile,
         story_drive: draft.story_drive,
         dialogue_examples: draft.dialogue_examples,
-        relationship_notes: draft.relationship_notes,
         personality_portrait: draft.personality_portrait,
       });
       setEditingName(null);
@@ -262,6 +261,9 @@ export default function CharactersPage() {
               const psychRows = richProfileEntries(shown?.psychological_profile);
               const moralRows = richProfileEntries(shown?.moral_profile);
               const portrait = shown?.personality_portrait ?? {};
+              const graphRelations = (project?.relationship_graph ?? []).filter(
+                (relation) => relation.source === shown?.name || relation.target === shown?.name,
+              );
 
               return (
                 <article className="ws-character-card" key={character.name}>
@@ -315,10 +317,10 @@ export default function CharactersPage() {
                         {isEditing ? <label><span>每行一句</span><textarea rows={4} value={(draft.dialogue_examples ?? []).join("\n")} onChange={(event) => setDraft({ ...draft, dialogue_examples: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean) })} /></label> : <ul>{cleanLines(shown?.dialogue_examples, 8).map((line) => <li key={line}>{line}</li>)}</ul>}
                       </section>
                     ) : null}
-                    {(shown?.relationship_notes ?? []).length > 0 ? (
+                    {graphRelations.length > 0 ? (
                       <section className="ws-character-concrete__section">
                         <h3>人物关系</h3>
-                        <div className="ws-character-relations">{shown?.relationship_notes?.map((relation) => <div key={`${relation.target}-${relation.relation_type ?? ""}`}><strong>{relation.target}</strong><p>{[relation.relation_type, relation.current_attitude, relation.shared_interest_or_conflict].filter(Boolean).join("；")}</p></div>)}</div>
+                        <div className="ws-character-relations">{graphRelations.map((relation) => { const other = relation.source === shown?.name ? relation.target : relation.source; return <div key={relation.id ?? `${relation.source}-${relation.target}`}><strong>{other}</strong><p>{[relation.relation_type ?? relation.bond, relation.current_state, relation.shared_interest_or_conflict].filter(Boolean).join("；")}</p></div>; })}</div>
                       </section>
                     ) : null}
                   </div>

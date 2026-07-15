@@ -526,11 +526,23 @@ export type ImportedWorldEntry = {
 };
 
 export type ImportedRelationshipEdge = {
+  id?: string;
   source: string;
   target: string;
+  relation_type?: string;
   bond?: string;
+  origin?: string;
+  current_state?: string;
+  shared_interest_or_conflict?: string;
   tension?: number;
   trust?: number;
+  source_knowledge?: string[];
+  target_knowledge?: string[];
+  private_notes?: string[];
+  status?: "active" | "ended" | "hidden";
+  first_chapter?: number;
+  last_changed_chapter?: number;
+  changes?: Array<{ chapter_number?: number; summary?: string; trust?: number | null; tension?: number | null }>;
 };
 
 export type ImportedGenrePlugin = {
