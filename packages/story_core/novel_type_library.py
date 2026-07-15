@@ -22,7 +22,7 @@ from packages.story_core.genre_types import (
     XUANHUAN,
     GenrePlugin,
 )
-from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG
+from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG, normalize_novel_type_id
 
 
 _BUILTIN_PLUGINS = (
@@ -64,6 +64,11 @@ def _trope_templates(value: Any) -> tuple[dict[str, object], ...]:
     if isinstance(value, Mapping):
         value = (value,)
     return tuple(deepcopy(dict(item)) for item in value if isinstance(item, Mapping))
+
+
+def _canonical_type_id(value: Any) -> str:
+    type_id = str(value or "").strip()
+    return normalize_novel_type_id(type_id) or type_id.casefold()
 
 
 @dataclass
@@ -188,6 +193,7 @@ class NovelTypeLibrary:
         self, stored: Mapping[str, Mapping[str, Any]]
     ) -> dict[str, NovelTypeRecord]:
         records: dict[str, NovelTypeRecord] = {}
+        canonical_ids: set[str] = set()
         for type_id, builtin in _BUILTINS.items():
             override = stored["overrides"].get(type_id, {})
             merged = builtin.to_dict()
@@ -196,14 +202,17 @@ class NovelTypeLibrary:
             merged.update(override)
             merged.update({"id": type_id, "builtin": True})
             records[type_id] = NovelTypeRecord.from_payload(merged)
+            canonical_ids.add(_canonical_type_id(type_id))
         for type_id, payload in stored["custom"].items():
-            if type_id in records:
-                continue
+            canonical_id = _canonical_type_id(type_id)
+            if canonical_id in canonical_ids:
+                raise ValueError(f"Novel type ID {type_id!r} collides with an existing type")
             if not isinstance(payload, Mapping):
                 raise ValueError(f"Custom novel type {type_id!r} must be an object")
             merged = dict(payload)
             merged.update({"id": type_id, "builtin": False})
             records[type_id] = NovelTypeRecord.from_payload(merged)
+            canonical_ids.add(canonical_id)
         return records
 
     def _records(self) -> dict[str, NovelTypeRecord]:
@@ -220,7 +229,10 @@ class NovelTypeLibrary:
         record = NovelTypeRecord.from_payload(payload)
         with self._transaction_lock():
             stored = self._stored_data()
-            if record.id in self._records_from_data(stored):
+            records = self._records_from_data(stored)
+            if _canonical_type_id(record.id) in {
+                _canonical_type_id(existing_id) for existing_id in records
+            }:
                 raise ValueError(f"Novel type ID {record.id!r} already exists")
             record = NovelTypeRecord.from_payload({**record.to_dict(), "builtin": False})
             stored["custom"][record.id] = record.to_dict(include_builtin=False)
@@ -321,8 +333,8 @@ class NovelTypeLibrary:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _write(self, payload: Mapping[str, Any]) -> None:
-        self._atomic_write(self.path, payload)
         self._atomic_write(self.backup_path, payload)
+        self._atomic_write(self.path, payload)
 
     @staticmethod
     def _atomic_write(path: Path, payload: Mapping[str, Any]) -> None:

@@ -227,6 +227,46 @@ def test_writes_maintain_a_valid_backup():
     assert stored["custom"]["sports"]["name"] == "竞技体育"
 
 
+def test_backup_write_failure_does_not_commit_main_file(monkeypatch):
+    library = NovelTypeLibrary()
+    library.create({"id": "sports", "name": "竞技体育"})
+    original_main = library.path.read_text(encoding="utf-8")
+    original_atomic_write = NovelTypeLibrary._atomic_write
+
+    def fail_backup(path, payload):
+        if path.name.endswith(".bak"):
+            raise OSError("injected backup failure")
+        original_atomic_write(path, payload)
+
+    monkeypatch.setattr(NovelTypeLibrary, "_atomic_write", staticmethod(fail_backup))
+
+    with pytest.raises(OSError, match="injected backup failure"):
+        NovelTypeLibrary().create({"id": "history", "name": "历史架空"})
+
+    assert library.path.read_text(encoding="utf-8") == original_main
+    assert NovelTypeLibrary().get("history") is None
+    assert NovelTypeLibrary().get("sports") is not None
+
+
+def test_custom_id_rejects_builtin_case_and_alias_collisions():
+    library = NovelTypeLibrary()
+
+    for colliding_id in ("XUANHUAN", "东方玄幻"):
+        with pytest.raises(ValueError, match="already exists"):
+            library.create({"id": colliding_id, "name": "重复玄幻类型"})
+
+    project = NovelProject(
+        project_id="p-canonical-xuanhuan",
+        title="东方幻想",
+        seed_outline="主角发现一件古老遗物。",
+        world_blueprint={"genre_plugin_ids": ["XUANHUAN"]},
+    )
+    selected_ids = [plugin.plugin_id for plugin in select_genre_plugins(project)]
+
+    assert selected_ids == ["generic_webnovel", "eastern_fantasy", "xuanhuan"]
+    assert selected_ids.count("xuanhuan") == 1
+
+
 def test_genre_selection_loads_one_consistent_library_snapshot(monkeypatch):
     calls = 0
     original_stored_data = NovelTypeLibrary._stored_data
