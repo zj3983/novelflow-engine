@@ -5,6 +5,7 @@ import json
 
 from packages.story_core.models import NovelProject
 from packages.story_core.novel_type_catalog import has_explicit_non_game_type, normalize_novel_type_ids
+from packages.story_core.novel_type_library import list_novel_types, resolve_genre_plugin
 from packages.story_core.genre_types import (
     EASTERN_FANTASY,
     EASTERN_FANTASY_SIMULATION_BLUEPRINT,
@@ -61,11 +62,22 @@ def select_genre_plugins(project: NovelProject, *, max_plugins: int = 2, min_sco
     explicit_ids = project.world_blueprint.get("genre_plugin_ids") if isinstance(project.world_blueprint, dict) else None
     selected: list[GenrePlugin] = []
     normalized_explicit_ids = normalize_novel_type_ids(explicit_ids)
+    raw_explicit_ids = (
+        explicit_ids
+        if isinstance(explicit_ids, list)
+        else [explicit_ids]
+        if isinstance(explicit_ids, str)
+        else []
+    )
+    for raw_id in raw_explicit_ids:
+        candidate = str(raw_id or "").strip()
+        if candidate and candidate not in normalized_explicit_ids and resolve_genre_plugin(candidate):
+            normalized_explicit_ids.append(candidate)
     if normalized_explicit_ids:
         for plugin_id in normalized_explicit_ids:
             if plugin_id == "generic_webnovel":
                 continue
-            match = next((plugin for plugin in PLUGIN_REGISTRY if plugin.plugin_id == plugin_id), None)
+            match = resolve_genre_plugin(plugin_id)
             if match and match not in selected:
                 selected.append(match)
             if len(selected) >= max_plugins:
@@ -74,7 +86,12 @@ def select_genre_plugins(project: NovelProject, *, max_plugins: int = 2, min_sco
 
     if len(selected) < max_plugins:
         scored: list[tuple[int, GenrePlugin]] = []
-        for plugin in PLUGIN_REGISTRY:
+        for record in list_novel_types():
+            if record.id == "generic_webnovel":
+                continue
+            plugin = resolve_genre_plugin(record.id)
+            if plugin is None:
+                continue
             score = sum(1 for keyword in plugin.keywords if keyword and keyword in text)
             if score >= min_score:
                 scored.append((score, plugin))
