@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from apps.api.storage import _project_world_facts
 from packages.story_core.chapter_governance import build_chapter_governance
 from packages.story_core.chapter_seed import _is_game_story as chapter_seed_is_game_story, build_chapter_seed
@@ -190,20 +192,43 @@ def test_dict_runtime_catalog_uses_one_library_snapshot(monkeypatch):
     assert set(converted) == {item.id for item in original()}
     assert all(type(key) is str for key in converted)
     assert all(key == item.plugin_id for key, item in converted.items())
+    assert novel_type_catalog._CONVERSION_KEYS.pin is None
 
 
-def test_runtime_catalog_conversion_pin_has_count_and_short_expiry(monkeypatch):
-    clock = [100.0]
-    monkeypatch.setattr(novel_type_catalog.time, "monotonic", lambda: clock[0])
+def test_runtime_catalog_bulk_operations_explicitly_clear_previous_pin():
+    operations = (
+        lambda: NOVEL_TYPE_CATALOG.keys(),
+        lambda: NOVEL_TYPE_CATALOG.items(),
+        lambda: NOVEL_TYPE_CATALOG.values(),
+        lambda: NOVEL_TYPE_CATALOG.copy(),
+    )
 
+    for operation in operations:
+        saved_keys = list(NOVEL_TYPE_CATALOG.keys())
+        pin = novel_type_catalog._CONVERSION_KEYS.pin
+        assert pin.remaining_key_count == len(saved_keys)
+
+        operation()
+
+        assert novel_type_catalog._CONVERSION_KEYS.pin is None
+
+    stale_view = NOVEL_TYPE_CATALOG.keys()
+    list(stale_view)
+    NOVEL_TYPE_CATALOG.items()
+    list(stale_view)
+    assert novel_type_catalog._CONVERSION_KEYS.pin is None
+
+
+def test_runtime_catalog_key_error_clears_conversion_pin():
     saved_keys = list(NOVEL_TYPE_CATALOG.keys())
+    first_key = saved_keys[0]
     pin = novel_type_catalog._CONVERSION_KEYS.pin
+    pin.snapshot = dict(pin.snapshot)
+    pin.snapshot.pop(str(first_key))
 
-    assert pin.remaining_key_count == len(saved_keys)
-    assert pin.expires_at == 100.0 + novel_type_catalog._CONVERSION_PIN_TTL_SECONDS
-    clock[0] = pin.expires_at + 0.001
+    with pytest.raises(KeyError):
+        NOVEL_TYPE_CATALOG[first_key]
 
-    assert NOVEL_TYPE_CATALOG[saved_keys[0]].plugin_id == saved_keys[0]
     assert novel_type_catalog._CONVERSION_KEYS.pin is None
 
 

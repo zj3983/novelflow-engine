@@ -7,10 +7,12 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 from pydantic import ValidationError
 
+from packages.story_core import novel_type_catalog
 from packages.story_core.file_project_creation import FileProjectCreateSpec, create_file_project
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.genre_plugins import plugin_prompt_guide, select_genre_plugins
@@ -392,6 +394,7 @@ def test_dict_catalog_conversion_keeps_one_snapshot_across_runtime_crud(
             )
             writer.start()
             writer.join()
+            time.sleep(0.55)
             return keys
 
         def __getitem__(self, key):
@@ -407,8 +410,27 @@ def test_dict_catalog_conversion_keeps_one_snapshot_across_runtime_crud(
 
     assert converted["xuanhuan"].label == original_xuanhuan_name
     assert converted[CUSTOM_ID].label == CUSTOM_NAME
+    assert novel_type_catalog._CONVERSION_KEYS.pin is None
     assert NOVEL_TYPE_CATALOG["xuanhuan"].label == "转换后的玄幻名"
     assert CUSTOM_ID not in dict(NOVEL_TYPE_CATALOG.items())
+
+
+def test_out_of_order_saved_key_discards_conversion_pin_and_reads_latest_value(
+    runtime_type_library,
+) -> None:
+    saved_keys = list(NOVEL_TYPE_CATALOG.keys())
+    out_of_order_key = saved_keys[1]
+
+    writer = threading.Thread(
+        target=lambda: NovelTypeLibrary().update(
+            str(out_of_order_key), {"name": "非顺序访问的新名称"}
+        )
+    )
+    writer.start()
+    writer.join()
+
+    assert NOVEL_TYPE_CATALOG[out_of_order_key].label == "非顺序访问的新名称"
+    assert novel_type_catalog._CONVERSION_KEYS.pin is None
 
 
 def test_saved_catalog_keys_refresh_after_same_thread_update_and_delete(

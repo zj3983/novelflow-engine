@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import threading
-import time
 from collections.abc import ItemsView, Iterator, KeysView, Mapping, ValuesView
 from copy import deepcopy
 from dataclasses import dataclass
@@ -40,7 +39,6 @@ _SNAPSHOT_TOKEN: tuple[Any, ...] | None = None
 _RECORD_SNAPSHOT: dict[str, Any] = {}
 _CATALOG_SNAPSHOT: dict[str, NovelType] = {}
 _CONVERSION_KEYS = threading.local()
-_CONVERSION_PIN_TTL_SECONDS = 0.25
 
 
 def _current_snapshot_token() -> tuple[Any, ...]:
@@ -110,7 +108,13 @@ class _ConversionPin:
     expected_key_ids: list[int]
     remaining_key_count: int
     next_key_index: int
-    expires_at: float
+
+
+def _replace_conversion_context() -> int:
+    generation = getattr(_CONVERSION_KEYS, "generation", 0) + 1
+    _CONVERSION_KEYS.generation = generation
+    _CONVERSION_KEYS.pin = None
+    return generation
 
 
 def _writer_revision(token: tuple[Any, ...], thread_id: int) -> int:
@@ -136,9 +140,6 @@ def _pin_allows_current_token(
 def _conversion_snapshot_for_key(key: str) -> dict[str, NovelType] | None:
     pin = getattr(_CONVERSION_KEYS, "pin", None)
     if pin is None:
-        return None
-    if time.monotonic() > pin.expires_at:
-        _CONVERSION_KEYS.pin = None
         return None
     entry = pin.keys.get(id(key))
     if entry is None or entry is not key:
@@ -168,15 +169,19 @@ class _CatalogKeysView(KeysView[str]):
         mapping: Mapping[str, NovelType],
         snapshot: dict[str, NovelType],
         token: tuple[Any, ...] | None,
+        generation: int,
     ) -> None:
         super().__init__(mapping)
         self._snapshot = snapshot
         self._token = token
-        self._expires_at = time.monotonic() + _CONVERSION_PIN_TTL_SECONDS
+        self._generation = generation
 
     def __iter__(self) -> Iterator[str]:
         conversion_keys = [_fresh_key(key) for key in self._snapshot]
-        if self._token is not None and time.monotonic() <= self._expires_at:
+        if (
+            self._token is not None
+            and getattr(_CONVERSION_KEYS, "generation", 0) == self._generation
+        ):
             _CONVERSION_KEYS.pin = _ConversionPin(
                 snapshot=self._snapshot,
                 token=self._token,
@@ -184,10 +189,7 @@ class _CatalogKeysView(KeysView[str]):
                 expected_key_ids=[id(key) for key in conversion_keys],
                 remaining_key_count=len(conversion_keys),
                 next_key_index=0,
-                expires_at=self._expires_at,
             )
-        else:
-            _CONVERSION_KEYS.pin = None
         yield from conversion_keys
 
 
@@ -197,26 +199,32 @@ class _RuntimeNovelTypeCatalog(Mapping[str, NovelType]):
         snapshot = _conversion_snapshot_for_key(key) or _catalog_snapshot()
         item = snapshot.get(str(key))
         if item is None:
+            _CONVERSION_KEYS.pin = None
             raise KeyError(key)
         return item
 
     def __iter__(self) -> Iterator[str]:
+        _replace_conversion_context()
         return iter(_catalog_snapshot())
 
     def __len__(self) -> int:
         return len(_catalog_snapshot())
 
     def items(self) -> ItemsView[str, NovelType]:
+        _replace_conversion_context()
         return _catalog_snapshot().items()
 
     def values(self) -> ValuesView[NovelType]:
+        _replace_conversion_context()
         return _catalog_snapshot().values()
 
     def keys(self) -> KeysView[str]:
+        generation = _replace_conversion_context()
         snapshot, token = _catalog_snapshot_with_token()
-        return _CatalogKeysView(snapshot, snapshot, token)
+        return _CatalogKeysView(snapshot, snapshot, token, generation)
 
     def copy(self) -> dict[str, NovelType]:
+        _replace_conversion_context()
         return dict(_catalog_snapshot())
 
 
