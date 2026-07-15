@@ -12,11 +12,14 @@ from urllib.parse import quote
 
 from packages.story_core.chapter_direction import build_chapter_direction_options
 from packages.story_core.character_portraits import complete_character_portrait as complete_portrait
+from packages.story_core.character_profiles import merge_character_profile, normalize_character_profile
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.opening_directions import OpeningBrief, OpeningDirectionSet
+from packages.story_core.outline_planning import GeneratedOutlinePlan, validate_generated_opening_plan
+from packages.story_core.outline_planning_generation import OutlinePlanningBrief
 from packages.story_core.prose_style_review import review_prose_style
 from packages.story_core.project_outline import normalize_project_outline, outline_from_legacy_project, select_outline_context
 from packages.story_core.reader_feel_review import review_reader_feel
@@ -2034,6 +2037,181 @@ class FileProjectStore:
         normalized = normalize_project_outline(outline_payload)
         self._write_json_atomic(self.webnovel_dir / "outline.json", normalized)
         return {**normalized, "source": "saved"}
+
+    def _planning_opening_direction(self, project: dict[str, Any], outline: dict[str, Any]) -> dict[str, str]:
+        directions = self.opening_directions()
+        selected_id = str((directions or {}).get("selected_id") or "")
+        selected = next(
+            (
+                dict(item)
+                for item in (directions or {}).get("directions", [])
+                if isinstance(item, dict) and str(item.get("id") or "") == selected_id
+            ),
+            None,
+        )
+        if selected:
+            return {
+                key: str(selected.get(key) or "")
+                for key in ("title", "hook", "protagonist_goal", "main_conflict", "growth_path", "opening_promise")
+            }
+        overall = outline.get("overall") if isinstance(outline.get("overall"), dict) else {}
+        seed = str(project.get("seed_outline") or project.get("world_summary") or overall.get("story") or project.get("title") or "")
+        focus = str(project.get("current_focus") or overall.get("protagonist_goal") or seed)
+        return {
+            "title": str(project.get("title") or ""),
+            "hook": str(overall.get("story") or seed),
+            "protagonist_goal": str(overall.get("protagonist_goal") or focus),
+            "main_conflict": str(overall.get("main_conflict") or project.get("world_summary") or seed),
+            "growth_path": str(overall.get("growth_path") or "主角在连续行动、代价和反馈中取得真实成长。"),
+            "opening_promise": str(overall.get("ending_direction") or "开篇建立的核心冲突会得到阶段性兑现。"),
+        }
+
+    def _planning_brief(self) -> OutlinePlanningBrief:
+        project = self.project()
+        outline = dict(self.project_outline())
+        outline.pop("source", None)
+        state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
+        blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
+        plugin_ids = blueprint.get("genre_plugin_ids") if isinstance(blueprint.get("genre_plugin_ids"), list) else []
+        novel_type_id = str(plugin_ids[0] if plugin_ids else "generic_webnovel")
+        existing_cards: list[dict[str, Any]] = []
+        for item in [
+            *(project.get("character_profiles") if isinstance(project.get("character_profiles"), list) else []),
+            *(state.get("characters") if isinstance(state.get("characters"), list) else []),
+        ]:
+            if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+                continue
+            card = normalize_character_profile(item)
+            existing_cards.append(
+                {
+                    key: card.get(key)
+                    for key in (
+                        "name",
+                        "role",
+                        "character_tier",
+                        "first_appearance",
+                        "identity_profile",
+                        "background_profile",
+                        "current_life_profile",
+                        "story_drive",
+                        "dialogue_examples",
+                    )
+                }
+            )
+            if len(existing_cards) >= 6:
+                break
+        summaries = state.get("chapter_summaries") if isinstance(state.get("chapter_summaries"), list) else []
+        return OutlinePlanningBrief(
+            novel_type_id=novel_type_id,
+            title=str(project.get("title") or ""),
+            opening_direction=self._planning_opening_direction(project, outline),
+            author_constraints=[str(item) for item in project.get("author_constraints", []) if str(item).strip()],
+            existing_outline=outline,
+            existing_characters=existing_cards,
+            current_chapter=int(state.get("current_chapter") or 0),
+            recent_chapter_summaries=[dict(item) for item in summaries[-3:] if isinstance(item, dict)],
+        )
+
+    def _merge_generated_character_cards(self, generated: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        project = self.project()
+        state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
+        existing: dict[str, dict[str, Any]] = {}
+        existing_order: list[str] = []
+        for item in [
+            *(project.get("character_profiles") if isinstance(project.get("character_profiles"), list) else []),
+            *(state.get("characters") if isinstance(state.get("characters"), list) else []),
+        ]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            if name not in existing:
+                existing[name] = dict(item)
+                existing_order.append(name)
+            else:
+                existing[name] = merge_character_profile(existing[name], item)
+
+        generated_names: list[str] = []
+        for card in generated:
+            name = str(card.get("name") or "").strip()
+            if not name:
+                continue
+            generated_names.append(name)
+            existing[name] = merge_character_profile(existing.get(name, {"name": name}), card)
+        order = [*generated_names, *(name for name in existing_order if name not in generated_names)]
+        return [normalize_character_profile(existing[name]) for name in order]
+
+    def _extend_outline(self, current: dict[str, Any], addition: dict[str, Any]) -> dict[str, Any]:
+        current = normalize_project_outline(current)
+        addition = normalize_project_outline(addition)
+        last_number = max([int(item["chapter_number"]) for item in current["chapters"]] or [0])
+        added_numbers = [int(item["chapter_number"]) for item in addition["chapters"]]
+        expected = list(range(last_number + 1, last_number + 6))
+        if added_numbers != expected:
+            raise ValueError("extension_chapters_must_be_next_five")
+        arcs = {str(item["id"]): dict(item) for item in current["arcs"]}
+        for arc in addition["arcs"]:
+            arc_id = str(arc["id"])
+            arcs[arc_id] = merge_character_profile(arcs.get(arc_id, {}), arc)
+        return normalize_project_outline(
+            {
+                "overall": merge_character_profile(current["overall"], addition["overall"]),
+                "arcs": list(arcs.values()),
+                "chapters": [*current["chapters"], *addition["chapters"]],
+            }
+        )
+
+    def save_generated_outline_plan(self, plan: Any, *, mode: str) -> dict[str, Any]:
+        validated = GeneratedOutlinePlan.model_validate(plan)
+        if mode in {"initial", "regenerate"}:
+            validated = validate_generated_opening_plan(validated.model_dump(mode="json"))
+        elif mode != "extend":
+            raise ValueError("invalid_outline_planning_mode")
+
+        generated_outline = validated.outline.model_dump(mode="json")
+        if mode == "extend":
+            current_outline = dict(self.project_outline())
+            current_outline.pop("source", None)
+            generated_outline = self._extend_outline(current_outline, generated_outline)
+        cards = self._merge_generated_character_cards(
+            [card.model_dump(mode="json") for card in validated.characters]
+        )
+        project = dict(self.project())
+        state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
+        project["character_profiles"] = cards
+        project["pipeline_stage"] = "world_ready"
+        first_arc = generated_outline["arcs"][0] if generated_outline["arcs"] else {}
+        project["current_focus"] = str(first_arc.get("goal") or project.get("current_focus") or "")
+        state["characters"] = cards
+        state["outline"] = str(generated_outline["overall"].get("story") or state.get("outline") or "")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        snapshot_path = self.story_system_dir / "plans" / f"{stamp}-{mode}.json"
+        snapshot = {
+            "schema_version": "generated-outline-plan/v1",
+            "mode": mode,
+            "outline": generated_outline,
+            "characters": cards,
+        }
+        self._replace_json_transaction(
+            {
+                self.webnovel_dir / "outline.json": generated_outline,
+                self.webnovel_dir / "project.json": project,
+                self.webnovel_dir / "state.json": state,
+                snapshot_path: snapshot,
+            }
+        )
+        return {**snapshot, "source": "generated"}
+
+    def generate_outline_plan(
+        self,
+        generator: Any,
+        *,
+        mode: str,
+        guidance: str = "",
+    ) -> dict[str, Any]:
+        plan = generator.generate(self._planning_brief(), mode=mode, guidance=guidance.strip())
+        return self.save_generated_outline_plan(plan, mode=mode)
 
     def update_project(self, patch: dict[str, Any]) -> dict[str, Any]:
         project = dict(self.project())
