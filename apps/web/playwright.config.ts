@@ -8,6 +8,7 @@ export default defineConfig({
   // testDir resolves relative to this config file (apps/web).
   testDir: "../..",
   testMatch: ["apps/web/tests/**/*.spec.ts", "tests/e2e/**/*.spec.ts"],
+  testIgnore: [".worktrees/**"],
   fullyParallel: true,
   timeout: 30_000,
   expect: { timeout: 5_000 },

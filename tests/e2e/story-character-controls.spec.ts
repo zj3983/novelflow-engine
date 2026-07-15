@@ -64,9 +64,9 @@ test("workbench displays lifecycle metadata for a character", async ({ page }) =
 test("config panel exposes model controls", async ({ page }) => {
   await page.goto("/config");
 
-  await expect(page.getByRole("heading", { name: "配置中心" })).toBeVisible();
+  await expect(page.locator("#config-global-model")).toBeHidden();
+  await page.locator("#config-global-provider").selectOption("openai");
   await expect(page.getByRole("heading", { name: "运行策略" })).toBeVisible();
-  await expect(page.getByText("当前仅支持 LLM 协助模式")).toBeVisible();
   await expect(page.locator("#config-global-model")).toBeVisible();
   await expect(page.locator("#config-character-model")).toBeVisible();
   await expect(page.getByRole("button", { name: "统一保存" })).toBeVisible();
@@ -75,6 +75,7 @@ test("config panel exposes model controls", async ({ page }) => {
 test("api configuration panel saves global credentials", async ({ page }) => {
   await page.route("http://127.0.0.1:8000/runtime-settings", (route) => route.abort());
   await page.goto("/config");
+  await page.locator("#config-global-provider").selectOption("openai");
 
   const originalApiKey = await page.locator("#config-global-api-key").inputValue();
   const originalBaseUrl = await page.locator("#config-global-base-url").inputValue();
@@ -94,6 +95,8 @@ test("api configuration panel saves global credentials", async ({ page }) => {
 test("api configuration panel supports agent-specific overrides", async ({ page }) => {
   await page.route("http://127.0.0.1:8000/runtime-settings", (route) => route.abort());
   await page.goto("/config");
+  await page.locator("#config-global-provider").selectOption("openai");
+  await page.locator(".config-advanced__summary").click();
 
   await page.locator("#config-角色代理-api-key").fill("sk-character-123");
   await page.locator("#config-角色代理-base-url").fill("https://character.example.com/v1");
@@ -138,6 +141,8 @@ test("api configuration panel can test an agent connection", async ({ page }) =>
     });
   });
   await page.goto("/config");
+  await page.locator("#config-global-provider").selectOption("openai");
+  await page.locator(".config-advanced__summary").click();
 
   await page.locator("#config-角色代理-api-key").fill("sk-character-123");
   await page.locator("#config-角色代理-base-url").fill("https://character.example.com/v1");
@@ -145,13 +150,14 @@ test("api configuration panel can test an agent connection", async ({ page }) =>
 
   await expect.poll(() => called).toBeTruthy();
   const characterCard = page.getByRole("article", { name: "角色代理" });
-  await expect(characterCard.locator(".config-status")).toContainText("测试中");
+  await expect(characterCard.locator(".config-status")).toContainText("连接成功");
 });
 
 test("api configuration panel saves a global default model", async ({ page }) => {
   await page.route("http://127.0.0.1:8000/runtime-settings", (route) => route.abort());
   await page.route("http://127.0.0.1:8000/runtime-strategy", (route) => route.abort());
   await page.goto("/config");
+  await page.locator("#config-global-provider").selectOption("openai");
 
   await page.locator("#config-global-model").fill("gpt-global");
   await page.getByRole("button", { name: "统一保存" }).click();
@@ -163,6 +169,7 @@ test("api configuration panel saves a global default model", async ({ page }) =>
 test("config settings persist across reloads", async ({ page }) => {
   await page.route("http://127.0.0.1:8000/runtime-settings", (route) => route.abort());
   await page.goto("/config");
+  await page.locator("#config-global-provider").selectOption("openai");
 
   await page.locator("#config-global-model").fill("qwen3.6-plus");
   await page.locator("#config-character-model").fill("qwen3.6-plus");

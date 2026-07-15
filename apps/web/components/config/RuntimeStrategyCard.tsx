@@ -20,18 +20,11 @@ export function RuntimeStrategyCard({ value, onChange }: RuntimeStrategyCardProp
     <section className="config-card config-card--spacious" aria-label="运行策略">
       <div className="config-card__header">
         <div>
-          <p className="config-card__eyebrow">运行策略</p>
           <h2 className="config-card__title">运行策略</h2>
         </div>
-        <p className="config-card__subtitle">这里只配置 LLM 协助模式下各个代理的模型与新角色审核策略。</p>
       </div>
 
       <div className="config-stack">
-        <div className="config-card__note" aria-label="模式说明">
-          <p className="hint">当前仅支持 LLM 协助模式，规则模式已移除。</p>
-          <p className="hint">全局模型为空时，会回退到默认值。</p>
-        </div>
-
         <div className="field">
           <label htmlFor="config-global-model">全局默认模型</label>
           <input
@@ -107,10 +100,8 @@ export function RuntimeStrategyCard({ value, onChange }: RuntimeStrategyCardProp
           </select>
         </div>
 
-        <div className="config-card__note" aria-label="运行策略摘要">
-          <p className="hint">模式：LLM 协助模式</p>
+        <div className="config-card__note config-card__note--inline" aria-label="运行策略摘要">
           <p className="hint">默认模型：{value.global_model || "未填写"}</p>
-          <p className="hint">角色 / 导演 / 写作 / 记忆模型会分别覆盖对应 Agent 的默认值。</p>
           <p className="hint">新角色策略：{value.new_character_policy}</p>
         </div>
       </div>

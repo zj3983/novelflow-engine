@@ -31,14 +31,14 @@ export function AgentOverrideGrid({
   meta,
 }: AgentOverrideGridProps) {
   return (
-    <section className="config-card config-card--grid" aria-label="Agent 独立覆盖">
-      <div className="config-card__header">
-        <div>
-          <p className="config-card__eyebrow">Agent 独立覆盖</p>
-          <h2 className="config-card__title">四个 Agent 的独立覆盖</h2>
-        </div>
-        <p className="config-card__subtitle">每个卡片都可以单独覆盖 API 密钥与接口地址。</p>
-      </div>
+    <details className="config-card config-card--grid config-advanced" aria-label="Agent 独立覆盖">
+      <summary className="config-advanced__summary" role="button" aria-label="Agent 覆盖（高级）">
+        <span>
+          <span className="config-card__title">Agent 覆盖（高级）</span>
+          <span className="config-card__subtitle">只在单个 Agent 需要不同 API 时使用。</span>
+        </span>
+        <span className="config-advanced__chevron" aria-hidden="true">展开</span>
+      </summary>
 
       <div className="config-grid">
         {meta.map(({ key, label, modelName }) => (
@@ -55,6 +55,6 @@ export function AgentOverrideGrid({
           />
         ))}
       </div>
-    </section>
+    </details>
   );
 }
