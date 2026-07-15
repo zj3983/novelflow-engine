@@ -2239,13 +2239,11 @@ class FileProjectStore:
             ),
             None,
         )
-        wanted = list(cast)
+        wanted = list(cast) if cast else [str(card.get("name") or "").strip() for card in characters[:6]]
         if protagonist:
             protagonist_name = str(protagonist.get("name") or "").strip()
             if protagonist_name and protagonist_name not in wanted:
                 wanted.insert(0, protagonist_name)
-        if not wanted:
-            wanted = [str(card.get("name") or "").strip() for card in characters[:6]]
 
         selected: list[dict[str, Any]] = []
         seen: set[str] = set()
