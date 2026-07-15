@@ -69,6 +69,15 @@ def test_file_project_settings_update_syncs_runtime_genre_id_to_state(
         "/file-projects",
         json={"mode": "blank", "title": "Settings Type Switch", "novel_type_id": "xuanhuan"},
     ).json()
+    store = FileProjectStore(Path(created["source_path"]))
+    state_path = store.webnovel_dir / "state.json"
+    initial_state = store.state()
+    initial_state["world_facts"] = [
+        "保留事实：联赛周末开场。",
+        "小说类型：xuanhuan",
+        "小说类型:xianxia",
+    ]
+    state_path.write_text(json.dumps(initial_state, ensure_ascii=False), encoding="utf-8")
 
     response = client.put(
         f"/file-projects/{created['project_id']}",
@@ -76,7 +85,6 @@ def test_file_project_settings_update_syncs_runtime_genre_id_to_state(
     )
 
     assert response.status_code == 200
-    store = FileProjectStore(Path(created["source_path"]))
     project = store.project()
     state = store.state()
     story = StoryState.model_validate(
@@ -85,9 +93,27 @@ def test_file_project_settings_update_syncs_runtime_genre_id_to_state(
     seed = build_chapter_seed(story, 1)
     assert project["world_blueprint"]["genre_plugin_ids"] == [" SPORTS "]
     assert state["genre_plugin_ids"] == ["sports"]
+    assert state["world_facts"] == ["保留事实：联赛周末开场。", "小说类型：sports"]
     assert seed["genre_plugins"] == ["generic_webnovel", "sports"]
     assert "设置页竞技承诺" in seed["core_promises"]
     assert "设置页竞技规则" in seed["rulebook"]["chapter_formula"]
+
+    cleared = client.put(
+        f"/file-projects/{created['project_id']}",
+        json={"world_blueprint": {"genre_plugin_ids": []}},
+    )
+    assert cleared.status_code == 200
+    cleared_project = store.project()
+    cleared_state = store.state()
+    cleared_story = StoryState.model_validate(
+        store._story_state_payload_for_direction(cleared_state, cleared_project, 1)
+    )
+    cleared_seed = build_chapter_seed(cleared_story, 1)
+    assert cleared_state["genre_plugin_ids"] == []
+    assert cleared_state["world_facts"] == ["保留事实：联赛周末开场。"]
+    assert cleared_seed["genre_plugins"] == ["generic_webnovel"]
+    assert "xuanhuan" not in cleared_seed["genre_plugins"]
+    assert "eastern_fantasy" not in cleared_seed["genre_plugins"]
 
 
 def test_file_project_list_ignores_in_progress_dot_directories(creation_api):

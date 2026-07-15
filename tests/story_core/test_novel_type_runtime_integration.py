@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from packages.story_core.file_project_creation import FileProjectCreateSpec, create_file_project
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.genre_plugins import plugin_prompt_guide, select_genre_plugins
+from packages.story_core.genre_types import EASTERN_FANTASY
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.models import AgentSettings, NovelProject, StoryState
 from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG, novel_type_options
@@ -199,6 +200,14 @@ def test_update_project_switches_persisted_story_state_and_seed_to_custom_type(
         project_id_factory=lambda: "p-switch-to-sports",
     )
     store = FileProjectStore(created.root)
+    state_path = store.webnovel_dir / "state.json"
+    initial_state = store.state()
+    initial_state["world_facts"] = [
+        "保留事实：训练场仍在开放。",
+        "小说类型：xuanhuan",
+        "小说类型:xianxia",
+    ]
+    state_path.write_text(json.dumps(initial_state, ensure_ascii=False), encoding="utf-8")
 
     store.update_project(
         {
@@ -221,6 +230,10 @@ def test_update_project_switches_persisted_story_state_and_seed_to_custom_type(
         "settings_marker": "preserved replacement payload",
     }
     assert state["genre_plugin_ids"] == [CUSTOM_ID]
+    assert state["world_facts"] == [
+        "保留事实：训练场仍在开放。",
+        f"小说类型：{CUSTOM_ID}",
+    ]
     assert story.genre_plugin_ids == [CUSTOM_ID]
     assert seed["genre_plugins"] == ["generic_webnovel", CUSTOM_ID]
     assert CUSTOM_PROMISE in seed["core_promises"]
@@ -239,6 +252,14 @@ def test_update_project_explicit_type_clear_does_not_leave_stale_state_id(
         project_id_factory=lambda: "p-clear-runtime-type",
     )
     store = FileProjectStore(created.root)
+    state_path = store.webnovel_dir / "state.json"
+    initial_state = store.state()
+    initial_state["world_facts"] = [
+        "保留事实：旧案仍未解决。",
+        "小说类型：xuanhuan",
+        "小说类型:xianxia",
+    ]
+    state_path.write_text(json.dumps(initial_state, ensure_ascii=False), encoding="utf-8")
 
     store.update_project({"world_blueprint": {"genre_plugin_ids": []}})
 
@@ -248,8 +269,15 @@ def test_update_project_explicit_type_clear_does_not_leave_stale_state_id(
     )
     seed = build_chapter_seed(story, 1)
     assert state["genre_plugin_ids"] == []
+    assert state["world_facts"] == ["保留事实：旧案仍未解决。"]
     assert story.genre_plugin_ids == []
-    assert "xuanhuan" not in seed["genre_plugins"]
+    assert seed["genre_plugins"] == ["generic_webnovel"]
+    assert XUANHUAN_PROMISE not in seed["core_promises"]
+    assert XUANHUAN_RULE not in seed["rulebook"]["chapter_formula"]
+    assert not set(EASTERN_FANTASY.core_promises) & set(seed["core_promises"])
+    assert not set(EASTERN_FANTASY.rulebook["chapter_formula"]) & set(
+        seed["rulebook"]["chapter_formula"]
+    )
 
 
 def test_catalog_is_dynamic_view_of_library_bootstrap(runtime_type_library) -> None:

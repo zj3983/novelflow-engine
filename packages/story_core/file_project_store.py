@@ -2373,14 +2373,35 @@ class FileProjectStore:
                     isinstance(raw_genre_ids, list)
                     and not any(str(item or "").strip() for item in raw_genre_ids)
                 )
+                synchronized_genre_ids: list[str] | None = None
                 if genre_plugin_ids:
                     state["genre_plugin_ids"] = genre_plugin_ids
+                    synchronized_genre_ids = genre_plugin_ids
                     primary_type = runtime_novel_type(genre_plugin_ids[0])
                     if primary_type is not None:
                         state["genre"] = primary_type.name
                 elif explicitly_empty:
                     state["genre_plugin_ids"] = []
                     state["genre"] = ""
+                    synchronized_genre_ids = []
+                if synchronized_genre_ids is not None:
+                    world_facts = (
+                        state.get("world_facts")
+                        if isinstance(state.get("world_facts"), list)
+                        else []
+                    )
+                    state["world_facts"] = [
+                        fact
+                        for fact in world_facts
+                        if not (
+                            isinstance(fact, str)
+                            and fact.startswith(("小说类型：", "小说类型:"))
+                        )
+                    ]
+                    if synchronized_genre_ids:
+                        state["world_facts"].append(
+                            f"小说类型：{synchronized_genre_ids[0]}"
+                        )
         if patch.get("current_focus") is not None:
             project["current_focus"] = patch["current_focus"]
             state["current_focus"] = patch["current_focus"]
