@@ -81,6 +81,25 @@ def test_resolve_genre_plugin_uses_edited_core_promise():
     assert plugin.core_promises == ("每次力量提升都必须改变外部关系。",)
 
 
+def test_genre_selection_uses_edited_generic_plugin():
+    update_novel_type(
+        "generic_webnovel",
+        {"name": "全局通用类型", "core_promises": ["每章都兑现一次明确变化。"]},
+    )
+    project = NovelProject(
+        project_id="p-edited-generic",
+        title="通用类型测试",
+        seed_outline="主角处理一件具体差事。",
+        world_blueprint={"genre_plugin_ids": ["generic_webnovel"]},
+    )
+
+    generic = select_genre_plugins(project)[0]
+
+    assert generic.plugin_id == "generic_webnovel"
+    assert generic.name == "全局通用类型"
+    assert generic.core_promises == ("每章都兑现一次明确变化。",)
+
+
 def test_record_rejects_blank_id_and_name_and_normalizes_rulebook():
     with pytest.raises(ValueError, match="ID"):
         NovelTypeRecord(id=" ", name="有效名称")

@@ -35,7 +35,8 @@ PLUGIN_REGISTRY: tuple[GenrePlugin, ...] = (
 
 
 def _with_shared_genre_plugins(plugins: list[GenrePlugin]) -> list[GenrePlugin]:
-    result: list[GenrePlugin] = [GENERIC_WEBNOVEL]
+    generic = resolve_genre_plugin("generic_webnovel") or GENERIC_WEBNOVEL
+    result: list[GenrePlugin] = [generic]
     for plugin in plugins:
         if plugin.plugin_id in {"xuanhuan", "xianxia"} and EASTERN_FANTASY not in result:
             result.append(EASTERN_FANTASY)
