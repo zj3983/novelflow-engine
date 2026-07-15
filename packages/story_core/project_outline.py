@@ -26,6 +26,8 @@ class ArcOutline(_OutlineModel):
     obstacle: str = ""
     payoff: str = ""
     end_state: str = ""
+    stage_antagonist: str = ""
+    long_term_antagonist_traces: list[str] = Field(default_factory=list)
 
     @field_validator("id")
     @classmethod
@@ -57,6 +59,7 @@ class ChapterPlan(_OutlineModel):
     turn: str = ""
     payoff: str = ""
     ending_hook: str = ""
+    cast: list[str] = Field(default_factory=list)
 
     @field_validator("chapter_number", mode="before")
     @classmethod

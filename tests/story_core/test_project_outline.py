@@ -70,6 +70,8 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "obstacle",
         "payoff",
         "end_state",
+        "stage_antagonist",
+        "long_term_antagonist_traces",
     }
     assert payload["arcs"][0]["id"]
     assert set(payload["chapters"][0]) == {
@@ -81,6 +83,7 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "turn",
         "payoff",
         "ending_hook",
+        "cast",
     }
 
 
@@ -260,12 +263,15 @@ def test_legacy_project_projects_into_three_levels_without_mutation() -> None:
             "obstacle": "",
             "payoff": "",
             "end_state": "",
+            "stage_antagonist": "",
+            "long_term_antagonist_traces": [],
         }
     ]
     assert [chapter["chapter_number"] for chapter in outline["chapters"]] == [2, 4]
     assert outline["chapters"][0]["title"] == "夜查祖祠"
     assert outline["chapters"][0]["payoff"] == "找到灰烬脚印"
     assert outline["chapters"][0]["ending_hook"] == "脚印通向内门"
+    assert outline["chapters"][0]["cast"] == []
     assert outline["chapters"][1]["payoff"] == "确认接头人"
     assert outline["chapters"][1]["ending_hook"] == "接头人佩戴长老令牌"
     assert project == original
@@ -338,3 +344,31 @@ def test_selection_returns_none_when_chapter_has_no_matching_details() -> None:
 
     assert context["active_arc"] is None
     assert context["chapter"] is None
+
+
+def test_outline_supports_opposition_and_chapter_cast() -> None:
+    outline = normalize_project_outline(
+        {
+            "arcs": [
+                {
+                    "id": "opening",
+                    "start_chapter": 1,
+                    "end_chapter": 10,
+                    "stage_antagonist": "赵衡",
+                    "long_term_antagonist_traces": ["旧名册有一页被换过"],
+                }
+            ],
+            "chapters": [
+                {
+                    "chapter_number": 1,
+                    "cast": ["林照", "赵衡"],
+                }
+            ],
+        }
+    )
+
+    context = select_outline_context(outline, 1)
+
+    assert context["active_arc"]["stage_antagonist"] == "赵衡"
+    assert context["active_arc"]["long_term_antagonist_traces"] == ["旧名册有一页被换过"]
+    assert context["chapter"]["cast"] == ["林照", "赵衡"]
