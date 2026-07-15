@@ -879,7 +879,7 @@ test("concrete character card shows and saves factual profile fields", async ({ 
   };
   const project = {
     project_id: "file:character-fixture", title: "Character Fixture", source_path: "", seed_outline: "祖祠旧案", world_summary: "",
-    current_focus: "", author_constraints: [], world_blueprint: {}, character_profiles: [character], relationship_graph: [], enabled_skill_ids: [],
+    current_focus: "", author_constraints: [], world_blueprint: {}, character_profiles: [character], relationship_graph: [{ source: character.name, target: "赵衡", relation_type: "管事与杂役", current_state: "表面顺从，实际提防" }], enabled_skill_ids: [],
     status: "simulating", pipeline_stage: "world_ready", active_story_id: "file:character-fixture", branches: [], storage_source: "file",
   };
 
@@ -913,8 +913,67 @@ test("concrete character card shows and saves factual profile fields", async ({ 
     current_life_profile: { livelihood: "守炉换取月例" },
     story_drive: { immediate_goal: "找出断炉的人", failure_stakes: "会被逐出祖祠并失去线索" },
     dialogue_examples: ["这炉子昨夜还好好的，谁动过，查值夜册就知道。"],
-    relationship_notes: [{ target: "赵衡" }],
   });
+  expect(savedBody).not.toHaveProperty("relationship_notes");
+});
+
+test("relationship workspace defaults to protagonist and saves the canonical graph", async ({ page }) => {
+  let savedBody: Record<string, unknown> | null = null;
+  const characters = [
+    { name: "林照", role: "protagonist", character_tier: "protagonist" },
+    { name: "赵衡", role: "stage_antagonist", character_tier: "stage_antagonist" },
+    { name: "周满", role: "supporting", character_tier: "supporting" },
+  ];
+  const project = {
+    project_id: "file:relationship-fixture",
+    title: "Relationship Fixture",
+    active_story_id: "file:relationship-fixture",
+    storage_source: "file",
+    status: "simulating",
+    pipeline_stage: "world_ready",
+    branches: [],
+    character_profiles: characters,
+    relationship_graph: [
+      { id: "rel-a", source: "林照", target: "赵衡", relation_type: "对手", current_state: "彼此提防", trust: 10, tension: 80 },
+      { id: "rel-b", source: "赵衡", target: "周满", relation_type: "同僚", current_state: "暂时合作", trust: 45, tension: 20 },
+    ],
+  };
+
+  await page.route("**/file-projects/file%3Arelationship-fixture", async (route) => {
+    if (route.request().method() === "PUT") {
+      savedBody = route.request().postDataJSON() as Record<string, unknown>;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-projects/file%3Arelationship-fixture/outline", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      schema_version: "project-outline/v1", source: "saved", overall: {}, arcs: [],
+      chapters: [{ chapter_number: 2, title: "当面对质", goal: "查账", obstacle: "赵衡阻拦", action: "林照拿出证据", turn: "周满改口", payoff: "拿到名册", ending_hook: "幕后人现身", cast: ["林照", "赵衡"] }],
+    }) });
+  });
+  await page.route("**/file-stories/file%3Arelationship-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:relationship-fixture", current_chapter: 1, characters, history: [], world_facts: [], author_constraints: [], agent_runtime: { recent_events: [] },
+    }) });
+  });
+
+  await page.goto("/projects/file%3Arelationship-fixture/relationships");
+
+  await expect(page.getByRole("heading", { name: "人物关系" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "主角视角" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "林照", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "赵衡", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "周满", exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "全局" }).click();
+  await expect(page.getByRole("button", { name: "周满", exact: true })).toBeVisible();
+  await page.getByLabel("林照与赵衡的当前状态").fill("公开对立");
+  await page.getByRole("button", { name: "保存关系图" }).click();
+
+  await expect.poll(() => savedBody).not.toBeNull();
+  const savedGraph = (savedBody as { relationship_graph: Array<Record<string, unknown>> }).relationship_graph;
+  expect(savedGraph).toHaveLength(2);
+  expect(savedGraph[0]).toMatchObject({ source: "林照", target: "赵衡", current_state: "公开对立" });
 });
 
 test("imported book still exposes a browsable source panel", async ({ page }) => {

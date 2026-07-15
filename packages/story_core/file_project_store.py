@@ -27,6 +27,13 @@ from packages.story_core.outline_planning_generation import OutlinePlanningBrief
 from packages.story_core.prose_style_review import review_prose_style
 from packages.story_core.project_outline import normalize_project_outline, outline_from_legacy_project, select_outline_context
 from packages.story_core.reader_feel_review import review_reader_feel
+from packages.story_core.relationship_graph import (
+    apply_relationship_updates,
+    graph_from_character_cards,
+    merge_relationship_graph,
+    normalize_relationship_graph,
+    select_relationship_subgraph,
+)
 from packages.story_core.quality import validate_bundle
 from packages.story_core.reader_agent import review_reader_agent
 from packages.story_core.reviewer_agent import review_reviewer_agent
@@ -1496,6 +1503,56 @@ class FileProjectStore:
                 profile["game_panel"] = game_panel | {"updated_chapter": chapter_number}
             by_name[name] = profile
         synced["character_profiles"] = list(by_name.values())
+        relationship_updates: list[dict[str, Any]] = []
+        for character in state.get("characters", []) if isinstance(state.get("characters"), list) else []:
+            if not isinstance(character, dict):
+                continue
+            source = self._canonical_character_name(str(character.get("name") or ""))
+            relationships = character.get("relationships")
+            if isinstance(relationships, dict):
+                items = relationships.items()
+            elif isinstance(relationships, list):
+                items = (("", item) for item in relationships)
+            else:
+                items = ()
+            for fallback_target, relation in items:
+                if not isinstance(relation, dict):
+                    continue
+                target = self._canonical_character_name(
+                    str(relation.get("target") or relation.get("name") or fallback_target or "")
+                )
+                if not source or not target or source == target:
+                    continue
+                relation_summary = self._compact_text(
+                    relation.get("current_state")
+                    or relation.get("bond")
+                    or summary.get("summary")
+                    or "关系状态更新",
+                    180,
+                )
+                relationship_updates.append(
+                    {
+                        "source": source,
+                        "target": target,
+                        "relation_type": relation.get("relation_type"),
+                        "bond": relation.get("bond"),
+                        "current_state": relation.get("current_state"),
+                        "trust": relation.get("trust"),
+                        "tension": relation.get("tension"),
+                        "last_changed_chapter": chapter_number,
+                        "changes": [
+                            {
+                                "chapter_number": chapter_number,
+                                "summary": relation_summary,
+                                "trust": relation.get("trust"),
+                                "tension": relation.get("tension"),
+                            }
+                        ],
+                    }
+                )
+        synced["relationship_graph"] = apply_relationship_updates(
+            synced.get("relationship_graph"), relationship_updates
+        )
         return synced
 
     def _sync_after_chapter(self, chapter: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1938,7 +1995,13 @@ class FileProjectStore:
         return self._read_json(self.story_system_dir / "MASTER_SETTING.json", {}) or {}
 
     def project(self) -> dict[str, Any]:
-        return self._read_json(self.webnovel_dir / "project.json", {}) or self.master_setting().get("project", {}) or {}
+        project = self._read_json(self.webnovel_dir / "project.json", {}) or self.master_setting().get("project", {}) or {}
+        project = dict(project)
+        if "relationship_graph" in project:
+            project["relationship_graph"] = normalize_relationship_graph(project.get("relationship_graph"))
+        else:
+            project["relationship_graph"] = graph_from_character_cards(project.get("character_profiles"))
+        return project
 
     def opening_brief(self) -> dict[str, Any]:
         payload = self._read_json(self.webnovel_dir / "opening_brief.json", {})
@@ -2198,6 +2261,10 @@ class FileProjectStore:
         project = dict(self.project())
         state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
         project["character_profiles"] = cards
+        project["relationship_graph"] = merge_relationship_graph(
+            project.get("relationship_graph"),
+            graph_from_character_cards(cards),
+        )
         project["pipeline_stage"] = "world_ready"
         first_arc = generated_outline["arcs"][0] if generated_outline["arcs"] else {}
         project["current_focus"] = str(first_arc.get("goal") or project.get("current_focus") or "")
@@ -2290,6 +2357,8 @@ class FileProjectStore:
         ):
             if key in patch and patch[key] is not None:
                 project[key] = patch[key]
+        if "relationship_graph" in patch and patch.get("relationship_graph") is not None:
+            project["relationship_graph"] = normalize_relationship_graph(patch["relationship_graph"])
         if patch.get("seed_outline") is not None:
             project["seed_outline"] = patch["seed_outline"]
             state["outline"] = patch["seed_outline"]
@@ -3182,6 +3251,10 @@ class FileProjectStore:
         hard_locks.extend(str(item) for item in progression_rules[:4] if str(item).strip())
         hard_locks.extend(str(item) for item in forbidden_breaks[:4] if str(item).strip())
         characters = self._writer_character_cards(state, selected_outline)
+        relationship_context = select_relationship_subgraph(
+            project.get("relationship_graph"),
+            [str(card.get("name") or "") for card in characters],
+        )
         chapter_direction_options = self._chapter_direction_options(state, project, int(target or 0))
         enabled_skill_ids = [
             str(item).strip()
@@ -3194,6 +3267,7 @@ class FileProjectStore:
         }
         packet_project = dict(project)
         packet_project["character_profiles"] = characters
+        packet_project.pop("relationship_graph", None)
         if isinstance(project.get("world_blueprint"), dict):
             packet_blueprint = dict(world_blueprint)
             packet_blueprint.pop("current_arc", None)
@@ -3211,6 +3285,7 @@ class FileProjectStore:
             "scene_cards": scene_cards,
             "outline_context": outline_context,
             "character_cards": characters,
+            "relationship_context": relationship_context,
             "title_contract": {
                 "style": "tomato_concrete_short_title",
                 "rules": [
