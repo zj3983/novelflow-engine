@@ -23,6 +23,34 @@ type PortraitSection = {
   fields: Array<{ key: string; label: string; list?: boolean }>;
 };
 
+type ConcreteSectionKey = "identity_profile" | "background_profile" | "current_life_profile" | "story_drive";
+
+type ConcreteSection = {
+  key: ConcreteSectionKey;
+  title: string;
+  fields: Array<{ key: string; label: string; list?: boolean; number?: boolean }>;
+};
+
+const concreteSections: ConcreteSection[] = [
+  { key: "identity_profile", title: "基本身份", fields: [
+    { key: "gender", label: "性别" }, { key: "age", label: "年龄", number: true }, { key: "birthplace", label: "出生地" },
+    { key: "origin", label: "来历" }, { key: "current_identity", label: "当前身份" }, { key: "occupation", label: "职业" },
+    { key: "affiliation", label: "所属势力" }, { key: "aliases", label: "别名", list: true },
+  ] },
+  { key: "background_profile", title: "过去经历", fields: [
+    { key: "family", label: "家庭" }, { key: "upbringing", label: "成长经历" }, { key: "education_or_training", label: "教育与训练" },
+    { key: "formative_events", label: "重要往事", list: true }, { key: "arrival_reason", label: "为何来到这里" },
+  ] },
+  { key: "current_life_profile", title: "当前生活", fields: [
+    { key: "residence", label: "住处" }, { key: "livelihood", label: "生计" }, { key: "economic_state", label: "经济状况" },
+    { key: "resources_and_ability", label: "手里的资源与能力" }, { key: "authority_scope", label: "能管到什么" }, { key: "immediate_problem", label: "眼前麻烦" },
+  ] },
+  { key: "story_drive", title: "目标与冲突", fields: [
+    { key: "long_term_goal", label: "长期目标" }, { key: "immediate_goal", label: "当前目标" }, { key: "motivation", label: "为什么要做" },
+    { key: "failure_stakes", label: "失败代价" }, { key: "main_conflict_reason", label: "主要冲突原因" }, { key: "hidden_matters", label: "隐藏事项", list: true },
+  ] },
+];
+
 const portraitSections: PortraitSection[] = [
   {
     key: "temperament",
@@ -134,8 +162,23 @@ function updatePortrait(
   return next;
 }
 
+function concreteFieldValue(character: DisplayCharacter, section: ConcreteSectionKey, field: string): string | string[] {
+  const group = character[section] as Record<string, unknown> | undefined;
+  const value = group?.[field];
+  if (Array.isArray(value)) return value.map(String);
+  return String(value ?? "");
+}
+
+function updateConcreteField(character: DisplayCharacter, section: ConcreteSectionKey, field: string, value: string, list = false, number = false): DisplayCharacter {
+  const next = cloneCharacter(character);
+  const group = { ...((next[section] as Record<string, unknown> | undefined) ?? {}) };
+  group[field] = list ? value.split("\n").map((line) => line.trim()).filter(Boolean) : number ? (value.trim() ? Number(value) : null) : value;
+  next[section] = group as never;
+  return next;
+}
+
 export default function CharactersPage() {
-  const { project, story, error, encodedProjectId, refresh } = useProjectWorkspace();
+  const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
   const characters = mergeCharacters(project?.character_profiles, story?.characters);
   const [editingName, setEditingName] = useState<string | null>(null);
   const [draft, setDraft] = useState<DisplayCharacter | null>(null);
@@ -153,7 +196,17 @@ export default function CharactersPage() {
     setBusy(editingName);
     setMessage(null);
     try {
-      await updateFileProjectCharacter(encodedProjectId, editingName, { personality_portrait: draft.personality_portrait });
+      await updateFileProjectCharacter(projectId, editingName, {
+        character_tier: draft.character_tier,
+        first_appearance: draft.first_appearance,
+        identity_profile: draft.identity_profile,
+        background_profile: draft.background_profile,
+        current_life_profile: draft.current_life_profile,
+        story_drive: draft.story_drive,
+        dialogue_examples: draft.dialogue_examples,
+        relationship_notes: draft.relationship_notes,
+        personality_portrait: draft.personality_portrait,
+      });
       setEditingName(null);
       setDraft(null);
       setMessage("角色卡已保存。");
@@ -169,7 +222,7 @@ export default function CharactersPage() {
     setBusy(character.name);
     setMessage(null);
     try {
-      await completeFileProjectCharacterPortrait(encodedProjectId, character.name);
+      await completeFileProjectCharacterPortrait(projectId, character.name);
       setMessage(`${character.name} 的基础侧写已补全。`);
       refresh();
     } catch (completeError) {
@@ -224,6 +277,51 @@ export default function CharactersPage() {
                     </div>
                   </div>
                   <p className="ws-character-card__status">{shortStatus(shown as DisplayCharacter)}</p>
+                  <div className="ws-character-concrete">
+                    {concreteSections.map((section) => {
+                      const hasValue = section.fields.some((field) => {
+                        const value = concreteFieldValue(shown as DisplayCharacter, section.key, field.key);
+                        return Array.isArray(value) ? value.length > 0 : value.trim().length > 0;
+                      });
+                      if (!isEditing && !hasValue) return null;
+                      return (
+                        <section className="ws-character-concrete__section" key={section.key}>
+                          <h3>{section.title}</h3>
+                          <div className="ws-character-concrete__grid">
+                            {section.fields.map((field) => {
+                              const value = concreteFieldValue(shown as DisplayCharacter, section.key, field.key);
+                              const text = Array.isArray(value) ? value.join("\n") : value;
+                              if (!isEditing && !text.trim()) return null;
+                              return isEditing ? (
+                                <label key={field.key}>
+                                  <span>{field.label}</span>
+                                  {field.number ? (
+                                    <input type="number" min={0} value={text} onChange={(event) => setDraft(updateConcreteField(draft as DisplayCharacter, section.key, field.key, event.target.value, false, true))} />
+                                  ) : (
+                                    <textarea rows={field.list ? 3 : 2} value={text} onChange={(event) => setDraft(updateConcreteField(draft as DisplayCharacter, section.key, field.key, event.target.value, Boolean(field.list)))} />
+                                  )}
+                                </label>
+                              ) : (
+                                <div className="ws-character-concrete__line" key={field.key}><b>{field.label}</b><p>{field.number ? `${text}岁` : text}</p></div>
+                              );
+                            })}
+                          </div>
+                        </section>
+                      );
+                    })}
+                    {(isEditing || cleanLines(shown?.dialogue_examples, 8).length > 0) ? (
+                      <section className="ws-character-concrete__section">
+                        <h3>说话例子</h3>
+                        {isEditing ? <label><span>每行一句</span><textarea rows={4} value={(draft.dialogue_examples ?? []).join("\n")} onChange={(event) => setDraft({ ...draft, dialogue_examples: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean) })} /></label> : <ul>{cleanLines(shown?.dialogue_examples, 8).map((line) => <li key={line}>{line}</li>)}</ul>}
+                      </section>
+                    ) : null}
+                    {(shown?.relationship_notes ?? []).length > 0 ? (
+                      <section className="ws-character-concrete__section">
+                        <h3>人物关系</h3>
+                        <div className="ws-character-relations">{shown?.relationship_notes?.map((relation) => <div key={`${relation.target}-${relation.relation_type ?? ""}`}><strong>{relation.target}</strong><p>{[relation.relation_type, relation.current_attitude, relation.shared_interest_or_conflict].filter(Boolean).join("；")}</p></div>)}</div>
+                      </section>
+                    ) : null}
+                  </div>
                   {rows.length > 0 ? <dl className="ws-panel-grid">{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl> : null}
                   {motiveRows.length > 0 ? <div className="ws-character-section-grid">{motiveRows.map(([label, value]) => <section className="ws-character-mini" key={label}><strong>{label}</strong><p>{value}</p></section>)}</div> : null}
                   {[socialRows, psychRows, moralRows].some((items) => items.length > 0) ? <div className="ws-character-block"><strong>已有三维档案</strong><div className="ws-profile-columns">{[["社会面", socialRows], ["心理面", psychRows], ["底线面", moralRows]].map(([title, items]) => Array.isArray(items) && items.length > 0 ? <section className="ws-profile-column" key={title as string}><b>{title as string}</b><dl>{items.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section> : null)}</div></div> : null}
