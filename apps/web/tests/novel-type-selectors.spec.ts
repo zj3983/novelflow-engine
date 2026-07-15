@@ -41,6 +41,14 @@ function novelTypeResponse(type: NovelTypeFixture) {
   };
 }
 
+function deferred() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
 async function routeNovelTypes(
   page: Page,
   types: NovelTypeFixture[],
@@ -70,16 +78,16 @@ async function routeNovelTypes(
   return { requestCount: () => requests };
 }
 
-function projectFixture(typeId: string) {
+function projectFixture(typeId?: string, projectId = "file:selector-fixture") {
   return {
-    project_id: "file:selector-fixture",
+    project_id: projectId,
     title: "试剑录",
     source_path: "",
     seed_outline: "",
     world_summary: "",
     current_focus: "",
     author_constraints: [],
-    world_blueprint: { genre_plugin_ids: [typeId] },
+    world_blueprint: typeId ? { genre_plugin_ids: [typeId] } : {},
     character_profiles: [],
     relationship_graph: [],
     enabled_skill_ids: [],
@@ -91,18 +99,32 @@ function projectFixture(typeId: string) {
   };
 }
 
-async function routeSettingsProject(page: Page, typeId: string) {
-  let project = projectFixture(typeId);
+async function routeSettingsProject(
+  page: Page,
+  typeId?: string,
+  options: { responseProjectId?: string; saveFailures?: number } = {},
+) {
+  let project = projectFixture(typeId, options.responseProjectId);
   const updates: Array<Record<string, unknown>> = [];
+  let putCount = 0;
   await page.route("**/file-projects/file%3Aselector-fixture", async (route: Route) => {
     if (route.request().method() === "PUT") {
+      putCount += 1;
       const payload = route.request().postDataJSON() as Record<string, unknown>;
       updates.push(payload);
+      if (putCount <= (options.saveFailures ?? 0)) {
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "project_service_unavailable" }),
+        });
+        return;
+      }
       project = { ...project, ...payload };
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  return updates;
+  return { updates, putCount: () => putCount };
 }
 
 test("新建页加载全局类型，优先通用类型并提交动态 ID", async ({ page }) => {
@@ -162,9 +184,62 @@ test("新建页遇到空类型库时明确提示并阻止创建", async ({ page 
   await expect(page.getByRole("button", { name: "创建小说" })).toBeDisabled();
 });
 
+test("新建请求完成前离开页面时不再导航", async ({ page }) => {
+  await routeNovelTypes(page, [genericType]);
+  const pendingCreate = deferred();
+  const requestStarted = deferred();
+  await page.route("**/file-projects", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+      return;
+    }
+    requestStarted.release();
+    await pendingCreate.promise;
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ next_path: "/projects/file%3Alate/outline" }),
+    });
+  });
+  await page.route(/^http:\/\/127\.0\.0\.1:8000\/projects(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+
+  await page.goto("/projects/new");
+  await page.getByRole("tab", { name: "建立空白小说" }).click();
+  await page.getByLabel("小说名").fill("迟到的响应");
+  await page.getByRole("button", { name: "创建小说" }).click();
+  await requestStarted.promise;
+
+  await page.getByRole("main").getByRole("link", { name: "作品" }).click();
+  await expect(page).toHaveURL(/\/projects$/);
+  pendingCreate.release();
+  await page.waitForTimeout(200);
+  await expect(page).toHaveURL(/\/projects$/);
+});
+
+test("设置页未配置类型时优先选择通用类型", async ({ page }) => {
+  await routeNovelTypes(page, [customType, genericType]);
+  await routeSettingsProject(page);
+  await page.goto("/projects/file%3Aselector-fixture/settings");
+
+  await expect(page.getByLabel("当前类型")).toHaveValue(genericType.id);
+  await expect(page.getByText(genericType.description)).toBeVisible();
+  await expect(page.getByText(/未知类型/)).toHaveCount(0);
+});
+
+test("设置页未配置且没有通用类型时选择列表第一项", async ({ page }) => {
+  await routeNovelTypes(page, [customType]);
+  await routeSettingsProject(page);
+  await page.goto("/projects/file%3Aselector-fixture/settings");
+
+  await expect(page.getByLabel("当前类型")).toHaveValue(customType.id);
+  await expect(page.getByText(customType.description)).toBeVisible();
+});
+
 test("设置页选中并保存自定义类型，描述和消息使用动态名称", async ({ page }) => {
   await routeNovelTypes(page, [genericType, customType]);
-  const updates = await routeSettingsProject(page, genericType.id);
+  const api = await routeSettingsProject(page, genericType.id);
   await page.goto("/projects/file%3Aselector-fixture/settings");
 
   const selector = page.getByLabel("当前类型");
@@ -174,13 +249,38 @@ test("设置页选中并保存自定义类型，描述和消息使用动态名�
   await selector.selectOption(customType.id);
 
   await expect(page.getByText(customType.description)).toBeVisible();
-  await expect(page.getByText(/小说类型已保存为：热血竞技/)).toBeVisible();
-  expect(updates).toEqual([{ world_blueprint: { genre_plugin_ids: [customType.id] } }]);
+  await expect(page.getByRole("status")).toContainText("小说类型已保存为：热血竞技");
+  await expect(page.getByRole("status")).toHaveAttribute("aria-live", "polite");
+  expect(api.updates).toEqual([{ world_blueprint: { genre_plugin_ids: [customType.id] } }]);
+});
+
+test("设置页保存失败后回滚选择并允许重试同一类型", async ({ page }) => {
+  await routeNovelTypes(page, [genericType, customType]);
+  const api = await routeSettingsProject(page, genericType.id, {
+    responseProjectId: "file:unmirrored",
+    saveFailures: 1,
+  });
+  await page.goto("/projects/file%3Aselector-fixture/settings");
+
+  const selector = page.getByLabel("当前类型");
+  await expect(selector).toHaveValue(genericType.id);
+  await selector.selectOption(customType.id);
+
+  const failure = page.getByRole("alert").filter({ hasText: "保存失败" });
+  await expect(failure).toContainText("保存失败：mock: project_not_found");
+  await expect(failure).toHaveAttribute("aria-live", "assertive");
+  await expect(selector).toHaveValue(genericType.id);
+  expect(api.putCount()).toBe(1);
+
+  await selector.selectOption(customType.id);
+  await expect(page.getByRole("status")).toContainText("小说类型已保存为：热血竞技");
+  await expect(selector).toHaveValue(customType.id);
+  expect(api.putCount()).toBe(2);
 });
 
 test("设置页保留已删除的当前类型，直到用户主动选择", async ({ page }) => {
   await routeNovelTypes(page, [genericType, customType]);
-  const updates = await routeSettingsProject(page, "retired_type");
+  const api = await routeSettingsProject(page, "retired_type");
   await page.goto("/projects/file%3Aselector-fixture/settings");
 
   const selector = page.getByLabel("当前类型");
@@ -188,11 +288,11 @@ test("设置页保留已删除的当前类型，直到用户主动选择", async
   await expect(selector.getByRole("option", { name: "未知类型（retired_type）" })).toHaveCount(1);
   await expect(page.getByRole("alert").filter({ hasText: "项目引用的小说类型 retired_type 已不存在" })).toBeVisible();
   await page.waitForTimeout(100);
-  expect(updates).toHaveLength(0);
+  expect(api.updates).toHaveLength(0);
 
   await selector.selectOption(customType.id);
-  await expect.poll(() => updates.length).toBe(1);
-  expect(updates[0]).toEqual({ world_blueprint: { genre_plugin_ids: [customType.id] } });
+  await expect.poll(() => api.updates.length).toBe(1);
+  expect(api.updates[0]).toEqual({ world_blueprint: { genre_plugin_ids: [customType.id] } });
 });
 
 test("设置页类型加载失败后可重新加载", async ({ page }) => {

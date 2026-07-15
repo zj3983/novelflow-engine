@@ -13,6 +13,8 @@ export default function NewProjectPage() {
   const router = useRouter();
   const inspirationTabRef = useRef<HTMLButtonElement>(null);
   const blankTabRef = useRef<HTMLButtonElement>(null);
+  const mountedRef = useRef(true);
+  const submitRequestIdRef = useRef(0);
   const typeSelectionTouchedRef = useRef(false);
   const [mode, setMode] = useState<CreationMode>("inspiration");
   const [title, setTitle] = useState("");
@@ -24,6 +26,14 @@ export default function NewProjectPage() {
   const [idea, setIdea] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      submitRequestIdRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +100,7 @@ export default function NewProjectPage() {
     event.preventDefault();
     if (!canSubmit || submitting) return;
 
+    const requestId = ++submitRequestIdRef.current;
     setSubmitting(true);
     setError("");
     try {
@@ -99,12 +110,14 @@ export default function NewProjectPage() {
         novel_type_id: novelTypeId,
         idea: mode === "inspiration" ? idea.trim() : "",
       });
+      if (!mountedRef.current || requestId !== submitRequestIdRef.current) return;
       router.push(response.next_path);
     } catch (err) {
+      if (!mountedRef.current || requestId !== submitRequestIdRef.current) return;
       const message = err instanceof Error ? err.message : String(err);
       setError(`创建失败：${message}`);
     } finally {
-      setSubmitting(false);
+      if (mountedRef.current && requestId === submitRequestIdRef.current) setSubmitting(false);
     }
   }
 

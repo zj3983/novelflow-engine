@@ -11,6 +11,7 @@ import {
   type NovelType,
   type ProjectStatus,
 } from "../../../../lib/api";
+import { DEFAULT_NOVEL_TYPE_ID } from "../../../../lib/novelTypes";
 
 const SOURCE_LABEL = {
   sqlite: "数据库",
@@ -32,10 +33,16 @@ function statusLabel(status: ProjectStatus | undefined): string {
   return key in STATUS_LABEL ? STATUS_LABEL[key as keyof typeof STATUS_LABEL] : key;
 }
 
+type TypeMessage = {
+  kind: "success" | "error";
+  text: string;
+};
+
 export default function ProjectSettingsPage() {
   const { project, story, loading: projectLoading, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
   const source = project?.storage_source ? SOURCE_LABEL[project.storage_source] : "数据库";
   const mountedRef = useRef(true);
+  const saveRequestIdRef = useRef(0);
   const typeSelectionTouchedRef = useRef(false);
   const typeSelectionInitializedRef = useRef(false);
   const [novelTypes, setNovelTypes] = useState<NovelType[]>([]);
@@ -44,12 +51,13 @@ export default function ProjectSettingsPage() {
   const [typesError, setTypesError] = useState("");
   const [typesLoadVersion, setTypesLoadVersion] = useState(0);
   const [savingType, setSavingType] = useState(false);
-  const [typeMessage, setTypeMessage] = useState("");
+  const [typeMessage, setTypeMessage] = useState<TypeMessage | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      saveRequestIdRef.current += 1;
     };
   }, []);
 
@@ -80,9 +88,11 @@ export default function ProjectSettingsPage() {
     if (!project || typesLoading || typesError || typeSelectionInitializedRef.current) return;
     typeSelectionInitializedRef.current = true;
     if (!typeSelectionTouchedRef.current) {
-      setSelectedTypeId(project.world_blueprint?.genre_plugin_ids?.[0] || "");
+      const configuredTypeId = project.world_blueprint?.genre_plugin_ids?.[0];
+      const defaultType = novelTypes.find((type) => type.id === DEFAULT_NOVEL_TYPE_ID) ?? novelTypes[0];
+      setSelectedTypeId(configuredTypeId || defaultType?.id || "");
     }
-  }, [project, typesError, typesLoading]);
+  }, [novelTypes, project, typesError, typesLoading]);
 
   const selectedType = useMemo(
     () => novelTypes.find((type) => type.id === selectedTypeId),
@@ -92,24 +102,32 @@ export default function ProjectSettingsPage() {
 
   async function saveNovelType(nextTypeId: string) {
     if (!project) return;
+    const previousTypeId = selectedTypeId;
+    const requestId = ++saveRequestIdRef.current;
     typeSelectionTouchedRef.current = true;
     setSelectedTypeId(nextTypeId);
     setSavingType(true);
-    setTypeMessage("");
+    setTypeMessage(null);
     try {
       const nextBlueprint: ImportedWorldBlueprint = {
         ...(project.world_blueprint ?? {}),
         genre_plugin_ids: [nextTypeId],
       };
       await updateProject(projectId, { world_blueprint: nextBlueprint });
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || requestId !== saveRequestIdRef.current) return;
       const nextTypeName = novelTypes.find((type) => type.id === nextTypeId)?.name ?? nextTypeId;
-      setTypeMessage(`小说类型已保存为：${nextTypeName}。下一次推演和写作包会读取这个类型。`);
+      setTypeMessage({
+        kind: "success",
+        text: `小说类型已保存为：${nextTypeName}。下一次推演和写作包会读取这个类型。`,
+      });
       refresh();
     } catch (err) {
-      if (mountedRef.current) setTypeMessage(err instanceof Error ? err.message : String(err));
+      if (!mountedRef.current || requestId !== saveRequestIdRef.current) return;
+      const message = err instanceof Error ? err.message : String(err);
+      setSelectedTypeId(previousTypeId);
+      setTypeMessage({ kind: "error", text: `保存失败：${message}` });
     } finally {
-      if (mountedRef.current) setSavingType(false);
+      if (mountedRef.current && requestId === saveRequestIdRef.current) setSavingType(false);
     }
   }
 
@@ -175,7 +193,16 @@ export default function ProjectSettingsPage() {
                 小说类型库为空，请先在全局小说类型库中添加类型。
               </p>
             ) : null}
-            {typeMessage ? <p className="ws-card__hint">{typeMessage}</p> : null}
+            {typeMessage?.kind === "success" ? (
+              <p className="ws-card__hint" role="status" aria-live="polite">
+                {typeMessage.text}
+              </p>
+            ) : null}
+            {typeMessage?.kind === "error" ? (
+              <p className="ws-project-create__error" role="alert" aria-live="assertive">
+                {typeMessage.text}
+              </p>
+            ) : null}
           </section>
 
           <div className="ws-detail-list">
