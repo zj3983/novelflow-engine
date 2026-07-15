@@ -197,9 +197,20 @@ def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path
 def test_extend_generated_plan_requires_and_appends_next_five_chapters(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+    current_outline = store.project_outline()
+    current_outline.pop("source", None)
+    current_outline["arcs"][0]["end_chapter"] = 5
+    store.update_project_outline(current_outline)
     addition = GeneratedOutlinePlan.model_validate(
         {
             "outline": {
+                "arcs": [
+                    {
+                        **current_outline["arcs"][0],
+                        "end_chapter": 10,
+                        "long_term_antagonist_traces": ["旧名册被换过", "执法堂有人提前封档"],
+                    }
+                ],
                 "chapters": [
                     {
                         "chapter_number": number,
@@ -221,6 +232,11 @@ def test_extend_generated_plan_requires_and_appends_next_five_chapters(tmp_path)
     saved = store.save_generated_outline_plan(addition, mode="extend")
 
     assert [item["chapter_number"] for item in saved["outline"]["chapters"]] == list(range(1, 11))
+    assert saved["outline"]["arcs"][0]["end_chapter"] == 10
+    assert saved["outline"]["arcs"][0]["long_term_antagonist_traces"] == [
+        "旧名册被换过",
+        "执法堂有人提前封档",
+    ]
     assert any(item["name"] == "新档房弟子" for item in saved["characters"])
 
 

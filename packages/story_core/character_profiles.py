@@ -126,4 +126,14 @@ def project_character_for_writer(
     projected["secrets"] = [
         item for item in projected.get("secrets", []) if str(item).strip() in allowed
     ]
+    relationship_notes: list[dict[str, Any]] = []
+    for item in projected.get("relationship_notes", []):
+        if not isinstance(item, dict):
+            continue
+        note = dict(item)
+        note["unknown_facts"] = [
+            fact for fact in note.get("unknown_facts", []) if str(fact).strip() in allowed
+        ]
+        relationship_notes.append(note)
+    projected["relationship_notes"] = relationship_notes
     return projected

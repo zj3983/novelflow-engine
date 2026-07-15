@@ -2157,7 +2157,21 @@ class FileProjectStore:
         arcs = {str(item["id"]): dict(item) for item in current["arcs"]}
         for arc in addition["arcs"]:
             arc_id = str(arc["id"])
-            arcs[arc_id] = merge_character_profile(arcs.get(arc_id, {}), arc)
+            existing_arc = arcs.get(arc_id)
+            if existing_arc is None:
+                arcs[arc_id] = dict(arc)
+                continue
+            merged_arc = merge_character_profile(existing_arc, arc)
+            merged_arc["end_chapter"] = max(int(existing_arc["end_chapter"]), int(arc["end_chapter"]))
+            merged_arc["long_term_antagonist_traces"] = list(
+                dict.fromkeys(
+                    [
+                        *existing_arc.get("long_term_antagonist_traces", []),
+                        *arc.get("long_term_antagonist_traces", []),
+                    ]
+                )
+            )
+            arcs[arc_id] = merged_arc
         return normalize_project_outline(
             {
                 "overall": merge_character_profile(current["overall"], addition["overall"]),

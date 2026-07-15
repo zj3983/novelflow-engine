@@ -101,6 +101,13 @@ def test_writer_projection_hides_unreleased_secrets() -> None:
             "hidden_matters": ["他亲手换掉旧名册", "他控制赵衡"],
         },
         "secrets": ["真实身份是执法堂首座"],
+        "relationship_notes": [
+            {
+                "target": "赵衡",
+                "known_facts": ["赵衡替他办事"],
+                "unknown_facts": ["赵衡留了旧账副本", "赵衡准备倒戈"],
+            }
+        ],
     }
 
     hidden = project_character_for_writer(card)
@@ -108,4 +115,6 @@ def test_writer_projection_hides_unreleased_secrets() -> None:
 
     assert hidden["story_drive"]["hidden_matters"] == []
     assert hidden["secrets"] == []
+    assert hidden["relationship_notes"][0]["known_facts"] == ["赵衡替他办事"]
+    assert hidden["relationship_notes"][0]["unknown_facts"] == []
     assert partly_revealed["story_drive"]["hidden_matters"] == ["他控制赵衡"]
