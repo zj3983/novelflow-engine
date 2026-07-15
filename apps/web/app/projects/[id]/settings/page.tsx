@@ -113,7 +113,7 @@ export default function ProjectSettingsPage() {
         ...(project.world_blueprint ?? {}),
         genre_plugin_ids: [nextTypeId],
       };
-      await updateProject(projectId, { world_blueprint: nextBlueprint });
+      await updateProject(projectId, { world_blueprint: nextBlueprint }, { fallbackToMock: false });
       if (!mountedRef.current || requestId !== saveRequestIdRef.current) return;
       const nextTypeName = novelTypes.find((type) => type.id === nextTypeId)?.name ?? nextTypeId;
       setTypeMessage({
@@ -121,11 +121,10 @@ export default function ProjectSettingsPage() {
         text: `小说类型已保存为：${nextTypeName}。下一次推演和写作包会读取这个类型。`,
       });
       refresh();
-    } catch (err) {
+    } catch {
       if (!mountedRef.current || requestId !== saveRequestIdRef.current) return;
-      const message = err instanceof Error ? err.message : String(err);
       setSelectedTypeId(previousTypeId);
-      setTypeMessage({ kind: "error", text: `保存失败：${message}` });
+      setTypeMessage({ kind: "error", text: "保存失败，请检查服务后重试。" });
     } finally {
       if (mountedRef.current && requestId === saveRequestIdRef.current) setSavingType(false);
     }

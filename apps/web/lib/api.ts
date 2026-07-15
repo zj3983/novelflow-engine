@@ -2760,7 +2760,15 @@ export async function fetchProject(projectId: string): Promise<ProjectResponse> 
   }
 }
 
-export async function updateProject(projectId: string, payload: UpdateProjectRequest): Promise<ProjectResponse> {
+export type UpdateProjectOptions = {
+  fallbackToMock?: boolean;
+};
+
+export async function updateProject(
+  projectId: string,
+  payload: UpdateProjectRequest,
+  { fallbackToMock = true }: UpdateProjectOptions = {},
+): Promise<ProjectResponse> {
   try {
     const path = isFileProjectId(projectId)
       ? fileProjectPath(projectId)
@@ -2771,7 +2779,8 @@ export async function updateProject(projectId: string, payload: UpdateProjectReq
       body: JSON.stringify(payload),
     })) as ProjectResponse;
     return persistProjectIntoMockStore(response);
-  } catch {
+  } catch (error) {
+    if (!fallbackToMock) throw error;
     return mockUpdateProject(projectId, payload);
   }
 }

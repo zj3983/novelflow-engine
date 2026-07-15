@@ -78,9 +78,9 @@ async function routeNovelTypes(
   return { requestCount: () => requests };
 }
 
-function projectFixture(typeId?: string, projectId = "file:selector-fixture") {
+function projectFixture(typeId?: string) {
   return {
-    project_id: projectId,
+    project_id: "file:selector-fixture",
     title: "试剑录",
     source_path: "",
     seed_outline: "",
@@ -102,9 +102,9 @@ function projectFixture(typeId?: string, projectId = "file:selector-fixture") {
 async function routeSettingsProject(
   page: Page,
   typeId?: string,
-  options: { responseProjectId?: string; saveFailures?: number } = {},
+  options: { saveFailures?: number } = {},
 ) {
-  let project = projectFixture(typeId, options.responseProjectId);
+  let project = projectFixture(typeId);
   const updates: Array<Record<string, unknown>> = [];
   let putCount = 0;
   await page.route("**/file-projects/file%3Aselector-fixture", async (route: Route) => {
@@ -116,7 +116,7 @@ async function routeSettingsProject(
         await route.fulfill({
           status: 503,
           contentType: "application/json",
-          body: JSON.stringify({ detail: "project_service_unavailable" }),
+          body: JSON.stringify({ detail: "项目服务暂时不可用" }),
         });
         return;
       }
@@ -257,7 +257,6 @@ test("设置页选中并保存自定义类型，描述和消息使用动态名�
 test("设置页保存失败后回滚选择并允许重试同一类型", async ({ page }) => {
   await routeNovelTypes(page, [genericType, customType]);
   const api = await routeSettingsProject(page, genericType.id, {
-    responseProjectId: "file:unmirrored",
     saveFailures: 1,
   });
   await page.goto("/projects/file%3Aselector-fixture/settings");
@@ -267,7 +266,7 @@ test("设置页保存失败后回滚选择并允许重试同一类型", async ({
   await selector.selectOption(customType.id);
 
   const failure = page.getByRole("alert").filter({ hasText: "保存失败" });
-  await expect(failure).toContainText("保存失败：mock: project_not_found");
+  await expect(failure).toContainText("保存失败，请检查服务后重试。");
   await expect(failure).toHaveAttribute("aria-live", "assertive");
   await expect(selector).toHaveValue(genericType.id);
   expect(api.putCount()).toBe(1);
