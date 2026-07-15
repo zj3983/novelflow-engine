@@ -77,6 +77,34 @@
   gap: 18px;
 }
 
+.loadPanel {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  min-height: 220px;
+  padding: 28px;
+  border: 1px solid var(--ws-line);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.84);
+}
+
+.loadPanel h2,
+.loadPanel p {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.loadPanel h2 {
+  font-size: 17px;
+}
+
+.loadPanel p {
+  max-width: 680px;
+  color: var(--ws-ink-muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
 .library,
 .editor {
   min-width: 0;

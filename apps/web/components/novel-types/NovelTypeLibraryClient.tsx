@@ -144,13 +144,17 @@ export function NovelTypeLibraryClient() {
   const [mode, setMode] = useState<"loading" | "idle" | "saving" | "deleting" | "error">("loading");
   const [message, setMessage] = useState("正在载入全局小说类型库...");
   const [isCreating, setIsCreating] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
+    setMode("loading");
+    setMessage(loadAttempt ? "正在重新载入全局小说类型库..." : "正在载入全局小说类型库...");
     void fetchNovelTypes()
       .then((items) => {
         if (!active) return;
         setRecords(items);
+        setIsCreating(false);
         const first = items[0];
         if (first) {
           const next = draftFromType(first);
@@ -159,19 +163,26 @@ export function NovelTypeLibraryClient() {
           setBaseline(next);
           setMessage(`已载入 ${items.length} 个小说类型。`);
         } else {
+          const next = blankDraft();
+          setSelectedId(null);
+          setDraft(next);
+          setBaseline(next);
           setMessage("类型库为空，可以新建第一个自定义类型。");
         }
         setMode("idle");
       })
       .catch((error) => {
         if (!active) return;
+        setRecords([]);
+        setSelectedId(null);
+        setIsCreating(false);
         setMode("error");
-        setMessage(naturalError(error));
+        setMessage(`小说类型库载入失败：${naturalError(error)}`);
       });
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadAttempt]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("zh-CN");
@@ -182,6 +193,7 @@ export function NovelTypeLibraryClient() {
   }, [records, search]);
 
   const busy = mode === "saving" || mode === "deleting";
+  const initialLoadUnavailable = records.length === 0 && (mode === "loading" || mode === "error");
 
   function selectRecord(record: NovelType) {
     const next = draftFromType(record);
@@ -275,7 +287,7 @@ export function NovelTypeLibraryClient() {
           <h1>全局小说类型库</h1>
           <p>类型决定写作时加载的题材承诺、规则和检查；修改会影响之后使用该类型的生成。</p>
         </div>
-        <button className={styles.primaryButton} type="button" onClick={startCreating} disabled={busy}>
+        <button className={styles.primaryButton} type="button" onClick={startCreating} disabled={busy || initialLoadUnavailable}>
           新建类型
         </button>
       </header>
@@ -285,6 +297,17 @@ export function NovelTypeLibraryClient() {
         {message}
       </p>
 
+      {initialLoadUnavailable ? (
+        <section className={styles.loadPanel} aria-label="小说类型库状态">
+          <h2>{mode === "loading" ? "正在载入类型库" : "无法载入类型库"}</h2>
+          <p>{message}</p>
+          {mode === "error" ? (
+            <button className={styles.secondaryButton} type="button" onClick={() => setLoadAttempt((current) => current + 1)}>
+              重新加载
+            </button>
+          ) : null}
+        </section>
+      ) : (
       <div className={styles.workspace}>
         <aside className={styles.library} aria-label="小说类型列表">
           <label className={styles.searchLabel}>
@@ -400,6 +423,7 @@ export function NovelTypeLibraryClient() {
           </footer>
         </form>
       </div>
+      )}
     </div>
   );
 }
