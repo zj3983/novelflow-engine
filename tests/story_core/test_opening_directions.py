@@ -173,6 +173,9 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     assert set(prompt_context) == {
         "genre_label",
         "genre_description",
+        "genre_core_promises",
+        "genre_rulebook",
+        "genre_quality_checks",
         "working_title",
         "idea",
         "regeneration_guidance",

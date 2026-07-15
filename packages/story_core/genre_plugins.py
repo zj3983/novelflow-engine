@@ -179,6 +179,9 @@ def plugin_prompt_guide(plugins: list[GenrePlugin]) -> str:
             "name": plugin.name,
             "core_promises": list(plugin.core_promises),
             "ledger_fields": list(plugin.ledger_fields),
+            "rulebook": {
+                field: list(rules) for field, rules in plugin.rulebook.items()
+            },
             "quality_checks": list(plugin.quality_checks),
             "trope_templates": deepcopy(list(plugin.trope_templates)),
         }

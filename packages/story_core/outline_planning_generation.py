@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.models import AgentSettings
-from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG
+from packages.story_core.novel_type_catalog import runtime_novel_type
 from packages.story_core.outline_planning import (
     GeneratedOutlinePlan,
     validate_generated_opening_plan,
@@ -72,7 +72,7 @@ class LLMOutlinePlanningGenerator:
             raise ValueError("regeneration_guidance_too_long")
 
         try:
-            genre = NOVEL_TYPE_CATALOG.get(validated.novel_type_id)
+            genre = runtime_novel_type(validated.novel_type_id)
             if genre is None:
                 raise ValueError("invalid_novel_type")
             runtime = self._runtime_resolver("director")
@@ -84,8 +84,13 @@ class LLMOutlinePlanningGenerator:
 
             prompt_context = {
                 "mode": mode,
-                "genre_label": genre.label,
+                "genre_label": genre.name,
                 "genre_description": genre.description,
+                "genre_core_promises": list(genre.core_promises),
+                "genre_rulebook": {
+                    field: list(rules) for field, rules in genre.rulebook.items()
+                },
+                "genre_quality_checks": list(genre.quality_checks),
                 "title": validated.title,
                 "opening_direction": validated.opening_direction.model_dump(mode="json"),
                 "author_constraints": validated.author_constraints,

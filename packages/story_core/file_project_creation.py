@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import StoryState
-from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG, normalize_novel_type_id
+from packages.story_core.novel_type_catalog import resolve_novel_type_id, runtime_novel_type
 from packages.story_core.project_outline import normalize_project_outline
 
 
@@ -37,7 +37,7 @@ class FileProjectCreateSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_fields(self) -> "FileProjectCreateSpec":
-        normalized_type_id = normalize_novel_type_id(self.novel_type_id)
+        normalized_type_id = resolve_novel_type_id(self.novel_type_id)
         if not normalized_type_id:
             raise ValueError("invalid_novel_type")
         self.novel_type_id = normalized_type_id
@@ -83,10 +83,13 @@ def _project_payload(project_id: str, spec: FileProjectCreateSpec) -> dict[str, 
 
 
 def _state_payload(project_id: str, novel_type_id: str) -> dict[str, Any]:
+    novel_type = runtime_novel_type(novel_type_id)
+    if novel_type is None:
+        raise ValueError("invalid_novel_type")
     state = StoryState(
         story_id=f"file:{project_id}",
         outline="",
-        genre=NOVEL_TYPE_CATALOG[novel_type_id].label,
+        genre=novel_type.name,
         style="通俗网文",
         current_chapter=0,
     )

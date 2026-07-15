@@ -144,18 +144,40 @@ def normalize_novel_type_ids(value: Any) -> list[str]:
 
 
 def normalize_novel_type_id(value: Any) -> str:
-    plugin_id = str(value or "").strip().lower()
-    plugin_id = NOVEL_TYPE_ID_ALIASES.get(plugin_id, plugin_id)
+    plugin_id = canonical_novel_type_id(value)
     return plugin_id if plugin_id in NOVEL_TYPE_CATALOG else ""
 
 
+def canonical_novel_type_id(value: Any) -> str:
+    plugin_id = str(value or "").strip().lower()
+    return NOVEL_TYPE_ID_ALIASES.get(plugin_id, plugin_id)
+
+
+def runtime_novel_type(value: Any) -> Any:
+    plugin_id = canonical_novel_type_id(value)
+    if not plugin_id:
+        return None
+
+    # Lazy import keeps the static catalog available as the library bootstrap.
+    from packages.story_core.novel_type_library import get_novel_type
+
+    return get_novel_type(plugin_id)
+
+
+def resolve_novel_type_id(value: Any) -> str:
+    record = runtime_novel_type(value)
+    return record.id if record is not None else ""
+
+
 def novel_type_options() -> list[dict[str, Any]]:
+    from packages.story_core.novel_type_library import list_novel_types
+
     return [
         {
-            "id": item.plugin_id,
-            "label": item.label,
+            "id": item.id,
+            "label": item.name,
             "description": item.description,
             "keywords": list(item.keywords),
         }
-        for item in NOVEL_TYPE_CATALOG.values()
+        for item in list_novel_types()
     ]
