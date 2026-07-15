@@ -74,8 +74,9 @@ def test_file_project_settings_update_syncs_runtime_genre_id_to_state(
     initial_state = store.state()
     initial_state["world_facts"] = [
         "保留事实：联赛周末开场。",
-        "小说类型：xuanhuan",
+        "  小说类型：东方玄幻",
         "小说类型:xianxia",
+        "小说类型：角色口中的分类并不可靠",
     ]
     state_path.write_text(json.dumps(initial_state, ensure_ascii=False), encoding="utf-8")
 
@@ -91,9 +92,13 @@ def test_file_project_settings_update_syncs_runtime_genre_id_to_state(
         store._story_state_payload_for_direction(state, project, 1)
     )
     seed = build_chapter_seed(story, 1)
-    assert project["world_blueprint"]["genre_plugin_ids"] == [" SPORTS "]
+    assert project["world_blueprint"]["genre_plugin_ids"] == ["sports"]
     assert state["genre_plugin_ids"] == ["sports"]
-    assert state["world_facts"] == ["保留事实：联赛周末开场。", "小说类型：sports"]
+    assert state["world_facts"] == [
+        "保留事实：联赛周末开场。",
+        "小说类型：角色口中的分类并不可靠",
+        "小说类型：sports",
+    ]
     assert seed["genre_plugins"] == ["generic_webnovel", "sports"]
     assert "设置页竞技承诺" in seed["core_promises"]
     assert "设置页竞技规则" in seed["rulebook"]["chapter_formula"]
@@ -110,10 +115,44 @@ def test_file_project_settings_update_syncs_runtime_genre_id_to_state(
     )
     cleared_seed = build_chapter_seed(cleared_story, 1)
     assert cleared_state["genre_plugin_ids"] == []
-    assert cleared_state["world_facts"] == ["保留事实：联赛周末开场。"]
+    assert cleared_state["world_facts"] == [
+        "保留事实：联赛周末开场。",
+        "小说类型：角色口中的分类并不可靠",
+    ]
     assert cleared_seed["genre_plugins"] == ["generic_webnovel"]
     assert "xuanhuan" not in cleared_seed["genre_plugins"]
     assert "eastern_fantasy" not in cleared_seed["genre_plugins"]
+
+
+@pytest.mark.parametrize(
+    "genre_plugin_ids",
+    [["unknown-runtime-type"], ["xuanhuan", "unknown-runtime-type"]],
+)
+def test_file_project_settings_reject_invalid_genre_ids_atomically(
+    creation_api,
+    genre_plugin_ids,
+):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Atomic Settings", "novel_type_id": "xuanhuan"},
+    ).json()
+    store = FileProjectStore(Path(created["source_path"]))
+    project_path = store.webnovel_dir / "project.json"
+    state_path = store.webnovel_dir / "state.json"
+    before = (project_path.read_bytes(), state_path.read_bytes())
+
+    response = client.put(
+        f"/file-projects/{created['project_id']}",
+        json={
+            "title": "Must Not Persist",
+            "world_blueprint": {"genre_plugin_ids": genre_plugin_ids},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid_novel_type"
+    assert (project_path.read_bytes(), state_path.read_bytes()) == before
 
 
 def test_file_project_list_ignores_in_progress_dot_directories(creation_api):

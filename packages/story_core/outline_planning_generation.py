@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.models import AgentSettings
-from packages.story_core.novel_type_catalog import runtime_novel_type
+from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.outline_planning import (
     GeneratedOutlinePlan,
     validate_generated_opening_plan,
@@ -84,13 +84,7 @@ class LLMOutlinePlanningGenerator:
 
             prompt_context = {
                 "mode": mode,
-                "genre_label": genre.name,
-                "genre_description": genre.description,
-                "genre_core_promises": list(genre.core_promises),
-                "genre_rulebook": {
-                    field: list(rules) for field, rules in genre.rulebook.items()
-                },
-                "genre_quality_checks": list(genre.quality_checks),
+                **novel_type_prompt_context(genre),
                 "title": validated.title,
                 "opening_direction": validated.opening_direction.model_dump(mode="json"),
                 "author_constraints": validated.author_constraints,

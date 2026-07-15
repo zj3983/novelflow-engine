@@ -204,8 +204,9 @@ def test_update_project_switches_persisted_story_state_and_seed_to_custom_type(
     initial_state = store.state()
     initial_state["world_facts"] = [
         "保留事实：训练场仍在开放。",
-        "小说类型：xuanhuan",
+        "  小说类型：东方玄幻  ",
         "小说类型:xianxia",
+        "小说类型：角色口中的分类并不可靠",
     ]
     state_path.write_text(json.dumps(initial_state, ensure_ascii=False), encoding="utf-8")
 
@@ -226,12 +227,13 @@ def test_update_project_switches_persisted_story_state_and_seed_to_custom_type(
     seed = build_chapter_seed(story, 1)
 
     assert project["world_blueprint"] == {
-        "genre_plugin_ids": [" SPORTS "],
+        "genre_plugin_ids": [CUSTOM_ID],
         "settings_marker": "preserved replacement payload",
     }
     assert state["genre_plugin_ids"] == [CUSTOM_ID]
     assert state["world_facts"] == [
         "保留事实：训练场仍在开放。",
+        "小说类型：角色口中的分类并不可靠",
         f"小说类型：{CUSTOM_ID}",
     ]
     assert story.genre_plugin_ids == [CUSTOM_ID]
@@ -256,8 +258,9 @@ def test_update_project_explicit_type_clear_does_not_leave_stale_state_id(
     initial_state = store.state()
     initial_state["world_facts"] = [
         "保留事实：旧案仍未解决。",
-        "小说类型：xuanhuan",
+        "  小说类型：东方玄幻  ",
         "小说类型:xianxia",
+        "小说类型：角色口中的分类并不可靠",
     ]
     state_path.write_text(json.dumps(initial_state, ensure_ascii=False), encoding="utf-8")
 
@@ -269,7 +272,10 @@ def test_update_project_explicit_type_clear_does_not_leave_stale_state_id(
     )
     seed = build_chapter_seed(story, 1)
     assert state["genre_plugin_ids"] == []
-    assert state["world_facts"] == ["保留事实：旧案仍未解决。"]
+    assert state["world_facts"] == [
+        "保留事实：旧案仍未解决。",
+        "小说类型：角色口中的分类并不可靠",
+    ]
     assert story.genre_plugin_ids == []
     assert seed["genre_plugins"] == ["generic_webnovel"]
     assert XUANHUAN_PROMISE not in seed["core_promises"]
@@ -278,6 +284,87 @@ def test_update_project_explicit_type_clear_does_not_leave_stale_state_id(
     assert not set(EASTERN_FANTASY.rulebook["chapter_formula"]) & set(
         seed["rulebook"]["chapter_formula"]
     )
+
+
+@pytest.mark.parametrize(
+    "genre_plugin_ids",
+    [["unknown-runtime-type"], ["xuanhuan", "unknown-runtime-type"]],
+)
+def test_update_project_rejects_invalid_genre_ids_without_writing_project_or_state(
+    runtime_type_library,
+    tmp_path,
+    genre_plugin_ids,
+) -> None:
+    created = create_file_project(
+        tmp_path / "projects",
+        FileProjectCreateSpec(mode="blank", title="原子类型更新", novel_type_id="xuanhuan"),
+        project_id_factory=lambda: "p-atomic-runtime-type",
+    )
+    store = FileProjectStore(created.root)
+    project_path = store.webnovel_dir / "project.json"
+    state_path = store.webnovel_dir / "state.json"
+    before = (project_path.read_bytes(), state_path.read_bytes())
+
+    with pytest.raises(ValueError, match="invalid_novel_type"):
+        store.update_project(
+            {
+                "title": "不得落盘的新标题",
+                "world_blueprint": {"genre_plugin_ids": genre_plugin_ids},
+            }
+        )
+
+    assert (project_path.read_bytes(), state_path.read_bytes()) == before
+
+
+def test_chapter_seed_resolves_unique_runtime_names_for_legacy_story_state(
+    runtime_type_library,
+) -> None:
+    custom_story = StoryState(
+        story_id="s-custom-name",
+        genre=CUSTOM_NAME,
+        style="白描",
+        outline="球队争夺最后一个季后赛席位。",
+    )
+    renamed_builtin_story = StoryState(
+        story_id="s-renamed-builtin-name",
+        genre="",
+        style="白描",
+        outline="遗物在第一次使用后留下代价。",
+        world_facts=[f"小说类型：{XUANHUAN_NAME}"],
+    )
+
+    custom_seed = build_chapter_seed(custom_story, 1)
+    builtin_seed = build_chapter_seed(renamed_builtin_story, 1)
+
+    assert custom_seed["genre_plugins"] == ["generic_webnovel", CUSTOM_ID]
+    assert CUSTOM_PROMISE in custom_seed["core_promises"]
+    assert "xuanhuan" in builtin_seed["genre_plugins"]
+    assert XUANHUAN_PROMISE in builtin_seed["core_promises"]
+
+
+def test_chapter_seed_does_not_guess_when_runtime_names_are_ambiguous(
+    runtime_type_library,
+) -> None:
+    NovelTypeLibrary().create(
+        {
+            "id": "sports_duplicate",
+            "name": CUSTOM_NAME,
+            "core_promises": ["不应被歧义名称加载"],
+        }
+    )
+    story = StoryState(
+        story_id="s-ambiguous-name",
+        genre=CUSTOM_NAME,
+        style="白描",
+        outline="名称重复时不应猜测类型。",
+        world_facts=[f"小说类型：{CUSTOM_NAME}"],
+    )
+
+    seed = build_chapter_seed(story, 1)
+
+    assert seed["genre_plugins"] == ["generic_webnovel"]
+    assert CUSTOM_PROMISE not in seed["core_promises"]
+    assert "不应被歧义名称加载" not in seed["core_promises"]
 
 
 def test_catalog_is_dynamic_view_of_library_bootstrap(runtime_type_library) -> None:
@@ -404,6 +491,124 @@ def test_outline_prompt_reads_latest_runtime_rulebook(
 
     prompt = json.loads(captured["payload"]["messages"][1]["content"])
     assert rule in prompt["genre_rulebook"]["chapter_formula"]
+
+
+@pytest.mark.parametrize("generator_kind", ["opening", "outline"])
+def test_generation_prompt_caps_runtime_novel_type_context(
+    runtime_type_library,
+    generator_kind,
+) -> None:
+    marker = "必须保留的运行时类型字段"
+    huge = "超长配置" * 3000
+    NovelTypeLibrary().update(
+        "xuanhuan",
+        {
+            "description": marker + huge,
+            "core_promises": [marker + huge, *[huge for _ in range(30)]],
+            "rulebook": {
+                field: [marker + huge, *[huge for _ in range(30)]]
+                for field in (
+                    "progression_rules",
+                    "economy_rules",
+                    "quest_rules",
+                    "faction_rules",
+                    "panel_rules",
+                    "chapter_formula",
+                    "forbidden_breaks",
+                )
+            },
+            "quality_checks": [marker + huge, *[huge for _ in range(30)]],
+        },
+    )
+    captured = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["payload"] = payload
+        if generator_kind == "opening":
+            return {
+                "choices": [
+                    {"message": {"content": json.dumps(_directions_payload(), ensure_ascii=False)}}
+                ]
+            }
+        raise RuntimeError("stop after prompt capture")
+
+    if generator_kind == "opening":
+        generator = LLMOpeningDirectionGenerator(
+            post_json=fake_post,
+            runtime_resolver=_runtime_settings,
+            strategy_resolver=_strategy_settings,
+        )
+        generator.generate(OpeningBrief(novel_type_id="xuanhuan", idea="限长测试"))
+    else:
+        generator = LLMOutlinePlanningGenerator(
+            post_json=fake_post,
+            runtime_resolver=_runtime_settings,
+            strategy_resolver=_strategy_settings,
+        )
+        with pytest.raises(ValueError, match="outline_planning_generation_failed"):
+            generator.generate(_planning_brief("xuanhuan"))
+
+    prompt = json.loads(captured["payload"]["messages"][1]["content"])
+    novel_type_context = {
+        key: value for key, value in prompt.items() if key.startswith("genre_")
+    }
+    serialized = json.dumps(novel_type_context, ensure_ascii=False)
+    assert marker in serialized
+    assert set(novel_type_context) == {
+        "genre_label",
+        "genre_description",
+        "genre_core_promises",
+        "genre_rulebook",
+        "genre_quality_checks",
+    }
+    assert len(serialized) <= 6000
+
+
+def test_generation_prompt_keeps_normal_short_runtime_type_content_complete(
+    runtime_type_library,
+) -> None:
+    short_rules = [f"短规则-{index}" for index in range(1, 5)]
+    NovelTypeLibrary().update(
+        "xuanhuan",
+        {
+            "description": "完整短说明",
+            "core_promises": ["短承诺一", "短承诺二", "短承诺三"],
+            "rulebook": {
+                field: short_rules
+                for field in (
+                    "progression_rules",
+                    "economy_rules",
+                    "quest_rules",
+                    "faction_rules",
+                    "panel_rules",
+                    "chapter_formula",
+                    "forbidden_breaks",
+                )
+            },
+            "quality_checks": ["短检查一", "短检查二", "短检查三"],
+        },
+    )
+    captured = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["payload"] = payload
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(_directions_payload(), ensure_ascii=False)}}
+            ]
+        }
+
+    LLMOpeningDirectionGenerator(
+        post_json=fake_post,
+        runtime_resolver=_runtime_settings,
+        strategy_resolver=_strategy_settings,
+    ).generate(OpeningBrief(novel_type_id="xuanhuan", idea="短配置完整性"))
+
+    prompt = json.loads(captured["payload"]["messages"][1]["content"])
+    assert prompt["genre_description"] == "完整短说明"
+    assert prompt["genre_core_promises"] == ["短承诺一", "短承诺二", "短承诺三"]
+    assert prompt["genre_quality_checks"] == ["短检查一", "短检查二", "短检查三"]
+    assert all(rules == short_rules for rules in prompt["genre_rulebook"].values())
 
 
 @pytest.mark.parametrize(

@@ -507,7 +507,10 @@ def init_file_project_routes() -> APIRouter:
     @router.put("/file-projects/{project_id}")
     def update_file_project(project_id: str, payload: FileProjectUpdateRequest) -> dict[str, Any]:
         store = _store_for(project_id)
-        store.update_project(payload.model_dump(exclude_unset=True))
+        try:
+            store.update_project(payload.model_dump(exclude_unset=True))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return _project_payload(store)
 
     @router.get("/file-projects/{project_id}/writing-packet")

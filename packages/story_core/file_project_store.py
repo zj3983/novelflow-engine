@@ -21,7 +21,12 @@ from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.models import CharacterState, StoryState
-from packages.story_core.novel_type_catalog import normalize_novel_type_ids, runtime_novel_type
+from packages.story_core.novel_type_catalog import (
+    normalize_novel_type_ids,
+    novel_type_id_from_metadata_fact,
+    resolve_novel_type_id,
+    runtime_novel_type,
+)
 from packages.story_core.opening_directions import OpeningBrief, OpeningDirectionSet
 from packages.story_core.outline_planning import GeneratedOutlinePlan, validate_generated_opening_plan
 from packages.story_core.outline_planning_generation import OutlinePlanningBrief
@@ -2344,6 +2349,33 @@ class FileProjectStore:
         return selected
 
     def update_project(self, patch: dict[str, Any]) -> dict[str, Any]:
+        normalized_patch_genre_ids: list[str] | None = None
+        patch_world_blueprint = patch.get("world_blueprint")
+        if (
+            patch_world_blueprint is not None
+            and isinstance(patch_world_blueprint, dict)
+            and "genre_plugin_ids" in patch_world_blueprint
+        ):
+            raw_genre_ids = patch_world_blueprint.get("genre_plugin_ids")
+            if raw_genre_ids is None:
+                genre_values: list[Any] = []
+            elif isinstance(raw_genre_ids, str):
+                genre_values = [raw_genre_ids]
+            elif isinstance(raw_genre_ids, list):
+                genre_values = raw_genre_ids
+            else:
+                raise ValueError("invalid_novel_type")
+
+            normalized_patch_genre_ids = []
+            for value in genre_values:
+                if not str(value or "").strip():
+                    continue
+                resolved_id = resolve_novel_type_id(value)
+                if not resolved_id:
+                    raise ValueError("invalid_novel_type")
+                if resolved_id not in normalized_patch_genre_ids:
+                    normalized_patch_genre_ids.append(resolved_id)
+
         project = dict(self.project())
         state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
         for key in (
@@ -2365,6 +2397,9 @@ class FileProjectStore:
             state["outline"] = patch["seed_outline"]
         if patch.get("world_blueprint") is not None:
             world_blueprint = patch["world_blueprint"]
+            if normalized_patch_genre_ids is not None:
+                world_blueprint = dict(world_blueprint)
+                world_blueprint["genre_plugin_ids"] = normalized_patch_genre_ids
             project["world_blueprint"] = world_blueprint
             if isinstance(world_blueprint, dict) and "genre_plugin_ids" in world_blueprint:
                 raw_genre_ids = world_blueprint.get("genre_plugin_ids")
@@ -2395,7 +2430,7 @@ class FileProjectStore:
                         for fact in world_facts
                         if not (
                             isinstance(fact, str)
-                            and fact.startswith(("小说类型：", "小说类型:"))
+                            and novel_type_id_from_metadata_fact(fact)
                         )
                     ]
                     if synchronized_genre_ids:

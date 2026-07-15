@@ -6,7 +6,11 @@ from typing import Any
 from packages.story_core.agent_base import compact_list, compact_text
 from packages.story_core.genre_plugins import is_game_genre, merge_plugin_rulebooks, plugin_simulation_blueprint, select_genre_plugins
 from packages.story_core.models import NovelProject, StoryState
-from packages.story_core.novel_type_catalog import normalize_novel_type_ids, resolve_novel_type_id
+from packages.story_core.novel_type_catalog import (
+    normalize_novel_type_ids,
+    novel_type_id_from_metadata_fact,
+    resolve_novel_type_id,
+)
 
 
 LONGFORM_FACT_PREFIXES = (
@@ -30,12 +34,12 @@ def _proxy_project(story: StoryState) -> NovelProject:
         explicit_genre = resolve_novel_type_id(story.genre)
         genre_ids = [explicit_genre] if explicit_genre else []
     if not genre_ids:
-        type_fact = next((fact for fact in story.world_facts if str(fact).startswith(("小说类型：", "小说类型:"))), "")
-        if type_fact:
-            explicit_genre = resolve_novel_type_id(
-                re.split("[：:]", str(type_fact), maxsplit=1)[-1]
-            )
-            genre_ids = [explicit_genre] if explicit_genre else []
+        explicit_genre = ""
+        for fact in story.world_facts:
+            explicit_genre = novel_type_id_from_metadata_fact(fact)
+            if explicit_genre:
+                break
+        genre_ids = [explicit_genre] if explicit_genre else []
     if not genre_ids and _is_game_story(story):
         genre_ids = ["game_webnovel"]
     return NovelProject(

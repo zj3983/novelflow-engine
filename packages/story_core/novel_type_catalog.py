@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import ItemsView, Iterator, KeysView, Mapping, ValuesView
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +32,12 @@ def _catalog_item(record: Any) -> NovelType:
     )
 
 
+def _catalog_snapshot() -> dict[str, NovelType]:
+    from packages.story_core.novel_type_library import list_novel_types
+
+    return {record.id: _catalog_item(record) for record in list_novel_types()}
+
+
 class _RuntimeNovelTypeCatalog(Mapping[str, NovelType]):
     def __getitem__(self, key: str) -> NovelType:
         record = runtime_novel_type(key)
@@ -39,14 +46,22 @@ class _RuntimeNovelTypeCatalog(Mapping[str, NovelType]):
         return _catalog_item(record)
 
     def __iter__(self) -> Iterator[str]:
-        from packages.story_core.novel_type_library import list_novel_types
-
-        return iter(record.id for record in list_novel_types())
+        return iter(_catalog_snapshot())
 
     def __len__(self) -> int:
-        from packages.story_core.novel_type_library import list_novel_types
+        return len(_catalog_snapshot())
 
-        return len(list_novel_types())
+    def items(self) -> ItemsView[str, NovelType]:
+        return _catalog_snapshot().items()
+
+    def values(self) -> ValuesView[NovelType]:
+        return _catalog_snapshot().values()
+
+    def keys(self) -> KeysView[str]:
+        return _catalog_snapshot().keys()
+
+    def copy(self) -> dict[str, NovelType]:
+        return _catalog_snapshot()
 
 
 NOVEL_TYPE_CATALOG: Mapping[str, NovelType] = _RuntimeNovelTypeCatalog()
@@ -96,14 +111,61 @@ def runtime_novel_type(value: Any) -> Any:
         return None
 
     # Lazy import keeps the static catalog available as the library bootstrap.
-    from packages.story_core.novel_type_library import get_novel_type
+    from packages.story_core.novel_type_library import list_novel_types
 
-    return get_novel_type(plugin_id)
+    records = list_novel_types()
+    record = next((item for item in records if item.id == plugin_id), None)
+    if record is not None:
+        return record
+
+    requested_name = str(value or "").strip().casefold()
+    matches = [
+        item for item in records if item.name.strip().casefold() == requested_name
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def resolve_novel_type_id(value: Any) -> str:
     record = runtime_novel_type(value)
     return record.id if record is not None else ""
+
+
+def novel_type_id_from_metadata_fact(value: Any) -> str:
+    text = str(value or "").lstrip()
+    match = re.match(r"^小说类型[：:](.*)$", text)
+    if match is None:
+        return ""
+    return resolve_novel_type_id(match.group(1).strip())
+
+
+def novel_type_prompt_context(record: Any) -> dict[str, Any]:
+    from packages.story_core.agent_base import compact_list, compact_text
+
+    context = {
+        "genre_label": compact_text(str(record.name), 100),
+        "genre_description": compact_text(str(record.description), 700),
+        "genre_core_promises": compact_list(
+            list(record.core_promises), max_items=8, item_chars=180
+        ),
+        "genre_rulebook": {
+            field: compact_list(list(rules), max_items=6, item_chars=160)
+            for field, rules in record.rulebook.items()
+        },
+        "genre_quality_checks": compact_list(
+            list(record.quality_checks), max_items=10, item_chars=180
+        ),
+    }
+    lists = [
+        context["genre_core_promises"],
+        *context["genre_rulebook"].values(),
+        context["genre_quality_checks"],
+    ]
+    while len(json.dumps(context, ensure_ascii=False)) > 6000:
+        candidates = [items for items in lists if len(items) > 1]
+        if not candidates:
+            break
+        max(candidates, key=lambda items: len(items[-1])).pop()
+    return context
 
 
 def novel_type_options() -> list[dict[str, Any]]:

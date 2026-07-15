@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.models import AgentSettings
-from packages.story_core.novel_type_catalog import runtime_novel_type
+from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.runtime_config import (
     OpenAIRuntimeSettings,
     get_runtime_strategy_settings,
@@ -107,13 +107,7 @@ class LLMOpeningDirectionGenerator:
                 raise ValueError("runtime_unavailable")
 
             prompt_context = {
-                "genre_label": genre.name,
-                "genre_description": genre.description,
-                "genre_core_promises": list(genre.core_promises),
-                "genre_rulebook": {
-                    field: list(rules) for field, rules in genre.rulebook.items()
-                },
-                "genre_quality_checks": list(genre.quality_checks),
+                **novel_type_prompt_context(genre),
                 "working_title": validated_brief.working_title,
                 "idea": validated_brief.idea,
                 "regeneration_guidance": normalized_guidance,

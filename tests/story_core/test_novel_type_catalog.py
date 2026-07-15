@@ -118,6 +118,55 @@ def test_novel_type_catalog_exposes_selectable_genres():
     assert NOVEL_TYPE_CATALOG["game_webnovel"].plugin_id == "game_webnovel"
 
 
+def test_runtime_catalog_bulk_views_use_one_stable_library_snapshot(monkeypatch):
+    from packages.story_core import novel_type_library
+
+    records = [
+        SimpleNamespace(id="first", name="First", description="First description", keywords=()),
+        SimpleNamespace(id="second", name="Second", description="Second description", keywords=()),
+    ]
+    calls = 0
+
+    def list_once():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise AssertionError("bulk catalog view reread the changing library")
+        return records
+
+    monkeypatch.setattr(novel_type_library, "list_novel_types", list_once)
+
+    assert list(NOVEL_TYPE_CATALOG.items()) == [
+        ("first", novel_type_catalog.NovelType("first", "First", "First description", ())),
+        ("second", novel_type_catalog.NovelType("second", "Second", "Second description", ())),
+    ]
+    assert calls == 1
+
+
+def test_runtime_catalog_values_and_copy_each_read_one_snapshot(monkeypatch):
+    from packages.story_core import novel_type_library
+
+    records = [
+        SimpleNamespace(id="only", name="Only", description="Only description", keywords=())
+    ]
+    calls = 0
+
+    def current_records():
+        nonlocal calls
+        calls += 1
+        return records
+
+    monkeypatch.setattr(novel_type_library, "list_novel_types", current_records)
+
+    assert [item.plugin_id for item in NOVEL_TYPE_CATALOG.values()] == ["only"]
+    assert calls == 1
+    copied = NOVEL_TYPE_CATALOG.copy()
+    assert copied == {
+        "only": novel_type_catalog.NovelType("only", "Only", "Only description", ())
+    }
+    assert calls == 2
+
+
 def test_eastern_fantasy_catalog_options_explain_their_distinct_promises():
     xuanhuan = NOVEL_TYPE_CATALOG["xuanhuan"]
     xianxia = NOVEL_TYPE_CATALOG["xianxia"]
