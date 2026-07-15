@@ -333,7 +333,8 @@ class NovelTypeLibrary:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _write(self, payload: Mapping[str, Any]) -> None:
-        self._atomic_write(self.backup_path, payload)
+        previous_payload = self._stored_data()
+        self._atomic_write(self.backup_path, previous_payload)
         self._atomic_write(self.path, payload)
 
     @staticmethod

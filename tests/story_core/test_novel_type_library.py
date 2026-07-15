@@ -181,21 +181,15 @@ def test_concurrent_creates_from_separate_instances_are_both_preserved(monkeypat
 
 def test_corrupt_main_file_recovers_from_valid_backup():
     library = NovelTypeLibrary()
-    backup_path = library.path.with_name(f"{library.path.name}.bak")
-    library.path.parent.mkdir(parents=True, exist_ok=True)
-    backup_path.write_text(
-        json.dumps(
-            {"overrides": {}, "custom": {"sports": {"id": "sports", "name": "竞技体育"}}},
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    library.create({"id": "sports", "name": "竞技体育"})
+    library.create({"id": "history", "name": "历史架空"})
     library.path.write_text("{broken", encoding="utf-8")
 
     recovered = library.get("sports")
 
     assert recovered is not None
     assert recovered.name == "竞技体育"
+    assert library.get("history") is None
 
 
 def test_corrupt_main_without_backup_still_selects_builtin():
@@ -217,14 +211,16 @@ def test_corrupt_main_without_backup_still_selects_builtin():
     ]
 
 
-def test_writes_maintain_a_valid_backup():
+def test_writes_keep_the_previous_committed_state_in_backup():
     library = NovelTypeLibrary()
     library.create({"id": "sports", "name": "竞技体育"})
+    library.create({"id": "history", "name": "历史架空"})
     backup_path = library.path.with_name(f"{library.path.name}.bak")
 
     stored = json.loads(backup_path.read_text(encoding="utf-8"))
 
     assert stored["custom"]["sports"]["name"] == "竞技体育"
+    assert "history" not in stored["custom"]
 
 
 def test_backup_write_failure_does_not_commit_main_file(monkeypatch):
@@ -246,6 +242,35 @@ def test_backup_write_failure_does_not_commit_main_file(monkeypatch):
     assert library.path.read_text(encoding="utf-8") == original_main
     assert NovelTypeLibrary().get("history") is None
     assert NovelTypeLibrary().get("sports") is not None
+
+
+def test_main_write_failure_keeps_old_state_and_allows_retry(monkeypatch):
+    library = NovelTypeLibrary()
+    library.create({"id": "sports", "name": "竞技体育"})
+    original_main = library.path.read_text(encoding="utf-8")
+    original_atomic_write = NovelTypeLibrary._atomic_write
+    failed_once = False
+
+    def fail_main_once(path, payload):
+        nonlocal failed_once
+        if path == library.path and not failed_once:
+            failed_once = True
+            raise OSError("injected main failure")
+        original_atomic_write(path, payload)
+
+    monkeypatch.setattr(NovelTypeLibrary, "_atomic_write", staticmethod(fail_main_once))
+
+    with pytest.raises(OSError, match="injected main failure"):
+        NovelTypeLibrary().create({"id": "history", "name": "历史架空"})
+
+    assert library.path.read_text(encoding="utf-8") == original_main
+    assert NovelTypeLibrary().get("history") is None
+    backup = json.loads(library.backup_path.read_text(encoding="utf-8"))
+    assert set(backup["custom"]) == {"sports"}
+
+    NovelTypeLibrary().create({"id": "history", "name": "历史架空"})
+
+    assert NovelTypeLibrary().get("history") is not None
 
 
 def test_custom_id_rejects_builtin_case_and_alias_collisions():
