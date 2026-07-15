@@ -36,6 +36,7 @@ function projectNav(projectId: string): NavItem[] {
     { href: `${base}/world`, label: "世界观" },
     { href: `${base}/relationships`, label: "人物关系" },
     { href: `${base}/characters`, label: "角色卡" },
+    { href: `${base}/settings`, label: "项目设置" },
   ];
 }
 

@@ -960,6 +960,10 @@ test("relationship workspace defaults to protagonist and saves the canonical gra
   await page.goto("/projects/file%3Arelationship-fixture/relationships");
 
   await expect(page.getByRole("heading", { name: "人物关系" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "项目设置" })).toHaveAttribute(
+    "href",
+    "/projects/file%3Arelationship-fixture/settings",
+  );
   await expect(page.getByRole("button", { name: "主角视角" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "林照", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "赵衡", exact: true })).toBeVisible();
