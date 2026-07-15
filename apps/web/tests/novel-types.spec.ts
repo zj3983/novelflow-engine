@@ -68,6 +68,7 @@ function fixtures(): NovelTypeFixture[] {
 type MockOptions = {
   createConflict?: boolean;
   deleteConflict?: boolean;
+  deleteReject?: boolean;
   holdDelete?: boolean;
   holdInitialGet?: boolean;
   holdPut?: boolean;
@@ -168,6 +169,12 @@ async function mockNovelTypes(page: Page, options?: MockOptions) {
         headers: { ...responseHeaders, "content-type": "application/json" },
         body: JSON.stringify({ detail: "Novel type 'sports' is used by project(s): spring-league" }),
       });
+      return;
+    }
+
+    if (method === "DELETE" && options?.deleteReject) {
+      requests.push({ method });
+      await route.abort("connectionfailed");
       return;
     }
 
@@ -359,6 +366,9 @@ test("保存中和删除中锁定操作并显示进行中文案", async ({ page 
   await expect(page.getByRole("button", { name: "保存中..." })).toBeDisabled();
   await expect(page.getByRole("button", { name: "取消 / 重置" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "删除类型" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "新建类型" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /玄幻/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /竞技体育/ })).toBeDisabled();
   saveApi.releasePut();
   await expect(page.getByRole("status")).toContainText("已保存");
 
@@ -373,6 +383,9 @@ test("保存中和删除中锁定操作并显示进行中文案", async ({ page 
   await expect(page.getByRole("button", { name: "删除中..." })).toBeDisabled();
   await expect(page.getByRole("button", { name: "保存修改" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "取消 / 重置" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "新建类型" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /玄幻/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /竞技体育/ })).toBeDisabled();
   deleteApi.releaseDelete();
   await expect(page.getByRole("status")).toContainText("已删除");
 });
@@ -404,6 +417,50 @@ test("取消删除确认不会发送 DELETE", async ({ page }) => {
 
   await expect(page.getByRole("button", { name: /竞技体育/ })).toBeVisible();
   expect(api.requests.filter((request) => request.method === "DELETE")).toHaveLength(0);
+});
+
+test("未保存修改在切换类型或新建前需要确认", async ({ page }) => {
+  await mockNovelTypes(page);
+  await page.goto("/novel-types", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("status")).toContainText("已载入");
+
+  await page.getByLabel("类型名称").fill("尚未保存的玄幻");
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toBe("当前修改尚未保存，确定放弃吗？");
+    await dialog.dismiss();
+  });
+  await page.getByRole("button", { name: /竞技体育/ }).click();
+  await expect(page.getByLabel("类型名称")).toHaveValue("尚未保存的玄幻");
+  await expect(page.getByRole("button", { name: /玄幻/ })).toHaveAttribute("aria-pressed", "true");
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: /竞技体育/ }).click();
+  await expect(page.getByLabel("类型名称")).toHaveValue("竞技体育");
+
+  await page.getByLabel("简短介绍").fill("尚未保存的竞技介绍");
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "新建类型" }).click();
+  await expect(page.getByLabel("简短介绍")).toHaveValue("尚未保存的竞技介绍");
+  await expect(page.getByLabel("类型 ID")).toBeDisabled();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "新建类型" }).click();
+  await expect(page.getByLabel("类型 ID")).toBeEnabled();
+  await expect(page.getByLabel("类型 ID")).toHaveValue("");
+});
+
+test("删除网络失败后恢复操作并显示自然中文", async ({ page }) => {
+  const api = await mockNovelTypes(page, { deleteReject: true });
+  await page.goto("/novel-types", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("status")).toContainText("已载入");
+  await page.getByRole("button", { name: /竞技体育/ }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "删除类型" }).click();
+
+  await expect(page.locator('p[role="alert"]')).toContainText("连接服务失败，请稍后重试");
+  await expect(page.getByRole("button", { name: "删除类型" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: /竞技体育/ })).toHaveAttribute("aria-pressed", "true");
+  expect(api.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
 });
 
 test("390px 宽度下列表与编辑器纵向排列且无横向溢出", async ({ page }) => {

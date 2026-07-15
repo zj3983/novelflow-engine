@@ -2059,7 +2059,12 @@ function mockSaveRuntimeStrategy(settings: RuntimeStrategySettings): RuntimeStra
   return clone(mockRuntimeStrategy);
 }
 
-async function tryFetchJson(url: string, init: RequestInit, timeoutMs = 30000): Promise<any> {
+async function requestWithTimeout<T>(
+  url: string,
+  init: RequestInit,
+  readResponse: (response: Response) => Promise<T>,
+  timeoutMs = 30000,
+): Promise<T> {
   console.log('[tryFetchJson] Requesting:', url, init.method);
   console.log('[tryFetchJson] Init:', JSON.stringify(init).slice(0, 200));
   const controller = new AbortController();
@@ -2088,11 +2093,7 @@ async function tryFetchJson(url: string, init: RequestInit, timeoutMs = 30000): 
       }
       throw new Error(message);
     }
-    const text = await resp.text();
-    console.log('[tryFetchJson] Response text (first 300):', text.slice(0, 300));
-    const data = JSON.parse(text);
-    console.log('[tryFetchJson] Parsed OK, keys:', Object.keys(data));
-    return data;
+    return await readResponse(resp);
   } catch (error) {
     console.error('[tryFetchJson] Error:', error);
     if (error instanceof DOMException && error.name === "AbortError") {
@@ -2102,6 +2103,21 @@ async function tryFetchJson(url: string, init: RequestInit, timeoutMs = 30000): 
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function tryFetchJson(url: string, init: RequestInit, timeoutMs = 30000): Promise<any> {
+  return await requestWithTimeout(
+    url,
+    init,
+    async (response) => {
+      const text = await response.text();
+      console.log('[tryFetchJson] Response text (first 300):', text.slice(0, 300));
+      const data = JSON.parse(text);
+      console.log('[tryFetchJson] Parsed OK, keys:', Object.keys(data));
+      return data;
+    },
+    timeoutMs,
+  );
 }
 
 export async function fetchRuntimeSettings(): Promise<RuntimeSettings> {
@@ -2966,16 +2982,9 @@ export async function updateNovelType(typeId: string, payload: NovelTypeWriteReq
 }
 
 export async function deleteNovelType(typeId: string): Promise<void> {
-  const response = await fetch(`${apiBase()}/novel-types/${encodeURIComponent(typeId)}`, { method: "DELETE" });
-  if (response.ok) return;
-
-  const text = await response.text().catch(() => "");
-  let message = text || `删除失败（${response.status}）`;
-  try {
-    const parsed = JSON.parse(text) as { detail?: unknown };
-    if (typeof parsed.detail === "string" && parsed.detail.trim()) message = parsed.detail.trim();
-  } catch {
-    // Preserve the server response when it is not JSON.
-  }
-  throw new Error(message);
+  await requestWithTimeout(
+    `${apiBase()}/novel-types/${encodeURIComponent(typeId)}`,
+    { method: "DELETE" },
+    async () => undefined,
+  );
 }

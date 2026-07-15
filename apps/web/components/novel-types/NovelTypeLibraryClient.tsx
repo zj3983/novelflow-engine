@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createNovelType,
@@ -120,8 +120,44 @@ function parseDraft(draft: Draft): NovelTypeWriteRequest {
   };
 }
 
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalJson(item)]),
+    );
+  }
+  return value;
+}
+
+function normalizedDraft(draft: Draft): string {
+  let templates: unknown;
+  try {
+    templates = canonicalJson(JSON.parse(draft.trope_templates || "[]"));
+  } catch {
+    templates = draft.trope_templates.trim();
+  }
+  return JSON.stringify({
+    id: draft.id.trim(),
+    name: draft.name.trim(),
+    description: draft.description.trim(),
+    keywords: fromLines(draft.keywords),
+    core_promises: fromLines(draft.core_promises),
+    ledger_fields: fromLines(draft.ledger_fields),
+    rulebook: Object.fromEntries(RULEBOOK_FIELDS.map(({ key }) => [key, fromLines(draft.rulebook[key])])),
+    quality_checks: fromLines(draft.quality_checks),
+    trope_templates: templates,
+    builtin: draft.builtin,
+  });
+}
+
 function naturalError(error: unknown): string {
   const message = error instanceof Error ? error.message : "操作失败，请稍后重试。";
+  if (/failed to fetch|networkerror|network request failed|fetch failed|request timed out|aborterror/i.test(message)) {
+    return "连接服务失败，请稍后重试。";
+  }
   const used = message.match(/is used by project\(s\):\s*(.+)$/i);
   if (used) return `该类型正被项目 ${used[1]} 使用，暂时不能删除。`;
   if (/already exists|collides/i.test(message)) return "这个类型 ID 已存在，请换一个 ID。";
@@ -145,6 +181,10 @@ export function NovelTypeLibraryClient() {
   const [message, setMessage] = useState("正在载入全局小说类型库...");
   const [isCreating, setIsCreating] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const editVersionRef = useRef(0);
+  const draftRef = useRef(draft);
+  const operationPendingRef = useRef(false);
+  draftRef.current = draft;
 
   useEffect(() => {
     let active = true;
@@ -194,8 +234,9 @@ export function NovelTypeLibraryClient() {
 
   const busy = mode === "saving" || mode === "deleting";
   const initialLoadUnavailable = records.length === 0 && (mode === "loading" || mode === "error");
+  const dirty = useMemo(() => normalizedDraft(draft) !== normalizedDraft(baseline), [baseline, draft]);
 
-  function selectRecord(record: NovelType) {
+  function openRecord(record: NovelType) {
     const next = draftFromType(record);
     setSelectedId(record.id);
     setDraft(next);
@@ -205,7 +246,14 @@ export function NovelTypeLibraryClient() {
     setMessage(`正在编辑“${record.name}”。`);
   }
 
-  function startCreating() {
+  function selectRecord(record: NovelType) {
+    if (operationPendingRef.current || busy || (!isCreating && selectedId === record.id)) return;
+    if (dirty && !window.confirm("当前修改尚未保存，确定放弃吗？")) return;
+    editVersionRef.current += 1;
+    openRecord(record);
+  }
+
+  function beginCreating() {
     const next = blankDraft();
     setSelectedId(null);
     setDraft(next);
@@ -215,10 +263,19 @@ export function NovelTypeLibraryClient() {
     setMessage("填写内容后创建自定义类型。");
   }
 
+  function startCreating() {
+    if (operationPendingRef.current || busy || isCreating) return;
+    if (dirty && !window.confirm("当前修改尚未保存，确定放弃吗？")) return;
+    editVersionRef.current += 1;
+    beginCreating();
+  }
+
   function resetDraft() {
+    if (operationPendingRef.current || busy) return;
+    editVersionRef.current += 1;
     if (isCreating) {
       const first = records[0];
-      if (first) selectRecord(first);
+      if (first) openRecord(first);
       else setDraft(blankDraft());
       return;
     }
@@ -228,6 +285,7 @@ export function NovelTypeLibraryClient() {
   }
 
   async function save() {
+    if (operationPendingRef.current || busy) return;
     let payload: NovelTypeWriteRequest;
     try {
       payload = parseDraft(draft);
@@ -237,6 +295,9 @@ export function NovelTypeLibraryClient() {
       return;
     }
 
+    const editVersion = editVersionRef.current;
+    const submittedDraft = normalizedDraft(draft);
+    operationPendingRef.current = true;
     setMode("saving");
     setMessage(isCreating ? "正在创建类型..." : "正在保存修改...");
     try {
@@ -245,6 +306,11 @@ export function NovelTypeLibraryClient() {
         const exists = current.some((record) => record.id === saved.id);
         return exists ? current.map((record) => (record.id === saved.id ? saved : record)) : [...current, saved];
       });
+      if (editVersionRef.current !== editVersion || normalizedDraft(draftRef.current) !== submittedDraft) {
+        setMode("idle");
+        setMessage(`“${saved.name}”已保存；已保留当前正在编辑的内容。`);
+        return;
+      }
       const next = draftFromType(saved);
       setSelectedId(saved.id);
       setDraft(next);
@@ -255,25 +321,39 @@ export function NovelTypeLibraryClient() {
     } catch (error) {
       setMode("error");
       setMessage(naturalError(error));
+    } finally {
+      operationPendingRef.current = false;
     }
   }
 
   async function remove() {
-    if (isCreating || draft.builtin || !selectedId) return;
+    if (operationPendingRef.current || busy || isCreating || draft.builtin || !selectedId) return;
     if (!window.confirm(`确定删除自定义类型“${draft.name}”吗？此操作无法撤销。`)) return;
+    const editVersion = editVersionRef.current;
+    const deletingDraft = normalizedDraft(draft);
+    const deletingId = selectedId;
+    operationPendingRef.current = true;
     setMode("deleting");
     setMessage("正在删除类型...");
     try {
-      await deleteNovelType(selectedId);
-      const remaining = records.filter((record) => record.id !== selectedId);
+      await deleteNovelType(deletingId);
+      const remaining = records.filter((record) => record.id !== deletingId);
       setRecords(remaining);
+      if (editVersionRef.current !== editVersion || normalizedDraft(draftRef.current) !== deletingDraft) {
+        setMode("idle");
+        setMessage(`“${draft.name}”已删除；已保留当前正在编辑的内容。`);
+        return;
+      }
       const next = remaining[0];
-      if (next) selectRecord(next);
-      else startCreating();
+      editVersionRef.current += 1;
+      if (next) openRecord(next);
+      else beginCreating();
       setMessage(`“${draft.name}”已删除。`);
     } catch (error) {
       setMode("error");
       setMessage(naturalError(error));
+    } finally {
+      operationPendingRef.current = false;
     }
   }
 
@@ -324,6 +404,7 @@ export function NovelTypeLibraryClient() {
                   type="button"
                   key={record.id}
                   onClick={() => selectRecord(record)}
+                  disabled={busy}
                   aria-pressed={selectedId === record.id && !isCreating}
                 >
                   <span className={styles.typeTitle}>
