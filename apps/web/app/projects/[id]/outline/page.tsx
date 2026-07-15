@@ -6,7 +6,9 @@ import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import {
   fetchProjectOutline,
+  generateProjectOutline,
   updateProjectOutline,
+  type OutlineGenerationMode,
   type ProjectChapterOutline,
   type ProjectOutline,
   type ProjectOutlineArc,
@@ -38,6 +40,8 @@ function newArc(index: number): ProjectOutlineArc {
     obstacle: "",
     payoff: "",
     end_state: "",
+    stage_antagonist: "",
+    long_term_antagonist_traces: [],
   };
 }
 
@@ -51,6 +55,7 @@ function newChapter(chapterNumber: number): ProjectChapterOutline {
     turn: "",
     payoff: "",
     ending_hook: "",
+    cast: [],
   };
 }
 
@@ -59,11 +64,13 @@ function rangesOverlap(left: ProjectOutlineArc, right: ProjectOutlineArc): boole
 }
 
 export default function OutlinePage() {
-  const { project, error: projectError, encodedProjectId, projectId } = useProjectWorkspace();
+  const { project, story, error: projectError, encodedProjectId, projectId } = useProjectWorkspace();
   const [activeTab, setActiveTab] = useState<OutlineTab>("overall");
   const [draft, setDraft] = useState<ProjectOutline | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState<OutlineGenerationMode | null>(null);
+  const [guidance, setGuidance] = useState("");
   const [message, setMessage] = useState("");
   const [loadError, setLoadError] = useState("");
 
@@ -96,8 +103,13 @@ export default function OutlinePage() {
     if (hasOverlap) {
       items.push("阶段章节范围有重叠；生成时会采用起始章节最接近当前章的阶段。");
     }
+    const lastPlannedChapter = Math.max(0, ...draft.chapters.map((chapter) => chapter.chapter_number));
+    const remainingChapters = lastPlannedChapter - (story?.current_chapter ?? 0);
+    if (remainingChapters > 0 && remainingChapters <= 2) {
+      items.push(`章节计划仅剩 ${remainingChapters} 章，请先补充后续章节。`);
+    }
     return items;
-  }, [draft]);
+  }, [draft, story?.current_chapter]);
 
   function updateArc(index: number, patch: Partial<ProjectOutlineArc>) {
     setDraft((current) =>
@@ -148,6 +160,22 @@ export default function OutlinePage() {
     }
   }
 
+  async function runGeneration(mode: OutlineGenerationMode) {
+    if (!draft) return;
+    setGenerating(mode);
+    setMessage("");
+    try {
+      const generated = await generateProjectOutline(projectId, mode, guidance.trim());
+      setDraft({ ...generated.outline, source: "saved" });
+      setGuidance("");
+      setMessage(mode === "extend" ? "后续五章已补充。" : mode === "regenerate" ? "大纲和开篇角色已重新生成。" : "大纲和开篇角色已生成。");
+    } catch (err) {
+      setMessage(`生成失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setGenerating(null);
+    }
+  }
+
   return (
     <div className="ws-page">
       <PageHeader
@@ -173,10 +201,42 @@ export default function OutlinePage() {
               {draft?.source === "legacy" ? "当前是旧大纲预览，保存后转为新版结构。" : "保存后，生成时只提取当前章节需要的大纲。"}
             </p>
           </div>
-          <button className="ws-btn ws-btn--primary" type="button" onClick={() => void saveOutline()} disabled={saving || !draft}>
+          <button className="ws-btn ws-btn--primary" type="button" onClick={() => void saveOutline()} disabled={saving || generating !== null || !draft}>
             {saving ? "保存中..." : "保存大纲"}
           </button>
         </div>
+
+        {draft ? (
+          <div className="ws-outline-generation">
+            <label className="ws-outline-field ws-outline-field--wide">
+              <span>本次生成补充要求</span>
+              <textarea
+                className="ws-input"
+                rows={3}
+                maxLength={1000}
+                placeholder="只在这次生成中使用，不会写入长期设定。"
+                value={guidance}
+                onChange={(event) => setGuidance(event.target.value)}
+              />
+            </label>
+            <div className="ws-outline-generation__actions">
+              {draft.arcs.length === 0 && draft.chapters.length === 0 ? (
+                <button className="ws-btn" type="button" disabled={generating !== null || saving} onClick={() => void runGeneration("initial")}>
+                  {generating === "initial" ? "生成中..." : "生成大纲"}
+                </button>
+              ) : (
+                <>
+                  <button className="ws-btn" type="button" disabled={generating !== null || saving} onClick={() => void runGeneration("regenerate")}>
+                    {generating === "regenerate" ? "生成中..." : "重新生成"}
+                  </button>
+                  <button className="ws-btn" type="button" disabled={generating !== null || saving} onClick={() => void runGeneration("extend")}>
+                    {generating === "extend" ? "生成中..." : "补充后续章节"}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        ) : null}
 
         <div className="ws-outline-tabs" role="tablist" aria-label="大纲层级">
           {TABS.map((tab) => (
@@ -272,6 +332,10 @@ export default function OutlinePage() {
                       <span>阶段名称</span>
                       <input className="ws-input" value={arc.title} onChange={(event) => updateArc(index, { title: event.target.value })} />
                     </label>
+                    <label className="ws-outline-field">
+                      <span>阶段对手</span>
+                      <input className="ws-input" value={arc.stage_antagonist} onChange={(event) => updateArc(index, { stage_antagonist: event.target.value })} />
+                    </label>
                     <div className="ws-outline-range">
                       <label className="ws-outline-field">
                         <span>起始章</span>
@@ -305,6 +369,15 @@ export default function OutlinePage() {
                         <textarea className="ws-input" rows={3} value={arc[field]} onChange={(event) => updateArc(index, { [field]: event.target.value })} />
                       </label>
                     ))}
+                    <label className="ws-outline-field ws-outline-field--wide">
+                      <span>长期对手留下的痕迹</span>
+                      <textarea
+                        className="ws-input"
+                        rows={3}
+                        value={arc.long_term_antagonist_traces.join("\n")}
+                        onChange={(event) => updateArc(index, { long_term_antagonist_traces: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })}
+                      />
+                    </label>
                   </div>
                 </article>
               ))}
@@ -344,6 +417,15 @@ export default function OutlinePage() {
                     <label className="ws-outline-field">
                       <span>暂定标题</span>
                       <input className="ws-input" value={chapter.title} onChange={(event) => updateChapter(index, { title: event.target.value })} />
+                    </label>
+                    <label className="ws-outline-field">
+                      <span>出场人物</span>
+                      <textarea
+                        className="ws-input"
+                        rows={3}
+                        value={chapter.cast.join("\n")}
+                        onChange={(event) => updateChapter(index, { cast: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })}
+                      />
                     </label>
                     {([
                       ["goal", "本章目标"],

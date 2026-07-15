@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from packages.story_core.file_project_store import FileProjectStore, _regeneration_quality_blocking
+from packages.story_core.outline_planning import GeneratedOutlinePlan
 from packages.story_core.skill_packs import import_skill_pack_from_path
 
 
@@ -35,6 +36,254 @@ def _make_minimal_file_project(root, *, state=None, project=None):
         encoding="utf-8",
     )
     return FileProjectStore(root)
+
+
+def _planning_card(name: str, tier: str, *, age: int = 30) -> dict:
+    return {
+        "name": name,
+        "role": tier,
+        "character_tier": tier,
+        "first_appearance": 0 if tier == "long_term_antagonist" else 1,
+        "identity_profile": {
+            "age": age,
+            "origin": "青石镇",
+            "current_identity": "宗门中人",
+            "occupation": "处理宗门差事",
+        },
+        "background_profile": {},
+        "current_life_profile": {},
+        "story_drive": {"immediate_goal": "控制祖祠", "failure_stakes": "失去位置"},
+        "performance_profile": {},
+        "dialogue_examples": ["先把事情说清楚。", "这件事要按规矩处理。"],
+        "relationship_notes": [],
+    }
+
+
+def _generated_opening_plan() -> GeneratedOutlinePlan:
+    return GeneratedOutlinePlan.model_validate(
+        {
+            "outline": {
+                "overall": {
+                    "story": "林照追查祖祠旧案。",
+                    "protagonist_goal": "查清旧案。",
+                    "main_conflict": "有人销毁证据。",
+                    "growth_path": "逐步取得调查旧档的权力。",
+                    "ending_direction": "旧案公开。",
+                },
+                "arcs": [
+                    {
+                        "id": "opening",
+                        "title": "祖祠旧案",
+                        "start_chapter": 1,
+                        "end_chapter": 10,
+                        "goal": "找到换名册的人",
+                        "obstacle": "赵衡控制清点权",
+                        "payoff": "取得查档资格",
+                        "end_state": "祖祠不再由赵衡独占",
+                        "stage_antagonist": "赵衡",
+                        "long_term_antagonist_traces": ["旧名册被换过"],
+                    }
+                ],
+                "chapters": [
+                    {
+                        "chapter_number": number,
+                        "title": f"第{number}步",
+                        "goal": "查清祖祠异动",
+                        "obstacle": "赵衡阻拦",
+                        "action": "林照留下证据",
+                        "turn": "旧名册出现矛盾",
+                        "payoff": "得到可验证线索",
+                        "ending_hook": "有人提前来过",
+                        "cast": ["林照", "赵衡"],
+                    }
+                    for number in range(1, 6)
+                ],
+            },
+            "characters": [
+                _planning_card("林照", "protagonist", age=19),
+                _planning_card("赵衡", "stage_antagonist"),
+                _planning_card("周满", "supporting"),
+                _planning_card("顾长老", "long_term_antagonist"),
+            ],
+        }
+    )
+
+
+def test_save_generated_plan_updates_outline_project_and_state_together(tmp_path):
+    root = tmp_path / "novel"
+    project = {
+        "project_id": "p-file",
+        "title": "断香炉",
+        "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        "character_profiles": [
+            {"name": "林照", "role": "protagonist", "identity_profile": {"age": 21, "occupation": "守祠杂役"}}
+        ],
+    }
+    state = {"story_id": "s-file", "current_chapter": 0, "world_facts": [], "characters": []}
+    store = _make_minimal_file_project(root, project=project, state=state)
+
+    saved = store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+
+    assert saved["outline"]["chapters"][0]["chapter_number"] == 1
+    assert store.project()["pipeline_stage"] == "world_ready"
+    assert store.project()["character_profiles"][0]["identity_profile"]["age"] == 21
+    assert store.project()["character_profiles"][0]["identity_profile"]["occupation"] == "守祠杂役"
+    assert store.state()["characters"][0]["identity_profile"]["age"] == 21
+    assert list((root / ".story-system" / "plans").glob("*-initial.json"))
+
+
+def test_generated_plan_transaction_restores_old_files_on_replace_failure(tmp_path, monkeypatch):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(root)
+    outline_path = root / ".webnovel" / "outline.json"
+    outline_path.write_text(json.dumps({"schema_version": "project-outline/v1", "overall": {}, "arcs": [], "chapters": []}), encoding="utf-8")
+    before = {
+        path: path.read_bytes()
+        for path in (root / ".webnovel" / "project.json", root / ".webnovel" / "state.json", outline_path)
+    }
+    import packages.story_core.file_project_store as module
+
+    real_replace = module.os.replace
+    calls = 0
+
+    def fail_second_replace(source, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated replace failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(module.os, "replace", fail_second_replace)
+
+    with pytest.raises(OSError, match="simulated replace failure"):
+        store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "断香炉",
+            "seed_outline": "林照看守断香炉。",
+            "current_focus": "查清第三块青砖。",
+            "author_constraints": ["对白完整。"],
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+            "character_profiles": [],
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": [], "characters": []},
+    )
+    calls = []
+
+    class RecordingGenerator:
+        def generate(self, brief, *, mode, guidance):
+            calls.append((brief, mode, guidance))
+            return _generated_opening_plan()
+
+    store.generate_outline_plan(RecordingGenerator(), mode="initial", guidance="  对手有现实利益  ")
+
+    brief, mode, guidance = calls[0]
+    assert mode == "initial"
+    assert guidance == "对手有现实利益"
+    assert brief.novel_type_id == "xuanhuan"
+    assert brief.opening_direction.hook == "林照看守断香炉。"
+    assert brief.existing_characters == []
+    secret = "对手有现实利益".encode("utf-8")
+    assert all(secret not in path.read_bytes() for path in store.root.rglob("*") if path.is_file())
+
+
+def test_extend_generated_plan_requires_and_appends_next_five_chapters(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+    current_outline = store.project_outline()
+    current_outline.pop("source", None)
+    current_outline["arcs"][0]["end_chapter"] = 5
+    store.update_project_outline(current_outline)
+    addition = GeneratedOutlinePlan.model_validate(
+        {
+            "outline": {
+                "arcs": [
+                    {
+                        **current_outline["arcs"][0],
+                        "end_chapter": 10,
+                        "long_term_antagonist_traces": ["旧名册被换过", "执法堂有人提前封档"],
+                    }
+                ],
+                "chapters": [
+                    {
+                        "chapter_number": number,
+                        "goal": "继续追查旧案",
+                        "obstacle": "旧档房封闭",
+                        "action": "林照争取查档资格",
+                        "turn": "发现新的经手人",
+                        "payoff": "锁定下一条线索",
+                        "ending_hook": "经手人已经离宗",
+                        "cast": ["林照", "周满"],
+                    }
+                    for number in range(6, 11)
+                ]
+            },
+            "characters": [_planning_card("新档房弟子", "supporting")],
+        }
+    )
+
+    saved = store.save_generated_outline_plan(addition, mode="extend")
+
+    assert [item["chapter_number"] for item in saved["outline"]["chapters"]] == list(range(1, 11))
+    assert saved["outline"]["arcs"][0]["end_chapter"] == 10
+    assert saved["outline"]["arcs"][0]["long_term_antagonist_traces"] == [
+        "旧名册被换过",
+        "执法堂有人提前封档",
+    ]
+    assert any(item["name"] == "新档房弟子" for item in saved["characters"])
+
+
+def test_writing_packet_uses_planned_cast_and_hides_long_term_secrets(tmp_path):
+    root = tmp_path / "novel"
+    characters = [
+        _planning_card("林照", "protagonist", age=19),
+        _planning_card("赵衡", "stage_antagonist"),
+        _planning_card("周满", "supporting"),
+        {
+            **_planning_card("顾长老", "long_term_antagonist"),
+            "story_drive": {
+                "immediate_goal": "让赵衡清掉旧档",
+                "failure_stakes": "旧案牵出自己",
+                "hidden_matters": ["亲手换掉旧名册"],
+            },
+            "secrets": ["真实身份是执法堂首座"],
+        },
+    ]
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "断香炉",
+            "character_profiles": characters,
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={
+            "story_id": "s-file",
+            "current_chapter": 0,
+            "world_facts": [],
+            "characters": characters,
+        },
+    )
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["chapters"][0]["cast"] = ["林照", "赵衡", "顾长老"]
+    (root / ".webnovel" / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
+
+    packet = store.writing_packet(1)
+
+    assert [card["name"] for card in packet["character_cards"]] == ["林照", "赵衡", "顾长老"]
+    assert [card["name"] for card in packet["state"]["characters"]] == ["林照", "赵衡", "顾长老"]
+    assert [card["name"] for card in packet["project"]["character_profiles"]] == ["林照", "赵衡", "顾长老"]
+    serialized = json.dumps(packet, ensure_ascii=False)
+    assert "亲手换掉旧名册" not in serialized
+    assert "真实身份是执法堂首座" not in serialized
+    assert packet["outline_context"]["active_arc"]["long_term_antagonist_traces"] == ["旧名册被换过"]
 
 
 def _character_portrait_state():

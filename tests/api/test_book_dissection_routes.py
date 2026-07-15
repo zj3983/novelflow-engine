@@ -201,10 +201,11 @@ def test_file_project_outline_get_projects_legacy_data_without_writing(tmp_path:
             "obstacle": "",
             "action": "",
             "turn": "",
-            "payoff": "Find the caravan seal.",
-            "ending_hook": "The seal is still warm.",
-        }
-    ]
+                "payoff": "Find the caravan seal.",
+                "ending_hook": "The seal is still warm.",
+                "cast": [],
+            }
+        ]
     assert not outline_path.exists()
     assert {path: path.read_bytes() for path in original_files} == original_files
 

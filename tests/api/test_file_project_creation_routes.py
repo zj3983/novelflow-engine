@@ -331,6 +331,77 @@ def test_generate_opening_directions_without_body_uses_empty_guidance(creation_a
     assert generator.guidance_calls == [""]
 
 
+def test_generate_file_project_plan_passes_mode_and_trimmed_guidance(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "断香炉", "novel_type_id": "xuanhuan"},
+    ).json()
+    calls = []
+
+    def fake_generate(store, generator, *, mode, guidance):
+        calls.append((generator, mode, guidance))
+        return {
+            "schema_version": "generated-outline-plan/v1",
+            "mode": mode,
+            "outline": {"chapters": [{"chapter_number": 1}]},
+            "characters": [{"name": "林照", "character_tier": "protagonist"}],
+            "source": "generated",
+        }
+
+    monkeypatch.setattr(file_project_routes.FileProjectStore, "generate_outline_plan", fake_generate)
+
+    response = client.post(
+        f"/file-projects/{project['project_id']}/outline/generate",
+        json={"mode": "regenerate", "guidance": "  阶段对手要有现实利益  "},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["outline"]["chapters"][0]["chapter_number"] == 1
+    assert calls[0][1:] == ("regenerate", "阶段对手要有现实利益")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"mode": "unknown", "guidance": ""},
+        {"mode": "initial", "guidance": "x" * 1001},
+        {"mode": "initial", "unexpected": True},
+    ],
+)
+def test_generate_file_project_plan_rejects_invalid_request(creation_api, payload):
+    client, _, _ = creation_api
+    project = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "断香炉", "novel_type_id": "xuanhuan"},
+    ).json()
+
+    response = client.post(f"/file-projects/{project['project_id']}/outline/generate", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_generate_file_project_plan_maps_model_failure_to_502(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "断香炉", "novel_type_id": "xuanhuan"},
+    ).json()
+
+    def fail_generation(store, generator, *, mode, guidance):
+        raise ValueError("outline_planning_generation_failed")
+
+    monkeypatch.setattr(file_project_routes.FileProjectStore, "generate_outline_plan", fail_generation)
+
+    response = client.post(
+        f"/file-projects/{project['project_id']}/outline/generate",
+        json={"mode": "initial", "guidance": ""},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "outline_planning_generation_failed"
+
+
 @pytest.mark.parametrize(
     "payload",
     [

@@ -697,8 +697,9 @@ test("homepage top bar shows writing progress and core actions", async ({ page }
   await expect(page.getByRole("banner").getByRole("link", { name: /查看配置/ })).toBeVisible();
 });
 
-test("file project outline edits three independent levels", async ({ page }) => {
+test("file project outline edits three levels and runs outline generation", async ({ page }) => {
   let savedBody: Record<string, unknown> | null = null;
+  let generationBody: Record<string, unknown> | null = null;
   const outline = {
     schema_version: "project-outline/v1",
     source: "saved",
@@ -719,6 +720,8 @@ test("file project outline edits three independent levels", async ({ page }) => 
         obstacle: "管事阻挠",
         payoff: "拿到旧名册",
         end_state: "进入外门调查",
+        stage_antagonist: "赵衡",
+        long_term_antagonist_traces: ["旧名册被换过"],
       },
     ],
     chapters: [
@@ -731,6 +734,7 @@ test("file project outline edits three independent levels", async ({ page }) => 
         turn: "香灰里有内门令牌碎片",
         payoff: "确认有人来过",
         ending_hook: "脚印通向后山",
+        cast: ["林照", "赵衡"],
       },
     ],
   };
@@ -763,6 +767,20 @@ test("file project outline edits three independent levels", async ({ page }) => 
       return;
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(outline) });
+  });
+  await page.route("**/file-projects/file%3Aoutline-fixture/outline/generate", async (route) => {
+    generationBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "generated-outline-plan/v1",
+        mode: generationBody.mode,
+        outline: { ...outline, source: undefined },
+        characters: [],
+        source: "generated",
+      }),
+    });
   });
   await page.route("**/file-stories/file%3Aoutline-fixture", async (route) => {
     const runtimeEntry = { mode: "LLM-assisted", source: "idle", fallback_reason: "", last_run_chapter: 0 };
@@ -804,6 +822,7 @@ test("file project outline edits three independent levels", async ({ page }) => 
   });
 
   await page.goto("/projects/file%3Aoutline-fixture/outline");
+  await expect(page.getByText("章节计划仅剩 1 章，请先补充后续章节。", { exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "总纲", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "阶段大纲", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "章节大纲", exact: true })).toBeVisible();
@@ -820,6 +839,82 @@ test("file project outline edits three independent levels", async ({ page }) => 
     chapters: outline.chapters,
   });
   expect(savedBody).not.toHaveProperty("source");
+
+  await page.getByLabel("本次生成补充要求").fill("阶段对手必须有现实利益");
+  await page.getByRole("button", { name: "重新生成" }).click();
+  await expect.poll(() => generationBody).toEqual({ mode: "regenerate", guidance: "阶段对手必须有现实利益" });
+  await expect(page.getByLabel("本次生成补充要求")).toHaveValue("");
+  await page.getByRole("tab", { name: "阶段大纲", exact: true }).click();
+  await expect(page.getByLabel("阶段对手")).toHaveValue("赵衡");
+  await page.getByRole("tab", { name: "章节大纲", exact: true }).click();
+  await expect(page.getByLabel("出场人物")).toHaveValue("林照\n赵衡");
+});
+
+test("concrete character card shows and saves factual profile fields", async ({ page }) => {
+  let savedBody: Record<string, unknown> | null = null;
+  const character = {
+    name: "林照",
+    role: "protagonist",
+    character_tier: "protagonist",
+    first_appearance: 1,
+    identity_profile: {
+      aliases: [], gender: "男", age: 19, birthplace: "青崖镇", origin: "守祠人之子",
+      current_identity: "祖祠杂役", occupation: "守炉杂役", affiliation: "赤霄宗",
+    },
+    background_profile: {
+      family: "父亲因旧案失踪", upbringing: "由祖祠老仆带大", education_or_training: "识字，会修香炉",
+      formative_events: ["十三岁目睹父亲被带走"], arrival_reason: "留在祖祠查父亲旧案",
+    },
+    current_life_profile: {
+      residence: "祖祠偏房", livelihood: "守炉换取月例", economic_state: "只能维持吃住",
+      resources_and_ability: "熟悉祖祠旧物", authority_scope: "只能进外院", immediate_problem: "香炉断裂会被问责",
+    },
+    story_drive: {
+      long_term_goal: "查清父亲旧案", immediate_goal: "找出断炉的人", motivation: "不愿父亲背着罪名消失",
+      failure_stakes: "会被逐出祖祠并失去线索", hidden_matters: ["保留了一页旧名册"], main_conflict_reason: "赵衡要销毁旧账",
+    },
+    dialogue_examples: ["这炉子昨夜还好好的，谁动过，查值夜册就知道。"],
+    relationship_notes: [{ target: "赵衡", relation_type: "管事与杂役", history: "赵衡曾经审过他父亲", current_attitude: "表面顺从，实际提防", shared_interest_or_conflict: "旧账册", known_facts: ["赵衡怕旧案重查"], unknown_facts: ["赵衡受谁指使"] }],
+    goals: [], frozen: false, lifecycle_state: "active", last_proposed_chapter: 0, last_approved_chapter: 1, introduced_by: "outline", relationships: {},
+  };
+  const project = {
+    project_id: "file:character-fixture", title: "Character Fixture", source_path: "", seed_outline: "祖祠旧案", world_summary: "",
+    current_focus: "", author_constraints: [], world_blueprint: {}, character_profiles: [character], relationship_graph: [], enabled_skill_ids: [],
+    status: "simulating", pipeline_stage: "world_ready", active_story_id: "file:character-fixture", branches: [], storage_source: "file",
+  };
+
+  await page.route("**/file-projects/file%3Acharacter-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Acharacter-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:character-fixture", outline: "祖祠旧案", genre: "玄幻", style: "白描", current_chapter: 1,
+      agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
+      agent_runtime: { recent_events: [] }, author_constraints: [], world_facts: [], characters: [character], history: [], parent_story_id: null, branched_from_chapter: null,
+    }) });
+  });
+  await page.route("**/file-projects/**/characters/%E6%9E%97%E7%85%A7", async (route) => {
+    savedBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...character, ...savedBody }) });
+  });
+
+  await page.goto("/projects/file%3Acharacter-fixture/characters");
+  await expect(page.getByText("19岁", { exact: true })).toBeVisible();
+  await expect(page.getByText("守祠人之子", { exact: true })).toBeVisible();
+  await expect(page.getByText("会被逐出祖祠并失去线索", { exact: true })).toBeVisible();
+  await expect(page.getByText("这炉子昨夜还好好的，谁动过，查值夜册就知道。", { exact: true })).toBeVisible();
+  await expect(page.getByText("赵衡", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByLabel("职业").fill("守祠杂役");
+  await page.getByRole("button", { name: "保存角色卡" }).click();
+  await expect.poll(() => savedBody).toMatchObject({
+    identity_profile: { age: 19, origin: "守祠人之子", occupation: "守祠杂役" },
+    background_profile: { upbringing: "由祖祠老仆带大" },
+    current_life_profile: { livelihood: "守炉换取月例" },
+    story_drive: { immediate_goal: "找出断炉的人", failure_stakes: "会被逐出祖祠并失去线索" },
+    dialogue_examples: ["这炉子昨夜还好好的，谁动过，查值夜册就知道。"],
+    relationship_notes: [{ target: "赵衡" }],
+  });
 });
 
 test("imported book still exposes a browsable source panel", async ({ page }) => {

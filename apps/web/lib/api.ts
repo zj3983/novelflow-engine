@@ -470,6 +470,14 @@ export type StoryResponse = {
     role: string;
     game_id?: string;
     game_panel?: GamePanel;
+    character_tier?: string;
+    first_appearance?: number | null;
+    identity_profile?: CharacterIdentityProfile;
+    background_profile?: CharacterBackgroundProfile;
+    current_life_profile?: CharacterCurrentLifeProfile;
+    story_drive?: CharacterStoryDrive;
+    dialogue_examples?: string[];
+    relationship_notes?: CharacterRelationshipNote[];
     character_type?: string;
     core_motivation?: string;
     behavior_logic?: string;
@@ -637,6 +645,14 @@ export type ImportedCharacterProfile = {
   name: string;
   game_id?: string;
   role?: string;
+  character_tier?: string;
+  first_appearance?: number | null;
+  identity_profile?: CharacterIdentityProfile;
+  background_profile?: CharacterBackgroundProfile;
+  current_life_profile?: CharacterCurrentLifeProfile;
+  story_drive?: CharacterStoryDrive;
+  dialogue_examples?: string[];
+  relationship_notes?: CharacterRelationshipNote[];
   character_type?: string;
   core_motivation?: string;
   behavior_logic?: string;
@@ -815,6 +831,55 @@ export type ProjectOutlineArc = {
   obstacle: string;
   payoff: string;
   end_state: string;
+  stage_antagonist: string;
+  long_term_antagonist_traces: string[];
+};
+
+export type CharacterIdentityProfile = {
+  aliases?: string[];
+  gender?: string;
+  age?: number | null;
+  birthplace?: string;
+  origin?: string;
+  current_identity?: string;
+  occupation?: string;
+  affiliation?: string;
+};
+
+export type CharacterBackgroundProfile = {
+  family?: string;
+  upbringing?: string;
+  education_or_training?: string;
+  formative_events?: string[];
+  arrival_reason?: string;
+};
+
+export type CharacterCurrentLifeProfile = {
+  residence?: string;
+  livelihood?: string;
+  economic_state?: string;
+  resources_and_ability?: string;
+  authority_scope?: string;
+  immediate_problem?: string;
+};
+
+export type CharacterStoryDrive = {
+  long_term_goal?: string;
+  immediate_goal?: string;
+  motivation?: string;
+  failure_stakes?: string;
+  hidden_matters?: string[];
+  main_conflict_reason?: string;
+};
+
+export type CharacterRelationshipNote = {
+  target: string;
+  relation_type?: string;
+  history?: string;
+  current_attitude?: string;
+  shared_interest_or_conflict?: string;
+  known_facts?: string[];
+  unknown_facts?: string[];
 };
 
 export type ProjectChapterOutline = {
@@ -826,6 +891,7 @@ export type ProjectChapterOutline = {
   turn: string;
   payoff: string;
   ending_hook: string;
+  cast: string[];
 };
 
 export type ProjectOutline = {
@@ -837,6 +903,16 @@ export type ProjectOutline = {
 };
 
 export type ProjectOutlineUpdate = Omit<ProjectOutline, "source">;
+
+export type OutlineGenerationMode = "initial" | "regenerate" | "extend";
+
+export type GeneratedOutlinePlanResponse = {
+  schema_version: "generated-outline-plan/v1";
+  mode: OutlineGenerationMode;
+  outline: ProjectOutlineUpdate;
+  characters: StoryCharacter[];
+  source: "generated";
+};
 
 export type AgentReviseRequest = {
   chapter_number?: number | null;
@@ -2663,6 +2739,25 @@ export async function updateProjectOutline(projectId: string, payload: ProjectOu
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   })) as ProjectOutline;
+}
+
+export async function generateProjectOutline(
+  projectId: string,
+  mode: OutlineGenerationMode,
+  guidance = "",
+): Promise<GeneratedOutlinePlanResponse> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("只有文件项目支持生成大纲");
+  }
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/outline/generate`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode, guidance }),
+    },
+    180000,
+  )) as GeneratedOutlinePlanResponse;
 }
 
 export async function enrichProjectWorld(projectId: string): Promise<ProjectResponse> {
