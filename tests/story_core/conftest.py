@@ -7,6 +7,15 @@ import pytest
 from packages.story_core.runtime_config import OpenAIRuntimeSettings
 
 
+@pytest.fixture(autouse=True)
+def isolate_novel_type_library(monkeypatch, tmp_path):
+    """Keep story_core tests isolated from the user's global type library."""
+    monkeypatch.setenv(
+        "NOVEL_AUTOGROWTH_NOVEL_TYPES_PATH",
+        str(tmp_path / "novel_types.json"),
+    )
+
+
 def _make_plan(story, chapter_number: int) -> dict:
     """Generate a plan JSON that matches test expectations."""
     active_chars = [c for c in story.characters if c.lifecycle_state == "active" and not c.frozen]

@@ -1,5 +1,8 @@
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 import json
+import threading
+import time
 
 import pytest
 
@@ -11,11 +14,6 @@ from packages.story_core.novel_type_library import (
 )
 from packages.story_core.genre_plugins import select_genre_plugins
 from packages.story_core.models import NovelProject
-
-
-@pytest.fixture(autouse=True)
-def isolated_novel_type_path(monkeypatch, tmp_path):
-    monkeypatch.setenv("NOVEL_AUTOGROWTH_NOVEL_TYPES_PATH", str(tmp_path / "novel_types.json"))
 
 
 def test_builtin_types_are_marked_builtin():
@@ -112,6 +110,13 @@ def test_record_rejects_blank_id_and_name_and_normalizes_rulebook():
     assert record.rulebook["economy_rules"] == ()
 
 
+def test_record_rejects_unknown_payload_fields():
+    with pytest.raises((TypeError, ValueError), match="core_promise"):
+        NovelTypeRecord.from_payload(
+            {"id": "sports", "name": "竞技体育", "core_promise": ["拼写错误"]}
+        )
+
+
 def test_storage_contains_only_builtin_overrides_and_custom_types():
     library = NovelTypeLibrary()
     library.update("xuanhuan", {"description": "用户修改后的说明"})
@@ -148,3 +153,110 @@ def test_custom_type_is_used_for_explicit_and_keyword_selection():
         "generic_webnovel",
         "sports",
     ]
+
+
+def test_concurrent_creates_from_separate_instances_are_both_preserved(monkeypatch):
+    original_write = NovelTypeLibrary._write
+
+    def slow_write(self, payload):
+        time.sleep(0.05)
+        original_write(self, payload)
+
+    monkeypatch.setattr(NovelTypeLibrary, "_write", slow_write)
+    start = threading.Barrier(2)
+
+    def create(type_id):
+        start.wait()
+        NovelTypeLibrary().create({"id": type_id, "name": type_id})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(create, type_id) for type_id in ("sports", "history")]
+        for future in futures:
+            future.result()
+
+    assert {"sports", "history"}.issubset(
+        {record.id for record in NovelTypeLibrary().list()}
+    )
+
+
+def test_corrupt_main_file_recovers_from_valid_backup():
+    library = NovelTypeLibrary()
+    backup_path = library.path.with_name(f"{library.path.name}.bak")
+    library.path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path.write_text(
+        json.dumps(
+            {"overrides": {}, "custom": {"sports": {"id": "sports", "name": "竞技体育"}}},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    library.path.write_text("{broken", encoding="utf-8")
+
+    recovered = library.get("sports")
+
+    assert recovered is not None
+    assert recovered.name == "竞技体育"
+
+
+def test_corrupt_main_without_backup_still_selects_builtin():
+    library = NovelTypeLibrary()
+    library.path.parent.mkdir(parents=True, exist_ok=True)
+    library.path.write_text("{broken", encoding="utf-8")
+    project = NovelProject(
+        project_id="p-corrupt-library",
+        title="凡人修仙",
+        seed_outline="主角进入宗门修炼灵根，争夺境界突破资源。",
+    )
+
+    selected = select_genre_plugins(project)
+
+    assert [plugin.plugin_id for plugin in selected] == [
+        "generic_webnovel",
+        "eastern_fantasy",
+        "xianxia",
+    ]
+
+
+def test_writes_maintain_a_valid_backup():
+    library = NovelTypeLibrary()
+    library.create({"id": "sports", "name": "竞技体育"})
+    backup_path = library.path.with_name(f"{library.path.name}.bak")
+
+    stored = json.loads(backup_path.read_text(encoding="utf-8"))
+
+    assert stored["custom"]["sports"]["name"] == "竞技体育"
+
+
+def test_genre_selection_loads_one_consistent_library_snapshot(monkeypatch):
+    calls = 0
+    original_stored_data = NovelTypeLibrary._stored_data
+
+    def counted_stored_data(self):
+        nonlocal calls
+        calls += 1
+        return original_stored_data(self)
+
+    monkeypatch.setattr(NovelTypeLibrary, "_stored_data", counted_stored_data)
+    project = NovelProject(
+        project_id="p-one-snapshot",
+        title="凡人修仙",
+        seed_outline="主角进入宗门修炼灵根，争夺境界突破资源。",
+    )
+
+    select_genre_plugins(project)
+
+    assert calls == 1
+
+
+def test_returned_records_are_mutable_isolated_copies():
+    library = NovelTypeLibrary()
+    first = library.get("xuanhuan")
+    assert first is not None
+
+    first.name = "仅本地修改"
+    first.rulebook["chapter_formula"] = ("仅本地规则",)
+    second = library.get("xuanhuan")
+
+    assert second is not None
+    assert second.name == "东方玄幻"
+    assert second.rulebook["chapter_formula"] != ("仅本地规则",)

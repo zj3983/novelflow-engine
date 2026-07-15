@@ -5,7 +5,10 @@ import json
 
 from packages.story_core.models import NovelProject
 from packages.story_core.novel_type_catalog import has_explicit_non_game_type, normalize_novel_type_ids
-from packages.story_core.novel_type_library import list_novel_types, resolve_genre_plugin
+from packages.story_core.novel_type_library import (
+    list_novel_types,
+    novel_type_record_to_genre_plugin,
+)
 from packages.story_core.genre_types import (
     EASTERN_FANTASY,
     EASTERN_FANTASY_SIMULATION_BLUEPRINT,
@@ -34,8 +37,10 @@ PLUGIN_REGISTRY: tuple[GenrePlugin, ...] = (
 )
 
 
-def _with_shared_genre_plugins(plugins: list[GenrePlugin]) -> list[GenrePlugin]:
-    generic = resolve_genre_plugin("generic_webnovel") or GENERIC_WEBNOVEL
+def _with_shared_genre_plugins(
+    plugins: list[GenrePlugin], plugin_by_id: dict[str, GenrePlugin]
+) -> list[GenrePlugin]:
+    generic = plugin_by_id.get("generic_webnovel") or GENERIC_WEBNOVEL
     result: list[GenrePlugin] = [generic]
     for plugin in plugins:
         if plugin.plugin_id in {"xuanhuan", "xianxia"} and EASTERN_FANTASY not in result:
@@ -59,6 +64,10 @@ def _project_text(project: NovelProject) -> str:
 
 
 def select_genre_plugins(project: NovelProject, *, max_plugins: int = 2, min_score: int = 2) -> list[GenrePlugin]:
+    records = list_novel_types()
+    plugin_by_id = {
+        record.id: novel_type_record_to_genre_plugin(record) for record in records
+    }
     text = _project_text(project)
     explicit_ids = project.world_blueprint.get("genre_plugin_ids") if isinstance(project.world_blueprint, dict) else None
     selected: list[GenrePlugin] = []
@@ -72,27 +81,25 @@ def select_genre_plugins(project: NovelProject, *, max_plugins: int = 2, min_sco
     )
     for raw_id in raw_explicit_ids:
         candidate = str(raw_id or "").strip()
-        if candidate and candidate not in normalized_explicit_ids and resolve_genre_plugin(candidate):
+        if candidate and candidate not in normalized_explicit_ids and candidate in plugin_by_id:
             normalized_explicit_ids.append(candidate)
     if normalized_explicit_ids:
         for plugin_id in normalized_explicit_ids:
             if plugin_id == "generic_webnovel":
                 continue
-            match = resolve_genre_plugin(plugin_id)
+            match = plugin_by_id.get(plugin_id)
             if match and match not in selected:
                 selected.append(match)
             if len(selected) >= max_plugins:
                 break
-        return _with_shared_genre_plugins(selected)
+        return _with_shared_genre_plugins(selected, plugin_by_id)
 
     if len(selected) < max_plugins:
         scored: list[tuple[int, GenrePlugin]] = []
-        for record in list_novel_types():
+        for record in records:
             if record.id == "generic_webnovel":
                 continue
-            plugin = resolve_genre_plugin(record.id)
-            if plugin is None:
-                continue
+            plugin = plugin_by_id[record.id]
             score = sum(1 for keyword in plugin.keywords if keyword and keyword in text)
             if score >= min_score:
                 scored.append((score, plugin))
@@ -102,7 +109,7 @@ def select_genre_plugins(project: NovelProject, *, max_plugins: int = 2, min_sco
             if len(selected) >= max_plugins:
                 break
 
-    return _with_shared_genre_plugins(selected)
+    return _with_shared_genre_plugins(selected, plugin_by_id)
 
 
 def is_game_genre(text: str) -> bool:
