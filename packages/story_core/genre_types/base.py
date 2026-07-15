@@ -23,3 +23,4 @@ class GenrePlugin:
     ledger_fields: tuple[str, ...]
     rulebook: dict[str, tuple[str, ...]]
     quality_checks: tuple[str, ...]
+    trope_templates: tuple[dict[str, object], ...] = ()

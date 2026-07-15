@@ -118,16 +118,33 @@ def merge_plugin_rulebooks(plugins: list[GenrePlugin]) -> dict[str, list[str]]:
     return merged
 
 
+def _plugin_trope_templates(plugins: list[GenrePlugin]) -> list[dict[str, object]]:
+    templates: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for plugin in plugins:
+        for template in plugin.trope_templates:
+            template_id = str(template.get("id") or "")
+            if not template_id or template_id in seen:
+                continue
+            seen.add(template_id)
+            templates.append(deepcopy(template))
+    return templates
+
+
 def plugin_simulation_blueprint(plugins: list[GenrePlugin]) -> dict[str, object]:
     plugin_ids = {plugin.plugin_id for plugin in plugins}
     for subtype in ("xuanhuan", "xianxia"):
         if subtype in plugin_ids:
             blueprint = deepcopy(EASTERN_FANTASY_SIMULATION_BLUEPRINT)
             blueprint["plugin_id"] = subtype
+            blueprint["trope_templates"] = _plugin_trope_templates(plugins)
             return blueprint
     if "game_webnovel" in plugin_ids:
-        return deepcopy(GAME_WEBNOVEL_SIMULATION_BLUEPRINT)
-    return {}
+        blueprint = deepcopy(GAME_WEBNOVEL_SIMULATION_BLUEPRINT)
+        blueprint["trope_templates"] = _plugin_trope_templates(plugins)
+        return blueprint
+    templates = _plugin_trope_templates(plugins)
+    return {"trope_templates": templates} if templates else {}
 
 
 def plugin_prompt_guide(plugins: list[GenrePlugin]) -> str:
@@ -138,6 +155,7 @@ def plugin_prompt_guide(plugins: list[GenrePlugin]) -> str:
             "core_promises": list(plugin.core_promises),
             "ledger_fields": list(plugin.ledger_fields),
             "quality_checks": list(plugin.quality_checks),
+            "trope_templates": deepcopy(list(plugin.trope_templates)),
         }
         for plugin in plugins
     ]

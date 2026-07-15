@@ -1,4 +1,4 @@
-from packages.story_core.genre_plugins import merge_plugin_rulebooks, plugin_simulation_blueprint, select_genre_plugins
+from packages.story_core.genre_plugins import merge_plugin_rulebooks, plugin_prompt_guide, plugin_simulation_blueprint, select_genre_plugins
 from packages.story_core.models import NovelProject
 from packages.story_core.world_enrichment import _merge_enrichment
 from packages.story_core.orchestrator import _normalize_event_plan, _story_snapshot
@@ -308,3 +308,41 @@ def test_game_simulation_blueprint_returns_isolated_nested_copies():
     first["opening_scene_templates"][0]["must_show"].append(marker)
     assert marker not in second["opening_scene_templates"][0]["must_show"]
     assert marker not in GAME_WEBNOVEL_SIMULATION_BLUEPRINT["opening_scene_templates"][0]["must_show"]
+
+
+def test_genre_plugins_expose_reusable_trope_templates_in_prompt_guide():
+    import json
+
+    project = NovelProject(
+        project_id="p-game-tropes",
+        title="网游套路模板测试",
+        seed_outline="主角登录游戏，靠隐藏爆率优势推进任务。",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+
+    guide = json.loads(plugin_prompt_guide(select_genre_plugins(project)))
+
+    generic = next(plugin for plugin in guide if plugin["id"] == "generic_webnovel")
+    game = next(plugin for plugin in guide if plugin["id"] == "game_webnovel")
+
+    assert any(template["id"] == "low_status_reversal" for template in generic["trope_templates"])
+    assert any(template["id"] == "first_advantage_verification" for template in game["trope_templates"])
+    assert all({"id", "name", "trigger", "beats", "payoff", "avoid"}.issubset(template) for plugin in guide for template in plugin["trope_templates"])
+
+
+def test_simulation_blueprint_carries_isolated_trope_templates():
+    project = NovelProject(
+        project_id="p-game-blueprint-tropes",
+        title="网游蓝图套路模板测试",
+        seed_outline="新手村、隐藏任务、交易行、公会压力。",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+
+    first = plugin_simulation_blueprint(select_genre_plugins(project))
+    second = plugin_simulation_blueprint(select_genre_plugins(project))
+
+    assert any(template["id"] == "first_advantage_verification" for template in first["trope_templates"])
+
+    marker = "只污染当前蓝图副本"
+    first["trope_templates"][0]["beats"].append(marker)
+    assert marker not in second["trope_templates"][0]["beats"]
