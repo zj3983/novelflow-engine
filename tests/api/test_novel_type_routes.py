@@ -46,7 +46,13 @@ def _custom_payload(type_id: str = "sports") -> dict:
     }
 
 
-def _create_file_project(root: Path, project_id: str, genre_ids: list[str]) -> None:
+def _create_file_project(
+    root: Path,
+    project_id: str,
+    state_genre_ids: list[str],
+    *,
+    project_genre_ids: list[str] | None = None,
+) -> None:
     project_root = root / project_id
     story_system = project_root / ".story-system"
     webnovel = project_root / ".webnovel"
@@ -54,14 +60,20 @@ def _create_file_project(root: Path, project_id: str, genre_ids: list[str]) -> N
     webnovel.mkdir(parents=True)
     (story_system / "MASTER_SETTING.json").write_text("{}", encoding="utf-8")
     (webnovel / "state.json").write_text(
-        json.dumps({"world_blueprint": {"genre_plugin_ids": genre_ids}}),
+        json.dumps({"world_blueprint": {"genre_plugin_ids": state_genre_ids}}),
         encoding="utf-8",
+    )
+    project_blueprint = (
+        {"world_blueprint": {"genre_plugin_ids": project_genre_ids}}
+        if project_genre_ids is not None
+        else {}
     )
     (webnovel / "project.json").write_text(
         json.dumps(
             {
                 "project_id": project_id,
                 "title": project_id,
+                **project_blueprint,
             }
         ),
         encoding="utf-8",
@@ -173,6 +185,44 @@ def test_create_rejects_unknown_or_invalid_fields(novel_type_api, payload):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "invalid_id",
+    [
+        "sports/fiction",
+        "sports fiction",
+        " sports",
+        "sports\nfiction",
+        "SPORTS",
+        "a" * 65,
+    ],
+)
+def test_create_rejects_ids_that_are_not_path_safe(novel_type_api, invalid_id):
+    client, _, _ = novel_type_api
+
+    response = client.post("/novel-types", json=_custom_payload(invalid_id))
+
+    assert response.status_code == 422
+
+
+def test_create_accepts_64_character_path_safe_id(novel_type_api):
+    client, _, _ = novel_type_api
+    type_id = "a" + "1" * 63
+
+    response = client.post("/novel-types", json=_custom_payload(type_id))
+
+    assert response.status_code == 201
+    assert response.json()["id"] == type_id
+
+
+@pytest.mark.parametrize("invalid_id", ["SPORTS", "a" * 65])
+def test_delete_rejects_invalid_path_ids(novel_type_api, invalid_id):
+    client, _, _ = novel_type_api
+
+    response = client.delete(f"/novel-types/{invalid_id}")
+
+    assert response.status_code == 422
+
+
 def test_delete_rejects_custom_type_used_by_sqlite_project(novel_type_api):
     client, sqlite_store, _ = novel_type_api
     assert client.post("/novel-types", json=_custom_payload()).status_code == 201
@@ -191,6 +241,23 @@ def test_delete_rejects_custom_type_used_by_sqlite_project(novel_type_api):
     assert "sports" in {item["id"] for item in client.get("/novel-types").json()}
 
 
+def test_delete_rejects_casefold_equivalent_sqlite_reference(novel_type_api):
+    client, sqlite_store, _ = novel_type_api
+    assert client.post("/novel-types", json=_custom_payload()).status_code == 201
+    sqlite_store.create_project(
+        NovelProject(
+            project_id="sqlite-uppercase-project",
+            title="SQLite uppercase project",
+            world_blueprint={"genre_plugin_ids": ["SPORTS"]},
+        )
+    )
+
+    response = client.delete("/novel-types/sports")
+
+    assert response.status_code == 409
+    assert "sqlite-uppercase-project" in response.json()["detail"]
+
+
 def test_delete_rejects_custom_type_used_by_file_project(novel_type_api):
     client, _, file_projects_dir = novel_type_api
     assert client.post("/novel-types", json=_custom_payload()).status_code == 201
@@ -201,3 +268,30 @@ def test_delete_rejects_custom_type_used_by_file_project(novel_type_api):
     assert response.status_code == 409
     assert "file-project" in response.json()["detail"]
     assert "sports" in {item["id"] for item in client.get("/novel-types").json()}
+
+
+def test_delete_rejects_casefold_equivalent_file_project_reference(novel_type_api):
+    client, _, file_projects_dir = novel_type_api
+    assert client.post("/novel-types", json=_custom_payload()).status_code == 201
+    _create_file_project(file_projects_dir, "file-uppercase-project", ["SpOrTs"])
+
+    response = client.delete("/novel-types/sports")
+
+    assert response.status_code == 409
+    assert "file-uppercase-project" in response.json()["detail"]
+
+
+def test_delete_checks_project_and_state_blueprints_independently(novel_type_api):
+    client, _, file_projects_dir = novel_type_api
+    assert client.post("/novel-types", json=_custom_payload()).status_code == 201
+    _create_file_project(
+        file_projects_dir,
+        "split-blueprint-project",
+        ["sports"],
+        project_genre_ids=["urban"],
+    )
+
+    response = client.delete("/novel-types/sports")
+
+    assert response.status_code == 409
+    assert "split-blueprint-project" in response.json()["detail"]

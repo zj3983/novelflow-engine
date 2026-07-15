@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Path, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from apps.api.routes import file_projects, stories
@@ -10,6 +10,7 @@ from packages.story_core.novel_type_library import NovelTypeLibrary, NovelTypeRe
 
 
 router = APIRouter()
+NOVEL_TYPE_ID_PATTERN = r"^[a-z][a-z0-9_-]{0,63}$"
 
 
 class NovelTypeRulebookRequest(BaseModel):
@@ -32,7 +33,7 @@ class NovelTypeRulebookRequest(BaseModel):
 class NovelTypeWriteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    id: str = Field(min_length=1)
+    id: str = Field(pattern=NOVEL_TYPE_ID_PATTERN)
     name: str = Field(min_length=1)
     description: str = ""
     keywords: list[str] = Field(default_factory=list)
@@ -42,7 +43,7 @@ class NovelTypeWriteRequest(BaseModel):
     quality_checks: list[str] = Field(default_factory=list)
     trope_templates: list[dict[str, Any]] = Field(default_factory=list)
 
-    @field_validator("id", "name", "description", mode="before")
+    @field_validator("name", "description", mode="before")
     @classmethod
     def trim_strings(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
@@ -80,7 +81,8 @@ def _project_uses_type(world_blueprint: Any, type_id: str) -> bool:
         selected = [selected]
     if not isinstance(selected, list):
         return False
-    return type_id in {str(item).strip() for item in selected}
+    canonical_type_id = type_id.strip().casefold()
+    return canonical_type_id in {str(item).strip().casefold() for item in selected}
 
 
 def _referencing_project_ids(type_id: str) -> list[str]:
@@ -91,8 +93,9 @@ def _referencing_project_ids(type_id: str) -> list[str]:
     for store in file_projects._stores():
         project = store.project()
         state = store.state()
-        world_blueprint = project.get("world_blueprint") or state.get("world_blueprint")
-        if _project_uses_type(world_blueprint, type_id):
+        project_uses_type = _project_uses_type(project.get("world_blueprint"), type_id)
+        state_uses_type = _project_uses_type(state.get("world_blueprint"), type_id)
+        if project_uses_type or state_uses_type:
             project_ids.add(str(project.get("project_id") or store.root.name))
     return sorted(project_ids)
 
@@ -116,15 +119,17 @@ def init_novel_type_routes() -> APIRouter:
             raise HTTPException(status_code=status_code, detail=detail) from exc
 
     @router.put("/novel-types/{type_id}")
-    def update_registered_novel_type(type_id: str, payload: NovelTypeWriteRequest) -> dict[str, Any]:
-        normalized_id = type_id.strip()
-        if payload.id != normalized_id:
+    def update_registered_novel_type(
+        payload: NovelTypeWriteRequest,
+        type_id: str = Path(pattern=NOVEL_TYPE_ID_PATTERN),
+    ) -> dict[str, Any]:
+        if payload.id != type_id:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Payload novel type ID must match the path ID",
             )
         try:
-            return _serialize(NovelTypeLibrary().update(normalized_id, _payload_dict(payload)))
+            return _serialize(NovelTypeLibrary().update(type_id, _payload_dict(payload)))
         except KeyError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -140,7 +145,9 @@ def init_novel_type_routes() -> APIRouter:
             raise HTTPException(status_code=status_code, detail=detail) from exc
 
     @router.delete("/novel-types/{type_id}", status_code=status.HTTP_204_NO_CONTENT)
-    def delete_registered_novel_type(type_id: str) -> Response:
+    def delete_registered_novel_type(
+        type_id: str = Path(pattern=NOVEL_TYPE_ID_PATTERN),
+    ) -> Response:
         library = NovelTypeLibrary()
         record = library.get(type_id)
         if record is None:
