@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -371,6 +373,77 @@ def test_catalog_is_dynamic_view_of_library_bootstrap(runtime_type_library) -> N
     assert not isinstance(NOVEL_TYPE_CATALOG, dict)
     assert NOVEL_TYPE_CATALOG["xuanhuan"].label == XUANHUAN_NAME
     assert NOVEL_TYPE_CATALOG[CUSTOM_ID].label == CUSTOM_NAME
+
+
+def test_dict_catalog_conversion_keeps_one_snapshot_across_runtime_crud(
+    runtime_type_library,
+) -> None:
+    original_xuanhuan_name = NOVEL_TYPE_CATALOG["xuanhuan"].label
+
+    class MutatingCatalog(Mapping[str, object]):
+        def keys(self):
+            keys = NOVEL_TYPE_CATALOG.keys()
+            NovelTypeLibrary().update("xuanhuan", {"name": "转换后的玄幻名"})
+            NovelTypeLibrary().delete(CUSTOM_ID)
+            return keys
+
+        def __getitem__(self, key):
+            return NOVEL_TYPE_CATALOG[key]
+
+        def __iter__(self):
+            return iter(self.keys())
+
+        def __len__(self):
+            return len(NOVEL_TYPE_CATALOG)
+
+    converted = dict(MutatingCatalog())
+
+    assert converted["xuanhuan"].label == original_xuanhuan_name
+    assert converted[CUSTOM_ID].label == CUSTOM_NAME
+    assert NOVEL_TYPE_CATALOG["xuanhuan"].label == "转换后的玄幻名"
+    assert CUSTOM_ID not in dict(NOVEL_TYPE_CATALOG.items())
+
+
+def test_catalog_snapshot_detects_external_file_replacement(runtime_type_library) -> None:
+    assert NOVEL_TYPE_CATALOG["xuanhuan"].label == XUANHUAN_NAME
+    path = runtime_type_library.path
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["overrides"]["xuanhuan"]["name"] = "外部进程改名"
+    previous_stat = path.stat()
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.utime(
+        path,
+        ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns + 1_000_000_000),
+    )
+
+    assert NOVEL_TYPE_CATALOG["xuanhuan"].label == "外部进程改名"
+
+
+def test_build_chapter_seed_reuses_runtime_type_snapshot(
+    runtime_type_library,
+    monkeypatch,
+) -> None:
+    original_list = NovelTypeLibrary.list
+    calls = 0
+
+    def counted_list(self):
+        nonlocal calls
+        calls += 1
+        return original_list(self)
+
+    monkeypatch.setattr(NovelTypeLibrary, "list", counted_list)
+    story = StoryState(
+        story_id="s-snapshot-count",
+        genre=CUSTOM_NAME,
+        genre_plugin_ids=[CUSTOM_ID],
+        style="白描",
+        outline="球队争夺季后赛席位。",
+    )
+
+    seed = build_chapter_seed(story, 1)
+
+    assert CUSTOM_ID in seed["genre_plugins"]
+    assert calls <= 2
 
 
 @pytest.mark.parametrize(

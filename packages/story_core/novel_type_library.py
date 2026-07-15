@@ -51,6 +51,14 @@ _EDITABLE_FIELDS = tuple(
 _EMPTY_STORAGE: dict[str, dict[str, Any]] = {"overrides": {}, "custom": {}}
 _PATH_LOCKS: dict[str, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+_LIBRARY_REVISION = 0
+_LIBRARY_REVISION_LOCK = threading.Lock()
+
+
+def _bump_library_revision() -> None:
+    global _LIBRARY_REVISION
+    with _LIBRARY_REVISION_LOCK:
+        _LIBRARY_REVISION += 1
 
 
 def _string_tuple(value: Any) -> tuple[str, ...]:
@@ -245,6 +253,7 @@ class NovelTypeLibrary:
             record = NovelTypeRecord.from_payload({**record.to_dict(), "builtin": False})
             stored["custom"][record.id] = record.to_dict(include_builtin=False)
             self._write(stored)
+        _bump_library_revision()
         return deepcopy(record)
 
     def update(self, type_id: str, payload: NovelTypeRecord | Mapping[str, Any]) -> NovelTypeRecord:
@@ -284,6 +293,7 @@ class NovelTypeLibrary:
             else:
                 stored["custom"][current.id] = updated.to_dict(include_builtin=False)
             self._write(stored)
+        _bump_library_revision()
         return deepcopy(updated)
 
     def delete(self, type_id: str) -> None:
@@ -297,6 +307,7 @@ class NovelTypeLibrary:
                 raise ValueError("A built-in novel type cannot be deleted")
             stored["custom"].pop(normalized_id, None)
             self._write(stored)
+        _bump_library_revision()
 
     @contextmanager
     def _transaction_lock(self):
@@ -366,6 +377,26 @@ class NovelTypeLibrary:
 
 def list_novel_types() -> list[NovelTypeRecord]:
     return NovelTypeLibrary().list()
+
+
+def novel_type_library_snapshot_token() -> tuple[Any, ...]:
+    library = NovelTypeLibrary()
+    with _LIBRARY_REVISION_LOCK:
+        revision = _LIBRARY_REVISION
+
+    def fingerprint(path: Path) -> tuple[Any, ...]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return (str(path.resolve()), None)
+        return (
+            str(path.resolve()),
+            stat.st_mtime_ns,
+            stat.st_size,
+            getattr(stat, "st_ino", 0),
+        )
+
+    return revision, fingerprint(library.path), fingerprint(library.backup_path)
 
 
 def get_novel_type(type_id: str) -> NovelTypeRecord | None:

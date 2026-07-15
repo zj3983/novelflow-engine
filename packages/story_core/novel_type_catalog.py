@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from collections.abc import ItemsView, Iterator, KeysView, Mapping, ValuesView
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,18 +34,97 @@ def _catalog_item(record: Any) -> NovelType:
     )
 
 
-def _catalog_snapshot() -> dict[str, NovelType]:
-    from packages.story_core.novel_type_library import list_novel_types
+_SNAPSHOT_LOCK = threading.Lock()
+_SNAPSHOT_TOKEN: tuple[Any, ...] | None = None
+_RECORD_SNAPSHOT: dict[str, Any] = {}
+_CATALOG_SNAPSHOT: dict[str, NovelType] = {}
+_CONVERSION_KEYS = threading.local()
 
-    return {record.id: _catalog_item(record) for record in list_novel_types()}
+
+def _refresh_snapshot() -> tuple[dict[str, Any], dict[str, NovelType]]:
+    from packages.story_core.novel_type_library import (
+        list_novel_types,
+        novel_type_library_snapshot_token,
+    )
+
+    global _SNAPSHOT_TOKEN, _RECORD_SNAPSHOT, _CATALOG_SNAPSHOT
+    with _SNAPSHOT_LOCK:
+        for _ in range(3):
+            token = (*novel_type_library_snapshot_token(), id(list_novel_types))
+            if token == _SNAPSHOT_TOKEN:
+                return _RECORD_SNAPSHOT, _CATALOG_SNAPSHOT
+            records = list_novel_types()
+            final_token = (*novel_type_library_snapshot_token(), id(list_novel_types))
+            if final_token == token:
+                _RECORD_SNAPSHOT = {record.id: record for record in records}
+                _CATALOG_SNAPSHOT = {
+                    record.id: _catalog_item(record) for record in records
+                }
+                _SNAPSHOT_TOKEN = token
+                return _RECORD_SNAPSHOT, _CATALOG_SNAPSHOT
+
+        record_snapshot = {record.id: record for record in records}
+        catalog_snapshot = {
+            record.id: _catalog_item(record) for record in records
+        }
+        return record_snapshot, catalog_snapshot
+
+
+def _record_snapshot() -> dict[str, Any]:
+    return _refresh_snapshot()[0]
+
+
+def _catalog_snapshot() -> dict[str, NovelType]:
+    return _refresh_snapshot()[1]
+
+
+def _fresh_key(key: str) -> str:
+    return bytes(key, "utf-8").decode("utf-8")
+
+
+def _pin_conversion_key(key: str, snapshot: dict[str, NovelType]) -> None:
+    registry = getattr(_CONVERSION_KEYS, "registry", None)
+    if registry is None:
+        registry = {}
+        _CONVERSION_KEYS.registry = registry
+    registry[id(key)] = (key, snapshot)
+
+
+def _conversion_snapshot_for_key(key: str) -> dict[str, NovelType] | None:
+    registry = getattr(_CONVERSION_KEYS, "registry", None)
+    if not registry:
+        return None
+    entry = registry.pop(id(key), None)
+    if entry is None or entry[0] is not key:
+        return None
+    return entry[1]
+
+
+class _CatalogKeysView(KeysView[str]):
+    def __init__(
+        self,
+        mapping: Mapping[str, NovelType],
+        snapshot: dict[str, NovelType],
+    ) -> None:
+        super().__init__(mapping)
+        self._snapshot = snapshot
+
+    def __iter__(self) -> Iterator[str]:
+        _CONVERSION_KEYS.registry = {}
+        for key in self._snapshot:
+            conversion_key = _fresh_key(key)
+            _pin_conversion_key(conversion_key, self._snapshot)
+            yield conversion_key
+
 
 
 class _RuntimeNovelTypeCatalog(Mapping[str, NovelType]):
     def __getitem__(self, key: str) -> NovelType:
-        record = runtime_novel_type(key)
-        if record is None:
+        snapshot = _conversion_snapshot_for_key(key) or _catalog_snapshot()
+        item = snapshot.get(str(key))
+        if item is None:
             raise KeyError(key)
-        return _catalog_item(record)
+        return item
 
     def __iter__(self) -> Iterator[str]:
         return iter(_catalog_snapshot())
@@ -58,10 +139,11 @@ class _RuntimeNovelTypeCatalog(Mapping[str, NovelType]):
         return _catalog_snapshot().values()
 
     def keys(self) -> KeysView[str]:
-        return _catalog_snapshot().keys()
+        snapshot = _catalog_snapshot()
+        return _CatalogKeysView(snapshot, snapshot)
 
     def copy(self) -> dict[str, NovelType]:
-        return _catalog_snapshot()
+        return dict(_catalog_snapshot())
 
 
 NOVEL_TYPE_CATALOG: Mapping[str, NovelType] = _RuntimeNovelTypeCatalog()
@@ -110,19 +192,16 @@ def runtime_novel_type(value: Any) -> Any:
     if not plugin_id:
         return None
 
-    # Lazy import keeps the static catalog available as the library bootstrap.
-    from packages.story_core.novel_type_library import list_novel_types
-
-    records = list_novel_types()
-    record = next((item for item in records if item.id == plugin_id), None)
+    records = _record_snapshot()
+    record = records.get(plugin_id)
     if record is not None:
-        return record
+        return deepcopy(record)
 
     requested_name = str(value or "").strip().casefold()
     matches = [
-        item for item in records if item.name.strip().casefold() == requested_name
+        item for item in records.values() if item.name.strip().casefold() == requested_name
     ]
-    return matches[0] if len(matches) == 1 else None
+    return deepcopy(matches[0]) if len(matches) == 1 else None
 
 
 def resolve_novel_type_id(value: Any) -> str:

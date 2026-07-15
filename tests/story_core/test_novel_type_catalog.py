@@ -164,7 +164,32 @@ def test_runtime_catalog_values_and_copy_each_read_one_snapshot(monkeypatch):
     assert copied == {
         "only": novel_type_catalog.NovelType("only", "Only", "Only description", ())
     }
-    assert calls == 2
+    assert calls == 1
+    copied.clear()
+    assert [item.plugin_id for item in NOVEL_TYPE_CATALOG.values()] == ["only"]
+    assert calls == 1
+
+
+def test_dict_runtime_catalog_uses_one_library_snapshot(monkeypatch):
+    from packages.story_core import novel_type_library
+
+    original = novel_type_library.list_novel_types
+    calls = 0
+
+    def counted_records():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    monkeypatch.setattr(novel_type_library, "list_novel_types", counted_records)
+
+    converted = dict(NOVEL_TYPE_CATALOG)
+
+    assert calls == 1
+    assert converted
+    assert set(converted) == {item.id for item in original()}
+    assert all(type(key) is str for key in converted)
+    assert all(key == item.plugin_id for key, item in converted.items())
 
 
 def test_eastern_fantasy_catalog_options_explain_their_distinct_promises():
