@@ -14,6 +14,7 @@ type NavItem = {
 
 const GLOBAL_NAV: NavItem[] = [
   { href: "/projects", label: "作品", exact: true },
+  { href: "/novel-types", label: "小说类型", exact: true },
   { href: "/config", label: "配置", exact: true },
 ];
 

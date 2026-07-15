@@ -88,6 +88,31 @@ export type RuntimeConnectionResult = {
   message: string;
 };
 
+export type NovelTypeRulebook = {
+  progression_rules: string[];
+  economy_rules: string[];
+  quest_rules: string[];
+  faction_rules: string[];
+  panel_rules: string[];
+  chapter_formula: string[];
+  forbidden_breaks: string[];
+};
+
+export type NovelType = {
+  id: string;
+  name: string;
+  description: string;
+  keywords: string[];
+  core_promises: string[];
+  ledger_fields: string[];
+  rulebook: NovelTypeRulebook;
+  quality_checks: string[];
+  trope_templates: Array<Record<string, unknown>>;
+  builtin: boolean;
+};
+
+export type NovelTypeWriteRequest = Omit<NovelType, "builtin">;
+
 export type GenerationJobStatus = "queued" | "running" | "completed" | "failed";
 
 export type GenerationJobResponse = {
@@ -2916,4 +2941,41 @@ export async function updateNovelStatus(storyId: string, payload: {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
+}
+
+// ── Global Novel Type Library API ─────────────────────────────
+
+export async function fetchNovelTypes(): Promise<NovelType[]> {
+  return await tryFetchJson(`${apiBase()}/novel-types`, { method: "GET" });
+}
+
+export async function createNovelType(payload: NovelTypeWriteRequest): Promise<NovelType> {
+  return await tryFetchJson(`${apiBase()}/novel-types`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateNovelType(typeId: string, payload: NovelTypeWriteRequest): Promise<NovelType> {
+  return await tryFetchJson(`${apiBase()}/novel-types/${encodeURIComponent(typeId)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteNovelType(typeId: string): Promise<void> {
+  const response = await fetch(`${apiBase()}/novel-types/${encodeURIComponent(typeId)}`, { method: "DELETE" });
+  if (response.ok) return;
+
+  const text = await response.text().catch(() => "");
+  let message = text || `删除失败（${response.status}）`;
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (typeof parsed.detail === "string" && parsed.detail.trim()) message = parsed.detail.trim();
+  } catch {
+    // Preserve the server response when it is not JSON.
+  }
+  throw new Error(message);
 }
