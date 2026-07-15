@@ -22,7 +22,7 @@ from packages.story_core.genre_types import (
     XUANHUAN,
     GenrePlugin,
 )
-from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG, normalize_novel_type_id
+from packages.story_core.novel_type_ids import canonical_novel_type_id
 
 
 _BUILTIN_PLUGINS = (
@@ -35,6 +35,16 @@ _BUILTIN_PLUGINS = (
     SUSPENSE,
     RULES_MYSTERY,
 )
+_BUILTIN_DESCRIPTIONS = {
+    "generic_webnovel": "不绑定具体题材规则，只保留章节推进、钩子、人物动机和连续性要求。",
+    "game_webnovel": "加载等级、面板、背包、任务、货币、掉落、玩家生态和NPC服务规则。",
+    "urban": "加载职场、商业、舆论、人际关系、现实利益和身份反差规则。",
+    "xuanhuan": "聚焦自创力量、异物机缘、资源成长和世界秘密，允许项目自行定义力量来源与成长终点。",
+    "xianxia": "聚焦灵根修炼、道法因果、渡劫飞升和长生求道，加载修真境界、传承与修炼资源规则。",
+    "suspense": "加载线索、证据链、嫌疑人、调查推进和公平反转规则。",
+    "romance": "加载关系拉扯、情绪递进、误会、靠近和外部阻碍规则。",
+    "rules_mystery": "加载规则验证、禁忌代价、污染递进和异常逻辑规则。",
+}
 _EDITABLE_FIELDS = tuple(
     item.name for item in fields(GenrePlugin) if item.name not in {"plugin_id"}
 )
@@ -67,8 +77,7 @@ def _trope_templates(value: Any) -> tuple[dict[str, object], ...]:
 
 
 def _canonical_type_id(value: Any) -> str:
-    type_id = str(value or "").strip()
-    return normalize_novel_type_id(type_id) or type_id.casefold()
+    return canonical_novel_type_id(value)
 
 
 @dataclass
@@ -131,11 +140,10 @@ class NovelTypeRecord:
 
 
 def _record_from_plugin(plugin: GenrePlugin) -> NovelTypeRecord:
-    catalog_entry = NOVEL_TYPE_CATALOG.get(plugin.plugin_id)
     return NovelTypeRecord(
         id=plugin.plugin_id,
         name=plugin.name,
-        description=catalog_entry.description if catalog_entry else "",
+        description=_BUILTIN_DESCRIPTIONS[plugin.plugin_id],
         keywords=plugin.keywords,
         core_promises=plugin.core_promises,
         ledger_fields=plugin.ledger_fields,

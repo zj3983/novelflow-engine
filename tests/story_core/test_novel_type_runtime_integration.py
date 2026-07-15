@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 from pydantic import ValidationError
 
 from packages.story_core.file_project_creation import FileProjectCreateSpec, create_file_project
+from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.genre_plugins import plugin_prompt_guide, select_genre_plugins
-from packages.story_core.models import AgentSettings, NovelProject
-from packages.story_core.novel_type_catalog import novel_type_options
+from packages.story_core.chapter_seed import build_chapter_seed
+from packages.story_core.models import AgentSettings, NovelProject, StoryState
+from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG, novel_type_options
 from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator, OpeningBrief
 from packages.story_core.outline_planning_generation import (
@@ -19,6 +24,7 @@ from packages.story_core.runtime_config import OpenAIRuntimeSettings
 
 
 XUANHUAN_DESCRIPTION = "运行时玄幻说明：力量异变必须落到现实选择。"
+XUANHUAN_NAME = "运行时东方幻想"
 XUANHUAN_PROMISE = "运行时玄幻承诺：每次变强都改变一段外部关系。"
 XUANHUAN_RULE = "运行时玄幻规则：每阶段必须验证一次力量代价。"
 XUANHUAN_QUALITY = "运行时玄幻检查：力量收益与代价必须同时出现。"
@@ -39,6 +45,7 @@ def runtime_type_library(monkeypatch, tmp_path) -> NovelTypeLibrary:
     library.update(
         "xuanhuan",
         {
+            "name": XUANHUAN_NAME,
             "description": XUANHUAN_DESCRIPTION,
             "core_promises": [XUANHUAN_PROMISE],
             "rulebook": {"chapter_formula": [XUANHUAN_RULE]},
@@ -114,6 +121,7 @@ def test_runtime_options_and_project_creation_use_edited_builtin(
     assert reloaded is not None
     assert reloaded.id == "xuanhuan"
     assert reloaded.builtin is True
+    assert reloaded.name == XUANHUAN_NAME
     assert reloaded.description == XUANHUAN_DESCRIPTION
 
     xuanhuan_option = next(item for item in novel_type_options() if item["id"] == "xuanhuan")
@@ -132,6 +140,97 @@ def test_runtime_options_and_project_creation_use_edited_builtin(
     project = _read_json(created.root / ".webnovel" / "project.json")
     assert spec.novel_type_id == "xuanhuan"
     assert project["world_blueprint"]["genre_plugin_ids"] == ["xuanhuan"]
+
+
+@pytest.mark.parametrize(
+    ("novel_type_id", "expected_name", "promise", "rule"),
+    [
+        ("xuanhuan", XUANHUAN_NAME, XUANHUAN_PROMISE, XUANHUAN_RULE),
+        (CUSTOM_ID, CUSTOM_NAME, CUSTOM_PROMISE, CUSTOM_RULE),
+    ],
+)
+def test_file_project_store_story_state_and_chapter_seed_preserve_runtime_type_id(
+    runtime_type_library,
+    tmp_path,
+    novel_type_id,
+    expected_name,
+    promise,
+    rule,
+) -> None:
+    created = create_file_project(
+        tmp_path / "projects",
+        FileProjectCreateSpec(
+            mode="blank",
+            title=f"{expected_name}写作链路",
+            novel_type_id=novel_type_id,
+        ),
+        project_id_factory=lambda: f"p-seed-{novel_type_id}",
+    )
+    store = FileProjectStore(created.root)
+
+    persisted_state = store.state()
+    story_payload = store._story_state_payload_for_direction(
+        persisted_state,
+        store.project(),
+        1,
+    )
+    story = StoryState.model_validate(story_payload)
+    seed = build_chapter_seed(story, 1)
+
+    assert persisted_state["genre"] == expected_name
+    assert persisted_state["genre_plugin_ids"] == [novel_type_id]
+    assert story.genre_plugin_ids == [novel_type_id]
+    assert novel_type_id in seed["genre_plugins"]
+    assert promise in seed["core_promises"]
+    assert rule in seed["rulebook"]["chapter_formula"]
+
+
+def test_catalog_is_dynamic_view_of_library_bootstrap(runtime_type_library) -> None:
+    assert not isinstance(NOVEL_TYPE_CATALOG, dict)
+    assert NOVEL_TYPE_CATALOG["xuanhuan"].label == XUANHUAN_NAME
+    assert NOVEL_TYPE_CATALOG[CUSTOM_ID].label == CUSTOM_NAME
+
+
+@pytest.mark.parametrize(
+    "imports",
+    [
+        "import packages.story_core.novel_type_catalog; import packages.story_core.novel_type_library",
+        "import packages.story_core.novel_type_library; import packages.story_core.novel_type_catalog",
+    ],
+)
+def test_catalog_and_library_support_both_import_orders(imports) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", imports],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_novel_type_library_import_does_not_require_catalog() -> None:
+    script = """
+import importlib.abc
+import sys
+
+class BlockCatalog(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == 'packages.story_core.novel_type_catalog':
+            raise ImportError('catalog import blocked')
+        return None
+
+sys.meta_path.insert(0, BlockCatalog())
+import packages.story_core.novel_type_library
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_custom_type_creates_project_with_stable_lowercase_id(

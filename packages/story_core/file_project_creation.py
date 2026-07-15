@@ -90,6 +90,7 @@ def _state_payload(project_id: str, novel_type_id: str) -> dict[str, Any]:
         story_id=f"file:{project_id}",
         outline="",
         genre=novel_type.name,
+        genre_plugin_ids=[novel_type.id],
         style="通俗网文",
         current_chapter=0,
     )

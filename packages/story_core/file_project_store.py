@@ -21,6 +21,7 @@ from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.novel_type_catalog import normalize_novel_type_ids
 from packages.story_core.opening_directions import OpeningBrief, OpeningDirectionSet
 from packages.story_core.outline_planning import GeneratedOutlinePlan, validate_generated_opening_plan
 from packages.story_core.outline_planning_generation import OutlinePlanningBrief
@@ -3127,6 +3128,16 @@ class FileProjectStore:
     ) -> dict[str, Any]:
         project_outline = dict(self.project_outline())
         project_outline.pop("source", None)
+        world_blueprint = (
+            project.get("world_blueprint")
+            if isinstance(project.get("world_blueprint"), dict)
+            else {}
+        )
+        state_genre_ids = state.get("genre_plugin_ids")
+        project_genre_ids = world_blueprint.get("genre_plugin_ids")
+        genre_plugin_ids = normalize_novel_type_ids(state_genre_ids)
+        if not genre_plugin_ids:
+            genre_plugin_ids = normalize_novel_type_ids(project_genre_ids)
         characters: list[dict[str, Any]] = []
         for item in state.get("characters", []) if isinstance(state.get("characters"), list) else []:
             if not isinstance(item, dict):
@@ -3145,6 +3156,7 @@ class FileProjectStore:
             "story_id": str(state.get("story_id") or project.get("active_story_id") or project.get("project_id") or "file-project"),
             "outline": str(state.get("outline") or project.get("seed_outline") or project.get("title") or ""),
             "genre": str(state.get("genre") or project.get("genre") or ""),
+            "genre_plugin_ids": genre_plugin_ids,
             "style": str(state.get("style") or project.get("style") or ""),
             "current_chapter": int(state.get("current_chapter") or 0),
             "enabled_skill_ids": list(project.get("enabled_skill_ids") or state.get("enabled_skill_ids") or []),

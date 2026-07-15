@@ -6,7 +6,7 @@ from typing import Any
 from packages.story_core.agent_base import compact_list, compact_text
 from packages.story_core.genre_plugins import is_game_genre, merge_plugin_rulebooks, plugin_simulation_blueprint, select_genre_plugins
 from packages.story_core.models import NovelProject, StoryState
-from packages.story_core.novel_type_catalog import normalize_novel_type_id
+from packages.story_core.novel_type_catalog import normalize_novel_type_ids, resolve_novel_type_id
 
 
 LONGFORM_FACT_PREFIXES = (
@@ -25,12 +25,19 @@ LONGFORM_FACT_PREFIXES = (
 
 def _proxy_project(story: StoryState) -> NovelProject:
     latest = story.chapter_summaries[-1] if story.chapter_summaries else None
-    explicit_genre = normalize_novel_type_id(story.genre)
-    if not explicit_genre:
+    genre_ids = normalize_novel_type_ids(story.genre_plugin_ids)
+    if not genre_ids:
+        explicit_genre = resolve_novel_type_id(story.genre)
+        genre_ids = [explicit_genre] if explicit_genre else []
+    if not genre_ids:
         type_fact = next((fact for fact in story.world_facts if str(fact).startswith(("小说类型：", "小说类型:"))), "")
         if type_fact:
-            explicit_genre = normalize_novel_type_id(re.split("[：:]", str(type_fact), maxsplit=1)[-1])
-    genre_ids = [explicit_genre] if explicit_genre else (["game_webnovel"] if _is_game_story(story) else [])
+            explicit_genre = resolve_novel_type_id(
+                re.split("[：:]", str(type_fact), maxsplit=1)[-1]
+            )
+            genre_ids = [explicit_genre] if explicit_genre else []
+    if not genre_ids and _is_game_story(story):
+        genre_ids = ["game_webnovel"]
     return NovelProject(
         project_id=story.story_id,
         title=story.outline[:80] or story.story_id,
@@ -463,9 +470,25 @@ def _writing_contract(story: StoryState, chapter_number: int, is_game: bool) -> 
 
 def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]:
     """Build the compact pre-writing contract that connects world simulation to prose."""
-    plugins = select_genre_plugins(_proxy_project(story))
+    proxy_project = _proxy_project(story)
+    plugins = select_genre_plugins(proxy_project)
     plugin_ids = [plugin.plugin_id for plugin in plugins]
-    rulebook = merge_plugin_rulebooks(plugins)
+    explicit_ids = normalize_novel_type_ids(
+        proxy_project.world_blueprint.get("genre_plugin_ids")
+    )
+    explicit_order = {plugin_id: index for index, plugin_id in enumerate(explicit_ids)}
+    original_order = {plugin.plugin_id: index for index, plugin in enumerate(plugins)}
+    prompt_plugins = sorted(
+        plugins,
+        key=lambda plugin: (
+            (0, explicit_order[plugin.plugin_id])
+            if plugin.plugin_id in explicit_order
+            else (2, original_order[plugin.plugin_id])
+            if plugin.plugin_id == "generic_webnovel"
+            else (1, original_order[plugin.plugin_id])
+        ),
+    )
+    rulebook = merge_plugin_rulebooks(prompt_plugins)
     is_game = "game_webnovel" in plugin_ids
     contract = _contract_for_game(chapter_number) if is_game else _generic_contract()
     return {
@@ -474,7 +497,7 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
         "phase": _phase(chapter_number, is_game=is_game),
         "genre_plugins": plugin_ids,
         "core_promises": compact_list(
-            [promise for plugin in plugins for promise in plugin.core_promises],
+            [promise for plugin in prompt_plugins for promise in plugin.core_promises],
             max_items=6,
             item_chars=150,
         ),
