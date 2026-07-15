@@ -1,11 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
-import { updateProject, type ImportedWorldBlueprint, type ProjectStatus } from "../../../../lib/api";
-import { DEFAULT_NOVEL_TYPE_ID, NOVEL_TYPE_OPTIONS, novelTypeLabel } from "../../../../lib/novelTypes";
+import {
+  fetchNovelTypes as listNovelTypes,
+  updateProject,
+  type ImportedWorldBlueprint,
+  type NovelType,
+  type ProjectStatus,
+} from "../../../../lib/api";
 
 const SOURCE_LABEL = {
   sqlite: "数据库",
@@ -28,29 +33,83 @@ function statusLabel(status: ProjectStatus | undefined): string {
 }
 
 export default function ProjectSettingsPage() {
-  const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
+  const { project, story, loading: projectLoading, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
   const source = project?.storage_source ? SOURCE_LABEL[project.storage_source] : "数据库";
-  const currentTypeId = project?.world_blueprint?.genre_plugin_ids?.[0] || DEFAULT_NOVEL_TYPE_ID;
-  const currentType = NOVEL_TYPE_OPTIONS.find((item) => item.id === currentTypeId) ?? NOVEL_TYPE_OPTIONS[0];
+  const mountedRef = useRef(true);
+  const typeSelectionTouchedRef = useRef(false);
+  const typeSelectionInitializedRef = useRef(false);
+  const [novelTypes, setNovelTypes] = useState<NovelType[]>([]);
+  const [selectedTypeId, setSelectedTypeId] = useState("");
+  const [typesLoading, setTypesLoading] = useState(true);
+  const [typesError, setTypesError] = useState("");
+  const [typesLoadVersion, setTypesLoadVersion] = useState(0);
   const [savingType, setSavingType] = useState(false);
   const [typeMessage, setTypeMessage] = useState("");
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setTypesLoading(true);
+    setTypesError("");
+
+    void listNovelTypes()
+      .then((types) => {
+        if (!cancelled) setNovelTypes(types);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setNovelTypes([]);
+        setTypesError("小说类型加载失败，请检查服务连接后重试。");
+      })
+      .finally(() => {
+        if (!cancelled) setTypesLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [typesLoadVersion]);
+
+  useEffect(() => {
+    if (!project || typesLoading || typesError || typeSelectionInitializedRef.current) return;
+    typeSelectionInitializedRef.current = true;
+    if (!typeSelectionTouchedRef.current) {
+      setSelectedTypeId(project.world_blueprint?.genre_plugin_ids?.[0] || "");
+    }
+  }, [project, typesError, typesLoading]);
+
+  const selectedType = useMemo(
+    () => novelTypes.find((type) => type.id === selectedTypeId),
+    [novelTypes, selectedTypeId],
+  );
+  const hasUnknownType = Boolean(selectedTypeId && !typesLoading && !typesError && !selectedType);
+
   async function saveNovelType(nextTypeId: string) {
     if (!project) return;
+    typeSelectionTouchedRef.current = true;
+    setSelectedTypeId(nextTypeId);
     setSavingType(true);
     setTypeMessage("");
     try {
       const nextBlueprint: ImportedWorldBlueprint = {
         ...(project.world_blueprint ?? {}),
-        genre_plugin_ids: nextTypeId === DEFAULT_NOVEL_TYPE_ID ? [DEFAULT_NOVEL_TYPE_ID] : [nextTypeId],
+        genre_plugin_ids: [nextTypeId],
       };
       await updateProject(projectId, { world_blueprint: nextBlueprint });
-      setTypeMessage(`小说类型已保存为：${novelTypeLabel(nextTypeId)}。下一次推演和写作包会读取这个类型。`);
+      if (!mountedRef.current) return;
+      const nextTypeName = novelTypes.find((type) => type.id === nextTypeId)?.name ?? nextTypeId;
+      setTypeMessage(`小说类型已保存为：${nextTypeName}。下一次推演和写作包会读取这个类型。`);
       refresh();
     } catch (err) {
-      setTypeMessage(err instanceof Error ? err.message : String(err));
+      if (mountedRef.current) setTypeMessage(err instanceof Error ? err.message : String(err));
     } finally {
-      setSavingType(false);
+      if (mountedRef.current) setSavingType(false);
     }
   }
 
@@ -77,19 +136,45 @@ export default function ProjectSettingsPage() {
                 <p className="ws-card__title">小说类型</p>
                 <p className="ws-card__hint">类型决定会加载哪套题材规则。网游的背包、铜币、掉落、任务规则只应该来自“网游升级”。</p>
               </div>
-              <span className="ws-toolbar__meta">{currentType.label}</span>
+              <span className="ws-toolbar__meta">{selectedType?.name ?? (selectedTypeId || "未选择")}</span>
             </div>
             <label className="ws-character-mini">
               <strong>当前类型</strong>
-              <select className="ws-input" value={currentTypeId} disabled={!project || savingType} onChange={(event) => void saveNovelType(event.target.value)}>
-                {NOVEL_TYPE_OPTIONS.map((option) => (
+              <select
+                className="ws-input"
+                value={selectedTypeId}
+                disabled={!project || projectLoading || typesLoading || Boolean(typesError) || novelTypes.length === 0 || savingType}
+                onChange={(event) => void saveNovelType(event.target.value)}
+              >
+                {typesLoading ? <option value="">正在加载小说类型...</option> : null}
+                {hasUnknownType ? <option value={selectedTypeId}>未知类型（{selectedTypeId}）</option> : null}
+                {!typesLoading && novelTypes.length === 0 ? <option value="">暂无可用类型</option> : null}
+                {novelTypes.map((option) => (
                   <option key={option.id} value={option.id}>
-                    {option.label}
+                    {option.name}
                   </option>
                 ))}
               </select>
             </label>
-            <p className="ws-card__hint">{currentType.description}</p>
+            {selectedType ? <p className="ws-card__hint">{selectedType.description}</p> : null}
+            {hasUnknownType ? (
+              <p className="ws-project-create__error" role="alert">
+                项目引用的小说类型 {selectedTypeId} 已不存在。请选择有效类型并保存。
+              </p>
+            ) : null}
+            {typesError ? (
+              <div className="ws-project-create__error" role="alert">
+                <p>{typesError}</p>
+                <button type="button" className="ws-btn" onClick={() => setTypesLoadVersion((value) => value + 1)}>
+                  重新加载
+                </button>
+              </div>
+            ) : null}
+            {!typesLoading && !typesError && novelTypes.length === 0 ? (
+              <p className="ws-project-create__error" role="alert">
+                小说类型库为空，请先在全局小说类型库中添加类型。
+              </p>
+            ) : null}
             {typeMessage ? <p className="ws-card__hint">{typeMessage}</p> : null}
           </section>
 

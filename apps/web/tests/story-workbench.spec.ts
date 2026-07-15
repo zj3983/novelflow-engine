@@ -224,6 +224,20 @@ async function routeOpeningProject(page: Page, handleOpeningRequest: (route: Rou
   });
 }
 
+async function routeProjectCreationNovelTypes(page: Page) {
+  await page.route("**/novel-types", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        { id: "generic_webnovel", name: "通用网文", description: "通用创作规则。", builtin: true },
+        { id: "xuanhuan", name: "东方玄幻", description: "力量成长与世界秘密。", builtin: true },
+        { id: "urban", name: "都市现代", description: "现实利益与身份关系。", builtin: true },
+      ]),
+    });
+  });
+}
+
 test("projects page creates entry beside the recent project", async ({ page }) => {
   const recentProject = {
     project_id: "file:p-recent",
@@ -308,6 +322,7 @@ test("projects page creates a single-column form without mobile overflow", async
 
 test("projects page creates a blank file novel", async ({ page }) => {
   const requests: unknown[] = [];
+  await routeProjectCreationNovelTypes(page);
   await page.route("**/file-projects", async (route) => {
     if (route.request().method() !== "POST") {
       await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
@@ -345,6 +360,7 @@ test("projects page creates a blank file novel", async ({ page }) => {
 test("projects page creates an inspiration novel and preserves input after failure", async ({ page }) => {
   const requests: unknown[] = [];
   let attempt = 0;
+  await routeProjectCreationNovelTypes(page);
   await page.route("**/file-projects", async (route) => {
     if (route.request().method() !== "POST") {
       await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });

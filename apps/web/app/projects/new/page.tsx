@@ -1,11 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { type FormEvent, type KeyboardEvent, useMemo, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { PageHeader } from "../../../components/ws/PageHeader";
-import { createFileProject } from "../../../lib/api";
-import { DEFAULT_NOVEL_TYPE_ID, NOVEL_TYPE_OPTIONS } from "../../../lib/novelTypes";
+import { createFileProject, fetchNovelTypes as listNovelTypes, type NovelType } from "../../../lib/api";
+import { DEFAULT_NOVEL_TYPE_ID } from "../../../lib/novelTypes";
 
 type CreationMode = "inspiration" | "blank";
 
@@ -13,17 +13,55 @@ export default function NewProjectPage() {
   const router = useRouter();
   const inspirationTabRef = useRef<HTMLButtonElement>(null);
   const blankTabRef = useRef<HTMLButtonElement>(null);
+  const typeSelectionTouchedRef = useRef(false);
   const [mode, setMode] = useState<CreationMode>("inspiration");
   const [title, setTitle] = useState("");
-  const [novelTypeId, setNovelTypeId] = useState(DEFAULT_NOVEL_TYPE_ID);
+  const [novelTypeId, setNovelTypeId] = useState("");
+  const [novelTypes, setNovelTypes] = useState<NovelType[]>([]);
+  const [typesLoading, setTypesLoading] = useState(true);
+  const [typesError, setTypesError] = useState("");
+  const [typesLoadVersion, setTypesLoadVersion] = useState(0);
   const [idea, setIdea] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    let cancelled = false;
+    setTypesLoading(true);
+    setTypesError("");
+
+    void listNovelTypes()
+      .then((types) => {
+        if (cancelled) return;
+        setNovelTypes(types);
+        if (!typeSelectionTouchedRef.current) {
+          const defaultType = types.find((type) => type.id === DEFAULT_NOVEL_TYPE_ID) ?? types[0];
+          setNovelTypeId(defaultType?.id ?? "");
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setNovelTypes([]);
+        setTypesError("小说类型加载失败，请检查服务连接后重试。");
+      })
+      .finally(() => {
+        if (!cancelled) setTypesLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [typesLoadVersion]);
+
+  const selectedNovelType = useMemo(
+    () => novelTypes.find((type) => type.id === novelTypeId),
+    [novelTypeId, novelTypes],
+  );
+
   const canSubmit = useMemo(() => {
-    if (!novelTypeId) return false;
+    if (typesLoading || typesError || !selectedNovelType) return false;
     return mode === "blank" ? Boolean(title.trim()) : Boolean(idea.trim());
-  }, [idea, mode, novelTypeId, title]);
+  }, [idea, mode, selectedNovelType, title, typesError, typesLoading]);
 
   function selectMode(nextMode: CreationMode) {
     setMode(nextMode);
@@ -119,14 +157,40 @@ export default function NewProjectPage() {
         >
           <label className="ws-project-create__field">
             <span>小说类型</span>
-            <select value={novelTypeId} onChange={(event) => setNovelTypeId(event.target.value)} required>
-              {NOVEL_TYPE_OPTIONS.map((option) => (
+            <select
+              value={novelTypeId}
+              onChange={(event) => {
+                typeSelectionTouchedRef.current = true;
+                setNovelTypeId(event.target.value);
+              }}
+              disabled={typesLoading || Boolean(typesError) || novelTypes.length === 0}
+              required
+            >
+              {typesLoading ? <option value="">正在加载小说类型...</option> : null}
+              {!typesLoading && novelTypes.length === 0 ? <option value="">暂无可用类型</option> : null}
+              {novelTypes.map((option) => (
                 <option key={option.id} value={option.id}>
-                  {option.label}
+                  {option.name}
                 </option>
               ))}
             </select>
+            {selectedNovelType ? <small>{selectedNovelType.description}</small> : null}
           </label>
+
+          {typesError ? (
+            <div className="ws-project-create__error" role="alert">
+              <p>{typesError}</p>
+              <button type="button" className="ws-btn" onClick={() => setTypesLoadVersion((value) => value + 1)}>
+                重新加载
+              </button>
+            </div>
+          ) : null}
+
+          {!typesLoading && !typesError && novelTypes.length === 0 ? (
+            <p className="ws-project-create__error" role="alert">
+              小说类型库为空，请先在全局小说类型库中添加类型后再创建小说。
+            </p>
+          ) : null}
 
           <label className="ws-project-create__field">
             <span>
