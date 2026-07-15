@@ -5,6 +5,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from packages.story_core.character_profiles import (
+    BackgroundProfile,
+    CurrentLifeProfile,
+    IdentityProfile,
+    RelationshipNote,
+    StoryDriveProfile,
+)
+
 from packages.story_core.env import load_environment_files
 
 
@@ -306,6 +314,14 @@ class CharacterState(BaseModel):
 
     name: str
     role: str
+    character_tier: str = ""
+    first_appearance: int = Field(default=0, ge=0)
+    identity_profile: IdentityProfile = Field(default_factory=IdentityProfile)
+    background_profile: BackgroundProfile = Field(default_factory=BackgroundProfile)
+    current_life_profile: CurrentLifeProfile = Field(default_factory=CurrentLifeProfile)
+    story_drive: StoryDriveProfile = Field(default_factory=StoryDriveProfile)
+    dialogue_examples: list[str] = Field(default_factory=list)
+    relationship_notes: list[RelationshipNote] = Field(default_factory=list)
     game_id: str = ""
     game_panel: GamePanel = Field(default_factory=GamePanel)
     performance_profile: CharacterPerformanceProfile = Field(default_factory=CharacterPerformanceProfile)
