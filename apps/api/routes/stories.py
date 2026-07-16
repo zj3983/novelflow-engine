@@ -7,6 +7,7 @@ import re
 from threading import Lock
 import urllib.error
 import urllib.request
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -24,22 +25,22 @@ from packages.story_core.generation_progress import generation_progress
 from packages.story_core.models import (
     AgentSettings,
     CharacterState,
+    NewCharacterPolicy,
     NovelProject,
     NovelProjectSummary,
     StoryState,
-    default_fast_model_name,
-    default_model_name,
 )
 from packages.story_core.orchestrator import _merge_writing_review_quality, _review_chapter_body
 from packages.story_core.quality import validate_bundle
 from packages.story_core.http_retry import RetryConfig, post_json_with_retry
 from packages.story_core.runtime_config import (
-    OpenAIRuntimeSettings,
-    get_all_runtime_settings,
+    RuntimeConfiguration,
+    RuntimeProvider,
+    RuntimeStage,
+    StageRuntimeSettings,
+    get_runtime_configuration,
     get_runtime_strategy_settings,
-    resolve_openai_runtime_settings,
-    set_runtime_strategy_settings,
-    set_all_runtime_settings,
+    set_runtime_configuration,
 )
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.simplified_review import build_simplified_review
@@ -209,47 +210,30 @@ class DeleteProjectResponse(BaseModel):
     deleted_story_ids: list[str] = Field(default_factory=list)
 
 
-class RuntimeSettingsResponse(BaseModel):
-    global_: OpenAIRuntimeSettings = Field(alias="global")
-    agents: dict[str, OpenAIRuntimeSettings] = Field(default_factory=dict)
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
 class RuntimeStrategyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     mode: str = "LLM-assisted"
-    global_model: str = Field(default_factory=default_model_name)
-    character_model: str = Field(default_factory=default_fast_model_name)
-    director_model: str = Field(default_factory=default_model_name)
-    writer_model: str = Field(default_factory=default_model_name)
-    memory_model: str = Field(default_factory=default_model_name)
-    temperature: float | str = 0.7
-    new_character_policy: str = "Director review"
+    temperature: float = 0.7
+    new_character_policy: NewCharacterPolicy = "Director review"
 
 
 class RuntimeStrategyRequest(RuntimeStrategyResponse):
-    pass
-
-
-class RuntimeSettingsRequest(BaseModel):
-    api_key: str | None = None
-    base_url: str | None = None
-    global_: OpenAIRuntimeSettings | None = Field(default=None, alias="global")
-    agents: dict[str, OpenAIRuntimeSettings] = Field(default_factory=dict)
-    strategy: RuntimeStrategyRequest | None = None
-
-    model_config = ConfigDict(populate_by_name=True)
+    mode: Literal["LLM-assisted"] = "LLM-assisted"
 
 
 class RuntimeSettingsTestRequest(BaseModel):
-    agent_name: str
-    model_name: str | None = None
-    runtime_settings: RuntimeSettingsRequest = Field(default_factory=RuntimeSettingsRequest)
+    model_config = ConfigDict(extra="forbid")
+
+    stage: RuntimeStage
+    runtime_settings: RuntimeConfiguration
 
 
 class RuntimeSettingsTestResponse(BaseModel):
     ok: bool
-    agent_name: str
+    provider: RuntimeProvider
+    stage: RuntimeStage
+    model: str
     message: str
 
 
@@ -1297,41 +1281,28 @@ def _complete_manual_bundle_metadata(project: NovelProject, bundle: ChapterBundl
     return bundle
 
 
-def _serialize_runtime_settings() -> dict[str, object]:
-    runtime = get_all_runtime_settings()
+def _serialize_runtime_settings(configuration: RuntimeConfiguration | None = None) -> dict[str, object]:
+    data = (configuration or get_runtime_configuration()).model_dump(mode="json")
     return {
-        "global": runtime["global"].model_dump(),
-        "agents": {
-            name: agent.model_dump()
-            for name, agent in runtime["agents"].items()
-        },
-        "strategy": runtime["strategy"].model_dump(),
+        key: data[key]
+        for key in ("provider", "providers", "temperature", "new_character_policy")
     }
 
 
-def _runtime_target_label(agent_name: str) -> str:
-    return {
-        "global": "全局默认",
-        "character": "角色代理",
-        "director": "导演代理",
-        "writer": "写作代理",
-        "memory": "记忆代理",
-    }.get(agent_name, agent_name)
-
-
-def _runtime_model_for_target(agent_name: str, provided_model: str | None = None) -> str:
-    if provided_model:
-        return provided_model
-    strategy = get_runtime_strategy_settings()
-    if agent_name == "character":
-        return strategy.character_model or strategy.global_model
-    if agent_name == "director":
-        return strategy.director_model or strategy.global_model
-    if agent_name == "writer":
-        return strategy.writer_model or strategy.global_model
-    if agent_name == "memory":
-        return strategy.memory_model or strategy.global_model
-    return strategy.global_model
+def _resolve_candidate_stage_runtime(
+    configuration: RuntimeConfiguration,
+    stage: RuntimeStage,
+) -> StageRuntimeSettings:
+    selected = getattr(configuration.providers, configuration.provider)
+    return StageRuntimeSettings(
+        provider=configuration.provider,
+        model=getattr(selected, stage),
+        api_key=selected.api_key,
+        base_url=selected.base_url.rstrip("/"),
+        codex_command=selected.codex_command,
+        temperature=configuration.temperature,
+        new_character_policy=configuration.new_character_policy,
+    )
 
 
 def _probe_via_chat_completions(base_url: str, api_key: str, model_name: str) -> None:
@@ -2048,107 +2019,94 @@ def read_runtime_settings() -> dict[str, object]:
 
 
 @router.put("/runtime-settings")
-def update_runtime_settings(payload: RuntimeSettingsRequest) -> dict[str, object]:
-    data = payload.model_dump(by_alias=True)
-    if data.get("global") is None and payload.api_key is not None and payload.base_url is not None:
-        data["global"] = {
-            "api_key": payload.api_key,
-            "base_url": payload.base_url,
-        }
-    elif data.get("global") is None and (payload.api_key is not None or payload.base_url is not None):
-        data["global"] = {
-            "api_key": payload.api_key or "",
-            "base_url": payload.base_url or "https://api.openai.com/v1",
-        }
-    if "agents" not in data:
-        data["agents"] = {}
-    set_all_runtime_settings(data)
-    return _serialize_runtime_settings()
+def update_runtime_settings(payload: RuntimeConfiguration) -> dict[str, object]:
+    saved = set_runtime_configuration(payload)
+    return _serialize_runtime_settings(saved)
 
 
 @router.get("/runtime-strategy")
 def read_runtime_strategy() -> dict[str, object]:
-    return get_runtime_strategy_settings().model_dump()
+    configuration = get_runtime_configuration()
+    return RuntimeStrategyResponse(
+        temperature=configuration.temperature,
+        new_character_policy=configuration.new_character_policy,
+    ).model_dump(mode="json")
 
 
 @router.put("/runtime-strategy")
 def update_runtime_strategy(payload: RuntimeStrategyRequest) -> dict[str, object]:
-    set_runtime_strategy_settings(payload.model_dump())
-    return get_runtime_strategy_settings().model_dump()
+    candidate = get_runtime_configuration()
+    candidate.temperature = payload.temperature
+    candidate.new_character_policy = payload.new_character_policy
+    saved = set_runtime_configuration(candidate)
+    return RuntimeStrategyResponse(
+        mode=payload.mode,
+        temperature=saved.temperature,
+        new_character_policy=saved.new_character_policy,
+    ).model_dump(mode="json")
 
 
 @router.post("/runtime-settings/test")
 def test_runtime_settings(payload: RuntimeSettingsTestRequest) -> RuntimeSettingsTestResponse:
-    agent_name = payload.agent_name
-    if agent_name not in {"character", "director", "writer", "memory", "global"}:
-        raise HTTPException(status_code=400, detail="invalid_agent_name")
+    runtime = _resolve_candidate_stage_runtime(payload.runtime_settings, payload.stage)
+    details = f"provider={runtime.provider}, stage={payload.stage}, model={runtime.model}"
 
-    overrides = payload.runtime_settings.model_dump(by_alias=True, exclude_none=True)
-    if not (
-        overrides.get("api_key")
-        or overrides.get("base_url")
-        or overrides.get("provider")
-        or overrides.get("codex_command")
-        or overrides.get("global")
-        or overrides.get("agents")
-        or overrides.get("strategy")
-    ):
-        overrides = None
-    if agent_name == "global":
-        resolved = resolve_openai_runtime_settings(overrides=overrides)
-    else:
-        resolved = resolve_openai_runtime_settings(agent_name=agent_name, overrides=overrides)
-
-    if resolved.provider == "codexcli":
+    if runtime.provider == "codexcli":
         try:
             _probe_via_codexcli(
-                resolved.codex_command or "codex",
-                _runtime_model_for_target(agent_name, payload.model_name),
+                runtime.codex_command or "codex",
+                runtime.model,
             )
         except Exception as exc:
             return RuntimeSettingsTestResponse(
                 ok=False,
-                agent_name=agent_name,
-                message=f"Codex CLI 测试失败：{str(exc)[:200]}",
+                provider=runtime.provider,
+                stage=payload.stage,
+                model=runtime.model,
+                message=f"{details}: Codex CLI 测试失败：{str(exc)[:200]}",
             )
         return RuntimeSettingsTestResponse(
             ok=True,
-            agent_name=agent_name,
-            message=f"{_runtime_target_label(agent_name)} Codex CLI 正常",
+            provider=runtime.provider,
+            stage=payload.stage,
+            model=runtime.model,
+            message=f"{details}: Codex CLI 连接正常",
         )
 
-    if not resolved.api_key or not resolved.base_url:
+    if not runtime.api_key or not runtime.base_url:
         return RuntimeSettingsTestResponse(
             ok=False,
-            agent_name=agent_name,
-            message="缺少 API 密钥或接口地址",
+            provider=runtime.provider,
+            stage=payload.stage,
+            model=runtime.model,
+            message=f"{details}: 缺少 API 密钥或接口地址",
         )
 
     try:
-        model_name = _runtime_model_for_target(agent_name, payload.model_name)
-        if model_name:
-            try:
-                _probe_via_chat_completions(
-                    base_url=resolved.base_url,
-                    api_key=resolved.api_key,
-                    model_name=model_name,
-                )
-            except urllib.error.HTTPError as exc:
-                if exc.code not in {404, 405}:
-                    raise
-                _probe_via_models(base_url=resolved.base_url, api_key=resolved.api_key)
-        else:
-            _probe_via_models(base_url=resolved.base_url, api_key=resolved.api_key)
+        try:
+            _probe_via_chat_completions(
+                base_url=runtime.base_url,
+                api_key=runtime.api_key,
+                model_name=runtime.model,
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {404, 405}:
+                raise
+            _probe_via_models(base_url=runtime.base_url, api_key=runtime.api_key)
         return RuntimeSettingsTestResponse(
             ok=True,
-            agent_name=agent_name,
-            message=f"{_runtime_target_label(agent_name)} 连接正常",
+            provider=runtime.provider,
+            stage=payload.stage,
+            model=runtime.model,
+            message=f"{details}: OpenAI 连接正常",
         )
     except Exception as exc:  # pragma: no cover - surfaced in UI and tests
         return RuntimeSettingsTestResponse(
             ok=False,
-            agent_name=agent_name,
-            message=f"{_runtime_target_label(agent_name)} 连接失败：{exc}",
+            provider=runtime.provider,
+            stage=payload.stage,
+            model=runtime.model,
+            message=f"{details}: OpenAI 连接失败：{exc}",
         )
 
 

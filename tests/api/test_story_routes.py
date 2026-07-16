@@ -15,6 +15,32 @@ from apps.api.routes.stories import _quality_context
 client = TestClient(app)
 
 
+def _runtime_configuration(*, provider="openai"):
+    return {
+        "provider": provider,
+        "providers": {
+            "codexcli": {
+                "api_key": "",
+                "base_url": "",
+                "codex_command": "codex-test",
+                "planner": "codex-planner",
+                "writer": "codex-writer",
+                "memory": "codex-memory",
+            },
+            "openai": {
+                "api_key": "sk-test",
+                "base_url": "https://api.test.example/v1",
+                "codex_command": "",
+                "planner": "openai-planner",
+                "writer": "openai-writer",
+                "memory": "openai-memory",
+            },
+        },
+        "temperature": 0.7,
+        "new_character_policy": "Director review",
+    }
+
+
 def _make_file_project(root, *, project_id="p-file-api", state=None):
     (root / ".story-system" / "chapters").mkdir(parents=True)
     (root / ".story-system" / "reviews").mkdir(parents=True)
@@ -160,50 +186,75 @@ def clean_db_and_restore_runtime_settings(monkeypatch, tmp_path):
             conn.commit()
             conn.close()
     original = client.get("/runtime-settings").json()
-    client.put(
-        "/runtime-settings",
-        json={
-            "global": {
-                "api_key": "",
-                "base_url": "https://api.openai.com/v1",
-                "provider": "openai",
-            },
-            "agents": {
-                "character": {"api_key": "", "base_url": ""},
-                "director": {"api_key": "", "base_url": ""},
-                "writer": {"api_key": "", "base_url": ""},
-                "memory": {"api_key": "", "base_url": ""},
-            },
-        },
-    )
+    reset = client.put("/runtime-settings", json=_runtime_configuration())
+    assert reset.status_code == 200
     monkeypatch.setattr("packages.story_core.orchestrator.StoryOrchestrator._chat", _mock_story_chat)
     yield
     client.put("/runtime-settings", json=original)
 
 
-def test_runtime_settings_can_be_saved_globally():
+def test_runtime_settings_get_returns_only_provider_stage_contract():
     response = client.get("/runtime-settings")
     assert response.status_code == 200
-    assert response.json()["global"]["base_url"]
-    assert "api_key" in response.json()["global"]
+    payload = response.json()
+    assert set(payload) == {
+        "provider",
+        "providers",
+        "temperature",
+        "new_character_policy",
+    }
+
+    serialized = json.dumps(payload)
+    for obsolete_key in (
+        "global_model",
+        "character_model",
+        "director_model",
+        "writer_model",
+        "memory_model",
+    ):
+        assert obsolete_key not in serialized
+    assert "global" not in payload
+    assert "agents" not in payload
+    assert "strategy" not in payload
+
+
+def test_runtime_settings_put_saves_and_returns_strict_configuration():
+    candidate = _runtime_configuration(provider="codexcli")
+    candidate["temperature"] = 0.35
+    candidate["new_character_policy"] = "Auto-approve named candidates"
 
     update_resp = client.put(
         "/runtime-settings",
-        json={
-            "global": {
-                "api_key": "sk-test-123",
-                "base_url": "https://api.example.com/v1",
-            },
-        },
+        json=candidate,
     )
     assert update_resp.status_code == 200
-    assert update_resp.json()["global"]["api_key"] == "sk-test-123"
-    assert update_resp.json()["global"]["base_url"] == "https://api.example.com/v1"
+    assert update_resp.json() == candidate
 
     loaded = client.get("/runtime-settings")
     assert loaded.status_code == 200
-    assert loaded.json()["global"]["api_key"] == "sk-test-123"
-    assert loaded.json()["global"]["base_url"] == "https://api.example.com/v1"
+    assert loaded.json() == candidate
+
+
+@pytest.mark.parametrize("obsolete_key", ["global", "agents", "strategy", "global_model"])
+def test_runtime_settings_put_rejects_obsolete_fields(obsolete_key):
+    candidate = _runtime_configuration()
+    candidate[obsolete_key] = {}
+
+    response = client.put("/runtime-settings", json=candidate)
+
+    assert response.status_code == 422
+
+
+def test_runtime_settings_put_validation_does_not_replace_saved_configuration():
+    saved = _runtime_configuration()
+    assert client.put("/runtime-settings", json=saved).status_code == 200
+    invalid = _runtime_configuration()
+    invalid["providers"]["openai"]["writer"] = "   "
+
+    response = client.put("/runtime-settings", json=invalid)
+
+    assert response.status_code == 422
+    assert client.get("/runtime-settings").json() == saved
 
 
 def test_serialized_history_uses_saved_quality_and_adds_simplified_review(monkeypatch):
@@ -264,45 +315,6 @@ def test_review_recommendation_only_revises_for_hard_errors():
     assert advisory["must_fix"] == []
     assert blocking["action"] == "revise"
     assert blocking["must_fix"] == ["body_too_short"]
-
-
-def test_runtime_settings_can_store_agent_overrides():
-    update_resp = client.put(
-        "/runtime-settings",
-        json={
-            "global": {
-                "api_key": "sk-global",
-                "base_url": "https://api.global.example/v1",
-            },
-            "agents": {
-                "character": {
-                    "api_key": "sk-character",
-                    "base_url": "https://api.character.example/v1",
-                },
-                "director": {
-                    "api_key": "sk-director",
-                    "base_url": "https://api.director.example/v1",
-                },
-                "writer": {
-                    "api_key": "sk-writer",
-                    "base_url": "https://api.writer.example/v1",
-                },
-                "memory": {
-                    "api_key": "sk-memory",
-                    "base_url": "https://api.memory.example/v1",
-                },
-            },
-        },
-    )
-    assert update_resp.status_code == 200
-
-    loaded = client.get("/runtime-settings")
-    assert loaded.status_code == 200
-    payload = loaded.json()
-    assert payload["global"]["api_key"] == "sk-global"
-    assert payload["global"]["base_url"] == "https://api.global.example/v1"
-    assert payload["agents"]["character"]["api_key"] == "sk-character"
-    assert payload["agents"]["director"]["base_url"] == "https://api.director.example/v1"
 
 
 def test_project_writing_packet_and_manual_draft_roundtrip():
@@ -722,7 +734,7 @@ def test_file_project_generation_job_accepts_chapter_direction_id(tmp_path, monk
     assert submitted["kwargs"]["chapter_direction_id"] == "guild-ecology"
 
 
-def test_runtime_settings_connection_can_be_tested_for_one_agent(monkeypatch):
+def test_runtime_connection_uses_candidate_openai_provider_stage_and_does_not_save(monkeypatch):
     captured = {}
 
     def fake_urlopen(request, timeout=30):
@@ -746,108 +758,93 @@ def test_runtime_settings_connection_can_be_tested_for_one_agent(monkeypatch):
 
     monkeypatch.setattr("apps.api.routes.stories.urllib.request.urlopen", fake_urlopen)
 
+    persisted = _runtime_configuration(provider="codexcli")
+    assert client.put("/runtime-settings", json=persisted).status_code == 200
+    candidate = _runtime_configuration(provider="openai")
+    candidate["providers"]["openai"].update(
+        {
+            "api_key": "sk-candidate",
+            "base_url": "https://api.candidate.example/v1/",
+            "writer": "candidate-writer",
+        }
+    )
+
     response = client.post(
         "/runtime-settings/test",
         json={
-            "agent_name": "character",
-            "runtime_settings": {
-                "global": {
-                    "api_key": "sk-global",
-                    "base_url": "https://api.global.example/v1",
-                },
-                "agents": {
-                    "character": {
-                        "api_key": "sk-character",
-                        "base_url": "https://api.character.example/v1",
-                    }
-                },
-            },
-            "model_name": "gpt-4.1-mini",
+            "stage": "writer",
+            "runtime_settings": candidate,
         },
     )
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
-    assert response.json()["agent_name"] == "character"
+    assert response.json()["provider"] == "openai"
+    assert response.json()["stage"] == "writer"
+    assert response.json()["model"] == "candidate-writer"
+    assert "openai" in response.json()["message"]
+    assert "writer" in response.json()["message"]
+    assert "candidate-writer" in response.json()["message"]
     assert captured["method"] == "POST"
-    assert captured["url"] == "https://api.character.example/v1/chat/completions"
-    assert captured["authorization"] == "Bearer sk-character"
+    assert captured["url"] == "https://api.candidate.example/v1/chat/completions"
+    assert captured["authorization"] == "Bearer sk-candidate"
     assert captured["content_type"] == "application/json"
-    assert b'"model": "gpt-4.1-mini"' in captured["body"]
+    assert b'"model": "candidate-writer"' in captured["body"]
+    assert client.get("/runtime-settings").json() == persisted
 
 
-def test_runtime_settings_connection_uses_strategy_model_when_model_name_missing(monkeypatch):
-    captured = {}
-
-    def fake_urlopen(request, timeout=30):
-        captured["url"] = request.full_url
-        captured["body"] = request.data
-
-        class _Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                return b"{}"
-
-        return _Response()
-
-    monkeypatch.setattr("apps.api.routes.stories.urllib.request.urlopen", fake_urlopen)
-    client.put(
-        "/runtime-strategy",
+@pytest.mark.parametrize("stage", ["character", "director", "global", "unknown"])
+def test_runtime_connection_rejects_non_runtime_stages(stage):
+    response = client.post(
+        "/runtime-settings/test",
         json={
-            "mode": "LLM-assisted",
-            "global_model": "global-model",
-            "character_model": "character-model",
-            "director_model": "director-model",
-            "writer_model": "writer-model",
-            "memory_model": "memory-model",
-            "temperature": 0.7,
-            "new_character_policy": "Director review",
+            "stage": stage,
+            "runtime_settings": _runtime_configuration(),
         },
     )
 
+    assert response.status_code == 422
+
+
+def test_runtime_connection_rejects_old_agent_name_contract():
     response = client.post(
         "/runtime-settings/test",
         json={
             "agent_name": "writer",
-            "runtime_settings": {
-                "global": {
-                    "api_key": "sk-global",
-                    "base_url": "https://api.global.example/v1",
-                },
-            },
+            "runtime_settings": _runtime_configuration(),
         },
+    )
+
+    assert response.status_code == 422
+
+
+def test_runtime_connection_uses_candidate_codex_command_and_stage_model(monkeypatch):
+    captured = {}
+
+    def fake_probe(command, model_name):
+        captured["command"] = command
+        captured["model"] = model_name
+
+    monkeypatch.setattr("apps.api.routes.stories._probe_via_codexcli", fake_probe)
+    candidate = _runtime_configuration(provider="codexcli")
+    candidate["providers"]["codexcli"].update(
+        {"codex_command": "candidate-codex", "memory": "candidate-memory"}
+    )
+
+    response = client.post(
+        "/runtime-settings/test",
+        json={"stage": "memory", "runtime_settings": candidate},
     )
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
-    assert captured["url"] == "https://api.global.example/v1/chat/completions"
-    assert b'"model": "writer-model"' in captured["body"]
+    assert response.json()["provider"] == "codexcli"
+    assert response.json()["stage"] == "memory"
+    assert response.json()["model"] == "candidate-memory"
+    assert captured == {"command": "candidate-codex", "model": "candidate-memory"}
 
 
-def test_runtime_settings_connection_treats_null_global_as_empty_config():
-    response = client.post(
-        "/runtime-settings/test",
-        json={
-            "agent_name": "character",
-            "runtime_settings": {
-                "global": None,
-                "agents": {},
-            },
-            "model_name": "gpt-4.1-mini",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["ok"] is False
-    assert response.json()["agent_name"] == "character"
-
-
-def test_runtime_settings_connection_falls_back_to_models_when_chat_endpoint_missing(monkeypatch):
+def test_runtime_connection_falls_back_to_models_when_chat_endpoint_missing(monkeypatch):
     captured_urls = []
 
     def fake_urlopen(request, timeout=30):
@@ -878,62 +875,55 @@ def test_runtime_settings_connection_falls_back_to_models_when_chat_endpoint_mis
     response = client.post(
         "/runtime-settings/test",
         json={
-            "agent_name": "global",
-            "runtime_settings": {
-                "global": {
-                    "api_key": "sk-global",
-                    "base_url": "https://api.global.example/v1",
-                },
-            },
-            "model_name": "gpt-4.1",
+            "stage": "planner",
+            "runtime_settings": _runtime_configuration(),
         },
     )
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert captured_urls == [
-        "https://api.global.example/v1/chat/completions",
-        "https://api.global.example/v1/models",
+        "https://api.test.example/v1/chat/completions",
+        "https://api.test.example/v1/models",
     ]
 
 
-def test_runtime_settings_connection_uses_custom_global_base_url(monkeypatch):
-    captured = {}
-
-    def fake_urlopen(request, timeout=30):
-        captured["url"] = request.full_url
-
-        class _Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                return b"{}"
-
-        return _Response()
-
-    monkeypatch.setattr("apps.api.routes.stories.urllib.request.urlopen", fake_urlopen)
-
-    response = client.post(
-        "/runtime-settings/test",
+def test_runtime_strategy_keeps_only_non_model_compatibility_fields():
+    response = client.put(
+        "/runtime-strategy",
         json={
-            "agent_name": "global",
-            "runtime_settings": {
-                "global": {
-                    "api_key": "sk-global",
-                    "base_url": "https://api.global.example/v1",
-                },
-            },
-            "model_name": "gpt-4.1",
+            "mode": "LLM-assisted",
+            "temperature": 0.45,
+            "new_character_policy": "Auto-approve named candidates",
         },
     )
 
     assert response.status_code == 200
-    assert response.json()["ok"] is True
-    assert captured["url"] == "https://api.global.example/v1/chat/completions"
+    assert response.json() == {
+        "mode": "LLM-assisted",
+        "temperature": 0.45,
+        "new_character_policy": "Auto-approve named candidates",
+    }
+    settings = client.get("/runtime-settings").json()
+    assert settings["temperature"] == 0.45
+    assert settings["new_character_policy"] == "Auto-approve named candidates"
+
+
+@pytest.mark.parametrize(
+    "model_field",
+    ["global_model", "character_model", "director_model", "writer_model", "memory_model"],
+)
+def test_runtime_strategy_rejects_model_fields(model_field):
+    payload = {
+        "mode": "LLM-assisted",
+        "temperature": 0.7,
+        "new_character_policy": "Director review",
+        model_field: "obsolete-model",
+    }
+
+    response = client.put("/runtime-strategy", json=payload)
+
+    assert response.status_code == 422
 
 
 def test_story_can_be_created_and_rolled_back():
