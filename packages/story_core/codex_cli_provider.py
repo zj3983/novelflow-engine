@@ -46,8 +46,9 @@ def _build_prompt(payload: dict[str, Any]) -> str:
 
 def _codex_command_prefix(command: str) -> list[str]:
     command = command or "codex"
-    executable = shutil.which(f"{command}.exe") if not Path(command).suffix else None
-    resolved_command = executable or shutil.which(command) or command
+    resolved_command = shutil.which(command) or command
+    if os.name == "nt" and Path(resolved_command).is_absolute() and not Path(resolved_command).suffix:
+        resolved_command = shutil.which(f"{command}.exe") or resolved_command
     lowered = resolved_command.lower()
     if lowered.endswith(".ps1"):
         return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", resolved_command]
