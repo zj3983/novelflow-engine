@@ -88,9 +88,9 @@ def test_load_migrates_codexcli_qwen_stage_models_and_discards_obsolete_models(t
     migrated = load_runtime_configuration(path)
 
     assert migrated.provider == "codexcli"
-    assert migrated.providers.codexcli.planner == "gpt-5.4"
-    assert migrated.providers.codexcli.writer == "gpt-5.4"
-    assert migrated.providers.codexcli.memory == "gpt-5.4"
+    assert migrated.providers.codexcli.planner == "gpt-5.6-sol"
+    assert migrated.providers.codexcli.writer == "gpt-5.6-sol"
+    assert migrated.providers.codexcli.memory == "gpt-5.6-terra"
     assert migrated.temperature == 0.2
     assert migrated.new_character_policy == "Auto-approve named candidates"
     assert path.read_bytes() == legacy_bytes
@@ -125,7 +125,15 @@ def test_read_only_legacy_migrates_to_new_file_without_modifying_legacy(tmp_path
     assert legacy_path.read_bytes() == legacy_bytes
     assert config_path.exists()
     migrated = load_runtime_configuration(config_path)
-    assert migrated.providers.codexcli.planner == "gpt-5.4"
+    assert migrated.providers.codexcli.planner == "gpt-5.6-sol"
+
+
+def test_codexcli_defaults_do_not_use_models_below_gpt_5_5():
+    configuration = RuntimeConfiguration()
+
+    assert configuration.providers.codexcli.planner == "gpt-5.6-sol"
+    assert configuration.providers.codexcli.writer == "gpt-5.6-sol"
+    assert configuration.providers.codexcli.memory == "gpt-5.6-terra"
 
 
 def test_openai_migration_preserves_non_qwen_stage_models(tmp_path):

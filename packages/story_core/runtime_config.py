@@ -42,9 +42,9 @@ class ProviderRuntimeConfiguration(_StrictModel):
     api_key: str = ""
     base_url: str = ""
     codex_command: str = ""
-    planner: str = "gpt-5.4"
-    writer: str = "gpt-5.4"
-    memory: str = "gpt-5.4"
+    planner: str = "gpt-5.6-sol"
+    writer: str = "gpt-5.6-sol"
+    memory: str = "gpt-5.6-terra"
 
 
 def _default_api_key() -> str:
@@ -163,7 +163,7 @@ def _atomic_write_configuration(configuration: RuntimeConfiguration, path: Path)
 def _legacy_stage_model(provider: RuntimeProvider, value: object, fallback: str) -> str:
     model = str(value or fallback).strip()
     if provider == "codexcli" and model == "qwen3.6-plus":
-        return "gpt-5.4"
+        return fallback
     return model
 
 

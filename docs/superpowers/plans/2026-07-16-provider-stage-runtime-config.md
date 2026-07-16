@@ -34,14 +34,14 @@
 
 - [ ] **Step 1: Write failing migration tests**
 
-Add a legacy Codex configuration fixture whose five model fields contain `qwen3.6-plus`. Assert migration creates only `planner`, `writer`, and `memory`, each using `gpt-5.4`; assert `character_model` and `global_model` are absent from serialized output. Add tests for idempotent migration, preservation of non-Qwen OpenAI stage models, unknown-field rejection, and empty selected-stage model rejection.
+Add a legacy Codex configuration fixture whose five model fields contain `qwen3.6-plus`. Assert migration creates only `planner`, `writer`, and `memory`, using the curated GPT-5.6 defaults; assert `character_model` and `global_model` are absent from serialized output. Add tests for idempotent migration, preservation of non-Qwen OpenAI stage models, unknown-field rejection, and empty selected-stage model rejection.
 
 ```python
 settings = load_runtime_configuration(config_path)
 assert settings.provider == "codexcli"
-assert settings.providers.codexcli.stages.planner.model == "gpt-5.4"
-assert settings.providers.codexcli.stages.writer.model == "gpt-5.4"
-assert settings.providers.codexcli.stages.memory.model == "gpt-5.4"
+assert settings.providers.codexcli.stages.planner.model == "gpt-5.6-sol"
+assert settings.providers.codexcli.stages.writer.model == "gpt-5.6-sol"
+assert settings.providers.codexcli.stages.memory.model == "gpt-5.6-terra"
 assert "character_model" not in settings.model_dump_json()
 ```
 
@@ -240,7 +240,7 @@ git commit -m "feat: configure real writing stages by provider"
 
 - [ ] **Step 1: Back up and migrate live configuration**
 
-Copy the current file to `runtime_config.pre-stage-config.json`. Start the API once, then verify `GET /runtime-settings` contains no legacy fields and all three Codex CLI stages use `gpt-5.4`. Do not commit either user file.
+Copy the current file to `runtime_config.pre-stage-config.json`. Start the API once, then verify `GET /runtime-settings` contains no legacy fields and the Codex CLI stages use the curated GPT-5.6 defaults. Do not commit either user file.
 
 - [ ] **Step 2: Run full backend verification**
 

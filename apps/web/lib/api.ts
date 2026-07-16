@@ -97,6 +97,7 @@ export type CodexCLIInfo = {
   available: boolean;
   command: string;
   version: string;
+  models: string[];
 };
 
 export type NovelTypeRulebook = {

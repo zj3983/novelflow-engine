@@ -66,3 +66,27 @@ def test_codex_cli_version_reports_command_output(monkeypatch):
 
     assert codex_cli_provider.read_codex_cli_version("codex") == "codex-cli 0.135.0"
     assert captured == {"args": ["codex.exe", "--version"], "timeout": 10}
+
+
+def test_codex_cli_models_only_return_gpt_5_5_and_newer(monkeypatch, tmp_path):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "models_cache.json").write_text(
+        '{"models": ['
+        '{"slug":"gpt-5.6-sol"},'
+        '{"slug":"gpt-5.6-terra"},'
+        '{"slug":"gpt-5.5"},'
+        '{"slug":"gpt-5.4"},'
+        '{"slug":"gpt-5.4-mini"},'
+        '{"slug":"gpt-5.3-codex-spark"},'
+        '{"slug":"codex-auto-review"}'
+        ']}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert codex_cli_provider.read_codex_cli_models() == [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.5",
+    ]

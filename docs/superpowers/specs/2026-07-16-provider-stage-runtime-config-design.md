@@ -21,9 +21,9 @@
     "codexcli": {
       "command": "codex",
       "stages": {
-        "planner": { "model": "gpt-5.4" },
-        "writer": { "model": "gpt-5.4" },
-        "memory": { "model": "gpt-5.4" }
+        "planner": { "model": "gpt-5.6-sol" },
+        "writer": { "model": "gpt-5.6-sol" },
+        "memory": { "model": "gpt-5.6-terra" }
       }
     },
     "openai": {
@@ -47,7 +47,7 @@
 
 - Codex CLI 每次调用直接使用当前阶段的 `model`，不再读取 `NOVEL_CODEX_MODEL`，也不再由 `NOVEL_CODEX_USE_PAYLOAD_MODEL` 决定是否采用配置。
 - OpenAI 兼容 API 使用当前供应商的连接信息和当前阶段模型。
-- 三个阶段允许使用不同模型；默认都使用 `gpt-5.4`。
+- 三个阶段允许使用不同模型；CLI 默认规划和正文使用 `gpt-5.6-sol`，记忆使用 `gpt-5.6-terra`。
 - 测试连接必须测试选中供应商和对应阶段的真实配置，提示中显示供应商、阶段和模型。
 - 项目和章节状态不再复制全局模型配置，只记录运行结果和所用模型快照。
 
@@ -71,7 +71,7 @@
 - `director_model` 迁移到 `planner.model`。
 - `writer_model` 迁移到 `writer.model`。
 - `memory_model` 迁移到 `memory.model`。
-- 旧值为 `qwen3.6-plus` 且供应商为 Codex CLI 时，迁移为当前实际默认值 `gpt-5.4`，避免旧的无效展示值重新生效。
+- 旧值为 `qwen3.6-plus` 且供应商为 Codex CLI 时，迁移为当前各阶段的 5.6 默认值，避免旧的无效展示值重新生效。
 - `character_model` 和 `global_model` 不写入新结构。
 - 保存新结构后不再输出旧字段；迁移保持幂等。
 

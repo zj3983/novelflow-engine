@@ -107,7 +107,13 @@ export function ConfigPageClient() {
     <main className="config-shell">
       <div className="config-shell__primary">
         <GlobalApiConfigCard value={settings} cliInfo={cliInfo} onChange={setSettings} />
-        <RuntimeStrategyCard value={settings} statuses={connections} onChange={setSettings} onTest={(stage) => void testStage(stage)} />
+        <RuntimeStrategyCard
+          value={settings}
+          cliModels={cliInfo?.models ?? []}
+          statuses={connections}
+          onChange={setSettings}
+          onTest={(stage) => void testStage(stage)}
+        />
 
         <section className="config-card config-card--spacious" aria-label="统一保存">
           <div className="config-savebar">

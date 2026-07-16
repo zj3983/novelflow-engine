@@ -7,9 +7,9 @@ const runtimeConfiguration = {
       api_key: "",
       base_url: "",
       codex_command: "codex",
-      planner: "gpt-5.4",
-      writer: "gpt-5.4",
-      memory: "gpt-5.4",
+      planner: "gpt-5.6-sol",
+      writer: "gpt-5.6-sol",
+      memory: "gpt-5.6-terra",
     },
     openai: {
       api_key: "sk-test",
@@ -38,7 +38,12 @@ test("/config displays the CLI version and the three real writing stages", async
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ available: true, command: "codex", version: "codex-cli 0.135.0" }),
+      body: JSON.stringify({
+        available: true,
+        command: "codex",
+        version: "codex-cli 0.144.5",
+        models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
+      }),
     });
   });
   await page.route("**/runtime-settings/test", async (route) => {
@@ -58,10 +63,12 @@ test("/config displays the CLI version and the three real writing stages", async
 
   await page.goto("/config");
 
-  await expect(page.getByText("codex-cli 0.135.0", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("剧情规划模型")).toHaveValue("gpt-5.4");
-  await expect(page.getByLabel("正文写作模型")).toHaveValue("gpt-5.4");
-  await expect(page.getByLabel("记忆回写模型")).toHaveValue("gpt-5.4");
+  await expect(page.getByText("codex-cli 0.144.5", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("剧情规划模型")).toHaveValue("gpt-5.6-sol");
+  await expect(page.getByLabel("正文写作模型")).toHaveValue("gpt-5.6-sol");
+  await expect(page.getByLabel("记忆回写模型")).toHaveValue("gpt-5.6-terra");
+  await expect(page.getByLabel("剧情规划模型").locator("option")).toHaveCount(4);
+  await expect(page.getByLabel("剧情规划模型").getByRole("option", { name: "gpt-5.4" })).toHaveCount(0);
   await expect(page.getByText("全局默认模型")).toHaveCount(0);
   await expect(page.getByText("角色代理模型")).toHaveCount(0);
 

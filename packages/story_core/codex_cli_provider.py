@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -73,6 +74,27 @@ def read_codex_cli_version(command: str = "codex") -> str:
     if not version:
         raise RuntimeError("codexcli_version_empty")
     return version.splitlines()[0].strip()
+
+
+def read_codex_cli_models() -> list[str]:
+    codex_home = Path(os.getenv("CODEX_HOME") or (Path.home() / ".codex"))
+    cache_path = codex_home / "models_cache.json"
+    if not cache_path.is_file():
+        return []
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    models: list[str] = []
+    for item in payload.get("models", []):
+        slug = str(item.get("slug", "")).strip() if isinstance(item, dict) else ""
+        match = re.match(r"^gpt-(\d+)\.(\d+)(?:-|$)", slug)
+        if not match or (int(match.group(1)), int(match.group(2))) < (5, 5):
+            continue
+        if slug not in models:
+            models.append(slug)
+    return models
 
 
 def post_json_via_codex_cli(

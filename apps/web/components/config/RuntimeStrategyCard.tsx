@@ -9,12 +9,13 @@ const STAGES: Array<{ key: RuntimeStageName; label: string; description: string 
 
 type Props = {
   value: RuntimeSettings;
+  cliModels: string[];
   statuses: RuntimeConnectionMap;
   onChange: (next: RuntimeSettings) => void;
   onTest: (stage: RuntimeStageName) => void;
 };
 
-export function RuntimeStrategyCard({ value, statuses, onChange, onTest }: Props) {
+export function RuntimeStrategyCard({ value, cliModels, statuses, onChange, onTest }: Props) {
   const selected = value.providers[value.provider];
 
   function updateModel(stage: RuntimeStageName, model: string) {
@@ -35,19 +36,35 @@ export function RuntimeStrategyCard({ value, statuses, onChange, onTest }: Props
       <div className="config-stage-list">
         {STAGES.map((stage) => {
           const status = statuses[stage.key];
+          const currentModel = selected[stage.key];
+          const modelOptions = cliModels.includes(currentModel) ? cliModels : [currentModel, ...cliModels];
           return (
             <div className="config-stage-row" key={stage.key}>
               <div className="config-stage-row__label">
                 <label htmlFor={`config-${stage.key}-model`}>{stage.label}模型</label>
                 <span>{stage.description}</span>
               </div>
-              <input
-                id={`config-${stage.key}-model`}
-                aria-label={`${stage.label}模型`}
-                className="text-input"
-                value={selected[stage.key]}
-                onChange={(event) => updateModel(stage.key, event.target.value)}
-              />
+              {value.provider === "codexcli" ? (
+                <select
+                  id={`config-${stage.key}-model`}
+                  aria-label={`${stage.label}模型`}
+                  className="text-input"
+                  value={currentModel}
+                  onChange={(event) => updateModel(stage.key, event.target.value)}
+                >
+                  {modelOptions.map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id={`config-${stage.key}-model`}
+                  aria-label={`${stage.label}模型`}
+                  className="text-input"
+                  value={currentModel}
+                  onChange={(event) => updateModel(stage.key, event.target.value)}
+                />
+              )}
               <button className="btn btn--ghost" type="button" onClick={() => onTest(stage.key)} disabled={status.state === "testing"}>
                 测试{stage.label}
               </button>
