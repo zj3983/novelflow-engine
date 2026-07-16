@@ -86,8 +86,13 @@ git commit -m "refactor: add provider stage runtime config"
 **Files:**
 - Modify: `packages/story_core/codex_cli_provider.py`
 - Modify: `packages/story_core/orchestrator.py`
+- Modify: `packages/story_core/opening_directions.py`
+- Modify: `packages/story_core/outline_planning_generation.py`
+- Modify: `packages/story_core/world_enrichment.py`
 - Test: `tests/story_core/test_codex_cli_provider.py`
 - Test: `tests/story_core/test_engine.py`
+- Test: `tests/story_core/test_opening_directions.py`
+- Test: `tests/story_core/test_outline_planning_generation.py`
 
 - [ ] **Step 1: Write a failing Codex CLI test**
 
@@ -123,14 +128,14 @@ Expected: FAIL because `_chat` still reads legacy strategy fields.
 
 - [ ] **Step 6: Route calls through `resolve_stage_runtime`**
 
-At the private boundary map legacy `director` to `planner`, resolve the stage once, put `runtime.model` in the payload, and pass the resolved provider credentials and command to `post_json_with_retry`.
+At the private boundary map legacy `director` to `planner`, resolve the stage once, put `runtime.model` in the payload, and pass the resolved provider credentials and command to `post_json_with_retry`. Route opening-direction generation, outline planning, and world enrichment through the same `planner` resolver so non-chapter planning cannot retain the legacy model source.
 
 - [ ] **Step 7: Verify GREEN and commit**
 
-Run `python -m pytest tests/story_core/test_codex_cli_provider.py tests/story_core/test_engine.py -q`; expect all tests pass.
+Run `python -m pytest tests/story_core/test_codex_cli_provider.py tests/story_core/test_engine.py tests/story_core/test_opening_directions.py tests/story_core/test_outline_planning_generation.py -q`; expect all tests pass.
 
 ```powershell
-git add packages/story_core/codex_cli_provider.py packages/story_core/orchestrator.py tests/story_core/test_codex_cli_provider.py tests/story_core/test_engine.py
+git add packages/story_core/codex_cli_provider.py packages/story_core/orchestrator.py packages/story_core/opening_directions.py packages/story_core/outline_planning_generation.py packages/story_core/world_enrichment.py tests/story_core/test_codex_cli_provider.py tests/story_core/test_engine.py tests/story_core/test_opening_directions.py tests/story_core/test_outline_planning_generation.py
 git commit -m "fix: use configured model for each writing stage"
 ```
 
