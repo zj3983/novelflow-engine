@@ -856,6 +856,10 @@ def test_runtime_cli_info_reports_detected_version(monkeypatch):
         "apps.api.routes.stories.read_codex_cli_models",
         lambda: ["gpt-5.6-sol", "gpt-5.5"],
     )
+    monkeypatch.setattr(
+        "apps.api.routes.stories.read_latest_codex_cli_version",
+        lambda: "0.145.0",
+    )
 
     response = client.get("/runtime-settings/cli-info")
 
@@ -865,6 +869,8 @@ def test_runtime_cli_info_reports_detected_version(monkeypatch):
         "command": "candidate-codex",
         "version": "version-from-candidate-codex",
         "models": ["gpt-5.6-sol", "gpt-5.5"],
+        "latest_version": "0.145.0",
+        "update_status": "unknown",
     }
 
 

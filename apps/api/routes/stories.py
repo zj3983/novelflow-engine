@@ -33,7 +33,12 @@ from packages.story_core.models import (
 from packages.story_core.orchestrator import _merge_writing_review_quality, _review_chapter_body
 from packages.story_core.quality import validate_bundle
 from packages.story_core.http_retry import RetryConfig, post_json_with_retry
-from packages.story_core.codex_cli_provider import read_codex_cli_models, read_codex_cli_version
+from packages.story_core.codex_cli_provider import (
+    codex_cli_update_status,
+    read_codex_cli_models,
+    read_codex_cli_version,
+    read_latest_codex_cli_version,
+)
 from packages.story_core.runtime_config import (
     RuntimeConfiguration,
     RuntimeProvider,
@@ -243,6 +248,8 @@ class CodexCLIInfoResponse(BaseModel):
     command: str
     version: str
     models: list[str] = Field(default_factory=list)
+    latest_version: str = ""
+    update_status: Literal["current", "available", "unknown"] = "unknown"
 
 
 class AgentContextResponse(BaseModel):
@@ -2034,7 +2041,20 @@ def read_runtime_cli_info() -> CodexCLIInfoResponse:
         version = read_codex_cli_version(command)
     except Exception:
         return CodexCLIInfoResponse(available=False, command=command, version="", models=models)
-    return CodexCLIInfoResponse(available=True, command=command, version=version, models=models)
+    try:
+        latest_version = read_latest_codex_cli_version()
+        update_status = codex_cli_update_status(version, latest_version)
+    except Exception:
+        latest_version = ""
+        update_status = "unknown"
+    return CodexCLIInfoResponse(
+        available=True,
+        command=command,
+        version=version,
+        models=models,
+        latest_version=latest_version,
+        update_status=update_status,
+    )
 
 
 @router.put("/runtime-settings")

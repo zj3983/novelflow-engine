@@ -3058,6 +3058,9 @@ body {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.48);
   color: var(--muted);
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .config-stage-list {

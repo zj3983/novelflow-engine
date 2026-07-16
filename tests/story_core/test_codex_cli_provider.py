@@ -90,3 +90,25 @@ def test_codex_cli_models_only_return_gpt_5_5_and_newer(monkeypatch, tmp_path):
         "gpt-5.6-terra",
         "gpt-5.5",
     ]
+
+
+def test_codex_cli_latest_version_reads_official_package_metadata(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"version":"0.145.0"}'
+
+    monkeypatch.setattr(
+        codex_cli_provider.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeResponse(),
+    )
+
+    assert codex_cli_provider.read_latest_codex_cli_version() == "0.145.0"
+    assert codex_cli_provider.codex_cli_update_status("codex-cli 0.144.5", "0.145.0") == "available"
+    assert codex_cli_provider.codex_cli_update_status("codex-cli 0.145.0", "0.145.0") == "current"

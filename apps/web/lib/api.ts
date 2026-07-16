@@ -98,6 +98,8 @@ export type CodexCLIInfo = {
   command: string;
   version: string;
   models: string[];
+  latest_version: string;
+  update_status: "current" | "available" | "unknown";
 };
 
 export type NovelTypeRulebook = {

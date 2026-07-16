@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +96,29 @@ def read_codex_cli_models() -> list[str]:
         if slug not in models:
             models.append(slug)
     return models
+
+
+def read_latest_codex_cli_version() -> str:
+    request = urllib.request.Request(
+        "https://registry.npmjs.org/@openai%2Fcodex/latest",
+        headers={"Accept": "application/json", "User-Agent": "novel-autogrowth-engine"},
+    )
+    with urllib.request.urlopen(request, timeout=3) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    version = str(payload.get("version", "")).strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
+        raise RuntimeError("codexcli_latest_version_invalid")
+    return version
+
+
+def codex_cli_update_status(current_version: str, latest_version: str) -> str:
+    current_match = re.search(r"(\d+)\.(\d+)\.(\d+)", current_version)
+    latest_match = re.search(r"(\d+)\.(\d+)\.(\d+)", latest_version)
+    if not current_match or not latest_match:
+        return "unknown"
+    current = tuple(int(part) for part in current_match.groups())
+    latest = tuple(int(part) for part in latest_match.groups())
+    return "available" if current < latest else "current"
 
 
 def post_json_via_codex_cli(

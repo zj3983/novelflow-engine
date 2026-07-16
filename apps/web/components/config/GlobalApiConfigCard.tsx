@@ -8,6 +8,12 @@ type Props = {
 
 export function GlobalApiConfigCard({ value, cliInfo, onChange }: Props) {
   const selected = value.providers[value.provider];
+  const updateLabel =
+    cliInfo?.update_status === "current"
+      ? "已是最新版"
+      : cliInfo?.update_status === "available"
+        ? `有新版本 ${cliInfo.latest_version}`
+        : "暂时无法检查更新";
 
   function updateSelected(patch: Partial<typeof selected>) {
     onChange({
@@ -56,7 +62,18 @@ export function GlobalApiConfigCard({ value, cliInfo, onChange }: Props) {
             <div className="field">
               <label>CLI 版本</label>
               <div className="config-readonly" aria-label="CLI 版本">
-                {cliInfo?.available ? cliInfo.version : "未检测到"}
+                <span>{cliInfo?.available ? cliInfo.version : "未检测到"}</span>
+                <span
+                  className={`runtime-status__badge runtime-status__badge--${
+                    cliInfo?.update_status === "current"
+                      ? "success"
+                      : cliInfo?.update_status === "available"
+                        ? "warning"
+                        : "idle"
+                  }`}
+                >
+                  {updateLabel}
+                </span>
               </div>
             </div>
           </div>

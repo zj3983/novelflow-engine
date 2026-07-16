@@ -42,6 +42,8 @@ test("/config displays the CLI version and the three real writing stages", async
         available: true,
         command: "codex",
         version: "codex-cli 0.144.5",
+        latest_version: "0.144.5",
+        update_status: "current",
         models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
       }),
     });
@@ -64,6 +66,7 @@ test("/config displays the CLI version and the three real writing stages", async
   await page.goto("/config");
 
   await expect(page.getByText("codex-cli 0.144.5", { exact: true })).toBeVisible();
+  await expect(page.getByText("已是最新版", { exact: true })).toBeVisible();
   await expect(page.getByLabel("剧情规划模型")).toHaveValue("gpt-5.6-sol");
   await expect(page.getByLabel("正文写作模型")).toHaveValue("gpt-5.6-sol");
   await expect(page.getByLabel("记忆回写模型")).toHaveValue("gpt-5.6-terra");
