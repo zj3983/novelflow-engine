@@ -26,7 +26,7 @@ from packages.story_core.memory import (
     maybe_update_arc_recap,
     retrieve_relevant_memories,
 )
-from packages.story_core.models import DirectorDecision, StoryState, default_model_name
+from packages.story_core.models import DirectorDecision, StoryState
 from packages.story_core.novel_type_catalog import normalize_novel_type_id
 from packages.story_core.planner import build_chapter_title, build_conflict_summary, build_event_beat, compute_chapter_cadence, plan_next_outline
 from packages.story_core.post_draft_memory import (
@@ -49,7 +49,7 @@ from packages.story_core.quality import validate_bundle
 from packages.story_core.reader_agent import review_reader_agent
 from packages.story_core.reviewer_agent import review_reviewer_agent
 from packages.story_core.runtime import record_agent_runtime
-from packages.story_core.runtime_config import get_runtime_strategy_settings, resolve_openai_runtime_settings
+from packages.story_core.runtime_config import resolve_stage_runtime
 from packages.story_core.revision_safety import choose_best_revision, choose_best_segment_revision
 from packages.story_core.segmented_writing import (
     FIRST_CHAPTER_FORBIDDEN,
@@ -3953,24 +3953,21 @@ class StoryOrchestrator:
         *,
         max_tokens: int,
         json_mode: bool,
-        agent: str = "director",
+        agent: str = "planner",
         stage: str = "",
         timeout_seconds: int | None = None,
     ) -> tuple[str, str]:
-        settings = resolve_openai_runtime_settings(agent)
-        provider = getattr(settings, "provider", "openai")
-        codex_command = getattr(settings, "codex_command", "")
+        runtime_stage = "planner" if agent == "director" else agent
+        if runtime_stage not in {"planner", "writer", "memory"}:
+            raise ValueError(f"unknown runtime stage: {runtime_stage}")
+        settings = resolve_stage_runtime(runtime_stage)
+        provider = settings.provider
+        codex_command = settings.codex_command
         if provider != "codexcli" and not settings.api_key:
             return "", "Missing OPENAI_API_KEY"
 
-        strategy = get_runtime_strategy_settings()
-        model_by_agent = {
-            "director": strategy.director_model or strategy.global_model or story.agent_settings.director_model,
-            "writer": strategy.writer_model or strategy.global_model or story.agent_settings.writer_model,
-            "memory": strategy.memory_model or strategy.global_model or story.agent_settings.memory_model,
-        }
-        model = model_by_agent.get(agent) or strategy.global_model or story.agent_settings.global_model or default_model_name()
-        temperature = float(strategy.temperature) if strategy.temperature > 0 else float(story.agent_settings.temperature)
+        model = settings.model
+        temperature = float(settings.temperature)
         if json_mode and max_tokens < 2000:
             max_tokens = 2000
 
@@ -4051,7 +4048,7 @@ class StoryOrchestrator:
         *,
         max_tokens: int,
         json_mode: bool,
-        agent: str = "director",
+        agent: str = "planner",
         stage: str,
         timeout_seconds: int | None = None,
     ) -> tuple[str, str]:
@@ -4611,7 +4608,7 @@ class StoryOrchestrator:
             self._plan_prompt(working_story, chapter_number),
             max_tokens=8000,
             json_mode=True,
-            agent="director",
+            agent="planner",
             stage="剧情计划生成",
         )
         if plan_error:

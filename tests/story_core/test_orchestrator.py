@@ -108,7 +108,7 @@ def test_orchestrator_persists_only_memory_extracted_after_final_body(monkeypatc
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
         calls.append((agent, stage, prompt))
-        if agent == "director":
+        if agent == "planner":
             return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
         if agent == "writer":
             return final_body, ""
@@ -120,7 +120,7 @@ def test_orchestrator_persists_only_memory_extracted_after_final_body(monkeypatc
     monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
     bundle = orchestrator.generate_next_chapter(story)
 
-    assert [item[0] for item in calls] == ["director", "writer", "memory"]
+    assert [item[0] for item in calls] == ["planner", "writer", "memory"]
     assert bundle.chapter_summary["facts"] == ["断香炉已搬回偏殿"]
     assert bundle.updated_story.progression_ledger["protagonist"]["location"] == "偏殿"
     assert "spirit_stones" not in bundle.updated_story.progression_ledger["protagonist"]
@@ -150,7 +150,7 @@ def test_orchestrator_memory_failure_uses_body_fallback_without_planned_state(mo
     orchestrator = StoryOrchestrator()
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
-        if agent == "director":
+        if agent == "planner":
             return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
         if agent == "writer":
             return final_body, ""
@@ -204,7 +204,7 @@ def test_grounded_memory_without_title_does_not_use_director_conflict_for_title(
     orchestrator = StoryOrchestrator()
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
-        if agent == "director":
+        if agent == "planner":
             return json.dumps(plan, ensure_ascii=False), ""
         if agent == "writer":
             return body, ""
@@ -234,7 +234,7 @@ def test_refresh_revised_bundle_reextracts_memory_from_revised_body(monkeypatch)
     orchestrator = StoryOrchestrator()
 
     def initial_chat(_story, prompt, *, agent, stage, **_kwargs):
-        if agent == "director":
+        if agent == "planner":
             return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
         if agent == "writer":
             return initial_body, ""
@@ -309,7 +309,7 @@ def test_memory_extraction_uses_selected_revision_body(monkeypatch):
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
         calls.append((agent, stage))
-        if agent == "director":
+        if agent == "planner":
             return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
         if agent == "writer" and "审稿改稿" not in stage:
             return initial_body, ""
@@ -324,7 +324,7 @@ def test_memory_extraction_uses_selected_revision_body(monkeypatch):
     monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
     bundle = orchestrator.generate_next_chapter(story)
 
-    assert [item[0] for item in calls] == ["director", "writer", "writer", "memory"]
+    assert [item[0] for item in calls] == ["planner", "writer", "writer", "memory"]
     assert bundle.body == revised_body
     assert bundle.chapter_summary["facts"] == ["断香炉已搬回偏殿"]
 
@@ -354,7 +354,7 @@ def test_dialogue_issue_triggers_one_revision_and_learns_only_after_acceptance(m
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
         calls.append((agent, stage))
-        if agent == "director":
+        if agent == "planner":
             return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
         if agent == "writer" and "审稿改稿" not in stage:
             return initial_body, ""
@@ -367,7 +367,7 @@ def test_dialogue_issue_triggers_one_revision_and_learns_only_after_acceptance(m
     monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
     bundle = orchestrator.generate_next_chapter(story)
 
-    assert [agent for agent, _stage in calls] == ["director", "writer", "writer", "memory"]
+    assert [agent for agent, _stage in calls] == ["planner", "writer", "writer", "memory"]
     assert bundle.body == revised_body
     assert bundle.quality_report["revision_safety"]["accepted"] is True
     assert any("已验证改法" in lesson and "对话" in lesson for lesson in bundle.updated_story.writing_lessons)
@@ -395,7 +395,7 @@ def test_ordinary_prose_advice_does_not_trigger_revision_or_learning(monkeypatch
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
         calls.append((agent, stage))
-        if agent == "director":
+        if agent == "planner":
             return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
         if agent == "writer":
             return body, ""
@@ -406,7 +406,7 @@ def test_ordinary_prose_advice_does_not_trigger_revision_or_learning(monkeypatch
     monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
     bundle = orchestrator.generate_next_chapter(story)
 
-    assert [agent for agent, _stage in calls] == ["director", "writer", "memory"]
+    assert [agent for agent, _stage in calls] == ["planner", "writer", "memory"]
     assert "revision_safety" not in bundle.quality_report
     assert bundle.updated_story.writing_lessons == []
 
@@ -431,7 +431,7 @@ def test_unresolved_dialogue_revision_is_rejected_and_not_learned(monkeypatch):
     orchestrator = StoryOrchestrator()
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
-        if agent == "director":
+        if agent == "planner":
             return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
         if agent == "writer":
             return body, ""

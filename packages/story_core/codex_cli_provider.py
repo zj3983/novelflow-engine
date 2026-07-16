@@ -52,10 +52,9 @@ def post_json_via_codex_cli(
 ) -> dict:
     cfg = config or RetryConfig()
     prompt = _build_prompt(payload)
-    payload_model = str(payload.get("model") or "").strip()
-    model = os.getenv("NOVEL_CODEX_MODEL", "").strip() or "gpt-5.4"
-    if payload_model and os.getenv("NOVEL_CODEX_USE_PAYLOAD_MODEL", "").strip().lower() in {"1", "true", "yes"}:
-        model = payload_model
+    model = str(payload.get("model") or "").strip()
+    if not model:
+        raise ValueError("codexcli_model_required")
     command = command or "codex"
 
     with tempfile.TemporaryDirectory(prefix="novel_codexcli_") as temp_dir:

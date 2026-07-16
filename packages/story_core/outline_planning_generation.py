@@ -7,16 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.http_retry import post_json_with_retry
-from packages.story_core.models import AgentSettings
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.outline_planning import (
     GeneratedOutlinePlan,
     validate_generated_opening_plan,
 )
 from packages.story_core.runtime_config import (
-    OpenAIRuntimeSettings,
-    get_runtime_strategy_settings,
-    resolve_openai_runtime_settings,
+    StageRuntimeSettings,
+    resolve_stage_runtime,
 )
 
 
@@ -52,12 +50,11 @@ class LLMOutlinePlanningGenerator:
         self,
         *,
         post_json: Callable[..., dict[str, Any]] = post_json_with_retry,
-        runtime_resolver: Callable[[str], OpenAIRuntimeSettings] = resolve_openai_runtime_settings,
-        strategy_resolver: Callable[[], AgentSettings] = get_runtime_strategy_settings,
+        runtime_resolver: Callable[[str], StageRuntimeSettings] = resolve_stage_runtime,
+        strategy_resolver: Callable[[], Any] | None = None,
     ) -> None:
         self._post_json = post_json
         self._runtime_resolver = runtime_resolver
-        self._strategy_resolver = strategy_resolver
 
     def generate(
         self,
@@ -75,11 +72,8 @@ class LLMOutlinePlanningGenerator:
             genre = runtime_novel_type(validated.novel_type_id)
             if genre is None:
                 raise ValueError("invalid_novel_type")
-            runtime = self._runtime_resolver("director")
-            strategy = self._strategy_resolver()
+            runtime = self._runtime_resolver("planner")
             if runtime.provider != "codexcli" and not runtime.api_key:
-                raise ValueError("runtime_unavailable")
-            if not strategy.director_model:
                 raise ValueError("runtime_unavailable")
 
             prompt_context = {
@@ -95,7 +89,7 @@ class LLMOutlinePlanningGenerator:
                 "one_time_guidance": normalized_guidance,
             }
             payload = {
-                "model": strategy.director_model,
+                "model": runtime.model,
                 "messages": [
                     {
                         "role": "system",
@@ -112,7 +106,7 @@ class LLMOutlinePlanningGenerator:
                     {"role": "user", "content": json.dumps(prompt_context, ensure_ascii=False)},
                 ],
                 "response_format": {"type": "json_object"},
-                "temperature": float(strategy.temperature),
+                "temperature": float(runtime.temperature),
             }
             response = self._post_json(
                 runtime.base_url,

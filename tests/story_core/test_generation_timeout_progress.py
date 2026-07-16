@@ -11,7 +11,7 @@ REAL_CHAT = StoryOrchestrator._chat
 def test_chat_passes_stage_timeout_and_reports_progress(monkeypatch):
     captured = {}
 
-    def fake_post_json(base_url, path, payload, api_key, config=None):
+    def fake_post_json(base_url, path, payload, api_key, config=None, **kwargs):
         captured["base_url"] = base_url
         captured["path"] = path
         captured["timeout"] = config.timeout if config else None
@@ -19,16 +19,13 @@ def test_chat_passes_stage_timeout_and_reports_progress(monkeypatch):
         return {"choices": [{"message": {"content": "正文"}}]}
 
     monkeypatch.setattr(
-        "packages.story_core.orchestrator.resolve_openai_runtime_settings",
-        lambda agent: SimpleNamespace(base_url="https://example.invalid/v1", api_key="key"),
-    )
-    monkeypatch.setattr(
-        "packages.story_core.orchestrator.get_runtime_strategy_settings",
-        lambda: SimpleNamespace(
-            director_model="",
-            writer_model="writer-model",
-            memory_model="",
-            global_model="",
+        "packages.story_core.orchestrator.resolve_stage_runtime",
+        lambda stage: SimpleNamespace(
+            provider="openai",
+            model="writer-model",
+            base_url="https://example.invalid/v1",
+            api_key="key",
+            codex_command="",
             temperature=0,
         ),
     )
@@ -61,16 +58,13 @@ def test_chat_returns_stage_specific_error_on_timeout(monkeypatch):
         raise TimeoutError("timed out")
 
     monkeypatch.setattr(
-        "packages.story_core.orchestrator.resolve_openai_runtime_settings",
-        lambda agent: SimpleNamespace(base_url="https://example.invalid/v1", api_key="key"),
-    )
-    monkeypatch.setattr(
-        "packages.story_core.orchestrator.get_runtime_strategy_settings",
-        lambda: SimpleNamespace(
-            director_model="director-model",
-            writer_model="",
-            memory_model="",
-            global_model="",
+        "packages.story_core.orchestrator.resolve_stage_runtime",
+        lambda stage: SimpleNamespace(
+            provider="openai",
+            model="planner-model",
+            base_url="https://example.invalid/v1",
+            api_key="key",
+            codex_command="",
             temperature=0,
         ),
     )
@@ -85,7 +79,7 @@ def test_chat_returns_stage_specific_error_on_timeout(monkeypatch):
             "规划",
             max_tokens=8000,
             json_mode=True,
-            agent="director",
+            agent="planner",
             stage="剧情计划：第3章",
             timeout_seconds=5,
         )

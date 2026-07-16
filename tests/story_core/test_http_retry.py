@@ -85,7 +85,7 @@ def test_post_json_with_retry_routes_codexcli(monkeypatch, tmp_path):
     assert "--ignore-user-config" in captured["args"]
     assert "--ignore-rules" in captured["args"]
     assert "--ephemeral" in captured["args"]
-    assert captured["args"][captured["args"].index("--model") + 1] == "gpt-5.4"
+    assert captured["args"][captured["args"].index("--model") + 1] == "qwen3.6-plus"
     assert captured["env"]["CODEX_HOME"] != str(source_codex_home)
     assert captured["isolated_auth_exists"] is True
     assert "合法 JSON 对象" in captured["input"]

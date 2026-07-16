@@ -12,8 +12,8 @@ from packages.story_core.genre_plugins import (
     select_genre_plugins,
 )
 from packages.story_core.http_retry import post_json_with_retry
-from packages.story_core.models import NovelProject, default_model_name
-from packages.story_core.runtime_config import get_runtime_strategy_settings, resolve_openai_runtime_settings
+from packages.story_core.models import NovelProject
+from packages.story_core.runtime_config import resolve_stage_runtime
 
 
 class WorldEnrichmentError(RuntimeError):
@@ -1444,20 +1444,18 @@ def _merge_enrichment(project: NovelProject, parsed: dict[str, Any]) -> NovelPro
 
 
 def _call_world_enrichment_model(project: NovelProject, *, rules_only: bool) -> NovelProject:
-    settings = resolve_openai_runtime_settings("director")
-    if not settings.api_key:
+    settings = resolve_stage_runtime("planner")
+    if settings.provider != "codexcli" and not settings.api_key:
         raise WorldEnrichmentError("missing_api_key")
 
-    strategy = get_runtime_strategy_settings()
-    model = strategy.director_model or strategy.global_model or default_model_name()
     payload = {
-        "model": model,
+        "model": settings.model,
         "messages": [
             {"role": "system", "content": "You are a senior Chinese webnovel worldbuilding editor. Return JSON only."},
             {"role": "user", "content": _build_prompt(project, rules_only=rules_only)},
         ],
         "response_format": {"type": "json_object"},
-        "temperature": float(strategy.temperature),
+        "temperature": float(settings.temperature),
         "max_tokens": 6000,
         "parameters": {"enable_thinking": False},
     }

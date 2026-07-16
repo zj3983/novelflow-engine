@@ -4,12 +4,11 @@ import json
 
 import pytest
 
-from packages.story_core.models import AgentSettings
 from packages.story_core.outline_planning_generation import (
     LLMOutlinePlanningGenerator,
     OutlinePlanningBrief,
 )
-from packages.story_core.runtime_config import OpenAIRuntimeSettings
+from packages.story_core.runtime_config import StageRuntimeSettings
 
 
 def _card(name: str, tier: str) -> dict:
@@ -92,6 +91,7 @@ def _brief() -> OutlinePlanningBrief:
 
 def test_generator_requests_one_compact_structured_plan() -> None:
     calls = []
+    runtime_calls = []
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
         calls.append({"base_url": base_url, "path": path, "payload": payload, "api_key": api_key, "kwargs": kwargs})
@@ -99,19 +99,24 @@ def test_generator_requests_one_compact_structured_plan() -> None:
 
     generator = LLMOutlinePlanningGenerator(
         post_json=fake_post,
-        runtime_resolver=lambda _: OpenAIRuntimeSettings(
-            provider="codexcli", base_url="http://runtime.test", codex_command="codex-test"
+        runtime_resolver=lambda stage: runtime_calls.append(stage) or StageRuntimeSettings(
+            provider="codexcli",
+            model="planning-test-model",
+            base_url="http://runtime.test",
+            codex_command="codex-test",
+            temperature=0.29,
         ),
-        strategy_resolver=lambda: AgentSettings(director_model="planning-test-model"),
     )
 
     result = generator.generate(_brief(), mode="initial", guidance="  反派要有现实利益  ")
 
     assert len(calls) == 1
+    assert runtime_calls == ["planner"]
     assert result.outline.chapters[0].chapter_number == 1
     request = calls[0]
     assert request["path"] == "/chat/completions"
     assert request["payload"]["model"] == "planning-test-model"
+    assert request["payload"]["temperature"] == 0.29
     assert request["payload"]["response_format"] == {"type": "json_object"}
     prompt = json.loads(request["payload"]["messages"][1]["content"])
     assert set(prompt) == {
@@ -138,8 +143,9 @@ def test_generator_rejects_invalid_output_and_long_guidance() -> None:
     runtime_calls = []
     generator = LLMOutlinePlanningGenerator(
         post_json=lambda *args, **kwargs: {"choices": [{"message": {"content": "{}"}}]},
-        runtime_resolver=lambda name: runtime_calls.append(name) or OpenAIRuntimeSettings(provider="codexcli"),
-        strategy_resolver=lambda: AgentSettings(director_model="planning-test-model"),
+        runtime_resolver=lambda name: runtime_calls.append(name) or StageRuntimeSettings(
+            provider="codexcli", model="planning-test-model"
+        ),
     )
 
     with pytest.raises(ValueError, match="outline_planning_generation_failed"):
@@ -147,4 +153,4 @@ def test_generator_rejects_invalid_output_and_long_guidance() -> None:
     with pytest.raises(ValueError, match="regeneration_guidance_too_long"):
         generator.generate(_brief(), mode="initial", guidance="x" * 1001)
 
-    assert runtime_calls == ["director"]
+    assert runtime_calls == ["planner"]

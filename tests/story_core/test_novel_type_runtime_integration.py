@@ -18,7 +18,7 @@ from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.genre_plugins import plugin_prompt_guide, select_genre_plugins
 from packages.story_core.genre_types import EASTERN_FANTASY
 from packages.story_core.chapter_seed import build_chapter_seed
-from packages.story_core.models import AgentSettings, NovelProject, StoryState
+from packages.story_core.models import NovelProject, StoryState
 from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG, novel_type_options
 from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator, OpeningBrief
@@ -26,7 +26,7 @@ from packages.story_core.outline_planning_generation import (
     LLMOutlinePlanningGenerator,
     OutlinePlanningBrief,
 )
-from packages.story_core.runtime_config import OpenAIRuntimeSettings
+from packages.story_core.runtime_config import StageRuntimeSettings
 
 
 XUANHUAN_DESCRIPTION = "运行时玄幻说明：力量异变必须落到现实选择。"
@@ -77,16 +77,13 @@ def _read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _runtime_settings(_: str) -> OpenAIRuntimeSettings:
-    return OpenAIRuntimeSettings(
+def _runtime_settings(_: str) -> StageRuntimeSettings:
+    return StageRuntimeSettings(
         provider="codexcli",
+        model="runtime-integration-model",
         base_url="http://runtime.test",
         codex_command="codex-test",
     )
-
-
-def _strategy_settings() -> AgentSettings:
-    return AgentSettings(director_model="runtime-integration-model")
 
 
 def _directions_payload() -> dict:
@@ -582,7 +579,6 @@ def test_opening_prompt_reads_latest_runtime_description_and_promise(
     generator = LLMOpeningDirectionGenerator(
         post_json=fake_post,
         runtime_resolver=_runtime_settings,
-        strategy_resolver=_strategy_settings,
     )
     generator.generate(OpeningBrief(novel_type_id=novel_type_id, idea="一个具体开书灵感"))
 
@@ -607,7 +603,6 @@ def test_outline_prompt_reads_latest_runtime_rulebook(
     generator = LLMOutlinePlanningGenerator(
         post_json=fake_post,
         runtime_resolver=_runtime_settings,
-        strategy_resolver=_strategy_settings,
     )
     with pytest.raises(ValueError, match="outline_planning_generation_failed"):
         generator.generate(_planning_brief(novel_type_id))
@@ -659,14 +654,12 @@ def test_generation_prompt_caps_runtime_novel_type_context(
         generator = LLMOpeningDirectionGenerator(
             post_json=fake_post,
             runtime_resolver=_runtime_settings,
-            strategy_resolver=_strategy_settings,
         )
         generator.generate(OpeningBrief(novel_type_id="xuanhuan", idea="限长测试"))
     else:
         generator = LLMOutlinePlanningGenerator(
             post_json=fake_post,
             runtime_resolver=_runtime_settings,
-            strategy_resolver=_strategy_settings,
         )
         with pytest.raises(ValueError, match="outline_planning_generation_failed"):
             generator.generate(_planning_brief("xuanhuan"))
@@ -724,7 +717,6 @@ def test_generation_prompt_keeps_normal_short_runtime_type_content_complete(
     LLMOpeningDirectionGenerator(
         post_json=fake_post,
         runtime_resolver=_runtime_settings,
-        strategy_resolver=_strategy_settings,
     ).generate(OpeningBrief(novel_type_id="xuanhuan", idea="短配置完整性"))
 
     prompt = json.loads(captured["payload"]["messages"][1]["content"])

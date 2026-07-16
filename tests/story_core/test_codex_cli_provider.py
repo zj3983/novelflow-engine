@@ -1,0 +1,43 @@
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from packages.story_core import codex_cli_provider
+
+
+def test_codex_cli_always_uses_payload_model_when_environment_conflicts(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        output_path = Path(args[args.index("--output-last-message") + 1])
+        output_path.write_text("ok", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setenv("NOVEL_CODEX_MODEL", "environment-model")
+    monkeypatch.setenv("NOVEL_CODEX_USE_PAYLOAD_MODEL", "false")
+    monkeypatch.setattr(codex_cli_provider.shutil, "which", lambda command: command)
+    monkeypatch.setattr(codex_cli_provider.subprocess, "run", fake_run)
+
+    codex_cli_provider.post_json_via_codex_cli(
+        {"model": "payload-model", "messages": [{"role": "user", "content": "hello"}]}
+    )
+
+    args = captured["args"]
+    assert args[args.index("--model") + 1] == "payload-model"
+
+
+def test_codex_cli_rejects_empty_payload_model(monkeypatch):
+    monkeypatch.setenv("NOVEL_CODEX_MODEL", "environment-model")
+    monkeypatch.setenv("NOVEL_CODEX_USE_PAYLOAD_MODEL", "true")
+    monkeypatch.setattr(
+        codex_cli_provider.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("empty model must fail before invoking Codex CLI"),
+    )
+
+    with pytest.raises(ValueError, match="^codexcli_model_required$"):
+        codex_cli_provider.post_json_via_codex_cli(
+            {"model": "  ", "messages": [{"role": "user", "content": "hello"}]}
+        )

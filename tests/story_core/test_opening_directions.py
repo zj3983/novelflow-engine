@@ -6,14 +6,14 @@ from pydantic import ValidationError
 
 import packages.story_core.file_project_store as file_project_store_module
 from packages.story_core.file_project_store import FileProjectStore
-from packages.story_core.models import AgentSettings, NovelProject, NovelProjectSummary
+from packages.story_core.models import NovelProject, NovelProjectSummary
 from packages.story_core.opening_directions import (
     LLMOpeningDirectionGenerator,
     OpeningBrief,
     OpeningDirectionSet,
 )
 from packages.story_core.project_outline import normalize_project_outline
-from packages.story_core.runtime_config import OpenAIRuntimeSettings
+from packages.story_core.runtime_config import StageRuntimeSettings
 
 
 def direction(direction_id: str, *, title: str | None = None) -> dict[str, str]:
@@ -138,6 +138,7 @@ def test_project_pipeline_types_accept_opening_stages(pipeline_stage):
 
 def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     captured = {}
+    runtime_calls = []
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
         captured.update(
@@ -151,10 +152,13 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
 
     generator = LLMOpeningDirectionGenerator(
         post_json=fake_post,
-        runtime_resolver=lambda name: OpenAIRuntimeSettings(
-            provider="codexcli", base_url="http://runtime.test", codex_command="codex-test"
+        runtime_resolver=lambda name: runtime_calls.append(name) or StageRuntimeSettings(
+            provider="codexcli",
+            model="direction-test-model",
+            base_url="http://runtime.test",
+            codex_command="codex-test",
+            temperature=0.31,
         ),
-        strategy_resolver=lambda: AgentSettings(director_model="direction-test-model"),
     )
     result = generator.generate(
         OpeningBrief(
@@ -166,8 +170,10 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     )
 
     assert len(result.directions) == 3
+    assert runtime_calls == ["planner"]
     assert captured["path"] == "/chat/completions"
     assert captured["payload"]["model"] == "direction-test-model"
+    assert captured["payload"]["temperature"] == 0.31
     assert captured["payload"]["response_format"] == {"type": "json_object"}
     prompt_context = json.loads(captured["payload"]["messages"][1]["content"])
     assert set(prompt_context) == {
@@ -202,10 +208,12 @@ def test_generator_adds_trimmed_one_time_guidance_to_prompt():
 
     generator = LLMOpeningDirectionGenerator(
         post_json=fake_post,
-        runtime_resolver=lambda _: OpenAIRuntimeSettings(
-            provider="codexcli", base_url="http://runtime.test", codex_command="codex-test"
+        runtime_resolver=lambda _: StageRuntimeSettings(
+            provider="codexcli",
+            model="direction-test-model",
+            base_url="http://runtime.test",
+            codex_command="codex-test",
         ),
-        strategy_resolver=lambda: AgentSettings(director_model="direction-test-model"),
     )
 
     generator.generate(
@@ -257,12 +265,12 @@ def test_store_passes_trimmed_guidance_without_persisting_it(tmp_path):
 @pytest.mark.parametrize(
     "runtime,response",
     [
-        (OpenAIRuntimeSettings(provider="openai", api_key=""), None),
+        (StageRuntimeSettings(provider="openai", model="planner-model", api_key=""), None),
         (
-            OpenAIRuntimeSettings(provider="codexcli", codex_command="codex"),
+            StageRuntimeSettings(provider="codexcli", model="planner-model", codex_command="codex"),
             {"choices": [{"message": {"content": json.dumps({"directions": [direction("only")]})}}]},
         ),
-        (OpenAIRuntimeSettings(provider="codexcli", codex_command="codex"), {"choices": []}),
+        (StageRuntimeSettings(provider="codexcli", model="planner-model", codex_command="codex"), {"choices": []}),
     ],
 )
 def test_generator_unifies_unavailable_runtime_and_invalid_output(runtime, response):
@@ -274,7 +282,6 @@ def test_generator_unifies_unavailable_runtime_and_invalid_output(runtime, respo
     generator = LLMOpeningDirectionGenerator(
         post_json=fake_post,
         runtime_resolver=lambda name: runtime,
-        strategy_resolver=lambda: AgentSettings(director_model="direction-test-model"),
     )
 
     with pytest.raises(ValueError, match="^opening_direction_generation_failed$"):

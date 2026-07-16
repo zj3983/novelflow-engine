@@ -1,6 +1,169 @@
+from types import SimpleNamespace
+
+import pytest
+
+from packages.story_core import orchestrator as orchestrator_module
+from packages.story_core import world_enrichment as world_enrichment_module
 from packages.story_core.engine import StoryEngine
-from packages.story_core.models import ChapterSummary, CharacterRelationship, CharacterState, ForeshadowingState, StoryState
+from packages.story_core.models import ChapterSummary, CharacterRelationship, CharacterState, ForeshadowingState, NovelProject, StoryState
+from packages.story_core.orchestrator import StoryOrchestrator
 from packages.story_core.planner import build_action_briefs, build_chapter_title, build_conflict_summary
+
+_REAL_ORCHESTRATOR_CHAT = StoryOrchestrator._chat
+
+
+def _runtime_story(story_id: str) -> StoryState:
+    return StoryState(story_id=story_id, outline="outline", genre="fantasy", style="plain")
+
+
+@pytest.mark.parametrize("agent", ["planner", "writer", "memory"])
+def test_orchestrator_uses_resolved_stage_runtime_for_provider_request(monkeypatch, agent):
+    runtime_calls: list[str] = []
+    captured: dict[str, object] = {}
+
+    def fake_resolve(stage):
+        runtime_calls.append(stage)
+        return SimpleNamespace(
+            provider="codexcli",
+            model=f"{stage}-model",
+            api_key=f"{stage}-key",
+            base_url=f"https://{stage}.example/v1",
+            codex_command=f"{stage}-codex",
+            temperature=0.25,
+        )
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured.update(
+            base_url=base_url,
+            path=path,
+            payload=payload,
+            api_key=api_key,
+            provider=kwargs["provider"],
+            codex_command=kwargs["codex_command"],
+        )
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", fake_resolve, raising=False)
+    monkeypatch.setattr(orchestrator_module, "post_json_with_retry", fake_post)
+
+    text, error = _REAL_ORCHESTRATOR_CHAT(
+        StoryOrchestrator(),
+        _runtime_story("runtime-stage"),
+        "prompt",
+        max_tokens=100,
+        json_mode=False,
+        agent=agent,
+    )
+
+    assert (text, error) == ("ok", "")
+    assert runtime_calls == [agent]
+    assert captured["base_url"] == f"https://{agent}.example/v1"
+    assert captured["api_key"] == f"{agent}-key"
+    assert captured["provider"] == "codexcli"
+    assert captured["codex_command"] == f"{agent}-codex"
+    assert captured["payload"]["model"] == f"{agent}-model"
+    assert captured["payload"]["temperature"] == 0.25
+
+
+def test_orchestrator_maps_private_director_compatibility_to_planner(monkeypatch):
+    runtime_calls: list[str] = []
+
+    def fake_resolve(stage):
+        runtime_calls.append(stage)
+        return SimpleNamespace(
+            provider="codexcli",
+            model="planner-model",
+            api_key="",
+            base_url="",
+            codex_command="codex",
+            temperature=0.2,
+        )
+
+    monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", fake_resolve, raising=False)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "post_json_with_retry",
+        lambda *args, **kwargs: {"choices": [{"message": {"content": "ok"}}]},
+    )
+
+    _REAL_ORCHESTRATOR_CHAT(
+        StoryOrchestrator(),
+        _runtime_story("director-alias"),
+        "prompt",
+        max_tokens=100,
+        json_mode=False,
+        agent="director",
+    )
+
+    assert runtime_calls == ["planner"]
+
+
+def test_orchestrator_does_not_resolve_character_as_a_runtime_stage(monkeypatch):
+    runtime_calls: list[str] = []
+    monkeypatch.setattr(
+        orchestrator_module,
+        "resolve_stage_runtime",
+        lambda stage: runtime_calls.append(stage),
+        raising=False,
+    )
+
+    with pytest.raises(ValueError, match="unknown runtime stage: character"):
+        _REAL_ORCHESTRATOR_CHAT(
+            StoryOrchestrator(),
+            _runtime_story("character-stage"),
+            "prompt",
+            max_tokens=100,
+            json_mode=False,
+            agent="character",
+        )
+
+    assert runtime_calls == []
+
+
+def test_world_enrichment_uses_planner_stage_runtime(monkeypatch):
+    runtime_calls: list[str] = []
+    captured: dict[str, object] = {}
+
+    def fake_resolve(stage):
+        runtime_calls.append(stage)
+        return SimpleNamespace(
+            provider="codexcli",
+            model="world-planner-model",
+            api_key="",
+            base_url="https://planner.example/v1",
+            codex_command="planner-codex",
+            temperature=0.27,
+        )
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured.update(
+            base_url=base_url,
+            payload=payload,
+            api_key=api_key,
+            provider=kwargs["provider"],
+            codex_command=kwargs["codex_command"],
+        )
+        return {"choices": [{"message": {"content": '{"ok": true}'}}]}
+
+    monkeypatch.setattr(world_enrichment_module, "resolve_stage_runtime", fake_resolve, raising=False)
+    monkeypatch.setattr(
+        world_enrichment_module,
+        "resolve_openai_runtime_settings",
+        lambda *args, **kwargs: pytest.fail("legacy runtime resolver must not be used"),
+        raising=False,
+    )
+    monkeypatch.setattr(world_enrichment_module, "post_json_with_retry", fake_post)
+    monkeypatch.setattr(world_enrichment_module, "_merge_enrichment", lambda project, parsed: project)
+
+    project = NovelProject(project_id="world-runtime", title="World Runtime")
+    assert world_enrichment_module.enrich_project_world(project) == project
+    assert runtime_calls == ["planner"]
+    assert captured["base_url"] == "https://planner.example/v1"
+    assert captured["api_key"] == ""
+    assert captured["provider"] == "codexcli"
+    assert captured["codex_command"] == "planner-codex"
+    assert captured["payload"]["model"] == "world-planner-model"
+    assert captured["payload"]["temperature"] == 0.27
 
 
 def test_generate_chapter_updates_state_and_returns_bundle():
