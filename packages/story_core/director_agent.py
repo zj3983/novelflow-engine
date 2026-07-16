@@ -12,7 +12,6 @@ from packages.story_core.agent_base import (
 )
 from packages.story_core.models import CharacterProposal, DirectorDecision, NewCharacterPolicy, StoryState, default_model_name
 from packages.story_core.planner import build_chapter_title, select_primary_pair
-from packages.story_core.runtime import record_agent_runtime
 
 
 def _constraint_texts(story: StoryState) -> list[str]:
@@ -278,28 +277,7 @@ class DirectorAgent:
                 cadence,
             )
             if llm_decision is not None:
-                record_agent_runtime(
-                    story,
-                    "DirectorAgent",
-                    story.agent_settings.mode,
-                    "llm",
-                    story.current_chapter,
-                )
                 return llm_decision
-
-            fallback_reason = "LLM did not return a usable director decision"
-            if hasattr(self.llm_provider, "last_error_reason"):
-                fallback_reason = self.llm_provider.last_error_reason() or fallback_reason
-            if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                fallback_reason = "Missing OPENAI_API_KEY"
-            record_agent_runtime(
-                story,
-                "DirectorAgent",
-                story.agent_settings.mode,
-                "fallback",
-                story.current_chapter,
-                fallback_reason,
-            )
         return self.rule_provider.decide(
             story,
             proposals,

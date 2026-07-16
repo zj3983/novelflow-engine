@@ -16,7 +16,6 @@ from packages.story_core.models import (
     NovelOutline,
     StoryState,
 )
-from packages.story_core.runtime import record_agent_runtime
 from packages.story_core.runtime_config import resolve_stage_runtime
 
 
@@ -350,23 +349,5 @@ class OutlineAgent:
         if story.agent_settings.mode == "LLM-assisted":
             llm_result = self.llm_generator.generate(story, target_chapters)
             if llm_result is not None:
-                record_agent_runtime(
-                    story,
-                    "OutlineAgent",
-                    story.agent_settings.mode,
-                    "llm",
-                    story.current_chapter,
-                )
                 return llm_result
-            fallback_reason = "LLM 没有返回可用大纲"
-            if hasattr(self.llm_generator, "available") and not self.llm_generator.available():
-                fallback_reason = "未配置 API 密钥"
-            record_agent_runtime(
-                story,
-                "OutlineAgent",
-                story.agent_settings.mode,
-                "fallback",
-                story.current_chapter,
-                fallback_reason,
-            )
         return self.rule_generator.generate(story, target_chapters)

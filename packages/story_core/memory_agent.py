@@ -15,7 +15,6 @@ from packages.story_core.post_draft_memory import (
     fallback_post_draft_memory,
     normalize_post_draft_memory,
 )
-from packages.story_core.runtime import record_agent_runtime
 
 
 class MemorySummaryProvider(Protocol):
@@ -151,27 +150,6 @@ class MemoryAgent:
                     analysis,
                     body=body,
                     existing_character_names={character.name for character in story.characters},
-                )
-                record_agent_runtime(
-                    story,
-                    "MemoryAgent",
-                    story.agent_settings.mode,
-                    "llm",
-                    story.current_chapter,
-                )
-            else:
-                fallback_reason = "LLM did not return a usable memory summary"
-                if hasattr(self.llm_provider, "last_error_reason"):
-                    fallback_reason = self.llm_provider.last_error_reason() or fallback_reason
-                if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                    fallback_reason = "Missing OPENAI_API_KEY"
-                record_agent_runtime(
-                    story,
-                    "MemoryAgent",
-                    story.agent_settings.mode,
-                    "fallback",
-                    story.current_chapter,
-                    fallback_reason,
                 )
 
         if memory is None:

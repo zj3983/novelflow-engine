@@ -1017,6 +1017,201 @@ test("generated chapters surface in the homepage chapter workspace", async ({ pa
   await expect(page.locator(".chapter-panel")).toContainText("事件推进");
 });
 
+test("chapter review panel can trigger an automatic revision", async ({ page }) => {
+  await page.route("**/projects/*/agent-revise", async (route) => {
+    const request = route.request();
+    expect(request.method()).toBe("POST");
+    const payload = request.postDataJSON() as {
+      chapter_number?: number;
+      instructions?: string[];
+      include_body?: boolean;
+    };
+    expect(payload.chapter_number).toBe(1);
+    expect(payload.include_body).toBe(true);
+    expect(payload.instructions?.length).toBeGreaterThan(0);
+
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
+      body: JSON.stringify({
+        schema_version: "agent-revision/v1",
+        project: { project_id: "p-test", title: "Revision Test" },
+        story: { story_id: "s-test", current_chapter: 1 },
+        chapter: {
+          chapter_number: 1,
+          chapter_title: "第1章 修订后",
+          body: "REVISED_BY_AGENT: market rules, NPC service boundary, and protagonist motive are now clearer.",
+          body_chars: 82,
+          quality_report: {
+            ok: true,
+            issues: [],
+            writing_review: { pass: true, scores: { genre_rules: 8 }, issues: [], revision_plan: [] },
+          },
+        },
+        review: {
+          writing_review: { pass: true, scores: { genre_rules: 8 }, issues: [], revision_plan: [] },
+        },
+        revision: {
+          changed: true,
+          previous_body_chars: 20,
+          revised_body_chars: 82,
+          instructions: ["按审稿意见自动改稿"],
+          source: "writer_agent",
+        },
+      }),
+    });
+  });
+
+  await page.route("**/projects", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
+        body: "[]",
+      });
+      return;
+    }
+    await route.abort();
+  });
+
+  await page.addInitScript(() => {
+    const agentRuntime = {
+      planner: { source: "idle", provider: "", model: "", fallback_reason: "", last_run_chapter: 0 },
+      writer: { source: "idle", provider: "", model: "", fallback_reason: "", last_run_chapter: 0 },
+      memory: { source: "idle", provider: "", model: "", fallback_reason: "", last_run_chapter: 0 },
+      recent_events: [],
+    };
+    window.localStorage.setItem(
+      "novel-autogrowth-engine.project-snapshot",
+      JSON.stringify({
+        project_id: "p-test",
+        title: "Revision Test",
+        source_path: "",
+        seed_outline: "A market clue opens the story.",
+        world_summary: "A game world with visible market rules.",
+        current_focus: "Revise chapter one.",
+        author_constraints: [],
+        world_blueprint: {},
+        character_profiles: [],
+        relationship_graph: [],
+        status: "simulating",
+        pipeline_stage: "simulating",
+        active_story_id: "s-test",
+        branches: [{ story_id: "s-test", current_chapter: 1, parent_story_id: null, branched_from_chapter: null }],
+      }),
+    );
+    window.localStorage.setItem(
+      "novel-autogrowth-engine.story-snapshot",
+      JSON.stringify({
+        story_id: "s-test",
+        outline: "A player tests a strange market clue.",
+        genre: "game fantasy",
+        style: "webnovel",
+        current_chapter: 1,
+        agent_settings: {
+          mode: "LLM-assisted",
+          global_model: "qwen3.6-plus",
+          character_model: "qwen3.6-plus",
+          director_model: "qwen3.6-plus",
+          writer_model: "qwen3.6-plus",
+          memory_model: "qwen3.6-plus",
+          temperature: 0.7,
+          new_character_policy: "Director review",
+        },
+        agent_runtime: agentRuntime,
+        author_constraints: [],
+        world_facts: [],
+        parent_story_id: null,
+        branched_from_chapter: null,
+        characters: [
+          {
+            name: "Lin Yue",
+            role: "protagonist",
+            goals: ["test the market clue"],
+            frozen: false,
+            lifecycle_state: "active",
+            last_proposed_chapter: 0,
+            last_approved_chapter: 0,
+            introduced_by: "",
+            relationships: {},
+          },
+        ],
+        history: [
+          {
+            chapter_number: 1,
+            chapter_title: "第1章 原稿",
+            body: "ORIGINAL_BY_AGENT: the chapter still lacks market rules.",
+            chapter_intent: { primary_conflict: { collision: "market clue" }, next_focus: "revise" },
+            character_moves: [{ name: "Lin Yue", action: "checks the market" }],
+            memory_constraints: { must_keep_facts: ["market clue exists"], unresolved_threads: ["market rules"] },
+            event_plan: { pivot: "market clue appears", stakes: "identity risk", next_focus: "revise" },
+            simulation_status: { ok: true },
+            next_outline: "continue after revision",
+            chapter_summary: {
+              chapter_number: 1,
+              summary: "The protagonist finds a market clue.",
+              facts: ["market clue exists"],
+              unresolved_threads: ["market rules"],
+            },
+            quality_report: {
+              ok: false,
+              issues: ["writing_review"],
+              revision_safety: {
+                reviewer: "revision_safety/v1",
+                accepted: false,
+                selected: "original",
+                reason: "candidate_worse_than_original",
+                original_score: 90,
+                candidate_score: 42,
+                original_chars: 4200,
+                candidate_chars: 1200,
+              },
+              segment_pipeline: {
+                enabled: true,
+                pass: false,
+                segments: [
+                  {
+                    segment_key: "setup",
+                    segment_title: "现实入口",
+                    pass: false,
+                    issues: ["局部改稿缩水"],
+                    segment_revision_safety: {
+                      reviewer: "segment_revision_safety/v1",
+                      accepted: false,
+                      selected: "original",
+                      reason: "candidate_worse_than_original",
+                      original_score: 60,
+                      candidate_score: 20,
+                    },
+                  },
+                ],
+              },
+              writing_review: {
+                pass: false,
+                scores: { genre_rules: 5 },
+                issues: ["market rules are thin"],
+                revision_plan: ["补足交易行规则"],
+              },
+            },
+          },
+        ],
+      }),
+    );
+    window.sessionStorage.setItem("novel-autogrowth-engine.project-id", "p-test");
+    window.sessionStorage.setItem("novel-autogrowth-engine.story-id", "s-test");
+  });
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+
+  await expect(page.locator(".chapter-panel")).toContainText("改稿安全报告");
+  await expect(page.locator(".chapter-panel")).toContainText("整章快照：保留原稿");
+  await expect(page.locator(".chapter-panel")).toContainText("现实入口：保留原稿");
+
+  await page.getByRole("button", { name: "按审稿意见自动改稿" }).click();
+
+  await expect(page.locator(".chapter-panel__prose")).toContainText("REVISED_BY_AGENT");
+});
+
 test("write page accepts three-stage runtime state", async ({ page }) => {
   await page.route("**/projects", async (route) => {
     if (route.request().method() === "GET") {

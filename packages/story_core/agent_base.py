@@ -14,7 +14,6 @@ import urllib.error
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from packages.story_core.http_retry import post_json_with_retry
-from packages.story_core.runtime import record_agent_runtime
 from packages.story_core.runtime_config import resolve_openai_runtime_settings
 
 if TYPE_CHECKING:
@@ -294,25 +293,6 @@ class BaseLLMAgent(Generic[T]):
             llm_kwargs = llm_kwargs or {}
             result = self.call_llm(story, **{**kwargs, **llm_kwargs})
             if result is not None:
-                record_agent_runtime(
-                    story,
-                    self.agent_name,
-                    story.agent_settings.mode,
-                    "llm",
-                    story.current_chapter,
-                )
                 return result
-            
-            reason = fallback_reason
-            if not self._runtime_settings(story).api_key:
-                reason = no_apikey_reason
-            record_agent_runtime(
-                story,
-                self.agent_name,
-                story.agent_settings.mode,
-                "fallback",
-                story.current_chapter,
-                reason,
-            )
         rule_args = rule_args or {}
         return rule_fallback(**{**kwargs, **rule_args})

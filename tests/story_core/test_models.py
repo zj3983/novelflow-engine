@@ -68,6 +68,12 @@ def test_agent_runtime_state_migrates_legacy_agents_and_discards_character():
     assert "memory_agent" not in serialized
 
 
+def test_runtime_module_does_not_expose_retired_agent_reporting():
+    from packages.story_core import runtime
+
+    assert not hasattr(runtime, "record_agent_runtime")
+
+
 def test_story_state_can_store_outline_and_chapter_index():
     story = StoryState(
         story_id="s-001",

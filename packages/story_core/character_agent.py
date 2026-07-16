@@ -12,7 +12,6 @@ from packages.story_core.agent_base import (
     parse_json_message_content,
 )
 from packages.story_core.models import CharacterProposal, CharacterState, StoryState, default_fast_model_name
-from packages.story_core.runtime import record_agent_runtime
 
 
 def _goal_topic(goal: str) -> str:
@@ -300,26 +299,5 @@ class CharacterAgent:
         if story.agent_settings.mode == "LLM-assisted":
             llm_proposals = self.llm_provider.propose_all(story)
             if llm_proposals:
-                record_agent_runtime(
-                    story,
-                    "CharacterAgent",
-                    story.agent_settings.mode,
-                    "llm",
-                    story.current_chapter,
-                )
                 return llm_proposals
-
-            fallback_reason = "LLM did not return usable proposals"
-            if hasattr(self.llm_provider, "last_error_reason"):
-                fallback_reason = self.llm_provider.last_error_reason() or fallback_reason
-            if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                fallback_reason = "Missing OPENAI_API_KEY"
-            record_agent_runtime(
-                story,
-                "CharacterAgent",
-                story.agent_settings.mode,
-                "fallback",
-                story.current_chapter,
-                fallback_reason,
-            )
         return self.rule_provider.propose_all(story)

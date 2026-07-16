@@ -41,7 +41,3 @@ def record_stage_runtime(
         event = f"{event}（{fallback_reason}）"
     story.agent_runtime.recent_events.append(event)
     story.agent_runtime.recent_events = story.agent_runtime.recent_events[-8:]
-
-
-def record_agent_runtime(*args, **kwargs) -> None:
-    """Compatibility no-op for retired standalone agent runtime reporting."""

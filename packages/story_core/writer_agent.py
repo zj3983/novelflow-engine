@@ -11,7 +11,6 @@ from packages.story_core.agent_base import (
     parse_json_message_content,
 )
 from packages.story_core.models import DirectorDecision, StoryState, default_model_name
-from packages.story_core.runtime import record_agent_runtime
 from packages.story_core.writer import write_chapter_body
 
 
@@ -205,28 +204,7 @@ class WriterAgent:
                     cadence,
                 )
             if llm_body:
-                record_agent_runtime(
-                    story,
-                    "WriterAgent",
-                    story.agent_settings.mode,
-                    "llm",
-                    story.current_chapter,
-                )
                 return llm_body
-
-            fallback_reason = "LLM did not return usable chapter text"
-            if hasattr(self.llm_provider, "last_error_reason"):
-                fallback_reason = self.llm_provider.last_error_reason() or fallback_reason
-            if hasattr(self.llm_provider, "available") and not self.llm_provider.available():
-                fallback_reason = "Missing OPENAI_API_KEY"
-            record_agent_runtime(
-                story,
-                "WriterAgent",
-                story.agent_settings.mode,
-                "fallback",
-                story.current_chapter,
-                fallback_reason,
-            )
 
         return write_chapter_body(
             story,
