@@ -86,9 +86,10 @@ class AgentSettings(BaseModel):
         return value
 
 
-class AgentRuntimeEntry(BaseModel):
-    mode: AgentMode = "LLM-assisted"
+class StageRuntimeEntry(BaseModel):
     source: AgentRuntimeSource = "idle"
+    provider: str = ""
+    model: str = ""
     fallback_reason: str = ""
     last_run_chapter: int = 0
 
@@ -97,21 +98,43 @@ class AgentRuntimeEntry(BaseModel):
     def _normalize_legacy_runtime(cls, value):
         if isinstance(value, dict):
             next_value = dict(value)
-            if next_value.get("mode") == "Rule-based":
-                next_value["mode"] = "LLM-assisted"
             if next_value.get("source") == "rule-based":
                 next_value["source"] = "fallback"
             return next_value
         return value
 
 
+AgentRuntimeEntry = StageRuntimeEntry
+
+
 class AgentRuntimeState(BaseModel):
-    character_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
-    director_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
-    writer_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
-    memory_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
-    outline_agent: AgentRuntimeEntry = Field(default_factory=AgentRuntimeEntry)
+    planner: StageRuntimeEntry = Field(default_factory=StageRuntimeEntry)
+    writer: StageRuntimeEntry = Field(default_factory=StageRuntimeEntry)
+    memory: StageRuntimeEntry = Field(default_factory=StageRuntimeEntry)
     recent_events: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_agent_runtime(cls, value):
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        for stage, legacy_key in (
+            ("planner", "director_agent"),
+            ("writer", "writer_agent"),
+            ("memory", "memory_agent"),
+        ):
+            if stage not in migrated and legacy_key in migrated:
+                migrated[stage] = migrated[legacy_key]
+        for legacy_key in (
+            "character_agent",
+            "director_agent",
+            "writer_agent",
+            "memory_agent",
+            "outline_agent",
+        ):
+            migrated.pop(legacy_key, None)
+        return migrated
 
 
 class CharacterRelationship(BaseModel):

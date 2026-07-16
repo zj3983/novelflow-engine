@@ -1,4 +1,4 @@
-from packages.story_core.models import AgentSettings, CharacterState, StoryState
+from packages.story_core.models import AgentRuntimeState, AgentSettings, CharacterState, StoryState
 
 
 def test_agent_settings_defaults_follow_environment_models(monkeypatch):
@@ -12,6 +12,60 @@ def test_agent_settings_defaults_follow_environment_models(monkeypatch):
     assert settings.writer_model == "qwen3.6-plus"
     assert settings.memory_model == "qwen3.6-plus"
     assert settings.character_model == "qwen3.6-plus-fast"
+
+
+def test_agent_runtime_state_uses_only_writing_stages():
+    runtime = AgentRuntimeState()
+
+    assert runtime.model_dump() == {
+        "planner": {
+            "source": "idle",
+            "provider": "",
+            "model": "",
+            "fallback_reason": "",
+            "last_run_chapter": 0,
+        },
+        "writer": {
+            "source": "idle",
+            "provider": "",
+            "model": "",
+            "fallback_reason": "",
+            "last_run_chapter": 0,
+        },
+        "memory": {
+            "source": "idle",
+            "provider": "",
+            "model": "",
+            "fallback_reason": "",
+            "last_run_chapter": 0,
+        },
+        "recent_events": [],
+    }
+
+
+def test_agent_runtime_state_migrates_legacy_agents_and_discards_character():
+    runtime = AgentRuntimeState.model_validate(
+        {
+            "character_agent": {"source": "llm", "last_run_chapter": 9},
+            "director_agent": {"source": "llm", "last_run_chapter": 3},
+            "writer_agent": {
+                "source": "fallback",
+                "fallback_reason": "writer timeout",
+                "last_run_chapter": 3,
+            },
+            "memory_agent": {"source": "llm", "last_run_chapter": 3},
+            "recent_events": ["legacy event"],
+        }
+    )
+
+    serialized = runtime.model_dump()
+    assert serialized["planner"]["source"] == "llm"
+    assert serialized["writer"]["fallback_reason"] == "writer timeout"
+    assert serialized["memory"]["last_run_chapter"] == 3
+    assert "character_agent" not in serialized
+    assert "director_agent" not in serialized
+    assert "writer_agent" not in serialized
+    assert "memory_agent" not in serialized
 
 
 def test_story_state_can_store_outline_and_chapter_index():

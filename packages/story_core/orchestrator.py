@@ -48,7 +48,7 @@ from packages.story_core.plot_spine_review import review_plot_spine_completion
 from packages.story_core.quality import validate_bundle
 from packages.story_core.reader_agent import review_reader_agent
 from packages.story_core.reviewer_agent import review_reviewer_agent
-from packages.story_core.runtime import record_agent_runtime
+from packages.story_core.runtime import record_stage_runtime
 from packages.story_core.runtime_config import resolve_stage_runtime
 from packages.story_core.revision_safety import choose_best_revision, choose_best_segment_revision
 from packages.story_core.segmented_writing import (
@@ -3878,23 +3878,12 @@ def _build_world_state_review(issues: list[str], revision_plan: list[str]) -> di
     }
 
 
-def _record_success(story: StoryState) -> None:
-    for agent_name in ("CharacterAgent", "DirectorAgent", "WriterAgent", "MemoryAgent"):
-        record_agent_runtime(story, agent_name, story.agent_settings.mode, "llm", story.current_chapter)
-
-
-def _record_failure(story: StoryState, reason: str, chapter_number: int) -> None:
-    for agent_name in ("CharacterAgent", "DirectorAgent", "WriterAgent", "MemoryAgent"):
-        record_agent_runtime(story, agent_name, story.agent_settings.mode, "fallback", chapter_number, reason)
-
-
 def _build_simulation_status(story: StoryState) -> dict:
     ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
     agent_entries = {
-        "character": story.agent_runtime.character_agent.model_dump(),
-        "director": story.agent_runtime.director_agent.model_dump(),
-        "writer": story.agent_runtime.writer_agent.model_dump(),
-        "memory": story.agent_runtime.memory_agent.model_dump(),
+        "planner": story.agent_runtime.planner.model_dump(),
+        "writer": story.agent_runtime.writer.model_dump(),
+        "memory": story.agent_runtime.memory.model_dump(),
     }
     fallback_agents = [name for name, entry in agent_entries.items() if entry.get("source") == "fallback"]
     return {
@@ -3961,6 +3950,7 @@ class StoryOrchestrator:
         if runtime_stage not in {"planner", "writer", "memory"}:
             raise ValueError(f"unknown runtime stage: {runtime_stage}")
         settings = resolve_stage_runtime(runtime_stage)
+        self._last_runtime_request = (runtime_stage, settings)
         provider = settings.provider
         codex_command = settings.codex_command
         if provider != "codexcli" and not settings.api_key:
@@ -4052,6 +4042,8 @@ class StoryOrchestrator:
         stage: str,
         timeout_seconds: int | None = None,
     ) -> tuple[str, str]:
+        runtime_stage = "planner" if agent == "director" else agent
+        self._last_runtime_request = None
         started = perf_counter()
         chat_kwargs: dict[str, Any] = {
             "max_tokens": max_tokens,
@@ -4070,6 +4062,21 @@ class StoryOrchestrator:
         elapsed = perf_counter() - started
         suffix = "失败" if error else "完成"
         report_generation_progress(f"{stage}耗时 {elapsed:.1f}s：{suffix}")
+        runtime_request = self._last_runtime_request
+        settings = (
+            runtime_request[1]
+            if runtime_request is not None and runtime_request[0] == runtime_stage
+            else resolve_stage_runtime(runtime_stage)
+        )
+        record_stage_runtime(
+            story,
+            runtime_stage,
+            "fallback" if error else "llm",
+            settings.provider,
+            settings.model,
+            story.current_chapter,
+            fallback_reason=error,
+        )
         return text, error
 
     def _plan_prompt(self, story: StoryState, chapter_number: int) -> str:
@@ -4378,6 +4385,16 @@ class StoryOrchestrator:
         except (TypeError, ValueError, json.JSONDecodeError):
             payload = None
         if not isinstance(payload, dict):
+            current = story.agent_runtime.memory
+            record_stage_runtime(
+                story,
+                "memory",
+                "fallback",
+                current.provider,
+                current.model,
+                chapter_number,
+                fallback_reason="memory_invalid_json",
+            )
             return fallback_post_draft_memory(body), {
                 "status": "fallback",
                 "rejected_count": 0,
@@ -4399,6 +4416,16 @@ class StoryOrchestrator:
             )
         )
         if not has_grounded_memory:
+            current = story.agent_runtime.memory
+            record_stage_runtime(
+                story,
+                "memory",
+                "fallback",
+                current.provider,
+                current.model,
+                chapter_number,
+                fallback_reason="memory_has_no_grounded_updates",
+            )
             return fallback_post_draft_memory(body), {
                 "status": "fallback",
                 "rejected_count": len(memory.get("rejected_updates", [])),
@@ -4542,11 +4569,12 @@ class StoryOrchestrator:
             if not manual_instructions and patch_safety.get("accepted") and (
                 patched_review.get("pass") or (isinstance(cut_review, dict) and cut_review.get("pass"))
             ):
-                record_agent_runtime(
+                record_stage_runtime(
                     story,
-                    "WriterAgent",
-                    "LLM-assisted",
+                    "writer",
                     "fallback",
+                    "",
+                    "",
                     story.current_chapter,
                     fallback_reason="本地表达修补",
                 )
@@ -4586,13 +4614,6 @@ class StoryOrchestrator:
         selected_quality["revision_safety"] = safety["report"]
         revised_body = str(safety["body"])
         quality_report = selected_quality
-        record_agent_runtime(
-            story,
-            "WriterAgent",
-            story.agent_settings.mode,
-            "llm",
-            story.current_chapter,
-        )
         return revised_body, quality_report, ""
 
     def generate_next_chapter(self, story: StoryState):
@@ -4612,7 +4633,6 @@ class StoryOrchestrator:
             stage="剧情计划生成",
         )
         if plan_error:
-            _record_failure(working_story, f"统一推演计划失败：{plan_error}", chapter_number)
             return _failed_bundle(working_story, chapter_number)
 
         plan = json.loads(plan_text)
@@ -4712,7 +4732,17 @@ class StoryOrchestrator:
             stage=f"整章写作 第{chapter_number}章",
         )
         if body_error or not body.strip():
-            _record_failure(working_story, f"统一写作失败：{body_error or '正文为空'}", chapter_number)
+            if not body_error:
+                current = working_story.agent_runtime.writer
+                record_stage_runtime(
+                    working_story,
+                    "writer",
+                    "fallback",
+                    current.provider,
+                    current.model,
+                    chapter_number,
+                    fallback_reason="正文为空",
+                )
             return _failed_bundle(working_story, chapter_number)
         body = _sanitize_chapter_output(
             body,
@@ -4742,7 +4772,6 @@ class StoryOrchestrator:
             )
             if expand_error:
                 reason = f"章节扩写失败：{expand_error}"
-                _record_failure(working_story, reason, chapter_number)
                 return _failed_bundle(working_story, chapter_number, reason)
             if _chapter_char_count(expanded_body) > _chapter_char_count(body):
                 body = _sanitize_chapter_output(
@@ -4974,8 +5003,6 @@ class StoryOrchestrator:
         latest_summary.secondary_conflict = {}
         latest_summary.event_beat = {}
         latest_summary.cadence = cadence  # type: ignore[assignment]
-
-        _record_success(updated_story)
 
         bundle = ChapterBundle(
             chapter_number=chapter_number,
