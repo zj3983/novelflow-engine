@@ -257,3 +257,20 @@ Open `http://localhost:3000/config`, confirm only three stage fields appear, run
 - [ ] **Step 5: Check repository cleanliness**
 
 Run `git diff --check` and `git status --short`. Commit only repository fixture or documentation changes if any remain; never commit the user runtime configuration or its backup.
+
+### Task 7: Add the Curated Codex CLI Model Dropdown
+
+**Files:**
+- Modify: `packages/story_core/codex_cli_provider.py`
+- Modify: `apps/api/routes/stories.py`
+- Modify: `apps/web/lib/api.ts`
+- Modify: `apps/web/components/config/RuntimeStrategyCard.tsx`
+- Test: `tests/story_core/test_codex_cli_provider.py`
+- Test: `tests/api/test_story_routes.py`
+- Test: `apps/web/tests/config-page.spec.ts`
+
+- [ ] Add failing tests for CLI model discovery and filtering.
+- [ ] Return only `gpt-5.5` and `gpt-5.6-*` from the CLI info endpoint.
+- [ ] Render stage models as native selects in CLI mode and text inputs in OpenAI mode.
+- [ ] Preserve a configured unavailable model as a temporary current option.
+- [ ] Run focused backend tests, Playwright config tests, and the production build.
