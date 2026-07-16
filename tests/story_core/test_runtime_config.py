@@ -5,7 +5,9 @@ from pydantic import ValidationError
 
 from packages.story_core import runtime_config
 from packages.story_core.runtime_config import (
+    OpenAIRuntimeSettings,
     RuntimeConfiguration,
+    get_agent_runtime_settings,
     get_runtime_configuration,
     load_runtime_configuration,
     resolve_stage_runtime,
@@ -167,6 +169,92 @@ def test_damaged_configuration_is_not_overwritten(tmp_path):
         load_runtime_configuration(path)
 
     assert path.read_bytes() == damaged
+
+
+def test_damaged_primary_configuration_stops_legacy_fallback(tmp_path, monkeypatch):
+    primary_path = tmp_path / "runtime.json"
+    legacy_path = tmp_path / "legacy-runtime.json"
+    damaged = b'{"provider": "openai", broken'
+    primary_path.write_bytes(damaged)
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "global": {"provider": "openai", "api_key": "must-not-load"},
+                "strategy": {
+                    "director_model": "o3",
+                    "writer_model": "gpt-4.1",
+                    "memory_model": "gpt-4.1-mini",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    in_memory_default = RuntimeConfiguration()
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", primary_path)
+    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", legacy_path)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", in_memory_default)
+
+    runtime_config._load_config_from_file()
+
+    assert primary_path.read_bytes() == damaged
+    assert get_runtime_configuration() == in_memory_default
+
+
+def test_legacy_agent_override_is_available_after_migration(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    legacy = {
+        "global": {"provider": "codexcli", "codex_command": "codex"},
+        "agents": {
+            "writer": {
+                "api_key": "writer-key",
+                "base_url": "https://writer.test/v1",
+                "provider": "openai",
+                "codex_command": "writer-codex",
+            }
+        },
+        "strategy": {
+            "director_model": "gpt-5.4",
+            "writer_model": "gpt-5.4",
+            "memory_model": "gpt-5.4",
+        },
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
+    monkeypatch.setattr(runtime_config, "_agent_runtime_settings", {})
+
+    runtime_config._load_config_from_file()
+
+    assert get_agent_runtime_settings("writer") == OpenAIRuntimeSettings(
+        api_key="writer-key",
+        base_url="https://writer.test/v1",
+        provider="openai",
+        codex_command="writer-codex",
+    )
+
+
+def test_set_agent_runtime_settings_persists_across_reload(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
+    monkeypatch.setattr(runtime_config, "_agent_runtime_settings", {})
+    save_runtime_configuration(RuntimeConfiguration(), path)
+
+    expected = OpenAIRuntimeSettings(
+        api_key="persisted-writer-key",
+        base_url="https://persisted-writer.test/v1",
+        provider="codexcli",
+        codex_command="persisted-codex",
+    )
+    runtime_config.set_agent_runtime_settings("writer", expected)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
+    monkeypatch.setattr(runtime_config, "_agent_runtime_settings", {})
+
+    runtime_config._load_config_from_file()
+
+    assert get_agent_runtime_settings("writer") == expected
 
 
 def test_legacy_interfaces_project_new_configuration(tmp_path, monkeypatch):

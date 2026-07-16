@@ -84,9 +84,23 @@ class ProviderConfigurations(_StrictModel):
     openai: ProviderRuntimeConfiguration = Field(default_factory=_default_openai_configuration)
 
 
+class CompatibilityAgentConnection(_StrictModel):
+    api_key: str = ""
+    base_url: str = ""
+    provider: RuntimeProvider = "openai"
+    codex_command: str = ""
+
+
+class RuntimeCompatibilityConfiguration(_StrictModel):
+    agents: dict[AgentRuntimeName, CompatibilityAgentConnection] = Field(default_factory=dict)
+
+
 class RuntimeConfiguration(_StrictModel):
     provider: RuntimeProvider = Field(default_factory=_default_provider)
     providers: ProviderConfigurations = Field(default_factory=ProviderConfigurations)
+    compatibility: RuntimeCompatibilityConfiguration = Field(
+        default_factory=RuntimeCompatibilityConfiguration
+    )
     temperature: float = 0.7
     new_character_policy: NewCharacterPolicy = "Director review"
 
@@ -166,9 +180,23 @@ def _migrate_legacy_configuration(data: dict) -> RuntimeConfiguration:
     selected.memory = _legacy_stage_model(provider, strategy.get("memory_model"), selected.memory)
     setattr(providers, provider, selected)
 
+    legacy_agents = data.get("agents") if isinstance(data.get("agents"), dict) else {}
+    compatibility_agents = {
+        agent_name: CompatibilityAgentConnection.model_validate(
+            {
+                key: settings.get(key)
+                for key in ("api_key", "base_url", "provider", "codex_command")
+                if key in settings
+            }
+        )
+        for agent_name, settings in legacy_agents.items()
+        if agent_name in AGENT_RUNTIME_NAMES and isinstance(settings, dict)
+    }
+
     return RuntimeConfiguration(
         provider=provider,
         providers=providers,
+        compatibility=RuntimeCompatibilityConfiguration(agents=compatibility_agents),
         temperature=strategy.get("temperature", 0.7),
         new_character_policy=strategy.get("new_character_policy", "Director review"),
     )
@@ -237,16 +265,20 @@ def resolve_stage_runtime(stage: RuntimeStage) -> StageRuntimeSettings:
 
 def _load_config_from_file() -> None:
     global _runtime_configuration
-    for config_path in (CONFIG_FILE, LEGACY_CONFIG_FILE):
-        if not config_path.exists():
-            continue
+    if CONFIG_FILE.exists():
         try:
-            _runtime_configuration = load_runtime_configuration(config_path)
-            if config_path == LEGACY_CONFIG_FILE and config_path != CONFIG_FILE:
-                save_runtime_configuration(_runtime_configuration, CONFIG_FILE)
-            return
+            _runtime_configuration = load_runtime_configuration(CONFIG_FILE)
         except ValueError:
-            continue
+            pass
+        return
+
+    if LEGACY_CONFIG_FILE.exists():
+        try:
+            _runtime_configuration = load_runtime_configuration(LEGACY_CONFIG_FILE)
+            if LEGACY_CONFIG_FILE != CONFIG_FILE:
+                save_runtime_configuration(_runtime_configuration, CONFIG_FILE)
+        except ValueError:
+            pass
 
 
 _load_config_from_file()
@@ -281,6 +313,11 @@ def set_runtime_settings(settings: OpenAIRuntimeSettings | dict) -> OpenAIRuntim
 
 def get_agent_runtime_settings(agent_name: AgentRuntimeName) -> OpenAIRuntimeSettings:
     with _lock:
+        compatibility_settings = _runtime_configuration.compatibility.agents.get(agent_name)
+        if compatibility_settings is not None:
+            return OpenAIRuntimeSettings.model_validate(
+                compatibility_settings.model_dump(mode="json")
+            )
         return _agent_runtime_settings.get(agent_name, _empty_runtime_settings()).model_copy(deep=True)
 
 
@@ -289,6 +326,11 @@ def set_agent_runtime_settings(
     settings: OpenAIRuntimeSettings | dict,
 ) -> OpenAIRuntimeSettings:
     next_settings = OpenAIRuntimeSettings.model_validate(settings)
+    configuration = get_runtime_configuration()
+    configuration.compatibility.agents[agent_name] = CompatibilityAgentConnection.model_validate(
+        next_settings.model_dump(mode="json")
+    )
+    set_runtime_configuration(configuration)
     with _lock:
         _agent_runtime_settings[agent_name] = next_settings
         return next_settings.model_copy(deep=True)
