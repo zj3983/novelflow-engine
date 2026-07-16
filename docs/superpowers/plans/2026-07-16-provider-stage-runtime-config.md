@@ -274,3 +274,11 @@ Run `git diff --check` and `git status --short`. Commit only repository fixture 
 - [ ] Render stage models as native selects in CLI mode and text inputs in OpenAI mode.
 - [ ] Preserve a configured unavailable model as a temporary current option.
 - [ ] Run focused backend tests, Playwright config tests, and the production build.
+
+### Task 8: Show Codex CLI Update Status
+
+- [ ] Add failing tests for latest-version lookup and comparison.
+- [ ] Extend CLI info with `latest_version` and `update_status`.
+- [ ] Render a read-only status beside the installed CLI version.
+- [ ] Treat lookup failures as non-blocking and render “暂时无法检查更新”.
+- [ ] Run focused backend tests, configuration Playwright tests, and the production build.
