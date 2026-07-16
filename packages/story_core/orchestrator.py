@@ -26,7 +26,7 @@ from packages.story_core.memory import (
     maybe_update_arc_recap,
     retrieve_relevant_memories,
 )
-from packages.story_core.models import DirectorDecision, StoryState
+from packages.story_core.models import DirectorDecision, StageRuntimeEntry, StoryState
 from packages.story_core.novel_type_catalog import normalize_novel_type_id
 from packages.story_core.planner import build_chapter_title, build_conflict_summary, build_event_beat, compute_chapter_cadence, plan_next_outline
 from packages.story_core.post_draft_memory import (
@@ -4622,6 +4622,8 @@ class StoryOrchestrator:
         chapter_number = story.current_chapter + 1
         working_story = story.model_copy(deep=True)
         working_story.current_chapter = chapter_number
+        for runtime_stage in ("planner", "writer", "memory"):
+            setattr(working_story.agent_runtime, runtime_stage, StageRuntimeEntry())
 
         report_generation_progress("剧情计划生成中...")
         plan_text, plan_error = self._timed_chat(

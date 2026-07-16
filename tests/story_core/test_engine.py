@@ -260,6 +260,32 @@ def test_generation_failure_does_not_mark_unexecuted_stages(monkeypatch, failed_
     } == expected_sources
 
 
+def test_new_chapter_clears_previous_stage_runtime_before_planner_request(monkeypatch):
+    responses = _runtime_generation_responses()
+    responses["planner"] = ("", "planner request failed")
+    _patch_three_stage_generation(monkeypatch, responses)
+    story = _runtime_story("stage-reset")
+    story.current_chapter = 5
+    for stage in ("planner", "writer", "memory"):
+        entry = getattr(story.agent_runtime, stage)
+        entry.source = "llm"
+        entry.provider = "openai"
+        entry.model = f"chapter-five-{stage}"
+        entry.last_run_chapter = 5
+
+    bundle = StoryOrchestrator().generate_next_chapter(story)
+
+    assert bundle.updated_story.agent_runtime.planner.source == "fallback"
+    assert bundle.updated_story.agent_runtime.planner.last_run_chapter == 6
+    for stage in ("writer", "memory"):
+        entry = getattr(bundle.updated_story.agent_runtime, stage)
+        assert entry.source == "idle"
+        assert entry.provider == ""
+        assert entry.model == ""
+        assert entry.fallback_reason == ""
+        assert entry.last_run_chapter == 0
+
+
 def test_memory_parse_failure_only_marks_memory_fallback(monkeypatch):
     responses = _runtime_generation_responses()
     responses["memory"] = ("not-json", "")

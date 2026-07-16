@@ -799,7 +799,7 @@ test("file project outline edits three levels and runs outline generation", asyn
     });
   });
   await page.route("**/file-stories/file%3Aoutline-fixture", async (route) => {
-    const runtimeEntry = { mode: "LLM-assisted", source: "idle", fallback_reason: "", last_run_chapter: 0 };
+    const runtimeEntry = { source: "idle", provider: "", model: "", fallback_reason: "", last_run_chapter: 0 };
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -820,11 +820,9 @@ test("file project outline edits three levels and runs outline generation", asyn
           new_character_policy: "Director review",
         },
         agent_runtime: {
-          character_agent: runtimeEntry,
-          director_agent: runtimeEntry,
-          writer_agent: runtimeEntry,
-          memory_agent: runtimeEntry,
-          outline_agent: runtimeEntry,
+          planner: runtimeEntry,
+          writer: runtimeEntry,
+          memory: runtimeEntry,
           recent_events: [],
         },
         author_constraints: [],
@@ -1019,51 +1017,7 @@ test("generated chapters surface in the homepage chapter workspace", async ({ pa
   await expect(page.locator(".chapter-panel")).toContainText("事件推进");
 });
 
-test("chapter review panel can trigger an automatic revision", async ({ page }) => {
-  await page.route("**/projects/*/agent-revise", async (route) => {
-    const request = route.request();
-    expect(request.method()).toBe("POST");
-    const payload = request.postDataJSON() as {
-      chapter_number?: number;
-      instructions?: string[];
-      include_body?: boolean;
-    };
-    expect(payload.chapter_number).toBe(1);
-    expect(payload.include_body).toBe(true);
-    expect(payload.instructions?.length).toBeGreaterThan(0);
-
-    await route.fulfill({
-      status: 200,
-      headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
-      body: JSON.stringify({
-        schema_version: "agent-revision/v1",
-        project: { project_id: "p-test", title: "Revision Test" },
-        story: { story_id: "s-test", current_chapter: 1 },
-        chapter: {
-          chapter_number: 1,
-          chapter_title: "第1章 修订后",
-          body: "REVISED_BY_AGENT: market rules, NPC service boundary, and protagonist motive are now clearer.",
-          body_chars: 82,
-          quality_report: {
-            ok: true,
-            issues: [],
-            writing_review: { pass: true, scores: { genre_rules: 8 }, issues: [], revision_plan: [] },
-          },
-        },
-        review: {
-          writing_review: { pass: true, scores: { genre_rules: 8 }, issues: [], revision_plan: [] },
-        },
-        revision: {
-          changed: true,
-          previous_body_chars: 20,
-          revised_body_chars: 82,
-          instructions: ["按审稿意见自动改稿"],
-          source: "writer_agent",
-        },
-      }),
-    });
-  });
-
+test("write page accepts three-stage runtime state", async ({ page }) => {
   await page.route("**/projects", async (route) => {
     if (route.request().method() === "GET") {
       await route.fulfill({
@@ -1077,14 +1031,11 @@ test("chapter review panel can trigger an automatic revision", async ({ page }) 
   });
 
   await page.addInitScript(() => {
-    const runtimeEntry = { mode: "LLM-assisted", source: "idle", fallback_reason: "", last_run_chapter: 0 };
     const agentRuntime = {
-      character_agent: runtimeEntry,
-      director_agent: runtimeEntry,
-      writer_agent: runtimeEntry,
-      memory_agent: runtimeEntry,
-      outline_agent: runtimeEntry,
-      recent_events: [],
+      planner: { source: "llm", provider: "openai", model: "planner-live", fallback_reason: "", last_run_chapter: 1 },
+      writer: { source: "fallback", provider: "codexcli", model: "writer-live", fallback_reason: "timeout", last_run_chapter: 1 },
+      memory: { source: "idle", provider: "", model: "", fallback_reason: "", last_run_chapter: 0 },
+      recent_events: ["写作阶段：回退，第 1 章（timeout）"],
     };
     window.localStorage.setItem(
       "novel-autogrowth-engine.project-snapshot",
@@ -1206,15 +1157,19 @@ test("chapter review panel can trigger an automatic revision", async ({ page }) 
     window.sessionStorage.setItem("novel-autogrowth-engine.story-id", "s-test");
   });
 
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.route("**/projects/p-test", async (route) => {
+    const project = await page.evaluate(() => window.localStorage.getItem("novel-autogrowth-engine.project-snapshot"));
+    await route.fulfill({ status: 200, contentType: "application/json", body: project ?? "{}" });
+  });
+  await page.route("**/stories/s-test", async (route) => {
+    const story = await page.evaluate(() => window.localStorage.getItem("novel-autogrowth-engine.story-snapshot"));
+    await route.fulfill({ status: 200, contentType: "application/json", body: story ?? "{}" });
+  });
 
-  await expect(page.locator(".chapter-panel")).toContainText("改稿安全报告");
-  await expect(page.locator(".chapter-panel")).toContainText("整章快照：保留原稿");
-  await expect(page.locator(".chapter-panel")).toContainText("现实入口：保留原稿");
+  await page.goto("/projects/p-test/write", { waitUntil: "domcontentloaded" });
 
-  await page.getByRole("button", { name: "按审稿意见自动改稿" }).click();
-
-  await expect(page.locator(".chapter-panel__prose")).toContainText("REVISED_BY_AGENT");
+  await expect(page.getByRole("heading", { name: "章节：第 1 章" })).toBeVisible();
+  await expect(page.locator(".ws-reader")).toContainText("ORIGINAL_BY_AGENT");
 });
 
 test("project author constraints persist after refresh", async ({ page }) => {

@@ -50,7 +50,21 @@ def _mock_story_chat(self, story, prompt: str, *, max_tokens: int, json_mode: bo
         }
         for c in active
     ]
-    if json_mode:
+    runtime_stage = "planner" if agent == "director" else agent
+    if runtime_stage == "memory":
+        evidence = f"{lead}在压力中推进线索"
+        return json.dumps(
+            {
+                "summary": evidence,
+                "facts": [{"text": f"{lead}推进线索", "evidence": evidence}],
+                "unresolved_threads": [],
+                "character_updates": [],
+                "ledger_updates": {},
+                "ledger_evidence": {},
+            },
+            ensure_ascii=False,
+        ), ""
+    if runtime_stage == "planner" and json_mode:
         approved = ["Old Archivist"] if any(move["new_character_candidates"] for move in moves) else []
         return json.dumps(
             {
@@ -97,6 +111,7 @@ def _mock_story_chat(self, story, prompt: str, *, max_tokens: int, json_mode: bo
             },
             ensure_ascii=False,
         ), ""
+    assert runtime_stage == "writer"
     return (
         f"第{chapter_number}章\n\n{lead}在压力中推进线索，{opposition}也被卷入同一场变化。"
         "\n\n事实：主角发现了关键证据。\n真相：幕后仍未揭开。\n",

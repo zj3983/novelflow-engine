@@ -72,10 +72,9 @@ export function StorySidebar({
               {story.agent_runtime ? (
                 <div className="story-sidebar__summary">
                   <p className="character-card__title">运行状态</p>
-                  <p className="hint">角色代理：{runtimeSourceLabel(story.agent_runtime.character_agent.source)}</p>
-                  <p className="hint">导演代理：{runtimeSourceLabel(story.agent_runtime.director_agent.source)}</p>
-                  <p className="hint">写作代理：{runtimeSourceLabel(story.agent_runtime.writer_agent.source)}</p>
-                  <p className="hint">记忆代理：{runtimeSourceLabel(story.agent_runtime.memory_agent.source)}</p>
+                  <p className="hint">规划阶段：{runtimeSourceLabel(story.agent_runtime.planner.source)}</p>
+                  <p className="hint">写作阶段：{runtimeSourceLabel(story.agent_runtime.writer.source)}</p>
+                  <p className="hint">记忆阶段：{runtimeSourceLabel(story.agent_runtime.memory.source)}</p>
                   <p className="hint">最近事件：{story.agent_runtime.recent_events.at(-1) ?? "暂无"}</p>
                 </div>
               ) : null}

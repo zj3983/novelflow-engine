@@ -173,19 +173,31 @@ export const CONFIG_AGENT_SETTINGS_STORAGE_KEY = "novel-autogrowth-engine.agent-
 export const AGENT_RUNTIME_TARGETS = ["global", "character", "director", "writer", "memory"] as const;
 
 export type AgentRuntimeEntry = {
-  mode: "LLM-assisted";
   source: "idle" | "llm" | "fallback";
+  provider: string;
+  model: string;
   fallback_reason: string;
   last_run_chapter: number;
 };
 
 export type AgentRuntimeState = {
-  character_agent: AgentRuntimeEntry;
-  director_agent: AgentRuntimeEntry;
-  writer_agent: AgentRuntimeEntry;
-  memory_agent: AgentRuntimeEntry;
-  outline_agent: AgentRuntimeEntry;
+  planner: AgentRuntimeEntry;
+  writer: AgentRuntimeEntry;
+  memory: AgentRuntimeEntry;
   recent_events: string[];
+};
+
+export type SimulationStatus = {
+  ok?: boolean;
+  mode?: "full" | "degraded";
+  fallback_agents?: Array<"planner" | "writer" | "memory">;
+  recent_events?: string[];
+  agents?: Partial<Record<"planner" | "writer" | "memory", AgentRuntimeEntry>>;
+  world_pulse?: {
+    latest?: Record<string, unknown>;
+    history?: Array<Record<string, unknown>>;
+  };
+  visibility_inbox?: Array<Record<string, unknown>>;
 };
 
 // ── Outline types ────────────────────────────────────────────────
@@ -425,18 +437,7 @@ export type ChapterBundle = {
     turn?: string;
     pivot?: string;
   };
-  simulation_status?: {
-    ok?: boolean;
-    mode?: "full" | "degraded";
-    fallback_agents?: string[];
-    recent_events?: string[];
-    agents?: Record<string, { source?: string; fallback_reason?: string; last_run_chapter?: number }>;
-    world_pulse?: {
-      latest?: Record<string, unknown>;
-      history?: Array<Record<string, unknown>>;
-    };
-    visibility_inbox?: Array<Record<string, unknown>>;
-  };
+  simulation_status?: SimulationStatus;
   character_cards?: unknown[];
   foreshadowing?: unknown[];
   next_outline?: string;
@@ -1292,7 +1293,19 @@ function loadMockStore(): Map<string, MockStory> {
     const raw = window.localStorage.getItem(MOCK_STORE_STORAGE_KEY);
     if (!raw) return new Map();
     const parsed = JSON.parse(raw) as Array<[string, MockStory]>;
-    return new Map(parsed);
+    return new Map(
+      parsed.map(([storyId, story]) => [
+        storyId,
+        {
+          ...story,
+          agent_runtime: normalizeAgentRuntime(story.agent_runtime),
+          initial_story: {
+            ...story.initial_story,
+            agent_runtime: normalizeAgentRuntime(story.initial_story?.agent_runtime),
+          },
+        },
+      ]),
+    );
   } catch {
     return new Map();
   }
@@ -1455,48 +1468,59 @@ function normalizeAgentSettings(
 }
 
 function defaultRuntimeEntry(
-  mode: AgentSettings["mode"],
   source: AgentRuntimeEntry["source"] = "idle",
   fallbackReason = "",
   lastRunChapter = 0,
+  provider = "",
+  model = "",
 ): AgentRuntimeEntry {
   return {
-    mode,
     source,
+    provider,
+    model,
     fallback_reason: fallbackReason,
     last_run_chapter: lastRunChapter,
   };
 }
 
-function defaultAgentRuntime(mode: AgentSettings["mode"]): AgentRuntimeState {
+function normalizeRuntimeEntry(value?: Partial<AgentRuntimeEntry>): AgentRuntimeEntry {
+  return defaultRuntimeEntry(
+    value?.source ?? "idle",
+    value?.fallback_reason ?? "",
+    value?.last_run_chapter ?? 0,
+    value?.provider ?? "",
+    value?.model ?? "",
+  );
+}
+
+function normalizeAgentRuntime(runtime?: Partial<AgentRuntimeState>): AgentRuntimeState {
   return {
-    character_agent: defaultRuntimeEntry(mode),
-    director_agent: defaultRuntimeEntry(mode),
-    writer_agent: defaultRuntimeEntry(mode),
-    memory_agent: defaultRuntimeEntry(mode),
-    outline_agent: defaultRuntimeEntry(mode),
-    recent_events: [],
+    planner: normalizeRuntimeEntry(runtime?.planner),
+    writer: normalizeRuntimeEntry(runtime?.writer),
+    memory: normalizeRuntimeEntry(runtime?.memory),
+    recent_events: Array.isArray(runtime?.recent_events) ? [...runtime.recent_events] : [],
   };
+}
+
+function defaultAgentRuntime(): AgentRuntimeState {
+  return normalizeAgentRuntime();
 }
 
 function updateRuntimeForChapter(
   runtime: AgentRuntimeState,
-  mode: AgentSettings["mode"],
   chapterNumber: number,
   source: AgentRuntimeEntry["source"],
   fallbackReason = "",
 ): AgentRuntimeState {
-  const nextRuntime = clone(runtime);
-  nextRuntime.character_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
-  nextRuntime.director_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
-  nextRuntime.writer_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
-  nextRuntime.memory_agent = defaultRuntimeEntry(mode, source, fallbackReason, chapterNumber);
+  const nextRuntime = normalizeAgentRuntime(runtime);
+  nextRuntime.planner = defaultRuntimeEntry(source, fallbackReason, chapterNumber);
+  nextRuntime.writer = defaultRuntimeEntry(source, fallbackReason, chapterNumber);
+  nextRuntime.memory = defaultRuntimeEntry(source, fallbackReason, chapterNumber);
   nextRuntime.recent_events = [
     ...nextRuntime.recent_events,
-    `角色代理：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
-    `导演代理：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
-    `写作代理：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
-    `记忆代理：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
+    `规划阶段：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
+    `写作阶段：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
+    `记忆阶段：${runtimeSourceLabel(source)}，第 ${chapterNumber} 章${fallbackReason ? `（${fallbackReason}）` : ""}`,
   ].slice(-8);
   return nextRuntime;
 }
@@ -1604,6 +1628,7 @@ function syncMockStoryAuthorConstraints(story: MockStory): string[] {
 }
 
 function persistStoryIntoMockStore(story: StoryResponse): StoryResponse {
+  const normalizedRuntime = normalizeAgentRuntime(story.agent_runtime);
   const mirroredStory: MockStory = {
     story_id: story.story_id,
     outline: story.outline,
@@ -1611,13 +1636,14 @@ function persistStoryIntoMockStore(story: StoryResponse): StoryResponse {
     style: story.style,
     current_chapter: story.current_chapter,
     agent_settings: clone(story.agent_settings),
-    agent_runtime: clone(story.agent_runtime),
+    agent_runtime: clone(normalizedRuntime),
     author_constraints: clone(story.author_constraints ?? []),
     world_facts: clone(story.world_facts ?? []),
     characters: clone(story.characters),
     history: clone(story.history),
     initial_story: {
       ...clone(story),
+      agent_runtime: clone(normalizedRuntime),
       history: [],
     },
     parent_story_id: story.parent_story_id ?? null,
@@ -1645,7 +1671,7 @@ function authorConstraintSentences(authorConstraints: string[]): string[] {
 
 function mockCreateStory(payload: CreateStoryRequest): StoryResponse {
   const agentSettings = normalizeAgentSettings(payload.agent_settings);
-  const agentRuntime = defaultAgentRuntime(agentSettings.mode);
+  const agentRuntime = defaultAgentRuntime();
   const normalizedCharacters = clone(payload.characters ?? []).map((character) => ({
     ...character,
     lifecycle_state: character.lifecycle_state ?? (character.frozen ? "frozen" : "active"),
@@ -1702,7 +1728,6 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
   const fallbackReason = "模拟后端使用确定性回退。";
   story.agent_runtime = updateRuntimeForChapter(
     story.agent_runtime,
-    story.agent_settings.mode,
     chapterNumber,
     source,
     fallbackReason,
@@ -1822,13 +1847,12 @@ function mockGenerateNextChapter(storyId: string): ChapterBundle {
     simulation_status: {
       ok: true,
       mode: "degraded",
-      fallback_agents: ["character_agent", "director_agent", "memory_agent", "writer_agent"],
+      fallback_agents: ["planner", "writer", "memory"],
       recent_events: clone(story.agent_runtime.recent_events),
       agents: {
-        character_agent: clone(story.agent_runtime.character_agent),
-        director_agent: clone(story.agent_runtime.director_agent),
-        memory_agent: clone(story.agent_runtime.memory_agent),
-        writer_agent: clone(story.agent_runtime.writer_agent),
+        planner: clone(story.agent_runtime.planner),
+        writer: clone(story.agent_runtime.writer),
+        memory: clone(story.agent_runtime.memory),
       },
     },
     quality_report: {
