@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -14,6 +15,9 @@ from packages.story_core.models import AgentSettings, NewCharacterPolicy, defaul
 
 
 load_environment_files()
+
+
+logger = logging.getLogger(__name__)
 
 
 AgentRuntimeName = Literal["character", "director", "writer", "memory"]
@@ -216,6 +220,19 @@ def _read_runtime_configuration(config_path: Path) -> tuple[RuntimeConfiguration
     return _migrate_legacy_configuration(data), True
 
 
+def _record_main_configuration_error(config_path: Path, exc: Exception) -> str:
+    global _runtime_configuration_error
+    message = f"invalid runtime configuration at {config_path}: {exc}"
+    with _lock:
+        _runtime_configuration_error = message
+    logger.error(
+        "Failed to parse runtime configuration at %s (%s)",
+        config_path,
+        type(exc).__name__,
+    )
+    return message
+
+
 def load_runtime_configuration(
     path: str | os.PathLike[str] | None = None,
 ) -> RuntimeConfiguration:
@@ -236,8 +253,7 @@ def load_runtime_configuration(
             else f"invalid runtime configuration at {config_path}: {exc}"
         )
         if is_main_configuration:
-            with _lock:
-                _runtime_configuration_error = message
+            message = _record_main_configuration_error(config_path, exc)
         if message == str(exc):
             raise
         raise ValueError(message) from exc
@@ -252,7 +268,8 @@ def save_runtime_configuration(
         global _runtime_configuration_error
         validated = _validate_runtime_configuration(configuration)
         _atomic_write_configuration(validated, config_path)
-        _runtime_configuration_error = None
+        if config_path == CONFIG_FILE:
+            _runtime_configuration_error = None
         return validated.model_copy(deep=True)
 
 
@@ -324,9 +341,7 @@ def _load_config_from_file() -> None:
                 _runtime_configuration = validated
                 _runtime_configuration_error = None
             except Exception as exc:
-                _runtime_configuration_error = (
-                    f"invalid runtime configuration at {CONFIG_FILE}: {exc}"
-                )
+                _record_main_configuration_error(CONFIG_FILE, exc)
             return
 
         if LEGACY_CONFIG_FILE.exists():

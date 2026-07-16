@@ -411,19 +411,27 @@ def test_none_agent_provider_inherits_global_provider(tmp_path, monkeypatch):
     assert runtime_config.resolve_openai_runtime_settings("memory").provider == "codexcli"
 
 
-def test_runtime_configuration_error_tracks_failed_and_successful_loads(tmp_path, monkeypatch):
+def test_runtime_configuration_error_tracks_failed_and_successful_loads(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
     path = tmp_path / "runtime.json"
-    damaged = b'{"provider": "openai", broken'
+    damaged = b'{"api_key": "do-not-log", broken'
     path.write_bytes(damaged)
     monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
     monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", tmp_path / "missing.json")
     monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
     monkeypatch.setattr(runtime_config, "_runtime_configuration_error", None, raising=False)
+    caplog.set_level("ERROR", logger=runtime_config.__name__)
 
     runtime_config._load_config_from_file()
 
     assert "invalid runtime configuration" in runtime_config.get_runtime_configuration_error()
     assert path.read_bytes() == damaged
+    assert str(path) in caplog.text
+    assert "JSONDecodeError" in caplog.text
+    assert "do-not-log" not in caplog.text
 
     path.write_text(
         json.dumps(RuntimeConfiguration().model_dump(mode="json")),
@@ -454,11 +462,24 @@ def test_public_main_configuration_load_updates_error_state(tmp_path, monkeypatc
     assert runtime_config.get_runtime_configuration_error() is None
 
 
-def test_successful_save_clears_runtime_configuration_error(tmp_path, monkeypatch):
-    path = tmp_path / "runtime.json"
-    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", "previous error", raising=False)
+def test_custom_save_preserves_main_error_until_main_save(tmp_path, monkeypatch):
+    main_path = tmp_path / "runtime.json"
+    export_path = tmp_path / "export.json"
+    main_path.write_bytes(b'{"provider": "openai", broken')
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", main_path)
+    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", None, raising=False)
 
-    save_runtime_configuration(RuntimeConfiguration(), path)
+    runtime_config._load_config_from_file()
+    main_error = runtime_config.get_runtime_configuration_error()
+
+    save_runtime_configuration(RuntimeConfiguration(), export_path)
+
+    assert runtime_config.get_runtime_configuration_error() == main_error
+    assert main_path.read_bytes() == b'{"provider": "openai", broken'
+    assert export_path.exists()
+
+    save_runtime_configuration(RuntimeConfiguration())
 
     assert runtime_config.get_runtime_configuration_error() is None
 
