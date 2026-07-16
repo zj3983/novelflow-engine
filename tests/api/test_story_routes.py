@@ -844,6 +844,25 @@ def test_runtime_connection_uses_candidate_codex_command_and_stage_model(monkeyp
     assert captured == {"command": "candidate-codex", "model": "candidate-memory"}
 
 
+def test_runtime_cli_info_reports_detected_version(monkeypatch):
+    candidate = _runtime_configuration(provider="codexcli")
+    candidate["providers"]["codexcli"]["codex_command"] = "candidate-codex"
+    assert client.put("/runtime-settings", json=candidate).status_code == 200
+    monkeypatch.setattr(
+        "apps.api.routes.stories.read_codex_cli_version",
+        lambda command: f"version-from-{command}",
+    )
+
+    response = client.get("/runtime-settings/cli-info")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "available": True,
+        "command": "candidate-codex",
+        "version": "version-from-candidate-codex",
+    }
+
+
 def test_runtime_connection_falls_back_to_models_when_chat_endpoint_missing(monkeypatch):
     captured_urls = []
 

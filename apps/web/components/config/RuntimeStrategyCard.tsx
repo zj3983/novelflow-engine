@@ -1,109 +1,65 @@
-import type { RuntimeStrategySettings } from "./types";
+import type { RuntimeSettings, RuntimeStageName } from "../../lib/api";
+import type { RuntimeConnectionMap } from "./types";
 
-type RuntimeStrategyCardProps = {
-  value: RuntimeStrategySettings;
-  onChange: (next: RuntimeStrategySettings) => void;
+const STAGES: Array<{ key: RuntimeStageName; label: string; description: string }> = [
+  { key: "planner", label: "剧情规划", description: "章节意图、人物行动和事件计划" },
+  { key: "writer", label: "正文写作", description: "正文生成、扩写与改稿" },
+  { key: "memory", label: "记忆回写", description: "事实、人物变化和未决线索" },
+];
+
+type Props = {
+  value: RuntimeSettings;
+  statuses: RuntimeConnectionMap;
+  onChange: (next: RuntimeSettings) => void;
+  onTest: (stage: RuntimeStageName) => void;
 };
 
-function updateStrategy(
-  current: RuntimeStrategySettings,
-  patch: Partial<RuntimeStrategySettings>,
-): RuntimeStrategySettings {
-  return {
-    ...current,
-    ...patch,
-  };
-}
+export function RuntimeStrategyCard({ value, statuses, onChange, onTest }: Props) {
+  const selected = value.providers[value.provider];
 
-export function RuntimeStrategyCard({ value, onChange }: RuntimeStrategyCardProps) {
+  function updateModel(stage: RuntimeStageName, model: string) {
+    onChange({
+      ...value,
+      providers: {
+        ...value.providers,
+        [value.provider]: { ...selected, [stage]: model },
+      },
+    });
+  }
+
   return (
-    <section className="config-card config-card--spacious" aria-label="运行策略">
+    <section className="config-card config-card--spacious" aria-label="写作阶段模型">
       <div className="config-card__header">
-        <div>
-          <h2 className="config-card__title">运行策略</h2>
-        </div>
+        <h2 className="config-card__title">写作阶段模型</h2>
       </div>
-
-      <div className="config-stack">
-        <div className="field">
-          <label htmlFor="config-global-model">全局默认模型</label>
-          <input
-            id="config-global-model"
-            aria-label="全局默认模型"
-            className="text-input"
-            value={value.global_model}
-            onChange={(event) => onChange(updateStrategy(value, { global_model: event.target.value }))}
-          />
-        </div>
-
-        <div className="config-grid config-grid--two-up">
-          <div className="field">
-            <label htmlFor="config-character-model">角色代理模型</label>
-            <input
-              id="config-character-model"
-              aria-label="角色代理模型"
-              className="text-input"
-              value={value.character_model}
-              onChange={(event) => onChange(updateStrategy(value, { character_model: event.target.value }))}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="config-director-model">导演代理模型</label>
-            <input
-              id="config-director-model"
-              aria-label="导演代理模型"
-              className="text-input"
-              value={value.director_model}
-              onChange={(event) => onChange(updateStrategy(value, { director_model: event.target.value }))}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="config-writer-model">写作代理模型</label>
-            <input
-              id="config-writer-model"
-              aria-label="写作代理模型"
-              className="text-input"
-              value={value.writer_model}
-              onChange={(event) => onChange(updateStrategy(value, { writer_model: event.target.value }))}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="config-memory-model">记忆代理模型</label>
-            <input
-              id="config-memory-model"
-              aria-label="记忆代理模型"
-              className="text-input"
-              value={value.memory_model}
-              onChange={(event) => onChange(updateStrategy(value, { memory_model: event.target.value }))}
-            />
-          </div>
-        </div>
-
-        <div className="field">
-          <label htmlFor="config-new-character-policy">新角色策略</label>
-          <select
-            id="config-new-character-policy"
-            aria-label="新角色策略"
-            className="text-input"
-            value={value.new_character_policy}
-            onChange={(event) =>
-              onChange(
-                updateStrategy(value, {
-                  new_character_policy: event.target.value as RuntimeStrategySettings["new_character_policy"],
-                }),
-              )
-            }
-          >
-            <option value="Director review">导演审核</option>
-            <option value="Auto-approve named candidates">自动通过具名候选</option>
-            <option value="Manual review">人工审核</option>
-          </select>
-        </div>
-
-        <div className="config-card__note config-card__note--inline" aria-label="运行策略摘要">
-          <p className="hint">默认模型：{value.global_model || "未填写"}</p>
-          <p className="hint">新角色策略：{value.new_character_policy}</p>
-        </div>
+      <div className="config-stage-list">
+        {STAGES.map((stage) => {
+          const status = statuses[stage.key];
+          return (
+            <div className="config-stage-row" key={stage.key}>
+              <div className="config-stage-row__label">
+                <label htmlFor={`config-${stage.key}-model`}>{stage.label}模型</label>
+                <span>{stage.description}</span>
+              </div>
+              <input
+                id={`config-${stage.key}-model`}
+                aria-label={`${stage.label}模型`}
+                className="text-input"
+                value={selected[stage.key]}
+                onChange={(event) => updateModel(stage.key, event.target.value)}
+              />
+              <button className="btn btn--ghost" type="button" onClick={() => onTest(stage.key)} disabled={status.state === "testing"}>
+                测试{stage.label}
+              </button>
+              <p className="config-status" aria-live="polite">
+                <span className={`runtime-status__badge runtime-status__badge--${status.state}`}>
+                  {status.state === "idle" ? "待测" : status.state === "testing" ? "测试中" : status.state === "success" ? "正常" : "失败"}
+                </span>
+                {status.message ? <span className="runtime-status__text">{status.message}</span> : null}
+              </p>
+            </div>
+          );
+        })}
       </div>
     </section>
   );

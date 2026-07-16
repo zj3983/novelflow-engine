@@ -33,6 +33,7 @@ from packages.story_core.models import (
 from packages.story_core.orchestrator import _merge_writing_review_quality, _review_chapter_body
 from packages.story_core.quality import validate_bundle
 from packages.story_core.http_retry import RetryConfig, post_json_with_retry
+from packages.story_core.codex_cli_provider import read_codex_cli_version
 from packages.story_core.runtime_config import (
     RuntimeConfiguration,
     RuntimeProvider,
@@ -235,6 +236,12 @@ class RuntimeSettingsTestResponse(BaseModel):
     stage: RuntimeStage
     model: str
     message: str
+
+
+class CodexCLIInfoResponse(BaseModel):
+    available: bool
+    command: str
+    version: str
 
 
 class AgentContextResponse(BaseModel):
@@ -2016,6 +2023,16 @@ def freeze_character(story_id: str, character_name: str) -> StoryResponse:
 @router.get("/runtime-settings")
 def read_runtime_settings() -> dict[str, object]:
     return _serialize_runtime_settings()
+
+
+@router.get("/runtime-settings/cli-info")
+def read_runtime_cli_info() -> CodexCLIInfoResponse:
+    command = get_runtime_configuration().providers.codexcli.codex_command or "codex"
+    try:
+        version = read_codex_cli_version(command)
+    except Exception:
+        return CodexCLIInfoResponse(available=False, command=command, version="")
+    return CodexCLIInfoResponse(available=True, command=command, version=version)
 
 
 @router.put("/runtime-settings")

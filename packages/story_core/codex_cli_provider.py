@@ -44,6 +44,36 @@ def _build_prompt(payload: dict[str, Any]) -> str:
     return "\n\n".join(sections).strip()
 
 
+def _codex_command_prefix(command: str) -> list[str]:
+    command = command or "codex"
+    executable = shutil.which(f"{command}.exe") if not Path(command).suffix else None
+    resolved_command = executable or shutil.which(command) or command
+    lowered = resolved_command.lower()
+    if lowered.endswith(".ps1"):
+        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", resolved_command]
+    if lowered.endswith((".cmd", ".bat")):
+        return ["cmd", "/d", "/c", resolved_command]
+    return [resolved_command]
+
+
+def read_codex_cli_version(command: str = "codex") -> str:
+    completed = subprocess.run(
+        [*_codex_command_prefix(command), "--version"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=10,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(f"codexcli_version_failed:{detail[:200]}")
+    version = (completed.stdout or completed.stderr or "").strip()
+    if not version:
+        raise RuntimeError("codexcli_version_empty")
+    return version.splitlines()[0].strip()
+
+
 def post_json_via_codex_cli(
     payload: dict[str, Any],
     *,
@@ -76,12 +106,7 @@ def post_json_via_codex_cli(
         subprocess_env = os.environ.copy()
         subprocess_env["CODEX_HOME"] = str(isolated_codex_home)
         output_path = Path(temp_dir) / "last_message.txt"
-        resolved_command = shutil.which(command) or command
-        command_prefix = (
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", resolved_command]
-            if resolved_command.lower().endswith(".ps1")
-            else [resolved_command]
-        )
+        command_prefix = _codex_command_prefix(command)
         args = [
             *command_prefix,
             "exec",

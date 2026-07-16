@@ -3049,6 +3049,51 @@ body {
   gap: 14px;
 }
 
+.config-readonly {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.48);
+  color: var(--muted);
+}
+
+.config-stage-list {
+  display: grid;
+  gap: 10px;
+}
+
+.config-stage-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(220px, 1fr) auto;
+  gap: 10px 12px;
+  align-items: center;
+  padding: 12px 0;
+  border-top: 1px solid var(--edge);
+}
+
+.config-stage-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.config-stage-row__label {
+  display: grid;
+  gap: 3px;
+}
+
+.config-stage-row__label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.config-stage-row .config-status {
+  grid-column: 2 / -1;
+  min-height: 24px;
+}
+
 .config-grid {
   display: grid;
   gap: 14px;
@@ -3174,6 +3219,15 @@ body {
   .config-grid--two-up,
   .config-card--grid .config-grid {
     grid-template-columns: 1fr;
+  }
+
+  .config-stage-row {
+    grid-template-columns: 1fr auto;
+  }
+
+  .config-stage-row__label,
+  .config-stage-row .config-status {
+    grid-column: 1 / -1;
   }
 }
 

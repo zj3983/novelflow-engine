@@ -66,26 +66,37 @@ export type CharacterPortrait = {
 export type AgentSettings = NonNullable<CreateStoryRequest["agent_settings"]>;
 export type RuntimeStrategySettings = AgentSettings;
 
-export type RuntimeEndpoint = {
+export type RuntimeProvider = "codexcli" | "openai";
+export type RuntimeStageName = "planner" | "writer" | "memory";
+
+export type RuntimeProviderSettings = {
   api_key: string;
   base_url: string;
-  provider: "codexcli" | "openai";
   codex_command: string;
+  planner: string;
+  writer: string;
+  memory: string;
 };
-
-export type AgentRuntimeName = "character" | "director" | "writer" | "memory";
 
 export type RuntimeSettings = {
-  global: RuntimeEndpoint;
-  agents: Record<AgentRuntimeName, RuntimeEndpoint>;
+  provider: RuntimeProvider;
+  providers: Record<RuntimeProvider, RuntimeProviderSettings>;
+  temperature: number;
+  new_character_policy: AgentSettings["new_character_policy"];
 };
-
-export type RuntimeConnectionTarget = "global" | AgentRuntimeName;
 
 export type RuntimeConnectionResult = {
   ok: boolean;
-  agent_name: RuntimeConnectionTarget;
+  provider: RuntimeProvider;
+  stage: RuntimeStageName;
+  model: string;
   message: string;
+};
+
+export type CodexCLIInfo = {
+  available: boolean;
+  command: string;
+  version: string;
 };
 
 export type NovelTypeRulebook = {
@@ -161,11 +172,6 @@ export type ProjectAutomationJobRequest = {
   include_body?: boolean;
   openclaw_agent?: string;
   openclaw_timeout?: number;
-};
-
-export type RuntimeSettingsPatch = {
-  global?: Partial<RuntimeEndpoint>;
-  agents?: Partial<RuntimeSettings["agents"]>;
 };
 
 export const CONFIG_AGENT_SETTINGS_STORAGE_KEY = "novel-autogrowth-engine.agent-settings";
@@ -1361,16 +1367,8 @@ let mockRuntimeSettings: RuntimeSettings = defaultRuntimeSettings();
 let mockRuntimeStrategy: RuntimeStrategySettings = defaultAgentSettings();
 const runtimeSettingsStorageKey = "novel-autogrowth-engine.runtime-settings";
 
-export function runtimeTargetLabel(target: RuntimeConnectionTarget): string {
-  return target === "global"
-    ? "全局默认"
-    : target === "character"
-      ? "角色代理"
-      : target === "director"
-        ? "导演代理"
-        : target === "writer"
-          ? "写作代理"
-          : "记忆代理";
+export function runtimeStageLabel(stage: RuntimeStageName): string {
+  return stage === "planner" ? "剧情规划" : stage === "writer" ? "正文写作" : "记忆回写";
 }
 
 function runtimeSourceLabel(source: AgentRuntimeEntry["source"]): string {
@@ -1404,52 +1402,37 @@ export function createDefaultAgentSettings(): AgentSettings {
   return defaultAgentSettings();
 }
 
-function defaultRuntimeEndpoint(): RuntimeEndpoint {
-  return {
-    api_key: "",
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    provider: "codexcli",
-    codex_command: "codex",
-  };
-}
-
-function blankRuntimeEndpoint(): RuntimeEndpoint {
+function defaultCodexCLIProvider(): RuntimeProviderSettings {
   return {
     api_key: "",
     base_url: "",
-    provider: "openai",
+    codex_command: "codex",
+    planner: "gpt-5.4",
+    writer: "gpt-5.4",
+    memory: "gpt-5.4",
+  };
+}
+
+function defaultOpenAIProvider(): RuntimeProviderSettings {
+  return {
+    api_key: "",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     codex_command: "",
+    planner: "qwen3.6-plus",
+    writer: "qwen3.6-plus",
+    memory: "qwen3.6-plus",
   };
 }
 
 export function createDefaultRuntimeSettings(): RuntimeSettings {
   return {
-    global: defaultRuntimeEndpoint(),
-    agents: {
-      character: blankRuntimeEndpoint(),
-      director: blankRuntimeEndpoint(),
-      writer: blankRuntimeEndpoint(),
-      memory: blankRuntimeEndpoint(),
+    provider: "codexcli",
+    providers: {
+      codexcli: defaultCodexCLIProvider(),
+      openai: defaultOpenAIProvider(),
     },
-  };
-}
-
-export function mergeRuntimeSettings(
-  current: RuntimeSettings,
-  updates: RuntimeSettingsPatch,
-): RuntimeSettings {
-  return {
-    global: { ...current.global, ...(updates.global ?? {}) },
-    agents: {
-      ...current.agents,
-      ...Object.entries(updates.agents ?? {}).reduce((acc, [key, value]) => {
-        acc[key as AgentRuntimeName] = {
-          ...current.agents[key as AgentRuntimeName],
-          ...value,
-        };
-        return acc;
-      }, {} as RuntimeSettings["agents"]),
-    },
+    temperature: 0.7,
+    new_character_policy: "Director review",
   };
 }
 
@@ -1525,40 +1508,33 @@ function updateRuntimeForChapter(
   return nextRuntime;
 }
 
-function normalizeRuntimeEndpoint(
-  value?: Partial<RuntimeEndpoint>,
-  fallbackBaseUrl = "https://api.openai.com/v1",
-): RuntimeEndpoint {
+function normalizeRuntimeProvider(
+  value: Partial<RuntimeProviderSettings> | undefined,
+  fallback: RuntimeProviderSettings,
+): RuntimeProviderSettings {
   return {
-    api_key: value?.api_key ?? "",
-    base_url: value?.base_url ?? fallbackBaseUrl,
-    provider: value?.provider === "openai" ? "openai" : value?.provider === "codexcli" ? "codexcli" : "openai",
-    codex_command: value?.codex_command ?? "",
+    api_key: value?.api_key ?? fallback.api_key,
+    base_url: value?.base_url ?? fallback.base_url,
+    codex_command: value?.codex_command ?? fallback.codex_command,
+    planner: value?.planner ?? fallback.planner,
+    writer: value?.writer ?? fallback.writer,
+    memory: value?.memory ?? fallback.memory,
   };
 }
 
-function normalizeRuntimeSettings(value?: Partial<RuntimeSettings> | any): RuntimeSettings {
+function normalizeRuntimeSettings(value?: Partial<RuntimeSettings>): RuntimeSettings {
   const base = defaultRuntimeSettings();
   if (!value) {
     return base;
   }
-
-  if ("api_key" in value || "base_url" in value) {
-    const endpoint = normalizeRuntimeEndpoint(value as Partial<RuntimeEndpoint>);
-    return {
-      global: endpoint,
-      agents: base.agents,
-    };
-  }
-
   return {
-    global: normalizeRuntimeEndpoint(value.global),
-    agents: {
-      character: normalizeRuntimeEndpoint(value.agents?.character, ""),
-      director: normalizeRuntimeEndpoint(value.agents?.director, ""),
-      writer: normalizeRuntimeEndpoint(value.agents?.writer, ""),
-      memory: normalizeRuntimeEndpoint(value.agents?.memory, ""),
+    provider: value.provider === "openai" ? "openai" : "codexcli",
+    providers: {
+      codexcli: normalizeRuntimeProvider(value.providers?.codexcli, base.providers.codexcli),
+      openai: normalizeRuntimeProvider(value.providers?.openai, base.providers.openai),
     },
+    temperature: Number(value.temperature ?? base.temperature),
+    new_character_policy: value.new_character_policy ?? base.new_character_policy,
   };
 }
 
@@ -2155,6 +2131,12 @@ export async function fetchRuntimeSettings(): Promise<RuntimeSettings> {
   }
 }
 
+export async function fetchCodexCLIInfo(): Promise<CodexCLIInfo> {
+  return (await tryFetchJson(`${apiBase()}/runtime-settings/cli-info`, {
+    method: "GET",
+  })) as CodexCLIInfo;
+}
+
 export async function fetchRuntimeStrategy(): Promise<RuntimeStrategySettings> {
   try {
     const response = await tryFetchJson(`${apiBase()}/runtime-strategy`, {
@@ -2200,16 +2182,14 @@ export async function saveRuntimeStrategy(settings: RuntimeStrategySettings): Pr
 
 export async function testRuntimeSettingsConnection(
   settings: RuntimeSettings,
-  target: RuntimeConnectionTarget,
-  modelName?: string,
+  stage: RuntimeStageName,
 ): Promise<RuntimeConnectionResult> {
   try {
     const response = await tryFetchJson(`${apiBase()}/runtime-settings/test`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        agent_name: target,
-        model_name: modelName,
+        stage,
         runtime_settings: settings,
       }),
     });
