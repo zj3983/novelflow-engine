@@ -1,4 +1,6 @@
 import json
+import stat
+import threading
 
 import pytest
 from pydantic import ValidationError
@@ -80,10 +82,10 @@ def test_load_migrates_codexcli_qwen_stage_models_and_discards_obsolete_models(t
             "new_character_policy": "Auto-approve named candidates",
         },
     }
-    path.write_text(json.dumps(legacy), encoding="utf-8")
+    legacy_bytes = json.dumps(legacy).encode("utf-8")
+    path.write_bytes(legacy_bytes)
 
     migrated = load_runtime_configuration(path)
-    persisted = json.loads(path.read_text(encoding="utf-8"))
 
     assert migrated.provider == "codexcli"
     assert migrated.providers.codexcli.planner == "gpt-5.4"
@@ -91,9 +93,39 @@ def test_load_migrates_codexcli_qwen_stage_models_and_discards_obsolete_models(t
     assert migrated.providers.codexcli.memory == "gpt-5.4"
     assert migrated.temperature == 0.2
     assert migrated.new_character_policy == "Auto-approve named candidates"
-    assert "strategy" not in persisted
-    assert "character_model" not in json.dumps(persisted)
-    assert "global_model" not in json.dumps(persisted)
+    assert path.read_bytes() == legacy_bytes
+    assert "character_model" not in json.dumps(migrated.model_dump(mode="json"))
+    assert "global_model" not in json.dumps(migrated.model_dump(mode="json"))
+
+
+def test_read_only_legacy_migrates_to_new_file_without_modifying_legacy(tmp_path, monkeypatch):
+    legacy_path = tmp_path / "legacy-runtime.json"
+    config_path = tmp_path / "runtime.json"
+    legacy_bytes = json.dumps(
+        {
+            "global": {"provider": "codexcli", "codex_command": "legacy-codex"},
+            "strategy": {
+                "director_model": "qwen3.6-plus",
+                "writer_model": "qwen3.6-plus",
+                "memory_model": "qwen3.6-plus",
+            },
+        }
+    ).encode("utf-8")
+    legacy_path.write_bytes(legacy_bytes)
+    legacy_path.chmod(stat.S_IREAD)
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", legacy_path)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
+
+    try:
+        runtime_config._load_config_from_file()
+    finally:
+        legacy_path.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    assert legacy_path.read_bytes() == legacy_bytes
+    assert config_path.exists()
+    migrated = load_runtime_configuration(config_path)
+    assert migrated.providers.codexcli.planner == "gpt-5.4"
 
 
 def test_openai_migration_preserves_non_qwen_stage_models(tmp_path):
@@ -255,6 +287,180 @@ def test_set_agent_runtime_settings_persists_across_reload(tmp_path, monkeypatch
     runtime_config._load_config_from_file()
 
     assert get_agent_runtime_settings("writer") == expected
+
+
+def test_concurrent_compatibility_setters_preserve_both_updates(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
+    set_runtime_configuration(_configuration_data(provider="codexcli"))
+    strategy = runtime_config.get_runtime_strategy_settings()
+    strategy.writer_model = "thread-writer-model"
+    writer_override = OpenAIRuntimeSettings(
+        api_key="thread-writer-key",
+        base_url="https://thread-writer.test/v1",
+        provider="openai",
+        codex_command="thread-writer-codex",
+    )
+
+    original_atomic_write = runtime_config._atomic_write_configuration
+    first_write_entered = threading.Event()
+    release_first_write = threading.Event()
+    second_write_entered = threading.Event()
+    second_thread_started = threading.Event()
+    write_call_lock = threading.Lock()
+    write_call_count = 0
+    errors: list[BaseException] = []
+
+    def synchronized_atomic_write(configuration, config_path):
+        nonlocal write_call_count
+        with write_call_lock:
+            write_call_count += 1
+            call_number = write_call_count
+        if call_number == 1:
+            first_write_entered.set()
+            if not release_first_write.wait(timeout=5):
+                raise TimeoutError("first write was not released")
+        elif call_number == 2:
+            second_write_entered.set()
+        original_atomic_write(configuration, config_path)
+
+    def run(callable_):
+        try:
+            callable_()
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(runtime_config, "_atomic_write_configuration", synchronized_atomic_write)
+    agent_thread = threading.Thread(
+        target=run,
+        args=(lambda: runtime_config.set_agent_runtime_settings("writer", writer_override),),
+    )
+
+    def update_strategy():
+        second_thread_started.set()
+        runtime_config.set_runtime_strategy_settings(strategy)
+
+    strategy_thread = threading.Thread(target=run, args=(update_strategy,))
+    threads = [agent_thread, strategy_thread]
+
+    agent_thread.start()
+    assert first_write_entered.wait(timeout=5)
+    strategy_thread.start()
+    assert second_thread_started.wait(timeout=5)
+    second_entered_while_first_blocked = second_write_entered.wait(timeout=0.5)
+    release_first_write.set()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert second_entered_while_first_blocked is False
+    assert write_call_count == 2
+    persisted = load_runtime_configuration(path)
+    assert persisted.providers.codexcli.writer == "thread-writer-model"
+    assert persisted.compatibility.agents["writer"].api_key == "thread-writer-key"
+
+
+def test_save_revalidates_mutated_configuration_instance_before_writing(tmp_path):
+    path = tmp_path / "runtime.json"
+    configuration = RuntimeConfiguration.model_validate(_configuration_data(provider="openai"))
+    save_runtime_configuration(configuration, path)
+    original_bytes = path.read_bytes()
+    configuration.providers.openai.writer = None
+
+    with pytest.raises(ValidationError, match="writer"):
+        save_runtime_configuration(configuration, path)
+
+    assert path.read_bytes() == original_bytes
+
+
+def test_explicit_openai_agent_override_wins_over_global_codexcli(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
+    set_runtime_configuration(_configuration_data(provider="codexcli"))
+    runtime_config.set_agent_runtime_settings(
+        "writer",
+        {
+            "api_key": "writer-openai-key",
+            "base_url": "https://writer-openai.test/v1",
+            "provider": "openai",
+            "codex_command": "",
+        },
+    )
+
+    resolved = runtime_config.resolve_openai_runtime_settings("writer")
+
+    assert resolved.provider == "openai"
+    assert resolved.api_key == "writer-openai-key"
+    assert resolved.base_url == "https://writer-openai.test/v1"
+
+
+def test_none_agent_provider_inherits_global_provider(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
+    set_runtime_configuration(_configuration_data(provider="codexcli"))
+    runtime_config.set_agent_runtime_settings(
+        "memory",
+        {"api_key": "memory-key", "base_url": "", "provider": None, "codex_command": ""},
+    )
+
+    assert get_agent_runtime_settings("memory").provider is None
+    assert runtime_config.resolve_openai_runtime_settings("memory").provider == "codexcli"
+
+
+def test_runtime_configuration_error_tracks_failed_and_successful_loads(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    damaged = b'{"provider": "openai", broken'
+    path.write_bytes(damaged)
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
+    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", None, raising=False)
+
+    runtime_config._load_config_from_file()
+
+    assert "invalid runtime configuration" in runtime_config.get_runtime_configuration_error()
+    assert path.read_bytes() == damaged
+
+    path.write_text(
+        json.dumps(RuntimeConfiguration().model_dump(mode="json")),
+        encoding="utf-8",
+    )
+    runtime_config._load_config_from_file()
+
+    assert runtime_config.get_runtime_configuration_error() is None
+
+
+def test_public_main_configuration_load_updates_error_state(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    path.write_bytes(b'{"provider": "openai", broken')
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", None, raising=False)
+
+    with pytest.raises(ValueError, match="invalid runtime configuration"):
+        load_runtime_configuration()
+
+    assert str(path) in runtime_config.get_runtime_configuration_error()
+
+    path.write_text(
+        json.dumps(RuntimeConfiguration().model_dump(mode="json")),
+        encoding="utf-8",
+    )
+    load_runtime_configuration()
+
+    assert runtime_config.get_runtime_configuration_error() is None
+
+
+def test_successful_save_clears_runtime_configuration_error(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", "previous error", raising=False)
+
+    save_runtime_configuration(RuntimeConfiguration(), path)
+
+    assert runtime_config.get_runtime_configuration_error() is None
 
 
 def test_legacy_interfaces_project_new_configuration(tmp_path, monkeypatch):

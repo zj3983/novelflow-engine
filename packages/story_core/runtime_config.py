@@ -5,7 +5,7 @@ import os
 import tempfile
 from pathlib import Path
 from threading import RLock
-from typing import Literal
+from typing import Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -24,13 +24,13 @@ RUNTIME_STAGES: tuple[RuntimeStage, ...] = ("planner", "writer", "memory")
 
 
 class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", revalidate_instances="always")
 
 
 class OpenAIRuntimeSettings(BaseModel):
     api_key: str = ""
     base_url: str = ""
-    provider: RuntimeProvider = "openai"
+    provider: RuntimeProvider | None = None
     codex_command: str = ""
 
 
@@ -87,7 +87,7 @@ class ProviderConfigurations(_StrictModel):
 class CompatibilityAgentConnection(_StrictModel):
     api_key: str = ""
     base_url: str = ""
-    provider: RuntimeProvider = "openai"
+    provider: RuntimeProvider | None = None
     codex_command: str = ""
 
 
@@ -135,6 +135,7 @@ CONFIG_FILE = Path(
 
 _lock = RLock()
 _runtime_configuration = RuntimeConfiguration()
+_runtime_configuration_error: str | None = None
 _agent_runtime_settings: dict[str, OpenAIRuntimeSettings] = {}
 
 
@@ -206,31 +207,78 @@ def _is_new_configuration(data: dict) -> bool:
     return "providers" in data
 
 
-def load_runtime_configuration(path: str | os.PathLike[str] = CONFIG_FILE) -> RuntimeConfiguration:
-    config_path = Path(path)
+def _read_runtime_configuration(config_path: Path) -> tuple[RuntimeConfiguration, bool]:
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise TypeError("configuration root must be an object")
+    if _is_new_configuration(data):
+        return RuntimeConfiguration.model_validate(data), False
+    return _migrate_legacy_configuration(data), True
+
+
+def load_runtime_configuration(
+    path: str | os.PathLike[str] | None = None,
+) -> RuntimeConfiguration:
+    global _runtime_configuration_error
+    config_path = Path(path) if path is not None else CONFIG_FILE
+    is_main_configuration = config_path == CONFIG_FILE
     try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise TypeError("configuration root must be an object")
-        if _is_new_configuration(data):
-            configuration = RuntimeConfiguration.model_validate(data)
-        else:
-            configuration = _migrate_legacy_configuration(data)
-            _atomic_write_configuration(configuration, config_path)
+        configuration, _ = _read_runtime_configuration(config_path)
+        if is_main_configuration:
+            with _lock:
+                _runtime_configuration_error = None
         return configuration
     except Exception as exc:
-        if isinstance(exc, ValueError) and str(exc).startswith("invalid runtime configuration"):
+        message = (
+            str(exc)
+            if isinstance(exc, ValueError)
+            and str(exc).startswith("invalid runtime configuration")
+            else f"invalid runtime configuration at {config_path}: {exc}"
+        )
+        if is_main_configuration:
+            with _lock:
+                _runtime_configuration_error = message
+        if message == str(exc):
             raise
-        raise ValueError(f"invalid runtime configuration at {config_path}: {exc}") from exc
+        raise ValueError(message) from exc
 
 
 def save_runtime_configuration(
     configuration: RuntimeConfiguration | dict,
-    path: str | os.PathLike[str] = CONFIG_FILE,
+    path: str | os.PathLike[str] | None = None,
 ) -> RuntimeConfiguration:
-    validated = RuntimeConfiguration.model_validate(configuration)
-    _atomic_write_configuration(validated, Path(path))
-    return validated.model_copy(deep=True)
+    config_path = Path(path) if path is not None else CONFIG_FILE
+    with _lock:
+        global _runtime_configuration_error
+        validated = _validate_runtime_configuration(configuration)
+        _atomic_write_configuration(validated, config_path)
+        _runtime_configuration_error = None
+        return validated.model_copy(deep=True)
+
+
+def _validate_runtime_configuration(
+    configuration: RuntimeConfiguration | dict,
+) -> RuntimeConfiguration:
+    data = (
+        configuration.model_dump(mode="python", warnings=False)
+        if isinstance(configuration, RuntimeConfiguration)
+        else configuration
+    )
+    return RuntimeConfiguration.model_validate(data)
+
+
+def _commit_runtime_update(
+    update: Callable[[RuntimeConfiguration], None],
+) -> RuntimeConfiguration:
+    with _lock:
+        global _runtime_configuration, _runtime_configuration_error
+        candidate = _validate_runtime_configuration(_runtime_configuration)
+        update(candidate)
+        validated = _validate_runtime_configuration(candidate)
+        _atomic_write_configuration(validated, CONFIG_FILE)
+        _runtime_configuration = validated
+        _runtime_configuration_error = None
+        return validated.model_copy(deep=True)
 
 
 def get_runtime_configuration() -> RuntimeConfiguration:
@@ -239,11 +287,12 @@ def get_runtime_configuration() -> RuntimeConfiguration:
 
 
 def set_runtime_configuration(configuration: RuntimeConfiguration | dict) -> RuntimeConfiguration:
-    validated = RuntimeConfiguration.model_validate(configuration)
     with _lock:
-        global _runtime_configuration
-        save_runtime_configuration(validated, CONFIG_FILE)
+        global _runtime_configuration, _runtime_configuration_error
+        validated = _validate_runtime_configuration(configuration)
+        _atomic_write_configuration(validated, CONFIG_FILE)
         _runtime_configuration = validated
+        _runtime_configuration_error = None
         return _runtime_configuration.model_copy(deep=True)
 
 
@@ -264,21 +313,38 @@ def resolve_stage_runtime(stage: RuntimeStage) -> StageRuntimeSettings:
 
 
 def _load_config_from_file() -> None:
-    global _runtime_configuration
-    if CONFIG_FILE.exists():
-        try:
-            _runtime_configuration = load_runtime_configuration(CONFIG_FILE)
-        except ValueError:
-            pass
-        return
+    with _lock:
+        global _runtime_configuration, _runtime_configuration_error
+        if CONFIG_FILE.exists():
+            try:
+                configuration, migrated = _read_runtime_configuration(CONFIG_FILE)
+                validated = _validate_runtime_configuration(configuration)
+                if migrated:
+                    _atomic_write_configuration(validated, CONFIG_FILE)
+                _runtime_configuration = validated
+                _runtime_configuration_error = None
+            except Exception as exc:
+                _runtime_configuration_error = (
+                    f"invalid runtime configuration at {CONFIG_FILE}: {exc}"
+                )
+            return
 
-    if LEGACY_CONFIG_FILE.exists():
-        try:
-            _runtime_configuration = load_runtime_configuration(LEGACY_CONFIG_FILE)
-            if LEGACY_CONFIG_FILE != CONFIG_FILE:
-                save_runtime_configuration(_runtime_configuration, CONFIG_FILE)
-        except ValueError:
-            pass
+        if LEGACY_CONFIG_FILE.exists():
+            try:
+                configuration, _ = _read_runtime_configuration(LEGACY_CONFIG_FILE)
+                validated = _validate_runtime_configuration(configuration)
+                _atomic_write_configuration(validated, CONFIG_FILE)
+                _runtime_configuration = validated
+                _runtime_configuration_error = None
+            except Exception as exc:
+                _runtime_configuration_error = (
+                    f"invalid runtime configuration at {LEGACY_CONFIG_FILE}: {exc}"
+                )
+
+
+def get_runtime_configuration_error() -> str | None:
+    with _lock:
+        return _runtime_configuration_error
 
 
 _load_config_from_file()
@@ -288,8 +354,9 @@ def _empty_runtime_settings() -> OpenAIRuntimeSettings:
     return OpenAIRuntimeSettings(api_key="", base_url="")
 
 
-def get_runtime_settings() -> OpenAIRuntimeSettings:
-    configuration = get_runtime_configuration()
+def _runtime_settings_from_configuration(
+    configuration: RuntimeConfiguration,
+) -> OpenAIRuntimeSettings:
     selected = getattr(configuration.providers, configuration.provider)
     return OpenAIRuntimeSettings(
         api_key=selected.api_key,
@@ -299,16 +366,29 @@ def get_runtime_settings() -> OpenAIRuntimeSettings:
     )
 
 
+def get_runtime_settings() -> OpenAIRuntimeSettings:
+    with _lock:
+        return _runtime_settings_from_configuration(_runtime_configuration)
+
+
+def _apply_runtime_settings(
+    configuration: RuntimeConfiguration,
+    settings: OpenAIRuntimeSettings,
+) -> None:
+    if settings.provider is not None:
+        configuration.provider = settings.provider
+    selected = getattr(configuration.providers, configuration.provider)
+    selected.api_key = settings.api_key
+    selected.base_url = settings.base_url
+    selected.codex_command = settings.codex_command
+
+
 def set_runtime_settings(settings: OpenAIRuntimeSettings | dict) -> OpenAIRuntimeSettings:
     next_settings = OpenAIRuntimeSettings.model_validate(settings)
-    configuration = get_runtime_configuration()
-    configuration.provider = next_settings.provider
-    selected = getattr(configuration.providers, configuration.provider)
-    selected.api_key = next_settings.api_key
-    selected.base_url = next_settings.base_url
-    selected.codex_command = next_settings.codex_command
-    set_runtime_configuration(configuration)
-    return get_runtime_settings()
+    configuration = _commit_runtime_update(
+        lambda candidate: _apply_runtime_settings(candidate, next_settings)
+    )
+    return _runtime_settings_from_configuration(configuration)
 
 
 def get_agent_runtime_settings(agent_name: AgentRuntimeName) -> OpenAIRuntimeSettings:
@@ -326,18 +406,16 @@ def set_agent_runtime_settings(
     settings: OpenAIRuntimeSettings | dict,
 ) -> OpenAIRuntimeSettings:
     next_settings = OpenAIRuntimeSettings.model_validate(settings)
-    configuration = get_runtime_configuration()
-    configuration.compatibility.agents[agent_name] = CompatibilityAgentConnection.model_validate(
-        next_settings.model_dump(mode="json")
+    connection = CompatibilityAgentConnection.model_validate(
+        next_settings.model_dump(mode="python")
     )
-    set_runtime_configuration(configuration)
-    with _lock:
-        _agent_runtime_settings[agent_name] = next_settings
-        return next_settings.model_copy(deep=True)
+    _commit_runtime_update(
+        lambda candidate: candidate.compatibility.agents.__setitem__(agent_name, connection)
+    )
+    return next_settings.model_copy(deep=True)
 
 
-def get_runtime_strategy_settings() -> AgentSettings:
-    configuration = get_runtime_configuration()
+def _strategy_settings_from_configuration(configuration: RuntimeConfiguration) -> AgentSettings:
     selected = getattr(configuration.providers, configuration.provider)
     return AgentSettings(
         global_model=selected.planner,
@@ -350,17 +428,29 @@ def get_runtime_strategy_settings() -> AgentSettings:
     )
 
 
-def set_runtime_strategy_settings(settings: AgentSettings | dict) -> AgentSettings:
-    strategy = AgentSettings.model_validate(settings)
-    configuration = get_runtime_configuration()
+def get_runtime_strategy_settings() -> AgentSettings:
+    with _lock:
+        return _strategy_settings_from_configuration(_runtime_configuration)
+
+
+def _apply_strategy_settings(
+    configuration: RuntimeConfiguration,
+    strategy: AgentSettings,
+) -> None:
     selected = getattr(configuration.providers, configuration.provider)
     selected.planner = strategy.director_model or strategy.global_model
     selected.writer = strategy.writer_model or strategy.global_model
     selected.memory = strategy.memory_model or strategy.global_model
     configuration.temperature = strategy.temperature
     configuration.new_character_policy = strategy.new_character_policy
-    set_runtime_configuration(configuration)
-    return get_runtime_strategy_settings()
+
+
+def set_runtime_strategy_settings(settings: AgentSettings | dict) -> AgentSettings:
+    strategy = AgentSettings.model_validate(settings)
+    configuration = _commit_runtime_update(
+        lambda candidate: _apply_strategy_settings(candidate, strategy)
+    )
+    return _strategy_settings_from_configuration(configuration)
 
 
 def get_all_runtime_settings() -> dict[str, object]:
@@ -378,24 +468,44 @@ def set_all_runtime_settings(settings: dict) -> dict[str, object]:
     if "providers" in settings:
         set_runtime_configuration(settings)
         return get_all_runtime_settings()
-    if settings.get("global") is not None:
-        set_runtime_settings(settings["global"])
+    global_settings = (
+        OpenAIRuntimeSettings.model_validate(settings["global"])
+        if settings.get("global") is not None
+        else None
+    )
     agents = settings.get("agents")
-    if isinstance(agents, dict):
-        for agent_name in AGENT_RUNTIME_NAMES:
-            if agent_name in agents:
-                set_agent_runtime_settings(agent_name, agents[agent_name])
-    if settings.get("strategy") is not None:
-        set_runtime_strategy_settings(settings["strategy"])
+    agent_settings = {
+        agent_name: CompatibilityAgentConnection.model_validate(agents[agent_name])
+        for agent_name in AGENT_RUNTIME_NAMES
+        if isinstance(agents, dict) and agent_name in agents
+    }
+    strategy = (
+        AgentSettings.model_validate(settings["strategy"])
+        if settings.get("strategy") is not None
+        else None
+    )
+
+    def apply_all(configuration: RuntimeConfiguration) -> None:
+        if global_settings is not None:
+            _apply_runtime_settings(configuration, global_settings)
+        configuration.compatibility.agents.update(agent_settings)
+        if strategy is not None:
+            _apply_strategy_settings(configuration, strategy)
+
+    _commit_runtime_update(apply_all)
     return get_all_runtime_settings()
 
 
-def _partial_runtime_settings(data: dict | None) -> OpenAIRuntimeSettings:
+def _partial_runtime_settings(
+    data: dict | None,
+    *,
+    default_provider: RuntimeProvider | None = None,
+) -> OpenAIRuntimeSettings:
     data = data or {}
     return OpenAIRuntimeSettings(
         api_key=data.get("api_key") or "",
         base_url=data.get("base_url") or "",
-        provider=data.get("provider") or "openai",
+        provider=data.get("provider", default_provider),
         codex_command=data.get("codex_command") or "",
     )
 
@@ -408,7 +518,10 @@ def resolve_openai_runtime_settings(
         global_settings = get_runtime_settings()
         agent_settings = get_agent_runtime_settings(agent_name) if agent_name else _empty_runtime_settings()
     else:
-        global_settings = _partial_runtime_settings(overrides.get("global"))
+        global_settings = _partial_runtime_settings(
+            overrides.get("global"),
+            default_provider="openai",
+        )
         agent_settings = (
             _partial_runtime_settings((overrides.get("agents") or {}).get(agent_name))
             if agent_name
@@ -417,6 +530,6 @@ def resolve_openai_runtime_settings(
     return OpenAIRuntimeSettings(
         api_key=agent_settings.api_key or global_settings.api_key or _default_api_key(),
         base_url=(agent_settings.base_url or global_settings.base_url or _default_base_url()).rstrip("/"),
-        provider=agent_settings.provider if agent_settings.provider != "openai" else global_settings.provider,
+        provider=agent_settings.provider or global_settings.provider or _default_provider(),
         codex_command=agent_settings.codex_command or global_settings.codex_command or _default_codex_command(),
     )

@@ -110,7 +110,9 @@ def clean_db_and_restore_runtime_settings(monkeypatch, tmp_path):
     import os as _os
     import apps.api.storage as storage
     import apps.api.routes.stories as story_routes
+    import packages.story_core.runtime_config as runtime_config
     test_db_path = tmp_path / "stories-test.db"
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", tmp_path / "runtime-config.json")
     monkeypatch.setattr(storage, "_DB_PATH", str(test_db_path))
     story_routes.store._db_path = str(test_db_path)
     with story_routes._generation_jobs_lock:
@@ -146,7 +148,11 @@ def clean_db_and_restore_runtime_settings(monkeypatch, tmp_path):
     client.put(
         "/runtime-settings",
         json={
-            "global": {"api_key": "", "base_url": "https://api.openai.com/v1"},
+            "global": {
+                "api_key": "",
+                "base_url": "https://api.openai.com/v1",
+                "provider": "openai",
+            },
             "agents": {
                 "character": {"api_key": "", "base_url": ""},
                 "director": {"api_key": "", "base_url": ""},
