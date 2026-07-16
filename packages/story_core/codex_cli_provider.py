@@ -52,6 +52,18 @@ def _codex_command_prefix(command: str) -> list[str]:
     if os.name == "nt" and Path(resolved_command).is_absolute() and not Path(resolved_command).suffix:
         resolved_command = shutil.which(f"{command}.exe") or resolved_command
     lowered = resolved_command.lower()
+    if os.name == "nt" and lowered.endswith((".cmd", ".bat")):
+        npm_entrypoint = (
+            Path(resolved_command).parent
+            / "node_modules"
+            / "@openai"
+            / "codex"
+            / "bin"
+            / "codex.js"
+        )
+        if npm_entrypoint.is_file():
+            node_command = shutil.which("node.exe") or shutil.which("node") or "node"
+            return [node_command, str(npm_entrypoint)]
     if lowered.endswith(".ps1"):
         return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", resolved_command]
     if lowered.endswith((".cmd", ".bat")):

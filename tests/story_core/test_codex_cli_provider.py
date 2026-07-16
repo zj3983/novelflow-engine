@@ -68,6 +68,28 @@ def test_codex_cli_version_reports_command_output(monkeypatch):
     assert captured == {"args": ["codex.exe", "--version"], "timeout": 10}
 
 
+def test_codex_cli_uses_node_entrypoint_for_windows_npm_shim(monkeypatch, tmp_path):
+    shim = tmp_path / "codex.cmd"
+    shim.write_text("@node node_modules/@openai/codex/bin/codex.js %*", encoding="utf-8")
+    entrypoint = tmp_path / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    entrypoint.parent.mkdir(parents=True)
+    entrypoint.write_text("", encoding="utf-8")
+
+    def fake_which(command):
+        return {
+            "codex": str(shim),
+            "node.exe": "C:\\Program Files\\nodejs\\node.exe",
+        }.get(command)
+
+    monkeypatch.setattr(codex_cli_provider.os, "name", "nt")
+    monkeypatch.setattr(codex_cli_provider.shutil, "which", fake_which)
+
+    assert codex_cli_provider._codex_command_prefix("codex") == [
+        "C:\\Program Files\\nodejs\\node.exe",
+        str(entrypoint),
+    ]
+
+
 def test_codex_cli_models_only_return_gpt_5_5_and_newer(monkeypatch, tmp_path):
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()

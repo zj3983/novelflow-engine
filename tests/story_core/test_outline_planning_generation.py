@@ -139,8 +139,26 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "current_chapter",
         "recent_chapter_summaries",
         "one_time_guidance",
+        "output_schema",
+        "validation_rules",
     }
     assert prompt["one_time_guidance"] == "反派要有现实利益"
+    schema_text = json.dumps(prompt["output_schema"], ensure_ascii=False)
+    assert '"start_chapter"' in schema_text
+    assert '"long_term_antagonist_traces"' in schema_text
+    assert '"stage_antagonist"' in schema_text
+    assert '"additionalProperties": false' in schema_text
+    assert all(tier in schema_text for tier in (
+        "protagonist",
+        "stage_antagonist",
+        "long_term_antagonist",
+        "supporting",
+    ))
+    rules_text = "\n".join(prompt["validation_rules"])
+    assert "stage_antagonist" in rules_text
+    assert "exactly equal" in rules_text
+    assert "1, 2, 3, 4, 5" in rules_text
+    assert "cast" in rules_text
     assert "chapter body" not in json.dumps(prompt, ensure_ascii=False).lower()
 
 

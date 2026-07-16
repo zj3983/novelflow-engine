@@ -86,6 +86,15 @@ class LLMOutlinePlanningGenerator:
                 "current_chapter": validated.current_chapter,
                 "recent_chapter_summaries": validated.recent_chapter_summaries,
                 "one_time_guidance": normalized_guidance,
+                "output_schema": GeneratedOutlinePlan.model_json_schema(),
+                "validation_rules": [
+                    "For initial/regenerate, characters must contain 4 to 6 unique names and include the protagonist, stage_antagonist, and long_term_antagonist tiers.",
+                    "The opening arc must start at chapter 1, and its stage_antagonist must be exactly equal to the name of the character whose character_tier is stage_antagonist.",
+                    "The opening arc must contain at least one long_term_antagonist_traces item.",
+                    "For initial/regenerate, chapter_number values must be exactly 1, 2, 3, 4, 5 in order.",
+                    "Every name in every chapter cast must exactly equal a name in characters.",
+                    "Every character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
+                ],
             }
             payload = {
                 "model": runtime.model,
@@ -93,6 +102,8 @@ class LLMOutlinePlanningGenerator:
                     {
                         "role": "system",
                         "content": (
+                            "Follow prompt_context.output_schema exactly. Do not add fields, rename fields, "
+                            "or use values outside the declared enums. Return every required field. "
                             "你负责生成中文长篇网文的结构化开书计划，不写正文。只返回 JSON，根字段必须是 "
                             "outline 和 characters。initial/regenerate 模式必须给出完整总纲、从第1章开始的首阶段、"
                             "连续第1至5章，以及4至6张具体角色卡。角色卡必须包括主角、阶段对手、长期反派和重要配角，"

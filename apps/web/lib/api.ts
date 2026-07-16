@@ -2825,7 +2825,7 @@ export async function generateProjectOutline(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ mode, guidance }),
     },
-    180000,
+    420000,
   )) as GeneratedOutlinePlanResponse;
 }
 
