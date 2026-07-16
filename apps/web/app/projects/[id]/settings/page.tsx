@@ -147,7 +147,7 @@ export default function ProjectSettingsPage() {
         </div>
       ) : (
         <>
-          <section className="ws-card">
+          <section className="ws-card ws-novel-type-card">
             <div className="ws-section-head">
               <div>
                 <p className="ws-card__title">小说类型</p>
@@ -155,7 +155,7 @@ export default function ProjectSettingsPage() {
               </div>
               <span className="ws-toolbar__meta">{selectedType?.name ?? (selectedTypeId || "未选择")}</span>
             </div>
-            <label className="ws-character-mini">
+            <label className="ws-character-mini ws-novel-type-field">
               <strong>当前类型</strong>
               <select
                 className="ws-input"

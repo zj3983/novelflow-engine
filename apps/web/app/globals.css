@@ -1101,6 +1101,24 @@ body {
   padding: 12px;
 }
 
+.ws-novel-type-card {
+  display: grid;
+  gap: 14px;
+}
+
+.ws-novel-type-card .ws-section-head {
+  margin-bottom: 0;
+}
+
+.ws-novel-type-field {
+  display: grid;
+  gap: 6px;
+}
+
+.ws-novel-type-field strong {
+  margin-bottom: 0;
+}
+
 .ws-character-mini strong,
 .ws-profile-column b {
   display: block;

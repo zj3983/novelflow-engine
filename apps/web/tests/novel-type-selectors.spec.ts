@@ -307,3 +307,41 @@ test("设置页类型加载失败后可重新加载", async ({ page }) => {
   await expect(page.getByLabel("当前类型")).toBeEnabled();
   expect(api.requestCount()).toBe(3);
 });
+
+test("设置页小说类型卡片在短视口中保持完整的纵向布局", async ({ page }) => {
+  await page.setViewportSize({ width: 1134, height: 375 });
+  await routeNovelTypes(page, [genericType, customType]);
+  await routeSettingsProject(page, customType.id);
+  await page.goto("/projects/file%3Aselector-fixture/settings");
+
+  const card = page.locator("section.ws-card").filter({ hasText: "小说类型" });
+  await expect(card).toBeVisible();
+
+  const layout = await card.evaluate((element) => {
+    const field = element.querySelector("label");
+    const description = Array.from(element.querySelectorAll("p")).find(
+      (paragraph) => paragraph.textContent === "围绕训练、比赛和团队关系推进。",
+    );
+    if (!field || !description) throw new Error("小说类型字段或说明未渲染");
+
+    const cardRect = element.getBoundingClientRect();
+    const fieldRect = field.getBoundingClientRect();
+    const descriptionRect = description.getBoundingClientRect();
+    return {
+      cardDisplay: getComputedStyle(element).display,
+      fieldDisplay: getComputedStyle(field).display,
+      fieldBottom: fieldRect.bottom,
+      descriptionTop: descriptionRect.top,
+      descriptionBottom: descriptionRect.bottom,
+      cardBottom: cardRect.bottom,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+    };
+  });
+
+  expect(layout.cardDisplay).toBe("grid");
+  expect(layout.fieldDisplay).toBe("grid");
+  expect(layout.descriptionTop).toBeGreaterThanOrEqual(layout.fieldBottom);
+  expect(layout.descriptionBottom).toBeLessThanOrEqual(layout.cardBottom);
+  expect(layout.scrollHeight).toBe(layout.clientHeight);
+});
