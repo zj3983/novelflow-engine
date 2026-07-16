@@ -1,5 +1,6 @@
 import json
 import os
+import inspect
 
 import pytest
 from pydantic import ValidationError
@@ -14,6 +15,10 @@ from packages.story_core.opening_directions import (
 )
 from packages.story_core.project_outline import normalize_project_outline
 from packages.story_core.runtime_config import StageRuntimeSettings
+
+
+def test_generator_constructor_does_not_accept_legacy_strategy_resolver():
+    assert "strategy_resolver" not in inspect.signature(LLMOpeningDirectionGenerator).parameters
 
 
 def direction(direction_id: str, *, title: str | None = None) -> dict[str, str]:

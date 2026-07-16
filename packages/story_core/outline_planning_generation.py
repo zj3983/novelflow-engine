@@ -51,7 +51,6 @@ class LLMOutlinePlanningGenerator:
         *,
         post_json: Callable[..., dict[str, Any]] = post_json_with_retry,
         runtime_resolver: Callable[[str], StageRuntimeSettings] = resolve_stage_runtime,
-        strategy_resolver: Callable[[], Any] | None = None,
     ) -> None:
         self._post_json = post_json
         self._runtime_resolver = runtime_resolver

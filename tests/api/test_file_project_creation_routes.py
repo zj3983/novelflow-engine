@@ -11,10 +11,10 @@ from apps.api.routes import file_projects as file_project_routes
 from apps.api.routes import stories as story_routes
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.file_project_store import FileProjectStore
-from packages.story_core.models import AgentSettings, StoryState
+from packages.story_core.models import StoryState
 from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
-from packages.story_core.runtime_config import OpenAIRuntimeSettings
+from packages.story_core.runtime_config import StageRuntimeSettings
 
 
 @pytest.fixture
@@ -599,7 +599,6 @@ def test_invalid_local_opening_brief_returns_422_without_calling_model(
         LLMOpeningDirectionGenerator(
             post_json=forbidden_post,
             runtime_resolver=forbidden_runtime,
-            strategy_resolver=lambda: AgentSettings(director_model="unused-model"),
         ),
     )
 
@@ -611,21 +610,29 @@ def test_invalid_local_opening_brief_returns_422_without_calling_model(
     assert calls == {"runtime": 0, "post": 0}
 
 
-@pytest.mark.parametrize("failure_kind", ["runtime", "http", "output"])
-def test_generation_failures_remain_502_with_stable_detail(creation_api, monkeypatch, failure_kind):
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_post_calls"),
+    [("runtime", 0), ("http", 1), ("empty_output", 1)],
+)
+def test_generation_failures_remain_502_with_stable_detail(
+    creation_api, monkeypatch, failure_kind, expected_post_calls
+):
     client, _, _ = creation_api
     project, _ = _create_inspiration_project(client)
-    runtime = OpenAIRuntimeSettings(
+    runtime = StageRuntimeSettings(
         provider="openai" if failure_kind == "runtime" else "codexcli",
+        model="direction-test-model",
         api_key="" if failure_kind == "runtime" else "test-key",
         codex_command="codex-test",
     )
+    post_calls = []
 
     def fake_post(*args, **kwargs):
+        post_calls.append((args, kwargs))
         if failure_kind == "http":
             raise OSError("model unavailable")
-        if failure_kind == "output":
-            return {"choices": [{"message": {"content": "not-json"}}]}
+        if failure_kind == "empty_output":
+            return {"choices": [{"message": {"content": ""}}]}
         raise AssertionError("missing runtime must not call the model")
 
     monkeypatch.setattr(
@@ -634,7 +641,6 @@ def test_generation_failures_remain_502_with_stable_detail(creation_api, monkeyp
         LLMOpeningDirectionGenerator(
             post_json=fake_post,
             runtime_resolver=lambda name: runtime,
-            strategy_resolver=lambda: AgentSettings(director_model="direction-test-model"),
         ),
     )
 
@@ -642,6 +648,7 @@ def test_generation_failures_remain_502_with_stable_detail(creation_api, monkeyp
 
     assert response.status_code == 502
     assert response.json()["detail"] == "opening_direction_generation_failed"
+    assert len(post_calls) == expected_post_calls
 
 
 def test_select_unknown_and_repeated_direction_returns_404_then_409(creation_api, monkeypatch):

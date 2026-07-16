@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 
 import pytest
 
@@ -9,6 +10,10 @@ from packages.story_core.outline_planning_generation import (
     OutlinePlanningBrief,
 )
 from packages.story_core.runtime_config import StageRuntimeSettings
+
+
+def test_generator_constructor_does_not_accept_legacy_strategy_resolver() -> None:
+    assert "strategy_resolver" not in inspect.signature(LLMOutlinePlanningGenerator).parameters
 
 
 def _card(name: str, tier: str) -> dict:

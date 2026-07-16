@@ -15,9 +15,9 @@ from packages.story_core.models import (
     ChapterOutline,
     NovelOutline,
     StoryState,
-    default_model_name,
 )
 from packages.story_core.runtime import record_agent_runtime
+from packages.story_core.runtime_config import resolve_stage_runtime
 
 
 # ── act / phase definitions ──────────────────────────────────
@@ -204,7 +204,10 @@ class RuleBasedOutlineGenerator:
 
 
 class OpenAIOutlineGenerator(BaseOpenAIProvider):
-    runtime_key = "director"  # reuse director key
+    runtime_key = "planner"
+
+    def _runtime_settings(self):
+        return resolve_stage_runtime("planner")
 
     def generate(
         self,
@@ -212,12 +215,12 @@ class OpenAIOutlineGenerator(BaseOpenAIProvider):
         target_chapters: int = 30,
     ) -> NovelOutline | None:
         settings = self._runtime_settings()
-        if not settings.api_key:
+        if settings.provider != "codexcli" and not settings.api_key:
             return None
 
         prompt = self._build_prompt(story, target_chapters)
         payload = {
-            "model": story.agent_settings.director_model or story.agent_settings.global_model or default_model_name(),
+            "model": settings.model,
             "messages": [
                 {
                     "role": "system",
@@ -231,7 +234,7 @@ class OpenAIOutlineGenerator(BaseOpenAIProvider):
                 {"role": "user", "content": prompt},
             ],
             "response_format": {"type": "json_object"},
-            "temperature": float(story.agent_settings.temperature),
+            "temperature": float(settings.temperature),
         }
 
         try:
