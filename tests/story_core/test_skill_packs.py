@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from pathlib import Path
 
-from packages.story_core.skill_packs import import_skill_pack_from_path, list_skill_packs, skill_pack_prompt_context
+import pytest
+
+from packages.story_core import skill_packs
+from packages.story_core.skill_packs import import_skill_pack_from_path, import_skill_pack_from_zip, list_skill_packs, skill_pack_prompt_context
 
 
 def _write_pack(root: Path) -> Path:
@@ -67,3 +72,32 @@ def test_skill_pack_prompt_context_is_trimmed_and_structured(tmp_path: Path, mon
 
     dialogue_context = skill_pack_prompt_context(["plain-webnovel"], purpose="dialogue")
     assert [module["module_id"] for module in dialogue_context[0]["modules"]] == ["dialogue"]
+
+
+def _pack_zip_bytes() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("pack/manifest.json", json.dumps({"skill_id": "zip-pack", "name": "Zip Pack"}))
+        archive.writestr("pack/SKILL.md", "# Zip Pack\n\n从压缩包导入。")
+    return buffer.getvalue()
+
+
+def test_import_skill_pack_from_zip_rejects_oversized_upload(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(skill_packs, "MAX_SKILL_ZIP_BYTES", 8)
+
+    with pytest.raises(ValueError, match="skill_pack_zip_too_large"):
+        import_skill_pack_from_zip(_pack_zip_bytes(), root=tmp_path / "registry")
+
+
+def test_import_skill_pack_from_zip_rejects_uncompressed_bomb(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(skill_packs, "MAX_SKILL_ZIP_UNCOMPRESSED_BYTES", 16)
+
+    with pytest.raises(ValueError, match="skill_pack_zip_uncompressed_too_large"):
+        import_skill_pack_from_zip(_pack_zip_bytes(), root=tmp_path / "registry")
+
+
+def test_import_skill_pack_from_zip_rejects_too_many_members(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(skill_packs, "MAX_SKILL_ZIP_MEMBERS", 1)
+
+    with pytest.raises(ValueError, match="skill_pack_zip_too_many_members"):
+        import_skill_pack_from_zip(_pack_zip_bytes(), root=tmp_path / "registry")

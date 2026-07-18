@@ -64,6 +64,20 @@ explicit comma-separated list:
 NOVEL_AUTOGROWTH_CORS_ORIGINS=https://your-domain.example
 ```
 
+## Filesystem Access Roots
+
+Endpoints that browse or import from the local filesystem (`/book-import/*`,
+`/skill-packs/import`) only accept paths under allowed roots. By default these
+are the user's home directory and the current working directory. Override with
+an OS-path-separator-separated list (`;` on Windows, `:` on POSIX):
+
+```env
+NOVEL_AUTOGROWTH_ALLOWED_FS_ROOTS=D:/novels;D:/skill-packs
+```
+
+Requests outside the allowed roots are rejected with `403
+path_outside_allowed_roots`.
+
 ## Storage Roadmap
 
 SQLite is the supported development and single-user store. A future PostgreSQL

@@ -13,6 +13,52 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def test_book_import_scan_rejects_path_outside_allowed_roots(tmp_path: Path, monkeypatch):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_ALLOWED_FS_ROOTS", str(allowed))
+
+    response = client.post("/book-import/scan", json={"source_path": str(outside)})
+
+    assert response.status_code == 403
+    assert "path_outside_allowed_roots" in response.json()["detail"]
+
+
+def test_book_import_scan_allows_path_inside_configured_root(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_ALLOWED_FS_ROOTS", str(tmp_path))
+    _write(tmp_path / "volume_outline.md", "# Volume Outline\n\nA grand mystery.\n")
+    _write(tmp_path / "current_focus.md", "# Current Focus\n\nOpen with the crime scene.\n")
+
+    response = client.post("/book-import/scan", json={"source_path": str(tmp_path)})
+
+    assert response.status_code == 200
+    assert response.json()["can_bootstrap"] is True
+
+
+def test_book_import_list_folders_returns_allowed_roots(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_ALLOWED_FS_ROOTS", str(tmp_path))
+
+    response = client.post("/book-import/list-folders", json={"source_path": ""})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [Path(entry["path"]).resolve() for entry in payload["drives"]] == [tmp_path.resolve()]
+
+
+def test_book_import_list_folders_rejects_path_outside_allowed_roots(tmp_path: Path, monkeypatch):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_ALLOWED_FS_ROOTS", str(allowed))
+
+    response = client.post("/book-import/list-folders", json={"source_path": str(outside)})
+
+    assert response.status_code == 403
+
+
 def test_book_import_scan_valid_folder(tmp_path: Path):
     _write(tmp_path / "volume_outline.md", "# Volume Outline\n\nA grand mystery.\n")
     _write(tmp_path / "current_focus.md", "# Current Focus\n\nOpen with the crime scene.\n")

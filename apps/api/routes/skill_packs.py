@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
@@ -12,6 +13,8 @@ from packages.story_core.skill_packs import (
     list_skill_packs,
     normalize_skill_id,
 )
+
+from apps.api.fs_access import require_allowed_path
 
 
 router = APIRouter()
@@ -53,6 +56,10 @@ def init_skill_pack_routes() -> APIRouter:
 
     @router.post("/skill-packs/import")
     def import_registered_skill_pack(payload: ImportSkillPackRequest) -> dict[str, Any]:
+        try:
+            require_allowed_path(Path(payload.source_path))
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         try:
             pack = import_skill_pack_from_path(payload.source_path)
         except (ValueError, OSError) as exc:

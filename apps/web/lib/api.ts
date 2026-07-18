@@ -2068,18 +2068,13 @@ async function requestWithTimeout<T>(
   readResponse: (response: Response) => Promise<T>,
   timeoutMs = 30000,
 ): Promise<T> {
-  console.log('[tryFetchJson] Requesting:', url, init.method);
-  console.log('[tryFetchJson] Init:', JSON.stringify(init).slice(0, 200));
   const controller = new AbortController();
   const timeout = setTimeout(() => {
-    console.log('[tryFetchJson] Timeout, aborting:', url);
     controller.abort();
   }, timeoutMs);
 
   try {
     const resp = await fetch(url, { ...init, signal: controller.signal });
-    console.log('[tryFetchJson] Response status:', resp.status, resp.statusText);
-    console.log('[tryFetchJson] Response headers:', Object.fromEntries(resp.headers.entries()));
     if (!resp.ok) {
       const detail = await resp.text().catch(() => "");
       console.error('[tryFetchJson] Not OK, detail:', detail.slice(0, 500));
@@ -2114,10 +2109,7 @@ async function tryFetchJson(url: string, init: RequestInit, timeoutMs = 30000): 
     init,
     async (response) => {
       const text = await response.text();
-      console.log('[tryFetchJson] Response text (first 300):', text.slice(0, 300));
-      const data = JSON.parse(text);
-      console.log('[tryFetchJson] Parsed OK, keys:', Object.keys(data));
-      return data;
+      return JSON.parse(text);
     },
     timeoutMs,
   );
@@ -2152,18 +2144,13 @@ export async function fetchRuntimeStrategy(): Promise<RuntimeStrategySettings> {
 }
 
 export async function saveRuntimeSettings(settings: RuntimeSettings): Promise<RuntimeSettings> {
-  console.log('[api] saveRuntimeSettings called, apiBase:', apiBase());
-  console.log('[api] saveRuntimeSettings settings:', JSON.stringify(settings).slice(0, 300));
   try {
     const response = await tryFetchJson(`${apiBase()}/runtime-settings`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(settings),
     });
-    console.log('[api] saveRuntimeSettings response received, normalizing...');
-    const normalized = normalizeRuntimeSettings(response);
-    console.log('[api] saveRuntimeSettings done, normalized:', JSON.stringify(normalized).slice(0, 300));
-    return normalized;
+    return normalizeRuntimeSettings(response);
   } catch (error) {
     console.error('[api] saveRuntimeSettings FAILED:', error);
     return mockSaveRuntimeSettings(settings);

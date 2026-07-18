@@ -1,8 +1,49 @@
 import json
+import subprocess
+
+import pytest
 
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core import orchestrator as orchestrator_module
 from packages.story_core.orchestrator import StoryOrchestrator
+
+_REAL_CHAT = StoryOrchestrator._chat
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("codexcli_failed:boom"),
+        subprocess.TimeoutExpired(cmd="codex", timeout=1),
+    ],
+)
+def test_chat_returns_error_tuple_when_cli_provider_fails(monkeypatch, failure):
+    from packages.story_core.runtime_config import StageRuntimeSettings
+
+    settings = StageRuntimeSettings(
+        provider="codexcli",
+        model="codex-model",
+        codex_command="codex",
+    )
+    monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", lambda stage: settings)
+
+    def _raise(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(orchestrator_module, "post_json_with_retry", _raise)
+
+    story = StoryState(
+        story_id="s-chat-cli-failure",
+        outline="A scribe tests failure handling.",
+        genre="fantasy",
+        style="noir",
+    )
+    text, error = _REAL_CHAT(
+        StoryOrchestrator(), story, "prompt", max_tokens=16, json_mode=False, stage="写作"
+    )
+
+    assert text == ""
+    assert "model_request_failed" in error
 
 
 def test_orchestrator_runs_all_phases_and_returns_bundle():

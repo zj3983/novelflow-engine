@@ -330,7 +330,7 @@ export function BookImportPanel({
                 fontSize: 13,
               }}
             >
-              {folderPicker.currentPath || "选择磁盘驱动器"}
+              {folderPicker.currentPath || "选择可访问的根目录"}
             </div>
             <div
               style={{
@@ -356,7 +356,7 @@ export function BookImportPanel({
                     fontSize: 14,
                   }}
                 >
-                  驱动器 {drive.name}
+                  目录 {drive.name}
                 </button>
               ))}
               {folderPicker.folders.map((folder) => (

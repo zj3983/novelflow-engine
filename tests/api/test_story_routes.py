@@ -41,6 +41,15 @@ def _runtime_configuration(*, provider="openai"):
     }
 
 
+def _masked(configuration):
+    """Expected wire form: non-empty api_key values are masked in API responses."""
+    masked = json.loads(json.dumps(configuration))
+    for provider in masked["providers"].values():
+        if provider["api_key"]:
+            provider["api_key"] = "********"
+    return masked
+
+
 def _make_file_project(root, *, project_id="p-file-api", state=None):
     (root / ".story-system" / "chapters").mkdir(parents=True)
     (root / ".story-system" / "reviews").mkdir(parents=True)
@@ -228,11 +237,39 @@ def test_runtime_settings_put_saves_and_returns_strict_configuration():
         json=candidate,
     )
     assert update_resp.status_code == 200
-    assert update_resp.json() == candidate
+    assert update_resp.json() == _masked(candidate)
 
     loaded = client.get("/runtime-settings")
     assert loaded.status_code == 200
-    assert loaded.json() == candidate
+    assert loaded.json() == _masked(candidate)
+
+
+def test_runtime_settings_never_returns_plaintext_api_key():
+    candidate = _runtime_configuration(provider="openai")
+    assert client.put("/runtime-settings", json=candidate).status_code == 200
+
+    for body in (client.get("/runtime-settings").json(), client.put("/runtime-settings", json=candidate).json()):
+        assert body["providers"]["openai"]["api_key"] == "********"
+        assert "sk-test" not in json.dumps(body)
+
+
+def test_runtime_settings_put_with_masked_api_key_preserves_stored_key():
+    saved = _runtime_configuration()
+    assert client.put("/runtime-settings", json=saved).status_code == 200
+
+    candidate = _runtime_configuration()
+    candidate["providers"]["openai"]["api_key"] = "********"
+    candidate["temperature"] = 0.55
+
+    update_resp = client.put("/runtime-settings", json=candidate)
+    assert update_resp.status_code == 200
+    assert update_resp.json() == _masked(candidate)
+
+    from packages.story_core.runtime_config import get_runtime_configuration
+
+    stored = get_runtime_configuration()
+    assert stored.providers.openai.api_key == "sk-test"
+    assert stored.temperature == 0.55
 
 
 @pytest.mark.parametrize("obsolete_key", ["global", "agents", "strategy", "global_model"])
@@ -254,7 +291,7 @@ def test_runtime_settings_put_validation_does_not_replace_saved_configuration():
     response = client.put("/runtime-settings", json=invalid)
 
     assert response.status_code == 422
-    assert client.get("/runtime-settings").json() == saved
+    assert client.get("/runtime-settings").json() == _masked(saved)
 
 
 def test_serialized_history_uses_saved_quality_and_adds_simplified_review(monkeypatch):
@@ -790,7 +827,7 @@ def test_runtime_connection_uses_candidate_openai_provider_stage_and_does_not_sa
     assert captured["authorization"] == "Bearer sk-candidate"
     assert captured["content_type"] == "application/json"
     assert b'"model": "candidate-writer"' in captured["body"]
-    assert client.get("/runtime-settings").json() == persisted
+    assert client.get("/runtime-settings").json() == _masked(persisted)
 
 
 @pytest.mark.parametrize("stage", ["character", "director", "global", "unknown"])
@@ -1801,6 +1838,32 @@ def test_branch_can_be_renamed_and_deleted():
 
     fetch_deleted = client.get("/stories/s-branch-admin-shadow")
     assert fetch_deleted.status_code == 404
+
+
+def test_rename_preserves_chapter_history():
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-rename-history-root",
+            "outline": "An archivist rewrites the same case file.",
+            "genre": "fantasy",
+            "style": "mystery",
+        },
+    )
+    client.post("/stories/s-rename-history-root/generate")
+    client.post("/stories/s-rename-history-root/generate")
+    before = client.get("/stories/s-rename-history-root").json()
+    assert len(before["history"]) == 2
+
+    rename_resp = client.post(
+        "/stories/s-rename-history-root/rename",
+        json={"new_story_id": "s-rename-history-new"},
+    )
+    assert rename_resp.status_code == 200
+
+    after = client.get("/stories/s-rename-history-new").json()
+    assert [entry["chapter_number"] for entry in after["history"]] == [1, 2]
+    assert after["current_chapter"] == before["current_chapter"]
 
 
 def test_file_project_character_routes_read_update_and_complete(monkeypatch):

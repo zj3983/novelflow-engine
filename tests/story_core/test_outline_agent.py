@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from packages.story_core import agent_base, outline_agent as outline_agent_module
 from packages.story_core.models import AgentSettings, CharacterState, StoryState
 from packages.story_core.outline_agent import (
@@ -14,6 +16,24 @@ from packages.story_core.outline_agent import (
     _rule_cadence,
     _rule_title,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_llm_runtime(monkeypatch):
+    """Never touch the real LLM/CLI from OutlineAgent tests; force rule fallback."""
+    monkeypatch.setattr(
+        outline_agent_module,
+        "resolve_stage_runtime",
+        lambda stage: SimpleNamespace(
+            provider="openai",
+            model="",
+            api_key="",
+            base_url="",
+            codex_command="",
+            temperature=0.7,
+        ),
+        raising=False,
+    )
 
 
 def test_openai_outline_generator_uses_planner_stage_runtime(monkeypatch):

@@ -1296,12 +1296,30 @@ def _complete_manual_bundle_metadata(project: NovelProject, bundle: ChapterBundl
     return bundle
 
 
+_MASKED_API_KEY = "********"
+
+
 def _serialize_runtime_settings(configuration: RuntimeConfiguration | None = None) -> dict[str, object]:
     data = (configuration or get_runtime_configuration()).model_dump(mode="json")
-    return {
+    serialized = {
         key: data[key]
         for key in ("provider", "providers", "temperature", "new_character_policy")
     }
+    for provider_settings in serialized["providers"].values():
+        if provider_settings.get("api_key"):
+            provider_settings["api_key"] = _MASKED_API_KEY
+    return serialized
+
+
+def _restore_masked_api_keys(configuration: RuntimeConfiguration) -> RuntimeConfiguration:
+    """Replace masked api_key placeholders with the currently stored keys."""
+    restored = configuration.model_copy(deep=True)
+    stored = get_runtime_configuration()
+    for name in ("codexcli", "openai"):
+        candidate = getattr(restored.providers, name)
+        if candidate.api_key == _MASKED_API_KEY:
+            candidate.api_key = getattr(stored.providers, name).api_key
+    return restored
 
 
 def _resolve_candidate_stage_runtime(
@@ -2059,7 +2077,7 @@ def read_runtime_cli_info() -> CodexCLIInfoResponse:
 
 @router.put("/runtime-settings")
 def update_runtime_settings(payload: RuntimeConfiguration) -> dict[str, object]:
-    saved = set_runtime_configuration(payload)
+    saved = set_runtime_configuration(_restore_masked_api_keys(payload))
     return _serialize_runtime_settings(saved)
 
 
@@ -2087,7 +2105,9 @@ def update_runtime_strategy(payload: RuntimeStrategyRequest) -> dict[str, object
 
 @router.post("/runtime-settings/test")
 def test_runtime_settings(payload: RuntimeSettingsTestRequest) -> RuntimeSettingsTestResponse:
-    runtime = _resolve_candidate_stage_runtime(payload.runtime_settings, payload.stage)
+    runtime = _resolve_candidate_stage_runtime(
+        _restore_masked_api_keys(payload.runtime_settings), payload.stage
+    )
     details = f"provider={runtime.provider}, stage={payload.stage}, model={runtime.model}"
 
     if runtime.provider == "codexcli":

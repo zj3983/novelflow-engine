@@ -221,7 +221,14 @@ def import_skill_pack_from_path(source_path: str | Path, root: Path | None = Non
     return load_skill_pack(target)
 
 
+MAX_SKILL_ZIP_BYTES = 20 * 1024 * 1024
+MAX_SKILL_ZIP_MEMBERS = 2000
+MAX_SKILL_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
+
+
 def import_skill_pack_from_zip(zip_bytes: bytes, root: Path | None = None) -> SkillPack:
+    if len(zip_bytes) > MAX_SKILL_ZIP_BYTES:
+        raise ValueError("skill_pack_zip_too_large")
     base = root or skill_packs_root()
     base.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -229,6 +236,11 @@ def import_skill_pack_from_zip(zip_bytes: bytes, root: Path | None = None) -> Sk
         zip_path = tmp_path / "skill.zip"
         zip_path.write_bytes(zip_bytes)
         with zipfile.ZipFile(zip_path) as archive:
+            infos = archive.infolist()
+            if len(infos) > MAX_SKILL_ZIP_MEMBERS:
+                raise ValueError("skill_pack_zip_too_many_members")
+            if sum(info.file_size for info in infos) > MAX_SKILL_ZIP_UNCOMPRESSED_BYTES:
+                raise ValueError("skill_pack_zip_uncompressed_too_large")
             archive.extractall(tmp_path / "unzipped")
         candidates = [path for path in (tmp_path / "unzipped").iterdir() if path.is_dir()]
         source = candidates[0] if len(candidates) == 1 and (candidates[0] / "SKILL.md").exists() else tmp_path / "unzipped"

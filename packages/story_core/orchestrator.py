@@ -6,6 +6,7 @@ from typing import Any
 
 import json
 import re
+import subprocess
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
@@ -4024,7 +4025,7 @@ class StoryOrchestrator:
                 report_generation_progress(f"模型请求失败：{error}")
                 return "", error
             return "", f"模型 HTTP {exc.code}"
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
             if stage:
                 error = f"{stage} model_request_failed:{exc}"
                 report_generation_progress(f"模型请求失败：{error}")

@@ -824,6 +824,16 @@ class SQLiteStoryStore:
 
         # Insert with new ID
         self._save_record(conn, record)
+        for bundle in record.history:
+            self._save_bundle(conn, new_story_id, bundle)
+
+        # Re-key per-story side tables before removing the old row,
+        # otherwise ON DELETE CASCADE wipes them with it.
+        for table in ("novel_outlines", "world_bibles", "novel_statuses", "project_stories"):
+            conn.execute(
+                f"UPDATE {table} SET story_id = ? WHERE story_id = ?",
+                (new_story_id, story_id),
+            )
 
         # Delete old
         conn.execute("DELETE FROM stories WHERE story_id = ?", (story_id,))

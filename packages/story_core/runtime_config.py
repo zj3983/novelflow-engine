@@ -155,6 +155,10 @@ def _atomic_write_configuration(configuration: RuntimeConfiguration, path: Path)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(serialized)
         os.replace(temporary_path, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
     finally:
         if os.path.exists(temporary_path):
             os.remove(temporary_path)

@@ -33,3 +33,18 @@ def test_skill_pack_import_and_list(tmp_path: Path, monkeypatch) -> None:
     listed = client.get("/skill-packs")
     assert listed.status_code == 200
     assert listed.json()[0]["modules"][0]["module_id"] == "dialogue"
+
+
+def test_skill_pack_import_rejects_path_outside_allowed_roots(tmp_path: Path, monkeypatch) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_ALLOWED_FS_ROOTS", str(allowed))
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(tmp_path / "registry"))
+    outside = tmp_path / "outside-pack"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text("# Outside Pack\n", encoding="utf-8")
+
+    response = client.post("/skill-packs/import", json={"source_path": str(outside)})
+
+    assert response.status_code == 403
+    assert "path_outside_allowed_roots" in response.json()["detail"]

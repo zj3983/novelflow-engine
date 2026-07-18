@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -19,6 +18,8 @@ from packages.story_core.book_browser import (
     BookBrowserItem,
     BookBrowserSection,
 )
+
+from apps.api.fs_access import allowed_fs_roots, require_allowed_path
 
 
 router = APIRouter()
@@ -82,7 +83,10 @@ def _resolve_source_dir(source_path: str) -> Path:
 
     if not base.is_absolute():
         raise HTTPException(status_code=400, detail=f"invalid_source_path: {source_path}")
-    return base
+    try:
+        return require_allowed_path(base)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def _public_report(report) -> BookFolderReportResponse:
@@ -231,19 +235,24 @@ def list_folders(payload: FolderListRequest) -> FolderListResponse:
     """列出指定路径下的文件夹，用于前端文件夹选择器"""
     target = payload.source_path.strip()
 
-    # 列出磁盘驱动器 (Windows)
+    # 无目标时列出允许访问的根目录（默认为用户主目录与工作目录，
+    # 可用 NOVEL_AUTOGROWTH_ALLOWED_FS_ROOTS 配置）
     if not target or target == "":
-        drives = []
-        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
-            drive_path = f"{letter}:\\"
-            if os.path.exists(drive_path):
-                drives.append(FolderItem(name=f"{letter}: 盘", path=drive_path, is_drive=True))
-        return FolderListResponse(drives=drives, current_path="")
+        roots = [
+            FolderItem(name=str(root), path=str(root), is_drive=False)
+            for root in allowed_fs_roots()
+            if root.is_dir()
+        ]
+        return FolderListResponse(drives=roots, current_path="")
 
     # 列出目标路径下的文件夹
     target_path = Path(target)
     if not target_path.exists() or not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"路径不存在: {target}")
+    try:
+        require_allowed_path(target_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     folders = []
     try:
