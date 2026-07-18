@@ -192,6 +192,372 @@ def test_update_project_normalizes_relationship_graph(tmp_path):
     assert updated["relationship_graph"][0]["trust"] == 100
 
 
+def test_chapter_reality_events_update_real_state_only(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "progression_ledger": {
+            "protagonist": {"level": "Lv.1"},
+            "economy": {"game_currency": "0铜币"},
+        },
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "real_state": {
+                    "current": {"balance": "27.60元"},
+                    "recent_changes": [],
+                },
+                "game_state": {
+                    "current": {"level": "Lv.1", "currency": "0铜币"},
+                    "recent_changes": [],
+                },
+                "game_panel": {"game_id": "夜烬", "level": "Lv.1", "currency": "0铜币"},
+            }
+        ],
+    }
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {
+            "chapter_number": 2,
+            "body": "现实线里兼职收入到账，随后支付房租。",
+            "state_changes": [
+                {
+                    "line": "reality",
+                    "change": {
+                        "current": {"balance": "32.60元", "income": "5.00元"},
+                        "fact": "兼职收入到账",
+                    },
+                },
+                {
+                    "line": "reality",
+                    "change": {
+                        "current": {"balance": "30.60元", "rent": "2.00元"},
+                        "fact": "支付房租",
+                    },
+                },
+            ],
+        },
+    )
+
+    character = synced["characters"][0]
+    assert character["real_state"]["current"] == {
+        "balance": "30.60元",
+        "income": "5.00元",
+        "rent": "2.00元",
+    }
+    assert character["real_state"]["recent_changes"] == [
+        {"chapter": 2, "fact": "兼职收入到账"},
+        {"chapter": 2, "fact": "支付房租"},
+    ]
+    assert character["game_state"] == {
+        "current": {"level": "Lv.1", "currency": "0铜币"},
+        "recent_changes": [],
+    }
+
+
+def test_transition_reality_change_does_not_fallback_to_game_change(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "real_state": {"current": {"balance": "27.60元"}, "recent_changes": []},
+                "game_state": {"current": {"level": "Lv.1"}, "recent_changes": []},
+                "game_panel": {"game_id": "夜烬", "level": "Lv.1"},
+            }
+        ],
+    }
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {
+            "chapter_number": 3,
+            "body": "从现实回到游戏。",
+            "state_changes": [
+                {
+                    "line": "transition",
+                    "real_change": {
+                        "current": {"balance": "32.60元"},
+                        "fact": "现实收入到账",
+                    },
+                }
+            ],
+        },
+    )
+
+    character = synced["characters"][0]
+    assert character["real_state"]["current"]["balance"] == "32.60元"
+    assert character["game_state"] == {
+        "current": {"level": "Lv.1"},
+        "recent_changes": [],
+    }
+
+
+def test_state_event_with_unknown_target_updates_no_character(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "real_state": {"current": {"balance": "27.60元"}, "recent_changes": []},
+            },
+            {
+                "name": "林照",
+                "role": "supporting",
+                "real_state": {"current": {"balance": "10.00元"}, "recent_changes": []},
+            },
+        ],
+    }
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {
+            "chapter_number": 4,
+            "body": "现实线出现一笔明确收入。",
+            "state_changes": [
+                {
+                    "line": "reality",
+                    "target": "不存在的人",
+                    "change": {"current": {"balance": "99.00元"}, "fact": "错误目标"},
+                }
+            ],
+        },
+    )
+
+    assert synced["characters"][0]["real_state"]["current"]["balance"] == "27.60元"
+    assert synced["characters"][1]["real_state"]["current"]["balance"] == "10.00元"
+
+
+def test_plain_money_in_game_body_without_state_changes_does_not_change_real_state(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "real_state": {"current": {"balance": "27.60元"}, "recent_changes": []},
+                "game_state": {"current": {"level": "Lv.1"}, "recent_changes": []},
+            }
+        ],
+    }
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {"chapter_number": 5, "body": "他摸了摸口袋里的钱，随后继续登录游戏。"},
+    )
+
+    character = synced["characters"][0]
+    assert character["real_state"] == {"current": {"balance": "27.60元"}, "recent_changes": []}
+
+
+def test_web_game_english_body_updates_game_state(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "web game",
+        "progression_ledger": {},
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "real_state": {"current": {"balance": "27.60元"}, "recent_changes": []},
+                "game_panel": {"game_id": "Night Ember"},
+            }
+        ],
+    }
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {
+            "chapter_number": 6,
+            "body": (
+                "Level: 2\nExperience: 20/200\nHP: 80/100\nMP: 40/60\n"
+                "Inventory: wolf fang x3\nCurrency: 30 coins\nQuest: patrol\nDurability: 90/100"
+            ),
+        },
+    )
+
+    character = synced["characters"][0]
+    current = character["game_state"]["current"]
+    assert current["level"] == "Lv.2"
+    assert current["exp"] == "20/200"
+    assert current["hp"] == "80/100"
+    assert current["mp"] == "40/60"
+    assert current["inventory"] == {"wolf fang": 3}
+    assert current["currency"] == "30 coins"
+
+
+def test_explicit_game_event_wins_over_chapter_ledger(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "progression_ledger": {},
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "game_state": {"current": {"level": "Lv.1"}, "recent_changes": []},
+                "game_panel": {"game_id": "夜烬"},
+            }
+        ],
+    }
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {
+            "chapter_number": 7,
+            "body": "Level: 2 Experience: 20/200",
+            "state_changes": [
+                {
+                    "line": "game",
+                    "change": {
+                        "current": {"level": "Lv.5"},
+                        "fact": "事件确认等级",
+                    },
+                }
+            ],
+        },
+    )
+
+    character = synced["characters"][0]
+    assert character["game_state"]["current"]["level"] == "Lv.5"
+    assert character["game_panel"]["level"] == "Lv.5"
+
+
+def test_full_chapter_sync_applies_game_state_event_once(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "progression_ledger": {},
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "game_state": {"current": {"level": "Lv.1"}, "recent_changes": []},
+                "game_panel": {"game_id": "夜烬", "level": "Lv.1"},
+            }
+        ],
+    }
+
+    synced = store._sync_after_chapter(
+        {
+            "chapter_number": 8,
+            "chapter_title": "回到副本",
+            "body": "现实线结束，夜烬重新登录。",
+            "state_changes": [
+                {
+                    "line": "game",
+                    "change": {
+                        "current": {"level": "Lv.2"},
+                        "fact": "重新登录后等级确认",
+                    },
+                }
+            ],
+        },
+        state,
+    )
+
+    changes = synced["characters"][0]["game_state"]["recent_changes"]
+    assert changes == [{"chapter": 8, "fact": "重新登录后等级确认"}]
+
+
+def test_english_prose_question_questing_and_coins_do_not_create_ledger_updates(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "web game",
+        "characters": [{"name": "苏叶", "role": "protagonist"}],
+    }
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {
+            "chapter_number": 9,
+            "body": "He questioned the questing route while coins glittered in the prose.",
+        },
+    )
+
+    assert synced.get("progression_ledger", {}) == {}
+    assert "game_state" not in synced["characters"][0]
+
+
+def test_reality_line_with_only_game_namespace_does_not_fallback_to_generic_change(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "real_state": {"current": {"balance": "27.60元"}, "recent_changes": []},
+                "game_state": {"current": {"level": "Lv.1"}, "recent_changes": []},
+            }
+        ],
+    }
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {
+            "chapter_number": 12,
+            "body": "现实线没有账本变化。",
+            "state_changes": [
+                {
+                    "line": "reality",
+                    "change": {
+                        "current": {"balance": "99.00元"},
+                        "game_state": {"current": {"level": "Lv.9"}},
+                    },
+                }
+            ],
+        },
+    )
+
+    character = synced["characters"][0]
+    assert character["real_state"]["current"]["balance"] == "27.60元"
+    assert character["game_state"]["current"]["level"] == "Lv.1"
+
+
+def test_game_line_with_only_reality_namespace_does_not_fallback_to_generic_change(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "real_state": {"current": {"balance": "27.60元"}, "recent_changes": []},
+                "game_state": {"current": {"level": "Lv.1"}, "recent_changes": []},
+            }
+        ],
+    }
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {
+            "chapter_number": 13,
+            "body": "游戏线没有账本变化。",
+            "state_changes": [
+                {
+                    "line": "game",
+                    "change": {
+                        "current": {"level": "Lv.9"},
+                        "real_state": {"current": {"balance": "99.00元"}},
+                    },
+                }
+            ],
+        },
+    )
+
+    character = synced["characters"][0]
+    assert character["game_state"]["current"]["level"] == "Lv.1"
+    assert character["real_state"]["current"]["balance"] == "27.60元"
+
+
 def test_generated_plan_transaction_restores_old_files_on_replace_failure(tmp_path, monkeypatch):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(root)

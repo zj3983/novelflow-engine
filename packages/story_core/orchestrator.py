@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from copy import deepcopy
 
 import json
 import re
@@ -1666,11 +1667,22 @@ def _merge_ledger_dict(base: dict, updates: dict) -> dict:
     return result
 
 
-def _apply_ledger_updates(story: StoryState, ledger_updates: dict) -> None:
+def _apply_ledger_updates(
+    story: StoryState,
+    ledger_updates: dict,
+    *,
+    chapter_number: int | None = None,
+) -> None:
     if not isinstance(ledger_updates, dict) or not ledger_updates:
         return
     story.progression_ledger = _merge_ledger_dict(story.progression_ledger or {}, ledger_updates)
     _normalize_progression_ledger(story.progression_ledger)
+    sync_chapter = chapter_number if chapter_number is not None else int(story.current_chapter or 0) or None
+    _sync_character_game_panels(
+        story,
+        sync_chapter,
+        authoritative_updates=ledger_updates,
+    )
 
 
 def _collect_state_deltas(items: list[dict] | None) -> list[dict]:
@@ -1786,7 +1798,7 @@ def apply_simulated_state_deltas(
 
     for delta in [*_collect_state_deltas(world_events), *_collect_state_deltas(scene_cards)]:
         ledger_update = {key: value for key, value in delta.items() if key != "game_world_simulation"}
-        _apply_ledger_updates(story, ledger_update)
+        _apply_ledger_updates(story, ledger_update, chapter_number=chapter_number)
         _apply_systemic_ledger_delta(story, _systemic_ledger_delta(delta))
     _sync_character_game_panels(story, chapter_number)
 
@@ -1820,9 +1832,16 @@ def _clean_game_id(value: object, character_name: str) -> str:
     return cleaned
 
 
-def _sync_character_game_panels(story: StoryState, chapter_number: int | None = None) -> None:
+def _sync_character_game_panels(
+    story: StoryState,
+    chapter_number: int | None = None,
+    *,
+    authoritative_updates: dict | None = None,
+) -> None:
     """Mirror the persistent progression ledger into the protagonist character card."""
-    if not story.characters or not isinstance(story.progression_ledger, dict):
+    genre = str(getattr(story, "genre", "") or "").strip().lower()
+    game_sync_enabled = is_game_story(story) or genre in {"网游", "web game", "game fantasy", "game_webnovel"}
+    if not story.characters or not isinstance(story.progression_ledger, dict) or not game_sync_enabled:
         return
     character = _pick_protagonist(story)
     if character is None:
@@ -1835,74 +1854,131 @@ def _sync_character_game_panels(story: StoryState, chapter_number: int | None = 
     skills = ledger.get("skills")
     quests = ledger.get("quests")
     pressure = _clean_mapping(ledger.get("pressure"))
-
     panel = character.game_panel
-    panel.game_id = (
-        _clean_game_id(protagonist.get("game_id"), character.name)
-        or _clean_game_id(panel.game_id, character.name)
-        or _clean_game_id(character.game_id, character.name)
-    )
-    if not panel.game_id and character.name == "苏叶":
-        panel.game_id = "夜烬"
-    if panel.game_id:
-        character.game_id = panel.game_id
-    if protagonist.get("level") not in (None, "", [], {}):
-        panel.level = protagonist.get("level")
-    if protagonist.get("class_path"):
-        panel.class_path = str(protagonist.get("class_path"))
-    if protagonist.get("exp"):
-        panel.exp = str(protagonist.get("exp"))
-    if protagonist.get("hp"):
-        panel.hp = str(protagonist.get("hp"))
-    if protagonist.get("mp"):
-        panel.mp = str(protagonist.get("mp"))
-    if isinstance(protagonist.get("attributes"), dict):
-        panel.attributes = dict(protagonist["attributes"])
+    game_state = dict(character.game_state) if isinstance(character.game_state, dict) else {}
+    current = deepcopy(game_state.get("current")) if isinstance(game_state.get("current"), dict) else {}
+    previous_current = deepcopy(current)
 
-    if character.name == "苏叶" and (panel.class_path or story.genre in {"网游", "web game", "game fantasy"}):
-        if not panel.hp:
-            panel.hp = "92/100" if str(panel.exp or "") not in {"", "0/100"} else "100/100"
-        if not panel.mp:
-            panel.mp = "61/80" if str(panel.exp or "") not in {"", "0/100"} else "80/80"
-        if not panel.attributes:
-            panel.attributes = {"力量": 3, "敏捷": 4, "智力": 9, "体质": 5}
+    def present(value: object) -> bool:
+        return value not in (None, "", [], {})
 
+    def fill(field: str, *values: object) -> None:
+        if present(current.get(field)):
+            return
+        for value in values:
+            if present(value):
+                current[field] = deepcopy(value)
+                return
+
+    legacy = panel.model_dump(mode="json")
+    ledger_skills: list[str] = []
     if isinstance(skills, dict):
-        values: list[str] = []
         for value in skills.values():
-            if isinstance(value, list):
-                values.extend(str(item) for item in value if str(item).strip())
-            elif value not in (None, "", {}, []):
-                values.append(str(value))
-        if values:
-            panel.skills = values[:12]
+            ledger_skills.extend(
+                str(item) for item in (value if isinstance(value, list) else [value]) if str(item).strip()
+            )
     elif isinstance(skills, list):
-        panel.skills = [str(item) for item in skills if str(item).strip()][:12]
+        ledger_skills = [str(item) for item in skills if str(item).strip()]
 
-    if equipment:
-        panel.equipment = equipment
-    if character.name == "苏叶" and panel.equipment and any("补给前置" in str(value) or "补给门槛" in str(value) for value in panel.equipment.values()):
-        durability = str(panel.equipment.get("durability") or panel.equipment.get("耐久") or "94/100")
-        panel.equipment = {"主武器": "新手法杖", "护甲": "粗布衣", "耐久": durability}
-    if economy.get("inventory") not in (None, "", [], {}):
-        panel.inventory = _clean_mapping(economy.get("inventory"))
-    if character.name == "苏叶" and not panel.inventory and str(panel.exp or "") not in {"", "0/100"}:
-        panel.inventory = {"灰鼠毒腺": "18份", "灰鼠皮": "3张"}
-    if economy.get("game_currency"):
-        panel.currency = str(economy.get("game_currency"))
-    elif economy.get("currency"):
-        panel.currency = str(economy.get("currency"))
-    elif ledger.get("currency"):
-        panel.currency = str(ledger.get("currency"))
+    def ledger_values_from(source: dict) -> dict:
+        source_protagonist = _clean_mapping(source.get("protagonist"))
+        source_economy = _clean_mapping(source.get("economy"))
+        source_equipment = _clean_mapping(source.get("equipment"))
+        source_quests = source.get("quests")
+        source_pressure = _clean_mapping(source.get("pressure"))
+        source_skills = source.get("skills")
+        if isinstance(source_skills, dict):
+            source_skill_values = [
+                str(item)
+                for value in source_skills.values()
+                for item in (value if isinstance(value, list) else [value])
+                if str(item).strip()
+            ]
+        elif isinstance(source_skills, list):
+            source_skill_values = [str(item) for item in source_skills if str(item).strip()]
+        else:
+            source_skill_values = []
+        return {
+            "level": source_protagonist.get("level", source.get("level")),
+            "class_path": source_protagonist.get("class_path", source.get("class_path")),
+            "exp": source_protagonist.get("exp", source.get("exp")),
+            "hp": source_protagonist.get("hp", source.get("hp")),
+            "mp": source_protagonist.get("mp", source.get("mp")),
+            "attributes": source_protagonist.get("attributes", source.get("attributes")),
+            "skills": source_skill_values or source.get("skills"),
+            "equipment": source_equipment or source.get("equipment"),
+            "inventory": source_economy.get("inventory", source.get("inventory")),
+            "currency": source_economy.get("game_currency") or source_economy.get("currency") or source.get("game_currency") or source.get("currency"),
+            "quests": source_quests if isinstance(source_quests, (dict, list)) else None,
+            "risk": source_pressure or source.get("risk"),
+        }
 
-    if isinstance(quests, dict):
-        panel.quests = dict(quests)
-    elif isinstance(quests, list):
-        panel.quests = {"active": list(quests)}
-    if pressure:
-        panel.risk = pressure
+    ledger_values = ledger_values_from(ledger)
+    for field, value in ledger_values.items():
+        fill(field, value, legacy.get(field))
+    if isinstance(authoritative_updates, dict):
+        for field, value in ledger_values_from(authoritative_updates).items():
+            if present(value):
+                current[field] = deepcopy(value)
+
+    game_id = _clean_game_id(current.get("game_id"), character.name)
+    if not game_id:
+        game_id = (
+            _clean_game_id(protagonist.get("game_id"), character.name)
+            or _clean_game_id(legacy.get("game_id"), character.name)
+            or _clean_game_id(character.game_id, character.name)
+        )
+    if not game_id and character.name == "苏叶":
+        game_id = "夜烬"
+    fill("game_id", game_id)
+
+    if character.name == "苏叶" and (present(current.get("class_path")) or game_sync_enabled):
+        fill("hp", "92/100" if str(current.get("exp") or "") not in {"", "0/100"} else "100/100")
+        fill("mp", "61/80" if str(current.get("exp") or "") not in {"", "0/100"} else "80/80")
+        fill("attributes", {"力量": 3, "敏捷": 4, "智力": 9, "体质": 5})
+    if character.name == "苏叶" and not present(current.get("inventory")) and str(current.get("exp") or "") not in {"", "0/100"}:
+        fill("inventory", {"灰鼠毒腺": "18份", "灰鼠皮": "3张"})
+    if character.name == "苏叶" and isinstance(current.get("equipment"), dict):
+        equipment_values = current["equipment"]
+        if any("补给前置" in str(value) or "补给门槛" in str(value) for value in equipment_values.values()):
+            durability = str(equipment_values.get("durability") or equipment_values.get("耐久") or "94/100")
+            current["equipment"] = {"主武器": "新手法杖", "护甲": "粗布衣", "耐久": durability}
+
+    panel.game_id = str(current.get("game_id") or "")
+    panel.level = current.get("level")
+    panel.class_path = str(current.get("class_path") or "")
+    panel.exp = str(current.get("exp") or "")
+    panel.hp = str(current.get("hp") or "")
+    panel.mp = str(current.get("mp") or "")
+    panel.attributes = deepcopy(current.get("attributes")) if isinstance(current.get("attributes"), dict) else {}
+    panel.skills = list(current.get("skills") or []) if isinstance(current.get("skills"), list) else []
+    panel.equipment = deepcopy(current.get("equipment")) if isinstance(current.get("equipment"), dict) else {}
+    panel.inventory = deepcopy(current.get("inventory")) if isinstance(current.get("inventory"), dict) else {}
+    panel.currency = str(current.get("currency") or "")
+    if isinstance(current.get("quests"), dict):
+        panel.quests = deepcopy(current["quests"])
+    elif isinstance(current.get("quests"), list):
+        panel.quests = {"active": deepcopy(current["quests"])}
+    else:
+        panel.quests = {}
+    panel.risk = deepcopy(current.get("risk")) if isinstance(current.get("risk"), dict) else {}
     if chapter_number is not None:
         panel.updated_chapter = chapter_number
+    character.game_id = panel.game_id or character.game_id
+
+    game_state["current"] = current
+    game_state.setdefault("recent_changes", [])
+    changed_fields = [field for field in ledger_values if previous_current.get(field) != current.get(field)]
+    if chapter_number is not None and changed_fields:
+        fact = f"游戏账本更新：{', '.join(changed_fields[:5])}"
+        if not any(
+            isinstance(item, dict)
+            and item.get("chapter") == int(chapter_number)
+            and item.get("fact") == fact
+            for item in game_state["recent_changes"]
+        ):
+            game_state["recent_changes"].append({"chapter": int(chapter_number), "fact": fact})
+    character.game_state = game_state
 
     summary_parts = [
         f"ID {panel.game_id}" if panel.game_id else "",
@@ -4509,7 +4585,11 @@ class StoryOrchestrator:
             event_beat=persisted_event_beat,
             post_draft_memory=post_draft_memory,
         )
-        _apply_ledger_updates(updated_story, post_draft_memory.get("ledger_updates", {}))
+        _apply_ledger_updates(
+            updated_story,
+            post_draft_memory.get("ledger_updates", {}),
+            chapter_number=chapter_number,
+        )
         _sync_character_game_panels(updated_story, chapter_number)
         advance_world_pulse(updated_story, chapter_number=chapter_number)
         maybe_update_arc_recap(updated_story, chapter_number)
@@ -5024,7 +5104,11 @@ class StoryOrchestrator:
             event_beat={},
             post_draft_memory=post_draft_memory,
         )
-        _apply_ledger_updates(updated_story, post_draft_memory.get("ledger_updates", {}))
+        _apply_ledger_updates(
+            updated_story,
+            post_draft_memory.get("ledger_updates", {}),
+            chapter_number=chapter_number,
+        )
         _sync_character_game_panels(updated_story, chapter_number)
         advance_world_pulse(updated_story, chapter_number=chapter_number)
         maybe_update_arc_recap(updated_story, chapter_number)

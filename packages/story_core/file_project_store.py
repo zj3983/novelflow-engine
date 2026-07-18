@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -20,6 +21,7 @@ from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.dual_state import (
+    merge_state_change,
     normalize_dual_state,
     project_character_for_scene,
     scene_kind_for_cards,
@@ -98,6 +100,54 @@ def _normalize_character_persistence_card(
         if not _state_namespace_has_content(normalized.get(state_name)):
             normalized.pop(state_name, None)
     return normalized
+
+
+_GAME_STATE_FIELDS = (
+    "game_id",
+    "level",
+    "class_path",
+    "exp",
+    "hp",
+    "mp",
+    "attributes",
+    "skills",
+    "equipment",
+    "inventory",
+    "currency",
+    "quests",
+    "risk",
+    "backpack",
+)
+
+
+def _sync_game_panel_from_state(card: dict[str, Any]) -> dict[str, Any]:
+    """Mirror structured game state into the legacy panel."""
+
+    panel = dict(card.get("game_panel") or {})
+    state = dict(card.get("game_state") or {})
+    current = dict(state.get("current") or {}) if isinstance(state.get("current"), dict) else {}
+    for field in _GAME_STATE_FIELDS:
+        value = current.get(field)
+        if value not in (None, "", [], {}):
+            panel[field] = deepcopy(value)
+    card["game_panel"] = panel
+    return card
+
+
+def _sync_game_state_mirror(card: dict[str, Any]) -> dict[str, Any]:
+    """Materialize game state from a legacy panel without touching reality."""
+
+    panel = dict(card.get("game_panel") or {})
+    state = dict(card.get("game_state") or {})
+    current = dict(state.get("current") or {}) if isinstance(state.get("current"), dict) else {}
+    for field in _GAME_STATE_FIELDS:
+        value = panel.get(field)
+        if value not in (None, "", [], {}):
+            current.setdefault(field, deepcopy(value))
+    state["current"] = current
+    state.setdefault("recent_changes", [])
+    card["game_state"] = state
+    return card
 
 
 SOFT_REGENERATION_ISSUE_MARKERS = (
@@ -1476,6 +1526,7 @@ class FileProjectStore:
             return project
         summary = self._chapter_summary_payload(chapter)
         synced = dict(project)
+        is_game_story = self._is_game_story_payload(synced, state)
         blueprint = dict(synced.get("world_blueprint") or {})
         continuity = dict(blueprint.get("continuity_state") or {})
         previous_chapter_facts: list[str] = []
@@ -1544,6 +1595,12 @@ class FileProjectStore:
             for key in ("role", "game_id", "goals", "secrets", "relationships", "lifecycle_state"):
                 if character.get(key) not in (None, "", [], {}):
                     profile[key] = character.get(key)
+            if isinstance(character.get("real_state"), dict) and character["real_state"]:
+                profile["real_state"] = deepcopy(character["real_state"])
+            elif not is_game_story:
+                profile.pop("game_state", None)
+            if is_game_story and isinstance(character.get("game_state"), dict) and character["game_state"]:
+                profile["game_state"] = deepcopy(character["game_state"])
             profile["current_emotion"] = character.get("current_emotion") or profile.get("current_emotion") or "neutral"
             profile["current_location"] = character.get("location") or profile.get("current_location") or ""
             profile["latest_chapter"] = chapter_number
@@ -1556,7 +1613,17 @@ class FileProjectStore:
                 )
             game_panel = character.get("game_panel")
             if isinstance(game_panel, dict) and game_panel:
-                profile["game_panel"] = game_panel | {"updated_chapter": chapter_number}
+                panel = dict(game_panel)
+                if is_game_story and isinstance(character.get("game_state"), dict):
+                    current = character["game_state"].get("current")
+                    if isinstance(current, dict):
+                        for field in _GAME_STATE_FIELDS:
+                            value = current.get(field)
+                            if value not in (None, "", [], {}):
+                                panel[field] = deepcopy(value)
+                profile["game_panel"] = panel | {"updated_chapter": chapter_number}
+            if not is_game_story:
+                profile.pop("game_state", None)
             by_name[name] = profile
         synced["character_profiles"] = list(by_name.values())
         relationship_updates: list[dict[str, Any]] = []
@@ -1706,9 +1773,246 @@ class FileProjectStore:
             "event_beat": {"turn": "任务推进", "pivot": next_focus},
         }
 
+    def _sync_game_character_from_ledger(
+        self,
+        character: dict[str, Any],
+        ledger: dict[str, Any],
+        *,
+        chapter_number: int | None = None,
+    ) -> dict[str, Any]:
+        """Write game ledger leaves to game_state and its legacy panel only."""
+
+        protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), dict) else {}
+        economy = ledger.get("economy") if isinstance(ledger.get("economy"), dict) else {}
+        equipment = ledger.get("equipment") if isinstance(ledger.get("equipment"), dict) else {}
+        quests = ledger.get("quests")
+        pressure = ledger.get("pressure") if isinstance(ledger.get("pressure"), dict) else {}
+        panel = dict(character.get("game_panel") or {})
+        game_state = dict(character.get("game_state") or {})
+        current = dict(game_state.get("current") or {}) if isinstance(game_state.get("current"), dict) else {}
+        previous_current = deepcopy(current)
+
+        game_id = protagonist.get("game_id") or current.get("game_id") or panel.get("game_id") or character.get("game_id")
+        if not game_id and character.get("name") == "苏叶":
+            game_id = "夜烬"
+        values = {
+            "game_id": game_id,
+            "level": protagonist.get("level"),
+            "class_path": protagonist.get("class_path"),
+            "exp": protagonist.get("exp"),
+            "hp": protagonist.get("hp"),
+            "mp": protagonist.get("mp"),
+            "attributes": protagonist.get("attributes"),
+            "equipment": equipment,
+            "inventory": economy.get("inventory"),
+            "backpack": economy.get("backpack"),
+            "currency": economy.get("game_currency") or economy.get("currency") or ledger.get("currency"),
+            "quests": quests,
+            "risk": pressure,
+        }
+        skills = ledger.get("skills")
+        if isinstance(skills, list):
+            values["skills"] = [str(item) for item in skills if str(item).strip()]
+        elif isinstance(skills, dict):
+            values["skills"] = [
+                str(item)
+                for value in skills.values()
+                for item in (value if isinstance(value, list) else [value])
+                if str(item).strip()
+            ]
+
+        for field, value in values.items():
+            if value in (None, "", [], {}):
+                continue
+            current[field] = deepcopy(value)
+            panel[field] = deepcopy(value)
+        if current.get("game_id"):
+            character["game_id"] = current["game_id"]
+        if chapter_number is not None:
+            panel["updated_chapter"] = chapter_number
+        game_state["current"] = current
+        game_state.setdefault("recent_changes", [])
+        changed_fields = [
+            field
+            for field in values
+            if previous_current.get(field) != current.get(field)
+        ]
+        if chapter_number is not None and changed_fields:
+            fact = f"游戏账本更新：{', '.join(changed_fields[:5])}"
+            recent_changes = game_state["recent_changes"]
+            if not any(
+                isinstance(item, dict)
+                and item.get("chapter") == int(chapter_number)
+                and item.get("fact") == fact
+                for item in recent_changes
+            ):
+                recent_changes.append({"chapter": int(chapter_number), "fact": fact})
+        character["game_state"] = game_state
+        character["game_panel"] = panel
+        return character
+
+    @staticmethod
+    def _chapter_state_events(chapter: dict[str, Any]) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for key in ("state_changes", "events", "ledger_events"):
+            raw = chapter.get(key)
+            if isinstance(raw, dict):
+                raw = raw.get("events") or raw.get("changes") or []
+            if isinstance(raw, list):
+                events.extend(item for item in raw if isinstance(item, dict))
+        summary = chapter.get("chapter_summary")
+        if isinstance(summary, dict) and isinstance(summary.get("state_changes"), list):
+            events.extend(item for item in summary["state_changes"] if isinstance(item, dict))
+        return events
+
+    @staticmethod
+    def _event_change_payload(
+        event: dict[str, Any],
+        *,
+        line: str,
+        strict_namespace: bool = False,
+    ) -> dict[str, Any]:
+        change = event.get("change") or event.get("state_change") or event.get("state_delta")
+        if not isinstance(change, dict):
+            change = {}
+        namespace_keys = {"real_change", "real_state", "game_change", "game_state"}
+        has_namespace = any(key in event or key in change for key in namespace_keys)
+        if line == "reality":
+            candidates = (
+                event.get("real_change"),
+                event.get("real_state"),
+                change.get("real_change"),
+                change.get("real_state"),
+            )
+        else:
+            candidates = (
+                event.get("game_change"),
+                event.get("game_state"),
+                change.get("game_change"),
+                change.get("game_state"),
+            )
+        selected = next((item for item in candidates if isinstance(item, dict)), None) if has_namespace else None
+        if selected is None and not has_namespace and not strict_namespace:
+            selected = change
+        if not isinstance(selected, dict):
+            return {}
+        if isinstance(selected.get("current"), dict):
+            current = selected["current"]
+        else:
+            current = {
+                key: value
+                for key, value in selected.items()
+                if key not in {"line", "scene_line", "fact", "recent_changes", "real_change", "game_change"}
+            }
+        return {
+            "current": deepcopy(current),
+            "fact": str(event.get("fact") or selected.get("fact") or change.get("fact") or "").strip(),
+        } if current else {}
+
+    def _apply_chapter_state_events(
+        self,
+        state: dict[str, Any],
+        chapter: dict[str, Any],
+        *,
+        is_game_story: bool,
+    ) -> None:
+        chapter_number = int(chapter.get("chapter_number") or 0)
+        characters = state.get("characters") if isinstance(state.get("characters"), list) else []
+        for event in self._chapter_state_events(chapter):
+            raw_line = str(event.get("line") or event.get("scene_line") or "").strip().lower()
+            if raw_line in {"游戏", "game_state"}:
+                raw_line = "game"
+            elif raw_line in {"现实", "real", "real_state"}:
+                raw_line = "reality"
+            elif raw_line in {"混合", "mixed", "过渡", "切换"}:
+                raw_line = "transition"
+            if raw_line not in {"game", "reality", "transition"}:
+                continue
+            lines = ("reality", "game") if raw_line == "transition" else (raw_line,)
+            for line in lines:
+                if line == "game" and not is_game_story:
+                    continue
+                change = self._event_change_payload(
+                    event,
+                    line=line,
+                    strict_namespace=raw_line == "transition",
+                )
+                if not isinstance(change.get("current"), dict) or not change["current"]:
+                    continue
+                target = str(event.get("character") or event.get("character_name") or event.get("target") or "").strip()
+                if target:
+                    selected = [
+                        item
+                        for item in characters
+                        if isinstance(item, dict) and item.get("name") == target
+                    ]
+                    if not selected:
+                        continue
+                else:
+                    selected = [
+                        item
+                        for item in characters
+                        if isinstance(item, dict) and item.get("role") in {"protagonist", "主角"}
+                    ]
+                    if not selected:
+                        selected = [item for item in characters if isinstance(item, dict)][:1]
+                for character in selected:
+                    state_key = "game_state" if line == "game" else "real_state"
+                    existing = character.get(state_key) if isinstance(character.get(state_key), dict) else {}
+                    existing_current = existing.get("current") if isinstance(existing.get("current"), dict) else {}
+                    if not any(existing_current.get(key) != value for key, value in change["current"].items()):
+                        continue
+                    merged = merge_state_change(
+                        character,
+                        line=line,
+                        change=change,
+                        chapter=chapter_number,
+                    )
+                    character.clear()
+                    character.update(merged)
+                    if line == "game":
+                        _sync_game_panel_from_state(character)
+
     def _sync_ledger_from_chapter_body(self, state: dict[str, Any], chapter: dict[str, Any]) -> dict[str, Any]:
         body = str(chapter.get("body") or "")
-        if not body:
+        is_game_story = self._is_game_story_payload(self.project(), state)
+        if not body or not is_game_story:
+            self._apply_chapter_state_events(state, chapter, is_game_story=is_game_story)
+            return state
+        chinese_markers = (
+            "经验",
+            "生命",
+            "法力",
+            "钱袋：",
+            "钱袋:",
+            "背包：",
+            "背包:",
+            "新手法杖",
+            "后坡巡查",
+            "清道夫委托",
+            "铜币",
+            "等级：",
+            "等级:",
+            "任务：",
+            "任务:",
+        )
+        english_field = re.search(
+            r"\b(?:experience|exp|hp|health|mp|mana|inventory|backpack|level|durability|equipment)\s*(?:[:=]|\s+\d)",
+            body,
+            flags=re.IGNORECASE,
+        )
+        currency_field = re.search(
+            r"\b(?:currency|coins?)\s*[:=]",
+            body,
+            flags=re.IGNORECASE,
+        )
+        amount_context = re.search(
+            r"\b\d+(?:\.\d+)?\s*(?:coins?|copper|gold|silver)\b",
+            body,
+            flags=re.IGNORECASE,
+        )
+        if not any(marker in body for marker in chinese_markers) and not (english_field or currency_field or amount_context):
+            self._apply_chapter_state_events(state, chapter, is_game_story=is_game_story)
             return state
         ledger = dict(state.get("progression_ledger") or {})
         protagonist = dict(ledger.get("protagonist") or {})
@@ -1718,16 +2022,28 @@ class FileProjectStore:
         quests = dict(ledger.get("quests") or {})
 
         def last(pattern: str) -> str:
-            matches = re.findall(pattern, body)
+            matches = re.findall(pattern, body, flags=re.IGNORECASE)
             return str(matches[-1]).strip() if matches else ""
 
-        exp = last(r"经验[：:]\s*(\d+\s*/\s*\d+)")
-        hp = last(r"生命[：:]\s*(\d+\s*/\s*\d+)")
-        mp = last(r"法力[：:]\s*(\d+\s*/\s*\d+)")
-        durability = last(r"新手法杖[：:]\s*(\d+\s*/\s*\d+)")
-        money = last(r"钱袋[：:]\s*([^\n。；；,，】]+)")
+        level = last(r"(?:等级|level)\s*(?:[：:]\s*)?(?:lv\.\s*)?(\d+)")
+        exp = last(r"(?:经验|experience|exp)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)")
+        hp = last(r"(?:生命|hp|health)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)")
+        mp = last(r"(?:法力|mp|mana)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)")
+        durability = last(r"(?:新手法杖|耐久|durability)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+|\d{1,3}%)")
+        money = last(r"(?:钱袋\s*[：:]|currency\s*[:=]|coins?\s*[:=])\s*([^\n。；,，】]+)")
+        if not money:
+            amount_matches = re.findall(
+                r"\b\d+(?:\.\d+)?\s*(?:coins?|copper|gold|silver)\b",
+                body,
+                flags=re.IGNORECASE,
+            )
+            money = str(amount_matches[-1]).strip() if amount_matches else ""
         patrol = last(r"后坡巡查[：:]\s*(\d+\s*/\s*\d+)")
+        quest_line = last(r"(?:任务\s*[：:]|quest(?:\s+status)?\s*[:=])\s*([^\n。】]+)")
 
+        if level:
+            protagonist["level"] = f"Lv.{level}"
+            panel["level"] = protagonist["level"]
         if exp:
             protagonist["exp"] = exp.replace(" ", "")
             panel["exp"] = protagonist["exp"]
@@ -1742,11 +2058,16 @@ class FileProjectStore:
         if money:
             economy["game_currency"] = money.rstrip("】】 ]")
 
-        inventory_line = last(r"背包[：:]\s*([^\n。]+)")
+        inventory_line = last(r"(?:背包|inventory|backpack)\s*(?:[：:]\s*)?([^\n。]+)")
         if inventory_line:
             inventory: dict[str, int] = {}
-            for item, count in re.findall(r"([\u4e00-\u9fffA-Za-z0-9_]+)\s*[×xX*]\s*(\d+)", inventory_line):
-                inventory[item] = int(count)
+            for raw_item, count in re.findall(
+                r"([^×xX*＊,，;；]+?)\s*[×xX*＊]\s*(\d+)",
+                inventory_line,
+            ):
+                item = re.sub(r"\s+", " ", raw_item).strip(" \t:：;；,，")
+                if item:
+                    inventory[item] = int(count)
             if inventory:
                 economy["inventory"] = inventory
         occupied = last(r"占用[：:]\s*(\d+\s*/\s*20)")
@@ -1755,6 +2076,8 @@ class FileProjectStore:
             occupied = occupied_match.group(1) if occupied_match else ""
         if occupied:
             economy["backpack"] = occupied.replace(" ", "")
+        if quest_line:
+            quests["active"] = quest_line
 
         if "清道夫委托已完成" in body:
             quests["清道夫委托"] = "已提交；奖励30铜已领取"
@@ -1787,26 +2110,16 @@ class FileProjectStore:
         state["progression_ledger"] = ledger
 
         for character in state.get("characters", []) if isinstance(state.get("characters"), list) else []:
-            if not isinstance(character, dict) or character.get("role") != "protagonist":
+            if not isinstance(character, dict) or character.get("role") not in {"protagonist", "主角"}:
                 continue
-            game_panel = dict(character.get("game_panel") or {})
-            game_panel.update(
-                {
-                    "level": protagonist.get("level", game_panel.get("level")),
-                    "identity": protagonist.get("identity", "见习冒险者（未转职）"),
-                    "class_path": protagonist.get("class_path", "见习冒险者（未转职）"),
-                    "exp": protagonist.get("exp", game_panel.get("exp")),
-                    "hp": protagonist.get("hp", game_panel.get("hp")),
-                    "mp": protagonist.get("mp", game_panel.get("mp")),
-                    "equipment": {"weapon": protagonist.get("weapon_durability", equipment.get("weapon", "新手法杖"))},
-                    "inventory": economy.get("inventory", game_panel.get("inventory", {})),
-                    "backpack": economy.get("backpack", game_panel.get("backpack", "")),
-                    "currency": economy.get("game_currency", game_panel.get("currency", "")),
-                    "quests": quests,
-                }
+            character.setdefault("game_panel", {})
+            character["game_panel"]["identity"] = protagonist.get("identity", "见习冒险者（未转职）")
+            self._sync_game_character_from_ledger(
+                character,
+                ledger,
+                chapter_number=int(chapter.get("chapter_number") or 0),
             )
-            character["game_panel"] = game_panel
-        if exp or hp or mp or inventory_line:
+        if level or exp or hp or mp or durability or money or inventory_line or quest_line:
             summary = self._chapter_body_ledger_summary(chapter, ledger)
             chapter["chapter_summary"] = summary
             state["chapter_summaries"] = self._replace_by_chapter_number(
@@ -1853,6 +2166,7 @@ class FileProjectStore:
                 memory_entry,
                 limit=240,
             )
+        self._apply_chapter_state_events(state, chapter, is_game_story=is_game_story)
         return state
 
     def _frozen_chapters(self) -> set[int]:
@@ -2052,12 +2366,36 @@ class FileProjectStore:
 
     @staticmethod
     def _is_game_story_payload(project: dict[str, Any], state: dict[str, Any] | None = None) -> bool:
+        def is_game_alias(value: Any) -> bool:
+            normalized = " ".join(
+                str(value or "")
+                .strip()
+                .casefold()
+                .replace("_", " ")
+                .replace("-", " ")
+                .split()
+            )
+            return normalized in {"网游", "web game", "game web", "game webnovel"}
+
         world_blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
+        raw_explicit_ids = world_blueprint.get("genre_plugin_ids")
+        if isinstance(raw_explicit_ids, str):
+            raw_explicit_ids = [raw_explicit_ids]
+        if any(is_game_alias(item) for item in (raw_explicit_ids if isinstance(raw_explicit_ids, list) else [])):
+            return True
         explicit_ids = normalize_novel_type_ids(world_blueprint.get("genre_plugin_ids"))
         if "game_webnovel" in explicit_ids:
             return True
         if explicit_ids:
             return False
+        state = state if isinstance(state, dict) else {}
+        raw_state_types = state.get("genre_plugin_ids")
+        if isinstance(raw_state_types, str):
+            raw_state_types = [raw_state_types]
+        if any(is_game_alias(item) for item in (raw_state_types if isinstance(raw_state_types, list) else [])):
+            return True
+        if is_game_alias(state.get("genre")):
+            return True
         try:
             project_model = NovelProject.model_validate(project)
         except Exception:
@@ -2066,7 +2404,6 @@ class FileProjectStore:
             plugin.plugin_id == "game_webnovel" for plugin in select_genre_plugins(project_model)
         ):
             return True
-        state = state if isinstance(state, dict) else {}
         state_ids = normalize_novel_type_ids(state.get("genre_plugin_ids"))
         if state_ids:
             return "game_webnovel" in state_ids
