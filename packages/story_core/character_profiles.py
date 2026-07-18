@@ -5,6 +5,8 @@ from typing import Any, Iterable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from packages.story_core.dual_state import normalize_dual_state
+
 
 class _ProfileModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -86,7 +88,11 @@ def merge_character_profile(existing: dict[str, Any], generated: dict[str, Any])
     return _merge_prefer_existing(dict(existing), dict(generated))
 
 
-def normalize_character_profile(card: dict[str, Any]) -> dict[str, Any]:
+def normalize_character_profile(
+    card: dict[str, Any],
+    *,
+    is_game_story: bool = False,
+) -> dict[str, Any]:
     """Add concrete profile defaults while preserving legacy and extension fields."""
 
     normalized = deepcopy(dict(card))
@@ -106,6 +112,8 @@ def normalize_character_profile(card: dict[str, Any]) -> dict[str, Any]:
     normalized.setdefault("first_appearance", 0)
     normalized.setdefault("dialogue_examples", [])
     normalized.setdefault("relationship_notes", [])
+    if is_game_story:
+        normalized = normalize_dual_state(normalized, is_game_story=True)
     return normalized
 
 

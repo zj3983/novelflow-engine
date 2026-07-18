@@ -216,7 +216,7 @@ class DirectorDecision(BaseModel):
 
 
 class GamePanel(BaseModel):
-    """Track a web-game character panel as part of the character card."""
+    """Legacy web-game panel kept as a compatibility mirror for game_state."""
 
     game_id: str = ""
     level: int | str | None = None
@@ -345,6 +345,8 @@ class CharacterState(BaseModel):
     story_drive: StoryDriveProfile = Field(default_factory=StoryDriveProfile)
     dialogue_examples: list[str] = Field(default_factory=list)
     relationship_notes: list[RelationshipNote] = Field(default_factory=list)
+    real_state: dict = Field(default_factory=dict)
+    game_state: dict = Field(default_factory=dict)
     game_id: str = ""
     game_panel: GamePanel = Field(default_factory=GamePanel)
     performance_profile: CharacterPerformanceProfile = Field(default_factory=CharacterPerformanceProfile)
