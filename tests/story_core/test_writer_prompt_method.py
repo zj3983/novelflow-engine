@@ -1,5 +1,5 @@
-from packages.story_core.models import StoryState
-from packages.story_core.orchestrator import StoryOrchestrator
+from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.orchestrator import StoryOrchestrator, _character_context_for_prompt, _writer_character_section
 from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
 
 
@@ -68,6 +68,59 @@ def test_segment_prompt_promotes_variant_fact_locks():
     assert "固定为灰狼" in prompt
     assert "不得写成灰鼠" in prompt
     assert "仓库管理员铁栓" in prompt
+
+
+def test_writer_character_section_renders_compact_projected_states():
+    lines = _writer_character_section(
+        {
+            "cards": [
+                {
+                    "identity": {"name": "苏叶", "role": "主角"},
+                    "motivation": "验证异常",
+                    "state_context": {
+                        "real_state": {"current": {"balance": "27.60"}},
+                        "game_state": {"current": {"level": "Lv.2"}},
+                    },
+                }
+            ]
+        },
+        {},
+    )
+
+    rendered = "\n".join(lines)
+    assert "现实状态：" in rendered
+    assert "游戏状态：" in rendered
+    assert "balance" not in rendered
+    assert "level" not in rendered
+    assert "27.60" in rendered
+    assert "Lv.2" in rendered
+
+
+def test_writer_prompt_projects_only_the_scene_line_and_renders_it():
+    story = StoryState(
+        story_id="s-dual-prompt",
+        outline="网游开服，同时承受现实压力。",
+        genre="网游",
+        style="升级流",
+        characters=[
+            CharacterState(
+                name="苏叶",
+                role="主角",
+                real_state={"current": {"balance": "27.60"}},
+                game_state={"current": {"level": "Lv.2"}},
+            )
+        ],
+    )
+    plan = {"scene_cards": [{"location": "副本入口", "purpose": "领取任务"}]}
+
+    context = _character_context_for_prompt(story, plan)
+    assert set(context["cards"][0]["state_context"]) == {"game_state"}
+    assert "27.60" not in str(context)
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, plan)
+    assert "游戏状态：" in prompt
+    assert "Lv.2" in prompt
+    assert "现实状态：" not in prompt
 
 
 def test_fallback_body_prompt_uses_same_scene_method():

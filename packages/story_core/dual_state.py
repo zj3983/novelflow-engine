@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -13,6 +13,69 @@ _REAL_FIELDS = (
 )
 _SCENE_KINDS = {"game", "reality", "transition"}
 _LINES = {"game": "game_state", "reality": "real_state"}
+_GAME_SCENE_MARKERS = ("游戏", "副本", "任务", "背包", "等级")
+_REALITY_SCENE_MARKERS = ("现实", "出租屋", "工作", "房租", "银行")
+_PRIVATE_KEY_MARKERS = ("secret", "private", "hidden_matters", "continuity_locks")
+_SCENE_PRIVATE_KEYS = {"game_panel", "continuity_locks", "real_state", "game_state"}
+
+
+def infer_scene_kind(scene_card: Mapping[str, Any], *, is_game_story: bool) -> str:
+    """Infer the visible story line for one scene card."""
+
+    card = scene_card if isinstance(scene_card, Mapping) else {}
+    for key in ("line", "scene_line"):
+        explicit = str(card.get(key) or "").strip().lower()
+        if explicit in {"game", "游戏", "game_state"}:
+            return "game" if is_game_story else "reality"
+        if explicit in {"reality", "real", "现实", "real_state"}:
+            return "reality"
+        if explicit in {"transition", "mixed", "过渡", "切换"}:
+            return "transition" if is_game_story else "reality"
+
+    if not is_game_story:
+        return "reality"
+
+    def collect_text(value: Any) -> list[str]:
+        if isinstance(value, Mapping):
+            return [piece for item in value.values() for piece in collect_text(item)]
+        if isinstance(value, (list, tuple, set)):
+            return [piece for item in value for piece in collect_text(item)]
+        if value in (None, ""):
+            return []
+        return [str(value)]
+
+    text = " ".join(
+        piece
+        for key, value in card.items()
+        if key not in {"line", "scene_line", "real_state", "game_state", "game_panel"}
+        for piece in collect_text(value)
+    )
+    has_game = any(marker in text for marker in _GAME_SCENE_MARKERS)
+    has_reality = any(marker in text for marker in _REALITY_SCENE_MARKERS)
+    if has_game and has_reality:
+        return "transition"
+    if has_game:
+        return "game"
+    if has_reality:
+        return "reality"
+    return "transition" if is_game_story else "reality"
+
+
+def scene_kind_for_cards(scene_cards: Any, *, is_game_story: bool) -> str:
+    """Choose one writer-visible line for a chapter's scene cards."""
+
+    kinds = {
+        infer_scene_kind(card, is_game_story=is_game_story)
+        for card in scene_cards
+        if isinstance(card, Mapping)
+    }
+    if "transition" in kinds or {"game", "reality"}.issubset(kinds):
+        return "transition"
+    if "game" in kinds:
+        return "game"
+    if "reality" in kinds:
+        return "reality"
+    return "transition" if is_game_story else "reality"
 
 
 def _current_from_state(value: Any) -> dict[str, Any]:
@@ -37,6 +100,20 @@ def _recent_changes(value: Any) -> list[dict[str, Any]]:
             chapter = 0
         changes.append({"chapter": chapter, "fact": str(item.get("fact", ""))})
     return changes
+
+
+def _scrub_private(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        cleaned: dict[Any, Any] = {}
+        for key, item in value.items():
+            normalized_key = str(key).strip().lower()
+            if any(marker in normalized_key for marker in _PRIVATE_KEY_MARKERS):
+                continue
+            cleaned[key] = _scrub_private(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_scrub_private(item) for item in value]
+    return deepcopy(value)
 
 
 def _normalize_state(value: Any, *, fallback_current: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -77,7 +154,7 @@ def normalize_dual_state(card: Mapping[str, Any], *, is_game_story: bool) -> dic
 
 
 def _project_state(card: Mapping[str, Any], normalized: Mapping[str, Any], name: str) -> dict[str, Any]:
-    state = deepcopy(normalized[name])
+    state = _scrub_private(normalized[name])
     original = card.get(name)
     # Existing envelopes historically allowed omitted optional members. Keep
     # that compact representation in scene projections while new envelopes
@@ -101,6 +178,34 @@ def project_dual_state(card: Mapping[str, Any], *, scene_kind: str) -> dict[str,
     if scene_kind == "transition":
         names = ("real_state", "game_state")
     return {name: _project_state(card, normalized, name) for name in names}
+
+
+def _strip_scene_private_fields(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _strip_scene_private_fields(item)
+            for key, item in value.items()
+            if str(key).strip().lower() not in _SCENE_PRIVATE_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_scene_private_fields(item) for item in value]
+    return deepcopy(value)
+
+
+def project_character_for_scene(
+    card: Mapping[str, Any],
+    *,
+    scene_kind: str,
+    allowed_reveals: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Build one scene-safe writer card with a single projected state context."""
+
+    from packages.story_core.character_profiles import project_character_for_writer
+
+    projected = project_character_for_writer(dict(card), allowed_reveals=allowed_reveals)
+    projected = _strip_scene_private_fields(projected)
+    projected["state_context"] = project_dual_state(card, scene_kind=scene_kind)
+    return projected
 
 
 def merge_state_change(

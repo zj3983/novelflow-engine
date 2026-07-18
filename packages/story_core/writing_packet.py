@@ -4,6 +4,7 @@ from typing import Any
 
 from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES, compact_list, compact_text
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate
+from packages.story_core.dual_state import project_character_for_scene, scene_kind_for_cards
 from packages.story_core.memory import build_character_cards
 from packages.story_core.simulation import is_game_story
 from packages.story_core.writing_learning import learning_snapshot
@@ -49,7 +50,43 @@ def _extract_scene_cards(bundle: Any) -> list[dict[str, Any]]:
         )
         if not result[-1]["scene_contract"]:
             result[-1].pop("scene_contract", None)
+        for key in ("line", "scene_line"):
+            if raw.get(key) not in (None, ""):
+                result[-1][key] = str(raw[key])
     return result
+
+
+def _packet_scene_kind(scene_cards: list[dict[str, Any]], *, is_game_story: bool) -> str:
+    return scene_kind_for_cards(scene_cards, is_game_story=is_game_story)
+
+
+def _character_model_payload(character: Any) -> dict[str, Any]:
+    if hasattr(character, "model_dump"):
+        try:
+            payload = character.model_dump(mode="json")
+        except TypeError:
+            payload = character.model_dump()
+        return payload if isinstance(payload, dict) else {}
+    return dict(character) if isinstance(character, dict) else {}
+
+
+def _project_packet_character_cards(story: Any, cards: list[dict[str, Any]], *, scene_kind: str) -> list[dict[str, Any]]:
+    raw_cards = [_character_model_payload(character) for character in getattr(story, "characters", []) or []]
+    by_name = {str(card.get("name") or "").strip(): card for card in raw_cards if str(card.get("name") or "").strip()}
+    by_game_id = {str(card.get("game_id") or "").strip(): card for card in raw_cards if str(card.get("game_id") or "").strip()}
+    projected_cards: list[dict[str, Any]] = []
+    for card in cards:
+        identity = card.get("identity") if isinstance(card.get("identity"), dict) else {}
+        raw = by_name.get(str(identity.get("name") or card.get("name") or "").strip())
+        if raw is None:
+            raw = by_game_id.get(str(identity.get("game_id") or "").strip(), {})
+        source = dict(card)
+        for key in ("real_state", "game_state", "game_panel", "secrets", "story_drive", "relationship_notes"):
+            if key in raw:
+                source[key] = raw[key]
+        projected = project_character_for_scene(source, scene_kind=scene_kind)
+        projected_cards.append(projected)
+    return projected_cards
 
 
 def _extract_scene_contracts(scene_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -436,8 +473,13 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         scene_cards = _default_first_chapter_scenes(game_genre)
         scene_contracts = _extract_scene_contracts(scene_cards)
 
+    scene_kind = _packet_scene_kind(scene_cards, is_game_story=game_genre)
     protagonist_locks = _latest_panel_locks(story, game_genre=game_genre)
-    character_cards = build_character_cards(story)
+    character_cards = _project_packet_character_cards(
+        story,
+        build_character_cards(story),
+        scene_kind=scene_kind,
+    )
     hard_locks = _hard_locks(game_genre, target_chapter)
     real_name = str(protagonist_locks.get("real_name") or "").strip()
     game_id = str(protagonist_locks.get("game_id") or "").strip()
@@ -453,6 +495,7 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
     return {
         "schema_version": "codex-writing-packet/v1",
         "chapter_number": target_chapter,
+        "scene_kind": scene_kind,
         "chapter_title": getattr(bundle, "chapter_title", "") if bundle is not None else "",
         "title_contract": {
             "style": "tomato_concrete_short_title",

@@ -84,6 +84,7 @@ from packages.story_core.world_simulation import select_scene_cards, simulate_wo
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.prompt_modules import replaceable_slots
 from packages.story_core.dialogue_context import build_dialogue_context
+from packages.story_core.dual_state import project_character_for_scene, scene_kind_for_cards
 from packages.story_core.review_report import format_review_report
 from packages.story_core.scene_contract_repair import build_scene_contract_repair_plan
 
@@ -1115,9 +1116,22 @@ def _planned_character_names(plan: Any) -> set[str]:
     return names
 
 
+def _writer_scene_kind(story: StoryState, plan: Any | None = None) -> str:
+    plan = plan if isinstance(plan, dict) else {}
+    scene_cards = plan.get("scene_cards") if isinstance(plan.get("scene_cards"), list) else []
+    is_game_story = _story_game_context(story, plan)
+    return scene_kind_for_cards(scene_cards, is_game_story=is_game_story)
+
+
 def _character_context_for_prompt(story: StoryState, plan: Any | None = None, *, max_items: int = 4) -> dict[str, Any]:
     requested = _planned_character_names(plan)
     cards = build_character_cards(story)
+    raw_cards = {
+        character.name: character.model_dump(mode="json")
+        for character in story.characters
+        if character.name
+    }
+    scene_kind = _writer_scene_kind(story, plan)
     selected: list[dict[str, Any]] = []
     for card in cards:
         identity = card.get("identity") if isinstance(card.get("identity"), dict) else {}
@@ -1140,6 +1154,12 @@ def _character_context_for_prompt(story: StoryState, plan: Any | None = None, *,
         locks = card.get("continuity_locks") if isinstance(card.get("continuity_locks"), dict) else {}
         relationships = locks.get("relationships") if isinstance(locks.get("relationships"), dict) else {}
         chapter_usage = usage.get("this_chapter_usage") if isinstance(usage.get("this_chapter_usage"), dict) else {}
+        raw = raw_cards.get(name, {})
+        source = dict(card)
+        for key in ("real_state", "game_state", "game_panel", "secrets", "story_drive", "relationship_notes"):
+            if key in raw:
+                source[key] = raw[key]
+        projected = project_character_for_scene(source, scene_kind=scene_kind)
         compact_cards.append(
             {
                 "identity": {
@@ -1156,6 +1176,7 @@ def _character_context_for_prompt(story: StoryState, plan: Any | None = None, *,
                 "risk_posture": compact_text(str(voice.get("risk_posture", "")), 100),
                 "speech_style": compact_text(str(voice.get("speech_style", "")), 100),
                 "poison_points": compact_list(profile.get("poison_points", []), max_items=4, item_chars=80),
+                "state_context": projected["state_context"],
                 "relationship_context": [
                     {
                         "target": str(target),
@@ -3627,6 +3648,15 @@ def _writer_character_section(character_context: dict[str, Any], dialogue_contex
             text = compact_text(str(value or ""), 90)
             if text:
                 parts.append(text)
+        state_context = card.get("state_context") if isinstance(card.get("state_context"), dict) else {}
+        for state_name, label in (("real_state", "现实状态"), ("game_state", "游戏状态")):
+            state = state_context.get(state_name)
+            current = state.get("current") if isinstance(state, dict) else None
+            if not isinstance(current, dict):
+                continue
+            values = _writer_state_values(current)
+            if values:
+                lines.append(f"{name}{label}：{'；'.join(values[:6])}")
         relationships = card.get("relationship_context") if isinstance(card.get("relationship_context"), list) else []
         for relation in relationships[:2]:
             if not isinstance(relation, dict):
@@ -3646,6 +3676,16 @@ def _writer_character_section(character_context: dict[str, Any], dialogue_contex
     if len(lines) == 1:
         lines.append("只使用本章已经出现或明确计划出场的人物，按既有关系和身份说话。")
     return lines
+
+
+def _writer_state_values(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return [item for nested in value.values() for item in _writer_state_values(nested)]
+    if isinstance(value, list):
+        return [item for nested in value for item in _writer_state_values(nested)]
+    if value in (None, "", [], {}):
+        return []
+    return [compact_text(str(value), 80)]
 
 
 def _writer_skill_lines(skill_context: dict[str, Any]) -> list[str]:

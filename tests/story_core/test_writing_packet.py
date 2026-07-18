@@ -1,4 +1,7 @@
+import json
+
 from packages.story_core.engine import ChapterBundle
+from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.writing_packet import build_codex_writing_packet
 
@@ -165,3 +168,168 @@ def test_packet_exposes_director_wow_hook_and_reality_bridge():
     assert packet["event_plan"]["wow_beat"].startswith("wow_beat")
     assert "下一章" in packet["event_plan"]["explicit_chapter_end_hook"]
     assert "现实" in packet["event_plan"]["reality_game_bridge"]
+
+
+def test_file_writer_character_cards_project_only_selected_state_line():
+    store = object.__new__(FileProjectStore)
+    state = {
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "主角",
+                "real_state": {"current": {"balance": "27.60", "real_secret": "现实秘密"}},
+                "game_state": {"current": {"level": "Lv.2", "game_secret": "游戏秘密"}},
+            }
+        ]
+    }
+
+    for scene_kind, expected in (
+        ("game", {"game_state"}),
+        ("reality", {"real_state"}),
+        ("transition", {"real_state", "game_state"}),
+    ):
+        cards = store._writer_character_cards(
+            state,
+            {"chapter": {"cast": ["苏叶"]}},
+            scene_kind=scene_kind,
+        )
+        assert set(cards[0]["state_context"]) == expected
+        assert "real_secret" not in str(cards[0]["state_context"] if scene_kind == "game" else {})
+        assert "game_secret" not in str(cards[0]["state_context"] if scene_kind == "reality" else {})
+
+
+def test_writer_scene_kind_uses_all_scene_card_text_and_mixes_lines():
+    store = object.__new__(FileProjectStore)
+
+    assert store._writer_scene_kind(
+        [{"location": "出租屋", "purpose": "核对银行余额"}],
+        is_game_story=True,
+    ) == "reality"
+    assert store._writer_scene_kind(
+        [{"location": "副本入口", "purpose": "领取任务"}],
+        is_game_story=False,
+    ) == "reality"
+    assert store._writer_scene_kind(
+        [
+            {"title": "出租屋催租", "line": "reality"},
+            {"title": "副本入口", "line": "game"},
+        ],
+        is_game_story=True,
+    ) == "transition"
+
+
+def test_common_writing_packet_projects_character_state_by_scene_kind():
+    story = StoryState(
+        story_id="s-common-dual",
+        outline="网游开服，现实压力同步推进。",
+        genre="网游",
+        style="升级流",
+        characters=[
+            CharacterState(
+                name="苏叶",
+                role="主角",
+                game_id="夜烬",
+                game_panel={"game_id": "夜烬", "level": "Lv.2", "currency": "99金币"},
+                real_state={"current": {"balance": "27.60", "real_secret": "现实秘密"}},
+                game_state={"current": {"level": "Lv.2", "game_secret": "游戏秘密"}},
+            )
+        ],
+    )
+    def build_packet(line: str) -> dict:
+        return build_codex_writing_packet(
+            story,
+            ChapterBundle(
+                chapter_number=2,
+                body="",
+                next_outline="继续推进。",
+                updated_story=story,
+                scene_cards=[{"location": "副本入口", "purpose": "领取任务", "line": line}],
+            ),
+        )
+
+    game_packet = build_packet("game")
+    game_card = game_packet["character_cards"][0]
+    assert game_packet["scene_kind"] == "game"
+    assert set(game_card["state_context"]) == {"game_state"}
+    assert "real_secret" not in str(game_card["state_context"])
+    assert "game_panel" not in game_card
+    assert "game_panel" not in game_card.get("continuity_locks", {})
+
+    reality_packet = build_packet("reality")
+    reality_card = reality_packet["character_cards"][0]
+    assert reality_packet["scene_kind"] == "reality"
+    assert set(reality_card["state_context"]) == {"real_state"}
+    assert "Lv.2" not in str(reality_card)
+    assert "99金币" not in str(reality_card)
+    assert "game_panel" not in reality_card.get("continuity_locks", {})
+
+    transition_packet = build_packet("transition")
+    transition_card = transition_packet["character_cards"][0]
+    assert transition_packet["scene_kind"] == "transition"
+    assert set(transition_card["state_context"]) == {"real_state", "game_state"}
+    assert "game_panel" not in transition_card.get("continuity_locks", {})
+
+
+def test_file_project_packet_and_prompt_preview_share_scene_kind_and_state_context(tmp_path):
+    root = tmp_path / "file-project"
+    (root / ".story-system" / "chapters").mkdir(parents=True)
+    (root / ".story-system" / "reviews").mkdir(parents=True)
+    (root / ".webnovel").mkdir(parents=True)
+    (root / "chapters").mkdir(parents=True)
+    project = {
+        "project_id": "p-dual",
+        "title": "双状态测试",
+        "active_story_id": "s-dual",
+        "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        "character_profiles": [
+            {
+                "name": "苏叶",
+                "role": "主角",
+                "character_tier": "protagonist",
+                "game_id": "夜烬",
+                "real_state": {"current": {"balance": "27.60", "real_secret": "现实秘密"}},
+                "game_state": {"current": {"level": "Lv.2", "game_secret": "游戏秘密"}},
+            }
+        ],
+    }
+    state = {
+        "story_id": "s-dual",
+        "current_chapter": 0,
+        "genre": "网游",
+        "style": "升级流",
+        "outline": "双状态测试",
+        "characters": project["character_profiles"],
+        "world_facts": [],
+    }
+    outline = {
+        "overall": {"story": "双状态测试"},
+        "arcs": [],
+        "chapters": [
+            {
+                "chapter_number": 1,
+                "title": "副本入口",
+                "goal": "进入副本",
+                "action": "进入副本领取任务",
+                "cast": ["苏叶"],
+            }
+        ],
+    }
+    (root / ".story-system" / "MASTER_SETTING.json").write_text(
+        json.dumps({"project": project}, ensure_ascii=False), encoding="utf-8"
+    )
+    (root / ".webnovel" / "project.json").write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    (root / ".webnovel" / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    (root / ".webnovel" / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
+
+    store = FileProjectStore(root)
+    packet = store.writing_packet(1)
+    preview = store.prompt_preview(1)
+    prompts = {item["key"]: item for item in preview["prompts"]}
+    character_module = next(item for item in preview["modules"] if item["key"] == "character_context")
+
+    assert packet["scene_kind"] == "game"
+    assert '"scene_kind": "game"' in preview["modules"][-1]["content"]
+    assert '"game_state"' in character_module["content"]
+    assert '"real_state"' not in character_module["content"]
+    assert "游戏状态：" in prompts["writer_body"]["content"]
+    assert "现实状态：" not in prompts["writer_body"]["content"]

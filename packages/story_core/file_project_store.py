@@ -15,12 +15,15 @@ from packages.story_core.character_portraits import complete_character_portrait 
 from packages.story_core.character_profiles import (
     merge_character_profile,
     normalize_character_profile,
-    project_character_for_writer,
 )
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
-from packages.story_core.dual_state import normalize_dual_state
+from packages.story_core.dual_state import (
+    normalize_dual_state,
+    project_character_for_scene,
+    scene_kind_for_cards,
+)
 from packages.story_core.genre_plugins import select_genre_plugins
 from packages.story_core.models import CharacterState, NovelProject, StoryState
 from packages.story_core.novel_type_catalog import (
@@ -2380,10 +2383,16 @@ class FileProjectStore:
         plan = generator.generate(self._planning_brief(), mode=mode, guidance=guidance.strip())
         return self.save_generated_outline_plan(plan, mode=mode)
 
+    @staticmethod
+    def _writer_scene_kind(scene_cards: list[dict[str, Any]], *, is_game_story: bool) -> str:
+        return scene_kind_for_cards(scene_cards, is_game_story=is_game_story)
+
     def _writer_character_cards(
         self,
         state: dict[str, Any],
         selected_outline: dict[str, Any],
+        *,
+        scene_kind: str = "reality",
     ) -> list[dict[str, Any]]:
         characters = [
             dict(item)
@@ -2421,7 +2430,8 @@ class FileProjectStore:
             if not name or name in seen:
                 continue
             seen.add(name)
-            selected.append(project_character_for_writer(card))
+            projected = project_character_for_scene(card, scene_kind=scene_kind)
+            selected.append(projected)
         return selected
 
     def update_project(self, patch: dict[str, Any]) -> dict[str, Any]:
@@ -3044,6 +3054,9 @@ class FileProjectStore:
             if role not in {"主角", "protagonist"} and str(character.get("name") or "") != "苏叶":
                 continue
             cleaned = dict(character)
+            # Rebuild the target chapter from the story bible, not a game_state
+            # materialized from the stale legacy panel during normal loading.
+            cleaned.pop("game_state", None)
             cleaned["game_panel"] = {"game_id": cleaned.get("game_id") or "夜烬"}
             cleaned["memory"] = [
                 item
@@ -3420,8 +3433,12 @@ class FileProjectStore:
                     "ending_hook": hook,
                     "chapter": chapter,
                     "source": "outline_context.chapter",
+                    "line": chapter_outline.get("line"),
+                    "scene_line": chapter_outline.get("scene_line"),
                 }
             )
+        is_game_story = self._is_game_story_payload(project, state)
+        scene_kind = self._writer_scene_kind(scene_cards, is_game_story=is_game_story)
         hard_locks = [
             "正文必须满足目标字数区间，低于下限不能通过章节检查。",
             "前十章每章必须给出可见成长或可见收益，不能连续只给线索。",
@@ -3444,7 +3461,7 @@ class FileProjectStore:
                 hard_locks.append(f"第{target}章结尾钩子：{hook}")
         hard_locks.extend(str(item) for item in progression_rules[:4] if str(item).strip())
         hard_locks.extend(str(item) for item in forbidden_breaks[:4] if str(item).strip())
-        characters = self._writer_character_cards(state, selected_outline)
+        characters = self._writer_character_cards(state, selected_outline, scene_kind=scene_kind)
         relationship_context = select_relationship_subgraph(
             project.get("relationship_graph"),
             [str(card.get("name") or "") for card in characters],
@@ -3472,6 +3489,7 @@ class FileProjectStore:
             "root": str(self.root),
             "target_chapter": target,
             "chapter_number": target,
+            "scene_kind": scene_kind,
             "latest_chapter_number": latest_number,
             "prose_renderer": prose_renderer_contract(),
             "target_chars": {"min": FILE_CHAPTER_MIN_CHARS, "max": FILE_CHAPTER_MAX_CHARS},
@@ -3618,6 +3636,7 @@ class FileProjectStore:
         return {
             "schema_version": packet.get("schema_version"),
             "target_chapter": packet.get("target_chapter"),
+            "scene_kind": packet.get("scene_kind"),
             "instruction": self._compact_text(packet.get("instruction"), 260),
             "hard_locks": [self._compact_text(item, 160) for item in packet.get("hard_locks", [])[:10]],
             "scene_cards": self._slim_prompt_preview_value(packet.get("scene_cards", [])[:6]),
@@ -3646,6 +3665,7 @@ class FileProjectStore:
                         "role": item.get("role"),
                         "location": self._compact_text(item.get("location"), 80),
                         "goal": self._compact_text(item.get("goal"), 140),
+                        "state_context": self._slim_prompt_preview_value(item.get("state_context")),
                     }
                     for item in characters[:6]
                     if isinstance(item, dict)
@@ -3715,7 +3735,9 @@ class FileProjectStore:
         )["outline_context"]
         story = StoryState.model_validate(story_payload)
         orchestrator = StoryOrchestrator()
+        writing_packet = self.writing_packet(target)
         plan = self._prompt_plan_from_chapter(chapter)
+        plan["scene_cards"] = writing_packet.get("scene_cards", [])
         body = str(chapter.get("body") or "")
         review = chapter.get("quality_report") if isinstance(chapter.get("quality_report"), dict) else {}
         if not review and chapter:
@@ -3796,7 +3818,7 @@ class FileProjectStore:
                     description="改稿阶段才读取的审稿问题和修复清单。",
                 )
             )
-        packet_preview = self._compact_prompt_preview_packet(self.writing_packet(target))
+        packet_preview = self._compact_prompt_preview_packet(writing_packet)
         modules.append(
             self._prompt_entry(
                 key="packet_context",
