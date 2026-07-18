@@ -1,7 +1,9 @@
-import type { CharacterPortrait, GamePanel, ImportedCharacterProfile, StoryCharacter } from "./api";
+import type { CharacterPortrait, CharacterStateLayer, GamePanel, ImportedCharacterProfile, ProjectResponse, StoryCharacter } from "./api";
 
 type ProfileWithRuntime = ImportedCharacterProfile & {
   game_panel?: GamePanel;
+  real_state?: CharacterStateLayer;
+  game_state?: CharacterStateLayer;
   memory?: string[];
   current_emotion?: string;
   current_location?: string;
@@ -13,6 +15,8 @@ type ProfileWithRuntime = ImportedCharacterProfile & {
 
 export type DisplayCharacter = ProfileWithRuntime & {
   game_panel?: GamePanel;
+  real_state?: CharacterStateLayer;
+  game_state?: CharacterStateLayer;
   character_type?: string;
   core_motivation?: string;
   behavior_logic?: string;
@@ -124,6 +128,8 @@ export function mergeCharacters(
       secrets: character.secrets?.length ? character.secrets : previous.secrets,
       location: character.location || previous.location || previous.current_location,
       game_panel: character.game_panel ?? previous.game_panel,
+      real_state: character.real_state ?? previous.real_state,
+      game_state: character.game_state ?? previous.game_state,
       lifecycle_state: character.lifecycle_state || previous.lifecycle_state,
       personality_portrait: character.personality_portrait ?? previous.personality_portrait,
     });
@@ -162,13 +168,61 @@ export function panelRows(panel: GamePanel | undefined): Array<[string, string]>
 
 export function compactRecord(value: Record<string, unknown> | undefined): string[] {
   if (!value) return [];
-  return Object.entries(value)
-    .map(([key, item]) => {
-      if (Array.isArray(item)) return `${key}: ${item.join("、")}`;
-      if (item && typeof item === "object") return `${key}: ${Object.values(item).join("、")}`;
-      return `${key}: ${item}`;
+  return Object.entries(value).map(([key, item]) => `${key}: ${formatDisplayValue(item)}`).filter(isReadableLine);
+}
+
+export function formatDisplayValue(value: unknown): string {
+  if (Array.isArray(value)) return value.map(formatDisplayValue).join("、");
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, nestedValue]) => `${key}：${formatDisplayValue(nestedValue)}`)
+      .join("；");
+  }
+  return String(value ?? "");
+}
+
+function formatStateValue(value: unknown): string {
+  return formatDisplayValue(value);
+}
+
+const STATE_LABELS: Record<string, string> = {
+  identity: "身份",
+  current_identity: "当前身份",
+  occupation: "职业",
+  income: "收入",
+  residence: "住处",
+  livelihood: "生计",
+  class_pressure: "现实压力",
+  game_id: "游戏ID",
+  level: "等级",
+  class_path: "职业",
+  exp: "经验",
+  hp: "生命",
+  mp: "法力",
+  attributes: "属性",
+  skills: "技能",
+  equipment: "装备",
+  inventory: "背包",
+  currency: "货币",
+  quests: "任务",
+  risk: "风险",
+};
+
+function stateLabel(key: string): string {
+  return STATE_LABELS[key] ?? "状态补充";
+}
+
+export function isGameWebnovel(project: ProjectResponse | null | undefined): boolean {
+  return (project?.world_blueprint?.genre_plugin_ids ?? []).some((id) => String(id).trim().toLowerCase() === "game_webnovel");
+}
+
+export function stateRows(layer: CharacterStateLayer | undefined): Array<[string, string]> {
+  if (!layer?.current) return [];
+  return Object.entries(layer.current)
+    .map(([key, value]): [string, string] | null => {
+      return [stateLabel(key), formatStateValue(value)];
     })
-    .filter(isReadableLine);
+    .filter((entry): entry is [string, string] => Boolean(entry && isReadableLine(entry[1])));
 }
 
 export function richProfileEntries(value: Record<string, unknown> | undefined): Array<[string, string]> {

@@ -698,6 +698,9 @@ export type ImportedOpeningArc = {
 export type ImportedCharacterProfile = {
   name: string;
   game_id?: string;
+  real_state?: CharacterStateLayer;
+  game_state?: CharacterStateLayer;
+  game_panel?: GamePanel;
   role?: string;
   character_tier?: string;
   first_appearance?: number | null;

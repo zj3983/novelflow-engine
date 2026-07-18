@@ -7,9 +7,11 @@ import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceP
 import {
   completeFileProjectCharacterPortrait,
   updateFileProjectCharacter,
+  type CharacterStateLayer,
   type CharacterPortrait,
+  type GamePanel,
 } from "../../../../lib/api";
-import { cleanLines, compactRecord, mergeCharacters, panelRows, richProfileEntries, shortStatus, type DisplayCharacter } from "../../../../lib/worldDisplay";
+import { cleanLines, compactRecord, isGameWebnovel, mergeCharacters, panelRows, richProfileEntries, shortStatus, stateRows, type DisplayCharacter } from "../../../../lib/worldDisplay";
 
 function characterCardBadge(state: string | undefined): string {
   if (state === "proposed") return "待出场卡";
@@ -177,22 +179,61 @@ function updateConcreteField(character: DisplayCharacter, section: ConcreteSecti
   return next;
 }
 
+type StateNamespace = "real_state" | "game_state";
+
+const STATE_TITLES: Record<StateNamespace, string> = {
+  real_state: "现实状态",
+  game_state: "游戏状态",
+};
+
+function stateJson(layer: CharacterStateLayer | undefined): string {
+  return JSON.stringify(layer ?? {}, null, 2);
+}
+
+const GAME_PANEL_FIELDS: Array<keyof GamePanel> = ["game_id", "level", "class_path", "exp", "hp", "mp", "attributes", "skills", "equipment", "inventory", "currency", "quests", "risk"];
+
+function mirrorGamePanel(panel: GamePanel, layer: CharacterStateLayer): GamePanel {
+  const next = { ...panel } as GamePanel & Record<string, unknown>;
+  for (const field of GAME_PANEL_FIELDS) {
+    if (layer.current && field in layer.current) (next as Record<string, unknown>)[field] = layer.current[field];
+  }
+  return next;
+}
+
 export default function CharactersPage() {
   const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
   const characters = mergeCharacters(project?.character_profiles, story?.characters);
   const [editingName, setEditingName] = useState<string | null>(null);
   const [draft, setDraft] = useState<DisplayCharacter | null>(null);
+  const [stateDrafts, setStateDrafts] = useState<Partial<Record<StateNamespace, string>>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   const beginEdit = (character: DisplayCharacter) => {
     setEditingName(character.name);
     setDraft(cloneCharacter(character));
+    setStateDrafts({
+      ...(character.real_state ? { real_state: stateJson(character.real_state) } : {}),
+      ...((character.game_state || character.game_panel) ? { game_state: stateJson(character.game_state ?? { current: character.game_panel }) } : {}),
+    });
     setMessage(null);
   };
 
   const save = async () => {
     if (!draft || !editingName) return;
+    const statePatch: Partial<Record<StateNamespace, CharacterStateLayer>> = {};
+    for (const namespace of ["real_state", "game_state"] as const) {
+      const raw = stateDrafts[namespace];
+      if (raw === undefined) continue;
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object_required");
+        statePatch[namespace] = parsed as CharacterStateLayer;
+      } catch {
+        setMessage(`${STATE_TITLES[namespace]} JSON 格式错误，请输入对象。`);
+        return;
+      }
+    }
     setBusy(editingName);
     setMessage(null);
     try {
@@ -205,9 +246,12 @@ export default function CharactersPage() {
         story_drive: draft.story_drive,
         dialogue_examples: draft.dialogue_examples,
         personality_portrait: draft.personality_portrait,
+        ...statePatch,
+        ...(statePatch.game_state && draft.game_panel ? { game_panel: mirrorGamePanel(draft.game_panel, statePatch.game_state) } : {}),
       });
       setEditingName(null);
       setDraft(null);
+      setStateDrafts({});
       setMessage("角色卡已保存。");
       refresh();
     } catch (saveError) {
@@ -248,7 +292,12 @@ export default function CharactersPage() {
             {characters.map((character) => {
               const isEditing = editingName === character.name && draft;
               const shown = isEditing ? draft : character;
-              const panel = shown?.game_panel;
+              const effectiveGameState = shown?.game_state ?? (shown?.game_panel ? { current: shown.game_panel } : undefined);
+              const showGameState = isGameWebnovel(project) && Boolean(effectiveGameState);
+              const panel = showGameState && !shown?.game_state ? shown?.game_panel : undefined;
+              const displayedGameId = showGameState
+                ? effectiveGameState?.current?.game_id ?? shown?.game_id ?? panel?.game_id
+                : undefined;
               const rows = panelRows(panel);
               const attributes = compactRecord(panel?.attributes);
               const equipment = compactRecord(panel?.equipment);
@@ -268,17 +317,48 @@ export default function CharactersPage() {
               return (
                 <article className="ws-character-card" key={character.name}>
                   <div className="ws-character-card__head">
-                    <div><h2>{shown?.name}</h2><p>{[shown?.role, shown?.game_id || panel?.game_id, shown?.lifecycle_state].filter(Boolean).join(" / ") || "角色"}</p></div>
+                    <div><h2>{shown?.name}</h2><p>{[shown?.role, displayedGameId, shown?.lifecycle_state].filter(Boolean).join(" / ") || "角色"}</p></div>
                     <div className="ws-character-card__actions">
                       <span>{characterCardBadge(shown?.lifecycle_state)}{panel?.updated_chapter ? ` · 第 ${panel.updated_chapter} 章更新` : ""}</span>
                       {isEditing ? (
-                        <><button type="button" className="ws-button ws-button--primary" disabled={busy === character.name} onClick={save}>保存角色卡</button><button type="button" className="ws-button" disabled={busy === character.name} onClick={() => { setEditingName(null); setDraft(null); }}>取消</button></>
+                        <><button type="button" className="ws-button ws-button--primary" disabled={busy === character.name} onClick={save}>保存角色卡</button><button type="button" className="ws-button" disabled={busy === character.name} onClick={() => { setEditingName(null); setDraft(null); setStateDrafts({}); }}>取消</button></>
                       ) : (
                         <><button type="button" className="ws-button" onClick={() => beginEdit(character)} title="编辑人物侧写">编辑</button><button type="button" className="ws-button" disabled={busy === character.name} onClick={() => complete(character)} title="用本地规则补全空白侧写">补全基础侧写</button></>
                       )}
                     </div>
                   </div>
                   <p className="ws-character-card__status">{shortStatus(shown as DisplayCharacter)}</p>
+                  <div className="ws-character-state-grid">
+                    {([
+                      ["real_state", shown?.real_state],
+                      ["game_state", showGameState ? effectiveGameState : undefined],
+                    ] as Array<[StateNamespace, CharacterStateLayer | undefined]>)
+                      .filter(([, layer]) => Boolean(layer))
+                      .map(([namespace, layer]) => {
+                        const stateLines = stateRows(layer);
+                        return (
+                          <section className="ws-character-block" key={namespace}>
+                            <h3>{STATE_TITLES[namespace]}</h3>
+                            {isEditing ? (
+                              <label>
+                                <span>{STATE_TITLES[namespace]} JSON</span>
+                                <textarea
+                                  aria-label={`${STATE_TITLES[namespace]} JSON`}
+                                  rows={8}
+                                  value={stateDrafts[namespace] ?? stateJson(layer)}
+                                  onChange={(event) => setStateDrafts((current) => ({ ...current, [namespace]: event.target.value }))}
+                                />
+                              </label>
+                            ) : (
+                              <>
+                                {stateLines.length > 0 ? <dl className="ws-panel-grid">{stateLines.map(([label, value]) => <div key={`${namespace}-${label}`}><dt>{label}</dt><dd>{value}</dd></div>)}</dl> : <p className="ws-card__hint">暂无当前状态。</p>}
+                                {layer?.recent_changes?.length ? <ul className="ws-plain-list">{layer.recent_changes.map((change, index) => <li key={`${namespace}-change-${index}`}>{change.chapter !== undefined ? `第 ${change.chapter} 章：` : ""}{change.fact}</li>)}</ul> : null}
+                              </>
+                            )}
+                          </section>
+                        );
+                      })}
+                  </div>
                   <div className="ws-character-concrete">
                     {concreteSections.map((section) => {
                       const hasValue = section.fields.some((field) => {

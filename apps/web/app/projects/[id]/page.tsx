@@ -6,7 +6,7 @@ import { useMemo } from "react";
 import { PageHeader } from "../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../components/ws/ProjectWorkspaceProvider";
 import type { ProjectStatus } from "../../../lib/api";
-import { cleanLines, mergeCharacters, shortStatus } from "../../../lib/worldDisplay";
+import { cleanLines, isGameWebnovel, mergeCharacters, shortStatus } from "../../../lib/worldDisplay";
 
 const STATUS_LABEL: Record<string, string> = {
   draft: "草稿",
@@ -139,11 +139,19 @@ export default function ProjectOverviewPage() {
             {characters.length > 0 ? (
               <div className="ws-simple-grid">
                 {characters.slice(0, 6).map((character) => (
-                  <div key={character.name} className="ws-simple-item">
-                    <strong>{character.name}</strong>
-                    <span>{[character.role, character.game_id || character.game_panel?.game_id].filter(Boolean).join(" / ")}</span>
-                    <small>{shortStatus(character)}</small>
-                  </div>
+                  (() => {
+                    const isGameProject = isGameWebnovel(project);
+                    const gameCurrent = isGameProject ? character.game_state?.current : undefined;
+                    const currentGameId = typeof gameCurrent?.game_id === "string" && gameCurrent.game_id.trim() ? gameCurrent.game_id : undefined;
+                    const currentLevel = isGameProject ? gameCurrent?.level ?? character.game_panel?.level : undefined;
+                    const gameId = currentGameId ?? (isGameProject ? character.game_id || character.game_panel?.game_id : undefined);
+                    const gameSummary = [gameId, currentLevel !== undefined && currentLevel !== null ? `${currentLevel}级` : undefined].filter(Boolean).join(" / ");
+                    return <div key={character.name} className="ws-simple-item">
+                      <strong>{character.name}</strong>
+                      <span>{[character.role, gameSummary].filter(Boolean).join(" / ")}</span>
+                      <small>{shortStatus(character)}</small>
+                    </div>;
+                  })()
                 ))}
               </div>
             ) : (

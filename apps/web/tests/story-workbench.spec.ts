@@ -989,7 +989,7 @@ test("relationship workspace defaults to protagonist and saves the canonical gra
   await page.getByRole("button", { name: "保存关系图" }).click();
 
   await expect.poll(() => savedBody).not.toBeNull();
-  const savedGraph = (savedBody as { relationship_graph: Array<Record<string, unknown>> }).relationship_graph;
+  const savedGraph = (savedBody as unknown as { relationship_graph: Array<Record<string, unknown>> }).relationship_graph;
   expect(savedGraph).toHaveLength(2);
   expect(savedGraph[0]).toMatchObject({ source: "林照", target: "赵衡", current_state: "公开对立" });
 });
@@ -1379,4 +1379,167 @@ test("project author constraints persist after refresh", async ({ page }) => {
   await page.reload();
 
   await expect(page.locator(".project-editor textarea").nth(2)).toHaveValue(/rule one/);
+});
+
+test("角色卡状态显示和编辑保存遵循网游插件", async ({ page }) => {
+  let savedBody: Record<string, unknown> | null = null;
+  let putCount = 0;
+  const character = {
+    name: "苏叶", role: "protagonist", goals: [], frozen: false, lifecycle_state: "active",
+    last_proposed_chapter: 0, last_approved_chapter: 1, introduced_by: "outline", relationships: {},
+    real_state: { current: { identity: "兼职店员", income: "兼职" }, recent_changes: [{ chapter: 2, fact: "开始接夜班" }] },
+    game_state: { current: { game_id: "夜烬", level: 7, class_path: "元素法师", attributes: { 基础: { 力量: 12, 加成: ["专注", "精准"], 深层: { 来源: "装备" } } } }, recent_changes: [{ chapter: 3, fact: "完成隐藏任务" }] },
+    game_panel: { game_id: "旧夜烬", level: 1, class_path: "旧职业" },
+  };
+  const project = {
+    project_id: "file:dual-state-fixture", title: "网游标题但看插件", source_path: "", seed_outline: "", world_summary: "", current_focus: "",
+    author_constraints: [], world_blueprint: { genre_plugin_ids: ["game_webnovel"] }, character_profiles: [], relationship_graph: [], enabled_skill_ids: [],
+    status: "simulating", pipeline_stage: "world_ready", active_story_id: "file:dual-state-fixture", branches: [], storage_source: "file",
+  };
+  await page.route("**/file-projects/file%3Adual-state-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Adual-state-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:dual-state-fixture", current_chapter: 3, characters: [character], history: [], world_facts: [], author_constraints: [], agent_runtime: { recent_events: [] },
+      agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
+    }) });
+  });
+  await page.route("**/file-projects/file%3Adual-state-fixture/characters/%E8%8B%8F%E5%8F%B6", async (route) => {
+    putCount += 1;
+    savedBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...character, ...savedBody }) });
+  });
+
+  await page.goto("/projects/file%3Adual-state-fixture/characters");
+  await expect(page.getByRole("heading", { name: "现实状态" })).toBeVisible();
+  await expect(page.getByText("身份", { exact: true })).toBeVisible();
+  await expect(page.getByText("兼职店员", { exact: true })).toBeVisible();
+  await expect(page.getByText("第 2 章：开始接夜班", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "游戏状态" })).toBeVisible();
+  await expect(page.getByText("旧夜烬", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("等级", { exact: true })).toBeVisible();
+  await expect(page.getByText("基础：力量：12；加成：专注、精准；深层：来源：装备", { exact: true })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("[object Object]");
+  await expect(page.getByText("第 3 章：完成隐藏任务", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByLabel("现实状态 JSON").fill(JSON.stringify({ current: { identity: "自由职业者" }, recent_changes: [] }));
+  await page.getByLabel("游戏状态 JSON").fill(JSON.stringify({ current: { game_id: "夜烬", level: 8 }, recent_changes: [] }));
+  await page.getByRole("button", { name: "保存角色卡" }).click();
+  await expect.poll(() => putCount).toBe(1);
+  expect(savedBody).toMatchObject({
+    real_state: { current: { identity: "自由职业者" }, recent_changes: [] },
+    game_state: { current: { game_id: "夜烬", level: 8 }, recent_changes: [] },
+  });
+});
+
+test("非法状态 JSON 页面内报错且不发请求，非网游隐藏游戏状态", async ({ page }) => {
+  let putCount = 0;
+  const character = {
+    name: "林照", role: "protagonist", goals: [], frozen: false, lifecycle_state: "active",
+    last_proposed_chapter: 0, last_approved_chapter: 1, introduced_by: "outline", relationships: {},
+    game_id: "不应显示的ID",
+    real_state: { current: { occupation: "守祠人" }, recent_changes: [] },
+    game_state: { current: { game_id: "不应显示", level: 9 }, recent_changes: [] },
+  };
+  const project = {
+    project_id: "file:real-state-fixture", title: "网游字样但不是网游", source_path: "", seed_outline: "", world_summary: "", current_focus: "",
+    author_constraints: [], world_blueprint: { genre_plugin_ids: ["xianxia"] }, character_profiles: [], relationship_graph: [], enabled_skill_ids: [],
+    status: "simulating", pipeline_stage: "world_ready", active_story_id: "file:real-state-fixture", branches: [], storage_source: "file",
+  };
+  await page.route("**/file-projects/file%3Areal-state-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Areal-state-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:real-state-fixture", current_chapter: 1, characters: [character], history: [], world_facts: [], author_constraints: [], agent_runtime: { recent_events: [] },
+      agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
+    }) });
+  });
+  await page.route("**/file-projects/file%3Areal-state-fixture/characters/%E6%9E%97%E7%85%A7", async (route) => {
+    putCount += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(character) });
+  });
+
+  await page.goto("/projects/file%3Areal-state-fixture/characters");
+  await expect(page.getByRole("heading", { name: "现实状态" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "游戏状态" })).toHaveCount(0);
+  await expect(page.getByText("不应显示", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("不应显示的ID", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByLabel("现实状态 JSON").fill("{invalid");
+  await page.getByRole("button", { name: "保存角色卡" }).click();
+  await expect(page.getByText("现实状态 JSON 格式错误", { exact: false })).toBeVisible();
+  expect(putCount).toBe(0);
+});
+
+test("网游角色卡兼容仅有旧游戏面板的角色状态", async ({ page }) => {
+  let savedBody: Record<string, unknown> | null = null;
+  const character = {
+    name: "顾行", role: "protagonist", goals: [], frozen: false, lifecycle_state: "active",
+    last_proposed_chapter: 0, last_approved_chapter: 1, introduced_by: "outline", relationships: {},
+    real_state: { current: { identity: "普通职员" }, recent_changes: [] },
+    game_panel: { game_id: "旧夜烬", level: 4, class_path: "弓手" },
+  };
+  const project = {
+    project_id: "file:legacy-panel-fixture", title: "兼容面板", source_path: "", seed_outline: "", world_summary: "", current_focus: "",
+    author_constraints: [], world_blueprint: { genre_plugin_ids: ["game_webnovel"] }, character_profiles: [], relationship_graph: [], enabled_skill_ids: [],
+    status: "simulating", pipeline_stage: "world_ready", active_story_id: "file:legacy-panel-fixture", branches: [], storage_source: "file",
+  };
+  await page.route("**/file-projects/file%3Alegacy-panel-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Alegacy-panel-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:legacy-panel-fixture", outline: "", genre: "game_webnovel", style: "升级流", current_chapter: 1,
+      agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
+      agent_runtime: { recent_events: [] }, author_constraints: [], world_facts: [], characters: [character], history: [], parent_story_id: null, branched_from_chapter: null,
+    }) });
+  });
+  await page.route("**/file-projects/file%3Alegacy-panel-fixture/characters/*", async (route) => {
+    savedBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...character, ...savedBody }) });
+  });
+
+  await page.goto("/projects/file%3Alegacy-panel-fixture/characters");
+  await expect(page.getByRole("heading", { name: "游戏状态" })).toBeVisible();
+  await expect(page.getByText("旧夜烬", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("4", { exact: true })).toHaveCount(2);
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(page.getByLabel("游戏状态 JSON")).toBeVisible();
+  await page.getByLabel("游戏状态 JSON").fill(JSON.stringify({ current: { game_id: "新夜烬", level: 5, class_path: "刺客" }, recent_changes: [] }));
+  await page.getByRole("button", { name: "保存角色卡" }).click();
+  await expect.poll(() => savedBody).toMatchObject({
+    game_state: { current: { game_id: "新夜烬", level: 5, class_path: "刺客" }, recent_changes: [] },
+    game_panel: { game_id: "新夜烬", level: 5, class_path: "刺客" },
+  });
+});
+
+test("非网游项目概览不读取旧游戏面板等级", async ({ page }) => {
+  const character = {
+    name: "林照", role: "protagonist", goals: [], frozen: false, lifecycle_state: "active",
+    last_proposed_chapter: 0, last_approved_chapter: 1, introduced_by: "outline", relationships: {},
+    game_panel: { game_id: "不应展示", level: 9 },
+  };
+  const project = {
+    project_id: "file:overview-real-fixture", title: "现实概览", source_path: "", seed_outline: "", world_summary: "", current_focus: "",
+    author_constraints: [], world_blueprint: { genre_plugin_ids: ["xianxia"] }, character_profiles: [character], relationship_graph: [], enabled_skill_ids: [],
+    status: "simulating", pipeline_stage: "world_ready", active_story_id: "file:overview-real-fixture", branches: [], storage_source: "file",
+  };
+  await page.route("**/file-projects/file%3Aoverview-real-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Aoverview-real-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:overview-real-fixture", outline: "", genre: "xianxia", style: "白描", current_chapter: 1,
+      agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
+      agent_runtime: { recent_events: [] }, author_constraints: [], world_facts: [], characters: [character], history: [], parent_story_id: null, branched_from_chapter: null,
+    }) });
+  });
+
+  await page.goto("/projects/file%3Aoverview-real-fixture");
+  await expect(page.getByRole("heading", { name: "角色卡" })).toBeVisible();
+  await expect(page.getByText("9级", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("不应展示", { exact: true })).toHaveCount(0);
 });
