@@ -487,6 +487,11 @@ export type RevisionSafetyReport = {
   candidate_chars?: number;
 };
 
+export type CharacterStateLayer = {
+  current?: Record<string, unknown>;
+  recent_changes?: Array<{ chapter?: number; fact: string }>;
+};
+
 export type StoryResponse = {
   story_id: string;
   outline: string;
@@ -505,6 +510,8 @@ export type StoryResponse = {
     role: string;
     game_id?: string;
     game_panel?: GamePanel;
+    real_state?: CharacterStateLayer;
+    game_state?: CharacterStateLayer;
     character_tier?: string;
     first_appearance?: number | null;
     identity_profile?: CharacterIdentityProfile;

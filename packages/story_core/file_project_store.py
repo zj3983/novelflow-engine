@@ -20,7 +20,9 @@ from packages.story_core.character_profiles import (
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
-from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.dual_state import normalize_dual_state
+from packages.story_core.genre_plugins import select_genre_plugins
+from packages.story_core.models import CharacterState, NovelProject, StoryState
 from packages.story_core.novel_type_catalog import (
     normalize_novel_type_ids,
     novel_type_id_from_metadata_fact,
@@ -48,6 +50,51 @@ from packages.story_core.writing_learning import learning_snapshot, lessons_from
 from packages.story_core.writing_packet import prose_renderer_contract
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.writing_taskbook import format_taskbook_brief_section
+
+
+def _state_namespace_has_content(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    current = value.get("current")
+    if isinstance(current, dict) and any(item not in (None, "", [], {}) for item in current.values()):
+        return True
+    recent_changes = value.get("recent_changes")
+    return isinstance(recent_changes, list) and bool(recent_changes)
+
+
+def _normalize_character_persistence_card(
+    card: dict[str, Any],
+    *,
+    is_game_story: bool,
+) -> dict[str, Any]:
+    normalized = normalize_dual_state(card, is_game_story=is_game_story)
+    if is_game_story:
+        current = normalized.get("game_state", {}).get("current") if isinstance(normalized.get("game_state"), dict) else None
+        if isinstance(current, dict):
+            panel = dict(normalized.get("game_panel") or {})
+            for field in (
+                "game_id",
+                "level",
+                "class_path",
+                "exp",
+                "hp",
+                "mp",
+                "attributes",
+                "skills",
+                "equipment",
+                "inventory",
+                "currency",
+                "quests",
+                "risk",
+            ):
+                value = current.get(field)
+                if value not in (None, "", [], {}):
+                    panel[field] = value
+            normalized["game_panel"] = panel
+    for state_name in ("real_state", "game_state"):
+        if not _state_namespace_has_content(normalized.get(state_name)):
+            normalized.pop(state_name, None)
+    return normalized
 
 
 SOFT_REGENERATION_ISSUE_MARKERS = (
@@ -2000,9 +2047,38 @@ class FileProjectStore:
     def master_setting(self) -> dict[str, Any]:
         return self._read_json(self.story_system_dir / "MASTER_SETTING.json", {}) or {}
 
+    @staticmethod
+    def _is_game_story_payload(project: dict[str, Any], state: dict[str, Any] | None = None) -> bool:
+        world_blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
+        explicit_ids = normalize_novel_type_ids(world_blueprint.get("genre_plugin_ids"))
+        if "game_webnovel" in explicit_ids:
+            return True
+        if explicit_ids:
+            return False
+        try:
+            project_model = NovelProject.model_validate(project)
+        except Exception:
+            project_model = None
+        if project_model is not None and any(
+            plugin.plugin_id == "game_webnovel" for plugin in select_genre_plugins(project_model)
+        ):
+            return True
+        state = state if isinstance(state, dict) else {}
+        state_ids = normalize_novel_type_ids(state.get("genre_plugin_ids"))
+        if state_ids:
+            return "game_webnovel" in state_ids
+        return "game_webnovel" in normalize_novel_type_ids(state.get("genre"))
+
     def project(self) -> dict[str, Any]:
         project = self._read_json(self.webnovel_dir / "project.json", {}) or self.master_setting().get("project", {}) or {}
         project = dict(project)
+        state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
+        is_game_story = self._is_game_story_payload(project, state)
+        project["character_profiles"] = [
+            _normalize_character_persistence_card(item, is_game_story=is_game_story)
+            for item in project.get("character_profiles", [])
+            if isinstance(item, dict)
+        ]
         if "relationship_graph" in project:
             project["relationship_graph"] = normalize_relationship_graph(project.get("relationship_graph"))
         else:
@@ -2476,15 +2552,24 @@ class FileProjectStore:
             return value
 
         card = drop_none(card)
-        validated = CharacterState.model_validate(card)
+        raw_state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
+        normalized_card = _normalize_character_persistence_card(
+            card,
+            is_game_story=self._is_game_story_payload(self.project(), raw_state),
+        )
+        validated = CharacterState.model_validate(normalized_card)
         completed = complete_portrait(
             validated,
             genre=genre,
-            story_function=str(card.get("story_function") or ""),
+            story_function=str(normalized_card.get("story_function") or ""),
         )
-        return self._merge_character_patch(
-            card,
+        completed_card = self._merge_character_patch(
+            normalized_card,
             completed.model_dump(exclude_defaults=True, exclude_none=True),
+        )
+        return _normalize_character_persistence_card(
+            completed_card,
+            is_game_story=self._is_game_story_payload(self.project(), raw_state),
         )
 
     def update_character(self, name: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -2519,9 +2604,34 @@ class FileProjectStore:
             raw_cards.append(completed)
         else:
             raw_cards[raw_index] = self._merge_character_patch(raw_cards[raw_index], completed)
+        is_game_story = self._is_game_story_payload(self.project(), raw_state)
+        raw_cards = [
+            _normalize_character_persistence_card(card, is_game_story=is_game_story)
+            for card in raw_cards
+        ]
         raw_state["characters"] = raw_cards
-        self._write_json(self.webnovel_dir / "state.json", raw_state)
-        return completed
+
+        project = dict(self.project())
+        project_cards = [dict(item) for item in project.get("character_profiles", []) if isinstance(item, dict)]
+        project_index = next(
+            (index for index, item in enumerate(project_cards) if self._character_matches(item, canonical_name)),
+            None,
+        )
+        if project_index is None:
+            project_cards.append(dict(completed))
+        else:
+            project_cards[project_index] = self._merge_character_patch(project_cards[project_index], completed)
+        project["character_profiles"] = [
+            _normalize_character_persistence_card(card, is_game_story=is_game_story)
+            for card in project_cards
+        ]
+        self._replace_json_transaction(
+            {
+                self.webnovel_dir / "state.json": raw_state,
+                self.webnovel_dir / "project.json": project,
+            }
+        )
+        return raw_cards[raw_index if raw_index is not None else -1]
 
     def complete_character_portrait(self, name: str) -> dict[str, Any]:
         identifier = str(name or "").strip()

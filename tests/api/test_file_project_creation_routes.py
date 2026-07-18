@@ -47,6 +47,137 @@ def test_blank_file_project_creation_returns_201_and_is_readable(creation_api):
     legacy_create.assert_not_called()
 
 
+def test_file_project_character_put_persists_normalized_dual_state_to_both_cards(
+    creation_api, monkeypatch
+):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Dual state route", "novel_type_id": "game_webnovel"},
+    ).json()
+    store = FileProjectStore(Path(created["source_path"]))
+    project_path = store.webnovel_dir / "project.json"
+    state_path = store.webnovel_dir / "state.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    card = {
+        "name": "苏叶",
+        "role": "protagonist",
+        "real_state": {"current": {"identity": "author confirmed"}},
+        "game_panel": {"game_id": "夜烬", "level": 1, "legacy_extension": "keep"},
+    }
+    project["character_profiles"] = [card]
+    state["characters"] = [card]
+    project_path.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    transactions = []
+    original_transaction = FileProjectStore._replace_json_transaction
+
+    def record_transaction(store, payloads):
+        transactions.append(set(payloads))
+        return original_transaction(store, payloads)
+
+    monkeypatch.setattr(FileProjectStore, "_replace_json_transaction", record_transaction)
+
+    response = client.put(
+        f"/file-projects/{created['project_id']}/characters/苏叶",
+        json={
+            "real_state": {
+                "current": {"income": "兼职"},
+                "recent_changes": [{"chapter": 2, "fact": "开始兼职"}],
+            },
+            "game_state": {
+                "current": {
+                    "game_id": "夜烬",
+                    "level": 3,
+                    "class_path": "元素法师",
+                    "exp": "120/300",
+                    "hp": "80/100",
+                    "mp": "40/60",
+                    "attributes": {"智力": 12},
+                    "skills": ["火球术"],
+                    "equipment": {"武器": "新手法杖"},
+                    "inventory": {"灰狼毒腺": 8},
+                    "currency": "30铜币",
+                    "quests": {"主线": "调查灰狼坡"},
+                    "risk": {"失败代价": "掉经验"},
+                },
+                "recent_changes": [{"chapter": 3, "fact": "升到三级"}],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    returned = response.json()
+    assert returned["real_state"] == {
+        "current": {"identity": "author confirmed", "income": "兼职"},
+        "recent_changes": [{"chapter": 2, "fact": "开始兼职"}],
+    }
+    game_current = returned["game_state"]["current"]
+    game_panel = returned["game_panel"]
+    for field in (
+        "game_id",
+        "level",
+        "class_path",
+        "exp",
+        "hp",
+        "mp",
+        "attributes",
+        "skills",
+        "equipment",
+        "inventory",
+        "currency",
+        "quests",
+        "risk",
+    ):
+        assert game_panel[field] == game_current[field]
+    assert returned["game_state"]["recent_changes"] == [
+        {"chapter": 3, "fact": "升到三级"}
+    ]
+    assert game_panel["legacy_extension"] == "keep"
+
+    persisted_project = json.loads(project_path.read_text(encoding="utf-8"))
+    persisted_state = json.loads(state_path.read_text(encoding="utf-8"))
+    for payload in (persisted_project, persisted_state):
+        persisted_card = payload["character_profiles"][0] if "character_profiles" in payload else payload["characters"][0]
+        assert persisted_card["real_state"] == returned["real_state"]
+        assert persisted_card["game_state"] == returned["game_state"]
+        assert persisted_card["game_panel"] == returned["game_panel"]
+    assert transactions == [
+        {store.webnovel_dir / "project.json", store.webnovel_dir / "state.json"}
+    ]
+
+
+def test_non_game_file_project_persistence_omits_empty_game_state(creation_api):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Reality route", "novel_type_id": "xianxia"},
+    ).json()
+    store = FileProjectStore(Path(created["source_path"]))
+    project_path = store.webnovel_dir / "project.json"
+    state_path = store.webnovel_dir / "state.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    card = {"name": "林照", "role": "protagonist", "real_state": {"current": {"occupation": "抄书"}}}
+    project["character_profiles"] = [card]
+    state["characters"] = [card]
+    project_path.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    response = client.put(
+        f"/file-projects/{created['project_id']}/characters/林照",
+        json={"real_state": {"current": {"residence": "旧城"}}},
+    )
+
+    assert response.status_code == 200
+    returned = response.json()
+    assert returned["real_state"]["current"] == {"occupation": "抄书", "residence": "旧城"}
+    assert "game_state" not in returned
+    persisted_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "game_state" not in persisted_state["characters"][0]
+
+
 def test_file_project_settings_update_syncs_runtime_genre_id_to_state(
     creation_api,
     monkeypatch,

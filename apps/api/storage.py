@@ -4,6 +4,8 @@ import json
 import os
 import sqlite3
 import threading
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +24,8 @@ from packages.story_core.models import (
     StoryState,
     WorldBible,
 )
+from packages.story_core.dual_state import normalize_dual_state
+from packages.story_core.genre_plugins import select_genre_plugins
 from packages.story_core.novel_type_catalog import normalize_novel_type_ids
 from packages.story_core.runtime_config import get_runtime_strategy_settings
 
@@ -333,15 +337,78 @@ def _project_genre_selection(project: NovelProject) -> tuple[list[str], bool]:
     return normalize_novel_type_ids(raw), has_explicit_value
 
 
+def _merge_prefer_existing(existing: object, incoming: object) -> object:
+    if isinstance(existing, Mapping) and isinstance(incoming, Mapping):
+        merged = deepcopy(dict(existing))
+        for key, value in incoming.items():
+            if key in merged:
+                merged[key] = _merge_prefer_existing(merged[key], value)
+            else:
+                merged[key] = deepcopy(value)
+        return merged
+    if existing not in (None, "", [], {}):
+        return deepcopy(existing)
+    return deepcopy(incoming)
+
+
+def _merge_character_state(existing: object, incoming: object) -> dict[str, object]:
+    existing_state = existing if isinstance(existing, Mapping) else {}
+    incoming_state = incoming if isinstance(incoming, Mapping) else {}
+    current = _merge_prefer_existing(
+        existing_state.get("current", {}), incoming_state.get("current", {})
+    )
+    existing_recent = existing_state.get("recent_changes")
+    incoming_recent = incoming_state.get("recent_changes")
+    recent: list[object] = []
+    for item in [
+        *(existing_recent if isinstance(existing_recent, list) else []),
+        *(incoming_recent if isinstance(incoming_recent, list) else []),
+    ]:
+        if item not in recent:
+            recent.append(deepcopy(item))
+    return {"current": current if isinstance(current, dict) else {}, "recent_changes": recent}
+
+
+_GAME_PANEL_STATE_FIELDS = (
+    "game_id",
+    "level",
+    "class_path",
+    "exp",
+    "hp",
+    "mp",
+    "attributes",
+    "skills",
+    "equipment",
+    "inventory",
+    "currency",
+    "quests",
+    "risk",
+)
+
+
+def _sync_game_panel_mirror(character: CharacterState) -> None:
+    current = character.game_state.get("current") if isinstance(character.game_state, dict) else None
+    if not isinstance(current, Mapping):
+        return
+    panel = character.game_panel.model_dump(mode="json")
+    for field in _GAME_PANEL_STATE_FIELDS:
+        value = current.get(field)
+        if value not in (None, "", [], {}):
+            panel[field] = deepcopy(value)
+    character.game_panel = GamePanel.model_validate(panel)
+
+
 def _sync_project_character_profiles(story: StoryState, project: NovelProject) -> None:
     """Keep runtime characters as rich as the imported/project character bible."""
     profiles = [profile for profile in project.character_profiles if isinstance(profile, dict)]
     if not profiles:
         return
     genre_ids, has_explicit_genre_value = _project_genre_selection(project)
+    selected_plugins = select_genre_plugins(project)
+    plugin_ids = {plugin.plugin_id for plugin in selected_plugins}
     story_genre_ids = normalize_novel_type_ids(story.genre) if not has_explicit_genre_value else []
     effective_genre_ids = genre_ids or story_genre_ids
-    is_game_story = "game_webnovel" in effective_genre_ids
+    is_game_story = "game_webnovel" in plugin_ids or "game_webnovel" in effective_genre_ids
     should_clear_game_state = bool(effective_genre_ids) and not is_game_story
 
     characters_by_name = {character.name: character for character in story.characters}
@@ -356,6 +423,27 @@ def _sync_project_character_profiles(story: StoryState, project: NovelProject) -
         else:
             character = characters_by_name[name]
 
+        raw_character = character.model_dump(mode="json", exclude_defaults=True, exclude_none=True)
+        normalized_character = normalize_dual_state(raw_character, is_game_story=is_game_story)
+        normalized_profile = normalize_dual_state(profile, is_game_story=is_game_story)
+        for state_name in ("real_state", "game_state"):
+            if state_name not in normalized_profile:
+                continue
+            existing_state = normalized_character.get(state_name, {})
+            if state_name == "game_state" and "game_state" not in raw_character:
+                existing_state = {}
+                legacy_panel = raw_character.get("game_panel")
+                if is_game_story and isinstance(legacy_panel, Mapping):
+                    existing_state = {"current": {}, "recent_changes": []}
+            merged_state = _merge_character_state(existing_state, normalized_profile[state_name])
+            if state_name == "game_state" and "game_state" not in raw_character:
+                legacy_panel = raw_character.get("game_panel")
+                if is_game_story and isinstance(legacy_panel, Mapping):
+                    merged_state["current"] = _merge_prefer_existing(
+                        merged_state["current"], legacy_panel
+                    )
+            setattr(character, state_name, merged_state)
+
         role = str(profile.get("role", "")).strip()
         if role:
             character.role = role
@@ -364,8 +452,15 @@ def _sync_project_character_profiles(story: StoryState, project: NovelProject) -
         if should_clear_game_state:
             character.game_id = ""
             character.game_panel = GamePanel()
-        elif game_id:
-            character.game_id = game_id
+        else:
+            if is_game_story and isinstance(profile.get("game_panel"), Mapping):
+                existing_panel = character.game_panel.model_dump(mode="json")
+                merged_panel = _merge_prefer_existing(existing_panel, profile["game_panel"])
+                character.game_panel = GamePanel.model_validate(merged_panel)
+            if game_id:
+                character.game_id = game_id
+        if is_game_story:
+            _sync_game_panel_mirror(character)
 
         motivation = str(profile.get("motivation", "")).strip()
         personality = str(profile.get("personality", "")).strip()

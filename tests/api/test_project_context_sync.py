@@ -25,6 +25,148 @@ def test_project_genre_selection_distinguishes_missing_unknown_and_known_values(
     assert _project_genre_selection(known) == (["xuanhuan"], True)
 
 
+def test_project_character_sync_preserves_dual_state_history_and_author_fields():
+    project = NovelProject(
+        project_id="p-dual-state",
+        title="网游小说",
+        character_profiles=[
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "real_state": {
+                    "current": {
+                        "identity": "profile identity",
+                        "income": "兼职",
+                    },
+                    "recent_changes": [{"chapter": 2, "fact": "profile reality fact"}],
+                },
+                "game_state": {
+                    "current": {
+                        "level": 3,
+                        "class_path": "元素法师",
+                        "exp": "120/300",
+                        "hp": "80/100",
+                        "mp": "40/60",
+                        "attributes": {"智力": 12},
+                        "skills": ["火球术"],
+                        "equipment": {"武器": "新手法杖"},
+                        "inventory": {"灰狼毒腺": 8},
+                        "currency": "30铜币",
+                        "quests": {"主线": "调查灰狼坡"},
+                        "risk": {"失败代价": "掉经验"},
+                    },
+                    "recent_changes": [{"chapter": 3, "fact": "profile game fact"}],
+                },
+                "game_panel": {"game_id": "夜烬", "level": 1, "legacy_extension": "keep"},
+            }
+        ],
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+    from packages.story_core.models import CharacterState, GamePanel
+
+    character = CharacterState(
+        name="苏叶",
+        role="protagonist",
+        real_state={"current": {"identity": "author confirmed"}},
+        game_panel=GamePanel(game_id="夜烬", level=1),
+    )
+    story = StoryState(
+        story_id="s-dual-state",
+        outline="夜烬开服。",
+        genre="game_webnovel",
+        style="白描、现代中文",
+        characters=[character],
+    )
+
+    _sync_project_character_profiles(story, project)
+
+    synced = story.characters[0]
+    assert synced.real_state == {
+        "current": {"identity": "author confirmed", "income": "兼职"},
+        "recent_changes": [{"chapter": 2, "fact": "profile reality fact"}],
+    }
+    assert synced.game_state["recent_changes"] == [
+        {"chapter": 3, "fact": "profile game fact"}
+    ]
+    game_current = synced.game_state["current"]
+    game_panel = synced.game_panel.model_dump()
+    for field in (
+        "game_id",
+        "level",
+        "class_path",
+        "exp",
+        "hp",
+        "mp",
+        "attributes",
+        "skills",
+        "equipment",
+        "inventory",
+        "currency",
+        "quests",
+        "risk",
+    ):
+        assert game_panel[field] == game_current[field]
+
+
+def test_non_game_project_sync_does_not_materialize_legacy_game_panel_as_game_state():
+    project = NovelProject(
+        project_id="p-real-only",
+        title="现实小说",
+        character_profiles=[
+            {
+                "name": "林照",
+                "role": "protagonist",
+                "game_panel": {"game_id": "不应出现", "level": 9},
+            }
+        ],
+        world_blueprint={"genre_plugin_ids": ["xianxia"]},
+    )
+    story = StoryState(
+        story_id="s-real-only",
+        outline="林照守着祖祠。",
+        genre="xianxia",
+        style="白描、现代中文",
+    )
+
+    _sync_project_character_profiles(story, project)
+
+    synced = story.characters[0]
+    assert synced.game_state == {}
+    assert synced.game_panel.game_id == ""
+
+
+def test_game_project_sync_writes_legacy_profile_panel_back_to_runtime_character():
+    from packages.story_core.models import GamePanel
+
+    project = NovelProject(
+        project_id="p-game-panel-compat",
+        title="网游小说",
+        character_profiles=[
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "game_panel": {"game_id": "夜烬", "level": 7},
+            }
+        ],
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+    story = StoryState(
+        story_id="s-game-panel-compat",
+        outline="夜烬开服。",
+        genre="game_webnovel",
+        style="白描、现代中文",
+    )
+
+    _sync_project_character_profiles(story, project)
+
+    synced = story.characters[0]
+    assert isinstance(synced.game_panel, GamePanel)
+    assert synced.game_panel.game_id == "夜烬"
+    assert synced.game_panel.level == 7
+    assert synced.game_state["current"]["game_id"] == "夜烬"
+    assert synced.game_state["current"]["level"] == 7
+
+
 def test_project_context_replaces_placeholder_story_metadata_after_chapter_exists():
     project = NovelProject(
         project_id="p-xianxia",
