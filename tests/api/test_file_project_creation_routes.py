@@ -178,6 +178,80 @@ def test_non_game_file_project_persistence_omits_empty_game_state(creation_api):
     assert "game_state" not in persisted_state["characters"][0]
 
 
+def test_legacy_game_character_api_reads_and_saves_both_state_namespaces(creation_api):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Legacy dual state API", "novel_type_id": "game_webnovel"},
+    ).json()
+    store = FileProjectStore(Path(created["source_path"]))
+    project_path = store.webnovel_dir / "project.json"
+    state_path = store.webnovel_dir / "state.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    old_card = {
+        "name": "苏叶",
+        "role": "protagonist",
+        "identity_profile": {
+            "age": 24,
+            "current_identity": "待业青年",
+            "occupation": "临时工",
+            "origin": "小城出身",
+        },
+        "current_life_profile": {"residence": "城中村出租屋"},
+        "game_panel": {"game_id": "夜烬", "level": 1, "currency": "0铜币"},
+    }
+    project["character_profiles"] = [old_card]
+    state["characters"] = [old_card]
+    project_path.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    read_response = client.get(f"/file-projects/{created['project_id']}/characters")
+    assert read_response.status_code == 200
+    read_card = read_response.json()[0]
+    assert read_card["real_state"]["current"]["identity_profile"]["occupation"] == "临时工"
+    assert read_card["real_state"]["current"]["current_life_profile"]["residence"] == "城中村出租屋"
+    assert read_card["game_state"]["current"]["game_id"] == "夜烬"
+    assert read_card["game_state"]["current"]["level"] == 1
+    assert read_card["game_state"]["current"]["currency"] == "0铜币"
+
+    save_response = client.put(
+        f"/file-projects/{created['project_id']}/characters/苏叶",
+        json={
+            "real_state": {"current": {"balance": "27.60元"}},
+            "game_state": {
+                "current": {
+                    "game_id": "夜烬",
+                    "level": 2,
+                    "currency": "30铜币",
+                    "inventory": {"灰狼毒腺": 2},
+                }
+            },
+        },
+    )
+    assert save_response.status_code == 200
+    saved_card = save_response.json()
+    assert saved_card["real_state"]["current"]["identity_profile"]["occupation"] == "临时工"
+    assert saved_card["real_state"]["current"]["balance"] == "27.60元"
+    assert saved_card["game_state"]["current"]["level"] == 2
+    assert saved_card["game_state"]["current"]["currency"] == "30铜币"
+    assert saved_card["game_state"]["current"]["inventory"] == {"灰狼毒腺": 2}
+
+    reread_response = client.get(f"/file-projects/{created['project_id']}/characters")
+    assert reread_response.status_code == 200
+    reread_card = reread_response.json()[0]
+    assert reread_card["real_state"] == saved_card["real_state"]
+    assert reread_card["game_state"] == saved_card["game_state"]
+
+    persisted_project = json.loads(project_path.read_text(encoding="utf-8"))
+    persisted_state = json.loads(state_path.read_text(encoding="utf-8"))
+    persisted_project_card = persisted_project["character_profiles"][0]
+    persisted_state_card = persisted_state["characters"][0]
+    for persisted_card in (persisted_project_card, persisted_state_card):
+        assert persisted_card["real_state"] == saved_card["real_state"]
+        assert persisted_card["game_state"] == saved_card["game_state"]
+
+
 def test_file_project_settings_update_syncs_runtime_genre_id_to_state(
     creation_api,
     monkeypatch,

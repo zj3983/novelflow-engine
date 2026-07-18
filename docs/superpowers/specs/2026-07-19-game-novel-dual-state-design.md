@@ -15,6 +15,44 @@
 
 两个状态都允许保存 `current` 和 `recent_changes`。`current` 是当前事实，`recent_changes` 只记录最近章节已经发生的变化，不能把计划当成事实。
 
+### 最终 JSON 形状
+
+```json
+{
+  "name": "苏叶",
+  "role": "主角",
+  "real_state": {
+    "current": {
+      "balance": "27.60元",
+      "occupation": "待业"
+    },
+    "recent_changes": [
+      {"chapter": 1, "fact": "收到现实收入"}
+    ]
+  },
+  "game_state": {
+    "current": {
+      "game_id": "夜烬",
+      "level": 2,
+      "exp": "30/100",
+      "currency": "30铜币",
+      "inventory": {"灰狼毒腺": 2},
+      "quests": {"清道夫委托": "进行中"}
+    },
+    "recent_changes": [
+      {"chapter": 1, "fact": "游戏内获得奖励"}
+    ]
+  },
+  "game_panel": {
+    "game_id": "夜烬",
+    "level": 2,
+    "currency": "30铜币"
+  }
+}
+```
+
+`game_panel` 不是新状态源，只是旧项目和旧接口的兼容镜像；新的写作包、页面和同步逻辑以两个命名空间为准。`real_state` 可以被所有题材使用，`game_state` 只在 `game_webnovel` 项目或旧网游数据明确存在时物化。
+
 ## 写作包提取
 
 写作包不再把双状态完整混入每章提示词：
@@ -24,15 +62,21 @@
 - 场景发生切换时同时提取两者，并增加一条明确的影响关系，例如“游戏收益尚未到账，现实余额不变”。
 - 角色卡仍按本章出场人物提取，不发送全量人物库。
 
+场景判断使用场景卡的 `line` 或 `scene_line`：`game`/`游戏`/`game_state` 取游戏线，`reality`/`现实`/`real_state` 取现实线，`transition`/`过渡` 取两条线。没有显式标记时，网游项目根据副本、任务、背包、等级等游戏词判断；仍无法判断则使用 `transition`，非网游默认使用现实线。单线场景禁止把另一条线放入 `state_context`。
+
 ## 状态同步
 
 章节提交后，现实变化只由正文中明确的到账、提现、卖币或支付行为触发；游戏变化由游戏内行动和账本触发。任何一条线的变化不能自动写入另一条线。
+
+现实账本必须由章节结构化状态事件明确标记为 `line: "reality"`，并放在 `real_change` 或 `real_state` 下；游戏货币、经验、装备、背包和任务只能写入 `game_change`/`game_state` 或游戏账本。`transition` 事件只有在现实和游戏两侧分别提供明确变化对象时才同时更新，不能因为正文提到“钱”“到账”或“奖励”就推断另一条线发生变化。
 
 旧项目兼容规则：
 
 - 现有 `game_panel` 映射到 `game_state.current`。
 - 现有角色顶层现实字段保留，并映射到 `real_state.current`。
 - 旧数据不强制迁移，读取时兼容，保存角色卡时逐步补齐双状态。
+
+兼容读取是惰性的：旧网游卡只有 `game_panel` 时，写作包可以临时投影为 `game_state.current`，原文件不因读取而批量改写；章节同步或保存这张卡时，才把已确认的游戏变化写入 `game_state`，并继续刷新 `game_panel` 镜像。旧非网游卡即使残留 `game_panel`，也不会因此生成 `game_state`。
 
 ## 题材隔离
 

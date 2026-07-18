@@ -18,7 +18,7 @@
 - Modify: `packages/story_core/character_profiles.py:55-145`
 - Test: `tests/story_core/test_dual_state.py`
 
-- [ ] **Step 1: Write failing tests for the public normalization contract**
+- [x] **Step 1: Write failing tests for the public normalization contract**
 
 ```python
 from packages.story_core.dual_state import normalize_dual_state, project_dual_state
@@ -45,13 +45,13 @@ def test_scene_projection_keeps_only_requested_line():
     assert project_dual_state(card, scene_kind="reality") == {"real_state": {"current": {"balance": "27.60元"}}}
 ```
 
-- [ ] **Step 2: Run the focused tests and verify the new API is absent**
+- [x] **Step 2: Run the focused tests and verify the new API is absent**
 
 Run: `pytest -q tests/story_core/test_dual_state.py`
 
 Expected: FAIL with an import error for `packages.story_core.dual_state`.
 
-- [ ] **Step 3: Add typed state envelopes and normalization helpers**
+- [x] **Step 3: Add typed state envelopes and normalization helpers**
 
 Implement `dual_state.py` with these exact public functions:
 
@@ -65,13 +65,13 @@ Use `{ "current": {...}, "recent_changes": [...] }` as the envelope. Map legacy 
 
 Add optional `real_state: dict` and `game_state: dict` to `CharacterState`; leave `game_panel` unchanged for old JSON. Update `normalize_character_profile` to call the helper only when a caller explicitly supplies `is_game_story=True`; generic profile normalization must remain genre-neutral.
 
-- [ ] **Step 4: Run the focused tests and existing character tests**
+- [x] **Step 4: Run the focused tests and existing character tests**
 
 Run: `pytest -q tests/story_core/test_dual_state.py tests/story_core/test_concrete_character_profiles.py tests/story_core/test_character_game_panel.py`
 
 Expected: PASS, with the existing game-panel assertions unchanged.
 
-- [ ] **Step 5: Commit the model boundary**
+- [x] **Step 5: Commit the model boundary**
 
 ```bash
 git add packages/story_core/dual_state.py packages/story_core/models.py packages/story_core/character_profiles.py tests/story_core/test_dual_state.py
@@ -88,31 +88,31 @@ git commit -m "feat: add dual state character model"
 - Test: `tests/api/test_project_context_sync.py`
 - Test: `tests/api/test_file_project_creation_routes.py`
 
-- [ ] **Step 1: Add failing persistence tests**
+- [x] **Step 1: Add failing persistence tests**
 
 Extend the project-context tests with a game card containing both states. Assert that a load/save round trip preserves `real_state.current`, `game_state.current`, and legacy `game_panel`. Add a non-game project assertion that a character payload with no game fields remains free of a synthesized game namespace.
 
-- [ ] **Step 2: Run the new tests and capture the current failure**
+- [x] **Step 2: Run the new tests and capture the current failure**
 
 Run: `pytest -q tests/api/test_project_context_sync.py tests/api/test_file_project_creation_routes.py`
 
 Expected: FAIL because project-to-runtime synchronization currently copies only the old fields and `game_panel`.
 
-- [ ] **Step 3: Normalize profiles at the storage boundary**
+- [x] **Step 3: Normalize profiles at the storage boundary**
 
 In `_sync_project_character_profiles`, determine `is_game_story` from the project genre plugin IDs using the existing `game_webnovel` resolver. Normalize incoming profiles before merging them into `CharacterState`, and copy both `real_state` and `game_state` without replacing non-empty author-confirmed values. In `update_character`, accept both namespaces as ordinary JSON objects, validate their envelopes through `normalize_dual_state`, and keep the old `game_panel` mirror for compatibility.
 
-- [ ] **Step 4: Extend the API and TypeScript response types**
+- [x] **Step 4: Extend the API and TypeScript response types**
 
 Add optional `real_state?: CharacterStateLayer` and `game_state?: CharacterStateLayer` to `StoryResponse.characters` and define `CharacterStateLayer` as `{ current?: Record<string, unknown>; recent_changes?: Array<{ chapter?: number; fact: string }> }`. The existing PUT route remains generic JSON; its response must include the normalized fields.
 
-- [ ] **Step 5: Run persistence and route tests**
+- [x] **Step 5: Run persistence and route tests**
 
 Run: `pytest -q tests/api/test_project_context_sync.py tests/api/test_file_project_creation_routes.py tests/api/test_story_routes.py -k "project or character"`
 
 Expected: PASS, including all legacy assertions for `game_panel`.
 
-- [ ] **Step 6: Commit persistence changes**
+- [x] **Step 6: Commit persistence changes**
 
 ```bash
 git add apps/api/storage.py apps/api/routes/file_projects.py apps/web/lib/api.ts packages/story_core/file_project_store.py tests/api/test_project_context_sync.py tests/api/test_file_project_creation_routes.py
@@ -129,31 +129,31 @@ git commit -m "feat: persist dual character states"
 - Test: `tests/story_core/test_writing_packet.py`
 - Test: `tests/api/test_story_routes.py`
 
-- [ ] **Step 1: Write failing writing-packet tests**
+- [x] **Step 1: Write failing writing-packet tests**
 
 Add tests that create a `game_webnovel` project with a scene whose location/action is explicitly marked `line: game`, then assert the packet's character card contains `game_state` but not `real_state`. Add a reality scene assertion for the inverse and a transition scene assertion for both. Assert that the compact prompt preview contains the selected line only.
 
-- [ ] **Step 2: Run the packet tests and verify leakage**
+- [x] **Step 2: Run the packet tests and verify leakage**
 
 Run: `pytest -q tests/story_core/test_writing_packet.py tests/api/test_story_routes.py -k "packet or writing"`
 
 Expected: FAIL because `_writer_character_cards` currently calls `project_character_for_writer` without a scene line and the packet copies complete cards.
 
-- [ ] **Step 3: Add deterministic scene-line selection**
+- [x] **Step 3: Add deterministic scene-line selection**
 
 Implement `infer_scene_kind(scene_card, *, is_game_story)` in `dual_state.py`: honor an explicit `line`/`scene_line` value first; otherwise classify known game markers (`game`, `游戏`, `副本`, `任务`, `背包`, `等级`) as game and real-life markers (`reality`, `现实`, `出租屋`, `工作`, `房租`, `银行`) as reality; default to `transition` for a game novel and `reality` for other genres. Pass the selected kind from `writing_packet` into `_writer_character_cards`, and attach the projected state under `state_context` so the generic identity/personality card is still available without mixing the two lines.
 
-- [ ] **Step 4: Keep the writer prompt compact and explicit**
+- [x] **Step 4: Keep the writer prompt compact and explicit**
 
 Change `_writer_character_section` to render `state_context` only when non-empty, with headings `现实状态` and `游戏状态`; do not render both for a single-line scene. Add one sentence for transition scenes: `这一段要写清楚现实动作如何影响游戏选择，不能凭空改变另一条线的数值。` Keep `game_panel` out of the new prompt projection unless an old card has no `game_state`, in which case use the normalized compatibility mirror.
 
-- [ ] **Step 5: Run packet, prompt, and API regression tests**
+- [x] **Step 5: Run packet, prompt, and API regression tests**
 
 Run: `pytest -q tests/story_core/test_dual_state.py tests/story_core/test_writing_packet.py tests/story_core/test_writer_prompt_method.py tests/api/test_story_routes.py -k "packet or prompt or writing"`
 
 Expected: PASS; existing prompt snapshots may change only where the new state headings replace the old full panel dump.
 
-- [ ] **Step 6: Commit packet scoping**
+- [x] **Step 6: Commit packet scoping**
 
 ```bash
 git add packages/story_core/dual_state.py packages/story_core/file_project_store.py packages/story_core/orchestrator.py tests/story_core/test_dual_state.py tests/story_core/test_writing_packet.py tests/story_core/test_writer_prompt_method.py tests/api/test_story_routes.py
@@ -169,31 +169,31 @@ git commit -m "feat: scope writing packets to story line"
 - Test: `tests/story_core/test_character_game_panel.py`
 - Test: `tests/api/test_project_context_sync.py`
 
-- [ ] **Step 1: Add failing no-cross-write tests**
+- [x] **Step 1: Add failing no-cross-write tests**
 
 Create a card with a real balance of `27.60元` and game currency `0铜币`. Feed a chapter ledger containing game experience, HP, inventory, and game currency; assert only `game_state.current` and the legacy `game_panel` mirror change. Feed a chapter event explicitly marked `line: reality` with an income or payment fact; assert only `real_state.current` and its `recent_changes` change. Assert that a game reward never changes the real balance.
 
-- [ ] **Step 2: Run the focused tests and verify current cross-line behavior**
+- [x] **Step 2: Run the focused tests and verify current cross-line behavior**
 
 Run: `pytest -q tests/story_core/test_character_game_panel.py tests/api/test_project_context_sync.py`
 
 Expected: FAIL for the new state assertions because ledger sync currently writes only the legacy panel and has no reality-state path.
 
-- [ ] **Step 3: Route game ledger updates through `merge_state_change`**
+- [x] **Step 3: Route game ledger updates through `merge_state_change`**
 
 In `_sync_ledger_from_chapter_body` and `_sync_character_game_panels`, build one normalized game change from the parsed progression ledger and call `merge_state_change(..., line="game", ...)`. Keep the existing `game_panel` update exactly as a compatibility mirror. Do not infer reality balance changes from game currency, item drops, or experience.
 
-- [ ] **Step 4: Route explicit reality events through the reality namespace**
+- [x] **Step 4: Route explicit reality events through the reality namespace**
 
 In `_sync_project_after_chapter`, consume only explicit chapter facts or ledger entries with `line` equal to `reality`/`transition` and a concrete real-world change field. Call `merge_state_change(..., line="reality", ...)`; transition events may update both only when each side has its own explicit change object. Do not treat prose mentions of money as a state mutation unless the chapter ledger records the event.
 
-- [ ] **Step 5: Run all synchronization tests**
+- [x] **Step 5: Run all synchronization tests**
 
 Run: `pytest -q tests/story_core/test_character_game_panel.py tests/api/test_project_context_sync.py tests/story_core/test_file_project_store.py -k "sync or ledger or character"`
 
 Expected: PASS, with the original five-gray-wolf/game-panel compatibility tests still green.
 
-- [ ] **Step 6: Commit separated synchronization**
+- [x] **Step 6: Commit separated synchronization**
 
 ```bash
 git add packages/story_core/file_project_store.py packages/story_core/orchestrator.py packages/story_core/dual_state.py tests/story_core/test_character_game_panel.py tests/api/test_project_context_sync.py
@@ -209,31 +209,31 @@ git commit -m "fix: prevent cross-line character state updates"
 - Modify: `apps/web/lib/worldDisplay.ts:1-140`
 - Test: `apps/web/tests/story-workbench.spec.ts`
 
-- [ ] **Step 1: Add a browser regression test for game and non-game cards**
+- [x] **Step 1: Add a browser regression test for game and non-game cards**
 
 Use the existing workbench fixture to load a game project and assert the character page shows `现实状态` and `游戏状态`, with game ID/level under the latter. Load a non-game project and assert `游戏状态` is absent. Edit a state field, save, reload, and assert the PUT payload contains only the edited namespace plus existing portrait fields.
 
-- [ ] **Step 2: Run the browser test to establish the current failure**
+- [x] **Step 2: Run the browser test to establish the current failure**
 
 Run: `npx playwright test apps/web/tests/story-workbench.spec.ts --grep "角色卡|状态"`
 
 Expected: FAIL because the page currently renders only `game_panel` and has no dual-state editor.
 
-- [ ] **Step 3: Add shared frontend state types and display helpers**
+- [x] **Step 3: Add shared frontend state types and display helpers**
 
 Extend `CharacterStateLayer` in `apps/web/lib/api.ts`. Add small pure helpers in `worldDisplay.ts` for `isGameWebnovel(project)` and `stateRows(layer)`, keeping layout logic out of the page component. `isGameWebnovel` must use the project’s resolved genre plugin IDs rather than title text.
 
-- [ ] **Step 4: Render and edit the two state sections**
+- [x] **Step 4: Render and edit the two state sections**
 
 In the character page, show `现实状态` for all characters and `游戏状态` only when the project is `game_webnovel` and the card has that namespace. Each section displays `current` key/value pairs and recent changes. During edit, use one textarea per namespace containing JSON; parse it before save and show an inline validation message instead of sending malformed JSON. Include both namespaces in the existing `updateFileProjectCharacter` payload only when present.
 
-- [ ] **Step 5: Keep project overview compact**
+- [x] **Step 5: Keep project overview compact**
 
 Update the project overview character summary to read game ID/level from `game_state.current` first and `game_panel` second, without exposing the full two-line state on the overview page.
 
-- [ ] **Step 6: Run frontend typecheck and browser tests**
+- [x] **Step 6: Run frontend typecheck and browser tests**
 
-Run: `npm --prefix apps/web run typecheck`
+Run: `npx tsc --noEmit` from `apps/web`
 
 Expected: PASS.
 
@@ -241,7 +241,7 @@ Run: `npx playwright test apps/web/tests/story-workbench.spec.ts --grep "角色�
 
 Expected: PASS for game and non-game cases.
 
-- [ ] **Step 7: Commit the UI**
+- [x] **Step 7: Commit the UI**
 
 ```bash
 git add apps/web/lib/api.ts apps/web/lib/worldDisplay.ts apps/web/app/projects/[id]/characters/page.tsx apps/web/app/projects/[id]/page.tsx apps/web/tests/story-workbench.spec.ts
@@ -253,26 +253,27 @@ git commit -m "feat: expose dual character states in workbench"
 **Files:**
 - Modify: `docs/superpowers/specs/2026-07-19-game-novel-dual-state-design.md`
 - Create: `tests/story_core/test_dual_state_integration.py`
+- Test: `tests/api/test_file_project_creation_routes.py`
 
-- [ ] **Step 1: Add an integration fixture covering an old project**
+- [x] **Step 1: Add an integration fixture covering an old project**
 
-Create a temporary file project with only `game_panel` and top-level real profile fields. Load its writing packet, character page payload, and state after one chapter sync. Assert no exception, both new namespaces are derived in memory, and the old files remain readable without a forced bulk migration.
+The `story_core` integration fixture only covers an old project's writing packet and chapter synchronization: create a temporary file project with only `game_panel` and top-level real profile fields, load the writing packet, and assert the post-sync state is isolated without a forced bulk migration. The character-page API payload is covered by `tests/api/test_file_project_creation_routes.py`, including GET/PUT/read-back and persisted file contents.
 
-- [ ] **Step 2: Run the integration test**
+- [x] **Step 2: Run the integration test**
 
 Run: `pytest -q tests/story_core/test_dual_state_integration.py`
 
 Expected: PASS.
 
-- [ ] **Step 3: Run the focused backend suite**
+- [x] **Step 3: Run the focused backend suite**
 
 Run: `pytest -q tests/story_core/test_dual_state.py tests/story_core/test_character_game_panel.py tests/story_core/test_writing_packet.py tests/story_core/test_writer_prompt_method.py tests/api/test_project_context_sync.py tests/api/test_story_routes.py`
 
 Expected: PASS.
 
-- [ ] **Step 4: Run the frontend checks**
+- [x] **Step 4: Run the frontend checks**
 
-Run: `npm --prefix apps/web run typecheck`
+Run: `npx tsc --noEmit` from `apps/web`
 
 Expected: PASS.
 
@@ -280,11 +281,11 @@ Run: `npx playwright test apps/web/tests/story-workbench.spec.ts --grep "角色�
 
 Expected: PASS, or a clearly reported environment-only browser failure with the backend tests still passing.
 
-- [ ] **Step 5: Update the design spec with the shipped interfaces**
+- [x] **Step 5: Update the design spec with the shipped interfaces**
 
 Document the final JSON shape, the supported scene-line markers, the legacy compatibility behavior, and the rule that only explicit reality ledger events can alter `real_state`. Keep the spec free of model-specific prompt text.
 
-- [ ] **Step 6: Commit and record verification**
+- [ ] **Step 6: Commit after verification**
 
 ```bash
 git add docs/superpowers/specs/2026-07-19-game-novel-dual-state-design.md tests/story_core/test_dual_state_integration.py
