@@ -372,7 +372,22 @@ def test_extend_accepts_seventh_existing_character_in_cast() -> None:
     assert prompt_context["existing_character_names"] == all_names
 
 
-def test_extend_rejects_existing_character_returned_as_new_card() -> None:
+@pytest.mark.parametrize(
+    "returned_name,cast,error",
+    [
+        (
+            "第七个已有角色",
+            ["第七个已有角色"],
+            "duplicate_existing_character_card:第七个已有角色",
+        ),
+        ("新角色", ["未知角色"], "missing_character_card:未知角色"),
+    ],
+)
+def test_extend_wraps_model_contract_errors_uniformly(
+    returned_name: str,
+    cast: list[str],
+    error: str,
+) -> None:
     existing_name = "第七个已有角色"
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
@@ -384,11 +399,11 @@ def test_extend_rejects_existing_character_returned_as_new_card() -> None:
             {
                 **template,
                 "chapter_number": number,
-                "cast": [existing_name],
+                "cast": cast,
             }
             for number in prompt["target_chapter_numbers"]
         ]
-        plan["characters"] = [_card(existing_name, "supporting")]
+        plan["characters"] = [_card(returned_name, "supporting")]
         return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
@@ -400,11 +415,11 @@ def test_extend_rejects_existing_character_returned_as_new_card() -> None:
         runtime_resolver=fixture.resolve,
     )
 
-    with pytest.raises(
-        ValueError,
-        match=f"^duplicate_existing_character_card:{existing_name}$",
-    ):
+    with pytest.raises(ValueError, match="^outline_planning_generation_failed$") as exc_info:
         generator.generate(OutlinePlanningBrief.model_validate(payload), mode="extend")
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert str(exc_info.value.__cause__) == error
 
 
 def test_generator_rejects_invalid_output_and_long_guidance() -> None:

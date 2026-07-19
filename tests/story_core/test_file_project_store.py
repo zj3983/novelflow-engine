@@ -726,6 +726,76 @@ def test_extend_generated_outline_plan_fills_missing_rolling_window_chapters(tmp
     assert any(item["name"] == "新档房弟子" for item in saved["characters"])
 
 
+@pytest.mark.parametrize(
+    "new_card_name,cast,error",
+    [
+        ("新角色", ["未知角色"], "missing_character_card:未知角色"),
+        ("林照", ["林照"], "duplicate_existing_character_card:林照"),
+    ],
+)
+def test_extend_direct_save_revalidates_cast_and_new_cards_without_writes(
+    tmp_path,
+    new_card_name: str,
+    cast: list[str],
+    error: str,
+) -> None:
+    store = _make_minimal_file_project(tmp_path / "novel")
+    store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+    state = store.state()
+    state["current_chapter"] = 20
+    store._write_json(store.webnovel_dir / "state.json", state)
+    current_outline = store.project_outline()
+    current_outline.pop("source", None)
+    current_outline["overall"].update(
+        core_ending_chapter=150,
+        extension_ceiling_chapter=500,
+        current_strategy="expand",
+        ending_contract="Close both lines.",
+    )
+    current_outline["arcs"][0].update(
+        end_chapter=150,
+        game_line_payoff="Win the game arc.",
+        reality_line_payoff="Resolve the reality pressure.",
+        extension_gate={"continue_route": "Enter the city.", "close_route": "Close the case."},
+    )
+    store.update_project_outline(current_outline)
+    addition = GeneratedOutlinePlan.model_validate(
+        {
+            "outline": {
+                "arcs": [current_outline["arcs"][0]],
+                "chapters": [
+                    {
+                        "chapter_number": number,
+                        "goal": "继续追查旧案",
+                        "obstacle": "旧档房封闭",
+                        "action": "林照争取查档资格",
+                        "turn": "发现新的经手人",
+                        "payoff": "锁定下一条线索",
+                        "ending_hook": "经手人已经离宗",
+                        "cast": cast,
+                    }
+                    for number in range(31, 51)
+                ],
+            },
+            "characters": [_planning_card(new_card_name, "supporting")],
+        }
+    )
+    before = {
+        path.relative_to(store.root): path.read_bytes()
+        for path in store.root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(ValueError, match=f"^{error}$"):
+        store.save_generated_outline_plan(addition, mode="extend")
+
+    assert {
+        path.relative_to(store.root): path.read_bytes()
+        for path in store.root.rglob("*")
+        if path.is_file()
+    } == before
+
+
 def test_regenerate_preserves_committed_chapter_outline(tmp_path) -> None:
     store = _make_minimal_file_project(tmp_path / "novel")
     store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")

@@ -36,7 +36,11 @@ from packages.story_core.novel_type_catalog import (
     runtime_novel_type,
 )
 from packages.story_core.opening_directions import OpeningBrief, OpeningDirectionSet
-from packages.story_core.outline_planning import GeneratedOutlinePlan, validate_generated_opening_plan
+from packages.story_core.outline_planning import (
+    GeneratedOutlinePlan,
+    validate_generated_continuation_plan,
+    validate_generated_opening_plan,
+)
 from packages.story_core.outline_planning_generation import OutlinePlanningBrief
 from packages.story_core.prose_style_review import review_prose_style
 from packages.story_core.project_outline import normalize_project_outline, outline_from_legacy_project, select_outline_context
@@ -2721,6 +2725,7 @@ class FileProjectStore:
             raise ValueError("invalid_outline_planning_mode")
 
         state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
+        project = dict(self.project())
         current_chapter = int(state.get("current_chapter") or 0)
         current_outline = dict(self.project_outline())
         current_outline.pop("source", None)
@@ -2749,6 +2754,33 @@ class FileProjectStore:
                 validated.model_dump(mode="json"),
                 expected_chapter_numbers=expected_chapter_numbers,
             )
+        else:
+            existing_character_names: set[str] = set()
+            for item in [
+                *(
+                    project.get("character_profiles")
+                    if isinstance(project.get("character_profiles"), list)
+                    else []
+                ),
+                *(
+                    state.get("characters")
+                    if isinstance(state.get("characters"), list)
+                    else []
+                ),
+            ]:
+                if not isinstance(item, dict):
+                    continue
+                raw_name = str(item.get("name") or "").strip()
+                canonical_name = self._canonical_character_name(raw_name)
+                if raw_name:
+                    existing_character_names.add(raw_name)
+                if canonical_name:
+                    existing_character_names.add(canonical_name)
+            validated = validate_generated_continuation_plan(
+                validated.model_dump(mode="json"),
+                expected_chapter_numbers=expected_chapter_numbers,
+                existing_character_names=existing_character_names,
+            )
 
         generated_outline = validated.outline.model_dump(mode="json")
         if mode == "extend":
@@ -2766,7 +2798,6 @@ class FileProjectStore:
         cards = self._merge_generated_character_cards(
             [card.model_dump(mode="json") for card in validated.characters]
         )
-        project = dict(self.project())
         project["character_profiles"] = cards
         project["relationship_graph"] = merge_relationship_graph(
             project.get("relationship_graph"),

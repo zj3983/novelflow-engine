@@ -211,6 +211,6 @@ class LLMOutlinePlanningGenerator:
                     "regeneration_guidance_too_long",
                     "initial_outline_requires_unstarted_project",
                     "outline_window_already_full",
-                } or error.startswith("duplicate_existing_character_card:"):
+                }:
                     raise
             raise ValueError("outline_planning_generation_failed") from exc
