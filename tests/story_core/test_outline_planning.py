@@ -229,3 +229,27 @@ def test_continuation_plan_rejects_unknown_cast(valid_payload: dict) -> None:
             expected_chapter_numbers=[31],
             existing_character_names={"林照"},
         )
+
+
+def test_continuation_plan_rejects_existing_character_submitted_as_new_card(
+    valid_payload: dict,
+) -> None:
+    valid_payload["outline"]["arcs"] = []
+    valid_payload["outline"]["chapters"] = [
+        {
+            **valid_payload["outline"]["chapters"][0],
+            "chapter_number": 31,
+            "cast": ["第七个已有角色"],
+        }
+    ]
+    valid_payload["characters"] = [_character("第七个已有角色", "supporting")]
+
+    with pytest.raises(
+        ValueError,
+        match="^duplicate_existing_character_card:第七个已有角色$",
+    ):
+        validate_generated_continuation_plan(
+            valid_payload,
+            expected_chapter_numbers=[31],
+            existing_character_names={"第七个已有角色"},
+        )

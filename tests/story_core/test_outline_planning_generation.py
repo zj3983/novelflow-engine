@@ -194,6 +194,7 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "author_constraints",
         "existing_outline",
         "existing_characters",
+        "existing_character_names",
         "current_chapter",
         "recent_chapter_summaries",
         "one_time_guidance",
@@ -331,7 +332,79 @@ def test_extend_accepts_only_new_character_cards_and_existing_cast() -> None:
     assert [card.name for card in plan.characters] == ["新角色"]
     rules = "\n".join(prompt_context["validation_rules"])
     assert "only newly introduced character cards" in rules
-    assert "existing_characters" in rules
+    assert "existing_character_names" in rules
+
+
+def test_extend_accepts_seventh_existing_character_in_cast() -> None:
+    prompt_context = {}
+    detailed_names = [f"已有角色{number}" for number in range(1, 7)]
+    all_names = [*detailed_names, "第七个已有角色"]
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt_context.update(json.loads(payload["messages"][1]["content"]))
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["arcs"] = []
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": number,
+                "cast": ["第七个已有角色", "新角色"],
+            }
+            for number in prompt_context["target_chapter_numbers"]
+        ]
+        plan["characters"] = [_card("新角色", "supporting")]
+        return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    brief = fixture.brief(current_chapter=20, existing_chapters=list(range(1, 31)))
+    payload = brief.model_dump(mode="json")
+    payload["existing_characters"] = [{"name": name} for name in detailed_names]
+    payload["existing_character_names"] = all_names
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    )
+
+    plan = generator.generate(OutlinePlanningBrief.model_validate(payload), mode="extend")
+
+    assert [card.name for card in plan.characters] == ["新角色"]
+    assert prompt_context["existing_character_names"] == all_names
+
+
+def test_extend_rejects_existing_character_returned_as_new_card() -> None:
+    existing_name = "第七个已有角色"
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["arcs"] = []
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": number,
+                "cast": [existing_name],
+            }
+            for number in prompt["target_chapter_numbers"]
+        ]
+        plan["characters"] = [_card(existing_name, "supporting")]
+        return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    brief = fixture.brief(current_chapter=20, existing_chapters=list(range(1, 31)))
+    payload = brief.model_dump(mode="json")
+    payload["existing_character_names"] = [existing_name]
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=f"^duplicate_existing_character_card:{existing_name}$",
+    ):
+        generator.generate(OutlinePlanningBrief.model_validate(payload), mode="extend")
 
 
 def test_generator_rejects_invalid_output_and_long_guidance() -> None:

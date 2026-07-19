@@ -43,6 +43,7 @@ class OutlinePlanningBrief(_PlanningInput):
     author_constraints: list[str] = Field(default_factory=list)
     existing_outline: dict[str, Any] = Field(default_factory=dict)
     existing_characters: list[dict[str, Any]] = Field(default_factory=list)
+    existing_character_names: list[str] = Field(default_factory=list)
     current_chapter: int = Field(default=0, ge=0)
     recent_chapter_summaries: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -100,11 +101,29 @@ class LLMOutlinePlanningGenerator:
             if runtime.provider != "codexcli" and not runtime.api_key:
                 raise ValueError("runtime_unavailable")
 
+            existing_character_names = list(
+                dict.fromkeys(
+                    [
+                        *(
+                            str(name).strip()
+                            for name in validated.existing_character_names
+                            if str(name).strip()
+                        ),
+                        *(
+                            str(item.get("name") or "").strip()
+                            for item in validated.existing_characters
+                            if isinstance(item, dict)
+                            and str(item.get("name") or "").strip()
+                        ),
+                    ]
+                )
+            )
+
             if mode == "extend":
                 validation_rules = [
                     "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order.",
-                    "characters must contain only newly introduced character cards; do not repeat cards from prompt_context.existing_characters.",
-                    "Every chapter cast name must equal either a name in prompt_context.existing_characters or a name in characters.",
+                    "characters must contain only newly introduced character cards; do not repeat cards named in prompt_context.existing_character_names.",
+                    "Every chapter cast name must equal either a name in prompt_context.existing_character_names or a name in characters.",
                     "Every new character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
                 ]
             else:
@@ -125,6 +144,7 @@ class LLMOutlinePlanningGenerator:
                 "author_constraints": validated.author_constraints,
                 "existing_outline": validated.existing_outline,
                 "existing_characters": validated.existing_characters,
+                "existing_character_names": existing_character_names,
                 "current_chapter": validated.current_chapter,
                 "recent_chapter_summaries": validated.recent_chapter_summaries,
                 "target_chapter_numbers": target_chapter_numbers,
@@ -146,7 +166,7 @@ class LLMOutlinePlanningGenerator:
                             "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order. "
                             "For initial/regenerate, provide the complete core arcs through core_ending_chapter, but only those detailed chapters. "
                             "For extend, continue from committed facts and the active arc; obey current_strategy. "
-                            "For extend, characters must contain only newly introduced character cards, while chapter cast may also use names from prompt_context.existing_characters. "
+                            "For extend, characters must contain only newly introduced character cards, while chapter cast may also use names from prompt_context.existing_character_names. "
                             "Every core arc must state a concrete game_line_payoff and reality_line_payoff. "
                             "observe follows the core route, expand uses only the next continue_route, and close uses the active close_route. "
                             "你负责生成中文长篇网文的结构化开书计划，不写正文。只返回 JSON，根字段必须是 "
@@ -175,25 +195,22 @@ class LLMOutlinePlanningGenerator:
             if parsed is None:
                 raise ValueError("invalid_json")
             if mode == "extend":
-                existing_character_names = {
-                    str(item.get("name") or "").strip()
-                    for item in validated.existing_characters
-                    if isinstance(item, dict) and str(item.get("name") or "").strip()
-                }
                 return validate_generated_continuation_plan(
                     parsed,
                     expected_chapter_numbers=target_chapter_numbers,
-                    existing_character_names=existing_character_names,
+                    existing_character_names=set(existing_character_names),
                 )
             return validate_generated_opening_plan(
                 parsed,
                 expected_chapter_numbers=target_chapter_numbers,
             )
         except Exception as exc:
-            if isinstance(exc, ValueError) and str(exc) in {
-                "regeneration_guidance_too_long",
-                "initial_outline_requires_unstarted_project",
-                "outline_window_already_full",
-            }:
-                raise
+            if isinstance(exc, ValueError):
+                error = str(exc)
+                if error in {
+                    "regeneration_guidance_too_long",
+                    "initial_outline_requires_unstarted_project",
+                    "outline_window_already_full",
+                } or error.startswith("duplicate_existing_character_card:"):
+                    raise
             raise ValueError("outline_planning_generation_failed") from exc

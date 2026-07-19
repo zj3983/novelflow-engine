@@ -2569,11 +2569,20 @@ class FileProjectStore:
         plugin_ids = blueprint.get("genre_plugin_ids") if isinstance(blueprint.get("genre_plugin_ids"), list) else []
         novel_type_id = str(plugin_ids[0] if plugin_ids else "generic_webnovel")
         existing_cards: list[dict[str, Any]] = []
+        existing_character_names: list[str] = []
+        seen_character_names: set[str] = set()
         for item in [
             *(project.get("character_profiles") if isinstance(project.get("character_profiles"), list) else []),
             *(state.get("characters") if isinstance(state.get("characters"), list) else []),
         ]:
-            if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name or name in seen_character_names:
+                continue
+            seen_character_names.add(name)
+            existing_character_names.append(name)
+            if len(existing_cards) >= 6:
                 continue
             card = normalize_character_profile(item)
             existing_cards.append(
@@ -2592,8 +2601,6 @@ class FileProjectStore:
                     )
                 }
             )
-            if len(existing_cards) >= 6:
-                break
         summaries = state.get("chapter_summaries") if isinstance(state.get("chapter_summaries"), list) else []
         return OutlinePlanningBrief(
             novel_type_id=novel_type_id,
@@ -2602,6 +2609,7 @@ class FileProjectStore:
             author_constraints=[str(item) for item in project.get("author_constraints", []) if str(item).strip()],
             existing_outline=outline,
             existing_characters=existing_cards,
+            existing_character_names=existing_character_names,
             current_chapter=int(state.get("current_chapter") or 0),
             recent_chapter_summaries=[dict(item) for item in summaries[-3:] if isinstance(item, dict)],
         )

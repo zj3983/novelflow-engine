@@ -134,7 +134,7 @@ def validate_generated_continuation_plan(
     }
     repeated = next((name for name in names if name in existing_names), None)
     if repeated is not None:
-        raise ValueError(f"existing_character_card_repeated:{repeated}")
+        raise ValueError(f"duplicate_existing_character_card:{repeated}")
 
     known_names = {*existing_names, *names}
     for chapter in plan.outline.chapters:

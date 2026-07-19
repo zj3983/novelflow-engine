@@ -631,8 +631,39 @@ def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path
     assert brief.novel_type_id == "xuanhuan"
     assert brief.opening_direction.hook == "林照看守断香炉。"
     assert brief.existing_characters == []
+    assert brief.existing_character_names == []
     secret = "对手有现实利益".encode("utf-8")
     assert all(secret not in path.read_bytes() for path in store.root.rglob("*") if path.is_file())
+
+
+def test_planning_brief_keeps_all_character_names_while_limiting_detailed_cards(tmp_path) -> None:
+    project_cards = [
+        _planning_card(f"已有角色{number}", "supporting")
+        for number in range(1, 8)
+    ]
+    state_cards = [project_cards[0], _planning_card("状态角色8", "supporting")]
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "角色清单",
+            "character_profiles": project_cards,
+        },
+        state={
+            "story_id": "s-file",
+            "current_chapter": 0,
+            "world_facts": [],
+            "characters": state_cards,
+        },
+    )
+
+    brief = store._planning_brief()
+
+    assert len(brief.existing_characters) == 6
+    assert brief.existing_character_names == [
+        *[f"已有角色{number}" for number in range(1, 8)],
+        "状态角色8",
+    ]
 
 
 def test_extend_generated_outline_plan_fills_missing_rolling_window_chapters(tmp_path):
