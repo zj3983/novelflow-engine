@@ -60,6 +60,18 @@ def test_window_target_stops_at_extension_ceiling() -> None:
     assert status["next_chapter_numbers"] == list(range(491, 501))
 
 
+def test_window_at_ceiling_does_not_request_committed_chapters() -> None:
+    status = outline_window_status(_outline(last_chapter=490), current_chapter=500)
+    assert status["target_last_chapter"] == 500
+    assert status["next_chapter_numbers"] == []
+
+
+def test_window_extension_starts_after_current_when_outline_is_behind() -> None:
+    status = outline_window_status(_outline(last_chapter=20), current_chapter=25)
+    assert status["next_chapter_numbers"] == list(range(26, 56))
+    assert all(number > 25 for number in status["next_chapter_numbers"])
+
+
 def test_core_ending_cannot_precede_committed_chapter() -> None:
     with pytest.raises(ValueError, match="core_ending_before_current_chapter"):
         validate_outline_for_project(

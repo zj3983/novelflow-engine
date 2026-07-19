@@ -23,9 +23,10 @@ def outline_window_status(
         normalized["overall"]["extension_ceiling_chapter"],
     )
     needs_extension = remaining <= EXTENSION_WARNING
+    next_start = max(last_planned, current_chapter) + 1
     next_numbers = (
-        list(range(last_planned + 1, target_last + 1))
-        if needs_extension and last_planned < target_last
+        list(range(next_start, target_last + 1))
+        if needs_extension and next_start <= target_last
         else []
     )
     return {
