@@ -120,6 +120,8 @@ def _with_elastic_defaults(payload: Any) -> Any:
         return payload
     prepared = deepcopy(payload)
     overall = prepared.setdefault("overall", {})
+    if not isinstance(overall, dict):
+        return prepared
     arcs = prepared.get("arcs") if isinstance(prepared.get("arcs"), list) else []
     chapters = (
         prepared.get("chapters")

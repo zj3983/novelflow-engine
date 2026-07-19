@@ -371,6 +371,36 @@ def test_file_project_outline_put_rejects_duplicate_chapter_without_overwriting(
     assert outline_path.read_bytes() == original_bytes
 
 
+@pytest.mark.parametrize("invalid_overall", [None, [], False])
+def test_file_project_outline_put_rejects_malformed_overall(
+    tmp_path: Path,
+    monkeypatch,
+    invalid_overall: object,
+) -> None:
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "outline-invalid-overall"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(
+        project_root / ".story-system" / "MASTER_SETTING.json",
+        {"project": {"title": "Outline Invalid Overall"}},
+    )
+    _write_json(
+        project_root / ".webnovel" / "state.json",
+        {"story_id": "s-outline-invalid-overall"},
+    )
+    _write_json(
+        project_root / ".webnovel" / "project.json",
+        {"project_id": "outline-invalid-overall"},
+    )
+
+    response = client.put(
+        "/file-projects/file:outline-invalid-overall/outline",
+        json={"overall": invalid_overall},
+    )
+
+    assert response.status_code == 422
+
+
 def test_file_project_outline_get_rejects_corrupt_file_without_rewriting(tmp_path: Path, monkeypatch):
     export_root = tmp_path / "exported-projects"
     project_root = export_root / "outline-corrupt"

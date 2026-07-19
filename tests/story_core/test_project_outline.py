@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from packages.story_core.project_outline import (
     ArcOutline,
@@ -276,6 +277,12 @@ def test_normalize_rejects_invalid_root_types(payload: object) -> None:
 
 def test_normalize_treats_only_none_as_an_empty_outline() -> None:
     assert normalize_project_outline(None) == normalize_project_outline({})
+
+
+@pytest.mark.parametrize("invalid_overall", [None, [], False])
+def test_malformed_overall_reports_validation_error(invalid_overall: object) -> None:
+    with pytest.raises(ValidationError):
+        normalize_project_outline({"overall": invalid_overall})
 
 
 def test_arc_id_is_required() -> None:
