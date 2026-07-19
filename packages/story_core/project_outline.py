@@ -243,9 +243,42 @@ def select_outline_context(
         ),
         None,
     )
+    overall_context = {
+        key: normalized["overall"][key]
+        for key in (
+            "story",
+            "protagonist_goal",
+            "main_conflict",
+            "growth_path",
+            "ending_direction",
+            "current_strategy",
+            "ending_contract",
+        )
+    }
+    active_arc_context = (
+        {
+            key: active_arc[key]
+            for key in (
+                "id",
+                "title",
+                "start_chapter",
+                "end_chapter",
+                "goal",
+                "obstacle",
+                "payoff",
+                "game_line_payoff",
+                "reality_line_payoff",
+                "end_state",
+                "stage_antagonist",
+                "long_term_antagonist_traces",
+            )
+        }
+        if active_arc is not None
+        else None
+    )
     return {
         "schema_version": "outline-context/v1",
-        "overall": normalized["overall"],
-        "active_arc": active_arc,
+        "overall": overall_context,
+        "active_arc": active_arc_context,
         "chapter": chapter,
     }

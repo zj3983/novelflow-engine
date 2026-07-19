@@ -913,6 +913,7 @@ def test_writing_packet_uses_planned_cast_and_hides_long_term_secrets(tmp_path):
         },
     )
     outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["overall"]["ending_contract"] = "游戏线与现实线完整收束。"
     outline["chapters"][0]["cast"] = ["林照", "赵衡", "顾长老"]
     (root / ".webnovel" / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
 
@@ -925,6 +926,9 @@ def test_writing_packet_uses_planned_cast_and_hides_long_term_secrets(tmp_path):
     assert "亲手换掉旧名册" not in serialized
     assert "真实身份是执法堂首座" not in serialized
     assert packet["outline_context"]["active_arc"]["long_term_antagonist_traces"] == ["旧名册被换过"]
+    assert packet["outline_context"]["overall"]["ending_contract"]
+    assert "extension_gate" not in packet["outline_context"]["active_arc"]
+    assert "chapters" not in packet["outline_context"]
 
 
 def test_writing_packet_only_includes_relationships_within_chapter_cast(tmp_path):

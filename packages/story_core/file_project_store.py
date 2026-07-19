@@ -3850,9 +3850,8 @@ class FileProjectStore:
         project_outline.pop("source", None)
         selected_outline = select_outline_context(project_outline, int(target or 0))
         outline_context = {
-            "overall": selected_outline.get("overall"),
-            "active_arc": selected_outline.get("active_arc"),
-            "chapter": selected_outline.get("chapter"),
+            key: selected_outline[key]
+            for key in ("overall", "active_arc", "chapter")
         }
         chapter_outline = outline_context["chapter"] if isinstance(outline_context.get("chapter"), dict) else {}
         recent = []

@@ -452,6 +452,43 @@ def test_selection_returns_only_active_arc_and_target_chapter() -> None:
     assert "chapters" not in context
 
 
+def test_writing_context_omits_future_routes_and_outline_bulk() -> None:
+    outline = normalize_project_outline(
+        {
+            "overall": {
+                "story": "核心故事",
+                "core_ending_chapter": 150,
+                "extension_ceiling_chapter": 500,
+                "current_strategy": "observe",
+                "ending_contract": "两条线完整收束。",
+            },
+            "arcs": [
+                {
+                    "id": "opening",
+                    "start_chapter": 1,
+                    "end_chapter": 30,
+                    "game_line_payoff": "游戏线阶段收束",
+                    "reality_line_payoff": "现实线阶段收束",
+                    "extension_gate": {
+                        "continue_route": "跨服战争",
+                        "close_route": "进入最终冲突",
+                    },
+                }
+            ],
+            "chapters": [{"chapter_number": 2, "goal": "完成前置任务"}],
+        }
+    )
+
+    context = select_outline_context(outline, 2)
+
+    assert context["overall"]["ending_contract"] == "两条线完整收束。"
+    assert context["overall"]["current_strategy"] == "observe"
+    assert "core_ending_chapter" not in context["overall"]
+    assert "extension_gate" not in context["active_arc"]
+    assert "arcs" not in context
+    assert "chapters" not in context
+
+
 def test_selection_overlap_tiebreakers_do_not_depend_on_input_order() -> None:
     arcs = [
         {"id": "broad", "start_chapter": 1, "end_chapter": 20},
