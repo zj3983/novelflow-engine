@@ -20,6 +20,7 @@ from packages.story_core.character_profiles import (
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
+from packages.story_core.elastic_outline import validate_outline_for_project
 from packages.story_core.dual_state import (
     merge_state_change,
     normalize_dual_state,
@@ -2523,7 +2524,11 @@ class FileProjectStore:
     def update_project_outline(self, payload: dict[str, Any]) -> dict[str, Any]:
         outline_payload = dict(payload)
         outline_payload.pop("source", None)
-        normalized = normalize_project_outline(outline_payload)
+        state = self._read_json(self.webnovel_dir / "state.json", {})
+        current_chapter = int(state.get("current_chapter") or 0)
+        normalized = validate_outline_for_project(
+            outline_payload, current_chapter=current_chapter
+        )
         self._write_json_atomic(self.webnovel_dir / "outline.json", normalized)
         return {**normalized, "source": "saved"}
 

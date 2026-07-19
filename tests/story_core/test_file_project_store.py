@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -585,6 +586,20 @@ def test_generated_plan_transaction_restores_old_files_on_replace_failure(tmp_pa
         store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
 
     assert {path: path.read_bytes() for path in before} == before
+
+
+def test_update_outline_rejects_core_ending_before_current_chapter(tmp_path) -> None:
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(root, state={"current_chapter": 21})
+    before = store.project_outline()
+    invalid = deepcopy(before)
+    invalid["overall"]["core_ending_chapter"] = 20
+    invalid["overall"]["extension_ceiling_chapter"] = 20
+
+    with pytest.raises(ValueError, match="core_ending_before_current_chapter"):
+        store.update_project_outline(invalid)
+
+    assert store.project_outline() == before
 
 
 def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path):
