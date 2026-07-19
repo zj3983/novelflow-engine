@@ -285,6 +285,18 @@ def test_regenerate_stops_at_extension_ceiling(generator_fixture) -> None:
     assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(491, 501))
 
 
+def test_regenerate_at_extension_ceiling_accepts_empty_target(generator_fixture) -> None:
+    brief = generator_fixture.brief(
+        current_chapter=500,
+        existing_chapters=list(range(1, 501)),
+    )
+
+    plan = generator_fixture.generator().generate(brief, mode="regenerate")
+
+    assert generator_fixture.prompt_context["target_chapter_numbers"] == []
+    assert plan.outline.chapters == []
+
+
 def test_generator_rejects_invalid_output_and_long_guidance() -> None:
     runtime_calls = []
     generator = LLMOutlinePlanningGenerator(

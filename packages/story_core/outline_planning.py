@@ -90,7 +90,11 @@ def validate_generated_opening_plan(
     if not opening_arc.long_term_antagonist_traces:
         raise ValueError("long_term_antagonist_trace_required")
 
-    expected = expected_chapter_numbers or list(range(1, 31))
+    expected = (
+        list(range(1, 31))
+        if expected_chapter_numbers is None
+        else expected_chapter_numbers
+    )
     chapter_numbers = [chapter.chapter_number for chapter in plan.outline.chapters]
     if chapter_numbers != expected:
         raise ValueError("generated_chapters_do_not_match_target_window")

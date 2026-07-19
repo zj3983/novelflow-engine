@@ -738,6 +738,37 @@ def test_regenerate_preserves_committed_chapter_outline(tmp_path) -> None:
     assert store.state()["world_facts"] == [{"fact": "Committed fact"}]
 
 
+def test_regenerate_at_extension_ceiling_saves_empty_future_target(tmp_path) -> None:
+    store = _make_minimal_file_project(tmp_path / "novel")
+    store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+    current_outline = store.project_outline()
+    current_outline.pop("source", None)
+    current_outline["overall"].update(
+        core_ending_chapter=500,
+        extension_ceiling_chapter=500,
+    )
+    current_outline["arcs"][0]["end_chapter"] = 500
+    store.update_project_outline(current_outline)
+    state = store.state()
+    state["current_chapter"] = 500
+    store._write_json(store.webnovel_dir / "state.json", state)
+
+    payload = _generated_opening_plan().model_dump(mode="json")
+    payload["outline"]["overall"].update(
+        core_ending_chapter=500,
+        extension_ceiling_chapter=500,
+    )
+    payload["outline"]["arcs"][0]["end_chapter"] = 500
+    payload["outline"]["chapters"] = []
+
+    saved = store.save_generated_outline_plan(
+        GeneratedOutlinePlan.model_validate(payload),
+        mode="regenerate",
+    )
+
+    assert [item["chapter_number"] for item in saved["outline"]["chapters"]] == list(range(1, 31))
+
+
 def test_writing_packet_uses_planned_cast_and_hides_long_term_secrets(tmp_path):
     root = tmp_path / "novel"
     characters = [

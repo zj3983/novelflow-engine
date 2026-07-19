@@ -176,3 +176,14 @@ def test_plan_requires_explicit_target_sequence(valid_payload: dict) -> None:
     )
 
     assert [item.chapter_number for item in plan.outline.chapters] == targets
+
+
+def test_plan_accepts_explicit_empty_target_sequence(valid_payload: dict) -> None:
+    valid_payload["outline"]["chapters"] = []
+
+    plan = validate_generated_opening_plan(
+        valid_payload,
+        expected_chapter_numbers=[],
+    )
+
+    assert plan.outline.chapters == []
