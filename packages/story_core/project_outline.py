@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -9,12 +10,24 @@ class _OutlineModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+OutlineStrategy = Literal["observe", "expand", "close"]
+
+
+class ExtensionGate(_OutlineModel):
+    continue_route: str = ""
+    close_route: str = ""
+
+
 class OverallOutline(_OutlineModel):
     story: str = ""
     protagonist_goal: str = ""
     main_conflict: str = ""
     growth_path: str = ""
     ending_direction: str = ""
+    core_ending_chapter: int = Field(default=1, ge=1, strict=True)
+    extension_ceiling_chapter: int = Field(default=1, ge=1, strict=True)
+    current_strategy: OutlineStrategy = "observe"
+    ending_contract: str = ""
 
 
 class ArcOutline(_OutlineModel):
@@ -28,6 +41,9 @@ class ArcOutline(_OutlineModel):
     end_state: str = ""
     stage_antagonist: str = ""
     long_term_antagonist_traces: list[str] = Field(default_factory=list)
+    game_line_payoff: str = ""
+    reality_line_payoff: str = ""
+    extension_gate: ExtensionGate = Field(default_factory=ExtensionGate)
 
     @field_validator("id")
     @classmethod
@@ -83,11 +99,58 @@ class ProjectOutline(_OutlineModel):
         chapter_numbers = [chapter.chapter_number for chapter in self.chapters]
         if len(chapter_numbers) != len(set(chapter_numbers)):
             raise ValueError("duplicate_chapter_outline")
+        if self.overall.extension_ceiling_chapter < self.overall.core_ending_chapter:
+            raise ValueError("extension_ceiling_before_core_ending")
+        if self.overall.extension_ceiling_chapter > self.overall.core_ending_chapter:
+            for arc in self.arcs:
+                if arc.end_chapter > self.overall.core_ending_chapter:
+                    continue
+                if not arc.game_line_payoff.strip() or not arc.reality_line_payoff.strip():
+                    raise ValueError(f"missing_arc_dual_line_payoff:{arc.id}")
+                if (
+                    not arc.extension_gate.continue_route.strip()
+                    or not arc.extension_gate.close_route.strip()
+                ):
+                    raise ValueError(f"missing_arc_extension_route:{arc.id}")
         return self
 
 
+def _with_elastic_defaults(payload: Any) -> Any:
+    if payload is None or not isinstance(payload, dict):
+        return payload
+    prepared = deepcopy(payload)
+    overall = prepared.setdefault("overall", {})
+    arcs = prepared.get("arcs") if isinstance(prepared.get("arcs"), list) else []
+    chapters = (
+        prepared.get("chapters")
+        if isinstance(prepared.get("chapters"), list)
+        else []
+    )
+    planned_ends = [
+        item.get("end_chapter")
+        for item in arcs
+        if isinstance(item, dict)
+        and isinstance(item.get("end_chapter"), int)
+        and not isinstance(item.get("end_chapter"), bool)
+    ]
+    planned_chapters = [
+        item.get("chapter_number")
+        for item in chapters
+        if isinstance(item, dict)
+        and isinstance(item.get("chapter_number"), int)
+        and not isinstance(item.get("chapter_number"), bool)
+    ]
+    legacy_end = max([*planned_ends, *planned_chapters, 1])
+    overall.setdefault("core_ending_chapter", legacy_end)
+    overall.setdefault("extension_ceiling_chapter", overall["core_ending_chapter"])
+    overall.setdefault("current_strategy", "observe")
+    overall.setdefault("ending_contract", overall.get("ending_direction", ""))
+    return prepared
+
+
 def normalize_project_outline(payload: Any) -> dict[str, Any]:
-    normalized = ProjectOutline.model_validate({} if payload is None else payload).model_dump()
+    prepared = {} if payload is None else payload
+    normalized = ProjectOutline.model_validate(_with_elastic_defaults(prepared)).model_dump()
     normalized["arcs"].sort(
         key=lambda arc: (arc["start_chapter"], arc["end_chapter"], arc["id"])
     )

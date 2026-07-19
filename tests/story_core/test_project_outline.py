@@ -60,6 +60,10 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "main_conflict",
         "growth_path",
         "ending_direction",
+        "core_ending_chapter",
+        "extension_ceiling_chapter",
+        "current_strategy",
+        "ending_contract",
     }
     assert set(payload["arcs"][0]) == {
         "id",
@@ -72,6 +76,9 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "end_state",
         "stage_antagonist",
         "long_term_antagonist_traces",
+        "game_line_payoff",
+        "reality_line_payoff",
+        "extension_gate",
     }
     assert payload["arcs"][0]["id"]
     assert set(payload["chapters"][0]) == {
@@ -85,6 +92,114 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "ending_hook",
         "cast",
     }
+
+
+def test_elastic_outline_fields_round_trip() -> None:
+    normalized = normalize_project_outline(
+        {
+            "overall": {
+                "story": "夜烬从新手村走向主城。",
+                "core_ending_chapter": 150,
+                "extension_ceiling_chapter": 500,
+                "current_strategy": "observe",
+                "ending_contract": "现实线和游戏线都完成核心结局。",
+            },
+            "arcs": [
+                {
+                    "id": "opening",
+                    "start_chapter": 1,
+                    "end_chapter": 30,
+                    "game_line_payoff": "进入主城并建立稳定材料渠道。",
+                    "reality_line_payoff": "到账足够支付眼前急账的收入。",
+                    "extension_gate": {
+                        "continue_route": "进入主城并开放公会竞争。",
+                        "close_route": "回收新手村线索并转入校验者结局。",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert normalized["overall"]["core_ending_chapter"] == 150
+    assert normalized["overall"]["extension_ceiling_chapter"] == 500
+    assert normalized["overall"]["current_strategy"] == "observe"
+    assert normalized["arcs"][0]["extension_gate"]["continue_route"]
+
+
+def test_old_outline_defaults_to_non_expanding_observe_mode() -> None:
+    normalized = normalize_project_outline(
+        {
+            "arcs": [
+                {"id": "opening", "start_chapter": 1, "end_chapter": 30}
+            ],
+            "chapters": [{"chapter_number": 1}],
+        }
+    )
+
+    assert normalized["overall"]["core_ending_chapter"] == 30
+    assert normalized["overall"]["extension_ceiling_chapter"] == 30
+    assert normalized["overall"]["current_strategy"] == "observe"
+    assert normalized["arcs"][0]["extension_gate"] == {
+        "continue_route": "",
+        "close_route": "",
+    }
+
+
+def test_extension_ceiling_cannot_precede_core_ending() -> None:
+    with pytest.raises(ValueError, match="extension_ceiling_before_core_ending"):
+        normalize_project_outline(
+            {
+                "overall": {
+                    "core_ending_chapter": 150,
+                    "extension_ceiling_chapter": 120,
+                }
+            }
+        )
+
+
+def test_expandable_outline_requires_both_routes_for_core_arcs() -> None:
+    with pytest.raises(ValueError, match="missing_arc_extension_route:opening"):
+        normalize_project_outline(
+            {
+                "overall": {
+                    "core_ending_chapter": 150,
+                    "extension_ceiling_chapter": 500,
+                },
+                "arcs": [
+                    {
+                        "id": "opening",
+                        "start_chapter": 1,
+                        "end_chapter": 30,
+                        "game_line_payoff": "进入主城。",
+                        "reality_line_payoff": "解决急账。",
+                        "extension_gate": {"continue_route": "继续", "close_route": ""},
+                    }
+                ],
+            }
+        )
+
+
+def test_expandable_outline_requires_dual_line_payoffs_for_core_arcs() -> None:
+    with pytest.raises(ValueError, match="missing_arc_dual_line_payoff:opening"):
+        normalize_project_outline(
+            {
+                "overall": {
+                    "core_ending_chapter": 150,
+                    "extension_ceiling_chapter": 500,
+                },
+                "arcs": [
+                    {
+                        "id": "opening",
+                        "start_chapter": 1,
+                        "end_chapter": 30,
+                        "extension_gate": {
+                            "continue_route": "进入下一阶段。",
+                            "close_route": "进入结局。",
+                        },
+                    }
+                ],
+            }
+        )
 
 
 def test_normalize_is_deterministic_non_mutating_json_serializable_and_sorted() -> None:
@@ -265,6 +380,9 @@ def test_legacy_project_projects_into_three_levels_without_mutation() -> None:
             "end_state": "",
             "stage_antagonist": "",
             "long_term_antagonist_traces": [],
+            "game_line_payoff": "",
+            "reality_line_payoff": "",
+            "extension_gate": {"continue_route": "", "close_route": ""},
         }
     ]
     assert [chapter["chapter_number"] for chapter in outline["chapters"]] == [2, 4]
@@ -287,6 +405,10 @@ def test_legacy_projection_tolerates_missing_or_malformed_optional_sections() ->
             "main_conflict": "",
             "growth_path": "",
             "ending_direction": "",
+            "core_ending_chapter": 1,
+            "extension_ceiling_chapter": 1,
+            "current_strategy": "observe",
+            "ending_contract": "",
         },
         "arcs": [],
         "chapters": [],
