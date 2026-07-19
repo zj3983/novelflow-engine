@@ -54,6 +54,20 @@ def test_full_window_does_not_request_more_chapters() -> None:
     assert status["next_chapter_numbers"] == []
 
 
+def test_window_does_not_expose_missing_numbers_before_warning_threshold() -> None:
+    status = outline_window_status(_outline(last_chapter=40), current_chapter=20)
+    assert status["remaining_detailed_chapters"] == 20
+    assert status["needs_extension"] is False
+    assert status["next_chapter_numbers"] == []
+
+
+def test_window_exposes_missing_numbers_after_progress_reaches_threshold() -> None:
+    status = outline_window_status(_outline(last_chapter=40), current_chapter=30)
+    assert status["remaining_detailed_chapters"] == 10
+    assert status["needs_extension"] is True
+    assert status["next_chapter_numbers"] == list(range(41, 61))
+
+
 def test_window_target_stops_at_extension_ceiling() -> None:
     status = outline_window_status(_outline(last_chapter=490), current_chapter=490)
     assert status["target_last_chapter"] == 500

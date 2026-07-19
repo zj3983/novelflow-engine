@@ -44,17 +44,20 @@ def outline_window_status(
         if chapter_number not in planned_numbers:
             break
         remaining += 1
-    next_numbers = [
+    missing_candidates = [
         chapter_number
         for chapter_number in target_numbers
         if chapter_number not in planned_numbers
     ]
+    needs_extension = (
+        bool(missing_candidates) and remaining <= EXTENSION_WARNING
+    )
     return {
         "last_planned_chapter": last_planned,
         "remaining_detailed_chapters": remaining,
         "target_last_chapter": target_last,
-        "needs_extension": bool(next_numbers) and remaining <= EXTENSION_WARNING,
-        "next_chapter_numbers": next_numbers,
+        "needs_extension": needs_extension,
+        "next_chapter_numbers": missing_candidates if needs_extension else [],
     }
 
 
