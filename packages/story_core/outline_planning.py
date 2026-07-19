@@ -111,3 +111,41 @@ def validate_generated_opening_plan(
         _require_text(card.story_drive.immediate_goal, f"missing_character_goal:{card.name}")
         _require_text(card.story_drive.failure_stakes, f"missing_character_stakes:{card.name}")
     return plan
+
+
+def validate_generated_continuation_plan(
+    payload: Any,
+    *,
+    expected_chapter_numbers: list[int],
+    existing_character_names: set[str],
+) -> GeneratedOutlinePlan:
+    """Validate an incremental plan without requiring opening-only structure."""
+
+    plan = GeneratedOutlinePlan.model_validate(payload)
+    chapter_numbers = [chapter.chapter_number for chapter in plan.outline.chapters]
+    if chapter_numbers != expected_chapter_numbers:
+        raise ValueError("generated_chapters_do_not_match_target_window")
+
+    names = [card.name.strip() for card in plan.characters]
+    if len(names) != len(set(names)):
+        raise ValueError("duplicate_character_name")
+    existing_names = {
+        str(name).strip() for name in existing_character_names if str(name).strip()
+    }
+    repeated = next((name for name in names if name in existing_names), None)
+    if repeated is not None:
+        raise ValueError(f"existing_character_card_repeated:{repeated}")
+
+    known_names = {*existing_names, *names}
+    for chapter in plan.outline.chapters:
+        for name in chapter.cast:
+            if name not in known_names:
+                raise ValueError(f"missing_character_card:{name}")
+
+    for card in plan.characters:
+        _require_text(card.identity_profile.origin, f"missing_character_origin:{card.name}")
+        _require_text(card.identity_profile.current_identity, f"missing_character_identity:{card.name}")
+        _require_text(card.identity_profile.occupation, f"missing_character_occupation:{card.name}")
+        _require_text(card.story_drive.immediate_goal, f"missing_character_goal:{card.name}")
+        _require_text(card.story_drive.failure_stakes, f"missing_character_stakes:{card.name}")
+    return plan

@@ -4,7 +4,10 @@ from copy import deepcopy
 
 import pytest
 
-from packages.story_core.outline_planning import validate_generated_opening_plan
+from packages.story_core.outline_planning import (
+    validate_generated_continuation_plan,
+    validate_generated_opening_plan,
+)
 
 
 def _character(name: str, tier: str, first_appearance: int = 1) -> dict:
@@ -187,3 +190,42 @@ def test_plan_accepts_explicit_empty_target_sequence(valid_payload: dict) -> Non
     )
 
     assert plan.outline.chapters == []
+
+
+def test_continuation_plan_accepts_existing_and_new_cast(valid_payload: dict) -> None:
+    valid_payload["outline"]["arcs"] = []
+    valid_payload["outline"]["chapters"] = [
+        {
+            **valid_payload["outline"]["chapters"][0],
+            "chapter_number": 31,
+            "cast": ["林照", "新角色"],
+        }
+    ]
+    valid_payload["characters"] = [_character("新角色", "supporting")]
+
+    plan = validate_generated_continuation_plan(
+        valid_payload,
+        expected_chapter_numbers=[31],
+        existing_character_names={"林照"},
+    )
+
+    assert [card.name for card in plan.characters] == ["新角色"]
+
+
+def test_continuation_plan_rejects_unknown_cast(valid_payload: dict) -> None:
+    valid_payload["outline"]["arcs"] = []
+    valid_payload["outline"]["chapters"] = [
+        {
+            **valid_payload["outline"]["chapters"][0],
+            "chapter_number": 31,
+            "cast": ["林照", "未知角色"],
+        }
+    ]
+    valid_payload["characters"] = [_character("新角色", "supporting")]
+
+    with pytest.raises(ValueError, match="missing_character_card:未知角色"):
+        validate_generated_continuation_plan(
+            valid_payload,
+            expected_chapter_numbers=[31],
+            existing_character_names={"林照"},
+        )

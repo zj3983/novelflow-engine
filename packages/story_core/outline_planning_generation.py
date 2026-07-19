@@ -11,6 +11,7 @@ from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.outline_planning import (
     GeneratedOutlinePlan,
+    validate_generated_continuation_plan,
     validate_generated_opening_plan,
 )
 from packages.story_core.runtime_config import (
@@ -72,10 +73,6 @@ class LLMOutlinePlanningGenerator:
             genre = runtime_novel_type(validated.novel_type_id)
             if genre is None:
                 raise ValueError("invalid_novel_type")
-            runtime = self._runtime_resolver("planner")
-            if runtime.provider != "codexcli" and not runtime.api_key:
-                raise ValueError("runtime_unavailable")
-
             window = outline_window_status(
                 validated.existing_outline,
                 current_chapter=validated.current_chapter,
@@ -92,10 +89,33 @@ class LLMOutlinePlanningGenerator:
                         + 1,
                     )
                 )
+                if not target_chapter_numbers:
+                    raise ValueError("outline_window_already_full")
             else:
                 target_chapter_numbers = window["next_chapter_numbers"]
                 if not target_chapter_numbers:
                     raise ValueError("outline_window_already_full")
+
+            runtime = self._runtime_resolver("planner")
+            if runtime.provider != "codexcli" and not runtime.api_key:
+                raise ValueError("runtime_unavailable")
+
+            if mode == "extend":
+                validation_rules = [
+                    "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order.",
+                    "characters must contain only newly introduced character cards; do not repeat cards from prompt_context.existing_characters.",
+                    "Every chapter cast name must equal either a name in prompt_context.existing_characters or a name in characters.",
+                    "Every new character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
+                ]
+            else:
+                validation_rules = [
+                    "For initial/regenerate, characters must contain 4 to 6 unique names and include the protagonist, stage_antagonist, and long_term_antagonist tiers.",
+                    "The opening arc must start at chapter 1, and its stage_antagonist must be exactly equal to the name of the character whose character_tier is stage_antagonist.",
+                    "The opening arc must contain at least one long_term_antagonist_traces item.",
+                    "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order.",
+                    "Every name in every chapter cast must exactly equal a name in characters.",
+                    "Every character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
+                ]
 
             prompt_context = {
                 "mode": mode,
@@ -113,14 +133,7 @@ class LLMOutlinePlanningGenerator:
                 ),
                 "one_time_guidance": normalized_guidance,
                 "output_schema": GeneratedOutlinePlan.model_json_schema(),
-                "validation_rules": [
-                    "For initial/regenerate, characters must contain 4 to 6 unique names and include the protagonist, stage_antagonist, and long_term_antagonist tiers.",
-                    "The opening arc must start at chapter 1, and its stage_antagonist must be exactly equal to the name of the character whose character_tier is stage_antagonist.",
-                    "The opening arc must contain at least one long_term_antagonist_traces item.",
-                    "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order.",
-                    "Every name in every chapter cast must exactly equal a name in characters.",
-                    "Every character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
-                ],
+                "validation_rules": validation_rules,
             }
             payload = {
                 "model": runtime.model,
@@ -133,6 +146,7 @@ class LLMOutlinePlanningGenerator:
                             "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order. "
                             "For initial/regenerate, provide the complete core arcs through core_ending_chapter, but only those detailed chapters. "
                             "For extend, continue from committed facts and the active arc; obey current_strategy. "
+                            "For extend, characters must contain only newly introduced character cards, while chapter cast may also use names from prompt_context.existing_characters. "
                             "Every core arc must state a concrete game_line_payoff and reality_line_payoff. "
                             "observe follows the core route, expand uses only the next continue_route, and close uses the active close_route. "
                             "你负责生成中文长篇网文的结构化开书计划，不写正文。只返回 JSON，根字段必须是 "
@@ -160,6 +174,17 @@ class LLMOutlinePlanningGenerator:
             parsed = parse_json_message_content(response)
             if parsed is None:
                 raise ValueError("invalid_json")
+            if mode == "extend":
+                existing_character_names = {
+                    str(item.get("name") or "").strip()
+                    for item in validated.existing_characters
+                    if isinstance(item, dict) and str(item.get("name") or "").strip()
+                }
+                return validate_generated_continuation_plan(
+                    parsed,
+                    expected_chapter_numbers=target_chapter_numbers,
+                    existing_character_names=existing_character_names,
+                )
             return validate_generated_opening_plan(
                 parsed,
                 expected_chapter_numbers=target_chapter_numbers,

@@ -2727,6 +2727,8 @@ class FileProjectStore:
             expected_chapter_numbers = list(
                 range(current_chapter + 1, min(current_chapter + 30, ceiling) + 1)
             )
+            if not expected_chapter_numbers:
+                raise ValueError("outline_window_already_full")
         else:
             expected_chapter_numbers = outline_window_status(
                 current_outline,

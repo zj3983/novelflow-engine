@@ -738,7 +738,7 @@ def test_regenerate_preserves_committed_chapter_outline(tmp_path) -> None:
     assert store.state()["world_facts"] == [{"fact": "Committed fact"}]
 
 
-def test_regenerate_at_extension_ceiling_saves_empty_future_target(tmp_path) -> None:
+def test_regenerate_at_extension_ceiling_rejects_without_file_changes(tmp_path) -> None:
     store = _make_minimal_file_project(tmp_path / "novel")
     store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
     current_outline = store.project_outline()
@@ -761,12 +761,23 @@ def test_regenerate_at_extension_ceiling_saves_empty_future_target(tmp_path) -> 
     payload["outline"]["arcs"][0]["end_chapter"] = 500
     payload["outline"]["chapters"] = []
 
-    saved = store.save_generated_outline_plan(
-        GeneratedOutlinePlan.model_validate(payload),
-        mode="regenerate",
-    )
+    before = {
+        path.relative_to(store.root): path.read_bytes()
+        for path in store.root.rglob("*")
+        if path.is_file()
+    }
 
-    assert [item["chapter_number"] for item in saved["outline"]["chapters"]] == list(range(1, 31))
+    with pytest.raises(ValueError, match="^outline_window_already_full$"):
+        store.save_generated_outline_plan(
+            GeneratedOutlinePlan.model_validate(payload),
+            mode="regenerate",
+        )
+
+    assert {
+        path.relative_to(store.root): path.read_bytes()
+        for path in store.root.rglob("*")
+        if path.is_file()
+    } == before
 
 
 def test_writing_packet_uses_planned_cast_and_hides_long_term_secrets(tmp_path):

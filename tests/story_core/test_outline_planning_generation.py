@@ -285,16 +285,53 @@ def test_regenerate_stops_at_extension_ceiling(generator_fixture) -> None:
     assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(491, 501))
 
 
-def test_regenerate_at_extension_ceiling_accepts_empty_target(generator_fixture) -> None:
+def test_regenerate_at_extension_ceiling_rejects_before_model_call(generator_fixture) -> None:
     brief = generator_fixture.brief(
         current_chapter=500,
         existing_chapters=list(range(1, 501)),
     )
 
-    plan = generator_fixture.generator().generate(brief, mode="regenerate")
+    with pytest.raises(ValueError, match="^outline_window_already_full$"):
+        generator_fixture.generator().generate(brief, mode="regenerate")
 
-    assert generator_fixture.prompt_context["target_chapter_numbers"] == []
-    assert plan.outline.chapters == []
+    assert generator_fixture.calls == []
+    assert generator_fixture.runtime_calls == []
+
+
+def test_extend_accepts_only_new_character_cards_and_existing_cast() -> None:
+    prompt_context = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt_context.update(json.loads(payload["messages"][1]["content"]))
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["arcs"] = []
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": number,
+                "cast": ["林照", "新角色"],
+            }
+            for number in prompt_context["target_chapter_numbers"]
+        ]
+        plan["characters"] = [_card("新角色", "supporting")]
+        return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    brief = fixture.brief(current_chapter=20, existing_chapters=list(range(1, 31)))
+    payload = brief.model_dump(mode="json")
+    payload["existing_characters"] = [{"name": "林照"}]
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    )
+
+    plan = generator.generate(OutlinePlanningBrief.model_validate(payload), mode="extend")
+
+    assert [card.name for card in plan.characters] == ["新角色"]
+    rules = "\n".join(prompt_context["validation_rules"])
+    assert "only newly introduced character cards" in rules
+    assert "existing_characters" in rules
 
 
 def test_generator_rejects_invalid_output_and_long_guidance() -> None:
