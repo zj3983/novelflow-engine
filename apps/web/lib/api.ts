@@ -871,12 +871,23 @@ export type OpeningSetup = {
   next_path: string;
 };
 
+export type OutlineStrategy = "observe" | "expand" | "close";
+
+export type OutlineExtensionGate = {
+  continue_route: string;
+  close_route: string;
+};
+
 export type ProjectOutlineOverall = {
   story: string;
   protagonist_goal: string;
   main_conflict: string;
   growth_path: string;
   ending_direction: string;
+  core_ending_chapter: number;
+  extension_ceiling_chapter: number;
+  current_strategy: OutlineStrategy;
+  ending_contract: string;
 };
 
 export type ProjectOutlineArc = {
@@ -890,6 +901,9 @@ export type ProjectOutlineArc = {
   end_state: string;
   stage_antagonist: string;
   long_term_antagonist_traces: string[];
+  game_line_payoff: string;
+  reality_line_payoff: string;
+  extension_gate: OutlineExtensionGate;
 };
 
 export type CharacterIdentityProfile = {

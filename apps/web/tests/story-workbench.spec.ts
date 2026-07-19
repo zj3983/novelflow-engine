@@ -725,25 +725,36 @@ test("file project outline edits three levels and runs outline generation", asyn
       main_conflict: "宗门有人阻止他追查。",
       growth_path: "从杂役成长为内门弟子。",
       ending_direction: "查清旧案。",
+      core_ending_chapter: 150,
+      extension_ceiling_chapter: 500,
+      current_strategy: "observe",
+      ending_contract: "现实线和游戏线都完成核心结局。",
     },
     arcs: [
       {
         id: "opening",
         title: "祖祠阶段",
         start_chapter: 1,
-        end_chapter: 8,
+        end_chapter: 30,
         goal: "找出纵火者",
         obstacle: "管事阻挠",
         payoff: "拿到旧名册",
         end_state: "进入外门调查",
         stage_antagonist: "赵衡",
         long_term_antagonist_traces: ["旧名册被换过"],
+        game_line_payoff: "进入内门并获得新功法。",
+        reality_line_payoff: "解决住处和眼前收入问题。",
+        extension_gate: {
+          continue_route: "进入内门并扩大旧案。",
+          close_route: "回收旧名册并转入最终审判。",
+        },
       },
     ],
-    chapters: [
-      {
-        chapter_number: 1,
-        title: "守炉",
+    chapters: Array.from({ length: 31 }, (_, index) => {
+      const chapterNumber = index === 30 ? 40 : index + 1;
+      return {
+        chapter_number: chapterNumber,
+        title: index === 0 ? "守炉" : `第 ${chapterNumber} 章细纲`,
         goal: "检查断香炉",
         obstacle: "值夜弟子不配合",
         action: "核对香灰和名册",
@@ -751,8 +762,8 @@ test("file project outline edits three levels and runs outline generation", asyn
         payoff: "确认有人来过",
         ending_hook: "脚印通向后山",
         cast: ["林照", "赵衡"],
-      },
-    ],
+      };
+    }),
   };
   const project = {
     project_id: "file:outline-fixture",
@@ -808,7 +819,7 @@ test("file project outline edits three levels and runs outline generation", asyn
         outline: outline.overall.story,
         genre: "玄幻",
         style: "白描",
-        current_chapter: 0,
+        current_chapter: 20,
         agent_settings: {
           mode: "LLM-assisted",
           global_model: "qwen3.6-plus",
@@ -836,19 +847,49 @@ test("file project outline edits three levels and runs outline generation", asyn
   });
 
   await page.goto("/projects/file%3Aoutline-fixture/outline");
-  await expect(page.getByText("章节计划仅剩 1 章，请先补充后续章节。", { exact: true })).toBeVisible();
+  await expect(page.getByText("章节计划还剩 10 章，请补充下一批。", { exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "总纲", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "阶段大纲", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "章节大纲", exact: true })).toBeVisible();
+  await expect(page.getByLabel("核心完结章数")).toHaveValue("150");
+  await expect(page.getByLabel("最大扩展章数")).toHaveValue("500");
+  await expect(page.getByRole("radio", { name: "观察中" })).toBeChecked();
+  await page.getByLabel("最大扩展章数").fill("30");
+  await expect(page.getByText("章节计划还剩 10 章，请补充下一批。", { exact: true })).toBeHidden();
+  await expect(page.getByText("最大扩展章数不能小于核心完结章数。", { exact: true })).toBeVisible();
+  await page.getByLabel("最大扩展章数").fill("500");
+  await expect(page.getByText("章节计划还剩 10 章，请补充下一批。", { exact: true })).toBeVisible();
+  await expect(page.getByText("最大扩展章数不能小于核心完结章数。", { exact: true })).toBeHidden();
+  await page.getByRole("radio", { name: "收束" }).check();
   await page.getByLabel("主角长期目标").fill("洗清父亲旧案");
   await page.getByRole("tab", { name: "阶段大纲", exact: true }).click();
   await expect(page.getByLabel("阶段名称")).toHaveValue("祖祠阶段");
+  await expect(page.getByLabel("游戏线阶段结果")).toHaveValue("进入内门并获得新功法。");
+  await expect(page.getByLabel("现实线阶段结果")).toHaveValue("解决住处和眼前收入问题。");
+  await expect(page.getByLabel("继续路线")).toHaveValue("进入内门并扩大旧案。");
+  await expect(page.getByLabel("收束路线")).toHaveValue("回收旧名册并转入最终审判。");
+  await page.getByLabel("收束路线").fill("");
+  await page.getByRole("tab", { name: "总纲", exact: true }).click();
+  await expect(page.getByRole("radio", { name: "收束" })).toBeDisabled();
+  await expect(page.getByText("请先填写当前阶段的收束路线。", { exact: true })).toBeVisible();
+  await page.getByLabel("核心完结章数").fill("");
+  await page.getByRole("button", { name: "保存大纲" }).click();
+  await expect(page.getByText("请输入有效的核心完结章数和最大扩展章数。", { exact: true })).toBeVisible();
+  expect(savedBody).toBeNull();
+  await page.getByLabel("核心完结章数").fill("150");
+  await page.getByRole("tab", { name: "阶段大纲", exact: true }).click();
+  await page.getByLabel("收束路线").fill("回收旧名册并转入最终审判。");
   await page.getByRole("tab", { name: "章节大纲", exact: true }).click();
-  await expect(page.getByLabel("暂定标题")).toHaveValue("守炉");
+  await expect(page.getByLabel("暂定标题").first()).toHaveValue("守炉");
   await page.getByRole("button", { name: "保存大纲" }).click();
 
   expect(savedBody).toMatchObject({
-    overall: { protagonist_goal: "洗清父亲旧案" },
+    overall: {
+      protagonist_goal: "洗清父亲旧案",
+      core_ending_chapter: 150,
+      extension_ceiling_chapter: 500,
+      current_strategy: "close",
+    },
     arcs: outline.arcs,
     chapters: outline.chapters,
   });
@@ -861,7 +902,12 @@ test("file project outline edits three levels and runs outline generation", asyn
   await page.getByRole("tab", { name: "阶段大纲", exact: true }).click();
   await expect(page.getByLabel("阶段对手")).toHaveValue("赵衡");
   await page.getByRole("tab", { name: "章节大纲", exact: true }).click();
-  await expect(page.getByLabel("出场人物")).toHaveValue("林照\n赵衡");
+  await expect(page.getByLabel("出场人物").first()).toHaveValue("林照\n赵衡");
+  await page.getByRole("tab", { name: "总纲", exact: true }).click();
+  await page.setViewportSize({ width: 375, height: 760 });
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth))
+    .toBe(true);
 });
 
 test("concrete character card shows and saves factual profile fields", async ({ page }) => {

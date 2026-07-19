@@ -42,6 +42,12 @@ function newArc(index: number): ProjectOutlineArc {
     end_state: "",
     stage_antagonist: "",
     long_term_antagonist_traces: [],
+    game_line_payoff: "",
+    reality_line_payoff: "",
+    extension_gate: {
+      continue_route: "",
+      close_route: "",
+    },
   };
 }
 
@@ -72,7 +78,9 @@ export default function OutlinePage() {
   const [generating, setGenerating] = useState<OutlineGenerationMode | null>(null);
   const [guidance, setGuidance] = useState("");
   const [message, setMessage] = useState("");
+  const [localError, setLocalError] = useState("");
   const [loadError, setLoadError] = useState("");
+  const [overallNumbers, setOverallNumbers] = useState({ core: "", ceiling: "" });
 
   useEffect(() => {
     let cancelled = false;
@@ -80,7 +88,13 @@ export default function OutlinePage() {
     setLoadError("");
     fetchProjectOutline(projectId)
       .then((outline) => {
-        if (!cancelled) setDraft(outline);
+        if (!cancelled) {
+          setDraft(outline);
+          setOverallNumbers({
+            core: String(outline.overall.core_ending_chapter),
+            ceiling: String(outline.overall.extension_ceiling_chapter),
+          });
+        }
       })
       .catch((err) => {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
@@ -93,6 +107,12 @@ export default function OutlinePage() {
     };
   }, [projectId]);
 
+  const nextChapter = (story?.current_chapter ?? 0) + 1;
+  const activeArc = draft?.arcs.find(
+    (arc) => arc.start_chapter <= nextChapter && nextChapter <= arc.end_chapter,
+  );
+  const closeRouteMissing = !activeArc?.extension_gate.close_route.trim();
+
   const warnings = useMemo(() => {
     if (!draft) return [];
     const items: string[] = [];
@@ -103,10 +123,20 @@ export default function OutlinePage() {
     if (hasOverlap) {
       items.push("阶段章节范围有重叠；生成时会采用起始章节最接近当前章的阶段。");
     }
-    const lastPlannedChapter = Math.max(0, ...draft.chapters.map((chapter) => chapter.chapter_number));
-    const remainingChapters = lastPlannedChapter - (story?.current_chapter ?? 0);
-    if (remainingChapters > 0 && remainingChapters <= 2) {
-      items.push(`章节计划仅剩 ${remainingChapters} 章，请先补充后续章节。`);
+    const currentChapter = story?.current_chapter ?? 0;
+    const plannedChapters = new Set(draft.chapters.map((chapter) => chapter.chapter_number));
+    let remainingChapters = 0;
+    while (plannedChapters.has(currentChapter + remainingChapters + 1)) {
+      remainingChapters += 1;
+    }
+    if (
+      remainingChapters <= 10 &&
+      currentChapter + remainingChapters < draft.overall.extension_ceiling_chapter
+    ) {
+      items.push(`章节计划还剩 ${remainingChapters} 章，请补充下一批。`);
+    }
+    if (draft.overall.extension_ceiling_chapter < draft.overall.core_ending_chapter) {
+      items.push("最大扩展章数不能小于核心完结章数。");
     }
     return items;
   }, [draft, story?.current_chapter]);
@@ -117,6 +147,20 @@ export default function OutlinePage() {
         ? { ...current, arcs: current.arcs.map((arc, arcIndex) => (arcIndex === index ? { ...arc, ...patch } : arc)) }
         : current,
     );
+  }
+
+  function updateOverallNumber(field: "core_ending_chapter" | "extension_ceiling_chapter", value: string) {
+    setLocalError("");
+    setOverallNumbers((current) => ({
+      ...current,
+      [field === "core_ending_chapter" ? "core" : "ceiling"]: value,
+    }));
+    const parsed = Number(value);
+    if (value.trim() && Number.isInteger(parsed)) {
+      setDraft((current) =>
+        current ? { ...current, overall: { ...current.overall, [field]: parsed } } : current,
+      );
+    }
   }
 
   function updateChapter(index: number, patch: Partial<ProjectChapterOutline>) {
@@ -146,6 +190,18 @@ export default function OutlinePage() {
 
   async function saveOutline() {
     if (!draft) return;
+    const coreEndingChapter = Number(overallNumbers.core);
+    const extensionCeilingChapter = Number(overallNumbers.ceiling);
+    if (
+      !overallNumbers.core.trim() ||
+      !overallNumbers.ceiling.trim() ||
+      !Number.isInteger(coreEndingChapter) ||
+      !Number.isInteger(extensionCeilingChapter)
+    ) {
+      setLocalError("请输入有效的核心完结章数和最大扩展章数。");
+      return;
+    }
+    setLocalError("");
     setSaving(true);
     setMessage("");
     try {
@@ -167,6 +223,10 @@ export default function OutlinePage() {
     try {
       const generated = await generateProjectOutline(projectId, mode, guidance.trim());
       setDraft({ ...generated.outline, source: "saved" });
+      setOverallNumbers({
+        core: String(generated.outline.overall.core_ending_chapter),
+        ceiling: String(generated.outline.overall.extension_ceiling_chapter),
+      });
       setGuidance("");
       setMessage(mode === "extend" ? "后续五章已补充。" : mode === "regenerate" ? "大纲和开篇角色已重新生成。" : "大纲和开篇角色已生成。");
     } catch (err) {
@@ -254,6 +314,7 @@ export default function OutlinePage() {
         </div>
 
         {message ? <p className="ws-outline-message">{message}</p> : null}
+        {localError ? <p className="ws-outline-error">{localError}</p> : null}
         {warnings.map((warning) => (
           <p className="ws-outline-warning" key={warning}>
             {warning}
@@ -273,6 +334,67 @@ export default function OutlinePage() {
                 onChange={(event) => setDraft({ ...draft, overall: { ...draft.overall, story: event.target.value } })}
               />
             </label>
+            <label className="ws-outline-field">
+              <span>核心完结章数</span>
+              <input
+                className="ws-input"
+                type="number"
+                min={story?.current_chapter || 1}
+                value={overallNumbers.core}
+                onChange={(event) => updateOverallNumber("core_ending_chapter", event.target.value)}
+              />
+            </label>
+            <label className="ws-outline-field">
+              <span>最大扩展章数</span>
+              <input
+                className="ws-input"
+                type="number"
+                min={story?.current_chapter || 1}
+                value={overallNumbers.ceiling}
+                onChange={(event) => updateOverallNumber("extension_ceiling_chapter", event.target.value)}
+              />
+            </label>
+            <label className="ws-outline-field ws-outline-field--wide">
+              <span>核心结局契约</span>
+              <textarea
+                className="ws-input"
+                rows={3}
+                value={draft.overall.ending_contract}
+                onChange={(event) =>
+                  setDraft({ ...draft, overall: { ...draft.overall, ending_contract: event.target.value } })
+                }
+              />
+            </label>
+            <div className="ws-outline-field ws-outline-field--wide">
+              <span>长篇策略</span>
+              <div className="ws-outline-strategy" role="radiogroup" aria-label="长篇策略">
+                {([
+                  ["observe", "观察中"],
+                  ["expand", "扩展"],
+                  ["close", "收束"],
+                ] as const).map(([value, label]) => (
+                  <label key={value}>
+                    <input
+                      type="radio"
+                      name="outline-strategy"
+                      value={value}
+                      checked={draft.overall.current_strategy === value}
+                      disabled={value === "close" && closeRouteMissing}
+                      onChange={() =>
+                        setDraft({
+                          ...draft,
+                          overall: { ...draft.overall, current_strategy: value },
+                        })
+                      }
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </div>
+              {closeRouteMissing ? (
+                <span className="ws-outline-strategy__reason">请先填写当前阶段的收束路线。</span>
+              ) : null}
+            </div>
             <label className="ws-outline-field">
               <span>主角长期目标</span>
               <textarea
@@ -369,6 +491,46 @@ export default function OutlinePage() {
                         <textarea className="ws-input" rows={3} value={arc[field]} onChange={(event) => updateArc(index, { [field]: event.target.value })} />
                       </label>
                     ))}
+                    {([
+                      ["game_line_payoff", "游戏线阶段结果"],
+                      ["reality_line_payoff", "现实线阶段结果"],
+                    ] as const).map(([field, label]) => (
+                      <label className="ws-outline-field" key={field}>
+                        <span>{label}</span>
+                        <textarea
+                          className="ws-input"
+                          rows={3}
+                          value={arc[field]}
+                          onChange={(event) => updateArc(index, { [field]: event.target.value })}
+                        />
+                      </label>
+                    ))}
+                    <label className="ws-outline-field">
+                      <span>继续路线</span>
+                      <textarea
+                        className="ws-input"
+                        rows={3}
+                        value={arc.extension_gate.continue_route}
+                        onChange={(event) =>
+                          updateArc(index, {
+                            extension_gate: { ...arc.extension_gate, continue_route: event.target.value },
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="ws-outline-field">
+                      <span>收束路线</span>
+                      <textarea
+                        className="ws-input"
+                        rows={3}
+                        value={arc.extension_gate.close_route}
+                        onChange={(event) =>
+                          updateArc(index, {
+                            extension_gate: { ...arc.extension_gate, close_route: event.target.value },
+                          })
+                        }
+                      />
+                    </label>
                     <label className="ws-outline-field ws-outline-field--wide">
                       <span>长期对手留下的痕迹</span>
                       <textarea
