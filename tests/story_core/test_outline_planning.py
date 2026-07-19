@@ -65,7 +65,7 @@ def valid_payload() -> dict:
         _character("顾长老", "long_term_antagonist", 0),
     ]
     chapters = []
-    for number in range(1, 6):
+    for number in range(1, 31):
         chapters.append(
             {
                 "chapter_number": number,
@@ -111,7 +111,7 @@ def valid_payload() -> dict:
 def test_valid_opening_plan_has_concrete_cast_and_two_layer_opposition(valid_payload) -> None:
     plan = validate_generated_opening_plan(valid_payload)
 
-    assert [chapter.chapter_number for chapter in plan.outline.chapters] == [1, 2, 3, 4, 5]
+    assert [chapter.chapter_number for chapter in plan.outline.chapters] == list(range(1, 31))
     assert plan.outline.arcs[0].stage_antagonist == "赵衡"
     assert {card.character_tier for card in plan.characters} >= {
         "protagonist",
@@ -132,7 +132,7 @@ def test_valid_opening_plan_has_concrete_cast_and_two_layer_opposition(valid_pay
             ),
             "character_count_out_of_range",
         ),
-        (lambda payload: payload["outline"]["chapters"].pop(2), "opening_chapters_must_be_1_to_5"),
+        (lambda payload: payload["outline"]["chapters"].pop(2), "generated_chapters_do_not_match_target_window"),
         (lambda payload: payload["outline"]["arcs"][0].update({"stage_antagonist": "其他人"}), "stage_antagonist_card_mismatch"),
         (lambda payload: payload["outline"]["arcs"][0].update({"long_term_antagonist_traces": []}), "long_term_antagonist_trace_required"),
     ],
@@ -150,3 +150,29 @@ def test_opening_plan_rejects_cast_without_character_card(valid_payload) -> None
 
     with pytest.raises(ValueError, match="missing_character_card:无卡人物"):
         validate_generated_opening_plan(valid_payload)
+
+
+def test_initial_plan_requires_thirty_detailed_chapters(valid_payload: dict) -> None:
+    valid_payload["outline"]["chapters"] = [
+        {**valid_payload["outline"]["chapters"][0], "chapter_number": number}
+        for number in range(1, 31)
+    ]
+
+    plan = validate_generated_opening_plan(valid_payload)
+
+    assert [item.chapter_number for item in plan.outline.chapters] == list(range(1, 31))
+
+
+def test_plan_requires_explicit_target_sequence(valid_payload: dict) -> None:
+    targets = [21, 23, *range(31, 51)]
+    valid_payload["outline"]["chapters"] = [
+        {**valid_payload["outline"]["chapters"][0], "chapter_number": number}
+        for number in targets
+    ]
+
+    plan = validate_generated_opening_plan(
+        valid_payload,
+        expected_chapter_numbers=targets,
+    )
+
+    assert [item.chapter_number for item in plan.outline.chapters] == targets

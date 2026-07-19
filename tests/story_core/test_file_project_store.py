@@ -97,7 +97,7 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
                         "ending_hook": "有人提前来过",
                         "cast": ["林照", "赵衡"],
                     }
-                    for number in range(1, 6)
+                    for number in range(1, 31)
                 ],
             },
             "characters": [
@@ -635,12 +635,26 @@ def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path
     assert all(secret not in path.read_bytes() for path in store.root.rglob("*") if path.is_file())
 
 
-def test_extend_generated_plan_requires_and_appends_next_five_chapters(tmp_path):
+def test_extend_generated_outline_plan_fills_missing_rolling_window_chapters(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+    state = store.state()
+    state["current_chapter"] = 20
+    store._write_json(store.webnovel_dir / "state.json", state)
     current_outline = store.project_outline()
     current_outline.pop("source", None)
-    current_outline["arcs"][0]["end_chapter"] = 5
+    current_outline["overall"].update(
+        core_ending_chapter=150,
+        extension_ceiling_chapter=500,
+        current_strategy="expand",
+        ending_contract="Close both lines.",
+    )
+    current_outline["arcs"][0].update(
+        end_chapter=150,
+        game_line_payoff="Win the game arc.",
+        reality_line_payoff="Resolve the reality pressure.",
+        extension_gate={"continue_route": "Enter the city.", "close_route": "Close the case."},
+    )
     store.update_project_outline(current_outline)
     addition = GeneratedOutlinePlan.model_validate(
         {
@@ -648,7 +662,7 @@ def test_extend_generated_plan_requires_and_appends_next_five_chapters(tmp_path)
                 "arcs": [
                     {
                         **current_outline["arcs"][0],
-                        "end_chapter": 10,
+                        "end_chapter": 150,
                         "long_term_antagonist_traces": ["旧名册被换过", "执法堂有人提前封档"],
                     }
                 ],
@@ -663,7 +677,7 @@ def test_extend_generated_plan_requires_and_appends_next_five_chapters(tmp_path)
                         "ending_hook": "经手人已经离宗",
                         "cast": ["林照", "周满"],
                     }
-                    for number in range(6, 11)
+                    for number in range(31, 51)
                 ]
             },
             "characters": [_planning_card("新档房弟子", "supporting")],
@@ -672,13 +686,56 @@ def test_extend_generated_plan_requires_and_appends_next_five_chapters(tmp_path)
 
     saved = store.save_generated_outline_plan(addition, mode="extend")
 
-    assert [item["chapter_number"] for item in saved["outline"]["chapters"]] == list(range(1, 11))
-    assert saved["outline"]["arcs"][0]["end_chapter"] == 10
+    assert [item["chapter_number"] for item in saved["outline"]["chapters"]] == list(range(1, 51))
+    assert saved["outline"]["arcs"][0]["end_chapter"] == 150
     assert saved["outline"]["arcs"][0]["long_term_antagonist_traces"] == [
         "旧名册被换过",
         "执法堂有人提前封档",
     ]
     assert any(item["name"] == "新档房弟子" for item in saved["characters"])
+
+
+def test_regenerate_preserves_committed_chapter_outline(tmp_path) -> None:
+    store = _make_minimal_file_project(tmp_path / "novel")
+    store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+    state = store.state()
+    state["current_chapter"] = 20
+    state["world_facts"] = [{"fact": "Committed fact"}]
+    store._write_json(store.webnovel_dir / "state.json", state)
+    current_outline = store.project_outline()
+    current_outline.pop("source", None)
+    current_outline["overall"].update(
+        core_ending_chapter=150,
+        extension_ceiling_chapter=500,
+        current_strategy="expand",
+        ending_contract="Close both lines.",
+    )
+    current_outline["arcs"][0].update(
+        end_chapter=150,
+        game_line_payoff="Win the game arc.",
+        reality_line_payoff="Resolve the reality pressure.",
+        extension_gate={"continue_route": "Enter the city.", "close_route": "Close the case."},
+    )
+    store.update_project_outline(current_outline)
+    before_outline = store.project_outline()
+    before_chapter = before_outline["chapters"][0]
+
+    payload = _generated_opening_plan().model_dump(mode="json")
+    template = payload["outline"]["chapters"][0]
+    payload["outline"]["chapters"] = [
+        {**template, "chapter_number": number, "title": f"Regenerated {number}"}
+        for number in range(21, 51)
+    ]
+    payload["outline"]["overall"]["story"] = "Regenerated future story"
+    generated_plan = GeneratedOutlinePlan.model_validate(payload)
+
+    store.save_generated_outline_plan(generated_plan, mode="regenerate")
+
+    after = store.project_outline()
+    assert after["chapters"][0] == before_chapter
+    assert [item["chapter_number"] for item in after["chapters"]] == list(range(1, 51))
+    assert after["overall"]["story"] == "Regenerated future story"
+    assert store.state()["world_facts"] == [{"fact": "Committed fact"}]
 
 
 def test_writing_packet_uses_planned_cast_and_hides_long_term_secrets(tmp_path):

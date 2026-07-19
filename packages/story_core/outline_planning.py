@@ -51,7 +51,11 @@ def _require_text(value: str, error: str) -> None:
         raise ValueError(error)
 
 
-def validate_generated_opening_plan(payload: Any) -> GeneratedOutlinePlan:
+def validate_generated_opening_plan(
+    payload: Any,
+    *,
+    expected_chapter_numbers: list[int] | None = None,
+) -> GeneratedOutlinePlan:
     """Validate an AI-generated opening plan without constraining manual drafts."""
 
     plan = GeneratedOutlinePlan.model_validate(payload)
@@ -86,9 +90,10 @@ def validate_generated_opening_plan(payload: Any) -> GeneratedOutlinePlan:
     if not opening_arc.long_term_antagonist_traces:
         raise ValueError("long_term_antagonist_trace_required")
 
+    expected = expected_chapter_numbers or list(range(1, 31))
     chapter_numbers = [chapter.chapter_number for chapter in plan.outline.chapters]
-    if chapter_numbers != [1, 2, 3, 4, 5]:
-        raise ValueError("opening_chapters_must_be_1_to_5")
+    if chapter_numbers != expected:
+        raise ValueError("generated_chapters_do_not_match_target_window")
     known_names = set(names)
     for chapter in plan.outline.chapters:
         for name in chapter.cast:

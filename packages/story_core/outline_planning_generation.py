@@ -6,6 +6,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from packages.story_core.agent_base import parse_json_message_content
+from packages.story_core.elastic_outline import outline_window_status
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.outline_planning import (
@@ -75,6 +76,27 @@ class LLMOutlinePlanningGenerator:
             if runtime.provider != "codexcli" and not runtime.api_key:
                 raise ValueError("runtime_unavailable")
 
+            window = outline_window_status(
+                validated.existing_outline,
+                current_chapter=validated.current_chapter,
+            )
+            if mode == "initial":
+                if validated.current_chapter != 0:
+                    raise ValueError("initial_outline_requires_unstarted_project")
+                target_chapter_numbers = list(range(1, 31))
+            elif mode == "regenerate":
+                target_chapter_numbers = list(
+                    range(
+                        validated.current_chapter + 1,
+                        min(validated.current_chapter + 30, window["target_last_chapter"])
+                        + 1,
+                    )
+                )
+            else:
+                target_chapter_numbers = window["next_chapter_numbers"]
+                if not target_chapter_numbers:
+                    raise ValueError("outline_window_already_full")
+
             prompt_context = {
                 "mode": mode,
                 **novel_type_prompt_context(genre),
@@ -85,13 +107,17 @@ class LLMOutlinePlanningGenerator:
                 "existing_characters": validated.existing_characters,
                 "current_chapter": validated.current_chapter,
                 "recent_chapter_summaries": validated.recent_chapter_summaries,
+                "target_chapter_numbers": target_chapter_numbers,
+                "current_strategy": validated.existing_outline.get("overall", {}).get(
+                    "current_strategy", "observe"
+                ),
                 "one_time_guidance": normalized_guidance,
                 "output_schema": GeneratedOutlinePlan.model_json_schema(),
                 "validation_rules": [
                     "For initial/regenerate, characters must contain 4 to 6 unique names and include the protagonist, stage_antagonist, and long_term_antagonist tiers.",
                     "The opening arc must start at chapter 1, and its stage_antagonist must be exactly equal to the name of the character whose character_tier is stage_antagonist.",
                     "The opening arc must contain at least one long_term_antagonist_traces item.",
-                    "For initial/regenerate, chapter_number values must be exactly 1, 2, 3, 4, 5 in order.",
+                    "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order.",
                     "Every name in every chapter cast must exactly equal a name in characters.",
                     "Every character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
                 ],
@@ -104,13 +130,18 @@ class LLMOutlinePlanningGenerator:
                         "content": (
                             "Follow prompt_context.output_schema exactly. Do not add fields, rename fields, "
                             "or use values outside the declared enums. Return every required field. "
+                            "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order. "
+                            "For initial/regenerate, provide the complete core arcs through core_ending_chapter, but only those detailed chapters. "
+                            "For extend, continue from committed facts and the active arc; obey current_strategy. "
+                            "Every core arc must state a concrete game_line_payoff and reality_line_payoff. "
+                            "observe follows the core route, expand uses only the next continue_route, and close uses the active close_route. "
                             "你负责生成中文长篇网文的结构化开书计划，不写正文。只返回 JSON，根字段必须是 "
-                            "outline 和 characters。initial/regenerate 模式必须给出完整总纲、从第1章开始的首阶段、"
-                            "连续第1至5章，以及4至6张具体角色卡。角色卡必须包括主角、阶段对手、长期反派和重要配角，"
+                            "outline 和 characters。initial/regenerate 模式必须给出完整总纲和全部核心卷，"
+                            "但细纲只能覆盖目标章节，并给出4至6张具体角色卡。角色卡必须包括主角、阶段对手、长期反派和重要配角，"
                             "并写清年龄或身份、来历、职业、当前生活、目标、失败代价、可观察行为和两句自然对白。"
                             "阶段对手要有现实利益和权力边界；长期反派只把允许露出的痕迹写进大纲。"
                             "章节字段为 chapter_number/title/goal/obstacle/action/turn/payoff/ending_hook/cast。"
-                            "extend 模式只续写紧接当前计划的五章，并只补充确实要出场的新角色卡。"
+                            "extend 模式只生成 target_chapter_numbers 指定的缺章，并只补充确实要出场的新角色卡。"
                         ),
                     },
                     {"role": "user", "content": json.dumps(prompt_context, ensure_ascii=False)},
@@ -129,10 +160,15 @@ class LLMOutlinePlanningGenerator:
             parsed = parse_json_message_content(response)
             if parsed is None:
                 raise ValueError("invalid_json")
-            if mode in {"initial", "regenerate"}:
-                return validate_generated_opening_plan(parsed)
-            return GeneratedOutlinePlan.model_validate(parsed)
+            return validate_generated_opening_plan(
+                parsed,
+                expected_chapter_numbers=target_chapter_numbers,
+            )
         except Exception as exc:
-            if isinstance(exc, ValueError) and str(exc) == "regeneration_guidance_too_long":
+            if isinstance(exc, ValueError) and str(exc) in {
+                "regeneration_guidance_too_long",
+                "initial_outline_requires_unstarted_project",
+                "outline_window_already_full",
+            }:
                 raise
             raise ValueError("outline_planning_generation_failed") from exc

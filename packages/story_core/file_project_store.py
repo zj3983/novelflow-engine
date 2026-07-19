@@ -20,7 +20,7 @@ from packages.story_core.character_profiles import (
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
-from packages.story_core.elastic_outline import validate_outline_for_project
+from packages.story_core.elastic_outline import outline_window_status, validate_outline_for_project
 from packages.story_core.dual_state import (
     merge_state_change,
     normalize_dual_state,
@@ -2636,14 +2636,24 @@ class FileProjectStore:
         order = [*generated_names, *(name for name in existing_order if name not in generated_names)]
         return [normalize_character_profile(existing[name]) for name in order]
 
-    def _extend_outline(self, current: dict[str, Any], addition: dict[str, Any]) -> dict[str, Any]:
+    def _extend_outline(
+        self,
+        current: dict[str, Any],
+        addition: dict[str, Any],
+        *,
+        current_chapter: int,
+    ) -> dict[str, Any]:
         current = normalize_project_outline(current)
         addition = normalize_project_outline(addition)
-        last_number = max([int(item["chapter_number"]) for item in current["chapters"]] or [0])
         added_numbers = [int(item["chapter_number"]) for item in addition["chapters"]]
-        expected = list(range(last_number + 1, last_number + 6))
+        expected = outline_window_status(
+            current,
+            current_chapter=current_chapter,
+        )["next_chapter_numbers"]
+        if not expected:
+            raise ValueError("outline_window_already_full")
         if added_numbers != expected:
-            raise ValueError("extension_chapters_must_be_next_five")
+            raise ValueError("generated_chapters_do_not_match_target_window")
         arcs = {str(item["id"]): dict(item) for item in current["arcs"]}
         for arc in addition["arcs"]:
             arc_id = str(arc["id"])
@@ -2670,23 +2680,83 @@ class FileProjectStore:
             }
         )
 
+    def _preserve_committed_outline(
+        self,
+        current: dict[str, Any],
+        generated: dict[str, Any],
+        *,
+        current_chapter: int,
+    ) -> dict[str, Any]:
+        current = normalize_project_outline(current)
+        generated = normalize_project_outline(generated)
+        committed = {
+            item["chapter_number"]: item
+            for item in current["chapters"]
+            if item["chapter_number"] <= current_chapter
+        }
+        future = {
+            item["chapter_number"]: item
+            for item in generated["chapters"]
+            if item["chapter_number"] > current_chapter
+        }
+        return normalize_project_outline(
+            {
+                "overall": generated["overall"],
+                "arcs": generated["arcs"],
+                "chapters": [*committed.values(), *future.values()],
+            }
+        )
+
     def save_generated_outline_plan(self, plan: Any, *, mode: str) -> dict[str, Any]:
         validated = GeneratedOutlinePlan.model_validate(plan)
-        if mode in {"initial", "regenerate"}:
-            validated = validate_generated_opening_plan(validated.model_dump(mode="json"))
-        elif mode != "extend":
+        if mode not in {"initial", "regenerate", "extend"}:
             raise ValueError("invalid_outline_planning_mode")
+
+        state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
+        current_chapter = int(state.get("current_chapter") or 0)
+        current_outline = dict(self.project_outline())
+        current_outline.pop("source", None)
+        if mode == "initial":
+            if current_chapter != 0:
+                raise ValueError("initial_outline_requires_unstarted_project")
+            expected_chapter_numbers = list(range(1, 31))
+        elif mode == "regenerate":
+            ceiling = normalize_project_outline(current_outline)["overall"][
+                "extension_ceiling_chapter"
+            ]
+            expected_chapter_numbers = list(
+                range(current_chapter + 1, min(current_chapter + 30, ceiling) + 1)
+            )
+        else:
+            expected_chapter_numbers = outline_window_status(
+                current_outline,
+                current_chapter=current_chapter,
+            )["next_chapter_numbers"]
+            if not expected_chapter_numbers:
+                raise ValueError("outline_window_already_full")
+        if mode in {"initial", "regenerate"}:
+            validated = validate_generated_opening_plan(
+                validated.model_dump(mode="json"),
+                expected_chapter_numbers=expected_chapter_numbers,
+            )
 
         generated_outline = validated.outline.model_dump(mode="json")
         if mode == "extend":
-            current_outline = dict(self.project_outline())
-            current_outline.pop("source", None)
-            generated_outline = self._extend_outline(current_outline, generated_outline)
+            generated_outline = self._extend_outline(
+                current_outline,
+                generated_outline,
+                current_chapter=current_chapter,
+            )
+        elif mode == "regenerate":
+            generated_outline = self._preserve_committed_outline(
+                current_outline,
+                generated_outline,
+                current_chapter=current_chapter,
+            )
         cards = self._merge_generated_character_cards(
             [card.model_dump(mode="json") for card in validated.characters]
         )
         project = dict(self.project())
-        state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
         project["character_profiles"] = cards
         project["relationship_graph"] = merge_relationship_graph(
             project.get("relationship_graph"),
@@ -2983,6 +3053,7 @@ class FileProjectStore:
                 self.webnovel_dir / "project.json": project,
             }
         )
+
         return raw_cards[raw_index if raw_index is not None else -1]
 
     def complete_character_portrait(self, name: str) -> dict[str, Any]:

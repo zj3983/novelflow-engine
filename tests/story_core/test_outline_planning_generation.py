@@ -66,7 +66,7 @@ def _valid_plan() -> dict:
                     "ending_hook": "有人提前来过",
                     "cast": ["林照", "赵衡"],
                 }
-                for number in range(1, 6)
+                for number in range(1, 31)
             ],
         },
         "characters": [
@@ -94,31 +94,89 @@ def _brief() -> OutlinePlanningBrief:
     )
 
 
-def test_generator_requests_one_compact_structured_plan() -> None:
-    calls = []
-    runtime_calls = []
+class RecordingRuntime:
+    def __init__(self) -> None:
+        self.calls = []
+        self.runtime_calls = []
+        self.prompt_context = {}
 
-    def fake_post(base_url, path, payload, api_key, **kwargs):
-        calls.append({"base_url": base_url, "path": path, "payload": payload, "api_key": api_key, "kwargs": kwargs})
-        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+    def post(self, base_url, path, payload, api_key, **kwargs):
+        self.calls.append({"base_url": base_url, "path": path, "payload": payload, "api_key": api_key, "kwargs": kwargs})
+        self.prompt_context = json.loads(payload["messages"][1]["content"])
+        plan = _valid_plan()
+        targets = self.prompt_context.get("target_chapter_numbers", list(range(1, 31)))
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["chapters"] = [
+            {**template, "chapter_number": number}
+            for number in targets
+        ]
+        return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
-    generator = LLMOutlinePlanningGenerator(
-        post_json=fake_post,
-        runtime_resolver=lambda stage: runtime_calls.append(stage) or StageRuntimeSettings(
+    def resolve(self, stage):
+        self.runtime_calls.append(stage)
+        return StageRuntimeSettings(
             provider="codexcli",
             model="planning-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
             temperature=0.29,
-        ),
-    )
+        )
+
+    def generator(self) -> LLMOutlinePlanningGenerator:
+        return LLMOutlinePlanningGenerator(
+            post_json=self.post,
+            runtime_resolver=self.resolve,
+        )
+
+    def brief(self, *, current_chapter: int, existing_chapters: list[int]) -> OutlinePlanningBrief:
+        payload = _brief().model_dump(mode="json")
+        outline = _valid_plan()["outline"]
+        template = outline["chapters"][0]
+        outline["overall"].update(
+            {
+                "core_ending_chapter": 150,
+                "extension_ceiling_chapter": 500,
+                "current_strategy": "expand",
+                "ending_contract": "Close both story lines.",
+            }
+        )
+        outline["arcs"][0].update(
+            {
+                "end_chapter": 150,
+                "game_line_payoff": "Win the active game arc.",
+                "reality_line_payoff": "Resolve the active reality pressure.",
+                "extension_gate": {
+                    "continue_route": "Enter the next city.",
+                    "close_route": "Close through the verifier ending.",
+                },
+            }
+        )
+        outline["chapters"] = [
+            {**template, "chapter_number": number}
+            for number in existing_chapters
+        ]
+        payload.update(
+            existing_outline=outline,
+            current_chapter=current_chapter,
+        )
+        return OutlinePlanningBrief.model_validate(payload)
+
+
+@pytest.fixture
+def generator_fixture() -> RecordingRuntime:
+    return RecordingRuntime()
+
+
+def test_generator_requests_one_compact_structured_plan() -> None:
+    recording = RecordingRuntime()
+    generator = recording.generator()
 
     result = generator.generate(_brief(), mode="initial", guidance="  反派要有现实利益  ")
 
-    assert len(calls) == 1
-    assert runtime_calls == ["planner"]
+    assert len(recording.calls) == 1
+    assert recording.runtime_calls == ["planner"]
     assert result.outline.chapters[0].chapter_number == 1
-    request = calls[0]
+    request = recording.calls[0]
     assert request["path"] == "/chat/completions"
     assert request["payload"]["model"] == "planning-test-model"
     assert request["payload"]["temperature"] == 0.29
@@ -141,6 +199,8 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "one_time_guidance",
         "output_schema",
         "validation_rules",
+        "target_chapter_numbers",
+        "current_strategy",
     }
     assert prompt["one_time_guidance"] == "反派要有现实利益"
     schema_text = json.dumps(prompt["output_schema"], ensure_ascii=False)
@@ -157,9 +217,72 @@ def test_generator_requests_one_compact_structured_plan() -> None:
     rules_text = "\n".join(prompt["validation_rules"])
     assert "stage_antagonist" in rules_text
     assert "exactly equal" in rules_text
-    assert "1, 2, 3, 4, 5" in rules_text
+    assert "target_chapter_numbers" in rules_text
     assert "cast" in rules_text
     assert "chapter body" not in json.dumps(prompt, ensure_ascii=False).lower()
+    assert "五章" not in request["payload"]["messages"][0]["content"]
+
+
+def test_extend_prompt_requests_only_missing_window_chapters(generator_fixture) -> None:
+    brief = generator_fixture.brief(
+        current_chapter=20,
+        existing_chapters=list(range(1, 31)),
+    )
+
+    generator_fixture.generator().generate(brief, mode="extend")
+
+    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(31, 51))
+    assert generator_fixture.prompt_context["current_strategy"] == "expand"
+
+
+def test_regenerate_requests_thirty_future_chapters(generator_fixture) -> None:
+    brief = generator_fixture.brief(
+        current_chapter=20,
+        existing_chapters=list(range(1, 51)),
+    )
+
+    generator_fixture.generator().generate(brief, mode="regenerate")
+
+    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(21, 51))
+
+
+def test_initial_requires_unstarted_project(generator_fixture) -> None:
+    brief = generator_fixture.brief(current_chapter=1, existing_chapters=list(range(1, 31)))
+
+    with pytest.raises(ValueError, match="^initial_outline_requires_unstarted_project$"):
+        generator_fixture.generator().generate(brief, mode="initial")
+
+
+def test_extend_rejects_full_window(generator_fixture) -> None:
+    brief = generator_fixture.brief(current_chapter=20, existing_chapters=list(range(1, 51)))
+
+    with pytest.raises(ValueError, match="^outline_window_already_full$"):
+        generator_fixture.generator().generate(brief, mode="extend")
+
+
+def test_extend_prompt_includes_sparse_window_holes(generator_fixture) -> None:
+    brief = generator_fixture.brief(
+        current_chapter=20,
+        existing_chapters=[*range(1, 21), 30],
+    )
+
+    generator_fixture.generator().generate(brief, mode="extend")
+
+    assert generator_fixture.prompt_context["target_chapter_numbers"] == [
+        *range(21, 30),
+        *range(31, 51),
+    ]
+
+
+def test_regenerate_stops_at_extension_ceiling(generator_fixture) -> None:
+    brief = generator_fixture.brief(current_chapter=490, existing_chapters=list(range(1, 491)))
+    payload = brief.model_dump(mode="json")
+    payload["existing_outline"]["overall"]["extension_ceiling_chapter"] = 500
+    brief = OutlinePlanningBrief.model_validate(payload)
+
+    generator_fixture.generator().generate(brief, mode="regenerate")
+
+    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(491, 501))
 
 
 def test_generator_rejects_invalid_output_and_long_guidance() -> None:
