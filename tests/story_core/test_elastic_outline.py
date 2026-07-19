@@ -72,13 +72,50 @@ def test_window_extension_starts_after_current_when_outline_is_behind() -> None:
     assert all(number > 25 for number in status["next_chapter_numbers"])
 
 
+def test_sparse_window_requests_every_missing_chapter_in_target_window() -> None:
+    outline = _outline(last_chapter=20)
+    outline["chapters"].append({"chapter_number": 30})
+
+    status = outline_window_status(outline, current_chapter=20)
+
+    assert status["last_planned_chapter"] == 30
+    assert status["remaining_detailed_chapters"] == 0
+    assert status["target_last_chapter"] == 50
+    assert status["needs_extension"] is True
+    assert status["next_chapter_numbers"] == [
+        *range(21, 30),
+        *range(31, 51),
+    ]
+
+
+@pytest.mark.parametrize(
+    "entrypoint", [outline_window_status, validate_outline_for_project]
+)
+@pytest.mark.parametrize("current_chapter", [True, "1", 1.0, -1])
+def test_public_entrypoints_reject_invalid_current_chapter(
+    entrypoint, current_chapter: object
+) -> None:
+    with pytest.raises(ValueError, match="^invalid_current_chapter$"):
+        entrypoint(_outline(), current_chapter=current_chapter)
+
+
+@pytest.mark.parametrize(
+    "entrypoint", [outline_window_status, validate_outline_for_project]
+)
+def test_public_entrypoints_reject_current_chapter_beyond_ceiling(entrypoint) -> None:
+    with pytest.raises(
+        ValueError, match="^current_chapter_exceeds_extension_ceiling$"
+    ):
+        entrypoint(_outline(), current_chapter=501)
+
+
 def test_core_ending_cannot_precede_committed_chapter() -> None:
     with pytest.raises(ValueError, match="core_ending_before_current_chapter"):
         validate_outline_for_project(
             {
                 "overall": {
                     "core_ending_chapter": 20,
-                    "extension_ceiling_chapter": 20,
+                    "extension_ceiling_chapter": 30,
                 }
             },
             current_chapter=21,

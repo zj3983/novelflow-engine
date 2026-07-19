@@ -9,31 +9,51 @@ DETAIL_WINDOW = 30
 EXTENSION_WARNING = 10
 
 
+def _normalize_for_current_chapter(
+    outline: dict[str, Any], *, current_chapter: int
+) -> dict[str, Any]:
+    if (
+        isinstance(current_chapter, bool)
+        or not isinstance(current_chapter, int)
+        or current_chapter < 0
+    ):
+        raise ValueError("invalid_current_chapter")
+    normalized = normalize_project_outline(outline)
+    if current_chapter > normalized["overall"]["extension_ceiling_chapter"]:
+        raise ValueError("current_chapter_exceeds_extension_ceiling")
+    return normalized
+
+
 def outline_window_status(
     outline: dict[str, Any], *, current_chapter: int
 ) -> dict[str, Any]:
-    normalized = normalize_project_outline(outline)
-    last_planned = max(
-        [int(item["chapter_number"]) for item in normalized["chapters"]]
-        or [current_chapter]
+    normalized = _normalize_for_current_chapter(
+        outline, current_chapter=current_chapter
     )
-    remaining = max(0, last_planned - current_chapter)
+    planned_numbers = {
+        int(item["chapter_number"]) for item in normalized["chapters"]
+    }
+    last_planned = max(planned_numbers or {current_chapter})
     target_last = min(
         current_chapter + DETAIL_WINDOW,
         normalized["overall"]["extension_ceiling_chapter"],
     )
-    needs_extension = remaining <= EXTENSION_WARNING
-    next_start = max(last_planned, current_chapter) + 1
-    next_numbers = (
-        list(range(next_start, target_last + 1))
-        if needs_extension and next_start <= target_last
-        else []
-    )
+    target_numbers = range(current_chapter + 1, target_last + 1)
+    remaining = 0
+    for chapter_number in target_numbers:
+        if chapter_number not in planned_numbers:
+            break
+        remaining += 1
+    next_numbers = [
+        chapter_number
+        for chapter_number in target_numbers
+        if chapter_number not in planned_numbers
+    ]
     return {
         "last_planned_chapter": last_planned,
         "remaining_detailed_chapters": remaining,
         "target_last_chapter": target_last,
-        "needs_extension": bool(next_numbers),
+        "needs_extension": bool(next_numbers) and remaining <= EXTENSION_WARNING,
         "next_chapter_numbers": next_numbers,
     }
 
@@ -41,7 +61,9 @@ def outline_window_status(
 def validate_outline_for_project(
     outline: dict[str, Any], *, current_chapter: int
 ) -> dict[str, Any]:
-    normalized = normalize_project_outline(outline)
+    normalized = _normalize_for_current_chapter(
+        outline, current_chapter=current_chapter
+    )
     if normalized["overall"]["core_ending_chapter"] < current_chapter:
         raise ValueError("core_ending_before_current_chapter")
     if normalized["overall"]["current_strategy"] == "close":

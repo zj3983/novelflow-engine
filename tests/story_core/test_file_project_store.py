@@ -594,7 +594,7 @@ def test_update_outline_rejects_core_ending_before_current_chapter(tmp_path) -> 
     before = store.project_outline()
     invalid = deepcopy(before)
     invalid["overall"]["core_ending_chapter"] = 20
-    invalid["overall"]["extension_ceiling_chapter"] = 20
+    invalid["overall"]["extension_ceiling_chapter"] = 30
 
     with pytest.raises(ValueError, match="core_ending_before_current_chapter"):
         store.update_project_outline(invalid)
