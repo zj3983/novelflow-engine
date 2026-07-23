@@ -75,18 +75,111 @@ from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.writing_taskbook import format_taskbook_brief_section
 from packages.story_core.world_blueprint_context import (
     merge_world_blueprint,
+    select_world_context,
     sync_world_markdown,
 )
 
 
 _PROJECT_UPDATE_LOCKS: dict[str, threading.RLock] = {}
 _PROJECT_UPDATE_LOCKS_GUARD = threading.Lock()
+_PROGRESSION_GOVERNANCE_CHINESE_MARKERS = (
+    "必须",
+    "不得",
+    "不能",
+    "每章",
+    "至少",
+    "前十章",
+    "只",
+    "只能",
+    "仅",
+    "一律",
+    "禁止",
+    "严禁",
+    "务必",
+)
+_PROGRESSION_GOVERNANCE_ENGLISH_MARKERS = (
+    "must",
+    "shall",
+    "never",
+    "cannot",
+    "only",
+    "every chapter",
+    "at least",
+    "required",
+)
 
 
 def _project_update_lock(root: Path) -> threading.RLock:
     key = os.path.normcase(str(root.resolve()))
     with _PROJECT_UPDATE_LOCKS_GUARD:
         return _PROJECT_UPDATE_LOCKS.setdefault(key, threading.RLock())
+
+
+def _is_progression_governance_rule(rule: str) -> bool:
+    if any(marker in rule for marker in _PROGRESSION_GOVERNANCE_CHINESE_MARKERS):
+        return True
+    folded = rule.casefold()
+    return any(
+        re.search(rf"\b{re.escape(marker)}\b", folded)
+        for marker in _PROGRESSION_GOVERNANCE_ENGLISH_MARKERS
+    )
+
+
+def _progression_governance_hard_locks(
+    progression_rules: Any,
+    scoped_progression_rules: Any,
+) -> list[str]:
+    if not isinstance(progression_rules, list):
+        return []
+
+    scoped = {
+        str(rule).strip()
+        for rule in (
+            scoped_progression_rules
+            if isinstance(scoped_progression_rules, list)
+            else []
+        )
+        if isinstance(rule, str) and rule.strip()
+    }
+    selected: list[str] = []
+    for value in progression_rules:
+        if not isinstance(value, str):
+            continue
+        rule = value.strip()
+        if (
+            not rule
+            or rule in scoped
+            or rule in selected
+            or not _is_progression_governance_rule(rule)
+        ):
+            continue
+        selected.append(rule)
+    return selected
+
+
+def _select_relevant_monster_profiles(
+    monster_profiles: Any,
+    relevance_text: str,
+    *,
+    max_profiles: int = 6,
+) -> list[dict[str, Any]]:
+    if not isinstance(monster_profiles, list):
+        return []
+
+    relevance = str(relevance_text or "").casefold()
+    selected: list[dict[str, Any]] = []
+    for profile in monster_profiles:
+        if not isinstance(profile, dict):
+            continue
+        identifiers = (
+            str(profile.get(field) or "").strip().casefold()
+            for field in ("name", "title")
+        )
+        if any(identifier and identifier in relevance for identifier in identifiers):
+            selected.append(deepcopy(profile))
+        if len(selected) >= max_profiles:
+            break
+    return selected
 
 
 def _with_project_update_lock(method):
@@ -4262,6 +4355,46 @@ class FileProjectStore:
             "results": results,
         }
 
+    def _world_relevance_text(
+        self,
+        state: dict[str, Any],
+        project: dict[str, Any],
+        target_chapter: int,
+        outline_context: dict[str, Any],
+        scene_cards: Any = None,
+        *,
+        current_chapter: int,
+    ) -> str:
+        chapter = (
+            outline_context.get("chapter")
+            if isinstance(outline_context.get("chapter"), dict)
+            else {}
+        )
+        parts: list[str] = []
+        if target_chapter > current_chapter:
+            parts.append(str(state.get("current_focus") or project.get("current_focus") or ""))
+
+        chapter_fields = (
+            "title",
+            "goal",
+            "action",
+            "payoff",
+            "turn",
+            "ending_hook",
+            "line",
+            "scene_line",
+        )
+        parts.extend(str(chapter.get(field) or "") for field in chapter_fields)
+
+        scene_fields = ("title", "purpose", *chapter_fields[1:])
+        parts.extend(
+            str(card.get(field) or "")
+            for card in (scene_cards if isinstance(scene_cards, list) else [])
+            if isinstance(card, dict)
+            for field in scene_fields
+        )
+        return "\n".join(part for part in parts if part.strip())
+
     def _story_state_payload_for_direction(
         self,
         state: dict[str, Any],
@@ -4274,6 +4407,21 @@ class FileProjectStore:
             project.get("world_blueprint")
             if isinstance(project.get("world_blueprint"), dict)
             else {}
+        )
+        outline_context = select_outline_context(project_outline, target_chapter)
+        latest_number = max(self.chapter_numbers() or [0])
+        current_chapter = max(latest_number, int(state.get("current_chapter") or 0))
+        relevance_text = self._world_relevance_text(
+            state,
+            project,
+            target_chapter,
+            outline_context,
+            current_chapter=current_chapter,
+        )
+        scoped_world = select_world_context(
+            world_blueprint,
+            relevance_text,
+            max_rules=8,
         )
         state_genre_ids = state.get("genre_plugin_ids")
         project_genre_ids = world_blueprint.get("genre_plugin_ids")
@@ -4303,30 +4451,14 @@ class FileProjectStore:
             "author_constraints": list(project.get("author_constraints") or state.get("author_constraints") or []),
             "world_facts": list(state.get("world_facts") or []),
             "progression_ledger": dict(state.get("progression_ledger") or {}),
-            "world_context": {
-                key: deepcopy(world_blueprint[key])
-                for key in (
-                    "premise",
-                    "world_rules",
-                    "power_system",
-                    "quest_rules",
-                    "economy_rules",
-                    "faction_rules",
-                    "panel_rules",
-                    "constraints",
-                    "reality_bridge_rules",
-                    "locations",
-                    "factions",
-                )
-                if world_blueprint.get(key) not in (None, "", [], {})
-            },
+            "world_context": scoped_world,
             "characters": characters,
             "monster_profiles": [
                 deepcopy(item)
                 for item in world_blueprint.get("monster_profiles", [])[:20]
                 if isinstance(item, dict) and str(item.get("name") or "").strip()
             ],
-            "outline_context": select_outline_context(project_outline, target_chapter),
+            "outline_context": outline_context,
         }
 
     def _chapter_direction_options(self, state: dict[str, Any], project: dict[str, Any], chapter_number: int) -> dict[str, Any]:
@@ -4354,11 +4486,12 @@ class FileProjectStore:
         project = self.project()
         world_blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
         forbidden_breaks = world_blueprint.get("forbidden_breaks") if isinstance(world_blueprint.get("forbidden_breaks"), list) else []
-        progression_rules = world_blueprint.get("progression_rules") if isinstance(world_blueprint.get("progression_rules"), list) else []
         numbers = self.chapter_numbers()
         latest_number = numbers[-1] if numbers else 0
-        latest_chapter = self.chapter(latest_number) if latest_number else {}
         target = chapter_number or int(state.get("current_chapter") or latest_number or 0) + 1
+        prior_numbers = [number for number in numbers if number < int(target or 0)]
+        latest_context_number = prior_numbers[-1] if prior_numbers else 0
+        latest_chapter = self.chapter(latest_context_number) if latest_context_number else {}
         project_outline = dict(self.project_outline())
         project_outline.pop("source", None)
         selected_outline = select_outline_context(project_outline, int(target or 0))
@@ -4368,7 +4501,7 @@ class FileProjectStore:
         }
         chapter_outline = outline_context["chapter"] if isinstance(outline_context.get("chapter"), dict) else {}
         recent = []
-        for number in numbers[-3:]:
+        for number in prior_numbers[-3:]:
             item = self.chapter(number)
             recent.append(
                 {
@@ -4405,44 +4538,25 @@ class FileProjectStore:
             )
         is_game_story = self._is_game_story_payload(project, state)
         scene_kind = self._writer_scene_kind(scene_cards, is_game_story=is_game_story)
-        reality_bridge_rules = (
-            world_blueprint.get("reality_bridge_rules")
-            if isinstance(world_blueprint.get("reality_bridge_rules"), list)
-            else []
-        )
-        narrative_fields = ("title", "goal", "action", "payoff", "turn", "ending_hook")
-        scene_narrative_fields = ("purpose", "goal", "action", "payoff", "turn", "ending_hook")
         current_chapter = max(latest_number, int(state.get("current_chapter") or 0))
-        relevance_parts = []
-        if int(target or 0) > current_chapter:
-            relevance_parts.append(str(state.get("current_focus") or project.get("current_focus") or ""))
-        relevance_parts.extend(
-            str(chapter_outline.get(field) or "")
-            for field in narrative_fields
+        relevance_text = self._world_relevance_text(
+            state,
+            project,
+            int(target or 0),
+            outline_context,
+            scene_cards,
+            current_chapter=current_chapter,
         )
-        relevance_parts.extend(
-            str(card.get(field) or "")
-            for card in scene_cards
-            if isinstance(card, dict)
-            for field in scene_narrative_fields
+        scoped_world = select_world_context(
+            world_blueprint,
+            relevance_text,
+            max_rules=8,
         )
-        relevance_text = "\n".join(part for part in relevance_parts if part.strip())
-        strong_reality_keywords = ("现实", "提现", "人民币", "银行卡", "房租", "宽带", "信用卡", "还款", "账单")
-        weak_reality_keywords = ("到账", "收入")
-        reality_payment_contexts = (
-            "现金", "转账", "工资", "生活费", "水电费", "租金", "银行账户",
-            "个人账户", "现实账户", "收款账户", "付款账户",
+        relevant_monster_profiles = _select_relevant_monster_profiles(
+            world_blueprint.get("monster_profiles"),
+            relevance_text,
+            max_profiles=6,
         )
-        reality_relevant = any(keyword in relevance_text for keyword in strong_reality_keywords) or (
-            any(keyword in relevance_text for keyword in weak_reality_keywords)
-            and any(context in relevance_text for context in reality_payment_contexts)
-        )
-        available_reality_rules = [
-            str(rule).strip()
-            for rule in reality_bridge_rules
-            if str(rule).strip()
-        ]
-        relevant_reality_rules = available_reality_rules[:6] if reality_relevant else []
         hard_locks = [
             "正文必须满足目标字数区间，低于下限不能通过章节检查。",
             "前十章每章必须给出可见成长或可见收益，不能连续只给线索。",
@@ -4451,7 +4565,7 @@ class FileProjectStore:
             "新人物出场前必须先有角色卡；没有角色卡只能作为待出场对象提出，不能直接写成已出场角色。",
         ]
         current_focus = state.get("current_focus") or project.get("current_focus")
-        if current_focus:
+        if current_focus and int(target or 0) > current_chapter:
             hard_locks.append(f"当前主线焦点：{self._compact_text(current_focus, 220)}")
         if chapter_outline:
             goal = self._compact_text(chapter_outline.get("goal"), 220)
@@ -4463,14 +4577,23 @@ class FileProjectStore:
                 hard_locks.append(f"第{target}章必须兑现：{payoff}")
             if hook:
                 hard_locks.append(f"第{target}章结尾钩子：{hook}")
-        hard_locks.extend(str(item) for item in progression_rules[:4] if str(item).strip())
+        hard_locks.extend(
+            _progression_governance_hard_locks(
+                world_blueprint.get("progression_rules"),
+                scoped_world.get("progression_rules"),
+            )
+        )
         hard_locks.extend(str(item) for item in forbidden_breaks[:4] if str(item).strip())
         characters = self._writer_character_cards(state, selected_outline, scene_kind=scene_kind)
         relationship_context = select_relationship_subgraph(
             project.get("relationship_graph"),
             [str(card.get("name") or "") for card in characters],
         )
-        chapter_direction_options = self._chapter_direction_options(state, project, int(target or 0))
+        chapter_direction_options = (
+            self._chapter_direction_options(state, project, int(target or 0))
+            if int(target or 0) > current_chapter
+            else {}
+        )
         enabled_skill_ids = [
             str(item).strip()
             for item in (project.get("enabled_skill_ids") or state.get("enabled_skill_ids") or [])
@@ -4483,22 +4606,20 @@ class FileProjectStore:
         packet_project = dict(project)
         packet_project["character_profiles"] = characters
         packet_project.pop("relationship_graph", None)
-        if isinstance(project.get("world_blueprint"), dict):
-            packet_blueprint = dict(world_blueprint)
-            packet_blueprint.pop("current_arc", None)
-            packet_blueprint.pop("opening_arc", None)
-            packet_blueprint.pop("reality_bridge_rules", None)
-            packet_project["world_blueprint"] = packet_blueprint
+        if int(target or 0) <= current_chapter:
+            packet_project.pop("current_focus", None)
+        packet_project["world_blueprint"] = scoped_world
         return {
             "schema_version": "file-writing-packet/v1",
             "root": str(self.root),
             "target_chapter": target,
             "chapter_number": target,
             "scene_kind": scene_kind,
-            "latest_chapter_number": latest_number,
+            "latest_chapter_number": latest_context_number,
             "prose_renderer": prose_renderer_contract(),
             "target_chars": {"min": FILE_CHAPTER_MIN_CHARS, "max": FILE_CHAPTER_MAX_CHARS},
             "hard_locks": hard_locks,
+            "monster_profiles": relevant_monster_profiles,
             "scene_cards": scene_cards,
             "outline_context": outline_context,
             "character_cards": characters,
@@ -4531,9 +4652,7 @@ class FileProjectStore:
                 "volume_plan": world_blueprint.get("volume_plan") or {},
                 "longform_framework": world_blueprint.get("longform_framework") or {},
                 "chapter_formula": world_blueprint.get("chapter_formula") or [],
-                "progression_rules": progression_rules,
                 "forbidden_breaks": forbidden_breaks,
-                "reality_bridge_rules": relevant_reality_rules,
             },
             "project": packet_project,
             "state": {
@@ -4541,14 +4660,18 @@ class FileProjectStore:
                 "genre": state.get("genre"),
                 "style": state.get("style"),
                 "current_chapter": state.get("current_chapter"),
-                "current_focus": state.get("current_focus") or project.get("current_focus"),
+                "current_focus": (
+                    state.get("current_focus") or project.get("current_focus")
+                    if int(target or 0) > current_chapter
+                    else ""
+                ),
                 "time_state": state.get("time_state") or world_blueprint.get("time_state", {}),
                 "author_constraints": state.get("author_constraints", []),
                 "world_facts": state.get("world_facts", [])[-20:],
                 "characters": characters,
             },
             "recent_chapters": recent,
-            "latest_review": self.review(None) if numbers else {},
+            "latest_review": self.review(latest_context_number) if latest_context_number else {},
             "latest_event_plan": latest_chapter.get("event_plan", {}) if isinstance(latest_chapter, dict) else {},
             "chapter_direction_options": chapter_direction_options,
             "skill_context": {key: value for key, value in skill_context.items() if value},
@@ -4653,9 +4776,7 @@ class FileProjectStore:
                 "volume_plan": self._slim_prompt_preview_value(outline_constraints.get("volume_plan")),
                 "longform_framework": self._slim_prompt_preview_value(outline_constraints.get("longform_framework")),
                 "chapter_formula": self._slim_prompt_preview_value(outline_constraints.get("chapter_formula", [])[:8]),
-                "progression_rules": self._slim_prompt_preview_value(outline_constraints.get("progression_rules", [])[:6]),
                 "forbidden_breaks": self._slim_prompt_preview_value(outline_constraints.get("forbidden_breaks", [])[:8]),
-                "reality_bridge_rules": self._slim_prompt_preview_value(outline_constraints.get("reality_bridge_rules", [])[:6]),
             },
             "state": {
                 "story_id": state.get("story_id"),

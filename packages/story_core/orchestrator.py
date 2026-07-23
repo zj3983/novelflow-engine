@@ -80,6 +80,7 @@ from packages.story_core.writing_taskbook import (
     writer_facing_text,
 )
 from packages.story_core.world_consistency_review import review_world_event_consistency
+from packages.story_core.world_blueprint_context import flatten_selected_rules
 from packages.story_core.world_pulse import advance_world_pulse
 from packages.story_core.world_simulation_gate import world_simulation_decision
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
@@ -4342,16 +4343,6 @@ def _writer_direction_section(
     return lines
 
 
-_WORLD_CONTEXT_RULE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("power_system", ("等级", "技能", "装备", "法杖", "战斗", "怪物", "职业", "转职", "生命", "法力")),
-    ("quest_rules", ("任务", "委托", "登记", "提交", "前置", "奖励")),
-    ("economy_rules", ("铜币", "材料", "掉落", "交易", "价格", "背包", "寄售", "收购", "药水", "修理", "钱袋")),
-    ("faction_rules", ("NPC", "玩家", "公会", "阵营", "势力", "仓库")),
-    ("panel_rules", ("面板", "生命", "法力", "经验", "耐久", "等级", "背包")),
-    ("reality_bridge_rules", ("现实余额", "现实到账", "人民币", "提现", "房租", "宽带", "信用卡", "银行卡", "银行账户", "现实工作")),
-)
-
-
 def _compact_world_context_for_prompt(
     world_context: Any,
     relevance_text: str,
@@ -4361,27 +4352,11 @@ def _compact_world_context_for_prompt(
     if not isinstance(world_context, dict) or not world_context:
         return {}
 
-    rules: list[str] = []
-
-    def add_rules(field: str, limit: int) -> None:
-        values = world_context.get(field)
-        if not isinstance(values, list):
-            return
-        for value in values[:limit]:
-            text = compact_text(str(value or ""), 140)
-            if text and text not in rules:
-                rules.append(text)
-            if len(rules) >= max_rules:
-                return
-
-    add_rules("world_rules", 2)
-    for field, keywords in _WORLD_CONTEXT_RULE_KEYWORDS:
-        if len(rules) >= max_rules:
-            break
-        if any(keyword in relevance_text for keyword in keywords):
-            add_rules(field, 1)
-    if len(rules) < max_rules:
-        add_rules("constraints", 1)
+    rules = [
+        text
+        for value in flatten_selected_rules(world_context)[:max_rules]
+        if (text := compact_text(str(value or ""), 140))
+    ]
 
     entities: list[str] = []
     for field in ("locations", "factions"):
@@ -4391,13 +4366,15 @@ def _compact_world_context_for_prompt(
         for value in values:
             if not isinstance(value, dict):
                 continue
-            name = compact_text(str(value.get("name") or ""), 50)
-            if not name or name not in relevance_text:
+            name = compact_text(str(value.get("name") or value.get("title") or ""), 50)
+            if not name:
                 continue
             description = compact_text(str(value.get("description") or ""), 120)
             entities.append(f"{name}：{description}" if description else name)
             if len(entities) >= 3:
                 break
+        if len(entities) >= 3:
+            break
 
     premise = compact_text(str(world_context.get("premise") or ""), 180)
     return {

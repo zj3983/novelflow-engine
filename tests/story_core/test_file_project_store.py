@@ -14,6 +14,7 @@ from packages.story_core.models import ChapterSummary, StoryState, TimelineEvent
 from packages.story_core.outline_planning import GeneratedOutlinePlan
 from packages.story_core.skill_packs import import_skill_pack_from_path
 from packages.story_core.orchestrator import _failed_bundle
+from packages.story_core.world_blueprint_context import flatten_selected_rules
 
 
 def _long_test_body(label: str = "Night Ember keeps the chapter grounded.") -> str:
@@ -180,6 +181,71 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
     )
 
 
+def _shenyu_world_blueprint() -> dict:
+    return {
+        "premise": "神域中的稀缺资源可以通过受限渠道影响现实生活。",
+        "world_rules": ["世界规则一。", "世界规则二。"],
+        "power_system": ["转职必须满足等级与技能条件。"],
+        "progression_rules": ["升级必须来自可验证经验。", "转职必须留下职业记录。"],
+        "economy_rules": ["交易价格取决于真实稀缺性。", "寄售必须支付手续费。"],
+        "quest_rules": ["委托必须先登记再提交。", "巡查任务必须记录路线。"],
+        "reality_bridge_rules": ["现实到账必须经过官方结算。", "房租支付必须保留账单。"],
+        "quest_network": {
+            "active_chains": [
+                {
+                    "name": "灰烬村异常链",
+                    "stages": ["提交清道夫委托", "开启后坡巡查"],
+                },
+                {
+                    "name": "黑水沼泽异常链",
+                    "stages": ["提交毒腺委托", "调查黑水沼泽"],
+                },
+            ]
+        },
+        "locations": [{"name": "灰烬村"}, {"name": "黑水沼泽"}],
+        "factions": [{"name": "灰烬村守卫队"}, {"name": "沼泽猎团"}],
+        "monster_profiles": [{"id": "wolf", "name": "灰狼"}],
+        "server_runtime": {"online": True},
+        "current_arc": "开服篇",
+        "opening_arc": {"goal": "完成开服验证"},
+        "volume_plan": {"volume_title": "新手村"},
+        "longform_framework": {"progression_ladder": ["Lv.1-5"]},
+        "chapter_formula": ["目标-代价-收益-钩子"],
+        "forbidden_breaks": ["不得跳过章节大纲。"],
+    }
+
+
+def _store_with_shenyu_world(
+    tmp_path,
+    *,
+    chapter_number: int,
+    chapter_update: dict,
+    current_chapter: int = 0,
+    current_focus: str = "",
+) -> FileProjectStore:
+    project = {
+        "project_id": "p-shenyu",
+        "title": "苟在网游里成神",
+        "active_story_id": "s-shenyu",
+        "current_focus": current_focus,
+        "world_blueprint": _shenyu_world_blueprint(),
+    }
+    state = {
+        "story_id": "s-shenyu",
+        "current_chapter": current_chapter,
+        "current_focus": current_focus,
+        "world_facts": [],
+    }
+    store = _make_minimal_file_project(tmp_path / "shenyu", project=project, state=state)
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["chapters"][chapter_number - 1].update(chapter_update)
+    (store.webnovel_dir / "outline.json").write_text(
+        json.dumps(outline, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return store
+
+
 def test_save_generated_plan_updates_outline_project_and_state_together(tmp_path):
     root = tmp_path / "novel"
     project = {
@@ -329,7 +395,6 @@ def test_update_project_syncs_canonical_blueprint_to_master_and_markdown(tmp_pat
         ),
         encoding="utf-8",
     )
-
     updated = store.update_project(
         {
             "game_title": "神域",
@@ -892,6 +957,134 @@ def test_story_payload_uses_project_constraints_and_preserves_character_lifecycl
     assert payload["author_constraints"] == ["游戏内使用夜烬。"]
     assert payload["characters"][1]["lifecycle_state"] == "proposed"
     assert payload["characters"][1]["last_approved_chapter"] == 0
+
+
+def test_director_story_payload_contains_progression_and_scoped_quest_context(tmp_path):
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=2,
+        chapter_update={
+            "title": "升级与巡查",
+            "goal": "升级转职后提交清道夫委托，开启后坡巡查",
+            "action": "返回灰烬村登记任务并提交记录",
+            "payoff": "获得新职业与巡查权限",
+        },
+    )
+
+    payload = store._story_state_payload_for_direction(store.state(), store.project(), 2)
+    world_context = payload["world_context"]
+
+    assert world_context["progression_rules"]
+    assert world_context["quest_rules"]
+    assert [
+        chain["name"]
+        for chain in world_context["quest_network"]["active_chains"]
+    ] == ["灰烬村异常链"]
+    assert "server_runtime" not in world_context
+    assert "monster_profiles" not in world_context
+    assert payload["monster_profiles"] == [{"id": "wolf", "name": "灰狼"}]
+
+
+def test_world_relevance_text_uses_explicit_current_chapter_snapshot(tmp_path, monkeypatch):
+    focus = "下一章交易材料并支付现实房租"
+    store = FileProjectStore(tmp_path / "novel")
+    monkeypatch.setattr(
+        store,
+        "chapter_numbers",
+        lambda: (_ for _ in ()).throw(AssertionError("helper must not rescan chapters")),
+    )
+    outline_context = {"chapter": {"title": "灰狼坡", "goal": "击败灰狼"}}
+    state = {"current_focus": focus}
+    project = {"current_focus": focus}
+
+    rewrite_text = store._world_relevance_text(
+        state,
+        project,
+        2,
+        outline_context,
+        current_chapter=2,
+    )
+    future_text = store._world_relevance_text(
+        state,
+        project,
+        3,
+        outline_context,
+        current_chapter=2,
+    )
+
+    assert focus not in rewrite_text
+    assert focus in future_text
+
+
+def test_writing_packet_passes_existing_current_chapter_to_relevance_helper(tmp_path, monkeypatch):
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=1,
+        chapter_update={"title": "灰狼坡", "goal": "击败灰狼"},
+        current_chapter=3,
+        current_focus="下一章交易材料",
+    )
+    captured = {}
+
+    def capture_relevance(
+        state,
+        project,
+        target_chapter,
+        outline_context,
+        scene_cards=None,
+        *,
+        current_chapter,
+    ):
+        captured["target_chapter"] = target_chapter
+        captured["current_chapter"] = current_chapter
+        return "灰狼"
+
+    monkeypatch.setattr(store, "_world_relevance_text", capture_relevance)
+
+    store.writing_packet(1)
+
+    assert captured == {"target_chapter": 1, "current_chapter": 3}
+
+
+def test_director_payload_scans_chapters_once_and_passes_current_snapshot(tmp_path, monkeypatch):
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=2,
+        chapter_update={"title": "后坡巡查", "goal": "提交清道夫委托"},
+        current_chapter=1,
+        current_focus="开启后坡巡查",
+    )
+    state = store.state()
+    project = store.project()
+    original = store.chapter_numbers
+    calls = 0
+    captured = {}
+
+    def counted_chapter_numbers():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    def capture_relevance(
+        state,
+        project,
+        target_chapter,
+        outline_context,
+        scene_cards=None,
+        *,
+        current_chapter,
+    ):
+        captured["target_chapter"] = target_chapter
+        captured["current_chapter"] = current_chapter
+        return "提交清道夫委托"
+
+    monkeypatch.setattr(store, "chapter_numbers", counted_chapter_numbers)
+    monkeypatch.setattr(store, "_world_relevance_text", capture_relevance)
+
+    store._story_state_payload_for_direction(state, project, 2)
+
+    assert calls == 1
+    assert captured == {"target_chapter": 2, "current_chapter": 1}
 
 
 def test_transition_reality_change_does_not_fallback_to_game_change(tmp_path):
@@ -1862,8 +2055,8 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert "苏叶" in by_key["writer_body"]["content"]
     assert "character_context" in by_key["writer_body"]["module_keys"]
     assert "NPC只能处理岗位权限内的事务" in by_key["writer_body"]["content"]
-    assert "任务必须先登记" in by_key["writer_body"]["content"]
-    assert "材料价格必须来自任务" in by_key["writer_body"]["content"]
+    assert "任务必须先登记" not in by_key["writer_body"]["content"]
+    assert "材料价格必须来自任务" not in by_key["writer_body"]["content"]
     assert "网游写法方法卡" in by_key["writer_body"]["content"]
     assert "genre_context" in by_key["writer_body"]["module_keys"]
     assert "web_game" in modules["genre_context"]["content"]
@@ -2194,9 +2387,299 @@ def test_file_project_writing_packet_exposes_outline_constraints(tmp_path):
     assert constraints["volume_plan"]["volume_title"] == "Newbie Village"
     assert constraints["longform_framework"]["progression_ladder"] == ["Lv.1-5"]
     assert constraints["chapter_formula"] == ["goal-cost-payoff-hook"]
-    assert constraints["progression_rules"] == ["visible gain every chapter"]
+    assert set(constraints) == {
+        "volume_plan",
+        "longform_framework",
+        "chapter_formula",
+        "forbidden_breaks",
+    }
+    assert "progression_rules" not in constraints
+    assert "reality_bridge_rules" not in constraints
     assert constraints["forbidden_breaks"] == ["do not skip the outline"]
+    assert "visible gain every chapter" in packet["hard_locks"]
     assert isinstance(packet["state"]["characters"], list)
+
+
+def test_compact_prompt_preview_keeps_only_governance_outline_constraints(tmp_path):
+    store = FileProjectStore(tmp_path / "novel")
+
+    preview = store._compact_prompt_preview_packet(
+        {
+            "outline_constraints": {
+                "volume_plan": {"title": "第一卷"},
+                "longform_framework": {"chapters": 300},
+                "chapter_formula": ["目标-代价-收益-钩子"],
+                "progression_rules": ["每章可见成长"],
+                "forbidden_breaks": ["不得跳过大纲"],
+                "reality_bridge_rules": ["现实到账需结算"],
+            }
+        }
+    )
+
+    assert set(preview["outline_constraints"]) == {
+        "volume_plan",
+        "longform_framework",
+        "chapter_formula",
+        "forbidden_breaks",
+    }
+
+
+def test_writing_packet_keeps_only_global_progression_governance_in_hard_locks(tmp_path):
+    governance_rule = "前十章每章至少完成一次可见成长。"
+    descriptive_rule = "成长节奏随剧情自然推进。"
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=3,
+        chapter_update={
+            "title": "村口闲谈",
+            "goal": "拜访灰烬村村长",
+            "action": "询问后坡天气",
+            "payoff": "确认明日路线",
+        },
+    )
+    project = store.project()
+    project["world_blueprint"]["progression_rules"] = [
+        governance_rule,
+        descriptive_rule,
+    ]
+    store._write_json(store.webnovel_dir / "project.json", project)
+
+    packet = store.writing_packet(3)
+
+    assert governance_rule in packet["hard_locks"]
+    assert descriptive_rule not in packet["hard_locks"]
+    assert "progression_rules" not in packet["project"]["world_blueprint"]
+
+
+def test_writing_packet_recognizes_chinese_and_english_progression_governance(tmp_path):
+    chinese_rule = "经验只来自可验证行动"
+    english_rule = "Visible gain every chapter"
+    descriptive_rule = "Lv.10完成转职"
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=3,
+        chapter_update={
+            "title": "Village conversation",
+            "goal": "Ask about tomorrow's route",
+            "action": "Record the weather",
+            "payoff": "Confirm the departure time",
+        },
+    )
+    project = store.project()
+    project["world_blueprint"]["progression_rules"] = [
+        chinese_rule,
+        english_rule,
+        descriptive_rule,
+    ]
+    store._write_json(store.webnovel_dir / "project.json", project)
+
+    packet = store.writing_packet(3)
+
+    assert chinese_rule in packet["hard_locks"]
+    assert english_rule in packet["hard_locks"]
+    assert descriptive_rule not in packet["hard_locks"]
+
+
+def test_writing_packet_does_not_duplicate_scoped_progression_governance_rule(tmp_path):
+    governance_rule = "升级必须留下可验证记录。"
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=3,
+        chapter_update={
+            "title": "第一次升级",
+            "goal": "积累经验并升级",
+            "action": "核对成长记录",
+            "payoff": "等级提升",
+        },
+    )
+    project = store.project()
+    project["world_blueprint"]["progression_rules"] = [governance_rule]
+    store._write_json(store.webnovel_dir / "project.json", project)
+
+    packet = store.writing_packet(3)
+
+    assert governance_rule in packet["project"]["world_blueprint"]["progression_rules"]
+    assert governance_rule not in packet["hard_locks"]
+
+
+def test_writing_packet_includes_only_relevant_monster_profiles_at_top_level(tmp_path):
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=1,
+        chapter_update={
+            "title": "灰狼坡",
+            "goal": "追踪灰狼",
+            "action": "观察灰狼的扑咬路线",
+            "payoff": "找到灰狼巢穴",
+        },
+    )
+    project = store.project()
+    project["world_blueprint"]["monster_profiles"] = [
+        {"name": "灰狼", "stats": {"hp": 90}},
+        {"name": "史莱姆", "stats": {"hp": 30}},
+    ]
+    store._write_json(store.webnovel_dir / "project.json", project)
+
+    packet = store.writing_packet(1)
+
+    assert packet["monster_profiles"] == [{"name": "灰狼", "stats": {"hp": 90}}]
+    assert "monster_profiles" not in packet["project"]["world_blueprint"]
+
+
+def test_writing_packet_limits_and_deep_copies_relevant_monster_profiles(tmp_path, monkeypatch):
+    names = [f"怪物{i}" for i in range(1, 8)]
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=1,
+        chapter_update={
+            "title": "怪物巡查",
+            "goal": "依次观察" + "、".join(names),
+            "action": "记录全部目标的行动",
+            "payoff": "完成图鉴核对",
+        },
+    )
+    project = store.project()
+    profiles = [
+        {"name": name, "stats": {"hp": index}}
+        for index, name in enumerate(names, start=1)
+    ]
+    profiles.append({"name": "史莱姆", "stats": {"hp": 99}})
+    project["world_blueprint"]["monster_profiles"] = profiles
+    monkeypatch.setattr(store, "project", lambda: project)
+
+    packet = store.writing_packet(1)
+
+    assert [item["name"] for item in packet["monster_profiles"]] == names[:6]
+    packet["monster_profiles"][0]["stats"]["hp"] = 999
+    assert profiles[0]["stats"]["hp"] == 1
+
+
+def test_rewriting_old_chapter_removes_future_focus_from_entire_writing_packet(tmp_path):
+    future_focus = "下一章去白河仓库交易材料并支付现实房租"
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=1,
+        chapter_update={
+            "title": "灰狼坡",
+            "goal": "击败灰狼",
+            "action": "使用法杖清理怪群",
+            "payoff": "获得游戏经验",
+        },
+        current_chapter=3,
+        current_focus=future_focus,
+    )
+
+    packet = store.writing_packet(1)
+
+    assert future_focus not in json.dumps(packet, ensure_ascii=False)
+    assert "current_focus" not in packet["project"]
+    assert packet["state"].get("current_focus") in (None, "")
+    assert packet["chapter_direction_options"] == {}
+
+
+def test_rewriting_chapter_uses_only_chapters_before_target_for_writer_context(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        state={"story_id": "s-file", "current_chapter": 3, "world_facts": []},
+    )
+    chapter_markers = {}
+    review_markers = {}
+    for number in range(1, 4):
+        next_focus = f"CHAPTER_{number}_NEXT_FOCUS_UNIQUE"
+        event_focus = f"CHAPTER_{number}_EVENT_FOCUS_UNIQUE"
+        review_marker = f"CHAPTER_{number}_REVIEW_UNIQUE"
+        chapter_markers[number] = (next_focus, event_focus)
+        review_markers[number] = review_marker
+        store._write_json(
+            store.story_system_dir / "chapters" / f"{number:04d}.json",
+            {
+                "chapter_number": number,
+                "chapter_title": f"Chapter {number}",
+                "body": f"Completed chapter {number}.",
+                "chapter_summary": {"summary": f"Summary {number}"},
+                "next_focus": next_focus,
+                "next_outline": next_focus,
+                "event_plan": {"next_focus": event_focus},
+            },
+        )
+        store._write_json(
+            store.story_system_dir / "reviews" / f"{number:04d}.json",
+            {"ok": True, "issues": [review_marker]},
+        )
+
+    first_packet = store.writing_packet(1)
+    first_json = json.dumps(first_packet, ensure_ascii=False)
+
+    assert first_packet["latest_chapter_number"] == 0
+    assert first_packet["recent_chapters"] == []
+    assert first_packet["latest_event_plan"] == {}
+    assert first_packet["latest_review"] == {}
+    for number in range(1, 4):
+        assert chapter_markers[number][0] not in first_json
+        assert chapter_markers[number][1] not in first_json
+        assert review_markers[number] not in first_json
+
+    second_packet = store.writing_packet(2)
+    second_json = json.dumps(second_packet, ensure_ascii=False)
+
+    assert second_packet["latest_chapter_number"] == 1
+    assert [item["chapter_number"] for item in second_packet["recent_chapters"]] == [1]
+    assert second_packet["latest_event_plan"]["next_focus"] == chapter_markers[1][1]
+    assert second_packet["latest_review"]["issues"] == [review_markers[1]]
+    assert chapter_markers[1][0] in second_json
+    assert chapter_markers[1][1] in second_json
+    assert review_markers[1] in second_json
+    for number in (2, 3):
+        assert chapter_markers[number][0] not in second_json
+        assert chapter_markers[number][1] not in second_json
+        assert review_markers[number] not in second_json
+
+
+def test_trade_chapter_writing_packet_only_includes_relevant_world_modules(tmp_path):
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=1,
+        chapter_update={
+            "title": "第一笔交易",
+            "goal": "匿名寄售材料并等待现实到账",
+            "action": "在交易行出售材料后提现支付房租账单",
+            "payoff": "完成第一笔现实结算",
+        },
+    )
+
+    packet = store.writing_packet(1)
+    blueprint = packet["project"]["world_blueprint"]
+
+    assert blueprint["economy_rules"]
+    assert blueprint["reality_bridge_rules"]
+    assert "quest_rules" not in blueprint
+    assert "quest_network" not in blueprint
+    assert "progression_rules" not in blueprint
+    assert "server_runtime" not in blueprint
+    assert "monster_profiles" not in blueprint
+    assert len(flatten_selected_rules(blueprint)) <= 8
+
+
+def test_quest_chapter_writing_packet_includes_only_matching_chain(tmp_path):
+    store = _store_with_shenyu_world(
+        tmp_path,
+        chapter_number=2,
+        chapter_update={
+            "title": "后坡巡查",
+            "goal": "提交清道夫委托，开启后坡巡查",
+            "action": "向灰烬村守卫队登记巡查路线",
+            "payoff": "取得后坡调查权限",
+        },
+    )
+
+    packet = store.writing_packet(2)
+    blueprint = packet["project"]["world_blueprint"]
+    chains = blueprint["quest_network"]["active_chains"]
+
+    assert [chain["name"] for chain in chains] == ["灰烬村异常链"]
+    assert blueprint["quest_rules"]
+    assert "server_runtime" not in blueprint
+    assert len(flatten_selected_rules(blueprint)) <= 8
 
 
 def test_writing_packet_includes_reality_bridge_rules_for_relevant_chapter_only(tmp_path):
@@ -2222,8 +2705,10 @@ def test_writing_packet_includes_reality_bridge_rules_for_relevant_chapter_only(
 
     packet = store.writing_packet(1)
 
-    assert packet["outline_constraints"]["reality_bridge_rules"] == reality_rules[:6]
-    assert "reality_bridge_rules" not in packet["project"]["world_blueprint"]
+    assert "reality_bridge_rules" not in packet["outline_constraints"]
+    scoped_world = packet["project"]["world_blueprint"]
+    assert scoped_world["reality_bridge_rules"] == reality_rules
+    assert len(flatten_selected_rules(scoped_world)) <= 8
     assert not any(rule in packet["hard_locks"] for rule in reality_rules)
 
 
@@ -2257,7 +2742,7 @@ def test_writing_packet_omits_reality_bridge_rules_for_game_only_chapter(tmp_pat
 
     packet = store.writing_packet(1)
 
-    assert not packet["outline_constraints"].get("reality_bridge_rules")
+    assert "reality_bridge_rules" not in packet["outline_constraints"]
     assert "reality_bridge_rules" not in packet["project"]["world_blueprint"]
     assert not any(rule in packet["hard_locks"] for rule in reality_rules)
 
@@ -2289,7 +2774,7 @@ def test_writing_packet_does_not_treat_game_income_as_reality_bridge(game_only_f
 
     packet = store.writing_packet(1)
 
-    assert not packet["outline_constraints"].get("reality_bridge_rules")
+    assert "reality_bridge_rules" not in packet["outline_constraints"]
     assert "reality_bridge_rules" not in packet["project"]["world_blueprint"]
 
 
@@ -2320,7 +2805,8 @@ def test_writing_packet_ignores_next_focus_when_rewriting_game_only_chapter(tmp_
 
     packet = store.writing_packet(1)
 
-    assert not packet["outline_constraints"].get("reality_bridge_rules")
+    assert "reality_bridge_rules" not in packet["outline_constraints"]
+    assert "reality_bridge_rules" not in packet["project"]["world_blueprint"]
 
 
 def test_state_restores_protagonist_character_card_from_ledger(tmp_path):

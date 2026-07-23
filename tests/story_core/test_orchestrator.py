@@ -11,6 +11,49 @@ from packages.story_core.orchestrator import StoryOrchestrator
 _REAL_CHAT = StoryOrchestrator._chat
 
 
+def test_compact_world_context_keeps_all_scoped_modules_without_keyword_reselection():
+    compacted = orchestrator_module._compact_world_context_for_prompt(
+        {
+            "premise": "神域资源会受限流转。",
+            "world_rules": ["基础规则。"],
+            "power_system": ["力量规则。"],
+            "progression_rules": ["成长规则。"],
+            "economy_rules": ["经济规则。"],
+            "quest_rules": ["任务规则。"],
+            "faction_rules": ["阵营规则。"],
+            "panel_rules": ["面板规则。"],
+            "reality_bridge_rules": ["现实规则。"],
+            "locations": [
+                {"name": "灰烬村", "description": "新手村"},
+                {"title": "后坡", "description": "巡查区域"},
+            ],
+            "factions": [
+                {"name": "灰烬村守卫队", "description": "守卫"},
+                {"name": "白河商会", "description": "商会"},
+            ],
+        },
+        "这段文本不包含任何模块关键词",
+        max_rules=8,
+    )
+
+    assert compacted["rules"] == [
+        "基础规则。",
+        "力量规则。",
+        "成长规则。",
+        "经济规则。",
+        "任务规则。",
+        "阵营规则。",
+        "面板规则。",
+        "现实规则。",
+    ]
+    assert compacted["entities"] == [
+        "灰烬村：新手村",
+        "后坡：巡查区域",
+        "灰烬村守卫队：守卫",
+    ]
+    assert len(compacted["rules"]) <= 8
+
+
 def test_workflow_character_names_come_from_card_identities():
     payload = {
         "selection": "planned_characters",

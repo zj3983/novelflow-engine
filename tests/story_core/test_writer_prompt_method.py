@@ -390,7 +390,7 @@ def test_web_game_second_chapter_does_not_inherit_first_chapter_service_bans():
     assert "不要写成交任务、领取铜币、扣费修理或购买药水" not in prompt
 
 
-def test_writer_prompt_reads_relevant_world_context_without_loading_unrelated_rules():
+def test_writer_prompt_reads_all_scoped_world_context_rules_once():
     story = StoryState(
         story_id="s-world-context",
         outline="夜烬回村提交清道夫委托。",
@@ -398,10 +398,10 @@ def test_writer_prompt_reads_relevant_world_context_without_loading_unrelated_ru
         style="白描",
         world_context={
             "world_rules": ["NPC只能处理岗位权限内的事务。"],
+            "progression_rules": ["升级必须来自可验证经验。"],
             "quest_rules": ["任务必须先登记，再执行和提交。"],
             "economy_rules": ["材料价格必须来自任务、配方或真实稀缺性。"],
             "faction_rules": ["服务NPC只能处理岗位权限内的事务。"],
-            "reality_bridge_rules": ["现实到账必须经过官方结算渠道。"],
         },
     )
 
@@ -413,10 +413,12 @@ def test_writer_prompt_reads_relevant_world_context_without_loading_unrelated_ru
 
     assert "本章相关世界规则" in prompt
     assert "NPC只能处理岗位权限内的事务" in prompt
+    assert "升级必须来自可验证经验" in prompt
     assert "任务必须先登记" in prompt
     assert "材料价格必须来自任务" in prompt
     assert "服务NPC只能处理岗位权限内的事务" in prompt
     assert "现实到账必须经过官方结算渠道" not in prompt
+    assert prompt.count("任务必须先登记") == 1
 
 
 def test_revision_prompt_keeps_method_and_separates_viewpoint_rule():

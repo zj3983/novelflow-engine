@@ -331,6 +331,7 @@ def select_world_context(
     if world_rules:
         selected["world_rules"] = deepcopy(world_rules)
         rule_budget -= len(world_rules)
+    seen_rules = set(world_rules)
 
     relevance = str(relevance_text or "").casefold()
     matched_modules = [
@@ -344,9 +345,14 @@ def select_world_context(
         added = False
         for field, values in matched_modules:
             position = positions[field]
+            while position < len(values) and values[position] in seen_rules:
+                position += 1
+            positions[field] = position
             if position >= len(values):
                 continue
-            selected.setdefault(field, []).append(deepcopy(values[position]))
+            rule = values[position]
+            selected.setdefault(field, []).append(deepcopy(rule))
+            seen_rules.add(rule)
             positions[field] += 1
             rule_budget -= 1
             added = True
@@ -358,6 +364,11 @@ def select_world_context(
     matching_chains = _matching_quest_chains(blueprint.get("quest_network"), relevance)
     if matching_chains:
         selected["quest_network"] = {"active_chains": matching_chains}
+
+    for field in ("locations", "factions"):
+        matching_entities = _matching_entities(blueprint.get(field), relevance)
+        if matching_entities:
+            selected[field] = matching_entities
 
     return selected
 
@@ -376,11 +387,54 @@ def flatten_selected_rules(selected: Any) -> list[Any]:
 
 def _rule_values(blueprint: dict[str, Any], field: str) -> list[Any]:
     values = blueprint.get(field)
-    return values if isinstance(values, list) else []
+    if not isinstance(values, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        rule = value.strip()
+        if not rule or rule in seen:
+            continue
+        seen.add(rule)
+        normalized.append(rule)
+    return normalized
 
 
 def _matches_module(field: str, relevance: str) -> bool:
     return any(keyword.casefold() in relevance for keyword in _RULE_KEYWORDS[field])
+
+
+def _matching_entities(entities: Any, relevance: str) -> list[dict[str, Any]]:
+    if not isinstance(entities, list):
+        return []
+
+    matches: list[tuple[dict[str, Any], str]] = []
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        identifiers = [
+            str(entity.get(field) or "").strip().casefold()
+            for field in ("name", "title")
+        ]
+        matched_identifiers = [
+            identifier
+            for identifier in identifiers
+            if len(identifier) >= 2 and identifier in relevance
+        ]
+        if matched_identifiers:
+            matches.append((entity, max(matched_identifiers, key=len)))
+
+    return [
+        deepcopy(entity)
+        for entity, identifier in matches
+        if not any(
+            identifier != other and identifier in other
+            for _, other in matches
+        )
+    ][:3]
 
 
 def _matching_quest_chains(quest_network: Any, relevance: str) -> list[dict[str, Any]]:

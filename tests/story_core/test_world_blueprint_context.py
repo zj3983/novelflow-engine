@@ -147,9 +147,123 @@ def test_select_world_context_keeps_only_the_matching_active_quest_chain():
         "active_chains": [blueprint["quest_network"]["active_chains"][0]]
     }
     assert blueprint == original
-
     selected["quest_network"]["active_chains"][0]["stages"].append("仅修改结果")
     assert blueprint == original
+
+
+def test_select_world_context_keeps_only_named_relevant_entities_without_mutating_input():
+    blueprint = {
+        "locations": [
+            {"name": "灰烬村", "description": "新手村"},
+            {"title": "后坡", "description": "巡查区域"},
+            {"name": "白河仓库", "description": "材料交易点"},
+            {"name": "黑水沼泽", "description": "无关区域"},
+            "不是实体",
+        ],
+        "factions": [
+            {"name": "灰烬村守卫队", "description": "村落守卫"},
+            {"title": "清道夫公会", "description": "委托方"},
+            {"name": "白河商会", "description": "收购方"},
+            {"name": "赤岩军团", "description": "无关势力"},
+            {"description": "没有名称"},
+        ],
+    }
+    original = deepcopy(blueprint)
+
+    selected = select_world_context(
+        blueprint,
+        "从灰烬村前往后坡，向灰烬村守卫队提交清道夫公会委托，再去白河仓库联系白河商会。",
+    )
+
+    assert selected["locations"] == blueprint["locations"][:3]
+    assert selected["factions"] == blueprint["factions"][:3]
+    selected["locations"][0]["description"] = "只修改结果"
+    selected["factions"][0]["description"] = "只修改结果"
+    assert blueprint == original
+
+
+def test_select_world_context_omits_unmatched_entities_and_non_chapter_blueprint_fields():
+    selected = select_world_context(
+        {
+            "locations": [{"name": "黑水沼泽"}],
+            "factions": [{"name": "赤岩军团"}],
+            "monster_profiles": [{"name": "灰狼"}],
+            "server_runtime": {"online": True},
+            "current_arc": "开服篇",
+            "opening_arc": {"goal": "开服"},
+            "volume_plan": {"title": "第一卷"},
+            "longform_framework": {"chapters": 300},
+        },
+        "提交灰烬村委托",
+    )
+
+    assert selected == {}
+
+
+def test_select_world_context_matches_entity_title_when_name_is_also_present():
+    location = {"name": "location-17", "title": "后坡", "description": "巡查区域"}
+
+    selected = select_world_context({"locations": [location]}, "开启后坡巡查")
+
+    assert selected == {"locations": [location]}
+
+
+def test_select_world_context_ignores_invalid_duplicate_rules_without_spending_budget():
+    selected = select_world_context(
+        {
+            "world_rules": [None, "", " 基础规则 ", "基础规则", 17],
+            "quest_rules": ["", " 任务规则 ", "任务规则"],
+            "economy_rules": [" 经济规则 "],
+        },
+        "提交任务并交易材料",
+        max_rules=3,
+    )
+
+    assert selected == {
+        "world_rules": ["基础规则"],
+        "economy_rules": ["经济规则"],
+        "quest_rules": ["任务规则"],
+    }
+    assert len(flatten_selected_rules(selected)) == 3
+
+
+def test_select_world_context_dedupes_rules_across_modules_without_starving_next_rule():
+    shared_rule = "shared verification rule"
+    quest_rule = "quest-specific follow-up"
+
+    selected = select_world_context(
+        {
+            "world_rules": [shared_rule],
+            "economy_rules": [shared_rule],
+            "quest_rules": [shared_rule, quest_rule],
+        },
+        "提交任务并交易材料",
+        max_rules=2,
+    )
+
+    assert flatten_selected_rules(selected) == [shared_rule, quest_rule]
+    assert sum(
+        rule == shared_rule
+        for rule in flatten_selected_rules(selected)
+    ) == 1
+
+
+def test_select_world_context_prefers_longest_entity_names_and_ignores_one_character_names():
+    blackwater = {"name": "黑水王城", "description": "北境主城"}
+    white_river = {"name": "白河村", "description": "河畔村落"}
+    selected = select_world_context(
+        {
+            "locations": [
+                {"name": "城"},
+                {"name": "王城"},
+                blackwater,
+                white_river,
+            ]
+        },
+        "从黑水王城出发，再前往白河村。",
+    )
+
+    assert selected == {"locations": [blackwater, white_river]}
 
 
 def test_select_world_context_ignores_generic_completion_text_shared_by_unrelated_chains():
