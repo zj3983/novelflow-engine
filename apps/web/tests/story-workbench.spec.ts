@@ -565,27 +565,60 @@ test("世界背景与分类规则编辑器保留蓝图其他字段并独立保�
   });
   expect(calls[0][2]).toEqual({ fallbackToMock: false });
 
-  expect(WORLD_RULE_EDITOR_SECTIONS.map((section) => section.title)).toEqual([
-    "基础规则",
-    "力量与能力",
-    "成长与战斗",
-    "任务与经济",
-    "阵营与面板",
-    "世界硬约束",
-    "游戏影响现实",
+  const ruleSections = WORLD_RULE_EDITOR_SECTIONS.map((section) => ({
+    title: section.title,
+    wide: section.wide,
+    fields: section.fields.map(({ field, label, buttonLabel }) => ({ field, label, buttonLabel })),
+  }));
+  expect(ruleSections).toEqual([
+    {
+      title: "基础规则",
+      wide: true,
+      fields: [{ field: "world_rules", label: "基础规则", buttonLabel: "保存基础规则" }],
+    },
+    {
+      title: "成长体系",
+      wide: true,
+      fields: [
+        { field: "power_system", label: "等级、职业与技能", buttonLabel: "保存力量体系" },
+        { field: "progression_rules", label: "成长与战斗边界", buttonLabel: "保存成长规则" },
+      ],
+    },
+    {
+      title: "经济体系",
+      wide: false,
+      fields: [{ field: "economy_rules", label: "货币、价格与交易", buttonLabel: "保存经济体系" }],
+    },
+    {
+      title: "任务体系",
+      wide: false,
+      fields: [{ field: "quest_rules", label: "任务类型、状态与奖励", buttonLabel: "保存任务体系" }],
+    },
+    {
+      title: "阵营与面板",
+      wide: true,
+      fields: [
+        { field: "faction_rules", label: "阵营规则", buttonLabel: "保存阵营规则" },
+        { field: "panel_rules", label: "面板规则", buttonLabel: "保存面板规则" },
+      ],
+    },
+    {
+      title: "游戏影响现实",
+      wide: true,
+      fields: [{ field: "reality_bridge_rules", label: "游戏影响现实规则", buttonLabel: "保存游戏影响现实规则" }],
+    },
+    {
+      title: "世界硬约束",
+      wide: true,
+      fields: [
+        { field: "constraints", label: "世界硬约束", buttonLabel: "保存世界硬约束" },
+        { field: "forbidden_breaks", label: "不可违反规则", buttonLabel: "保存不可违反规则" },
+      ],
+    },
   ]);
-  expect(WORLD_RULE_EDITOR_SECTIONS.flatMap((section) => section.fields.map((field) => field.label))).toEqual([
-    "基础规则",
-    "力量/能力体系",
-    "成长与战斗规则",
-    "任务规则",
-    "经济规则",
-    "阵营规则",
-    "面板规则",
-    "世界硬约束",
-    "不可违反规则",
-    "游戏影响现实规则",
-  ]);
+  expect(ruleSections.find((section) => section.title === "成长体系")?.fields).toHaveLength(2);
+  expect(ruleSections.filter((section) => ["经济体系", "任务体系"].includes(section.title))).toHaveLength(2);
+  expect(ruleSections.map((section) => section.title)).not.toContain("任务与经济");
   expect(WORLD_RULE_EDITOR_SECTIONS.flatMap((section) => section.fields.map((field) => field.field))).not.toContain("chapter_formula");
 
   await saveWorldRules({
@@ -2273,14 +2306,61 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
     }) });
   });
 
+  await page.setViewportSize({ width: 901, height: 900 });
   await page.goto("/projects/file%3Aworld-page-fixture/world");
 
   for (const heading of ["世界背景", "世界规则", "地点", "阵营", "怪物图鉴", "已确认事实"]) {
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
   }
-  const orderedSections = page.locator("#world-background-title, #world-rules-title, #world-entities-title, #monster-bestiary-title, #confirmed-facts-title");
-  await expect(orderedSections).toHaveCount(5);
-  await expect(orderedSections).toHaveText(["世界背景", "世界规则", "地点与阵营", "怪物图鉴", "已确认事实"]);
+  const orderedSections = page.locator([
+    "#world-background-title",
+    "#basic-world-rules-title",
+    "#progression-world-rules-title",
+    "#economy-world-rules-title",
+    "#quest-world-rules-title",
+    "#faction-panel-world-rules-title",
+    "#reality-world-rules-title",
+    "#constraints-world-rules-title",
+    "#world-entities-title",
+    "#monster-bestiary-title",
+    "#confirmed-facts-title",
+  ].join(", "));
+  await expect(orderedSections).toHaveCount(11);
+  await expect(orderedSections).toHaveText([
+    "世界背景",
+    "基础规则",
+    "成长体系",
+    "经济体系",
+    "任务体系",
+    "阵营与面板",
+    "游戏影响现实",
+    "世界硬约束",
+    "地点与阵营",
+    "怪物图鉴",
+    "已确认事实",
+  ]);
+  for (const buttonName of ["保存力量体系", "保存成长规则", "保存经济体系", "保存任务体系"]) {
+    await expect(page.getByRole("button", { name: buttonName, exact: true })).toBeVisible();
+  }
+
+  const progressionSection = page.locator('section[aria-labelledby="progression-world-rules-title"]');
+  await expect(progressionSection).toHaveClass(/ws-form-grid__wide/);
+  const progressionTextareas = progressionSection.locator("textarea");
+  await expect(progressionTextareas).toHaveCount(2);
+  const desktopWidths = await progressionTextareas.evaluateAll((elements) =>
+    elements.map((element) => element.getBoundingClientRect().width),
+  );
+  expect(desktopWidths.every((width) => width >= 200)).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileBounds = await progressionTextareas.evaluateAll((elements) =>
+    elements.map((element) => {
+      const bounds = element.getBoundingClientRect();
+      return { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom };
+    }),
+  );
+  expect(mobileBounds[1].top).toBeGreaterThan(mobileBounds[0].bottom);
+  expect(mobileBounds.every(({ left, right }) => left >= 0 && right <= 390)).toBe(true);
   await expect(page.getByText("项目事实25", { exact: true })).toBeVisible();
   await expect(page.getByText("作者约束", { exact: true })).toHaveCount(0);
 

@@ -41,36 +41,40 @@ type SaveWorldRulesArgs = Omit<Props, "blueprint"> & {
 export const WORLD_RULE_EDITOR_SECTIONS: ReadonlyArray<{
   id: string;
   title: string;
+  wide: boolean;
   fields: ReadonlyArray<{ field: EditableWorldRuleField; label: string; buttonLabel: string }>;
 }> = [
-  { id: "basic", title: "基础规则", fields: [{ field: "world_rules", label: "基础规则", buttonLabel: "保存基础规则" }] },
-  { id: "power", title: "力量与能力", fields: [{ field: "power_system", label: "力量/能力体系", buttonLabel: "保存力量/能力体系" }] },
-  { id: "progression", title: "成长与战斗", fields: [{ field: "progression_rules", label: "成长与战斗规则", buttonLabel: "保存成长与战斗规则" }] },
+  { id: "basic", title: "基础规则", wide: true, fields: [{ field: "world_rules", label: "基础规则", buttonLabel: "保存基础规则" }] },
   {
-    id: "quest-economy",
-    title: "任务与经济",
+    id: "progression",
+    title: "成长体系",
+    wide: true,
     fields: [
-      { field: "quest_rules", label: "任务规则", buttonLabel: "保存任务规则" },
-      { field: "economy_rules", label: "经济规则", buttonLabel: "保存经济规则" },
+      { field: "power_system", label: "等级、职业与技能", buttonLabel: "保存力量体系" },
+      { field: "progression_rules", label: "成长与战斗边界", buttonLabel: "保存成长规则" },
     ],
   },
+  { id: "economy", title: "经济体系", wide: false, fields: [{ field: "economy_rules", label: "货币、价格与交易", buttonLabel: "保存经济体系" }] },
+  { id: "quest", title: "任务体系", wide: false, fields: [{ field: "quest_rules", label: "任务类型、状态与奖励", buttonLabel: "保存任务体系" }] },
   {
     id: "faction-panel",
     title: "阵营与面板",
+    wide: true,
     fields: [
       { field: "faction_rules", label: "阵营规则", buttonLabel: "保存阵营规则" },
       { field: "panel_rules", label: "面板规则", buttonLabel: "保存面板规则" },
     ],
   },
+  { id: "reality", title: "游戏影响现实", wide: true, fields: [{ field: "reality_bridge_rules", label: "游戏影响现实规则", buttonLabel: "保存游戏影响现实规则" }] },
   {
     id: "constraints",
     title: "世界硬约束",
+    wide: true,
     fields: [
       { field: "constraints", label: "世界硬约束", buttonLabel: "保存世界硬约束" },
       { field: "forbidden_breaks", label: "不可违反规则", buttonLabel: "保存不可违反规则" },
     ],
   },
-  { id: "reality", title: "游戏影响现实", fields: [{ field: "reality_bridge_rules", label: "游戏影响现实规则", buttonLabel: "保存游戏影响现实规则" }] },
 ];
 
 function rulesText(value?: string[]) {
@@ -304,9 +308,9 @@ export function WorldRulesEditor({ projectId, blueprint, onSaved }: Props) {
       </div>
 
       <div className="ws-form-grid">
-        {WORLD_RULE_EDITOR_SECTIONS.map((section, index) => (
+        {WORLD_RULE_EDITOR_SECTIONS.map((section) => (
           <section
-            className={index >= 2 ? "ws-form-grid__wide" : undefined}
+            className={section.wide ? "ws-form-grid__wide" : undefined}
             aria-labelledby={`${section.id}-world-rules-title`}
             key={section.id}
           >
