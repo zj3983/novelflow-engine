@@ -10,6 +10,7 @@ import re
 import subprocess
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal, InvalidOperation
 from time import perf_counter
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from packages.story_core.agent_base import compact_list, compact_text, parse_jso
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate, review_chapter_governance
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.chapter_plot_contract import build_chapter_plot_contract
+from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.craft import is_game_story
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.generation_progress import report_generation_progress
@@ -77,13 +79,13 @@ from packages.story_core.writing_taskbook import (
     format_taskbook_prompt_section,
     writer_facing_text,
 )
-from packages.story_core.style_adaptation import build_style_adapt_prompt, style_adapt_safety_check
 from packages.story_core.world_consistency_review import review_world_event_consistency
 from packages.story_core.world_pulse import advance_world_pulse
 from packages.story_core.world_simulation_gate import world_simulation_decision
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.prompt_modules import replaceable_slots
+from packages.story_core.prompt_templates import get_default_prompt_template, render_prompt_template
 from packages.story_core.dialogue_context import build_dialogue_context
 from packages.story_core.dual_state import project_character_for_scene, scene_kind_for_cards
 from packages.story_core.review_report import format_review_report
@@ -93,6 +95,9 @@ from packages.story_core.scene_contract_repair import build_scene_contract_repai
 VALID_CADENCES = {"urgent", "measured", "breathing"}
 MIN_CHAPTER_CHARS = 4200
 MAX_CHAPTER_CHARS = 5500
+CHAPTER_CHAR_TOLERANCE = 20
+CHAPTER_MAX_CHAR_TOLERANCE = 200
+CHAPTER_HARD_MIN_CHARS = 3800
 REGENERATION_MIN_CHARS = 3500
 REGENERATION_FAST_MIN_CHARS = 3200
 TARGET_CHAPTER_CHARS = "4200到5500字"
@@ -115,6 +120,109 @@ def _expansion_timeout_seconds() -> int:
 
 def _should_compress_chapter(body: str) -> bool:
     return _chapter_char_count(body) > MAX_CHAPTER_CHARS
+
+
+def _chapter_body_is_hard_length_acceptable(body: str) -> bool:
+    chars = _chapter_char_count(body)
+    return CHAPTER_HARD_MIN_CHARS <= chars <= MAX_CHAPTER_CHARS + CHAPTER_MAX_CHAR_TOLERANCE
+
+
+def _expanded_body_is_acceptable(original_body: str, candidate_body: str) -> bool:
+    original_chars = _chapter_char_count(original_body)
+    candidate_chars = _chapter_char_count(candidate_body)
+    return original_chars < candidate_chars and MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE <= candidate_chars <= MAX_CHAPTER_CHARS
+
+
+def _compressed_body_is_acceptable(original_body: str, candidate_body: str) -> bool:
+    original_chars = _chapter_char_count(original_body)
+    candidate_chars = _chapter_char_count(candidate_body)
+    return candidate_chars < original_chars and MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE <= candidate_chars <= MAX_CHAPTER_CHARS + CHAPTER_MAX_CHAR_TOLERANCE
+
+
+def _compressed_body_is_progress(original_body: str, candidate_body: str) -> bool:
+    original_chars = _chapter_char_count(original_body)
+    candidate_chars = _chapter_char_count(candidate_body)
+    return candidate_chars < original_chars and candidate_chars >= MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE
+
+
+def _compression_candidate_action(original_body: str, candidate_body: str) -> str:
+    if _compressed_body_is_acceptable(original_body, candidate_body):
+        return "accept"
+    candidate_chars = _chapter_char_count(candidate_body)
+    original_chars = _chapter_char_count(original_body)
+    if candidate_chars < original_chars and candidate_chars < MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE:
+        return "retry"
+    if _compressed_body_is_progress(original_body, candidate_body):
+        return "continue"
+    return "reject"
+
+
+def _rebalanced_body_is_acceptable(short_body: str, candidate_body: str) -> bool:
+    short_chars = _chapter_char_count(short_body)
+    candidate_chars = _chapter_char_count(candidate_body)
+    return (
+        candidate_chars > short_chars
+        and MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE <= candidate_chars <= MAX_CHAPTER_CHARS + CHAPTER_MAX_CHAR_TOLERANCE
+    )
+
+
+def _repair_outline_amount_anchors(body: str, anchor: Any) -> str:
+    if not isinstance(anchor, dict) or not str(body or "").strip():
+        return body
+    repaired = str(body)
+    opening = str(anchor.get("opening_balance") or "").strip()
+    arrival = str(anchor.get("trade_arrival") or "").strip()
+    ending = str(anchor.get("ending_balance") or "").strip()
+
+    balance_pattern = re.compile(
+        r"余额\s*(?:[：:]\s*)?(?:只剩|还有|变成|变为|为)?\s*\d+(?:\.\d{1,2})?\s*元"
+    )
+    if opening:
+        balance_matches = list(balance_pattern.finditer(repaired))
+        if balance_matches:
+            match = balance_matches[0]
+            repaired = repaired[: match.start()] + f"余额{opening}" + repaired[match.end() :]
+        elif opening not in repaired[:1200]:
+            repaired = f"苏叶登录游戏前，账户余额{opening}。\n\n{repaired.lstrip()}"
+    if ending:
+        balance_matches = list(balance_pattern.finditer(repaired))
+        if len(balance_matches) >= 2:
+            match = balance_matches[-1]
+            repaired = repaired[: match.start()] + f"余额{ending}" + repaired[match.end() :]
+        elif ending not in repaired[-1600:]:
+            repaired = f"{repaired.rstrip()}\n\n付清现实急账后，账户余额{ending}。"
+
+    arrival_pattern = re.compile(
+        r"(成交价|到账(?:金额)?|实收)\s*(?:[：:]\s*)?\d+(?:\.\d{1,2})?\s*元"
+    )
+    arrival_match = arrival_pattern.search(repaired)
+    if arrival:
+        if arrival_match:
+            label = arrival_match.group(1)
+            repaired = repaired[: arrival_match.start()] + f"{label}{arrival}" + repaired[arrival_match.end() :]
+        elif arrival not in repaired:
+            repaired = f"{repaired.rstrip()}\n\n担保交易完成，{arrival}到账。"
+    return repaired
+
+
+def _review_context_facts(story: StoryState) -> list[str]:
+    outline_context = story.outline_context if isinstance(story.outline_context, dict) else {}
+    outline_facts = [
+        json.dumps(outline_context.get(key), ensure_ascii=False)
+        for key in ("overall", "chapter")
+        if isinstance(outline_context.get(key), dict)
+    ]
+    return list(dict.fromkeys([*story.world_facts, *story.author_constraints, *outline_facts]))
+
+
+def _should_extract_final_memory(body: str, review_gate: dict[str, Any] | None) -> bool:
+    chars = _chapter_char_count(body)
+    gate = review_gate or {}
+    if "has_hard_errors" in gate:
+        review_blocks_memory = bool(gate.get("has_hard_errors"))
+    else:
+        review_blocks_memory = bool(gate.get("needs_revision"))
+    return MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE <= chars <= MAX_CHAPTER_CHARS + CHAPTER_MAX_CHAR_TOLERANCE and not review_blocks_memory
 
 
 def _review_exception_result(name: str, exc: Exception) -> dict[str, Any]:
@@ -1117,6 +1225,22 @@ def _planned_character_names(plan: Any) -> set[str]:
     return names
 
 
+def _approved_new_character_names(plan: Any) -> set[str]:
+    if not isinstance(plan, dict):
+        return set()
+    intent = plan.get("chapter_intent") if isinstance(plan.get("chapter_intent"), dict) else {}
+    governance = plan.get("governance") if isinstance(plan.get("governance"), dict) else {}
+    governed_intent = governance.get("chapter_intent") if isinstance(governance.get("chapter_intent"), dict) else {}
+    approved: set[str] = set()
+    for source in (intent.get("approved_new_characters"), governed_intent.get("approved_new_characters")):
+        for item in source if isinstance(source, list) else []:
+            value = item.get("name") if isinstance(item, dict) else item
+            name = str(value or "").strip()
+            if name:
+                approved.add(name)
+    return approved
+
+
 def _writer_scene_kind(story: StoryState, plan: Any | None = None) -> str:
     plan = plan if isinstance(plan, dict) else {}
     scene_cards = plan.get("scene_cards") if isinstance(plan.get("scene_cards"), list) else []
@@ -1126,6 +1250,7 @@ def _writer_scene_kind(story: StoryState, plan: Any | None = None) -> str:
 
 def _character_context_for_prompt(story: StoryState, plan: Any | None = None, *, max_items: int = 4) -> dict[str, Any]:
     requested = _planned_character_names(plan)
+    approved_new = _approved_new_character_names(plan)
     cards = build_character_cards(story)
     raw_cards = {
         character.name: character.model_dump(mode="json")
@@ -1138,17 +1263,26 @@ def _character_context_for_prompt(story: StoryState, plan: Any | None = None, *,
         identity = card.get("identity") if isinstance(card.get("identity"), dict) else {}
         name = str(identity.get("name") or "").strip()
         game_id = str(identity.get("game_id") or "").strip()
+        raw = raw_cards.get(name, {})
+        if str(raw.get("lifecycle_state") or "active") == "proposed" and name not in approved_new and game_id not in approved_new:
+            continue
         if requested and name not in requested and game_id not in requested:
             continue
         selected.append(card)
         if len(selected) >= max_items:
             break
     if not selected:
-        selected = cards[:max_items]
+        selected = [
+            card
+            for card in cards
+            if str(raw_cards.get(str((card.get("identity") or {}).get("name") or ""), {}).get("lifecycle_state") or "active")
+            != "proposed"
+        ][:max_items]
 
     compact_cards: list[dict[str, Any]] = []
     for card in selected:
         identity = card.get("identity") if isinstance(card.get("identity"), dict) else {}
+        name = str(identity.get("name") or "").strip()
         profile = card.get("webnovel_profile") if isinstance(card.get("webnovel_profile"), dict) else {}
         usage = card.get("story_usage") if isinstance(card.get("story_usage"), dict) else {}
         voice = card.get("voice_and_action") if isinstance(card.get("voice_and_action"), dict) else {}
@@ -1177,6 +1311,7 @@ def _character_context_for_prompt(story: StoryState, plan: Any | None = None, *,
                 "risk_posture": compact_text(str(voice.get("risk_posture", "")), 100),
                 "speech_style": compact_text(str(voice.get("speech_style", "")), 100),
                 "poison_points": compact_list(profile.get("poison_points", []), max_items=4, item_chars=80),
+                "memory": compact_list(raw.get("memory", []), max_items=2, item_chars=70),
                 "state_context": projected["state_context"],
                 "relationship_context": [
                     {
@@ -1222,6 +1357,30 @@ def _character_context_summary_for_prompt(context: dict[str, Any]) -> dict[str, 
     return {"selection": context.get("selection"), "requested_names": context.get("requested_names", [])[:4], "cards": brief_cards}
 
 
+def _progress_character_cards(story: StoryState, plan: dict[str, Any] | None = None, max_items: int = 3) -> dict[str, Any]:
+    context = _character_context_for_prompt(story, plan, max_items=max_items)
+    summary = _character_context_summary_for_prompt(context)
+    return {
+        "selection": summary.get("selection"),
+        "requested_names": summary.get("requested_names", []),
+        "cards": summary.get("cards", []),
+    }
+
+
+def _review_progress_snapshot(review: dict[str, Any] | None) -> dict[str, Any]:
+    summary = _compact_review_summary(review)
+    issues = summary.get("issues", [])
+    revision_plan = summary.get("revision_plan", [])
+    return {
+        "issue_count": len(issues),
+        "sample_issues": issues,
+        "sample_revision_plan": revision_plan,
+        "style_issues": summary.get("style_issues", []),
+        "prose_issues": summary.get("prose_issues", []),
+        "scene_contract_failures": summary.get("scene_contract_failures", []),
+    }
+
+
 def _slim_prompt_value(value: Any, *, depth: int = 0) -> Any:
     if depth > 5:
         return compact_text(str(value), 160)
@@ -1246,6 +1405,7 @@ def _compact_chapter_seed_for_prompt(seed: Any) -> dict[str, Any]:
         "schema_version",
         "chapter_number",
         "chapter_contract",
+        "outline_anchor",
         "writing_contract",
         "simulation_axes",
         "current_state",
@@ -1350,6 +1510,7 @@ def _writer_seed_summary(seed: Any) -> dict[str, Any]:
     continuity = compacted.get("continuity") if isinstance(compacted.get("continuity"), dict) else {}
     return {
         "章节": compacted.get("chapter_number"),
+        "本章硬锚点": compacted.get("outline_anchor", {}),
         "上一章": compact_text(str(continuity.get("latest_summary") or ""), 160),
         "必须承接": compact_list(continuity.get("must_keep_facts", []), max_items=4, item_chars=90),
         "未解线索": compact_list(continuity.get("unresolved_threads", []), max_items=4, item_chars=90),
@@ -1418,13 +1579,18 @@ def _story_snapshot(story: StoryState) -> dict:
     relevant_memories = retrieve_relevant_memories(story, memory_query, limit=6)
     prompt_ledger = _compact_prompt_ledger(story.progression_ledger)
     return {
-        "outline": compact_text(story.outline, 700),
+        "outline": compact_text(story.outline, 1600),
         "outline_context": story.outline_context,
         "genre": story.genre,
         "style": story.style,
         "current_chapter": story.current_chapter,
         "author_constraints": compact_list(story.author_constraints, max_items=6, item_chars=130),
         "world_facts": _priority_world_facts(story.world_facts, max_items=12, item_chars=140),
+        "world_context": _compact_world_context_for_prompt(
+            story.world_context,
+            "\n".join((story.outline, json.dumps(story.outline_context, ensure_ascii=False))),
+            max_rules=8,
+        ),
         "progression_ledger": prompt_ledger,
         "relevant_memories": [
             {
@@ -1490,13 +1656,14 @@ def _director_snapshot_summary(snapshot: dict) -> dict:
     visibility = snapshot.get("visibility_inbox") if isinstance(snapshot.get("visibility_inbox"), dict) else {}
     characters = snapshot.get("characters") if isinstance(snapshot.get("characters"), list) else []
     return {
-        "outline": compact_text(str(snapshot.get("outline") or ""), 180),
+        "outline": compact_text(str(snapshot.get("outline") or ""), 1200),
         "outline_context": snapshot.get("outline_context") if isinstance(snapshot.get("outline_context"), dict) else {},
         "genre": snapshot.get("genre"),
         "style": compact_text(str(snapshot.get("style") or ""), 120),
         "current_chapter": snapshot.get("current_chapter"),
         "author_constraints": compact_list(snapshot.get("author_constraints", []), max_items=4, item_chars=90),
         "world_facts": compact_list(snapshot.get("world_facts", []), max_items=6, item_chars=90),
+        "world_context": _slim_prompt_value(snapshot.get("world_context", {})),
         "progression_ledger": {
             "protagonist": ledger.get("protagonist"),
             "economy": ledger.get("economy"),
@@ -1506,6 +1673,17 @@ def _director_snapshot_summary(snapshot: dict) -> dict:
         "latest_facts": compact_list(snapshot.get("latest_facts", []), max_items=4, item_chars=80),
         "latest_threads": compact_list(snapshot.get("latest_threads", []), max_items=4, item_chars=80),
         "current_focus": compact_text(str(snapshot.get("current_focus") or ""), 120),
+        "relevant_memories": [
+            _slim_prompt_value(item)
+            for item in snapshot.get("relevant_memories", [])[:4]
+            if isinstance(item, dict)
+        ],
+        "arc_recaps": [
+            _slim_prompt_value(item)
+            for item in snapshot.get("arc_recaps", [])[-2:]
+            if isinstance(item, dict)
+        ],
+        "world_pulse": _slim_prompt_value(snapshot.get("world_pulse", {})),
         "visibility_inbox": {
             "signals": compact_list(visibility.get("signals", []), max_items=3, item_chars=80) if isinstance(visibility, dict) else [],
             "visible_traces": compact_list(visibility.get("visible_traces", []), max_items=3, item_chars=80)
@@ -1515,11 +1693,14 @@ def _director_snapshot_summary(snapshot: dict) -> dict:
         "characters": [
             {
                 "name": item.get("name"),
+                "game_id": item.get("game_id"),
+                "game_panel": _slim_prompt_value(item.get("game_panel", {})),
                 "role": item.get("role"),
                 "goals": compact_list(item.get("goals", []), max_items=2, item_chars=60),
                 "emotion": compact_text(str(item.get("emotion") or ""), 40),
                 "location": compact_text(str(item.get("location") or ""), 60),
                 "memory": compact_list(item.get("memory", []), max_items=2, item_chars=70),
+                "secrets": compact_list(item.get("secrets", []), max_items=2, item_chars=70),
                 "relationships": item.get("relationships", [])[:3]
                 if isinstance(item.get("relationships"), list)
                 else [],
@@ -1528,6 +1709,199 @@ def _director_snapshot_summary(snapshot: dict) -> dict:
             if isinstance(item, dict)
         ],
     }
+
+
+def _director_context_payload(story: StoryState, chapter_number: int) -> dict[str, Any]:
+    relevant_characters = _director_characters(story, limit=4)
+    selector_plan = {
+        "character_moves": [{"name": character.name} for character in relevant_characters]
+    }
+    return {
+        "project_snapshot": _director_snapshot_summary(_story_snapshot(story)),
+        "chapter_seed": _writer_seed_summary(
+            _compact_chapter_seed_for_prompt(build_chapter_seed(story, chapter_number))
+        ),
+        "character_cards": _character_context_for_prompt(
+            story,
+            selector_plan,
+            max_items=4,
+        ),
+    }
+
+
+def _planning_character_names(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    names: list[str] = []
+    cards = payload.get("cards")
+    if isinstance(cards, list):
+        for card in cards:
+            identity = card.get("identity") if isinstance(card, dict) else None
+            name = str(identity.get("name") or "").strip() if isinstance(identity, dict) else ""
+            if name and name not in names:
+                names.append(name)
+    if names:
+        return names
+    envelope_keys = {"selection", "requested_names", "cards"}
+    direct_names = [str(name).strip() for name in payload if name not in envelope_keys]
+    if direct_names:
+        return sorted(name for name in direct_names if name)
+    requested = payload.get("requested_names")
+    if isinstance(requested, list):
+        return [str(name).strip() for name in requested if str(name).strip()]
+    return []
+
+
+def _director_prompt_outline_context(value: Any) -> dict[str, Any]:
+    context = value if isinstance(value, dict) else {}
+    field_limits = {
+        "overall": ("protagonist_goal", "main_conflict", "current_strategy"),
+        "active_arc": (
+            "id",
+            "title",
+            "start_chapter",
+            "end_chapter",
+            "goal",
+            "obstacle",
+            "payoff",
+            "game_line_payoff",
+            "reality_line_payoff",
+            "end_state",
+            "stage_antagonist",
+        ),
+        "chapter": ("chapter_number", "title", "goal", "obstacle", "action", "turn", "payoff", "ending_hook", "cast"),
+    }
+    result: dict[str, Any] = {}
+    for section, keys in field_limits.items():
+        source = context.get(section) if isinstance(context.get(section), dict) else {}
+        selected: dict[str, Any] = {}
+        for key in keys:
+            item = source.get(key)
+            if item in (None, "", [], {}):
+                continue
+            selected[key] = compact_list(item, max_items=3, item_chars=60) if isinstance(item, list) else compact_text(str(item), 120)
+        if selected:
+            result[section] = selected
+    return result
+
+
+def _director_prompt_snapshot(snapshot: Any) -> dict[str, Any]:
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    ledger = snapshot.get("progression_ledger") if isinstance(snapshot.get("progression_ledger"), dict) else {}
+    protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), dict) else {}
+    economy = ledger.get("economy") if isinstance(ledger.get("economy"), dict) else {}
+    quests = ledger.get("quests") if isinstance(ledger.get("quests"), dict) else {}
+    latest_recap = next((item for item in reversed(snapshot.get("arc_recaps", [])) if isinstance(item, dict)), {})
+    result = {
+        "outline": compact_text(str(snapshot.get("outline") or ""), 180),
+        "outline_context": _director_prompt_outline_context(snapshot.get("outline_context")),
+        "genre": snapshot.get("genre"),
+        "style": compact_text(str(snapshot.get("style") or ""), 80),
+        "author_constraints": compact_list(snapshot.get("author_constraints", []), max_items=3, item_chars=75),
+        "world_facts": compact_list(snapshot.get("world_facts", []), max_items=3, item_chars=75),
+        "ledger": {
+            "protagonist": {
+                key: protagonist.get(key)
+                for key in ("game_id", "level", "class_path", "exp", "hp", "mp", "weapon_durability")
+                if protagonist.get(key) not in (None, "", [], {})
+            },
+            "economy": {
+                key: economy.get(key)
+                for key in ("game_currency", "inventory", "backpack", "real_balance")
+                if economy.get(key) not in (None, "", [], {})
+            },
+            "quests": dict(list(quests.items())[:6]),
+        },
+        "previous": {
+            "summary": compact_text(str(snapshot.get("latest_summary") or ""), 150),
+            "facts": compact_list(snapshot.get("latest_facts", []), max_items=2, item_chars=70),
+            "threads": compact_list(snapshot.get("latest_threads", []), max_items=3, item_chars=70),
+            "next_focus": compact_text(str(snapshot.get("current_focus") or ""), 100),
+        },
+        "relevant_memories": [
+            {
+                "summary": compact_text(str(item.get("summary") or ""), 100),
+                "facts": compact_list(item.get("facts", []), max_items=2, item_chars=60),
+            }
+            for item in snapshot.get("relevant_memories", [])[:1]
+            if isinstance(item, dict)
+        ],
+        "arc_recap": {
+            "range": latest_recap.get("range"),
+            "recap": compact_text(str(latest_recap.get("recap") or ""), 120),
+            "open_threads": compact_list(latest_recap.get("open_threads", []), max_items=3, item_chars=60),
+        }
+        if latest_recap
+        else {},
+        "world_pulse": _slim_prompt_value(snapshot.get("world_pulse", {})),
+        "visibility": _slim_prompt_value(snapshot.get("visibility_inbox", {})),
+    }
+    return {key: value for key, value in result.items() if value not in (None, "", [], {})}
+
+
+def _director_prompt_chapter_seed(value: Any) -> dict[str, Any]:
+    seed = value if isinstance(value, dict) else {}
+    keys = (
+        "章节",
+        "未解线索",
+        "下一步",
+        "本章目标",
+        "本章要兑现",
+        "这章可以兑现的小进展",
+        "这章不能提前写",
+        "情绪走向",
+        "行动顺序",
+    )
+    result: dict[str, Any] = {}
+    for key in keys:
+        item = seed.get(key)
+        if item in (None, "", [], {}):
+            continue
+        if isinstance(item, list):
+            max_items = 3 if key == "行动顺序" else 2
+            result[key] = compact_list(item, max_items=max_items, item_chars=80)
+        else:
+            result[key] = compact_text(str(item), 130)
+    return result
+
+
+def _director_prompt_character_cards(value: Any) -> dict[str, Any]:
+    context = value if isinstance(value, dict) else {}
+    cards = context.get("cards") if isinstance(context.get("cards"), list) else []
+    compact_cards: list[dict[str, Any]] = []
+    for card in cards[:4]:
+        if not isinstance(card, dict):
+            continue
+        identity = card.get("identity") if isinstance(card.get("identity"), dict) else {}
+        relationships = card.get("relationship_context") if isinstance(card.get("relationship_context"), list) else []
+        portrait = card.get("scene_portrait") if isinstance(card.get("scene_portrait"), dict) else {}
+        compact_cards.append(
+            {
+                "identity": {
+                    key: identity.get(key)
+                    for key in ("name", "game_id", "role")
+                    if identity.get(key) not in (None, "")
+                },
+                "motivation": compact_text(str(card.get("motivation") or ""), 100),
+                "emotion": compact_text(str(portrait.get("current_emotion") or ""), 40),
+                "behavior": compact_text(str(card.get("behavior_logic") or ""), 110),
+                "interaction": compact_text(str(card.get("interaction_mode") or ""), 90),
+                "speech": compact_text(str(card.get("speech_style") or card.get("speech_tendency") or ""), 80),
+                "risk": compact_text(str(card.get("risk_posture") or ""), 70),
+                "memory": compact_list(card.get("memory", []), max_items=2, item_chars=70),
+                "relationships": [
+                    {
+                        "target": item.get("target"),
+                        "bond": compact_text(str(item.get("bond") or ""), 60),
+                        "trust": item.get("trust"),
+                        "tension": item.get("tension"),
+                    }
+                    for item in relationships[:2]
+                    if isinstance(item, dict)
+                ],
+            }
+        )
+    return {"cards": compact_cards}
 
 
 def _normalize_moves(raw_moves: object) -> list[dict]:
@@ -1546,7 +1920,7 @@ def _normalize_moves(raw_moves: object) -> list[dict]:
                 "goal": compact_text(str(item.get("goal", "")).strip() or "推进当前主线", 80),
                 "emotion": str(item.get("emotion", "")).strip() or "alert",
                 "action": compact_text(str(item.get("action", "")).strip() or "继续推进当前主线", 120),
-                "priority": int(item.get("priority", 0) or 0),
+                "priority": _normalize_priority(item.get("priority")),
                 "new_character_candidates": compact_list(
                     item.get("new_character_candidates", []),
                     max_items=4,
@@ -1555,6 +1929,24 @@ def _normalize_moves(raw_moves: object) -> list[dict]:
             }
         )
     return moves
+
+
+def _normalize_priority(raw: object) -> int:
+    if isinstance(raw, bool):
+        return int(raw)
+    if isinstance(raw, (int, float)):
+        return max(0, min(10, int(raw)))
+    cleaned = str(raw or "").strip().lower()
+    if not cleaned:
+        return 0
+    if cleaned in {"最高", "高", "紧急", "关键", "highest", "high", "critical"}:
+        return 3
+    if cleaned in {"中", "一般", "普通", "medium", "normal"}:
+        return 2
+    if cleaned in {"低", "最低", "low", "lowest"}:
+        return 1
+    match = re.search(r"-?\d+", cleaned)
+    return max(0, min(10, int(match.group(0)))) if match else 0
 
 
 def _normalize_cadence(raw: object) -> str:
@@ -1571,12 +1963,19 @@ def _normalize_cadence(raw: object) -> str:
 def _normalize_intent(raw_intent: object) -> dict:
     if not isinstance(raw_intent, dict):
         return {}
+
+    def _normalize_conflict(value: object) -> dict:
+        if isinstance(value, dict):
+            return value
+        text = compact_text(str(value or "").strip(), 180)
+        return {"summary": text} if text else {}
+
     return {
         "chapter_title": compact_text(str(raw_intent.get("chapter_title", "")).strip(), 60),
         "cadence": _normalize_cadence(raw_intent.get("cadence", "measured")),
         "next_focus": compact_text(str(raw_intent.get("next_focus", "")).strip(), 160),
-        "primary_conflict": raw_intent.get("primary_conflict", {}) if isinstance(raw_intent.get("primary_conflict"), dict) else {},
-        "secondary_conflict": raw_intent.get("secondary_conflict", {}) if isinstance(raw_intent.get("secondary_conflict"), dict) else {},
+        "primary_conflict": _normalize_conflict(raw_intent.get("primary_conflict")),
+        "secondary_conflict": _normalize_conflict(raw_intent.get("secondary_conflict")),
         "approved_new_characters": raw_intent.get("approved_new_characters", [])
         if isinstance(raw_intent.get("approved_new_characters", []), list)
         else [],
@@ -1589,6 +1988,151 @@ def _normalize_intent(raw_intent: object) -> dict:
     }
 
 
+def _director_quality_gate_enabled(story: StoryState) -> bool:
+    context = story.outline_context if isinstance(story.outline_context, dict) else {}
+    return context.get("schema_version") == "outline-context/v1"
+
+
+def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
+    if not isinstance(plan, dict):
+        return ["导演产物不是JSON对象。"]
+    issues: list[str] = []
+    event_plan = plan.get("event_plan") if isinstance(plan.get("event_plan"), dict) else {}
+    satisfaction = event_plan.get("chapter_satisfaction") if isinstance(event_plan.get("chapter_satisfaction"), dict) else {}
+    required_satisfaction = ("core_event", "obstacle", "visible_payoff", "cost", "state_change", "next_hook")
+    missing = [key for key in required_satisfaction if not str(satisfaction.get(key) or "").strip()]
+    if missing:
+        issues.append(f"event_plan.chapter_satisfaction 缺少：{', '.join(missing)}。")
+    hook = event_plan.get("chapter_end_hook") if isinstance(event_plan.get("chapter_end_hook"), dict) else {}
+    if not str(hook.get("content") or "").strip():
+        issues.append("event_plan.chapter_end_hook 缺少具体 content。")
+    placeholder_phrases = {
+        "完成本章推进",
+        "推进当前目标",
+        "出现可见阻力",
+        "获得阶段收益",
+        "付出可见代价",
+        "状态发生变化",
+        "形成下一场压力",
+        "留下下一步",
+    }
+    satisfaction_values = [str(satisfaction.get(key) or "").strip() for key in required_satisfaction]
+    if any(value in placeholder_phrases for value in [*satisfaction_values, str(hook.get("content") or "").strip()]):
+        issues.append("导演计划仍含空泛占位语，必须改成能直接写成场景的具体行动、阻力、结果和章末事件。")
+
+    moves = []
+    for key in ("character_moves",):
+        value = plan.get(key)
+        if isinstance(value, list):
+            moves.extend(item for item in value if isinstance(item, dict))
+    ordered = event_plan.get("ordered_actions")
+    if isinstance(ordered, list):
+        moves.extend(item for item in ordered if isinstance(item, dict))
+
+    lead = next((character for character in story.characters if character.role in {"主角", "protagonist"}), None)
+    if is_game_story(story) and lead and lead.game_id:
+        for move in moves:
+            if str(move.get("name") or "").strip() != lead.name:
+                continue
+            action_text = " ".join(str(move.get(key) or "") for key in ("goal", "action"))
+            if not any(marker in action_text for marker in ("现实", "下线", "手机", "银行卡", "房租")):
+                issues.append(f"游戏内行动使用了现实姓名“{lead.name}”，应使用游戏ID“{lead.game_id}”。")
+                break
+
+    generic_suffixes = ("收购方", "管理员", "工作人员", "路人", "玩家甲", "店员", "商人玩家")
+    for move in moves:
+        name = str(move.get("name") or "").strip()
+        if name and name.endswith(generic_suffixes):
+            issues.append(f"角色“{name}”是岗位或占位称呼；删除该角色，或先使用已有具名角色卡。")
+            break
+
+    known_text = "\n".join(
+        [
+            story.outline,
+            *story.world_facts,
+            *story.author_constraints,
+            *(story.chapter_summaries[-1].facts if story.chapter_summaries else []),
+            json.dumps(story.progression_ledger, ensure_ascii=False),
+            json.dumps(story.outline_context, ensure_ascii=False),
+        ]
+    )
+    plan_text = json.dumps(plan, ensure_ascii=False)
+    material_pattern = re.compile(r"[\u4e00-\u9fff]{1,8}(?:毒腺|狼皮|鼠皮|兽皮|矿石|草药)")
+    def _material_keys(value: object) -> set[str]:
+        found: set[str] = set()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if material_pattern.fullmatch(str(key)):
+                    found.add(str(key))
+                found.update(_material_keys(item))
+        elif isinstance(value, list):
+            for item in value:
+                found.update(_material_keys(item))
+        return found
+
+    known_materials = _material_keys(story.progression_ledger)
+    if not known_materials:
+        known_materials = set(material_pattern.findall(known_text))
+    for known in sorted(known_materials):
+        suffix = next((item for item in ("毒腺", "狼皮", "鼠皮", "兽皮", "矿石", "草药") if known.endswith(item)), "")
+        known_prefix = known[: -len(suffix)] if suffix else ""
+        if not known_prefix:
+            continue
+        candidate_pattern = re.compile(rf"[\u4e00-\u9fff]{{{len(known_prefix)}}}{re.escape(suffix)}")
+        for candidate in sorted(set(candidate_pattern.findall(plan_text))):
+            candidate_prefix = candidate[: -len(suffix)]
+            if candidate != known and candidate_prefix[:1] == known_prefix[:1]:
+                issues.append(f"材料“{candidate}”与既有材料冲突；既有名称是“{known}”。")
+
+    economy = story.progression_ledger.get("economy") if isinstance(story.progression_ledger, dict) else {}
+    inventory = economy.get("inventory") if isinstance(economy, dict) and isinstance(economy.get("inventory"), dict) else {}
+    collection_markers = ("补足", "补齐", "继续收集", "继续刷", "再刷", "刷取")
+    negated_collection_markers = ("不用收集", "无需收集", "不再收集", "不用再刷", "无需再刷")
+    move_texts = [" ".join(str(move.get(key) or "") for key in ("goal", "action")) for move in moves]
+    for material, raw_count in inventory.items():
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            continue
+        name = str(material).strip()
+        if not name:
+            continue
+        requirement_matches: list[int] = []
+        for pattern in (
+            rf"(?:需要|要求|提交|收集)[^。；\n]{{0,16}}{re.escape(name)}\s*[×xX*]?\s*(\d+)",
+            rf"{re.escape(name)}\s*[×xX*]\s*(\d+)",
+        ):
+            requirement_matches.extend(int(value) for value in re.findall(pattern, known_text))
+        if not requirement_matches:
+            continue
+        required = min(requirement_matches)
+        if count < required:
+            continue
+        suffix = next((item for item in ("毒腺", "狼皮", "鼠皮", "兽皮", "矿石", "草药") if name.endswith(item)), name)
+        for action_text in move_texts:
+            if any(marker in action_text for marker in negated_collection_markers):
+                continue
+            if (name in action_text or suffix in action_text) and any(marker in action_text for marker in collection_markers):
+                issues.append(
+                    f"背包已有{count}份{name}，已满足已知需求{required}份，不应重复收集；应先处理接取、提交或其他明确前置。"
+                )
+                break
+    return list(dict.fromkeys(issues))
+
+
+def _director_revision_prompt(base_prompt: str, plan: dict, issues: list[str]) -> str:
+    return "\n".join(
+        [
+            base_prompt,
+            "",
+            "上一次导演计划未通过硬性验收，请完整重做JSON。",
+            f"必须修复：{'；'.join(issues)}",
+            "不得保留错误材料名、占位人物或空的章节收益/钩子；不要输出解释。",
+            f"上一次JSON：{_plain_prompt_json(plan)}",
+        ]
+    )
+
+
 def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: StoryState) -> dict:
     def _normalize_chapter_end_hook(raw_hook: object) -> dict[str, str | None] | None:
         if not isinstance(raw_hook, dict):
@@ -1597,6 +2141,25 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
         strength = str(raw_hook.get("strength", "")).strip().lower() or None
         content = compact_text(str(raw_hook.get("content", "")).strip(), 180)
         return {"type": hook_type, "strength": strength, "content": content}
+
+    def _normalize_chapter_satisfaction(raw_satisfaction: object) -> dict[str, str]:
+        if not isinstance(raw_satisfaction, dict):
+            return {}
+        fields = (
+            "emotion_target",
+            "core_event",
+            "obstacle",
+            "visible_payoff",
+            "cost",
+            "outsider_misread",
+            "state_change",
+            "next_hook",
+        )
+        return {
+            field: compact_text(str(raw_satisfaction.get(field, "")).strip(), 180)
+            for field in fields
+            if str(raw_satisfaction.get(field, "")).strip()
+        }
 
     if not isinstance(raw_event_plan, dict):
         return {
@@ -1609,6 +2172,7 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
             "location_beats": [],
             "explicit_chapter_end_hook": "",
             "chapter_end_hook": None,
+            "chapter_satisfaction": {},
             "author_constraints": list(story.author_constraints),
         }
     return {
@@ -1627,6 +2191,7 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
         "next_focus": compact_text(str(raw_event_plan.get("next_focus", "")).strip(), 160),
         "explicit_chapter_end_hook": compact_text(str(raw_event_plan.get("explicit_chapter_end_hook", "")).strip(), 180),
         "chapter_end_hook": _normalize_chapter_end_hook(raw_event_plan.get("chapter_end_hook")),
+        "chapter_satisfaction": _normalize_chapter_satisfaction(raw_event_plan.get("chapter_satisfaction")),
         "author_constraints": list(story.author_constraints),
     }
 
@@ -2413,12 +2978,13 @@ def _review_chapter_body(
     facts_text = "\n".join(world_facts or [])
     plan_text = json.dumps(event_plan, ensure_ascii=False)
     game_context = is_game_genre("\n".join([body, facts_text, plan_text]))
+    chapter_one_trade_payoff = first_chapter_trade_authorized(event_plan, world_facts)
     simulation_plan = simulation_plan or {}
     min_chapter_chars = _chapter_review_min_chars(simulation_plan)
     issues: list[str] = []
     revision_plan: list[str] = []
     scores = {
-        "webnovel_hook": 8 if len(compact_body) >= min_chapter_chars else 5,
+        "webnovel_hook": 8 if len(compact_body) >= min_chapter_chars - CHAPTER_CHAR_TOLERANCE else 5,
         "background_integration": 8,
         "protagonist_motivation": 8,
         "genre_rules": 8,
@@ -2433,7 +2999,45 @@ def _review_chapter_body(
             issues.append(issue)
             revision_plan.append(plan)
 
-    if len(compact_body) < min_chapter_chars:
+    if chapter_one_trade_payoff:
+        anchor_text = f"{plan_text}\n{facts_text}"
+        expected_arrivals = re.findall(r"到账\s*[：:]?\s*(\d+(?:\.\d{1,2})?)\s*元", anchor_text)
+        body_arrivals = re.findall(r"(\d+(?:\.\d{1,2})?)\s*元", body)
+
+        def normalized_amounts(values: list[str]) -> set[Decimal]:
+            normalized: set[Decimal] = set()
+            for value in values:
+                try:
+                    normalized.add(Decimal(value))
+                except InvalidOperation:
+                    continue
+            return normalized
+
+        missing_amounts = normalized_amounts(expected_arrivals) - normalized_amounts(body_arrivals)
+        if missing_amounts:
+            expected_text = "、".join(f"{amount:.2f}元" for amount in sorted(missing_amounts))
+            scores["continuity"] = min(scores["continuity"], 4)
+            issues.append(f"大纲金额不一致：正文必须保留明确到账金额{expected_text}。")
+            revision_plan.append(
+                f"把担保交易的净到账金额改为{expected_text}，并同步核对支付急账后的现实余额；不要自行改价或手续费。"
+            )
+        opening_matches = re.findall(r"最后\s*(\d+(?:\.\d{1,2})?)\s*元", anchor_text)
+        if opening_matches and not any(f"{value}元" in body[:1200] for value in opening_matches):
+            expected_opening = f"{opening_matches[0]}元"
+            scores["continuity"] = min(scores["continuity"], 4)
+            issues.append(f"开篇余额不一致：正文开篇必须保留{expected_opening}。")
+            revision_plan.append(f"把登录游戏前的现实余额改回{expected_opening}，不要沿用旧稿数字。")
+        ending_matches = re.findall(
+            r"余额(?:变为|变成|为)?\s*(\d+(?:\.\d{1,2})?)\s*元",
+            anchor_text,
+        )
+        if ending_matches and not any(f"{value}元" in body[-1600:] for value in ending_matches):
+            expected_ending = f"{ending_matches[-1]}元"
+            scores["continuity"] = min(scores["continuity"], 4)
+            issues.append(f"章末余额不一致：付清急账后的现实余额必须是{expected_ending}。")
+            revision_plan.append(f"把章末现实余额改回{expected_ending}，并删除与该结果冲突的分项金额。")
+
+    if len(compact_body) < min_chapter_chars - CHAPTER_CHAR_TOLERANCE:
         scores["webnovel_hook"] = min(scores["webnovel_hook"], 5)
         issues.append(f"章节字数偏少：当前约{len(compact_body)}字，番茄长篇建议至少{min_chapter_chars}字。")
         revision_plan.append(f"扩写到{TARGET_CHAPTER_CHARS}，补足场景、对话、心理、交易过程、NPC服务边界和章末弱钩子，避免摘要化。")
@@ -2563,7 +3167,7 @@ def _review_chapter_body(
             "赵胖子",
             "盯盘",
         )
-        if any(token in body for token in first_chapter_trade_terms):
+        if not chapter_one_trade_payoff and any(token in body for token in first_chapter_trade_terms):
             scores["genre_rules"] = min(scores["genre_rules"], 5)
             issues.append("第一章提前展开交易线：出现寄售、成交、到账、手续费、商人盯盘或赵胖子内容。")
             revision_plan.append("删除第一章的实际交易和商人线，只保留掉落、任务材料预留和章末“下一步用高爆率抢任务/装备/技能前置”的目标。")
@@ -2584,14 +3188,24 @@ def _review_chapter_body(
             "旧城区入口",
             "巡夜人残牌",
         )
-        if any(token in body for token in first_chapter_service_closure_terms):
+        service_terms = first_chapter_service_closure_terms
+        if chapter_one_trade_payoff:
+            service_terms = tuple(token for token in service_terms if token != "扣掉")
+        if any(token in body for token in service_terms):
             scores["genre_rules"] = min(scores["genre_rules"], 5)
             scores["continuity"] = min(scores["continuity"], 5)
             issues.append("第一章账本越界：出现拿铜币、修法杖、买药水、技能书残页或旧城区入口等后续阶段内容。")
             revision_plan.append("第一章只保留首次打灰狼、掉落异常、血蓝耐久消耗、背包材料和清道夫委托前置；不得交任务、拿铜币、修法杖、买药水或开启技能书/旧城区线。")
 
         first_chapter_pressure_terms = ("白袍", "公会", "论坛", "清场", "后勤", "异常低价", "观察名单")
-        if any(token in body for token in first_chapter_pressure_terms):
+        early_external_pressure = any(token in body for token in first_chapter_pressure_terms)
+        if chapter_one_trade_payoff:
+            early_external_pressure = any(
+                token in body for token in ("白袍", "论坛", "清场", "后勤", "异常低价", "观察名单")
+            ) or bool(
+                re.search(r"公会[^。！？\n]{0,24}(?:追查|盯上|锁定|调查|围堵|清场)", body)
+            )
+        if early_external_pressure:
             scores["genre_rules"] = min(scores["genre_rules"], 5)
             issues.append("第一章外部压力过早：公会、论坛、商人脚本或清场信息提前介入。")
             revision_plan.append("把公会、论坛和商人脚本反应全部移到第二章以后；第一章只让主角自己意识到材料需要处理，外部世界暂不正式发现。")
@@ -3062,6 +3676,7 @@ def _merge_writing_review_quality(quality: dict, writing_review: dict) -> dict:
     ):
         if isinstance(writing_review.get(key), dict):
             merged[key] = writing_review[key]
+    merged["simplified_review"] = build_simplified_review(merged)
     return merged
 
 
@@ -3259,23 +3874,6 @@ def _chapter_review_min_chars(simulation_plan: dict[str, Any] | None) -> int:
     if variant:
         return REGENERATION_MIN_CHARS
     return MIN_CHAPTER_CHARS
-
-
-def _style_adapt_enabled(plan: dict[str, Any] | None) -> bool:
-    plan = plan if isinstance(plan, dict) else {}
-    if str(plan.get("write_mode", "")).strip().lower() in {"fast", "speed", "rough"}:
-        return False
-    simulation_plan = plan.get("simulation_plan") if isinstance(plan.get("simulation_plan"), dict) else {}
-    if _simulation_variant_from_plan(plan).get("skip_style_adapt"):
-        return False
-    return bool(
-        plan.get("style_adapt", True)
-        and (
-            plan.get("web_game_director_card")
-            or simulation_plan.get("web_game_director_card")
-            or simulation_plan.get("chapter_goal")
-        )
-    )
 
 
 def _segment_needs_model_revision(review: dict[str, Any]) -> bool:
@@ -3587,20 +4185,36 @@ def _compact_prompt_text(value: str, limit: int) -> str:
 def _compact_writer_taskbook_section(taskbook: dict[str, Any]) -> str:
     taskbook = taskbook if isinstance(taskbook, dict) else {}
     lines = ["## 本章方向"]
-    goal = plain_writer_phrase(str(taskbook.get("chapter_goal") or "完成本章推进"))
+    scenes = [item for item in taskbook.get("scenes", []) if isinstance(item, dict)][:3]
+    goal = plain_writer_phrase(str(taskbook.get("chapter_goal") or ""))
+    if goal in {"", "完成本章推进", "推进当前目标"} and scenes:
+        goal = plain_writer_phrase(str(scenes[0].get("goal") or "")).split("；阻力是", 1)[0].strip("。； ")
+    goal = goal or "承接上一章结果，完成一个具体行动"
     lines.append(f"目标：{_compact_prompt_text(goal, 150)}")
     for index, scene in enumerate(
-        [item for item in taskbook.get("scenes", []) if isinstance(item, dict)][:3],
+        scenes,
         start=1,
     ):
         title = _compact_prompt_text(str(scene.get("title") or f"场面{index}"), 35)
+        if title.startswith("当前地点："):
+            title = f"场面{index}"
         scene_goal = _compact_prompt_text(plain_writer_phrase(str(scene.get("goal") or "")), 80)
+        scene_goal = scene_goal.replace("；阻力是出现可见阻力。", "").replace("；阻力是出现可见阻力", "")
         required = _compact_prompt_text(writer_facing_text(scene.get("required_surface") or ""), 200)
+        if required in {"地点、行动、反馈、代价", "地点、行动、反馈和代价"}:
+            required = ""
         ending = _compact_prompt_text(
             plain_writer_phrase(str(scene.get("exit_state") or scene.get("handoff") or "")),
             70,
         )
-        lines.append(f"{index}. {title}：{scene_goal}；要出现：{required}；结束时：{ending}")
+        if ending in {"形成下一场压力。", "形成下一场压力", "下一场必须承接本场结果，不重置状态。"}:
+            ending = ""
+        details = [scene_goal]
+        if required:
+            details.append(f"要出现：{required}")
+        if ending:
+            details.append(f"结束时：{ending}")
+        lines.append(f"{index}. {title}：{'；'.join(item for item in details if item)}")
     forbidden = compact_list(taskbook.get("global_forbidden", []), max_items=4, item_chars=55)
     if forbidden:
         lines.append(f"本章不写：{'；'.join(forbidden)}")
@@ -3619,6 +4233,61 @@ def _writer_value_lines(values: dict[str, Any], *, max_items: int = 8) -> list[s
         if rendered:
             lines.append(f"{label}：{rendered}")
     return lines
+
+
+def _monster_context_for_prompt(story: StoryState, plan: dict[str, Any], *, max_items: int = 3) -> list[dict[str, Any]]:
+    profiles = story.monster_profiles if isinstance(story.monster_profiles, list) else []
+    relevance_text = json.dumps(plan if isinstance(plan, dict) else {}, ensure_ascii=False)
+    selected: list[dict[str, Any]] = []
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        name = str(profile.get("name") or "").strip()
+        if not name or name not in relevance_text:
+            continue
+        selected.append(
+            {
+                key: profile.get(key)
+                for key in (
+                    "name",
+                    "category",
+                    "rank",
+                    "level",
+                    "hp",
+                    "attack_mode",
+                    "skills",
+                    "traits",
+                    "habitats",
+                    "drops",
+                )
+                if profile.get(key) not in (None, "", [], {})
+            }
+        )
+        if len(selected) >= max_items:
+            break
+    return selected
+
+
+def _writer_monster_card_line(profile: dict[str, Any]) -> str:
+    labels = {
+        "category": "类别",
+        "rank": "品阶",
+        "level": "等级",
+        "hp": "生命",
+        "attack_mode": "攻击方式",
+        "skills": "技能",
+        "traits": "特性",
+        "habitats": "出没地点",
+        "drops": "可能掉落",
+    }
+    parts: list[str] = []
+    for key, label in labels.items():
+        value = profile.get(key)
+        if value in (None, "", [], {}):
+            continue
+        rendered = "、".join(str(item) for item in value[:4]) if isinstance(value, list) else str(value)
+        parts.append(f"{label}：{compact_text(rendered, 90)}")
+    return f"{profile.get('name') or '未命名怪物'}（{'；'.join(parts)}）"
 
 
 def _writer_output_section(chapter_number: int, plan: dict[str, Any]) -> list[str]:
@@ -3668,6 +4337,71 @@ def _writer_direction_section(
     return lines
 
 
+_WORLD_CONTEXT_RULE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("power_system", ("等级", "技能", "装备", "法杖", "战斗", "怪物", "职业", "转职", "生命", "法力")),
+    ("quest_rules", ("任务", "委托", "登记", "提交", "前置", "奖励")),
+    ("economy_rules", ("铜币", "材料", "掉落", "交易", "价格", "背包", "寄售", "收购", "药水", "修理", "钱袋")),
+    ("faction_rules", ("NPC", "玩家", "公会", "阵营", "势力", "仓库")),
+    ("panel_rules", ("面板", "生命", "法力", "经验", "耐久", "等级", "背包")),
+    ("reality_bridge_rules", ("现实余额", "现实到账", "人民币", "提现", "房租", "宽带", "信用卡", "银行卡", "银行账户", "现实工作")),
+)
+
+
+def _compact_world_context_for_prompt(
+    world_context: Any,
+    relevance_text: str,
+    *,
+    max_rules: int = 8,
+) -> dict[str, Any]:
+    if not isinstance(world_context, dict) or not world_context:
+        return {}
+
+    rules: list[str] = []
+
+    def add_rules(field: str, limit: int) -> None:
+        values = world_context.get(field)
+        if not isinstance(values, list):
+            return
+        for value in values[:limit]:
+            text = compact_text(str(value or ""), 140)
+            if text and text not in rules:
+                rules.append(text)
+            if len(rules) >= max_rules:
+                return
+
+    add_rules("world_rules", 2)
+    for field, keywords in _WORLD_CONTEXT_RULE_KEYWORDS:
+        if len(rules) >= max_rules:
+            break
+        if any(keyword in relevance_text for keyword in keywords):
+            add_rules(field, 1)
+    if len(rules) < max_rules:
+        add_rules("constraints", 1)
+
+    entities: list[str] = []
+    for field in ("locations", "factions"):
+        values = world_context.get(field)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            name = compact_text(str(value.get("name") or ""), 50)
+            if not name or name not in relevance_text:
+                continue
+            description = compact_text(str(value.get("description") or ""), 120)
+            entities.append(f"{name}：{description}" if description else name)
+            if len(entities) >= 3:
+                break
+
+    premise = compact_text(str(world_context.get("premise") or ""), 180)
+    return {
+        key: value
+        for key, value in {"premise": premise, "rules": rules, "entities": entities}.items()
+        if value not in (None, "", [], {})
+    }
+
+
 def _writer_fact_section(
     story: StoryState,
     chapter_number: int,
@@ -3684,6 +4418,31 @@ def _writer_fact_section(
     world_facts = _priority_world_facts(story.world_facts, max_items=6, item_chars=100)
     if world_facts:
         lines.append(f"既有事实：{'；'.join(world_facts)}")
+    world_context = _compact_world_context_for_prompt(
+        story.world_context,
+        "\n".join(
+            (
+                json.dumps(
+                    story.outline_context.get("chapter", {})
+                    if isinstance(story.outline_context, dict)
+                    else {},
+                    ensure_ascii=False,
+                ),
+                json.dumps(_compact_writer_plan_for_prompt(plan), ensure_ascii=False),
+                json.dumps(plan.get("writing_taskbook", {}), ensure_ascii=False),
+            )
+        ),
+        max_rules=8,
+    )
+    relevant_world_rules = world_context.get("rules") if isinstance(world_context.get("rules"), list) else []
+    if relevant_world_rules:
+        lines.append(f"本章相关世界规则：{'；'.join(relevant_world_rules)}")
+    relevant_world_entities = world_context.get("entities") if isinstance(world_context.get("entities"), list) else []
+    if relevant_world_entities:
+        lines.append(f"本章地点与阵营：{'；'.join(relevant_world_entities)}")
+    monster_cards = _monster_context_for_prompt(story, plan)
+    if monster_cards:
+        lines.append("本章怪物卡：" + "；".join(_writer_monster_card_line(card) for card in monster_cards))
     if story.chapter_summaries:
         latest = story.chapter_summaries[-1]
         if latest.summary:
@@ -3756,7 +4515,13 @@ def _writer_character_section(character_context: dict[str, Any], dialogue_contex
 
 def _writer_state_values(value: Any) -> list[str]:
     if isinstance(value, dict):
-        return [item for nested in value.values() for item in _writer_state_values(nested)]
+        metadata_keys = {"updated_chapter", "chapter_number", "revision", "schema_version"}
+        return [
+            item
+            for key, nested in value.items()
+            if key not in metadata_keys
+            for item in _writer_state_values(nested)
+        ]
     if isinstance(value, list):
         return [item for nested in value for item in _writer_state_values(nested)]
     if value in (None, "", [], {}):
@@ -3828,7 +4593,7 @@ def _writer_craft_section(
     if skill_lines:
         lines.append("启用 Skill 模块摘要：")
         lines.extend(skill_lines)
-    return lines
+    return list(dict.fromkeys(lines))
 
 
 def _compact_writer_governance_section(governance: dict[str, Any]) -> str:
@@ -3885,6 +4650,7 @@ def _web_game_writing_method_lines(chapter_number: int) -> list[str]:
         phase_hint,
         "让主角为一个眼前目标行动，遇到阻力后付出代价，并拿到一个看得见的小进展。",
         "游戏规则从战斗、任务、背包、价格、NPC回话和结算里自然露出；面板只留马上会影响选择的数字。",
+        "怪物面板在该类怪物第一次正式交战前显示一次：普通怪写名称、等级、生命和攻击方式，同类普通怪后续不重复；精英怪和首领另加技能、特性，掉落等击杀后再结算。",
         "隐藏优势只在幕后起作用。别人可以误判，但不能凭一次低级掉落看穿主角。",
         "玩家和NPC按现代中文习惯说完整的话；游戏内说前置任务、条件没满足或登记不了，不单说门槛。",
     ]
@@ -4045,6 +4811,7 @@ def _failed_bundle(story: StoryState, chapter_number: int, reason: str = ""):
     bundle.quality_report = validate_bundle(bundle.model_dump())
     if reason:
         bundle.quality_report["ok"] = False
+        bundle.quality_report["failure_reason"] = reason
         issues = list(bundle.quality_report.get("issues") or [])
         issues.append(reason)
         bundle.quality_report["issues"] = issues
@@ -4052,6 +4819,72 @@ def _failed_bundle(story: StoryState, chapter_number: int, reason: str = ""):
 
 
 class StoryOrchestrator:
+    def _emit_workflow_step(
+        self,
+        step_id: str,
+        label: str,
+        *,
+        status: str = "running",
+        source: str = "orchestrator",
+        used_modules: list[str] | None = None,
+        reads: list[str] | None = None,
+        outputs: dict[str, Any] | None = None,
+    ) -> None:
+        normalized_status = status if status in {"queued", "running", "done", "error"} else "running"
+        suffix = {"queued": "等待中", "running": "进行中", "done": "完成", "error": "失败"}[normalized_status]
+        workflow_step: dict[str, Any] = {
+            "id": step_id,
+            "label": label,
+            "reads": [str(item).strip() for item in (reads or []) if str(item).strip()],
+        }
+        artifact: dict[str, Any] = {"workflow_step": workflow_step}
+        if used_modules:
+            artifact["used_modules"] = used_modules
+        if outputs:
+            artifact["outputs"] = outputs
+        report_generation_progress(
+            {
+                "message": f"{label}{suffix}",
+                "status": normalized_status,
+                "stage": step_id,
+                "source": source,
+                "artifact": artifact,
+            }
+        )
+
+    def _emit_progress_with_artifact(
+        self,
+        message: str,
+        stage: str,
+        *,
+        source: str = "orchestrator",
+        used_modules: list[str] | None = None,
+        reason: str | None = None,
+        inputs: dict[str, Any] | None = None,
+        outputs: dict[str, Any] | None = None,
+        keep_legacy_text: bool = True,
+    ) -> None:
+        if keep_legacy_text:
+            report_generation_progress(message)
+        if source and (used_modules or reason or inputs or outputs):
+            artifact: dict[str, Any] = {}
+            if used_modules:
+                artifact["used_modules"] = used_modules
+            if reason:
+                artifact["reason"] = reason
+            if inputs:
+                artifact["inputs"] = inputs
+            if outputs:
+                artifact["outputs"] = outputs
+            report_generation_progress(
+                {
+                    "message": message,
+                    "stage": stage,
+                    "source": source,
+                    "artifact": artifact,
+                }
+            )
+
     def _chat(
         self,
         story: StoryState,
@@ -4196,52 +5029,28 @@ class StoryOrchestrator:
         )
         return text, error
 
-    def _plan_prompt(self, story: StoryState, chapter_number: int) -> str:
-        snapshot = _director_snapshot_summary(_story_snapshot(story))
-        chapter_seed = _writer_seed_summary(_compact_chapter_seed_for_prompt(build_chapter_seed(story, chapter_number)))
+    def _plan_prompt(
+        self,
+        story: StoryState,
+        chapter_number: int,
+        director_context: dict[str, Any] | None = None,
+    ) -> str:
+        director_context = director_context or _director_context_payload(story, chapter_number)
+        snapshot = _director_prompt_snapshot(director_context.get("project_snapshot", {}))
+        chapter_seed = _director_prompt_chapter_seed(director_context.get("chapter_seed", {}))
+        character_cards = _director_prompt_character_cards(director_context.get("character_cards", {}))
         char_names = [c.name for c in story.characters if c.lifecycle_state == "active" and not c.frozen]
+        values = {
+            "chapter_number": str(chapter_number),
+            "chapter_phase": _opening_phase_name(chapter_number, is_game=bool(_story_game_context(story, {}))),
+            "project_snapshot": _plain_prompt_json(snapshot),
+            "chapter_seed": _plain_prompt_json(chapter_seed),
+            "character_cards": _plain_prompt_json(character_cards),
+        }
         if not _story_game_context(story, {}):
-            return "\n".join(
-                [
-                    "请为中文长篇项目生成本章推演计划，只返回 JSON。",
-                    f"目标章节：第{chapter_number}章",
-                    f"章节阶段：{_opening_phase_name(chapter_number, is_game=False)}",
-                    f"项目快照：{_plain_prompt_json(snapshot)}",
-                    f"本章连续性材料：{_plain_prompt_json(chapter_seed)}",
-                    "输出字段：character_moves, chapter_intent, event_plan, memory_constraints, chapter_summary。",
-                    "event_plan 必须包含 chapter_title, turn, pivot, collision, ordered_actions, exposition_beats, npc_beats, quest_beats, location_beats, world_reactions, stakes, next_focus, explicit_chapter_end_hook, chapter_end_hook。",
-                    "chapter_end_hook 使用结构：{type, strength, content}；type 只能是危机钩、悬念钩、渴望钩、反转钩、余韵钩；strength 只能是 strong、medium、weak。",
-                    "要求：动作具体，焦点明确，事件链短但有效，不要写正文。",
-                ]
-            )
-        phase_name = _opening_phase_name(chapter_number)
-        return "\n".join(
-            [
-                "网游计划写法：先排出一条玩家行动链；不要只列设定，要让目标、卡点、尝试、消耗、反馈、小进度和下一步都能写成场景。",
-                "请为中文网文项目生成本章推演计划，只返回 JSON。",
-                f"目标章节：第{chapter_number}章",
-                f"章节阶段：{_opening_phase_name(chapter_number)}",
-                f"项目快照：{_plain_prompt_json(snapshot)}",
-                f"本章连续性材料：{_plain_prompt_json(chapter_seed)}",
-                "输出字段如下，注意 character_moves 必须是对象数组：",
-                '  character_moves: [{"name": "角色名", "goal": "目标", "emotion": "情绪", "action": "行动", "priority": 数字}]',
-                "  chapter_intent: {chapter_title, cadence, next_focus, primary_conflict, secondary_conflict}",
-                "  event_plan.chapter_satisfaction: {emotion_target, core_event, obstacle, visible_payoff, outsider_misread, state_change, next_hook}",
-                "  event_plan.chapter_end_hook: {type: 危机钩|悬念钩|渴望钩|反转钩|余韵钩, strength: strong|medium|weak, content: 章末具体诱饵}",
-                "  event_plan: {chapter_title, turn, pivot, collision, ordered_actions: [{name, goal, emotion, action, priority}], exposition_beats: [本章要自然写进正文的背景节拍], npc_beats: [NPC服务/信息边界/任务钩子], quest_beats: [任务链阶段/奖励/代价], location_beats: [地图资源/风险/玩家密度], world_reactions: [世界会如何反应], stakes, next_focus}",
-                "  memory_constraints: {must_keep_facts, unresolved_threads, protected_characters, protected_foreshadowing, author_constraints, current_focus, conflict_anchor, event_guardrail, ledger_updates}",
-                "  chapter_summary: {summary, facts, unresolved_threads, next_focus, chapter_title}",
-                "JSON长度要求：所有数组每项不超过80字；不要输出推理过程、不要重复字段、不要补充说明。",
-                f"活跃角色：{', '.join(char_names)}",
-                "计划优先级：先遵守本章连续性材料，再用项目快照补连续性；不要把检查规则复述进计划。",
-                "网游连续性：现实姓名、游戏ID、身份、等级、经验、货币、背包、装备耐久、任务进度必须能在 ledger_updates 里对上。",
-                "爽点结构：本章必须有一个具体目标、一个阻碍、一个可见收益、一个外人误判和一个章末下一步。",
-                "世界反应：只能从玩家看得见的价格、柜台、任务、掉落、公告、排队、目击和NPC记录长出来，不能让世界全知全能。",
-                "角色计划：主要角色不能只做功能动作；要写清他想要什么、怕什么、误判了什么，以及本章关系有什么变化。",
-                "第1-3章：第1章负责登录、建号、第一次验证和现实压力兑现；第2章负责把优势转成成长；第3章再升级到路线竞争或职业前置。",
-                "要求：动作具体，焦点明确，事件链简短但有效，不要写正文。",
-            ]
-        )
+            return render_prompt_template(get_default_prompt_template("director_generic"), values)
+        values["active_characters"] = ", ".join(char_names)
+        return render_prompt_template(get_default_prompt_template("director"), values)
 
     def _body_prompt(self, story: StoryState, chapter_number: int, plan: dict) -> str:
         plan = plan if isinstance(plan, dict) else {}
@@ -4285,14 +5094,23 @@ class StoryOrchestrator:
                 style_guidance=plan.get("style_guidance") if isinstance(plan.get("style_guidance"), dict) else {},
             ),
         ]
-        return "\n".join(line for section in sections for line in [*section, ""]).strip()
+        section_text = ["\n".join(section) for section in sections]
+        return render_prompt_template(
+            get_default_prompt_template("writer"),
+            {
+                "output_section": section_text[0],
+                "chapter_direction": section_text[1],
+                "chapter_facts": section_text[2],
+                "character_context": section_text[3],
+                "prose_method": section_text[4],
+            },
+        ).strip()
 
     def _revision_prompt(self, story: StoryState, chapter_number: int, body: str, plan: dict, review: dict) -> str:
         plan = plan if isinstance(plan, dict) else {}
         plan = {**plan, "writing_taskbook": ensure_writing_taskbook(chapter_number, plan, genre=story.genre, style=story.style)}
         review = review if isinstance(review, dict) else {}
         forbidden_terms = _revision_forbidden_terms(review, plan)
-        fix_checklist = _revision_fix_checklist(review)
         style_guidance = plan.get("style_guidance", {})
         target_chars = _plan_target_chars(plan)
         scene_repair_plan = review.get("scene_repair_plan") if isinstance(review.get("scene_repair_plan"), dict) else {}
@@ -4300,45 +5118,27 @@ class StoryOrchestrator:
             scene_repair_plan = build_scene_contract_repair_plan(review, plan.get("scene_cards", []))
         scene_repair_summary = _scene_repair_writer_summary(scene_repair_plan)
         base_prompt = self._body_prompt(story, chapter_number, plan)
-        compact_review = _compact_review_summary(review)
-        nested_review_items: dict[str, list[Any]] = {"issues": [], "revision_plan": []}
-        for nested_key in ("writing_review", "style_review", "prose_quality_review"):
-            nested = review.get(nested_key) if isinstance(review.get(nested_key), dict) else {}
-            for item_key in nested_review_items:
-                values = nested.get(item_key) if isinstance(nested.get(item_key), list) else []
-                nested_review_items[item_key].extend(values)
-        issues = compact_list(
-            [
-                *compact_review.get("issues", []),
-                *compact_review.get("style_issues", []),
-                *compact_review.get("prose_issues", []),
-                *nested_review_items["issues"],
-            ],
-            max_items=10,
-            item_chars=110,
-        )
-        raw_revision_plan = review.get("revision_plan") if isinstance(review.get("revision_plan"), list) else []
-        revision_plan = compact_list(
-            [
-                *raw_revision_plan[-8:],
-                *compact_review.get("revision_plan", []),
-                *nested_review_items["revision_plan"],
-            ],
-            max_items=10,
-            item_chars=110,
-        )
+        consolidated_review = build_simplified_review(review)
+        review_issues = consolidated_review.get("issues") if isinstance(consolidated_review.get("issues"), list) else []
+        review_actions = consolidated_review.get("revision_plan") if isinstance(consolidated_review.get("revision_plan"), list) else []
+        manual_instructions = compact_list(review.get("manual_instructions", []), max_items=3, item_chars=150)
         modification_lines = [
-            "## 修改目标",
+            "## 综合审稿修改",
             "在不改变本章核心事实、事件顺序和人物关系的前提下，把原文改得更顺。",
         ]
-        if issues:
-            modification_lines.append(f"修改意见：{'；'.join(issues)}")
-        if revision_plan:
-            modification_lines.append(f"用户改稿指令：{'；'.join(revision_plan)}")
+        if manual_instructions:
+            modification_lines.append(f"用户要求：{'；'.join(manual_instructions)}")
+        if review_issues:
+            modification_lines.append("修改意见（综合后，必须改到以下三项以内）：")
+            for index, item in enumerate(review_issues[:3], start=1):
+                if not isinstance(item, dict):
+                    continue
+                message = compact_text(str(item.get("message") or ""), 100)
+                fallback = compact_text(str(item.get("suggestion") or ""), 120)
+                action = compact_text(str(review_actions[index - 1]), 120) if index <= len(review_actions) else fallback
+                modification_lines.append(f"{index}. 问题：{message} 修改：{action}")
         if style_guidance:
             modification_lines.append(f"表达提醒：{_plain_prompt_json(_slim_prompt_value(style_guidance))}")
-        if fix_checklist:
-            modification_lines.append(f"必须改到：{'；'.join(compact_text(str(item), 110) for item in fix_checklist[:10])}")
         if scene_repair_summary:
             modification_lines.append(f"局部补写范围：{_plain_prompt_json(scene_repair_summary)}")
             modification_lines.append("只补这些场景缺少的可见后果，其他场景只做必要衔接。")
@@ -4351,16 +5151,13 @@ class StoryOrchestrator:
                 "改完后检查：修改目标逐项完成，删词清零，缺失场面已经正面写出；不要输出检查说明。",
             ]
         )
-        return "\n".join(
-            [
-                base_prompt,
-                "",
-                *modification_lines,
-                "",
-                "## 原正文",
-                "以下内容只作改稿输入，不复述提示词，不输出修改说明。",
-                body,
-            ]
+        return render_prompt_template(
+            get_default_prompt_template("revision"),
+            {
+                "body_prompt": base_prompt,
+                "revision_instructions": "\n".join(modification_lines),
+                "source_body": body,
+            },
         )
 
     def _write_chapter_in_segments(
@@ -4382,7 +5179,18 @@ class StoryOrchestrator:
             segments.extend(completed)
             segment_reviews.extend(c_reviews)
             start_index = len(completed) + 1
-            report_generation_progress(f"断点恢复：从第{start_index}段继续")
+            self._emit_progress_with_artifact(
+                f"断点恢复：从第{start_index}段继续",
+                "segment_checkpoint",
+                source="writer",
+                used_modules=["writer_agent", "segmented_writing"],
+                reason="重试写作时恢复已完成分段",
+                inputs={
+                    "chapter_number": chapter_number,
+                    "resume_from_segment": start_index,
+                    "story_id": story.story_id,
+                },
+            )
             self._segment_checkpoint = None
         else:
             start_index = 1
@@ -4390,6 +5198,19 @@ class StoryOrchestrator:
         for index in range(start_index, len(specs) + 1):
             spec = specs[index - 1]
             report_generation_progress(f"分段写作中 {index}/{len(specs)}：{spec.title}")
+            self._emit_progress_with_artifact(
+                f"分段写作 {index}/{len(specs)}：{spec.title}",
+                "segment_write",
+                source="writer",
+                used_modules=["writer_agent", "segmented_writing"],
+                reason="构建分段任务后调用 LLM 生成该段正文",
+                inputs={
+                    "chapter_number": chapter_number,
+                    "segment_index": index,
+                    "segment_key": spec.key,
+                    "segment_title": spec.title,
+                },
+            )
             segment_text, segment_error = self._timed_chat(
                 story,
                 build_segment_prompt(
@@ -4404,6 +5225,15 @@ class StoryOrchestrator:
                 stage=f"分段写作 {index}/{len(specs)}：{spec.title}",
             )
             if segment_error or not segment_text.strip():
+                self._emit_progress_with_artifact(
+                    f"分段写作 {index}/{len(specs)}失败",
+                    "segment_write",
+                    source="writer",
+                    used_modules=["writer_agent", "segmented_writing", "reviewer_agent"],
+                    reason="分段生成失败，触发断点快照",
+                    inputs={"chapter_number": chapter_number, "segment_index": index},
+                    outputs={"error": segment_error or f"segment_empty:{spec.key}"},
+                )
                 # Save checkpoint before returning
                 self._segment_checkpoint = {
                     "story_id": story.story_id,
@@ -4420,7 +5250,14 @@ class StoryOrchestrator:
             )
             review = review_segment_output(spec, segment_text, chapter_number=chapter_number)
             if not review.get("pass") and _segment_needs_model_revision(review):
-                report_generation_progress(f"局部改稿中 {index}/{len(specs)}：{spec.title}")
+                self._emit_progress_with_artifact(
+                    f"局部改稿中 {index}/{len(specs)}：{spec.title}",
+                    "segment_revision",
+                    source="writer",
+                    used_modules=["writer_agent", "reviewer_agent"],
+                    reason="段落质检未通过，执行局部改稿",
+                    inputs={"chapter_number": chapter_number, "segment_index": index, "segment_title": spec.title},
+                )
                 original_segment_text = segment_text
                 original_segment_review = review
                 revised_text, revised_error = self._timed_chat(
@@ -4453,6 +5290,15 @@ class StoryOrchestrator:
                     segment_text = str(segment_safety["text"])
                     review = dict(segment_safety["review"])
                     review["segment_revision_safety"] = segment_safety["report"]
+                    self._emit_progress_with_artifact(
+                        f"局部改稿完成 {index}/{len(specs)}：{spec.title}",
+                        "segment_revision",
+                        source="writer",
+                        used_modules=["writer_agent", "reviewer_agent"],
+                        reason="改稿通过安全规则后落库",
+                        inputs={"chapter_number": chapter_number, "segment_index": index},
+                        outputs={"accepted": segment_safety.get("accepted", False)},
+                    )
 
             segment_reviews.append(review)
             segments.append(segment_text)
@@ -4482,7 +5328,19 @@ class StoryOrchestrator:
             genre=story.genre,
             fact_locks=fact_locks or {},
         )
-        report_generation_progress("最终正文记忆提取中...")
+        self._emit_progress_with_artifact(
+            "最终正文记忆提取中...",
+            "memory_post_draft",
+            source="memory",
+            used_modules=["memory_agent", "post_draft_memory", "writer_agent"],
+            reason="将正文压缩为下一章状态摘要和账本变动",
+            inputs={
+                "story_id": story.story_id,
+                "chapter_number": chapter_number,
+                "body_chars": len(body),
+                "prompt_chars": len(prompt),
+            },
+        )
         memory_text, memory_error = self._timed_chat(
             story,
             prompt,
@@ -4492,6 +5350,15 @@ class StoryOrchestrator:
             stage=f"最终正文记忆 第{chapter_number}章",
         )
         if memory_error:
+            self._emit_progress_with_artifact(
+                "最终正文记忆提取失败",
+                "memory_post_draft",
+                source="memory",
+                used_modules=["memory_agent", "post_draft_memory"],
+                reason="模型未返回可解析记忆，fallback",
+                inputs={"chapter_number": chapter_number},
+                outputs={"error": memory_error},
+            )
             return fallback_post_draft_memory(body), {
                 "status": "fallback",
                 "rejected_count": 0,
@@ -4511,6 +5378,15 @@ class StoryOrchestrator:
                 current.model,
                 chapter_number,
                 fallback_reason="memory_invalid_json",
+            )
+            self._emit_progress_with_artifact(
+                "最终正文记忆JSON解析失败",
+                "memory_post_draft",
+                source="memory",
+                used_modules=["memory_agent", "post_draft_memory"],
+                reason="返回内容不是字典，改用安全后备逻辑",
+                inputs={"chapter_number": chapter_number},
+                outputs={"raw_payload_type": type(memory_text).__name__},
             )
             return fallback_post_draft_memory(body), {
                 "status": "fallback",
@@ -4543,11 +5419,34 @@ class StoryOrchestrator:
                 chapter_number,
                 fallback_reason="memory_has_no_grounded_updates",
             )
+            self._emit_progress_with_artifact(
+                "最终正文记忆无有效事实",
+                "memory_post_draft",
+                source="memory",
+                used_modules=["memory_agent", "post_draft_memory"],
+                reason="记忆缺失关键字段，改走后备记忆抽取",
+                inputs={"chapter_number": chapter_number},
+                outputs={"rejected_updates": len(memory.get("rejected_updates", []))},
+            )
             return fallback_post_draft_memory(body), {
                 "status": "fallback",
                 "rejected_count": len(memory.get("rejected_updates", [])),
                 "reason": "memory_has_no_grounded_updates",
             }
+        self._emit_progress_with_artifact(
+            "最终正文记忆提取完成",
+            "memory_post_draft",
+            source="memory",
+            used_modules=["memory_agent", "post_draft_memory"],
+            reason="记忆落盘成功，可用于下一章状态更新",
+            inputs={"chapter_number": chapter_number},
+            outputs={
+                "summary": bool(memory.get("summary")),
+                "facts": len(memory.get("facts", [])),
+                "unresolved_threads": len(memory.get("unresolved_threads", [])),
+                "rejected_updates": len(memory.get("rejected_updates", [])),
+            },
+        )
         return memory, {
             "status": "ok",
             "rejected_count": len(memory.get("rejected_updates", [])),
@@ -4643,13 +5542,8 @@ class StoryOrchestrator:
         instructions: list[str] | None = None,
     ) -> tuple[str, dict, str]:
         revision_review = dict(review or {})
-        revision_plan = list(revision_review.get("revision_plan") or [])
         manual_instructions = [str(instruction).strip() for instruction in (instructions or []) if str(instruction).strip()]
-        for instruction in manual_instructions:
-            clean = str(instruction).strip()
-            if clean and clean not in revision_plan:
-                revision_plan.append(clean)
-        revision_review["revision_plan"] = revision_plan
+        revision_review["manual_instructions"] = manual_instructions
         original_quality_seed = bundle.model_dump()
         original_quality = _merge_writing_review_quality(validate_bundle(original_quality_seed), revision_review)
         plan = {
@@ -4669,7 +5563,7 @@ class StoryOrchestrator:
                 bundle.chapter_number,
                 patched_body,
                 bundle.event_plan,
-                story.world_facts,
+                _review_context_facts(story),
                 getattr(bundle, "simulation_plan", {}),
                 getattr(bundle, "world_events", []),
                 getattr(bundle, "scene_cards", []),
@@ -4719,7 +5613,7 @@ class StoryOrchestrator:
             bundle.chapter_number,
             revised_body,
             bundle.event_plan,
-            story.world_facts,
+            _review_context_facts(story),
             getattr(bundle, "simulation_plan", {}),
             getattr(bundle, "world_events", []),
             getattr(bundle, "scene_cards", []),
@@ -4745,25 +5639,250 @@ class StoryOrchestrator:
         working_story.current_chapter = chapter_number
         for runtime_stage in ("planner", "writer", "memory"):
             setattr(working_story.agent_runtime, runtime_stage, StageRuntimeEntry())
+        director_context = _director_context_payload(working_story, chapter_number)
+        planning_character_cards = director_context.get("character_cards", {})
+        outline_snapshot = compact_text(working_story.outline, 220)
 
         report_generation_progress("剧情计划生成中...")
+        outline_reads = ["总纲", f"第{chapter_number}章细纲"]
+        if chapter_number > 1:
+            outline_reads.append("上一章摘要与结尾")
+        self._emit_workflow_step(
+            "read_outline",
+            "读取大纲",
+            status="done",
+            source="context_loader",
+            used_modules=["outline_agent", "memory_retrieval"],
+            reads=outline_reads,
+            outputs={
+                "outline_preview": outline_snapshot,
+                "chapter_context_keys": sorted((working_story.outline_context or {}).keys()),
+            },
+        )
+        character_names = _planning_character_names(planning_character_cards)
+        self._emit_workflow_step(
+            "read_characters",
+            "读取角色卡",
+            status="done",
+            source="context_loader",
+            used_modules=["character_agent"],
+            reads=[f"角色卡：{name}" for name in character_names] or ["本章没有匹配到角色卡"],
+            outputs={"character_count": len(character_names), "characters": character_names},
+        )
+        world_context = working_story.world_context if isinstance(working_story.world_context, dict) else {}
+        self._emit_workflow_step(
+            "read_world_state",
+            "读取世界观与连续性",
+            status="done",
+            source="context_loader",
+            used_modules=["world_context", "continuity_state", "progression_ledger"],
+            reads=["本章相关世界规则", "当前任务与资源账本", "已确认事实", "未解决线索"],
+            outputs={
+                "world_sections": sorted(world_context.keys()),
+                "world_fact_count": len(working_story.world_facts),
+                "ledger_sections": sorted((working_story.progression_ledger or {}).keys()),
+            },
+        )
+        self._emit_workflow_step(
+            "director_plan",
+            "导演规划",
+            status="running",
+            source="director",
+            used_modules=["director_agent"],
+            reads=["大纲读取结果", "本章角色卡", "世界观与连续性"],
+        )
+
+        self._emit_progress_with_artifact(
+            "剧情计划生成中...",
+            "outline_plan",
+            source="director",
+            used_modules=["director_agent", "outline_agent", "character_agent", "memory_retrieval"],
+            reason="读取相关大纲、连续性、长期记忆、世界状态和角色卡，生成本章剧情计划",
+            inputs={
+                "chapter_number": chapter_number,
+                "story_outline": outline_snapshot,
+                "character_cards": planning_character_cards,
+                "project_snapshot": director_context.get("project_snapshot", {}),
+                "chapter_seed": director_context.get("chapter_seed", {}),
+                "is_game": is_game_story(working_story),
+                "opening_phase": _opening_phase_name(chapter_number, is_game=working_story.genre == "game fantasy"),
+                "characters": [character.name for character in working_story.characters],
+                "world_facts_count": len(working_story.world_facts),
+            },
+        )
+        director_prompt = self._plan_prompt(working_story, chapter_number, director_context)
         plan_text, plan_error = self._timed_chat(
             working_story,
-            self._plan_prompt(working_story, chapter_number),
+            director_prompt,
             max_tokens=8000,
             json_mode=True,
             agent="planner",
             stage="剧情计划生成",
         )
+        if plan_error and "有效 JSON" in plan_error:
+            self._emit_progress_with_artifact(
+                "导演返回格式错误，正在重试...",
+                "outline_plan_retry",
+                source="director",
+                used_modules=["director_agent", "json_contract"],
+                reason="第一次导演输出不是有效JSON，使用同一上下文做一次严格格式重试",
+                inputs={"chapter_number": chapter_number, "error": plan_error},
+            )
+            retry_prompt = "\n".join(
+                [
+                    director_prompt,
+                    "上一次返回不是有效 JSON。请重新生成，只输出一个完整 JSON 对象，不要代码块、解释或前后缀。",
+                ]
+            )
+            plan_text, plan_error = self._timed_chat(
+                working_story,
+                retry_prompt,
+                max_tokens=8000,
+                json_mode=True,
+                agent="planner",
+                stage="剧情计划格式重试",
+            )
         if plan_error:
+            self._emit_workflow_step(
+                "director_plan",
+                "导演规划",
+                status="error",
+                source="director",
+                used_modules=["director_agent"],
+                reads=["大纲读取结果", "本章角色卡", "世界观与连续性"],
+                outputs={"error": plan_error},
+            )
+            self._emit_progress_with_artifact(
+                "剧情计划生成失败",
+                "outline_plan",
+                source="director",
+                used_modules=["director_agent", "outline_agent", "character_agent", "memory_retrieval"],
+                reason="规划模型返回异常，中断本轮写作",
+                inputs={"chapter_number": chapter_number, "story_outline": outline_snapshot},
+                outputs={"error": plan_error},
+            )
             return _failed_bundle(working_story, chapter_number)
 
-        plan = json.loads(plan_text)
+        try:
+            plan = json.loads(plan_text)
+        except Exception as exc:
+            self._emit_workflow_step(
+                "director_plan",
+                "导演规划",
+                status="error",
+                source="director",
+                used_modules=["director_agent"],
+                outputs={"error": f"outline_plan_parse_failed:{exc}"},
+            )
+            self._emit_progress_with_artifact(
+                "剧情计划解析失败",
+                "outline_plan",
+                source="director",
+                used_modules=["director_agent", "outline_agent", "character_agent", "memory_retrieval"],
+                reason="规划返回内容不是合法JSON，无法进入正文阶段",
+                inputs={"chapter_number": chapter_number, "story_outline": outline_snapshot},
+                outputs={"error": str(exc)},
+            )
+            return _failed_bundle(working_story, chapter_number, f"outline_plan_parse_failed:{exc}")
+        director_issues = (
+            _director_plan_quality_issues(working_story, plan)
+            if _director_quality_gate_enabled(working_story)
+            else []
+        )
+        if director_issues:
+            self._emit_progress_with_artifact(
+                "导演计划未通过，定向重做中...",
+                "director_quality_gate",
+                source="director",
+                used_modules=["director_agent", "continuity_gate"],
+                reason="导演计划存在硬性结构或连续性错误，禁止交给写手",
+                inputs={"issues": director_issues, "rejected_plan": plan},
+            )
+            retry_text, retry_error = self._timed_chat(
+                working_story,
+                _director_revision_prompt(director_prompt, plan, director_issues),
+                max_tokens=8000,
+                json_mode=True,
+                agent="planner",
+                stage="剧情计划重做",
+            )
+            if retry_error:
+                return _failed_bundle(
+                    working_story,
+                    chapter_number,
+                    f"director_plan_quality_failed:{'; '.join(director_issues)}; retry:{retry_error}",
+                )
+            try:
+                plan = json.loads(retry_text)
+            except Exception as exc:
+                return _failed_bundle(
+                    working_story,
+                    chapter_number,
+                    f"director_plan_quality_failed:retry_parse_failed:{exc}",
+                )
+            director_issues = _director_plan_quality_issues(working_story, plan)
+            if director_issues:
+                self._emit_progress_with_artifact(
+                    "导演计划重做后仍未通过",
+                    "director_quality_gate",
+                    source="director",
+                    used_modules=["director_agent", "continuity_gate"],
+                    reason="第二次导演计划仍有硬性错误，本轮生成终止",
+                    outputs={"issues": director_issues, "rejected_plan": plan},
+                )
+                return _failed_bundle(
+                    working_story,
+                    chapter_number,
+                    f"director_plan_quality_failed:{'; '.join(director_issues)}",
+                )
+        plan_summary = {key: len(plan.get(key, [])) if isinstance(plan.get(key, []), list) else None for key in ("character_moves", "chapter_summary")}
         action_briefs = _normalize_moves(plan.get("character_moves"))
         chapter_intent = _normalize_intent(plan.get("chapter_intent"))
         event_plan = _normalize_event_plan(plan.get("event_plan"), chapter_number, working_story)
         memory_constraints = _normalize_memory_constraints(plan.get("memory_constraints"), working_story)
         chapter_summary_data = _normalize_chapter_summary(plan.get("chapter_summary"), chapter_number)
+        self._emit_progress_with_artifact(
+            "剧情计划生成完成",
+            "outline_plan",
+            source="director",
+            used_modules=["director_agent", "outline_agent", "character_agent", "memory_retrieval"],
+            reason="导演JSON已解析并完成字段规范化，后续世界响应不得改写剧情决策",
+            inputs={
+                "chapter_number": chapter_number,
+                "project_snapshot": director_context.get("project_snapshot", {}),
+                "chapter_seed": director_context.get("chapter_seed", {}),
+                "character_cards": planning_character_cards,
+            },
+            outputs={
+                "character_moves": action_briefs,
+                "chapter_intent": chapter_intent,
+                "event_plan": event_plan,
+                "memory_constraints": memory_constraints,
+                "chapter_summary": chapter_summary_data,
+            },
+        )
+        self._emit_workflow_step(
+            "director_plan",
+            "导演规划",
+            status="done",
+            source="director",
+            used_modules=["director_agent"],
+            reads=["大纲读取结果", "本章角色卡", "世界观与连续性"],
+            outputs={
+                "chapter_title": chapter_intent.get("chapter_title", ""),
+                "character_moves": len(action_briefs),
+                "event_plan_keys": sorted(event_plan.keys()),
+                "next_focus": chapter_intent.get("next_focus", ""),
+            },
+        )
+        self._emit_workflow_step(
+            "prepare_scenes",
+            "准备剧情场景",
+            status="running",
+            source="world_simulation",
+            used_modules=["world_simulation", "scene_cards"],
+            reads=["导演规划", "世界状态", "信息边界"],
+        )
         chapter_seed = build_chapter_seed(working_story, chapter_number)
         simulation_plan = build_chapter_simulation_plan(
             working_story,
@@ -4771,6 +5890,7 @@ class StoryOrchestrator:
             event_plan=event_plan,
             memory_constraints=memory_constraints,
             chapter_seed=chapter_seed,
+            plot_authority="director",
         ).model_dump()
         world_simulation_decision_result = world_simulation_decision(
             working_story,
@@ -4812,7 +5932,39 @@ class StoryOrchestrator:
             **simulation_plan,
             "style_guidance": style_guidance,
         }
+        outline_progress_snapshot = {
+            "outline": outline_snapshot,
+            "world_facts_count": len(working_story.world_facts),
+            "plan_summary": plan_summary,
+        }
+        self._emit_progress_with_artifact(
+            "世界响应校验完成",
+            "world_response",
+            source="world_simulation",
+            used_modules=["world_simulation", "scene_cards", "style_guidance"],
+            reason="依据导演计划检查世界反应、信息边界并生成执行场景卡，不新增剧情目标",
+            inputs={"chapter_number": chapter_number, "outline_snapshot": outline_progress_snapshot, "character_cards": planning_character_cards},
+            outputs={
+                "event_plan_keys": sorted(event_plan.keys()) if isinstance(event_plan, dict) else [],
+                "character_moves": len(action_briefs),
+                "scene_cards": len(scene_cards),
+                "style_guidance_keys": sorted((style_guidance or {}).keys()) if isinstance(style_guidance, dict) else [],
+            },
+        )
 
+        self._emit_workflow_step(
+            "prepare_scenes",
+            "准备剧情场景",
+            status="done",
+            source="world_simulation",
+            used_modules=["world_simulation", "scene_cards", "style_guidance"],
+            reads=["导演规划", "世界状态", "信息边界"],
+            outputs={
+                "world_simulation_ran": run_world_simulation,
+                "world_events": len(world_events),
+                "scene_cards": len(scene_cards),
+            },
+        )
         conflict_summary = build_conflict_summary(working_story, action_briefs)
         cadence = chapter_intent.get("cadence") or compute_chapter_cadence(working_story, action_briefs, conflict_summary)
         event_beat = build_event_beat(conflict_summary)
@@ -4839,22 +5991,80 @@ class StoryOrchestrator:
             genre=working_story.genre,
             style=working_story.style,
         )
+        writer_plan_snapshot = _compact_writer_plan_for_prompt(writer_plan)
 
-        report_generation_progress("正文生成中...")
-        report_generation_progress("整章正文生成中...")
+        self._emit_workflow_step(
+            "write_body",
+            "写手生成正文",
+            status="running",
+            source="writer",
+            used_modules=["writer_agent", "plot_contract", "writing_taskbook"],
+            reads=["导演规划", "场景卡", "本章角色卡", "相关世界规则", "连续性事实"],
+        )
+
+        self._emit_progress_with_artifact(
+            "正文生成中...",
+            "body_generate",
+            source="writer",
+            used_modules=["writer_agent", "plot_contract"],
+            reason="基于计划生成正文主文，控制现实压迫与世界连续性",
+            inputs={
+                "chapter_number": chapter_number,
+                "target_chars": TARGET_CHAPTER_CHARS,
+                "scene_cards": len(scene_cards),
+                "outline_title": compact_text(str(event_plan.get("chapter_title") or ""), 80),
+                "character_cards": planning_character_cards,
+                "writer_plan": writer_plan_snapshot,
+                "writer_taskbook": len(writer_plan.get("writing_taskbook", [])),
+                "use_segments": self._use_segmented_writing(chapter_number, writer_plan),
+            },
+            outputs={"plan_valid": bool(plan)},
+        )
+        body_prompt = self._body_prompt(
+            working_story,
+            chapter_number,
+            writer_plan,
+        )
         body, body_error = self._timed_chat(
             working_story,
-            self._body_prompt(
-                working_story,
-                chapter_number,
-                writer_plan,
-            ),
+            body_prompt,
             max_tokens=7000,
             json_mode=False,
             agent="writer",
             stage=f"整章写作 第{chapter_number}章",
         )
+        if not body.strip() and (not body_error or "正文返回为空" in body_error):
+            self._emit_progress_with_artifact(
+                "写手返回空正文，正在重试...",
+                "body_generate_retry",
+                source="writer",
+                used_modules=["writer_agent", "output_contract"],
+                reason="第一次写手调用未返回正文，复用同一写作包重试一次",
+                inputs={"chapter_number": chapter_number, "error": body_error or "body_empty"},
+            )
+            retry_body_prompt = "\n".join(
+                [
+                    body_prompt,
+                    "上一次没有返回正文。请重新完成本章，只输出完整小说正文，不要解释、提纲或代码块。",
+                ]
+            )
+            body, body_error = self._timed_chat(
+                working_story,
+                retry_body_prompt,
+                max_tokens=7000,
+                json_mode=False,
+                agent="writer",
+                stage=f"整章写作重试 第{chapter_number}章",
+            )
         if body_error or not body.strip():
+            self._emit_workflow_step(
+                "write_body",
+                "写手生成正文",
+                status="error",
+                source="writer",
+                used_modules=["writer_agent"],
+                outputs={"error": body_error or "body_empty"},
+            )
             if not body_error:
                 current = working_story.agent_runtime.writer
                 record_stage_runtime(
@@ -4866,6 +6076,15 @@ class StoryOrchestrator:
                     chapter_number,
                     fallback_reason="正文为空",
                 )
+            self._emit_progress_with_artifact(
+                "正文生成失败",
+                "body_generate",
+                source="writer",
+                used_modules=["writer_agent", "plot_contract"],
+                reason="正文写作未返回有效文本，章节中止",
+                inputs={"chapter_number": chapter_number, "writer_plan": writer_plan_snapshot},
+                outputs={"error": body_error or "body_empty"},
+            )
             return _failed_bundle(working_story, chapter_number)
         body = _sanitize_chapter_output(
             body,
@@ -4873,9 +6092,21 @@ class StoryOrchestrator:
             scene_cards=scene_cards,
             game_story=is_game_story(working_story),
         )
+        body = _repair_outline_amount_anchors(body, chapter_seed.get("outline_anchor"))
 
         if _should_expand_chapter(body, writer_plan):
-            report_generation_progress("章节扩写中...")
+            self._emit_progress_with_artifact(
+                "章节扩写中...",
+                "body_expand",
+                source="writer",
+                used_modules=["writer_agent", "writing_taskbook", "plot_contract"],
+                reason="正文字数不足时进行事件与对话扩充",
+                inputs={
+                    "chapter_number": chapter_number,
+                    "current_chars": _chapter_char_count(body),
+                    "plan_snapshot": {"target_chars": TARGET_CHAPTER_CHARS, "outline": outline_snapshot},
+                },
+            )
             expanded_body, expand_error = self._timed_chat(
                 working_story,
                 "\n".join(
@@ -4896,52 +6127,83 @@ class StoryOrchestrator:
             if expand_error:
                 reason = f"章节扩写失败：{expand_error}"
                 return _failed_bundle(working_story, chapter_number, reason)
-            if _chapter_char_count(expanded_body) > _chapter_char_count(body):
-                body = _sanitize_chapter_output(
-                    expanded_body,
-                    chapter_number=chapter_number,
-                    scene_cards=scene_cards,
-                    game_story=is_game_story(working_story),
-                )
-
-        style_adapt_report = None
-        if _style_adapt_enabled(writer_plan):
-            report_generation_progress("风格适配中...")
-            adapted_body, adapt_error = self._timed_chat(
-                working_story,
-                build_style_adapt_prompt(body, writer_plan),
-                max_tokens=7000,
-                json_mode=False,
-                agent="writer",
-                stage=f"风格适配 第{chapter_number}章",
+            candidate_body = _sanitize_chapter_output(
+                expanded_body,
+                chapter_number=chapter_number,
+                scene_cards=scene_cards,
+                game_story=is_game_story(working_story),
             )
-            if not adapt_error and adapted_body.strip():
-                candidate_body = _sanitize_chapter_output(
-                    adapted_body,
-                    chapter_number=chapter_number,
-                    scene_cards=scene_cards,
-                    game_story=is_game_story(working_story),
+            candidate_body = _repair_outline_amount_anchors(
+                candidate_body,
+                chapter_seed.get("outline_anchor"),
+            )
+            if _expanded_body_is_acceptable(body, candidate_body):
+                self._emit_progress_with_artifact(
+                    "章节扩写完成",
+                    "body_expand",
+                    source="writer",
+                    used_modules=["writer_agent", "writing_taskbook"],
+                    reason="扩写后长度和细节有实质补充",
+                    inputs={"chapter_number": chapter_number},
+                    outputs={
+                        "before_chars": _chapter_char_count(body),
+                        "after_chars": _chapter_char_count(candidate_body),
+                    },
                 )
-                style_adapt_report = style_adapt_safety_check(body, candidate_body)
-                if style_adapt_report.get("accept"):
-                    body = candidate_body
-            else:
-                style_adapt_report = {"accept": False, "reason": adapt_error or "candidate_empty"}
+                body = candidate_body
 
+        self._emit_workflow_step(
+            "write_body",
+            "写手生成正文",
+            status="done",
+            source="writer",
+            used_modules=["writer_agent", "plot_contract", "writing_taskbook"],
+            reads=["导演规划", "场景卡", "本章角色卡", "相关世界规则", "连续性事实"],
+            outputs={"body_chars": _chapter_char_count(body), "chapter_number": chapter_number},
+        )
+        self._emit_workflow_step(
+            "review_body",
+            "综合审稿",
+            status="running",
+            source="reviewer",
+            used_modules=["reviewer_agent", "editor_agent"],
+            reads=["正文", "导演规划", "连续性事实", "角色卡"],
+        )
         writing_review = _review_chapter_body(
             chapter_number,
             body,
             event_plan,
-            story.world_facts,
+            _review_context_facts(story),
             simulation_plan,
             world_events,
             scene_cards,
         )
         revision_safety_report = None
         accepted_revision_actions: list[str] = []
+        MAX_REVISION_ROUNDS = 1
+        revision_rounds_done = 0
         review_gate = build_simplified_review({"writing_review": writing_review})
-        if review_gate["needs_revision"]:
-            report_generation_progress("审稿改稿中...")
+        while review_gate["needs_revision"] and revision_rounds_done < MAX_REVISION_ROUNDS:
+            revision_rounds_done += 1
+            revision_snapshot = _review_progress_snapshot(writing_review)
+            self._emit_progress_with_artifact(
+                f"审稿改稿中...（第{revision_rounds_done}/{MAX_REVISION_ROUNDS}轮）",
+                "revision",
+                source="reviewer",
+                used_modules=["reviewer_agent", "writer_agent", "editor_agent"],
+                reason=f"写稿审查后触发第{revision_rounds_done}轮修订",
+                inputs={
+                    "chapter_number": chapter_number,
+                    "round": revision_rounds_done,
+                    "max_rounds": MAX_REVISION_ROUNDS,
+                    "issue_count": len(writing_review.get("issues", [])),
+                    "character_cards": planning_character_cards,
+                    "outline": outline_snapshot,
+                    "writer_plan": writer_plan_snapshot,
+                    "review_snapshot": revision_snapshot,
+                    "chapter_title": compact_text(str(event_plan.get("chapter_title") or ""), 100),
+                },
+            )
             pre_revision_body = body
             pre_revision_review = writing_review
             pre_revision_quality = {
@@ -4961,7 +6223,7 @@ class StoryOrchestrator:
                 max_tokens=7000,
                 json_mode=False,
                 agent="writer",
-                stage=f"审稿改稿 第{chapter_number}章",
+                stage=f"审稿改稿 第{chapter_number}章（第{revision_rounds_done}轮）",
             )
             if not revision_error and revised_body.strip():
                 candidate_body = _sanitize_chapter_output(
@@ -4970,11 +6232,15 @@ class StoryOrchestrator:
                     scene_cards=scene_cards,
                     game_story=is_game_story(working_story),
                 )
+                candidate_body = _repair_outline_amount_anchors(
+                    candidate_body,
+                    chapter_seed.get("outline_anchor"),
+                )
                 candidate_review = _review_chapter_body(
                     chapter_number,
                     candidate_body,
                     event_plan,
-                    story.world_facts,
+                    _review_context_facts(story),
                     simulation_plan,
                     world_events,
                     scene_cards,
@@ -5003,64 +6269,220 @@ class StoryOrchestrator:
                         for category in ("hard", "dialogue", "ai_flavor")
                         if int(candidate_gate.get("categories", {}).get(category, {}).get("count") or 0) > 0
                     }
-                    accepted_revision_actions = [
+                    accepted_revision_actions.extend([
                         str(item.get("suggestion") or "").strip()
                         for item in review_gate.get("issues", [])
                         if isinstance(item, dict)
                         and item.get("category") in {"hard", "dialogue", "ai_flavor"}
                         and item.get("category") not in unresolved_categories
                         and str(item.get("suggestion") or "").strip()
-                    ]
+                    ])
+            review_gate = build_simplified_review({"writing_review": writing_review})
+        if revision_rounds_done > 0:
+            self._emit_progress_with_artifact(
+                "审稿改稿完成",
+                "revision",
+                source="reviewer",
+                used_modules=["reviewer_agent", "writer_agent", "editor_agent"],
+                reason=f"改稿完成，共执行{revision_rounds_done}轮修订，回填安全评估与剩余问题记录",
+                inputs={"chapter_number": chapter_number, "rounds_done": revision_rounds_done},
+                outputs={
+                    "accepted": bool(revision_safety_report),
+                    "rounds_done": revision_rounds_done,
+                    "passed": not review_gate["needs_revision"],
+                    "issues_remaining": len((writing_review or {}).get("issues", [])),
+                },
+            )
 
         if _should_compress_chapter(body):
-            report_generation_progress("章节压缩中...")
-            compressed_body, compress_error = self._timed_chat(
-                working_story,
-                "\n".join(
-                    [
-                        "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。",
-                        f"目标篇幅：保留完整网文章节感，但压到4300到5000字之间，绝对不要超过{MAX_CHAPTER_CHARS}字。",
-                        "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。",
-                        "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。",
-                        "只输出压缩后的小说正文，不要解释，不要列大纲。",
-                        f"原正文：\n{body}",
-                    ]
-                ),
-                max_tokens=5500,
-                json_mode=False,
-                agent="writer",
-                stage=f"章节压缩 第{chapter_number}章",
-                timeout_seconds=_expansion_timeout_seconds(),
+            self._emit_progress_with_artifact(
+                "章节压缩中...",
+                "chapter_compress",
+                source="writer",
+                used_modules=["writer_agent", "prose_quality_review"],
+                reason="超字数时压缩无损细节，保留主线和关键钩子",
+                inputs={"chapter_number": chapter_number, "current_chars": _chapter_char_count(body)},
             )
-            if not compress_error and compressed_body.strip():
+            allow_trade_payoff = chapter_number == 1 and first_chapter_trade_authorized(
+                event_plan,
+                _review_context_facts(story),
+            )
+            outline_anchor = chapter_seed.get("outline_anchor") if isinstance(chapter_seed, dict) else {}
+            locked_amounts = (
+                "、".join(
+                    str(outline_anchor.get(key) or "").strip()
+                    for key in ("opening_balance", "trade_arrival", "ending_balance")
+                    if str(outline_anchor.get(key) or "").strip()
+                )
+                if isinstance(outline_anchor, dict)
+                else ""
+            )
+            chapter_one_scope = (
+                "第一章必须保留裂纹狼心担保交易、现实到账和付清急账，但不要新增游戏内任务提交、修理或买药。"
+                + (f" 以下金额必须原样保留，不得改写、换算或删除：{locked_amounts}。" if locked_amounts else "")
+                if allow_trade_payoff
+                else "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。"
+            )
+            retry_after_short = False
+            short_body = ""
+            best_acceptable_body = ""
+            for compress_round in range(1, 4):
+                if not _should_compress_chapter(body) and not retry_after_short:
+                    break
+                before_body = short_body if retry_after_short and short_body else body
+                if retry_after_short:
+                    target_range = "4600到5200字"
+                elif compress_round == 1:
+                    target_range = "4200到5000字"
+                else:
+                    target_range = "3800到4600字"
+                compressed_body, compress_error = self._timed_chat(
+                    working_story,
+                    "\n".join(
+                        [
+                            (
+                                "下面这版正文压得过短，请在不改变剧情事实、人物选择、游戏账本和结尾钩子的前提下适度补写。"
+                                if retry_after_short
+                                else "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。"
+                            ),
+                            f"目标篇幅：保留完整网文章节感，调整到{target_range}，绝对不要超过{MAX_CHAPTER_CHARS}字。",
+                            (
+                                "补写方法：补足已有场景中的动作、对话、阻力和结果，不新增支线，不重复解释。"
+                                if retry_after_short
+                                else "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。"
+                            ),
+                            chapter_one_scope,
+                            "只输出压缩后的小说正文，不要解释，不要列大纲。",
+                            f"原正文：\n{before_body}",
+                        ]
+                    ),
+                    max_tokens=5000 if compress_round == 1 else 4500,
+                    json_mode=False,
+                    agent="writer",
+                    stage=f"章节压缩 第{chapter_number}章 第{compress_round}轮",
+                    timeout_seconds=_expansion_timeout_seconds(),
+                )
+                if compress_error or not compressed_body.strip():
+                    break
                 candidate_body = _sanitize_chapter_output(
                     compressed_body,
                     chapter_number=chapter_number,
                     scene_cards=scene_cards,
                     game_story=is_game_story(working_story),
                 )
+                candidate_body = _repair_outline_amount_anchors(
+                    candidate_body,
+                    chapter_seed.get("outline_anchor"),
+                )
                 candidate_chars = _chapter_char_count(candidate_body)
-                if MIN_CHAPTER_CHARS <= candidate_chars <= _chapter_char_count(body):
-                    body = candidate_body
-                    writing_review = _review_chapter_body(
-                        chapter_number,
-                        body,
-                        event_plan,
-                        story.world_facts,
-                        simulation_plan,
-                        world_events,
-                        scene_cards,
-                    )
+                if _chapter_body_is_hard_length_acceptable(candidate_body):
+                    target_midpoint = (MIN_CHAPTER_CHARS + MAX_CHAPTER_CHARS) // 2
+                    if not best_acceptable_body or abs(candidate_chars - target_midpoint) < abs(
+                        _chapter_char_count(best_acceptable_body) - target_midpoint
+                    ):
+                        best_acceptable_body = candidate_body
+                self._emit_progress_with_artifact(
+                    "章节压缩完成",
+                    "chapter_compress",
+                    source="writer",
+                    used_modules=["writer_agent", "prose_quality_review", "prose_style_review"],
+                    reason="压缩回写体量，保持关键事件与钩子",
+                    inputs={"chapter_number": chapter_number, "round": compress_round},
+                    outputs={"before_chars": _chapter_char_count(before_body), "candidate_chars": candidate_chars},
+                )
+                if retry_after_short:
+                    if _rebalanced_body_is_acceptable(before_body, candidate_body):
+                        body = candidate_body
+                        retry_after_short = False
+                        break
+                    if candidate_chars < MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE and candidate_chars > _chapter_char_count(before_body):
+                        short_body = candidate_body
+                        continue
+                    if candidate_chars > MAX_CHAPTER_CHARS + CHAPTER_MAX_CHAR_TOLERANCE:
+                        body = candidate_body
+                        retry_after_short = False
+                        continue
+                    break
+                candidate_action = _compression_candidate_action(before_body, candidate_body)
+                if candidate_action == "retry":
+                    retry_after_short = True
+                    if not short_body or candidate_chars > _chapter_char_count(short_body):
+                        short_body = candidate_body
+                    continue
+                if candidate_action == "reject":
+                    break
+                body = candidate_body
+                retry_after_short = False
+                if candidate_action == "accept":
+                    break
 
-        post_draft_memory, memory_sync = self._extract_final_body_memory(
-            working_story,
-            body,
-            chapter_number,
-            fact_locks={
-                "must_keep_facts": memory_constraints.get("must_keep_facts", []),
-                "planned_summary": chapter_summary_data,
+            if not _chapter_body_is_hard_length_acceptable(body) and best_acceptable_body:
+                body = best_acceptable_body
+
+            writing_review = _review_chapter_body(
+                chapter_number,
+                body,
+                event_plan,
+                _review_context_facts(story),
+                simulation_plan,
+                world_events,
+                scene_cards,
+            )
+
+        review_gate = build_simplified_review({"writing_review": writing_review})
+        body_chars = _chapter_char_count(body)
+        self._emit_workflow_step(
+            "review_body",
+            "综合审稿",
+            status="done",
+            source="reviewer",
+            used_modules=["reviewer_agent", "editor_agent", "quality_gate"],
+            reads=["正文", "导演规划", "连续性事实", "角色卡"],
+            outputs={
+                "body_chars": body_chars,
+                "needs_revision": bool(review_gate.get("needs_revision")),
+                "issue_count": len((writing_review or {}).get("issues", [])),
+                "revision_rounds": revision_rounds_done,
             },
         )
+        self._emit_workflow_step(
+            "write_memory",
+            "记忆与状态回写",
+            status="running",
+            source="memory",
+            used_modules=["memory_agent", "project_state"],
+            reads=["最终正文", "本章事实锁", "当前任务与资源账本"],
+        )
+        memory_input_is_usable = _should_extract_final_memory(body, review_gate) or (
+            body_chars < MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE and not _should_expand_chapter(body, writer_plan)
+        )
+        if memory_input_is_usable:
+            post_draft_memory, memory_sync = self._extract_final_body_memory(
+                working_story,
+                body,
+                chapter_number,
+                fact_locks={
+                    "must_keep_facts": memory_constraints.get("must_keep_facts", []),
+                    "planned_summary": chapter_summary_data,
+                },
+            )
+        else:
+            post_draft_memory = {}
+            memory_sync = {
+                "status": "skipped",
+                "reason": "final_body_not_accepted",
+                "body_chars": body_chars,
+                "needs_revision": bool(review_gate.get("needs_revision")),
+            }
+            self._emit_progress_with_artifact(
+                "最终正文未通过，跳过记忆提取",
+                "memory_sync",
+                source="memory",
+                used_modules=["memory_agent", "quality_gate"],
+                reason="未通过篇幅或审稿门禁的正文不会写入长期记忆",
+                inputs={"chapter_number": chapter_number},
+                outputs=memory_sync,
+            )
         simulation_plan["memory_sync"] = memory_sync
 
         decision = DirectorDecision(
@@ -5094,7 +6516,14 @@ class StoryOrchestrator:
             "secondary_conflict": decision.secondary_conflict,
         }
 
-        report_generation_progress("记忆回写中...")
+        self._emit_progress_with_artifact(
+            "记忆回写中...",
+            "memory_sync",
+            source="memory",
+            used_modules=["memory_agent", "world_simulation", "project_state"],
+            reason="写入章节摘要、账本与世界脉络推进状态",
+            inputs={"chapter_number": chapter_number, "writer_plan_key_count": len(writer_plan)},
+        )
         memory_is_verified = memory_sync.get("status") == "ok"
         apply_post_chapter_updates(
             updated_story,
@@ -5112,6 +6541,19 @@ class StoryOrchestrator:
         _sync_character_game_panels(updated_story, chapter_number)
         advance_world_pulse(updated_story, chapter_number=chapter_number)
         maybe_update_arc_recap(updated_story, chapter_number)
+        self._emit_workflow_step(
+            "write_memory",
+            "记忆与状态回写",
+            status="done",
+            source="memory",
+            used_modules=["memory_agent", "project_state", "progression_ledger"],
+            reads=["最终正文", "本章事实锁", "当前任务与资源账本"],
+            outputs={
+                "memory_status": memory_sync.get("status", "unknown"),
+                "chapter_summaries": len(updated_story.chapter_summaries),
+                "world_facts": len(updated_story.world_facts),
+            },
+        )
 
         latest_summary = updated_story.chapter_summaries[-1]
         title_conflict: dict[str, Any] = {}
@@ -5173,11 +6615,19 @@ class StoryOrchestrator:
             updated_story=updated_story,
             chapter_summary=latest_summary.model_dump(),
         )
+        self._emit_progress_with_artifact(
+            "质量检查中...",
+            "quality_gate",
+            source="reviewer",
+            used_modules=["prose_quality_review", "world_consistency_review", "writer_agent"],
+            reason="执行最终质量评估并合并审查报告",
+            inputs={"chapter_number": chapter_number, "writing_review_issue_count": len(writing_review.get("issues", []))},
+            outputs={"memory_sync_status": memory_sync.get("status", "unknown")},
+            keep_legacy_text=False,
+        )
         report_generation_progress("质量检查中...")
         bundle.quality_report = _merge_writing_review_quality(validate_bundle(bundle.model_dump()), writing_review)
         bundle.quality_report["memory_sync"] = memory_sync
-        if style_adapt_report:
-            bundle.quality_report["style_adapt"] = style_adapt_report
         if revision_safety_report:
             bundle.quality_report["revision_safety"] = revision_safety_report
         if accepted_revision_actions:
