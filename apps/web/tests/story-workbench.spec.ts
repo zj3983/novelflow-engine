@@ -82,6 +82,15 @@ test("Playwright 配置统一读取浏览器可执行路径", () => {
   }
 });
 
+test("浏览器测试使用独立的 Next 开发缓存目录", () => {
+  const webServer = playwrightConfig.webServer as { env?: Record<string, string> };
+  const port = process.env.PLAYWRIGHT_PORT || "3100";
+  const nextConfigSource = fs.readFileSync(path.resolve(__dirname, "../next.config.mjs"), "utf-8");
+
+  expect(webServer.env?.NEXT_DIST_DIR).toBe(`.next-e2e-${port}`);
+  expect(nextConfigSource).toContain("process.env.NEXT_DIST_DIR");
+});
+
 test("切换项目时可见状态不会泄漏旧项目错误", () => {
   const selectProjectWorkspaceView = (
     workspaceProvider as unknown as {
