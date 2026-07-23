@@ -29,7 +29,6 @@ def test_mcp_lists_novel_autogrowth_tools():
         "get_writing_packet",
         "review_chapter",
         "revise_chapter",
-        "submit_manual_draft",
         "patch_world",
         "continue_generation",
     }
@@ -90,33 +89,6 @@ def test_mcp_get_writing_packet_calls_agent_packet(monkeypatch):
 
     assert calls == [("http://api.test", "p-1", 2)]
     assert _text_payload(result)["schema_version"] == "writing-packet/v1"
-
-
-def test_mcp_submit_manual_draft_calls_agent_manual_draft(monkeypatch):
-    mcp = _load_mcp_module()
-
-    calls: list[tuple[str, str, int, str, list[str], bool]] = []
-
-    def fake_post_manual_draft(api_base, project_id, chapter_number, body, instructions, include_body):
-        calls.append((api_base, project_id, chapter_number, body, instructions, include_body))
-        return {"schema_version": "agent-revision/v1", "source": "manual_draft"}
-
-    monkeypatch.setattr(mcp.novel_agent, "post_manual_draft", fake_post_manual_draft)
-
-    result = mcp.call_tool(
-        "submit_manual_draft",
-        {
-            "api_base": "http://api.test",
-            "project_id": "p-1",
-            "chapter_number": 1,
-            "body": "manual chapter body",
-            "instructions": ["keep panel consistent"],
-            "include_body": True,
-        },
-    )
-
-    assert calls == [("http://api.test", "p-1", 1, "manual chapter body", ["keep panel consistent"], True)]
-    assert _text_payload(result)["source"] == "manual_draft"
 
 
 def test_mcp_patch_world_accepts_single_author_constraint(monkeypatch):

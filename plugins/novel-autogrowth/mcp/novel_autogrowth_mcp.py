@@ -76,31 +76,6 @@ def call_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str, A
             )
         )
 
-    if name == "submit_manual_draft":
-        return _json_text(
-            novel_agent.post_manual_draft(
-                api_base,
-                str(args["project_id"]),
-                int(args["chapter_number"]),
-                str(args["body"]),
-                _str_list(args.get("instructions")),
-                bool(args.get("include_body", True)),
-            )
-        )
-
-    if name == "submit_segment_draft":
-        return _json_text(
-            novel_agent.post_manual_segment_draft(
-                api_base,
-                str(args["project_id"]),
-                int(args["chapter_number"]),
-                int(args["segment_index"]),
-                str(args["body"]),
-                _str_list(args.get("instructions")),
-                bool(args.get("include_body", True)),
-            )
-        )
-
     if name == "revise_chapter":
         chapter_number = args.get("chapter_number")
         return _json_text(
@@ -212,46 +187,13 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "get_writing_packet",
-        "description": "Fetch the Codex writing packet for a target chapter before manual prose writing.",
+        "description": "Fetch the writing packet (context, constraints, scene cards) for reviewing a target chapter.",
         "inputSchema": {
             "type": "object",
             "required": ["project_id"],
             "properties": {
                 "project_id": {"type": "string"},
                 "chapter_number": {"type": "integer"},
-                "api_base": {"type": "string"},
-            },
-        },
-    },
-    {
-        "name": "submit_manual_draft",
-        "description": "Submit a Codex/manual full-chapter draft, then receive the updated review package.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["project_id", "chapter_number", "body"],
-            "properties": {
-                "project_id": {"type": "string"},
-                "chapter_number": {"type": "integer"},
-                "body": {"type": "string"},
-                "instructions": {"type": "array", "items": {"type": "string"}},
-                "include_body": {"type": "boolean", "default": True},
-                "api_base": {"type": "string"},
-            },
-        },
-    },
-    {
-        "name": "submit_segment_draft",
-        "description": "Submit a Codex/manual replacement for one zero-based chapter segment.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["project_id", "chapter_number", "segment_index", "body"],
-            "properties": {
-                "project_id": {"type": "string"},
-                "chapter_number": {"type": "integer"},
-                "segment_index": {"type": "integer"},
-                "body": {"type": "string"},
-                "instructions": {"type": "array", "items": {"type": "string"}},
-                "include_body": {"type": "boolean", "default": True},
                 "api_base": {"type": "string"},
             },
         },

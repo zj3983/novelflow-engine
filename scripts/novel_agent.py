@@ -72,12 +72,6 @@ def _writing_packet_url(api_base: str, project_id: str, chapter_number: int | No
     return f"{base}/projects/{encoded_project_id}/writing-packet{suffix}"
 
 
-def _manual_draft_url(api_base: str, project_id: str) -> str:
-    base = api_base.rstrip("/")
-    encoded_project_id = urllib.parse.quote(project_id, safe="")
-    return f"{base}/projects/{encoded_project_id}/manual-draft"
-
-
 def _story_generate_url(api_base: str, story_id: str) -> str:
     base = api_base.rstrip("/")
     encoded_story_id = urllib.parse.quote(story_id, safe="")
@@ -150,31 +144,6 @@ def patch_project(api_base: str, project_id: str, payload: dict) -> dict:
 
 def fetch_writing_packet(api_base: str, project_id: str, chapter_number: int | None) -> dict:
     return _json_request(_writing_packet_url(api_base, project_id, chapter_number), timeout=30)
-
-
-def post_manual_draft(
-    api_base: str,
-    project_id: str,
-    chapter_number: int,
-    body: str,
-    instructions: list[str],
-    include_body: bool,
-) -> dict:
-    payload = {
-        "chapter_number": chapter_number,
-        "body": body,
-        "instructions": instructions,
-        "include_body": include_body,
-    }
-    return _json_request(_manual_draft_url(api_base, project_id), method="POST", payload=payload, timeout=300)
-
-
-def _read_body_argument(body: str | None, body_file: str | None) -> str:
-    if body is not None:
-        return body
-    if body_file is not None:
-        return Path(body_file).read_text(encoding="utf-8")
-    raise ValueError("body_required")
 
 
 def generate_story_chapter(api_base: str, story_id: str) -> dict:
@@ -749,15 +718,6 @@ def build_parser() -> argparse.ArgumentParser:
     writing_packet.add_argument("--api-base", default=DEFAULT_API_BASE, help=f"API base URL. Default: {DEFAULT_API_BASE}")
     writing_packet.add_argument("--chapter-number", type=int, default=None, help="Chapter number to write. Defaults to the next target chapter.")
 
-    manual_draft = subparsers.add_parser("manual-draft", help="Submit a Codex/manual full-chapter draft.")
-    manual_draft.add_argument("project_id", help="Project id, for example p-c771ad03.")
-    manual_draft.add_argument("--api-base", default=DEFAULT_API_BASE, help=f"API base URL. Default: {DEFAULT_API_BASE}")
-    manual_draft.add_argument("--chapter-number", type=int, required=True, help="Chapter number to replace.")
-    manual_draft.add_argument("--body", default=None, help="Full chapter body text.")
-    manual_draft.add_argument("--body-file", default=None, help="UTF-8 text file containing the full chapter body.")
-    manual_draft.add_argument("--instruction", action="append", default=[], help="Editorial note stored with this manual draft.")
-    manual_draft.add_argument("--include-body", action="store_true", help="Include the updated chapter prose body in the response.")
-
     world = subparsers.add_parser("world", help="Read or patch project world state.")
     world_subparsers = world.add_subparsers(dest="world_command", required=True)
 
@@ -848,18 +808,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "writing-packet":
         _ensure_utf8_stdout()
         payload = fetch_writing_packet(args.api_base, args.project_id, args.chapter_number)
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 0
-    if args.command == "manual-draft":
-        _ensure_utf8_stdout()
-        payload = post_manual_draft(
-            args.api_base,
-            args.project_id,
-            args.chapter_number,
-            _read_body_argument(args.body, args.body_file),
-            args.instruction,
-            args.include_body,
-        )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     if args.command == "world":
