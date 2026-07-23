@@ -17,7 +17,11 @@ def test_prompt_call_records_exact_prompt_and_success(tmp_path):
         stage="正文写作",
         agent="writer",
         user_prompt="真实 prompt",
+        system_prompt="系统指令",
         module_keys=["core_context"],
+        provider="openai",
+        model="deepseek-v4-flash",
+        temperature=0.7,
     )
     log.finish(
         call_id,
@@ -31,6 +35,8 @@ def test_prompt_call_records_exact_prompt_and_success(tmp_path):
     saved = log.get(call_id)
     assert saved["status"] == "succeeded"
     assert saved["user_prompt"] == "真实 prompt"
+    assert saved["system_prompt"] == "系统指令"
+    assert saved["temperature"] == 0.7
     assert saved["provider"] == "openai"
     assert saved["model"] == "deepseek-v4-flash"
     assert saved["output_chars"] == 4
@@ -88,7 +94,7 @@ def test_orchestrator_timed_chat_records_exact_prompt_and_runtime(tmp_path, monk
     monkeypatch.setattr(
         orchestrator_module,
         "resolve_stage_runtime",
-        lambda stage: type("Runtime", (), {"provider": "openai", "model": "deepseek-v4-flash"})(),
+        lambda stage: type("Runtime", (), {"provider": "openai", "model": "deepseek-v4-flash", "temperature": 0.7})(),
     )
 
     with prompt_template_scope(lambda key: get_default_prompt_template(key), lambda key: "project_override"):
@@ -106,6 +112,8 @@ def test_orchestrator_timed_chat_records_exact_prompt_and_runtime(tmp_path, monk
     assert error == ""
     detail = log.get(log.list(chapter_number=1)[0]["call_id"])
     assert detail["user_prompt"] == "EXACT PROMPT"
+    assert detail["system_prompt"] == "You are a novel simulation engine."
+    assert detail["temperature"] == 0.7
     assert detail["status"] == "succeeded"
     assert detail["provider"] == "openai"
     assert detail["model"] == "deepseek-v4-flash"
@@ -122,7 +130,7 @@ def test_orchestrator_records_returned_model_error(tmp_path, monkeypatch):
     monkeypatch.setattr(
         orchestrator_module,
         "resolve_stage_runtime",
-        lambda stage: type("Runtime", (), {"provider": "openai", "model": "deepseek-v4-flash"})(),
+        lambda stage: type("Runtime", (), {"provider": "openai", "model": "deepseek-v4-flash", "temperature": 0.7})(),
     )
 
     with prompt_call_recording(log):

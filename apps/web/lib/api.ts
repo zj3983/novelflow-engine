@@ -1,4 +1,4 @@
-﻿export type CreateStoryRequest = {
+export type CreateStoryRequest = {
   story_id: string;
   outline: string;
   genre: string;
@@ -129,11 +129,21 @@ export type NovelTypeWriteRequest = Omit<NovelType, "builtin">;
 
 export type GenerationJobStatus = "queued" | "running" | "completed" | "failed";
 
+export type GenerationJobStep = {
+  at?: string;
+  message: string;
+  status?: "running" | "done" | "error" | "queued" | string;
+  stage?: string;
+  source?: string;
+  artifact?: Record<string, unknown> | string | number | boolean | null | (string | number | boolean | Record<string, unknown>)[];
+};
+
 export type GenerationJobResponse = {
   job_id: string;
   story_id: string;
   status: GenerationJobStatus;
   progress: string;
+  steps: GenerationJobStep[];
   chapter_number: number | null;
   error: string;
   created_at: string;
@@ -340,11 +350,14 @@ export type LengthReview = {
 
 export type SimplifiedReview = {
   schema_version: "simplified-review/v1" | string;
+  agent_label?: string;
+  status?: "passed" | "needs_revision" | "blocked" | string;
   pass: boolean;
   has_hard_errors: boolean;
   summary: string;
   categories: {
     hard: { label: string; count: number };
+    dialogue: { label: string; count: number };
     prose: { label: string; count: number };
     ai_flavor: { label: string; count: number };
   };
@@ -354,6 +367,7 @@ export type SimplifiedReview = {
     message: string;
     suggestion: string;
   }>;
+  revision_plan?: string[];
   total_issues: number;
 };
 
@@ -565,6 +579,7 @@ export type StorySummary = {
 export type ImportedWorldEntry = {
   name: string;
   description?: string;
+  [key: string]: unknown;
 };
 
 export type ImportedRelationshipEdge = {
@@ -740,6 +755,7 @@ export type ImportedWorldBlueprint = {
   progression_rules?: string[];
   economy_rules?: string[];
   quest_rules?: string[];
+  reality_bridge_rules?: string[];
   faction_rules?: string[];
   panel_rules?: string[];
   chapter_formula?: string[];
@@ -756,6 +772,23 @@ export type ImportedWorldBlueprint = {
   server_runtime?: ImportedServerRuntime;
   map_ecology?: ImportedMapEcology;
   relationship_graph?: ImportedRelationshipEdge[];
+  monster_profiles?: ImportedMonsterProfile[];
+};
+
+export type ImportedMonsterProfile = {
+  id?: string;
+  name: string;
+  category?: string;
+  rank?: string;
+  level?: string;
+  hp?: string;
+  attack_mode?: string;
+  skills?: string[];
+  traits?: string[];
+  habitats?: string[];
+  drops?: string[];
+  first_appearance_chapter?: number;
+  status?: string;
 };
 
 export type CreateProjectRequest = {
@@ -1082,6 +1115,72 @@ export type PromptPreviewResponse = {
   prompts: PromptPreviewEntry[];
 };
 
+export type PromptTemplateEntry = {
+  key: string;
+  title: string;
+  stage: string;
+  content: string;
+  required_variables: string[];
+  version: string;
+  source: "global_default" | "global_override" | "project_override";
+};
+
+export type PromptTemplatesResponse = {
+  schema_version: "prompt-templates/v1" | "project-prompt-templates/v1";
+  project_id?: string;
+  templates: PromptTemplateEntry[];
+};
+
+export type PromptContextEntry = PromptPreviewEntry & {
+  available: boolean;
+  reason?: string;
+};
+
+export type PromptContextResponse = {
+  schema_version: "file-project-prompt-context/v1";
+  project_id: string;
+  chapter_number: number;
+  chapter_title?: string;
+  source: string;
+  modules: PromptContextEntry[];
+};
+
+export type PromptCallSummary = {
+  call_id: string;
+  project_id?: string;
+  chapter_number: number;
+  stage: string;
+  agent: string;
+  attempt: number;
+  status: "started" | "succeeded" | "failed" | string;
+  provider?: string;
+  model?: string;
+  temperature?: number | null;
+  started_at?: string;
+  finished_at?: string;
+  elapsed_seconds?: number | null;
+  prompt_chars?: number;
+  output_chars?: number;
+  error?: string;
+};
+
+export type PromptCallDetail = PromptCallSummary & {
+  user_prompt: string;
+  system_prompt?: string;
+  module_keys: string[];
+  template_key?: string;
+  template_source?: string;
+  template_version?: string;
+  output_summary?: string;
+};
+
+export type PromptCallListResponse = {
+  schema_version: "prompt-call-list/v1";
+  project_id: string;
+  chapter_number?: number | null;
+  calls: PromptCallSummary[];
+};
+
 export type PromptModuleSpec = {
   key: string;
   title: string;
@@ -1092,13 +1191,6 @@ export type PromptModuleSpec = {
   depends_on: string[];
   role: string;
   replaceable: boolean;
-};
-
-export type ManualDraftRequest = {
-  chapter_number: number;
-  body: string;
-  instructions?: string[];
-  include_body?: boolean;
 };
 
 export type AgentReviewResponse = {
@@ -2139,15 +2231,41 @@ async function tryFetchJson(url: string, init: RequestInit, timeoutMs = 30000): 
   );
 }
 
-export async function fetchRuntimeSettings(): Promise<RuntimeSettings> {
+async function fetchOptionalJson(url: string, init: RequestInit, timeoutMs = 30000): Promise<any | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await tryFetchJson(`${apiBase()}/runtime-settings`, {
-      method: "GET",
-    });
-    return normalizeRuntimeSettings(response);
-  } catch {
-    return mockFetchRuntimeSettings();
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(detail || `${url} failed: ${response.status}`);
+    }
+    return JSON.parse(await response.text());
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(`${url} failed: request timed out (${Math.round(timeoutMs / 1000)}s)`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
+}
+
+export async function fetchRuntimeSettings(): Promise<RuntimeSettings> {
+  const response = await tryFetchJson(`${apiBase()}/runtime-settings`, {
+    method: "GET",
+  });
+  return normalizeRuntimeSettings(response);
+}
+
+export async function revealRuntimeApiKey(provider: RuntimeSettings["provider"]): Promise<string> {
+  const response = (await tryFetchJson(`${apiBase()}/runtime-settings/reveal-api-key`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider }),
+  })) as { api_key?: string };
+  return response.api_key ?? "";
 }
 
 export async function fetchCodexCLIInfo(): Promise<CodexCLIInfo> {
@@ -2168,17 +2286,12 @@ export async function fetchRuntimeStrategy(): Promise<RuntimeStrategySettings> {
 }
 
 export async function saveRuntimeSettings(settings: RuntimeSettings): Promise<RuntimeSettings> {
-  try {
-    const response = await tryFetchJson(`${apiBase()}/runtime-settings`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(settings),
-    });
-    return normalizeRuntimeSettings(response);
-  } catch (error) {
-    console.error('[api] saveRuntimeSettings FAILED:', error);
-    return mockSaveRuntimeSettings(settings);
-  }
+  const response = await tryFetchJson(`${apiBase()}/runtime-settings`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  return normalizeRuntimeSettings(response);
 }
 
 export async function saveRuntimeStrategy(settings: RuntimeStrategySettings): Promise<RuntimeStrategySettings> {
@@ -2325,6 +2438,17 @@ export async function startFileProjectRegenerationJob(
   })) as GenerationJobResponse;
 }
 
+export async function fetchCurrentGenerationJob(storyId: string): Promise<GenerationJobResponse | null> {
+  const path = isFileProjectId(storyId)
+    ? `${fileProjectPath(storyId)}/generation-jobs/current`
+    : `${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs/current`;
+  try {
+    return (await fetchOptionalJson(path, { method: "GET" }, 90000)) as GenerationJobResponse | null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchGenerationJob(storyId: string, jobId: string): Promise<GenerationJobResponse> {
   const path = isFileProjectId(storyId)
     ? `${fileProjectPath(storyId)}/generation-jobs/${encodeURIComponent(jobId)}`
@@ -2334,6 +2458,7 @@ export async function fetchGenerationJob(storyId: string, jobId: string): Promis
     {
       method: "GET",
     },
+    90000,
   )) as GenerationJobResponse;
 }
 
@@ -2466,6 +2591,78 @@ export async function fetchProjectPromptPreview(
   )) as PromptPreviewResponse;
 }
 
+export async function fetchGlobalPromptTemplates(): Promise<PromptTemplatesResponse> {
+  return (await tryFetchJson(`${apiBase()}/prompt-templates`, { method: "GET" })) as PromptTemplatesResponse;
+}
+
+export async function saveGlobalPromptTemplate(
+  templateKey: string,
+  content: string,
+): Promise<PromptTemplateEntry> {
+  return (await tryFetchJson(`${apiBase()}/prompt-templates/${encodeURIComponent(templateKey)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  })) as PromptTemplateEntry;
+}
+
+export async function fetchProjectPromptTemplates(projectId: string): Promise<PromptTemplatesResponse> {
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-templates`, {
+    method: "GET",
+  })) as PromptTemplatesResponse;
+}
+
+export async function saveProjectPromptTemplate(
+  projectId: string,
+  templateKey: string,
+  content: string,
+): Promise<PromptTemplateEntry> {
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-templates/${encodeURIComponent(templateKey)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  })) as PromptTemplateEntry;
+}
+
+export async function deleteProjectPromptTemplate(
+  projectId: string,
+  templateKey: string,
+): Promise<PromptTemplateEntry> {
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-templates/${encodeURIComponent(templateKey)}`, {
+    method: "DELETE",
+  })) as PromptTemplateEntry;
+}
+
+export async function fetchProjectPromptContext(
+  projectId: string,
+  chapterNumber?: number | null,
+): Promise<PromptContextResponse> {
+  const params = new URLSearchParams();
+  if (chapterNumber != null) params.set("chapter_number", String(chapterNumber));
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-context${suffix}`, {
+    method: "GET",
+  })) as PromptContextResponse;
+}
+
+export async function fetchProjectPromptCalls(
+  projectId: string,
+  chapterNumber?: number | null,
+): Promise<PromptCallListResponse> {
+  const params = new URLSearchParams();
+  if (chapterNumber != null) params.set("chapter_number", String(chapterNumber));
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-calls${suffix}`, {
+    method: "GET",
+  })) as PromptCallListResponse;
+}
+
+export async function fetchProjectPromptCall(projectId: string, callId: string): Promise<PromptCallDetail> {
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-calls/${encodeURIComponent(callId)}`, {
+    method: "GET",
+  })) as PromptCallDetail;
+}
+
 export async function listSkillPacks(): Promise<SkillPackSummary[]> {
   return (await tryFetchJson(`${apiBase()}/skill-packs`, {
     method: "GET",
@@ -2492,21 +2689,6 @@ export async function uploadSkillPackZip(file: File): Promise<SkillPackSummary> 
     headers: { "content-type": "application/zip" },
     body: await file.arrayBuffer(),
   })) as SkillPackSummary;
-}
-
-export async function submitProjectManualDraft(
-  projectId: string,
-  payload: ManualDraftRequest,
-): Promise<AgentRevisionResponse> {
-  return (await tryFetchJson(
-    `${apiBase()}/projects/${encodeURIComponent(projectId)}/manual-draft`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    },
-    180000,
-  )) as AgentRevisionResponse;
 }
 
 export async function fetchStory(storyId: string): Promise<StoryResponse> {

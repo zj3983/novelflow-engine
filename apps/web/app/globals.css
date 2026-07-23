@@ -503,6 +503,89 @@ body {
   gap: 18px;
 }
 
+.ws-prompt-tabs {
+  display: flex;
+  width: fit-content;
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--ws-panel);
+}
+
+.ws-prompt-tabs button {
+  min-height: 40px;
+  padding: 0 18px;
+  border: 0;
+  border-right: 1px solid var(--ws-line);
+  color: var(--ws-ink-muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.ws-prompt-tabs button:last-child { border-right: 0; }
+.ws-prompt-tabs button[aria-selected="true"] { color: #fff; background: var(--ws-ink); }
+
+.ws-template-workbench,
+.ws-call-workbench {
+  display: grid;
+  grid-template-columns: minmax(190px, 260px) minmax(0, 1fr);
+  gap: 18px;
+  min-width: 0;
+}
+
+.ws-template-list,
+.ws-call-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.ws-template-list button,
+.ws-call-item {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  color: var(--ws-ink);
+  background: var(--ws-panel);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ws-template-list button:hover,
+.ws-call-item:hover,
+.ws-template-list button.is-active,
+.ws-call-item.is-active {
+  border-color: var(--ws-ink);
+  background: rgba(31, 38, 48, 0.05);
+}
+
+.ws-template-list small,
+.ws-call-item small { color: var(--ws-ink-muted); }
+
+.ws-template-editor,
+.ws-call-detail {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  background: var(--ws-panel);
+}
+
+.ws-template-editor__textarea {
+  min-height: 480px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  line-height: 1.65;
+}
+
+.ws-inline-success { color: #167347; }
+.ws-inline-error { color: var(--ws-danger); }
+
 .ws-prompt-section {
   min-width: 0;
   display: grid;
@@ -1190,6 +1273,25 @@ body {
   line-height: 1.7;
 }
 
+.ws-artifact__detail {
+  margin-top: 6px;
+}
+
+.ws-artifact__payload {
+  margin: 6px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  background: var(--ws-paper);
+  padding: 10px;
+  color: var(--ws-ink-muted);
+  font-family: ui-monospace, Menlo, Consolas, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .ws-character-section-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1723,11 +1825,24 @@ body {
   .ws-character-section-grid,
   .ws-character-state-grid,
   .ws-profile-columns,
+  .ws-prompt-layout,
+  .ws-template-workbench,
+  .ws-call-workbench,
   .ws-outline-grid,
   .ws-outline-range,
   .ws-outline-generation,
   .ws-character-concrete__grid {
     grid-template-columns: 1fr;
+  }
+
+  .ws-prompt-tabs {
+    width: 100%;
+  }
+
+  .ws-prompt-tabs button {
+    flex: 1;
+    min-width: 0;
+    padding: 0 10px;
   }
 
   .ws-outline-tabs {
@@ -3218,6 +3333,22 @@ body {
 
 .config-grid--two-up {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.config-input-with-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.config-input-with-action .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.config-input-with-action .btn {
+  white-space: nowrap;
+  border-radius: 12px;
 }
 
 .config-card__note {

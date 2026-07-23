@@ -4890,6 +4890,13 @@ class StoryOrchestrator:
                 }
             )
 
+    @staticmethod
+    def _model_system_prompt(json_mode: bool) -> str:
+        system_msg = "You are a novel simulation engine."
+        if json_mode:
+            system_msg += " Respond in json format only."
+        return system_msg
+
     def _chat(
         self,
         story: StoryState,
@@ -4916,9 +4923,7 @@ class StoryOrchestrator:
         if json_mode and max_tokens < 2000:
             max_tokens = 2000
 
-        system_msg = "You are a novel simulation engine."
-        if json_mode:
-            system_msg += " Respond in json format only."
+        system_msg = self._model_system_prompt(json_mode)
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -5032,15 +5037,20 @@ class StoryOrchestrator:
                 template_source = get_effective_prompt_template_source(template_key)
             except KeyError:
                 template_key = ""
+        initial_settings = resolve_stage_runtime(runtime_stage)
         call_id = start_prompt_call(
             chapter_number=story.current_chapter,
             stage=stage,
             agent=runtime_stage,
             user_prompt=prompt,
+            system_prompt=self._model_system_prompt(json_mode),
             module_keys=module_keys,
             template_key=template_key,
             template_source=template_source,
             template_version=template_version,
+            provider=initial_settings.provider,
+            model=initial_settings.model,
+            temperature=float(initial_settings.temperature),
         )
         started = perf_counter()
         chat_kwargs: dict[str, Any] = {

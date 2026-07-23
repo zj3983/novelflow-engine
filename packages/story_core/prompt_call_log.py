@@ -61,6 +61,7 @@ class PromptCallLog:
                 "status",
                 "provider",
                 "model",
+                "temperature",
                 "started_at",
                 "finished_at",
                 "elapsed_seconds",
@@ -93,6 +94,9 @@ class PromptCallLog:
         template_key: str = "",
         template_source: str = "",
         template_version: str = "",
+        provider: str = "",
+        model: str = "",
+        temperature: float | None = None,
     ) -> str:
         call_id = f"pc-{uuid4().hex}"
         payload: dict[str, Any] = {
@@ -104,8 +108,9 @@ class PromptCallLog:
             "agent": str(agent),
             "attempt": self._attempt(chapter_number=int(chapter_number), stage=str(stage)),
             "status": "started",
-            "provider": "",
-            "model": "",
+            "provider": str(provider),
+            "model": str(model),
+            "temperature": temperature,
             "started_at": _now_iso(),
             "finished_at": "",
             "elapsed_seconds": None,
@@ -182,6 +187,7 @@ class PromptCallLog:
                         "status",
                         "provider",
                         "model",
+                        "temperature",
                         "started_at",
                         "finished_at",
                         "elapsed_seconds",

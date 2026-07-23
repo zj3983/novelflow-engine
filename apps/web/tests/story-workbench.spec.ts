@@ -3,7 +3,594 @@ import path from "node:path";
 
 import { expect, test, type Page, type Route } from "@playwright/test";
 
+import playwrightConfig from "../playwright.config";
+import * as workspaceProvider from "../components/ws/ProjectWorkspaceProvider";
+
+import { ConfirmedFactsPanel } from "../components/ws/ConfirmedFactsPanel";
+import {
+  WorldEntitySaveStatus,
+  addWorldEntity,
+  createWorldEntitiesEditorState,
+  editWorldEntity,
+  markWorldEntitiesSaved,
+  mergeWorldEntitiesProps,
+  removeWorldEntity,
+  saveWorldEntities,
+  syncWorldEntitiesBlueprintStore,
+  type WorldEntitiesBlueprintStore,
+} from "../components/ws/WorldEntitiesEditor";
+import {
+  WORLD_BACKGROUND_FIELDS,
+  createWorldBackgroundEditorState,
+  editWorldBackgroundField,
+  markWorldBackgroundSaved,
+  mergeWorldBackgroundProps,
+  saveWorldBackground,
+} from "../components/ws/WorldBackgroundEditor";
+import {
+  WORLD_RULE_EDITOR_SECTIONS,
+  createWorldRulesEditorState,
+  editWorldRuleField,
+  markWorldRuleSaved,
+  mergeWorldRulesProps,
+  saveWorldRules,
+  syncWorldBlueprintStore,
+} from "../components/ws/WorldRulesEditor";
+import { type ImportedWorldBlueprint, type updateProject } from "../lib/api";
+import { groupWorldFacts } from "../lib/worldDisplay";
+import { buildWritingFlow } from "../components/ws/WritingFlow";
+
 const FIXTURE_PATH = path.resolve(__dirname, "../../../tests/fixtures/book-import-sample");
+
+test("写作流程只读取结构化步骤并展示资料来源", () => {
+  const flow = buildWritingFlow([
+    {
+      message: "读取大纲完成",
+      status: "done",
+      stage: "read_outline",
+      source: "context_loader",
+      artifact: {
+        workflow_step: {
+          id: "read_outline",
+          label: "读取大纲",
+          reads: ["总纲", "第2章细纲", "上一章结尾"],
+        },
+        outputs: { chapter_goal: "推进灰狼坡任务" },
+      },
+    },
+    { message: "模型请求耗时 2.1s", status: "done", stage: "writer", source: "llm" },
+  ]);
+
+  expect(flow).toHaveLength(1);
+  expect(flow[0]).toMatchObject({
+    key: "read_outline",
+    label: "读取大纲",
+    status: "done",
+    reads: ["总纲", "第2章细纲", "上一章结尾"],
+    outputs: { chapter_goal: "推进灰狼坡任务" },
+  });
+});
+
+test("Playwright 配置统一读取浏览器可执行路径", () => {
+  const use = playwrightConfig.use as { launchOptions?: { executablePath?: string } };
+  const executablePath = process.env.PLAYWRIGHT_EXECUTABLE_PATH;
+
+  if (executablePath) {
+    expect(use.launchOptions?.executablePath).toBe(executablePath);
+  } else {
+    expect(use.launchOptions?.executablePath).toBeUndefined();
+  }
+});
+
+test("切换项目时可见状态不会泄漏旧项目错误", () => {
+  const selectProjectWorkspaceView = (
+    workspaceProvider as unknown as {
+      selectProjectWorkspaceView?: (input: {
+        hasCurrentProject: boolean;
+        project: unknown;
+        story: unknown;
+        loading: boolean;
+        error: string | null;
+      }) => { project: unknown; story: unknown; loading: boolean; error: string | null };
+    }
+  ).selectProjectWorkspaceView;
+
+  expect(typeof selectProjectWorkspaceView).toBe("function");
+  expect(selectProjectWorkspaceView?.({
+    hasCurrentProject: true,
+    project: null,
+    story: null,
+    loading: false,
+    error: "旧项目加载失败",
+  })).toEqual({ project: null, story: null, loading: false, error: "旧项目加载失败" });
+  expect(selectProjectWorkspaceView?.({
+    hasCurrentProject: false,
+    project: { project_id: "file:failed-project" },
+    story: { story_id: "file:failed-project" },
+    loading: false,
+    error: "旧项目加载失败",
+  })).toEqual({ project: null, story: null, loading: true, error: null });
+});
+
+test("提示词工作台分开模板、上下文和真实调用", async ({ page }) => {
+  const projectId = "file:prompt-workbench-fixture";
+  const projectPath = `/projects/${encodeURIComponent(projectId)}`;
+  let savedProjectTemplate = "";
+  await page.route("**/file-projects/**", async (route) => {
+    const pathname = decodeURIComponent(new URL(route.request().url()).pathname);
+    if (pathname.includes("/prompt-templates")) {
+      if (route.request().method() === "PUT") {
+        savedProjectTemplate = String((route.request().postDataJSON() as { content?: string }).content ?? "");
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ key: "writer", title: "整章正文写作", stage: "writing", content: savedProjectTemplate, required_variables: ["output_section", "chapter_direction"], version: "sha256:saved", source: "project_override" }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema_version: "project-prompt-templates/v1",
+          project_id: projectId,
+          templates: [
+            {
+              key: "writer",
+              title: "整章正文写作",
+              stage: "writing",
+              content: "{{output_section}}\n{{chapter_direction}}",
+              required_variables: ["output_section", "chapter_direction"],
+              version: "sha256:test",
+              source: "global_default",
+            },
+          ],
+        }),
+      });
+      return;
+    }
+    if (pathname.endsWith("/prompt-context")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema_version: "file-project-prompt-context/v1",
+          project_id: projectId,
+          chapter_number: 1,
+          source: "current_project_context",
+          modules: [
+            { key: "character_context", title: "本章人物模块", stage: "人物角色卡", source: "character", content: "苏叶", chars: 2, available: true },
+          ],
+        }),
+      });
+      return;
+    }
+    if (pathname.endsWith("/prompt-calls")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema_version: "prompt-call-list/v1",
+          project_id: projectId,
+          chapter_number: 1,
+          calls: [
+            { call_id: "pc-test", chapter_number: 1, stage: "正文写作", agent: "writer", attempt: 1, status: "succeeded", provider: "openai", model: "deepseek-v4-flash", prompt_chars: 1200 },
+          ],
+        }),
+      });
+      return;
+    }
+    if (pathname.endsWith("/prompt-calls/pc-test")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ call_id: "pc-test", chapter_number: 1, stage: "正文写作", attempt: 1, status: "succeeded", user_prompt: "真实最终 Prompt", module_keys: ["character_context"] }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        project_id: projectId,
+        title: "提示词测试",
+        active_story_id: "",
+        status: "draft",
+        pipeline_stage: "idea_pending",
+        branches: [],
+        storage_source: "file",
+      }),
+    });
+  });
+
+  await page.goto(`${projectPath}/prompts`);
+  await expect(page.getByRole("tab", { name: "提示词模板" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel("原始模板")).toHaveValue(/\{\{chapter_direction\}\}/);
+  await expect(page.getByText("苏叶", { exact: true })).toHaveCount(0);
+  await page.getByLabel("原始模板").fill("项目模板\n{{output_section}}\n{{chapter_direction}}");
+  await page.getByRole("button", { name: "保存为项目覆盖" }).click();
+  await expect.poll(() => savedProjectTemplate).toContain("项目模板");
+
+  await page.getByRole("tab", { name: "上下文模块" }).click();
+  await expect(page).toHaveURL(`${projectPath}/prompts?view=context&chapter=1`);
+  await expect(page.getByText("本章人物模块", { exact: true })).toBeVisible();
+
+  await page.getByRole("tab", { name: "实际调用" }).click();
+  await expect(page.getByText("第 1 次 · 正文写作", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "查看调用 pc-test" }).click();
+  await expect(page.getByText("真实最终 Prompt", { exact: true })).toBeVisible();
+});
+
+test("地点草稿编辑保留附加字段，服务端刷新不覆盖未保存实体", () => {
+  const blueprint = {
+    locations: [{ name: "旧港", description: "旧描述", danger_level: "high" }],
+    factions: [{ name: "巡夜会", description: "旧宗旨", influence: 7 }],
+  } as ImportedWorldBlueprint;
+  let state = createWorldEntitiesEditorState(blueprint);
+
+  state = editWorldEntity(state, "locations", 0, "name", "新港");
+  state = editWorldEntity(state, "factions", 0, "description", "未保存宗旨");
+  state = mergeWorldEntitiesProps(state, {
+    ...blueprint,
+    locations: [{ name: "服务端港口", description: "服务端描述" }],
+    factions: [{ name: "巡夜会", description: "服务端宗旨" }],
+  });
+
+  expect(state.drafts.locations[0]).toEqual({
+    name: "新港",
+    description: "旧描述",
+    danger_level: "high",
+  });
+  expect(state.drafts.factions[0].description).toBe("未保存宗旨");
+});
+
+test("连续保存地点和阵营会基于最新蓝图且保留怪物卡", async () => {
+  const blueprint = {
+    locations: [{ name: "旧港", description: "旧描述", danger_level: "high" }],
+    factions: [{ name: "旧阵营", description: "旧宗旨" }],
+    monster_profiles: [{ id: "wolf", name: "灰狼" }],
+  } as ImportedWorldBlueprint;
+  const blueprintStore: WorldEntitiesBlueprintStore = { current: blueprint };
+  const calls: Parameters<typeof updateProject>[] = [];
+  const updater = (async (...args: Parameters<typeof updateProject>) => {
+    calls.push(args);
+    return { world_blueprint: args[1].world_blueprint } as Awaited<ReturnType<typeof updateProject>>;
+  }) as typeof updateProject;
+
+  await saveWorldEntities({
+    projectId: "file:world-entities-fixture",
+    field: "locations",
+    entities: [{ ...blueprint.locations![0], name: "新港" }],
+    blueprintStore,
+    updater,
+  });
+  syncWorldEntitiesBlueprintStore(blueprintStore, blueprint);
+  await saveWorldEntities({
+    projectId: "file:world-entities-fixture",
+    field: "factions",
+    entities: [{ ...blueprint.factions![0], name: "新阵营" }],
+    blueprintStore,
+    updater,
+  });
+
+  expect(calls[0][1].world_blueprint).toEqual({
+    locations: [{ name: "新港", description: "旧描述", danger_level: "high" }],
+  });
+  expect(calls[1][1].world_blueprint).toEqual({
+    factions: [{ name: "新阵营", description: "旧宗旨" }],
+  });
+  expect(calls[0][2]).toEqual({ fallbackToMock: false });
+  expect(calls[1][2]).toEqual({ fallbackToMock: false });
+});
+
+test("实体保存期间继续编辑不会误报成功", () => {
+  let state = createWorldEntitiesEditorState({
+    locations: [{ name: "旧港", description: "旧描述" }],
+  });
+  state = editWorldEntity(state, "locations", 0, "name", "提交名称");
+  const submitted = state.drafts.locations;
+  state = editWorldEntity(state, "locations", 0, "name", "请求期间新名称");
+  state = markWorldEntitiesSaved(state, "locations", submitted);
+
+  expect(state.statuses.locations).toBe("idle");
+});
+
+test("新增实体设置 dirty、清除成功状态并保留已有项附加字段", () => {
+  let state = createWorldEntitiesEditorState({
+    locations: [{ name: "旧港", description: "旧描述", danger_level: "high" }],
+  });
+  state = markWorldEntitiesSaved(state, "locations", state.drafts.locations);
+  state = addWorldEntity(state, "locations");
+
+  expect(state.dirty.locations).toBe(true);
+  expect(state.statuses.locations).toBe("idle");
+  expect(state.drafts.locations).toEqual([
+    { name: "旧港", description: "旧描述", danger_level: "high" },
+    { name: "", description: "" },
+  ]);
+});
+
+test("删除实体设置 dirty、清除成功状态并保留其余项附加字段", () => {
+  let state = createWorldEntitiesEditorState({
+    factions: [
+      { name: "旧阵营", description: "待删除", influence: 1 },
+      { name: "巡夜会", description: "保留", influence: 7 },
+    ],
+  });
+  state = markWorldEntitiesSaved(state, "factions", state.drafts.factions);
+  state = removeWorldEntity(state, "factions", 0);
+
+  expect(state.dirty.factions).toBe(true);
+  expect(state.statuses.factions).toBe("idle");
+  expect(state.drafts.factions).toEqual([
+    { name: "巡夜会", description: "保留", influence: 7 },
+  ]);
+});
+
+test("保存请求期间新增或删除实体不会把提交快照误报为成功", () => {
+  let addedState = createWorldEntitiesEditorState({
+    locations: [{ name: "旧港", description: "旧描述", danger_level: "high" }],
+  });
+  const addSubmitted = addedState.drafts.locations;
+  addedState = addWorldEntity(addedState, "locations");
+  addedState = markWorldEntitiesSaved(addedState, "locations", addSubmitted);
+  expect(addSubmitted).toHaveLength(1);
+  expect(addedState.statuses.locations).toBe("idle");
+  expect(addedState.dirty.locations).toBe(true);
+  expect(addedState.drafts.locations[0].danger_level).toBe("high");
+
+  let removedState = createWorldEntitiesEditorState({
+    factions: [
+      { name: "旧阵营", description: "待删除", influence: 1 },
+      { name: "巡夜会", description: "保留", influence: 7 },
+    ],
+  });
+  const removeSubmitted = removedState.drafts.factions;
+  removedState = removeWorldEntity(removedState, "factions", 0);
+  removedState = markWorldEntitiesSaved(removedState, "factions", removeSubmitted);
+  expect(removeSubmitted).toHaveLength(2);
+  expect(removedState.statuses.factions).toBe("idle");
+  expect(removedState.dirty.factions).toBe(true);
+  expect(removedState.drafts.factions[0].influence).toBe(7);
+});
+
+test("实体保存状态使用 polite live status，错误保持 alert", () => {
+  const saving = JSON.stringify(WorldEntitySaveStatus({ status: "saving" }));
+  const success = JSON.stringify(WorldEntitySaveStatus({ status: "success" }));
+  const error = JSON.stringify(WorldEntitySaveStatus({ status: "error", error: "网络错误" }));
+
+  expect(saving).toContain('"role":"status"');
+  expect(saving).toContain('"aria-live":"polite"');
+  expect(saving).toContain("保存中...");
+  expect(success).toContain('"role":"status"');
+  expect(success).toContain('"aria-live":"polite"');
+  expect(success).toContain("保存成功");
+  expect(error).toContain('"role":"alert"');
+  expect(error).toContain("保存失败：网络错误");
+});
+
+test("世界事实完整分组并去掉章节来源前缀", () => {
+  const projectFacts = Array.from({ length: 25 }, (_, index) => `项目事实${index + 1}`);
+  const grouped = groupWorldFacts([
+    ...projectFacts,
+    "第2章事实：第二章唯一事实",
+    "第1章事实：第一章事实甲",
+    "第 1 章事实：第一章事实乙",
+    "   ",
+  ]);
+
+  expect(grouped.projectFacts).toHaveLength(25);
+  expect(grouped.projectFacts[24]).toBe("项目事实25");
+  expect(grouped.chapters).toEqual([
+    { chapterNumber: 1, facts: ["第一章事实甲", "第一章事实乙"] },
+    { chapterNumber: 2, facts: ["第二章唯一事实"] },
+  ]);
+});
+
+test("世界事实保留重复记录并严格匹配章节事实前缀", () => {
+  const grouped = groupWorldFacts([
+    "重复项目事实",
+    "重复项目事实",
+    "第3章事实: ASCII 事实",
+    "第3章事实: ASCII 事实",
+    "第3章事实-错误前缀",
+    "第x章事实：错误章节号",
+  ]);
+
+  expect(grouped.projectFacts).toEqual([
+    "重复项目事实",
+    "重复项目事实",
+    "第3章事实-错误前缀",
+    "第x章事实：错误章节号",
+  ]);
+  expect(grouped.chapters).toEqual([
+    { chapterNumber: 3, facts: ["ASCII 事实", "ASCII 事实"] },
+  ]);
+});
+
+test("已确认事实面板真实渲染标题、只读说明和空状态", () => {
+  const markup = JSON.stringify(ConfirmedFactsPanel({ facts: [] }));
+
+  expect(markup).toContain("已确认事实");
+  expect(markup).toContain("由章节回写，不在此处直接修改");
+  expect(markup).toContain("暂无已确认事实");
+  expect(markup).not.toContain("编辑");
+  expect(markup).not.toContain("删除");
+});
+
+test("服务端刷新只同步未修改的世界背景和规则字段", () => {
+  const original: ImportedWorldBlueprint = {
+    premise: "旧前提",
+    current_arc: "旧局势",
+    world_rules: ["旧基础规则"],
+    progression_rules: ["旧成长规则"],
+  };
+  let backgroundState = createWorldBackgroundEditorState("旧摘要", original);
+  backgroundState = editWorldBackgroundField(backgroundState, "premise", "未保存前提");
+  backgroundState = mergeWorldBackgroundProps(backgroundState, "服务端新摘要", {
+    ...original,
+    premise: "服务端新前提",
+    current_arc: "服务端新局势",
+  });
+  expect(backgroundState.values).toEqual({
+    world_summary: "服务端新摘要",
+    premise: "未保存前提",
+    current_arc: "服务端新局势",
+  });
+
+  let rulesState = createWorldRulesEditorState(original);
+  rulesState = editWorldRuleField(rulesState, "world_rules", "未保存基础规则");
+  rulesState = mergeWorldRulesProps(rulesState, {
+    ...original,
+    world_rules: ["服务端新基础规则"],
+    progression_rules: ["服务端新成长规则"],
+  });
+  expect(rulesState.drafts.world_rules).toBe("未保存基础规则");
+  expect(rulesState.drafts.progression_rules).toBe("服务端新成长规则");
+});
+
+test("规则服务端回显按语义确认 dirty 并同步规范文本", () => {
+  let state = createWorldRulesEditorState({ world_rules: ["旧规则"] });
+  state = editWorldRuleField(state, "world_rules", " 新规则 \n\n");
+  state = mergeWorldRulesProps(state, { world_rules: ["新规则"] });
+
+  expect(state.dirty.world_rules).toBe(false);
+  expect(state.drafts.world_rules).toBe("新规则");
+});
+
+test("连续保存两个规则字段时在上一响应蓝图上合并", async () => {
+  const staleBlueprint: ImportedWorldBlueprint = {
+    world_rules: ["旧基础规则"],
+    reality_bridge_rules: ["旧现实规则"],
+    monster_profiles: [{ id: "wolf", name: "灰狼" }],
+  };
+  const blueprintStore = {
+    current: staleBlueprint,
+  };
+  const calls: Parameters<typeof updateProject>[] = [];
+  const updater = (async (...args: Parameters<typeof updateProject>) => {
+    calls.push(args);
+    return { world_blueprint: args[1].world_blueprint } as Awaited<ReturnType<typeof updateProject>>;
+  }) as typeof updateProject;
+
+  await saveWorldRules({
+    projectId: "file:world-editor-fixture",
+    field: "world_rules",
+    text: "新基础规则",
+    blueprintStore,
+    updater,
+  });
+  syncWorldBlueprintStore(blueprintStore, staleBlueprint);
+  await saveWorldRules({
+    projectId: "file:world-editor-fixture",
+    field: "reality_bridge_rules",
+    text: "新现实规则",
+    blueprintStore,
+    updater,
+  });
+
+  expect(calls[0][1].world_blueprint).toEqual({ world_rules: ["新基础规则"] });
+  expect(calls[1][1].world_blueprint).toEqual({ reality_bridge_rules: ["新现实规则"] });
+});
+
+test("保存成功后再次编辑会清除对应成功状态", () => {
+  let backgroundState = createWorldBackgroundEditorState("摘要", {});
+  backgroundState = markWorldBackgroundSaved(backgroundState, backgroundState.values);
+  backgroundState = editWorldBackgroundField(backgroundState, "world_summary", "新摘要");
+  expect(backgroundState.status).toBe("idle");
+
+  let rulesState = createWorldRulesEditorState({ world_rules: ["规则"] });
+  rulesState = markWorldRuleSaved(rulesState, "world_rules", rulesState.drafts.world_rules);
+  rulesState = editWorldRuleField(rulesState, "world_rules", "新规则");
+  expect(rulesState.statuses.world_rules).toBeUndefined();
+});
+
+test("保存请求期间的新编辑不会被完成响应标记为成功", () => {
+  let backgroundState = createWorldBackgroundEditorState("旧摘要", { premise: "旧前提" });
+  backgroundState = editWorldBackgroundField(backgroundState, "premise", "提交前提");
+  const submittedBackground = { ...backgroundState.values };
+  backgroundState = editWorldBackgroundField(backgroundState, "premise", "请求期间的新前提");
+  backgroundState = markWorldBackgroundSaved(backgroundState, submittedBackground);
+  expect(backgroundState.status).toBe("idle");
+
+  let rulesState = createWorldRulesEditorState({ world_rules: ["旧规则"] });
+  rulesState = editWorldRuleField(rulesState, "world_rules", "提交规则");
+  const submittedRules = rulesState.drafts.world_rules;
+  rulesState = editWorldRuleField(rulesState, "world_rules", "请求期间的新规则");
+  rulesState = markWorldRuleSaved(rulesState, "world_rules", submittedRules);
+  expect(rulesState.statuses.world_rules).toBeUndefined();
+});
+
+test("世界背景与分类规则编辑器保留蓝图其他字段并独立保存规则", async () => {
+  const blueprint: ImportedWorldBlueprint = {
+    premise: "旧世界前提",
+    current_arc: "旧局势",
+    world_rules: ["旧基础规则"],
+    progression_rules: ["旧成长规则"],
+    quest_rules: ["旧任务规则"],
+    economy_rules: ["旧经济规则"],
+    reality_bridge_rules: ["旧现实规则"],
+    monster_profiles: [{ id: "wolf", name: "灰狼" }],
+  };
+  const calls: Parameters<typeof updateProject>[] = [];
+  const updater = (async (...args: Parameters<typeof updateProject>) => {
+    calls.push(args);
+    return { world_blueprint: args[1].world_blueprint } as Awaited<ReturnType<typeof updateProject>>;
+  }) as typeof updateProject;
+  let savedCount = 0;
+
+  expect(WORLD_BACKGROUND_FIELDS.map((field) => field.label)).toEqual(["项目摘要", "世界前提", "当前局势"]);
+
+  await saveWorldBackground({
+    projectId: "file:world-editor-fixture",
+    worldSummary: "新项目摘要",
+    premise: "新世界前提",
+    currentArc: "新局势",
+    blueprint,
+    onSaved: () => { savedCount += 1; },
+    updater,
+  });
+  expect(calls[0][1]).toEqual({
+    world_summary: "新项目摘要",
+    world_blueprint: { premise: "新世界前提", current_arc: "新局势" },
+  });
+  expect(calls[0][2]).toEqual({ fallbackToMock: false });
+
+  expect(WORLD_RULE_EDITOR_SECTIONS.map((section) => section.title)).toEqual([
+    "基础规则",
+    "力量与能力",
+    "成长与战斗",
+    "任务与经济",
+    "阵营与面板",
+    "世界硬约束",
+    "游戏影响现实",
+  ]);
+  expect(WORLD_RULE_EDITOR_SECTIONS.flatMap((section) => section.fields.map((field) => field.label))).toEqual([
+    "基础规则",
+    "力量/能力体系",
+    "成长与战斗规则",
+    "任务规则",
+    "经济规则",
+    "阵营规则",
+    "面板规则",
+    "世界硬约束",
+    "不可违反规则",
+    "游戏影响现实规则",
+  ]);
+  expect(WORLD_RULE_EDITOR_SECTIONS.flatMap((section) => section.fields.map((field) => field.field))).not.toContain("chapter_formula");
+
+  await saveWorldRules({
+    projectId: "file:world-editor-fixture",
+    field: "reality_bridge_rules",
+    text: " 新现实规则一 \n\n新现实规则二\n   ",
+    blueprintStore: { current: blueprint },
+    onSaved: () => { savedCount += 1; },
+    updater,
+  });
+  expect(calls[1][1].world_blueprint).toEqual({ reality_bridge_rules: ["新现实规则一", "新现实规则二"] });
+  expect(calls[1][2]).toEqual({ fallbackToMock: false });
+  expect(savedCount).toBe(2);
+});
 
 async function proxyBookImportRoutes(page: Page) {
   await page.route("**/book-import/**", async (route) => {
@@ -1588,4 +2175,252 @@ test("非网游项目概览不读取旧游戏面板等级", async ({ page }) => 
   await expect(page.getByRole("heading", { name: "角色卡" })).toBeVisible();
   await expect(page.getByText("9级", { exact: true })).toHaveCount(0);
   await expect(page.getByText("不应展示", { exact: true })).toHaveCount(0);
+});
+
+test("世界观页面显示并编辑怪物图鉴", async ({ page }) => {
+  let savedBlueprint: Record<string, unknown> | null = null;
+  const project = {
+    project_id: "file:monster-fixture", title: "怪物图鉴测试", source_path: "", seed_outline: "", world_summary: "", current_focus: "",
+    author_constraints: [],
+    world_blueprint: {
+      genre_plugin_ids: ["game_webnovel"],
+      monster_profiles: [{
+        id: "gray-wolf", name: "灰狼", category: "野兽", rank: "普通", level: "Lv.3", hp: "80",
+        attack_mode: "扑咬", skills: [], traits: ["听觉敏锐"], habitats: ["灰狼坡"],
+        drops: ["灰狼毒腺", "粗糙狼皮"], first_appearance_chapter: 1, status: "active",
+      }],
+    },
+    character_profiles: [], relationship_graph: [], enabled_skill_ids: [], status: "simulating", pipeline_stage: "world_ready",
+    active_story_id: "file:monster-fixture", branches: [], storage_source: "file",
+  };
+  await page.route("**/file-projects/file%3Amonster-fixture", async (route) => {
+    if (route.request().method() === "PUT") {
+      const payload = route.request().postDataJSON() as { world_blueprint?: Record<string, unknown> };
+      savedBlueprint = payload.world_blueprint ?? null;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...project, world_blueprint: savedBlueprint }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Amonster-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:monster-fixture", outline: "", genre: "网游", style: "白描", current_chapter: 1,
+      agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
+      agent_runtime: { recent_events: [] }, author_constraints: [], world_facts: [], characters: [], history: [], parent_story_id: null, branched_from_chapter: null,
+    }) });
+  });
+
+  await page.goto("/projects/file%3Amonster-fixture/world");
+  await expect(page.getByRole("heading", { name: "怪物图鉴" })).toBeVisible();
+  await expect(page.getByText("灰狼", { exact: true })).toBeVisible();
+  await expect(page.getByText("野兽 · 普通 · Lv.3", { exact: true })).toBeVisible();
+  await expect(page.getByText("Lv.Lv.3", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("扑咬", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "编辑灰狼" }).click();
+  await page.getByLabel("怪物生命").fill("90");
+  await page.getByRole("button", { name: "保存怪物卡" }).click();
+  await expect.poll(() => savedBlueprint).toMatchObject({ monster_profiles: [{ name: "灰狼", hp: "90" }] });
+});
+
+test("世界观真实路由常驻展示完整编辑区并在刷新时保留草稿", async ({ page }) => {
+  let savedPayload: { world_summary?: string; world_blueprint?: Record<string, unknown> } = {};
+  let projectGetCount = 0;
+  let completedProjectGetCount = 0;
+  const monsterProfiles = [{ id: "gray-wolf", name: "灰狼", hp: "80" }];
+  const project = {
+    project_id: "file:world-page-fixture", title: "世界观集成测试", source_path: "", seed_outline: "",
+    world_summary: "旧项目摘要", current_focus: "", author_constraints: ["不应显示为页面标题"],
+    world_blueprint: {
+      premise: "旧世界前提",
+      current_arc: "旧局势",
+      world_rules: ["基础世界规则"],
+      locations: [{ name: "旧港", description: "沿海聚落" }],
+      factions: [{ name: "巡夜会", description: "维护夜间秩序" }],
+      monster_profiles: monsterProfiles,
+    },
+    character_profiles: [], relationship_graph: [], enabled_skill_ids: [], status: "simulating",
+    pipeline_stage: "world_ready", active_story_id: "file:world-page-fixture", branches: [], storage_source: "file",
+  };
+  await page.route("**/file-projects/file%3Aworld-page-fixture", async (route) => {
+    if (route.request().method() === "PUT") {
+      savedPayload = route.request().postDataJSON() as typeof savedPayload;
+      project.world_summary = savedPayload.world_summary ?? project.world_summary;
+      project.world_blueprint = { ...project.world_blueprint, ...(savedPayload.world_blueprint ?? {}) };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+      return;
+    }
+    projectGetCount += 1;
+    if (projectGetCount > 1) await new Promise((resolve) => setTimeout(resolve, 350));
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+    completedProjectGetCount += 1;
+  });
+  await page.route("**/file-stories/file%3Aworld-page-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:world-page-fixture", outline: "", genre: "网游", style: "白描", current_chapter: 1,
+      agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
+      agent_runtime: { recent_events: [] }, author_constraints: [],
+      world_facts: Array.from({ length: 25 }, (_, index) => `项目事实${index + 1}`),
+      characters: [], history: [], parent_story_id: null, branched_from_chapter: null,
+    }) });
+  });
+
+  await page.goto("/projects/file%3Aworld-page-fixture/world");
+
+  for (const heading of ["世界背景", "世界规则", "地点", "阵营", "怪物图鉴", "已确认事实"]) {
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+  }
+  const orderedSections = page.locator("#world-background-title, #world-rules-title, #world-entities-title, #monster-bestiary-title, #confirmed-facts-title");
+  await expect(orderedSections).toHaveCount(5);
+  await expect(orderedSections).toHaveText(["世界背景", "世界规则", "地点与阵营", "怪物图鉴", "已确认事实"]);
+  await expect(page.getByText("项目事实25", { exact: true })).toBeVisible();
+  await expect(page.getByText("作者约束", { exact: true })).toHaveCount(0);
+
+  const summary = page.getByLabel("项目摘要");
+  const unsavedRule = page.locator("label.ws-search").filter({ hasText: "基础规则" }).locator("textarea").first();
+  await summary.fill("保存后的项目摘要");
+  await unsavedRule.fill("尚未保存的规则草稿");
+  await page.getByRole("button", { name: "保存世界背景" }).click();
+  await expect.poll(() => savedPayload.world_summary).toBe("保存后的项目摘要");
+  await page.waitForTimeout(100);
+  await expect(summary).toBeVisible();
+  await expect(summary).toHaveValue("保存后的项目摘要");
+  await expect(unsavedRule).toHaveValue("尚未保存的规则草稿");
+  await expect.poll(() => completedProjectGetCount).toBeGreaterThan(1);
+  await expect(unsavedRule).toHaveValue("尚未保存的规则草稿");
+  expect(savedPayload.world_blueprint).toEqual({ premise: "旧世界前提", current_arc: "旧局势" });
+  expect(project.world_blueprint).toMatchObject({ monster_profiles: monsterProfiles });
+});
+
+test("世界观并发保存使用局部蓝图且跨编辑器更新互不覆盖", async ({ page }) => {
+  let projectGetCount = 0;
+  let refreshPending = false;
+  let rulePutStarted = false;
+  let rulePutCompleted = false;
+  let backgroundPutStarted = false;
+  let failWrites = false;
+  let releaseRulePut!: () => void;
+  let releaseBackgroundPut!: () => void;
+  let releaseRefresh!: () => void;
+  const rulePutGate = new Promise<void>((resolve) => { releaseRulePut = resolve; });
+  const backgroundPutGate = new Promise<void>((resolve) => { releaseBackgroundPut = resolve; });
+  const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+  const project = {
+    project_id: "file:world-concurrent-fixture", title: "并发保存测试", source_path: "", seed_outline: "",
+    world_summary: "旧摘要", current_focus: "", author_constraints: [],
+    world_blueprint: {
+      premise: "旧前提", current_arc: "旧局势", world_rules: ["旧规则"],
+      locations: [{ name: "旧港", description: "旧描述" }], factions: [],
+      monster_profiles: [{ id: "wolf", name: "灰狼" }],
+    },
+    character_profiles: [], relationship_graph: [], enabled_skill_ids: [], status: "simulating",
+    pipeline_stage: "world_ready", active_story_id: "file:world-concurrent-fixture", branches: [], storage_source: "file",
+  };
+  await page.route("**/file-projects/file%3Aworld-concurrent-fixture", async (route) => {
+    if (route.request().method() === "PUT") {
+      if (failWrites) {
+        await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "write_failed" }) });
+        return;
+      }
+      const payload = route.request().postDataJSON() as {
+        world_summary?: string;
+        world_blueprint?: Record<string, unknown>;
+      };
+      if (payload.world_blueprint?.world_rules) {
+        rulePutStarted = true;
+        await rulePutGate;
+      }
+      if (payload.world_blueprint?.premise) {
+        backgroundPutStarted = true;
+        await backgroundPutGate;
+      }
+      if (payload.world_summary !== undefined) project.world_summary = payload.world_summary;
+      project.world_blueprint = { ...project.world_blueprint, ...(payload.world_blueprint ?? {}) };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+      if (payload.world_blueprint?.world_rules) rulePutCompleted = true;
+      return;
+    }
+    projectGetCount += 1;
+    if (rulePutCompleted) {
+      refreshPending = true;
+      await refreshGate;
+      refreshPending = false;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Aworld-concurrent-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:world-concurrent-fixture", outline: "", genre: "网游", style: "白描", current_chapter: 1,
+      agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
+      agent_runtime: { recent_events: [] }, author_constraints: [], world_facts: [], characters: [], history: [],
+      parent_story_id: null, branched_from_chapter: null,
+    }) });
+  });
+
+  await page.goto("/projects/file%3Aworld-concurrent-fixture/world");
+  await expect.poll(async () => page.locator("body").innerText()).toContain("世界规则");
+  const ruleEditor = page.locator("label.ws-search").filter({ hasText: "基础规则" }).locator("textarea").first();
+  await ruleEditor.fill("并发新规则");
+  await page.getByRole("button", { name: "保存基础规则" }).click();
+  await expect.poll(() => rulePutStarted).toBe(true);
+  const ruleSaving = page.getByRole("status").filter({ hasText: "保存中" });
+  await expect(ruleSaving).toHaveAttribute("aria-live", "polite");
+  releaseRulePut();
+  await expect.poll(() => project.world_blueprint.world_rules).toEqual(["并发新规则"]);
+  await expect.poll(() => refreshPending).toBe(true);
+  await expect(page.locator('section[aria-labelledby="world-rules-title"]').getByRole("status").filter({ hasText: "保存成功" })).toBeVisible();
+
+  await page.getByLabel("世界前提").fill("并发新前提");
+  await page.getByRole("button", { name: "保存世界背景" }).click();
+  await expect.poll(() => backgroundPutStarted).toBe(true);
+  const backgroundSaving = page.getByRole("status").filter({ hasText: "保存中" });
+  await expect(backgroundSaving).toHaveAttribute("aria-live", "polite");
+  releaseBackgroundPut();
+  await expect.poll(() => project.world_blueprint.premise).toBe("并发新前提");
+  await expect(page.locator('section[aria-labelledby="world-background-title"]').getByRole("status").filter({ hasText: "保存成功" })).toBeVisible();
+
+  const locations = page.locator('section[aria-labelledby="world-locations-title"]');
+  await locations.getByLabel("名称").fill("并发新港");
+  await locations.getByRole("button", { name: "保存地点" }).click();
+  await expect.poll(() => project.world_blueprint.locations).toEqual([{ name: "并发新港", description: "旧描述" }]);
+  expect(project.world_blueprint).toMatchObject({
+    world_rules: ["并发新规则"], premise: "并发新前提",
+    locations: [{ name: "并发新港" }], monster_profiles: [{ id: "wolf", name: "灰狼" }],
+  });
+
+  failWrites = true;
+  await page.getByLabel("世界前提").fill("失败背景");
+  await page.getByRole("button", { name: "保存世界背景" }).click();
+  await expect(page.locator('section[aria-labelledby="world-background-title"]').getByRole("alert").filter({ hasText: "保存失败" })).toBeVisible();
+  await ruleEditor.fill("失败规则");
+  await page.getByRole("button", { name: "保存基础规则" }).click();
+  await expect(page.locator('section[aria-labelledby="world-rules-title"]').getByRole("alert").filter({ hasText: "保存失败" })).toBeVisible();
+  releaseRefresh();
+});
+
+test("项目加载成功但故事加载失败时仍显示项目并报告故事错误", async ({ page }) => {
+  let storyRequestStarted = false;
+  let releaseStory!: () => void;
+  const storyGate = new Promise<void>((resolve) => { releaseStory = resolve; });
+  const project = {
+    project_id: "file:story-failure-fixture", title: "项目仍可见", source_path: "", seed_outline: "",
+    world_summary: "项目数据已加载", current_focus: "", author_constraints: [], world_blueprint: {},
+    character_profiles: [], relationship_graph: [], enabled_skill_ids: [], status: "simulating",
+    pipeline_stage: "world_ready", active_story_id: "file:missing-story", branches: [], storage_source: "file",
+  };
+  await page.route("**/file-projects/file%3Astory-failure-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Amissing-story", async (route) => {
+    storyRequestStarted = true;
+    await storyGate;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "story_failed" }) });
+  });
+
+  await page.goto("/projects/file%3Astory-failure-fixture/world");
+
+  await expect.poll(() => storyRequestStarted).toBe(true);
+  await expect(page.getByRole("heading", { name: "世界背景" })).toBeVisible();
+  await expect(page.getByLabel("项目摘要")).toHaveValue("项目数据已加载");
+  releaseStory();
+  await expect(page.getByText(/故事加载失败/)).toBeVisible();
 });
