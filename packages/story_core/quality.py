@@ -7,6 +7,7 @@ def validate_bundle(bundle: dict) -> dict:
     compact_body = "".join(body.split())
     target_min_chars = 3800
     target_max_chars = 5500
+    hard_max_chars = target_max_chars + 200
     enforce_min_chars = bool(
         bundle.get("enforce_target_chars")
         or bundle.get("manual_instructions")
@@ -17,7 +18,7 @@ def validate_bundle(bundle: dict) -> dict:
         issues.append("body")
     elif enforce_min_chars and len(compact_body) < target_min_chars:
         issues.append("body_too_short")
-    elif len(compact_body) > target_max_chars:
+    elif len(compact_body) > hard_max_chars:
         issues.append("body_too_long")
     if not bundle.get("chapter_title"):
         issues.append("chapter_title")

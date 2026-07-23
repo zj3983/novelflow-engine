@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import random
+from hashlib import md5
+
 from packages.story_core.models import StoryState
 from packages.story_core.planner import build_chapter_title
 
@@ -100,11 +103,51 @@ def _pick_named_actions(event_plan: dict | None) -> list[dict]:
     return cleaned
 
 
+def _opening_style_seed(
+    story: StoryState,
+    chapter_number: int,
+    lead_name: str,
+    goal: str,
+    pivot: str,
+    collision: str,
+    anchor: str,
+) -> int:
+    material = "|".join(
+        [
+            str(chapter_number),
+            story.genre,
+            story.style,
+            lead_name,
+            goal,
+            pivot,
+            collision,
+            anchor,
+            story.outline[:120],
+        ]
+    )
+    return int(md5(material.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def _pick_seeded_phrase(
+    phrase_bank: tuple[str, ...],
+    seed: int,
+    *,
+    offset: int = 0,
+    chapter_number: int,
+) -> str:
+    if not phrase_bank:
+        return ""
+    rng = random.Random(seed + chapter_number * 17 + offset)
+    index = rng.randrange(len(phrase_bank))
+    return phrase_bank[index]
+
+
 def _opening_paragraph(
     story: StoryState,
     conflict_summary: dict | None,
     event_plan: dict | None,
     memory_constraints: dict | None,
+    chapter_number: int,
 ) -> str:
     lead = _lead(story)
     lead_name = lead.name if lead else "主角"
@@ -112,30 +155,71 @@ def _opening_paragraph(
     pivot = str((event_plan or {}).get("pivot", "")).strip()
     collision = str((event_plan or {}).get("collision", "")).strip()
     anchor = _world_anchor(story, memory_constraints)
+    seed = _opening_style_seed(story, chapter_number, lead_name, goal, pivot, collision, anchor)
+    primary_template_bank = (
+        f"{lead_name}把现实中的几样要紧事先放在心里：{goal}。",
+        f"{lead_name}今天先把脑子里最要紧的一件事想清：{goal}。",
+        f"{lead_name}先不去找安慰，先把{goal}这件事做掉。",
+        f"{lead_name}知道先稳住自己，才能走得更快，今天的目标先放到{goal}上。",
+        f"{lead_name}先不想别的，先把{goal}这条路走出来。",
+        f"{lead_name}先把{goal}这件事的节奏踩稳。",
+        f"{lead_name}知道要想往前走，先把{goal}做成一件确定的事。",
+        f"{lead_name}先把第一步定在{goal}上，心里才不乱。",
+    )
+    anchor_tail_bank = (
+        f"真正压住他的是：{anchor}。",
+        f"眼前更明确的是：{anchor}。",
+        f"最先让他不敢分神的是：{anchor}。",
+        f"真正让他握紧呼吸的是：{anchor}。",
+    )
+    pressure_turn_bank = (
+        f"也因为这样，{pivot}把节奏从缓慢推向了紧绷。",
+        f"更麻烦的是，{pivot}让局面直接往前拧了一下。",
+        f"所以{pivot}先把节奏拧起来，像把按钮一下子拨大。",
+        f"结果{pivot}让他连思考停顿的余地都没留下。",
+    )
+    collision_tail_bank = (
+        f"他能感觉到{collision}正在顶着来。",
+        f"接下来会更难的是，{collision}。",
+        f"有一股{collision}在背后推着局面往前。",
+        f"{collision}这类事，通常不是一招就能躲过去的。",
+    )
+    secondary_intro_bank = (
+        f"{lead_name}先把今天最该争的事情摆正：{goal}。",
+        f"{lead_name}先不浪费力气绕弯，先盯着{goal}推进。",
+        f"{lead_name}明知道最难的是开场，可他先把{goal}给稳住。",
+        f"{lead_name}先给自己定了个当下目标：{goal}。",
+        f"{lead_name}先把{goal}这件事当成今天最先要完成的事。",
+        f"{lead_name}不想把精力散开，先把{goal}走通。",
+        f"{lead_name}先把{goal}放在最前，下一秒再想别的。",
+        f"{lead_name}先把{goal}处理掉，才会知道自己还能继续往前走到哪。",
+    )
 
     if _is_game_novel(story, event_plan):
+        opener = _pick_seeded_phrase(primary_template_bank, seed, chapter_number=chapter_number)
         parts = [
-            f"{lead_name}重新上线的时候，天启之门的晨雾还没从新手村外散干净。",
-            f"他先确认了一遍今天最不能拖的事：{goal}。",
+            opener,
         ]
         if anchor:
-            parts.append(f"可真正让他不敢放松的，不是经验条涨得慢，而是那条已经摆在眼前的硬事实：{anchor}。")
+            parts.append(_pick_seeded_phrase(anchor_tail_bank, seed, offset=1, chapter_number=chapter_number))
         if pivot:
-            parts.append(f"也正因为这样，原本该是平稳发育的一天，被{pivot}硬生生拽进了台前。")
+            parts.append(_pick_seeded_phrase(pressure_turn_bank, seed, offset=2, chapter_number=chapter_number))
         elif collision:
-            parts.append(f"也正因为这样，局势很快顺着{collision}的方向压了过来。")
+            parts.append(_pick_seeded_phrase(collision_tail_bank, seed, offset=3, chapter_number=chapter_number))
         return "".join(parts)
 
-    parts = [f"{lead_name}一开始只是想先把手头最要紧的事处理掉：{goal}。"]
+    parts = [_pick_seeded_phrase(secondary_intro_bank, seed, offset=4, chapter_number=chapter_number)]
     primary = (conflict_summary or {}).get("primary_conflict", {})
     opposition = str(primary.get("opposition", "")).strip()
     primary_collision = str(primary.get("collision", "")).strip()
     if opposition and opposition not in ("circumstance", lead_name):
-        parts.append(f"可{opposition}也站在同一条线索的另一端，{primary_collision or '这场碰撞已经避不开'}。")
+        parts.append(
+            f"问题不再只剩{opposition}，而是{(primary_collision or '这场矛盾').strip()}。"
+        )
     if anchor:
-        parts.append(f"可眼下最不容忽视的事实只有一个：{anchor}。")
+        parts.append(_pick_seeded_phrase(anchor_tail_bank, seed, offset=5, chapter_number=chapter_number))
     if pivot:
-        parts.append(f"局面真正拧紧的地方，也正是{pivot}。")
+        parts.append(_pick_seeded_phrase(pressure_turn_bank, seed, offset=6, chapter_number=chapter_number))
     return "".join(parts)
 
 
@@ -143,7 +227,7 @@ def _stakes_paragraph(conflict_summary: dict | None) -> str:
     stakes = str((conflict_summary or {}).get("stakes", "")).strip()
     if not stakes:
         return ""
-    return f"苏叶心里很清楚，这一章真正危险的地方不在眼前谁赢谁输，而在于{stakes}。"
+    return f"主角心里很清楚，这一章真正危险的地方不在眼前谁赢谁输，而在于{stakes}。"
 
 
 def _build_scene_paragraphs(story: StoryState, event_plan: dict | None) -> list[str]:
@@ -205,7 +289,7 @@ def _constraint_paragraphs(memory_constraints: dict | None) -> list[str]:
         cleaned = [str(item).strip() for item in author_constraints[:2] if str(item).strip()]
         if cleaned:
             paragraphs.append(
-                f"所以这一局没有侥幸，也没有天降答案。苏叶只能沿着既定规则一点点往前拱，"
+                f"所以这一局没有侥幸，也没有天降答案。主角只能沿着既定规则一点点往前拱，"
                 f"每一步都得自己扛住：{'；'.join(cleaned)}。"
             )
 
@@ -250,7 +334,13 @@ def write_chapter_body(
         f"第{chapter_number}章《{chapter_title}》",
         f"（节奏：{tempo_label}）",
         "",
-        _opening_paragraph(story, conflict_summary, event_plan, memory_constraints),
+        _opening_paragraph(
+            story,
+            conflict_summary,
+            event_plan,
+            memory_constraints,
+            chapter_number,
+        ),
     ]
 
     stakes = _stakes_paragraph(conflict_summary)

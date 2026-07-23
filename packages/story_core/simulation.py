@@ -329,6 +329,49 @@ def _plot_simulation(
     }
 
 
+def _director_plot_projection(event_plan: dict, *, chapter_goal: str) -> dict[str, Any]:
+    """Expose the director's decisions without making a second plot plan."""
+
+    satisfaction = (
+        event_plan.get("chapter_satisfaction")
+        if isinstance(event_plan.get("chapter_satisfaction"), dict)
+        else {}
+    )
+    chapter_end_hook = event_plan.get("chapter_end_hook")
+    if isinstance(chapter_end_hook, dict):
+        ending_hook = str(
+            chapter_end_hook.get("content")
+            or chapter_end_hook.get("hook")
+            or chapter_end_hook.get("text")
+            or ""
+        ).strip()
+    else:
+        ending_hook = str(chapter_end_hook or "").strip()
+    ending_hook = ending_hook or str(
+        event_plan.get("explicit_chapter_end_hook")
+        or event_plan.get("next_focus")
+        or ""
+    ).strip()
+
+    obstacle_chain = _compact_list(
+        [event_plan.get("collision"), satisfaction.get("obstacle")],
+        limit=4,
+    )
+    return {
+        "mode": "director-projection",
+        "source": "director_event_plan",
+        "reader_hook": ending_hook,
+        "chapter_desire": str(satisfaction.get("core_event") or chapter_goal).strip(),
+        "obstacle_chain": obstacle_chain,
+        "choice_point": str(event_plan.get("pivot") or "").strip(),
+        "payoff": str(satisfaction.get("visible_payoff") or "").strip(),
+        "cost": str(satisfaction.get("cost") or event_plan.get("cost") or "").strip(),
+        "emotional_turn": str(satisfaction.get("emotion_target") or "").strip(),
+        "outsider_misread": str(satisfaction.get("outsider_misread") or "").strip(),
+        "ending_hook": ending_hook,
+    }
+
+
 def _world_context(story: StoryState, chapter_number: int) -> dict[str, Any]:
     ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
     pulse_store = ledger.get("world_pulse") if isinstance(ledger.get("world_pulse"), dict) else {}
@@ -353,13 +396,15 @@ def build_chapter_simulation_plan(
     event_plan: dict | None = None,
     memory_constraints: dict | None = None,
     chapter_seed: dict | None = None,
+    plot_authority: str = "simulation",
 ) -> ChapterSimulationPlan:
     game_story = is_game_story(story)
     lead = _lead_character(story)
     event_plan = event_plan or {}
     memory_constraints = memory_constraints or {}
     chapter_seed = chapter_seed or {}
-    if game_story:
+    director_owns_plot = plot_authority == "director"
+    if game_story and not director_owns_plot:
         event_plan = _game_director_event_plan(event_plan, chapter_number)
     simulation_variant = dict(chapter_seed.get("simulation_variant")) if isinstance(chapter_seed.get("simulation_variant"), dict) else {}
     ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
@@ -368,6 +413,7 @@ def build_chapter_simulation_plan(
     )
     if selected_direction:
         simulation_variant["chapter_direction"] = selected_direction
+    if selected_direction and not director_owns_plot:
         event_plan = {
             **event_plan,
             "chapter_direction": selected_direction,
@@ -397,17 +443,18 @@ def build_chapter_simulation_plan(
     if game_story:
         information_visibility = [*information_visibility, *_game_visibility_rules()]
         economy_expectations = [*economy_expectations, *_game_economy_rules()]
-        required_beats = [*required_beats, *_game_required_beats(chapter_number)]
         forbidden_moves = [*forbidden_moves, *_game_forbidden_moves(chapter_number)]
-        for key in (
-            "wow_beat",
-            "escalation_break",
-            "core_mystery_reinforcement",
-            "explicit_chapter_end_hook",
-            "reality_game_bridge",
-        ):
-            if event_plan.get(key):
-                required_beats.append(f"{key}: {event_plan[key]}")
+        if not director_owns_plot:
+            required_beats = [*required_beats, *_game_required_beats(chapter_number)]
+            for key in (
+                "wow_beat",
+                "escalation_break",
+                "core_mystery_reinforcement",
+                "explicit_chapter_end_hook",
+                "reality_game_bridge",
+            ):
+                if event_plan.get(key):
+                    required_beats.append(f"{key}: {event_plan[key]}")
 
     protagonist_strategy = {}
     if lead:
@@ -457,7 +504,7 @@ def build_chapter_simulation_plan(
         or str(story.outline or "").strip()
         or "推进当前章节目标"
     )
-    if selected_direction:
+    if selected_direction and not director_owns_plot:
         main_scenes = selected_direction.get("main_scenes") if isinstance(selected_direction.get("main_scenes"), list) else []
         required_beats.extend(
             [
@@ -471,11 +518,15 @@ def build_chapter_simulation_plan(
         )
         if selected_direction.get("risk"):
             forbidden_moves.append(str(selected_direction["risk"]))
-    plot_simulation = _plot_simulation(
-        story,
-        chapter_number,
-        chapter_goal=chapter_goal,
-        game_story=game_story,
+    plot_simulation = (
+        _director_plot_projection(event_plan, chapter_goal=chapter_goal)
+        if director_owns_plot
+        else _plot_simulation(
+            story,
+            chapter_number,
+            chapter_goal=chapter_goal,
+            game_story=game_story,
+        )
     )
     longform_plot_contract = build_longform_plot_contract(
         story,
@@ -483,14 +534,15 @@ def build_chapter_simulation_plan(
         chapter_goal=chapter_goal,
         game_story=game_story,
     )
-    plot_simulation = {
-        **plot_simulation,
-        "longform_position": longform_plot_contract.get("arc_window", {}),
-        "payoff_requirement": longform_plot_contract.get("payoff_requirement", ""),
-        "anti_drag_rule": longform_plot_contract.get("anti_drag_rule", ""),
-        "future_use_rule": longform_plot_contract.get("future_use_rule", ""),
-        "reader_reason_to_continue": longform_plot_contract.get("reader_reason_to_continue", ""),
-    }
+    if not director_owns_plot:
+        plot_simulation = {
+            **plot_simulation,
+            "longform_position": longform_plot_contract.get("arc_window", {}),
+            "payoff_requirement": longform_plot_contract.get("payoff_requirement", ""),
+            "anti_drag_rule": longform_plot_contract.get("anti_drag_rule", ""),
+            "future_use_rule": longform_plot_contract.get("future_use_rule", ""),
+            "reader_reason_to_continue": longform_plot_contract.get("reader_reason_to_continue", ""),
+        }
     web_game_author_craft = build_web_game_author_craft(chapter_number, chapter_goal=chapter_goal) if game_story else {}
     web_game_director_card = (
         build_web_game_director_card(
@@ -499,7 +551,7 @@ def build_chapter_simulation_plan(
             simulation_plan={"chapter_goal": chapter_goal, "simulation_variant": simulation_variant},
             event_plan=event_plan,
         )
-        if game_story
+        if game_story and not director_owns_plot
         else {}
     )
 

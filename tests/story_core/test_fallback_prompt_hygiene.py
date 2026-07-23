@@ -145,3 +145,23 @@ def test_revision_prompt_uses_compact_review_and_packet_target_chars():
     assert "webnovel_hook" not in prompt
     assert "background_integration" not in prompt
     assert "套话偏多" in prompt
+
+
+def test_revision_prompt_uses_only_consolidated_review_actions():
+    story = StoryState(story_id="s-review-compact", outline="查清旧印", genre="xuanhuan", style="白描")
+    review = {
+        "issues": [
+            "对话不够自然。",
+            "AI味偏重：报告腔明显。",
+            "章末动作不够具体。",
+            "剧情推进偏慢。",
+            "同一信息重复解释。",
+        ],
+        "revision_plan": [f"原始修改意见{i}" for i in range(8)],
+    }
+
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文", {}, review)
+
+    assert "## 综合审稿修改" in prompt
+    assert "原始修改意见7" not in prompt
+    assert prompt.count("问题：") <= 3

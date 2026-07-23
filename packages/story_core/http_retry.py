@@ -12,6 +12,9 @@ import urllib.error
 import urllib.request
 
 
+_COMPAT_FALLBACK_STRIP_FIELDS = ("parameters", "response_format", "temperature")
+
+
 class RetryConfig:
     """Configuration for retry behavior."""
     max_retries: int = 2
@@ -42,10 +45,15 @@ def post_json_with_retry(
     
     Returns:
         Parsed JSON response as dict
-    
+
     Raises:
         urllib.error.URLError: After all retries exhausted
         json.JSONDecodeError: If response is not valid JSON
+
+    Note:
+        On HTTP 400, retries once with provider-specific compatibility fields
+        (parameters, response_format, temperature) stripped, since some
+        OpenAI-compatible endpoints reject them.
     """
     if provider == "codexcli":
         from packages.story_core.codex_cli_provider import post_json_via_codex_cli
@@ -62,34 +70,43 @@ def post_json_with_retry(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    data = json.dumps(payload).encode("utf-8")
-    
+
+    payloads = [payload]
+    stripped = {k: v for k, v in payload.items() if k not in _COMPAT_FALLBACK_STRIP_FIELDS}
+    if stripped != payload:
+        payloads.append(stripped)
+
     last_error: Exception | None = None
-    delay = cfg.initial_delay
-    
-    for attempt in range(1, cfg.max_retries + 1):
-        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=cfg.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            last_error = e
-            if e.code not in cfg.retry_on_status:
-                raise  # Non-retryable error (401, 403, etc.)
-            if attempt < cfg.max_retries:
-                # Check Retry-After header
-                retry_after = e.headers.get("Retry-After")
-                if retry_after:
-                    try:
-                        delay = float(retry_after)
-                    except ValueError:
-                        pass
-                time.sleep(delay)
-                delay = min(delay * cfg.backoff_factor, cfg.max_delay)
-        except (urllib.error.URLError, TimeoutError, OSError, http.client.IncompleteRead, json.JSONDecodeError) as e:
-            last_error = e
-            if attempt < cfg.max_retries:
-                time.sleep(delay)
-                delay = min(delay * cfg.backoff_factor, cfg.max_delay)
-    
+
+    for index, current_payload in enumerate(payloads):
+        data = json.dumps(current_payload).encode("utf-8")
+        delay = cfg.initial_delay
+
+        for attempt in range(1, cfg.max_retries + 1):
+            request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=cfg.timeout) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                last_error = e
+                if e.code == 400 and index + 1 < len(payloads):
+                    break
+                if e.code not in cfg.retry_on_status:
+                    raise  # Non-retryable error (401, 403, etc.)
+                if attempt < cfg.max_retries:
+                    # Check Retry-After header
+                    retry_after = e.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = float(retry_after)
+                        except ValueError:
+                            pass
+                    time.sleep(delay)
+                    delay = min(delay * cfg.backoff_factor, cfg.max_delay)
+            except (urllib.error.URLError, TimeoutError, OSError, http.client.IncompleteRead, json.JSONDecodeError) as e:
+                last_error = e
+                if attempt < cfg.max_retries:
+                    time.sleep(delay)
+                    delay = min(delay * cfg.backoff_factor, cfg.max_delay)
+
     raise last_error or urllib.error.URLError("All retries exhausted")

@@ -86,6 +86,7 @@ def test_segment_revision_prompt_limits_rewrite_scope():
     assert "交接约束" in prompt
     assert "苏叶看着催租单。" in prompt
     assert "灰狼倒下。" in prompt
+    assert "对话要完整" in prompt
 
 
 def test_segment_prompt_includes_governance_boundaries():
@@ -161,6 +162,18 @@ def test_segment_review_exposes_patchwork_reader_feel():
 
     assert "reader_feel_review" in review
     assert review["reader_feel_review"]["scores"]["patchwork"] <= 5
+
+
+def test_segment_review_marks_command_style_dialogue_as_hard_issue():
+    specs = build_segment_specs(1, {})
+    text = "赵管事：先试，不深入。夜烬：先报我，别乱拆。"
+
+    review = review_segment_output(specs[1], text, chapter_number=1)
+    critical = review["critical_review"] if isinstance(review.get("critical_review"), dict) else {}
+
+    assert "pass" in review
+    assert any("对话口令化明显" in item for item in critical.get("hard_issues", []))
+    assert review["revision_plan"]
 
 
 def test_merge_segment_outputs_strips_segment_labels():

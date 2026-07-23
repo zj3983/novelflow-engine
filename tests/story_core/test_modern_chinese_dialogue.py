@@ -22,6 +22,16 @@ def test_prose_style_review_flags_outline_and_translation_dialogue():
     assert "你手里没毒腺" in joined_plan
 
 
+def test_prose_style_review_flags_single_command_like_line():
+    body = "赵管事说：“你先报我。”"
+
+    review = review_prose_style(body)
+
+    assert review["pass"] is False
+    assert any("电报码式台词" in item for item in review["issues"])
+    assert any("不要只说‘先试，不深入’" in item or "先报我" in item for item in review["revision_plan"])
+
+
 def test_prose_style_review_flags_telegraphic_rule_list_dialogue():
     body = "赵管事说：“炉灭了，记你失职。窗坏、瓦落、门锁坏，先报我，不许自己乱拆。”"
 
@@ -43,6 +53,26 @@ def test_prose_style_review_flags_comma_separated_short_judgments_inside_long_di
     assert review["pass"] is False
     assert any("没油水，没记功，祖祠偏" in issue for issue in review["issues"])
     assert any("完整口语" in item for item in review["revision_plan"])
+
+
+def test_prose_style_review_flags_command_style_dialogue_without_reasoning():
+    body = "赵管事说：“先发，先交，先走。”夜烬说：“你先报我。”"
+
+    review = review_prose_style(body)
+
+    assert review["pass"] is False
+    assert any("电报码式台词" in issue for issue in review["issues"])
+    assert any("台词" in item for item in review["revision_plan"])
+
+
+def test_prose_style_review_flags_command_style_dialogue_without_standard_quotes():
+    body = "赵管事：先试，不深入。夜烬：先报我。"
+
+    review = review_prose_style(body)
+
+    assert not review["pass"]
+    assert any("电报码式台词" in issue for issue in review["issues"])
+    assert any("完整口语" in item or "先试，不深入" in item for item in review["revision_plan"])
 
 
 def test_taskbook_exposes_modern_chinese_dialogue_method():

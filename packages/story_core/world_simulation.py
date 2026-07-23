@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.genre_plugins import GAME_WEBNOVEL, plugin_simulation_blueprint
 from packages.story_core.game_world_simulator import simulate_game_world
+from packages.story_core.game_level_gap import level_gap_rule_text
 from packages.story_core.models import SceneCard, StoryState, WorldEvent
 from packages.story_core.simulation import is_game_story
 from packages.story_core.world_pulse import visibility_inbox_consumed_ids, visibility_inbox_for_chapter
@@ -211,6 +213,15 @@ def simulate_world_events(
         if is_game
         else {}
     )
+    allow_first_chapter_trade = chapter_number == 1 and first_chapter_trade_authorized(
+        simulation_plan,
+        [
+            *story.world_facts,
+            *story.author_constraints,
+            *[str(item) for item in chapter_seed.get("world_facts", [])],
+            *[str(item) for item in chapter_seed.get("author_constraints", [])],
+        ],
+    )
 
     if not is_game:
         chapter_goal = str(simulation_plan.get("chapter_goal") or "推进当前章节目标")
@@ -227,6 +238,28 @@ def simulate_world_events(
 
     events: list[WorldEvent] = []
     if chapter_number == 1:
+        next_step_action = (
+            "用裂纹狼心完成担保交易，让款项真实到账并处理现实急账，同时藏住材料来源和隐藏爆率。"
+            if allow_first_chapter_trade
+            else "把首次验证得到的材料分开处理，暗中办成一项小服务，剩下的材料和来源继续藏住。"
+        )
+        next_step_cause = (
+            "项目大纲要求第一章完成现实收益闭环，交易必须有可信买家、担保路径和到账结果。"
+            if allow_first_chapter_trade
+            else "第一章只完成登录建号和首次验证，不提前展开交易线。"
+        )
+        next_step_consequences = (
+            [
+                "担保交易完成并真实到账，现实急账得到处理。",
+                "交易只留下有限记录，本章不提前发生公会追查、论坛扩散或全服市场盯盘。",
+                "章末转向隐藏等级、任务线索或交易痕迹带来的下一步压力。",
+            ]
+            if allow_first_chapter_trade
+            else [
+                "本章不发生寄售、提现、公会追查、论坛扩散或市场玩家盯盘。",
+                "章末要留下已经暗中交掉一项、修好一件、换到补给或摸到新路线的问题。",
+            ]
+        )
         events.extend(
             [
                 _event(
@@ -307,15 +340,12 @@ def simulate_world_events(
                 _event(
                     event_id="c1-next-step-hook",
                     actor=protagonist,
-                    action="把首次验证得到的材料分开处理，暗中办成一项小服务，剩下的材料和来源继续藏住。",
+                    action=next_step_action,
                     target="下一步领先目标",
                     location="灰烬村",
-                    cause="第一章只完成登录建号和首次验证，不提前展开交易线。",
+                    cause=next_step_cause,
                     visible_to=[protagonist],
-                    consequences=[
-                        "本章不发生寄售、提现、公会追查、论坛扩散或市场玩家盯盘。",
-                        "章末要留下已经暗中交掉一项、修好一件、换到补给或摸到新路线的问题。",
-                    ],
+                    consequences=next_step_consequences,
                     state_delta={"economy": {"inventory_hint": "保留低级材料"}},
                     prose_priority=9,
                     template_id="chapter_1_next_step",
@@ -663,7 +693,7 @@ def select_scene_cards(
                 template_id="plot_simulation",
                 location="本章剧情线",
                 pov=str(plot.get("pov") or plot.get("protagonist") or "主角"),
-                purpose=f"剧情推演：下一章目标从这里落地；{plot.get('reader_hook') or '先定读者期待和本章推进'}",
+                purpose=f"导演计划：本章目标从这里落地；{plot.get('reader_hook') or '先定读者期待和本章推进'}",
                 conflict=f"下一步目标：{plot.get('choice_point') or '主角必须在收益、代价和暴露风险之间做选择'}",
                 source_events=[],
                 must_show=[
@@ -677,12 +707,15 @@ def select_scene_cards(
                 ],
                 must_not_explain=[
                     *META_TERMS,
-                    "不要把剧情推演、读者期待、爽点、钩子这些后台词写进正文。",
+                    "不要把导演计划、读者期待、爽点、钩子这些后台词写进正文。",
                     "不要把本卡写成规则说明；要落成角色动作、对话、代价和结果。",
                 ],
                 ending_pressure=str(plot.get("ending_hook") or ""),
             )
         )
+        cards[0].must_show = [
+            item for item in cards[0].must_show if str(item).strip() and str(item).strip().lower() not in {"none", "null"}
+        ]
     remaining_slots = max(0, (6 if plot else 5) - len(cards))
     for event in sorted_events[:remaining_slots]:
         template = templates.get(event.template_id, {})
@@ -692,6 +725,9 @@ def select_scene_cards(
             must_show.extend(str(item) for item in template_must_show if str(item).strip())
         if event.state_delta:
             must_show.append("把状态变化写成可回写账本的结果。")
+        combat_text = " ".join([event.action, *event.consequences])
+        if any(token in combat_text for token in ("战斗", "挑战", "攻击", "击杀", "精英怪", "首领", "BOSS")):
+            must_show.append(level_gap_rule_text())
         if "角色" in event.action or "面板" in " ".join(event.consequences):
             must_show.append("短角色面板：ID、等级、职业、生命/法力、装备、背包；不要重复展开扩展属性。")
         if "交易行" in event.location:

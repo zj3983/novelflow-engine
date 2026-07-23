@@ -129,7 +129,7 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
     reality = ledger.setdefault("reality", {})
     persistent = ledger.setdefault("persistent_world", {})
 
-    inventory_total = _numeric_inventory_total(inventory)
+    visible_batch_count = _as_int(market.get("visible_batch_count"), 0)
     price_copper = _as_int(market.get("price_copper"), 0)
     supply = _as_int(market.get("supply"), 0)
     anomaly_score = _as_int(chaos_seed.get("anomaly_score"), 0)
@@ -140,7 +140,7 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
     npc_memory = persistent.setdefault("npc_memory", {}).setdefault("service_counter", {})
     _npc_memory_update(
         npc_memory=npc_memory,
-        inventory_total=inventory_total,
+        inventory_total=visible_batch_count,
         pulse_index=pulse_index,
         chapter_number=chapter_number,
     )
@@ -148,7 +148,7 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
     guild_intel = persistent.setdefault("guild_intel", {}).setdefault("white_robe_guild", {})
     _guild_intel_update(
         guild_intel=guild_intel,
-        inventory_total=inventory_total,
+        inventory_total=visible_batch_count,
         anomaly_score=anomaly_score,
     )
 
@@ -157,7 +157,7 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
     market_state["price_copper"] = price_copper
     market_state["signal"] = "small_price_wobble" if price_copper else "unchanged"
     order_book = _market_order_book(
-        inventory_total=inventory_total,
+        inventory_total=visible_batch_count,
         price_copper=price_copper,
         supply=supply,
     )
@@ -189,7 +189,7 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
             "id": f"pulse-{pulse_index}-npc-counter",
             "visible_at_chapter": visible_at_chapter,
             "channel": "npc_counter",
-            "text": f"Service counter notices a batch of {inventory_total} low-level materials and applies posted thresholds.",
+            "text": f"Service counter notices a batch of {visible_batch_count} low-level materials and applies posted thresholds.",
             "source_event": "service_npc",
         },
         {
@@ -200,7 +200,7 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
             "source_event": "local_market",
         },
     ]
-    if inventory_total >= 10:
+    if visible_batch_count >= 10:
         visibility_inbox.append(
             {
                 "id": f"pulse-{pulse_index}-player-chatter",

@@ -20,7 +20,7 @@ def test_validate_bundle_flags_body_over_target_range():
     bundle = {
         "chapter_number": 2,
         "chapter_title": "过长章节",
-        "body": "字" * 5601,
+        "body": "字" * 5701,
         "cadence": "measured",
         "next_outline": "continue",
         "updated_story": {"timeline": ["x"], "chapter_summaries": ["x"]},
@@ -40,6 +40,50 @@ def test_validate_bundle_flags_body_over_target_range():
     assert report["ok"] is False
     assert "body_too_long" in report["issues"]
     assert report["metrics"]["target_max_chars"] == 5500
+
+
+def test_validate_bundle_allows_small_generation_length_tolerance():
+    bundle = {
+        "chapter_number": 2,
+        "chapter_title": "边界篇幅",
+        "body": "字" * 5503,
+        "cadence": "measured",
+        "next_outline": "continue",
+        "updated_story": {"timeline": ["x"], "chapter_summaries": ["x"]},
+        "chapter_summary": {
+            "chapter_title": "边界篇幅",
+            "cadence": "measured",
+            "facts": ["x"],
+            "next_focus": "continue",
+            "primary_conflict": {"collision": "x"},
+            "secondary_conflict": {"detail": "x"},
+            "event_beat": {"turn": "x"},
+        },
+    }
+
+    report = validate_bundle(bundle)
+
+    assert "body_too_long" not in report["issues"]
+
+
+def test_validate_bundle_allows_small_upper_length_tolerance():
+    bundle = {
+        "chapter_number": 2,
+        "chapter_title": "边界篇幅",
+        "body": "字" * 5587,
+        "cadence": "measured",
+        "next_outline": "continue",
+        "updated_story": {"timeline": ["x"], "chapter_summaries": ["x"]},
+        "chapter_summary": {
+            "chapter_title": "边界篇幅",
+            "cadence": "measured",
+            "summary": "x",
+        },
+    }
+
+    report = validate_bundle(bundle)
+
+    assert "body_too_long" not in report["issues"]
 
 
 def test_validate_bundle_flags_body_under_target_range():

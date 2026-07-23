@@ -3,6 +3,7 @@ from packages.story_core.models import NovelProject
 from packages.story_core.world_enrichment import _merge_enrichment
 from packages.story_core.orchestrator import _normalize_event_plan, _story_snapshot
 from packages.story_core.models import StoryState
+from packages.story_core.genre_types.game_webnovel import GAME_WEBNOVEL
 
 
 def plugin_ids(project: NovelProject) -> list[str]:
@@ -17,6 +18,14 @@ def test_selects_game_webnovel_plugin_for_game_project():
     )
 
     assert plugin_ids(project)[:2] == ["generic_webnovel", "game_webnovel"]
+
+
+def test_game_genre_rulebook_defines_level_gap_boundary():
+    rules = "\n".join(GAME_WEBNOVEL.rulebook["progression_rules"])
+
+    assert "高出1至2级" in rules
+    assert "高出3级及以上" in rules
+    assert "走位、计算和操作不能单独" in rules
 
 
 def test_selects_xianxia_plugin_for_cultivation_project():

@@ -171,7 +171,7 @@ def _variant_fact_locks(simulation_plan: dict[str, Any], event_plan: dict[str, A
             [
                 "本章首次验证对象固定为灰狼，地点固定为灰狼坡；不得写成灰鼠、灰鼠坡、鼠皮或灰鼠毒囊。",
                 "本章材料固定为灰狼毒腺和粗糙狼皮；不得把材料名改成毒囊、鼠皮或其他怪物材料。",
-                "现实压力只沿用房租、宽带、信用卡最低还款等既有压力；不得新增前世、穿越、网贷、靶向药费或重病亲属。",
+                "现实压力只沿用项目档案里已经存在的账单和工作处境；不得套用其他作品的金额或账单，也不得新增前世、穿越、网贷、靶向药费或重病亲属。",
             ]
         )
     if variant_id == "boundary-inventory-route" or "铁栓" in text:
@@ -241,7 +241,7 @@ def format_web_game_director_card(card: dict[str, Any] | None) -> str:
     lines = [
         f"网游导演卡：{_plain_writer_phrase(str(card.get('read_feel') or '把网游规则写成可见场景。'))}",
         f"章法：{_plain_writer_phrase(str(card.get('scene_formula') or '压力 -> 试探 -> 反馈 -> 代价 -> 钩子'))}",
-        f"本章一句话：{_plain_writer_phrase(str(card.get('one_line') or '先试清楚这条路能不能走。'))}",
+        f"本章一句话：{_plain_writer_phrase(str(card.get('one_line') or '先跑一小段，看这条路能不能走。'))}",
     ]
     reactions = compact_list([_plain_writer_phrase(str(item)) for item in (card.get("reaction_ladder") or [])], max_items=5, item_chars=80)
     if reactions:

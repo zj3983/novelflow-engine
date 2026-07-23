@@ -10,11 +10,19 @@ from packages.story_core.orchestrator import (
     _merge_writing_review_quality,
     _limit_metaphor_markers,
     _normalize_chapter_summary,
+    _normalize_moves,
     _normalize_web_game_terms,
     _review_chapter_body,
     _sanitize_chapter_output,
+    _expanded_body_is_acceptable,
+    _compressed_body_is_acceptable,
+    _compressed_body_is_progress,
+    _compression_candidate_action,
+    _chapter_body_is_hard_length_acceptable,
+    _rebalanced_body_is_acceptable,
+    _repair_outline_amount_anchors,
+    _should_extract_final_memory,
     _should_expand_chapter,
-    _style_adapt_enabled,
 )
 from packages.story_core.prose_rule_review import review_emotion_quota, review_paragraph_form
 from packages.story_core.world_enrichment import _merge_enrichment
@@ -22,6 +30,124 @@ from packages.story_core.world_enrichment import _merge_enrichment
 
 def test_compact_list_treats_single_string_as_one_item():
     assert compact_list("混沌之种已经完成首次验证。", max_items=5) == ["混沌之种已经完成首次验证。"]
+
+
+def test_rebalanced_short_draft_can_grow_into_target_range():
+    short = "短" * 3300
+    candidate = "正文" * 2300
+
+    assert _rebalanced_body_is_acceptable(short, candidate) is True
+    assert _rebalanced_body_is_acceptable(short, "正文" * 1500) is False
+
+
+def test_rebalanced_draft_allows_small_upper_length_tolerance():
+    assert _rebalanced_body_is_acceptable("短" * 2700, "新" * 5587) is True
+
+
+def test_hard_length_fallback_accepts_publishable_draft_outside_preferred_range():
+    assert _chapter_body_is_hard_length_acceptable("字" * 3849) is True
+    assert _chapter_body_is_hard_length_acceptable("字" * 5640) is True
+    assert _chapter_body_is_hard_length_acceptable("字" * 2993) is False
+    assert _chapter_body_is_hard_length_acceptable("字" * 5844) is False
+
+
+def test_compression_accepts_small_lower_boundary_tolerance():
+    original = "原" * 6500
+    candidate = "新" * 4193
+
+    assert _compressed_body_is_acceptable(original, candidate) is True
+    assert _compression_candidate_action(original, candidate) == "accept"
+
+
+def test_locked_outline_amounts_are_repaired_from_structured_anchor():
+    body = (
+        "苏叶看着账户余额7.40元，戴上头盔。\n\n"
+        "担保订单成交价305.20元，平台随后发来到账通知。\n\n"
+        "付清房租、宽带和信用卡最低还款后，账户余额100.00元。"
+    )
+    anchor = {
+        "opening_balance": "27.60元",
+        "trade_arrival": "1764.00元",
+        "ending_balance": "312.60元",
+    }
+
+    repaired = _repair_outline_amount_anchors(body, anchor)
+
+    assert "余额27.60元" in repaired
+    assert "成交价1764.00元" in repaired
+    assert "余额312.60元" in repaired
+    assert "7.40元" not in repaired
+    assert "305.20元" not in repaired
+    assert "100.00元" not in repaired
+
+
+def test_compact_list_accepts_model_object_instead_of_array():
+    assert compact_list({"最高": "先完成担保交易", "其次": "隐藏掉落异常"}, max_items=2) == [
+        "先完成担保交易",
+        "隐藏掉落异常",
+    ]
+
+
+def test_director_move_priority_accepts_chinese_levels():
+    moves = _normalize_moves(
+        [
+            {"name": "苏叶", "goal": "解决急账", "action": "完成担保交易", "priority": "最高"},
+            {"name": "夜烬", "goal": "验证爆率", "action": "击杀灰狼", "priority": "2"},
+        ]
+    )
+
+    assert [move["priority"] for move in moves] == [3, 2]
+
+
+def test_expansion_candidate_must_land_inside_target_range():
+    original = "原" * 4069
+
+    assert _expanded_body_is_acceptable(original, "新" * 4300) is True
+    assert _expanded_body_is_acceptable(original, "新" * 8304) is False
+    assert _expanded_body_is_acceptable(original, "新" * 4000) is False
+
+
+def test_compression_candidate_must_land_inside_target_range():
+    original = "原" * 8763
+
+    assert _compressed_body_is_acceptable(original, "新" * 5000) is True
+    assert _compressed_body_is_acceptable(original, "新" * 8020) is False
+    assert _compressed_body_is_acceptable(original, "新" * 3500) is False
+
+
+def test_compression_keeps_a_shorter_reviewable_intermediate_draft():
+    original = "原" * 9937
+
+    assert _compressed_body_is_progress(original, "新" * 6235) is True
+    assert _compressed_body_is_progress(original, "新" * 10000) is False
+    assert _compressed_body_is_progress(original, "新" * 3500) is False
+
+
+def test_compression_retries_when_model_overcompresses():
+    assert _compression_candidate_action("原" * 6104, "新" * 4321) == "accept"
+    assert _compression_candidate_action("原" * 9937, "新" * 6235) == "continue"
+    assert _compression_candidate_action("原" * 6104, "新" * 2632) == "retry"
+    assert _compression_candidate_action("原" * 6104, "新" * 6200) == "reject"
+
+
+def test_final_memory_runs_only_for_a_reviewable_in_range_body():
+    assert _should_extract_final_memory("正文" * 2300, {"needs_revision": False}) is True
+    assert _should_extract_final_memory("正文" * 3000, {"needs_revision": False}) is False
+    assert _should_extract_final_memory("正文" * 2751 + "字", {"needs_revision": False}) is True
+    assert _should_extract_final_memory("正文" * 2300, {"needs_revision": True}) is False
+
+
+def test_final_memory_accepts_advisory_review_but_rejects_hard_errors():
+    body = "正文" * 2300
+
+    assert _should_extract_final_memory(
+        body,
+        {"needs_revision": True, "has_hard_errors": False},
+    ) is True
+    assert _should_extract_final_memory(
+        body,
+        {"needs_revision": True, "has_hard_errors": True},
+    ) is False
 
 
 def test_metaphor_limiter_never_rewrites_like_into_ungrammatical_gen():
@@ -283,6 +409,104 @@ def test_first_chapter_review_allows_negated_arrival_wording():
     review = _review_chapter_body(1, body, {}, ["网游"], {}, [], [])
 
     assert not any("第一章提前展开交易线" in issue for issue in review["issues"])
+
+
+def test_first_chapter_review_honors_project_authorized_trade_payoff():
+    body = (
+        "《天启之门》开服，苏叶以夜烬的游戏ID进入游戏，并在灰狼坡确认千倍爆率。"
+        "裂纹狼心是开服首批稀有心核样本，他通过担保交易完成交割，扣除手续费后到账1764.00元。"
+        "苏叶退出游戏，付清房租、宽带和信用卡最低还款，银行卡余额变成312.60元。"
+    )
+    world_facts = [
+        "第一章必须通过裂纹狼心担保交易解决现实急账，到账后余额312.60元。",
+    ]
+
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+
+    assert not any("第一章提前展开交易" in issue for issue in review["issues"])
+    assert not any("边界章目标漂移" in issue for issue in review["issues"])
+
+
+def test_authorized_trade_does_not_treat_item_utility_as_guild_pressure():
+    body = (
+        "《天启之门》开服，苏叶以夜烬的游戏ID进入游戏，完成角色创建并去灰狼坡刷怪。"
+        "裂纹狼心可供公会图鉴收集，也能用于二环解毒剂。夜烬通过平台私聊确认用途，"
+        "完成担保交易后到账1764.00元，付清现实急账，余额变成312.60元。"
+    )
+    world_facts = [
+        "第一章必须通过裂纹狼心担保交易解决现实急账，到账后余额312.60元。",
+    ]
+
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+
+    assert not any("第一章节奏过载" in issue for issue in review["issues"])
+    assert not any("第一章外部压力过早" in issue for issue in review["issues"])
+
+
+def test_review_rejects_trade_amount_that_differs_from_outline_anchor():
+    body = (
+        "夜烬把裂纹狼心交给担保平台，扣除手续费后到账1664元。"
+        "苏叶付清现实急账，银行卡余额变成312.60元。"
+    )
+    event_plan = {
+        "chapter_satisfaction": {
+            "visible_payoff": "担保交易到账1764.00元，现实余额变为312.60元。",
+        }
+    }
+    world_facts = ["第一章必须通过裂纹狼心担保交易解决现实急账。"]
+
+    review = _review_chapter_body(1, body, event_plan, world_facts, {}, [], [])
+
+    assert any("大纲金额不一致" in issue and "1764.00元" in issue for issue in review["issues"])
+
+
+def test_review_accepts_equivalent_trade_amount_outside_arrival_phrase():
+    body = (
+        "担保订单最终成交价1764元，平台随后发来到账通知。"
+        "苏叶付清急账，银行卡余额变成312.60元。"
+    )
+    event_plan = {
+        "chapter_satisfaction": {
+            "visible_payoff": "担保交易到账1764.00元，现实余额变为312.60元。",
+        }
+    }
+    world_facts = ["第一章必须通过裂纹狼心担保交易解决现实急账。"]
+
+    review = _review_chapter_body(1, body, event_plan, world_facts, {}, [], [])
+
+    assert not any("大纲金额不一致" in issue for issue in review["issues"])
+
+
+def test_review_rejects_opening_and_ending_balances_that_differ_from_outline():
+    body = (
+        "苏叶看着账户里的7.40元进入游戏。"
+        "担保交易到账1764.00元，付清急账后余额只剩100.00元。"
+    )
+    world_facts = [
+        "第一章必须通过裂纹狼心担保交易解决现实急账。",
+        '{"story":"苏叶以最后27.60元进入游戏。"}',
+        '{"payoff":"担保交易到账1764.00元，现实余额变为312.60元。"}',
+    ]
+
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+
+    assert any("开篇余额不一致" in issue and "27.60元" in issue for issue in review["issues"])
+    assert any("章末余额不一致" in issue and "312.60元" in issue for issue in review["issues"])
+
+
+def test_amount_anchor_repair_keeps_distinct_opening_and_ending_when_draft_has_one_balance():
+    repaired = _repair_outline_amount_anchors(
+        "苏叶看着余额7.40元登录游戏。担保交易到账305.20元。",
+        {
+            "opening_balance": "27.60元",
+            "trade_arrival": "1764.00元",
+            "ending_balance": "312.60元",
+        },
+    )
+
+    assert "余额27.60元" in repaired[:1200]
+    assert "1764.00元" in repaired
+    assert "余额312.60元" in repaired[-1600:]
 
 
 def test_first_chapter_sanitizer_merges_overfragmented_paragraphs():
@@ -551,38 +775,6 @@ def test_chapter_body_review_uses_event_plan_protagonist_names_for_speech_gate()
 
     assert review["critical_review"]["scores"]["protagonist_speech"] < 8
     assert any("主角全章没有可识别的开口对话" in issue for issue in review["issues"])
-
-
-def test_style_adapt_defaults_on_for_normal_generation_plans():
-    assert (
-        _style_adapt_enabled(
-            {
-                "chapter_number": 1,
-                "simulation_plan": {
-                    "chapter_goal": "确认边界",
-                    "web_game_director_card": {"read_feel": "确认规则边界"},
-                },
-            }
-        )
-        is True
-    )
-    assert _style_adapt_enabled({"write_mode": "fast"}) is False
-    assert _style_adapt_enabled({"chapter_number": 1}) is False
-
-
-def test_style_adapt_disabled_for_regeneration_variants():
-    assert (
-        _style_adapt_enabled(
-            {
-                "chapter_number": 1,
-                "simulation_plan": {
-                    "chapter_goal": "重新推演第一章",
-                    "simulation_variant": {"id": "boundary-inventory-route", "skip_style_adapt": True},
-                },
-            }
-        )
-        is False
-    )
 
 
 def test_regeneration_fast_path_skips_whole_chapter_expansion():

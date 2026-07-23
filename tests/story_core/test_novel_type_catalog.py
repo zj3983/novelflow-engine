@@ -12,7 +12,13 @@ from packages.story_core.genre_plugins import (
     select_genre_plugins,
 )
 from packages.story_core.models import ChapterSummary, CharacterState, NovelProject, StoryState
-from packages.story_core.orchestrator import StoryOrchestrator, _genre_context_for_prompt, _review_chapter_body, _story_snapshot
+from packages.story_core.orchestrator import (
+    StoryOrchestrator,
+    _director_snapshot_summary,
+    _genre_context_for_prompt,
+    _review_chapter_body,
+    _story_snapshot,
+)
 from packages.story_core.web_game_review import _has_game_context
 from packages.story_core import novel_type_catalog
 from packages.story_core.novel_type_catalog import (
@@ -99,6 +105,121 @@ def test_director_snapshot_prioritizes_chapter_relevant_characters_and_caps_deta
     prompt = StoryOrchestrator()._plan_prompt(story, 5)
     assert "戒备" in prompt
     assert "见过同样的旧印" in prompt
+
+
+def test_director_summary_keeps_longform_memory_arc_and_world_context():
+    outline_marker = "总纲后段关键目标"
+    summary = _director_snapshot_summary(
+        {
+            "outline": "前情" * 120 + outline_marker,
+            "outline_context": {"active_arc": {"goal": "本卷追查旧印"}},
+            "relevant_memories": [{"chapter_number": 7, "summary": "七章前埋下旧印"}],
+            "arc_recaps": [{"range": "1-10", "recap": "第一卷前半回顾", "open_threads": ["旧印来源"]}],
+            "world_pulse": {"latest": {"summary": "执事已封锁炉房"}},
+            "characters": [
+                {
+                    "name": "林照",
+                    "role": "主角",
+                    "game_id": "",
+                    "game_panel": {"level": "炼体一重"},
+                    "goals": ["查清旧印"],
+                    "secrets": ["认得残缺族徽"],
+                }
+            ],
+        }
+    )
+
+    assert outline_marker in summary["outline"]
+    assert summary["relevant_memories"][0]["summary"] == "七章前埋下旧印"
+    assert summary["arc_recaps"][0]["recap"] == "第一卷前半回顾"
+    assert summary["world_pulse"]["latest"]["summary"] == "执事已封锁炉房"
+    assert summary["characters"][0]["game_panel"]["level"] == "炼体一重"
+    assert summary["characters"][0]["secrets"] == ["认得残缺族徽"]
+
+
+def test_director_prompt_receives_relevant_character_card_and_non_game_satisfaction_contract():
+    story = StoryState(
+        story_id="s-director-character-card",
+        outline="林照追查祖祠旧账。",
+        genre="xuanhuan",
+        style="白描",
+        characters=[
+            CharacterState(
+                name="林照",
+                role="主角",
+                core_motivation="查清父亲失踪的原因",
+                behavior_logic="遇到长辈阻拦时先问证据，不会立刻翻脸",
+                game_id="夜印",
+            )
+        ],
+    )
+
+    prompt = StoryOrchestrator()._plan_prompt(story, 1)
+
+    assert "相关角色卡" in prompt
+    assert "查清父亲失踪的原因" in prompt
+    assert "遇到长辈阻拦时先问证据" in prompt
+    assert "chapter_satisfaction" in prompt
+    assert "visible_payoff" in prompt
+
+
+def test_director_prompt_uses_compact_chapter_slice_instead_of_full_snapshot_dump():
+    story = StoryState(
+        story_id="s-director-compact",
+        outline="夜烬利用隐藏爆率在新手期拉开进度。" * 80,
+        genre="网游",
+        style="白描",
+        current_chapter=1,
+        outline_context={
+            "schema_version": "outline-context/v1",
+            "overall": {
+                "story": "主角从新手村成长到服务器顶层。" * 30,
+                "protagonist_goal": "隐藏优势并稳定成长。",
+                "main_conflict": "成长速度和暴露风险冲突。",
+                "unused_notes": "不相关总纲资料" * 100,
+            },
+            "active_arc": {
+                "title": "灰烬村",
+                "goal": "完成新手任务并打开下一条路线。",
+                "obstacle": "其他玩家仍在争抢稀缺材料。",
+                "unused_notes": "不相关分卷资料" * 100,
+            },
+            "chapter": {
+                "chapter_number": 2,
+                "title": "材料早就够了",
+                "goal": "用现有材料完成清道夫委托。",
+                "obstacle": "必须先登记再提交。",
+                "payoff": "获得任务经验和路线资格。",
+                "ending_hook": "特殊标记灰狼出现。",
+            },
+        },
+        progression_ledger={
+            "protagonist": {"level": "Lv.1", "exp": "20/100", "hp": "82/100", "mp": "36/60"},
+            "economy": {"inventory": {"灰狼毒腺": 16}, "game_currency": "空"},
+            "quests": {"清道夫委托": "未接取"},
+        },
+        characters=[
+            CharacterState(
+                name="苏叶",
+                role="主角",
+                game_id="夜烬",
+                core_motivation="隐藏异常优势并推进成长。",
+                behavior_logic="先按正常玩家流程完成任务，不公开异常掉落。",
+                memory=["冗长人物记忆" * 100],
+            )
+        ],
+    )
+
+    prompt = StoryOrchestrator()._plan_prompt(story, 2)
+
+    assert len(prompt) < 4000
+    assert "用现有材料完成清道夫委托" in prompt
+    assert "灰狼毒腺" in prompt and "20/100" in prompt
+    assert "隐藏异常优势并推进成长" in prompt
+    assert "不相关总纲资料" not in prompt
+    assert "不相关分卷资料" not in prompt
+    assert "scene_portrait" not in prompt
+    assert "state_context" not in prompt
 
 
 def test_novel_type_catalog_exposes_selectable_genres():

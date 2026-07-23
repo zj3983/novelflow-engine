@@ -36,6 +36,25 @@ def test_normalize_preserves_structured_chapter_end_hook_dict():
     }
 
 
+def test_normalize_preserves_director_chapter_satisfaction():
+    raw = {
+        "chapter_satisfaction": {
+            "emotion_target": "从提防转为暂时放心",
+            "core_event": "主角拿到祖祠账册",
+            "obstacle": "执事要求出示旧印",
+            "visible_payoff": "账册当场打开",
+            "cost": "执事记住了主角",
+            "outsider_misread": "执事以为旧印是借来的",
+            "state_change": "主角获得查阅资格",
+            "next_hook": "账册里少了三个名字",
+        }
+    }
+
+    out = _normalize_event_plan(raw, chapter_number=1, story=_story())
+
+    assert out["chapter_satisfaction"] == raw["chapter_satisfaction"]
+
+
 def test_normalize_preserves_legacy_explicit_string_alongside_structured():
     raw = {
         "explicit_chapter_end_hook": "下一章去找散人收购渠道。",

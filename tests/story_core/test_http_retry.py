@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import http.client
+import json
+import urllib.error
 from pathlib import Path
+
+import pytest
 
 from packages.story_core.http_retry import RetryConfig, post_json_with_retry
 
@@ -34,6 +38,75 @@ def test_post_json_with_retry_retries_incomplete_read(monkeypatch):
     result = post_json_with_retry("http://api.test", "/chat", {"x": 1}, "key", config=config)
 
     assert result == {"ok": True}
+    assert calls["count"] == 2
+
+
+def _http_400() -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("http://api.test/chat", 400, "Bad Request", {}, None)
+
+
+def test_post_json_with_retry_400_strips_compat_fields(monkeypatch):
+    sent = []
+
+    def fake_urlopen(request, timeout):
+        sent.append(json.loads(request.data.decode("utf-8")))
+        if len(sent) == 1:
+            raise _http_400()
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    config = RetryConfig()
+    config.initial_delay = 0
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "ping"}],
+        "temperature": 0.7,
+        "parameters": {"enable_thinking": False},
+        "response_format": {"type": "json_object"},
+    }
+
+    result = post_json_with_retry("http://api.test", "/chat", payload, "key", config=config)
+
+    assert result == {"ok": True}
+    assert len(sent) == 2
+    assert sent[0] == payload
+    assert sent[1] == {"model": "m", "messages": [{"role": "user", "content": "ping"}]}
+
+
+def test_post_json_with_retry_400_without_compat_fields_raises(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        raise _http_400()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    config = RetryConfig()
+    config.initial_delay = 0
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        post_json_with_retry("http://api.test", "/chat", {"x": 1}, "key", config=config)
+
+    assert exc_info.value.code == 400
+    assert calls["count"] == 1
+
+
+def test_post_json_with_retry_400_persists_after_strip_raises(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        raise _http_400()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    config = RetryConfig()
+    config.initial_delay = 0
+    payload = {"model": "m", "messages": [], "temperature": 0.7}
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        post_json_with_retry("http://api.test", "/chat", payload, "key", config=config)
+
+    assert exc_info.value.code == 400
     assert calls["count"] == 2
 
 

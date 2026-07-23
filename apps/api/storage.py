@@ -980,7 +980,18 @@ class SQLiteStoryStore:
         record.story = bundle.updated_story
         record.history.append(bundle)
 
-        report_generation_progress("写入故事中...")
+        report_generation_progress(
+            {
+                "message": "写入故事中",
+                "stage": "orchestrator",
+                "source": "story-store",
+                "artifact": {
+                    "chapter_number": bundle.chapter_number,
+                    "message": "持久化章节与剧情记忆更新",
+                    "used_modules": ["story_store", "history_append"],
+                },
+            }
+        )
         self._save_record(conn, record)
         self._save_bundle(conn, story_id, bundle)
 

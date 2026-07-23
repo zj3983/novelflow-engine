@@ -334,7 +334,7 @@ def simulate_game_world(
             }
             ledger_delta["next_pressure"] = [
                 "后坡探路前置已满足，但等级和补给仍压着风险",
-                "现实余额27.60元仍未解决",
+                "现实账单压力按项目当前账本继承，只有正文写出到账或支付后才能变化",
                 "外人只能误判夜烬路线熟或运气好",
             ]
             systemic = {**systemic, "ledger_delta": ledger_delta}

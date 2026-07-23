@@ -2,11 +2,42 @@ from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.models import ChapterSummary, StoryState
 from packages.story_core.orchestrator import (
     StoryOrchestrator,
+    _compact_chapter_seed_for_prompt,
+    _writer_seed_summary,
     _merge_writing_review_quality,
     _review_chapter_body,
     _scene_card_writing_protocol,
     _sanitize_generated_body,
 )
+
+
+def test_chapter_seed_replaces_stale_ledger_facts_with_current_ledger():
+    story = StoryState(
+        story_id="s-ledger-precedence",
+        outline="夜烬在游戏里推进新手任务。",
+        genre="网游",
+        style="白描",
+        progression_ledger={
+            "real": {"start_balance": "27.60元", "end_balance": "312.60元"},
+            "protagonist": {"level": "Lv.1", "exp": "20/100", "hp": "82/100", "mp": "36/60"},
+            "economy": {"real_balance": "312.60元", "inventory": {"灰狼毒腺": 16}},
+        },
+        chapter_summaries=[
+            ChapterSummary(
+                chapter_number=1,
+                summary="第一章结束。",
+                facts=["苏叶现实余额27.60元未变", "经验80/100", "混沌之种仍未解析"],
+            )
+        ],
+    )
+
+    facts = "\n".join(build_chapter_seed(story, 2)["continuity"]["must_keep_facts"])
+
+    assert "27.60元未变" not in facts
+    assert "经验80/100" not in facts
+    assert "现实余额312.60元" in facts
+    assert "经验20/100" in facts
+    assert "混沌之种仍未解析" in facts
 
 
 def test_game_chapter_seed_turns_rules_into_generation_contract():
@@ -56,8 +87,43 @@ def test_chapter_seed_preserves_regeneration_fast_path_flags():
     seed = build_chapter_seed(story, 1)
 
     assert seed["simulation_variant"]["id"] == "boundary-inventory-route"
-    assert seed["simulation_variant"]["skip_style_adapt"] is True
+    assert "skip_style_adapt" not in seed["simulation_variant"]
     assert seed["simulation_variant"]["skip_expansion"] is True
+
+
+def test_chapter_seed_allows_authorized_first_chapter_trade_payoff():
+    story = StoryState(
+        story_id="s-seed-authorized-trade",
+        outline="主角在网游开服首日验证隐藏爆率。",
+        genre="网游",
+        style="白描",
+        author_constraints=[
+            "第一章必须通过裂纹狼心担保交易解决现实急账，并写清到账结果。",
+        ],
+        outline_context={
+            "overall": {"story": "苏叶以最后27.60元进入游戏。"},
+            "chapter": {
+                "chapter_number": 1,
+                "title": "灰狼坡的第一笔到账",
+                "payoff": "担保交易到账1764.00元，现实余额变为312.60元。",
+            },
+        },
+    )
+
+    seed = build_chapter_seed(story, 1)
+    surface = str(seed["simulation_blueprint"])
+
+    assert "不能立刻解决现实债务" not in surface
+    assert "不展开实际寄售、成交、到账" not in surface
+    assert "担保交易" in surface
+    assert "现实急账" in surface
+    assert "不要自行编造分项金额" in surface
+    assert seed["outline_anchor"]["opening_balance"] == "27.60元"
+    assert seed["outline_anchor"]["trade_arrival"] == "1764.00元"
+    assert seed["outline_anchor"]["ending_balance"] == "312.60元"
+    compact_seed = _compact_chapter_seed_for_prompt(seed)
+    assert compact_seed["outline_anchor"] == seed["outline_anchor"]
+    assert _writer_seed_summary(seed)["本章硬锚点"] == seed["outline_anchor"]
 
 
 def test_chapter_seed_carries_recent_continuity_and_ledger():
@@ -303,6 +369,8 @@ def test_quality_merge_marks_any_writing_review_failure():
 
     assert merged["ok"] is False
     assert "writing_review" in merged["issues"]
+    assert merged["simplified_review"]["agent_label"] == "综合审稿"
+    assert len(merged["simplified_review"]["issues"]) <= 3
 
 
 def test_quality_merge_exposes_layered_review_sections():

@@ -52,11 +52,7 @@ class OpenAIWriterTextProvider(BaseOpenAIProvider):
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "你是小说自动演化引擎的写作代理。"
-                        "请输出自然、连贯、带悬念的中文章节正文。"
-                        "只返回 JSON，并且只能包含一个 body 字段。"
-                    ),
+                    "content": "你是中文网文写作助手。只返回 JSON，结构为 {\"body\": \"...\"}。",
                 },
                 {
                     "role": "user",
@@ -81,14 +77,14 @@ class OpenAIWriterTextProvider(BaseOpenAIProvider):
             response = self._post_json("/chat/completions", payload, settings)
             parsed = parse_json_message_content(response)
             if parsed is None:
-                self._set_last_error("写作代理返回的内容不是有效 JSON")
+                self._set_last_error("写作模型返回结果不是标准 JSON")
                 return None
             self._clear_last_error()
         except urllib.error.HTTPError as exc:
-            self._set_last_error(f"写作代理 HTTP {exc.code}")
+            self._set_last_error(f"写作调用 HTTP {exc.code}")
             return None
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            self._set_last_error(f"写作代理请求失败：{exc}")
+            self._set_last_error(f"写作调用失败：{exc}")
             return None
 
         body = compact_text(str(parsed.get("body", "")).strip(), 8000)
@@ -106,7 +102,7 @@ class OpenAIWriterTextProvider(BaseOpenAIProvider):
         memory_constraints: dict | None,
     ) -> str:
         latest_summary = compact_text(
-            story.chapter_summaries[-1].summary if story.chapter_summaries else "暂无上一章摘要。",
+            story.chapter_summaries[-1].summary if story.chapter_summaries else "暂无上章梗概",
             220,
         )
         compact_decision = {
@@ -141,26 +137,21 @@ class OpenAIWriterTextProvider(BaseOpenAIProvider):
 
         return "\n".join(
             [
-                f"小说大纲：{compact_text(story.outline, 520)}",
+                f"网文大纲：{compact_text(story.outline, 260)}",
                 f"题材：{story.genre}",
-                f"风格：{story.style}",
+                f"文体：{story.style}",
                 f"当前章节：第 {chapter_number} 章",
-                f"上一章摘要：{latest_summary}",
+                f"上一章梗概：{latest_summary}",
                 f"作者约束：{json.dumps(compact_list(story.author_constraints, max_items=4, item_chars=70), ensure_ascii=False)}",
-                f"导演裁决：{json.dumps(compact_decision, ensure_ascii=False)}",
-                f"冲突摘要：{json.dumps(compact_conflict, ensure_ascii=False)}",
-                f"事件节拍：{json.dumps(compact_event, ensure_ascii=False)}",
-                f"事件计划：{json.dumps(compact_event_plan, ensure_ascii=False)}",
-                f"记忆约束：{json.dumps(compact_memory, ensure_ascii=False)}",
-                f"节奏：{cadence}",
-                "要求：",
-                "1. 必须写成中文小说正文，不要输出解释、提示词或模板标签。",
-                "2. 先遵守事件计划，再组织场景，不要跳过关键碰撞。",
-                "3. 记忆约束里的事实、悬念和伏笔必须自然继承。",
-                "4. 作者约束是硬边界，不要用巧合、天降答案、突然升级来偷懒。",
-                "5. 这是一章小说，不是一份总结。要有场景、动作、对话或心理推进。",
-                "6. 结尾要留下下一章的压力或钩子。",
-                '只返回 JSON，对象里包含 body 字段，body 是完整章节正文。',
+                f"章节目标：{json.dumps(compact_decision, ensure_ascii=False)}",
+                f"核心冲突：{json.dumps(compact_conflict, ensure_ascii=False)}",
+                f"章节事实：{json.dumps(compact_event, ensure_ascii=False)}",
+                f"计划动作：{json.dumps(compact_event_plan, ensure_ascii=False)}",
+                f"保留约束：{json.dumps(compact_memory, ensure_ascii=False)}",
+                f"节奏设定：{cadence}",
+                "输出要求：只写中文正文，不引入未给定事实。",
+                "先写动作与反馈，再接对白与选择；对白要完整对话，不做规则清单式汇报。",
+                "优先突出每一步的现场选择和结果链，避免“先分析后总结”式说明。",
             ]
         )
 

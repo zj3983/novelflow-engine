@@ -96,6 +96,50 @@ def test_writer_character_section_renders_compact_projected_states():
     assert "Lv.2" in rendered
 
 
+def test_writer_character_section_omits_metadata_only_zero_state():
+    lines = _writer_character_section(
+        {
+            "cards": [
+                {
+                    "identity": {"name": "夜烬", "role": "主角"},
+                    "state_context": {"game_state": {"current": {"updated_chapter": 0}}},
+                }
+            ]
+        },
+        {},
+    )
+
+    assert "游戏状态：0" not in "\n".join(lines)
+
+
+def test_writer_context_excludes_unapproved_proposed_character_from_stale_plan():
+    story = StoryState(
+        story_id="s-proposed-cast",
+        outline="夜烬在游戏里推进新手任务。",
+        genre="网游",
+        style="白描",
+        characters=[
+            CharacterState(name="苏叶", role="protagonist", game_id="夜烬"),
+            CharacterState(
+                name="白河仓库收购方",
+                role="收购方NPC",
+                lifecycle_state="proposed",
+                last_approved_chapter=0,
+            ),
+        ],
+    )
+    plan = {
+        "character_moves": [
+            {"name": "夜烬", "action": "接取清道夫委托"},
+            {"name": "白河仓库收购方", "action": "询问材料来源"},
+        ]
+    }
+
+    context = _character_context_for_prompt(story, plan)
+
+    assert [card["identity"]["name"] for card in context["cards"]] == ["苏叶"]
+
+
 def test_writer_prompt_projects_only_the_scene_line_and_renders_it():
     story = StoryState(
         story_id="s-dual-prompt",
@@ -133,6 +177,37 @@ def test_fallback_body_prompt_uses_same_scene_method():
     assert "## 本章方向" in prompt
     assert "写法施工单" not in prompt
     assert prompt.index("## 本章方向") < prompt.index("## 本章事实")
+
+
+def test_writer_direction_drops_generic_taskbook_placeholders():
+    story = StoryState(
+        story_id="s-concrete-direction",
+        outline="夜烬完成清道夫委托。",
+        genre="网游",
+        style="白描",
+    )
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        2,
+        {
+            "writing_taskbook": {
+                "chapter_goal": "完成本章推进",
+                "scenes": [
+                    {
+                        "title": "当前地点：清道夫委托完成，经验推进到60/100",
+                        "goal": "清道夫委托完成，经验推进到60/100；阻力是出现可见阻力。",
+                        "required_surface": "地点、行动、反馈、代价",
+                        "exit_state": "形成下一场压力。",
+                    }
+                ],
+            }
+        },
+    )
+
+    assert "目标：清道夫委托完成，经验推进到60/100" in prompt
+    assert "完成本章推进" not in prompt
+    assert "出现可见阻力" not in prompt
+    assert "形成下一场压力" not in prompt
 
 
 def test_fallback_body_prompt_includes_web_game_director_card():
@@ -315,6 +390,35 @@ def test_web_game_second_chapter_does_not_inherit_first_chapter_service_bans():
     assert "不要写成交任务、领取铜币、扣费修理或购买药水" not in prompt
 
 
+def test_writer_prompt_reads_relevant_world_context_without_loading_unrelated_rules():
+    story = StoryState(
+        story_id="s-world-context",
+        outline="夜烬回村提交清道夫委托。",
+        genre="网游",
+        style="白描",
+        world_context={
+            "world_rules": ["NPC只能处理岗位权限内的事务。"],
+            "quest_rules": ["任务必须先登记，再执行和提交。"],
+            "economy_rules": ["材料价格必须来自任务、配方或真实稀缺性。"],
+            "faction_rules": ["服务NPC只能处理岗位权限内的事务。"],
+            "reality_bridge_rules": ["现实到账必须经过官方结算渠道。"],
+        },
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        2,
+        {"event_plan": {"chapter_title": "提交清道夫委托", "turn": "药剂师NPC用毒腺结算任务经验和铜币"}},
+    )
+
+    assert "本章相关世界规则" in prompt
+    assert "NPC只能处理岗位权限内的事务" in prompt
+    assert "任务必须先登记" in prompt
+    assert "材料价格必须来自任务" in prompt
+    assert "服务NPC只能处理岗位权限内的事务" in prompt
+    assert "现实到账必须经过官方结算渠道" not in prompt
+
+
 def test_revision_prompt_keeps_method_and_separates_viewpoint_rule():
     story = StoryState(story_id="s-revision-method", outline="都市悬疑", genre="悬疑", style="克制")
     prompt = StoryOrchestrator()._revision_prompt(
@@ -329,7 +433,7 @@ def test_revision_prompt_keeps_method_and_separates_viewpoint_rule():
     assert "写成一章顺着人物行动自然展开的白话小说" in prompt
     assert "写法施工单" not in prompt
     assert "第三人称有限视角" in prompt
-    assert "## 修改目标" in prompt
+    assert "## 综合审稿修改" in prompt
     assert "## 原正文" in prompt
     assert "上帝视角。工作流词" not in prompt
 
@@ -350,7 +454,7 @@ def test_revision_prompt_reuses_five_sections_and_adds_only_revision_material():
         "## 本章事实",
         "## 出场人物",
         "## 正文写法",
-        "## 修改目标",
+        "## 综合审稿修改",
         "## 原正文",
     ]
     assert all(heading in prompt for heading in headings)
@@ -358,5 +462,66 @@ def test_revision_prompt_reuses_five_sections_and_adds_only_revision_material():
     assert "对话太短" in prompt
     assert "林照关上门。" in prompt
     assert "scores" not in prompt
+
+
+def test_game_writer_prompt_explains_monster_panel_frequency_and_fields():
+    story = StoryState(story_id="s-monster-panel", outline="夜烬进入新地图打怪。", genre="网游", style="白描")
+
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        2,
+        {"event_plan": {"chapter_title": "矿洞入口", "ordered_actions": ["首次挑战矿洞精英怪"]}},
+    )
+
+    assert "怪物面板" in prompt
+    assert "名称、等级、生命和攻击方式" in prompt
+    assert "同类普通怪后续不重复" in prompt
+    assert "精英怪和首领" in prompt
+    assert "掉落" in prompt and "击杀后" in prompt
+
+
+def test_game_writer_prompt_only_includes_monsters_named_in_chapter_plan():
+    story = StoryState(
+        story_id="s-monster-cards",
+        outline="夜烬进入灰狼坡。",
+        genre="网游",
+        style="白描",
+        monster_profiles=[
+            {
+                "name": "灰狼",
+                "category": "野兽",
+                "rank": "普通",
+                "level": "1-2",
+                "hp": "80",
+                "attack_mode": "扑咬",
+                "skills": [],
+                "traits": ["听觉敏锐"],
+                "habitats": ["灰狼坡"],
+                "drops": ["灰狼毒腺", "粗糙狼皮"],
+            },
+            {
+                "name": "熔岩蜥蜴",
+                "category": "元素兽",
+                "rank": "精英",
+                "level": "18",
+                "hp": "2400",
+                "attack_mode": "喷火",
+                "skills": ["熔岩吐息"],
+                "traits": ["火焰抗性"],
+                "habitats": ["熔岩洞穴"],
+                "drops": ["熔岩核心"],
+            },
+        ],
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        2,
+        {"event_plan": {"chapter_title": "灰狼坡", "ordered_actions": ["夜烬迎战灰狼"]}},
+    )
+
+    assert "本章怪物卡" in prompt
+    assert "灰狼" in prompt and "扑咬" in prompt and "灰狼毒腺" in prompt
+    assert "熔岩蜥蜴" not in prompt
 
 

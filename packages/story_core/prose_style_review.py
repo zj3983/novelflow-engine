@@ -47,6 +47,7 @@ MODERN_CHINESE_DIALOGUE_PROBLEMS = (
     "先试，不深入",
     "先试，不进",
     "先看，不打",
+    "先报我",
     "暂缓提交",
     "确认收益",
     "验证路线",
@@ -54,6 +55,45 @@ MODERN_CHINESE_DIALOGUE_PROBLEMS = (
     "系统不允许",
     "条件未满足",
     "背包里没有",
+)
+
+DIALOGUE_TELEGRAPHY_HINTS = (
+    "没油水",
+    "没记功",
+    "不许",
+    "先报",
+    "先说",
+    "先交",
+    "先放",
+    "先走",
+)
+
+DIALOGUE_COMMAND_SNIPPETS = (
+    "先试，不深入",
+    "先试，不进",
+    "先报我",
+    "先交",
+    "先放",
+    "先走",
+    "先说",
+    "先来",
+    "你先",
+    "我先",
+    "不许",
+    "别乱",
+)
+
+_COMMAND_LINE_RE = re.compile(r"^(你|我|你们|我们)?先(?:报|交|说|放|走|来|拿|看|去|做|告|开|试|探|测|等|停|等着)[^，,。！？!?]*$")
+_DIALOGUE_SNIPPET_RE = (
+    r"[“\"]([^”\"]{1,300})[”\"]",
+    r"‘([^’]{1,300})’",
+    r"『([^』]{1,300})』",
+    r"「([^」]{1,300})」",
+)
+_DIALOGUE_COLON_LINE_RE = re.compile(r"[^\n。！？!?]{0,6}[：:]+\s*([^\n。！？!?，,]{2,90})")
+
+_SHORT_CLAUSE_ACTION_VERBS = re.compile(
+    r"(说|问|答|回|告诉|回应|交|拿|给|把|去|来|看|提|放|开|关|扔|丢|打|抛|跑|走|进|出|坐|站|停|盯|收|买|卖|修|做|想|听|见|见到|拿到|先)"
 )
 
 OLD_SLOGAN_PAYOFF_TERMS = (
@@ -160,6 +200,7 @@ def anti_ai_style_rules() -> list[str]:
         "增加专属生活化细节：人物小习惯、环境气味/声音/光线、道具使用痕迹、口头禅、过往小阴影或偏执小习惯。",
         "修正逻辑并防吃设定：核对实力、身份、伏笔、时间、地点、道具、装备、货币和任务状态；删除强行降智、强行巧合、强行煽情。",
         "改写对话：配角说话要符合身份，接地气，别绕太远；加说话动作，删除像念台词的空洞废话。",
+        "对白结构要求：对方先说一句（催/抱怨/提醒），主角一句完整回应（说清原因和选择），对方再有一句真实反应；别让一段台词只剩命令和短语。",
         "番茄白话风：不要把后台词写进正文和标题。边界/验证/服务节点/信息边界/逻辑/模型/阈值/可见性，要换成试一把、问一嘴、柜台能不能办、先别卖、包快满、药水不够、法杖快断。",
         "修辞配额：每800字最多1个比喻，形容词不要连着堆；优先写动作、对话、面板提示、背包格、耐久和直接后果。",
     ]
@@ -197,8 +238,52 @@ def _repeated_terms(body: str, terms: tuple[str, ...]) -> list[str]:
 
 def _modern_chinese_dialogue_problems(body: str) -> list[str]:
     problems = _repeated_terms(body, MODERN_CHINESE_DIALOGUE_PROBLEMS)
-    quoted_lines = re.findall(r"[“\"]([^”\"]{1,300})[”\"]", body, flags=re.DOTALL)
-    for line in quoted_lines:
+    quoted_lines: list[str] = []
+    for pattern in _DIALOGUE_SNIPPET_RE:
+        quoted_lines.extend(re.findall(pattern, body, flags=re.DOTALL))
+    quoted_lines.extend(match.group(1).strip() for match in _DIALOGUE_COLON_LINE_RE.finditer(body))
+    dialogue_lines = [line.strip() for line in quoted_lines if line.strip()]
+
+    def _looks_like_command_snippet(sentence: str) -> bool:
+        compact = re.sub(r"\s+", "", sentence)
+        if not compact or len(compact) > 22:
+            return False
+        for snippet in DIALOGUE_COMMAND_SNIPPETS:
+            if snippet in compact:
+                return True
+        if _COMMAND_LINE_RE.search(compact):
+            return True
+        if re.fullmatch(r"先(?:报|交|说|放|走|来|拿|看|去|做|告|开|试|探|测|等|等着)[^，,。！？!?]*", compact):
+            return True
+        if re.fullmatch(r"你先[^，,。？！!？]*", compact) and len(compact) <= 12:
+            return True
+        return False
+
+    def _is_telegraphic_dialogue(sentence: str) -> bool:
+        compact = re.sub(r"\s+", "", sentence)
+        if not compact:
+            return False
+        for hint in DIALOGUE_TELEGRAPHY_HINTS:
+            if hint in compact:
+                return True
+        if re.fullmatch(
+            r"[\u4e00-\u9fff]{2,5}[，,][\u4e00-\u9fff]{2,5}(?:[，,][\u4e00-\u9fff]{2,5})+",
+            compact,
+        ):
+            return True
+        fragments = [part.strip() for part in re.split(r"[，,、。；;！!？?]", compact) if part.strip()]
+        if len(fragments) < 3:
+            return False
+        if compact.count("、") >= 2:
+            return True
+        short_clause_count = sum(1 for item in fragments if 1 <= len(item) <= 6)
+        if short_clause_count >= 2 and short_clause_count == len(fragments) and not any(
+            _SHORT_CLAUSE_ACTION_VERBS.search(item) for item in fragments
+        ):
+            return True
+        return False
+
+    for line in dialogue_lines:
         inner = line.strip()
         if re.fullmatch(r"[\u4e00-\u9fff]{2,4}[，,][\u4e00-\u9fff]{2,4}", inner):
             problems.append(inner)
@@ -210,6 +295,10 @@ def _modern_chinese_dialogue_problems(body: str) -> list[str]:
             compact_fragments = [re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", fragment) for fragment in fragments]
             if len(compact_fragments) >= 3 and all(1 <= len(fragment) <= 6 for fragment in compact_fragments):
                 problems.append(f"清单式短句“{sentence.strip()}”")
+            if _looks_like_command_snippet(sentence):
+                problems.append(f"电报码式台词“{sentence.strip()}”")
+            if _is_telegraphic_dialogue(sentence):
+                problems.append(f"电报码式台词“{sentence.strip()}”")
     result: list[str] = []
     for item in problems:
         if item not in result:
@@ -291,7 +380,7 @@ def review_prose_style(body: str) -> dict[str, Any]:
             scores=scores,
             score_key="dialogue_texture",
             issue=f"现代中文对话不自然：{sample}。台词像提纲句、翻译腔或系统说明，不像人物顺嘴说话。",
-            plan="少解释只针对旁白，不是让人物省略连接词。把清单式短句改成完整口语；例如“窗坏、瓦落、门锁坏，先报我”改成“要是窗子、屋瓦或者门锁出了问题，你先来报我”。“先试，不深入”改成“我就在坡口打两只看看，不往里走”；“柜台不认”改成“你手里没毒腺，接了也交不了”。",
+            plan="少解释只针对旁白，不是让人物省略连接词。对白/台词要完整说出原因和决策，再带一个动作。把清单式短句改成完整口语；例如“窗坏、瓦落、门锁坏，先报我”改成“要是窗子、屋瓦或者门锁出了问题，你先来报我”。“先试，不深入”改成“我就在坡口打两只看看，不往里走”；“柜台不认”改成“你手里没毒腺，接了也交不了”。",
             score=5,
         )
 

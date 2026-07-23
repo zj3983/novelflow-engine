@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
+from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.genre_plugins import is_game_genre, merge_plugin_rulebooks, plugin_simulation_blueprint, select_genre_plugins
 from packages.story_core.models import NovelProject, StoryState
 from packages.story_core.novel_type_catalog import (
@@ -80,11 +82,58 @@ def _phase(chapter_number: int, *, is_game: bool = True) -> str:
     return "常规连载章节：目标、行动、收益、代价、外部反应和章末钩子。"
 
 
+LEDGER_FACT_PATTERN = re.compile(
+    r"(?:现实余额|可用余额|当前等级|等级[：:]?|仍为Lv\.?|经验|生命|法力|法杖|新手法杖|钱袋|游戏货币|背包)"
+)
+
+
+def _ledger_continuity_facts(story: StoryState) -> list[str]:
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
+    real = ledger.get("real") if isinstance(ledger.get("real"), dict) else {}
+    protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), dict) else {}
+    economy = ledger.get("economy") if isinstance(ledger.get("economy"), dict) else {}
+    equipment = ledger.get("equipment") if isinstance(ledger.get("equipment"), dict) else {}
+    quests = ledger.get("quests") if isinstance(ledger.get("quests"), dict) else {}
+    inventory = economy.get("inventory") if isinstance(economy.get("inventory"), dict) else {}
+    balance = real.get("end_balance") or economy.get("real_balance")
+    inventory_text = "、".join(f"{name}×{count}" for name, count in inventory.items())
+    facts = [
+        f"现实余额{balance}" if balance not in (None, "") else "",
+        f"当前等级{protagonist.get('level')}" if protagonist.get("level") not in (None, "") else "",
+        f"经验{protagonist.get('exp')}" if protagonist.get("exp") not in (None, "") else "",
+        f"生命{protagonist.get('hp')}" if protagonist.get("hp") not in (None, "") else "",
+        f"法力{protagonist.get('mp')}" if protagonist.get("mp") not in (None, "") else "",
+        f"法杖耐久{equipment.get('durability')}" if equipment.get("durability") not in (None, "") else "",
+        f"游戏货币{economy.get('game_currency')}" if economy.get("game_currency") not in (None, "") else "",
+        f"背包{inventory_text}" + (f"，占用{economy.get('backpack')}" if economy.get("backpack") else "")
+        if inventory_text
+        else "",
+        *[f"{name}：{value}" for name, value in quests.items() if str(value).strip()],
+    ]
+    return [fact for fact in facts if fact]
+
+
 def _latest_continuity(story: StoryState) -> dict[str, Any]:
     latest = story.chapter_summaries[-1] if story.chapter_summaries else None
+    canonical_facts = _ledger_continuity_facts(story)
+    quest_names = {
+        str(name)
+        for name in (
+            story.progression_ledger.get("quests", {})
+            if isinstance(story.progression_ledger, dict)
+            and isinstance(story.progression_ledger.get("quests"), dict)
+            else {}
+        )
+    }
+    narrative_facts = [
+        fact
+        for fact in (latest.facts if latest else [])
+        if not LEDGER_FACT_PATTERN.search(str(fact))
+        and not any(str(fact).startswith(f"{quest_name}：") for quest_name in quest_names)
+    ]
     return {
         "latest_summary": compact_text(latest.summary if latest else "", 220),
-        "must_keep_facts": compact_list(latest.facts if latest else [], max_items=10, item_chars=150),
+        "must_keep_facts": compact_list([*canonical_facts, *narrative_facts], max_items=12, item_chars=150),
         "unresolved_threads": compact_list(latest.unresolved_threads if latest else [], max_items=6, item_chars=120),
         "next_focus": compact_text(latest.next_focus if latest else "", 160),
     }
@@ -213,7 +262,7 @@ def _simulation_variant(story: StoryState, chapter_number: int) -> dict[str, Any
         "axes": compact_list(axes, max_items=6, item_chars=80),
         "avoid": compact_list(avoid, max_items=8, item_chars=80),
     }
-    for flag in ("skip_style_adapt", "skip_expansion"):
+    for flag in ("skip_expansion",):
         if raw.get(flag) is True:
             variant[flag] = True
     return variant
@@ -472,6 +521,76 @@ def _writing_contract(story: StoryState, chapter_number: int, is_game: bool) -> 
     }
 
 
+def _authorized_trade_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
+    adapted = deepcopy(blueprint)
+    for template in adapted.get("opening_scene_templates", []):
+        if template.get("id") == "reality_entry":
+            template["conflict"] = (
+                "现实急账迫使主角进入游戏寻找机会，本章必须让收益通过可信交易落到现实。"
+            )
+        elif template.get("id") == "chapter_1_next_step":
+            template["purpose"] = (
+                "完成裂纹狼心担保交易和现实到账，再把材料来源、隐藏优势与后续路线继续藏住。"
+            )
+            template["conflict"] = (
+                "主角必须在不暴露隐藏爆率和现实身份的前提下完成交易，并承担可追溯记录带来的后续风险。"
+            )
+            template["must_show"] = [
+                "担保交易",
+                "真实到账",
+                "现实急账处理",
+                "若大纲未锁定各笔账单数额，不要自行编造分项金额，只写付清并保留正确余额",
+                "下一步目标",
+            ]
+    return adapted
+
+
+def _authorized_trade_rulebook(rulebook: dict[str, list[str]]) -> dict[str, list[str]]:
+    adapted = deepcopy(rulebook)
+    blocked_phrases = (
+        "第一章不得实际交易",
+        "不承担引发市场风暴或第一章服务闭环",
+    )
+    for key, values in adapted.items():
+        adapted[key] = [
+            value for value in values if not any(phrase in value for phrase in blocked_phrases)
+        ]
+    adapted.setdefault("chapter_formula", []).append(
+        "项目大纲明确要求第一章完成担保交易时，以项目大纲为准；写清买家依据、担保路径、真实到账和现实急账处理，但不要提前引发公会全知或论坛扩散。"
+    )
+    return adapted
+
+
+def _outline_anchor(story: StoryState, chapter_number: int) -> dict[str, str]:
+    context = story.outline_context if isinstance(story.outline_context, dict) else {}
+    chapter = context.get("chapter") if isinstance(context.get("chapter"), dict) else {}
+    try:
+        planned_number = int(chapter.get("chapter_number") or 0)
+    except (TypeError, ValueError):
+        planned_number = 0
+    if planned_number != chapter_number:
+        chapter = {}
+    overall = context.get("overall") if isinstance(context.get("overall"), dict) else {}
+    opening_text = str(overall.get("story") or "")
+    chapter_text = "\n".join(str(chapter.get(key) or "") for key in ("goal", "action", "turn", "payoff", "ending_hook"))
+    anchor: dict[str, str] = {}
+    title = str(chapter.get("title") or "").strip()
+    if title:
+        anchor["chapter_title"] = title
+    opening_match = re.search(r"最后\s*(\d+(?:\.\d{1,2})?)\s*元", opening_text)
+    arrival_match = re.search(r"到账\s*(\d+(?:\.\d{1,2})?)\s*元", chapter_text)
+    ending_match = re.search(r"余额(?:变为|变成|为)?\s*(\d+(?:\.\d{1,2})?)\s*元", chapter_text)
+    if opening_match:
+        anchor["opening_balance"] = f"{opening_match.group(1)}元"
+    if arrival_match:
+        anchor["trade_arrival"] = f"{arrival_match.group(1)}元"
+    if ending_match:
+        anchor["ending_balance"] = f"{ending_match.group(1)}元"
+    if chapter_text.strip():
+        anchor["planned_payoff"] = compact_text(str(chapter.get("payoff") or ""), 180)
+    return anchor
+
+
 def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]:
     """Build the compact pre-writing contract that connects world simulation to prose."""
     proxy_project = _proxy_project(story)
@@ -494,7 +613,16 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
     )
     rulebook = merge_plugin_rulebooks(prompt_plugins)
     is_game = "game_webnovel" in plugin_ids
+    allow_first_chapter_trade = chapter_number == 1 and first_chapter_trade_authorized(
+        world_facts=[*story.world_facts, *story.author_constraints]
+    )
+    if allow_first_chapter_trade:
+        rulebook = _authorized_trade_rulebook(rulebook)
+    simulation_blueprint = plugin_simulation_blueprint(plugins)
+    if allow_first_chapter_trade:
+        simulation_blueprint = _authorized_trade_blueprint(simulation_blueprint)
     contract = _contract_for_game(chapter_number) if is_game else _generic_contract()
+    outline_anchor = _outline_anchor(story, chapter_number)
     return {
         "schema_version": "chapter-seed/v1",
         "chapter_number": chapter_number,
@@ -512,10 +640,11 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
         "current_state": story.progression_ledger or {},
         "continuity": _latest_continuity(story),
         "chapter_contract": contract,
+        "outline_anchor": outline_anchor,
         "writing_contract": _writing_contract(story, chapter_number, is_game),
         "simulation_axes": _simulation_axes(story, plugin_ids),
         "simulation_variant": _simulation_variant(story, chapter_number),
-        "simulation_blueprint": plugin_simulation_blueprint(plugins),
+        "simulation_blueprint": simulation_blueprint,
         "longform_constraints": _longform_constraints(story),
         "world_facts": compact_list(story.world_facts, max_items=18, item_chars=180),
         "author_constraints": compact_list(story.author_constraints, max_items=12, item_chars=180),

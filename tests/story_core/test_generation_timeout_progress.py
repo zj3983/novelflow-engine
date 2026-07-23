@@ -105,12 +105,12 @@ def test_timed_chat_reports_elapsed_progress():
             max_tokens=4000,
             json_mode=False,
             agent="writer",
-            stage="风格适配",
+            stage="正文生成",
         )
 
     assert text == "正文"
     assert error == ""
-    assert any("风格适配耗时" in item for item in progress)
+    assert any("正文生成耗时" in item for item in progress)
 
 
 def test_timed_chat_passes_stage_timeout_to_chat():

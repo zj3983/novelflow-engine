@@ -33,9 +33,26 @@ def test_first_chapter_taskbook_keeps_only_three_useful_scenes():
     assert "选择场面" in templates
     assert "对话场面" in templates
     assert "战斗场面" in templates
+    assert "怪物面板" in templates
+    assert "名称、等级、生命和攻击方式" in templates
+    assert "同类普通怪" in templates
+    assert "精英怪和首领" in templates
     assert "爽点场面" in templates
     assert "夜烬不能只说两个字装高手" in templates
     assert "不要只写火球命中、怪倒地、掉落入包" in templates
+
+
+def test_first_chapter_taskbook_uses_project_balance_and_requires_plausible_network_access():
+    taskbook = build_writing_taskbook(
+        chapter_number=1,
+        plan={"outline_anchor": {"opening_balance": "43.18元"}},
+        genre="网游",
+    )
+
+    entry = taskbook["scenes"][0]
+    assert "43.18元" in entry["required_surface"]
+    assert "27.60" not in entry["required_surface"]
+    assert "有效联网方式" in entry["forbidden_surface"]
 
 
 def test_taskbook_compiles_scene_cards_for_later_chapters():

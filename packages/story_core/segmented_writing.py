@@ -16,11 +16,6 @@ from packages.story_core.writing_taskbook import (
     format_taskbook_brief_section,
     taskbook_segment_specs,
 )
-# Compatibility exports for older integrations; production code imports the
-# whole-chapter style pass from style_adaptation directly.
-from packages.story_core.style_adaptation import build_style_adapt_prompt, style_adapt_safety_check
-
-
 @dataclass(frozen=True)
 class SegmentSpec:
     key: str
@@ -199,6 +194,7 @@ def build_segment_prompt(
             "输出要求：只写连续小说正文",
             "把这一场写成白话小说，顺着人物当下的目标和动作往前走。旁白少做抽象解释，对话不能省略连接词和因果。",
             "现代中文对话：话题先摆出来，再接判断和行动；要有完整来回，人物把理由说清楚。提纲句、翻译腔和系统腔改成普通说法，情绪放进动作、停顿和回答里。",
+            "对话约束：出现“先...”或“你先...”这类短句必须补齐理由和动作，不允许出现“先报我”“先试，不深入”这种命令式片段。",
             taskbook_section,
             "写作保护线",
             governance_section,
@@ -264,11 +260,31 @@ def review_segment_output(spec: SegmentSpec, text: str, *, chapter_number: int) 
 
     # Layered HARD/SOFT critical rules at segment level. Chapter-level checks
     # (protagonist_speech, emotion_quota) are gated behind protagonist_names
-    # and won't fire here — segments aren't expected to carry the full
+    # and won't fire here - segments aren't expected to carry the full
     # protagonist arc on their own.
     critical_review = review_critical_prose_rules(text, protagonist_names=())
     ai_flavor_review = review_ai_flavor(text)
     reader_feel_review = review_reader_feel(text)
+    # Dialogues written as telegraphic command fragments are one of the most
+    # common causes of "AI-report tone" complaints. Treat this as a hard
+    # issue so the segment rewrite pass is triggered, but keep the
+    # transformation logic in prose_style_review so behavior stays centralized.
+    style_issue_text = "\n".join(str(item) for item in style_review.get("issues", []))
+    if "现代中文对话" in style_issue_text or "电报码式台词" in style_issue_text:
+        critical_issues = list((critical_review.get("hard_issues") or [])) if isinstance(critical_review, dict) else []
+        hard_item = "对话口令化明显：补齐原因和动作，改为完整口语。"
+        if hard_item not in critical_issues:
+            critical_issues.append(hard_item)
+        if isinstance(critical_review, dict):
+            critical_review["hard_issues"] = critical_issues
+            severity = critical_review.setdefault("severity_summary", {})
+            if isinstance(severity, dict):
+                severity["has_hard_violation"] = True
+        if hard_item not in issues:
+            issues.append(hard_item)
+        if "把所有“先…/不…/来…”这种对话命令改成有主语、动机、动作的完整一句。" not in revision_plan:
+            revision_plan.append("把所有“先…/不…/来…”这种对话命令改成有主语、动机、动作的完整一句。")
+
     for key, score in critical_review.get("scores", {}).items():
         scores[f"segment_critical_{key}"] = int(score)
     for key, score in ai_flavor_review.get("scores", {}).items():
@@ -356,6 +372,7 @@ def build_segment_revision_prompt(
             f"上一段参考：{previous or '无'}",
             f"下一段参考：{following or '无'}",
             "改稿要求：只修复审稿指出的问题，保持事实、角色状态、背包、等级、货币和任务结果不乱跳。",
+            "重点约束：对话要完整。关键句按‘条件->回应/动作->下一步’写，不要只留“先、试、报、去”这类命令片段。",
             f"原当前段：\n{text}",
         ]
     )

@@ -217,6 +217,20 @@ FILE_CHAPTER_MAX_CHARS = 5500
 FILE_CHAPTER_HARD_MAX_CHARS = FILE_CHAPTER_MAX_CHARS + 200
 
 
+def _without_monster_stat_surfaces(text: str) -> str:
+    text = re.sub(
+        r"(?:系统(?:弹出)?(?:怪物)?信息|怪物信息)\s*[：:][^。！？\n]*[。！？]?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    monster_panel = re.compile(
+        r"【[^】]+】(?:\s*【(?:等级|生命|攻击方式|技能|特性)[^】]*】){2,}",
+        flags=re.IGNORECASE,
+    )
+    return monster_panel.sub(lambda match: "" if "攻击方式" in match.group(0) else match.group(0), text)
+
+
 def _chapter_length_review(body: str) -> dict[str, Any]:
     body_chars = len("".join(str(body or "").split()))
     issues: list[str] = []
@@ -1151,19 +1165,27 @@ class FileProjectStore:
                 (chapter.get("chapter_summary") or {}).get("next_focus"),
             )
         )
+        progression_text = "\n".join(
+            _without_monster_stat_surfaces(str(chapter.get("body") or ""))
+            for chapter in chapters
+        )
         protagonist = dict(ledger.get("protagonist") or {})
         panel = dict(ledger.get("panel") or {})
         economy = dict(ledger.get("economy") or {})
         equipment = dict(ledger.get("equipment") or {})
         quests = dict(ledger.get("quests") or {})
 
-        level_matches = re.findall(r"(?:升到|提升[:：]?|当前|为)\s*Lv\.\s*(\d+)", text, flags=re.IGNORECASE)
-        if not level_matches and "Lv.2" in text and any(token in text for token in ("升到", "升级", "等级", "提升")):
+        level_matches = re.findall(
+            r"(?:等级提升至|升级到|升级至|升到|当前等级[：:]?|等级[：:]?|level\s*[:=]?)\s*(?:Lv\.?)?\s*(\d+)",
+            progression_text,
+            flags=re.IGNORECASE,
+        )
+        if not level_matches and "Lv.2" in progression_text and any(
+            token in progression_text for token in ("升到", "升级", "等级", "提升")
+        ):
             level_matches = ["2"]
-        if not level_matches:
-            level_matches = re.findall(r"Lv\.\s*(\d+)", text, flags=re.IGNORECASE)
         if level_matches:
-            level = f"Lv.{max(int(item) for item in level_matches)}"
+            level = f"Lv.{int(level_matches[-1])}"
             protagonist["level"] = level
             panel["level"] = level
         if "见习冒险者" in text or "未转职" in text:
@@ -1171,13 +1193,16 @@ class FileProjectStore:
             protagonist["class_path"] = "见习冒险者（未转职）"
             panel["identity"] = "见习冒险者（未转职）"
 
-        exp_matches = re.findall(r"经验\s*([0-9]+\s*/\s*[0-9]+)", text)
+        exp_matches = re.findall(r"经验\s*([0-9]+\s*/\s*[0-9]+)", progression_text)
         if exp_matches:
             protagonist["exp"] = re.sub(r"\s+", "", exp_matches[-1])
         elif "等级升到Lv.2" in text or "Lv.2" in text:
             protagonist.setdefault("exp", "12/200")
 
-        durability_matches = re.findall(r"(?:新手法杖[：:]\s*|法杖[^，。；\n]{0,12})(\d{1,2}\s*/\s*\d{1,2})", text)
+        durability_matches = re.findall(
+            r"(?:新手法杖[：:]\s*|法杖[^，。；\n]{0,12})(\d{1,2}\s*/\s*\d{1,2})",
+            progression_text,
+        )
         if durability_matches:
             equipment["weapon"] = "新手法杖"
             equipment["durability"] = re.sub(r"\s+", "", durability_matches[-1])
@@ -1192,8 +1217,12 @@ class FileProjectStore:
             economy["game_currency"] = "空"
         elif "30铜" in text or "三十铜" in text:
             economy["game_currency"] = "30铜"
-        if "27.60" in text:
-            economy["real_balance"] = "27.60元"
+        real_balance_matches = re.findall(
+            r"(?:银行卡可用余额|现实余额|可用余额|账户余额|余额)\s*(?:[：:]\s*)?(?:只剩|还有|变成|变为|为)?\s*(\d+(?:\.\d{1,2})?)\s*元",
+            text,
+        )
+        if real_balance_matches:
+            economy["real_balance"] = f"{real_balance_matches[-1]}元"
         if "清道夫委托已提交" in text or "清道夫委托完成" in text:
             quests["清道夫委托"] = "已提交；奖励30铜已领取"
         if "后坡登记" in text:
@@ -2262,6 +2291,7 @@ class FileProjectStore:
 
     def _sync_ledger_from_chapter_body(self, state: dict[str, Any], chapter: dict[str, Any]) -> dict[str, Any]:
         body = str(chapter.get("body") or "")
+        protagonist_body = _without_monster_stat_surfaces(body)
         is_game_story = self._is_game_story_payload(self.project(), state)
         if not body or not is_game_story:
             self._apply_chapter_state_events(state, chapter, is_game_story=is_game_story)
@@ -2312,15 +2342,21 @@ class FileProjectStore:
         equipment = dict(ledger.get("equipment") or {})
         quests = dict(ledger.get("quests") or {})
 
-        def last(pattern: str) -> str:
-            matches = re.findall(pattern, body, flags=re.IGNORECASE)
+        def last(pattern: str, source: str | None = None) -> str:
+            matches = re.findall(pattern, body if source is None else source, flags=re.IGNORECASE)
             return str(matches[-1]).strip() if matches else ""
 
-        level = last(r"(?:等级|level)\s*(?:[：:]\s*)?(?:lv\.\s*)?(\d+)")
-        exp = last(r"(?:经验|experience|exp)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)")
-        hp = last(r"(?:生命|hp|health)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)")
-        mp = last(r"(?:法力|mp|mana)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)")
-        durability = last(r"(?:新手法杖|耐久|durability)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+|\d{1,3}%)")
+        level = last(
+            r"(?:等级提升至|升级到|升级至|升到|当前等级\s*[：:]?|等级\s*[：:]?|level\s*[:=]?)\s*(?:lv\.?\s*)?(\d+)",
+            protagonist_body,
+        )
+        exp = last(r"(?:经验|experience|exp)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)", protagonist_body)
+        hp = last(r"(?:生命|hp|health)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)", protagonist_body)
+        mp = last(r"(?:法力|mp|mana)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)", protagonist_body)
+        durability = last(
+            r"(?:新手法杖[^。！？\n]{0,60}?耐久\s*(?:回到|恢复到|变为|为)?|法杖[^。！？\n]{0,60}?耐久\s*(?:回到|恢复到|变为|为)?|耐久(?:回到|恢复到|变为)|durability\s*[:=]?)\s*(\d+\s*/\s*\d+|\d{1,3}%)",
+            protagonist_body,
+        )
         money = last(r"(?:钱袋\s*[：:]|currency\s*[:=]|coins?\s*[:=])\s*([^\n。；,，】]+)")
         if not money:
             amount_matches = re.findall(
@@ -2353,17 +2389,28 @@ class FileProjectStore:
             normalized_balance = real_balance.replace(" ", "")
             real["end_balance"] = normalized_balance
             economy["real_balance"] = normalized_balance
-        if "急账代付已通过" in body or "房租、宽带、信用卡最低还款三项都显示已付清" in body:
-            real["paid"] = "房租、宽带和信用卡最低还款已付清"
+        if "急账代付已通过" in body or re.search(r"房租[^。\n]{0,80}信用卡最低还款[^。\n]{0,40}已付清", body):
+            real["paid"] = "正文明确写出的现实急账已付清"
 
-        inventory_line = last(r"(?:背包|inventory|backpack)\s*(?:[：:]\s*)?([^\n。]+)")
+        inventory_lines = re.findall(
+            r"(?:背包|inventory|backpack)\s*(?:[：:]\s*)?([^\n。]+)",
+            body,
+            flags=re.IGNORECASE,
+        )
+        quantified_inventory_lines = [
+            str(item).strip()
+            for item in inventory_lines
+            if re.search(r"[×xX*＊]\s*\d+", str(item))
+        ]
+        inventory_line = quantified_inventory_lines[-1] if quantified_inventory_lines else ""
         if inventory_line:
             inventory: dict[str, int] = {}
             for raw_item, count in re.findall(
                 r"([^×xX*＊,，;；]+?)\s*[×xX*＊]\s*(\d+)",
                 inventory_line,
             ):
-                item = re.sub(r"\s+", " ", raw_item).strip(" \t:：;；,，")
+                item = re.sub(r"\s+", " ", raw_item).strip(" \t:：;；,，、")
+                item = re.sub(r"^(?:里|中)?(?:还剩|剩下|有|装着)\s*", "", item)
                 if item:
                     inventory[item] = int(count)
             if inventory:
@@ -2845,20 +2892,17 @@ class FileProjectStore:
             outline_payload, current_chapter=current_chapter
         )
         self._write_json_atomic(self.webnovel_dir / "outline.json", normalized)
-        result = {**normalized, "source": "saved"}
         # 保存后立即把 json 字段级合并渲染回 大纲/*.md；导出失败不影响保存结果，
-        # 只在返回 dict 里附带 markdown_export 状态，方便前端/调试排查。
+        # 导出状态只写日志，避免把运行状态混进可再次提交的大纲数据。
         try:
             from packages.story_core.outline_markdown_sync import export_outline_to_markdown
 
             export_outline_to_markdown(self.root, normalized)
-            result["markdown_export"] = "ok"
         except Exception as exc:  # noqa: BLE001
             logging.getLogger(__name__).warning(
                 "outline markdown export failed: %s", exc, exc_info=True
             )
-            result["markdown_export"] = f"failed:{exc}"
-        return result
+        return {**normalized, "source": "saved"}
 
     def _planning_opening_direction(self, project: dict[str, Any], outline: dict[str, Any]) -> dict[str, str]:
         directions = self.opening_directions()

@@ -6,7 +6,7 @@ from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.writing_packet import build_codex_writing_packet
 
 
-def test_first_chapter_packet_contains_manual_drafting_contract():
+def test_first_chapter_packet_contains_contract():
     story = StoryState(
         story_id="s-writing-packet",
         outline="网游开服，苏叶以夜烬身份低调验证千倍爆率。",
@@ -58,7 +58,6 @@ def test_first_chapter_packet_contains_manual_drafting_contract():
     assert any("白描" in item for item in packet["whole_chapter_contract"]["style"])
     assert any("自然对话" in item for item in packet["whole_chapter_contract"]["dialogue"])
     assert any("谜语式" in item for item in packet["whole_chapter_contract"]["avoid"])
-    assert packet["submission_contract"]["endpoint"] == "POST /projects/{project_id}/manual-draft"
 
 
 def test_non_game_packet_does_not_leak_webgame_terms():

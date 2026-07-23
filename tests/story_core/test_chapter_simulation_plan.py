@@ -9,6 +9,49 @@ from packages.story_core.orchestrator import StoryOrchestrator
 from packages.story_core.simulation import build_chapter_simulation_plan
 
 
+def test_director_authority_preserves_event_plan_and_only_projects_plot_fields():
+    story = StoryState(
+        story_id="s-director-authority",
+        outline="Long-form outline",
+        genre="xuanhuan",
+        style="plain",
+    )
+    event_plan = {
+        "turn": "The lead enters the ancestral hall",
+        "collision": "The steward blocks the door",
+        "pivot": "The lead shows the old seal",
+        "chapter_satisfaction": {
+            "core_event": "The lead gains access to the hall",
+            "obstacle": "The steward demands proof",
+            "visible_payoff": "The sealed register is opened",
+            "cost": "The steward now remembers the lead",
+            "emotion_target": "Suspicion turns into guarded relief",
+            "outsider_misread": "The steward thinks the seal was borrowed",
+        },
+        "chapter_end_hook": {"content": "A missing name appears in the register"},
+        "next_focus": "Find who removed the other names",
+    }
+
+    plan = build_chapter_simulation_plan(
+        story,
+        3,
+        event_plan=event_plan,
+        plot_authority="director",
+    ).model_dump()
+
+    assert plan["event_plan"] == event_plan
+    assert plan["plot_simulation"]["source"] == "director_event_plan"
+    assert plan["plot_simulation"]["chapter_desire"] == "The lead gains access to the hall"
+    assert plan["plot_simulation"]["obstacle_chain"] == [
+        "The steward blocks the door",
+        "The steward demands proof",
+    ]
+    assert plan["plot_simulation"]["choice_point"] == "The lead shows the old seal"
+    assert plan["plot_simulation"]["payoff"] == "The sealed register is opened"
+    assert plan["plot_simulation"]["cost"] == "The steward now remembers the lead"
+    assert plan["plot_simulation"]["ending_hook"] == "A missing name appears in the register"
+
+
 def test_game_opening_simulation_plan_merges_event_and_performance_constraints():
     story = StoryState(
         story_id="s-sim-plan",
@@ -72,6 +115,7 @@ def test_orchestrator_bundle_contains_simulation_plan():
 
     assert bundle.simulation_plan["chapter_number"] == 1
     assert bundle.simulation_plan["protagonist_strategy"]["game_id"] == "夜烬"
+    assert bundle.simulation_plan["plot_simulation"]["source"] == "director_event_plan"
     assert bundle.simulation_plan["character_performance"]
     assert bundle.simulation_plan["review_focus"]
     assert bundle.world_events

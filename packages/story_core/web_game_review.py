@@ -4,6 +4,8 @@ import re
 from typing import Any
 
 from packages.story_core.genre_plugins import is_game_genre
+from packages.story_core.chapter_scope import first_chapter_trade_authorized
+from packages.story_core.game_level_gap import assess_level_gap, extract_level_gap_case
 
 
 GAME_CONTEXT_TOKENS = (
@@ -165,6 +167,7 @@ def web_game_review_rules() -> list[str]:
         "经济规则：没有世界档案明确设定前，不得把金币直接换算成人民币；新手阶段优先使用铜币、银币、材料和市场询价。",
         "公会压迫：公会只能通过重复模式、稀有物、资源点目击、NPC任务异常、榜单或多处线索逐步逼近，不能全知全能。",
         "背景预算：第一章只完整展开现实入口、游戏入口、首次验证和领先预期；NPC服务、论坛、公会追查和实际交易后移。",
+        "联网连续性：如果正文写家庭宽带断网、停机或路由器无信号，登录全沉浸游戏前必须交代移动数据、设备eSIM或其他有效联网方式。",
         "信息可见：交易行、论坛、公会频道和NPC记录都有可见性边界；低级交易不能直接显示卖家坐标、实时位置、现实身份或隐藏天赋。",
     ]
 
@@ -192,7 +195,7 @@ def _has_asserted_plain_term(text: str, term: str) -> bool:
         start = index + len(term)
 
 
-def _first_chapter_anchor_issues(body: str) -> list[tuple[str, str, str]]:
+def _first_chapter_anchor_issues(body: str, *, allow_trade_payoff: bool = False) -> list[tuple[str, str, str]]:
     """Return hard continuity issues for the current web-game opening contract."""
 
     issues: list[tuple[str, str, str]] = []
@@ -252,14 +255,6 @@ def _first_chapter_anchor_issues(body: str) -> list[tuple[str, str, str]]:
                 "在角色面板或钱袋里写清一枚铜都没有，并用它压住章末选择。",
             )
         )
-    if ("二十七块六" in body or "27.60" in body) and not _has_any(body, ("余额", "银行卡", "可用")):
-        issues.append(
-            (
-                "economy_rules",
-                "现实金钱语义漂移：二十七块六必须是余额/可用钱，不是轻飘飘的最低还款额。",
-                "把27.60写成银行卡余额或可用余额；信用卡最低还款只保留倒计时压力，不写成金额很低。",
-            )
-        )
     if not _has_any(body, ("任务进度", "任务门槛", "装备门槛", "技能门槛", "路线", "领先", "更快", "少跑", "早一步", "提前凑齐")):
         issues.append(
             (
@@ -270,7 +265,7 @@ def _first_chapter_anchor_issues(body: str) -> list[tuple[str, str, str]]:
         )
     actual_trade_terms = ("寄售成功", "上架成功", "成交", "到账", "手续费", "已售出")
     actual_trade_hit = any(_has_asserted_plain_term(body, term) for term in actual_trade_terms)
-    if actual_trade_hit:
+    if actual_trade_hit and not allow_trade_payoff:
         issues.append(
             (
                 "market_logic",
@@ -674,6 +669,8 @@ def review_web_game_chapter(
         "background_budget": 8,
         "information_visibility": 8,
         "prose_surface": 8,
+        "monster_panel": 8,
+        "combat_rules": 8,
     }
     issues: list[str] = []
     revision_plan: list[str] = []
@@ -683,13 +680,73 @@ def review_web_game_chapter(
 
     facts_text = "\n".join(world_facts or [])
     plan_text = str(event_plan)
+    chapter_one_trade_payoff = first_chapter_trade_authorized(event_plan, world_facts)
     combined = "\n".join([body, plan_text, facts_text])
+    level_gap_case = extract_level_gap_case(body, context_text="\n".join([plan_text, facts_text]))
+    if level_gap_case:
+        level_gap = assess_level_gap(
+            player_level=level_gap_case.player_level,
+            monster_level=level_gap_case.monster_level,
+            evidence_text=level_gap_case.evidence_text,
+            cost_text=level_gap_case.cost_text,
+        )
+        if not level_gap.allowed:
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="combat_rules",
+                issue=f"越级战斗不成立：怪物等级高出{level_gap.gap}级，缺少成立条件或可见代价。",
+                plan=(
+                    "改为撤退、侦察、组队或挑战低等级目标；例外必须在战斗前已有任务道具、明确克制、"
+                    "特殊装备、地形机关、怪物残血或既有特殊能力，并写出受伤、补给或装备消耗。"
+                ),
+            )
+    network_disconnected = _has_any(body, ("宽带已经断网", "宽带断了", "宽带停机", "网络已断", "路由器指示灯全灭"))
+    logs_into_game = _has_any(body, ("登录《", "登录游戏", "进入游戏", "网络延迟"))
+    has_network_fallback = _has_any(body, ("移动数据", "手机热点", "流量卡", "设备eSIM", "头盔eSIM", "备用网络"))
+    if network_disconnected and logs_into_game and not has_network_fallback:
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="background_budget",
+            issue="联网连续性断裂：正文写家庭宽带已经断网或停机，却没有交代有效联网方式就直接登录全沉浸游戏。",
+            plan="删除不必要的宽带断网设定，或在登录前明确写出移动数据、设备eSIM等有效联网方式。",
+        )
+    combat_surface = _has_any(body, ("攻击", "扑来", "扑出", "出手", "命中", "击杀", "战斗", "开怪"))
+    monster_surface = _has_any(combined, ("怪物", "野怪", "灰狼", "灰鼠", "精英", "首领", "BOSS", "Boss", "boss"))
+    first_encounter = chapter_number == 1 or _has_any("\n".join([plan_text, facts_text]), ("第一次", "首次", "初见", "新敌人"))
+    panel_fields = ("等级：", "生命：", "攻击方式：")
+    has_basic_monster_panel = "【" in body and all(field in body for field in panel_fields)
+    if combat_surface and monster_surface and first_encounter and not has_basic_monster_panel:
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="monster_panel",
+            issue="首次与该类怪物正式交战前缺少简洁怪物面板，读者无法直接确认敌人的等级、生命和攻击方式。",
+            plan="在第一次交手前补一次怪物面板，只写名称、等级、生命和攻击方式；同类普通怪后续不要重复展示，掉落等击杀后再结算。",
+        )
+    elite_or_boss = _has_any(body, ("精英", "首领", "BOSS", "Boss", "boss"))
+    if combat_surface and elite_or_boss and has_basic_monster_panel and not all(field in body for field in ("技能：", "特性：")):
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="monster_panel",
+            issue="精英怪或首领的首次面板缺少技能和特性，面板没有体现它与普通怪的区别。",
+            plan="在精英怪或首领面板中补入技能和特性；只使用世界设定或本章计划已有内容，不临时扩写无关属性。",
+        )
     requires_opening_anchors = chapter_number == 1 and _has_any(
         "\n".join([plan_text, facts_text]),
-        ("长期核心", "底层协议校验通过", "初始0铜", "余额27.60", "基础火球术、初始0铜"),
+        ("长期核心", "底层协议校验通过", "初始0铜", "现实余额", "可用余额", "基础火球术、初始0铜"),
     )
     if requires_opening_anchors:
-        for score_key, issue, plan in _first_chapter_anchor_issues(body):
+        for score_key, issue, plan in _first_chapter_anchor_issues(
+            body,
+            allow_trade_payoff=chapter_one_trade_payoff,
+        ):
             _append_issue(
                 issues=issues,
                 revision_plan=revision_plan,
@@ -719,7 +776,7 @@ def review_web_game_chapter(
             scores=scores,
             score_key="background_budget",
             issue=f"现实背景擅自扩写：正文新增 {'、'.join(stray_background_terms[:5])}，但世界档案没有这些事实。",
-            plan="删除未授权的前世、穿越、疾病、网贷等背景；现实压力只写既有房租、宽带、信用卡最低还款和工作技能来源。",
+            plan="删除未授权的前世、穿越、疾病、网贷等背景；现实压力只写项目档案已有的账单和工作技能来源，不套用其他作品的金额或账单。",
         )
 
     boundary_chapter = chapter_number == 1 and _has_any(

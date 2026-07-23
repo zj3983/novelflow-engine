@@ -44,10 +44,22 @@ def test_world_pulse_advances_background_actors_and_visibility_inbox():
 
     ledger = story.progression_ledger
     assert ledger["reality"]["rent_due_days"] == 2
-    assert ledger["persistent_world"]["npc_memory"]["service_counter"]["last_seen_batch_count"] == 14
+    assert ledger["persistent_world"]["npc_memory"]["service_counter"]["last_seen_batch_count"] == 0
     assert ledger["persistent_world"]["guild_intel"]["white_robe_guild"]["knowledge_state"] == "weak_pattern_only"
     assert ledger["visibility_inbox"][-1]["visible_at_chapter"] == 2
     assert ledger["world_pulse"]["latest"]["pulse_index"] == 1
+
+
+def test_world_pulse_exposes_only_recorded_public_material_flow():
+    story = _pulse_story()
+    story.progression_ledger["market"]["newbie_materials"]["visible_batch_count"] = 6
+
+    pulse = advance_world_pulse(story, chapter_number=1)
+
+    counter = story.progression_ledger["persistent_world"]["npc_memory"]["service_counter"]
+    assert counter["last_seen_batch_count"] == 6
+    assert "batch of 6" in pulse["visibility_inbox"][0]["text"]
+    assert "batch of 14" not in " ".join(item["text"] for item in pulse["visibility_inbox"])
 
 
 def test_world_pulse_accumulates_without_erasing_prior_inbox():
@@ -78,6 +90,7 @@ def test_story_snapshot_and_simulation_status_surface_latest_world_pulse():
 
 def test_world_pulse_builds_persistent_actor_subsystems():
     story = _pulse_story()
+    story.progression_ledger["market"]["newbie_materials"]["visible_batch_count"] = 14
 
     pulse = advance_world_pulse(story, chapter_number=1)
 
@@ -103,10 +116,12 @@ def test_world_pulse_builds_persistent_actor_subsystems():
 
 def test_world_pulse_accumulates_guild_suspicion_without_omniscience():
     story = _pulse_story()
+    story.progression_ledger["market"]["newbie_materials"]["visible_batch_count"] = 14
     first = advance_world_pulse(story, chapter_number=1)
     first_score = story.progression_ledger["persistent_world"]["guild_intel"]["white_robe_guild"]["suspicion_score"]
     story.progression_ledger["systems"]["chaos_seed"]["anomaly_score"] = 18
     story.progression_ledger["economy"]["inventory"]["venom_gland"] = 20
+    story.progression_ledger["market"]["newbie_materials"]["visible_batch_count"] = 26
 
     second = advance_world_pulse(story, chapter_number=2)
 
@@ -144,6 +159,7 @@ def test_normal_generation_advances_world_pulse_for_next_chapter():
 
 def test_chapter_simulation_plan_carries_long_running_world_context():
     story = _pulse_story()
+    story.progression_ledger["market"]["newbie_materials"]["visible_batch_count"] = 14
     pulse = advance_world_pulse(story, chapter_number=1)
     seed = build_chapter_seed(story, 2)
 

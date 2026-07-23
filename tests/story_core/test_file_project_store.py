@@ -467,6 +467,76 @@ def test_body_ledger_sync_uses_final_panel_and_real_balance(tmp_path):
     assert "苏叶现实余额27.60元未变" not in facts
 
 
+def test_opening_ledger_derives_latest_project_balance_instead_of_fixed_amount(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    chapters = [
+        {
+            "chapter_number": 1,
+            "body": "登录前，银行卡可用余额43.18元。收到转账并付完急账后，账户余额286.41元。",
+            "chapter_summary": {},
+        }
+    ]
+
+    ledger = store._derive_opening_progression_ledger(chapters, {})
+
+    assert ledger["economy"]["real_balance"] == "286.41元"
+    assert "27.60" not in str(ledger)
+
+
+def test_chapter_ledger_does_not_copy_monster_level_and_hp_to_protagonist(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "progression_ledger": {"protagonist": {"level": "Lv.1", "hp": "100/100"}},
+        "characters": [{"name": "苏叶", "role": "protagonist", "game_id": "夜烬"}],
+    }
+    body = (
+        "苏叶打开角色面板，等级Lv.1，生命100/100，法力60/60。"
+        "任务结算后，系统提示等级提升至Lv.2，生命110/110，法力66/66。"
+        "系统弹出信息：裂纹狼（精英），等级Lv.5，生命320/320，攻击方式为撕咬。"
+        "夜烬击杀了裂纹狼。"
+    )
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {"chapter_number": 1, "chapter_title": "第一笔到账", "body": body},
+    )
+
+    protagonist = synced["progression_ledger"]["protagonist"]
+    assert protagonist["level"] == "Lv.2"
+    assert protagonist["hp"] == "110/110"
+    assert protagonist["mp"] == "66/66"
+
+
+def test_chapter_ledger_scopes_weapon_durability_and_quantity_backpack_lines(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "progression_ledger": {"economy": {"inventory": {}}},
+        "characters": [{"name": "苏叶", "role": "protagonist", "game_id": "夜烬"}],
+    }
+    body = (
+        "夜烬装备灰狼护腕，防御+2，耐久8/8。"
+        "铁匠修好新手法杖，耐久回到10/10。"
+        "背包里还剩灰狼毒腺×2、粗糙狼皮×4、狼牙×1、灰狼护腕×1。"
+        "下线后，他还在想该怎么解释背包里的东西。"
+    )
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {"chapter_number": 1, "chapter_title": "第一笔到账", "body": body},
+    )
+
+    ledger = synced["progression_ledger"]
+    assert ledger["equipment"]["durability"] == "10/10"
+    assert ledger["economy"]["inventory"] == {
+        "灰狼毒腺": 2,
+        "粗糙狼皮": 4,
+        "狼牙": 1,
+        "灰狼护腕": 1,
+    }
+
+
 def test_body_ledger_summary_preserves_confirmed_next_focus(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     chapter = {

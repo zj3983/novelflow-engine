@@ -548,8 +548,7 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
             "existing_body_chars": _chapter_body_chars(existing_body),
         },
         "submission_contract": {
-            "endpoint": "POST /projects/{project_id}/manual-draft",
-            "required_fields": ["chapter_number", "body"],
-            "after_submit": ["refresh metadata", "run local writing review", "update character panel", "persist replacement"],
+            "mode": "auto_generation_only",
+            "note": "Manual draft submission is disabled. Use continue_generation or agent-revise for chapter progression.",
         },
     }

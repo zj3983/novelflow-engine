@@ -2,6 +2,116 @@ from packages.story_core.web_game_review import review_web_game_chapter, web_gam
 from packages.story_core.orchestrator import _merge_writing_review_quality, _opening_writer_rules
 
 
+def test_web_game_review_requires_panel_before_first_monster_fight():
+    body = (
+        "《天启之门》开服后，夜烬走到灰狼坡。"
+        "第一只灰狼从石头后扑出来，他抬手放出火球，随后击杀了灰狼。"
+    ) * 20
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"ordered_actions": ["夜烬第一次和灰狼正式交战"]},
+        world_facts=["这是夜烬第一次遇见灰狼。"],
+    )
+
+    assert any("怪物面板" in issue for issue in review["issues"])
+
+
+def test_web_game_review_accepts_compact_first_monster_panel():
+    body = (
+        "《天启之门》开服后，夜烬走到灰狼坡。"
+        "【灰狼】【等级：1】【生命：80/80】【攻击方式：扑咬】"
+        "灰狼从石头后扑出来，他抬手放出火球，随后击杀了灰狼。"
+    ) * 20
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"ordered_actions": ["夜烬第一次和灰狼正式交战"]},
+        world_facts=["这是夜烬第一次遇见灰狼。"],
+    )
+
+    assert not any("怪物面板" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_login_after_disconnected_broadband_without_network_source():
+    body = (
+        "家里的宽带已经断网两天，路由器指示灯全灭。"
+        "苏叶戴上全沉浸头盔，登录《天启之门》，系统显示网络延迟十二毫秒。"
+    )
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"ordered_actions": ["苏叶登录游戏"]},
+        world_facts=[],
+    )
+
+    assert any("有效联网方式" in issue for issue in review["issues"])
+
+
+def test_opening_writer_rules_do_not_embed_one_projects_balance():
+    rules = "\n".join(_opening_writer_rules(1))
+
+    assert "27.60" not in rules
+    assert "项目写作包" in rules
+    assert "禁止寄售成功" not in rules
+    assert "交易、到账和现实付款是否发生，必须服从本书大纲" in rules
+
+
+def test_web_game_review_requires_skills_and_traits_for_elite_panel():
+    body = (
+        "《天启之门》里，夜烬在矿洞遇见灰狼精英。"
+        "【灰狼精英】【等级：5】【生命：600/600】【攻击方式：扑咬】"
+        "灰狼精英随即发动攻击。"
+    ) * 20
+
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=body,
+        event_plan={"ordered_actions": ["首次挑战灰狼精英"]},
+        world_facts=["灰狼精英是本章新敌人。"],
+    )
+
+    assert any("技能和特性" in issue for issue in review["issues"])
+
+
+def test_web_game_review_rejects_three_level_solo_kill_with_only_skill_claims():
+    body = (
+        "【游戏ID：夜烬】【等级：Lv.5】【生命：100/100】"
+        "【腐沼鳄（精英）】【等级：Lv.8】【生命：400/400】"
+        "【攻击方式：扑咬】【技能：扫尾】【特性：厚皮】"
+        "夜烬只靠走位和计算避开攻击，最后单独击杀了腐沼鳄，法力耗尽。"
+    )
+
+    review = review_web_game_chapter(
+        chapter_number=20,
+        body=body,
+        event_plan={"ordered_actions": ["夜烬单刷腐沼鳄"]},
+    )
+
+    assert any("高出3级" in issue and "缺少成立条件" in issue for issue in review["issues"])
+
+
+def test_web_game_review_accepts_three_level_kill_with_established_reason_and_cost():
+    body = (
+        "【游戏ID：夜烬】【等级：Lv.5】【生命：100/100】"
+        "任务说明早已写明缚鳄索能压制腐沼鳄，夜烬和三名队友使用任务道具后开怪。"
+        "【腐沼鳄（精英）】【等级：Lv.8】【生命：400/400】"
+        "【攻击方式：扑咬】【技能：扫尾】【特性：厚皮】"
+        "四人耗尽药水才将它击杀。"
+    )
+
+    review = review_web_game_chapter(
+        chapter_number=20,
+        body=body,
+        event_plan={"special_combat_conditions": ["任务道具缚鳄索", "四人组队"]},
+    )
+
+    assert not any("高出3级" in issue for issue in review["issues"])
+
+
 def test_web_game_review_rejects_real_name_as_game_identity():
     body = (
         "《天启之门》开服当晚，苏叶在出租屋里完成登录。"

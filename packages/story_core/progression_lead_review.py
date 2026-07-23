@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.story_core.chapter_scope import first_chapter_trade_authorized
+
 
 CORE_SIGNAL_TERMS = (
     "千倍爆率",
@@ -199,6 +201,7 @@ def review_progression_lead(
 
     event_plan = event_plan if isinstance(event_plan, dict) else {}
     world_facts = [str(item) for item in (world_facts or [])]
+    chapter_one_trade_payoff = first_chapter_trade_authorized(event_plan, world_facts)
     context = "\n".join([body, str(event_plan), "\n".join(world_facts)])
     is_game = _has_any(context, ("网游", "游戏", "VRMMO", "天启之门", "爆率", "混沌之种", "交易行", "职业"))
     issues: list[str] = []
@@ -270,7 +273,7 @@ def review_progression_lead(
         issues.append("第一章服务闭环太满：任务、铜币、修理、药水一起铺开，焦点从幕后领先滑回小账本。")
         revision_plan.append("第一章服务是否办成必须跟随项目账本；未允许时删掉任务提交、修理和补给，只保留价牌、队伍、前置条件和下一步目标。")
 
-    if chapter_number == 1 and trade_closure_count:
+    if chapter_number == 1 and trade_closure_count and not chapter_one_trade_payoff:
         scores["opening_scope"] = 5
         issues.append("第一章提前展开交易闭环：出现寄售、上架、成交、到账、手续费或提现。")
         revision_plan.append("删除第一章实际交易，只保留交易行/价牌作为下一章可选目标或路牌。")

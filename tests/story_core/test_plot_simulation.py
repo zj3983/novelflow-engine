@@ -66,7 +66,21 @@ def test_scene_cards_use_plot_simulation_as_writing_spine():
     joined_conflict = "\n".join(card.conflict for card in scene_cards)
     joined_must_show = "\n".join("\n".join(card.must_show) for card in scene_cards)
 
-    assert "剧情推演" in joined_purpose
+    assert "导演计划" in joined_purpose
     assert plan["plot_simulation"]["chapter_desire"] in joined_must_show
     assert plan["plot_simulation"]["choice_point"] in joined_conflict
     assert plan["plot_simulation"]["ending_hook"] in joined_must_show
+
+
+def test_scene_cards_drop_blank_and_none_plot_values():
+    story = _story()
+    plan = build_chapter_simulation_plan(
+        story,
+        2,
+        event_plan={"turn": "完成低级任务"},
+        plot_authority="director",
+    ).model_dump()
+    cards = select_scene_cards([], chapter_seed={"chapter_number": 2, "genre_plugins": ["game_webnovel"]}, simulation_plan=plan)
+
+    assert cards
+    assert all(item not in {"", "None", "null"} for item in cards[0].must_show)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.story_core.genre_types.base import GenrePlugin
+from packages.story_core.game_level_gap import level_gap_rule_text
 
 
 GAME_WEBNOVEL = GenrePlugin(
@@ -16,6 +17,7 @@ GAME_WEBNOVEL = GenrePlugin(
     rulebook={
         "progression_rules": (
             "等级、经验、装备、技能和称号必须前后一致，任何升级都要有可见成本或明确收益来源。",
+            level_gap_rule_text(),
             "主角可以有隐藏优势，但优势不能自动解决所有问题，必须受到资源、情报、时间或身份暴露风险限制。",
             "第一章必须写出角色创建或登录阶段的初始身份、武器和基础技能选择，并把游戏身份写入角色面板；开局所有玩家都是见习冒险者（未转职），不能把夜烬写成独有职业。",
             "游戏身份不是现实职业：苏叶现实职业用于解释外包测试和拆单习惯；夜烬开局固定为见习冒险者（未转职），只是选择新手法杖和基础火球术，正式职业路线必须等后续转职再确认。",

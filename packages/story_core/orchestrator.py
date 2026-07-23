@@ -842,8 +842,8 @@ def _ensure_first_chapter_emotion_anchors(body: str, chapter_number: int) -> str
         return body
     result = body
     opening_anchor = (
-        "苏叶把手机扣回桌面，喉咙发紧了一下。二十七块六不是不能看，是看多了会让人忍不住算，"
-        "今晚要不要连泡面都省一包。"
+        "苏叶把手机扣回桌面，喉咙发紧了一下。账户里那点可用余额不是不能看，"
+        "是看多了会让人忍不住算，今晚要不要连泡面都省一包。"
     )
     combat_anchor = (
         "灰狼扑近的那一下，夜烬肩膀先缩了一下，火球脱手后才发现掌心全是汗。"
@@ -2898,12 +2898,12 @@ def _opening_writer_rules(chapter_number: int) -> list[str]:
             "角色面板必须在正文中写出“角色面板”四个字，并有职业栏，至少包含：游戏ID、等级、职业/路线、经验、生命/法力、基础火球术、背包或钱袋关键项；不要写“货币：0铜”；面板要短，不要刷屏。",
             "初始钱袋锁死为空。第一章如果没有正文写出铜币掉落或任务奖励，章末就仍是一枚铜都没有，不能凭空变成15铜。",
             "初始身份和技能锁死：开局不要写任何正式职业；统一写见习冒险者（未转职），夜烬只是在新手武器里选法杖，并拿到基础火球术，不要改名成元素弹。",
-            "现实钱语义锁死：27.60是银行卡余额或可用余额，不是最低还款额；不要把现实压力写轻。",
+            "现实金额必须读取项目写作包和本章硬锚点；写清它是银行卡或支付账户的可用余额，不得沿用其他作品的数字，也不要把余额误写成最低还款额。",
             "金手指不能凭空弹出：必须先有旧头盔/底层日志/接驳异常等触发，再出现“底层协议校验通过”和“混沌之种：未解析”。",
             "统一术语：本项目隐藏优势必须出现“千倍爆率”四个字；可以同时写掉落判定×1000，但不能只写异常或不正常。",
             "第一章冲突是现实缺钱、旧设备、首次验证成本和主角意识到自己能比普通玩家快一步；不要把焦点写成几颗材料怎么处理。",
             "第一章禁止越级冲突：公会不能精准锁定坐标/现实身份，不能围杀主角，不能直接抢世界BOSS或高阶副本。",
-            "第一章不要完成公开交易或结算闭环：禁止寄售成功、成交、到账、手续费扣款、材料换成人民币；是否提交低级任务、拿铜币、修理或买药，必须跟随项目账本/章节计划，不得凭空补收益。",
+            "交易、到账和现实付款是否发生，必须服从本书大纲、本章计划和项目账本；大纲要求第一章完成结算时就写清金额与用途，大纲没有安排时不得凭空补收益。",
             "下一步钩子要落在进度领先上：主角意识到这些掉落能更快交任务、换装备、学技能或摸到下一条路线，而不是纠结几颗材料值多少钱。",
             "金手指首次验证必须同时带来收益和代价：掉落变多的爽点要指向任务/装备/技能领先，血量、法力、耐久和背包只作为节奏摩擦。",
             "第一章必须收敛：NPC、柜台、价牌和队伍只作为环境入口或下一章目标，不强制完整服务出场；如果出现命名NPC，只能一笔带过。",
@@ -4911,7 +4911,12 @@ class StoryOrchestrator:
         runtime_stage = "planner" if agent == "director" else agent
         if runtime_stage not in {"planner", "writer", "memory"}:
             raise ValueError(f"unknown runtime stage: {runtime_stage}")
-        settings = resolve_stage_runtime(runtime_stage)
+        prepared_runtime = getattr(self, "_prepared_runtime_request", None)
+        if prepared_runtime is not None and prepared_runtime[0] == runtime_stage:
+            settings = prepared_runtime[1]
+            self._prepared_runtime_request = None
+        else:
+            settings = resolve_stage_runtime(runtime_stage)
         self._last_runtime_request = (runtime_stage, settings)
         provider = settings.provider
         codex_command = settings.codex_command
@@ -5038,6 +5043,7 @@ class StoryOrchestrator:
             except KeyError:
                 template_key = ""
         initial_settings = resolve_stage_runtime(runtime_stage)
+        self._prepared_runtime_request = (runtime_stage, initial_settings)
         call_id = start_prompt_call(
             chapter_number=story.current_chapter,
             stage=stage,
@@ -5050,7 +5056,7 @@ class StoryOrchestrator:
             template_version=template_version,
             provider=initial_settings.provider,
             model=initial_settings.model,
-            temperature=float(initial_settings.temperature),
+            temperature=float(getattr(initial_settings, "temperature", 0.2)),
         )
         started = perf_counter()
         chat_kwargs: dict[str, Any] = {
@@ -5070,16 +5076,17 @@ class StoryOrchestrator:
                 text, error = self._chat(story, prompt, **chat_kwargs)
         except Exception as exc:
             elapsed = perf_counter() - started
-            settings = resolve_stage_runtime(runtime_stage)
+            self._prepared_runtime_request = None
             finish_prompt_call(
                 call_id,
                 status="failed",
-                provider=settings.provider,
-                model=settings.model,
+                provider=initial_settings.provider,
+                model=initial_settings.model,
                 elapsed_seconds=elapsed,
                 error=str(exc),
             )
             raise
+        self._prepared_runtime_request = None
         elapsed = perf_counter() - started
         suffix = "失败" if error else "完成"
         report_generation_progress(f"{stage}耗时 {elapsed:.1f}s：{suffix}")
@@ -5087,7 +5094,7 @@ class StoryOrchestrator:
         settings = (
             runtime_request[1]
             if runtime_request is not None and runtime_request[0] == runtime_stage
-            else resolve_stage_runtime(runtime_stage)
+            else initial_settings
         )
         record_stage_runtime(
             story,
