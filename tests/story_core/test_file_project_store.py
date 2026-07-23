@@ -1,16 +1,86 @@
 import json
+import threading
 from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
 
-from packages.story_core.file_project_store import FileProjectStore, _regeneration_quality_blocking
+from packages.story_core.file_project_store import (
+    FileProjectStore,
+    _chapter_outline_title,
+    _regeneration_quality_blocking,
+)
+from packages.story_core.models import ChapterSummary, StoryState, TimelineEvent
 from packages.story_core.outline_planning import GeneratedOutlinePlan
 from packages.story_core.skill_packs import import_skill_pack_from_path
+from packages.story_core.orchestrator import _failed_bundle
 
 
 def _long_test_body(label: str = "Night Ember keeps the chapter grounded.") -> str:
-    return (label + " He checks the task, pays a visible cost, gains a result, and leaves a next step.\n") * 80
+    unit = label + " He checks the task, pays a visible cost, gains a result, and leaves a next step.\n"
+    unit_chars = max(1, len("".join(unit.split())))
+    return unit * max(1, 4500 // unit_chars)
+
+
+def test_first_chapter_regeneration_removes_post_chapter_character_states(tmp_path):
+    store = FileProjectStore(tmp_path)
+    reset = store._reset_first_chapter_regeneration_state(
+        {
+            "current_chapter": 1,
+            "characters": [
+                {
+                    "name": "苏叶",
+                    "role": "protagonist",
+                    "game_id": "夜烬",
+                    "real_state": {"current": {"balance": "312.60元"}},
+                    "game_state": {"current": {"level": "Lv.1"}},
+                    "memory": ["现实急账已在第一章解决，余额312.60元。"],
+                }
+            ],
+        }
+    )
+
+    protagonist = reset["characters"][0]
+    assert "real_state" not in protagonist
+    assert "game_state" not in protagonist
+    assert not any("312.60元" in item for item in protagonist["memory"])
+
+
+def test_chapter_outline_title_uses_matching_detailed_outline_title():
+    outline_context = {
+        "chapter": {
+            "chapter_number": 1,
+            "title": "灰狼坡的第一笔到账",
+        }
+    }
+
+    assert _chapter_outline_title(outline_context, 1) == "灰狼坡的第一笔到账"
+    assert _chapter_outline_title(outline_context, 2) is None
+
+
+def test_regeneration_gate_treats_prose_and_scene_feedback_as_advisory():
+    writing_review = {
+        "issues": [
+            "第一章外部压力过早：公会信息提前介入。",
+            "场景卡必写内容缺失：缺少现实职业/技能来源。",
+            "现代中文对话不自然：存在清单式短句。",
+        ],
+        "critical_review": {"hard_issues": [], "severity_summary": {"has_hard_violation": False}},
+    }
+
+    assert _regeneration_quality_blocking({"issues": ["writing_review"]}, writing_review) is False
+
+
+def test_regeneration_gate_does_not_let_heuristic_critical_review_override_simplified_gate():
+    writing_review = {
+        "issues": ["首次与怪物交战前缺少简洁怪物面板。"],
+        "critical_review": {
+            "hard_issues": ["首次与怪物交战前缺少简洁怪物面板。"],
+            "severity_summary": {"has_hard_violation": True},
+        },
+    }
+
+    assert _regeneration_quality_blocking({"issues": ["writing_review"]}, writing_review) is False
 
 
 def _make_minimal_file_project(root, *, state=None, project=None):
@@ -193,6 +263,97 @@ def test_update_project_normalizes_relationship_graph(tmp_path):
     assert updated["relationship_graph"][0]["trust"] == 100
 
 
+def test_update_project_shallow_merges_independent_world_blueprint_patches(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "world_blueprint": {
+                "genre_plugin_ids": ["game_webnovel"],
+                "premise": "旧前提",
+                "monster_profiles": [{"id": "wolf", "name": "灰狼"}],
+            },
+        },
+    )
+
+    store.update_project({"world_blueprint": {"world_rules": ["新规则"]}})
+    updated = store.update_project(
+        {
+            "world_blueprint": {
+                "locations": [{"name": "新港"}],
+                "monster_profiles": [{"id": "wolf", "name": "灰狼", "hp": "90"}],
+            }
+        }
+    )
+
+    assert updated["world_blueprint"] == {
+        "genre_plugin_ids": ["game_webnovel"],
+        "premise": "旧前提",
+        "world_rules": ["新规则"],
+        "locations": [{"name": "新港"}],
+        "monster_profiles": [{"id": "wolf", "name": "灰狼", "hp": "90"}],
+    }
+
+
+def test_update_project_serializes_concurrent_instances_for_same_root(tmp_path):
+    root = tmp_path / "novel"
+    store_a = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "world_blueprint": {"monster_profiles": [{"id": "wolf", "name": "灰狼"}]},
+        },
+    )
+    store_b = FileProjectStore(root)
+    read_barrier = threading.Barrier(2)
+    start_barrier = threading.Barrier(3)
+    errors: list[BaseException] = []
+
+    def synchronize_project_read(store):
+        original = store.project
+
+        def read_project():
+            project = original()
+            try:
+                read_barrier.wait(timeout=0.25)
+            except threading.BrokenBarrierError:
+                pass
+            return project
+
+        store.project = read_project
+
+    synchronize_project_read(store_a)
+    synchronize_project_read(store_b)
+
+    def update(store, patch):
+        try:
+            start_barrier.wait()
+            store.update_project({"world_blueprint": patch})
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=update, args=(store_a, {"world_rules": ["并发规则"]})),
+        threading.Thread(target=update, args=(store_b, {"locations": [{"name": "并发新港"}]})),
+    ]
+    for thread in threads:
+        thread.start()
+    start_barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert FileProjectStore(root).project()["world_blueprint"] == {
+        "world_rules": ["并发规则"],
+        "locations": [{"name": "并发新港"}],
+        "monster_profiles": [{"id": "wolf", "name": "灰狼"}],
+    }
+
+
 def test_chapter_reality_events_update_real_state_only(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     state = {
@@ -256,6 +417,199 @@ def test_chapter_reality_events_update_real_state_only(tmp_path):
         "current": {"level": "Lv.1", "currency": "0铜币"},
         "recent_changes": [],
     }
+
+
+def test_body_ledger_sync_uses_final_panel_and_real_balance(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "Web Game",
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+    )
+    state = {
+        "genre": "game_webnovel",
+        "progression_ledger": {
+            "real": {"start_balance": "27.60元", "end_balance": "27.60元"},
+            "protagonist": {"level": "Lv.3", "exp": "80/100"},
+            "panel": {"level": "Lv.3", "exp": "80/100"},
+            "economy": {"inventory": {}},
+        },
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "game_id": "夜烬",
+                "game_panel": {"level": "Lv.3", "exp": "80/100"},
+            }
+        ],
+    }
+    body = (
+        "银行卡可用余额：27.60元。\n"
+        "【急账代付已通过】【可用余额：312.60元】\n"
+        "【等级：Lv.1】【经验：20/100】【生命：82/100】【法力：36/60】\n"
+        "【新手法杖 9/10】【钱袋：空】【背包：灰狼毒腺×16，粗糙狼皮×10（2/20）】"
+    )
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {"chapter_number": 1, "chapter_title": "夜烬", "body": body},
+    )
+
+    ledger = synced["progression_ledger"]
+    assert ledger["real"]["end_balance"] == "312.60元"
+    assert ledger["protagonist"]["level"] == "Lv.1"
+    assert ledger["panel"]["level"] == "Lv.1"
+    assert synced["characters"][0]["game_panel"]["level"] == "Lv.1"
+    facts = synced["chapter_summaries"][0]["facts"]
+    assert "苏叶现实余额312.60元" in facts
+    assert "苏叶现实余额27.60元未变" not in facts
+
+
+def test_body_ledger_summary_preserves_confirmed_next_focus(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "夜烬",
+        "chapter_summary": {
+            "next_focus": "用现有材料登记并完成清道夫委托，优先拿任务经验。"
+        },
+    }
+    ledger = {
+        "protagonist": {"level": "Lv.1", "exp": "20/100"},
+        "economy": {"inventory": {"灰狼毒腺": 16}, "game_currency": "空"},
+        "quests": {"清道夫委托": "未接取；未提交；奖励未到账"},
+    }
+
+    summary = store._chapter_body_ledger_summary(chapter, ledger)
+
+    assert summary["next_focus"] == "用现有材料登记并完成清道夫委托，优先拿任务经验。"
+
+
+def test_generation_state_reconciles_saved_chapter_before_planning(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        state={
+            "story_id": "s-file",
+            "genre": "game_webnovel",
+            "current_chapter": 1,
+            "world_facts": [],
+            "progression_ledger": {
+                "real": {"end_balance": "27.60元"},
+                "protagonist": {"level": "Lv.3", "exp": "80/100"},
+                "panel": {"level": "Lv.3"},
+            },
+            "characters": [{"name": "苏叶", "role": "protagonist", "game_id": "夜烬"}],
+        },
+        project={
+            "project_id": "p-file",
+            "title": "Web Game",
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+    )
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "夜烬",
+        "body": (
+            "银行卡可用余额：27.60元。后来急账代付通过。"
+            "【可用余额：312.60元】【等级：Lv.1】【经验：20/100】"
+            "【生命：82/100】【法力：36/60】【新手法杖 9/10】【钱袋：空】"
+        ),
+        "chapter_summary": {"chapter_number": 1, "facts": ["旧摘要误写Lv.3"]},
+    }
+    (store.story_system_dir / "chapters" / "0001.json").write_text(
+        json.dumps(chapter, ensure_ascii=False), encoding="utf-8"
+    )
+
+    reconciled = store._generation_state(store.state())
+
+    ledger = reconciled["progression_ledger"]
+    assert ledger["real"]["end_balance"] == "312.60元"
+    assert ledger["protagonist"]["level"] == "Lv.1"
+    assert ledger["panel"]["level"] == "Lv.1"
+
+
+def test_state_before_next_chapter_prefers_current_state_over_stale_embedded_snapshot(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        state={
+            "story_id": "s-file",
+            "current_chapter": 1,
+            "progression_ledger": {
+                "real": {"start_balance": "27.60元", "end_balance": "312.60元"},
+                "economy": {"real_balance": "312.60元"},
+            },
+            "chapter_summaries": [
+                {
+                    "chapter_number": 1,
+                    "summary": "急账已经付清。",
+                    "facts": ["苏叶现实余额312.60元"],
+                }
+            ],
+        },
+    )
+    store._write_json(
+        store.story_system_dir / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "updated_story": {
+                "story_id": "s-file",
+                "current_chapter": 1,
+                "progression_ledger": {
+                    "real": {"start_balance": "27.60元", "end_balance": "27.60元"},
+                    "economy": {"real_balance": "27.60元"},
+                },
+                "chapter_summaries": [
+                    {
+                        "chapter_number": 1,
+                        "summary": "急账尚未解决。",
+                        "facts": ["苏叶现实余额27.60元未变"],
+                    }
+                ],
+            },
+        },
+    )
+    (store.root / "chapters" / "0001-第一章.md").write_text("第一章正文", encoding="utf-8")
+
+    before = store._state_before_chapter(2)
+
+    assert before["progression_ledger"]["real"]["end_balance"] == "312.60元"
+    assert before["chapter_summaries"][-1]["facts"] == ["苏叶现实余额312.60元"]
+
+
+def test_story_payload_uses_project_constraints_and_preserves_character_lifecycle(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        state={
+            "story_id": "s-file",
+            "outline": "夜烬推进新手任务。",
+            "genre": "网游",
+            "style": "白描",
+            "author_constraints": ["stale english constraint"],
+            "characters": [
+                {"name": "苏叶", "role": "protagonist", "game_id": "夜烬", "lifecycle_state": "active"},
+                {
+                    "name": "白河仓库收购方",
+                    "role": "收购方NPC",
+                    "lifecycle_state": "proposed",
+                    "last_approved_chapter": 0,
+                },
+            ],
+        },
+        project={
+            "project_id": "p-file",
+            "title": "Web Game",
+            "author_constraints": ["游戏内使用夜烬。"],
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+    )
+
+    payload = store._story_state_payload_for_direction(store.state(), store.project(), 2)
+
+    assert payload["author_constraints"] == ["游戏内使用夜烬。"]
+    assert payload["characters"][1]["lifecycle_state"] == "proposed"
+    assert payload["characters"][1]["last_approved_chapter"] == 0
 
 
 def test_transition_reality_change_does_not_fallback_to_game_change(tmp_path):
@@ -1152,6 +1506,16 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(
         root,
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "world_blueprint": {
+                "world_rules": ["NPC只能处理岗位权限内的事务。"],
+                "quest_rules": ["任务必须先登记，再执行和提交。"],
+                "economy_rules": ["材料价格必须来自任务、配方或真实稀缺性。"],
+            },
+        },
         state={
             "story_id": "s-file",
             "outline": "A grounded webgame story.",
@@ -1198,11 +1562,14 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     preview = store.prompt_preview(1)
 
     assert preview["schema_version"] == "file-project-prompt-preview/v1"
+    assert preview["reconstructed"] is True
+    assert preview["source"] == "rebuilt_from_current_project_files"
     modules = {item["key"]: item for item in preview["modules"]}
     assert {"core_context", "character_context", "genre_context", "writing_taskbook", "packet_context"}.issubset(modules)
     assert "source_body" not in modules
     keys = {item["key"] for item in preview["prompts"]}
     assert {"director_plan", "writer_body", "revision", "writing_taskbook", "review_agents"}.issubset(keys)
+    assert "style_adapt" not in keys
     by_key = {item["key"]: item for item in preview["prompts"]}
     assert "## 输出要求" in by_key["writer_body"]["content"]
     assert "## 本章方向" in by_key["writer_body"]["content"]
@@ -1212,9 +1579,21 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert "character_cards" not in modules["core_context"]["content"]
     assert "苏叶" in by_key["writer_body"]["content"]
     assert "character_context" in by_key["writer_body"]["module_keys"]
+    assert "NPC只能处理岗位权限内的事务" in by_key["writer_body"]["content"]
+    assert "任务必须先登记" in by_key["writer_body"]["content"]
+    assert "材料价格必须来自任务" in by_key["writer_body"]["content"]
     assert "网游写法方法卡" in by_key["writer_body"]["content"]
     assert "genre_context" in by_key["writer_body"]["module_keys"]
     assert "web_game" in modules["genre_context"]["content"]
+
+    context = store.prompt_context(1)
+    assert context["schema_version"] == "file-project-prompt-context/v1"
+    assert "prompts" not in context
+    assert {item["key"] for item in context["modules"]}.issuperset(
+        {"core_context", "character_context", "genre_context", "writing_taskbook"}
+    )
+    missing = {item["key"]: item for item in context["modules"] if item.get("available") is False}
+    assert "dialogue_context" in missing
     assert "验证灰狼掉落" in by_key["writing_taskbook"]["content"]
     assert "对话场面" not in by_key["writing_taskbook"]["content"]
     assert "补完整对话" in by_key["revision"]["content"]
@@ -1299,7 +1678,25 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
 
     class FakeEngine:
         def generate_next_chapter(self, story):
-            updated_story = story.model_copy(update={"current_chapter": 1})
+            updated_story = story.model_copy(
+                update={
+                    "current_chapter": 1,
+                    "timeline": [
+                        TimelineEvent(
+                            chapter_number=1,
+                            summary="Night Ember checks the counter.",
+                            impact="Chapter 1 closes with a visible cost.",
+                        )
+                    ],
+                    "chapter_summaries": [
+                        ChapterSummary(
+                            chapter_number=1,
+                            chapter_title="Generated One",
+                            summary="Night Ember checks the counter.",
+                        )
+                    ],
+                }
+            )
             return SimpleNamespace(
                 chapter_number=1,
                 chapter_title="Generated One",
@@ -1520,6 +1917,130 @@ def test_file_project_writing_packet_exposes_outline_constraints(tmp_path):
     assert isinstance(packet["state"]["characters"], list)
 
 
+def test_writing_packet_includes_reality_bridge_rules_for_relevant_chapter_only(tmp_path):
+    root = tmp_path / "novel"
+    reality_rules = [f"现实规则{i}" for i in range(1, 9)]
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "current_focus": "完成本章计划。",
+            "world_blueprint": {
+                "reality_bridge_rules": reality_rules,
+                "monster_profiles": [{"id": "wolf", "name": "灰狼"}],
+            },
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": []},
+    )
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["chapters"][0]["goal"] = "确认第一笔收入到账并支付房租"
+    (store.webnovel_dir / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
+
+    packet = store.writing_packet(1)
+
+    assert packet["outline_constraints"]["reality_bridge_rules"] == reality_rules[:6]
+    assert "reality_bridge_rules" not in packet["project"]["world_blueprint"]
+    assert not any(rule in packet["hard_locks"] for rule in reality_rules)
+
+
+def test_writing_packet_omits_reality_bridge_rules_for_game_only_chapter(tmp_path):
+    root = tmp_path / "novel"
+    reality_rules = ["游戏收益只能通过合规渠道进入现实", "现实资金变化必须留下可核对记录"]
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "current_focus": "清理矿洞深处的怪物。",
+            "world_blueprint": {
+                "reality_bridge_rules": reality_rules,
+                "monster_profiles": [{"id": "wolf", "name": "灰狼"}],
+            },
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": []},
+    )
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["chapters"][0].update(
+        {
+            "goal": "击败矿洞狼王",
+            "action": "组队进入洞穴并清理怪群",
+            "payoff": "获得新装备和经验",
+            "ending_hook": "更深处传来咆哮",
+        }
+    )
+    (store.webnovel_dir / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
+
+    packet = store.writing_packet(1)
+
+    assert not packet["outline_constraints"].get("reality_bridge_rules")
+    assert "reality_bridge_rules" not in packet["project"]["world_blueprint"]
+    assert not any(rule in packet["hard_locks"] for rule in reality_rules)
+
+
+@pytest.mark.parametrize("game_only_focus", ["金币收入到账", "任务奖励到账"])
+def test_writing_packet_does_not_treat_game_income_as_reality_bridge(game_only_focus, tmp_path):
+    root = tmp_path / "novel"
+    reality_rules = ["现实资金变化必须留下可核对记录"]
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "current_focus": game_only_focus,
+            "world_blueprint": {"reality_bridge_rules": reality_rules},
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": []},
+    )
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["chapters"][0].update(
+        {
+            "goal": game_only_focus,
+            "action": "领取奖励并整理背包",
+            "payoff": "获得游戏金币",
+        }
+    )
+    (store.webnovel_dir / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
+
+    packet = store.writing_packet(1)
+
+    assert not packet["outline_constraints"].get("reality_bridge_rules")
+    assert "reality_bridge_rules" not in packet["project"]["world_blueprint"]
+
+
+def test_writing_packet_ignores_next_focus_when_rewriting_game_only_chapter(tmp_path):
+    root = tmp_path / "novel"
+    reality_rules = ["现实资金变化必须留下可核对记录"]
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "current_focus": "筹钱支付房租账单",
+            "world_blueprint": {"reality_bridge_rules": reality_rules},
+        },
+        state={"story_id": "s-file", "current_chapter": 3, "world_facts": []},
+    )
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["chapters"][0].update(
+        {
+            "goal": "击败矿洞狼王",
+            "action": "进入洞穴清理怪群",
+            "payoff": "获得新装备和经验",
+            "ending_hook": "更深处传来咆哮",
+        }
+    )
+    (store.webnovel_dir / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
+
+    packet = store.writing_packet(1)
+
+    assert not packet["outline_constraints"].get("reality_bridge_rules")
+
+
 def test_state_restores_protagonist_character_card_from_ledger(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(
@@ -1726,6 +2247,7 @@ def test_persist_bundle_ignores_stale_bundle_updated_story(tmp_path):
             "current_chapter": 99,
             "world_facts": ["stale fact should not return"],
         },
+        quality_report={"ok": True, "issues": []},
         chapter_summary={
             "chapter_title": "Fresh Chapter",
             "cadence": "manual",
@@ -1771,6 +2293,10 @@ def test_persist_bundle_uses_runtime_updated_story(tmp_path):
             "current_chapter": 2,
             "progression_ledger": {"economy": {"game_currency": "5铜"}},
             "world_facts": ["source:canonical"],
+            "timeline": [{"chapter_number": 2, "label": "第2章"}],
+            "chapter_summaries": [
+                {"chapter_number": 2, "chapter_title": "Ledger Chapter", "summary": "ledger settles"}
+            ],
         },
         chapter_summary={
             "chapter_title": "Ledger Chapter",
@@ -2044,7 +2570,14 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
         encoding="utf-8",
     )
     (root / ".webnovel" / "project.json").write_text(
-        json.dumps({"project_id": "p-file", "title": "File Novel"}, ensure_ascii=False),
+        json.dumps(
+            {
+                "project_id": "p-file",
+                "title": "File Novel",
+                "author_constraints": ["第一章必须通过裂纹狼心担保交易解决现实急账。"],
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     (root / ".webnovel" / "state.json").write_text(
@@ -2054,6 +2587,8 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
                 "outline": "网游开服，主角先确认边界。",
                 "genre": "网游",
                 "style": "番茄升级流",
+                "author_constraints": ["第一章不得交易。"],
+                "writing_lessons": ["删除第一章实际交易，只保留价牌。"],
                 "current_chapter": 1,
                 "world_facts": ["世界摘要：保留。", "第1章事实：灰鼠毒腺x18。", "第4章章末：巡夜人残牌和废井污染源。"],
                 "progression_ledger": {
@@ -2084,10 +2619,12 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
 
     class FakeEngine:
         def generate_next_chapter(self, story):
+            assert story.author_constraints == ["第一章必须通过裂纹狼心担保交易解决现实急账。"]
+            assert story.writing_lessons == []
             simulation_variant = story.progression_ledger["simulation_variant"]
             variant = simulation_variant["id"]
             seen_variants.append(variant)
-            assert simulation_variant["skip_style_adapt"] is True
+            assert "skip_style_adapt" not in simulation_variant
             assert simulation_variant["skip_expansion"] is False
             dumped_story = json.dumps(story.model_dump(mode="json"), ensure_ascii=False)
             assert "灰鼠" not in dumped_story
@@ -2125,7 +2662,7 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
     assert regenerated["chapter_title"] == "背包快满了"
     assert seen_variants == ["boundary-inventory-route"]
     assert regenerated["simulation_variant"]["id"] == "boundary-inventory-route"
-    assert regenerated["simulation_variant"]["skip_style_adapt"] is True
+    assert "skip_style_adapt" not in regenerated["simulation_variant"]
     assert regenerated["simulation_variant"]["skip_expansion"] is False
     assert (root / "chapters" / "0001-背包快满了.md").exists()
 
@@ -2179,6 +2716,60 @@ def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):
     assert regenerated["simulation_variant"]["rewrite_guidance"]["text"] == guidance
     state_after = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
     assert "rewrite_guidance" not in state_after.get("progression_ledger", {}).get("simulation_variant", {})
+
+
+def test_file_project_store_regenerate_does_not_fail_on_continuity_quality_fields(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    store.write_chapter(
+        chapter_number=1,
+        title="Old One",
+        body=_long_test_body("Old draft keeps costs visible."),
+        summary="Old summary.",
+    )
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            updated_story = story.model_copy(update={"current_chapter": 1})
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="Regenerated One",
+                body=_long_test_body("Regenerated body keeps structure and continuity."),
+                cadence="manual",
+                next_outline="Continue from continuity.",
+                updated_story=updated_story,
+                chapter_summary={
+                    "chapter_title": "Regenerated One",
+                    "cadence": "manual",
+                    "summary": "Continuity fields are missing in report.",
+                    "facts": ["continuity fallback"],
+                    "next_focus": "Continue from continuity.",
+                    "primary_conflict": "cost",
+                    "secondary_conflict": "visibility",
+                    "event_beat": "continuity",
+                },
+                quality_report={
+                    "ok": False,
+                    "issues": ["body", "chapter_title", "next_outline", "timeline", "chapter_summaries"],
+                    "writing_review": {"pass": False, "issues": ["body", "chapter_title", "next_outline", "timeline", "chapter_summaries"]},
+                },
+            )
+
+    regenerated = store.regenerate_chapter(1, engine=FakeEngine())
+
+    assert regenerated["schema_version"] == "file-project-regenerate/v1"
+    assert isinstance(regenerated["chapter_title"], str) and bool(regenerated["chapter_title"])
+    assert regenerated["chapter_number"] == 1
 
 
 def test_file_project_store_blocks_short_generated_bundle(tmp_path):
@@ -2271,6 +2862,190 @@ def test_file_project_store_blocks_failed_generated_quality_report(tmp_path):
         store.generate_next_chapter(engine=FakeEngine())
 
     assert not (root / ".story-system" / "chapters" / "0001.json").exists()
+
+
+def test_file_project_store_saves_generated_chapter_with_advisory_review(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 0,
+            "world_facts": [],
+        },
+    )
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            updated_story = story.model_copy(update={"current_chapter": 1})
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="Usable Draft",
+                body=_long_test_body("The chapter is complete but the dialogue can still be polished."),
+                cadence="manual",
+                next_outline="Continue.",
+                updated_story=updated_story,
+                chapter_summary={
+                    "chapter_title": "Usable Draft",
+                    "cadence": "manual",
+                    "summary": "The usable draft advances the story.",
+                    "facts": ["the chapter advanced"],
+                    "next_focus": "Continue.",
+                    "primary_conflict": "cost",
+                    "secondary_conflict": "visibility",
+                    "event_beat": "advanced",
+                },
+                quality_report={
+                    "ok": False,
+                    "issues": ["writing_review"],
+                    "writing_review": {
+                        "pass": False,
+                        "issues": ["现代中文对话不够自然，建议局部修改。"],
+                    },
+                    "simplified_review": {
+                        "status": "needs_revision",
+                        "pass": True,
+                        "has_hard_errors": False,
+                        "needs_revision": True,
+                    },
+                },
+            )
+
+    result = store.generate_next_chapter(engine=FakeEngine())
+
+    assert result["chapter_number"] == 1
+    saved = json.loads((root / ".story-system" / "chapters" / "0001.json").read_text(encoding="utf-8"))
+    assert saved["quality_report"]["quality_warning"]["status"] == "needs_revision"
+
+
+def test_persist_bundle_quality_failure_raises_chapter_quality_error_with_report(tmp_path):
+    from packages.story_core.file_project_store import ChapterQualityError
+
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": []},
+    )
+    bundle = SimpleNamespace(
+        chapter_number=1,
+        chapter_title="Fresh Chapter",
+        body=_long_test_body(),
+        cadence="manual",
+        next_outline="Continue.",
+        updated_story={"story_id": "s-file", "current_chapter": 1},
+        chapter_summary={
+            "chapter_title": "Fresh Chapter",
+            "cadence": "manual",
+            "summary": "Fresh summary.",
+            "facts": ["fresh fact"],
+            "next_focus": "Continue.",
+            "primary_conflict": "Clean state.",
+            "secondary_conflict": "Old snapshot.",
+            "event_beat": "Persist.",
+        },
+    )
+
+    with pytest.raises(ChapterQualityError, match="generate_quality_failed") as exc_info:
+        store.persist_bundle(bundle)
+
+    assert exc_info.value.operation == "generate"
+    assert exc_info.value.quality_report.get("ok") is False
+
+
+
+def test_file_project_store_generate_bundle_with_empty_failure_body_reports_generate_failed_reason(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 0,
+            "world_facts": [],
+        },
+    )
+
+    bundle = _failed_bundle(
+        StoryState(
+            story_id="s-file",
+            outline="A grounded game story.",
+            genre="webgame",
+            style="plain",
+            current_chapter=0,
+            world_facts=[],
+        ),
+        1,
+        "plan_timeout",
+    )
+
+    with pytest.raises(ValueError, match="generate_failed:plan_timeout"):
+        store.persist_bundle(bundle, operation="generate")
+
+
+def test_file_project_store_generate_bundle_with_empty_body_reports_generate_failed(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 0,
+            "world_facts": [],
+        },
+    )
+
+    bundle = {
+        "chapter_number": 1,
+        "chapter_title": "第一章",
+        "body": "",
+        "quality_report": {
+            "ok": False,
+            "issues": ["body", "cadence", "next_outline", "timeline", "chapter_summaries"],
+            "writing_review": {
+                "pass": False,
+                "issues": ["body", "cadence", "next_outline", "timeline", "chapter_summaries"],
+            },
+        },
+    }
+
+    with pytest.raises(ValueError, match="generate_failed:body"):
+        store.persist_bundle(bundle, operation="generate")
+
+
+def test_file_project_store_regenerate_bundle_with_empty_body_reports_regenerate_failed(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+
+    bundle = {
+        "chapter_number": 1,
+        "chapter_title": "第一章",
+        "body": "",
+        "quality_report": {
+            "ok": False,
+            "issues": ["body", "timeline", "chapter_summaries"],
+            "writing_review": {"pass": False, "issues": ["body", "timeline", "chapter_summaries"]},
+        },
+    }
+
+    with pytest.raises(ValueError, match="regenerate_failed:body"):
+        store.persist_bundle(bundle, operation="regenerate")
 
 
 def test_file_project_store_normalizes_generated_chapter_title_prefix(tmp_path):

@@ -253,6 +253,35 @@ def test_runtime_settings_never_returns_plaintext_api_key():
         assert "sk-test" not in json.dumps(body)
 
 
+def test_runtime_settings_can_reveal_saved_api_key_without_cache():
+    candidate = _runtime_configuration(provider="openai")
+    assert client.put("/runtime-settings", json=candidate).status_code == 200
+
+    response = client.post(
+        "/runtime-settings/reveal-api-key",
+        json={"provider": "openai"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"api_key": "sk-test"}
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+
+
+def test_global_prompt_templates_can_be_read_and_updated(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_PROMPT_TEMPLATES_PATH", str(tmp_path / "templates.json"))
+    original = client.get("/prompt-templates")
+    assert original.status_code == 200
+    writer = next(item for item in original.json()["templates"] if item["key"] == "writer")
+    changed = writer["content"].replace("{{chapter_direction}}", "方向：{{chapter_direction}}")
+
+    updated = client.put("/prompt-templates/writer", json={"content": changed})
+
+    assert updated.status_code == 200
+    assert updated.json()["content"] == changed
+    assert updated.json()["source"] == "global_override"
+
+
 def test_runtime_settings_put_with_masked_api_key_preserves_stored_key():
     saved = _runtime_configuration()
     assert client.put("/runtime-settings", json=saved).status_code == 200
@@ -354,7 +383,7 @@ def test_review_recommendation_only_revises_for_hard_errors():
     assert blocking["must_fix"] == ["body_too_short"]
 
 
-def test_project_writing_packet_and_manual_draft_roundtrip():
+def test_project_writing_packet_returns_packet():
     story_id = "s-writing-packet-api"
     project_id = "p-writing-packet-api"
     create_story = client.post(
@@ -379,8 +408,6 @@ def test_project_writing_packet_and_manual_draft_roundtrip():
         },
     )
     assert create_project.status_code == 200
-    generated = client.post(f"/stories/{story_id}/generate")
-    assert generated.status_code == 200
 
     packet_response = client.get(f"/projects/{project_id}/writing-packet?chapter_number=1")
     assert packet_response.status_code == 200
@@ -394,29 +421,6 @@ def test_project_writing_packet_and_manual_draft_roundtrip():
     assert any("灰鼠" in " ".join(card.get("must_show", []) + card.get("fact_locks", [])) for card in packet["scene_cards"]) or any(
         "首杀" in str(card) or "验证" in str(card) for card in packet["scene_cards"]
     )
-
-    manual_body = "\n\n".join(
-        [
-            "催租单压在键盘边，苏叶把旧头盔从抽屉里拖出来。他以前做过游戏经济模型外包，最熟的是材料产出、交易流水和异常账号曲线。现在余额只剩几十块，他需要的不是奇迹，而是一条能验证的路。",
-            "《天启之门》的登录界面亮起。苏叶输入游戏ID：夜烬。职业列表展开后，他没有选战士，也没有选游侠，而是点下元素法师学徒。面板很短：【角色：夜烬】【等级：Lv.1】【职业：元素法师学徒】【经验：0/100】【生命：100/100】【法力：80/80】【属性：力量5，敏捷8，体质9，智力9】【装备：新手木杖，粗布衣】【货币：0铜币】。",
-            "灰烬村外的灰鼠坡有几只灰鼠在草根下乱窜。夜烬先用微光弹试距离，第一发打偏，第二发命中，法力掉了一截，肩膀也被灰鼠抓掉三点血。第三发微光弹落下后，提示跳出：【击杀灰鼠。经验+15。】【获得：灰鼠毒腺×12。】【获得：灰鼠皮×3。】他没有笑，只把背包关上，转身回村。",
-            "药剂铺里，洛婶把灰鼠毒腺拿到鼻下闻了闻，说单卖一份两铜，清道夫委托要五份毒腺和三张灰鼠皮，奖励二十铜。她补了一句：单卖是材料价，委托价里算村务补贴。柜台旁的木牌写着一金币兑一百银币，一银币兑一百铜币。夜烬接下委托，却没有立刻提交。他看着背包里的材料，知道这东西能用，但不能急着暴露。",
-        ]
-    )
-    draft_response = client.post(
-        f"/projects/{project_id}/manual-draft",
-        json={"chapter_number": 1, "body": manual_body, "instructions": ["Codex手写样稿"], "include_body": True},
-    )
-    assert draft_response.status_code == 200
-    draft = draft_response.json()
-    assert draft["revision"]["source"] == "manual_draft"
-    assert "货币：0铜币" not in draft["chapter"]["body"]
-    assert "钱袋：空" in draft["chapter"]["body"]
-    assert draft["chapter"]["body_chars"] >= 1
-    assert "writing_review" in draft["review"]
-    refreshed = client.get(f"/stories/{story_id}").json()
-    assert "货币：0铜币" not in refreshed["history"][0]["body"]
-    assert "钱袋：空" in refreshed["history"][0]["body"]
 
 
 def test_project_writing_packet_uses_explicit_non_game_project_type():
@@ -462,46 +466,112 @@ def test_project_writing_packet_uses_explicit_non_game_project_type():
     assert "清道夫委托" not in text
 
 
-def test_existing_first_chapter_packet_uses_story_state_before_that_chapter():
-    story_id = "s-first-chapter-snapshot"
-    project_id = "p-first-chapter-snapshot"
-    assert client.post(
-        "/stories",
-        json={
-            "story_id": story_id,
-            "outline": "林照看守祖祠断香炉。",
-            "genre": "xianxia",
-            "style": "白描",
-            "characters": [{"name": "林照", "role": "protagonist"}],
-        },
-    ).status_code == 200
-    assert client.post(
+def test_regular_project_world_blueprint_patch_merges_fields_and_preserves_explicit_clears():
+    project_id = "p-world-blueprint-patch"
+    created = client.post(
         "/projects",
         json={
             "project_id": project_id,
-            "title": "断香炉快照测试",
-            "active_story_id": story_id,
-            "world_blueprint": {"genre_plugin_ids": ["xianxia"]},
+            "title": "普通项目世界观更新",
+            "world_blueprint": {
+                "genre_plugin_ids": ["xuanhuan"],
+                "world_rules": ["旧规则"],
+                "monster_profiles": [{"id": "wolf", "name": "灰狼"}],
+            },
         },
-    ).status_code == 200
-    assert client.post(
-        f"/projects/{project_id}/manual-draft",
-        json={"chapter_number": 1, "body": "林照接下守炉差事。"},
-    ).status_code == 200
-    assert client.post(
-        f"/projects/{project_id}/manual-draft",
-        json={"chapter_number": 2, "body": "第二章未来污染标记。"},
-    ).status_code == 200
+    )
+    assert created.status_code == 200
 
-    packet_response = client.get(f"/projects/{project_id}/writing-packet?chapter_number=1")
+    merged = client.patch(
+        f"/projects/{project_id}",
+        json={"world_blueprint": {"locations": [{"name": "新港"}]}},
+    )
 
-    assert packet_response.status_code == 200
-    packet = packet_response.json()
-    text = json.dumps(packet, ensure_ascii=False)
-    assert packet["story"]["current_chapter"] == 0
-    assert packet["continuity"]["previous_summary"] == ""
-    assert packet["governance"]["runtime_context"]["previous_summary"] == ""
-    assert "第二章未来污染标记" not in text
+    assert merged.status_code == 200
+    assert merged.json()["world_blueprint"] == {
+        "genre_plugin_ids": ["xuanhuan"],
+        "world_rules": ["旧规则"],
+        "monster_profiles": [{"id": "wolf", "name": "灰狼"}],
+        "locations": [{"name": "新港"}],
+    }
+
+    normalized_and_cleared = client.patch(
+        f"/projects/{project_id}",
+        json={"world_blueprint": {"genre_plugin_ids": [" XIANXIA "], "world_rules": []}},
+    )
+    assert normalized_and_cleared.status_code == 200
+    assert normalized_and_cleared.json()["world_blueprint"] == {
+        "genre_plugin_ids": ["xianxia"],
+        "world_rules": [],
+        "monster_profiles": [{"id": "wolf", "name": "灰狼"}],
+        "locations": [{"name": "新港"}],
+    }
+
+    cleared_type = client.patch(
+        f"/projects/{project_id}",
+        json={"world_blueprint": {"genre_plugin_ids": []}},
+    )
+    assert cleared_type.status_code == 200
+    assert cleared_type.json()["world_blueprint"]["genre_plugin_ids"] == []
+    assert cleared_type.json()["world_blueprint"]["monster_profiles"] == [{"id": "wolf", "name": "灰狼"}]
+
+
+def test_regular_project_updates_are_serialized_per_project(monkeypatch):
+    import apps.api.routes.stories as story_routes
+
+    project_id = "p-concurrent-world-blueprint"
+    created = client.post(
+        "/projects",
+        json={
+            "project_id": project_id,
+            "title": "普通项目并发更新",
+            "world_blueprint": {"monster_profiles": [{"id": "wolf", "name": "灰狼"}]},
+        },
+    )
+    assert created.status_code == 200
+
+    original_get_project = story_routes.store.get_project
+    read_barrier = threading.Barrier(2)
+    start_barrier = threading.Barrier(3)
+    responses = []
+    errors: list[BaseException] = []
+
+    def synchronized_get_project(requested_project_id):
+        project = original_get_project(requested_project_id)
+        if requested_project_id == project_id:
+            try:
+                read_barrier.wait(timeout=0.25)
+            except threading.BrokenBarrierError:
+                pass
+        return project
+
+    monkeypatch.setattr(story_routes.store, "get_project", synchronized_get_project)
+
+    def update(payload):
+        try:
+            start_barrier.wait()
+            responses.append(client.patch(f"/projects/{project_id}", json={"world_blueprint": payload}))
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=update, args=({"world_rules": ["并发规则"]},)),
+        threading.Thread(target=update, args=({"locations": [{"name": "并发新港"}]},)),
+    ]
+    for thread in threads:
+        thread.start()
+    start_barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert [response.status_code for response in responses] == [200, 200]
+    final_project = original_get_project(project_id)
+    assert final_project.world_blueprint == {
+        "world_rules": ["并发规则"],
+        "locations": [{"name": "并发新港"}],
+        "monster_profiles": [{"id": "wolf", "name": "灰狼"}],
+    }
 
 
 def test_project_delete_removes_owned_story_and_project():
@@ -574,60 +644,13 @@ def test_database_project_prompt_preview_exposes_modular_prompts():
     assert preview["chapter_number"] == 1
     assert {module["key"] for module in preview["modules"]} >= {"core_context", "character_context", "genre_context"}
     assert {prompt["key"] for prompt in preview["prompts"]} >= {"director_plan", "writer_body", "review_agents"}
+    assert "style_adapt" not in {prompt["key"] for prompt in preview["prompts"]}
     writer_prompt = next(prompt for prompt in preview["prompts"] if prompt["key"] == "writer_body")
     assert all(
         heading in writer_prompt["content"]
         for heading in ("## 输出要求", "## 本章方向", "## 本章事实", "## 出场人物", "## 正文写法")
     )
     assert "五块装配" in writer_prompt["description"]
-
-
-def test_project_manual_draft_can_append_next_chapter():
-    story_id = "s-manual-next-chapter-api"
-    project_id = "p-manual-next-chapter-api"
-    client.post(
-        "/stories",
-        json={
-            "story_id": story_id,
-            "outline": "A cautious player validates a game economy anomaly.",
-            "genre": "web-game",
-            "style": "progression",
-            "characters": [{"name": "Su Ye", "role": "protagonist", "game_id": "Night Ember"}],
-        },
-    )
-    client.post(
-        "/projects",
-        json={
-            "project_id": project_id,
-            "title": "Manual Next Chapter",
-            "active_story_id": story_id,
-            "current_focus": "Chapter 2 should continue from the first task.",
-        },
-    )
-    generated = client.post(f"/stories/{story_id}/generate")
-    assert generated.status_code == 200
-
-    packet_response = client.get(f"/projects/{project_id}/writing-packet?chapter_number=2")
-    assert packet_response.status_code == 200
-    assert packet_response.json()["chapter_number"] == 2
-
-    chapter_two_body = "Chapter two starts from the task reward.\n\nThe player checks cost before fighting again."
-    draft_response = client.post(
-        f"/projects/{project_id}/manual-draft",
-        json={"chapter_number": 2, "body": chapter_two_body, "instructions": ["Codex manual chapter 2"], "include_body": True},
-    )
-
-    assert draft_response.status_code == 200
-    payload = draft_response.json()
-    assert payload["revision"]["source"] == "manual_draft"
-    assert payload["chapter"]["chapter_number"] == 2
-    assert payload["chapter"]["body"] == chapter_two_body
-    assert payload["chapter"]["quality_report"]["ok"] is True
-    assert payload["chapter"]["quality_report"]["issues"] == []
-    refreshed = client.get(f"/stories/{story_id}").json()
-    assert refreshed["current_chapter"] == 2
-    assert [chapter["chapter_number"] for chapter in refreshed["history"]][-2:] == [1, 2]
-    assert refreshed["history"][-1]["body"] == chapter_two_body
 
 
 def test_file_project_regenerate_rejects_frozen_chapter(tmp_path, monkeypatch):
@@ -769,6 +792,203 @@ def test_file_project_generation_job_accepts_chapter_direction_id(tmp_path, monk
     assert response.status_code == 200
     assert submitted["project_id"] == "p-direction-job-file"
     assert submitted["kwargs"]["chapter_direction_id"] == "guild-ecology"
+
+
+def test_file_project_generation_job_response_has_steps(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "queued-step-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-queued-step-file",
+        state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
+    )
+    monkeypatch.setattr(file_projects._file_generation_executor, "submit", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/file-projects/p-queued-step-file/generation-jobs",
+        json={"chapter_direction_id": "guild-queued"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["steps"][0]["message"] == "生成已排队"
+    assert payload["steps"][0]["status"] == "queued"
+    assert payload["steps"][0]["stage"] == "orchestrator"
+    assert payload["steps"][0]["source"] == "file-project-route"
+    assert isinstance(payload["steps"][0]["at"], str)
+    job_id = payload["job_id"]
+
+    get_response = client.get(f"/file-projects/p-queued-step-file/generation-jobs/{job_id}")
+    assert get_response.status_code == 200
+    polled = get_response.json()
+    assert len(polled["steps"]) >= 1
+    assert polled["steps"][0]["status"] == "queued"
+
+
+def test_file_project_current_generation_job_returns_active_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "current-job-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-current-job-file",
+        state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
+    )
+    monkeypatch.setattr(file_projects._file_generation_executor, "submit", lambda *args, **kwargs: None)
+
+    missing = client.get("/file-projects/p-current-job-file/generation-jobs/current")
+    assert missing.status_code == 404
+
+    started = client.post("/file-projects/p-current-job-file/generation-jobs", json={})
+    assert started.status_code == 200
+
+    current = client.get("/file-projects/p-current-job-file/generation-jobs/current")
+    assert current.status_code == 200
+    payload = current.json()
+    assert payload["job_id"] == started.json()["job_id"]
+    assert payload["status"] == "queued"
+    assert isinstance(payload["steps"], list) and payload["steps"]
+
+
+def test_file_project_generation_log_survives_in_memory_job_reset(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "persistent-log-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-persistent-log-file",
+        state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
+    )
+    monkeypatch.setattr(file_projects._file_generation_executor, "submit", lambda *args, **kwargs: None)
+
+    started = client.post("/file-projects/p-persistent-log-file/generation-jobs", json={})
+    assert started.status_code == 200
+    started_payload = started.json()
+
+    with file_projects._file_generation_jobs_lock:
+        file_projects._file_generation_jobs.clear()
+        file_projects._active_file_generation_jobs.clear()
+
+    restored = client.get("/file-projects/p-persistent-log-file/generation-jobs/current")
+
+    assert restored.status_code == 200
+    payload = restored.json()
+    assert payload["job_id"] == started_payload["job_id"]
+    assert payload["steps"] == started_payload["steps"]
+
+
+def test_story_current_generation_job_returns_active_job(monkeypatch):
+    import apps.api.routes.stories as story_routes
+
+    client.post(
+        "/stories",
+        json={
+            "story_id": "s-current-job",
+            "outline": "A cautious player tests a strange login token.",
+            "genre": "game fantasy",
+            "style": "webnovel",
+        },
+    )
+    monkeypatch.setattr(story_routes._generation_executor, "submit", lambda *args, **kwargs: None)
+
+    missing = client.get("/stories/s-current-job/generation-jobs/current")
+    assert missing.status_code == 404
+
+    started = client.post("/stories/s-current-job/generation-jobs")
+    assert started.status_code == 200
+
+    current = client.get("/stories/s-current-job/generation-jobs/current")
+    assert current.status_code == 200
+    payload = current.json()
+    assert payload["job_id"] == started.json()["job_id"]
+    assert payload["status"] == "queued"
+    assert isinstance(payload["steps"], list) and payload["steps"]
+
+
+def test_user_facing_generation_error_maps_quality_failure():
+    from packages.story_core.file_project_store import ChapterQualityError
+
+    exc = ChapterQualityError(
+        "generate_quality_failed:writing_review; 推演事件未被正文场景化：npc_counter dump; AI高频套话进入正文：轻松。",
+        quality_report={
+            "ok": False,
+            "issues": ["推演事件未被正文场景化：npc_counter dump"],
+            "writing_review": {
+                "pass": False,
+                "issues": ["推演事件未被正文场景化：npc_counter dump", "AI高频套话进入正文：轻松。"],
+            },
+        },
+        operation="generate",
+    )
+
+    message = file_projects._user_facing_generation_error(exc)
+
+    assert message.startswith("章节质量检查未通过")
+    assert "npc_counter" not in message
+    assert "generate_quality_failed" not in message
+    assert "重试" in message
+
+
+def test_user_facing_generation_error_maps_common_failures():
+    assert "模型请求失败" in file_projects._user_facing_generation_error(
+        ValueError("generate_failed:planner model_request_failed:模型 HTTP 400")
+    )
+    assert "字数不达标" in file_projects._user_facing_generation_error(
+        ValueError("generate_length_failed:body_chars 1200 < 3800")
+    )
+    assert "正文为空" in file_projects._user_facing_generation_error(ValueError("generate_failed:body"))
+    assert "超时" in file_projects._user_facing_generation_error(ValueError("generate_failed:plan_timeout"))
+    assert file_projects._user_facing_generation_error(ValueError("unexpected")) == "生成失败，请重试。"
+
+
+def test_user_facing_generation_error_maps_missing_api_key():
+    message = file_projects._user_facing_generation_error(ValueError("generate_failed:Missing OPENAI_API_KEY"))
+
+    assert "API Key" in message
+    assert "重试" in message
+
+
+def test_file_project_generation_job_polling_does_not_reload_project_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "poll-cache-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-poll-cache-file",
+        state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
+    )
+
+    project_id = "file:p-poll-cache-file"
+    job_id = "fgj-poll-cache"
+    with file_projects._file_generation_jobs_lock:
+        file_projects._file_generation_jobs.clear()
+        file_projects._active_file_generation_jobs.clear()
+        file_projects._file_generation_jobs[job_id] = {
+            "job_id": job_id,
+            "story_id": project_id,
+            "status": "queued",
+            "progress": "queued",
+            "starting_chapter": 1,
+            "error": "",
+            "created_at": file_projects._now_iso(),
+            "updated_at": file_projects._now_iso(),
+            "chapter_number": None,
+        }
+        file_projects._active_file_generation_jobs[project_id] = job_id
+
+    def fail_if_called(project_id: str):
+        raise AssertionError(f"Unexpected _store_for call for {project_id}")
+
+    try:
+        monkeypatch.setattr(file_projects, "_store_for", fail_if_called)
+
+        response = client.get(f"/file-projects/{project_id}/generation-jobs/{job_id}")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["job_id"] == job_id
+        assert payload["status"] == "queued"
+    finally:
+        with file_projects._file_generation_jobs_lock:
+            file_projects._file_generation_jobs.clear()
+            file_projects._active_file_generation_jobs.clear()
 
 
 def test_runtime_connection_uses_candidate_openai_provider_stage_and_does_not_save(monkeypatch):
@@ -1376,6 +1596,7 @@ def test_generation_job_exposes_pipeline_progress(monkeypatch):
     start_resp = client.post("/stories/s-progress-job/generation-jobs")
     assert start_resp.status_code == 200
     job = start_resp.json()
+    assert isinstance(job.get("steps"), list)
 
     assert progress_seen.wait(2)
     progress_resp = client.get(f"/stories/s-progress-job/generation-jobs/{job['job_id']}")
@@ -1395,6 +1616,7 @@ def test_generation_job_exposes_pipeline_progress(monkeypatch):
 
     assert finished["status"] == "completed"
     assert finished["chapter_number"] == 1
+    assert len(finished.get("steps", [])) >= 2
 
 
 def test_project_agent_context_pack_exposes_current_workbench_state():

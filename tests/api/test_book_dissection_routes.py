@@ -41,6 +41,39 @@ def test_book_dissection_reference_empty_text_returns_422():
     assert response.json()["detail"] == "text_required"
 
 
+def test_file_project_prompt_template_override_and_restore(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "prompt-template-fixture"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    monkeypatch.setenv("NOVEL_PROMPT_TEMPLATES_PATH", str(tmp_path / "global-templates.json"))
+    _write_json(
+        project_root / ".story-system" / "MASTER_SETTING.json",
+        {"project": {"project_id": "prompt-template-fixture", "title": "Prompt Template Fixture"}},
+    )
+    _write_json(
+        project_root / ".webnovel" / "project.json",
+        {"project_id": "prompt-template-fixture", "title": "Prompt Template Fixture"},
+    )
+    _write_json(project_root / ".webnovel" / "state.json", {"current_chapter": 0})
+
+    templates = client.get("/file-projects/file:prompt-template-fixture/prompt-templates")
+    assert templates.status_code == 200
+    writer = next(item for item in templates.json()["templates"] if item["key"] == "writer")
+    changed = writer["content"].replace("{{chapter_direction}}", "项目方向：{{chapter_direction}}")
+
+    updated = client.put(
+        "/file-projects/file:prompt-template-fixture/prompt-templates/writer",
+        json={"content": changed},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["source"] == "project_override"
+    assert updated.json()["content"] == changed
+
+    restored = client.delete("/file-projects/file:prompt-template-fixture/prompt-templates/writer")
+    assert restored.status_code == 200
+    assert restored.json()["source"] == "global_default"
+
+
 def test_file_project_book_dissection_chapter_uses_store(tmp_path: Path, monkeypatch):
     export_root = tmp_path / "exported-projects"
     project_root = export_root / "dissection-fixture"
@@ -565,6 +598,7 @@ def test_file_project_writing_packet_scopes_saved_outline_to_target_chapter(tmp_
         "chapter_formula",
         "progression_rules",
         "forbidden_breaks",
+        "reality_bridge_rules",
     }
     hard_locks = "\n".join(packet["hard_locks"])
     assert "本章目标：确认收购规则" in hard_locks
@@ -594,6 +628,12 @@ def test_file_project_writing_packet_scopes_saved_outline_to_target_chapter(tmp_
     assert "本章目标：确认收购规则" in director_prompt
     assert "OTHER-PHASE-LEAK" not in director_prompt
     assert "CHAPTER-13-LEAK" not in director_prompt
+
+    context_response = client.get("/file-projects/file:packet-fixture/prompt-context?chapter_number=12")
+    assert context_response.status_code == 200
+    context = context_response.json()
+    assert context["schema_version"] == "file-project-prompt-context/v1"
+    assert "prompts" not in context
 
 
 def test_file_project_book_dissection_returns_concrete_progress_without_filler(tmp_path: Path, monkeypatch):

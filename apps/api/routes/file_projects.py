@@ -1,7 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import json
 import os
 import re
 from pathlib import Path
@@ -19,7 +20,7 @@ from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import AgentRuntimeState, AgentSettings
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
-from packages.story_core.simplified_review import build_simplified_review
+from packages.story_core.simplified_review import build_simplified_review, user_facing_generation_error
 
 
 router = APIRouter()
@@ -27,6 +28,7 @@ opening_direction_generator = LLMOpeningDirectionGenerator()
 outline_planning_generator = LLMOutlinePlanningGenerator()
 FILE_ID_PREFIX = "file:"
 FILE_GENERATION_JOB_STALE_SECONDS = 15 * 60
+FILE_GENERATION_JOB_STEP_LIMIT = 200
 _file_generation_executor = ThreadPoolExecutor(max_workers=1)
 _file_generation_jobs: dict[str, dict[str, object]] = {}
 _active_file_generation_jobs: dict[str, str] = {}
@@ -97,6 +99,12 @@ class BookDissectionChapterRequest(BaseModel):
     chapter_number: int | None = None
 
 
+class PromptTemplateUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -118,6 +126,181 @@ def _file_id(value: str) -> str:
 
 def _public_project_id(store: FileProjectStore) -> str:
     return _file_id(store.root.name)
+
+
+def _file_generation_job_log_dir(store: FileProjectStore) -> Path:
+    return store.story_system_dir / "generation-jobs"
+
+
+def _persist_file_generation_job(job: dict[str, object]) -> None:
+    project_root = str(job.get("_project_root", "")).strip()
+    job_id = str(job.get("job_id", "")).strip()
+    if not project_root or not job_id:
+        return
+    log_dir = Path(project_root) / ".story-system" / "generation-jobs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    payload = {key: value for key, value in job.items() if not str(key).startswith("_")}
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    for target in (log_dir / f"{job_id}.json", log_dir / "latest.json"):
+        temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+        temporary.write_text(serialized, encoding="utf-8")
+        temporary.replace(target)
+
+
+def _load_file_generation_job(store: FileProjectStore, job_id: str | None = None) -> dict[str, object] | None:
+    filename = f"{job_id}.json" if job_id else "latest.json"
+    path = _file_generation_job_log_dir(store) / filename
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not str(payload.get("job_id", "")).strip():
+        return None
+    payload["_project_root"] = str(store.root)
+    return payload
+
+
+def _sanitize_file_generation_step_item(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    message = str(value.get("message", "")).strip()
+    if not message:
+        return {}
+    status = str(value.get("status", "running")).strip().lower()
+    normalized_status = status if status in {"running", "done", "error", "queued"} else "running"
+    normalized: dict[str, object] = {
+        "message": message,
+        "status": normalized_status,
+        "at": str(value.get("at", "")) or _now_iso(),
+    }
+    raw_stage = value.get("stage")
+    if isinstance(raw_stage, str) and raw_stage.strip():
+        normalized["stage"] = raw_stage.strip()
+    raw_source = value.get("source")
+    if isinstance(raw_source, str) and raw_source.strip():
+        normalized["source"] = raw_source.strip()
+    return normalized
+
+
+def _normalize_file_generation_step_artifact(value: object) -> dict[str, object] | list[object] | str | int | float | bool | None:
+    if isinstance(value, dict):
+        normalized: dict[str, object] = {}
+        for artifact_key, artifact_value in value.items():
+            key = str(artifact_key)
+            if key.startswith("_"):
+                continue
+            normalized_value = _normalize_file_generation_step_artifact(artifact_value)
+            if normalized_value is not None:
+                normalized[key] = normalized_value
+        if not normalized:
+            return None
+        return normalized
+    if isinstance(value, list):
+        items: list[object] = []
+        for index, item in enumerate(value):
+            if index >= 24:
+                break
+            normalized_item = _normalize_file_generation_step_artifact(item)
+            if normalized_item is not None:
+                items.append(normalized_item)
+        return items
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if len(text) > 280:
+            text = f"{text[:260]}..."
+        return text
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _infer_file_generation_source(message: str, stage: str | None = None) -> str:
+    lowered = message.lower()
+    if stage == "review":
+        return "reviewer"
+    if any(keyword in lowered for keyword in ["model", "llm", "timeout", "request", "response"]):
+        return "llm"
+    if any(keyword in message for keyword in ["璁板繂", "鍥炲啓", "璐︽湰", "鍐欏洖"]):
+        return "memory"
+    if any(keyword in message for keyword in ["瀹＄", "鏀圭", "璐ㄩ噺", "鍘嬬缉", "鎻愬彇"]):
+        return "reviewer"
+    if any(keyword in message for keyword in ["鍐欎綔", "姝ｆ枃", "鍒嗘", "鎵╁啓", "绔犺妭"]):
+        return "writer"
+    return "orchestrator"
+
+
+def _infer_file_generation_stage(message: str) -> str:
+    lowered = message.lower()
+    if "review" in lowered or "瀹＄" in message:
+        return "review"
+    if "planning" in lowered or "plan" in lowered or "璁″垝" in message:
+        return "director"
+    if "memory" in lowered or "璁板繂" in message:
+        return "memory"
+    if any(keyword in message for keyword in ["姝ｆ枃", "鍐欎綔", "绔犺妭", "妯″瀷", "璐ㄩ噺"]):
+        return "writer"
+    return "orchestrator"
+
+
+def _user_facing_generation_error(exc: Exception) -> str:
+    return user_facing_generation_error(exc)
+
+
+def _append_file_generation_job_step(
+    job: dict[str, object],
+    message: str,
+    *,
+    status: str = "running",
+    stage: str | None = None,
+    source: str | None = None,
+    artifact: object = None,
+) -> None:
+    cleaned = str(message or "").strip()
+    if not cleaned:
+        return
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        steps = []
+        job["steps"] = steps
+    normalized_status = "running" if status not in {"running", "done", "error", "queued"} else status
+    normalized = {
+        "message": cleaned,
+        "status": normalized_status,
+        "at": _now_iso(),
+    }
+    if stage:
+        normalized["stage"] = stage
+    if source:
+        normalized["source"] = source
+    compacted_artifact = _normalize_file_generation_step_artifact(artifact) if artifact is not None else None
+    if compacted_artifact is not None:
+        normalized["artifact"] = compacted_artifact
+    if steps and isinstance(steps[-1], dict) and str(steps[-1].get("message", "")).strip() == cleaned:
+        steps[-1] = normalized
+    else:
+        steps.append(normalized)
+    if len(steps) > FILE_GENERATION_JOB_STEP_LIMIT:
+        steps.pop(0)
+    _persist_file_generation_job(job)
+
+
+def _normalise_file_generation_job_steps(job: dict[str, object]) -> list[dict[str, object]]:
+    steps: list[dict[str, object]] = []
+    for value in job.get("steps", []):
+        clean = _sanitize_file_generation_step_item(value)
+        if not clean:
+            continue
+        raw_artifact = value.get("artifact") if isinstance(value, dict) else None
+        if raw_artifact is not None:
+            normalized_artifact = _normalize_file_generation_step_artifact(raw_artifact)
+            if normalized_artifact is not None:
+                clean["artifact"] = normalized_artifact
+        steps.append(clean)
+    if len(steps) != (len(job.get("steps", []) if isinstance(job.get("steps"), list) else [])):
+        job["steps"] = steps
+    return steps
 
 
 def _is_hidden_file_project_dir(path: Path) -> bool:
@@ -147,10 +330,23 @@ def _stores() -> list[FileProjectStore]:
 
 def _store_for(project_id: str) -> FileProjectStore:
     wanted = _strip_file_prefix(project_id)
+    if not wanted:
+        raise HTTPException(status_code=404, detail="file_project_not_found")
+
+    root = _export_root()
+    if root.is_dir():
+        direct_root = root / wanted
+        if direct_root.exists() and direct_root.is_dir():
+            direct_store = FileProjectStore(direct_root)
+            if direct_store.exists():
+                return direct_store
+
     for store in _stores():
+        if store.root.name == wanted or _strip_file_prefix(_story_id_for(store)) == wanted:
+            return store
         project = store.project()
-        candidates = {str(project.get("project_id") or ""), store.root.name}
-        if wanted in candidates:
+        project_id = str(project.get("project_id") or "")
+        if project_id == wanted:
             return store
     raise HTTPException(status_code=404, detail="file_project_not_found")
 
@@ -163,6 +359,10 @@ def _raise_file_project_error(exc: ValueError) -> None:
 
 
 def _story_id_for(store: FileProjectStore) -> str:
+    project = store.project()
+    project_id = str(project.get("project_id") or "").strip()
+    if project_id:
+        return _file_id(project_id)
     return _file_id(store.root.name)
 
 
@@ -174,6 +374,7 @@ def _file_generation_job_response(job: dict[str, object]) -> dict[str, object]:
         "progress": str(job.get("progress", "")),
         "chapter_number": job.get("chapter_number") if isinstance(job.get("chapter_number"), int) else None,
         "error": str(job.get("error", "")),
+        "steps": _normalise_file_generation_job_steps(job),
         "created_at": str(job.get("created_at", "")),
         "updated_at": str(job.get("updated_at", "")),
     }
@@ -186,6 +387,7 @@ def _update_file_generation_job(job_id: str, **updates: object) -> None:
             return
         job.update(updates)
         job["updated_at"] = _now_iso()
+        _persist_file_generation_job(job)
 
 
 def _parse_iso_datetime(value: object) -> datetime | None:
@@ -195,29 +397,38 @@ def _parse_iso_datetime(value: object) -> datetime | None:
         return None
 
 
-def _reconcile_file_generation_job_locked(job: dict[str, object]) -> None:
+def _reconcile_file_generation_job_locked(
+    job: dict[str, object], *, store: FileProjectStore | None = None
+) -> None:
+    story_id = str(job.get("story_id", ""))
     if job.get("status") not in {"queued", "running"}:
         return
-    story_id = str(job.get("story_id", ""))
-    try:
-        store = _store_for(story_id)
-    except HTTPException:
-        return
-    starting_chapter = int(job.get("starting_chapter") or 0)
-    current_chapter = int(store.summary().get("current_chapter") or 0)
-    if current_chapter > starting_chapter:
-        job.update(
-            {
-                "status": "completed",
-                "progress": "generation completed",
-                "chapter_number": current_chapter,
-                "error": "",
-                "updated_at": _now_iso(),
-            }
-        )
-        if _active_file_generation_jobs.get(story_id) == job.get("job_id"):
-            _active_file_generation_jobs.pop(story_id, None)
-        return
+    if store is not None:
+        starting_chapter = int(job.get("starting_chapter") or 0)
+        current_chapter = int(store.summary().get("current_chapter") or 0)
+        if current_chapter > starting_chapter:
+            _append_file_generation_job_step(
+                job,
+                "生成完成",
+                status="done",
+                stage="orchestrator",
+                source="file-project-route",
+                artifact={"reason": "chapter_advanced"},
+            )
+            job.update(
+                {
+                    "status": "completed",
+                    "progress": "生成完成",
+                    "chapter_number": current_chapter,
+                    "error": "",
+                    "updated_at": _now_iso(),
+                }
+            )
+            _persist_file_generation_job(job)
+            story_id = str(job.get("story_id", ""))
+            if _active_file_generation_jobs.get(story_id) == job.get("job_id"):
+                _active_file_generation_jobs.pop(story_id, None)
+            return
 
     updated_at = _parse_iso_datetime(job.get("updated_at"))
     if updated_at is None:
@@ -225,14 +436,23 @@ def _reconcile_file_generation_job_locked(job: dict[str, object]) -> None:
     if updated_at.tzinfo is None:
         updated_at = updated_at.replace(tzinfo=timezone.utc)
     if (datetime.now(timezone.utc) - updated_at).total_seconds() > FILE_GENERATION_JOB_STALE_SECONDS:
+        _append_file_generation_job_step(
+            job,
+            "生成超时",
+            status="error",
+            stage="orchestrator",
+            source="file-project-route",
+            artifact={"reason": "stale_timeout"},
+        )
         job.update(
             {
                 "status": "failed",
-                "progress": "generation timed out",
-                "error": "file_generation_job_stale_timeout",
+                "progress": "生成超时",
+                "error": "生成超时，请稍后重试。",
                 "updated_at": _now_iso(),
             }
         )
+        _persist_file_generation_job(job)
         if _active_file_generation_jobs.get(story_id) == job.get("job_id"):
             _active_file_generation_jobs.pop(story_id, None)
 
@@ -246,11 +466,62 @@ def _run_file_generation_job(
     guidance: str | None = None,
     chapter_direction_id: str | None = None,
 ) -> None:
-    def report_progress(message: str) -> None:
-        _update_file_generation_job(job_id, status="running", progress=message)
+    def report_progress(message: str | dict[str, object]) -> None:
+        if isinstance(message, dict):
+            payload = dict(message)
+        else:
+            payload = {"message": message}
+        display_message = str(payload.get("message", "")).strip()
+        if not display_message:
+            return
+        status = str(payload.get("status", "running")).strip().lower()
+        normalized_status = status if status in {"running", "done", "error", "queued"} else "running"
+        stage = payload.get("stage")
+        if not isinstance(stage, str) or not stage.strip():
+            stage = _infer_file_generation_stage(display_message)
+        source = payload.get("source")
+        if not isinstance(source, str) or not source.strip():
+            source = _infer_file_generation_source(display_message, stage)
+        artifact = payload.get("artifact")
+        _update_file_generation_job(job_id, status=normalized_status, progress=display_message)
+        with _file_generation_jobs_lock:
+            job = _file_generation_jobs.get(job_id)
+        if job is not None:
+            _append_file_generation_job_step(
+                job,
+                display_message,
+                status=normalized_status,
+                stage=stage,
+                source=source,
+                artifact=artifact,
+            )
 
     story_id = _file_id(_strip_file_prefix(project_id))
-    report_progress("generation started")
+    report_progress(
+        {
+            "message": "生产任务启动中",
+            "status": "running",
+            "stage": "orchestrator",
+            "source": "file-project-route",
+            "artifact": {
+                "reason": "execution_started",
+                "used_modules": [
+                    "story_store",
+                    "director",
+                    "writer",
+                    "memory",
+                    "runtime_manager",
+                ],
+                "inputs": {
+                    "project_id": project_id,
+                    "chapter_number": chapter_number,
+                    "variant": variant or "",
+                    "guidance": guidance or "",
+                    "chapter_direction_id": chapter_direction_id or "",
+                },
+            },
+        }
+    )
     try:
         store = _store_for(project_id)
         with generation_progress(report_progress):
@@ -260,16 +531,54 @@ def _run_file_generation_job(
                 else store.generate_next_chapter(chapter_direction_id=chapter_direction_id)
             )
     except Exception as exc:  # pragma: no cover - background safety net
-        _update_file_generation_job(job_id, status="failed", progress="generation failed", error=str(exc))
+        friendly_error = _user_facing_generation_error(exc)
+        _update_file_generation_job(job_id, status="failed", progress="生成失败", error=friendly_error)
+        with _file_generation_jobs_lock:
+            job = _file_generation_jobs.get(job_id)
+            if job is not None:
+                _append_file_generation_job_step(
+                    job,
+                    f"生产失败：{friendly_error}",
+                    status="error",
+                    source="file-project-route",
+                    artifact={
+                        "reason": "generation_exception",
+                        "used_modules": ["story_store", "director", "writer", "memory"],
+                        "inputs": {
+                            "chapter_number": chapter_number,
+                            "variant": variant or "",
+                            "guidance": guidance or "",
+                            "chapter_direction_id": chapter_direction_id or "",
+                        },
+                        "outputs": {"error": str(exc)},
+                    },
+                )
     else:
         chapter_number = generated.get("chapter_number") if isinstance(generated, dict) else None
         _update_file_generation_job(
             job_id,
             status="completed",
-            progress="generation completed",
+            progress="生成完成",
             chapter_number=chapter_number if isinstance(chapter_number, int) else None,
             error="",
         )
+        with _file_generation_jobs_lock:
+            job = _file_generation_jobs.get(job_id)
+            if job is not None:
+                _append_file_generation_job_step(
+                    job,
+                    "生产完成",
+                    status="done",
+                    source="file-project-route",
+                    artifact={
+                        "reason": "execution_complete",
+                        "used_modules": ["story_store", "director", "writer", "memory", "review"],
+                        "outputs": {
+                            "generated_chapter": chapter_number,
+                            "status": "completed",
+                        },
+                    },
+                )
     finally:
         with _file_generation_jobs_lock:
             if _active_file_generation_jobs.get(story_id) == job_id:
@@ -300,20 +609,20 @@ def _display_title(project: dict[str, Any], state: dict[str, Any], summary: dict
         )
     for value in title_candidates:
         title = str(value or "").strip()
-        if title and len(title) <= 40 and "，" not in title and "。" not in title:
+        if title and len(title) <= 40:
             return title
 
     for fact in state.get("world_facts") or []:
         text = str(fact or "")
-        match = re.search(r"世界摘要：?《([^》]+)》", text)
+        match = re.search(r"世界.*?[:：]([^，。；!?！？;:.]*)", text)
         if match:
             return match.group(1).strip()
-        match = re.search(r"《([^》]+)》故事圣经", text)
+        match = re.search(r"世界观[:：](.{1,40})", text)
         if match:
             return match.group(1).strip()
 
     title = str(project.get("title") or summary.get("title") or "").strip()
-    if title and len(title) <= 24 and "，" not in title and "。" not in title:
+    if title and len(title) <= 24:
         return title
     return fallback
 
@@ -523,6 +832,42 @@ def init_file_project_routes() -> APIRouter:
         store = _store_for(project_id)
         return store.prompt_preview(chapter_number)
 
+    @router.get("/file-projects/{project_id}/prompt-context")
+    def get_file_project_prompt_context(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:
+        store = _store_for(project_id)
+        return store.prompt_context(chapter_number)
+
+    @router.get("/file-projects/{project_id}/prompt-templates")
+    def get_file_project_prompt_templates(project_id: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        return {
+            "schema_version": "project-prompt-templates/v1",
+            "project_id": project_id,
+            "templates": store.prompt_templates(),
+        }
+
+    @router.put("/file-projects/{project_id}/prompt-templates/{template_key}")
+    def update_file_project_prompt_template(
+        project_id: str,
+        template_key: str,
+        payload: PromptTemplateUpdateRequest,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.set_prompt_template_override(template_key, payload.content)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.delete("/file-projects/{project_id}/prompt-templates/{template_key}")
+    def delete_file_project_prompt_template(project_id: str, template_key: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.delete_prompt_template_override(template_key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @router.post("/file-projects/{project_id}/book-dissection/chapter")
     def dissect_file_project_chapter(project_id: str, payload: BookDissectionChapterRequest) -> dict[str, Any]:
         store = _store_for(project_id)
@@ -572,7 +917,7 @@ def init_file_project_routes() -> APIRouter:
             if active_job_id:
                 active_job = _file_generation_jobs.get(active_job_id)
                 if active_job:
-                    _reconcile_file_generation_job_locked(active_job)
+                    _reconcile_file_generation_job_locked(active_job, store=store)
                 if active_job and active_job.get("status") in {"queued", "running"}:
                     return _file_generation_job_response(active_job)
 
@@ -583,7 +928,39 @@ def init_file_project_routes() -> APIRouter:
                 "story_id": story_id,
                 "project_id": _public_project_id(store),
                 "status": "queued",
-                "progress": "queued",
+                "progress": "生成已排队",
+                "steps": [
+                    {
+                        "message": "生成已排队",
+                        "status": "queued",
+                        "stage": "orchestrator",
+                        "source": "file-project-route",
+                        "artifact": {
+                            "reason": "job_context",
+                            "used_modules": [
+                                "story_store",
+                                "director",
+                                "writer",
+                                "memory",
+                                "outline",
+                                "character_agent",
+                            ],
+                            "inputs": {
+                                "project_id": _public_project_id(store),
+                                "target_chapter": target_chapter,
+                                "variant": variant or "",
+                                "guidance": guidance or "",
+                                "chapter_direction_id": chapter_direction_id or "",
+                                "starting_chapter": int(store.summary().get("current_chapter") or 0),
+                            },
+                            "outputs": {
+                                "will_run_generate_next": target_chapter is None,
+                                "will_regen": isinstance(target_chapter, int) and target_chapter > 0,
+                            },
+                        },
+                        "at": now,
+                    }
+                ],
                 "chapter_number": None,
                 "target_chapter": target_chapter,
                 "variant": variant or "",
@@ -593,9 +970,11 @@ def init_file_project_routes() -> APIRouter:
                 "error": "",
                 "created_at": now,
                 "updated_at": now,
+                "_project_root": str(store.root),
             }
             _file_generation_jobs[job_id] = job
             _active_file_generation_jobs[story_id] = job_id
+            _persist_file_generation_job(job)
             response = _file_generation_job_response(job)
 
         job_kwargs: dict[str, object] = {
@@ -608,13 +987,50 @@ def init_file_project_routes() -> APIRouter:
         _file_generation_executor.submit(_run_file_generation_job, job_id, project_id, **job_kwargs)
         return response
 
+    @router.get("/file-projects/{project_id}/generation-jobs/current")
+    def get_current_file_generation_job(project_id: str) -> dict[str, object]:
+        requested_story_id = _strip_file_prefix(project_id)
+        with _file_generation_jobs_lock:
+            job: dict[str, object] | None = None
+            active_job_id = _active_file_generation_jobs.get(requested_story_id) or _active_file_generation_jobs.get(
+                _file_id(requested_story_id)
+            )
+            if active_job_id:
+                job = _file_generation_jobs.get(active_job_id)
+            if job is None:
+                candidates = [
+                    item
+                    for item in _file_generation_jobs.values()
+                    if _strip_file_prefix(str(item.get("story_id", ""))) == requested_story_id
+                ]
+                if candidates:
+                    job = max(candidates, key=lambda item: str(item.get("updated_at", "")))
+            if job is None:
+                store = _store_for(project_id)
+                job = _load_file_generation_job(store)
+                if job is not None:
+                    loaded_job_id = str(job.get("job_id", ""))
+                    _file_generation_jobs[loaded_job_id] = job
+                    if job.get("status") in {"queued", "running"}:
+                        _active_file_generation_jobs[str(job.get("story_id", ""))] = loaded_job_id
+            if job is None:
+                raise HTTPException(status_code=404, detail="file_generation_job_not_found")
+            _reconcile_file_generation_job_locked(job)
+            return _file_generation_job_response(job)
+
     @router.get("/file-projects/{project_id}/generation-jobs/{job_id}")
     def get_file_generation_job(project_id: str, job_id: str) -> dict[str, object]:
-        store = _store_for(project_id)
-        story_id = _story_id_for(store)
+        requested_story_id = _strip_file_prefix(project_id)
         with _file_generation_jobs_lock:
             job = _file_generation_jobs.get(job_id)
-            if job is None or job.get("story_id") != story_id:
+            if job is None:
+                store = _store_for(project_id)
+                job = _load_file_generation_job(store, job_id)
+                if job is not None:
+                    _file_generation_jobs[job_id] = job
+            if job is None:
+                raise HTTPException(status_code=404, detail="file_generation_job_not_found")
+            if _strip_file_prefix(str(job.get("story_id", ""))) != requested_story_id:
                 raise HTTPException(status_code=404, detail="file_generation_job_not_found")
             _reconcile_file_generation_job_locked(job)
             return _file_generation_job_response(job)

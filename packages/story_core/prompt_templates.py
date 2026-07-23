@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
 from collections.abc import Mapping
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+import json
+import os
+from pathlib import Path
 import re
+import tempfile
 
 
 _VARIABLE_PATTERN = re.compile(r"{{([a-z][a-z0-9_]*)}}")
+_current_template_resolver: ContextVar[Callable[[str], "PromptTemplate"] | None] = ContextVar(
+    "current_prompt_template_resolver",
+    default=None,
+)
 
 
 @dataclass(frozen=True)
@@ -140,9 +152,14 @@ def template_variables(content: str) -> tuple[str, ...]:
 
 
 def validate_prompt_template(template: PromptTemplate) -> None:
-    unknown = set(template_variables(template.content)) - set(template.required_variables)
+    variables = set(template_variables(template.content))
+    required = set(template.required_variables)
+    unknown = variables - required
     if unknown:
         raise ValueError(f"unknown_template_variable:{sorted(unknown)[0]}")
+    missing = required - variables
+    if missing:
+        raise ValueError(f"missing_required_template_variable:{sorted(missing)[0]}")
 
 
 def render_prompt_template(template: PromptTemplate, values: Mapping[str, str]) -> str:
@@ -152,3 +169,106 @@ def render_prompt_template(template: PromptTemplate, values: Mapping[str, str]) 
     if missing:
         raise ValueError(f"missing_template_variable:{sorted(missing)[0]}")
     return _VARIABLE_PATTERN.sub(lambda match: str(values[match.group(1)]), template.content)
+
+
+def _global_storage_path(storage_path: str | Path | None = None) -> Path:
+    if storage_path is not None:
+        return Path(storage_path)
+    configured = os.getenv("NOVEL_PROMPT_TEMPLATES_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parents[2] / "data" / "prompt-templates" / "templates.json"
+
+
+def _template_with_content(key: str, content: str) -> PromptTemplate:
+    base = get_default_prompt_template(key)
+    candidate = PromptTemplate(
+        key=base.key,
+        title=base.title,
+        stage=base.stage,
+        content=str(content),
+        required_variables=base.required_variables,
+    )
+    validate_prompt_template(candidate)
+    return candidate
+
+
+def _read_global_overrides(storage_path: str | Path | None = None) -> dict[str, dict[str, str]]:
+    path = _global_storage_path(storage_path)
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    templates = payload.get("templates", {}) if isinstance(payload, dict) else {}
+    return templates if isinstance(templates, dict) else {}
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def load_global_prompt_templates(*, storage_path: str | Path | None = None) -> list[PromptTemplate]:
+    overrides = _read_global_overrides(storage_path)
+    templates: list[PromptTemplate] = []
+    for base in list_default_prompt_templates():
+        override = overrides.get(base.key, {})
+        content = override.get("content") if isinstance(override, dict) else None
+        templates.append(_template_with_content(base.key, content) if isinstance(content, str) else base)
+    return templates
+
+
+def get_global_prompt_template(key: str, *, storage_path: str | Path | None = None) -> PromptTemplate:
+    try:
+        return next(item for item in load_global_prompt_templates(storage_path=storage_path) if item.key == key)
+    except StopIteration as exc:
+        raise KeyError(f"unknown_prompt_template:{key}") from exc
+
+
+def get_effective_prompt_template(key: str) -> PromptTemplate:
+    resolver = _current_template_resolver.get()
+    return resolver(key) if resolver is not None else get_global_prompt_template(key)
+
+
+@contextmanager
+def prompt_template_scope(resolver: Callable[[str], PromptTemplate]) -> Iterator[None]:
+    token = _current_template_resolver.set(resolver)
+    try:
+        yield
+    finally:
+        _current_template_resolver.reset(token)
+
+
+def save_global_prompt_template(
+    key: str,
+    content: str,
+    *,
+    storage_path: str | Path | None = None,
+) -> PromptTemplate:
+    candidate = _template_with_content(key, content)
+    path = _global_storage_path(storage_path)
+    overrides = _read_global_overrides(path)
+    overrides[key] = {
+        "content": candidate.content,
+        "version": candidate.version,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_json_atomic(path, {"schema_version": "prompt-templates/v1", "templates": overrides})
+    return candidate
+
+
+def delete_global_prompt_template(key: str, *, storage_path: str | Path | None = None) -> PromptTemplate:
+    base = get_default_prompt_template(key)
+    path = _global_storage_path(storage_path)
+    overrides = _read_global_overrides(path)
+    overrides.pop(key, None)
+    _write_json_atomic(path, {"schema_version": "prompt-templates/v1", "templates": overrides})
+    return base

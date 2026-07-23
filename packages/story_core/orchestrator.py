@@ -85,7 +85,7 @@ from packages.story_core.world_simulation_gate import world_simulation_decision
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.prompt_modules import replaceable_slots
-from packages.story_core.prompt_templates import get_default_prompt_template, render_prompt_template
+from packages.story_core.prompt_templates import get_effective_prompt_template, render_prompt_template
 from packages.story_core.dialogue_context import build_dialogue_context
 from packages.story_core.dual_state import project_character_for_scene, scene_kind_for_cards
 from packages.story_core.review_report import format_review_report
@@ -5048,9 +5048,9 @@ class StoryOrchestrator:
             "character_cards": _plain_prompt_json(character_cards),
         }
         if not _story_game_context(story, {}):
-            return render_prompt_template(get_default_prompt_template("director_generic"), values)
+            return render_prompt_template(get_effective_prompt_template("director_generic"), values)
         values["active_characters"] = ", ".join(char_names)
-        return render_prompt_template(get_default_prompt_template("director"), values)
+        return render_prompt_template(get_effective_prompt_template("director"), values)
 
     def _body_prompt(self, story: StoryState, chapter_number: int, plan: dict) -> str:
         plan = plan if isinstance(plan, dict) else {}
@@ -5096,7 +5096,7 @@ class StoryOrchestrator:
         ]
         section_text = ["\n".join(section) for section in sections]
         return render_prompt_template(
-            get_default_prompt_template("writer"),
+            get_effective_prompt_template("writer"),
             {
                 "output_section": section_text[0],
                 "chapter_direction": section_text[1],
@@ -5152,7 +5152,7 @@ class StoryOrchestrator:
             ]
         )
         return render_prompt_template(
-            get_default_prompt_template("revision"),
+            get_effective_prompt_template("revision"),
             {
                 "body_prompt": base_prompt,
                 "revision_instructions": "\n".join(modification_lines),
