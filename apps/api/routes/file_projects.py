@@ -868,6 +868,24 @@ def init_file_project_routes() -> APIRouter:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @router.get("/file-projects/{project_id}/prompt-calls")
+    def list_file_project_prompt_calls(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:
+        store = _store_for(project_id)
+        return {
+            "schema_version": "prompt-call-list/v1",
+            "project_id": project_id,
+            "chapter_number": chapter_number,
+            "calls": store.prompt_call_log().list(chapter_number=chapter_number),
+        }
+
+    @router.get("/file-projects/{project_id}/prompt-calls/{call_id}")
+    def get_file_project_prompt_call(project_id: str, call_id: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.prompt_call_log().get(call_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @router.post("/file-projects/{project_id}/book-dissection/chapter")
     def dissect_file_project_chapter(project_id: str, payload: BookDissectionChapterRequest) -> dict[str, Any]:
         store = _store_for(project_id)

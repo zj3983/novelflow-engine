@@ -74,6 +74,37 @@ def test_file_project_prompt_template_override_and_restore(tmp_path: Path, monke
     assert restored.json()["source"] == "global_default"
 
 
+def test_file_project_prompt_call_list_and_detail(tmp_path: Path, monkeypatch):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "prompt-call-fixture"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(
+        project_root / ".story-system" / "MASTER_SETTING.json",
+        {"project": {"project_id": "prompt-call-fixture", "title": "Prompt Call Fixture"}},
+    )
+    _write_json(
+        project_root / ".webnovel" / "project.json",
+        {"project_id": "prompt-call-fixture", "title": "Prompt Call Fixture"},
+    )
+    _write_json(project_root / ".webnovel" / "state.json", {"current_chapter": 0})
+    store = FileProjectStore(project_root)
+    call_id = store.prompt_call_log().start(
+        chapter_number=1,
+        stage="正文写作",
+        agent="writer",
+        user_prompt="真实调用内容",
+    )
+
+    listing = client.get("/file-projects/file:prompt-call-fixture/prompt-calls?chapter_number=1")
+    detail = client.get(f"/file-projects/file:prompt-call-fixture/prompt-calls/{call_id}")
+
+    assert listing.status_code == 200
+    assert listing.json()["calls"][0]["call_id"] == call_id
+    assert "user_prompt" not in listing.json()["calls"][0]
+    assert detail.status_code == 200
+    assert detail.json()["user_prompt"] == "真实调用内容"
+
+
 def test_file_project_book_dissection_chapter_uses_store(tmp_path: Path, monkeypatch):
     export_root = tmp_path / "exported-projects"
     project_root = export_root / "dissection-fixture"

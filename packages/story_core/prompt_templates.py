@@ -21,6 +21,10 @@ _current_template_resolver: ContextVar[Callable[[str], "PromptTemplate"] | None]
     "current_prompt_template_resolver",
     default=None,
 )
+_current_template_source_resolver: ContextVar[Callable[[str], str] | None] = ContextVar(
+    "current_prompt_template_source_resolver",
+    default=None,
+)
 
 
 @dataclass(frozen=True)
@@ -130,8 +134,8 @@ _DEFAULT_TEMPLATES: dict[str, PromptTemplate] = {
         key="compression",
         title="章节压缩",
         stage="revision",
-        content="下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。\n目标篇幅：{{target_chars}}。\n{{compression_method}}\n只输出压缩后的小说正文，不要解释，不要列大纲。\n原正文：\n{{source_body}}",
-        required_variables=("target_chars", "compression_method", "source_body"),
+        content="{{opening_line}}\n目标篇幅：{{target_chars}}。\n{{compression_method}}\n{{chapter_scope}}\n只输出压缩后的小说正文，不要解释，不要列大纲。\n原正文：\n{{source_body}}",
+        required_variables=("opening_line", "target_chars", "compression_method", "chapter_scope", "source_body"),
     ),
 }
 
@@ -238,12 +242,25 @@ def get_effective_prompt_template(key: str) -> PromptTemplate:
     return resolver(key) if resolver is not None else get_global_prompt_template(key)
 
 
+def get_effective_prompt_template_source(key: str) -> str:
+    resolver = _current_template_source_resolver.get()
+    if resolver is not None:
+        return str(resolver(key))
+    template = get_global_prompt_template(key)
+    return "global_default" if template.content == get_default_prompt_template(key).content else "global_override"
+
+
 @contextmanager
-def prompt_template_scope(resolver: Callable[[str], PromptTemplate]) -> Iterator[None]:
+def prompt_template_scope(
+    resolver: Callable[[str], PromptTemplate],
+    source_resolver: Callable[[str], str] | None = None,
+) -> Iterator[None]:
     token = _current_template_resolver.set(resolver)
+    source_token = _current_template_source_resolver.set(source_resolver)
     try:
         yield
     finally:
+        _current_template_source_resolver.reset(source_token)
         _current_template_resolver.reset(token)
 
 

@@ -54,6 +54,7 @@ from packages.story_core.prompt_templates import (
     prompt_template_scope,
     validate_prompt_template,
 )
+from packages.story_core.prompt_call_log import PromptCallLog, prompt_call_recording
 from packages.story_core.project_outline import normalize_project_outline, outline_from_legacy_project, select_outline_context
 from packages.story_core.reader_feel_review import review_reader_feel
 from packages.story_core.relationship_graph import (
@@ -567,8 +568,17 @@ class FileProjectStore:
     def prompt_template_object(self, key: str) -> PromptTemplate:
         return self._effective_prompt_template_object(key)[0]
 
+    def prompt_template_source(self, key: str) -> str:
+        return self._effective_prompt_template_object(key)[1]
+
     def prompt_templates(self) -> list[dict[str, Any]]:
         return [self.effective_prompt_template(item.key) for item in list_default_prompt_templates()]
+
+    def prompt_call_log(self) -> PromptCallLog:
+        project_id = str(self.project().get("project_id") or self.root.name)
+        if not project_id.startswith("file:"):
+            project_id = f"file:{project_id}"
+        return PromptCallLog(self.story_system_dir, project_id=project_id)
 
     @_with_project_update_lock
     def set_prompt_template_override(self, key: str, content: str) -> dict[str, Any]:
@@ -3767,7 +3777,9 @@ class FileProjectStore:
             state["progression_ledger"] = ledger
         story = StoryState.model_validate(self._story_state_payload_for_direction(state, project, target_chapter))
         generator = engine or StoryEngine()
-        with prompt_template_scope(self.prompt_template_object):
+        with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
+            self.prompt_call_log()
+        ):
             bundle = generator.generate_next_chapter(story)
         persisted = self.persist_bundle(bundle, operation="generate", commit_message=commit_message)
         return {
@@ -3969,7 +3981,9 @@ class FileProjectStore:
         story_payload["world_context"] = direction_payload["world_context"]
         story = StoryState.model_validate(story_payload)
         generator = engine or StoryEngine()
-        with prompt_template_scope(self.prompt_template_object):
+        with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
+            self.prompt_call_log()
+        ):
             bundle = generator.generate_next_chapter(story)
         if int(getattr(bundle, "chapter_number", 0) or 0) != chapter_number:
             raise ValueError(f"regenerated_wrong_chapter:{getattr(bundle, 'chapter_number', None)}")

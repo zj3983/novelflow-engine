@@ -85,7 +85,12 @@ from packages.story_core.world_simulation_gate import world_simulation_decision
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.prompt_modules import replaceable_slots
-from packages.story_core.prompt_templates import get_effective_prompt_template, render_prompt_template
+from packages.story_core.prompt_templates import (
+    get_effective_prompt_template,
+    get_effective_prompt_template_source,
+    render_prompt_template,
+)
+from packages.story_core.prompt_call_log import finish_prompt_call, start_prompt_call
 from packages.story_core.dialogue_context import build_dialogue_context
 from packages.story_core.dual_state import project_character_for_scene, scene_kind_for_cards
 from packages.story_core.review_report import format_review_report
@@ -4994,6 +4999,49 @@ class StoryOrchestrator:
     ) -> tuple[str, str]:
         runtime_stage = "planner" if agent == "director" else agent
         self._last_runtime_request = None
+        template_key = ""
+        module_keys: list[str] = []
+        if runtime_stage == "planner":
+            template_key = "director" if _story_game_context(story, {}) else "director_generic"
+            module_keys = ["core_context", "outline_context", "character_context"]
+        elif runtime_stage == "writer":
+            if "扩写" in stage:
+                template_key = "expansion"
+            elif "压缩" in stage:
+                template_key = "compression"
+            elif any(marker in stage for marker in ("改稿", "修订", "重写")):
+                template_key = "revision"
+            else:
+                template_key = "writer"
+            module_keys = [
+                "core_context",
+                "outline_context",
+                "chapter_plan",
+                "character_context",
+                "dialogue_context",
+                "genre_context",
+                "writing_taskbook",
+                "style_context",
+            ]
+        template_source = ""
+        template_version = ""
+        if template_key:
+            try:
+                template = get_effective_prompt_template(template_key)
+                template_version = template.version
+                template_source = get_effective_prompt_template_source(template_key)
+            except KeyError:
+                template_key = ""
+        call_id = start_prompt_call(
+            chapter_number=story.current_chapter,
+            stage=stage,
+            agent=runtime_stage,
+            user_prompt=prompt,
+            module_keys=module_keys,
+            template_key=template_key,
+            template_source=template_source,
+            template_version=template_version,
+        )
         started = perf_counter()
         chat_kwargs: dict[str, Any] = {
             "max_tokens": max_tokens,
@@ -5003,12 +5051,25 @@ class StoryOrchestrator:
         if timeout_seconds is not None:
             chat_kwargs["timeout_seconds"] = timeout_seconds
         try:
-            text, error = self._chat(story, prompt, **chat_kwargs)
-        except TypeError as exc:
-            if timeout_seconds is None or "timeout_seconds" not in str(exc):
-                raise
-            chat_kwargs.pop("timeout_seconds", None)
-            text, error = self._chat(story, prompt, **chat_kwargs)
+            try:
+                text, error = self._chat(story, prompt, **chat_kwargs)
+            except TypeError as exc:
+                if timeout_seconds is None or "timeout_seconds" not in str(exc):
+                    raise
+                chat_kwargs.pop("timeout_seconds", None)
+                text, error = self._chat(story, prompt, **chat_kwargs)
+        except Exception as exc:
+            elapsed = perf_counter() - started
+            settings = resolve_stage_runtime(runtime_stage)
+            finish_prompt_call(
+                call_id,
+                status="failed",
+                provider=settings.provider,
+                model=settings.model,
+                elapsed_seconds=elapsed,
+                error=str(exc),
+            )
+            raise
         elapsed = perf_counter() - started
         suffix = "失败" if error else "完成"
         report_generation_progress(f"{stage}耗时 {elapsed:.1f}s：{suffix}")
@@ -5026,6 +5087,15 @@ class StoryOrchestrator:
             settings.model,
             story.current_chapter,
             fallback_reason=error,
+        )
+        finish_prompt_call(
+            call_id,
+            status="failed" if error else "succeeded",
+            provider=settings.provider,
+            model=settings.model,
+            elapsed_seconds=elapsed,
+            output=text,
+            error=error,
         )
         return text, error
 
@@ -6109,14 +6179,13 @@ class StoryOrchestrator:
             )
             expanded_body, expand_error = self._timed_chat(
                 working_story,
-                "\n".join(
-                    [
-                        "下面这章正文太短，请在不改变剧情事实和结尾钩子的前提下扩写成完整网文章节。",
-                        f"目标篇幅：{TARGET_CHAPTER_CHARS}。",
-                        "扩写已有场景中的行动、对话、阻力和结果，不新增独立的补丁段。同一事实、判断和旁人误解只写一次；新增内容必须改变行动、关系或资源。第一章不要补成交易、提交委托、修理或买药水。",
-                        "只输出扩写后的小说正文，不要解释，不要列大纲。",
-                        f"原正文：\n{body}",
-                    ]
+                render_prompt_template(
+                    get_effective_prompt_template("expansion"),
+                    {
+                        "target_chars": TARGET_CHAPTER_CHARS,
+                        "expansion_focus": "扩写已有场景中的行动、对话、阻力和结果，不新增独立的补丁段。同一事实、判断和旁人误解只写一次；新增内容必须改变行动、关系或资源。第一章不要补成交易、提交委托、修理或买药水。",
+                        "source_body": body,
+                    },
                 ),
                 max_tokens=7000,
                 json_mode=False,
@@ -6338,23 +6407,23 @@ class StoryOrchestrator:
                     target_range = "3800到4600字"
                 compressed_body, compress_error = self._timed_chat(
                     working_story,
-                    "\n".join(
-                        [
-                            (
+                    render_prompt_template(
+                        get_effective_prompt_template("compression"),
+                        {
+                            "opening_line": (
                                 "下面这版正文压得过短，请在不改变剧情事实、人物选择、游戏账本和结尾钩子的前提下适度补写。"
                                 if retry_after_short
                                 else "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。"
                             ),
-                            f"目标篇幅：保留完整网文章节感，调整到{target_range}，绝对不要超过{MAX_CHAPTER_CHARS}字。",
-                            (
+                            "target_chars": f"保留完整网文章节感，调整到{target_range}，绝对不要超过{MAX_CHAPTER_CHARS}字",
+                            "compression_method": (
                                 "补写方法：补足已有场景中的动作、对话、阻力和结果，不新增支线，不重复解释。"
                                 if retry_after_short
                                 else "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。"
                             ),
-                            chapter_one_scope,
-                            "只输出压缩后的小说正文，不要解释，不要列大纲。",
-                            f"原正文：\n{before_body}",
-                        ]
+                            "chapter_scope": chapter_one_scope,
+                            "source_body": before_body,
+                        },
                     ),
                     max_tokens=5000 if compress_round == 1 else 4500,
                     json_mode=False,
