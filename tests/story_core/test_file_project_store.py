@@ -297,6 +297,218 @@ def test_update_project_shallow_merges_independent_world_blueprint_patches(tmp_p
     }
 
 
+def test_update_project_syncs_canonical_blueprint_to_master_and_markdown(tmp_path):
+    root = tmp_path / "novel"
+    project = {
+        "project_id": "p-shenyu",
+        "title": "旧书名",
+        "active_story_id": "s-shenyu",
+        "world_blueprint": {
+            "premise": "旧世界背景。",
+            "economy_rules": ["铜币价格必须有锚点。"],
+            "quest_rules": ["任务必须先登记，再执行和提交。"],
+            "power_system": ["所有玩家统一为见习者。"],
+        },
+    }
+    store = _make_minimal_file_project(root, project=project)
+    master_path = root / ".story-system" / "MASTER_SETTING.json"
+    master_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "story-system-master-setting/v1",
+                "editor_notes": {"owner": "保留我"},
+                "world_blueprint": {"premise": "顶层旧镜像"},
+                "project": {
+                    "project_id": "p-shenyu",
+                    "title": "旧书名",
+                    "custom_master_field": "不得删除",
+                    "world_blueprint": {"premise": "项目旧镜像"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    updated = store.update_project(
+        {
+            "game_title": "神域",
+            "world_blueprint": {"premise": "新世界背景。"},
+        }
+    )
+
+    saved_project = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
+    saved_master = json.loads(master_path.read_text(encoding="utf-8"))
+    canonical = saved_project["world_blueprint"]
+    assert updated["game_title"] == "神域"
+    assert canonical["premise"] == "新世界背景。"
+    assert canonical["economy_rules"] == ["铜币价格必须有锚点。"]
+    assert saved_master["world_blueprint"] == canonical
+    assert saved_master["project"]["world_blueprint"] == canonical
+    assert saved_master["project"]["game_title"] == "神域"
+    assert saved_master["project"]["title"] == "旧书名"
+    assert saved_master["editor_notes"] == {"owner": "保留我"}
+    assert saved_master["project"]["custom_master_field"] == "不得删除"
+
+    world_markdown = (root / "设定集" / "世界观.md").read_text(encoding="utf-8")
+    power_markdown = (root / "设定集" / "力量体系.md").read_text(encoding="utf-8")
+    assert world_markdown.startswith("<!-- managed: world-blueprint/v1 -->")
+    assert "# 《神域》世界观" in world_markdown
+    assert "## 经济体系" in world_markdown
+    assert "## 任务体系" in world_markdown
+    assert "所有玩家统一为见习者。" in power_markdown
+
+
+@pytest.mark.parametrize(
+    ("include_master_project", "master_project"),
+    [(False, None), (True, ["legacy-project"])],
+    ids=["missing", "non-dict"],
+)
+def test_update_project_creates_master_project_blueprint_mirror(
+    tmp_path,
+    include_master_project,
+    master_project,
+):
+    root = tmp_path / "novel"
+    project = {
+        "project_id": "p-mirror",
+        "active_story_id": "s-mirror",
+        "title": "镜像测试",
+        "game_title": "镜像游戏名",
+        "world_blueprint": {
+            "premise": "旧前提",
+            "economy_rules": ["经济规则不能丢。"],
+        },
+    }
+    store = _make_minimal_file_project(root, project=project)
+    master_path = root / ".story-system" / "MASTER_SETTING.json"
+    master_payload = {
+        "schema_version": "story-system-master-setting/v1",
+        "custom_master_field": {"preserved": True},
+        "world_blueprint": {"premise": "旧顶层镜像"},
+    }
+    if include_master_project:
+        master_payload["project"] = master_project
+    master_path.write_text(
+        json.dumps(master_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    store.update_project({"world_blueprint": {"premise": "新前提"}})
+
+    saved_project = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
+    saved_master = json.loads(master_path.read_text(encoding="utf-8"))
+    canonical = saved_project["world_blueprint"]
+    assert canonical["economy_rules"] == ["经济规则不能丢。"]
+    assert saved_master["world_blueprint"] == canonical
+    assert saved_master["project"]["world_blueprint"] == canonical
+    for key in ("project_id", "active_story_id", "title", "game_title"):
+        assert saved_master["project"][key] == saved_project[key]
+    assert saved_master["custom_master_field"] == {"preserved": True}
+
+
+@pytest.mark.parametrize(
+    ("project", "expected_title"),
+    [
+        (
+            {"project_id": "p-game-title", "title": "作品标题", "game_title": "游戏标题"},
+            "游戏标题",
+        ),
+        ({"project_id": "p-title", "title": "作品标题"}, "作品标题"),
+        ({"project_id": "p-untitled"}, "未命名作品"),
+    ],
+    ids=["game-title", "title", "fallback"],
+)
+def test_update_project_uses_title_priority_for_world_markdown(
+    tmp_path,
+    project,
+    expected_title,
+):
+    root = tmp_path / "novel"
+    project = {
+        **project,
+        "world_blueprint": {
+            "premise": "标题优先级测试。",
+            "power_system": ["力量规则。"],
+        },
+    }
+    store = _make_minimal_file_project(root, project=project)
+
+    store.update_project({"world_blueprint": {"world_rules": ["触发同步。"]}})
+
+    world_markdown = (root / "设定集" / "世界观.md").read_text(encoding="utf-8")
+    power_markdown = (root / "设定集" / "力量体系.md").read_text(encoding="utf-8")
+    assert f"# 《{expected_title}》世界观" in world_markdown
+    assert f"# 《{expected_title}》力量体系" in power_markdown
+
+
+def test_update_project_without_world_blueprint_does_not_refresh_world_markdown(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "旧标题",
+            "world_blueprint": {"premise": "项目背景"},
+        },
+    )
+    settings_dir = root / "设定集"
+    settings_dir.mkdir()
+    world_path = settings_dir / "世界观.md"
+    power_path = settings_dir / "力量体系.md"
+    world_path.write_text("<!-- managed: world-blueprint/v1 -->\n保留世界文档\n", encoding="utf-8")
+    power_path.write_text("<!-- managed: world-blueprint/v1 -->\n保留力量文档\n", encoding="utf-8")
+
+    updated = store.update_project({"title": "新标题", "game_title": "新游戏名"})
+
+    assert updated["title"] == "新标题"
+    assert updated["game_title"] == "新游戏名"
+    assert world_path.read_text(encoding="utf-8") == "<!-- managed: world-blueprint/v1 -->\n保留世界文档\n"
+    assert power_path.read_text(encoding="utf-8") == "<!-- managed: world-blueprint/v1 -->\n保留力量文档\n"
+
+
+def test_update_project_keeps_saved_json_when_world_markdown_sync_fails(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "故障降级测试",
+            "world_blueprint": {
+                "premise": "旧前提",
+                "economy_rules": ["经济规则保留。"],
+            },
+        },
+    )
+
+    def fail_sync(*args, **kwargs):
+        raise OSError("markdown unavailable")
+
+    monkeypatch.setattr(
+        "packages.story_core.file_project_store.sync_world_markdown",
+        fail_sync,
+    )
+
+    with caplog.at_level("WARNING"):
+        updated = store.update_project(
+            {"world_blueprint": {"premise": "JSON 已保存的新前提"}}
+        )
+
+    saved_project = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
+    saved_master = json.loads(
+        (root / ".story-system" / "MASTER_SETTING.json").read_text(encoding="utf-8")
+    )
+    assert updated["world_blueprint"]["premise"] == "JSON 已保存的新前提"
+    assert saved_project["world_blueprint"] == updated["world_blueprint"]
+    assert saved_master["world_blueprint"] == updated["world_blueprint"]
+    assert saved_master["project"]["world_blueprint"] == updated["world_blueprint"]
+    assert "world blueprint markdown sync failed" in caplog.text
+
+
 def test_update_project_serializes_concurrent_instances_for_same_root(tmp_path):
     root = tmp_path / "novel"
     store_a = _make_minimal_file_project(

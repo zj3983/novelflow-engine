@@ -73,6 +73,10 @@ from packages.story_core.writing_learning import learning_snapshot, lessons_from
 from packages.story_core.writing_packet import prose_renderer_contract
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.writing_taskbook import format_taskbook_brief_section
+from packages.story_core.world_blueprint_context import (
+    merge_world_blueprint,
+    sync_world_markdown,
+)
 
 
 _PROJECT_UPDATE_LOCKS: dict[str, threading.RLock] = {}
@@ -3257,6 +3261,7 @@ class FileProjectStore:
 
     @_with_project_update_lock
     def update_project(self, patch: dict[str, Any]) -> dict[str, Any]:
+        world_blueprint_updated = patch.get("world_blueprint") is not None
         normalized_patch_genre_ids: list[str] | None = None
         patch_world_blueprint = patch.get("world_blueprint")
         if (
@@ -3288,6 +3293,7 @@ class FileProjectStore:
         state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
         for key in (
             "title",
+            "game_title",
             "world_summary",
             "author_constraints",
             "character_profiles",
@@ -3303,16 +3309,12 @@ class FileProjectStore:
         if patch.get("seed_outline") is not None:
             project["seed_outline"] = patch["seed_outline"]
             state["outline"] = patch["seed_outline"]
-        if patch.get("world_blueprint") is not None:
+        if world_blueprint_updated:
             world_blueprint_patch = patch["world_blueprint"]
-            if isinstance(world_blueprint_patch, dict):
-                current_blueprint = project.get("world_blueprint")
-                world_blueprint = {
-                    **(current_blueprint if isinstance(current_blueprint, dict) else {}),
-                    **world_blueprint_patch,
-                }
-            else:
-                world_blueprint = world_blueprint_patch
+            world_blueprint = merge_world_blueprint(
+                project.get("world_blueprint"),
+                world_blueprint_patch,
+            )
             if normalized_patch_genre_ids is not None:
                 world_blueprint = dict(world_blueprint)
                 world_blueprint["genre_plugin_ids"] = normalized_patch_genre_ids
@@ -3358,8 +3360,41 @@ class FileProjectStore:
             state["current_focus"] = patch["current_focus"]
         elif isinstance(project.get("world_blueprint"), dict) and project["world_blueprint"].get("current_arc"):
             project["current_focus"] = project.get("current_focus") or project["world_blueprint"]["current_arc"]
-        self._write_json(self.webnovel_dir / "project.json", project)
-        self._write_json(self.webnovel_dir / "state.json", state)
+
+        payloads = {
+            self.webnovel_dir / "project.json": project,
+            self.webnovel_dir / "state.json": state,
+        }
+        if world_blueprint_updated:
+            master_path = self.story_system_dir / "MASTER_SETTING.json"
+            master = dict(self._read_json(master_path, {}) or {})
+            canonical_blueprint = deepcopy(project["world_blueprint"])
+            master["world_blueprint"] = canonical_blueprint
+            master_project = master.get("project")
+            synchronized_master_project = (
+                dict(master_project) if isinstance(master_project, dict) else {}
+            )
+            synchronized_master_project["world_blueprint"] = deepcopy(canonical_blueprint)
+            for key in ("project_id", "active_story_id", "title", "game_title"):
+                if key in project:
+                    synchronized_master_project[key] = deepcopy(project[key])
+            master["project"] = synchronized_master_project
+            payloads[master_path] = master
+
+        self._replace_json_transaction(payloads)
+        if world_blueprint_updated:
+            title = project.get("game_title") or project.get("title") or "未命名作品"
+            try:
+                sync_world_markdown(
+                    self.root,
+                    title,
+                    project["world_blueprint"],
+                )
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "world blueprint markdown sync failed",
+                    exc_info=True,
+                )
         return project
 
     @staticmethod

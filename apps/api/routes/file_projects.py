@@ -77,6 +77,7 @@ class FileProjectGenerationJobRequest(BaseModel):
 
 class FileProjectUpdateRequest(BaseModel):
     title: str | None = None
+    game_title: str | None = None
     seed_outline: str | None = None
     world_summary: str | None = None
     current_focus: str | None = None

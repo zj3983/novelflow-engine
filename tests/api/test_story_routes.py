@@ -2121,6 +2121,43 @@ def test_file_project_character_routes_read_update_and_complete(monkeypatch):
     assert complete.json()["personality_portrait"]["behavior"]["pressure_mode"]
 
 
+def test_update_file_project_route_preserves_game_title_in_patch(monkeypatch, tmp_path):
+    class FakeStore:
+        def __init__(self):
+            self.root = tmp_path / "p-test"
+            self.saved_project = {
+                "project_id": "p-test",
+                "title": "作品标题",
+                "active_story_id": "s-test",
+            }
+            self.received_patch = None
+
+        def update_project(self, patch):
+            self.received_patch = patch
+            self.saved_project.update(patch)
+            return self.saved_project
+
+        def project(self):
+            return self.saved_project
+
+        def state(self):
+            return {"story_id": "s-test", "current_chapter": 0}
+
+        def summary(self):
+            return {"current_chapter": 0, "title": "作品标题"}
+
+    store = FakeStore()
+    monkeypatch.setattr(file_projects, "_store_for", lambda project_id: store)
+
+    response = client.put(
+        "/file-projects/file:p-test",
+        json={"game_title": "神域"},
+    )
+
+    assert response.status_code == 200
+    assert store.received_patch == {"game_title": "神域"}
+
+
 def test_file_project_character_routes_return_404_for_unknown_character(monkeypatch):
     class FakeStore:
         def update_character(self, name, patch):

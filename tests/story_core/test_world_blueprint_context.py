@@ -2,6 +2,7 @@ from copy import deepcopy
 
 import pytest
 
+import packages.story_core.world_blueprint_context as blueprint_context
 from packages.story_core.world_blueprint_context import (
     flatten_selected_rules,
     merge_world_blueprint,
@@ -346,3 +347,282 @@ def test_flatten_selected_rules_uses_rule_field_order():
         "面板",
         "现实",
     ]
+
+
+def test_world_markdown_rendering_is_ordered_and_shows_quest_chain_stages_without_mutation():
+    blueprint = {
+        "premise": "现实与神域同时运转。",
+        "world_rules": ["死亡会损失经验。"],
+        "economy_rules": ["铜币价格必须有锚点。"],
+        "quest_rules": ["任务必须先登记。"],
+        "quest_network": {
+            "active_chains": [
+                {
+                    "name": "灰烬村异常链",
+                    "description": "从清道夫委托追查后坡异动。",
+                    "stages": [
+                        "清道夫委托",
+                        {"name": "后坡巡查", "description": "确认污染来源。"},
+                    ],
+                }
+            ]
+        },
+        "reality_bridge_rules": ["现实到账必须可核对。"],
+        "locations": [{"name": "灰烬村", "description": "新手出生地。"}],
+        "faction_rules": ["阵营声望必须来自行动。"],
+        "factions": [{"name": "巡夜人", "goal": "封锁污染。"}],
+    }
+    original = deepcopy(blueprint)
+
+    rendered = blueprint_context.render_world_markdown("神域", blueprint)
+
+    assert rendered.splitlines()[0] == blueprint_context.MANAGED_MARKER
+    assert "# 《神域》世界观" in rendered
+    headings = [
+        "## 世界背景",
+        "## 世界规则",
+        "## 经济体系",
+        "## 任务体系",
+        "## 任务网络",
+        "## 现实桥接",
+        "## 地点",
+        "## 阵营",
+    ]
+    assert [rendered.index(heading) for heading in headings] == sorted(
+        rendered.index(heading) for heading in headings
+    )
+    assert "灰烬村异常链" in rendered
+    assert "从清道夫委托追查后坡异动。" in rendered
+    assert "清道夫委托" in rendered
+    assert "后坡巡查" in rendered
+    assert blueprint == original
+
+
+def test_power_markdown_renders_all_rule_groups_without_mutation():
+    blueprint = {
+        "power_system": ["所有玩家统一为见习者。"],
+        "progression_rules": ["经验只来自可验证行动。"],
+        "panel_rules": ["面板只显示玩家可见信息。"],
+        "constraints": ["不存在无代价复活。"],
+        "forbidden_breaks": ["不得跳过职业前置。"],
+    }
+    original = deepcopy(blueprint)
+
+    rendered = blueprint_context.render_power_markdown("神域", blueprint)
+
+    assert rendered.splitlines()[0] == blueprint_context.MANAGED_MARKER
+    assert "# 《神域》力量体系" in rendered
+    headings = ["## 力量与职业", "## 成长与战斗", "## 面板规则", "## 世界硬约束"]
+    assert [rendered.index(heading) for heading in headings] == sorted(
+        rendered.index(heading) for heading in headings
+    )
+    for rule in (
+        "所有玩家统一为见习者。",
+        "经验只来自可验证行动。",
+        "面板只显示玩家可见信息。",
+        "不存在无代价复活。",
+        "不得跳过职业前置。",
+    ):
+        assert rule in rendered
+    assert blueprint == original
+
+
+def test_sync_world_markdown_creates_and_refreshes_managed_files_without_mutation(tmp_path):
+    blueprint = {
+        "premise": "旧背景",
+        "power_system": ["旧力量规则"],
+    }
+    original = deepcopy(blueprint)
+
+    created = blueprint_context.sync_world_markdown(tmp_path, "神域", blueprint)
+
+    world_path = tmp_path / "设定集" / "世界观.md"
+    power_path = tmp_path / "设定集" / "力量体系.md"
+    assert created["world"]["written"] is True
+    assert created["power"]["written"] is True
+    assert world_path.read_text(encoding="utf-8").startswith(blueprint_context.MANAGED_MARKER)
+    assert power_path.read_text(encoding="utf-8").startswith(blueprint_context.MANAGED_MARKER)
+
+    refreshed = blueprint_context.sync_world_markdown(
+        tmp_path,
+        "神域",
+        {"premise": "新背景", "power_system": ["新力量规则"]},
+    )
+
+    assert refreshed["world"]["written"] is True
+    assert refreshed["power"]["written"] is True
+    assert "新背景" in world_path.read_text(encoding="utf-8")
+    assert "新力量规则" in power_path.read_text(encoding="utf-8")
+    assert blueprint == original
+
+
+def test_sync_world_markdown_preserves_manual_files_unless_forced(tmp_path):
+    settings_dir = tmp_path / "设定集"
+    settings_dir.mkdir()
+    world_path = settings_dir / "世界观.md"
+    power_path = settings_dir / "力量体系.md"
+    world_path.write_text("# 手写世界观\n\n不要覆盖。\n", encoding="utf-8")
+    power_path.write_text("# 手写力量体系\n\n不要覆盖。\n", encoding="utf-8")
+
+    skipped = blueprint_context.sync_world_markdown(
+        tmp_path,
+        "神域",
+        {"premise": "托管背景", "power_system": ["托管规则"]},
+    )
+
+    assert skipped["world"]["written"] is False
+    assert skipped["power"]["written"] is False
+    assert world_path.read_text(encoding="utf-8").startswith("# 手写世界观")
+    assert power_path.read_text(encoding="utf-8").startswith("# 手写力量体系")
+
+    forced = blueprint_context.sync_world_markdown(
+        tmp_path,
+        "神域",
+        {"premise": "托管背景", "power_system": ["托管规则"]},
+        force=True,
+    )
+
+    assert forced["world"]["written"] is True
+    assert forced["power"]["written"] is True
+    assert world_path.read_text(encoding="utf-8").startswith(blueprint_context.MANAGED_MARKER)
+    assert power_path.read_text(encoding="utf-8").startswith(blueprint_context.MANAGED_MARKER)
+
+
+@pytest.mark.parametrize(
+    "existing_content",
+    [
+        "# 旧世界观\n<!-- managed: world-blueprint/v1 -->\n旧背景\n",
+        "# 旧世界观\n```markdown\n<!-- managed: world-blueprint/v1 -->\n```\n旧背景\n",
+        "  <!-- managed: world-blueprint/v1 -->  \n# 手写世界观\n",
+    ],
+    ids=["second-line", "code-block", "indented-first-line"],
+)
+def test_sync_world_markdown_preserves_manual_files_that_only_reference_marker(
+    tmp_path,
+    existing_content,
+):
+    settings_dir = tmp_path / "设定集"
+    settings_dir.mkdir()
+    world_path = settings_dir / "世界观.md"
+    world_path.write_text(existing_content, encoding="utf-8")
+
+    result = blueprint_context.sync_world_markdown(
+        tmp_path,
+        "神域",
+        {"premise": "刷新后的背景"},
+    )
+
+    assert result["world"]["written"] is False
+    assert world_path.read_text(encoding="utf-8") == existing_content
+
+
+def test_sync_world_markdown_refreshes_bom_prefixed_first_line_marker(tmp_path):
+    settings_dir = tmp_path / "设定集"
+    settings_dir.mkdir()
+    world_path = settings_dir / "世界观.md"
+    world_path.write_text(
+        f"\ufeff{blueprint_context.MANAGED_MARKER}\n旧背景\n",
+        encoding="utf-8",
+    )
+
+    result = blueprint_context.sync_world_markdown(
+        tmp_path,
+        "神域",
+        {"premise": "刷新后的背景"},
+    )
+
+    assert result["world"]["written"] is True
+    assert world_path.read_text(encoding="utf-8").startswith(blueprint_context.MANAGED_MARKER)
+    assert "刷新后的背景" in world_path.read_text(encoding="utf-8")
+
+
+def test_sync_world_markdown_does_not_treat_inline_marker_text_as_managed(tmp_path):
+    settings_dir = tmp_path / "设定集"
+    settings_dir.mkdir()
+    world_path = settings_dir / "世界观.md"
+    original = "# 手写世界观\n正文提到 <!-- managed: world-blueprint/v1 --> 但不是管理标记。\n"
+    world_path.write_text(original, encoding="utf-8")
+
+    result = blueprint_context.sync_world_markdown(
+        tmp_path,
+        "神域",
+        {"premise": "不应写入"},
+    )
+
+    assert result["world"]["written"] is False
+    assert world_path.read_text(encoding="utf-8") == original
+
+
+def test_sync_world_markdown_force_overwrites_non_utf8_files_without_reading_them(tmp_path):
+    settings_dir = tmp_path / "设定集"
+    settings_dir.mkdir()
+    world_path = settings_dir / "世界观.md"
+    power_path = settings_dir / "力量体系.md"
+    world_path.write_bytes("旧世界观".encode("utf-16"))
+    power_path.write_bytes(b"\x80\x81\x82")
+
+    result = blueprint_context.sync_world_markdown(
+        tmp_path,
+        "神域",
+        {"premise": "新背景", "power_system": ["新力量规则"]},
+        force=True,
+    )
+
+    assert result["world"]["written"] is True
+    assert result["power"]["written"] is True
+    assert world_path.read_text(encoding="utf-8").startswith(blueprint_context.MANAGED_MARKER)
+    assert power_path.read_text(encoding="utf-8").startswith(blueprint_context.MANAGED_MARKER)
+
+
+def test_sync_world_markdown_skips_non_utf8_unmanaged_files_without_failing(tmp_path):
+    settings_dir = tmp_path / "设定集"
+    settings_dir.mkdir()
+    world_path = settings_dir / "世界观.md"
+    power_path = settings_dir / "力量体系.md"
+    world_bytes = "手写世界观".encode("utf-16")
+    power_bytes = b"\x80\x81\x82"
+    world_path.write_bytes(world_bytes)
+    power_path.write_bytes(power_bytes)
+
+    result = blueprint_context.sync_world_markdown(
+        tmp_path,
+        "神域",
+        {"premise": "不应写入", "power_system": ["不应写入"]},
+    )
+
+    assert result["world"]["written"] is False
+    assert result["power"]["written"] is False
+    assert world_path.read_bytes() == world_bytes
+    assert power_path.read_bytes() == power_bytes
+
+
+def test_world_markdown_renders_non_list_active_chains_value():
+    rendered = blueprint_context.render_world_markdown(
+        "神域",
+        {"quest_network": {"active_chains": "灰烬村异常链（旧格式）"}},
+    )
+
+    assert "## 任务网络" in rendered
+    assert "进行中的任务链" in rendered
+    assert "灰烬村异常链（旧格式）" in rendered
+
+
+def test_world_markdown_renders_non_list_chain_stages_value():
+    rendered = blueprint_context.render_world_markdown(
+        "神域",
+        {
+            "quest_network": {
+                "active_chains": [
+                    {
+                        "name": "灰烬村异常链",
+                        "description": "追查村外异动。",
+                        "stages": {"当前阶段": "调查后坡污染"},
+                    }
+                ]
+            }
+        },
+    )
+
+    assert "灰烬村异常链" in rendered
+    assert "阶段" in rendered
+    assert "调查后坡污染" in rendered

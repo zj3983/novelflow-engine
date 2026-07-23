@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 import re
 from typing import Any
 
+
+MANAGED_MARKER = "<!-- managed: world-blueprint/v1 -->"
 
 RULE_FIELDS = (
     "world_rules",
@@ -105,6 +108,207 @@ def merge_world_blueprint(current: Any, patch: Any) -> dict[str, Any]:
     if isinstance(patch, dict):
         merged.update(deepcopy(patch))
     return merged
+
+
+def render_world_markdown(title: Any, blueprint: Any) -> str:
+    world = blueprint if isinstance(blueprint, dict) else {}
+    lines = [MANAGED_MARKER, "", f"# 《{_markdown_title(title)}》世界观"]
+
+    _append_section(lines, "世界背景", world.get("premise"))
+    _append_section(lines, "世界规则", world.get("world_rules"))
+    _append_section(lines, "经济体系", world.get("economy_rules"))
+    _append_section(lines, "任务体系", world.get("quest_rules"))
+    _append_quest_network(lines, world.get("quest_network"))
+    _append_section(lines, "现实桥接", world.get("reality_bridge_rules"))
+    _append_section(lines, "地点", world.get("locations"))
+    _append_combined_section(
+        lines,
+        "阵营",
+        (("阵营规则", world.get("faction_rules")), ("阵营名录", world.get("factions"))),
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_power_markdown(title: Any, blueprint: Any) -> str:
+    world = blueprint if isinstance(blueprint, dict) else {}
+    lines = [MANAGED_MARKER, "", f"# 《{_markdown_title(title)}》力量体系"]
+
+    _append_section(lines, "力量与职业", world.get("power_system"))
+    _append_section(lines, "成长与战斗", world.get("progression_rules"))
+    _append_section(lines, "面板规则", world.get("panel_rules"))
+    _append_combined_section(
+        lines,
+        "世界硬约束",
+        (("约束", world.get("constraints")), ("禁止破坏", world.get("forbidden_breaks"))),
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def sync_world_markdown(
+    root: str | Path,
+    title: Any,
+    blueprint: Any,
+    force: bool = False,
+) -> dict[str, dict[str, Any]]:
+    settings_dir = Path(root) / "设定集"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    documents = {
+        "world": (settings_dir / "世界观.md", render_world_markdown(title, blueprint)),
+        "power": (settings_dir / "力量体系.md", render_power_markdown(title, blueprint)),
+    }
+
+    results: dict[str, dict[str, Any]] = {}
+    for key, (path, content) in documents.items():
+        existed = path.exists()
+        managed = False if force else existed and _has_managed_marker(path)
+        written = force or not existed or managed
+        if written:
+            path.write_text(content, encoding="utf-8")
+        results[key] = {
+            "path": str(path),
+            "written": written,
+            "reason": (
+                "forced"
+                if force and existed and not managed
+                else "refreshed"
+                if managed
+                else "created"
+                if not existed
+                else "unmanaged"
+            ),
+        }
+    return results
+
+
+def _markdown_title(title: Any) -> str:
+    value = str(title or "").strip()
+    return value or "未命名作品"
+
+
+def _has_content(value: Any) -> bool:
+    return value not in (None, "", [], {})
+
+
+def _append_section(lines: list[str], heading: str, value: Any) -> None:
+    if not _has_content(value):
+        return
+    lines.extend(("", f"## {heading}", ""))
+    lines.extend(_markdown_list(value))
+
+
+def _append_combined_section(
+    lines: list[str],
+    heading: str,
+    groups: tuple[tuple[str, Any], ...],
+) -> None:
+    populated = [(label, value) for label, value in groups if _has_content(value)]
+    if not populated:
+        return
+    lines.extend(("", f"## {heading}", ""))
+    if len(populated) == 1:
+        lines.extend(_markdown_list(populated[0][1]))
+        return
+    for index, (label, value) in enumerate(populated):
+        if index:
+            lines.append("")
+        lines.extend((f"### {label}", ""))
+        lines.extend(_markdown_list(value))
+
+
+def _append_quest_network(lines: list[str], value: Any) -> None:
+    if not _has_content(value):
+        return
+    if not isinstance(value, dict):
+        _append_section(lines, "任务网络", value)
+        return
+
+    lines.extend(("", "## 任务网络", ""))
+    active_chains = value.get("active_chains")
+    if isinstance(active_chains, list):
+        for chain in active_chains:
+            if not isinstance(chain, dict):
+                lines.append(f"- {_inline_markdown(chain)}")
+                continue
+            name = str(chain.get("name") or chain.get("title") or "未命名任务链").strip()
+            description = str(chain.get("description") or chain.get("summary") or "").strip()
+            chain_line = f"- **{name}**"
+            if description:
+                chain_line += f"：{description}"
+            lines.append(chain_line)
+            stages = chain.get("stages")
+            if isinstance(stages, list):
+                for index, stage in enumerate(stages, start=1):
+                    lines.append(f"  - 阶段 {index}：{_inline_markdown(stage)}")
+            elif _has_content(stages):
+                lines.append(f"  - **阶段**：{_inline_markdown(stages)}")
+            for key in sorted(chain, key=str):
+                if key in {"name", "title", "description", "summary", "stages"}:
+                    continue
+                lines.append(f"  - **{_field_label(key)}**：{_inline_markdown(chain[key])}")
+    elif _has_content(active_chains):
+        lines.append(
+            f"- **{_field_label('active_chains')}**：{_inline_markdown(active_chains)}"
+        )
+
+    for key in sorted(value, key=str):
+        if key == "active_chains":
+            continue
+        lines.append(f"- **{_field_label(key)}**：{_inline_markdown(value[key])}")
+
+
+def _markdown_list(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [f"- {_inline_markdown(item)}" for item in value]
+    if isinstance(value, dict):
+        if any(key in value for key in ("name", "title")):
+            return [f"- {_inline_markdown(value)}"]
+        return [
+            f"- **{_field_label(key)}**：{_inline_markdown(value[key])}"
+            for key in sorted(value, key=str)
+        ]
+    return [f"- {_inline_markdown(value)}"]
+
+
+def _inline_markdown(value: Any) -> str:
+    if isinstance(value, dict):
+        name = str(value.get("name") or value.get("title") or "").strip()
+        details = [
+            f"{_field_label(key)}：{_inline_markdown(value[key])}"
+            for key in sorted(value, key=str)
+            if key not in {"name", "title"} and _has_content(value[key])
+        ]
+        if name and details:
+            return f"**{name}**；" + "；".join(details)
+        if name:
+            return f"**{name}**"
+        return "；".join(details) or "（空）"
+    if isinstance(value, (list, tuple)):
+        return "；".join(_inline_markdown(item) for item in value)
+    if value is None:
+        return "（空）"
+    return str(value).strip()
+
+
+def _field_label(key: Any) -> str:
+    labels = {
+        "active_chains": "进行中的任务链",
+        "description": "描述",
+        "goal": "目标",
+        "npc_links": "关联人物",
+        "reward_rules": "奖励规则",
+        "stages": "阶段",
+        "summary": "摘要",
+    }
+    return labels.get(str(key), str(key).replace("_", " "))
+
+
+def _has_managed_marker(path: Path) -> bool:
+    try:
+        with path.open("r", encoding="utf-8-sig") as handle:
+            first_line = handle.readline()
+    except UnicodeDecodeError:
+        return False
+    return first_line.rstrip("\r\n") == MANAGED_MARKER
 
 
 def select_world_context(
