@@ -13,7 +13,7 @@ const STATUS_META: Record<string, { label: string; badge: string }> = {
   outlining: { label: "大纲中", badge: "ws-badge" },
   writing: { label: "写作中", badge: "ws-badge ws-badge--success" },
   reviewing: { label: "审核中", badge: "ws-badge ws-badge--warn" },
-  simulating: { label: "推演中", badge: "ws-badge ws-badge--success" },
+  simulating: { label: "生成中", badge: "ws-badge ws-badge--success" },
   paused: { label: "已暂停", badge: "ws-badge ws-badge--warn" },
   completed: { label: "已完成", badge: "ws-badge" },
 };

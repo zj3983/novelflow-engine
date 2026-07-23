@@ -12,13 +12,14 @@ Use `.env.example` as the starting point:
 Copy-Item .env.example .env.local
 ```
 
-For the current Qwen-compatible setup:
+For a Kimi-compatible setup:
 
 ```env
-OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+OPENAI_BASE_URL=https://api.moonshot.cn/v1
 OPENAI_API_KEY=your-api-key
-NOVEL_AUTOGROWTH_DEFAULT_MODEL=qwen3.6-plus
-NOVEL_AUTOGROWTH_FAST_MODEL=qwen3.6-plus
+NOVEL_LLM_PROVIDER=openai
+NOVEL_AUTOGROWTH_DEFAULT_MODEL=kimi-k3
+NOVEL_AUTOGROWTH_FAST_MODEL=kimi-k3
 ```
 
 `DASHSCOPE_API_KEY` is also accepted as a fallback if `OPENAI_API_KEY` is not

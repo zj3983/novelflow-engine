@@ -28,11 +28,21 @@ test("/config displays the CLI version and the three real writing stages", async
   let saved = structuredClone(runtimeConfiguration);
   let testedPayload: Record<string, unknown> | null = null;
 
+  await page.route("**/runtime-settings/reveal-api-key", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "cache-control": "no-store" },
+      body: JSON.stringify({ api_key: "sk-test" }),
+    });
+  });
   await page.route("**/runtime-settings", async (route) => {
     if (route.request().method() === "PUT") {
       saved = route.request().postDataJSON();
     }
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(saved) });
+    const response = structuredClone(saved);
+    if (response.providers.openai.api_key) response.providers.openai.api_key = "********";
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(response) });
   });
   await page.route("**/runtime-settings/cli-info", async (route) => {
     await route.fulfill({
@@ -66,7 +76,7 @@ test("/config displays the CLI version and the three real writing stages", async
   await page.goto("/config");
 
   await expect(page.getByText("codex-cli 0.144.5", { exact: true })).toBeVisible();
-  await expect(page.getByText("已是最新版", { exact: true })).toBeVisible();
+  await expect(page.getByText("已是最新版本", { exact: true })).toBeVisible();
   await expect(page.getByLabel("剧情规划模型")).toHaveValue("gpt-5.6-sol");
   await expect(page.getByLabel("正文写作模型")).toHaveValue("gpt-5.6-sol");
   await expect(page.getByLabel("记忆回写模型")).toHaveValue("gpt-5.6-terra");
@@ -75,8 +85,13 @@ test("/config displays the CLI version and the three real writing stages", async
   await expect(page.getByText("全局默认模型")).toHaveCount(0);
   await expect(page.getByText("角色代理模型")).toHaveCount(0);
 
-  await page.getByLabel("模型来源").selectOption("openai");
+  await page.getByLabel("模型提供方").selectOption("openai");
+  await expect(page.getByLabel("全局 API 密钥")).toHaveValue("");
+  await expect(page.getByText("密钥已保存", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "显示 API 密钥" }).click();
   await expect(page.getByLabel("全局 API 密钥")).toHaveValue("sk-test");
+  await page.getByRole("button", { name: "隐藏 API 密钥" }).click();
+  await expect(page.getByLabel("全局 API 密钥")).toHaveValue("");
   await expect(page.getByLabel("正文写作模型")).toHaveValue("openai-writer");
   await page.getByLabel("正文写作模型").fill("openai-writer-next");
   await page.getByRole("button", { name: "测试正文写作" }).click();
@@ -94,4 +109,27 @@ test("/config displays the CLI version and the three real writing stages", async
   await page.getByRole("button", { name: "统一保存" }).click();
   expect(saved.provider).toBe("openai");
   expect(saved.providers.openai.writer).toBe("openai-writer-next");
+});
+
+test("/config reports backend save failures instead of keeping a browser-only copy", async ({ page }) => {
+  await page.route("**/runtime-settings", async (route) => {
+    if (route.request().method() === "PUT") {
+      await route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"save failed"}' });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(runtimeConfiguration) });
+  });
+  await page.route("**/runtime-settings/cli-info", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ available: false, command: "codex", version: "", latest_version: "", update_status: "unknown", models: [] }),
+    });
+  });
+
+  await page.goto("/config");
+  await page.getByRole("button", { name: "统一保存" }).click();
+
+  await expect(page.getByText("失败", { exact: true })).toBeVisible();
+  await expect(page.getByText(/save failed/)).toBeVisible();
 });

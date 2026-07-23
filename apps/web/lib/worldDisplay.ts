@@ -1,5 +1,38 @@
 import type { CharacterPortrait, CharacterStateLayer, GamePanel, ImportedCharacterProfile, ProjectResponse, StoryCharacter } from "./api";
 
+export type GroupedWorldFacts = {
+  projectFacts: string[];
+  chapters: Array<{ chapterNumber: number; facts: string[] }>;
+};
+
+export function groupWorldFacts(facts: string[] | undefined): GroupedWorldFacts {
+  const projectFacts: string[] = [];
+  const chapters = new Map<number, string[]>();
+  const chapterPrefix = /^第\s*(\d+)\s*章事实[：:]\s*(.*)$/;
+
+  for (const value of facts ?? []) {
+    const fact = typeof value === "string" ? value.trim() : "";
+    if (!fact) continue;
+    const match = fact.match(chapterPrefix);
+    if (!match) {
+      projectFacts.push(fact);
+      continue;
+    }
+    const content = match[2].trim();
+    if (!content) continue;
+    const chapterNumber = Number(match[1]);
+    chapters.set(chapterNumber, [...(chapters.get(chapterNumber) ?? []), content]);
+  }
+
+  return {
+    projectFacts,
+    chapters: Array.from(chapters, ([chapterNumber, chapterFacts]) => ({
+      chapterNumber,
+      facts: chapterFacts,
+    })).sort((left, right) => left.chapterNumber - right.chapterNumber),
+  };
+}
+
 type ProfileWithRuntime = ImportedCharacterProfile & {
   game_panel?: GamePanel;
   real_state?: CharacterStateLayer;

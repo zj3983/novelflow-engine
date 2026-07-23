@@ -1,10 +1,11 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
+import { WritingFlowPanel } from "../../../../components/ws/WritingFlow";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
 import {
@@ -15,6 +16,7 @@ import {
   type ChapterBundle,
   type ChapterDirectionOption,
   type CodexWritingPacket,
+  type GenerationJobStep,
 } from "../../../../lib/api";
 
 const PAGE_SIZE = 80;
@@ -43,6 +45,7 @@ export default function WritePage() {
   const [regenerating, setRegenerating] = useState(false);
   const [generatingNext, setGeneratingNext] = useState(false);
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
+  const [generationSteps, setGenerationSteps] = useState<GenerationJobStep[]>([]);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
   const [temporaryGuidance, setTemporaryGuidance] = useState("");
   const [nextWritingPacket, setNextWritingPacket] = useState<CodexWritingPacket | null>(null);
@@ -143,10 +146,12 @@ export default function WritePage() {
     try {
       const job = await startFileProjectRegenerationJob(projectId, chapter.chapter_number, undefined, temporaryGuidance || undefined);
       let currentJob = job;
+      setGenerationSteps(Array.isArray(job.steps) ? job.steps : []);
       setRegenerateStatus(currentJob.progress || currentJob.status);
       while (currentJob.status === "queued" || currentJob.status === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
         currentJob = await fetchGenerationJob(projectId, currentJob.job_id);
+        setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
         setRegenerateStatus(currentJob.progress || currentJob.status);
       }
       if (currentJob.status === "failed") {
@@ -170,10 +175,12 @@ export default function WritePage() {
     try {
       const job = await startGenerationJob(generationTargetId, isFileProject ? selectedDirection?.id : undefined);
       let currentJob = job;
+      setGenerationSteps(Array.isArray(job.steps) ? job.steps : []);
       setRegenerateStatus(currentJob.progress || currentJob.status);
       while (currentJob.status === "queued" || currentJob.status === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
         currentJob = await fetchGenerationJob(generationTargetId, currentJob.job_id);
+        setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
         setRegenerateStatus(currentJob.progress || currentJob.status);
       }
       if (currentJob.status === "failed") {
@@ -284,12 +291,27 @@ export default function WritePage() {
                   disabled={!canRegenerate || regenerating || generatingNext}
                   onClick={() => void handleRegenerateChapter()}
                 >
-                  {regenerating ? "重新推演中..." : "重新推演本章"}
+                  {regenerating ? "重新生成中..." : "重新生成本章"}
                 </button>
                 <span className="ws-badge">{chapterCharCount(chapter.body)} 字</span>
               </div>
             </header>
-            {(regenerating || generatingNext) && regenerateStatus ? <p className="ws-card__hint">任务进度：{regenerateStatus}</p> : null}
+
+            {(regenerating || generatingNext || generationSteps.length > 0) ? (
+              <section className="ws-card">
+                <div className="ws-section-head">
+                  <p className="ws-card__title">生成任务</p>
+                  <span className="ws-badge">
+                    {regenerateStatus || generationSteps[generationSteps.length - 1]?.message || "准备中"}
+                  </span>
+                </div>
+                <WritingFlowPanel steps={generationSteps} />
+                <p className="ws-card__hint">
+                  <Link href={`/projects/${encodedProjectId}/log`}>查看日志页，获取完整历史记录 →</Link>
+                </p>
+              </section>
+            ) : null}
+
             {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
             {directionOptions.length > 0 ? (
               <section className="ws-card">
@@ -333,7 +355,7 @@ export default function WritePage() {
                 <div className="ws-section-head">
                   <div>
                     <p className="ws-card__title">本次重写提示</p>
-                    <p className="ws-card__hint">来自拆书报告，只影响这次重新推演，不会写入作者约束。</p>
+                    <p className="ws-card__hint">来自拆书报告，只影响这次重新生成，不会写入作者约束。</p>
                   </div>
                   <button className="ws-btn ws-btn--sm" type="button" onClick={clearTemporaryGuidance}>
                     清除

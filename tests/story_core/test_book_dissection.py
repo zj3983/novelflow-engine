@@ -57,6 +57,7 @@ def test_diagnose_project_chapter_flags_common_webgame_issues():
     assert any("转职" in item for item in section(report, "设定冲突"))
     assert any("短" in item or "不像" in item for item in section(report, "对话问题"))
     assert any("货币：0铜" in item for item in section(report, "说明感问题"))
+    assert not any("怪物面板" in item for item in section(report, "说明感问题"))
     assert section(report, "可写入提示词")
 
 

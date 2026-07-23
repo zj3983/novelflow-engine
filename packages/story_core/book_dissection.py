@@ -33,7 +33,7 @@ PROJECT_SECTION_KEYS = (
     "可写入提示词",
 )
 
-FORBIDDEN_TERMS = ("【货币：0铜】", "怪物面板", "法师兄", "牙缝", "草屑")
+FORBIDDEN_TERMS = ("【货币：0铜】", "法师兄", "牙缝", "草屑")
 COMBAT_TERMS = ("攻击", "出手", "挥", "砍", "刺", "命中", "伤害", "击杀", "刷新")
 PROGRESS_TERMS = ("获得", "升级", "完成", "交付", "解锁", "材料", "经验", "铜", "任务", "装备")
 
@@ -439,10 +439,10 @@ def _detect_exposition_issues(body: str, sections: dict[str, list[str]]) -> None
     for term in hits:
         _add_issue(sections, "说明感问题", f"正文出现{term}，说明感过重或命中禁用表达。")
     if hits:
-        _add_issue(sections, "主要问题", "面板和禁用词直接进正文。")
+        _add_issue(sections, "主要问题", "禁用表达直接进入正文。")
         _add_issue(sections, "不爽原因", "信息被贴出来而不是被主角看见、判断和使用。")
-        _add_issue(sections, "下一版改法", "把面板直贴改成钱包、背包、NPC报价或界面一闪而过的反馈。")
-        _add_issue(sections, "可写入提示词", "禁用【货币：0铜】、怪物面板等直白面板词，改写成角色可见的资源反馈。")
+        _add_issue(sections, "下一版改法", "把生硬提示改成钱包、背包、NPC报价或角色能直接使用的界面反馈。")
+        _add_issue(sections, "可写入提示词", "禁用【货币：0铜】等生硬提示，改写成角色可见的资源反馈。")
 
 
 def _detect_repetitive_combat(body: str, sections: dict[str, list[str]]) -> None:

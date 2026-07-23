@@ -13,7 +13,7 @@ const STATUS_LABEL: Record<string, string> = {
   outlining: "大纲中",
   writing: "写作中",
   reviewing: "审核中",
-  simulating: "推演中",
+  simulating: "生成中",
   paused: "已暂停",
   completed: "已完成",
 };
@@ -102,7 +102,7 @@ export default function ProjectOverviewPage() {
 
           <section className="ws-card">
             <div className="ws-section-head">
-              <h2 className="ws-section-title">剧情推演</h2>
+              <h2 className="ws-section-title">世界响应</h2>
               <Link href={`/projects/${encodedProjectId}/sim`} className="ws-text-link">
                 查看
               </Link>

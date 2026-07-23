@@ -42,10 +42,11 @@ Story data is persisted in the `novel-data` volume at `/data/stories.db`.
 Recommended production variables:
 
 ```bash
-OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+OPENAI_BASE_URL=https://api.moonshot.cn/v1
 OPENAI_API_KEY=
-NOVEL_AUTOGROWTH_DEFAULT_MODEL=qwen3.6-plus
-NOVEL_AUTOGROWTH_FAST_MODEL=qwen3.6-plus
+NOVEL_LLM_PROVIDER=openai
+NOVEL_AUTOGROWTH_DEFAULT_MODEL=kimi-k3
+NOVEL_AUTOGROWTH_FAST_MODEL=kimi-k3
 NOVEL_AUTOGROWTH_DB_PATH=/data/stories.db
 NOVEL_AUTOGROWTH_RUNTIME_CONFIG_PATH=/data/runtime_config.json
 NOVEL_AUTOGROWTH_CORS_ORIGINS=https://your-web-domain.example

@@ -4,6 +4,9 @@ import json
 import logging
 import os
 import tempfile
+import base64
+import ctypes
+from copy import deepcopy
 from pathlib import Path
 from threading import RLock
 from typing import Callable, Literal
@@ -18,6 +21,93 @@ load_environment_files()
 
 
 logger = logging.getLogger(__name__)
+
+
+_DPAPI_PREFIX = "dpapi:v1:"
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+
+def _windows_dpapi(data: bytes, *, protect: bool) -> bytes:
+    if os.name != "nt":
+        raise RuntimeError("windows_dpapi_unavailable")
+    source = ctypes.create_string_buffer(data)
+    source_blob = _DataBlob(
+        len(data),
+        ctypes.cast(source, ctypes.POINTER(ctypes.c_ubyte)),
+    )
+    result_blob = _DataBlob()
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    flags = 0x01  # CRYPTPROTECT_UI_FORBIDDEN
+    if protect:
+        ok = crypt32.CryptProtectData(
+            ctypes.byref(source_blob),
+            "Novel Autogrowth API key",
+            None,
+            None,
+            None,
+            flags,
+            ctypes.byref(result_blob),
+        )
+    else:
+        ok = crypt32.CryptUnprotectData(
+            ctypes.byref(source_blob),
+            None,
+            None,
+            None,
+            None,
+            flags,
+            ctypes.byref(result_blob),
+        )
+    if not ok:
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(result_blob.pbData, result_blob.cbData)
+    finally:
+        kernel32.LocalFree(result_blob.pbData)
+
+
+def _protect_api_key(value: str) -> str:
+    secret = str(value or "")
+    if not secret or secret.startswith(_DPAPI_PREFIX) or os.name != "nt":
+        return secret
+    encrypted = _windows_dpapi(secret.encode("utf-8"), protect=True)
+    return f"{_DPAPI_PREFIX}{base64.b64encode(encrypted).decode('ascii')}"
+
+
+def _unprotect_api_key(value: str) -> str:
+    secret = str(value or "")
+    if not secret.startswith(_DPAPI_PREFIX):
+        return secret
+    payload = base64.b64decode(secret[len(_DPAPI_PREFIX) :], validate=True)
+    return _windows_dpapi(payload, protect=False).decode("utf-8")
+
+
+def _configuration_storage_data(configuration: "RuntimeConfiguration") -> dict:
+    data = configuration.model_dump(mode="json")
+    for provider in data.get("providers", {}).values():
+        if isinstance(provider, dict):
+            provider["api_key"] = _protect_api_key(provider.get("api_key", ""))
+    agents = data.get("compatibility", {}).get("agents", {})
+    for agent in agents.values() if isinstance(agents, dict) else ():
+        if isinstance(agent, dict):
+            agent["api_key"] = _protect_api_key(agent.get("api_key", ""))
+    return data
+
+
+def _configuration_runtime_data(data: dict) -> dict:
+    restored = deepcopy(data)
+    for provider in restored.get("providers", {}).values():
+        if isinstance(provider, dict):
+            provider["api_key"] = _unprotect_api_key(provider.get("api_key", ""))
+    agents = restored.get("compatibility", {}).get("agents", {})
+    for agent in agents.values() if isinstance(agents, dict) else ():
+        if isinstance(agent, dict):
+            agent["api_key"] = _unprotect_api_key(agent.get("api_key", ""))
+    return restored
 
 
 AgentRuntimeName = Literal["character", "director", "writer", "memory"]
@@ -145,7 +235,7 @@ _agent_runtime_settings: dict[str, OpenAIRuntimeSettings] = {}
 
 def _atomic_write_configuration(configuration: RuntimeConfiguration, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = json.dumps(configuration.model_dump(mode="json"), indent=2, ensure_ascii=False)
+    serialized = json.dumps(_configuration_storage_data(configuration), indent=2, ensure_ascii=False)
     fd, temporary_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix="runtime_config_",
@@ -219,6 +309,7 @@ def _read_runtime_configuration(config_path: Path) -> tuple[RuntimeConfiguration
     data = json.loads(config_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise TypeError("configuration root must be an object")
+    data = _configuration_runtime_data(data)
     if _is_new_configuration(data):
         return RuntimeConfiguration.model_validate(data), False
     return _migrate_legacy_configuration(data), True

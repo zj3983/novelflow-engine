@@ -23,7 +23,7 @@ const STATUS_LABEL = {
   outlining: "大纲中",
   writing: "写作中",
   reviewing: "审核中",
-  simulating: "推演中",
+  simulating: "生成中",
   paused: "已暂停",
   completed: "已完成",
 } as const;

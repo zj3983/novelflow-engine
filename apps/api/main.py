@@ -4,6 +4,7 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from apps.api.routes.book_import import init_book_import_routes
 from apps.api.routes.file_projects import init_file_project_routes
@@ -51,6 +52,12 @@ app.include_router(init_novel_type_routes())
 app.include_router(init_book_import_routes())
 app.include_router(init_outline_routes())
 app.include_router(init_skill_pack_routes())
+
+
+@app.get("/", include_in_schema=False)
+def workbench() -> RedirectResponse:
+    frontend_url = os.getenv("NOVEL_AUTOGROWTH_FRONTEND_URL", "http://localhost:3000").rstrip("/")
+    return RedirectResponse(f"{frontend_url}/projects")
 
 
 @app.get("/health")

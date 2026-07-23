@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 import threading
 
@@ -61,6 +62,19 @@ def test_new_configuration_round_trips_and_resolves_selected_stage(tmp_path, mon
     assert resolved.base_url == "https://example.test/v1"
     assert resolved.temperature == 0.35
     assert resolved.new_character_policy == "Manual review"
+
+
+def test_runtime_configuration_does_not_store_plaintext_api_key_on_windows(tmp_path):
+    path = tmp_path / "runtime.json"
+    configuration = RuntimeConfiguration.model_validate(_configuration_data(provider="openai"))
+
+    save_runtime_configuration(configuration, path)
+
+    stored = path.read_text(encoding="utf-8")
+    if os.name == "nt":
+        assert "test-key" not in stored
+        assert "dpapi:v1:" in stored
+    assert load_runtime_configuration(path).providers.openai.api_key == "test-key"
 
 
 def test_load_migrates_codexcli_qwen_stage_models_and_discards_obsolete_models(tmp_path):

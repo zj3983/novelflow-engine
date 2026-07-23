@@ -101,7 +101,7 @@ function worldPulseLine(pulse: WorldPulseLatest): string {
     typeof pulse.chapter_number === "number" ? `源自第 ${pulse.chapter_number} 章` : "",
     typeof pulse.visible_at_chapter === "number" ? `第 ${pulse.visible_at_chapter} 章可见` : "",
   ].filter(Boolean);
-  return parts.join(" / ") || pulse.summary || "暂无长期世界脉冲。";
+  return parts.join(" / ") || pulse.summary || "暂无世界响应记录。";
 }
 
 function eventPlanLine(bundle: ChapterBundle): string {
@@ -265,8 +265,8 @@ export default function SimulationPage() {
           { label: "我的作品", href: "/projects" },
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
-        title="剧情推演"
-        subtitle={project?.current_focus || latest?.next_outline || "先看本章剧情目标、阻碍、爽点、代价和章末钩子，再用世界账本校验。"}
+        title="世界响应"
+        subtitle={project?.current_focus || latest?.next_outline || "导演确定本章剧情，世界响应只检查人物边界、信息可见性和连续性。"}
       />
 
       {error ? (
@@ -295,7 +295,7 @@ export default function SimulationPage() {
               <section className="ws-card ws-sim-chapter" key={bundle.chapter_number}>
                 <div className="ws-section-head">
                   <div>
-                    <p className="ws-card__title">第 {bundle.chapter_number} 章推演</p>
+                    <p className="ws-card__title">第 {bundle.chapter_number} 章响应记录</p>
                     <h2 className="ws-sim-chapter__title">{bundle.chapter_title || bundle.chapter_intent?.chapter_title || "未命名"}</h2>
                   </div>
                   <Link href={`/projects/${encodedProjectId}/write?chapter=${bundle.chapter_number}`} className="ws-text-link">
@@ -309,7 +309,7 @@ export default function SimulationPage() {
 
                 <div className="ws-sim-grid">
                   <div className="ws-simple-item">
-                    <strong>剧情焦点</strong>
+                    <strong>导演目标</strong>
                     <span>{eventPlanLine(bundle) || "暂无焦点。"}</span>
                   </div>
                   <div className="ws-simple-item">
@@ -324,9 +324,9 @@ export default function SimulationPage() {
                     <strong>运行状态</strong>
                     <span>
                       {status
-                        ? `${status.ok ? "完整推演" : "降级推演"} · ${status.mode || "unknown"}`
+                        ? `${status.ok ? "完整校验" : "降级校验"} · ${status.mode || "unknown"}`
                         : bundle.simulation_plan
-                          ? "完整推演"
+                          ? "完整校验"
                           : "章节回填记录"}
                     </span>
                   </div>
@@ -334,7 +334,7 @@ export default function SimulationPage() {
 
                 {plot ? (
                   <div className="ws-character-block">
-                    <strong>剧情推演</strong>
+                    <strong>导演计划明细</strong>
                     <div className="ws-sim-grid">
                       {plotLineItems(plot).map((item) => (
                         <div className="ws-simple-item" key={item.label}>
@@ -355,8 +355,8 @@ export default function SimulationPage() {
 
                 {pulse || inbox.length > 0 ? (
                   <div className="ws-character-block">
-                    <strong>长期世界脉冲</strong>
-                    <p className="ws-card__hint">{pulse ? worldPulseLine(pulse) : "本章暂无新的长期世界脉冲。"}</p>
+                    <strong>世界响应</strong>
+                    <p className="ws-card__hint">{pulse ? worldPulseLine(pulse) : "本章暂无新的世界响应。"}</p>
                     {publicTraces.length > 0 ? (
                       <ul>
                         {publicTraces.map((line, index) => (
@@ -398,7 +398,7 @@ export default function SimulationPage() {
 
                 {reactions.length > 0 ? (
                   <div className="ws-character-block">
-                    <strong>人物反应</strong>
+                    <strong>人物响应</strong>
                     <div className="ws-reaction-list">
                       {reactions.map((reaction) => (
                         <article className="ws-reaction-item" key={reaction.name}>
@@ -456,7 +456,7 @@ export default function SimulationPage() {
 
                 {facts.length > 0 ? (
                   <div className="ws-character-block">
-                    <strong>记忆事实</strong>
+                    <strong>连续性记录</strong>
                     <ul>
                       {facts.map((fact, index) => (
                         <li key={`${fact}-${index}`}>{fact}</li>
@@ -477,8 +477,8 @@ export default function SimulationPage() {
         </div>
       ) : (
         <section className="ws-card">
-          <p className="ws-card__title">剧情推演</p>
-          <p className="ws-card__hint">还没有章节推演记录。</p>
+          <p className="ws-card__title">世界响应</p>
+          <p className="ws-card__hint">还没有世界响应记录。</p>
         </section>
       )}
     </div>
