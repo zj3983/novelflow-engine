@@ -8,6 +8,7 @@ import { PageHeader } from "../../../../components/ws/PageHeader";
 import { WritingFlowPanel } from "../../../../components/ws/WritingFlow";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
+import { resolveChapterDirectionId } from "../../../../lib/chapterDirections";
 import {
   fetchGenerationJob,
   fetchProjectWritingPacket,
@@ -110,12 +111,9 @@ export default function WritePage() {
         if (cancelled) return;
         const options = packet.chapter_direction_options;
         setNextWritingPacket(packet);
-        setSelectedDirectionId((current) => {
-          if (current && options?.options.some((item) => item.id === current)) {
-            return current;
-          }
-          return options?.recommended_id || options?.options[0]?.id || "";
-        });
+        setSelectedDirectionId((current) =>
+          resolveChapterDirectionId(current, options?.options, options?.recommended_id),
+        );
       })
       .catch(() => {
         if (cancelled) return;

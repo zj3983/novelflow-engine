@@ -39,8 +39,15 @@ import {
 import { type ImportedWorldBlueprint, type updateProject } from "../lib/api";
 import { groupWorldFacts } from "../lib/worldDisplay";
 import { buildWritingFlow } from "../components/ws/WritingFlow";
+import { resolveChapterDirectionId } from "../lib/chapterDirections";
 
 const FIXTURE_PATH = path.resolve(__dirname, "../../../tests/fixtures/book-import-sample");
+
+test("chapter direction selection tolerates an omitted options array", () => {
+  expect(resolveChapterDirectionId("old", undefined, "recommended")).toBe("");
+  expect(resolveChapterDirectionId("", [], "recommended")).toBe("");
+  expect(resolveChapterDirectionId("old", [{ id: "next" }], "missing")).toBe("next");
+});
 
 test("写作流程只读取结构化步骤并展示资料来源", () => {
   const flow = buildWritingFlow([
