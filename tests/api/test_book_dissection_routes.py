@@ -627,9 +627,7 @@ def test_file_project_writing_packet_scopes_saved_outline_to_target_chapter(tmp_
         "volume_plan",
         "longform_framework",
         "chapter_formula",
-        "progression_rules",
         "forbidden_breaks",
-        "reality_bridge_rules",
     }
     hard_locks = "\n".join(packet["hard_locks"])
     assert "本章目标：确认收购规则" in hard_locks

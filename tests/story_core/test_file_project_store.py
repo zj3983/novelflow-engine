@@ -2283,6 +2283,40 @@ def test_file_project_writing_packet_exposes_next_chapter_direction_options(tmp_
     assert any("现实" in item["reader_promise"] for item in choices["options"])
 
 
+def test_file_project_writing_packet_does_not_offer_branches_over_explicit_chapter_outline(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        state={
+            "story_id": "s-file",
+            "genre": "网游",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    (store.webnovel_dir / "outline.json").write_text(
+        json.dumps(
+            {
+                "overall": {"story": "夜烬低调验证混沌之种。"},
+                "chapters": [
+                    {
+                        "chapter_number": 2,
+                        "title": "还差八份毒腺",
+                        "goal": "补齐八份毒腺并完成清道夫委托。",
+                        "payoff": "升到Lv.3。",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    packet = store.writing_packet(2)
+
+    assert packet["outline_context"]["chapter"]["title"] == "还差八份毒腺"
+    assert packet["chapter_direction_options"] == {}
+
+
 def test_file_project_generate_next_accepts_selected_chapter_direction(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(
@@ -2849,6 +2883,135 @@ def test_state_restores_protagonist_character_card_from_ledger(tmp_path):
     assert protagonist["game_id"] == "夜烬"
     assert protagonist["game_panel"]["level"] == "Lv.3"
     assert protagonist["game_panel"]["inventory"]["灰狼毒腺"] == 11
+
+
+def test_state_does_not_append_legacy_defaults_to_saved_protagonist(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "current_chapter": 1,
+            "world_facts": [],
+            "characters": [
+                {
+                    "name": "苏叶",
+                    "role": "protagonist",
+                    "game_id": "夜烬",
+                    "goals": ["在《神域》中完成清道夫委托。"],
+                    "memory": ["现实余额332.60元。"],
+                    "game_panel": {
+                        "game_id": "夜烬",
+                        "level": "Lv.2",
+                        "class_path": "见习者（未转职）",
+                        "currency": "39铜币",
+                    },
+                }
+            ],
+            "progression_ledger": {
+                "protagonist": {
+                    "real_name": "苏叶",
+                    "game_id": "夜烬",
+                    "level": "Lv.2",
+                    "class_path": "见习者（未转职）",
+                },
+                "economy": {"game_currency": "39铜币"},
+            },
+        },
+    )
+
+    protagonist = next(card for card in store.state()["characters"] if card["name"] == "苏叶")
+
+    assert protagonist["goals"] == ["在《神域》中完成清道夫委托。"]
+    assert protagonist["memory"] == ["现实余额332.60元。"]
+    assert protagonist["game_panel"]["class_path"] == "见习者（未转职）"
+    assert protagonist["game_panel"]["currency"] == "39铜币"
+
+
+def test_state_overlays_ledger_status_on_saved_protagonist_profile(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        state={
+            "story_id": "s-file",
+            "current_chapter": 2,
+            "genre_plugin_ids": ["game_webnovel"],
+            "world_facts": [],
+            "characters": [
+                {
+                    "name": "苏叶",
+                    "role": "主角",
+                    "goals": ["隐藏混沌之种"],
+                    "game_panel": {"level": "Lv.1", "currency": "0铜币"},
+                    "real_state": {"current": {"balance": "27.60元"}},
+                }
+            ],
+            "progression_ledger": {
+                "protagonist": {
+                    "real_name": "苏叶",
+                    "game_id": "夜烬",
+                    "level": "Lv.2",
+                    "class_path": "见习者（未转职）",
+                    "exp": "75/200",
+                },
+                "economy": {"game_currency": "39铜币", "inventory": {"灰狼毒腺": 2}},
+                "real": {"end_balance": "332.60元"},
+            },
+        },
+    )
+
+    protagonist = next(card for card in store.state()["characters"] if card["name"] == "苏叶")
+
+    assert protagonist["goals"] == ["隐藏混沌之种"]
+    assert protagonist["game_panel"]["level"] == "Lv.2"
+    assert protagonist["game_panel"]["exp"] == "75/200"
+    assert protagonist["game_panel"]["currency"] == "39铜币"
+    assert protagonist["game_panel"]["inventory"] == {"灰狼毒腺": 2}
+    assert protagonist["real_state"]["current"]["balance"] == "332.60元"
+
+
+def test_completed_quest_is_not_reintroduced_as_active(tmp_path):
+    store = FileProjectStore(tmp_path)
+    state = {
+        "story_id": "s-file",
+        "current_chapter": 1,
+        "genre_plugin_ids": ["game_webnovel"],
+        "progression_ledger": {
+            "quests": {
+                "active": "灰狼材料收集：2/10",
+                "available": "清道夫委托：提交灰狼毒腺×10；当前2/10",
+            }
+        },
+    }
+    chapter = {
+        "chapter_number": 1,
+        "body": "任务：灰狼材料收集。系统提示：完成任务：灰狼材料收集，获得经验100点。",
+    }
+
+    synced = store._sync_ledger_from_chapter_body(state, chapter)
+
+    quests = synced["progression_ledger"]["quests"]
+    assert "active" not in quests
+    assert quests["灰狼材料收集"] == "已完成"
+
+
+def test_negated_quest_completion_does_not_mark_quest_completed(tmp_path):
+    store = FileProjectStore(tmp_path)
+    state = {
+        "story_id": "s-file",
+        "current_chapter": 1,
+        "genre_plugin_ids": ["game_webnovel"],
+        "progression_ledger": {"quests": {}},
+    }
+    chapter = {
+        "chapter_number": 1,
+        "body": "任务：灰狼材料收集。他还没有完成任务：灰狼材料收集。",
+    }
+
+    synced = store._sync_ledger_from_chapter_body(state, chapter)
+
+    quests = synced["progression_ledger"]["quests"]
+    assert quests["active"] == "灰狼材料收集"
+    assert "灰狼材料收集" not in quests
 
 
 def test_state_adds_proposed_character_card_before_outline_appearance(tmp_path):

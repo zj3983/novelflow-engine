@@ -1285,10 +1285,10 @@ class FileProjectStore:
             level = f"Lv.{int(level_matches[-1])}"
             protagonist["level"] = level
             panel["level"] = level
-        if "见习冒险者" in text or "未转职" in text:
-            protagonist["identity"] = "见习冒险者（未转职）"
-            protagonist["class_path"] = "见习冒险者（未转职）"
-            panel["identity"] = "见习冒险者（未转职）"
+        if "见习者" in text or "见习冒险者" in text or "未转职" in text:
+            protagonist["identity"] = "见习者（未转职）"
+            protagonist["class_path"] = "见习者（未转职）"
+            panel["identity"] = "见习者（未转职）"
 
         exp_matches = re.findall(r"经验\s*([0-9]+\s*/\s*[0-9]+)", progression_text)
         if exp_matches:
@@ -1713,6 +1713,15 @@ class FileProjectStore:
         skills = protagonist.get("skills") if isinstance(protagonist.get("skills"), list) else []
         weapon = str(equipment.get("weapon") or "新手法杖").strip()
         durability = str(equipment.get("durability") or protagonist.get("weapon_durability") or "").strip()
+        current_goal = "推进当前游戏目标。"
+        recovered_memory: list[str] = []
+        real_balance = real.get("end_balance") or real.get("balance")
+        if real_balance:
+            recovered_memory.append(f"当前现实余额：{real_balance}。")
+        level = protagonist.get("level") or ""
+        exp = protagonist.get("exp") or ""
+        if level or exp:
+            recovered_memory.append(f"当前游戏进度：{level}，经验{exp}。")
         return {
             "name": name or game_id,
             "role": "protagonist",
@@ -1723,23 +1732,16 @@ class FileProjectStore:
             "interaction_mode": "对外少说异常，只说够用的理由；面对NPC按规则办事，面对玩家保持普通新手的样子。",
             "story_function": "承载现实压力、隐藏优势和新手村快速成长线。",
             "chapter_role": "主视角",
-            "goals": [
-                "在《天启之门》前期暗中拉开进度。",
-                "继续把异常掉落转成稳定收益，同时不暴露千倍爆率。",
-            ],
-            "memory": [
-                "现实急账已在第一章通过裂纹狼心担保交易解决，余额312.60元。",
-                f"当前进度：{protagonist.get('level') or 'Lv.3'}，经验{protagonist.get('exp') or ''}。",
-                "核心异常：底层协议校验通过、掉落判定×1000、混沌之种未解析。",
-            ],
-            "location": "灰烬村 / 灰石裂缝外沿",
+            "goals": [current_goal],
+            "memory": recovered_memory,
+            "location": str(protagonist.get("location") or state.get("current_location") or ""),
             "current_emotion": "克制",
             "secrets": ["掉落判定×1000", "混沌之种未解析"],
             "poison_points": ["不能写成装高手", "不能让外人全知主角异常", "对话要口语化并说完整"],
             "game_panel": {
                 "game_id": game_id,
                 "level": protagonist.get("level") or (ledger.get("panel") or {}).get("level"),
-                "class_path": protagonist.get("class_path") or protagonist.get("identity") or "见习冒险者（未转职）",
+                "class_path": protagonist.get("class_path") or protagonist.get("identity") or "见习者（未转职）",
                 "exp": protagonist.get("exp") or "",
                 "hp": protagonist.get("hp") or "",
                 "mp": protagonist.get("mp") or "",
@@ -2137,7 +2139,7 @@ class FileProjectStore:
         inv_text = "、".join(f"{name}×{count}" for name, count in inventory.items()) if inventory else "空"
         facts: list[str] = [
             f"苏叶现实余额{real_balance}" if real_balance else "",
-            f"夜烬仍为{str(protagonist.get('level') or 'Lv.1')}见习冒险者（未转职）",
+            f"夜烬仍为{str(protagonist.get('level') or 'Lv.1')}见习者（未转职）",
             f"经验{exp}" if exp else "",
             f"生命{hp}" if hp else "",
             f"法力{mp}" if mp else "",
@@ -2211,7 +2213,7 @@ class FileProjectStore:
         values = {
             "game_id": game_id,
             "level": protagonist.get("level"),
-            "class_path": protagonist.get("class_path"),
+            "class_path": protagonist.get("class_path") or protagonist.get("identity"),
             "exp": protagonist.get("exp"),
             "hp": protagonist.get("hp"),
             "mp": protagonist.get("mp"),
@@ -2223,7 +2225,7 @@ class FileProjectStore:
             "quests": quests,
             "risk": pressure,
         }
-        skills = ledger.get("skills")
+        skills = ledger.get("skills") or protagonist.get("skills")
         if isinstance(skills, list):
             values["skills"] = [str(item) for item in skills if str(item).strip()]
         elif isinstance(skills, dict):
@@ -2463,7 +2465,7 @@ class FileProjectStore:
             )
             money = str(amount_matches[-1]).strip() if amount_matches else ""
         patrol = last(r"后坡巡查[：:]\s*(\d+\s*/\s*\d+)")
-        quest_line = last(r"(?:任务\s*[：:]|quest(?:\s+status)?\s*[:=])\s*([^\n。】]+)")
+        quest_line = last(r"(?<!完成)(?:任务\s*[：:]|quest(?:\s+status)?\s*[:=])\s*([^\n。】]+)")
         real_balance = last(r"(?:银行卡可用余额|现实余额|可用余额)\s*[：:]\s*(\d+(?:\.\d+)?\s*元)")
 
         if level:
@@ -2518,7 +2520,25 @@ class FileProjectStore:
             occupied = occupied_match.group(1) if occupied_match else ""
         if occupied:
             economy["backpack"] = occupied.replace(" ", "")
-        if quest_line:
+        completed_quests: list[str] = []
+        for match in re.finditer(r"完成任务\s*[：:]?\s*([^\n。；;，,】\]]+)", body):
+            prefix = body[max(0, match.start() - 12) : match.start()]
+            if re.search(
+                r"(?:还没有|没有|尚未|并未|未能|无法|不能|如果|若|要是|只要|一旦|等到?|是否|能否)\s*$",
+                prefix,
+            ):
+                continue
+            completed_name = match.group(1).strip(" \t：:，,")
+            if completed_name:
+                completed_quests.append(completed_name)
+
+        active_quest = str(quests.get("active") or "").strip()
+        active_name = re.split(r"[：:(（]", active_quest, maxsplit=1)[0].strip()
+        for completed_name in completed_quests:
+            quests[completed_name] = "已完成"
+            if active_name == completed_name:
+                quests.pop("active", None)
+        if quest_line and quest_line not in completed_quests:
             quests["active"] = quest_line
 
         if "清道夫委托已完成" in body:
@@ -2536,10 +2556,10 @@ class FileProjectStore:
             if stale_quest in quests and stale_quest not in body:
                 quests.pop(stale_quest, None)
 
-        protagonist.setdefault("identity", "见习冒险者（未转职）")
-        protagonist.setdefault("class_path", "见习冒险者（未转职）")
+        protagonist.setdefault("identity", "见习者（未转职）")
+        protagonist.setdefault("class_path", "见习者（未转职）")
         protagonist.setdefault("level", "Lv.1")
-        panel.setdefault("identity", "见习冒险者（未转职）")
+        panel.setdefault("identity", "见习者（未转职）")
         panel.setdefault("level", "Lv.1")
 
         ledger["protagonist"] = protagonist
@@ -2556,7 +2576,7 @@ class FileProjectStore:
             if not isinstance(character, dict) or character.get("role") not in {"protagonist", "主角"}:
                 continue
             character.setdefault("game_panel", {})
-            character["game_panel"]["identity"] = protagonist.get("identity", "见习冒险者（未转职）")
+            character["game_panel"]["identity"] = protagonist.get("identity", "见习者（未转职）")
             self._sync_game_character_from_ledger(
                 character,
                 ledger,
@@ -3620,9 +3640,41 @@ class FileProjectStore:
         sanitized = self._sanitize_story_state(state)
         additions: list[dict[str, Any]] = []
         project = self.project()
-        protagonist_card = self._protagonist_character_card(sanitized, self.project())
-        if protagonist_card:
-            additions.append(protagonist_card)
+        saved_characters = sanitized.get("characters") if isinstance(sanitized.get("characters"), list) else []
+        protagonist_indexes = [
+            index
+            for index, card in enumerate(saved_characters)
+            if isinstance(card, dict)
+            and (
+                str(card.get("role") or "").strip().casefold() in {"protagonist", "主角"}
+                or str(card.get("character_tier") or "").strip().casefold() == "protagonist"
+            )
+        ]
+        is_game_story = self._is_game_story_payload(project, sanitized)
+        if protagonist_indexes and is_game_story:
+            ledger = sanitized.get("progression_ledger") if isinstance(sanitized.get("progression_ledger"), dict) else {}
+            real = ledger.get("real") if isinstance(ledger.get("real"), dict) else {}
+            real_balance = real.get("end_balance") or real.get("balance")
+            for index in protagonist_indexes:
+                card = dict(saved_characters[index])
+                self._sync_game_character_from_ledger(
+                    card,
+                    ledger,
+                    chapter_number=int(sanitized.get("current_chapter") or 0),
+                )
+                if real_balance:
+                    real_state = dict(card.get("real_state") or {})
+                    current_real = dict(real_state.get("current") or {})
+                    current_real["balance"] = real_balance
+                    real_state["current"] = current_real
+                    real_state.setdefault("recent_changes", [])
+                    card["real_state"] = real_state
+                saved_characters[index] = card
+            sanitized["characters"] = saved_characters
+        elif not protagonist_indexes:
+            protagonist_card = self._protagonist_character_card(sanitized, project)
+            if protagonist_card:
+                additions.append(protagonist_card)
         additions.extend(self._proposed_character_cards_from_outline(sanitized, project))
         for number in self.chapter_numbers():
             try:
@@ -4591,7 +4643,7 @@ class FileProjectStore:
         )
         chapter_direction_options = (
             self._chapter_direction_options(state, project, int(target or 0))
-            if int(target or 0) > current_chapter
+            if int(target or 0) > current_chapter and not chapter_outline
             else {}
         )
         enabled_skill_ids = [
