@@ -1445,32 +1445,33 @@ def _compact_writer_plan_for_prompt(plan: Any) -> dict[str, Any]:
         return {}
     event_plan = plan.get("event_plan") if isinstance(plan.get("event_plan"), dict) else {}
     chapter_intent = plan.get("chapter_intent") if isinstance(plan.get("chapter_intent"), dict) else {}
-    memory_constraints = plan.get("memory_constraints") if isinstance(plan.get("memory_constraints"), dict) else {}
     result: dict[str, Any] = {}
     if chapter_intent:
-        result["chapter_intent"] = _slim_prompt_value(chapter_intent)
+        compact_intent = {
+            key: _slim_prompt_value(chapter_intent.get(key))
+            for key in (
+                "chapter_title",
+                "next_focus",
+                "primary_conflict",
+                "secondary_conflict",
+            )
+            if chapter_intent.get(key) not in (None, "", [], {})
+        }
+        if compact_intent:
+            result["chapter_intent"] = compact_intent
     if event_plan:
-        result["event_plan"] = {
-            "chapter_title": event_plan.get("chapter_title"),
-            "turn": event_plan.get("turn"),
-            "pivot": event_plan.get("pivot"),
-            "collision": event_plan.get("collision"),
-            "chapter_satisfaction": _slim_prompt_value(event_plan.get("chapter_satisfaction")),
-            "ordered_actions": _slim_prompt_value(event_plan.get("ordered_actions", [])[:6]),
-            "npc_beats": _slim_prompt_value(event_plan.get("npc_beats", [])[:4]),
-            "quest_beats": _slim_prompt_value(event_plan.get("quest_beats", [])[:4]),
-            "location_beats": _slim_prompt_value(event_plan.get("location_beats", [])[:4]),
-            "world_reactions": _slim_prompt_value(event_plan.get("world_reactions", [])[:4]),
-            "stakes": event_plan.get("stakes"),
-            "next_focus": event_plan.get("next_focus"),
-            "chapter_end_hook": _slim_prompt_value(event_plan.get("chapter_end_hook")),
+        compact_event = {
+            key: _slim_prompt_value(event_plan.get(key))
+            for key in (
+                "chapter_title",
+                "chapter_satisfaction",
+                "ordered_actions",
+                "chapter_end_hook",
+            )
+            if event_plan.get(key) not in (None, "", [], {})
         }
-    if memory_constraints:
-        result["memory_constraints"] = {
-            "must_keep_facts": _slim_prompt_value(memory_constraints.get("must_keep_facts", [])[:8]),
-            "unresolved_threads": _slim_prompt_value(memory_constraints.get("unresolved_threads", [])[:5]),
-            "ledger_updates": _slim_prompt_value(memory_constraints.get("ledger_updates")),
-        }
+        if compact_event:
+            result["event_plan"] = compact_event
     scene_cards = plan.get("scene_cards")
     if isinstance(scene_cards, list) and scene_cards:
         compact_cards: list[dict[str, Any]] = []

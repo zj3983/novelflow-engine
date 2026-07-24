@@ -161,6 +161,8 @@ def test_director_prompt_receives_relevant_character_card_and_non_game_satisfact
     assert "遇到长辈阻拦时先问证据" in prompt
     assert "chapter_satisfaction" in prompt
     assert "visible_payoff" in prompt
+    assert "chapter_summary" not in prompt
+    assert "ledger_updates" not in prompt
 
 
 def test_director_prompt_uses_compact_chapter_slice_instead_of_full_snapshot_dump():

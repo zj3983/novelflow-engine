@@ -1,5 +1,10 @@
 from packages.story_core.models import CharacterState, StoryState
-from packages.story_core.orchestrator import StoryOrchestrator, _character_context_for_prompt, _writer_character_section
+from packages.story_core.orchestrator import (
+    StoryOrchestrator,
+    _character_context_for_prompt,
+    _compact_writer_plan_for_prompt,
+    _writer_character_section,
+)
 from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
 
 
@@ -14,6 +19,57 @@ def test_segment_prompt_puts_scene_method_before_guardrails():
     assert "写法施工单" not in prompt
     assert "本段收住自己的场面" in prompt
     assert prompt.index("## 本章方向") < prompt.index("写作保护线")
+
+
+def test_compact_writer_plan_excludes_planning_memory_and_world_noise():
+    compacted = _compact_writer_plan_for_prompt(
+        {
+            "chapter_intent": {
+                "chapter_title": "补齐委托",
+                "next_focus": "查看新收购单",
+                "primary_conflict": {"collision": "刷新点竞争激烈"},
+            },
+            "event_plan": {
+                "chapter_title": "补齐委托",
+                "ordered_actions": ["换到侧坡", "凑齐材料", "提交任务"],
+                "chapter_satisfaction": {
+                    "obstacle": "刷新点竞争激烈",
+                    "visible_payoff": "提交任务并升级",
+                    "cost": "消耗法力药水",
+                    "state_change": "升到二级",
+                    "next_hook": "查看新收购单",
+                },
+                "chapter_end_hook": {"content": "查看新收购单"},
+                "world_reactions": ["不应进入写手合同的后台反应"],
+                "npc_beats": ["不应进入写手合同的NPC调度"],
+            },
+            "memory_constraints": {
+                "must_keep_facts": ["旧事实"],
+                "ledger_updates": {"protagonist": {"level": 2}},
+            },
+            "debug_noise": "不应进入写手合同",
+        }
+    )
+
+    assert compacted == {
+        "chapter_intent": {
+            "chapter_title": "补齐委托",
+            "next_focus": "查看新收购单",
+            "primary_conflict": {"collision": "刷新点竞争激烈"},
+        },
+        "event_plan": {
+            "chapter_title": "补齐委托",
+            "chapter_satisfaction": {
+                "obstacle": "刷新点竞争激烈",
+                "visible_payoff": "提交任务并升级",
+                "cost": "消耗法力药水",
+                "state_change": "升到二级",
+                "next_hook": "查看新收购单",
+            },
+            "ordered_actions": ["换到侧坡", "凑齐材料", "提交任务"],
+            "chapter_end_hook": {"content": "查看新收购单"},
+        },
+    }
 
 
 def test_segment_prompt_uses_web_game_director_card_not_full_plan_dump():
