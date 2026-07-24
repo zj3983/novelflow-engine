@@ -38,10 +38,16 @@ import {
 } from "../components/ws/WorldRulesEditor";
 import { type ImportedWorldBlueprint, type updateProject } from "../lib/api";
 import { groupWorldFacts } from "../lib/worldDisplay";
-import { buildWritingFlow } from "../components/ws/WritingFlow";
+import { buildWritingFlow, writingFlowPlanningSourceText } from "../components/ws/WritingFlow";
 import { resolveChapterDirectionId } from "../lib/chapterDirections";
 
 const FIXTURE_PATH = path.resolve(__dirname, "../../../tests/fixtures/book-import-sample");
+
+test("chapter planning source is shown in plain language", () => {
+  expect(writingFlowPlanningSourceText({ planning_source: "outline" })).toBe("已有章节细纲");
+  expect(writingFlowPlanningSourceText({ planning_source: "model_fallback" })).toBe("模型补全");
+  expect(writingFlowPlanningSourceText({})).toBe("");
+});
 
 test("chapter direction selection tolerates an omitted options array", () => {
   expect(resolveChapterDirectionId("old", undefined, "recommended")).toBe("");

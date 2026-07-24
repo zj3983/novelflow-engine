@@ -266,7 +266,7 @@ export default function SimulationPage() {
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
         title="世界响应"
-        subtitle={project?.current_focus || latest?.next_outline || "导演确定本章剧情，世界响应只检查人物边界、信息可见性和连续性。"}
+        subtitle={project?.current_focus || latest?.next_outline || "章节规划确定本章剧情，世界响应只检查人物边界、信息可见性和连续性。"}
       />
 
       {error ? (
@@ -309,7 +309,7 @@ export default function SimulationPage() {
 
                 <div className="ws-sim-grid">
                   <div className="ws-simple-item">
-                    <strong>导演目标</strong>
+                    <strong>章节目标</strong>
                     <span>{eventPlanLine(bundle) || "暂无焦点。"}</span>
                   </div>
                   <div className="ws-simple-item">
@@ -334,7 +334,7 @@ export default function SimulationPage() {
 
                 {plot ? (
                   <div className="ws-character-block">
-                    <strong>导演计划明细</strong>
+                    <strong>章节计划明细</strong>
                     <div className="ws-sim-grid">
                       {plotLineItems(plot).map((item) => (
                         <div className="ws-simple-item" key={item.label}>

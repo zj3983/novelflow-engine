@@ -5016,7 +5016,7 @@ class FileProjectStore:
         prompts: list[dict[str, Any]] = [
             self._prompt_entry(
                 key="director_plan",
-                title="导演/剧情计划 Prompt",
+                title="章节规划补全 Prompt",
                 agent="director",
                 stage="剧情计划生成",
                 content=orchestrator._plan_prompt(story, target),

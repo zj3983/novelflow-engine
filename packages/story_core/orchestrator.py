@@ -2026,7 +2026,7 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     }
     satisfaction_values = [str(satisfaction.get(key) or "").strip() for key in required_satisfaction]
     if any(value in placeholder_phrases for value in [*satisfaction_values, str(hook.get("content") or "").strip()]):
-        issues.append("导演计划仍含空泛占位语，必须改成能直接写成场景的具体行动、阻力、结果和章末事件。")
+        issues.append("章节规划仍含空泛占位语，必须改成能直接写成场景的具体行动、阻力、结果和章末事件。")
 
     moves = []
     for key in ("character_moves",):
@@ -2133,7 +2133,7 @@ def _director_revision_prompt(base_prompt: str, plan: dict, issues: list[str]) -
         [
             base_prompt,
             "",
-            "上一次导演计划未通过硬性验收，请完整重做JSON。",
+            "上一次章节规划未通过硬性验收，请完整重做JSON。",
             f"必须修复：{'；'.join(issues)}",
             "不得保留错误材料名、占位人物或空的章节收益/钩子；不要输出解释。",
             f"上一次JSON：{_plain_prompt_json(plan)}",
@@ -5749,20 +5749,23 @@ class StoryOrchestrator:
                 "ledger_sections": sorted((working_story.progression_ledger or {}).keys()),
             },
         )
+        outline_plan = build_outline_chapter_plan(director_context, chapter_number)
+        planning_source = "outline" if outline_plan is not None else "model_fallback"
+        planning_modules = ["chapter_planning"] if outline_plan is not None else ["chapter_planning", "planner_model"]
         self._emit_workflow_step(
             "director_plan",
-            "导演规划",
+            "章节规划",
             status="running",
-            source="director",
-            used_modules=["director_agent"],
+            source="chapter_planning",
+            used_modules=planning_modules,
             reads=["大纲读取结果", "本章角色卡", "世界观与连续性"],
         )
 
         self._emit_progress_with_artifact(
             "剧情计划生成中...",
             "outline_plan",
-            source="director",
-            used_modules=["director_agent", "outline_agent", "character_agent", "memory_retrieval"],
+            source="chapter_planning",
+            used_modules=[*planning_modules, "outline_agent", "character_agent", "memory_retrieval"],
             reason="读取相关大纲、连续性、长期记忆、世界状态和角色卡，生成本章剧情计划",
             inputs={
                 "chapter_number": chapter_number,
@@ -5776,8 +5779,6 @@ class StoryOrchestrator:
                 "world_facts_count": len(working_story.world_facts),
             },
         )
-        outline_plan = build_outline_chapter_plan(director_context, chapter_number)
-        planning_source = "outline" if outline_plan is not None else "model_fallback"
         director_prompt = ""
         if outline_plan is not None:
             plan_text = json.dumps(outline_plan, ensure_ascii=False)
@@ -5794,7 +5795,7 @@ class StoryOrchestrator:
             )
         if plan_error and "有效 JSON" in plan_error:
             self._emit_progress_with_artifact(
-                "导演返回格式错误，正在重试...",
+                "章节规划补全返回格式错误，正在重试...",
                 "outline_plan_retry",
                 source="director",
                 used_modules=["director_agent", "json_contract"],
@@ -5818,18 +5819,18 @@ class StoryOrchestrator:
         if plan_error:
             self._emit_workflow_step(
                 "director_plan",
-                "导演规划",
+                "章节规划",
                 status="error",
-                source="director",
-                used_modules=["director_agent"],
+                source="chapter_planning",
+                used_modules=planning_modules,
                 reads=["大纲读取结果", "本章角色卡", "世界观与连续性"],
                 outputs={"error": plan_error},
             )
             self._emit_progress_with_artifact(
                 "剧情计划生成失败",
                 "outline_plan",
-                source="director",
-                used_modules=["director_agent", "outline_agent", "character_agent", "memory_retrieval"],
+                source="chapter_planning",
+                used_modules=[*planning_modules, "outline_agent", "character_agent", "memory_retrieval"],
                 reason="规划模型返回异常，中断本轮写作",
                 inputs={"chapter_number": chapter_number, "story_outline": outline_snapshot},
                 outputs={"error": plan_error},
@@ -5841,10 +5842,10 @@ class StoryOrchestrator:
         except Exception as exc:
             self._emit_workflow_step(
                 "director_plan",
-                "导演规划",
+                "章节规划",
                 status="error",
-                source="director",
-                used_modules=["director_agent"],
+                source="chapter_planning",
+                used_modules=planning_modules,
                 outputs={"error": f"outline_plan_parse_failed:{exc}"},
             )
             self._emit_progress_with_artifact(
@@ -5864,11 +5865,11 @@ class StoryOrchestrator:
         )
         if director_issues:
             self._emit_progress_with_artifact(
-                "导演计划未通过，定向重做中...",
+                "章节规划未通过，定向重做中...",
                 "director_quality_gate",
                 source="director",
                 used_modules=["director_agent", "continuity_gate"],
-                reason="导演计划存在硬性结构或连续性错误，禁止交给写手",
+                reason="章节规划存在硬性结构或连续性错误，禁止交给写手",
                 inputs={"issues": director_issues, "rejected_plan": plan},
             )
             retry_text, retry_error = self._timed_chat(
@@ -5896,11 +5897,11 @@ class StoryOrchestrator:
             director_issues = _director_plan_quality_issues(working_story, plan)
             if director_issues:
                 self._emit_progress_with_artifact(
-                    "导演计划重做后仍未通过",
+                    "章节规划重做后仍未通过",
                     "director_quality_gate",
                     source="director",
                     used_modules=["director_agent", "continuity_gate"],
-                    reason="第二次导演计划仍有硬性错误，本轮生成终止",
+                    reason="第二次章节规划仍有硬性错误，本轮生成终止",
                     outputs={"issues": director_issues, "rejected_plan": plan},
                 )
                 return _failed_bundle(
@@ -5918,9 +5919,9 @@ class StoryOrchestrator:
         self._emit_progress_with_artifact(
             "剧情计划生成完成",
             "outline_plan",
-            source="director",
-            used_modules=["director_agent", "outline_agent", "character_agent", "memory_retrieval"],
-            reason="导演JSON已解析并完成字段规范化，后续世界响应不得改写剧情决策",
+            source="chapter_planning",
+            used_modules=[*planning_modules, "outline_agent", "character_agent", "memory_retrieval"],
+            reason="章节规划已完成字段规范化，后续世界响应不得改写剧情决策",
             inputs={
                 "chapter_number": chapter_number,
                 "planning_source": planning_source,
@@ -5937,10 +5938,10 @@ class StoryOrchestrator:
         )
         self._emit_workflow_step(
             "director_plan",
-            "导演规划",
+            "章节规划",
             status="done",
-            source="director",
-            used_modules=["director_agent"],
+            source="chapter_planning",
+            used_modules=planning_modules,
             reads=["大纲读取结果", "本章角色卡", "世界观与连续性"],
             outputs={
                 "chapter_title": chapter_intent.get("chapter_title", ""),
@@ -5956,7 +5957,7 @@ class StoryOrchestrator:
             status="running",
             source="world_simulation",
             used_modules=["world_simulation", "scene_cards"],
-            reads=["导演规划", "世界状态", "信息边界"],
+            reads=["章节规划", "世界状态", "信息边界"],
         )
         chapter_seed = build_chapter_seed(working_story, chapter_number)
         simulation_plan = build_chapter_simulation_plan(
@@ -6017,7 +6018,7 @@ class StoryOrchestrator:
             "world_response",
             source="world_simulation",
             used_modules=["world_simulation", "scene_cards", "style_guidance"],
-            reason="依据导演计划检查世界反应、信息边界并生成执行场景卡，不新增剧情目标",
+            reason="依据章节规划检查世界反应、信息边界并生成执行场景卡，不新增剧情目标",
             inputs={"chapter_number": chapter_number, "outline_snapshot": outline_progress_snapshot, "character_cards": planning_character_cards},
             outputs={
                 "event_plan_keys": sorted(event_plan.keys()) if isinstance(event_plan, dict) else [],
@@ -6033,7 +6034,7 @@ class StoryOrchestrator:
             status="done",
             source="world_simulation",
             used_modules=["world_simulation", "scene_cards", "style_guidance"],
-            reads=["导演规划", "世界状态", "信息边界"],
+            reads=["章节规划", "世界状态", "信息边界"],
             outputs={
                 "world_simulation_ran": run_world_simulation,
                 "world_events": len(world_events),
@@ -6074,7 +6075,7 @@ class StoryOrchestrator:
             status="running",
             source="writer",
             used_modules=["writer_agent", "plot_contract", "writing_taskbook"],
-            reads=["导演规划", "场景卡", "本章角色卡", "相关世界规则", "连续性事实"],
+            reads=["章节规划", "场景卡", "本章角色卡", "相关世界规则", "连续性事实"],
         )
 
         self._emit_progress_with_artifact(
@@ -6232,7 +6233,7 @@ class StoryOrchestrator:
             status="done",
             source="writer",
             used_modules=["writer_agent", "plot_contract", "writing_taskbook"],
-            reads=["导演规划", "场景卡", "本章角色卡", "相关世界规则", "连续性事实"],
+            reads=["章节规划", "场景卡", "本章角色卡", "相关世界规则", "连续性事实"],
             outputs={"body_chars": _chapter_char_count(body), "chapter_number": chapter_number},
         )
         self._emit_workflow_step(
@@ -6241,7 +6242,7 @@ class StoryOrchestrator:
             status="running",
             source="reviewer",
             used_modules=["reviewer_agent", "editor_agent"],
-            reads=["正文", "导演规划", "连续性事实", "角色卡"],
+            reads=["正文", "章节规划", "连续性事实", "角色卡"],
         )
         writing_review = _review_chapter_body(
             chapter_number,
@@ -6511,7 +6512,7 @@ class StoryOrchestrator:
             status="done",
             source="reviewer",
             used_modules=["reviewer_agent", "editor_agent", "quality_gate"],
-            reads=["正文", "导演规划", "连续性事实", "角色卡"],
+            reads=["正文", "章节规划", "连续性事实", "角色卡"],
             outputs={
                 "body_chars": body_chars,
                 "needs_revision": bool(review_gate.get("needs_revision")),

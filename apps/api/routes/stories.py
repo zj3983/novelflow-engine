@@ -3179,7 +3179,7 @@ def get_project_prompt_preview(project_id: str, chapter_number: int | None = Non
 
             key="director_plan",
 
-            title="导演/规划 Prompt",
+            title="章节规划补全 Prompt",
 
             agent="director",
 

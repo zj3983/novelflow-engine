@@ -14,7 +14,7 @@ export type WritingFlowStage = {
 
 const STAGE_LABELS: Record<string, string> = {
   orchestrator: "编排器",
-  director: "导演",
+  director: "章节规划",
   writer: "写手",
   review: "审稿",
   memory: "记忆更新",
@@ -26,7 +26,8 @@ const SOURCE_LABELS: Record<string, string> = {
   "file-project-route": "任务接口层",
   orchestrator: "编排器",
   context_loader: "资料读取器",
-  director: "导演模块",
+  chapter_planning: "章节规划",
+  director: "章节规划模块",
   writer: "写作模块",
   reviewer: "审稿模块",
   memory: "记忆模块",
@@ -55,6 +56,12 @@ function artifactText(artifact: GenerationJobStep["artifact"]): string {
   } catch {
     return String(artifact);
   }
+}
+
+export function writingFlowPlanningSourceText(outputs: Record<string, unknown>): string {
+  if (outputs.planning_source === "outline") return "已有章节细纲";
+  if (outputs.planning_source === "model_fallback") return "模型补全";
+  return "";
 }
 
 export function buildWritingFlow(steps: GenerationJobStep[]): WritingFlowStage[] {
@@ -141,6 +148,11 @@ export function WritingFlowPanel({ steps, status }: { steps: GenerationJobStep[]
               {item.usedModules.length > 0 ? (
                 <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
                   调用：{item.usedModules.join("、")}
+                </p>
+              ) : null}
+              {writingFlowPlanningSourceText(item.outputs) ? (
+                <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                  规划来源：{writingFlowPlanningSourceText(item.outputs)}
                 </p>
               ) : null}
               {Object.keys(item.outputs).length > 0 ? (

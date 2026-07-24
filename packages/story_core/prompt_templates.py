@@ -50,7 +50,7 @@ class PromptTemplate:
 _DEFAULT_TEMPLATES: dict[str, PromptTemplate] = {
     "director_generic": PromptTemplate(
         key="director_generic",
-        title="导演剧情计划（通用）",
+        title="章节规划补全（通用）",
         stage="planning",
         content="\n".join(
             [
@@ -70,7 +70,7 @@ _DEFAULT_TEMPLATES: dict[str, PromptTemplate] = {
     ),
     "director": PromptTemplate(
         key="director",
-        title="导演剧情计划（网游）",
+        title="章节规划补全（网游）",
         stage="planning",
         content="\n".join(
             [
