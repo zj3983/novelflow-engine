@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 from packages.story_core.agent_base import compact_list, compact_text, parse_json_message_content
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate, review_chapter_governance
+from packages.story_core.chapter_planning import build_outline_chapter_plan
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.chapter_plot_contract import build_chapter_plot_contract
 from packages.story_core.chapter_scope import first_chapter_trade_authorized
@@ -5774,15 +5775,22 @@ class StoryOrchestrator:
                 "world_facts_count": len(working_story.world_facts),
             },
         )
-        director_prompt = self._plan_prompt(working_story, chapter_number, director_context)
-        plan_text, plan_error = self._timed_chat(
-            working_story,
-            director_prompt,
-            max_tokens=8000,
-            json_mode=True,
-            agent="planner",
-            stage="剧情计划生成",
-        )
+        outline_plan = build_outline_chapter_plan(director_context, chapter_number)
+        planning_source = "outline" if outline_plan is not None else "model_fallback"
+        director_prompt = ""
+        if outline_plan is not None:
+            plan_text = json.dumps(outline_plan, ensure_ascii=False)
+            plan_error = ""
+        else:
+            director_prompt = self._plan_prompt(working_story, chapter_number, director_context)
+            plan_text, plan_error = self._timed_chat(
+                working_story,
+                director_prompt,
+                max_tokens=8000,
+                json_mode=True,
+                agent="planner",
+                stage="剧情计划生成",
+            )
         if plan_error and "有效 JSON" in plan_error:
             self._emit_progress_with_artifact(
                 "导演返回格式错误，正在重试...",
@@ -5850,7 +5858,7 @@ class StoryOrchestrator:
             return _failed_bundle(working_story, chapter_number, f"outline_plan_parse_failed:{exc}")
         director_issues = (
             _director_plan_quality_issues(working_story, plan)
-            if _director_quality_gate_enabled(working_story)
+            if outline_plan is None and _director_quality_gate_enabled(working_story)
             else []
         )
         if director_issues:
@@ -5904,7 +5912,8 @@ class StoryOrchestrator:
         chapter_intent = _normalize_intent(plan.get("chapter_intent"))
         event_plan = _normalize_event_plan(plan.get("event_plan"), chapter_number, working_story)
         memory_constraints = _normalize_memory_constraints(plan.get("memory_constraints"), working_story)
-        chapter_summary_data = _normalize_chapter_summary(plan.get("chapter_summary"), chapter_number)
+        memory_constraints["ledger_updates"] = {}
+        chapter_summary_data: dict[str, Any] = {}
         self._emit_progress_with_artifact(
             "剧情计划生成完成",
             "outline_plan",
@@ -5913,6 +5922,7 @@ class StoryOrchestrator:
             reason="导演JSON已解析并完成字段规范化，后续世界响应不得改写剧情决策",
             inputs={
                 "chapter_number": chapter_number,
+                "planning_source": planning_source,
                 "project_snapshot": director_context.get("project_snapshot", {}),
                 "chapter_seed": director_context.get("chapter_seed", {}),
                 "character_cards": planning_character_cards,
@@ -5922,7 +5932,6 @@ class StoryOrchestrator:
                 "chapter_intent": chapter_intent,
                 "event_plan": event_plan,
                 "memory_constraints": memory_constraints,
-                "chapter_summary": chapter_summary_data,
             },
         )
         self._emit_workflow_step(
@@ -5934,6 +5943,7 @@ class StoryOrchestrator:
             reads=["大纲读取结果", "本章角色卡", "世界观与连续性"],
             outputs={
                 "chapter_title": chapter_intent.get("chapter_title", ""),
+                "planning_source": planning_source,
                 "character_moves": len(action_briefs),
                 "event_plan_keys": sorted(event_plan.keys()),
                 "next_focus": chapter_intent.get("next_focus", ""),
@@ -6526,7 +6536,6 @@ class StoryOrchestrator:
                 chapter_number,
                 fact_locks={
                     "must_keep_facts": memory_constraints.get("must_keep_facts", []),
-                    "planned_summary": chapter_summary_data,
                 },
             )
         else:

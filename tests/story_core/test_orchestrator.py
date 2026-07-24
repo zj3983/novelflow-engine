@@ -127,6 +127,97 @@ def test_orchestrator_runs_all_phases_and_returns_bundle():
     assert "writing_review" in bundle.quality_report
 
 
+def test_actionable_chapter_outline_skips_planner_model(monkeypatch):
+    story = StoryState(
+        story_id="s-outline-planning",
+        outline="夜烬通过新手任务建立第一笔游戏收入。",
+        outline_context={
+            "chapter": {
+                "chapter_number": 1,
+                "title": "第一笔收入",
+                "goal": "完成灰狼材料任务",
+                "obstacle": "灰狼刷新点竞争激烈",
+                "action": "夜烬换到侧坡收集材料",
+                "turn": "任务材料比预想更快凑齐",
+                "payoff": "提交任务并升到二级",
+                "ending_hook": "交易行出现新的收购单",
+                "cast": ["夜烬"],
+            }
+        },
+        genre="game fantasy",
+        style="webnovel",
+        characters=[CharacterState(name="夜烬", role="protagonist")],
+    )
+    orchestrator = StoryOrchestrator()
+    calls: list[str] = []
+    body = "夜烬沿着侧坡清理灰狼，凑齐材料后回村提交任务。" * 300
+
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "_review_chapter_body",
+        lambda *_args, **_kwargs: {"pass": True, "issues": [], "revision_plan": []},
+    )
+
+    def fake_timed_chat(_story, _prompt, *, agent, **_kwargs):
+        calls.append(agent)
+        if agent == "planner":
+            raise AssertionError("完整章节细纲不应调用规划模型")
+        if agent == "writer":
+            return body, ""
+        if agent == "memory":
+            return json.dumps(
+                {
+                    "summary": "夜烬完成材料任务并升到二级。",
+                    "facts": [{"text": "夜烬升到二级", "evidence": "提交任务并升到二级"}],
+                    "unresolved_threads": [],
+                    "next_focus": "查看新的收购单",
+                    "chapter_title": "第一笔收入",
+                    "character_updates": [],
+                    "ledger_updates": {},
+                    "ledger_evidence": {},
+                },
+                ensure_ascii=False,
+            ), ""
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    bundle = orchestrator.generate_next_chapter(story)
+
+    assert "planner" not in calls
+    assert bundle.event_plan["chapter_title"] == "第一笔收入"
+    assert bundle.event_plan["chapter_satisfaction"]["visible_payoff"] == "提交任务并升到二级"
+
+
+def test_incomplete_chapter_outline_uses_planner_model(monkeypatch):
+    story = StoryState(
+        story_id="s-model-planning-fallback",
+        outline="主角继续推进任务。",
+        outline_context={"chapter": {"chapter_number": 1, "goal": "继续升级"}},
+        genre="fantasy",
+        style="webnovel",
+        characters=[CharacterState(name="林照", role="protagonist")],
+    )
+    orchestrator = StoryOrchestrator()
+    planner_calls = 0
+    original_timed_chat = orchestrator._timed_chat
+
+    def count_planner(*args, **kwargs):
+        nonlocal planner_calls
+        if kwargs.get("agent") == "planner":
+            planner_calls += 1
+        return original_timed_chat(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", count_planner)
+
+    bundle = orchestrator.generate_next_chapter(story)
+
+    assert bundle.body
+    assert planner_calls == 1
+
+
 def test_whole_chapter_writing_is_default_path():
     orchestrator = StoryOrchestrator()
 
