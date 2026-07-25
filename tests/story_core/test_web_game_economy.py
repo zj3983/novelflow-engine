@@ -428,10 +428,11 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     end_marker = "手机的到账震动透过头盔提醒传来。"
     segment = body[start : body.index(end_marker, start) + len(end_marker)]
 
-    ancient_sword_before = "古剑交给鉴定师以后，等待鉴定结果期间，柜台显示【样本符合求购要求。】\n\n"
-    ancient_sword_after = "\n\n古剑的鉴定仍在继续，页面显示【样本符合求购要求。】"
+    ancient_sword_inside = "古剑交给鉴定师，等待鉴定结果。【样本符合求购要求】\n\n"
+    insert_at = segment.index("夜烬盯着订单页面")
+    segment = segment[:insert_at] + ancient_sword_inside + segment[insert_at:]
     normalized = normalize_legacy_economy_prompt_value(
-        ancient_sword_before + segment + ancient_sword_after,
+        segment,
         game_context=True,
         chapter_number=1,
     )
@@ -439,13 +440,14 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     ordered_fragments = (
         "夜烬点下立即出售",
         "求购单显示已成交",
+        "【成交价：按求购单标价。】",
         "【游戏币已进入钱包。】",
         "他随后打开独立的官方兑换页面。",
-        "兑换价",
-        "可用额度",
-        "手续费",
-        "预计到账1764.00元",
-        "确认兑换",
+        "【兑换价：当前官方报价。】",
+        "【可用额度：足够完成本次兑换。】",
+        "【手续费：已计入预计到账。】",
+        "【预计到账：1764.00元。】",
+        "他确认兑换",
         "【现实账户到账1764.00元。】",
     )
     assert all(fragment in normalized for fragment in ordered_fragments)
@@ -453,29 +455,39 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
         normalized.index(fragment) for fragment in ordered_fragments
     )
     assert normalized.count("求购单显示已成交") == 1
-    assert normalized.count("成交") == 1
     assert "交易完成以后，村口不断有玩家跑进跑出" in normalized
     assert "一个法杖玩家坐在喷泉边回蓝" in normalized
     assert "手机的到账震动透过头盔提醒传来" in normalized
     sale_index = normalized.index("夜烬点下立即出售")
     market_index = normalized.index("求购单显示已成交", sale_index)
+    price_index = normalized.index("【成交价：按求购单标价。】", market_index)
     wallet_index = normalized.index("【游戏币已进入钱包。】", market_index)
     exchange_index = normalized.index("他随后打开独立的官方兑换页面。", wallet_index)
+    actual_index = normalized.index("【现实账户到账1764.00元。】", exchange_index)
+    assert price_index < wallet_index
+    assert "【成交价：按求购单标价。】【游戏币已进入钱包。】" in normalized
     assert "等待" not in normalized[market_index:wallet_index]
     assert "村口" not in normalized[market_index:wallet_index]
     assert "官方兑换" not in normalized[:sale_index]
     assert "预计到账" not in normalized[:sale_index]
+    assert "1764.00元" not in normalized[:exchange_index]
     assert "【担保净到账1764.00元。】" not in normalized
-    assert normalized.count(ancient_sword_before.strip()) == 1
-    assert normalized.count(ancient_sword_after.strip()) == 1
-    assert normalized.index(ancient_sword_before.strip()) < sale_index < normalized.index(
-        ancient_sword_after.strip()
-    )
+    assert normalized.count(ancient_sword_inside.strip()) == 1
+    assert wallet_index < normalized.index(ancient_sword_inside.strip()) < exchange_index
     exchange_sentence = (
-        "他随后打开独立的官方兑换页面。页面显示兑换价、可用额度、手续费和预计到账1764.00元；确认兑换。"
+        "他随后打开独立的官方兑换页面。"
+        "【兑换价：当前官方报价。】"
+        "【可用额度：足够完成本次兑换。】"
+        "【手续费：已计入预计到账。】"
+        "【预计到账：1764.00元。】"
+        "他确认兑换。"
     )
     assert exchange_sentence in normalized
     assert exchange_index == normalized.index(exchange_sentence)
+    assert normalized.index("他确认兑换。", exchange_index) < actual_index
+    assert "成交价：1764.00元" not in normalized
+    assert "游戏币已进入钱包1764.00元" not in normalized
+    assert "汇率" not in normalized
     assert all(
         term not in normalized
         for term in (
@@ -520,6 +532,30 @@ def test_amounts_and_anonymous_action_without_old_trade_results_do_not_form_a_wi
     assert "游戏币已进入钱包" not in normalized
     assert "页面显示兑换价、可用额度、手续费" not in normalized
     assert "官方兑换预计到账" not in normalized
+
+
+def test_trade_window_uses_captured_amount_without_inventing_coin_price_or_rate() -> None:
+    source = (
+        "求购单详情。【担保净到账93.25元。】订单仍可提交。"
+        "夜烬点下匿名提交。裂纹狼心从背包中消失，订单状态变成鉴定中。"
+        "等待的半分钟里，村口仍有人排队。"
+        "夜烬盯着订单页面，食指轻轻敲着膝盖。屏幕终于一跳。"
+        "【样本符合求购要求。】【买家确认收购。】【匿名担保交易已完成。】"
+        "【净到账93.25元。】"
+    )
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert "【成交价：按求购单标价。】【游戏币已进入钱包。】" in normalized
+    assert "【预计到账：93.25元。】" in normalized
+    assert "【现实账户到账93.25元。】" in normalized
+    assert "1764.00" not in normalized
+    assert "成交价：93.25元" not in normalized
+    assert "汇率" not in normalized
 
 
 @pytest.mark.parametrize(

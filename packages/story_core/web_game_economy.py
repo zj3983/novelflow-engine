@@ -92,9 +92,6 @@ _ADJACENT_LEGACY_TRADE_RESULTS_PATTERN = re.compile(
     r"【\s*买家确认收购[。.]?\s*】\s*"
     r"【\s*(?:匿名)?担保交易已完成[。.]?\s*】"
 )
-_LEGACY_APPRAISAL_WAIT_PATTERN = re.compile(
-    r"等待的半分钟里|等待鉴定(?:结果)?(?:的)?(?:半分钟|片刻|期间|过程中)?"
-)
 _LEGACY_SAMPLE_WAIT_RESULT_PATTERN = re.compile(
     r"夜烬盯着订单页面，食指轻轻敲着膝盖。屏幕终于一跳。\s*"
     r"【样本符合求购要求。】"
@@ -205,15 +202,27 @@ def _normalize_legacy_trade_window(value: str, amount: str) -> str:
     def replace_status(match: re.Match[str]) -> str:
         item = match.group("item") or ""
         wallet = "" if has_wallet_result else "【游戏币已进入钱包。】"
-        return f"{item}求购单显示已成交。{wallet}"
+        return f"{item}求购单显示已成交。【成交价：按求购单标价。】{wallet}"
 
     normalized = _LEGACY_TRADE_STATUS_PATTERN.sub(replace_status, normalized, count=1)
-    normalized = _LEGACY_APPRAISAL_WAIT_PATTERN.sub("交易完成以后", normalized)
+    wallet_end = normalized.find("【游戏币已进入钱包。】")
+    sample_result = _LEGACY_SAMPLE_WAIT_RESULT_PATTERN.search(normalized)
+    if wallet_end >= 0 and sample_result is not None and wallet_end < sample_result.start():
+        wallet_end += len("【游戏币已进入钱包。】")
+        bridge = normalized[wallet_end : sample_result.start()].replace(
+            "等待的半分钟里，村口",
+            "交易完成以后，村口",
+            1,
+        )
+        normalized = normalized[:wallet_end] + bridge + normalized[sample_result.start() :]
     normalized = _LEGACY_SAMPLE_WAIT_RESULT_PATTERN.sub("", normalized, count=1)
-    normalized = normalized.replace("【样本符合求购要求。】", "")
     exchange_step = (
         "他随后打开独立的官方兑换页面。"
-        f"页面显示兑换价、可用额度、手续费和预计到账{amount}元；确认兑换。"
+        "【兑换价：当前官方报价。】"
+        "【可用额度：足够完成本次兑换。】"
+        "【手续费：已计入预计到账。】"
+        f"【预计到账：{amount}元。】"
+        "他确认兑换。"
     )
     normalized = _ADJACENT_LEGACY_TRADE_RESULTS_PATTERN.sub(
         exchange_step,
