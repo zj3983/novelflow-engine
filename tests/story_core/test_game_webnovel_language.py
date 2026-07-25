@@ -25,7 +25,7 @@ def test_language_cards_select_loot_and_trade_for_sale_scene():
     ids = _ids(
         {
             "chapter_goal": "把可交易的裂纹狼心放进交易行",
-            "ordered_actions": ["查看掉落", "打开求购单", "确认一口价并成交"],
+            "ordered_actions": ["查看掉落", "按一口价挂单", "等待买家购买"],
         }
     )
 
@@ -47,6 +47,11 @@ def test_trade_card_uses_only_in_game_market_language():
         for marker in ("交易行", "求购单", "挂单", "立即出售", "一口价", "成交", "手续费", "游戏币到账")
     )
     assert all(marker not in text for marker in ("官方兑换", "兑换价", "现实账户", "鉴定", "验货"))
+    listing_path, instant_sale_path = card.example.split("；")
+    assert all(marker in listing_path for marker in ("一口价", "挂单", "等待买家"))
+    assert "求购" not in listing_path
+    assert all(marker in instant_sale_path for marker in ("求购单", "立即出售", "直接成交"))
+    assert "一口价" not in instant_sale_path
 
 
 def test_currency_exchange_card_uses_separate_official_channel_language():

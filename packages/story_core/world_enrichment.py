@@ -14,6 +14,7 @@ from packages.story_core.genre_plugins import (
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.models import NovelProject
 from packages.story_core.runtime_config import resolve_stage_runtime
+from packages.story_core.web_game_economy import exchange_rules, market_rules
 
 
 class WorldEnrichmentError(RuntimeError):
@@ -64,7 +65,7 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "background_budget 必须包含 required_layers、allowed_layers、forbidden_layers，用于限制每章能展开多少世界背景，防止第一章堆设定。",
             "living_world 必须包含：daily_routines, economy, power_structure, information_network, player_ecology, information_visibility_rules, world_reaction_ladder, location_functions, timeline, reaction_rules。",
             "living_world 要回答：普通人每天在做什么，资源如何流动，谁控制秩序，消息如何传播，地点有什么功能，时间如何推进，主角行动会造成什么连锁反应。",
-            "如果是网游/游戏经济题材，必须明确币制、低级物价尺度和现实兑换边界；没有明确设定前，不得写死金币与人民币汇率。",
+            "如果是网游/游戏经济题材，必须明确币制和低级物价尺度，并严格复用题材插件提供的交易行与官方兑换统一边界。",
             f"已识别题材插件：{plugin_prompt_guide(plugins)}",
             "请根据题材插件补齐可泛化的类型规则；若是复合题材，主题材负责主线逻辑，副题材提供钩子、规则或爽点。",
             f"当前项目数据：{json.dumps(payload, ensure_ascii=False)}",
@@ -141,11 +142,12 @@ def _default_living_world(project: NovelProject, genre_plugins: list[dict[str, A
             ],
             "economy": {
                 "resource_flow": [
+                    *market_rules(),
+                    *exchange_rules(),
                     "低级材料从刷怪点流入交易行，再被生活职业玩家、公会仓库和倒卖商吸收。",
                     "大量低价材料会压低短期价格并形成弱线索，但不会单次暴露卖家身份、现实身份或精确刷怪点。",
-                    "开服初期没有稳定现实汇率，交易以游戏内铜币、银币、金币为主，现实变现只能通过后续玩家行情逐渐形成。",
                 ],
-                "pressure_points": ["匿名寄售轨迹", "材料价格波动", "汇率不透明", "公会集中收购", "散人跟风刷点"],
+                "pressure_points": ["匿名寄售轨迹", "材料价格波动", "兑换价波动", "公会集中收购", "散人跟风刷点"],
             },
             "power_structure": {
                 "dominant_groups": ["白袍公会", "交易行商人", "职业导师与任务NPC"],
@@ -187,7 +189,6 @@ def _default_living_world(project: NovelProject, genre_plugins: list[dict[str, A
             "reaction_rules": [
                 "主角大量出售低级材料只会引发价格波动、商人脚本注意和时间戳弱线索，不会单次暴露身份或精确坐标。",
                 "主角越低调处理收益，越需要付出时间、手续费、拆单或绕路成本。",
-                "没有明确设定前，章节不得把金币直接换算成人民币，只能写游戏内价格、市场询价或玩家猜测。",
                 "公会不会立刻知道真相；只有重复出货模式、稀有物品、榜单公告、资源点目击、NPC任务异常或多处线索汇总后，才会逐步缩小范围。",
                 "任何罕见收益都必须产生至少一个外部反应：商人注意、散人跟风、公会试探或NPC线索变化。",
             ],

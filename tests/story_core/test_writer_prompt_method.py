@@ -36,12 +36,14 @@ def test_web_game_method_loads_only_trade_language_for_trade_scene():
     text = "\n".join(
         _web_game_writing_method_lines(
             2,
-            {"chapter_goal": "打开交易行，查看求购单并按一口价出售材料"},
+            {"chapter_goal": "打开交易行，按一口价挂单并等待买家购买材料"},
         )
     )
 
     assert "求购单" in text
     assert "一口价" in text
+    assert "接受现有求购单价格" in text
+    assert "立即出售并直接成交" in text
     assert "平台封存" in text
     assert "进本" not in text
     assert "坦克" not in text

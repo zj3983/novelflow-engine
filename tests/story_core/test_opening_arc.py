@@ -1,7 +1,10 @@
+import json
+
 from apps.api.storage import _project_world_facts, _sync_project_character_profiles
 from packages.story_core.models import CharacterState, NovelProject, StoryState
 from packages.story_core.orchestrator import _normalize_event_plan, _review_chapter_body, _story_snapshot
-from packages.story_core.world_enrichment import _merge_enrichment
+from packages.story_core.web_game_economy import exchange_rules, market_rules
+from packages.story_core.world_enrichment import _build_prompt, _merge_enrichment
 
 
 def test_world_enrichment_adds_game_golden_three_chapters():
@@ -29,6 +32,40 @@ def test_world_enrichment_adds_game_golden_three_chapters():
     assert opening_arc["chapter_1"]["exposition_beats"]
     assert any("现实入口" in item for item in opening_arc["chapter_1"]["background_budget"]["required_layers"])
     assert any("多个命名NPC" in item for item in opening_arc["chapter_1"]["background_budget"]["forbidden_layers"])
+
+
+def test_game_world_enrichment_prompt_uses_unified_economy_boundaries():
+    project = NovelProject(
+        project_id="p-economy-prompt",
+        title="Economy Prompt",
+        seed_outline="网游开服，主角出售材料后兑换现实收益。",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+
+    prompt = _build_prompt(project)
+    forbidden_currency = "\u4eba\u6c11\u5e01"
+
+    assert forbidden_currency not in prompt
+    assert all(rule in prompt for rule in (*market_rules(), *exchange_rules()))
+
+
+def test_default_game_world_economy_flow_reuses_unified_boundaries():
+    project = NovelProject(
+        project_id="p-economy-defaults",
+        title="Economy Defaults",
+        seed_outline="网游开服，主角出售材料后兑换现实收益。",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+
+    enriched = _merge_enrichment(project, {})
+    resource_flow = enriched.world_blueprint["living_world"]["economy"]["resource_flow"]
+    boundaries = [*market_rules(), *exchange_rules()]
+    active_text = json.dumps(enriched.world_blueprint, ensure_ascii=False)
+    forbidden_currency = "\u4eba\u6c11\u5e01"
+
+    assert resource_flow[: len(boundaries)] == boundaries
+    assert "现实变现只能通过后续玩家行情逐渐形成" not in active_text
+    assert forbidden_currency not in active_text
 
 
 def test_project_world_facts_prioritize_opening_arc():
