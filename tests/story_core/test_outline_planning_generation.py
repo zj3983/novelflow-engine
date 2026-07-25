@@ -166,6 +166,14 @@ def test_trope_validator_allows_missing_chapter_beats() -> None:
     validate_generated_trope_selection(plan, _trope_templates())
 
 
+def test_trope_validator_requires_primary_when_candidates_exist() -> None:
+    plan = _trope_plan()
+    plan["outline"]["overall"]["primary_trope_id"] = None
+
+    with pytest.raises(ValueError, match="^invalid_primary_trope_id$"):
+        validate_generated_trope_selection(plan, _trope_templates())
+
+
 def test_trope_validator_requires_all_nulls_when_no_candidates() -> None:
     plan = _trope_plan()
     plan["outline"]["overall"]["primary_trope_id"] = None

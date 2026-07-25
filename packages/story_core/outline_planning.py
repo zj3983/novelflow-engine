@@ -184,32 +184,51 @@ def validate_generated_trope_selection(
     candidates = compact_trope_candidates(trope_templates)
     candidates_by_id = {str(item["id"]): item for item in candidates}
     primary_trope_id = validated.outline.overall.primary_trope_id
-
-    if not candidates_by_id:
-        if primary_trope_id is not None:
-            raise ValueError("unexpected_primary_trope_id")
-        for arc in validated.outline.arcs:
-            if arc.trope_id is not None:
-                raise ValueError(f"unexpected_arc_trope_id:{arc.id}")
-        for chapter in validated.outline.chapters:
-            if chapter.trope_beat is not None:
-                raise ValueError(f"unexpected_chapter_trope_beat:{chapter.chapter_number}")
-        return validated
-
-    if primary_trope_id not in candidates_by_id:
-        raise ValueError("invalid_primary_trope_id")
     expected = str(expected_primary_trope_id or "").strip()
     if expected and primary_trope_id != expected:
         raise ValueError("unexpected_primary_trope_id")
+    if not expected:
+        if candidates_by_id and primary_trope_id not in candidates_by_id:
+            raise ValueError("invalid_primary_trope_id")
+        if not candidates_by_id and primary_trope_id is not None:
+            raise ValueError("unexpected_primary_trope_id")
+
+    fallback = (
+        normalize_project_outline(fallback_outline)
+        if fallback_outline is not None
+        else None
+    )
+    fallback_arcs = {
+        str(arc["id"]): arc
+        for arc in (fallback or {}).get("arcs", [])
+    }
+    fallback_chapters = {
+        int(chapter["chapter_number"]): chapter
+        for chapter in (fallback or {}).get("chapters", [])
+    }
 
     for arc in validated.outline.arcs:
-        if arc.trope_id not in candidates_by_id:
-            raise ValueError(f"invalid_arc_trope_id:{arc.id}")
+        if arc.trope_id in candidates_by_id:
+            continue
+        fallback_arc = fallback_arcs.get(arc.id)
+        if (
+            arc.trope_id is not None
+            and fallback_arc is not None
+            and arc.trope_id == fallback_arc.get("trope_id")
+        ):
+            continue
+        if arc.trope_id is None and not candidates_by_id:
+            continue
+        error = (
+            "unexpected_arc_trope_id"
+            if not candidates_by_id
+            else "invalid_arc_trope_id"
+        )
+        raise ValueError(f"{error}:{arc.id}")
 
     outline_payload = validated.outline.model_dump(mode="json")
-    if fallback_outline is not None:
+    if fallback is not None:
         generated_arc_ids = {str(arc["id"]) for arc in outline_payload["arcs"]}
-        fallback = normalize_project_outline(fallback_outline)
         outline_payload = {
             **outline_payload,
             "arcs": [
@@ -233,7 +252,28 @@ def validate_generated_trope_selection(
             if isinstance(active_arc, dict)
             else None
         )
+        fallback_chapter = fallback_chapters.get(chapter.chapter_number)
+        fallback_context = (
+            select_outline_context(fallback, chapter.chapter_number)
+            if fallback is not None and fallback_chapter is not None
+            else {}
+        )
+        fallback_active_arc = fallback_context.get("active_arc")
+        if (
+            fallback_chapter is not None
+            and beat == fallback_chapter.get("trope_beat")
+            and isinstance(active_arc, dict)
+            and isinstance(fallback_active_arc, dict)
+            and active_arc.get("id") == fallback_active_arc.get("id")
+            and active_trope_id == fallback_active_arc.get("trope_id")
+        ):
+            continue
         active_template = candidates_by_id.get(str(active_trope_id or ""))
         if active_template is None or beat not in active_template.get("beats", []):
-            raise ValueError(f"invalid_chapter_trope_beat:{chapter.chapter_number}")
+            error = (
+                "unexpected_chapter_trope_beat"
+                if not candidates_by_id
+                else "invalid_chapter_trope_beat"
+            )
+            raise ValueError(f"{error}:{chapter.chapter_number}")
     return validated

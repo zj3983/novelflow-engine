@@ -1469,6 +1469,74 @@ def test_generated_plan_transaction_restores_old_files_on_replace_failure(tmp_pa
     assert {path: path.read_bytes() for path in before} == before
 
 
+def test_generated_plan_failed_transaction_does_not_rollback_concurrent_success(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "novel"
+    failing_store = _make_minimal_file_project(root)
+    successful_store = FileProjectStore(root)
+    first_replace_finished = threading.Event()
+    successful_save_finished = threading.Event()
+    errors: dict[str, BaseException] = {}
+    results: dict[str, dict] = {}
+    import packages.story_core.file_project_store as module
+
+    real_replace = module.os.replace
+    failing_replace_calls = 0
+
+    def coordinated_replace(source, target):
+        nonlocal failing_replace_calls
+        if threading.current_thread().name != "failing-outline-save":
+            return real_replace(source, target)
+        failing_replace_calls += 1
+        if failing_replace_calls == 1:
+            result = real_replace(source, target)
+            first_replace_finished.set()
+            successful_save_finished.wait(timeout=0.5)
+            return result
+        if failing_replace_calls == 2:
+            raise OSError("simulated concurrent replace failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(module.os, "replace", coordinated_replace)
+
+    def fail_save() -> None:
+        try:
+            failing_store.save_generated_outline_plan(
+                _generated_opening_plan(),
+                mode="initial",
+            )
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["failing"] = exc
+
+    def succeed_save() -> None:
+        try:
+            results["successful"] = successful_store.save_generated_outline_plan(
+                _generated_opening_plan(),
+                mode="initial",
+            )
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["successful"] = exc
+        finally:
+            successful_save_finished.set()
+
+    failing_thread = threading.Thread(target=fail_save, name="failing-outline-save")
+    failing_thread.start()
+    assert first_replace_finished.wait(timeout=2)
+    successful_thread = threading.Thread(target=succeed_save, name="successful-outline-save")
+    successful_thread.start()
+    failing_thread.join(timeout=3)
+    successful_thread.join(timeout=3)
+
+    assert not failing_thread.is_alive()
+    assert not successful_thread.is_alive()
+    assert isinstance(errors.get("failing"), OSError)
+    assert "successful" not in errors
+    assert results["successful"]["outline"]["chapters"]
+    assert len(FileProjectStore(root).project_outline()["chapters"]) == 30
+
+
 def test_update_outline_rejects_core_ending_before_current_chapter(tmp_path) -> None:
     root = tmp_path / "novel"
     store = _make_minimal_file_project(root, state={"current_chapter": 21})
@@ -1918,6 +1986,85 @@ def _regeneration_plan_from_current(
         for number in range(21, 51)
     ]
     return GeneratedOutlinePlan.model_validate(payload)
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+@pytest.mark.parametrize("candidate_state", ["empty", "replacement"])
+def test_deleted_trope_locks_do_not_block_future_outline_saves(
+    tmp_path,
+    monkeypatch,
+    mode: str,
+    candidate_state: str,
+) -> None:
+    _, store, current_outline = _prepare_extendable_outline(tmp_path)
+    current_candidates = store._current_project_trope_candidates(
+        store.project(),
+        store.state(),
+    )
+    replacement = next(
+        candidate
+        for candidate in current_candidates
+        if candidate["id"] != "low_status_reversal"
+    )
+    candidates = [] if candidate_state == "empty" else [replacement]
+    new_trope_id = None if candidate_state == "empty" else replacement["id"]
+    monkeypatch.setattr(store, "_current_project_trope_candidates", lambda *_: candidates)
+    new_arc = {
+        **current_outline["arcs"][0],
+        "id": "new-volume",
+        "title": "New volume",
+        "start_chapter": 31,
+        "end_chapter": 50,
+        "trope_id": new_trope_id,
+    }
+    plan = (
+        _extension_plan(current_outline, arcs=[*current_outline["arcs"], new_arc])
+        if mode == "extend"
+        else _regeneration_plan_from_current(
+            current_outline,
+            arcs=[*current_outline["arcs"], new_arc],
+        )
+    )
+
+    saved = store.save_generated_outline_plan(plan, mode=mode)
+
+    arcs = {arc["id"]: arc for arc in saved["outline"]["arcs"]}
+    assert saved["outline"]["overall"]["primary_trope_id"] == "low_status_reversal"
+    assert arcs["opening"]["trope_id"] == "low_status_reversal"
+    assert arcs["new-volume"]["trope_id"] == new_trope_id
+    assert saved["outline"]["chapters"][0]["trope_beat"] == "低位压力"
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_deleted_trope_library_still_rejects_unknown_new_arc_id(
+    tmp_path,
+    monkeypatch,
+    mode: str,
+) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    monkeypatch.setattr(store, "_current_project_trope_candidates", lambda *_: [])
+    new_arc = {
+        **current_outline["arcs"][0],
+        "id": "new-volume",
+        "title": "New volume",
+        "start_chapter": 31,
+        "end_chapter": 50,
+        "trope_id": "unknown-new-trope",
+    }
+    plan = (
+        _extension_plan(current_outline, arcs=[*current_outline["arcs"], new_arc])
+        if mode == "extend"
+        else _regeneration_plan_from_current(
+            current_outline,
+            arcs=[*current_outline["arcs"], new_arc],
+        )
+    )
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^(unexpected|invalid)_arc_trope_id:new-volume$"):
+        store.save_generated_outline_plan(plan, mode=mode)
+
+    assert _file_snapshot(root) == before
 
 
 @pytest.mark.parametrize("mode", ["extend", "regenerate"])

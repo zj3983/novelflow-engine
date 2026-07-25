@@ -3369,6 +3369,7 @@ class FileProjectStore:
             }
         )
 
+    @_with_project_update_lock
     def save_generated_outline_plan(self, plan: Any, *, mode: str) -> dict[str, Any]:
         validated = GeneratedOutlinePlan.model_validate(plan)
         if mode not in {"initial", "regenerate", "extend"}:
@@ -3465,6 +3466,7 @@ class FileProjectStore:
             final_validation_payload,
             trope_candidates,
             expected_primary_trope_id=expected_primary_trope_id,
+            fallback_outline=current_outline if mode in {"extend", "regenerate"} else None,
         )
         cards = self._merge_generated_character_cards(
             [card.model_dump(mode="json") for card in validated.characters]
