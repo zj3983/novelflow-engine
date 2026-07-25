@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -69,13 +69,11 @@ _FIRST_CHAPTER_TRANSACTION_MARKERS: tuple[str, ...] = (
 )
 _PROMPT_CLAUSE_SEPARATOR = re.compile(r"([。；！？!?\n]+)")
 _PROMPT_SOFT_CLAUSE_SEPARATOR = re.compile(r"([，,]+)")
-_CLAUSE_SCOPED_LEGACY_FLOW_TERMS: tuple[str, ...] = (
-    "提交鉴定",
-    "鉴定中",
-    "鉴定求购",
+_ORDER_STATUS_APPRAISAL_PATTERN = re.compile(
+    r"订单状态变成\s*(?:[“‘\"']\s*)?鉴定中(?:\s*[”’\"'])?"
 )
-_CLAUSE_SCOPED_LEGACY_FLOW_PATTERN = re.compile(
-    "|".join(re.escape(term) for term in _CLAUSE_SCOPED_LEGACY_FLOW_TERMS)
+_ANONYMOUS_SUBMIT_ACTION_PATTERN = re.compile(
+    r"(?P<action>点下|点击|选择|按下)\s*匿名提交(?!反馈|投诉|意见|举报)"
 )
 _CHAPTER_SCOPE_MARKER = re.compile(
     r"第\s*(?P<chinese>[零〇一二两三四五六七八九十百千万\d]+)\s*章"
@@ -160,28 +158,36 @@ def _normalize_anonymous_submit_soft_clauses(value: str) -> str:
     return "".join(parts)
 
 
-def _normalize_clause_scoped_terms(
-    value: str,
-    replace_flow: Callable[[re.Match[str]], str],
-) -> str:
+def _normalize_local_transaction_terms(clause: str) -> str:
+    normalized = _ORDER_STATUS_APPRAISAL_PATTERN.sub("求购单显示已成交", clause)
+    return (
+        normalized.replace("提交鉴定", "立即出售")
+        .replace("鉴定求购", "求购单")
+        .replace("鉴定中", "已成交")
+    )
+
+
+def _next_sentence_has_transaction_marker(parts: list[str], index: int) -> bool:
+    if index + 2 >= len(parts):
+        return False
+    separator = parts[index + 1]
+    if not separator or separator[0] not in "。！？!?":
+        return False
+    return _has_first_chapter_transaction_marker(parts[index + 2])
+
+
+def _normalize_clause_scoped_terms(value: str) -> str:
     parts = _PROMPT_CLAUSE_SEPARATOR.split(value)
     for index in range(0, len(parts), 2):
         clause = _normalize_anonymous_submit_soft_clauses(parts[index])
+        if _next_sentence_has_transaction_marker(parts, index):
+            clause = _ANONYMOUS_SUBMIT_ACTION_PATTERN.sub(
+                lambda match: f"{match.group('action')}立即出售",
+                clause,
+            )
+        if _has_first_chapter_transaction_marker(clause):
+            clause = _normalize_local_transaction_terms(clause)
         parts[index] = clause
-        if not _has_first_chapter_transaction_marker(clause):
-            continue
-        has_scoped_flow = _CLAUSE_SCOPED_LEGACY_FLOW_PATTERN.search(clause) is not None
-        parts[index] = _CLAUSE_SCOPED_LEGACY_FLOW_PATTERN.sub(replace_flow, clause)
-        if (
-            has_scoped_flow
-            and index + 1 < len(parts)
-            and parts[index].endswith(("。", "！", "？", "!", "?"))
-            and parts[index + 1]
-            and parts[index + 1][0] in "。！？!?"
-        ):
-            terminal = parts[index + 1][0]
-            parts[index] = parts[index].rstrip("。！？!?") + terminal
-            parts[index + 1] = parts[index + 1][1:]
     return "".join(parts)
 
 
@@ -200,7 +206,7 @@ def _normalize_legacy_economy_prompt_segment(value: str) -> str:
             replacement = replacement.rstrip("。！？!?") + terminal
         return replacement
 
-    normalized = _normalize_clause_scoped_terms(value, replace_flow)
+    normalized = _normalize_clause_scoped_terms(value)
     for legacy, current in _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS:
         normalized = normalized.replace(legacy, current)
     normalized = _LEGACY_PROMPT_FLOW_PATTERN.sub(replace_flow, normalized)
@@ -327,7 +333,15 @@ def _normalize_json_string_scopes(value: str) -> str:
         elif char == "\\":
             escaped = True
         elif char == '"':
-            parts.append(_normalize_legacy_economy_scoped_text(value[start : index + 1]))
+            lookahead = index + 1
+            while lookahead < len(value) and value[lookahead].isspace():
+                lookahead += 1
+            token = value[start : index + 1]
+            parts.append(
+                token
+                if lookahead < len(value) and value[lookahead] == ":"
+                else _normalize_legacy_economy_scoped_text(token)
+            )
             cursor = index + 1
             start = None
     if start is not None:

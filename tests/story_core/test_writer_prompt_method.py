@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 import packages.story_core.orchestrator as orchestrator_module
 
 from packages.story_core.chapter_seed import build_chapter_seed
@@ -12,6 +16,7 @@ from packages.story_core.orchestrator import (
     _writer_fact_section,
 )
 from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
+from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
 
 
 def test_body_prompt_has_no_unselected_plain_style_fallback():
@@ -682,16 +687,59 @@ def test_each_formal_prompt_normalizes_once_at_its_final_output(monkeypatch):
 def test_revision_prompt_migrates_real_order_status_appraisal_sentence() -> None:
     story = StoryState(
         story_id="s-real-order-appraisal",
-        outline="第一章卖出裂纹狼心解决现实急账。",
+        outline="第一章在交易行卖出裂纹狼心，再走官方兑换渠道解决现实急账。",
         genre="网游",
         style="升级流",
     )
     source_body = "裂纹狼心从背包中消失，订单状态变成‘鉴定中’。"
 
-    prompt = StoryOrchestrator()._revision_prompt(story, 1, source_body, {}, {})
+    plan = {
+        "governance": {"chapter_intent": {"first_chapter_trade_authorized": True}},
+        "event_plan": {"turn": story.outline},
+    }
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, source_body, plan, {})
 
     assert "鉴定中" not in prompt
-    assert "官方兑换" in prompt
+    assert "求购单显示已成交" in prompt
+    assert "订单状态变成" not in prompt
+    for line in opening_market_exchange_flow_lines():
+        assert prompt.count(line) == 1
+
+
+def test_real_chapter_one_revision_prompt_uses_natural_local_trade_migration() -> None:
+    worktree_root = Path(__file__).resolve().parents[2]
+    candidates = (
+        worktree_root / "data" / "exported-projects" / "p-gou-webgame-restored",
+        worktree_root.parent.parent / "data" / "exported-projects" / "p-gou-webgame-restored",
+    )
+    project_root = next((candidate for candidate in candidates if candidate.exists()), None)
+    if project_root is None:
+        pytest.skip("real p-gou-webgame-restored fixture is unavailable")
+    chapter_path = next((project_root / "chapters").glob("0001-*.md"), None)
+    if chapter_path is None:
+        pytest.skip("real chapter one fixture is unavailable")
+
+    source_body = chapter_path.read_text(encoding="utf-8")
+    story = StoryState(
+        story_id="s-real-chapter-one-migration",
+        outline="第一章在交易行卖出裂纹狼心，再走官方兑换渠道解决现实急账。",
+        genre="网游",
+        style="升级流",
+    )
+
+    plan = {
+        "governance": {"chapter_intent": {"first_chapter_trade_authorized": True}},
+        "event_plan": {"turn": story.outline},
+    }
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, source_body, plan, {})
+
+    assert "夜烬点下立即出售" in prompt
+    assert "求购单显示已成交" in prompt
+    assert "订单状态变成" not in prompt
+    assert "匿名提交" not in prompt
+    assert "鉴定中" not in prompt
+    for line in opening_market_exchange_flow_lines():
+        assert prompt.count(line) == 1
 
 
 def test_web_game_writer_prompt_moves_on_after_a_panel_instead_of_explaining_it():

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from copy import deepcopy
 
@@ -216,6 +218,22 @@ def test_legacy_prompt_migration_preserves_mapping_keys_and_container_types() ->
     assert normalized["nested"]["担保平台"] == "官方兑换流水号A-17"
 
 
+def test_legacy_prompt_migration_preserves_json_string_keys_without_collision() -> None:
+    source = '{"担保订单":"A","官方兑换流水":"B","goal":"裂纹狼心通过担保交易成交"}'
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+    payload = json.loads(normalized)
+
+    assert payload["担保订单"] == "A"
+    assert payload["官方兑换流水"] == "B"
+    assert "担保订单" in normalized
+    assert "担保交易" not in payload["goal"]
+
+
 @pytest.mark.parametrize(
     "source",
     (
@@ -335,6 +353,61 @@ def test_order_complaint_and_isolated_order_status_do_not_create_trade_context()
     )
 
     assert normalized == source
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "裂纹狼心从背包中消失，订单状态变成“鉴定中”。",
+        "裂纹狼心从背包中消失，订单状态变成鉴定中。",
+    ),
+)
+def test_wolf_heart_order_status_uses_natural_completed_wording(source: str) -> None:
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert normalized == "裂纹狼心从背包中消失，求购单显示已成交。"
+
+
+def test_isolated_appraisal_status_in_wolf_heart_context_becomes_completed_only() -> None:
+    source = "裂纹狼心已经交给求购单，页面仍显示鉴定中。"
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert normalized == "裂纹狼心已经交给求购单，页面仍显示已成交。"
+    assert "官方兑换页面" not in normalized
+
+
+def test_anonymous_submit_action_uses_one_sentence_trade_lookahead_only() -> None:
+    source = "夜烬点下匿名提交。裂纹狼心从背包中消失，订单状态变成鉴定中。"
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert normalized == "夜烬点下立即出售。裂纹狼心从背包中消失，求购单显示已成交。"
+
+
+@pytest.mark.parametrize("action", ("匿名提交反馈", "匿名提交投诉"))
+def test_anonymous_feedback_action_stays_unchanged_before_trade_sentence(action: str) -> None:
+    source = f"夜烬点下{action}。裂纹狼心随后放进求购单。"
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert action in normalized
 
 
 @pytest.mark.parametrize(
