@@ -87,6 +87,49 @@ def test_web_game_review_accepts_separated_exchange_and_conservative_economy_ter
     assert not any("经济边界" in issue for issue in review["issues"]), review
 
 
+def test_web_game_review_detects_ordered_economy_chains_across_adjacent_units():
+    body = (
+        "《神域》里，交易行显示那件拍卖物已经成交。\n\n"
+        "下一秒，卖出所得直接打进现实账户。\n\n"
+        "【名称：裂纹狼心】【用途：锻造材料】\n\n"
+        "夜烬看完面板，还是把它提交鉴定。\n\n"
+        "另一张求购单显示资金已经冻结。\n\n"
+        "夜烬点下立即出售，界面显示成交。\n\n"
+        "系统却让他等待买家再次确认。"
+    )
+
+    review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 3
+
+
+def test_web_game_review_ignores_negated_economy_chains_and_other_unidentified_item():
+    body = (
+        "《神域》的交易行显示求购单已经成交。\n\n"
+        "款项不会直接进入现实账户，必须另走独立官方兑换。\n\n"
+        "裂纹狼心的用途是锻造；旁边的披风仍未鉴定，他把披风交给鉴定师。\n\n"
+        "另一张求购单显示资金已经冻结。\n\n"
+        "夜烬点下立即出售，界面显示成交。\n\n"
+        "成交以后不再等待买家确认，游戏币直接进入游戏钱包。"
+    )
+
+    review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+def test_web_game_review_does_not_let_earlier_exchange_hide_direct_market_settlement():
+    body = (
+        "《神域》里，夜烬先退出官方兑换页面再打开交易行，"
+        "求购单成交后，卖出所得直接转入现实账户。"
+    )
+
+    review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
+
+    assert any("交易与现实兑换混成了一步" in issue for issue in review["issues"]), review
+
+
 def test_web_game_review_rejects_login_after_disconnected_broadband_without_network_source():
     body = (
         "家里的宽带已经断网两天，路由器指示灯全灭。"
@@ -387,9 +430,10 @@ def test_web_game_review_allows_bounded_realtime_visibility_language():
 
 
 def test_web_game_review_rejects_unset_real_money_exchange_rate():
+    forbidden_currency_name = "\u4eba\u6c11\u5e01"
     body = (
         "夜烬卖出狼皮后看着到账提示。"
-        "他立刻按1金币=100人民币计算收益，确认今天已经能付房租。"
+        f"他立刻按1金币=100{forbidden_currency_name}计算收益，确认今天已经能付房租。"
         "交易行里其他玩家还在用铜币和银币询价。"
     ) * 35
 
@@ -397,7 +441,7 @@ def test_web_game_review_rejects_unset_real_money_exchange_rate():
         chapter_number=1,
         body=body,
         event_plan={},
-        world_facts=["没有明确设定前，不得把金币直接换算成人民币。"],
+        world_facts=[f"没有明确设定前，不得把金币直接换算成{forbidden_currency_name}。"],
     )
 
     assert review["pass"] is False

@@ -131,8 +131,31 @@ class EconomyBoundaryViolation:
     revision: str
 
 
-_ECONOMY_PARAGRAPH_SPLIT = re.compile(r"(?:\r?\n\s*){2,}")
-_ECONOMY_SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;])")
+@dataclass(frozen=True)
+class _EconomyUnit:
+    text: str
+    paragraph_index: int
+    sentence_index: int
+    start: int
+
+
+@dataclass(frozen=True)
+class _ItemMention:
+    item: str
+    identified: bool
+    unit_index: int
+    position: int
+
+
+@dataclass(frozen=True)
+class _AppraisalAction:
+    item: str
+    unit_index: int
+    position: int
+
+
+_ECONOMY_PARAGRAPH_BREAK = re.compile(r"(?:\r?\n[\t ]*){2,}")
+_ECONOMY_SENTENCE = re.compile(r"[^。！？!?；;\r\n]+[。！？!?；;]?")
 _MARKET_SCENE_TERMS = (
     "交易行",
     "拍卖行",
@@ -142,8 +165,35 @@ _MARKET_SCENE_TERMS = (
     "立即出售",
 )
 _REAL_SETTLEMENT_TERMS = ("现实账户", "现实结算")
-_APPRAISAL_ACTION_TERMS = ("提交鉴定", "送去鉴定", "交给鉴定师", "送去验货", "平台验货", "安排验货")
-_IDENTIFIED_STATE_TERMS = ("已识别", "已经识别", "正式名称", "用途：", "用途:", "【名称：", "【名称:")
+_MARKET_COMPLETION_TERMS = ("成交", "卖出", "出售")
+_DIRECT_SETTLEMENT_TERMS = ("直接", "进入", "转入", "打进", "到账", "现实结算")
+_DIRECT_SETTLEMENT_DENIAL = re.compile(
+    r"(?:不会|不能|并非|不是|不应|不得|不可能)"
+    r"[^。！？!?；;]{0,12}(?:直接)?(?:进入|转入|打进|到账|现实结算)"
+)
+_NAME_PANEL_PATTERN = re.compile(r"【名称\s*[:：]\s*(?P<item>[^】]{1,20})】")
+_ITEM_USE_PATTERN = re.compile(
+    r"(?P<item>[一-龥A-Za-z0-9·]{2,20})(?:的)?用途(?:是|为|写着|标为|[:：])"
+)
+_ITEM_IDENTIFIED_PATTERN = re.compile(
+    r"(?P<item>[一-龥A-Za-z0-9·]{2,20})(?:已识别|已经识别|已显示正式名称|已经显示正式名称)"
+)
+_ITEM_UNIDENTIFIED_PATTERNS = (
+    re.compile(r"(?P<item>[一-龥A-Za-z0-9·]{1,20})(?:仍是|仍为|还是|标为|显示为)?未鉴定"),
+    re.compile(r"未鉴定的(?P<item>[一-龥A-Za-z0-9·]{1,20})"),
+)
+_APPRAISAL_ACTION_PATTERNS = (
+    re.compile(
+        r"把(?P<item>[一-龥A-Za-z0-9·]{1,20}?)(?:交给鉴定师|提交鉴定|送去鉴定|送去验货)"
+    ),
+    re.compile(r"送(?P<item>[一-龥A-Za-z0-9·]{1,20}?)去鉴定"),
+    re.compile(
+        r"(?:^|[，、：\s])(?P<item>[一-龥A-Za-z0-9·]{1,20}?)(?:提交鉴定|送去鉴定|送去验货)"
+    ),
+)
+_ITEM_PRONOUNS = {"它", "这件物品", "这个物品", "这件装备", "这颗材料", "这块材料", "这件材料"}
+_IMPLICIT_ITEM_REFERENCE = "<implicit-item>"
+_APPRAISAL_ACTION_TERMS = ("提交鉴定", "送去鉴定", "送去验货", "平台验货")
 _FUNDED_ORDER_TERMS = (
     "资金已冻结",
     "资金已经冻结",
@@ -154,76 +204,235 @@ _FUNDED_ORDER_TERMS = (
     "游戏币已经冻结",
     "游戏币冻结",
 )
-_COMPLETED_ORDER_TERMS = ("立即出售", "显示成交", "已经成交", "已成交", "成交后", "成交以后")
-_BUYER_RECONFIRM_PATTERNS = (
-    re.compile(r"(?:仍|还|继续)?\s*(?:等待|等)买家(?:再次)?确认"),
-    re.compile(r"买家再次确认"),
-)
+_COMPLETED_ORDER_TERMS = ("立即出售", "显示成交", "已经成交", "已成交", "成交后", "成交以后", "成交")
+_BUYER_RECONFIRM_PATTERN = re.compile(r"(?:等待|等)买家(?:再次)?确认|买家再次确认")
+_NEGATED_WAIT_MARKERS = ("不再", "无需", "无须", "不用", "不必", "不会", "不能", "并非", "不是")
 
 
-def _asserted_action(text: str, action: str) -> bool:
-    start = 0
-    while True:
-        index = text.find(action, start)
-        if index < 0:
-            return False
-        prefix = text[max(0, index - 6) : index]
-        if not any(marker in prefix for marker in ("不", "无需", "不用", "没有", "未曾", "不再")):
-            return True
-        start = index + len(action)
-
-
-def _has_direct_market_settlement(text: str) -> bool:
-    for paragraph in _ECONOMY_PARAGRAPH_SPLIT.split(text):
-        for sentence in _ECONOMY_SENTENCE_SPLIT.split(paragraph):
-            market_positions = [sentence.find(term) for term in _MARKET_SCENE_TERMS if term in sentence]
-            reality_positions = [sentence.find(term) for term in _REAL_SETTLEMENT_TERMS if term in sentence]
-            if not market_positions or not reality_positions:
+def _economy_units(text: str) -> tuple[_EconomyUnit, ...]:
+    units: list[_EconomyUnit] = []
+    paragraph_start = 0
+    paragraph_index = 0
+    breaks = (*_ECONOMY_PARAGRAPH_BREAK.finditer(text), None)
+    for paragraph_break in breaks:
+        paragraph_end = paragraph_break.start() if paragraph_break else len(text)
+        paragraph = text[paragraph_start:paragraph_end]
+        sentence_index = 0
+        for sentence in _ECONOMY_SENTENCE.finditer(paragraph):
+            raw = sentence.group()
+            stripped = raw.strip()
+            if not stripped:
                 continue
-            market = min(market_positions)
-            reality = min(position for position in reality_positions if position >= 0)
-            exchange = sentence.find("官方兑换", market, reality)
-            direct = any(term in sentence[market : reality + 8] for term in ("直接", "所得", "款项", "转入", "打进"))
-            if reality > market and exchange < 0 and direct:
-                return True
-    return False
+            leading = len(raw) - len(raw.lstrip())
+            units.append(
+                _EconomyUnit(
+                    text=stripped,
+                    paragraph_index=paragraph_index,
+                    sentence_index=sentence_index,
+                    start=paragraph_start + sentence.start() + leading,
+                )
+            )
+            sentence_index += 1
+        if paragraph_break is None:
+            break
+        paragraph_start = paragraph_break.end()
+        paragraph_index += 1
+    return tuple(units)
 
 
-def _has_reappraised_identified_item(text: str) -> bool:
-    for paragraph in _ECONOMY_PARAGRAPH_SPLIT.split(text):
-        appraisal = any(_asserted_action(paragraph, action) for action in _APPRAISAL_ACTION_TERMS)
-        if not appraisal:
+def _is_market_completion(unit: _EconomyUnit) -> bool:
+    return any(term in unit.text for term in _MARKET_SCENE_TERMS) and any(
+        term in unit.text for term in _MARKET_COMPLETION_TERMS
+    )
+
+
+def _is_direct_reality_settlement(unit: _EconomyUnit) -> bool:
+    if not any(term in unit.text for term in _REAL_SETTLEMENT_TERMS):
+        return False
+    if not any(term in unit.text for term in _DIRECT_SETTLEMENT_TERMS):
+        return False
+    return _DIRECT_SETTLEMENT_DENIAL.search(unit.text) is None
+
+
+def _has_exchange_between(
+    market_unit: _EconomyUnit,
+    settlement_unit: _EconomyUnit,
+) -> bool:
+    market_position = min(
+        market_unit.text.find(term)
+        for term in _MARKET_SCENE_TERMS
+        if term in market_unit.text
+    )
+    reality_position = min(
+        settlement_unit.text.find(term)
+        for term in _REAL_SETTLEMENT_TERMS
+        if term in settlement_unit.text
+    )
+    if market_unit is settlement_unit:
+        exchange = market_unit.text.find("官方兑换", market_position, reality_position)
+        return exchange >= 0
+    exchange_after_market = market_unit.text.find("官方兑换", market_position)
+    exchange_before_reality = settlement_unit.text.find("官方兑换", 0, reality_position)
+    return exchange_after_market >= 0 or exchange_before_reality >= 0
+
+
+def _has_direct_market_settlement(units: tuple[_EconomyUnit, ...]) -> bool:
+    for index, market_unit in enumerate(units):
+        if not _is_market_completion(market_unit):
             continue
-        if "裂纹狼心" in paragraph or any(term in paragraph for term in _IDENTIFIED_STATE_TERMS):
+        for settlement_unit in units[index : index + 2]:
+            if not _is_direct_reality_settlement(settlement_unit):
+                continue
+            if _has_exchange_between(market_unit, settlement_unit):
+                continue
+            if settlement_unit is market_unit:
+                market_position = min(
+                    market_unit.text.find(term) for term in _MARKET_SCENE_TERMS if term in market_unit.text
+                )
+                reality_position = min(
+                    market_unit.text.find(term) for term in _REAL_SETTLEMENT_TERMS if term in market_unit.text
+                )
+                if reality_position <= market_position:
+                    continue
             return True
     return False
 
 
-def _has_buyer_reconfirmation_after_funded_sale(text: str) -> bool:
-    for paragraph in _ECONOMY_PARAGRAPH_SPLIT.split(text):
-        if "求购单" not in paragraph:
-            continue
-        funded_positions = [paragraph.find(term) for term in _FUNDED_ORDER_TERMS if term in paragraph]
-        completed_positions = [paragraph.find(term) for term in _COMPLETED_ORDER_TERMS if term in paragraph]
-        confirm_positions = [
-            match.start()
-            for pattern in _BUYER_RECONFIRM_PATTERNS
-            for match in pattern.finditer(paragraph)
+def _clean_item_name(value: str) -> str:
+    item = value.strip(" ，。；：、【】")
+    for marker in ("面板写着", "面板显示", "系统显示", "写着", "显示", "标着", "旁边的", "旁边"):
+        if marker in item:
+            item = item.rsplit(marker, 1)[-1]
+    for prefix in ("夜烬", "他", "她", "那件", "一件", "一个", "一颗", "一块"):
+        if item.startswith(prefix) and item not in _ITEM_PRONOUNS:
+            item = item[len(prefix) :]
+    return item.strip(" ，。；：、【】")
+
+
+def _item_mentions(units: tuple[_EconomyUnit, ...]) -> tuple[_ItemMention, ...]:
+    mentions: list[_ItemMention] = []
+    for unit_index, unit in enumerate(units):
+        identified_matches = [
+            *_NAME_PANEL_PATTERN.finditer(unit.text),
+            *_ITEM_USE_PATTERN.finditer(unit.text),
+            *_ITEM_IDENTIFIED_PATTERN.finditer(unit.text),
         ]
-        if funded_positions and completed_positions and confirm_positions:
-            funded = min(funded_positions)
-            completed = min(position for position in completed_positions if position >= 0)
-            confirm = min(confirm_positions)
-            if funded < completed < confirm:
+        for match in identified_matches:
+            item = _clean_item_name(match.group("item"))
+            if item:
+                mentions.append(_ItemMention(item, True, unit_index, unit.start + match.start()))
+        if "裂纹狼心" in unit.text and any(term in unit.text for term in ("用途", "正式名称", "已识别")):
+            mentions.append(
+                _ItemMention("裂纹狼心", True, unit_index, unit.start + unit.text.find("裂纹狼心"))
+            )
+        for pattern in _ITEM_UNIDENTIFIED_PATTERNS:
+            for match in pattern.finditer(unit.text):
+                item = _clean_item_name(match.group("item"))
+                if item:
+                    mentions.append(_ItemMention(item, False, unit_index, unit.start + match.start()))
+    return tuple(sorted(mentions, key=lambda mention: mention.position))
+
+
+def _appraisal_actions(units: tuple[_EconomyUnit, ...]) -> tuple[_AppraisalAction, ...]:
+    actions: list[_AppraisalAction] = []
+    for unit_index, unit in enumerate(units):
+        explicit_positions: set[int] = set()
+        for pattern in _APPRAISAL_ACTION_PATTERNS:
+            for match in pattern.finditer(unit.text):
+                item = _clean_item_name(match.group("item"))
+                if item:
+                    actions.append(_AppraisalAction(item, unit_index, unit.start + match.start()))
+                    explicit_positions.update(
+                        range(unit.start + match.start(), unit.start + match.end())
+                    )
+        for term in _APPRAISAL_ACTION_TERMS:
+            start = 0
+            while True:
+                index = unit.text.find(term, start)
+                if index < 0:
+                    break
+                position = unit.start + index
+                if position not in explicit_positions:
+                    actions.append(
+                        _AppraisalAction(_IMPLICIT_ITEM_REFERENCE, unit_index, position)
+                    )
+                start = index + len(term)
+    return tuple(sorted(actions, key=lambda action: action.position))
+
+
+def _has_reappraised_identified_item(units: tuple[_EconomyUnit, ...]) -> bool:
+    mentions = _item_mentions(units)
+    for action in _appraisal_actions(units):
+        nearby = [
+            mention
+            for mention in mentions
+            if mention.position < action.position and 0 <= action.unit_index - mention.unit_index <= 1
+        ]
+        if action.item in _ITEM_PRONOUNS or action.item == _IMPLICIT_ITEM_REFERENCE:
+            if nearby and nearby[-1].identified:
                 return True
+            continue
+        same_item = [mention for mention in nearby if mention.item == action.item]
+        if same_item and same_item[-1].identified:
+            return True
+    return False
+
+
+def _event_positions(units: tuple[_EconomyUnit, ...], terms: tuple[str, ...]) -> list[tuple[int, int]]:
+    positions: list[tuple[int, int]] = []
+    for unit in units:
+        for term in terms:
+            start = 0
+            while True:
+                index = unit.text.find(term, start)
+                if index < 0:
+                    break
+                positions.append((unit.paragraph_index, unit.start + index))
+                start = index + len(term)
+    return sorted(set(positions), key=lambda event: event[1])
+
+
+def _buyer_reconfirm_positions(units: tuple[_EconomyUnit, ...]) -> list[tuple[int, int]]:
+    positions: list[tuple[int, int]] = []
+    for unit in units:
+        for match in _BUYER_RECONFIRM_PATTERN.finditer(unit.text):
+            prefix = unit.text[max(0, match.start() - 6) : match.start()]
+            if any(marker in prefix for marker in _NEGATED_WAIT_MARKERS):
+                continue
+            positions.append((unit.paragraph_index, unit.start + match.start()))
+    return positions
+
+
+def _funded_order_positions(units: tuple[_EconomyUnit, ...]) -> list[tuple[int, int]]:
+    return _event_positions(
+        tuple(unit for unit in units if "求购单" in unit.text),
+        _FUNDED_ORDER_TERMS,
+    )
+
+
+def _has_buyer_reconfirmation_after_funded_sale(units: tuple[_EconomyUnit, ...]) -> bool:
+    funded_events = _funded_order_positions(units)
+    completed_events = _event_positions(units, _COMPLETED_ORDER_TERMS)
+    confirm_events = _buyer_reconfirm_positions(units)
+    for funded_paragraph, funded_position in funded_events:
+        for completed_paragraph, completed_position in completed_events:
+            if completed_position <= funded_position or completed_paragraph > funded_paragraph + 2:
+                continue
+            for confirm_paragraph, confirm_position in confirm_events:
+                if (
+                    confirm_position > completed_position
+                    and confirm_paragraph <= funded_paragraph + 2
+                ):
+                    return True
     return False
 
 
 def detect_economy_boundary_violations(body: str) -> tuple[EconomyBoundaryViolation, ...]:
     """Find only explicit market, appraisal and exchange boundary violations."""
 
+    units = _economy_units(body)
     violations: list[EconomyBoundaryViolation] = []
-    if _has_direct_market_settlement(body):
+    if _has_direct_market_settlement(units):
         violations.append(
             EconomyBoundaryViolation(
                 code="market_direct_reality_settlement",
@@ -231,7 +440,7 @@ def detect_economy_boundary_violations(body: str) -> tuple[EconomyBoundaryViolat
                 revision="交易行只进游戏钱包；现实收益必须在离开交易行后走独立官方兑换。",
             )
         )
-    if _has_reappraised_identified_item(body):
+    if _has_reappraised_identified_item(units):
         violations.append(
             EconomyBoundaryViolation(
                 code="identified_item_reappraised",
@@ -239,7 +448,7 @@ def detect_economy_boundary_violations(body: str) -> tuple[EconomyBoundaryViolat
                 revision="已识别物不重复鉴定；只有明确标为未鉴定的物品才交给鉴定师。",
             )
         )
-    if _has_buyer_reconfirmation_after_funded_sale(body):
+    if _has_buyer_reconfirmation_after_funded_sale(units):
         violations.append(
             EconomyBoundaryViolation(
                 code="funded_order_waits_for_buyer",

@@ -78,6 +78,52 @@ def test_world_consistency_review_accepts_separated_exchange_and_isolated_terms(
     assert not any("经济边界" in issue for issue in review["issues"]), review
 
 
+def test_world_consistency_review_detects_ordered_economy_chains_across_adjacent_units():
+    body = (
+        "求购成交的提示刚刚亮起。卖出所得转入现实账户。\n\n"
+        "裂纹狼心已显示正式名称。\n\n"
+        "夜烬随后送这件物品去鉴定。\n\n"
+        "一张求购单标着已付款。\n\n"
+        "这张订单随即成交。\n\n"
+        "随后页面仍要等买家再次确认。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 3
+
+
+def test_world_consistency_review_ignores_negation_and_distant_unrelated_events():
+    body = (
+        "拍卖行显示装备已经成交。\n\n"
+        "款项不能直接进入现实账户，必须进入独立官方兑换页面。\n\n"
+        "裂纹狼心的用途是锻造；披风仍是未鉴定状态，夜烬把披风送去鉴定。\n\n"
+        "求购单显示资金冻结。\n\n"
+        "夜烬选择立即出售。\n\n"
+        "系统提示无需等待买家确认。\n\n"
+        "他离开市场去做了三天任务。\n\n"
+        "公会在另一座城开会。\n\n"
+        "现实账户直接到账的是他的旧工资。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+def test_world_consistency_review_does_not_treat_unrelated_frozen_funds_as_funded_buy_order():
+    body = (
+        "现实账户因为旧账显示资金冻结。\n\n"
+        "夜烬随后看见一张普通求购单，点下立即出售，界面显示成交。\n\n"
+        "这笔普通订单需要等待买家确认。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
 def test_world_consistency_review_accepts_outsider_misread_alias():
     world_events = [
         {

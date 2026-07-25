@@ -178,6 +178,38 @@ def test_prose_style_review_accepts_valid_exchange_unidentified_item_and_isolate
     assert not any("经济边界" in issue for issue in review["issues"]), review
 
 
+def test_prose_style_review_detects_ordered_economy_chains_across_adjacent_units():
+    body = (
+        "夜烬在交易行卖出拍卖物，成交提示跳了出来。\n\n"
+        "紧接着，那笔款项直接到账现实账户。\n\n"
+        "面板写着焰纹石用途是强化武器。\n\n"
+        "他却把这颗材料交给鉴定师。\n\n"
+        "求购单里的游戏币已经冻结。\n\n"
+        "夜烬点下立即出售。\n\n"
+        "成交以后，页面还让他继续等待买家确认。"
+    )
+
+    review = review_prose_style(body)
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 3
+
+
+def test_prose_style_review_ignores_negated_chains_and_appraisal_of_another_item():
+    body = (
+        "交易行里的求购已经成交。\n\n"
+        "这笔钱并非直接进入现实账户，而是必须另走独立官方兑换。\n\n"
+        "裂纹狼心用途是锻造；旁边的披风仍未鉴定，他把披风交给鉴定师。\n\n"
+        "求购单里的游戏币已经冻结。\n\n"
+        "夜烬点下立即出售。\n\n"
+        "成交以后不用等待买家确认，游戏币马上进入游戏钱包。"
+    )
+
+    review = review_prose_style(body)
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
 def test_prose_style_review_flags_panel_followed_by_rule_explanation():
     body = "角色面板：等级Lv.1，法力60/60。\n\n这说明他的法力还很充足，规则就是这样。"
 
