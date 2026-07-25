@@ -43,6 +43,7 @@ packages/story_core/runtime_config.json
 chapter_exports/
 data/exported-projects/
 data/backups/
+data/project-backups/
 data/reset-backups/
 
 # Local one-off model trials / exported working copies
