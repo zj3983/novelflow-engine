@@ -149,6 +149,10 @@ class LLMOutlinePlanningGenerator:
                 "Do not assign trope_beat to every chapter.",
                 "If prompt_context.genre_trope_templates is empty, overall.primary_trope_id, every arc.trope_id, and every chapter.trope_beat must be null.",
             ]
+            financial_outline_rule = (
+                "All outline narrative text may describe financial outcomes but must not contain "
+                "exact currency amounts, account balances, or fee percentages."
+            )
 
             if mode == "extend":
                 validation_rules = [
@@ -168,6 +172,8 @@ class LLMOutlinePlanningGenerator:
                     "Every character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
                     *trope_validation_rules,
                 ]
+
+            validation_rules.append(financial_outline_rule)
 
             prompt_context = {
                 "mode": mode,
@@ -194,6 +200,7 @@ class LLMOutlinePlanningGenerator:
                     {
                         "role": "system",
                         "content": (
+                            f"{financial_outline_rule} "
                             "Follow prompt_context.output_schema exactly. Do not add fields, rename fields, "
                             "or use values outside the declared enums. Return every required field. "
                             "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order. "

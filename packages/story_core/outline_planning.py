@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -47,9 +49,191 @@ class GeneratedOutlinePlan(_PlanningModel):
     characters: list[PlanningCharacterCard]
 
 
+_GENERATED_OVERALL_NARRATIVE_FIELDS = (
+    "story",
+    "protagonist_goal",
+    "main_conflict",
+    "growth_path",
+    "ending_direction",
+    "ending_contract",
+)
+_GENERATED_ARC_NARRATIVE_FIELDS = (
+    "title",
+    "goal",
+    "obstacle",
+    "payoff",
+    "end_state",
+    "game_line_payoff",
+    "reality_line_payoff",
+)
+_GENERATED_CHAPTER_NARRATIVE_FIELDS = (
+    "title",
+    "goal",
+    "obstacle",
+    "action",
+    "turn",
+    "payoff",
+    "ending_hook",
+)
+_NUMBER_TOKEN = (
+    r"(?:\d+(?:,\d{3})*(?:\.\d+)?[万亿]?"
+    r"|[零〇一二两三四五六七八九十百千万亿]+)"
+)
+_PERCENTAGE_TOKEN = rf"(?:\d+(?:\.\d+)?\s*[%％]|百分之{_NUMBER_TOKEN})"
+_FEE_TERM = r"(?:手续费|服务费|费率)"
+_EXPLICIT_CURRENCY_PATTERN = re.compile(
+    rf"{_NUMBER_TOKEN}\s*(?:金币|银币|铜币|元)"
+    rf"|(?:金币|银币|铜币)\s*{_NUMBER_TOKEN}"
+    rf"|(?:人民币|[￥¥])\s*{_NUMBER_TOKEN}"
+)
+_SMALL_CURRENCY_UNIT_PATTERN = re.compile(rf"{_NUMBER_TOKEN}\s*(块|角|分)")
+_BARE_AMOUNT_TOKEN = (
+    rf"{_NUMBER_TOKEN}(?![\d零〇一二两三四五六七八九十百千万亿])"
+)
+_FINANCIAL_AMOUNT_RELATION = (
+    r"(?:为|是|达到|达|剩余|变为|还有|只剩|仅剩|需付|降至|升至|约为|约|人民币|[￥¥:：、])?"
+)
+_NONFINANCIAL_AMOUNT_SUFFIX = r"(?:级|章|只|件|个|次|天|小时|分钟|秒|[%％])"
+_FINANCIAL_KEYWORD_AMOUNT_PATTERN = re.compile(
+    rf"(?:余额|成交价|房租|最低还款|售价|单价|价格|成本|支出)"
+    rf"\s*{_FINANCIAL_AMOUNT_RELATION}\s*{_BARE_AMOUNT_TOKEN}"
+    rf"(?!\s*{_NONFINANCIAL_AMOUNT_SUFFIX})"
+)
+_INCOME_AMOUNT_PATTERN = re.compile(
+    rf"收入\s*{_FINANCIAL_AMOUNT_RELATION}\s*{_BARE_AMOUNT_TOKEN}"
+    rf"(?!\s*(?:名|人|位|{_NONFINANCIAL_AMOUNT_SUFFIX}))"
+)
+_OUTLINE_CLAUSE_SEPARATOR_PATTERN = re.compile(r"[，。；！？\n]")
+_DIRECT_FEE_PERCENTAGE_PATTERN = re.compile(
+    rf"{_FEE_TERM}(?:比例)?\s*(?:"
+    rf"{_PERCENTAGE_TOKEN}"
+    rf"|(?:为|是|高达|达到|设为|定为|不得超过|不超过|最高|最低|调整为|收取|扣除)"
+    rf"\s*{_PERCENTAGE_TOKEN}"
+    rf"|占.*?的?\s*{_PERCENTAGE_TOKEN}"
+    rf")"
+)
+_FEE_COLLECTION_PERCENTAGE_PATTERN = re.compile(
+    rf"{_FEE_TERM}.*?"
+    rf"(?:按|按照).*?(?:"
+    rf"(?:收取|扣除)\s*{_PERCENTAGE_TOKEN}"
+    rf"|{_PERCENTAGE_TOKEN}.*?(?:收取|扣除)"
+    rf")"
+)
+_PERCENTAGE_BEFORE_FEE_PATTERN = re.compile(
+    rf"{_PERCENTAGE_TOKEN}\s*(?:"
+    rf"的?\s*{_FEE_TERM}"
+    rf"|(?:的\s*)?(?:比例\s*)?(?:收取|扣除)\s*{_FEE_TERM}"
+    rf"|作为\s*{_FEE_TERM}"
+    rf")"
+)
+_NON_FEE_METRIC_BEFORE_PERCENTAGE_PATTERN = re.compile(
+    r"(?P<metric>[\u4e00-\u9fff]{1,8}(?:率|度|值)|血量|法力|伤害|经验|收益)"
+    r"\s*(?:为|是|达到|达|提升|提高|恢复|降低|降至|升至)?\s*$"
+)
+
+
 def _require_text(value: str, error: str) -> None:
     if not str(value or "").strip():
         raise ValueError(error)
+
+
+def _contains_monetary_amount(value: str) -> bool:
+    explicit_currency = _EXPLICIT_CURRENCY_PATTERN.search(value)
+    keyword_amount = _FINANCIAL_KEYWORD_AMOUNT_PATTERN.search(value)
+    income_amount = _INCOME_AMOUNT_PATTERN.search(value)
+    if explicit_currency or keyword_amount or income_amount:
+        return True
+    for match in _SMALL_CURRENCY_UNIT_PATTERN.finditer(value):
+        unit = match.group(1)
+        following = value[match.end() : match.end() + 1]
+        if unit in {"块", "角"}:
+            followed_by_classifier = (
+                following
+                and "\u4e00" <= following <= "\u9fff"
+                and following != "钱"
+            )
+            if followed_by_classifier:
+                continue
+            return True
+        prefix = value[max(0, match.start() - 10) : match.start()]
+        remainder = value[match.end() :]
+        if (
+            following
+            and "\u4e00" <= following <= "\u9fff"
+            and following != "钱"
+        ) or re.match(r"\d+\s*秒", remainder) or re.search(
+            r"(?:评分|得分|分数|拿到|得到|获得).{0,8}$",
+            prefix,
+        ):
+            continue
+        return True
+    return False
+
+
+def _contains_financial_percentage(value: str) -> bool:
+    for clause in _OUTLINE_CLAUSE_SEPARATOR_PATTERN.split(value):
+        if any(
+            pattern.search(clause)
+            for pattern in (
+                _DIRECT_FEE_PERCENTAGE_PATTERN,
+                _FEE_COLLECTION_PERCENTAGE_PATTERN,
+                _PERCENTAGE_BEFORE_FEE_PATTERN,
+            )
+        ):
+            return True
+        if not re.search(_FEE_TERM, clause):
+            continue
+        for percentage in re.finditer(_PERCENTAGE_TOKEN, clause):
+            if re.match(r"\s*(?:概率|几率)", clause[percentage.end() :]):
+                continue
+            metric_match = _NON_FEE_METRIC_BEFORE_PERCENTAGE_PATTERN.search(
+                clause[: percentage.start()]
+            )
+            if metric_match and "费率" not in metric_match.group("metric"):
+                continue
+            return True
+    return False
+
+
+def _validate_generated_narrative_value(value: str, location: str) -> None:
+    normalized = unicodedata.normalize("NFKC", value)
+    if _contains_monetary_amount(normalized) or _contains_financial_percentage(
+        normalized
+    ):
+        raise ValueError(f"generated_outline_contains_monetary_amount:{location}")
+
+
+def _validate_generated_outline_amounts(plan: GeneratedOutlinePlan) -> None:
+    overall = plan.outline.overall
+    for field_name in _GENERATED_OVERALL_NARRATIVE_FIELDS:
+        _validate_generated_narrative_value(
+            getattr(overall, field_name),
+            f"overall:{field_name}",
+        )
+
+    for arc in plan.outline.arcs:
+        for field_name in _GENERATED_ARC_NARRATIVE_FIELDS:
+            _validate_generated_narrative_value(
+                getattr(arc, field_name),
+                f"arc:{arc.id}:{field_name}",
+            )
+        for index, trace in enumerate(arc.long_term_antagonist_traces):
+            _validate_generated_narrative_value(
+                trace,
+                f"arc:{arc.id}:long_term_antagonist_traces:{index}",
+            )
+        for field_name in ("continue_route", "close_route"):
+            _validate_generated_narrative_value(
+                getattr(arc.extension_gate, field_name),
+                f"arc:{arc.id}:extension_gate:{field_name}",
+            )
+
+    for chapter in plan.outline.chapters:
+        for field_name in _GENERATED_CHAPTER_NARRATIVE_FIELDS:
+            _validate_generated_narrative_value(
+                getattr(chapter, field_name),
+                f"{chapter.chapter_number}:{field_name}",
+            )
 
 
 def validate_generated_opening_plan(
@@ -64,6 +248,7 @@ def validate_generated_opening_plan(
     """Validate an AI-generated opening plan without constraining manual drafts."""
 
     plan = GeneratedOutlinePlan.model_validate(payload)
+    _validate_generated_outline_amounts(plan)
     overall = plan.outline.overall
     for field_name in (
         "story",
@@ -139,6 +324,7 @@ def validate_generated_continuation_plan(
     """Validate an incremental plan without requiring opening-only structure."""
 
     plan = GeneratedOutlinePlan.model_validate(payload)
+    _validate_generated_outline_amounts(plan)
     chapter_numbers = [chapter.chapter_number for chapter in plan.outline.chapters]
     if chapter_numbers != expected_chapter_numbers:
         raise ValueError("generated_chapters_do_not_match_target_window")

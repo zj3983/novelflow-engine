@@ -420,6 +420,29 @@ def test_generator_requests_one_compact_structured_plan() -> None:
     assert "五章" not in request["payload"]["messages"][0]["content"]
 
 
+@pytest.mark.parametrize("mode", ["initial", "regenerate", "extend"])
+def test_generator_forbids_exact_financial_hard_anchors_in_every_mode(
+    mode: str,
+) -> None:
+    recording = RecordingRuntime()
+    brief = (
+        _brief()
+        if mode == "initial"
+        else recording.brief(current_chapter=20, existing_chapters=list(range(1, 31)))
+    )
+
+    recording.generator().generate(brief, mode=mode)
+
+    request = recording.calls[0]["payload"]
+    rules_text = "\n".join(recording.prompt_context["validation_rules"])
+    required_rule = (
+        "All outline narrative text may describe financial outcomes but must not contain "
+        "exact currency amounts, account balances, or fee percentages."
+    )
+    assert required_rule in rules_text
+    assert required_rule in request["messages"][0]["content"]
+
+
 def test_generator_rejects_selected_primary_trope_drift() -> None:
     def fake_post(base_url, path, payload, api_key, **kwargs):
         plan = _valid_plan()

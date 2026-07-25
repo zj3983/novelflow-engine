@@ -192,6 +192,306 @@ def test_plan_accepts_explicit_empty_target_sequence(valid_payload: dict) -> Non
     assert plan.outline.chapters == []
 
 
+def test_opening_plan_rejects_concrete_monetary_amount(valid_payload: dict) -> None:
+    valid_payload["outline"]["chapters"][0]["payoff"] = "担保交易到账1764.00元"
+
+    with pytest.raises(
+        ValueError,
+        match="^generated_outline_contains_monetary_amount:1:payoff$",
+    ):
+        validate_generated_opening_plan(valid_payload)
+
+
+def test_opening_plan_rejects_monetary_amount_in_overall_story(
+    valid_payload: dict,
+) -> None:
+    valid_payload["outline"]["overall"]["story"] = (
+        "林照带着仅剩的46.83元进入宗门旧案。"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="^generated_outline_contains_monetary_amount:overall:story$",
+    ):
+        validate_generated_opening_plan(valid_payload)
+
+
+def test_opening_plan_rejects_monetary_amount_in_arc_narrative(
+    valid_payload: dict,
+) -> None:
+    valid_payload["outline"]["arcs"][0]["payoff"] = "林照拿到价值300元的旧物"
+
+    with pytest.raises(
+        ValueError,
+        match="^generated_outline_contains_monetary_amount:arc:opening:payoff$",
+    ):
+        validate_generated_opening_plan(valid_payload)
+
+
+@pytest.mark.parametrize(
+    ("scope", "field_name", "location"),
+    [
+        *(('overall', field_name, f'overall:{field_name}') for field_name in (
+            'story',
+            'protagonist_goal',
+            'main_conflict',
+            'growth_path',
+            'ending_direction',
+            'ending_contract',
+        )),
+        *(('arc', field_name, f'arc:opening:{field_name}') for field_name in (
+            'title',
+            'goal',
+            'obstacle',
+            'payoff',
+            'end_state',
+            'game_line_payoff',
+            'reality_line_payoff',
+        )),
+        ('arc_trace', 'long_term_antagonist_traces', 'arc:opening:long_term_antagonist_traces:0'),
+        ('extension_gate', 'continue_route', 'arc:opening:extension_gate:continue_route'),
+        ('extension_gate', 'close_route', 'arc:opening:extension_gate:close_route'),
+        ('chapter', 'title', '1:title'),
+    ],
+)
+def test_opening_plan_checks_every_outline_narrative_field(
+    valid_payload: dict,
+    scope: str,
+    field_name: str,
+    location: str,
+) -> None:
+    amount_text = "保留46.83元作为硬锚点"
+    if scope == "overall":
+        valid_payload["outline"]["overall"][field_name] = amount_text
+    elif scope == "arc":
+        valid_payload["outline"]["arcs"][0][field_name] = amount_text
+    elif scope == "arc_trace":
+        valid_payload["outline"]["arcs"][0][field_name] = [amount_text]
+    elif scope == "extension_gate":
+        gate = valid_payload["outline"]["arcs"][0].setdefault("extension_gate", {})
+        gate[field_name] = amount_text
+    else:
+        valid_payload["outline"]["chapters"][0][field_name] = amount_text
+
+    with pytest.raises(
+        ValueError,
+        match=f"^generated_outline_contains_monetary_amount:{location}$",
+    ):
+        validate_generated_opening_plan(valid_payload)
+
+
+@pytest.mark.parametrize(
+    "amount",
+    ["40块", "2角", "5分", "100金币", "20银币", "8铜币"],
+)
+def test_opening_plan_rejects_supported_currency_units(
+    valid_payload: dict,
+    amount: str,
+) -> None:
+    valid_payload["outline"]["chapters"][0]["goal"] = amount
+
+    with pytest.raises(
+        ValueError,
+        match="^generated_outline_contains_monetary_amount:1:goal$",
+    ):
+        validate_generated_opening_plan(valid_payload)
+
+
+def test_opening_plan_rejects_currency_unit_before_amount(valid_payload: dict) -> None:
+    valid_payload["outline"]["chapters"][0]["payoff"] = "奖励金币100"
+
+    with pytest.raises(
+        ValueError,
+        match="^generated_outline_contains_monetary_amount:1:payoff$",
+    ):
+        validate_generated_opening_plan(valid_payload)
+
+
+@pytest.mark.parametrize(
+    "financial_percentage",
+    [
+        "手续费5%",
+        "费率为5%",
+        "手续费将按照本次平台担保交易的最终实际成交金额收取5%",
+        "按5%收取手续费",
+        "手续费比例为5%",
+        "手续费高达5%",
+        "以5%的比例收取手续费",
+        "手续费不得超过5%",
+        "手续费占成交额的5%",
+        "费率调整为5%",
+        "手续费按成交额的5%收取",
+        "手续费按成交额百分之五收取",
+        "平台服务费为5%",
+        "平台服务费收取5%",
+        "成交额的5%作为服务费",
+        "手续费为成交额的5%",
+        "服务费是成交金额的百分之五",
+        "手续费按5%计收",
+        "手续费按成交额5%计提",
+    ],
+)
+def test_continuation_plan_rejects_financial_fee_percentage_without_amount(
+    valid_payload: dict,
+    financial_percentage: str,
+) -> None:
+    valid_payload["outline"]["arcs"] = []
+    valid_payload["outline"]["chapters"] = [
+        {
+            **valid_payload["outline"]["chapters"][0],
+            "chapter_number": 31,
+            "turn": financial_percentage,
+            "cast": ["林照"],
+        }
+    ]
+    valid_payload["characters"] = []
+
+    with pytest.raises(
+        ValueError,
+        match="^generated_outline_contains_monetary_amount:31:turn$",
+    ):
+        validate_generated_continuation_plan(
+            valid_payload,
+            expected_chapter_numbers=[31],
+            existing_character_names={"林照"},
+        )
+
+
+def test_generated_plan_allows_nonfinancial_quantities_and_qualitative_money_outcome(
+    valid_payload: dict,
+) -> None:
+    valid_payload["outline"]["chapters"][0]["action"] = (
+        "击杀5只灰狼，升到2级，扣除手续费后款项到账"
+    )
+
+    plan = validate_generated_opening_plan(valid_payload)
+
+    assert plan.outline.chapters[0].action == "击杀5只灰狼，升到2级，扣除手续费后款项到账"
+
+
+def test_generated_plan_allows_time_and_unrelated_percentage(valid_payload: dict) -> None:
+    valid_payload["outline"]["chapters"][0]["obstacle"] = (
+        "等待5分钟，技能命中率只有20%"
+    )
+
+    plan = validate_generated_opening_plan(valid_payload)
+
+    assert plan.outline.chapters[0].obstacle == "等待5分钟，技能命中率只有20%"
+
+
+@pytest.mark.parametrize(
+    "unrelated_percentage",
+    [
+        "扣除手续费后技能命中率20%",
+        "手续费不变且成功率提升5%",
+        "手续费不变且技能命中率为20%",
+        "手续费取消后生命值恢复20%",
+        "手续费不变且经验值提升20%",
+        "手续费不变且按命中率20%释放技能",
+        "手续费不变但有5%概率触发暴击",
+        "扣除手续费后有20%概率掉落装备",
+    ],
+)
+def test_generated_plan_allows_unrelated_percentage_near_fee_terms(
+    valid_payload: dict,
+    unrelated_percentage: str,
+) -> None:
+    valid_payload["outline"]["chapters"][0]["turn"] = unrelated_percentage
+
+    plan = validate_generated_opening_plan(valid_payload)
+
+    assert plan.outline.chapters[0].turn == unrelated_percentage
+
+
+@pytest.mark.parametrize(
+    "ordinary_quantity",
+    [
+        "收集5块碎片",
+        "评分达到5分",
+        "完成三分之一进度",
+        "牛排达到七分熟",
+        "本局拿到5分",
+        "使出三分力",
+        "有七分把握",
+        "当前最快记录38分02秒",
+        "剩余时间1分47秒",
+        "收入3名弟子",
+        "收入三名成员",
+    ],
+)
+def test_generated_plan_allows_classifier_and_score_quantities(
+    valid_payload: dict,
+    ordinary_quantity: str,
+) -> None:
+    valid_payload["outline"]["chapters"][0]["action"] = ordinary_quantity
+
+    plan = validate_generated_opening_plan(valid_payload)
+
+    assert plan.outline.chapters[0].action == ordinary_quantity
+
+
+@pytest.mark.parametrize(
+    "amount",
+    ["一百元", "金币一百", "10万元", "3亿元", "１２元"],
+)
+def test_opening_plan_rejects_chinese_fullwidth_and_scaled_amounts(
+    valid_payload: dict,
+    amount: str,
+) -> None:
+    valid_payload["outline"]["chapters"][0]["goal"] = f"获得{amount}"
+
+    with pytest.raises(
+        ValueError,
+        match="^generated_outline_contains_monetary_amount:1:goal$",
+    ):
+        validate_generated_opening_plan(valid_payload)
+
+
+@pytest.mark.parametrize(
+    "financial_amount",
+    [
+        "账户余额为332.60",
+        "账户余额还有332.60",
+        "账户余额只剩332.60",
+        "账户余额仅剩332.60",
+        "账户余额约332.60",
+        "账户余额：332.60",
+        "账户余额: 332.60",
+        "账户余额、 332.60",
+        "余额降至332.60",
+        "余额升至 332.60",
+        "成交价人民币1764",
+        "成交价约为1764",
+        "房租1180",
+        "房租需付1180",
+        "收入3000",
+        "售价￥1764",
+        "售价¥1764",
+    ],
+)
+def test_opening_plan_rejects_bare_amount_near_financial_keyword(
+    valid_payload: dict,
+    financial_amount: str,
+) -> None:
+    valid_payload["outline"]["chapters"][0]["payoff"] = financial_amount
+
+    with pytest.raises(
+        ValueError,
+        match="^generated_outline_contains_monetary_amount:1:payoff$",
+    ):
+        validate_generated_opening_plan(valid_payload)
+
+
+def test_opening_plan_rejects_percentage_before_fee_term(valid_payload: dict) -> None:
+    valid_payload["outline"]["chapters"][0]["goal"] = "收取5%的手续费"
+
+    with pytest.raises(
+        ValueError,
+        match="^generated_outline_contains_monetary_amount:1:goal$",
+    ):
+        validate_generated_opening_plan(valid_payload)
+
+
 def test_continuation_plan_accepts_existing_and_new_cast(valid_payload: dict) -> None:
     valid_payload["outline"]["arcs"] = []
     valid_payload["outline"]["chapters"] = [
