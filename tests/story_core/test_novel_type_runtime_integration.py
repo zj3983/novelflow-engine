@@ -257,19 +257,30 @@ def test_trope_stage_locking_flows_from_opening_to_writer_summary(tmp_path) -> N
     )
     seed = build_chapter_seed(story, 1)
     writer_summary = _writer_seed_summary(seed)
-    serialized_summary = json.dumps(writer_summary, ensure_ascii=False)
+    summary_contracts = [
+        value
+        for value in writer_summary.values()
+        if isinstance(value, dict) and "template_id" in value
+    ]
+
+    def nested_keys(value):
+        if isinstance(value, dict):
+            return {
+                *value.keys(),
+                *(key for item in value.values() for key in nested_keys(item)),
+            }
+        if isinstance(value, list):
+            return {key for item in value for key in nested_keys(item)}
+        return set()
 
     assert saved["outline"]["overall"]["primary_trope_id"] == selected["id"]
     assert saved["outline"]["arcs"][0]["trope_id"] == selected["id"]
     assert saved["outline"]["chapters"][0]["trope_beat"] == selected["beats"][0]
     assert seed["trope_contract"]["template_id"] == selected["id"]
     assert seed["trope_contract"]["current_beat"] == selected["beats"][0]
-    assert selected["id"] in serialized_summary
-    assert all(
-        candidate["id"] not in serialized_summary
-        for candidate in candidates
-        if candidate["id"] != selected["id"]
-    )
+    assert summary_contracts == [seed["trope_contract"]]
+    assert "trope_templates" not in nested_keys(writer_summary)
+    assert "genre_trope_templates" not in nested_keys(writer_summary)
 
 
 def test_legacy_outline_without_trope_fields_loads_and_builds_seed(tmp_path) -> None:

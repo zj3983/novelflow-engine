@@ -505,6 +505,73 @@ def _opening_direction_payload() -> dict:
     }
 
 
+def _outline_plan_with_trope(trope_id: str, trope_beat: str) -> dict:
+    characters = [
+        ("Lead", "protagonist"),
+        ("Rival", "stage_antagonist"),
+        ("Witness", "supporting"),
+        ("Sponsor", "long_term_antagonist"),
+    ]
+    return {
+        "outline": {
+            "overall": {
+                "story": "The lead investigates a sealed record.",
+                "protagonist_goal": "Open the record.",
+                "main_conflict": "The rival controls access.",
+                "growth_path": "Earn authority through verified results.",
+                "ending_direction": "Expose the sponsor.",
+                "primary_trope_id": trope_id,
+            },
+            "arcs": [{
+                "id": "opening",
+                "title": "The sealed record",
+                "start_chapter": 1,
+                "end_chapter": 30,
+                "goal": "Obtain the first record.",
+                "obstacle": "The rival blocks the archive.",
+                "payoff": "The record becomes public.",
+                "trope_id": trope_id,
+                "end_state": "The investigation is official.",
+                "stage_antagonist": "Rival",
+                "long_term_antagonist_traces": ["The sponsor changed the index."],
+            }],
+            "chapters": [{
+                "chapter_number": number,
+                "title": f"Record {number}",
+                "goal": "Verify one fact.",
+                "obstacle": "Access remains restricted.",
+                "action": "The lead checks the archive.",
+                "turn": "A second record contradicts the first.",
+                "payoff": "One fact is verified.",
+                "ending_hook": "A witness requests a meeting.",
+                "trope_beat": trope_beat if number == 1 else None,
+                "cast": ["Lead", "Rival"],
+            } for number in range(1, 31)],
+        },
+        "characters": [{
+            "name": name,
+            "role": tier,
+            "character_tier": tier,
+            "first_appearance": 0 if tier == "long_term_antagonist" else 1,
+            "identity_profile": {
+                "age": 30,
+                "origin": "River City",
+                "current_identity": tier,
+                "occupation": "archive officer",
+            },
+            "background_profile": {},
+            "current_life_profile": {},
+            "story_drive": {
+                "immediate_goal": "Control the public record.",
+                "failure_stakes": "Lose official standing.",
+            },
+            "performance_profile": {},
+            "dialogue_examples": ["Show the record.", "Verify the timestamp."],
+            "relationship_notes": [],
+        } for name, tier in characters],
+    }
+
+
 class _FakeOpeningDirectionGenerator:
     def __init__(self, payload=None):
         self.payload = payload if payload is not None else _opening_direction_payload()
@@ -690,6 +757,67 @@ def test_generate_file_project_plan_passes_mode_and_trimmed_guidance(creation_ap
     assert response.status_code == 200
     assert response.json()["outline"]["chapters"][0]["chapter_number"] == 1
     assert calls[0][1:] == ("regenerate", "阶段对手要有现实利益")
+
+
+def test_outline_api_round_trips_trope_lock_fields(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Trope transport", "novel_type_id": "xuanhuan"},
+    ).json()
+    candidates = novel_type_prompt_context(runtime_novel_type("xuanhuan"))[
+        "genre_trope_templates"
+    ]
+    selected = candidates[0]
+    initial_beat = selected["beats"][0]
+    updated_beat = selected["beats"][1]
+
+    class OutlineGenerator:
+        def generate(self, brief, *, mode, guidance):
+            assert mode == "initial"
+            return _outline_plan_with_trope(selected["id"], initial_beat)
+
+    monkeypatch.setattr(
+        file_project_routes,
+        "outline_planning_generator",
+        OutlineGenerator(),
+    )
+
+    generated = client.post(
+        f"/file-projects/{project['project_id']}/outline/generate",
+        json={"mode": "initial", "guidance": ""},
+    )
+    assert generated.status_code == 200
+    generated_outline = generated.json()["outline"]
+    assert generated_outline["overall"]["primary_trope_id"] == selected["id"]
+    assert generated_outline["arcs"][0]["trope_id"] == selected["id"]
+    assert generated_outline["chapters"][0]["trope_beat"] == initial_beat
+
+    fetched = client.get(f"/file-projects/{project['project_id']}/outline")
+    assert fetched.status_code == 200
+    fetched_outline = fetched.json()
+    assert fetched_outline["overall"]["primary_trope_id"] == selected["id"]
+    assert fetched_outline["arcs"][0]["trope_id"] == selected["id"]
+    assert fetched_outline["chapters"][0]["trope_beat"] == initial_beat
+
+    updated_payload = {
+        key: value for key, value in fetched_outline.items() if key != "source"
+    }
+    updated_payload["chapters"][0]["trope_beat"] = updated_beat
+    updated = client.put(
+        f"/file-projects/{project['project_id']}/outline",
+        json=updated_payload,
+    )
+    assert updated.status_code == 200
+    assert updated.json()["overall"]["primary_trope_id"] == selected["id"]
+    assert updated.json()["arcs"][0]["trope_id"] == selected["id"]
+    assert updated.json()["chapters"][0]["trope_beat"] == updated_beat
+
+    refetched = client.get(f"/file-projects/{project['project_id']}/outline")
+    assert refetched.status_code == 200
+    assert refetched.json()["overall"]["primary_trope_id"] == selected["id"]
+    assert refetched.json()["arcs"][0]["trope_id"] == selected["id"]
+    assert refetched.json()["chapters"][0]["trope_beat"] == updated_beat
 
 
 @pytest.mark.parametrize(
