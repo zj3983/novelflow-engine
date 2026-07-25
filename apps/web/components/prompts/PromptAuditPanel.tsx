@@ -61,14 +61,14 @@ export function PromptAuditPanel({
         </div>
         {onDeepAudit ? (
           <button className="ws-btn" type="button" disabled={deepLoading || stale} onClick={onDeepAudit}>
-            {deepLoading ? "检查中..." : "AI 深度检查"}
+            {deepLoading ? "AI 深度检查中..." : "AI 深度检查"}
           </button>
         ) : null}
       </div>
 
-      {deepLoading ? <p className="ws-card__hint" role="status">AI 深度检查中...</p> : null}
+      {deepLoading ? <p className="ws-card__hint" role="status">AI 深度检查中，请稍候...</p> : null}
       {stale ? <p className="ws-inline-warning" role="status">内容已变化，请重新检查。</p> : null}
-      {deepError ? <p className="ws-inline-error" role="alert">{deepError}</p> : null}
+      {deepError ? <p className="ws-inline-error" role="alert">深度检查失败：{deepError}</p> : null}
 
       <div className="ws-prompt-audit__summary" aria-label="检查统计">
         <span><strong>{summary.characters}</strong> 总字符</span>

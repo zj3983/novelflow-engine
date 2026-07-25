@@ -4,10 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   auditPrompt,
+  deepAuditPrompt,
   deleteProjectPromptTemplate,
   fetchProjectPromptTemplates,
   saveGlobalPromptTemplate,
   saveProjectPromptTemplate,
+  type DeepPromptAuditResult,
   type PromptTemplateEntry,
   type PromptAuditResult,
 } from "../../lib/api";
@@ -27,11 +29,15 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
   const [saving, setSaving] = useState<"project" | "global" | "restore" | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [auditResult, setAuditResult] = useState<PromptAuditResult | null>(null);
+  const [localAuditResult, setLocalAuditResult] = useState<PromptAuditResult | null>(null);
+  const [displayAuditResult, setDisplayAuditResult] = useState<PromptAuditResult | DeepPromptAuditResult | null>(null);
   const [auditedContent, setAuditedContent] = useState("");
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState("");
+  const [deepLoading, setDeepLoading] = useState(false);
+  const [deepError, setDeepError] = useState("");
   const auditRequestId = useRef(0);
+  const deepRequestId = useRef(0);
 
   const selected = useMemo(
     () => templates.find((template) => template.key === selectedKey) ?? templates[0] ?? null,
@@ -40,10 +46,14 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
 
   async function loadTemplates(preferredKey?: string) {
     auditRequestId.current += 1;
-    setAuditResult(null);
+    deepRequestId.current += 1;
+    setLocalAuditResult(null);
+    setDisplayAuditResult(null);
     setAuditedContent("");
     setAuditError("");
     setAuditLoading(false);
+    setDeepError("");
+    setDeepLoading(false);
     setLoading(true);
     setError("");
     try {
@@ -67,14 +77,18 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
 
   function selectTemplate(template: PromptTemplateEntry) {
     auditRequestId.current += 1;
+    deepRequestId.current += 1;
     setSelectedKey(template.key);
     setContent(template.content);
     setMessage("");
     setError("");
-    setAuditResult(null);
+    setLocalAuditResult(null);
+    setDisplayAuditResult(null);
     setAuditedContent("");
     setAuditError("");
     setAuditLoading(false);
+    setDeepError("");
+    setDeepLoading(false);
   }
 
   async function runAudit() {
@@ -82,9 +96,13 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
     const requestContent = content;
     const requestId = auditRequestId.current + 1;
     auditRequestId.current = requestId;
+    deepRequestId.current += 1;
     setAuditLoading(true);
     setAuditError("");
-    setAuditResult(null);
+    setDeepLoading(false);
+    setDeepError("");
+    setLocalAuditResult(null);
+    setDisplayAuditResult(null);
     setAuditedContent("");
     try {
       const result = await auditPrompt({
@@ -94,8 +112,10 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
         required_variables: selected.required_variables,
       });
       if (requestId === auditRequestId.current) {
-        setAuditResult(result);
+        setLocalAuditResult(result);
+        setDisplayAuditResult(result);
         setAuditedContent(requestContent);
+        setDeepError("");
       }
     } catch (reason) {
       if (requestId === auditRequestId.current) {
@@ -108,6 +128,35 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
     }
   }
 
+  async function runDeepAudit() {
+    if (!selected || !localAuditResult || auditedContent !== content || deepLoading) return;
+    const requestContent = content;
+    const requestLocalResult = localAuditResult;
+    const requestId = deepRequestId.current + 1;
+    deepRequestId.current = requestId;
+    setDeepLoading(true);
+    setDeepError("");
+    try {
+      const result = await deepAuditPrompt({
+        mode: "template",
+        content: requestContent,
+        template_key: selected.key,
+        required_variables: selected.required_variables,
+      }, requestLocalResult);
+      if (requestId === deepRequestId.current) {
+        setDisplayAuditResult(result);
+      }
+    } catch (reason) {
+      if (requestId === deepRequestId.current) {
+        setDeepError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (requestId === deepRequestId.current) {
+        setDeepLoading(false);
+      }
+    }
+  }
+
   function editContent(nextContent: string) {
     setContent(nextContent);
     if (auditLoading) {
@@ -115,6 +164,12 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
       setAuditLoading(false);
       setAuditError("");
     }
+    if (deepLoading) {
+      deepRequestId.current += 1;
+      setDeepLoading(false);
+      setDisplayAuditResult(localAuditResult);
+    }
+    setDeepError("");
   }
 
   async function save(scope: "project" | "global") {
@@ -220,7 +275,15 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
           {error ? <p className="ws-inline-error" role="alert">保存失败：{error}</p> : null}
           {auditLoading ? <p className="ws-card__hint" role="status">提示词检查中...</p> : null}
           {auditError ? <p className="ws-inline-error" role="alert">检查失败：{auditError}</p> : null}
-          {auditResult ? <PromptAuditPanel result={auditResult} stale={auditedContent !== content} /> : null}
+          {displayAuditResult ? (
+            <PromptAuditPanel
+              result={displayAuditResult}
+              stale={auditedContent !== content}
+              deepLoading={deepLoading}
+              deepError={deepError}
+              onDeepAudit={() => void runDeepAudit()}
+            />
+          ) : null}
         </section>
       ) : (
         <p className="ws-card__hint">没有可编辑的提示词模板。</p>

@@ -57,16 +57,61 @@ const auditResult = {
   passed_checks: ["必需变量齐全", "未发现互相冲突的指令"],
 };
 
+const deepAuditResult = {
+  ...auditResult,
+  suggestions: [
+    ...auditResult.suggestions,
+    {
+      code: "semantic_focus",
+      title: "语义焦点可更明确",
+      evidence: "正文目标与章节方向分散在不同位置。",
+      location: "全文",
+      suggestion: "将正文目标与章节方向合并为一个清晰的任务段。",
+      estimated_reduction_characters: 8,
+    },
+  ],
+  runtime: {
+    provider: "openai",
+    model: "gpt-5-mini",
+    elapsed_seconds: 1.25,
+    prompt_characters: 321,
+  },
+};
+
 type AuditMockOptions = {
   auditStatus?: number;
   auditStarted?: () => void;
   waitForAudit?: Promise<void>;
+  deepStatus?: number;
+  deepStarted?: () => void;
+  waitForDeep?: Promise<void>;
 };
 
 async function mockPromptAuditPage(page: Page, options: AuditMockOptions = {}) {
-  const { auditStatus = 200, auditStarted, waitForAudit } = options;
+  const {
+    auditStatus = 200,
+    auditStarted,
+    waitForAudit,
+    deepStatus = 200,
+    deepStarted,
+    waitForDeep,
+  } = options;
   const auditBodies: unknown[] = [];
+  const deepAuditBodies: unknown[] = [];
   const templatePutMethods: string[] = [];
+
+  await page.route("**/prompt-audit/deep", async (route) => {
+    deepAuditBodies.push(route.request().postDataJSON());
+    deepStarted?.();
+    await waitForDeep;
+    await route.fulfill({
+      status: deepStatus,
+      contentType: "application/json",
+      body: deepStatus === 200
+        ? JSON.stringify(deepAuditResult)
+        : JSON.stringify({ detail: "AI 服务暂时不可用" }),
+    });
+  });
 
   await page.route("**/prompt-audit", async (route) => {
     auditBodies.push(route.request().postDataJSON());
@@ -104,7 +149,7 @@ async function mockPromptAuditPage(page: Page, options: AuditMockOptions = {}) {
     });
   });
 
-  return { auditBodies, templatePutMethods };
+  return { auditBodies, deepAuditBodies, templatePutMethods };
 }
 
 test("检查当前未保存的模板并显示紧凑诊断", async ({ page }) => {
@@ -112,6 +157,7 @@ test("检查当前未保存的模板并显示紧凑诊断", async ({ page }) => 
   const editedContent = "请保持节奏紧凑。\n请保持节奏紧凑。\n{{output_section}}\n{{chapter_direction}}";
 
   await page.goto(PROJECT_PATH);
+  expect(api.deepAuditBodies).toHaveLength(0);
   await page.getByLabel("原始模板").fill(editedContent);
   await page.getByRole("button", { name: "检查提示词" }).click();
 
@@ -129,7 +175,135 @@ test("检查当前未保存的模板并显示紧凑诊断", async ({ page }) => 
   await expect(page.getByText(/5.*有效行/)).toBeVisible();
   await expect(page.getByText(/16.*22\.2%/)).toBeVisible();
   await expect(page.getByText("分析报告", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "AI 深度检查" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "AI 深度检查" })).toBeEnabled();
+  expect(api.deepAuditBodies).toHaveLength(0);
+});
+
+test("AI 深度检查仅在显式点击后调用并显示语义建议与运行信息", async ({ page }) => {
+  const api = await mockPromptAuditPage(page);
+  const originalContent = templatesResponse.templates[0].content;
+
+  await page.goto(PROJECT_PATH);
+  expect(api.deepAuditBodies).toHaveLength(0);
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  await expect(page.getByRole("button", { name: "AI 深度检查" })).toBeEnabled();
+  expect(api.deepAuditBodies).toHaveLength(0);
+
+  await page.getByRole("button", { name: "AI 深度检查" }).click();
+
+  await expect.poll(() => api.deepAuditBodies).toHaveLength(1);
+  expect(api.deepAuditBodies[0]).toEqual({
+    mode: "template",
+    content: originalContent,
+    template_key: "writer",
+    required_variables: REQUIRED_VARIABLES,
+    local_result: auditResult,
+  });
+  expect((api.deepAuditBodies[0] as { local_result: Record<string, unknown> }).local_result).not.toHaveProperty("runtime");
+  await expect(page.getByText("语义焦点可更明确", { exact: true })).toBeVisible();
+  await expect(page.getByText(/openai \/ gpt-5-mini.*1\.25.*321/)).toBeVisible();
+});
+
+test("内容过期时禁用深度检查，重新本地检查后恢复", async ({ page }) => {
+  const api = await mockPromptAuditPage(page);
+  const editedContent = "重新检查后的内容\n{{output_section}}\n{{chapter_direction}}";
+
+  await page.goto(PROJECT_PATH);
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  const deepButton = page.getByRole("button", { name: "AI 深度检查" });
+  await expect(deepButton).toBeEnabled();
+
+  await page.getByLabel("原始模板").fill(editedContent);
+  await expect(deepButton).toBeDisabled();
+  await expect(page.getByText("内容已变化，请重新检查。", { exact: true })).toBeVisible();
+  await deepButton.click({ force: true });
+  expect(api.deepAuditBodies).toHaveLength(0);
+
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  await expect(deepButton).toBeEnabled();
+  expect(api.deepAuditBodies).toHaveLength(0);
+});
+
+test("深度检查失败保留本地结果与未保存内容", async ({ page }) => {
+  const api = await mockPromptAuditPage(page, { deepStatus: 503 });
+  const editedContent = "深度检查失败也要保留\n{{output_section}}\n{{chapter_direction}}";
+
+  await page.goto(PROJECT_PATH);
+  await page.getByLabel("原始模板").fill(editedContent);
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  await page.getByRole("button", { name: "AI 深度检查" }).click();
+
+  await expect(page.getByRole("alert").filter({ hasText: "深度检查失败：AI 服务暂时不可用" })).toBeVisible();
+  await expect(page.getByText("重复指令", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("原始模板")).toHaveValue(editedContent);
+  await expect(page.getByRole("button", { name: "保存为项目覆盖" })).toBeEnabled();
+  expect(api.deepAuditBodies).toHaveLength(1);
+});
+
+test("深度检查期间编辑内容会忽略旧响应并结束 loading", async ({ page }) => {
+  let releaseDeep!: () => void;
+  let markDeepStarted!: () => void;
+  const deepGate = new Promise<void>((resolve) => { releaseDeep = resolve; });
+  const deepStarted = new Promise<void>((resolve) => { markDeepStarted = resolve; });
+  await mockPromptAuditPage(page, { deepStarted: markDeepStarted, waitForDeep: deepGate });
+
+  await page.goto(PROJECT_PATH);
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  await page.getByRole("button", { name: "AI 深度检查" }).click();
+  await deepStarted;
+  await expect(page.getByText("AI 深度检查中，请稍候...", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "AI 深度检查中..." })).toBeDisabled();
+
+  await page.getByLabel("原始模板").fill("请求期间编辑\n{{output_section}}\n{{chapter_direction}}");
+  await expect(page.getByText("AI 深度检查中，请稍候...", { exact: true })).toHaveCount(0);
+  const deepResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit/deep"));
+  releaseDeep();
+  await deepResponse;
+  await expect(page.getByText("语义焦点可更明确", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("重复指令", { exact: true })).toBeVisible();
+});
+
+test("本地重新检查成功会忽略在途深度检查并重置深度状态", async ({ page }) => {
+  let releaseDeep!: () => void;
+  let markDeepStarted!: () => void;
+  const deepGate = new Promise<void>((resolve) => { releaseDeep = resolve; });
+  const deepStarted = new Promise<void>((resolve) => { markDeepStarted = resolve; });
+  const api = await mockPromptAuditPage(page, { deepStarted: markDeepStarted, waitForDeep: deepGate });
+
+  await page.goto(PROJECT_PATH);
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  await page.getByRole("button", { name: "AI 深度检查" }).click();
+  await deepStarted;
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  await expect.poll(() => api.auditBodies).toHaveLength(2);
+  await expect(page.getByRole("button", { name: "AI 深度检查" })).toBeEnabled();
+
+  const deepResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit/deep"));
+  releaseDeep();
+  await deepResponse;
+  await expect(page.getByText("语义焦点可更明确", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("重复指令", { exact: true })).toBeVisible();
+});
+
+test("深度检查期间切换模板会忽略旧响应并结束 loading", async ({ page }) => {
+  let releaseDeep!: () => void;
+  let markDeepStarted!: () => void;
+  const deepGate = new Promise<void>((resolve) => { releaseDeep = resolve; });
+  const deepStarted = new Promise<void>((resolve) => { markDeepStarted = resolve; });
+  await mockPromptAuditPage(page, { deepStarted: markDeepStarted, waitForDeep: deepGate });
+
+  await page.goto(PROJECT_PATH);
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  await page.getByRole("button", { name: "AI 深度检查" }).click();
+  await deepStarted;
+  await page.getByRole("button", { name: /章节审稿/ }).click();
+
+  await expect(page.getByText("AI 深度检查中，请稍候...", { exact: true })).toHaveCount(0);
+  const deepResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit/deep"));
+  releaseDeep();
+  await deepResponse;
+  await expect(page.getByText("语义焦点可更明确", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
 });
 
 test("检查失败时保留未保存内容且不保存模板", async ({ page }) => {
