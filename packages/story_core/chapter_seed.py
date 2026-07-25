@@ -13,6 +13,7 @@ from packages.story_core.novel_type_catalog import (
     novel_type_id_from_metadata_fact,
     resolve_novel_type_id,
 )
+from packages.story_core.trope_runtime import merge_trope_templates, resolve_trope_contract
 
 
 LONGFORM_FACT_PREFIXES = (
@@ -591,6 +592,30 @@ def _outline_anchor(story: StoryState, chapter_number: int) -> dict[str, str]:
     return anchor
 
 
+def _outline_trope_contract(
+    story: StoryState,
+    chapter_number: int,
+    prompt_plugins: list[Any],
+) -> dict[str, Any]:
+    context = story.outline_context if isinstance(story.outline_context, dict) else {}
+    active_arc = context.get("active_arc") if isinstance(context.get("active_arc"), dict) else {}
+    chapter = context.get("chapter") if isinstance(context.get("chapter"), dict) else {}
+    if "chapter_number" in chapter and chapter.get("chapter_number") not in (None, ""):
+        try:
+            planned_number = int(chapter.get("chapter_number"))
+        except (TypeError, ValueError):
+            planned_number = chapter_number
+        if planned_number != chapter_number:
+            return {}
+    trope_id = str(active_arc.get("trope_id") or "").strip()
+    if not trope_id:
+        return {}
+    templates = merge_trope_templates(
+        getattr(plugin, "trope_templates", ()) or () for plugin in prompt_plugins
+    )
+    return resolve_trope_contract(templates, trope_id, chapter.get("trope_beat"))
+
+
 def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]:
     """Build the compact pre-writing contract that connects world simulation to prose."""
     proxy_project = _proxy_project(story)
@@ -618,12 +643,13 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
     )
     if allow_first_chapter_trade:
         rulebook = _authorized_trade_rulebook(rulebook)
-    simulation_blueprint = plugin_simulation_blueprint(plugins)
+    simulation_blueprint = plugin_simulation_blueprint(prompt_plugins)
     if allow_first_chapter_trade:
         simulation_blueprint = _authorized_trade_blueprint(simulation_blueprint)
     contract = _contract_for_game(chapter_number) if is_game else _generic_contract()
     outline_anchor = _outline_anchor(story, chapter_number)
-    return {
+    trope_contract = _outline_trope_contract(story, chapter_number, prompt_plugins)
+    seed = {
         "schema_version": "chapter-seed/v1",
         "chapter_number": chapter_number,
         "phase": _phase(chapter_number, is_game=is_game),
@@ -649,3 +675,6 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
         "world_facts": compact_list(story.world_facts, max_items=18, item_chars=180),
         "author_constraints": compact_list(story.author_constraints, max_items=12, item_chars=180),
     }
+    if trope_contract:
+        seed["trope_contract"] = trope_contract
+    return seed

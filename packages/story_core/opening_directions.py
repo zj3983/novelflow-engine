@@ -39,6 +39,7 @@ class OpeningDirection(_StrictOpeningModel):
     main_conflict: str = Field(min_length=1, max_length=500)
     growth_path: str = Field(min_length=1, max_length=500)
     opening_promise: str = Field(min_length=1, max_length=500)
+    primary_trope_id: str | None = Field(default=None, max_length=120)
 
     @field_validator(
         "id",
@@ -48,6 +49,7 @@ class OpeningDirection(_StrictOpeningModel):
         "main_conflict",
         "growth_path",
         "opening_promise",
+        "primary_trope_id",
         mode="before",
     )
     @classmethod
@@ -73,6 +75,25 @@ class OpeningDirectionSet(_StrictOpeningModel):
         if self.selected_id and self.selected_id not in ids:
             raise ValueError("selected_direction_not_found")
         return self
+
+
+def validate_opening_direction_set_primary_tropes(
+    directions: OpeningDirectionSet,
+    trope_candidates: Any,
+) -> OpeningDirectionSet:
+    candidate_ids = {
+        str(item.get("id") or "").strip()
+        for item in (trope_candidates if isinstance(trope_candidates, list) else [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    for direction in directions.directions:
+        if candidate_ids:
+            if direction.primary_trope_id not in candidate_ids:
+                raise ValueError(f"invalid_primary_trope_id:{direction.id}")
+            continue
+        if direction.primary_trope_id is not None:
+            raise ValueError(f"invalid_primary_trope_id:{direction.id}")
+    return directions
 
 
 class LLMOpeningDirectionGenerator:
@@ -105,6 +126,7 @@ class LLMOpeningDirectionGenerator:
                 "idea": validated_brief.idea,
                 "regeneration_guidance": normalized_guidance,
             }
+            trope_candidates = prompt_context.get("genre_trope_templates", [])
             payload = {
                 "model": runtime.model,
                 "messages": [
@@ -113,7 +135,8 @@ class LLMOpeningDirectionGenerator:
                         "content": (
                             "Create exactly three distinct Chinese webnovel opening directions from the supplied "
                             "brief. Return JSON only with a directions array. Each item must contain only id, title, "
-                            "hook, protagonist_goal, main_conflict, growth_path, and opening_promise."
+                            "hook, protagonist_goal, main_conflict, growth_path, opening_promise, and primary_trope_id. "
+                            "choose one listed primary_trope_id for every direction. Return null only when candidate list empty."
                         ),
                     },
                     {
@@ -135,7 +158,8 @@ class LLMOpeningDirectionGenerator:
             parsed = parse_json_message_content(response)
             if parsed is None:
                 raise ValueError("invalid_json")
-            return OpeningDirectionSet.model_validate(parsed)
+            directions = OpeningDirectionSet.model_validate(parsed)
+            return validate_opening_direction_set_primary_tropes(directions, trope_candidates)
         except Exception as exc:
             if isinstance(exc, ValueError) and str(exc) == "opening_direction_generation_failed":
                 raise

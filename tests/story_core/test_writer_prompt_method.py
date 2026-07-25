@@ -1,3 +1,5 @@
+from packages.story_core.chapter_seed import build_chapter_seed
+from packages.story_core.genre_types.urban import URBAN
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.orchestrator import (
     StoryOrchestrator,
@@ -5,6 +7,7 @@ from packages.story_core.orchestrator import (
     _compact_writer_plan_for_prompt,
     _web_game_writing_method_lines,
     _writer_character_section,
+    _writer_fact_section,
 )
 from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
 
@@ -56,6 +59,38 @@ def test_web_game_method_loads_only_combat_language_for_combat_scene():
     assert "脱战" in text
     assert "一口价" not in text
     assert "求购单" not in text
+
+
+TROPE_PROGRESS_GUIDANCE = "本章产生可观察推进"
+TROPE_EMPTY_BEAT_GUIDANCE = "只保持阶段承诺，不强行完成整套节点，也不得自行换套路"
+TROPE_AVOID_GUIDANCE = "保守遵守 avoid 规则"
+OLD_ENGLISH_PROGRESS_GUIDANCE = "This chapter must create observable progress for current_beat; do not merely mention it."
+OLD_ENGLISH_EMPTY_BEAT_GUIDANCE = "Maintain the trigger/payoff/avoid stage promise; do not force a full trope beat and do not switch tropes."
+OLD_ENGLISH_AVOID_GUIDANCE = "Always follow avoid rules conservatively."
+
+
+def _urban_trope(template_id: str) -> dict[str, object]:
+    return next(template for template in URBAN.trope_templates if template["id"] == template_id)
+
+
+def _urban_story_with_trope(template_id: str, beat: str | None) -> StoryState:
+    return StoryState(
+        story_id=f"s-real-trope-{template_id}",
+        outline="Urban professional pressure story.",
+        genre="urban",
+        genre_plugin_ids=["urban"],
+        style="plain",
+        outline_context={
+            "overall": {"primary_trope_id": template_id},
+            "active_arc": {"trope_id": template_id},
+            "chapter": {
+                "chapter_number": 1,
+                "title": "Proof",
+                "goal": "Build a visible professional result.",
+                "trope_beat": beat,
+            },
+        },
+    )
 
 
 def test_segment_prompt_puts_scene_method_before_guardrails():
@@ -283,6 +318,185 @@ def test_fallback_body_prompt_uses_same_scene_method():
     assert "## 本章方向" in prompt
     assert "写法施工单" not in prompt
     assert prompt.index("## 本章方向") < prompt.index("## 本章事实")
+
+
+def test_non_game_writer_prompt_receives_trope_contract_without_game_fact_label(monkeypatch):
+    contract = {
+        "template_id": "public-turnaround",
+        "name": "Public turnaround",
+        "trigger": "public pressure",
+        "current_beat": "collect visible proof",
+        "payoff": "reputation turns",
+        "avoid": ["no instant full vindication"],
+    }
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.build_chapter_seed",
+        lambda story, chapter_number: {
+            "chapter_number": chapter_number,
+            "trope_contract": contract,
+        },
+    )
+    story = StoryState(story_id="s-urban-trope", outline="urban pressure", genre="urban", style="plain")
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Proof"}})
+
+    assert "当前阶段套路" in prompt
+    assert "public-turnaround" in prompt
+    assert "collect visible proof" in prompt
+    assert TROPE_PROGRESS_GUIDANCE in prompt
+    assert "不能只提到节点" in prompt
+    assert TROPE_AVOID_GUIDANCE in prompt
+    assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
+    assert OLD_ENGLISH_AVOID_GUIDANCE not in prompt
+    assert "游戏主角" not in prompt
+
+
+def test_empty_beat_writer_prompt_keeps_contract_without_forcing_full_beat(monkeypatch):
+    contract = {
+        "template_id": "slow-burn",
+        "name": "Slow burn",
+        "trigger": "stage promise",
+        "current_beat": "",
+        "payoff": "later payoff",
+        "avoid": ["do not switch tropes"],
+    }
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.build_chapter_seed",
+        lambda story, chapter_number: {
+            "chapter_number": chapter_number,
+            "trope_contract": contract,
+        },
+    )
+    story = StoryState(story_id="s-empty-beat", outline="slow chapter", genre="urban", style="plain")
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Promise"}})
+
+    assert "slow-burn" in prompt
+    assert '"current_beat": ""' in prompt
+    assert TROPE_EMPTY_BEAT_GUIDANCE in prompt
+    assert TROPE_PROGRESS_GUIDANCE not in prompt
+    assert OLD_ENGLISH_EMPTY_BEAT_GUIDANCE not in prompt
+    assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
+
+
+def test_writer_fact_section_omits_trope_guidance_when_contract_missing():
+    story = StoryState(story_id="s-no-trope", outline="plain", genre="urban", style="plain")
+
+    rendered = "\n".join(_writer_fact_section(story, 1, {}, chapter_seed={"chapter_number": 1}))
+
+    assert "当前阶段套路" not in rendered
+    assert "current_beat" not in rendered
+    assert TROPE_AVOID_GUIDANCE not in rendered
+    assert OLD_ENGLISH_AVOID_GUIDANCE not in rendered
+
+
+def test_game_writer_prompt_keeps_game_facts_and_adds_trope_contract(monkeypatch):
+    contract = {
+        "template_id": "first-advantage",
+        "name": "First advantage",
+        "trigger": "first test",
+        "current_beat": "visible gain",
+        "payoff": "advantage lands",
+        "avoid": ["no global exposure"],
+    }
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.build_chapter_seed",
+        lambda story, chapter_number: {
+            "chapter_number": chapter_number,
+            "trope_contract": contract,
+            "current_state": {"protagonist": {"level": "Lv.1"}},
+        },
+    )
+    story = StoryState(
+        story_id="s-game-trope",
+        outline="网游开服",
+        genre="网游",
+        style="白描",
+        progression_ledger={"protagonist": {"game_id": "Night", "class_path": "Rogue"}},
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Start"}})
+
+    assert "游戏主角" in prompt
+    assert "Night" in prompt
+    assert "Rogue" in prompt
+    assert "当前阶段套路" in prompt
+    assert "first-advantage" in prompt
+    assert TROPE_PROGRESS_GUIDANCE in prompt
+    assert "不能只提到节点" in prompt
+    assert TROPE_AVOID_GUIDANCE in prompt
+    assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
+
+
+def test_real_non_game_director_and_writer_prompts_include_selected_trope_only():
+    selected_id = "professional_save_the_day"
+    unrelated_id = "shenhao_system_spend"
+    beat = _urban_trope(selected_id)["beats"][0]
+    story = _urban_story_with_trope(selected_id, str(beat))
+
+    seed = build_chapter_seed(story, 1)
+    blueprint_ids = {template["id"] for template in seed["simulation_blueprint"]["trope_templates"]}
+    plan_prompt = StoryOrchestrator()._plan_prompt(story, 1)
+    body_prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Proof"}})
+
+    assert selected_id in blueprint_ids
+    assert unrelated_id in blueprint_ids
+    assert seed["trope_contract"]["template_id"] == selected_id
+    for prompt in (plan_prompt, body_prompt):
+        assert "当前阶段套路" in prompt
+        assert selected_id in prompt
+        assert str(beat) in prompt
+        assert unrelated_id not in prompt
+        assert "trope_templates" not in prompt
+    assert TROPE_PROGRESS_GUIDANCE in body_prompt
+    assert TROPE_AVOID_GUIDANCE in body_prompt
+    assert "不能只提到节点" in body_prompt
+    assert OLD_ENGLISH_PROGRESS_GUIDANCE not in body_prompt
+    assert OLD_ENGLISH_AVOID_GUIDANCE not in body_prompt
+
+
+def test_real_non_game_prompts_omit_trope_contract_for_deleted_template_id():
+    unrelated_id = "shenhao_system_spend"
+    story = _urban_story_with_trope("deleted-template", "missing beat")
+
+    seed = build_chapter_seed(story, 1)
+    plan_prompt = StoryOrchestrator()._plan_prompt(story, 1)
+    body_prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Proof"}})
+
+    assert unrelated_id in {template["id"] for template in seed["simulation_blueprint"]["trope_templates"]}
+    assert "trope_contract" not in seed
+    for prompt in (plan_prompt, body_prompt):
+        assert "当前阶段套路" not in prompt
+        assert TROPE_PROGRESS_GUIDANCE not in prompt
+        assert TROPE_AVOID_GUIDANCE not in prompt
+        assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
+        assert OLD_ENGLISH_AVOID_GUIDANCE not in prompt
+        assert "deleted-template" not in prompt
+        assert unrelated_id not in prompt
+        assert "trope_templates" not in prompt
+
+
+def test_real_non_game_prompts_omit_trope_contract_for_invalid_beat():
+    selected_id = "professional_save_the_day"
+    unrelated_id = "shenhao_system_spend"
+    story = _urban_story_with_trope(selected_id, "not a valid trope beat")
+
+    seed = build_chapter_seed(story, 1)
+    plan_prompt = StoryOrchestrator()._plan_prompt(story, 1)
+    body_prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Proof"}})
+
+    assert unrelated_id in {template["id"] for template in seed["simulation_blueprint"]["trope_templates"]}
+    assert "trope_contract" not in seed
+    for prompt in (plan_prompt, body_prompt):
+        assert "当前阶段套路" not in prompt
+        assert TROPE_PROGRESS_GUIDANCE not in prompt
+        assert TROPE_AVOID_GUIDANCE not in prompt
+        assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
+        assert OLD_ENGLISH_AVOID_GUIDANCE not in prompt
+        assert selected_id not in prompt
+        assert "not a valid trope beat" not in prompt
+        assert unrelated_id not in prompt
+        assert "trope_templates" not in prompt
 
 
 def test_writer_direction_drops_generic_taskbook_placeholders():
@@ -678,6 +892,59 @@ def test_revision_prompt_reuses_five_sections_and_adds_only_revision_material():
     assert "对话太短" in prompt
     assert "林照关上门。" in prompt
     assert "scores" not in prompt
+
+
+def test_revision_prompt_reuses_plan_chapter_seed_when_build_seed_drifts(monkeypatch):
+    locked_contract = {
+        "template_id": "locked-contract",
+        "name": "Locked Contract",
+        "trigger": "locked trigger",
+        "current_beat": "locked beat",
+        "payoff": "locked payoff",
+        "avoid": ["locked avoid"],
+    }
+    drift_contract = {
+        "template_id": "drift-contract",
+        "name": "Drift Contract",
+        "trigger": "drift trigger",
+        "current_beat": "drift beat",
+        "payoff": "drift payoff",
+        "avoid": ["drift avoid"],
+    }
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.build_chapter_seed",
+        lambda story, chapter_number: {
+            "chapter_number": chapter_number,
+            "trope_contract": drift_contract,
+        },
+    )
+    story = StoryState(story_id="s-revision-seed-lock", outline="urban pressure", genre="urban", style="plain")
+
+    prompt = StoryOrchestrator()._revision_prompt(
+        story,
+        1,
+        "old body",
+        {
+            "event_plan": {"chapter_title": "Proof"},
+            "chapter_seed": {
+                "chapter_number": 1,
+                "trope_contract": locked_contract,
+            },
+        },
+        {
+            "pass": False,
+            "issues": ["套路节点未兑现：本章未写出当前节点「locked beat」的正文动作或反馈。"],
+            "revision_plan": ["按套路节点改：本章必须兑现「locked beat」，并落到回报「locked payoff」。"],
+            "plot_spine_review": {"diagnostics": {"trope_avoid": ["locked avoid"]}},
+        },
+    )
+
+    assert "locked-contract" in prompt
+    assert "locked beat" in prompt
+    assert "locked avoid" in prompt
+    assert "drift-contract" not in prompt
+    assert "drift beat" not in prompt
+    assert "drift avoid" not in prompt
 
 
 def test_game_writer_prompt_explains_monster_panel_frequency_and_fields():

@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -24,8 +25,253 @@ from packages.story_core import novel_type_catalog
 from packages.story_core.novel_type_catalog import (
     DEFAULT_NOVEL_TYPE_ID,
     NOVEL_TYPE_CATALOG,
+    novel_type_prompt_context,
     novel_type_options,
+    runtime_novel_type,
 )
+
+
+def _trope_template(
+    template_id: str,
+    *,
+    name: str | None = None,
+    trigger: str = "",
+    beats: list[str] | None = None,
+    payoff: str = "",
+    avoid: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "id": template_id,
+        "name": name or template_id,
+        "trigger": trigger,
+        "beats": beats or [],
+        "payoff": payoff,
+        "avoid": avoid or [],
+    }
+
+
+def _prompt_context_record(
+    type_id: str,
+    templates: list[dict[str, object]],
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=type_id,
+        name=f"{type_id}-name",
+        description=f"{type_id}-description",
+        core_promises=("promise",),
+        rulebook={"chapter_formula": ("formula",)},
+        quality_checks=("check",),
+        trope_templates=tuple(templates),
+    )
+
+
+def test_novel_type_prompt_context_merges_type_specific_tropes_before_generic_and_dedupes_ids(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    specific = _prompt_context_record(
+        "custom_type",
+        [
+            _trope_template(
+                "shared",
+                name="specific shared",
+                trigger="specific trigger",
+                beats=["specific beat"],
+                payoff="specific payoff",
+            ),
+            _trope_template("specific_only", beats=["specific only beat"]),
+        ],
+    )
+    generic = _prompt_context_record(
+        "generic_webnovel",
+        [
+            _trope_template(
+                "shared",
+                name="generic shared",
+                trigger="generic trigger",
+                beats=["generic beat"],
+                payoff="generic payoff",
+            ),
+            _trope_template("generic_only", beats=["generic only beat"]),
+        ],
+    )
+
+    monkeypatch.setattr(
+        novel_type_catalog,
+        "runtime_novel_type",
+        lambda value: generic if value == "generic_webnovel" else None,
+    )
+
+    context = novel_type_prompt_context(specific)
+
+    assert isinstance(context, dict)
+    assert dict(context) == context
+    assert {**context} == context
+    assert "genre_trope_templates" in json.dumps(context, ensure_ascii=False)
+    assert [item["id"] for item in context["genre_trope_templates"]] == [
+        "shared",
+        "specific_only",
+        "generic_only",
+    ]
+    assert context["genre_trope_templates"][0]["name"] == "specific shared"
+    assert context["genre_trope_templates"][0]["beats"] == ["specific beat"]
+
+
+def test_novel_type_prompt_context_does_not_duplicate_generic_templates(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    generic = _prompt_context_record(
+        "generic_webnovel",
+        [
+            _trope_template("shared", beats=["generic beat"]),
+            _trope_template("generic_only", beats=["generic only beat"]),
+        ],
+    )
+
+    monkeypatch.setattr(
+        novel_type_catalog,
+        "runtime_novel_type",
+        lambda value: generic if value == "generic_webnovel" else None,
+    )
+
+    context = novel_type_prompt_context(generic)
+
+    assert [item["id"] for item in context["genre_trope_templates"]] == [
+        "shared",
+        "generic_only",
+    ]
+
+
+def test_novel_type_prompt_context_trims_generic_trope_candidates_first_to_stay_within_cap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    large_beat = "b" * 180
+    specific = _prompt_context_record(
+        "custom_type",
+        [
+            _trope_template("specific_a", beats=["setup"], trigger="s" * 400, payoff="p" * 400),
+            _trope_template("specific_b", beats=["turn"], trigger="s" * 400, payoff="p" * 400),
+        ],
+    )
+    generic_template_ids = [f"generic_{index}" for index in range(6)]
+    generic = _prompt_context_record(
+        "generic_webnovel",
+        [
+            _trope_template(
+                template_id,
+                trigger="t" * 500,
+                beats=[large_beat] * 8,
+                payoff="p" * 500,
+                avoid=["a" * 120] * 4,
+            )
+            for template_id in generic_template_ids
+        ],
+    )
+
+    monkeypatch.setattr(
+        novel_type_catalog,
+        "runtime_novel_type",
+        lambda value: generic if value == "generic_webnovel" else None,
+    )
+
+    context = novel_type_prompt_context(specific)
+    template_ids = [item["id"] for item in context["genre_trope_templates"]]
+    generic_ids = template_ids[2:]
+
+    assert len(json.dumps({**context}, ensure_ascii=False)) <= 6000
+    assert template_ids[:2] == ["specific_a", "specific_b"]
+    assert generic_ids
+    assert len(generic_ids) < len(generic_template_ids)
+    assert generic_ids == generic_template_ids[: len(generic_ids)]
+
+
+def test_novel_type_prompt_context_removes_final_type_specific_candidate_only_after_base_lists_shrink(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    escaped = "\x00" * 400
+    escaped_beat = "\x00" * 180
+    specific = _prompt_context_record(
+        "custom_type",
+        [
+            _trope_template(
+                "specific_only",
+                name=f"name-{escaped}",
+                trigger=f"trigger-{escaped}",
+                beats=[escaped_beat] * 8,
+                payoff=f"payoff-{escaped}",
+                avoid=[f"avoid-{escaped}"],
+            )
+        ],
+    )
+    generic = _prompt_context_record(
+        "generic_webnovel",
+        [_trope_template("generic_only", beats=["generic beat"])],
+    )
+    specific.core_promises = tuple(f"promise-{index}-{escaped}" for index in range(8))
+    specific.rulebook = {
+        "chapter_formula": tuple(f"rule-{index}-{escaped}" for index in range(6))
+    }
+    specific.quality_checks = tuple(f"check-{index}-{escaped}" for index in range(10))
+
+    monkeypatch.setattr(
+        novel_type_catalog,
+        "runtime_novel_type",
+        lambda value: generic if value == "generic_webnovel" else None,
+    )
+
+    context = novel_type_prompt_context(specific)
+
+    assert len(json.dumps({**context}, ensure_ascii=False)) <= 6000
+    assert context["genre_trope_templates"] == []
+    assert len(context["genre_core_promises"]) < 8
+    assert len(context["genre_rulebook"]["chapter_formula"]) < 6
+    assert len(context["genre_quality_checks"]) < 10
+
+
+def test_novel_type_prompt_context_trims_candidate_free_singleton_base_lists_until_json_bound(
+) -> None:
+    escaped_singleton = "\x00" * 180
+    rulebook = {
+        field: (escaped_singleton,)
+        for field in (
+            "progression_rules",
+            "economy_rules",
+            "quest_rules",
+            "faction_rules",
+            "panel_rules",
+            "chapter_formula",
+            "forbidden_breaks",
+        )
+    }
+    record = SimpleNamespace(
+        id="custom_type",
+        name="custom-type",
+        description="description",
+        core_promises=(escaped_singleton,),
+        rulebook=rulebook,
+        quality_checks=(escaped_singleton,),
+        trope_templates=(),
+    )
+
+    context = novel_type_prompt_context(record)
+
+    assert len(json.dumps({**context}, ensure_ascii=False)) <= 6000
+    assert context["genre_trope_templates"] == []
+    assert sum(len(items) for items in context["genre_rulebook"].values()) < len(rulebook)
+    assert len(context["genre_core_promises"]) in {0, 1}
+    assert len(context["genre_quality_checks"]) in {0, 1}
+
+
+def test_builtin_novel_type_prompt_context_keeps_nonempty_base_content_and_candidates() -> None:
+    record = runtime_novel_type("generic_webnovel")
+
+    assert record is not None
+    context = novel_type_prompt_context(record)
+
+    assert len(json.dumps({**context}, ensure_ascii=False)) <= 6000
+    assert context["genre_core_promises"]
+    assert any(items for items in context["genre_rulebook"].values())
+    assert context["genre_quality_checks"]
+    assert context["genre_trope_templates"]
 
 
 def test_xuanhuan_prompt_uses_non_game_phase_and_subtype_method():

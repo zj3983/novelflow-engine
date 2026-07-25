@@ -12,7 +12,8 @@ from packages.story_core.character_profiles import (
     StoryDriveProfile,
 )
 from packages.story_core.models import CharacterPerformanceProfile
-from packages.story_core.project_outline import ProjectOutline
+from packages.story_core.project_outline import ProjectOutline, normalize_project_outline, select_outline_context
+from packages.story_core.trope_runtime import compact_trope_candidates
 
 
 CharacterTier = Literal[
@@ -55,6 +56,10 @@ def validate_generated_opening_plan(
     payload: Any,
     *,
     expected_chapter_numbers: list[int] | None = None,
+    trope_templates: list[dict[str, Any]] | None = None,
+    expected_primary_trope_id: str | None = None,
+    fallback_outline: dict[str, Any] | None = None,
+    committed_through_chapter: int | None = None,
 ) -> GeneratedOutlinePlan:
     """Validate an AI-generated opening plan without constraining manual drafts."""
 
@@ -110,6 +115,14 @@ def validate_generated_opening_plan(
         _require_text(card.identity_profile.occupation, f"missing_character_occupation:{card.name}")
         _require_text(card.story_drive.immediate_goal, f"missing_character_goal:{card.name}")
         _require_text(card.story_drive.failure_stakes, f"missing_character_stakes:{card.name}")
+    if trope_templates is not None:
+        validate_generated_trope_selection(
+            plan,
+            trope_templates,
+            expected_primary_trope_id=expected_primary_trope_id,
+            fallback_outline=fallback_outline,
+            committed_through_chapter=committed_through_chapter,
+        )
     return plan
 
 
@@ -118,6 +131,10 @@ def validate_generated_continuation_plan(
     *,
     expected_chapter_numbers: list[int],
     existing_character_names: set[str],
+    trope_templates: list[dict[str, Any]] | None = None,
+    expected_primary_trope_id: str | None = None,
+    fallback_outline: dict[str, Any] | None = None,
+    committed_through_chapter: int | None = None,
 ) -> GeneratedOutlinePlan:
     """Validate an incremental plan without requiring opening-only structure."""
 
@@ -148,4 +165,123 @@ def validate_generated_continuation_plan(
         _require_text(card.identity_profile.occupation, f"missing_character_occupation:{card.name}")
         _require_text(card.story_drive.immediate_goal, f"missing_character_goal:{card.name}")
         _require_text(card.story_drive.failure_stakes, f"missing_character_stakes:{card.name}")
+    if trope_templates is not None:
+        validate_generated_trope_selection(
+            plan,
+            trope_templates,
+            expected_primary_trope_id=expected_primary_trope_id,
+            fallback_outline=fallback_outline,
+            committed_through_chapter=committed_through_chapter,
+        )
     return plan
+
+
+def validate_generated_trope_selection(
+    plan: Any,
+    trope_templates: list[dict[str, Any]],
+    expected_primary_trope_id: str | None = None,
+    fallback_outline: dict[str, Any] | None = None,
+    committed_through_chapter: int | None = None,
+) -> GeneratedOutlinePlan:
+    """Validate generated trope locks against the active project candidates."""
+
+    validated = GeneratedOutlinePlan.model_validate(plan)
+    candidates = compact_trope_candidates(trope_templates)
+    candidates_by_id = {str(item["id"]): item for item in candidates}
+    primary_trope_id = validated.outline.overall.primary_trope_id
+    expected = str(expected_primary_trope_id or "").strip()
+    if expected and primary_trope_id != expected:
+        raise ValueError("unexpected_primary_trope_id")
+    if not expected:
+        if candidates_by_id and primary_trope_id not in candidates_by_id:
+            raise ValueError("invalid_primary_trope_id")
+        if not candidates_by_id and primary_trope_id is not None:
+            raise ValueError("unexpected_primary_trope_id")
+
+    fallback = (
+        normalize_project_outline(fallback_outline)
+        if fallback_outline is not None
+        else None
+    )
+    fallback_arcs = {
+        str(arc["id"]): arc
+        for arc in (fallback or {}).get("arcs", [])
+    }
+    fallback_chapters = {
+        int(chapter["chapter_number"]): chapter
+        for chapter in (fallback or {}).get("chapters", [])
+    }
+    committed_through = max(0, int(committed_through_chapter or 0))
+
+    for arc in validated.outline.arcs:
+        if arc.trope_id in candidates_by_id:
+            continue
+        fallback_arc = fallback_arcs.get(arc.id)
+        if (
+            arc.trope_id is not None
+            and fallback_arc is not None
+            and arc.trope_id == fallback_arc.get("trope_id")
+        ):
+            continue
+        if arc.trope_id is None and not candidates_by_id:
+            continue
+        error = (
+            "unexpected_arc_trope_id"
+            if not candidates_by_id
+            else "invalid_arc_trope_id"
+        )
+        raise ValueError(f"{error}:{arc.id}")
+
+    outline_payload = validated.outline.model_dump(mode="json")
+    if fallback is not None:
+        generated_arc_ids = {str(arc["id"]) for arc in outline_payload["arcs"]}
+        outline_payload = {
+            **outline_payload,
+            "arcs": [
+                *outline_payload["arcs"],
+                *(
+                    arc
+                    for arc in fallback["arcs"]
+                    if arc.get("trope_id") is not None
+                    and str(arc["id"]) not in generated_arc_ids
+                ),
+            ],
+        }
+    for chapter in validated.outline.chapters:
+        beat = chapter.trope_beat
+        if beat is None:
+            continue
+        context = select_outline_context(outline_payload, chapter.chapter_number)
+        active_arc = context.get("active_arc")
+        active_trope_id = (
+            active_arc.get("trope_id")
+            if isinstance(active_arc, dict)
+            else None
+        )
+        fallback_chapter = fallback_chapters.get(chapter.chapter_number)
+        fallback_context = (
+            select_outline_context(fallback, chapter.chapter_number)
+            if fallback is not None and fallback_chapter is not None
+            else {}
+        )
+        fallback_active_arc = fallback_context.get("active_arc")
+        if (
+            chapter.chapter_number <= committed_through
+            and fallback_chapter is not None
+            and str(active_trope_id or "") not in candidates_by_id
+            and beat == fallback_chapter.get("trope_beat")
+            and isinstance(active_arc, dict)
+            and isinstance(fallback_active_arc, dict)
+            and active_arc.get("id") == fallback_active_arc.get("id")
+            and active_trope_id == fallback_active_arc.get("trope_id")
+        ):
+            continue
+        active_template = candidates_by_id.get(str(active_trope_id or ""))
+        if active_template is None or beat not in active_template.get("beats", []):
+            error = (
+                "unexpected_chapter_trope_beat"
+                if not candidates_by_id
+                else "invalid_chapter_trope_beat"
+            )
+            raise ValueError(f"{error}:{chapter.chapter_number}")
+    return validated

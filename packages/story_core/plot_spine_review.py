@@ -59,6 +59,15 @@ _STOP_TERMS = {
 }
 
 _CJK_RUN = re.compile(r"[\u4e00-\u9fff]{2,}")
+_LATIN_SYMBOL_RUN = re.compile(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*")
+_LATIN_CONTRACTED_NEGATION = re.compile(r"\b\w+n['’]t\b", re.IGNORECASE)
+_TROPE_NEGATION_TERMS = ("没有", "没能", "未能", "尚未", "并未", "不曾", "拒绝", "不肯", "不愿", "没接", "未接")
+_TROPE_NEGATION_LATIN_TERMS = ("not", "never", "refuse", "refused")
+_TROPE_QUESTION_TERMS = ("吗", "呢", "？", "?")
+_TROPE_PLAN_ONLY_TERMS = ("打算", "计划", "准备", "想要", "以后", "明天再", "下一章", "心里盘算", "只是在心里")
+_TROPE_PLAN_ONLY_LATIN_TERMS = ("plan", "plans", "planned", "intend", "intends")
+_TROPE_ACTION_CONFIRM_TERMS = ("当场", "立刻", "马上", "直接", "终于", "已经", "真的", "随后", "于是")
+_TROPE_OTHER_ACTOR_TERMS = ("别人", "旁人", "有人", "其他人", "另一边")
 
 
 def _terms(text: str) -> set[str]:
@@ -81,6 +90,149 @@ def _coverage(body: str, text: str) -> float:
         return 1.0
     hits = sum(1 for term in terms if term in body)
     return hits / len(terms)
+
+
+def _trope_terms(text: str) -> set[str]:
+    terms = set(_terms(text))
+    for match in _LATIN_SYMBOL_RUN.findall(str(text or "")):
+        token = match.lower()
+        terms.add(token)
+        for piece in re.split(r"[-_]", token):
+            if piece:
+                terms.add(piece)
+    return {term for term in terms if term}
+
+
+def _latin_symbol_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for match in _LATIN_SYMBOL_RUN.findall(str(text or "")):
+        token = match.lower()
+        tokens.add(token)
+        tokens.update(piece for piece in re.split(r"[-_]", token) if piece)
+    return tokens
+
+
+def _trope_term_coverage(text: str, terms: set[str]) -> float:
+    if not terms:
+        return 0.0
+    lowered = str(text or "").lower()
+    hits = sum(1 for term in terms if term in lowered)
+    return hits / len(terms)
+
+
+def _normalized_trope_phrase(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").lower()).strip()
+
+
+def _trope_action_anchors(text: str) -> list[str]:
+    anchors: list[str] = []
+    for run in _CJK_RUN.findall(str(text or "")):
+        if len(run) >= 4:
+            anchors.append(run)
+            anchors.extend(run[index : index + 4] for index in range(len(run) - 3))
+        elif len(run) >= 2:
+            anchors.append(run)
+    latin_phrase = _normalized_trope_phrase(text)
+    if latin_phrase and _LATIN_SYMBOL_RUN.search(latin_phrase):
+        anchors.append(latin_phrase)
+    return list(dict.fromkeys(anchors))
+
+
+def _trope_anchor_contexts(sentence: str, anchors: list[str]) -> list[tuple[str, bool]]:
+    raw_sentence = str(sentence or "")
+    lowered_sentence = _normalized_trope_phrase(raw_sentence)
+    contexts: list[tuple[str, bool]] = []
+    for anchor in anchors:
+        if not anchor:
+            continue
+        is_latin_anchor = bool(_LATIN_SYMBOL_RUN.search(anchor))
+        haystack = lowered_sentence if is_latin_anchor else raw_sentence
+        needle = _normalized_trope_phrase(anchor) if is_latin_anchor else anchor
+        start = 0
+        while needle:
+            index = haystack.find(needle, start)
+            if index < 0:
+                break
+            prefix_window = 12 if is_latin_anchor else 4
+            suffix_window = 8 if is_latin_anchor else 4
+            context = haystack[
+                max(0, index - prefix_window) : min(len(haystack), index + len(needle) + suffix_window)
+            ]
+            contexts.append((context, is_latin_anchor))
+            start = index + 1
+    return contexts
+
+
+def _trope_sentence_is_invalid(sentence: str, anchors: list[str]) -> bool:
+    if any(term in sentence for term in _TROPE_QUESTION_TERMS):
+        return True
+    if any(term in sentence for term in _TROPE_OTHER_ACTOR_TERMS):
+        return True
+
+    anchor_contexts = _trope_anchor_contexts(sentence, anchors)
+    if any(
+        any(term in context for term in _TROPE_NEGATION_TERMS)
+        or (
+            is_latin_anchor
+            and (
+                _LATIN_CONTRACTED_NEGATION.search(context)
+                or any(term in _latin_symbol_tokens(context) for term in _TROPE_NEGATION_LATIN_TERMS)
+            )
+        )
+        for context, is_latin_anchor in anchor_contexts
+    ):
+        return True
+
+    has_plan_marker = any(
+        any(term in context for term in _TROPE_PLAN_ONLY_TERMS)
+        or (
+            is_latin_anchor
+            and any(term in _latin_symbol_tokens(context) for term in _TROPE_PLAN_ONLY_LATIN_TERMS)
+        )
+        for context, is_latin_anchor in anchor_contexts
+    )
+    if has_plan_marker and not any(
+        term in sentence for term in _TROPE_ACTION_CONFIRM_TERMS
+    ):
+        return True
+    return False
+
+
+def _trope_sentence_has_anchor(sentence: str, anchors: list[str]) -> bool:
+    lowered = _normalized_trope_phrase(sentence)
+    return any((anchor in sentence) or (anchor in lowered) for anchor in anchors)
+
+
+def _trope_beat_coverage(body: str, beat: str) -> tuple[bool, float]:
+    terms = _trope_terms(beat)
+    if not terms:
+        return False, 0.0
+
+    anchors = _trope_action_anchors(beat)
+    best_ratio = 0.0
+    sentences = [part.strip() for part in re.findall(r"[^。！？!?；;\n]+[。！？!?；;]?", str(body or "")) if part.strip()]
+    for sentence in sentences:
+        sentence_ratio = _trope_term_coverage(sentence, terms)
+        best_ratio = max(best_ratio, sentence_ratio)
+        if sentence_ratio < 0.25:
+            continue
+        if not _trope_sentence_has_anchor(sentence, anchors):
+            continue
+        if _trope_sentence_is_invalid(sentence, anchors):
+            continue
+        return True, sentence_ratio
+
+    return False, best_ratio
+
+
+def _compact_trope_avoid(value: Any) -> list[str]:
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = []
+    return [str(item).strip()[:180] for item in items[:8] if str(item).strip()]
 
 
 def _field_is_covered(key: str, body: str, text: str, threshold: float) -> tuple[bool, float]:
@@ -115,7 +267,10 @@ def review_plot_spine_completion(
     plot = simulation_plan.get("plot_simulation")
     contract = simulation_plan.get("longform_plot_contract")
     contract = contract if isinstance(contract, dict) else {}
-    if (not isinstance(plot, dict) or not plot) and not contract:
+    trope_contract = simulation_plan.get("trope_contract")
+    trope_contract = trope_contract if isinstance(trope_contract, dict) else {}
+    trope_avoid = _compact_trope_avoid(trope_contract.get("avoid"))
+    if (not isinstance(plot, dict) or not plot) and not contract and not trope_contract:
         return {"pass": True, "issues": [], "revision_plan": [], "scores": {}}
     plot = plot if isinstance(plot, dict) else {}
 
@@ -182,6 +337,18 @@ def review_plot_spine_completion(
         issues.append(f"长篇后续承接偏弱：缺少{labels}。")
         revision_plan.append("补一处章末可执行动作，让本章新增道具、任务、人物或线索能推动下一章。")
 
+    trope_beat = str(trope_contract.get("current_beat") or "").strip()
+    trope_payoff = str(trope_contract.get("payoff") or "").strip()
+    trope_beat_coverage = 0.0
+    trope_beat_covered: bool | str = "not_scheduled"
+    if trope_beat:
+        trope_beat_covered, trope_beat_coverage = _trope_beat_coverage(body, trope_beat)
+        if not trope_beat_covered:
+            scores["trope_beat_missing"] = 5
+            issues.append(f"套路节点未兑现：本章未写出当前节点「{trope_beat}」的正文动作或反馈。")
+            payoff_clause = f"，并落到回报「{trope_payoff}」" if trope_payoff else ""
+            revision_plan.append(f"按套路节点改：本章必须兑现「{trope_beat}」{payoff_clause}；不要只提到节点名，要写成行动、反馈或关系变化。")
+
     return {
         "pass": not issues,
         "issues": issues,
@@ -193,5 +360,8 @@ def review_plot_spine_completion(
             "contract_missing": list(dict.fromkeys(contract_missing)),
             "contract_partial": list(dict.fromkeys(contract_partial)),
             "coverage": ratios,
+            "trope_avoid": trope_avoid,
+            "trope_beat_covered": trope_beat_covered,
+            "trope_beat_coverage": round(trope_beat_coverage, 2),
         },
     }

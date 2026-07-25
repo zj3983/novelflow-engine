@@ -1,6 +1,8 @@
 import json
+import os
 import threading
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -133,6 +135,14 @@ def _make_minimal_file_project(root, *, state=None, project=None):
     return FileProjectStore(root)
 
 
+def _file_snapshot(root) -> dict:
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def _planning_card(name: str, tier: str, *, age: int = 30) -> dict:
     return {
         "name": name,
@@ -164,6 +174,7 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
                     "main_conflict": "有人销毁证据。",
                     "growth_path": "逐步取得调查旧档的权力。",
                     "ending_direction": "旧案公开。",
+                    "primary_trope_id": "low_status_reversal",
                 },
                 "arcs": [
                     {
@@ -174,6 +185,7 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
                         "goal": "找到换名册的人",
                         "obstacle": "赵衡控制清点权",
                         "payoff": "取得查档资格",
+                        "trope_id": "low_status_reversal",
                         "end_state": "祖祠不再由赵衡独占",
                         "stage_antagonist": "赵衡",
                         "long_term_antagonist_traces": ["旧名册被换过"],
@@ -189,6 +201,7 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
                         "turn": "旧名册出现矛盾",
                         "payoff": "得到可验证线索",
                         "ending_hook": "有人提前来过",
+                        "trope_beat": "低位压力" if number == 1 else None,
                         "cast": ["林照", "赵衡"],
                     }
                     for number in range(1, 31)
@@ -290,6 +303,47 @@ def test_save_generated_plan_updates_outline_project_and_state_together(tmp_path
     assert store.project()["character_profiles"][0]["identity_profile"]["occupation"] == "守祠杂役"
     assert store.state()["characters"][0]["identity_profile"]["age"] == 21
     assert list((root / ".story-system" / "plans").glob("*-initial.json"))
+
+
+def test_save_generated_plan_revalidates_tropes_before_writes(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "Fake Trope Bypass",
+            "active_story_id": "s-file",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": []},
+    )
+    payload = _generated_opening_plan().model_dump(mode="json")
+    payload["outline"]["overall"]["primary_trope_id"] = "not-a-candidate"
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^invalid_primary_trope_id$"):
+        store.save_generated_outline_plan(GeneratedOutlinePlan.model_validate(payload), mode="initial")
+
+    assert _file_snapshot(root) == before
+
+
+def test_save_initial_allows_generated_primary_when_no_existing_lock(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "Direct Initial",
+            "active_story_id": "s-file",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": []},
+    )
+
+    saved = store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+
+    assert saved["outline"]["overall"]["primary_trope_id"] == "low_status_reversal"
+    assert saved["outline"]["arcs"][0]["trope_id"] == "low_status_reversal"
 
 
 def test_save_generated_plan_builds_canonical_relationship_graph(tmp_path):
@@ -1546,6 +1600,389 @@ def test_generated_plan_transaction_restores_old_files_on_replace_failure(tmp_pa
     assert {path: path.read_bytes() for path in before} == before
 
 
+def test_generated_plan_failed_transaction_does_not_rollback_concurrent_success(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "novel"
+    failing_store = _make_minimal_file_project(root)
+    successful_store = FileProjectStore(root)
+    first_replace_finished = threading.Event()
+    successful_save_finished = threading.Event()
+    errors: dict[str, BaseException] = {}
+    results: dict[str, dict] = {}
+    import packages.story_core.file_project_store as module
+
+    real_replace = module.os.replace
+    failing_replace_calls = 0
+
+    def coordinated_replace(source, target):
+        nonlocal failing_replace_calls
+        if threading.current_thread().name != "failing-outline-save":
+            return real_replace(source, target)
+        failing_replace_calls += 1
+        if failing_replace_calls == 1:
+            result = real_replace(source, target)
+            first_replace_finished.set()
+            successful_save_finished.wait(timeout=0.5)
+            return result
+        if failing_replace_calls == 2:
+            raise OSError("simulated concurrent replace failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(module.os, "replace", coordinated_replace)
+
+    def fail_save() -> None:
+        try:
+            failing_store.save_generated_outline_plan(
+                _generated_opening_plan(),
+                mode="initial",
+            )
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["failing"] = exc
+
+    def succeed_save() -> None:
+        try:
+            results["successful"] = successful_store.save_generated_outline_plan(
+                _generated_opening_plan(),
+                mode="initial",
+            )
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["successful"] = exc
+        finally:
+            successful_save_finished.set()
+
+    failing_thread = threading.Thread(target=fail_save, name="failing-outline-save")
+    failing_thread.start()
+    assert first_replace_finished.wait(timeout=2)
+    successful_thread = threading.Thread(target=succeed_save, name="successful-outline-save")
+    successful_thread.start()
+    failing_thread.join(timeout=3)
+    successful_thread.join(timeout=3)
+
+    assert not failing_thread.is_alive()
+    assert not successful_thread.is_alive()
+    assert isinstance(errors.get("failing"), OSError)
+    assert "successful" not in errors
+    assert results["successful"]["outline"]["chapters"]
+    assert len(FileProjectStore(root).project_outline()["chapters"]) == 30
+
+
+def test_manual_outline_update_waits_for_failed_generated_transaction(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "novel"
+    generated_store = _make_minimal_file_project(root)
+    manual_store = FileProjectStore(root)
+    manual_outline = _generated_opening_plan().outline.model_dump(mode="json")
+    manual_outline["overall"]["ending_direction"] = "Manual ending after rollback."
+    generated_paused = threading.Event()
+    release_generated = threading.Event()
+    manual_started = threading.Event()
+    manual_write_entered = threading.Event()
+    errors: dict[str, BaseException] = {}
+    import packages.story_core.file_project_store as module
+
+    real_replace = module.os.replace
+    generated_replace_calls = 0
+
+    def coordinated_replace(source, target):
+        nonlocal generated_replace_calls
+        if threading.current_thread().name != "failing-generated-save":
+            return real_replace(source, target)
+        generated_replace_calls += 1
+        if generated_replace_calls == 1:
+            result = real_replace(source, target)
+            generated_paused.set()
+            assert release_generated.wait(timeout=2)
+            return result
+        if generated_replace_calls == 2:
+            raise OSError("simulated generated save failure")
+        return real_replace(source, target)
+
+    original_manual_write = manual_store._write_json_atomic
+
+    def tracked_manual_write(path, payload):
+        manual_write_entered.set()
+        return original_manual_write(path, payload)
+
+    monkeypatch.setattr(module.os, "replace", coordinated_replace)
+    monkeypatch.setattr(manual_store, "_write_json_atomic", tracked_manual_write)
+
+    def save_generated() -> None:
+        try:
+            generated_store.save_generated_outline_plan(
+                _generated_opening_plan(),
+                mode="initial",
+            )
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["generated"] = exc
+
+    def update_manually() -> None:
+        manual_started.set()
+        try:
+            manual_store.update_project_outline(manual_outline)
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["manual"] = exc
+
+    generated_thread = threading.Thread(
+        target=save_generated,
+        name="failing-generated-save",
+    )
+    generated_thread.start()
+    assert generated_paused.wait(timeout=2)
+    manual_thread = threading.Thread(target=update_manually, name="manual-outline-update")
+    manual_thread.start()
+    assert manual_started.wait(timeout=2)
+    manual_entered_while_generated_paused = manual_write_entered.wait(timeout=0.25)
+    release_generated.set()
+    generated_thread.join(timeout=3)
+    manual_thread.join(timeout=3)
+
+    assert not generated_thread.is_alive()
+    assert not manual_thread.is_alive()
+    assert manual_entered_while_generated_paused is False
+    assert isinstance(errors.get("generated"), OSError)
+    assert "manual" not in errors
+    assert FileProjectStore(root).project_outline()["overall"]["ending_direction"] == (
+        "Manual ending after rollback."
+    )
+
+
+def test_manual_outline_update_waits_for_successful_generated_transaction(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "novel"
+    generated_store = _make_minimal_file_project(root)
+    manual_store = FileProjectStore(root)
+    plan = _generated_opening_plan()
+    manual_outline = plan.outline.model_dump(mode="json")
+    manual_outline["overall"]["ending_direction"] = "Manual ending after generation."
+    generated_paused = threading.Event()
+    release_generated = threading.Event()
+    manual_started = threading.Event()
+    manual_write_entered = threading.Event()
+    errors: dict[str, BaseException] = {}
+    import packages.story_core.file_project_store as module
+
+    real_replace = module.os.replace
+    generated_replace_calls = 0
+
+    def coordinated_replace(source, target):
+        nonlocal generated_replace_calls
+        if threading.current_thread().name != "successful-generated-save":
+            return real_replace(source, target)
+        generated_replace_calls += 1
+        result = real_replace(source, target)
+        if generated_replace_calls == 1:
+            generated_paused.set()
+            assert release_generated.wait(timeout=2)
+        return result
+
+    original_manual_write = manual_store._write_json_atomic
+
+    def tracked_manual_write(path, payload):
+        manual_write_entered.set()
+        return original_manual_write(path, payload)
+
+    monkeypatch.setattr(module.os, "replace", coordinated_replace)
+    monkeypatch.setattr(manual_store, "_write_json_atomic", tracked_manual_write)
+
+    def save_generated() -> None:
+        try:
+            generated_store.save_generated_outline_plan(plan, mode="initial")
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["generated"] = exc
+
+    def update_manually() -> None:
+        manual_started.set()
+        try:
+            manual_store.update_project_outline(manual_outline)
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["manual"] = exc
+
+    generated_thread = threading.Thread(
+        target=save_generated,
+        name="successful-generated-save",
+    )
+    generated_thread.start()
+    assert generated_paused.wait(timeout=2)
+    manual_thread = threading.Thread(target=update_manually, name="manual-outline-update")
+    manual_thread.start()
+    assert manual_started.wait(timeout=2)
+    manual_entered_while_generated_paused = manual_write_entered.wait(timeout=0.25)
+    release_generated.set()
+    generated_thread.join(timeout=3)
+    manual_thread.join(timeout=3)
+
+    assert not generated_thread.is_alive()
+    assert not manual_thread.is_alive()
+    assert manual_entered_while_generated_paused is False
+    assert errors == {}
+    saved = FileProjectStore(root)
+    outline = saved.project_outline()
+    project = saved.project()
+    state = saved.state()
+    assert outline["overall"]["ending_direction"] == "Manual ending after generation."
+    assert len(outline["chapters"]) == 30
+    assert project["pipeline_stage"] == "world_ready"
+    assert state["outline"] == outline["overall"]["story"]
+    assert [
+        (card["name"], card["role"])
+        for card in project["character_profiles"]
+    ] == [
+        (card["name"], card["role"])
+        for card in state["characters"]
+    ]
+
+
+def _prepare_synced_markdown_outline(root: Path, outline: dict) -> Path:
+    from packages.story_core.outline_markdown_sync import export_outline_to_markdown
+
+    baseline = deepcopy(outline)
+    baseline["overall"]["ending_direction"] = "Baseline markdown ending."
+    (root / ".webnovel" / "outline.json").write_text(
+        json.dumps(baseline, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    outline_dir = root / "大纲"
+    outline_dir.mkdir(parents=True, exist_ok=True)
+    overview_path = outline_dir / "总纲.md"
+    overview_path.write_text(
+        """# 总纲
+
+## 故事一句话
+Baseline story.
+
+## 核心主线
+- **主线目标**：Baseline goal.
+- **主要阻力**：Baseline conflict.
+
+## 主角成长线
+- **关键跃迁节点**：Baseline growth.
+- **终局定位**：Baseline ending.
+
+## 分卷纲要
+""",
+        encoding="utf-8",
+    )
+    assert export_outline_to_markdown(root, baseline) == "ok"
+    assert "Baseline markdown ending." in overview_path.read_text(encoding="utf-8")
+    return overview_path
+
+
+@pytest.mark.parametrize("generated_fails", [True, False])
+def test_markdown_newer_sync_waits_for_generated_outline_transaction(
+    tmp_path,
+    monkeypatch,
+    generated_fails: bool,
+) -> None:
+    root = tmp_path / "novel"
+    generated_store = _make_minimal_file_project(root)
+    reader_store = FileProjectStore(root)
+    plan = _generated_opening_plan()
+    overview_path = _prepare_synced_markdown_outline(
+        root,
+        plan.outline.model_dump(mode="json"),
+    )
+    generated_paused = threading.Event()
+    release_generated = threading.Event()
+    reader_started = threading.Event()
+    markdown_sync_write_entered = threading.Event()
+    errors: dict[str, BaseException] = {}
+    results: dict[str, dict] = {}
+    import packages.story_core.file_project_store as store_module
+    import packages.story_core.outline_markdown_sync as sync_module
+
+    real_replace = store_module.os.replace
+    generated_replace_calls = 0
+
+    def coordinated_replace(source, target):
+        nonlocal generated_replace_calls
+        if threading.current_thread().name != "generated-outline-save":
+            return real_replace(source, target)
+        generated_replace_calls += 1
+        result = real_replace(source, target)
+        if generated_replace_calls == 1:
+            generated_paused.set()
+            assert release_generated.wait(timeout=2)
+        elif generated_fails and generated_replace_calls == 2:
+            raise OSError("simulated generated save failure")
+        return result
+
+    real_sync_write = sync_module._write_json_atomic
+
+    def tracked_sync_write(path, payload):
+        if threading.current_thread().name == "markdown-outline-reader":
+            markdown_sync_write_entered.set()
+        return real_sync_write(path, payload)
+
+    monkeypatch.setattr(store_module.os, "replace", coordinated_replace)
+    monkeypatch.setattr(sync_module, "_write_json_atomic", tracked_sync_write)
+
+    def save_generated() -> None:
+        try:
+            results["generated"] = generated_store.save_generated_outline_plan(
+                plan,
+                mode="initial",
+            )
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["generated"] = exc
+
+    def read_outline() -> None:
+        reader_started.set()
+        try:
+            results["reader"] = reader_store.project_outline()
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["reader"] = exc
+
+    generated_thread = threading.Thread(
+        target=save_generated,
+        name="generated-outline-save",
+    )
+    generated_thread.start()
+    assert generated_paused.wait(timeout=2)
+
+    overview_text = overview_path.read_text(encoding="utf-8")
+    overview_path.write_text(
+        overview_text.replace(
+            "Baseline markdown ending.",
+            "Concurrent markdown ending.",
+        ),
+        encoding="utf-8",
+    )
+    assert "Concurrent markdown ending." in overview_path.read_text(encoding="utf-8")
+    json_path = root / ".webnovel" / "outline.json"
+    newer_mtime = max(overview_path.stat().st_mtime, json_path.stat().st_mtime) + 100
+    os.utime(overview_path, (newer_mtime, newer_mtime))
+
+    reader_thread = threading.Thread(target=read_outline, name="markdown-outline-reader")
+    reader_thread.start()
+    assert reader_started.wait(timeout=2)
+    sync_entered_while_generated_paused = markdown_sync_write_entered.wait(timeout=0.25)
+    release_generated.set()
+    generated_thread.join(timeout=3)
+    reader_thread.join(timeout=3)
+
+    assert not generated_thread.is_alive()
+    assert not reader_thread.is_alive()
+    assert sync_entered_while_generated_paused is False
+    assert "reader" not in errors
+    if generated_fails:
+        assert isinstance(errors.get("generated"), OSError)
+        assert "generated" not in results
+    else:
+        assert "generated" not in errors
+        assert results["generated"]["outline"]["chapters"]
+    assert results["reader"]["overall"]["ending_direction"] == (
+        "Concurrent markdown ending."
+    )
+    final_outline = json.loads(json_path.read_text(encoding="utf-8"))
+    assert final_outline["overall"]["ending_direction"] == "Concurrent markdown ending."
+
+
 def test_update_outline_rejects_core_ending_before_current_chapter(tmp_path) -> None:
     root = tmp_path / "novel"
     store = _make_minimal_file_project(root, state={"current_chapter": 21})
@@ -1581,6 +2018,49 @@ def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path
             calls.append((brief, mode, guidance))
             return _generated_opening_plan()
 
+    (store.webnovel_dir / "opening_directions.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "opening-directions/v1",
+                "directions": [
+                    {
+                        "id": "direction-1",
+                        "title": "方向一",
+                        "hook": "林照看守断香炉。",
+                        "protagonist_goal": "守住香火。",
+                        "main_conflict": "有人想毁掉旧案。",
+                        "growth_path": "从守住现场开始掌握宗门规则。",
+                        "opening_promise": "每次解决具体问题都会换来一条可验证线索。",
+                        "primary_trope_id": "selected-trope",
+                    },
+                    {
+                        "id": "direction-2",
+                        "title": "方向二",
+                        "hook": "另一条方向。",
+                        "protagonist_goal": "另一目标。",
+                        "main_conflict": "另一冲突。",
+                        "growth_path": "另一成长。",
+                        "opening_promise": "另一承诺。",
+                        "primary_trope_id": "unused-trope",
+                    },
+                    {
+                        "id": "direction-3",
+                        "title": "方向三",
+                        "hook": "第三条方向。",
+                        "protagonist_goal": "第三目标。",
+                        "main_conflict": "第三冲突。",
+                        "growth_path": "第三成长。",
+                        "opening_promise": "第三承诺。",
+                        "primary_trope_id": "backup-trope",
+                    },
+                ],
+                "selected_id": "direction-1",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
     store.generate_outline_plan(RecordingGenerator(), mode="initial", guidance="  对手有现实利益  ")
 
     brief, mode, guidance = calls[0]
@@ -1588,10 +2068,47 @@ def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path
     assert guidance == "对手有现实利益"
     assert brief.novel_type_id == "xuanhuan"
     assert brief.opening_direction.hook == "林照看守断香炉。"
+    assert brief.opening_direction.primary_trope_id == "selected-trope"
     assert brief.existing_characters == []
     assert brief.existing_character_names == []
     secret = "对手有现实利益".encode("utf-8")
     assert all(secret not in path.read_bytes() for path in store.root.rglob("*") if path.is_file())
+
+
+def test_planning_brief_falls_back_to_saved_overall_primary_trope_id(tmp_path) -> None:
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "Fallback Trope",
+            "seed_outline": "Seed outline",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": [], "characters": []},
+    )
+    (store.webnovel_dir / "outline.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "project-outline/v1",
+                "overall": {
+                    "story": "Saved hook",
+                    "protagonist_goal": "Saved goal",
+                    "main_conflict": "Saved conflict",
+                    "growth_path": "Saved growth",
+                    "ending_direction": "Saved promise",
+                    "primary_trope_id": "saved-overall-trope",
+                },
+                "arcs": [],
+                "chapters": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    brief = store._planning_brief()
+
+    assert brief.opening_direction.primary_trope_id == "saved-overall-trope"
 
 
 def test_planning_brief_keeps_all_character_names_while_limiting_detailed_cards(tmp_path) -> None:
@@ -1624,6 +2141,76 @@ def test_planning_brief_keeps_all_character_names_while_limiting_detailed_cards(
     ]
 
 
+def _prepare_extendable_outline(tmp_path, *, locked_inner_arc: bool = False):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(root)
+    store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+    state = store.state()
+    state["current_chapter"] = 20
+    store._write_json(store.webnovel_dir / "state.json", state)
+    current_outline = store.project_outline()
+    current_outline.pop("source", None)
+    current_outline["overall"].update(
+        core_ending_chapter=150,
+        extension_ceiling_chapter=500,
+        current_strategy="expand",
+        ending_contract="Close both lines.",
+    )
+    current_outline["arcs"][0].update(
+        end_chapter=150,
+        game_line_payoff="Win the game arc.",
+        reality_line_payoff="Resolve the reality pressure.",
+        extension_gate={"continue_route": "Enter the city.", "close_route": "Close the case."},
+    )
+    if locked_inner_arc:
+        current_outline["arcs"].append(
+            {
+                **current_outline["arcs"][0],
+                "id": "locked-inner",
+                "title": "Locked inner",
+                "start_chapter": 31,
+                "end_chapter": 50,
+                "trope_id": "golden_finger_first_test",
+                "goal": "Test the anomaly",
+            }
+        )
+    store.update_project_outline(current_outline)
+    prepared = store.project_outline()
+    prepared.pop("source", None)
+    return root, store, prepared
+
+
+def _extension_plan(
+    current_outline: dict,
+    *,
+    arcs: list[dict] | None = None,
+    first_trope_beat=None,
+) -> GeneratedOutlinePlan:
+    return GeneratedOutlinePlan.model_validate(
+        {
+            "outline": {
+                "overall": current_outline["overall"],
+                "arcs": current_outline["arcs"] if arcs is None else arcs,
+                "chapters": [
+                    {
+                        "chapter_number": number,
+                        "goal": "继续追查旧案",
+                        "obstacle": "旧档房封门",
+                        "action": "林照争取查档资格",
+                        "turn": "发现新的经手人",
+                        "payoff": "锁定下一条线索",
+                        "ending_hook": "经手人已经离宗",
+                        "trope_beat": first_trope_beat if number == 31 else None,
+                        "cast": ["林照", "New"],
+                    }
+                    for number in range(31, 51)
+                ],
+            },
+            "characters": [_planning_card("New", "supporting")],
+        }
+    )
+
+
 def test_extend_generated_outline_plan_fills_missing_rolling_window_chapters(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
@@ -1648,6 +2235,7 @@ def test_extend_generated_outline_plan_fills_missing_rolling_window_chapters(tmp
     addition = GeneratedOutlinePlan.model_validate(
         {
             "outline": {
+                "overall": current_outline["overall"],
                 "arcs": [
                     {
                         **current_outline["arcs"][0],
@@ -1676,6 +2264,8 @@ def test_extend_generated_outline_plan_fills_missing_rolling_window_chapters(tmp
     saved = store.save_generated_outline_plan(addition, mode="extend")
 
     assert [item["chapter_number"] for item in saved["outline"]["chapters"]] == list(range(1, 51))
+    assert saved["outline"]["arcs"][0]["trope_id"] == "low_status_reversal"
+    assert saved["outline"]["chapters"][0]["trope_beat"] == "低位压力"
     assert saved["outline"]["arcs"][0]["end_chapter"] == 150
     assert saved["outline"]["arcs"][0]["long_term_antagonist_traces"] == [
         "旧名册被换过",
@@ -1754,6 +2344,379 @@ def test_extend_direct_save_revalidates_cast_and_new_cards_without_writes(
     } == before
 
 
+@pytest.mark.parametrize(
+    "overall_trope_id,arc_trope_id,error",
+    [
+        ("golden_finger_first_test", "low_status_reversal", "unexpected_primary_trope_id"),
+        ("low_status_reversal", "golden_finger_first_test", "locked_arc_trope_drift:opening"),
+    ],
+)
+def test_extend_rejects_locked_trope_drift_without_writes(
+    tmp_path,
+    overall_trope_id: str,
+    arc_trope_id: str,
+    error: str,
+) -> None:
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(root)
+    store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+    state = store.state()
+    state["current_chapter"] = 20
+    store._write_json(store.webnovel_dir / "state.json", state)
+    current_outline = store.project_outline()
+    current_outline.pop("source", None)
+    current_outline["overall"].update(
+        core_ending_chapter=150,
+        extension_ceiling_chapter=500,
+        current_strategy="expand",
+        ending_contract="Close both lines.",
+    )
+    current_outline["arcs"][0].update(
+        end_chapter=150,
+        game_line_payoff="Win the game arc.",
+        reality_line_payoff="Resolve the reality pressure.",
+        extension_gate={"continue_route": "Enter the city.", "close_route": "Close the case."},
+    )
+    store.update_project_outline(current_outline)
+    addition = GeneratedOutlinePlan.model_validate(
+        {
+            "outline": {
+                "overall": {**current_outline["overall"], "primary_trope_id": overall_trope_id},
+                "arcs": [{**current_outline["arcs"][0], "trope_id": arc_trope_id}],
+                "chapters": [
+                    {
+                        "chapter_number": number,
+                        "goal": "继续追查旧案",
+                        "obstacle": "旧档房封门",
+                        "action": "林照争取查档资格",
+                        "turn": "发现新的经手人",
+                        "payoff": "锁定下一条线索",
+                        "ending_hook": "经手人已经离宗",
+                        "trope_beat": None,
+                        "cast": ["林照", "New"],
+                    }
+                    for number in range(31, 51)
+                ],
+            },
+            "characters": [_planning_card("New", "supporting")],
+        }
+    )
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match=f"^{error}$"):
+        store.save_generated_outline_plan(addition, mode="extend")
+
+    assert _file_snapshot(root) == before
+
+
+def _regeneration_plan_from_current(
+    current_outline: dict,
+    *,
+    arcs: list[dict] | None = None,
+    first_trope_beat=None,
+) -> GeneratedOutlinePlan:
+    payload = _generated_opening_plan().model_dump(mode="json")
+    template = payload["outline"]["chapters"][0]
+    payload["outline"]["overall"] = {
+        **payload["outline"]["overall"],
+        **current_outline["overall"],
+    }
+    payload["outline"]["arcs"] = current_outline["arcs"] if arcs is None else arcs
+    payload["outline"]["chapters"] = [
+        {
+            **template,
+            "chapter_number": number,
+            "title": f"Regenerated {number}",
+            "trope_beat": first_trope_beat if number == 21 else None,
+        }
+        for number in range(21, 51)
+    ]
+    return GeneratedOutlinePlan.model_validate(payload)
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+@pytest.mark.parametrize("candidate_state", ["empty", "replacement"])
+def test_deleted_trope_locks_do_not_block_future_outline_saves(
+    tmp_path,
+    monkeypatch,
+    mode: str,
+    candidate_state: str,
+) -> None:
+    _, store, current_outline = _prepare_extendable_outline(tmp_path)
+    current_candidates = store._current_project_trope_candidates(
+        store.project(),
+        store.state(),
+    )
+    replacement = next(
+        candidate
+        for candidate in current_candidates
+        if candidate["id"] != "low_status_reversal"
+    )
+    candidates = [] if candidate_state == "empty" else [replacement]
+    new_trope_id = None if candidate_state == "empty" else replacement["id"]
+    monkeypatch.setattr(store, "_current_project_trope_candidates", lambda *_: candidates)
+    new_arc = {
+        **current_outline["arcs"][0],
+        "id": "new-volume",
+        "title": "New volume",
+        "start_chapter": 31,
+        "end_chapter": 50,
+        "trope_id": new_trope_id,
+    }
+    plan = (
+        _extension_plan(current_outline, arcs=[*current_outline["arcs"], new_arc])
+        if mode == "extend"
+        else _regeneration_plan_from_current(
+            current_outline,
+            arcs=[*current_outline["arcs"], new_arc],
+        )
+    )
+
+    saved = store.save_generated_outline_plan(plan, mode=mode)
+
+    arcs = {arc["id"]: arc for arc in saved["outline"]["arcs"]}
+    assert saved["outline"]["overall"]["primary_trope_id"] == "low_status_reversal"
+    assert arcs["opening"]["trope_id"] == "low_status_reversal"
+    assert arcs["new-volume"]["trope_id"] == new_trope_id
+    assert saved["outline"]["chapters"][0]["trope_beat"] == "低位压力"
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_deleted_trope_library_still_rejects_unknown_new_arc_id(
+    tmp_path,
+    monkeypatch,
+    mode: str,
+) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    monkeypatch.setattr(store, "_current_project_trope_candidates", lambda *_: [])
+    new_arc = {
+        **current_outline["arcs"][0],
+        "id": "new-volume",
+        "title": "New volume",
+        "start_chapter": 31,
+        "end_chapter": 50,
+        "trope_id": "unknown-new-trope",
+    }
+    plan = (
+        _extension_plan(current_outline, arcs=[*current_outline["arcs"], new_arc])
+        if mode == "extend"
+        else _regeneration_plan_from_current(
+            current_outline,
+            arcs=[*current_outline["arcs"], new_arc],
+        )
+    )
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^(unexpected|invalid)_arc_trope_id:new-volume$"):
+        store.save_generated_outline_plan(plan, mode=mode)
+
+    assert _file_snapshot(root) == before
+
+
+def _prepare_deleted_trope_boundary_regeneration(tmp_path, monkeypatch):
+    root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    current_outline["chapters"][19]["trope_beat"] = "committed orphan beat"
+    current_outline["chapters"][20]["trope_beat"] = "future orphan beat"
+    store.update_project_outline(current_outline)
+    current_outline = store.project_outline()
+    current_outline.pop("source", None)
+    monkeypatch.setattr(store, "_current_project_trope_candidates", lambda *_: [])
+    return root, store, current_outline
+
+
+def test_regenerate_rejects_future_fallback_orphan_beat(tmp_path, monkeypatch) -> None:
+    root, store, current_outline = _prepare_deleted_trope_boundary_regeneration(
+        tmp_path,
+        monkeypatch,
+    )
+    plan = _regeneration_plan_from_current(
+        current_outline,
+        first_trope_beat="future orphan beat",
+    )
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^unexpected_chapter_trope_beat:21$"):
+        store.save_generated_outline_plan(plan, mode="regenerate")
+
+    assert _file_snapshot(root) == before
+
+
+def test_regenerate_keeps_committed_orphan_beat_but_clears_future_beat(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _, store, current_outline = _prepare_deleted_trope_boundary_regeneration(
+        tmp_path,
+        monkeypatch,
+    )
+    plan = _regeneration_plan_from_current(current_outline, first_trope_beat=None)
+
+    saved = store.save_generated_outline_plan(plan, mode="regenerate")
+
+    chapters = {
+        chapter["chapter_number"]: chapter
+        for chapter in saved["outline"]["chapters"]
+    }
+    assert chapters[20]["trope_beat"] == "committed orphan beat"
+    assert chapters[21]["trope_beat"] is None
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generated_outline_preserves_omitted_locked_arc_after_merge(tmp_path, mode: str) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path, locked_inner_arc=True)
+    generated_arcs = [arc for arc in current_outline["arcs"] if arc["id"] != "locked-inner"]
+    plan = (
+        _extension_plan(current_outline, arcs=generated_arcs)
+        if mode == "extend"
+        else _regeneration_plan_from_current(current_outline, arcs=generated_arcs)
+    )
+
+    saved = store.save_generated_outline_plan(plan, mode=mode)
+
+    assert any(
+        arc["id"] == "locked-inner" and arc["trope_id"] == "golden_finger_first_test"
+        for arc in saved["outline"]["arcs"]
+    )
+    assert _file_snapshot(root)
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generated_outline_accepts_future_nested_arc_inside_locked_arc(
+    tmp_path,
+    mode: str,
+) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    nested = {
+        **current_outline["arcs"][0],
+        "id": "future-nested",
+        "title": "Future nested",
+        "start_chapter": 31,
+        "end_chapter": 45,
+        "trope_id": "golden_finger_first_test",
+        "goal": "Test the anomaly",
+    }
+    plan = (
+        _extension_plan(current_outline, arcs=[*current_outline["arcs"], nested])
+        if mode == "extend"
+        else _regeneration_plan_from_current(current_outline, arcs=[*current_outline["arcs"], nested])
+    )
+
+    saved = store.save_generated_outline_plan(plan, mode=mode)
+
+    assert any(arc["id"] == "future-nested" for arc in saved["outline"]["arcs"])
+    assert _file_snapshot(root)
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generated_outline_rejects_renamed_arc_overlapping_committed_locked_range_without_writes(
+    tmp_path,
+    mode: str,
+) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    renamed = {**current_outline["arcs"][0], "id": "renamed-opening", "start_chapter": 10, "end_chapter": 30}
+    plan = (
+        _extension_plan(current_outline, arcs=[renamed])
+        if mode == "extend"
+        else _regeneration_plan_from_current(current_outline, arcs=[*current_outline["arcs"], renamed])
+    )
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^locked_arc_overlap:renamed-opening$"):
+        store.save_generated_outline_plan(plan, mode=mode)
+
+    assert _file_snapshot(root) == before
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generated_outline_rejects_renamed_arc_exactly_replacing_locked_range_without_writes(
+    tmp_path,
+    mode: str,
+) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    renamed = {**current_outline["arcs"][0], "id": "renamed-opening"}
+    plan = (
+        _extension_plan(current_outline, arcs=[renamed])
+        if mode == "extend"
+        else _regeneration_plan_from_current(current_outline, arcs=[renamed])
+    )
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^locked_arc_overlap:renamed-opening$"):
+        store.save_generated_outline_plan(plan, mode=mode)
+
+    assert _file_snapshot(root) == before
+
+
+def test_regenerate_rejects_same_id_locked_trope_drift_without_writes(tmp_path) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    drifted = [{**current_outline["arcs"][0], "trope_id": "golden_finger_first_test"}]
+    plan = _regeneration_plan_from_current(current_outline, arcs=drifted)
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^locked_arc_trope_drift:opening$"):
+        store.save_generated_outline_plan(plan, mode="regenerate")
+
+    assert _file_snapshot(root) == before
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generated_outline_accepts_omitted_locked_arc_as_trope_beat_context(
+    tmp_path,
+    mode: str,
+) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path, locked_inner_arc=True)
+    generated_arcs = [arc for arc in current_outline["arcs"] if arc["id"] != "locked-inner"]
+    if mode == "extend":
+        plan = _extension_plan(
+            current_outline,
+            arcs=generated_arcs,
+            first_trope_beat="异常出现",
+        )
+    else:
+        plan = _regeneration_plan_from_current(current_outline, arcs=generated_arcs)
+        payload = plan.model_dump(mode="json")
+        for chapter in payload["outline"]["chapters"]:
+            if chapter["chapter_number"] == 31:
+                chapter["trope_beat"] = "异常出现"
+        plan = GeneratedOutlinePlan.model_validate(payload)
+
+    saved = store.save_generated_outline_plan(plan, mode=mode)
+
+    assert any(
+        arc["id"] == "locked-inner" and arc["trope_id"] == "golden_finger_first_test"
+        for arc in saved["outline"]["arcs"]
+    )
+    assert _file_snapshot(root)
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generated_outline_rejects_invalid_beat_after_locked_arc_context_merge(
+    tmp_path,
+    mode: str,
+) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path, locked_inner_arc=True)
+    generated_arcs = [arc for arc in current_outline["arcs"] if arc["id"] != "locked-inner"]
+    if mode == "extend":
+        plan = _extension_plan(
+            current_outline,
+            arcs=generated_arcs,
+            first_trope_beat="低位压力",
+        )
+    else:
+        plan = _regeneration_plan_from_current(current_outline, arcs=generated_arcs)
+        payload = plan.model_dump(mode="json")
+        for chapter in payload["outline"]["chapters"]:
+            if chapter["chapter_number"] == 31:
+                chapter["trope_beat"] = "低位压力"
+        plan = GeneratedOutlinePlan.model_validate(payload)
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:31$"):
+        store.save_generated_outline_plan(plan, mode=mode)
+
+    assert _file_snapshot(root) == before
+
+
 def test_regenerate_preserves_committed_chapter_outline(tmp_path) -> None:
     store = _make_minimal_file_project(tmp_path / "novel")
     store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
@@ -1781,8 +2744,14 @@ def test_regenerate_preserves_committed_chapter_outline(tmp_path) -> None:
 
     payload = _generated_opening_plan().model_dump(mode="json")
     template = payload["outline"]["chapters"][0]
+    payload["outline"]["arcs"] = current_outline["arcs"]
     payload["outline"]["chapters"] = [
-        {**template, "chapter_number": number, "title": f"Regenerated {number}"}
+        {
+            **template,
+            "chapter_number": number,
+            "title": f"Regenerated {number}",
+            "trope_beat": None,
+        }
         for number in range(21, 51)
     ]
     payload["outline"]["overall"]["story"] = "Regenerated future story"

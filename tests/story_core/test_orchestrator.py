@@ -5,10 +5,33 @@ import pytest
 from packages.story_core.generation_progress import generation_progress
 
 from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.genre_types.base import GenrePlugin
 from packages.story_core import orchestrator as orchestrator_module
 from packages.story_core.orchestrator import StoryOrchestrator
 
 _REAL_CHAT = StoryOrchestrator._chat
+
+
+def _trope_plugin() -> GenrePlugin:
+    return GenrePlugin(
+        plugin_id="urban",
+        name="urban",
+        keywords=(),
+        core_promises=(),
+        ledger_fields=(),
+        rulebook={},
+        quality_checks=(),
+        trope_templates=(
+            {
+                "id": "trial",
+                "name": "Trial Stage",
+                "trigger": "rain invitation",
+                "beats": ["accept the rain duel"],
+                "payoff": "win trust without revealing the hidden card",
+                "avoid": ["do not switch tropes"],
+            },
+        ),
+    )
 
 
 def test_compact_world_context_keeps_all_scoped_modules_without_keyword_reselection():
@@ -226,6 +249,215 @@ def test_writer_request_failure_is_preserved_in_failed_bundle(monkeypatch):
 
     assert bundle.quality_report["failure_reason"] == writer_error
     assert writer_error in bundle.quality_report["issues"]
+
+
+def test_generation_attaches_resolved_trope_contract_to_review_without_extra_provider_calls(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "packages.story_core.chapter_seed.select_genre_plugins",
+        lambda *args, **kwargs: [_trope_plugin()],
+    )
+    body = "Lin accepts the rain duel, wins trust without revealing the hidden card, and keeps the larger arc open."
+    memory = json.dumps(
+        {
+            "summary": "Lin accepts the duel.",
+            "facts": [{"text": "Lin accepted the rain duel", "evidence": "accepts the rain duel"}],
+            "unresolved_threads": [],
+            "next_focus": "check who sent the invitation",
+            "chapter_title": "Rain Duel",
+            "character_updates": [],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        ensure_ascii=False,
+    )
+    seen_contracts: list[dict | None] = []
+
+    def review_spy(_chapter, _body, _event_plan, _world_facts, simulation_plan, *_args, **_kwargs):
+        seen_contracts.append(simulation_plan.get("trope_contract") if isinstance(simulation_plan, dict) else None)
+        return {"pass": True, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(orchestrator_module, "_review_chapter_body", review_spy)
+
+    def run_story(outline_context):
+        story = StoryState(
+            story_id=f"s-trope-review-{bool(outline_context)}",
+            outline="urban story",
+            genre="urban",
+            genre_plugin_ids=["urban"],
+            style="plain",
+            outline_context=outline_context,
+            characters=[CharacterState(name="Lin", role="protagonist")],
+        )
+        orchestrator = StoryOrchestrator()
+        calls: list[str] = []
+
+        def fake_timed_chat(_story, _prompt, *, agent, **_kwargs):
+            calls.append(agent)
+            if agent == "planner":
+                raise AssertionError("complete outline_context should skip planner")
+            if agent == "writer":
+                return body, ""
+            if agent == "memory":
+                return memory, ""
+            raise AssertionError(agent)
+
+        monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+        return orchestrator.generate_next_chapter(story), calls
+
+    valid_context = {
+        "active_arc": {"trope_id": "trial"},
+        "chapter": {
+            "chapter_number": 1,
+            "title": "Rain Duel",
+            "goal": "answer the invitation",
+            "obstacle": "public pressure",
+            "action": "accept the rain duel",
+            "turn": "wins trust without revealing the hidden card",
+            "payoff": "wins trust",
+            "ending_hook": "check who sent the invitation",
+            "trope_beat": "accept the rain duel",
+            "cast": ["Lin"],
+        },
+    }
+    invalid_context = {
+        "chapter": {
+            "chapter_number": 1,
+            "title": "Rain Duel",
+            "goal": "answer the invitation",
+            "obstacle": "public pressure",
+            "action": "accept the rain duel",
+            "turn": "wins trust without revealing the hidden card",
+            "payoff": "wins trust",
+            "ending_hook": "check who sent the invitation",
+            "cast": ["Lin"],
+        },
+    }
+
+    _, calls_with_contract = run_story(valid_context)
+    _, calls_without_contract = run_story(invalid_context)
+
+    assert calls_with_contract == calls_without_contract == ["writer"]
+    assert seen_contracts[0] == {
+        "template_id": "trial",
+        "name": "Trial Stage",
+        "trigger": "rain invitation",
+        "current_beat": "accept the rain duel",
+        "payoff": "win trust without revealing the hidden card",
+        "avoid": ["do not switch tropes"],
+    }
+    assert seen_contracts[1] is None
+
+
+def test_attach_trope_contract_to_simulation_plan_deepcopies_only_resolved_contract():
+    contract = {
+        "template_id": "trial",
+        "current_beat": "accept the rain duel",
+        "payoff": "win trust without revealing the hidden card",
+        "avoid": ["do not switch tropes"],
+    }
+    seed = {
+        "trope_contract": contract,
+        "simulation_blueprint": {"trope_templates": [{"id": "trial"}]},
+    }
+    plan = {"review_focus": ["existing"]}
+
+    attached = orchestrator_module._attach_trope_contract_to_simulation_plan(plan, seed)
+
+    contract["avoid"].append("mutated")
+    assert attached["trope_contract"]["avoid"] == ["do not switch tropes"]
+    assert attached["review_focus"] == ["existing"]
+    assert "trope_templates" not in attached
+    assert "trope_candidates" not in attached
+
+
+def test_trope_beat_miss_triggers_existing_revision_prompt_with_avoid_guidance(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
+    initial_body = "林站在屋檐下想了想明天的安排，最后没有回应邀请就离开了。"
+    revised_body = "林在雨夜接下挑战，赢得信任且不暴露底牌。"
+    revision_prompts: list[str] = []
+
+    def review(_chapter, body, *_args, **_kwargs):
+        if body == initial_body:
+            return {
+                "pass": False,
+                "issues": ["套路节点未兑现：本章未写出当前节点「雨夜接下挑战」的正文动作或反馈。"],
+                "revision_plan": ["按套路节点改：本章必须兑现「雨夜接下挑战」，并落到回报「赢得信任且不暴露底牌」。"],
+                "plot_spine_review": {
+                    "diagnostics": {
+                        "trope_avoid": ["不要换套路", "不要提前解决整条主线"],
+                    }
+                },
+            }
+        return {"pass": True, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(orchestrator_module, "_review_chapter_body", review)
+    story = StoryState(
+        story_id="s-trope-revision-gate",
+        outline="urban story",
+        genre="urban",
+        style="plain",
+        outline_context={
+            "chapter": {
+                "chapter_number": 1,
+                "title": "Rain Duel",
+                "goal": "answer the invitation",
+                "obstacle": "public pressure",
+                "action": "accept the rain duel",
+                "turn": "wins trust without revealing the hidden card",
+                "payoff": "wins trust",
+                "ending_hook": "check who sent the invitation",
+                "cast": ["Lin"],
+            }
+        },
+        characters=[CharacterState(name="Lin", role="protagonist")],
+    )
+    orchestrator = StoryOrchestrator()
+    calls: list[str] = []
+    memory = json.dumps(
+        {
+            "summary": "林接下挑战。",
+            "facts": [{"text": "林雨夜接下挑战", "evidence": "雨夜接下挑战"}],
+            "unresolved_threads": [],
+            "next_focus": "追查邀请来源",
+            "chapter_title": "雨夜挑战",
+            "character_updates": [],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        ensure_ascii=False,
+    )
+
+    writer_calls = 0
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        nonlocal writer_calls
+        calls.append(agent)
+        if agent == "planner":
+            raise AssertionError("complete outline_context should skip planner")
+        if agent == "writer" and writer_calls == 0:
+            writer_calls += 1
+            return initial_body, ""
+        if agent == "writer":
+            writer_calls += 1
+            revision_prompts.append(prompt)
+            return revised_body, ""
+        if agent == "memory":
+            return memory, ""
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    bundle = orchestrator.generate_next_chapter(story)
+
+    assert calls == ["writer", "writer"]
+    assert bundle.body == revised_body
+    assert "雨夜接下挑战" in revision_prompts[0]
+    assert "赢得信任且不暴露底牌" in revision_prompts[0]
+    assert "不要换套路" in revision_prompts[0]
+    assert "不要提前解决整条主线" in revision_prompts[0]
 
 
 def test_incomplete_chapter_outline_uses_planner_model(monkeypatch):

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import inspect
 
 import pytest
 
+from packages.story_core.outline_planning import (
+    validate_generated_continuation_plan,
+    validate_generated_opening_plan,
+    validate_generated_trope_selection,
+)
 from packages.story_core.outline_planning_generation import (
     LLMOutlinePlanningGenerator,
     OutlinePlanningBrief,
@@ -41,6 +47,7 @@ def _valid_plan() -> dict:
                 "main_conflict": "有人销毁证据。",
                 "growth_path": "从守祠杂役成长为能调用宗门规则的人。",
                 "ending_direction": "旧案公开。",
+                "primary_trope_id": "low_status_reversal",
             },
             "arcs": [{
                 "id": "opening",
@@ -50,6 +57,7 @@ def _valid_plan() -> dict:
                 "goal": "找到换名册的人",
                 "obstacle": "赵衡控制清点权",
                 "payoff": "取得查档资格",
+                "trope_id": "low_status_reversal",
                 "end_state": "祖祠不再由赵衡独占",
                 "stage_antagonist": "赵衡",
                 "long_term_antagonist_traces": ["旧名册被换过"],
@@ -64,6 +72,7 @@ def _valid_plan() -> dict:
                     "turn": "发现一处矛盾",
                     "payoff": "得到可验证线索",
                     "ending_hook": "有人提前来过",
+                    "trope_beat": "低位压力" if number == 1 else None,
                     "cast": ["林照", "赵衡"],
                 }
                 for number in range(1, 31)
@@ -89,9 +98,179 @@ def _brief() -> OutlinePlanningBrief:
             "main_conflict": "有人要毁掉旧案证据。",
             "growth_path": "从守住现场开始掌握宗门规则。",
             "opening_promise": "每次解决具体问题都会换来一条可验证线索。",
+            "primary_trope_id": "low_status_reversal",
         },
         author_constraints=["白描，对话完整自然。"],
     )
+
+
+def _trope_templates() -> list[dict]:
+    return [
+        {"id": "trope-a", "name": "A", "beats": ["beat-a1", "beat-a2"]},
+        {"id": "trope-b", "name": "B", "beats": ["beat-b1"]},
+    ]
+
+
+def _trope_plan() -> dict:
+    plan = _valid_plan()
+    plan["outline"]["overall"]["primary_trope_id"] = "trope-a"
+    plan["outline"]["arcs"][0]["trope_id"] = "trope-a"
+    plan["outline"]["chapters"][0]["trope_beat"] = "beat-a1"
+    return plan
+
+
+def test_trope_validator_rejects_invalid_primary_arc_and_beat() -> None:
+    plan = _trope_plan()
+    plan["outline"]["overall"]["primary_trope_id"] = "missing"
+    with pytest.raises(ValueError, match="^invalid_primary_trope_id$"):
+        validate_generated_trope_selection(plan, _trope_templates())
+
+    plan = _trope_plan()
+    plan["outline"]["arcs"][0]["trope_id"] = "missing"
+    with pytest.raises(ValueError, match="^invalid_arc_trope_id:opening$"):
+        validate_generated_trope_selection(plan, _trope_templates())
+
+    plan = _trope_plan()
+    plan["outline"]["chapters"][0]["trope_beat"] = "wrong beat"
+    with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:1$"):
+        validate_generated_trope_selection(plan, _trope_templates())
+
+
+def test_trope_validator_rejects_empty_string_beat_when_candidates_exist() -> None:
+    plan = _trope_plan()
+    plan["outline"]["chapters"][0]["trope_beat"] = ""
+
+    with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:1$"):
+        validate_generated_trope_selection(plan, _trope_templates())
+
+
+def test_trope_validator_uses_active_arc_precedence_for_overlapping_arcs() -> None:
+    plan = _trope_plan()
+    plan["outline"]["arcs"] = [
+        {**plan["outline"]["arcs"][0], "id": "outer", "start_chapter": 1, "end_chapter": 10, "trope_id": "trope-a"},
+        {**plan["outline"]["arcs"][0], "id": "inner", "start_chapter": 5, "end_chapter": 6, "trope_id": "trope-b"},
+    ]
+    plan["outline"]["chapters"][4]["trope_beat"] = "beat-b1"
+
+    validate_generated_trope_selection(plan, _trope_templates())
+
+    plan["outline"]["chapters"][4]["trope_beat"] = "beat-a1"
+    with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:5$"):
+        validate_generated_trope_selection(plan, _trope_templates())
+
+
+def test_trope_validator_allows_missing_chapter_beats() -> None:
+    plan = _trope_plan()
+    for chapter in plan["outline"]["chapters"]:
+        chapter["trope_beat"] = None
+
+    validate_generated_trope_selection(plan, _trope_templates())
+
+
+def test_trope_validator_requires_primary_when_candidates_exist() -> None:
+    plan = _trope_plan()
+    plan["outline"]["overall"]["primary_trope_id"] = None
+
+    with pytest.raises(ValueError, match="^invalid_primary_trope_id$"):
+        validate_generated_trope_selection(plan, _trope_templates())
+
+
+def test_trope_validator_does_not_grandfather_fallback_beats_by_default() -> None:
+    plan = _trope_plan()
+    fallback = deepcopy(plan["outline"])
+    plan["outline"]["overall"]["primary_trope_id"] = "deleted-trope"
+    plan["outline"]["arcs"][0]["trope_id"] = "deleted-trope"
+    plan["outline"]["chapters"][0]["trope_beat"] = "deleted beat"
+    fallback["overall"]["primary_trope_id"] = "deleted-trope"
+    fallback["arcs"][0]["trope_id"] = "deleted-trope"
+    fallback["chapters"][0]["trope_beat"] = "deleted beat"
+
+    with pytest.raises(ValueError, match="^unexpected_chapter_trope_beat:1$"):
+        validate_generated_trope_selection(
+            plan,
+            [],
+            expected_primary_trope_id="deleted-trope",
+            fallback_outline=fallback,
+        )
+
+    validate_generated_trope_selection(
+        plan,
+        [],
+        expected_primary_trope_id="deleted-trope",
+        fallback_outline=fallback,
+        committed_through_chapter=1,
+    )
+
+
+def test_trope_validator_does_not_grandfather_changed_beat_for_current_template() -> None:
+    plan = _trope_plan()
+    fallback = deepcopy(plan["outline"])
+    plan["outline"]["chapters"][0]["trope_beat"] = "removed beat"
+    fallback["chapters"][0]["trope_beat"] = "removed beat"
+
+    with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:1$"):
+        validate_generated_trope_selection(
+            plan,
+            _trope_templates(),
+            fallback_outline=fallback,
+            committed_through_chapter=1,
+        )
+
+
+def test_trope_validator_requires_all_nulls_when_no_candidates() -> None:
+    plan = _trope_plan()
+    plan["outline"]["overall"]["primary_trope_id"] = None
+    plan["outline"]["arcs"][0]["trope_id"] = None
+    for chapter in plan["outline"]["chapters"]:
+        chapter["trope_beat"] = None
+
+    validate_generated_trope_selection(plan, [])
+
+    plan["outline"]["chapters"][0]["trope_beat"] = "beat-a1"
+    with pytest.raises(ValueError, match="^unexpected_chapter_trope_beat:1$"):
+        validate_generated_trope_selection(plan, [])
+
+    plan = _trope_plan()
+    plan["outline"]["arcs"][0]["trope_id"] = None
+    for chapter in plan["outline"]["chapters"]:
+        chapter["trope_beat"] = None
+    with pytest.raises(ValueError, match="^unexpected_primary_trope_id$"):
+        validate_generated_trope_selection(plan, [])
+
+    plan = _trope_plan()
+    plan["outline"]["overall"]["primary_trope_id"] = None
+    for chapter in plan["outline"]["chapters"]:
+        chapter["trope_beat"] = None
+    with pytest.raises(ValueError, match="^unexpected_arc_trope_id:opening$"):
+        validate_generated_trope_selection(plan, [])
+
+
+def test_opening_and_continuation_validators_call_shared_trope_validator() -> None:
+    plan = _trope_plan()
+    plan["outline"]["overall"]["primary_trope_id"] = "trope-b"
+
+    with pytest.raises(ValueError, match="^unexpected_primary_trope_id$"):
+        validate_generated_opening_plan(
+            plan,
+            expected_chapter_numbers=list(range(1, 31)),
+            trope_templates=_trope_templates(),
+            expected_primary_trope_id="trope-a",
+        )
+
+    continuation = _trope_plan()
+    continuation["outline"]["chapters"] = [
+        {**continuation["outline"]["chapters"][0], "chapter_number": 31, "cast": ["Existing", "New"]}
+    ]
+    continuation["characters"] = [_card("New", "supporting")]
+    continuation["outline"]["arcs"][0]["trope_id"] = "trope-b"
+    with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:31$"):
+        validate_generated_continuation_plan(
+            continuation,
+            expected_chapter_numbers=[31],
+            existing_character_names={"Existing"},
+            trope_templates=_trope_templates(),
+            expected_primary_trope_id="trope-a",
+        )
 
 
 class RecordingRuntime:
@@ -107,7 +286,11 @@ class RecordingRuntime:
         targets = self.prompt_context.get("target_chapter_numbers", list(range(1, 31)))
         template = plan["outline"]["chapters"][0]
         plan["outline"]["chapters"] = [
-            {**template, "chapter_number": number}
+            {
+                **template,
+                "chapter_number": number,
+                "trope_beat": template["trope_beat"] if number == 1 else None,
+            }
             for number in targets
         ]
         return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
@@ -189,6 +372,7 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "genre_core_promises",
         "genre_rulebook",
         "genre_quality_checks",
+        "genre_trope_templates",
         "title",
         "opening_direction",
         "author_constraints",
@@ -204,6 +388,9 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "current_strategy",
     }
     assert prompt["one_time_guidance"] == "反派要有现实利益"
+    assert prompt["opening_direction"]["primary_trope_id"] == "low_status_reversal"
+    assert prompt["genre_trope_templates"]
+    assert "genre_trope_templates" in request["payload"]["messages"][1]["content"]
     schema_text = json.dumps(prompt["output_schema"], ensure_ascii=False)
     assert '"start_chapter"' in schema_text
     assert '"long_term_antagonist_traces"' in schema_text
@@ -220,8 +407,135 @@ def test_generator_requests_one_compact_structured_plan() -> None:
     assert "exactly equal" in rules_text
     assert "target_chapter_numbers" in rules_text
     assert "cast" in rules_text
+    assert "overall.primary_trope_id" in rules_text
+    assert "arc.trope_id" in rules_text
+    assert "trope_beat only on milestone chapters" in rules_text
+    assert "must exactly equal a beat" in rules_text
+    system_text = request["payload"]["messages"][0]["content"]
+    assert "Choose one overall.primary_trope_id from prompt_context.genre_trope_templates" in system_text
+    assert "Use null for overall.primary_trope_id, arc.trope_id, and chapter.trope_beat when prompt_context.genre_trope_templates is empty" in system_text
+    assert "Do not assign trope_beat to every chapter" in system_text
+    assert "Do not change trope_id inside an arc" in system_text
     assert "chapter body" not in json.dumps(prompt, ensure_ascii=False).lower()
     assert "五章" not in request["payload"]["messages"][0]["content"]
+
+
+def test_generator_rejects_selected_primary_trope_drift() -> None:
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        plan = _valid_plan()
+        plan["outline"]["overall"]["primary_trope_id"] = "golden_finger_first_test"
+        plan["outline"]["arcs"][0]["trope_id"] = "golden_finger_first_test"
+        plan["outline"]["chapters"][0]["trope_beat"] = "异常出现"
+        return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    )
+
+    with pytest.raises(ValueError, match="^outline_planning_generation_failed$") as exc_info:
+        generator.generate(_brief(), mode="initial")
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert str(exc_info.value.__cause__) == "unexpected_primary_trope_id"
+
+
+def test_generator_allows_direct_initial_model_to_choose_primary_trope() -> None:
+    recording = RecordingRuntime()
+    payload = _brief().model_dump(mode="json")
+    payload["opening_direction"]["primary_trope_id"] = None
+
+    plan = recording.generator().generate(
+        OutlinePlanningBrief.model_validate(payload),
+        mode="initial",
+    )
+
+    assert plan.outline.overall.primary_trope_id == "low_status_reversal"
+    assert recording.prompt_context["opening_direction"]["primary_trope_id"] is None
+
+
+def test_extend_rejects_existing_primary_trope_drift() -> None:
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["overall"]["primary_trope_id"] = "golden_finger_first_test"
+        plan["outline"]["arcs"][0]["trope_id"] = "golden_finger_first_test"
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": number,
+                "trope_beat": "异常出现" if number == prompt["target_chapter_numbers"][0] else None,
+                "cast": ["林照", "New"],
+            }
+            for number in prompt["target_chapter_numbers"]
+        ]
+        plan["characters"] = [_card("New", "supporting")]
+        return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    brief = fixture.brief(current_chapter=20, existing_chapters=list(range(1, 31)))
+    payload = brief.model_dump(mode="json")
+    payload["existing_character_names"] = ["林照"]
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    )
+
+    with pytest.raises(ValueError, match="^outline_planning_generation_failed$") as exc_info:
+        generator.generate(OutlinePlanningBrief.model_validate(payload), mode="extend")
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert str(exc_info.value.__cause__) == "unexpected_primary_trope_id"
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generator_uses_existing_locked_arc_context_for_omitted_arc_beats(mode: str) -> None:
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["arcs"] = [
+            arc
+            for arc in prompt["existing_outline"]["arcs"]
+            if arc["id"] != "locked-inner"
+        ]
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": number,
+                "trope_beat": "异常出现" if number == 31 else None,
+                "cast": ["林照", "New"] if mode == "extend" else template["cast"],
+            }
+            for number in prompt["target_chapter_numbers"]
+        ]
+        if mode == "extend":
+            plan["characters"] = [_card("New", "supporting")]
+        return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    existing_chapters = list(range(1, 31)) if mode == "extend" else list(range(1, 51))
+    brief = fixture.brief(current_chapter=20, existing_chapters=existing_chapters)
+    payload = brief.model_dump(mode="json")
+    payload["existing_outline"]["arcs"].append(
+        {
+            **payload["existing_outline"]["arcs"][0],
+            "id": "locked-inner",
+            "start_chapter": 31,
+            "end_chapter": 50,
+            "trope_id": "golden_finger_first_test",
+        }
+    )
+    payload["existing_character_names"] = ["林照"]
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    )
+
+    plan = generator.generate(OutlinePlanningBrief.model_validate(payload), mode=mode)
+
+    assert any(chapter.trope_beat == "异常出现" for chapter in plan.outline.chapters)
 
 
 def test_extend_prompt_requests_only_missing_window_chapters(generator_fixture) -> None:
@@ -311,6 +625,7 @@ def test_extend_accepts_only_new_character_cards_and_existing_cast() -> None:
             {
                 **template,
                 "chapter_number": number,
+                "trope_beat": None,
                 "cast": ["林照", "新角色"],
             }
             for number in prompt_context["target_chapter_numbers"]
@@ -349,6 +664,7 @@ def test_extend_accepts_seventh_existing_character_in_cast() -> None:
             {
                 **template,
                 "chapter_number": number,
+                "trope_beat": None,
                 "cast": ["第七个已有角色", "新角色"],
             }
             for number in prompt_context["target_chapter_numbers"]

@@ -36,15 +36,21 @@ from packages.story_core.genre_plugins import select_genre_plugins
 from packages.story_core.models import CharacterState, NovelProject, StoryState
 from packages.story_core.novel_type_catalog import (
     normalize_novel_type_ids,
+    novel_type_prompt_context,
     novel_type_id_from_metadata_fact,
     resolve_novel_type_id,
     runtime_novel_type,
 )
-from packages.story_core.opening_directions import OpeningBrief, OpeningDirectionSet
+from packages.story_core.opening_directions import (
+    OpeningBrief,
+    OpeningDirectionSet,
+    validate_opening_direction_set_primary_tropes,
+)
 from packages.story_core.outline_planning import (
     GeneratedOutlinePlan,
     validate_generated_continuation_plan,
     validate_generated_opening_plan,
+    validate_generated_trope_selection,
 )
 from packages.story_core.outline_planning_generation import OutlinePlanningBrief
 from packages.story_core.prose_style_review import review_prose_style
@@ -2940,6 +2946,47 @@ class FileProjectStore:
             "next_path": f"/projects/{quote(public_project_id, safe='')}/{next_page}",
         }
 
+    def _opening_direction_trope_candidates(
+        self,
+        brief: OpeningBrief | dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        validated_brief = OpeningBrief.model_validate(brief or self.opening_brief())
+        genre = runtime_novel_type(validated_brief.novel_type_id)
+        if genre is None:
+            raise ValueError("invalid_novel_type")
+        prompt_context = novel_type_prompt_context(genre)
+        return [
+            dict(item)
+            for item in prompt_context.get("genre_trope_templates", [])
+            if isinstance(item, dict)
+        ]
+
+    def _current_opening_direction_novel_type_id(
+        self,
+        brief: OpeningBrief | dict[str, Any] | None = None,
+    ) -> str:
+        validated_brief = OpeningBrief.model_validate(brief or self.opening_brief())
+        project = self.project()
+        world_blueprint = (
+            project.get("world_blueprint")
+            if isinstance(project.get("world_blueprint"), dict)
+            else {}
+        )
+        raw_ids = world_blueprint.get("genre_plugin_ids")
+        if isinstance(raw_ids, str):
+            has_explicit_type = bool(raw_ids.strip())
+        elif isinstance(raw_ids, list):
+            has_explicit_type = any(str(item).strip() for item in raw_ids)
+        else:
+            has_explicit_type = False
+        normalized_ids = normalize_novel_type_ids(raw_ids)
+        if normalized_ids:
+            return normalized_ids[0]
+        if has_explicit_type:
+            raise ValueError("invalid_novel_type")
+        return validated_brief.novel_type_id
+
+    @_with_project_update_lock
     def generate_opening_directions(
         self, generator: Any, *, guidance: str = ""
     ) -> dict[str, Any]:
@@ -2947,10 +2994,20 @@ class FileProjectStore:
         if existing and existing.get("selected_id"):
             raise ValueError("direction_already_selected")
         brief = OpeningBrief.model_validate(self.opening_brief())
-        result = generator.generate(brief, guidance=guidance.strip())
         try:
-            directions = OpeningDirectionSet.model_validate(result)
-        except (TypeError, ValueError) as exc:
+            current_type_id = self._current_opening_direction_novel_type_id(brief)
+            effective_brief = brief.model_copy(update={"novel_type_id": current_type_id})
+            trope_candidates = self._opening_direction_trope_candidates(effective_brief)
+            result = generator.generate(effective_brief, guidance=guidance.strip())
+            directions = validate_opening_direction_set_primary_tropes(
+                OpeningDirectionSet.model_validate(result),
+                trope_candidates,
+            )
+        except Exception as exc:
+            if isinstance(exc, ValueError) and str(exc) == "invalid_novel_type":
+                raise ValueError("opening_direction_generation_failed") from exc
+            if isinstance(exc, ValueError) and str(exc) == "opening_direction_generation_failed":
+                raise
             raise ValueError("opening_direction_generation_failed") from exc
         project = {**self.project(), "pipeline_stage": "direction_ready"}
         self._replace_json_transaction(
@@ -2961,6 +3018,7 @@ class FileProjectStore:
         )
         return self.opening_setup()
 
+    @_with_project_update_lock
     def select_opening_direction(self, direction_id: str) -> dict[str, Any]:
         payload = self.opening_directions()
         if payload is None:
@@ -2988,6 +3046,7 @@ class FileProjectStore:
                     "main_conflict": selected.main_conflict,
                     "growth_path": selected.growth_path,
                     "ending_direction": selected.opening_promise,
+                    "primary_trope_id": selected.primary_trope_id,
                 },
                 "arcs": [],
                 "chapters": [],
@@ -3003,6 +3062,7 @@ class FileProjectStore:
         )
         return self.opening_setup()
 
+    @_with_project_update_lock
     def project_outline(self) -> dict[str, Any]:
         # 先尝试 Markdown 大纲双向同步（last-writer-wins）；同步失败静默降级，
         # 绝不能因为 md 解析/导出问题搞挂读接口。
@@ -3019,6 +3079,7 @@ class FileProjectStore:
             return {**normalize_project_outline(self._read_json(path, {})), "source": "saved"}
         return {**outline_from_legacy_project(self.project()), "source": "legacy"}
 
+    @_with_project_update_lock
     def update_project_outline(self, payload: dict[str, Any]) -> dict[str, Any]:
         outline_payload = dict(payload)
         outline_payload.pop("source", None)
@@ -3040,7 +3101,11 @@ class FileProjectStore:
             )
         return {**normalized, "source": "saved"}
 
-    def _planning_opening_direction(self, project: dict[str, Any], outline: dict[str, Any]) -> dict[str, str]:
+    def _planning_opening_direction(
+        self,
+        project: dict[str, Any],
+        outline: dict[str, Any],
+    ) -> dict[str, Any]:
         directions = self.opening_directions()
         selected_id = str((directions or {}).get("selected_id") or "")
         selected = next(
@@ -3053,12 +3118,22 @@ class FileProjectStore:
         )
         if selected:
             return {
-                key: str(selected.get(key) or "")
-                for key in ("title", "hook", "protagonist_goal", "main_conflict", "growth_path", "opening_promise")
+                "title": str(selected.get("title") or ""),
+                "hook": str(selected.get("hook") or ""),
+                "protagonist_goal": str(selected.get("protagonist_goal") or ""),
+                "main_conflict": str(selected.get("main_conflict") or ""),
+                "growth_path": str(selected.get("growth_path") or ""),
+                "opening_promise": str(selected.get("opening_promise") or ""),
+                "primary_trope_id": selected.get("primary_trope_id"),
             }
         overall = outline.get("overall") if isinstance(outline.get("overall"), dict) else {}
         seed = str(project.get("seed_outline") or project.get("world_summary") or overall.get("story") or project.get("title") or "")
         focus = str(project.get("current_focus") or overall.get("protagonist_goal") or seed)
+        primary_trope_id = overall.get("primary_trope_id")
+        if isinstance(primary_trope_id, str):
+            primary_trope_id = primary_trope_id.strip() or None
+        else:
+            primary_trope_id = None
         return {
             "title": str(project.get("title") or ""),
             "hook": str(overall.get("story") or seed),
@@ -3066,7 +3141,85 @@ class FileProjectStore:
             "main_conflict": str(overall.get("main_conflict") or project.get("world_summary") or seed),
             "growth_path": str(overall.get("growth_path") or "主角在连续行动、代价和反馈中取得真实成长。"),
             "opening_promise": str(overall.get("ending_direction") or "开篇建立的核心冲突会得到阶段性兑现。"),
+            "primary_trope_id": primary_trope_id,
         }
+
+    def _current_project_trope_candidates(
+        self,
+        project: dict[str, Any],
+        state: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        blueprint = (
+            project.get("world_blueprint")
+            if isinstance(project.get("world_blueprint"), dict)
+            else {}
+        )
+        genre_ids = normalize_novel_type_ids(blueprint.get("genre_plugin_ids"))
+        if not genre_ids:
+            genre_ids = normalize_novel_type_ids(state.get("genre_plugin_ids"))
+        if not genre_ids:
+            genre_ids = ["generic_webnovel"]
+        genre = runtime_novel_type(genre_ids[0])
+        if genre is None:
+            raise ValueError("invalid_novel_type")
+        prompt_context = novel_type_prompt_context(genre)
+        return [
+            dict(item)
+            for item in prompt_context.get("genre_trope_templates", [])
+            if isinstance(item, dict)
+        ]
+
+    @staticmethod
+    def _outline_primary_trope_id(outline: dict[str, Any]) -> str | None:
+        overall = outline.get("overall") if isinstance(outline.get("overall"), dict) else {}
+        primary_trope_id = overall.get("primary_trope_id")
+        if isinstance(primary_trope_id, str):
+            return primary_trope_id.strip() or None
+        return None
+
+    @staticmethod
+    def _validate_generated_locked_tropes_match(
+        current: dict[str, Any],
+        generated: dict[str, Any],
+        *,
+        current_chapter: int,
+    ) -> None:
+        current_arcs = {
+            str(arc.get("id")): arc
+            for arc in current.get("arcs", [])
+            if isinstance(arc, dict) and str(arc.get("id") or "").strip()
+        }
+        locked_current_arcs = [
+            arc
+            for arc in current_arcs.values()
+            if arc.get("trope_id") is not None
+        ]
+        for arc in generated.get("arcs", []):
+            if not isinstance(arc, dict):
+                continue
+            arc_id = str(arc.get("id") or "")
+            current_arc = current_arcs.get(arc_id)
+            if not current_arc:
+                for locked_arc in locked_current_arcs:
+                    exact_range = (
+                        int(arc["start_chapter"]) == int(locked_arc["start_chapter"])
+                        and int(arc["end_chapter"]) == int(locked_arc["end_chapter"])
+                    )
+                    committed_overlap = max(
+                        int(arc["start_chapter"]),
+                        int(locked_arc["start_chapter"]),
+                    ) <= min(
+                        int(arc["end_chapter"]),
+                        int(locked_arc["end_chapter"]),
+                        current_chapter,
+                    )
+                    if exact_range or committed_overlap:
+                        raise ValueError(f"locked_arc_overlap:{arc_id}")
+                continue
+            current_trope_id = current_arc.get("trope_id")
+            generated_trope_id = arc.get("trope_id")
+            if current_trope_id is not None and generated_trope_id != current_trope_id:
+                raise ValueError(f"locked_arc_trope_drift:{arc_id}")
 
     def _planning_brief(self) -> OutlinePlanningBrief:
         project = self.project()
@@ -3179,6 +3332,8 @@ class FileProjectStore:
                 continue
             merged_arc = merge_character_profile(existing_arc, arc)
             merged_arc["end_chapter"] = max(int(existing_arc["end_chapter"]), int(arc["end_chapter"]))
+            if existing_arc.get("trope_id") is not None:
+                merged_arc["trope_id"] = existing_arc["trope_id"]
             merged_arc["long_term_antagonist_traces"] = list(
                 dict.fromkeys(
                     [
@@ -3205,6 +3360,18 @@ class FileProjectStore:
     ) -> dict[str, Any]:
         current = normalize_project_outline(current)
         generated = normalize_project_outline(generated)
+        overall = dict(generated["overall"])
+        current_primary_trope_id = self._outline_primary_trope_id(current)
+        if current_primary_trope_id is not None:
+            overall["primary_trope_id"] = current_primary_trope_id
+        current_arcs = {str(item["id"]): dict(item) for item in current["arcs"]}
+        arcs = {str(item["id"]): dict(item) for item in generated["arcs"]}
+        for arc_id, current_arc in current_arcs.items():
+            if arc_id not in arcs:
+                arcs[arc_id] = current_arc
+                continue
+            if current_arc.get("trope_id") is not None:
+                arcs[arc_id]["trope_id"] = current_arc["trope_id"]
         committed = {
             item["chapter_number"]: item
             for item in current["chapters"]
@@ -3217,12 +3384,13 @@ class FileProjectStore:
         }
         return normalize_project_outline(
             {
-                "overall": generated["overall"],
-                "arcs": generated["arcs"],
+                "overall": overall,
+                "arcs": list(arcs.values()),
                 "chapters": [*committed.values(), *future.values()],
             }
         )
 
+    @_with_project_update_lock
     def save_generated_outline_plan(self, plan: Any, *, mode: str) -> dict[str, Any]:
         validated = GeneratedOutlinePlan.model_validate(plan)
         if mode not in {"initial", "regenerate", "extend"}:
@@ -3233,6 +3401,8 @@ class FileProjectStore:
         current_chapter = int(state.get("current_chapter") or 0)
         current_outline = dict(self.project_outline())
         current_outline.pop("source", None)
+        trope_candidates = self._current_project_trope_candidates(project, state)
+        expected_primary_trope_id = self._outline_primary_trope_id(current_outline)
         if mode == "initial":
             if current_chapter != 0:
                 raise ValueError("initial_outline_requires_unstarted_project")
@@ -3257,6 +3427,12 @@ class FileProjectStore:
             validated = validate_generated_opening_plan(
                 validated.model_dump(mode="json"),
                 expected_chapter_numbers=expected_chapter_numbers,
+                trope_templates=trope_candidates,
+                expected_primary_trope_id=expected_primary_trope_id,
+                fallback_outline=current_outline if mode == "regenerate" else None,
+                committed_through_chapter=(
+                    current_chapter if mode == "regenerate" else None
+                ),
             )
         else:
             existing_character_names: set[str] = set()
@@ -3284,9 +3460,19 @@ class FileProjectStore:
                 validated.model_dump(mode="json"),
                 expected_chapter_numbers=expected_chapter_numbers,
                 existing_character_names=existing_character_names,
+                trope_templates=trope_candidates,
+                expected_primary_trope_id=expected_primary_trope_id,
+                fallback_outline=current_outline,
+                committed_through_chapter=current_chapter,
             )
 
         generated_outline = validated.outline.model_dump(mode="json")
+        if mode in {"extend", "regenerate"}:
+            self._validate_generated_locked_tropes_match(
+                current_outline,
+                generated_outline,
+                current_chapter=current_chapter,
+            )
         if mode == "extend":
             generated_outline = self._extend_outline(
                 current_outline,
@@ -3299,6 +3485,17 @@ class FileProjectStore:
                 generated_outline,
                 current_chapter=current_chapter,
             )
+        final_validation_payload = validated.model_dump(mode="json")
+        final_validation_payload["outline"] = generated_outline
+        validate_generated_trope_selection(
+            final_validation_payload,
+            trope_candidates,
+            expected_primary_trope_id=expected_primary_trope_id,
+            fallback_outline=current_outline if mode in {"extend", "regenerate"} else None,
+            committed_through_chapter=(
+                current_chapter if mode in {"extend", "regenerate"} else None
+            ),
+        )
         cards = self._merge_generated_character_cards(
             [card.model_dump(mode="json") for card in validated.characters]
         )

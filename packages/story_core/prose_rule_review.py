@@ -651,6 +651,7 @@ HARD_REVIEWERS: frozenset[str] = frozenset({
     "required_beats_critical",    # >50% required_beats 未在正文落地
     "plot_spine_critical",
     "longform_payoff_missing",
+    "trope_beat_missing",
 })
 
 SOFT_REVIEWERS: frozenset[str] = frozenset({

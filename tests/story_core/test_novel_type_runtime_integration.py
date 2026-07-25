@@ -19,9 +19,15 @@ from packages.story_core.genre_plugins import plugin_prompt_guide, select_genre_
 from packages.story_core.genre_types import EASTERN_FANTASY
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.models import NovelProject, StoryState
-from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG, novel_type_options
+from packages.story_core.novel_type_catalog import (
+    NOVEL_TYPE_CATALOG,
+    novel_type_options,
+    novel_type_prompt_context,
+    runtime_novel_type,
+)
 from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator, OpeningBrief
+from packages.story_core.orchestrator import _writer_seed_summary
 from packages.story_core.outline_planning_generation import (
     LLMOutlinePlanningGenerator,
     OutlinePlanningBrief,
@@ -86,7 +92,18 @@ def _runtime_settings(_: str) -> StageRuntimeSettings:
     )
 
 
-def _directions_payload() -> dict:
+def _primary_trope_id_for(novel_type_id: str) -> str | None:
+    record = runtime_novel_type(novel_type_id)
+    candidates = (
+        novel_type_prompt_context(record).get("genre_trope_templates", [])
+        if record is not None
+        else []
+    )
+    return str(candidates[0]["id"]) if candidates else None
+
+
+def _directions_payload(novel_type_id: str) -> dict:
+    primary_trope_id = _primary_trope_id_for(novel_type_id)
     return {
         "directions": [
             {
@@ -97,6 +114,7 @@ def _directions_payload() -> dict:
                 "main_conflict": f"冲突{index}",
                 "growth_path": f"成长{index}",
                 "opening_promise": f"承诺{index}",
+                "primary_trope_id": primary_trope_id,
             }
             for index in range(1, 4)
         ]
@@ -115,6 +133,345 @@ def _planning_brief(novel_type_id: str) -> OutlinePlanningBrief:
             "opening_promise": "每次行动都会得到可验证的结果。",
         },
     )
+
+
+def _trope_plan(primary_trope_id: str | None, trope_beat: str | None) -> dict:
+    characters = [
+        ("Lead", "protagonist"),
+        ("Rival", "stage_antagonist"),
+        ("Patron", "supporting"),
+        ("Hidden Hand", "long_term_antagonist"),
+    ]
+    return {
+        "outline": {
+            "overall": {
+                "story": "The lead investigates a public failure.",
+                "protagonist_goal": "Find the cause.",
+                "main_conflict": "The rival blocks the investigation.",
+                "growth_path": "Earn the authority to expose the truth.",
+                "ending_direction": "Publish the evidence.",
+                "primary_trope_id": primary_trope_id,
+            },
+            "arcs": [{
+                "id": "opening",
+                "title": "Opening case",
+                "start_chapter": 1,
+                "end_chapter": 30,
+                "goal": "Secure the first piece of evidence.",
+                "obstacle": "The rival controls access.",
+                "payoff": "The lead earns a formal hearing.",
+                "trope_id": primary_trope_id,
+                "end_state": "The case can no longer be buried.",
+                "stage_antagonist": "Rival",
+                "long_term_antagonist_traces": ["A hidden sponsor altered the record."],
+            }],
+            "chapters": [{
+                "chapter_number": number,
+                "title": f"Step {number}",
+                "goal": "Advance the investigation.",
+                "obstacle": "Access is restricted.",
+                "action": "The lead verifies one record.",
+                "turn": "The record points to a larger scheme.",
+                "payoff": "One fact becomes public.",
+                "ending_hook": "A witness asks for protection.",
+                "trope_beat": trope_beat if number == 1 else None,
+                "cast": ["Lead", "Rival"],
+            } for number in range(1, 31)],
+        },
+        "characters": [{
+            "name": name,
+            "role": tier,
+            "character_tier": tier,
+            "first_appearance": 0 if tier == "long_term_antagonist" else 1,
+            "identity_profile": {
+                "age": 30,
+                "origin": "River City",
+                "current_identity": tier,
+                "occupation": "investigator",
+            },
+            "background_profile": {},
+            "current_life_profile": {},
+            "story_drive": {
+                "immediate_goal": "Control the hearing.",
+                "failure_stakes": "Lose public standing.",
+            },
+            "performance_profile": {},
+            "dialogue_examples": ["State the evidence.", "Then show the record."],
+            "relationship_notes": [],
+        } for name, tier in characters],
+    }
+
+
+def test_trope_stage_locking_flows_from_opening_to_writer_summary(tmp_path) -> None:
+    created = create_file_project(
+        tmp_path / "projects",
+        FileProjectCreateSpec(
+            mode="inspiration",
+            title="Working title",
+            idea="A courier finds tomorrow's missing-person report.",
+            novel_type_id="urban",
+        ),
+        project_id_factory=lambda: "p-trope-flow",
+    )
+    store = FileProjectStore(created.root)
+    candidates = novel_type_prompt_context(runtime_novel_type("urban"))[
+        "genre_trope_templates"
+    ]
+    selected = candidates[0]
+
+    def opening_post(base_url, path, payload, api_key, **kwargs):
+        return {
+            "choices": [{
+                "message": {
+                    "content": json.dumps(_directions_payload("urban"), ensure_ascii=False)
+                }
+            }]
+        }
+
+    opening_generator = LLMOpeningDirectionGenerator(
+        post_json=opening_post,
+        runtime_resolver=_runtime_settings,
+    )
+    generated = store.generate_opening_directions(opening_generator)
+    direction_id = generated["directions"][0]["id"]
+    store.select_opening_direction(direction_id)
+
+    plan_payload = _trope_plan(selected["id"], selected["beats"][0])
+
+    def outline_post(base_url, path, payload, api_key, **kwargs):
+        return {
+            "choices": [{
+                "message": {"content": json.dumps(plan_payload, ensure_ascii=False)}
+            }]
+        }
+
+    saved = store.generate_outline_plan(
+        LLMOutlinePlanningGenerator(
+            post_json=outline_post,
+            runtime_resolver=_runtime_settings,
+        ),
+        mode="initial",
+    )
+    story = StoryState.model_validate(
+        store._story_state_payload_for_direction(store.state(), store.project(), 1)
+    )
+    seed = build_chapter_seed(story, 1)
+    writer_summary = _writer_seed_summary(seed)
+    summary_contracts = [
+        value
+        for value in writer_summary.values()
+        if isinstance(value, dict) and "template_id" in value
+    ]
+
+    def nested_keys(value):
+        if isinstance(value, dict):
+            return {
+                *value.keys(),
+                *(key for item in value.values() for key in nested_keys(item)),
+            }
+        if isinstance(value, list):
+            return {key for item in value for key in nested_keys(item)}
+        return set()
+
+    assert saved["outline"]["overall"]["primary_trope_id"] == selected["id"]
+    assert saved["outline"]["arcs"][0]["trope_id"] == selected["id"]
+    assert saved["outline"]["chapters"][0]["trope_beat"] == selected["beats"][0]
+    assert seed["trope_contract"]["template_id"] == selected["id"]
+    assert seed["trope_contract"]["current_beat"] == selected["beats"][0]
+    assert summary_contracts == [seed["trope_contract"]]
+    assert "trope_templates" not in nested_keys(writer_summary)
+    assert "genre_trope_templates" not in nested_keys(writer_summary)
+
+
+def test_legacy_outline_without_trope_fields_loads_and_builds_seed(tmp_path) -> None:
+    created = create_file_project(
+        tmp_path / "projects",
+        FileProjectCreateSpec(mode="blank", title="Legacy", novel_type_id="urban"),
+        project_id_factory=lambda: "p-legacy-tropes",
+    )
+    store = FileProjectStore(created.root)
+    legacy_outline = _trope_plan(None, None)["outline"]
+    legacy_outline["overall"].pop("primary_trope_id")
+    legacy_outline["arcs"][0].pop("trope_id")
+    for chapter in legacy_outline["chapters"]:
+        chapter.pop("trope_beat")
+    (store.webnovel_dir / "outline.json").write_text(
+        json.dumps(legacy_outline, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    loaded = store.project_outline()
+    story = StoryState.model_validate(
+        store._story_state_payload_for_direction(store.state(), store.project(), 1)
+    )
+    seed = build_chapter_seed(story, 1)
+
+    assert loaded["overall"]["primary_trope_id"] is None
+    assert loaded["arcs"][0]["trope_id"] is None
+    assert loaded["chapters"][0]["trope_beat"] is None
+    assert "trope_contract" not in seed
+
+
+def test_custom_type_allows_none_when_specific_and_generic_tropes_are_empty(
+    runtime_type_library,
+) -> None:
+    runtime_type_library.update("generic_webnovel", {"trope_templates": []})
+    runtime_type_library.update(CUSTOM_ID, {"trope_templates": []})
+    candidates = novel_type_prompt_context(runtime_novel_type(CUSTOM_ID))[
+        "genre_trope_templates"
+    ]
+    captured = {}
+
+    def opening_post(base_url, path, payload, api_key, **kwargs):
+        captured["opening"] = json.loads(payload["messages"][1]["content"])
+        return {
+            "choices": [{
+                "message": {
+                    "content": json.dumps(_directions_payload(CUSTOM_ID), ensure_ascii=False)
+                }
+            }]
+        }
+
+    directions = LLMOpeningDirectionGenerator(
+        post_json=opening_post,
+        runtime_resolver=_runtime_settings,
+    ).generate(OpeningBrief(novel_type_id=CUSTOM_ID, idea="A final match."))
+
+    def outline_post(base_url, path, payload, api_key, **kwargs):
+        captured["outline"] = json.loads(payload["messages"][1]["content"])
+        return {
+            "choices": [{
+                "message": {
+                    "content": json.dumps(_trope_plan(None, None), ensure_ascii=False)
+                }
+            }]
+        }
+
+    plan = LLMOutlinePlanningGenerator(
+        post_json=outline_post,
+        runtime_resolver=_runtime_settings,
+    ).generate(_planning_brief(CUSTOM_ID))
+
+    assert candidates == []
+    assert captured["opening"]["genre_trope_templates"] == []
+    assert captured["outline"]["genre_trope_templates"] == []
+    assert all(direction.primary_trope_id is None for direction in directions.directions)
+    assert plan.outline.overall.primary_trope_id is None
+    assert plan.outline.arcs[0].trope_id is None
+    assert all(chapter.trope_beat is None for chapter in plan.outline.chapters)
+
+
+def test_deleted_saved_trope_id_does_not_block_project_load_or_seed(
+    runtime_type_library,
+    tmp_path,
+) -> None:
+    deleted_id = "sports_upset"
+    deleted_beat = "The favorite underestimates the challenger."
+    runtime_type_library.update(
+        CUSTOM_ID,
+        {
+            "trope_templates": [{
+                "id": deleted_id,
+                "name": "Upset",
+                "trigger": "An overlooked team enters the final.",
+                "beats": [deleted_beat],
+                "payoff": "The ranking changes.",
+                "avoid": ["Do not win by luck alone."],
+            }]
+        },
+    )
+    created = create_file_project(
+        tmp_path / "projects",
+        FileProjectCreateSpec(mode="blank", title="Deleted trope", novel_type_id=CUSTOM_ID),
+        project_id_factory=lambda: "p-deleted-trope",
+    )
+    store = FileProjectStore(created.root)
+    outline = _trope_plan(deleted_id, deleted_beat)["outline"]
+    (store.webnovel_dir / "outline.json").write_text(
+        json.dumps(outline, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    runtime_type_library.update(CUSTOM_ID, {"trope_templates": []})
+
+    loaded = store.project_outline()
+    story = StoryState.model_validate(
+        store._story_state_payload_for_direction(store.state(), store.project(), 1)
+    )
+    seed = build_chapter_seed(story, 1)
+
+    assert loaded["overall"]["primary_trope_id"] == deleted_id
+    assert loaded["arcs"][0]["trope_id"] == deleted_id
+    assert "trope_contract" not in seed
+
+
+def test_direct_initial_and_opening_first_use_identical_trope_candidate_ids() -> None:
+    captured: dict[str, list[dict]] = {}
+
+    def opening_post(base_url, path, payload, api_key, **kwargs):
+        context = json.loads(payload["messages"][1]["content"])
+        captured["opening"] = context["genre_trope_templates"]
+        return {
+            "choices": [{
+                "message": {
+                    "content": json.dumps(_directions_payload("urban"), ensure_ascii=False)
+                }
+            }]
+        }
+
+    directions = LLMOpeningDirectionGenerator(
+        post_json=opening_post,
+        runtime_resolver=_runtime_settings,
+    ).generate(OpeningBrief(novel_type_id="urban", idea="A city mystery."))
+    selected_id = directions.directions[0].primary_trope_id
+    selected = next(item for item in captured["opening"] if item["id"] == selected_id)
+
+    def outline_post(label):
+        def post(base_url, path, payload, api_key, **kwargs):
+            context = json.loads(payload["messages"][1]["content"])
+            captured[label] = context["genre_trope_templates"]
+            return {
+                "choices": [{
+                    "message": {
+                        "content": json.dumps(
+                            _trope_plan(selected_id, selected["beats"][0]),
+                            ensure_ascii=False,
+                        )
+                    }
+                }]
+            }
+        return post
+
+    brief_payload = _planning_brief("urban").model_dump(mode="json")
+    direct_brief = OutlinePlanningBrief.model_validate(
+        {
+            **brief_payload,
+            "opening_direction": {
+                **brief_payload["opening_direction"],
+                "primary_trope_id": None,
+            },
+        }
+    )
+    opening_first_brief = OutlinePlanningBrief.model_validate(
+        {
+            **brief_payload,
+            "opening_direction": {
+                **brief_payload["opening_direction"],
+                "primary_trope_id": selected_id,
+            },
+        }
+    )
+    LLMOutlinePlanningGenerator(
+        post_json=outline_post("direct"), runtime_resolver=_runtime_settings
+    ).generate(direct_brief)
+    LLMOutlinePlanningGenerator(
+        post_json=outline_post("opening_first"), runtime_resolver=_runtime_settings
+    ).generate(opening_first_brief)
+
+    def candidate_ids(items):
+        return [item["id"] for item in items]
+
+    assert candidate_ids(captured["direct"]) == candidate_ids(captured["opening"])
+    assert candidate_ids(captured["opening_first"]) == candidate_ids(captured["opening"])
 
 
 def test_runtime_options_and_project_creation_use_edited_builtin(
@@ -572,7 +929,7 @@ def test_opening_prompt_reads_latest_runtime_description_and_promise(
         captured["payload"] = payload
         return {
             "choices": [
-                {"message": {"content": json.dumps(_directions_payload(), ensure_ascii=False)}}
+                {"message": {"content": json.dumps(_directions_payload(novel_type_id), ensure_ascii=False)}}
             ]
         }
 
@@ -645,7 +1002,7 @@ def test_generation_prompt_caps_runtime_novel_type_context(
         if generator_kind == "opening":
             return {
                 "choices": [
-                    {"message": {"content": json.dumps(_directions_payload(), ensure_ascii=False)}}
+                    {"message": {"content": json.dumps(_directions_payload("xuanhuan"), ensure_ascii=False)}}
                 ]
             }
         raise RuntimeError("stop after prompt capture")
@@ -676,7 +1033,9 @@ def test_generation_prompt_caps_runtime_novel_type_context(
         "genre_core_promises",
         "genre_rulebook",
         "genre_quality_checks",
+        "genre_trope_templates",
     }
+    assert "genre_trope_templates" in captured["payload"]["messages"][1]["content"]
     assert len(serialized) <= 6000
 
 
@@ -710,7 +1069,7 @@ def test_generation_prompt_keeps_normal_short_runtime_type_content_complete(
         captured["payload"] = payload
         return {
             "choices": [
-                {"message": {"content": json.dumps(_directions_payload(), ensure_ascii=False)}}
+                {"message": {"content": json.dumps(_directions_payload("xuanhuan"), ensure_ascii=False)}}
             ]
         }
 

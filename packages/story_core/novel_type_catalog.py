@@ -15,6 +15,10 @@ from packages.story_core.novel_type_ids import (
     NOVEL_TYPE_ID_ALIASES,
     canonical_novel_type_id,
 )
+from packages.story_core.trope_runtime import (
+    compact_trope_candidates,
+    merge_trope_templates,
+)
 
 
 @dataclass(frozen=True)
@@ -302,6 +306,19 @@ def novel_type_id_from_metadata_fact(value: Any) -> str:
 def novel_type_prompt_context(record: Any) -> dict[str, Any]:
     from packages.story_core.agent_base import compact_list, compact_text
 
+    specific_trope_templates = list(getattr(record, "trope_templates", ()) or ())
+    generic_record = None
+    if str(getattr(record, "id", "") or "").strip() != DEFAULT_NOVEL_TYPE_ID:
+        generic_record = runtime_novel_type(DEFAULT_NOVEL_TYPE_ID)
+    generic_trope_templates = (
+        list(getattr(generic_record, "trope_templates", ()) or [])
+        if generic_record is not None
+        else []
+    )
+    merged_trope_templates = compact_trope_candidates(
+        merge_trope_templates([specific_trope_templates, generic_trope_templates])
+    )
+    specific_candidate_count = len(compact_trope_candidates(specific_trope_templates))
     context = {
         "genre_label": compact_text(str(record.name), 100),
         "genre_description": compact_text(str(record.description), 700),
@@ -315,18 +332,28 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
         "genre_quality_checks": compact_list(
             list(record.quality_checks), max_items=10, item_chars=180
         ),
+        "genre_trope_templates": deepcopy(merged_trope_templates),
     }
     lists = [
         context["genre_core_promises"],
         *context["genre_rulebook"].values(),
         context["genre_quality_checks"],
     ]
-    while len(json.dumps(context, ensure_ascii=False)) > 6000:
-        candidates = [items for items in lists if len(items) > 1]
-        if not candidates:
-            break
-        max(candidates, key=lambda items: len(items[-1])).pop()
-    return context
+    while len(json.dumps({**context}, ensure_ascii=False)) > 6000:
+        trope_candidates = context["genre_trope_templates"]
+        if len(trope_candidates) > specific_candidate_count:
+            trope_candidates.pop()
+            continue
+        base_lists = [items for items in lists if items]
+        if base_lists:
+            max(base_lists, key=lambda items: len(items[-1])).pop()
+            continue
+        if trope_candidates:
+            trope_candidates.pop()
+            specific_candidate_count = min(specific_candidate_count, len(trope_candidates))
+            continue
+        raise ValueError("novel_type_prompt_context_exceeds_size_cap")
+    return deepcopy(context)
 
 
 def novel_type_options() -> list[dict[str, Any]]:

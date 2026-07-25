@@ -6,6 +6,7 @@ from typing import Any
 HARD_TOKENS = (
     "body_too_short",
     "body_too_long",
+    "套路节点未兑现",
     "正文为空",
     "字数不足",
     "章节字数偏少",

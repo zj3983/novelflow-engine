@@ -13,6 +13,7 @@ from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import StoryState
 from packages.story_core.novel_type_library import NovelTypeLibrary
+from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.runtime_config import StageRuntimeSettings
 
@@ -471,7 +472,14 @@ def test_file_project_creation_leaves_unexpected_disk_errors_as_500(creation_api
     legacy_create.assert_not_called()
 
 
-def _opening_direction(direction_id: str, title: str) -> dict[str, str]:
+def _urban_primary_trope_ids() -> list[str]:
+    return [
+        str(item["id"])
+        for item in novel_type_prompt_context(runtime_novel_type("urban"))["genre_trope_templates"]
+    ]
+
+
+def _opening_direction(direction_id: str, title: str, *, primary_trope_id: str) -> dict[str, str]:
     return {
         "id": direction_id,
         "title": title,
@@ -480,18 +488,87 @@ def _opening_direction(direction_id: str, title: str) -> dict[str, str]:
         "main_conflict": f"Conflict {direction_id}",
         "growth_path": f"Growth {direction_id}",
         "opening_promise": f"Promise {direction_id}",
+        "primary_trope_id": primary_trope_id,
     }
 
 
 def _opening_direction_payload() -> dict:
+    trope_ids = _urban_primary_trope_ids()
     return {
         "schema_version": "opening-directions/v1",
         "directions": [
-            _opening_direction("direction-1", "First direction"),
-            _opening_direction("direction-2", "Second direction"),
-            _opening_direction("direction-3", "Third direction"),
+            _opening_direction("direction-1", "First direction", primary_trope_id=trope_ids[0]),
+            _opening_direction("direction-2", "Second direction", primary_trope_id=trope_ids[1]),
+            _opening_direction("direction-3", "Third direction", primary_trope_id=trope_ids[2]),
         ],
         "selected_id": "",
+    }
+
+
+def _outline_plan_with_trope(trope_id: str, trope_beat: str) -> dict:
+    characters = [
+        ("Lead", "protagonist"),
+        ("Rival", "stage_antagonist"),
+        ("Witness", "supporting"),
+        ("Sponsor", "long_term_antagonist"),
+    ]
+    return {
+        "outline": {
+            "overall": {
+                "story": "The lead investigates a sealed record.",
+                "protagonist_goal": "Open the record.",
+                "main_conflict": "The rival controls access.",
+                "growth_path": "Earn authority through verified results.",
+                "ending_direction": "Expose the sponsor.",
+                "primary_trope_id": trope_id,
+            },
+            "arcs": [{
+                "id": "opening",
+                "title": "The sealed record",
+                "start_chapter": 1,
+                "end_chapter": 30,
+                "goal": "Obtain the first record.",
+                "obstacle": "The rival blocks the archive.",
+                "payoff": "The record becomes public.",
+                "trope_id": trope_id,
+                "end_state": "The investigation is official.",
+                "stage_antagonist": "Rival",
+                "long_term_antagonist_traces": ["The sponsor changed the index."],
+            }],
+            "chapters": [{
+                "chapter_number": number,
+                "title": f"Record {number}",
+                "goal": "Verify one fact.",
+                "obstacle": "Access remains restricted.",
+                "action": "The lead checks the archive.",
+                "turn": "A second record contradicts the first.",
+                "payoff": "One fact is verified.",
+                "ending_hook": "A witness requests a meeting.",
+                "trope_beat": trope_beat if number == 1 else None,
+                "cast": ["Lead", "Rival"],
+            } for number in range(1, 31)],
+        },
+        "characters": [{
+            "name": name,
+            "role": tier,
+            "character_tier": tier,
+            "first_appearance": 0 if tier == "long_term_antagonist" else 1,
+            "identity_profile": {
+                "age": 30,
+                "origin": "River City",
+                "current_identity": tier,
+                "occupation": "archive officer",
+            },
+            "background_profile": {},
+            "current_life_profile": {},
+            "story_drive": {
+                "immediate_goal": "Control the public record.",
+                "failure_stakes": "Lose official standing.",
+            },
+            "performance_profile": {},
+            "dialogue_examples": ["Show the record.", "Verify the timestamp."],
+            "relationship_notes": [],
+        } for name, tier in characters],
     }
 
 
@@ -594,6 +671,7 @@ def test_generate_and_select_direction_only_updates_allowed_fields(creation_api,
             "main_conflict": "Conflict direction-2",
             "growth_path": "Growth direction-2",
             "ending_direction": "Promise direction-2",
+            "primary_trope_id": _urban_primary_trope_ids()[1],
             "core_ending_chapter": 1,
             "extension_ceiling_chapter": 1,
             "current_strategy": "observe",
@@ -681,6 +759,67 @@ def test_generate_file_project_plan_passes_mode_and_trimmed_guidance(creation_ap
     assert calls[0][1:] == ("regenerate", "阶段对手要有现实利益")
 
 
+def test_outline_api_round_trips_trope_lock_fields(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Trope transport", "novel_type_id": "xuanhuan"},
+    ).json()
+    candidates = novel_type_prompt_context(runtime_novel_type("xuanhuan"))[
+        "genre_trope_templates"
+    ]
+    selected = candidates[0]
+    initial_beat = selected["beats"][0]
+    updated_beat = selected["beats"][1]
+
+    class OutlineGenerator:
+        def generate(self, brief, *, mode, guidance):
+            assert mode == "initial"
+            return _outline_plan_with_trope(selected["id"], initial_beat)
+
+    monkeypatch.setattr(
+        file_project_routes,
+        "outline_planning_generator",
+        OutlineGenerator(),
+    )
+
+    generated = client.post(
+        f"/file-projects/{project['project_id']}/outline/generate",
+        json={"mode": "initial", "guidance": ""},
+    )
+    assert generated.status_code == 200
+    generated_outline = generated.json()["outline"]
+    assert generated_outline["overall"]["primary_trope_id"] == selected["id"]
+    assert generated_outline["arcs"][0]["trope_id"] == selected["id"]
+    assert generated_outline["chapters"][0]["trope_beat"] == initial_beat
+
+    fetched = client.get(f"/file-projects/{project['project_id']}/outline")
+    assert fetched.status_code == 200
+    fetched_outline = fetched.json()
+    assert fetched_outline["overall"]["primary_trope_id"] == selected["id"]
+    assert fetched_outline["arcs"][0]["trope_id"] == selected["id"]
+    assert fetched_outline["chapters"][0]["trope_beat"] == initial_beat
+
+    updated_payload = {
+        key: value for key, value in fetched_outline.items() if key != "source"
+    }
+    updated_payload["chapters"][0]["trope_beat"] = updated_beat
+    updated = client.put(
+        f"/file-projects/{project['project_id']}/outline",
+        json=updated_payload,
+    )
+    assert updated.status_code == 200
+    assert updated.json()["overall"]["primary_trope_id"] == selected["id"]
+    assert updated.json()["arcs"][0]["trope_id"] == selected["id"]
+    assert updated.json()["chapters"][0]["trope_beat"] == updated_beat
+
+    refetched = client.get(f"/file-projects/{project['project_id']}/outline")
+    assert refetched.status_code == 200
+    assert refetched.json()["overall"]["primary_trope_id"] == selected["id"]
+    assert refetched.json()["arcs"][0]["trope_id"] == selected["id"]
+    assert refetched.json()["chapters"][0]["trope_beat"] == updated_beat
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -764,7 +903,29 @@ def test_invalid_model_output_returns_502_and_preserves_previous_candidates(crea
     monkeypatch.setattr(
         file_project_routes,
         "opening_direction_generator",
-        _FakeOpeningDirectionGenerator({"directions": [_opening_direction("only", "Only one")]}),
+        _FakeOpeningDirectionGenerator(
+            {
+                "schema_version": "opening-directions/v1",
+                "directions": [
+                    _opening_direction(
+                        "direction-1",
+                        "First direction",
+                        primary_trope_id="not-a-real-trope",
+                    ),
+                    _opening_direction(
+                        "direction-2",
+                        "Second direction",
+                        primary_trope_id=_urban_primary_trope_ids()[1],
+                    ),
+                    _opening_direction(
+                        "direction-3",
+                        "Third direction",
+                        primary_trope_id=_urban_primary_trope_ids()[2],
+                    ),
+                ],
+                "selected_id": "",
+            }
+        ),
     )
 
     response = client.post(f"/file-projects/{project['project_id']}/opening-directions")
@@ -774,7 +935,7 @@ def test_invalid_model_output_returns_502_and_preserves_previous_candidates(crea
     assert (directions_path.read_bytes(), project_path.read_bytes()) == before
 
 
-@pytest.mark.parametrize("brief_problem", ["missing", "corrupt", "invalid_novel_type"])
+@pytest.mark.parametrize("brief_problem", ["missing", "corrupt"])
 def test_invalid_local_opening_brief_returns_422_without_calling_model(
     creation_api,
     monkeypatch,
@@ -785,12 +946,8 @@ def test_invalid_local_opening_brief_returns_422_without_calling_model(
     brief_path = root / ".webnovel" / "opening_brief.json"
     if brief_problem == "missing":
         brief_path.unlink()
-    elif brief_problem == "corrupt":
-        brief_path.write_text("{not-json", encoding="utf-8")
     else:
-        brief = json.loads(brief_path.read_text(encoding="utf-8"))
-        brief["novel_type_id"] = "unknown-type"
-        brief_path.write_text(json.dumps(brief), encoding="utf-8")
+        brief_path.write_text("{not-json", encoding="utf-8")
 
     calls = {"runtime": 0, "post": 0}
 
@@ -814,9 +971,26 @@ def test_invalid_local_opening_brief_returns_422_without_calling_model(
     response = client.post(f"/file-projects/{project['project_id']}/opening-directions")
 
     assert response.status_code == 422
-    if brief_problem == "invalid_novel_type":
-        assert response.json()["detail"] == "invalid_novel_type"
     assert calls == {"runtime": 0, "post": 0}
+
+
+def test_invalid_opening_brief_type_is_ignored_when_project_has_explicit_current_type(
+    creation_api,
+    monkeypatch,
+):
+    client, _, _ = creation_api
+    project, root = _create_inspiration_project(client)
+    brief_path = root / ".webnovel" / "opening_brief.json"
+    brief = json.loads(brief_path.read_text(encoding="utf-8"))
+    brief["novel_type_id"] = "unknown-type"
+    brief_path.write_text(json.dumps(brief), encoding="utf-8")
+    generator = _FakeOpeningDirectionGenerator()
+    monkeypatch.setattr(file_project_routes, "opening_direction_generator", generator)
+
+    response = client.post(f"/file-projects/{project['project_id']}/opening-directions")
+
+    assert response.status_code == 200
+    assert generator.calls == 1
 
 
 @pytest.mark.parametrize(
