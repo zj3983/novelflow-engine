@@ -83,7 +83,7 @@ def _duplicate_line_issues(content: str) -> list[PromptAuditIssue]:
         if _MARKDOWN_HEADING_RE.fullmatch(line):
             continue
         normalized = normalize_audit_line(line)
-        if not normalized or len(normalized) < 11:
+        if not normalized or len(normalized) < 12:
             continue
         if normalized in seen:
             evidence = " ".join(line.strip().split())
@@ -127,7 +127,7 @@ def _markdown_sections(content: str) -> list[PromptAuditSection]:
         body = "".join(chunks)
         if current_title is not None:
             append_section(current_title, body)
-        elif body:
+        elif body.strip():
             append_section("开头", body)
         chunks = []
         current_title = heading.group(1)
@@ -169,7 +169,9 @@ def _conflict_issues(content: str) -> list[PromptAuditIssue]:
     issues: list[PromptAuditIssue] = []
     output_body_only = re.search(r"只输出(?:小说)?正文", content)
     without_negated_output = re.sub(
-        r"不要\s*输出\s*(?:分析报告|分析|报告|解释)", "", content
+        r"(?:不要|禁止|无需|不需要)\s*输出\s*(?:分析报告|分析|报告|解释)",
+        "",
+        content,
     )
     positive_extra_output = re.search(
         r"(?:最后输出分析报告|输出分析|输出报告|输出解释)",

@@ -232,8 +232,8 @@ def test_normalize_audit_line_removes_only_deterministic_list_syntax(line, norma
 def test_duplicate_lines_report_only_later_exact_normalized_occurrences():
     content = "\n".join(
         [
-            "1. 对话必须符合人物关系。",
-            "2. 对话必须符合人物关系。",
+            "1. 对话必须始终符合人物关系。",
+            "2. 对话必须始终符合人物关系。",
             "对话要符合当前场面的关系。",
         ]
     )
@@ -243,12 +243,31 @@ def test_duplicate_lines_report_only_later_exact_normalized_occurrences():
     duplicates = [issue for issue in result.suggestions if issue.code == "duplicate_line"]
     assert len(duplicates) == 1
     assert duplicates[0].location == "第2行"
-    assert duplicates[0].evidence == "2. 对话必须符合人物关系。"
+    assert duplicates[0].evidence == "2. 对话必须始终符合人物关系。"
     assert duplicates[0].title == "发现明确重复行"
     assert duplicates[0].suggestion == "删除或合并这条重复内容。"
     assert duplicates[0].estimated_reduction_characters == len(
-        "2. 对话必须符合人物关系。"
+        "2. 对话必须始终符合人物关系。"
     )
+
+
+def test_duplicate_line_length_boundary_uses_normalized_characters():
+    eleven_characters = "一二三四五六七八九十。"
+    twelve_characters = "一二三四五六七八九十甲。"
+    content = "\n".join(
+        [
+            eleven_characters,
+            eleven_characters,
+            twelve_characters,
+            twelve_characters,
+        ]
+    )
+
+    result = audit_prompt(mode="final_call", content=content)
+
+    duplicates = [issue for issue in result.suggestions if issue.code == "duplicate_line"]
+    assert [issue.location for issue in duplicates] == ["第4行"]
+    assert duplicates[0].evidence == twelve_characters
 
 
 def test_short_lines_and_markdown_headings_are_not_duplicate_lines():
@@ -279,6 +298,16 @@ def test_explicit_empty_markdown_section_is_reported_but_empty_opening_is_not():
         {"title": "空区块", "characters": 0, "percent": 0.0},
         {"title": "下一节", "characters": 2, "percent": 13.3},
     ]
+
+
+def test_whitespace_only_opening_is_omitted_but_explicit_empty_section_remains():
+    result = audit_prompt(
+        mode="final_call",
+        content=" \n\t\n# 空区块\n## 下一节\n正文",
+    )
+
+    assert [section.title for section in result.summary.sections] == ["空区块", "下一节"]
+    assert result.summary.sections[0].characters == 0
 
 
 def test_oversized_section_is_only_a_suggestion_and_boundaries_do_not_warn():
@@ -331,8 +360,29 @@ def test_three_mechanical_conflicts_are_must_fix_items():
     assert "没有发现明确冲突" not in result.passed_checks
 
 
-def test_negated_analysis_and_overlapping_word_ranges_do_not_conflict():
-    content = "只输出正文，不要输出分析报告。字数为1000到2000字，也可1500—2500字。"
+@pytest.mark.parametrize(
+    "content",
+    [
+        "只输出正文，不要输出分析报告",
+        "只输出正文，禁止输出报告",
+        "只输出正文，无需输出解释",
+        "只输出正文，不需要输出分析",
+    ],
+)
+def test_explicitly_negated_extra_output_does_not_conflict(content):
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert all(issue.code != "conflicting_output_format" for issue in result.must_fix)
+
+
+def test_positive_extra_output_still_conflicts():
+    result = audit_prompt(mode="final_call", content="只输出正文，最后输出分析报告")
+
+    assert [issue.code for issue in result.must_fix] == ["conflicting_output_format"]
+
+
+def test_overlapping_word_ranges_do_not_conflict():
+    content = "字数为1000到2000字，也可1500—2500字。"
 
     result = audit_prompt(mode="final_call", content=content)
 
