@@ -53,18 +53,26 @@ _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = tuple(
         reverse=True,
     )
 )
-_ECONOMIC_CONTEXT_TERMS: tuple[str, ...] = (
+_ANONYMOUS_SUBMIT_ECONOMIC_TERMS: tuple[str, ...] = (
     "裂纹狼心",
+    "物品",
+    "商品",
+    "装备",
+    "材料",
     "交易行",
+    "挂单",
     "求购",
     "收购",
+    "出售",
+    "成交",
     "游戏币",
     "虚拟资产",
     "稀有资产",
-    "担保",
+    "担保平台",
     "订单",
     "交割",
 )
+_PROMPT_CLAUSE_SEPARATOR = re.compile(r"([，。；！？!?：:\n]+)")
 
 _LEGACY_PROMPT_FLOW_TERMS: tuple[str, ...] = (
     "裂纹狼心提交鉴定后，系统给出一条求购匹配",
@@ -133,13 +141,21 @@ def opening_market_exchange_flow_lines() -> tuple[str, ...]:
     return _OPENING_MARKET_EXCHANGE_FLOW
 
 
+def _normalize_anonymous_submit_clauses(value: str) -> str:
+    parts = _PROMPT_CLAUSE_SEPARATOR.split(value)
+    for index in range(0, len(parts), 2):
+        clause = parts[index]
+        if "匿名提交" in clause and any(
+            term in clause for term in _ANONYMOUS_SUBMIT_ECONOMIC_TERMS
+        ):
+            parts[index] = clause.replace("匿名提交", "立即出售")
+    return "".join(parts)
+
+
 def _normalize_legacy_economy_prompt_text(value: str) -> str:
-    economic_context = any(term in value for term in _ECONOMIC_CONTEXT_TERMS)
-    normalized = value
+    normalized = _normalize_anonymous_submit_clauses(value)
     for legacy, current in _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS:
         normalized = normalized.replace(legacy, current)
-    if economic_context:
-        normalized = normalized.replace("匿名提交", "立即出售")
 
     inserted_flow = False
 

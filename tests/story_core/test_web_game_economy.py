@@ -148,6 +148,20 @@ def test_anonymous_submit_changes_only_in_economy_context() -> None:
     assert normalize_legacy_economy_prompt_value("匿名提交读者反馈。") == "匿名提交读者反馈。"
 
 
+def test_anonymous_submit_uses_clause_context_inside_a_mixed_long_prompt() -> None:
+    source = (
+        "担保平台处理订单。裂纹狼心选择匿名提交，匿名提交读者反馈。\n"
+        "交易行要求物品匿名提交；匿名提交编辑意见。"
+    )
+
+    normalized = normalize_legacy_economy_prompt_value(source)
+
+    assert normalized == (
+        "官方兑换渠道处理订单。裂纹狼心选择立即出售，匿名提交读者反馈。\n"
+        "交易行要求物品立即出售；匿名提交编辑意见。"
+    )
+
+
 def test_specific_replacements_do_not_leave_duplicate_or_partial_order_words() -> None:
     source = "持牌虚拟资产担保平台生成担保订单号，买家确认收购后完成担保交割。"
 
