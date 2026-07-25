@@ -36,6 +36,12 @@ _ECONOMY_DENIAL = re.compile(
     r"(?:不(?:得|再|允许|能|应|必)?|禁止|严禁|不可|无需|无须|拒绝)"
     r"[^，。；;！？!?\n]{0,8}(?:交易|卖出|兑换)"
 )
+_FLOW_PURPOSE_DENIAL = re.compile(
+    r"(?:卖出裂纹狼心|交易成交)"
+    r"(?:并非|并不(?:是)?|不是|不)(?:用于|用来|为了)(?:官方)?兑换"
+    r"|官方兑换(?:渠道)?"
+    r"(?:并非|并不(?:是)?|不是|不)(?:用于|用来|为了)(?:解决|处理)现实急账"
+)
 _NUMBERED_CHAPTER = re.compile(r"第(?:[一二三四五六七八九十百千万零〇两\d]+|[Nn])章")
 _CLAUSE_SPLIT = re.compile(r"[\n。；;]+")
 
@@ -119,21 +125,14 @@ def _ordered_new_chain(text: str) -> tuple[int, int, int] | None:
 
 def _first_chapter_range_authorized(text: str) -> bool:
     denial_matches = tuple(_ECONOMY_DENIAL.finditer(text))
-    legacy_denials = tuple(
-        match for match in denial_matches if match.group().endswith("担保交易")
-    )
     current_denials = tuple(
         match for match in denial_matches if not match.group().endswith("担保交易")
     )
     new_chain = _ordered_new_chain(text)
-    if new_chain is not None and not current_denials:
-        transaction_position = new_chain[0]
-        last_legacy_denial = max(
-            (match.end() for match in legacy_denials),
-            default=-1,
-        )
-        if transaction_position > last_legacy_denial:
-            return True
+    purpose_denial = _FLOW_PURPOSE_DENIAL.search(text)
+    # A complete replacement chain is independent of the retired legacy flow.
+    if new_chain is not None and not current_denials and purpose_denial is None:
+        return True
     # Read compatibility only. New prompt rules must never emit legacy markers.
     legacy_contract = any(marker in text for marker in _LEGACY_OPENING_MARKERS)
     return legacy_contract and not denial_matches

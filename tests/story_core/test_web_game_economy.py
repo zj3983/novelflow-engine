@@ -177,13 +177,38 @@ def test_legacy_contract_is_cancelled_by_same_chapter_legacy_denial() -> None:
     )
 
 
-def test_replacing_legacy_trade_with_new_chain_is_authorized() -> None:
+@pytest.mark.parametrize(
+    "text",
+    (
+        (
+            "第一章不再使用担保交易，改为卖出裂纹狼心，"
+            "再走官方兑换渠道解决现实急账。"
+        ),
+        (
+            "第一章卖出裂纹狼心，再走官方兑换渠道解决现实急账；"
+            "本章不再使用担保交易。"
+        ),
+    ),
+)
+def test_complete_new_chain_is_independent_of_legacy_denial(text: str) -> None:
     assert first_chapter_market_exchange_authorized(
-        {
-            "turn": (
-                "第一章不再使用担保交易，改为卖出裂纹狼心，"
-                "再走官方兑换渠道解决现实急账。"
-            )
-        },
+        {"turn": text},
+        [],
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "第一章卖出裂纹狼心，再走官方兑换不用于解决现实急账。",
+        "第一章卖出裂纹狼心，再走官方兑换并非用于解决现实急账。",
+        "第一章卖出裂纹狼心不是为了兑换，随后走官方兑换解决现实急账。",
+        "第一章卖出裂纹狼心并非为了兑换，随后走官方兑换解决现实急账。",
+        "第一章交易成交并非用于官方兑换，随后官方兑换解决现实急账。",
+    ),
+)
+def test_flow_purpose_denial_does_not_authorize_new_chain(text: str) -> None:
+    assert not first_chapter_market_exchange_authorized(
+        {"turn": text},
         [],
     )
