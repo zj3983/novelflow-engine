@@ -1,3 +1,4 @@
+import json
 from hashlib import sha256
 from time import perf_counter
 
@@ -113,6 +114,8 @@ def test_summary_dump_uses_contract_field_names_only():
         "estimated_redundant_characters": 0,
         "estimated_reduction_percent": 0.0,
         "sections": [],
+        "total_sections": 0,
+        "sections_truncated": False,
     }
     assert "duplicate_characters" not in summary
     assert "duplicate_percentage" not in summary
@@ -266,6 +269,24 @@ def test_duplicate_complete_chinese_sentence_within_one_line_is_reported():
     assert duplicates[0].estimated_reduction_characters == len("请保持节奏紧凑。")
 
 
+def test_duplicate_chinese_sentence_wrapped_in_quotes_is_reported():
+    content = "“请保持角色动机一致。”“请保持角色动机一致。”"
+
+    result = audit_prompt(mode="final_call", content=content)
+
+    duplicates = [
+        issue for issue in result.suggestions if issue.code == "duplicate_sentence"
+    ]
+    assert len(duplicates) == 1
+    assert duplicates[0].evidence == "“请保持角色动机一致。”"
+
+
+def test_short_quoted_spoken_phrases_are_not_reported_as_duplicate_sentences():
+    result = audit_prompt(mode="final_call", content="“好的。”“好的。”“明白了！”“明白了！”")
+
+    assert all(issue.code != "duplicate_sentence" for issue in result.suggestions)
+
+
 def test_duplicate_sentence_check_stays_within_a_line_and_requires_complete_chinese_sentences():
     content = "请保持节奏紧凑。\n请保持节奏紧凑。\nkeep pace. keep pace."
 
@@ -333,6 +354,48 @@ def test_whitespace_only_opening_is_omitted_but_explicit_empty_section_remains()
     assert result.summary.sections[0].characters == 0
 
 
+def test_many_markdown_sections_are_bounded_and_report_truncation_metadata():
+    section_limit = 100
+    section_title_limit = 200
+    section_count = section_limit + 50
+    content = "".join(f"# 标题{index:05d}\n" for index in range(section_count))
+
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert len(result.summary.sections) == section_limit
+    assert result.summary.total_sections == section_count
+    assert result.summary.sections_truncated is True
+    assert all(
+        len(section.title) <= section_title_limit
+        for section in result.summary.sections
+    )
+    assert len(json.dumps(result.model_dump(), ensure_ascii=False)) < 100_000
+
+
+def test_section_titles_are_bounded_without_marking_the_section_array_truncated():
+    content = "# " + "长" * 10_000 + "\n正文"
+
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert len(result.summary.sections) == 1
+    assert len(result.summary.sections[0].title) <= 200
+    assert result.summary.total_sections == 1
+    assert result.summary.sections_truncated is False
+
+
+def test_prompt_audit_summary_rejects_more_than_section_limit():
+    section = PromptAuditSection(title="section", characters=0, percent=0.0)
+
+    with pytest.raises(ValidationError):
+        prompt_audit.PromptAuditSummary(
+            characters=1,
+            lines=1,
+            sections=[section] * 101,
+            total_sections=101,
+            sections_truncated=False,
+        )
+
+
 def test_oversized_section_is_only_a_suggestion_and_boundaries_do_not_warn():
     over_characters = audit_prompt(mode="final_call", content="# 大节\n" + "x" * 12_001)
     over_percent = audit_prompt(
@@ -369,7 +432,7 @@ def test_three_mechanical_conflicts_are_must_fix_items():
     content = (
         "只输出小说正文，同时最后输出分析报告。\n"
         "采用第一人称，并且采用第三人称。\n"
-        "正文控制在1000-1200字，另要求2000至2500字。"
+        "正文控制在1000-1200字，目标字数2000至2500字。"
     )
 
     result = audit_prompt(mode="template", content=content)
@@ -442,7 +505,7 @@ def test_overlapping_word_ranges_do_not_conflict():
 def test_reversed_disjoint_word_ranges_are_normalized_before_comparison():
     result = audit_prompt(
         mode="final_call",
-        content="正文要求1200~1000字，另一处要求2500至2000字。",
+        content="正文要求1200~1000字，另一处目标字数2500至2000字。",
     )
 
     assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
@@ -452,14 +515,49 @@ def test_reversed_disjoint_word_ranges_are_normalized_before_comparison():
     "content",
     [
         "目标字数 2000 字。目标字数 5000 字。",
-        "目标字数 2000 字。另一处要求 5000-6000 字。",
-        "目标字数 5000-6000 字。另一处要求 2000 字。",
+        "目标字数 2000 字。另一处目标字数 5000-6000 字。",
+        "目标字数 5000-6000 字。另一处目标字数 2000 字。",
     ],
 )
 def test_disjoint_single_word_counts_and_ranges_conflict(content):
     result = audit_prompt(mode="final_call", content=content)
 
     assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
+
+
+def test_explicit_whole_prompt_single_word_count_conflicts_with_target_range():
+    result = audit_prompt(
+        mode="final_call",
+        content="全文 2000 字。目标字数 5000-6000 字。",
+    )
+
+    assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "本章 2000 字。控制在 5000-6000 字。",
+        "目标字数不超过2000字。全文不少于5000字。",
+    ],
+)
+def test_common_explicit_whole_prompt_word_count_phrases_conflict(content):
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "本章不少于2000字，目标字数5000-6000字。",
+        "全文不超过6000字，目标字数5000-5500字。",
+    ],
+)
+def test_compatible_whole_prompt_word_count_bounds_do_not_conflict(content):
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
 
 
 @pytest.mark.parametrize(
@@ -479,6 +577,15 @@ def test_single_word_positions_without_target_context_do_not_conflict():
     result = audit_prompt(
         mode="final_call",
         content="在第2000字埋下伏笔，在第5000字回收伏笔。",
+    )
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
+
+
+def test_requirements_at_single_word_positions_do_not_become_word_count_targets():
+    result = audit_prompt(
+        mode="final_call",
+        content="要求在第2000字埋下伏笔，要求在第5000字回收伏笔。",
     )
 
     assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)

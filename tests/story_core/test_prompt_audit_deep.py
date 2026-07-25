@@ -325,6 +325,25 @@ def test_deep_merge_preserves_global_issue_limit_and_reports_truncation():
     assert sum(item.code == "issues_truncated" for item in issues) == 1
 
 
+def test_deep_audit_accepts_bounded_local_result_from_thousands_of_headings():
+    section_count = 7_000
+    content = "".join(f"# 标题{index:05d}\n" for index in range(section_count))
+    local = local_result(content)
+    calls = []
+
+    result = DeepPromptAuditor(
+        post_json=lambda *args, **kwargs: calls.append((args, kwargs)) or response([]),
+        runtime_resolver=lambda stage: runtime(),
+        clock=lambda: 1.0,
+    ).analyze(content=content, local_result=local)
+
+    assert len(calls) == 1
+    assert len(local.summary.sections) == 100
+    assert local.summary.total_sections == section_count
+    assert local.summary.sections_truncated is True
+    assert result.summary == local.summary
+
+
 def test_markdown_fenced_json_uses_shared_parser():
     result = DeepPromptAuditor(
         post_json=lambda *args, **kwargs: response([issue()], fenced=True),

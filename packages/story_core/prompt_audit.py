@@ -22,6 +22,9 @@ LONG_PROMPT_WARNING = 40_000
 SECTION_CHARACTER_LIMIT = 12_000
 SECTION_PERCENT_LIMIT = 45
 PROMPT_AUDIT_ISSUE_LIMIT = 100
+PROMPT_AUDIT_SECTION_LIMIT = 100
+PROMPT_AUDIT_SECTION_TITLE_LIMIT = 200
+_WORD_COUNT_UPPER_BOUND = 1_000_000
 
 _MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 _LIST_PREFIX_RE = re.compile(
@@ -30,8 +33,16 @@ _LIST_PREFIX_RE = re.compile(
 _WORD_COUNT_RE = re.compile(
     r"(?:(\d{2,6})\s*[-—~到至]\s*(\d{2,6})|(\d{2,6}))\s*字"
 )
-_WORD_COUNT_SINGLE_CONTEXT_RE = re.compile(r"目标字数|字数|要求|控制")
-_CHINESE_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？])")
+_WORD_COUNT_CONTEXT_RE = re.compile(
+    r"(?:全文|全篇|本章|正文|篇幅|目标字数|字数|控制在|限定在|保持在|"
+    r"不少于|不低于|至少|不超过|不高于|至多|最多|初稿|终稿)"
+    r"(?:\s*(?:字数|篇幅|长度|为|是|要求|需|应|应为|约|大约|可在|"
+    r"控制在|限定在|保持在|不少于|不低于|至少|不超过|不高于|至多|最多))*\s*$"
+)
+_WORD_COUNT_LOWER_BOUND_RE = re.compile(r"(?:不少于|不低于|至少)\s*$")
+_WORD_COUNT_UPPER_BOUND_RE = re.compile(r"(?:不超过|不高于|至多|最多)\s*$")
+_CHINESE_SENTENCE_END_RE = re.compile(r"([。！？](?:[”’」』》】])?)")
+_CHINESE_QUOTE_CHARACTERS = "“”‘’「」『』《》【】"
 _OUTPUT_NEGATION_PREFIX_PATTERN = r"(?:不要|禁止|无需|不需要|不能|请勿|不得)"
 _OUTPUT_REQUIREMENT_TARGET_PATTERN = (
     r"(?:最后\s*输出\s*分析报告|输出\s*(?:分析报告|分析|报告|解释))"
@@ -59,7 +70,7 @@ class _StrictPromptAuditModel(BaseModel):
 
 
 class PromptAuditSection(_StrictPromptAuditModel):
-    title: str
+    title: str = Field(max_length=PROMPT_AUDIT_SECTION_TITLE_LIMIT)
     characters: int = Field(ge=0)
     percent: float = Field(ge=0, le=100)
 
@@ -69,7 +80,12 @@ class PromptAuditSummary(_StrictPromptAuditModel):
     lines: int = Field(ge=0)
     estimated_redundant_characters: int = Field(default=0, ge=0)
     estimated_reduction_percent: float = Field(default=0.0, ge=0, le=100)
-    sections: list[PromptAuditSection] = Field(default_factory=list)
+    sections: list[PromptAuditSection] = Field(
+        default_factory=list,
+        max_length=PROMPT_AUDIT_SECTION_LIMIT,
+    )
+    total_sections: int = Field(default=0, ge=0)
+    sections_truncated: bool = False
 
 
 class PromptAuditIssue(_StrictPromptAuditModel):
@@ -185,14 +201,15 @@ def _duplicate_sentence_issues(content: str) -> list[PromptAuditIssue]:
             continue
         seen_lines.add(normalized_line)
         seen_sentences: set[str] = set()
-        for raw_sentence in _CHINESE_SENTENCE_SPLIT_RE.split(line):
-            if not raw_sentence.endswith(("。", "！", "？")):
-                continue
+        sentence_parts = _CHINESE_SENTENCE_END_RE.split(line)
+        for index in range(0, len(sentence_parts) - 1, 2):
+            raw_sentence = sentence_parts[index] + sentence_parts[index + 1]
             sentence = " ".join(raw_sentence.strip().split())
             chinese_characters = sum("\u4e00" <= char <= "\u9fff" for char in sentence)
             if chinese_characters < 6:
                 continue
-            if sentence in seen_sentences:
+            normalized_sentence = sentence.strip(_CHINESE_QUOTE_CHARACTERS)
+            if normalized_sentence in seen_sentences:
                 issues.append(
                     PromptAuditIssue(
                         code="duplicate_sentence",
@@ -204,7 +221,7 @@ def _duplicate_sentence_issues(content: str) -> list[PromptAuditIssue]:
                     )
                 )
             else:
-                seen_sentences.add(sentence)
+                seen_sentences.add(normalized_sentence)
     return issues
 
 
@@ -216,6 +233,8 @@ def _markdown_sections(content: str) -> list[PromptAuditSection]:
 
     def append_section(title: str, body: str) -> None:
         characters = len(body)
+        if len(title) > PROMPT_AUDIT_SECTION_TITLE_LIMIT:
+            title = title[: PROMPT_AUDIT_SECTION_TITLE_LIMIT - 3] + "..."
         sections.append(
             PromptAuditSection(
                 title=title,
@@ -286,15 +305,21 @@ def _word_count_ranges_in_segment(
     first_included_match: re.Match[str] | None = None
     previous_included_match: re.Match[str] | None = None
     for match in matches:
+        context = segment[max(0, match.start() - 24) : match.start()]
+        continues_alternative = (
+            previous_included_match is not None
+            and "或" in segment[previous_included_match.end() : match.start()]
+        )
+        if not _WORD_COUNT_CONTEXT_RE.search(context) and not continues_alternative:
+            continue
         if match.group(3) is not None:
-            context = segment[max(0, match.start() - 24) : match.start()]
-            continues_alternative = (
-                previous_included_match is not None
-                and "或" in segment[previous_included_match.end() : match.start()]
-            )
-            if not _WORD_COUNT_SINGLE_CONTEXT_RE.search(context) and not continues_alternative:
-                continue
-            low = high = int(match.group(3))
+            value = int(match.group(3))
+            if _WORD_COUNT_LOWER_BOUND_RE.search(context):
+                low, high = value, _WORD_COUNT_UPPER_BOUND
+            elif _WORD_COUNT_UPPER_BOUND_RE.search(context):
+                low, high = 0, value
+            else:
+                low = high = value
         else:
             low = min(int(match.group(1)), int(match.group(2)))
             high = max(int(match.group(1)), int(match.group(2)))
@@ -530,8 +555,10 @@ def audit_prompt(
     if not duplicate_issues:
         passed_checks.append("没有发现明确重复行")
 
-    sections = _markdown_sections(content)
-    oversized_section_issues = _oversized_section_issues(sections, len(content))
+    all_sections = _markdown_sections(content)
+    total_sections = len(all_sections)
+    sections = all_sections[:PROMPT_AUDIT_SECTION_LIMIT]
+    oversized_section_issues = _oversized_section_issues(all_sections, len(content))
     suggestions.extend(oversized_section_issues)
     if not oversized_section_issues:
         passed_checks.append("没有发现过大区块")
@@ -563,6 +590,8 @@ def audit_prompt(
                 redundant_characters * 100 / len(content), 1
             ),
             sections=sections,
+            total_sections=total_sections,
+            sections_truncated=total_sections > len(sections),
         ),
         must_fix=limited_must_fix,
         suggestions=limited_suggestions,
