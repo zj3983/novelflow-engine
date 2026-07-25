@@ -179,6 +179,57 @@ def test_scheduled_trope_beat_rejects_negated_or_planned_mentions():
     assert landed["diagnostics"]["trope_beat_covered"] is True
 
 
+def test_scheduled_trope_beat_handles_english_and_symbol_beats_conservatively():
+    plan = _trope_plan(current_beat="unlock VIP-3 badge")
+
+    unrelated = review_plot_spine_completion(
+        "Lin checks the empty hallway and closes the app without doing anything.",
+        plan,
+    )
+    landed = review_plot_spine_completion(
+        "Lin chooses the public challenge and unlock VIP-3 badge before the crowd can react.",
+        plan,
+    )
+
+    assert unrelated["pass"] is False
+    assert unrelated["diagnostics"]["trope_beat_covered"] is False
+    assert unrelated["diagnostics"]["trope_beat_coverage"] < 0.25
+    assert landed["pass"] is True
+    assert landed["diagnostics"]["trope_beat_covered"] is True
+
+
+def test_scheduled_trope_beat_rejects_question_pending_and_split_mentions():
+    questioned = review_plot_spine_completion(
+        "林会在雨夜接下挑战吗？旁人只是猜测他能赢得信任。",
+        _trope_plan(),
+    )
+    pending = review_plot_spine_completion(
+        "林雨夜尚未接下挑战，只把赢得信任且不暴露底牌写进明天的计划。",
+        _trope_plan(),
+    )
+    split = review_plot_spine_completion(
+        "林在雨夜盯着屋檐。另一边有人接下挑战。后来众人谈起赢得信任且不暴露底牌。",
+        _trope_plan(),
+    )
+
+    assert questioned["pass"] is False
+    assert questioned["diagnostics"]["trope_beat_covered"] is False
+    assert pending["pass"] is False
+    assert pending["diagnostics"]["trope_beat_covered"] is False
+    assert split["pass"] is False
+    assert split["diagnostics"]["trope_beat_covered"] is False
+
+
+def test_scheduled_trope_beat_allows_later_positive_action_after_rejection():
+    review = review_plot_spine_completion(
+        "林起初拒绝邀请，没有接下挑战。雨声变急后，他当场在雨夜接下挑战，赢得信任且不暴露底牌。",
+        _trope_plan(),
+    )
+
+    assert review["pass"] is True
+    assert review["diagnostics"]["trope_beat_covered"] is True
+
+
 def test_empty_trope_beat_is_not_forced_but_avoid_guidance_is_reported():
     body = "林听见邀请，克制地守住这一阶段的承诺。"
 

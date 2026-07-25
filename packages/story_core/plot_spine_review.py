@@ -59,9 +59,12 @@ _STOP_TERMS = {
 }
 
 _CJK_RUN = re.compile(r"[\u4e00-\u9fff]{2,}")
-_TROPE_NEGATION_TERMS = ("没有", "没能", "未能", "并未", "不曾", "拒绝", "不肯", "不愿", "没接", "未接")
-_TROPE_PLAN_ONLY_TERMS = ("打算", "计划", "准备", "想要", "以后", "明天再", "下一章", "心里盘算", "只是在心里")
+_LATIN_SYMBOL_RUN = re.compile(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*")
+_TROPE_NEGATION_TERMS = ("没有", "没能", "未能", "尚未", "并未", "不曾", "拒绝", "不肯", "不愿", "没接", "未接", "not", "never", "refuse", "refused")
+_TROPE_QUESTION_TERMS = ("吗", "呢", "？", "?")
+_TROPE_PLAN_ONLY_TERMS = ("打算", "计划", "准备", "想要", "以后", "明天再", "下一章", "心里盘算", "只是在心里", "plan", "plans", "planned", "intend", "intends")
 _TROPE_ACTION_CONFIRM_TERMS = ("当场", "立刻", "马上", "直接", "终于", "已经", "真的", "随后", "于是")
+_TROPE_OTHER_ACTOR_TERMS = ("别人", "旁人", "有人", "其他人", "另一边")
 
 
 def _terms(text: str) -> set[str]:
@@ -86,40 +89,81 @@ def _coverage(body: str, text: str) -> float:
     return hits / len(terms)
 
 
+def _trope_terms(text: str) -> set[str]:
+    terms = set(_terms(text))
+    for match in _LATIN_SYMBOL_RUN.findall(str(text or "")):
+        token = match.lower()
+        terms.add(token)
+        for piece in re.split(r"[-_]", token):
+            if piece:
+                terms.add(piece)
+    return {term for term in terms if term}
+
+
+def _trope_term_coverage(text: str, terms: set[str]) -> float:
+    if not terms:
+        return 0.0
+    lowered = str(text or "").lower()
+    hits = sum(1 for term in terms if term in lowered)
+    return hits / len(terms)
+
+
+def _normalized_trope_phrase(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").lower()).strip()
+
+
 def _trope_action_anchors(text: str) -> list[str]:
     anchors: list[str] = []
     for run in _CJK_RUN.findall(str(text or "")):
         if len(run) >= 4:
             anchors.append(run)
             anchors.extend(run[index : index + 4] for index in range(len(run) - 3))
+    latin_phrase = _normalized_trope_phrase(text)
+    if latin_phrase and _LATIN_SYMBOL_RUN.search(latin_phrase):
+        anchors.append(latin_phrase)
     return list(dict.fromkeys(anchors))
 
 
+def _trope_sentence_is_invalid(sentence: str) -> bool:
+    lowered = sentence.lower()
+    if any(term in sentence for term in _TROPE_QUESTION_TERMS):
+        return True
+    if any(term in lowered for term in _TROPE_NEGATION_TERMS):
+        return True
+    if any(term in sentence for term in _TROPE_OTHER_ACTOR_TERMS):
+        return True
+    if any(term in lowered for term in _TROPE_PLAN_ONLY_TERMS) and not any(
+        term in sentence for term in _TROPE_ACTION_CONFIRM_TERMS
+    ):
+        return True
+    return False
+
+
+def _trope_sentence_has_anchor(sentence: str, anchors: list[str]) -> bool:
+    lowered = _normalized_trope_phrase(sentence)
+    return any((anchor in sentence) or (anchor in lowered) for anchor in anchors)
+
+
 def _trope_beat_coverage(body: str, beat: str) -> tuple[bool, float]:
-    ratio = _coverage(body, beat)
-    if ratio < 0.25:
-        return False, ratio
+    terms = _trope_terms(beat)
+    if not terms:
+        return False, 0.0
 
     anchors = _trope_action_anchors(beat)
-    sentences = [part for part in re.split(r"[。！？!?；;\n]", str(body or "")) if part.strip()]
+    best_ratio = 0.0
+    sentences = [part.strip() for part in re.findall(r"[^。！？!?；;\n]+[。！？!?；;]?", str(body or "")) if part.strip()]
     for sentence in sentences:
-        if _coverage(sentence, beat) < 0.25:
+        sentence_ratio = _trope_term_coverage(sentence, terms)
+        best_ratio = max(best_ratio, sentence_ratio)
+        if sentence_ratio < 0.25:
             continue
-        if "拒绝邀请" in sentence:
-            return False, ratio
-        for anchor in anchors:
-            start = sentence.find(anchor)
-            if start < 0:
-                continue
-            local_prefix = sentence[max(0, start - 8) : start]
-            if any(term in local_prefix for term in _TROPE_NEGATION_TERMS):
-                return False, ratio
-        if any(term in sentence for term in _TROPE_PLAN_ONLY_TERMS) and not any(
-            term in sentence for term in _TROPE_ACTION_CONFIRM_TERMS
-        ):
-            return False, ratio
+        if _trope_sentence_is_invalid(sentence):
+            continue
+        if not _trope_sentence_has_anchor(sentence, anchors):
+            continue
+        return True, sentence_ratio
 
-    return True, ratio
+    return False, best_ratio
 
 
 def _compact_trope_avoid(value: Any) -> list[str]:
