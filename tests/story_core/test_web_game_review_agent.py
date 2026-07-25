@@ -177,6 +177,14 @@ def test_web_game_review_does_not_let_earlier_exchange_hide_direct_market_settle
             "甲玩家的第一张求购单资金冻结。\n\n该订单成交。\n\n同一订单等待买家确认。",
             "仍在等待买家再次确认",
         ),
+        (
+            "拍卖物成交，游戏币到账。\n\n款项由交易行支付，随后直接进入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "夜烬看见甲玩家的A单求购资金已经冻结。\n\n甲玩家的A单求购成交。\n\n甲玩家的A单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
     ],
 )
 def test_web_game_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
@@ -216,6 +224,7 @@ def test_web_game_review_detects_explicit_economy_boundaries_in_three_paragraph_
         "甲玩家的第一张求购单资金冻结。\n\n甲玩家的第二张订单成交。\n\n甲玩家的第三张订单等待买家确认。",
         "夜烬的求购单资金冻结。\n\n洛婶的订单成交。\n\n艾伦的订单等待买家确认。",
         "夜烬的求购单资金冻结。\n\n商人的普通订单成交。\n\n守卫等待买家确认。",
+        "夜烬有一张求购单，资金已经冻结。\n\n洛婶有一张订单显示成交。\n\n艾伦还在等待买家确认。",
     ],
 )
 def test_web_game_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):

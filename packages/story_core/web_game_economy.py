@@ -189,9 +189,10 @@ _MARKET_MONEY_TO_REALITY_PATTERN = re.compile(
     r"(?:直接\s*)?(?:转入|打进|进入|到账)[^。！？!?；;\r\n]{0,8}现实账户"
 )
 _MONEY_SOURCE_REBINDING = re.compile(
-    r"^(?:是|来自)[^。！？!?；;\r\n]{1,18}"
-    r"|^由[^，,。！？!?；;\r\n]{1,16}(?:支付|归还|发放)"
+    r"^(?:(?:是|来自)(?P<description>[^。！？!?；;\r\n]{1,18})"
+    r"|由(?P<actor>[^，,。！？!?；;\r\n]{1,16})(?:支付|归还|发放))"
 )
+_MARKET_PAYMENT_ACTOR_PATTERN = re.compile(r"(?:交易行|拍卖行|求购平台|交易平台|拍卖平台)")
 _INDEPENDENT_SETTLEMENT_SOURCE_TERMS = (
     "工资",
     "薪水",
@@ -272,12 +273,20 @@ _FUNDED_ORDER_PATTERN = re.compile(
     r"求购单(?:里|里的|中|中的|其中|其中的)?"
     r"[^，。！？!?；;]{0,8}?(?:资金|游戏币)(?:已经|已)?(?:被)?冻结(?:了)?"
 )
-_ORDER_OWNER_WITH_NOUN_PATTERN = re.compile(
-    r"(?P<owner>[一-龥A-Za-z0-9·]{1,12}(?:玩家)?)的"
+_ORDER_POSSESSIVE_OWNER_PATTERN = re.compile(
+    r"(?:^|[，、：；])\s*(?P<owner>[一-龥A-Za-z0-9·]{1,6})的"
     r"(?:(?:第[一二三四五六七八九十百\d]+(?:条|张))?"
     r"(?:普通)?(?:求购单|订单)|[A-Z]单(?:求购)?)"
 )
 _ORDER_PLAYER_OWNER_PATTERN = re.compile(r"(?P<owner>[甲乙丙丁戊己庚辛壬癸A-Z])玩家")
+_ORDER_HOLDER_OWNER_PATTERN = re.compile(
+    r"(?:^|[，、：；])\s*(?P<owner>[一-龥A-Za-z0-9·]{1,6})"
+    r"(?=有一张(?:求购单|订单))"
+)
+_ORDER_WAITING_OWNER_PATTERN = re.compile(
+    r"(?:^|[，、：；])\s*(?P<owner>[一-龥A-Za-z0-9·]{1,3})"
+    r"(?=(?:(?:还在|仍在|正在)?等待)买家(?:再次)?确认)"
+)
 _ORDER_LABEL_PATTERNS = (
     (
         "number",
@@ -349,7 +358,11 @@ def _has_independent_settlement_source(text: str) -> bool:
 
 def _has_market_money_reference(text: str) -> bool:
     for match in _MARKET_MONEY_TO_REALITY_PATTERN.finditer(text):
-        if _MONEY_SOURCE_REBINDING.search(match.group("link").strip()) is None:
+        rebinding = _MONEY_SOURCE_REBINDING.search(match.group("link").strip())
+        if rebinding is None:
+            return True
+        source = rebinding.group("actor") or rebinding.group("description") or ""
+        if _MARKET_PAYMENT_ACTOR_PATTERN.search(source):
             return True
     return False
 
@@ -520,21 +533,23 @@ def _has_reappraised_identified_item(units: tuple[_EconomyUnit, ...]) -> bool:
 
 
 def _order_identity(text: str) -> tuple[str | None, str | None, bool]:
-    owner_match = _ORDER_OWNER_WITH_NOUN_PATTERN.search(text)
-    if owner_match is None:
-        owner_match = _ORDER_PLAYER_OWNER_PATTERN.search(text)
-    owner = owner_match.group("owner") if owner_match else None
-    if owner and owner.endswith("玩家"):
-        owner = owner.removesuffix("玩家")
-    if owner in {"该", "这", "同一"}:
-        owner = None
-
     label = None
     for kind, pattern in _ORDER_LABEL_PATTERNS:
         match = pattern.search(text)
         if match:
             label = f"{kind}:{match.group('label')}"
             break
+
+    owner_match = _ORDER_PLAYER_OWNER_PATTERN.search(text)
+    if owner_match is None:
+        owner_match = _ORDER_POSSESSIVE_OWNER_PATTERN.search(text)
+    if owner_match is None:
+        owner_match = _ORDER_HOLDER_OWNER_PATTERN.search(text)
+    if owner_match is None:
+        owner_match = _ORDER_WAITING_OWNER_PATTERN.search(text)
+    owner = owner_match.group("owner") if owner_match else None
+    if owner in {"该", "这", "同一"}:
+        owner = None
     return owner, label, _ORDER_REFERENCE_PATTERN.search(text) is not None
 
 
