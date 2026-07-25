@@ -3,12 +3,15 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  auditPrompt,
   deleteProjectPromptTemplate,
   fetchProjectPromptTemplates,
   saveGlobalPromptTemplate,
   saveProjectPromptTemplate,
   type PromptTemplateEntry,
+  type PromptAuditResult,
 } from "../../lib/api";
+import { PromptAuditPanel } from "./PromptAuditPanel";
 
 const SOURCE_LABELS: Record<PromptTemplateEntry["source"], string> = {
   global_default: "全局默认",
@@ -24,6 +27,9 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
   const [saving, setSaving] = useState<"project" | "global" | "restore" | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [auditResult, setAuditResult] = useState<PromptAuditResult | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState("");
 
   const selected = useMemo(
     () => templates.find((template) => template.key === selectedKey) ?? templates[0] ?? null,
@@ -57,6 +63,27 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
     setContent(template.content);
     setMessage("");
     setError("");
+    setAuditResult(null);
+    setAuditError("");
+  }
+
+  async function runAudit() {
+    if (!selected) return;
+    setAuditLoading(true);
+    setAuditError("");
+    setAuditResult(null);
+    try {
+      setAuditResult(await auditPrompt({
+        mode: "template",
+        content,
+        template_key: selected.key,
+        required_variables: selected.required_variables,
+      }));
+    } catch (reason) {
+      setAuditError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setAuditLoading(false);
+    }
   }
 
   async function save(scope: "project" | "global") {
@@ -143,20 +170,26 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
             必需变量：{selected.required_variables.map((name) => `{{${name}}}`).join("、") || "无"}
           </p>
           <div className="ws-actions">
-            <button className="ws-btn ws-btn--primary" type="button" disabled={saving !== null} onClick={() => void save("project")}>
+            <button className="ws-btn ws-btn--primary" type="button" disabled={saving !== null || auditLoading} onClick={() => void save("project")}>
               {saving === "project" ? "保存中..." : "保存为项目覆盖"}
             </button>
-            <button className="ws-btn" type="button" disabled={saving !== null} onClick={() => void save("global")}>
+            <button className="ws-btn" type="button" disabled={saving !== null || auditLoading} onClick={() => void save("global")}>
               {saving === "global" ? "保存中..." : "更新全局模板"}
             </button>
             {selected.source === "project_override" ? (
-              <button className="ws-btn" type="button" disabled={saving !== null} onClick={() => void restoreGlobal()}>
+              <button className="ws-btn" type="button" disabled={saving !== null || auditLoading} onClick={() => void restoreGlobal()}>
                 {saving === "restore" ? "恢复中..." : "恢复全局模板"}
               </button>
             ) : null}
+            <button className="ws-btn" type="button" disabled={saving !== null || auditLoading} onClick={() => void runAudit()}>
+              {auditLoading ? "检查中..." : "检查提示词"}
+            </button>
           </div>
           {message ? <p className="ws-inline-success" role="status">{message}</p> : null}
           {error ? <p className="ws-inline-error" role="alert">保存失败：{error}</p> : null}
+          {auditLoading ? <p className="ws-card__hint" role="status">提示词检查中...</p> : null}
+          {auditError ? <p className="ws-inline-error" role="alert">检查失败：{auditError}</p> : null}
+          {auditResult ? <PromptAuditPanel result={auditResult} stale={false} /> : null}
         </section>
       ) : (
         <p className="ws-card__hint">没有可编辑的提示词模板。</p>

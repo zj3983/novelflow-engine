@@ -1131,6 +1131,50 @@ export type PromptTemplatesResponse = {
   templates: PromptTemplateEntry[];
 };
 
+export type PromptAuditMode = "template" | "final_call";
+
+export type PromptAuditIssue = {
+  code: string;
+  title: string;
+  evidence: string;
+  location: string;
+  suggestion: string;
+  estimated_reduction_characters: number;
+};
+
+export type PromptAuditResult = {
+  schema_version: "prompt-audit/v1";
+  mode: PromptAuditMode;
+  content_sha256: string;
+  summary: {
+    characters: number;
+    lines: number;
+    estimated_redundant_characters: number;
+    estimated_reduction_percent: number;
+    sections: Array<{
+      title: string;
+      characters: number;
+      percent: number;
+    }>;
+  };
+  must_fix: PromptAuditIssue[];
+  suggestions: PromptAuditIssue[];
+  passed_checks: string[];
+  runtime?: {
+    provider: string;
+    model: string;
+    elapsed_seconds: number;
+    prompt_characters: number;
+  };
+};
+
+export type PromptAuditRequest = {
+  mode: PromptAuditMode;
+  content: string;
+  template_key?: string;
+  required_variables?: string[];
+};
+
 export type PromptContextEntry = PromptPreviewEntry & {
   available: boolean;
   reason?: string;
@@ -2593,6 +2637,25 @@ export async function fetchProjectPromptPreview(
 
 export async function fetchGlobalPromptTemplates(): Promise<PromptTemplatesResponse> {
   return (await tryFetchJson(`${apiBase()}/prompt-templates`, { method: "GET" })) as PromptTemplatesResponse;
+}
+
+export async function auditPrompt(payload: PromptAuditRequest): Promise<PromptAuditResult> {
+  return (await tryFetchJson(`${apiBase()}/prompt-audit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })) as PromptAuditResult;
+}
+
+export async function deepAuditPrompt(
+  payload: PromptAuditRequest,
+  localResult: PromptAuditResult,
+): Promise<PromptAuditResult> {
+  return (await tryFetchJson(`${apiBase()}/prompt-audit/deep`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, local_result: localResult }),
+  }, 360000)) as PromptAuditResult;
 }
 
 export async function saveGlobalPromptTemplate(
