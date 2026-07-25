@@ -2966,6 +2966,7 @@ class FileProjectStore:
             raise ValueError("invalid_novel_type")
         return validated_brief.novel_type_id
 
+    @_with_project_update_lock
     def generate_opening_directions(
         self, generator: Any, *, guidance: str = ""
     ) -> dict[str, Any]:
@@ -2975,19 +2976,16 @@ class FileProjectStore:
         brief = OpeningBrief.model_validate(self.opening_brief())
         try:
             current_type_id = self._current_opening_direction_novel_type_id(brief)
-        except ValueError as exc:
-            if isinstance(exc, ValueError) and str(exc) == "invalid_novel_type":
-                raise ValueError("opening_direction_generation_failed") from exc
-            raise
-        effective_brief = brief.model_copy(update={"novel_type_id": current_type_id})
-        trope_candidates = self._opening_direction_trope_candidates(effective_brief)
-        try:
+            effective_brief = brief.model_copy(update={"novel_type_id": current_type_id})
+            trope_candidates = self._opening_direction_trope_candidates(effective_brief)
             result = generator.generate(effective_brief, guidance=guidance.strip())
             directions = validate_opening_direction_set_primary_tropes(
                 OpeningDirectionSet.model_validate(result),
                 trope_candidates,
             )
-        except (TypeError, ValueError) as exc:
+        except Exception as exc:
+            if isinstance(exc, ValueError) and str(exc) == "invalid_novel_type":
+                raise ValueError("opening_direction_generation_failed") from exc
             if isinstance(exc, ValueError) and str(exc) == "opening_direction_generation_failed":
                 raise
             raise ValueError("opening_direction_generation_failed") from exc
@@ -3000,6 +2998,7 @@ class FileProjectStore:
         )
         return self.opening_setup()
 
+    @_with_project_update_lock
     def select_opening_direction(self, direction_id: str) -> dict[str, Any]:
         payload = self.opening_directions()
         if payload is None:

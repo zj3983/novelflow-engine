@@ -1,6 +1,7 @@
 import json
 import os
 import inspect
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -767,3 +768,139 @@ def test_store_rejects_fake_generator_with_unknown_primary_trope_without_overwri
         )
 
     assert directions_path.read_bytes() == before
+
+
+def test_generate_opening_directions_holds_project_lock_across_model_call(tmp_path):
+    store = make_opening_store(tmp_path)
+    store.update_project({"world_blueprint": {"genre_plugin_ids": ["xuanhuan"]}})
+    other_store = FileProjectStore(store.root)
+    urban_ids = set(_primary_trope_ids("urban"))
+    xuanhuan_only_trope_id = next(
+        trope_id for trope_id in _primary_trope_ids("xuanhuan") if trope_id not in urban_ids
+    )
+    generator_started = threading.Event()
+    release_generator = threading.Event()
+    update_finished = threading.Event()
+    errors: list[BaseException] = []
+    calls = []
+
+    class BlockingGenerator:
+        def generate(self, brief, *, guidance=""):
+            calls.append(brief.novel_type_id)
+            generator_started.set()
+            assert release_generator.wait(timeout=1), "generator was not released"
+            return {
+                "schema_version": "opening-directions/v1",
+                "directions": [
+                    direction("direction-1", primary_trope_id=xuanhuan_only_trope_id),
+                    direction("direction-2", primary_trope_id=xuanhuan_only_trope_id),
+                    direction("direction-3", primary_trope_id=xuanhuan_only_trope_id),
+                ],
+                "selected_id": "",
+            }
+
+    def run_generation():
+        try:
+            store.generate_opening_directions(BlockingGenerator())
+        except BaseException as exc:
+            errors.append(exc)
+
+    def run_update():
+        try:
+            other_store.update_project({"world_blueprint": {"genre_plugin_ids": ["urban"]}})
+            update_finished.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    generation_thread = threading.Thread(target=run_generation)
+    update_thread = threading.Thread(target=run_update)
+    generation_thread.start()
+    assert generator_started.wait(timeout=1), "generator never started"
+    update_thread.start()
+
+    assert not update_finished.wait(timeout=0.2)
+
+    release_generator.set()
+    generation_thread.join(timeout=2)
+    update_thread.join(timeout=2)
+
+    assert errors == []
+    saved = json.loads((store.webnovel_dir / "opening_directions.json").read_text(encoding="utf-8"))
+    project = store.project()
+    assert calls == ["xuanhuan"]
+    assert project["world_blueprint"]["genre_plugin_ids"] == ["urban"]
+    assert [item["primary_trope_id"] for item in saved["directions"]] == [
+        xuanhuan_only_trope_id,
+        xuanhuan_only_trope_id,
+        xuanhuan_only_trope_id,
+    ]
+
+
+def test_select_opening_direction_is_atomic_across_store_instances(tmp_path):
+    store_a = make_opening_store(tmp_path)
+    store_b = FileProjectStore(store_a.root)
+    directions_path = store_a.webnovel_dir / "opening_directions.json"
+    directions_path.write_text(json.dumps(direction_set(), indent=2), encoding="utf-8")
+    read_barrier = threading.Barrier(2)
+    start_barrier = threading.Barrier(3)
+    results: list[tuple[str, str]] = []
+    errors: list[BaseException] = []
+
+    def synchronize_opening_read(store):
+        original = store.opening_directions
+
+        def read_directions():
+            payload = original()
+            try:
+                read_barrier.wait(timeout=0.25)
+            except threading.BrokenBarrierError:
+                pass
+            return payload
+
+        store.opening_directions = read_directions
+
+    synchronize_opening_read(store_a)
+    synchronize_opening_read(store_b)
+
+    def select(store, direction_id):
+        try:
+            start_barrier.wait()
+            store.select_opening_direction(direction_id)
+            results.append(("ok", direction_id))
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=select, args=(store_a, "direction-1")),
+        threading.Thread(target=select, args=(store_b, "direction-2")),
+    ]
+    for thread in threads:
+        thread.start()
+    start_barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert str(errors[0]) == "direction_already_selected"
+    persisted = json.loads(directions_path.read_text(encoding="utf-8"))
+    assert persisted["selected_id"] == results[0][1]
+
+
+def test_store_wraps_candidate_resolution_failure_without_writes(tmp_path, monkeypatch):
+    store = make_opening_store(tmp_path)
+    project_path = store.webnovel_dir / "project.json"
+    before = project_path.read_bytes()
+
+    monkeypatch.setattr(
+        file_project_store_module,
+        "novel_type_prompt_context",
+        lambda _: (_ for _ in ()).throw(RuntimeError("context unavailable")),
+    )
+
+    with pytest.raises(ValueError, match="^opening_direction_generation_failed$"):
+        store.generate_opening_directions(StaticDirectionGenerator(direction_set()))
+
+    assert project_path.read_bytes() == before
+    assert not (store.webnovel_dir / "opening_directions.json").exists()
