@@ -5,7 +5,12 @@ from typing import Any
 
 from packages.story_core.genre_types.base import GenrePlugin
 from packages.story_core.game_level_gap import level_gap_rule_text
-from packages.story_core.web_game_economy import appraisal_rules, exchange_rules, market_rules
+from packages.story_core.web_game_economy import (
+    appraisal_rules,
+    exchange_rules,
+    first_chapter_market_exchange_authorized,
+    market_rules,
+)
 
 
 @dataclass(frozen=True)
@@ -57,7 +62,7 @@ GAME_WEBNOVEL_LANGUAGE_CARDS = (
         card_id="trade",
         trigger_terms=("交易", "交易行", "拍卖行", "上架", "挂单", "出售", "卖出", "立即出售", "求购", "一口价", "成交", "手续费", "游戏币到账", "寄售"),
         preferred=("交易行", "求购单", "挂单", "立即出售", "一口价", "成交", "手续费", "游戏币到账"),
-        avoid=("平台封存", "现实结算", "字段权限", "交易流转"),
+        avoid=("平台封存", "字段权限", "交易流转"),
         example="写“卖家按一口价挂单，等待买家购买；若接受现有求购单价格，则点立即出售并直接成交，游戏币到账”。",
     ),
     GameLanguageCard(
@@ -99,14 +104,11 @@ _IGNORED_LANGUAGE_PLAN_KEYS = (
     "ban",
 )
 
-_LEGACY_TRADE_PLAN_MARKERS = ("担保交易", "匿名交割", "第一笔到账")
-
-
 _LANGUAGE_CARD_PRIORITY_MARKERS = {
     "login_server": ("entry_login", "登录建号", "创建角色"),
     "combat": ("small_verification", "低级怪小验证", "怪物面板"),
     "loot_inventory": ("异常掉落", "掉落异常", "战利品"),
-    "trade": ("交易行出售", "挂单成交", "游戏币到账", *_LEGACY_TRADE_PLAN_MARKERS),
+    "trade": ("交易行出售", "挂单成交", "游戏币到账"),
     "currency_exchange": ("官方兑换", "兑换渠道", "兑换价", "现实账户"),
     "group_dungeon": ("副本开荒", "进入副本", "团队副本"),
     "guild_social": ("公会招募", "固定团招募", "公会频道"),
@@ -145,9 +147,11 @@ def select_game_language_cards(
 
     scored_card_ids = {card.card_id for _, _, card in scored}
     market_exchange_pair = {"trade", "currency_exchange"}
-    if market_exchange_pair.issubset(scored_card_ids) or any(
-        marker in text for marker in _LEGACY_TRADE_PLAN_MARKERS
-    ):
+    legacy_opening_authorized = first_chapter_market_exchange_authorized(
+        plan if isinstance(plan, dict) else {"turn": text},
+        [],
+    )
+    if market_exchange_pair.issubset(scored_card_ids) or legacy_opening_authorized:
         cards_by_id = {card.card_id: card for card in GAME_WEBNOVEL_LANGUAGE_CARDS}
         selected.extend((cards_by_id["trade"], cards_by_id["currency_exchange"]))
         return selected[:limit]

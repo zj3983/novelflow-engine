@@ -5,6 +5,7 @@ from packages.story_core.web_game_economy import (
     exchange_rules,
     first_chapter_market_exchange_authorized,
     market_rules,
+    opening_market_exchange_flow_lines,
 )
 
 
@@ -31,7 +32,8 @@ def test_exchange_rules_define_a_separate_official_channel() -> None:
         marker in text
         for marker in ("官方兑换渠道", "游戏钱包", "兑换价", "额度", "手续费", "预计到账", "现实账户")
     )
-    assert "交易行不能直接现实结算" in text
+    assert "现实款项只能通过独立官方兑换渠道进入现实账户" in text
+    assert "现实结算" not in text
     assert "鉴定" not in text
 
 
@@ -60,6 +62,32 @@ def test_new_opening_contract_authorizes_market_then_exchange() -> None:
         {"turn": "第一章在交易行卖出裂纹狼心，再走官方兑换渠道解决现实急账。"},
         [],
     )
+
+
+def test_opening_market_exchange_flow_lines_define_the_four_ordered_steps() -> None:
+    lines = opening_market_exchange_flow_lines()
+
+    assert len(lines) == 4
+    assert "已冻结游戏币的现有求购单" in lines[0]
+    assert "立即出售已识别裂纹狼心" in lines[0]
+    assert "游戏币进入游戏钱包" in lines[0]
+    assert "离开交易行" in lines[1] and "独立官方兑换页面" in lines[1]
+    assert all(term in lines[2] for term in ("兑换价", "额度", "手续费", "预计到账"))
+    assert "现实账户到账后处理急账" in lines[3]
+
+    rendered = "\n".join(lines)
+    forbidden = (
+        "担保交易",
+        "匿名交割",
+        "封存交割",
+        "提交鉴定",
+        "鉴定中",
+        "平台验货",
+        "买家再次确认",
+        "交易行直接现实结算",
+        "\u4eba\u6c11\u5e01",
+    )
+    assert all(term not in rendered for term in forbidden)
 
 
 def test_implementation_plan_wording_does_not_require_market_name() -> None:

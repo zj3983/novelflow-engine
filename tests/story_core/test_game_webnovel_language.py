@@ -1,3 +1,6 @@
+import inspect
+
+from packages.story_core.genre_types import game_webnovel
 from packages.story_core.genre_types.game_webnovel import GAME_WEBNOVEL, select_game_language_cards
 from packages.story_core.web_game_economy import appraisal_rules, exchange_rules, market_rules
 
@@ -46,7 +49,7 @@ def test_trade_card_uses_only_in_game_market_language():
         marker in card.preferred
         for marker in ("交易行", "求购单", "挂单", "立即出售", "一口价", "成交", "手续费", "游戏币到账")
     )
-    assert all(marker not in text for marker in ("官方兑换", "兑换价", "现实账户", "鉴定", "验货"))
+    assert all(marker not in text for marker in ("官方兑换", "兑换价", "现实账户", "现实结算", "鉴定", "验货"))
     listing_path, instant_sale_path = card.example.split("；")
     assert all(marker in listing_path for marker in ("一口价", "挂单", "等待买家"))
     assert "求购" not in listing_path
@@ -141,21 +144,14 @@ def test_complex_opening_prioritizes_market_exchange_pair():
     assert ids == ["base", "trade", "currency_exchange"]
 
 
-def test_legacy_trade_markers_select_current_market_exchange_pair():
-    for marker in ("担保交易", "匿名交割", "第一笔到账"):
-        cards = select_game_language_cards({"chapter_goal": f"完成{marker}"})
-        ids = [card.card_id for card in cards]
+def test_legacy_input_markers_live_only_in_the_economy_compatibility_module():
+    source = inspect.getsource(game_webnovel)
+    legacy_markers = (
+        "\u62c5\u4fdd\u4ea4\u6613",
+        "\u533f\u540d\u4ea4\u5272",
+    )
 
-        assert ids == ["base", "trade", "currency_exchange"]
-        card_text = "\n".join(
-            text
-            for card in cards
-            for text in (*card.preferred, *card.avoid, card.example)
-        )
-        assert all(
-            old_marker not in card_text
-            for old_marker in ("担保交易", "匿名交割", "第一笔到账", "验货")
-        )
+    assert all(marker not in source for marker in legacy_markers)
 
 
 def test_economy_rules_separate_market_appraisal_and_official_exchange():

@@ -65,7 +65,7 @@ def test_compression_accepts_small_lower_boundary_tolerance():
 def test_locked_outline_amounts_are_repaired_from_structured_anchor():
     body = (
         "苏叶看着账户余额7.40元，戴上头盔。\n\n"
-        "担保订单成交价305.20元，平台随后发来到账通知。\n\n"
+        "交易行求购单成交后，游戏币进入钱包。\n\n"
         "付清房租、宽带和信用卡最低还款后，账户余额100.00元。"
     )
     anchor = {
@@ -77,8 +77,8 @@ def test_locked_outline_amounts_are_repaired_from_structured_anchor():
     repaired = _repair_outline_amount_anchors(body, anchor)
 
     assert "余额27.60元" in repaired
-    assert "成交价305.20元" in repaired
-    assert "1764.00元到账" in repaired
+    assert "游戏币进入钱包" in repaired
+    assert "现实账户收到1764.00元" in repaired
     assert "余额312.60元" in repaired
     assert "7.40元" not in repaired
     assert "100.00元" not in repaired

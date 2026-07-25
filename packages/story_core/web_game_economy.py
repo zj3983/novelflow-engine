@@ -14,12 +14,19 @@ _MARKET_RULES: tuple[str, ...] = (
 _EXCHANGE_RULES: tuple[str, ...] = (
     "官方兑换渠道独立于交易行，只兑换已进入游戏钱包的游戏币。",
     "确认兑换价、额度、手续费和预计到账后，款项进入现实账户。",
-    "交易行不能直接现实结算。",
+    "现实款项只能通过独立官方兑换渠道进入现实账户。",
 )
 
 _APPRAISAL_RULES: tuple[str, ...] = (
     "仅未鉴定物品可交给鉴定师。",
     "已识别物品不重复鉴定。",
+)
+
+_OPENING_MARKET_EXCHANGE_FLOW: tuple[str, ...] = (
+    "在交易行选择已冻结游戏币的现有求购单，立即出售已识别裂纹狼心，游戏币进入游戏钱包。",
+    "离开交易行，进入独立官方兑换页面。",
+    "确认兑换价、额度、手续费和预计到账。",
+    "现实账户到账后处理急账。",
 )
 
 _LEGACY_OPENING_MARKERS: tuple[str, ...] = (
@@ -59,6 +66,12 @@ def exchange_rules() -> tuple[str, ...]:
 
 def appraisal_rules() -> tuple[str, ...]:
     return _APPRAISAL_RULES
+
+
+def opening_market_exchange_flow_lines() -> tuple[str, ...]:
+    """Return the canonical writer-facing opening flow in scene order."""
+
+    return _OPENING_MARKET_EXCHANGE_FLOW
 
 
 def _text_entries(value: Any) -> tuple[str, ...]:

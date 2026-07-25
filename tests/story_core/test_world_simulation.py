@@ -56,14 +56,14 @@ def test_world_events_capture_visibility_and_state_delta_for_game_opening():
     assert next_step_event.state_delta.get("economy", {}).get("inventory_hint") == "保留低级材料"
 
 
-def test_world_events_preserve_authorized_first_chapter_trade_payoff():
+def test_world_events_preserve_authorized_first_chapter_market_exchange_payoff():
     story = StoryState(
         story_id="s-world-events-authorized-trade",
         outline="主角在网游开服首日验证隐藏爆率。",
         genre="网游",
         style="白描",
         author_constraints=[
-            "第一章必须通过裂纹狼心担保交易解决现实急账，并写清到账结果。",
+            "第一章卖出裂纹狼心，再走官方兑换渠道解决现实急账，并写清到账结果。",
         ],
         characters=[CharacterState(name="苏叶", role="主角", game_id="夜烬")],
     )
@@ -76,8 +76,11 @@ def test_world_events_preserve_authorized_first_chapter_trade_payoff():
         [next_step_event.action, next_step_event.cause, *next_step_event.consequences]
     )
 
-    assert "担保交易" in surface
-    assert "到账" in surface
+    assert "已冻结游戏币的现有求购单" in surface
+    assert "游戏钱包" in surface
+    assert "官方兑换" in surface
+    assert "现实账户到账" in surface
+    assert "担保交易" not in surface
     assert "不提前展开交易线" not in surface
     assert "本章不发生寄售" not in surface
     assert "公会追查" in surface

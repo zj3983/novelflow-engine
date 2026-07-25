@@ -21,20 +21,23 @@ def test_taskbook_uses_one_selected_style_prompt():
     ]
 
 
-def test_trade_authorized_first_chapter_taskbook_does_not_reintroduce_old_game_or_trade_ban():
+def test_trade_authorized_first_chapter_taskbook_uses_market_then_exchange():
     taskbook = build_writing_taskbook(
         chapter_number=1,
         genre="网游",
         plan={
             "governance": {"chapter_intent": {"first_chapter_trade_authorized": True}},
-            "event_plan": {"turn": "第一章完成裂纹狼心担保交易并付清急账。"},
+            "event_plan": {"turn": "第一章卖出裂纹狼心，再走官方兑换渠道并付清急账。"},
         },
     )
 
     rendered = str(taskbook)
     assert "天启之门" not in rendered
     assert "第一章只完成登录、低级验证和领先预期" not in rendered
-    assert "担保交易到账并处理现实急账" in rendered
+    assert "已冻结游戏币的现有求购单" in rendered
+    assert "独立官方兑换页面" in rendered
+    assert "现实账户到账后处理急账" in rendered
+    assert "担保交易" not in rendered
 
 
 def test_first_chapter_taskbook_keeps_only_three_useful_scenes():

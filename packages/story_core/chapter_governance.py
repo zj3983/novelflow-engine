@@ -3,9 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
-from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.novel_type_catalog import normalize_novel_type_id
+from packages.story_core.web_game_economy import (
+    first_chapter_market_exchange_authorized,
+    opening_market_exchange_flow_lines,
+)
 
 
 def _as_list(value: Any, *, max_items: int = 8, item_chars: int = 120) -> list[str]:
@@ -105,10 +108,15 @@ def _chapter_intent(
             "第一章禁止把低级材料写成扰乱市场",
         ]
         if chapter_one_trade:
-            must_include.append("担保交易到账并处理现实急账")
-            ending_change = "夜烬完成第一笔担保交易，处理现实急账，并确认千倍爆率能带来实际收益。"
+            must_include.extend(
+                [
+                    "交易行游戏币成交 -> 官方兑换 -> 现实账户到账 -> 处理急账",
+                    *opening_market_exchange_flow_lines(),
+                ]
+            )
+            ending_change = "夜烬先在交易行获得游戏币，再通过官方兑换让现实账户到账并处理急账，确认千倍爆率能带来实际收益。"
         else:
-            must_avoid[:0] = ["交易行实际成交", "到账/手续费结算"]
+            must_avoid[:0] = ["交易行实际成交", "官方兑换", "现实账户到账"]
             ending_change = "夜烬确认异常存在，并意识到千倍爆率能让自己在任务、装备或路线进度上领先一步。"
     elif xuanhuan_context and chapter_number == 1:
         must_include = [
@@ -288,7 +296,8 @@ DIAGNOSTIC_TERMS = (
 
 FIRST_CHAPTER_REQUIRED_BANS = (
     "交易行实际成交",
-    "到账/手续费结算",
+    "官方兑换",
+    "现实账户到账",
     "赵胖子正面登场",
     "公会正面追查",
 )
@@ -355,7 +364,7 @@ def review_chapter_governance(governance: dict[str, Any]) -> dict[str, Any]:
         required_bans = FIRST_CHAPTER_REQUIRED_BANS
         if bool(intent.get("first_chapter_trade_authorized")):
             required_bans = tuple(
-                ban for ban in required_bans if ban not in {"交易行实际成交", "到账/手续费结算"}
+                ban for ban in required_bans if ban not in {"交易行实际成交", "官方兑换", "现实账户到账"}
             )
         missing = [ban for ban in required_bans if not any(ban in item for item in must_avoid)]
         if missing:
@@ -394,7 +403,7 @@ def build_chapter_governance(story: Any, bundle: Any | None = None, *, chapter_n
     game_context = _is_game_context(story)
     xuanhuan_context = (not game_context) and _is_xuanhuan_context(story)
     xianxia_context = (not game_context) and _is_xianxia_context(story)
-    chapter_one_trade = target_chapter == 1 and first_chapter_trade_authorized(
+    chapter_one_trade = target_chapter == 1 and first_chapter_market_exchange_authorized(
         _event_plan(bundle),
         list(getattr(story, "world_facts", []) or []),
     )

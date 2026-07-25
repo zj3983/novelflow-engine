@@ -598,18 +598,21 @@ def test_web_game_first_chapter_whole_body_prompt_has_plain_four_beat_contract()
     assert prompt.index("整章顺序") < prompt.index("## 本章事实")
 
 
-def test_trade_authorized_first_chapter_prompt_uses_the_actual_five_step_order():
+def test_trade_authorized_first_chapter_prompt_uses_market_then_exchange_order():
     story = StoryState(story_id="s-trade-order", outline="网游开服后匿名处理稀有材料。", genre="网游", style="白描")
     prompt = StoryOrchestrator()._body_prompt(
         story,
         1,
         {
             "governance": {"chapter_intent": {"first_chapter_trade_authorized": True}},
-            "event_plan": {"chapter_title": "第一笔到账", "turn": "担保交易到账并付清急账"},
+            "event_plan": {"chapter_title": "第一笔到账", "turn": "卖出裂纹狼心，再走官方兑换渠道并付清急账"},
         },
     )
 
-    assert "现实压力 -> 登录建号 -> 低级验证 -> 匿名交割与急账处理 -> 下一步" in prompt
+    assert "交易行游戏币成交 -> 官方兑换 -> 现实账户到账 -> 处理急账" in prompt
+    assert "已冻结游戏币的现有求购单" in prompt
+    assert "独立官方兑换页面" in prompt
+    assert "担保交易" not in prompt
     assert "第一章只完成开服现场、建号、低级验证和下一步决定" not in prompt
 
 

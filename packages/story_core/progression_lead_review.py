@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from packages.story_core.chapter_scope import first_chapter_trade_authorized
+from packages.story_core.web_game_economy import first_chapter_market_exchange_authorized
 
 
 CORE_SIGNAL_TERMS = (
@@ -86,7 +86,7 @@ FIRST_CHAPTER_TRADE_CLOSURE_TERMS = (
     "钱袋里多了",
     "手续费",
     "提现",
-    "换算人民币",
+    "现实币换算",
 )
 
 CONCRETE_PAYOFF_TERMS = (
@@ -224,7 +224,7 @@ def review_progression_lead(
 
     event_plan = event_plan if isinstance(event_plan, dict) else {}
     world_facts = [str(item) for item in (world_facts or [])]
-    chapter_one_trade_payoff = first_chapter_trade_authorized(event_plan, world_facts)
+    chapter_one_trade_payoff = first_chapter_market_exchange_authorized(event_plan, world_facts)
     context = "\n".join([body, str(event_plan), "\n".join(world_facts)])
     is_game = _has_any(context, ("网游", "游戏", "VRMMO", "天启之门", "爆率", "混沌之种", "交易行", "职业"))
     issues: list[str] = []

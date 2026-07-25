@@ -321,21 +321,21 @@ def test_chapter_seed_preserves_regeneration_fast_path_flags():
     assert seed["simulation_variant"]["skip_expansion"] is True
 
 
-def test_chapter_seed_allows_authorized_first_chapter_trade_payoff():
+def test_chapter_seed_allows_authorized_first_chapter_market_exchange_payoff():
     story = StoryState(
         story_id="s-seed-authorized-trade",
         outline="主角在网游开服首日验证隐藏爆率。",
         genre="网游",
         style="白描",
         author_constraints=[
-            "第一章必须通过裂纹狼心担保交易解决现实急账，并写清到账结果。",
+            "第一章卖出裂纹狼心，再走官方兑换渠道解决现实急账，并写清到账结果。",
         ],
         outline_context={
             "overall": {"story": "苏叶以最后27.60元进入游戏。"},
             "chapter": {
                 "chapter_number": 1,
                 "title": "灰狼坡的第一笔到账",
-                "payoff": "担保交易到账1764.00元，现实余额变为312.60元。",
+                "payoff": "官方兑换后现实账户到账1764.00元，现实余额变为312.60元。",
             },
         },
     )
@@ -345,7 +345,9 @@ def test_chapter_seed_allows_authorized_first_chapter_trade_payoff():
 
     assert "不能立刻解决现实债务" not in surface
     assert "不展开实际寄售、成交、到账" not in surface
-    assert "担保交易" in surface
+    assert "已冻结游戏币的现有求购单" in surface
+    assert "独立官方兑换页面" in surface
+    assert "担保交易" not in surface
     assert "现实急账" in surface
     assert "不要自行编造分项金额" in surface
     assert seed["outline_anchor"]["opening_balance"] == "27.60元"
@@ -693,17 +695,18 @@ def test_chapter_seed_carries_longform_constraints_separately():
 
 
 def test_review_splits_world_state_patch_plan_from_prose_issues():
+    forbidden_currency_name = "\u4eba\u6c11\u5e01"
     body = (
         "《天启之门》开服后，夜烬把低级狼皮匿名上架交易行。"
         "白袍公会只看了一笔交易，就立刻锁定他的坐标和现实身份。"
-        "他又按1金币=100人民币计算收益，确认今天能还房租。"
+        f"他又按1金币=100{forbidden_currency_name}计算收益，确认今天能还房租。"
     ) * 40
 
     review = _review_chapter_body(
         1,
         body,
         {"world_reactions": ["公会外围开始注意。"]},
-        ["没有明确设定前，不得把金币直接换算成人民币。"],
+        [f"没有明确设定前，不得把金币直接换算成{forbidden_currency_name}。"],
     )
 
     world_review = review["world_state_review"]

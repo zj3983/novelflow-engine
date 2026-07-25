@@ -19,10 +19,13 @@ from packages.story_core.chapter_governance import build_chapter_governance, gov
 from packages.story_core.chapter_planning import build_outline_chapter_plan
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.chapter_plot_contract import build_chapter_plot_contract
-from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.craft import is_game_story
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.genre_types.game_webnovel import select_game_language_cards
+from packages.story_core.web_game_economy import (
+    first_chapter_market_exchange_authorized,
+    opening_market_exchange_flow_lines,
+)
 from packages.story_core.generation_progress import report_generation_progress
 from packages.story_core.http_retry import RetryConfig, post_json_with_retry
 from packages.story_core.memory import (
@@ -100,6 +103,7 @@ from packages.story_core.review_report import format_review_report
 from packages.story_core.scene_contract_repair import build_scene_contract_repair_plan
 
 
+_FORBIDDEN_REAL_CURRENCY_NAME = "\u4eba\u6c11\u5e01"
 VALID_CADENCES = {"urgent", "measured", "breathing"}
 MIN_CHAPTER_CHARS = 4200
 MAX_CHAPTER_CHARS = 5500
@@ -212,7 +216,7 @@ def _repair_outline_amount_anchors(body: str, anchor: Any) -> str:
             label = arrival_match.group(1)
             repaired = repaired[: arrival_match.start()] + f"{label}{arrival}" + repaired[arrival_match.end() :]
         elif arrival not in repaired:
-            repaired = f"{repaired.rstrip()}\n\n担保交易完成，{arrival}到账。"
+            repaired = f"{repaired.rstrip()}\n\n官方兑换完成，现实账户收到{arrival}。"
     return repaired
 
 
@@ -3146,7 +3150,7 @@ def _review_chapter_body(
     facts_text = "\n".join(world_facts or [])
     plan_text = json.dumps(event_plan, ensure_ascii=False)
     game_context = is_game_genre("\n".join([body, facts_text, plan_text]))
-    chapter_one_trade_payoff = first_chapter_trade_authorized(event_plan, world_facts)
+    chapter_one_trade_payoff = first_chapter_market_exchange_authorized(event_plan, world_facts)
     simulation_plan = simulation_plan or {}
     min_chapter_chars = _chapter_review_min_chars(simulation_plan)
     issues: list[str] = []
@@ -3187,7 +3191,7 @@ def _review_chapter_body(
             scores["continuity"] = min(scores["continuity"], 4)
             issues.append(f"大纲金额不一致：正文必须保留明确到账金额{expected_text}。")
             revision_plan.append(
-                f"把担保交易的净到账金额改为{expected_text}，并同步核对支付急账后的现实余额；不要自行改价或手续费。"
+                f"把官方兑换后的现实账户到账金额改为{expected_text}，并同步核对支付急账后的现实余额；不要自行改价或手续费。"
             )
         opening_matches = re.findall(r"最后\s*(\d+(?:\.\d{1,2})?)\s*元", anchor_text)
         if opening_matches and not any(f"{value}元" in body[:1200] for value in opening_matches):
@@ -3285,15 +3289,16 @@ def _review_chapter_body(
 
     forbids_fixed_exchange_rate = "不得写死" in facts_text and "汇率" in facts_text
     has_explicit_exchange_rate = not forbids_fixed_exchange_rate and any(
-        token in facts_text for token in ("稳定汇率", "金币=人民币", "金币兑人民币")
+        token in facts_text
+        for token in ("稳定汇率", "金币=现实货币", "金币兑现实货币", f"金币={_FORBIDDEN_REAL_CURRENCY_NAME}", f"金币兑{_FORBIDDEN_REAL_CURRENCY_NAME}")
     )
     invented_exchange_rate = re.search(
-        r"(?:1|一)\s*(?:枚)?金币\s*(?:=|约等于|等于|能换|可以换|折合)\s*\d+(?:\.\d+)?\s*(?:元|人民币|RMB)",
+        rf"(?:1|一)\s*(?:枚)?金币\s*(?:=|约等于|等于|能换|可以换|折合)\s*\d+(?:\.\d+)?\s*(?:元|{_FORBIDDEN_REAL_CURRENCY_NAME}|RMB)",
         body,
     )
     if invented_exchange_rate and not has_explicit_exchange_rate:
         scores["genre_rules"] = min(scores["genre_rules"], 5)
-        issues.append("章节写死了金币与人民币汇率，但世界档案没有明确官方兑换或黑市行情。")
+        issues.append("章节写死了游戏币与现实货币的汇率，但世界档案没有明确官方兑换行情。")
         revision_plan.append("删除固定现实汇率，改写为开服期行情未稳、商人询价、游戏内铜币/银币/金币价格或市场猜测。")
 
     for match in re.finditer(r"(\d+)\s*铜币[（(]\s*(?:(\d+)\s*金)?\s*(?:(\d+)\s*银)?\s*(?:(\d+)\s*铜)?\s*[）)]", body):
@@ -5021,7 +5026,7 @@ def _build_world_state_review(issues: list[str], revision_plan: list[str]) -> di
 
     for issue in issues:
         text = str(issue)
-        if any(token in text for token in ("汇率", "人民币", "金币", "银币", "铜币", "价格", "材料", "交易行", "市场", "手续费")):
+        if any(token in text for token in ("汇率", _FORBIDDEN_REAL_CURRENCY_NAME, "金币", "银币", "铜币", "价格", "材料", "交易行", "市场", "手续费")):
             add(
                 "economy",
                 text,
@@ -6343,7 +6348,7 @@ class StoryOrchestrator:
         scene_cards = _compact_first_chapter_scene_cards(
             scene_cards,
             chapter_number=chapter_number,
-            trade_authorized=first_chapter_trade_authorized(
+            trade_authorized=first_chapter_market_exchange_authorized(
                 world_facts=[*working_story.world_facts, *working_story.author_constraints],
             ),
         )
@@ -6522,12 +6527,12 @@ class StoryOrchestrator:
         body = _repair_outline_amount_anchors(body, chapter_seed.get("outline_anchor"))
 
         if _should_expand_chapter(body, writer_plan):
-            allow_trade_payoff = chapter_number == 1 and first_chapter_trade_authorized(
+            allow_trade_payoff = chapter_number == 1 and first_chapter_market_exchange_authorized(
                 event_plan,
                 _review_context_facts(story),
             )
             expansion_scope = (
-                "第一章按大纲补足匿名担保交易、现实到账和急账处理，不新增公会追查或论坛扩散。"
+                "第一章按大纲补足以下顺序：" + " ".join(opening_market_exchange_flow_lines()) + " 不新增公会追查或论坛扩散。"
                 if allow_trade_payoff
                 else "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。"
             )
@@ -6738,7 +6743,7 @@ class StoryOrchestrator:
                 reason="超字数时压缩无损细节，保留主线和关键钩子",
                 inputs={"chapter_number": chapter_number, "current_chars": _chapter_char_count(body)},
             )
-            allow_trade_payoff = chapter_number == 1 and first_chapter_trade_authorized(
+            allow_trade_payoff = chapter_number == 1 and first_chapter_market_exchange_authorized(
                 event_plan,
                 _review_context_facts(story),
             )
@@ -6753,7 +6758,9 @@ class StoryOrchestrator:
                 else ""
             )
             chapter_one_scope = (
-                "第一章必须原样保留角色面板、怪物面板、千倍爆率、现实职业/技能来源、见习冒险者（未转职）、裂纹狼心担保交易、现实到账和付清急账；不要新增游戏内任务提交、修理或买药。"
+                "第一章必须原样保留角色面板、怪物面板、千倍爆率、现实职业/技能来源、见习冒险者（未转职），并按以下顺序完成："
+                + " ".join(opening_market_exchange_flow_lines())
+                + " 不要新增游戏内任务提交、修理或买药。"
                 + (f" 以下金额必须原样保留，不得改写、换算或删除：{locked_amounts}。" if locked_amounts else "")
                 if allow_trade_payoff
                 else "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。"

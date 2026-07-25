@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import quote
 
 from packages.story_core.chapter_direction import build_chapter_direction_options
-from packages.story_core.chapter_scope import first_chapter_trade_authorized
+from packages.story_core.web_game_economy import first_chapter_market_exchange_authorized
 from packages.story_core.character_portraits import complete_character_portrait as complete_portrait
 from packages.story_core.character_profiles import (
     merge_character_profile,
@@ -4398,7 +4398,7 @@ class FileProjectStore:
                 variant_payload.setdefault("axes", ["千倍爆率转化为任务/装备/技能/路线领先"])
                 variant_payload.setdefault(
                     "avoid",
-                    ["公开炫耀清道夫委托", "市场玩家盯盘", "提现换算人民币", "公会追查", "把材料账本写成第一章公开高潮"],
+                    ["公开炫耀清道夫委托", "市场玩家盯盘", "擅自走官方兑换", "公会追查", "把材料账本写成第一章公开高潮"],
                 )
                 variant_payload["skip_expansion"] = False
         variant_payload.setdefault("skip_expansion", False)
@@ -4416,7 +4416,7 @@ class FileProjectStore:
             chapter_number,
         )
         story_payload["author_constraints"] = direction_payload["author_constraints"]
-        if chapter_number == 1 and first_chapter_trade_authorized(
+        if chapter_number == 1 and first_chapter_market_exchange_authorized(
             world_facts=direction_payload["author_constraints"],
         ):
             stale_trade_lesson_terms = (

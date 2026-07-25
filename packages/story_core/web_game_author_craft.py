@@ -3,8 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
-from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.writing_taskbook import writer_facing_text
+from packages.story_core.web_game_economy import (
+    first_chapter_market_exchange_authorized,
+    opening_market_exchange_flow_lines,
+)
 
 
 def build_web_game_author_craft(chapter_number: int, *, chapter_goal: str = "") -> dict[str, Any]:
@@ -18,7 +21,7 @@ def build_web_game_author_craft(chapter_number: int, *, chapter_goal: str = "") 
 
     early = chapter_number <= 3
     boundary_focus = chapter_number == 1 or any(token in chapter_goal for token in ("边界", "验证", "试探", "boundary"))
-    trade_authorized = chapter_number == 1 and first_chapter_trade_authorized({"turn": chapter_goal}, [])
+    trade_authorized = chapter_number == 1 and first_chapter_market_exchange_authorized({"turn": chapter_goal}, [])
     return {
         "schema_version": "web-game-author-craft/v1",
         "lineage": [
@@ -60,7 +63,7 @@ def build_web_game_author_craft(chapter_number: int, *, chapter_goal: str = "") 
         "boundary_chapter_contract": {
             "enabled": boundary_focus,
             "pleasure": (
-                "第一章先试清楚异常，再按大纲让匿名担保交易到账；爽点来自异常第一次解决现实问题。"
+                "第一章先试清楚异常，再按大纲完成：" + " ".join(opening_market_exchange_flow_lines()) + " 爽点来自异常第一次解决现实问题。"
                 if trade_authorized
                 else "第一章的爽点不是到账，而是试清楚系统认什么、不认什么。"
             ),
@@ -73,7 +76,7 @@ def build_web_game_author_craft(chapter_number: int, *, chapter_goal: str = "") 
             "must_not_drift_to": (
                 ["论坛或公会追查"]
                 if trade_authorized
-                else ["实际寄售", "成交到账", "手续费扣款", "人民币换算", "论坛或公会追查"]
+                else ["交易行实际成交", "官方兑换", "现实账户到账", "论坛或公会追查"]
             ),
         },
     }
@@ -201,7 +204,7 @@ def build_web_game_director_card(
     event_plan = event_plan if isinstance(event_plan, dict) else {}
     goal = chapter_goal or str(simulation_plan.get("chapter_goal") or event_plan.get("turn") or event_plan.get("next_focus") or "")
     boundary_focus = chapter_number == 1 or any(token in goal for token in ("边界", "验证", "试探", "boundary"))
-    trade_authorized = chapter_number == 1 and first_chapter_trade_authorized(event_plan, [goal])
+    trade_authorized = chapter_number == 1 and first_chapter_market_exchange_authorized(event_plan, [goal])
     visible_actions = compact_list(
         [
             str(item.get("action") if isinstance(item, dict) else item)
@@ -221,6 +224,7 @@ def build_web_game_director_card(
         ),
         "scene_formula": "现实压力 -> 试探动作 -> 即时反馈 -> 资源代价 -> 半个答案 -> 更大问题",
         "boundary_focus": boundary_focus,
+        "opening_market_exchange_flow": list(opening_market_exchange_flow_lines()) if trade_authorized else [],
         "visible_actions": visible_actions,
         "reaction_ladder": _reaction_ladder(chapter_number, boundary_focus),
         "fact_locks": fact_locks,
@@ -255,6 +259,9 @@ def format_web_game_director_card(card: dict[str, Any] | None) -> str:
     rules = compact_list([_plain_writer_phrase(str(item)) for item in (card.get("write_rules") or [])], max_items=4, item_chars=80)
     if rules:
         lines.append("写法提醒：" + "；".join(rules))
+    opening_flow = compact_list(card.get("opening_market_exchange_flow") or [], max_items=4, item_chars=100)
+    if opening_flow:
+        lines.append("第一章交易与兑换顺序：" + " ".join(opening_flow))
     bans = compact_list(card.get("boundary_chapter_bans") or [], max_items=8, item_chars=20)
     if bans:
         lines.append("第一章先放后面：材料换钱、市场玩家盯上主角、公共频道扩散、玩家势力追过来")
