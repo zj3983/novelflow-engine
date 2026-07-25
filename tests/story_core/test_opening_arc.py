@@ -4,7 +4,7 @@ from apps.api.storage import _project_world_facts, _sync_project_character_profi
 from packages.story_core.models import CharacterState, NovelProject, StoryState
 from packages.story_core.orchestrator import _normalize_event_plan, _review_chapter_body, _story_snapshot
 from packages.story_core.web_game_economy import exchange_rules, market_rules
-from packages.story_core.world_enrichment import _build_prompt, _merge_enrichment
+from packages.story_core.world_enrichment import _build_prompt, _merge_enrichment, _plugin_metadata
 
 
 def test_world_enrichment_adds_game_golden_three_chapters():
@@ -66,6 +66,62 @@ def test_default_game_world_economy_flow_reuses_unified_boundaries():
     assert resource_flow[: len(boundaries)] == boundaries
     assert "现实变现只能通过后续玩家行情逐渐形成" not in active_text
     assert forbidden_currency not in active_text
+
+
+def test_game_economy_boundaries_survive_saturated_model_output():
+    model_resource_flow = [f"模型资源流{i}" for i in range(10)]
+    model_economy_rules = [f"模型经济规则{i}" for i in range(12)]
+    project = NovelProject(
+        project_id="p-economy-saturated",
+        title="Economy Saturated",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "living_world": {"economy": {"resource_flow": ["旧资源流"]}},
+            "economy_rules": ["旧经济规则"],
+        },
+    )
+    parsed = {
+        "world_blueprint": {
+            "living_world": {"economy": {"resource_flow": model_resource_flow}},
+            "economy_rules": model_economy_rules,
+        }
+    }
+
+    enriched = _merge_enrichment(project, parsed)
+    resource_flow = enriched.world_blueprint["living_world"]["economy"]["resource_flow"]
+    economy_rules = enriched.world_blueprint["economy_rules"]
+    boundaries = [*market_rules(), *exchange_rules()]
+    _, plugin_rulebook = _plugin_metadata(project)
+
+    assert resource_flow == [*boundaries, *model_resource_flow[: 10 - len(boundaries)]]
+    assert economy_rules == plugin_rulebook["economy_rules"][:12]
+    assert all(rule in economy_rules[:9] for rule in boundaries)
+
+
+def test_non_game_economy_merge_keeps_model_then_old_data_priority():
+    project = NovelProject(
+        project_id="p-urban-economy-priority",
+        title="Urban Economy",
+        world_blueprint={
+            "genre_plugin_ids": ["urban"],
+            "living_world": {"economy": {"resource_flow": ["旧资源流"]}},
+            "economy_rules": ["旧经济规则"],
+        },
+    )
+    parsed = {
+        "world_blueprint": {
+            "living_world": {"economy": {"resource_flow": ["模型资源流"]}},
+            "economy_rules": ["模型经济规则"],
+        }
+    }
+
+    enriched = _merge_enrichment(project, parsed)
+
+    assert enriched.world_blueprint["living_world"]["economy"]["resource_flow"][:2] == [
+        "模型资源流",
+        "旧资源流",
+    ]
+    assert enriched.world_blueprint["economy_rules"][:2] == ["模型经济规则", "旧经济规则"]
 
 
 def test_project_world_facts_prioritize_opening_arc():

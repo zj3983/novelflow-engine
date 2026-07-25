@@ -231,6 +231,15 @@ def _merge_living_world(project: NovelProject, incoming_world: dict[str, Any], c
     incoming = _as_dict(incoming_world.get("living_world"))
     current = _as_dict(current_world.get("living_world"))
     defaults = _default_living_world(project, genre_plugins)
+    incoming_resource_flow = _as_dict(incoming.get("economy")).get("resource_flow")
+    current_resource_flow = _as_dict(current.get("economy")).get("resource_flow")
+    default_resource_flow = _as_dict(defaults.get("economy")).get("resource_flow")
+    plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
+    resource_flow_sources = (
+        ([*market_rules(), *exchange_rules()], incoming_resource_flow, current_resource_flow, default_resource_flow)
+        if "game_webnovel" in plugin_ids
+        else (incoming_resource_flow, current_resource_flow, default_resource_flow)
+    )
     return {
         "daily_routines": _merge_string_lists(
             incoming.get("daily_routines"),
@@ -241,9 +250,7 @@ def _merge_living_world(project: NovelProject, incoming_world: dict[str, Any], c
         ),
         "economy": {
             "resource_flow": _merge_string_lists(
-                _as_dict(incoming.get("economy")).get("resource_flow"),
-                _as_dict(current.get("economy")).get("resource_flow"),
-                _as_dict(defaults.get("economy")).get("resource_flow"),
+                *resource_flow_sources,
                 limit=10,
                 item_limit=240,
             ),
@@ -1401,11 +1408,15 @@ def _merge_enrichment(project: NovelProject, parsed: dict[str, Any]) -> NovelPro
     if incoming_world.get("genre_plugin_ids") or current_world.get("genre_plugin_ids"):
         world_blueprint["genre_plugin_ids"] = incoming_world.get("genre_plugin_ids") or current_world.get("genre_plugin_ids")
 
+    plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
     for field in RULEBOOK_FIELDS:
+        sources = (
+            (plugin_rulebook.get(field, []), incoming_world.get(field), current_world.get(field))
+            if field == "economy_rules" and "game_webnovel" in plugin_ids
+            else (incoming_world.get(field), current_world.get(field), plugin_rulebook.get(field, []))
+        )
         world_blueprint[field] = _merge_string_lists(
-            incoming_world.get(field),
-            current_world.get(field),
-            plugin_rulebook.get(field, []),
+            *sources,
             limit=12,
             item_limit=260,
         )
