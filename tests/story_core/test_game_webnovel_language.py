@@ -45,7 +45,7 @@ def test_trade_card_uses_only_in_game_market_language():
         marker in card.preferred
         for marker in ("交易行", "求购单", "挂单", "立即出售", "成交", "手续费", "游戏币到账")
     )
-    assert all(marker not in text for marker in ("官方兑换", "兑换价", "现实账户", "鉴定"))
+    assert all(marker not in text for marker in ("官方兑换", "兑换价", "现实账户", "鉴定", "验货"))
 
 
 def test_currency_exchange_card_uses_separate_official_channel_language():
@@ -74,16 +74,16 @@ def test_language_cards_return_only_base_for_unrelated_plan():
     assert [card.card_id for card in cards] == ["base"]
 
 
-def test_language_card_selection_never_exceeds_limit():
-    cards = select_game_language_cards(
-        {
-            "chapter_goal": "登录服务器，接任务，拉怪，拾取战利品，上架拍卖，再组队进副本",
-        },
-        max_cards=3,
-    )
+def test_language_card_selection_hard_caps_requested_limit_at_three():
+    plan = {
+        "chapter_goal": "登录服务器，接任务，拉怪，拾取战利品，上架拍卖，再组队进副本",
+    }
+    cards = select_game_language_cards(plan, max_cards=5)
+    default_cards = select_game_language_cards(plan)
 
     assert len(cards) == 3
-    assert cards[0].card_id == "base"
+    assert [card.card_id for card in cards] == [card.card_id for card in default_cards]
+    assert [card.card_id for card in cards] == ["base", "loot_inventory", "login_server"]
 
 
 def test_language_card_selection_ignores_forbidden_scene_terms():
@@ -111,7 +111,7 @@ def test_language_cards_select_guild_social_for_raid_recruitment():
     assert ids == ["base", "guild_social"]
 
 
-def test_complex_opening_prioritizes_login_combat_loot_and_trade_cards():
+def test_complex_opening_keeps_deterministic_top_three_cards():
     cards = select_game_language_cards(
         {
             "writing_taskbook": {
@@ -126,12 +126,17 @@ def test_complex_opening_prioritizes_login_combat_loot_and_trade_cards():
     )
     ids = [card.card_id for card in cards]
 
-    assert ids[0] == "base"
-    assert {"login_server", "combat", "loot_inventory", "trade"}.issubset(ids)
+    assert ids == ["base", "login_server", "combat"]
 
+
+def test_legacy_trade_plan_selects_trade_card_with_current_language():
+    cards = select_game_language_cards({"chapter_goal": "完成匿名担保交易"})
+    ids = [card.card_id for card in cards]
+
+    assert ids == ["base", "trade"]
     trade = next(card for card in cards if card.card_id == "trade")
-    assert "担保交易" not in "\n".join((*trade.preferred, *trade.avoid, trade.example))
-    assert "匿名交割" not in "\n".join((*trade.preferred, *trade.avoid, trade.example))
+    text = "\n".join((*trade.preferred, *trade.avoid, trade.example))
+    assert all(marker not in text for marker in ("担保交易", "匿名交割", "验货"))
 
 
 def test_economy_rules_separate_market_appraisal_and_official_exchange():

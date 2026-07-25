@@ -57,7 +57,7 @@ GAME_WEBNOVEL_LANGUAGE_CARDS = (
         trigger_terms=("交易", "交易行", "拍卖行", "上架", "挂单", "出售", "立即出售", "求购", "一口价", "成交", "手续费", "游戏币到账", "寄售"),
         preferred=("交易行", "求购单", "挂单", "立即出售", "成交", "手续费", "游戏币到账"),
         avoid=("平台封存", "现实结算", "字段权限", "交易流转"),
-        example="写“他点下立即出售，扣除手续费后游戏币到账”，不解释平台后台怎样验货。",
+        example="写“他点下立即出售，订单显示已成交，扣除手续费后游戏币到账”。",
     ),
     GameLanguageCard(
         card_id="currency_exchange",
@@ -128,7 +128,7 @@ def select_game_language_cards(
 ) -> list[GameLanguageCard]:
     """Select a compact set of player-facing language cards for one chapter."""
 
-    limit = max(1, int(max_cards))
+    limit = min(3, max(1, int(max_cards)))
     text = _language_plan_text(plan)
     selected = [GAME_WEBNOVEL_LANGUAGE_CARDS[0]]
     scored: list[tuple[int, int, GameLanguageCard]] = []
