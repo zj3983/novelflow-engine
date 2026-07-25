@@ -70,7 +70,7 @@ def _variable_issue(
     suggestion: str,
 ) -> PromptAuditIssue:
     placeholder = "{{" + variable + "}}"
-    location_prefix = template_key or "prompt"
+    location_prefix = template_key or "提示词"
     return PromptAuditIssue(
         code=code,
         title=title,
@@ -109,20 +109,20 @@ def audit_prompt(
             must_fix.append(
                 _variable_issue(
                     code="missing_required_variable",
-                    title="Missing required variable",
+                    title="缺少必需变量",
                     variable=variable,
                     template_key=template_key,
-                    suggestion="Add the required placeholder to the template.",
+                    suggestion="在模板中补充必需占位符。",
                 )
             )
         for variable in variable_set - required_set:
             must_fix.append(
                 _variable_issue(
                     code="unknown_template_variable",
-                    title="Unknown template variable",
+                    title="未知模板变量",
                     variable=variable,
                     template_key=template_key,
-                    suggestion="Remove the placeholder or declare it as required.",
+                    suggestion="移除该占位符，或将其声明为必需变量。",
                 )
             )
         for variable, count in Counter(occurrences).items():
@@ -130,10 +130,10 @@ def audit_prompt(
                 suggestions.append(
                     _variable_issue(
                         code="repeated_template_variable",
-                        title="Repeated template variable",
+                        title="模板变量重复",
                         variable=variable,
                         template_key=template_key,
-                        suggestion="Confirm that each repeated placeholder is intentional.",
+                        suggestion="确认重复出现的占位符是否为有意设置。",
                     )
                 )
 
@@ -144,10 +144,10 @@ def audit_prompt(
         suggestions.append(
             PromptAuditIssue(
                 code="oversized_prompt",
-                title="Prompt exceeds the recommended length",
-                evidence=f"{len(content)} characters",
-                location=template_key or "prompt",
-                suggestion=f"Reduce the prompt to {LONG_PROMPT_WARNING} characters or fewer.",
+                title="提示词整体过长",
+                evidence=f"{len(content)} 个字符",
+                location=template_key or "提示词",
+                suggestion=f"将提示词缩减至 {LONG_PROMPT_WARNING} 个字符以内。",
                 estimated_reduction_characters=len(content) - LONG_PROMPT_WARNING,
             )
         )

@@ -28,6 +28,16 @@ def test_template_audit_reports_missing_unknown_and_repeated_variables_in_stable
         "{{chapter_direction}}",
         "{{unexpected}}",
     ]
+    assert [issue.title for issue in result.must_fix] == [
+        "缺少必需变量",
+        "未知模板变量",
+    ]
+    assert [issue.suggestion for issue in result.must_fix] == [
+        "在模板中补充必需占位符。",
+        "移除该占位符，或将其声明为必需变量。",
+    ]
+    assert result.suggestions[0].title == "模板变量重复"
+    assert result.suggestions[0].suggestion == "确认重复出现的占位符是否为有意设置。"
     assert result.suggestions[0].evidence == "{{output_section}}"
     assert result.summary.characters == len("{{output_section}}\n{{unexpected}}\n{{output_section}}")
     assert result.summary.lines == 3
@@ -52,7 +62,27 @@ def test_long_prompt_produces_oversized_suggestion():
     result = audit_prompt(mode="final_call", content="x" * (LONG_PROMPT_WARNING + 1))
 
     assert [issue.code for issue in result.suggestions] == ["oversized_prompt"]
-    assert result.suggestions[0].estimated_reduction_characters == 1
+    issue = result.suggestions[0]
+    assert issue.title == "提示词整体过长"
+    assert issue.evidence == "40001 个字符"
+    assert issue.location == "提示词"
+    assert issue.suggestion == "将提示词缩减至 40000 个字符以内。"
+    assert issue.estimated_reduction_characters == 1
+
+
+def test_default_variable_location_is_localized_but_template_key_is_preserved():
+    default_location = audit_prompt(
+        mode="template",
+        content="{{unexpected}}",
+    ).must_fix[0].location
+    keyed_location = audit_prompt(
+        mode="template",
+        content="{{unexpected}}",
+        template_key="writer",
+    ).must_fix[0].location
+
+    assert default_location == "提示词:{{unexpected}}"
+    assert keyed_location == "writer:{{unexpected}}"
 
 
 def test_warning_and_hard_limits_are_exclusive():
@@ -157,3 +187,15 @@ def test_prompt_audit_models_are_strict():
             estimated_reduction_characters=0,
             extra_field=True,
         )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"title": "Instructions", "characters": "20", "percent": 50.0},
+        {"title": "Instructions", "characters": 20, "percent": "50.0"},
+    ],
+)
+def test_prompt_audit_section_rejects_string_numbers(arguments):
+    with pytest.raises(ValidationError):
+        PromptAuditSection(**arguments)
