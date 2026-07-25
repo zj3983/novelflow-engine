@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import json
+import re
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -31,6 +32,12 @@ _LEGACY_OPENING_MARKERS: tuple[str, ...] = (
     "第一章允许完成裂纹狼心担保交易",
 )
 
+_ECONOMY_DENIAL = re.compile(
+    r"(?:不(?:得|再|允许|能|应|必)?|禁止|严禁|不可|无需|无须|拒绝)"
+    r"[^，。；;！？!?\n]{0,8}(?:交易|卖出|兑换)"
+)
+_NUMBERED_CHAPTER = re.compile(r"第[一二三四五六七八九十百千万零〇两\d]+章")
+
 
 def market_rules() -> tuple[str, ...]:
     return _MARKET_RULES
@@ -44,19 +51,51 @@ def appraisal_rules() -> tuple[str, ...]:
     return _APPRAISAL_RULES
 
 
+def _text_entries(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Mapping):
+        return tuple(text for item in value.values() for text in _text_entries(item))
+    if isinstance(value, (list, tuple)):
+        return tuple(text for item in value for text in _text_entries(item))
+    return ()
+
+
+def _has_ordered_new_contract(text: str) -> bool:
+    scope_positions = tuple(
+        match.start()
+        for match in re.finditer(r"第一章|本章", text)
+    )
+    transaction_positions = tuple(
+        match.start()
+        for match in re.finditer(r"卖出裂纹狼心|交易成交", text)
+    )
+    exchange_position = text.find("官方兑换")
+    urgency_position = text.find("现实急账")
+    if not transaction_positions:
+        return False
+    transaction_position = min(transaction_positions)
+    relevant_scopes = tuple(position for position in scope_positions if position < transaction_position)
+    if not relevant_scopes or not (transaction_position < exchange_position < urgency_position):
+        return False
+    scope_position = max(relevant_scopes)
+    return not any(
+        scope_position < match.start() <= urgency_position
+        for match in _NUMBERED_CHAPTER.finditer(text)
+    )
+
+
 def first_chapter_market_exchange_authorized(
     event_plan: dict[str, Any] | None = None,
     world_facts: list[str] | None = None,
 ) -> bool:
-    context = "\n".join(
-        (
-            json.dumps(event_plan or {}, ensure_ascii=False),
-            *(str(item) for item in (world_facts or [])),
-        )
+    entries = (
+        *_text_entries(event_plan or {}),
+        *(str(item) for item in (world_facts or [])),
     )
-    new_contract = (
-        "卖出裂纹狼心" in context
-        and "官方兑换渠道" in context
-        and "现实急账" in context
-    )
-    return new_contract or any(marker in context for marker in _LEGACY_OPENING_MARKERS)
+    if any(_ECONOMY_DENIAL.search(text) for text in entries):
+        return False
+    if any(_has_ordered_new_contract(text) for text in entries):
+        return True
+    # Legacy project input only; new prompt rules must never emit these markers.
+    return any(marker in text for text in entries for marker in _LEGACY_OPENING_MARKERS)

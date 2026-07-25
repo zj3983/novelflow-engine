@@ -69,10 +69,33 @@ def test_implementation_plan_wording_does_not_require_market_name() -> None:
     )
 
 
-def test_contract_can_be_split_between_event_plan_and_world_facts() -> None:
+def test_transaction_completion_before_exchange_is_authorized() -> None:
     assert first_chapter_market_exchange_authorized(
+        {"turn": "本章交易成交后，走官方兑换渠道解决现实急账。"},
+        [],
+    )
+
+
+def test_contract_cannot_be_assembled_across_separate_entries() -> None:
+    assert not first_chapter_market_exchange_authorized(
         {"ordered_actions": ["在交易行卖出裂纹狼心"]},
-        ["成交所得游戏币进入游戏钱包。", "再走官方兑换渠道解决现实急账。"],
+        ["本章再走官方兑换渠道解决现实急账。"],
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "第一章不得卖出裂纹狼心，第二章再走官方兑换渠道解决现实急账。",
+        "第一章只处理战斗，第二章卖出裂纹狼心，再走官方兑换渠道解决现实急账。",
+        "第一章先走官方兑换渠道解决现实急账，再卖出裂纹狼心。",
+        "卖出裂纹狼心后，再走官方兑换渠道解决现实急账。",
+    ),
+)
+def test_new_contract_requires_order_and_chapter_association(text: str) -> None:
+    assert not first_chapter_market_exchange_authorized(
+        {"turn": text},
+        [],
     )
 
 
@@ -92,10 +115,31 @@ def test_incomplete_new_contract_is_not_authorized() -> None:
         "第一章的裂纹狼心担保交易",
         "第一章已经通过担保交易解决现实急账",
         "第一章已通过担保交易解决现实急账",
+        "第一章允许完成裂纹狼心担保交易",
     ),
 )
-def test_original_legacy_opening_markers_remain_readable(marker: str) -> None:
+def test_all_legacy_opening_markers_remain_readable(marker: str) -> None:
     assert first_chapter_market_exchange_authorized(
         {"turn": marker},
         [],
+    )
+
+
+@pytest.mark.parametrize(
+    "denial",
+    (
+        "本章不交易",
+        "第一章不得卖出裂纹狼心",
+        "第一章禁止交易",
+        "第一章不兑换",
+    ),
+)
+def test_explicit_denial_overrides_new_and_legacy_authorization(denial: str) -> None:
+    assert not first_chapter_market_exchange_authorized(
+        {"turn": "第一章卖出裂纹狼心，再走官方兑换渠道解决现实急账。"},
+        [denial],
+    )
+    assert not first_chapter_market_exchange_authorized(
+        {"turn": "第一章必须解决现实急账"},
+        [denial],
     )
