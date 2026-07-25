@@ -367,6 +367,7 @@ def test_three_mechanical_conflicts_are_must_fix_items():
         "只输出正文，禁止输出报告",
         "只输出正文，无需输出解释",
         "只输出正文，不需要输出分析",
+        "只输出正文，不要最后输出分析报告",
     ],
 )
 def test_explicitly_negated_extra_output_does_not_conflict(content):

@@ -169,7 +169,8 @@ def _conflict_issues(content: str) -> list[PromptAuditIssue]:
     issues: list[PromptAuditIssue] = []
     output_body_only = re.search(r"只输出(?:小说)?正文", content)
     without_negated_output = re.sub(
-        r"(?:不要|禁止|无需|不需要)\s*输出\s*(?:分析报告|分析|报告|解释)",
+        r"(?:不要|禁止|无需|不需要)\s*"
+        r"(?:最后\s*输出\s*分析报告|输出\s*(?:分析报告|分析|报告|解释))",
         "",
         content,
     )
