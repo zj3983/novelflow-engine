@@ -158,7 +158,9 @@ class _AppraisalAction:
 class _OrderEvent:
     paragraph_index: int
     position: int
-    order_id: str | None
+    owner: str | None
+    label: str | None
+    referential: bool
 
 
 _ECONOMY_PARAGRAPH_BREAK = re.compile(r"(?:\r?\n[\t ]*){2,}")
@@ -172,10 +174,7 @@ _MARKET_SCENE_TERMS = (
     "立即出售",
 )
 _REAL_SETTLEMENT_TERMS = ("现实账户", "现实结算", "现实到账")
-_MARKET_SETTLEMENT_SOURCE_TERMS = (
-    "这笔款",
-    "这笔钱",
-    "那笔钱",
+_MARKET_TRANSACTION_SOURCE_TERMS = (
     "成交款",
     "成交所得",
     "交易所得",
@@ -183,10 +182,15 @@ _MARKET_SETTLEMENT_SOURCE_TERMS = (
     "求购所得",
     "求购成交所得",
     "卖出所得",
-    "款项",
 )
-_MARKET_MONEY_PRONOUN = re.compile(
-    r"(?:^|[，。；：、\s])钱(?=(?:随后|随即|接着|又|便|就|直接|被|由|转入|打进|进入|到账))"
+_MARKET_MONEY_TO_REALITY_PATTERN = re.compile(
+    r"(?P<reference>这笔款项|那笔款项|这笔款|这笔钱|那笔钱|款项|(?<![一-龥A-Za-z0-9])钱)"
+    r"(?P<link>[^。！？!?；;\r\n]{0,24}?)"
+    r"(?:直接\s*)?(?:转入|打进|进入|到账)[^。！？!?；;\r\n]{0,8}现实账户"
+)
+_MONEY_SOURCE_REBINDING = re.compile(
+    r"^(?:是|来自)[^。！？!?；;\r\n]{1,18}"
+    r"|^由[^，,。！？!?；;\r\n]{1,16}(?:支付|归还|发放)"
 )
 _INDEPENDENT_SETTLEMENT_SOURCE_TERMS = (
     "工资",
@@ -268,13 +272,27 @@ _FUNDED_ORDER_PATTERN = re.compile(
     r"求购单(?:里|里的|中|中的|其中|其中的)?"
     r"[^，。！？!?；;]{0,8}?(?:资金|游戏币)(?:已经|已)?(?:被)?冻结(?:了)?"
 )
-_ORDER_ID_PATTERNS = (
-    re.compile(r"(?P<id>[甲乙丙丁戊己庚辛壬癸A-Z])玩家(?:的)?"),
-    re.compile(r"第(?P<id>[一二三四五六七八九十百\d]+)(?:条|张)(?:求购单|订单)"),
-    re.compile(r"(?P<id>[甲乙丙丁戊己庚辛壬癸A-Z])(?:号)?(?:求购单|订单)"),
-    re.compile(r"(?P<id>[A-Z])单(?:求购)?"),
-    re.compile(r"(?:求购单|订单)(?:号|编号)[:：#-]?(?P<id>[A-Z0-9甲乙丙丁戊己庚辛壬癸-]+)"),
-    re.compile(r"(?:求购单|订单)(?P<id>[甲乙丙丁戊己庚辛壬癸A-Z]\d*)"),
+_ORDER_OWNER_WITH_NOUN_PATTERN = re.compile(
+    r"(?P<owner>[一-龥A-Za-z0-9·]{1,12}(?:玩家)?)的"
+    r"(?:(?:第[一二三四五六七八九十百\d]+(?:条|张))?"
+    r"(?:普通)?(?:求购单|订单)|[A-Z]单(?:求购)?)"
+)
+_ORDER_PLAYER_OWNER_PATTERN = re.compile(r"(?P<owner>[甲乙丙丁戊己庚辛壬癸A-Z])玩家")
+_ORDER_LABEL_PATTERNS = (
+    (
+        "number",
+        re.compile(r"(?:求购单|订单)(?:号|编号)[:：#-]?(?P<label>[A-Z0-9甲乙丙丁戊己庚辛壬癸-]+)"),
+    ),
+    (
+        "ordinal",
+        re.compile(r"第(?P<label>[一二三四五六七八九十百\d]+)(?:条|张)(?:求购单|订单)"),
+    ),
+    ("code", re.compile(r"(?P<label>[A-Z])单(?:求购)?")),
+    ("code", re.compile(r"(?P<label>[甲乙丙丁戊己庚辛壬癸A-Z])(?:号)?(?:求购单|订单)")),
+    ("code", re.compile(r"(?:求购单|订单)(?P<label>[甲乙丙丁戊己庚辛壬癸A-Z]\d*)")),
+)
+_ORDER_REFERENCE_PATTERN = re.compile(
+    r"(?:该(?:求购单|订单|玩家)|这张(?:求购单|订单)?|同一(?:求购单|订单))"
 )
 
 
@@ -329,6 +347,13 @@ def _has_independent_settlement_source(text: str) -> bool:
     return False
 
 
+def _has_market_money_reference(text: str) -> bool:
+    for match in _MARKET_MONEY_TO_REALITY_PATTERN.finditer(text):
+        if _MONEY_SOURCE_REBINDING.search(match.group("link").strip()) is None:
+            return True
+    return False
+
+
 def _is_direct_reality_settlement(unit: _EconomyUnit) -> bool:
     if not any(term in unit.text for term in _REAL_SETTLEMENT_TERMS):
         return False
@@ -337,8 +362,8 @@ def _is_direct_reality_settlement(unit: _EconomyUnit) -> bool:
     if _has_independent_settlement_source(unit.text):
         return False
     has_market_source = any(
-        term in unit.text for term in _MARKET_SETTLEMENT_SOURCE_TERMS
-    ) or _MARKET_MONEY_PRONOUN.search(unit.text)
+        term in unit.text for term in _MARKET_TRANSACTION_SOURCE_TERMS
+    ) or _has_market_money_reference(unit.text)
     if not has_market_source and not _is_market_completion(unit):
         return False
     return _DIRECT_SETTLEMENT_DENIAL.search(unit.text) is None
@@ -494,12 +519,23 @@ def _has_reappraised_identified_item(units: tuple[_EconomyUnit, ...]) -> bool:
     return False
 
 
-def _order_identifier(text: str) -> str | None:
-    for pattern in _ORDER_ID_PATTERNS:
+def _order_identity(text: str) -> tuple[str | None, str | None, bool]:
+    owner_match = _ORDER_OWNER_WITH_NOUN_PATTERN.search(text)
+    if owner_match is None:
+        owner_match = _ORDER_PLAYER_OWNER_PATTERN.search(text)
+    owner = owner_match.group("owner") if owner_match else None
+    if owner and owner.endswith("玩家"):
+        owner = owner.removesuffix("玩家")
+    if owner in {"该", "这", "同一"}:
+        owner = None
+
+    label = None
+    for kind, pattern in _ORDER_LABEL_PATTERNS:
         match = pattern.search(text)
         if match:
-            return match.group("id")
-    return None
+            label = f"{kind}:{match.group('label')}"
+            break
+    return owner, label, _ORDER_REFERENCE_PATTERN.search(text) is not None
 
 
 def _order_events_for_terms(
@@ -510,8 +546,8 @@ def _order_events_for_terms(
 ) -> list[_OrderEvent]:
     events: list[_OrderEvent] = []
     for unit in units:
-        order_id = _order_identifier(unit.text)
-        if require_order_context and "求购单" not in unit.text and order_id is None:
+        owner, label, referential = _order_identity(unit.text)
+        if require_order_context and "求购单" not in unit.text and label is None:
             continue
         for term in terms:
             start = 0
@@ -523,7 +559,9 @@ def _order_events_for_terms(
                     _OrderEvent(
                         paragraph_index=unit.paragraph_index,
                         position=unit.start + index,
-                        order_id=order_id,
+                        owner=owner,
+                        label=label,
+                        referential=referential,
                     )
                 )
                 start = index + len(term)
@@ -533,7 +571,7 @@ def _order_events_for_terms(
 def _buyer_reconfirm_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEvent]:
     events: list[_OrderEvent] = []
     for unit in units:
-        order_id = _order_identifier(unit.text)
+        owner, label, referential = _order_identity(unit.text)
         for match in _BUYER_RECONFIRM_PATTERN.finditer(unit.text):
             prefix = unit.text[max(0, match.start() - 10) : match.start()]
             if any(marker in prefix for marker in _NEGATED_WAIT_MARKERS):
@@ -542,7 +580,9 @@ def _buyer_reconfirm_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEv
                 _OrderEvent(
                     paragraph_index=unit.paragraph_index,
                     position=unit.start + match.start(),
-                    order_id=order_id,
+                    owner=owner,
+                    label=label,
+                    referential=referential,
                 )
             )
     return events
@@ -555,21 +595,30 @@ def _funded_order_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEvent
         require_order_context=True,
     )
     for unit in units:
-        order_id = _order_identifier(unit.text)
+        owner, label, referential = _order_identity(unit.text)
         for match in _FUNDED_ORDER_PATTERN.finditer(unit.text):
             positions.append(
                 _OrderEvent(
                     paragraph_index=unit.paragraph_index,
                     position=unit.start + match.start(),
-                    order_id=order_id,
+                    owner=owner,
+                    label=label,
+                    referential=referential,
                 )
             )
     return sorted(set(positions), key=lambda event: event.position)
 
 
 def _same_order(*events: _OrderEvent) -> bool:
-    explicit_ids = {event.order_id for event in events if event.order_id is not None}
-    return len(explicit_ids) <= 1
+    for field in ("owner", "label"):
+        values = {getattr(event, field) for event in events if getattr(event, field) is not None}
+        if len(values) > 1:
+            return False
+        if values and any(
+            getattr(event, field) is None and not event.referential for event in events
+        ):
+            return False
+    return True
 
 
 def _has_buyer_reconfirmation_after_funded_sale(units: tuple[_EconomyUnit, ...]) -> bool:

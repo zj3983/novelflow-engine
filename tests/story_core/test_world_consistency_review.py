@@ -160,7 +160,15 @@ def test_world_consistency_review_does_not_treat_unrelated_frozen_funds_as_funde
             "仍在等待买家再次确认",
         ),
         (
-            "苏叶的求购单资金冻结。\n\n洛婶的订单成交。\n\n艾伦等待买家确认。",
+            "拍卖物成交，游戏币进入钱包。\n\n钱很快就直接打进现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "甲玩家的第一条求购单资金冻结。\n\n甲玩家的第一条订单成交。\n\n甲玩家的第一条订单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "甲玩家的第一条求购单资金冻结。\n\n该订单成交。\n\n同一订单等待买家确认。",
             "仍在等待买家再次确认",
         ),
     ],
@@ -193,6 +201,10 @@ def test_world_consistency_review_detects_explicit_economy_boundaries_in_three_p
         "甲求购单资金冻结。\n\n乙求购单成交。\n\n丙求购单等待买家确认。",
         "拍卖物成交，游戏币到账。\n\n夜烬退出游戏。\n\n那笔钱是公司退款，随后直接进入现实账户。",
         "甲玩家的求购单资金冻结。\n\n乙玩家的普通订单成交。\n\n丙玩家等待买家确认。",
+        "拍卖物成交，游戏币到账。\n\n夜烬退出游戏。\n\n这笔款来自朋友归还的借款，随后直接进入现实账户。",
+        "甲玩家的第一条求购单资金冻结。\n\n甲玩家的第二条订单成交。\n\n甲玩家的第三条订单等待买家确认。",
+        "苏叶的求购单资金冻结。\n\n洛婶的订单成交。\n\n艾伦的订单等待买家确认。",
+        "苏叶的求购单资金冻结。\n\n洛婶的订单成交。\n\n艾伦等待买家确认。",
     ],
 )
 def test_world_consistency_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):
