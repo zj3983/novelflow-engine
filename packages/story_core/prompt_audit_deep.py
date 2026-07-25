@@ -14,7 +14,7 @@ from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.prompt_audit import (
     PromptAuditIssue,
     PromptAuditResult,
-    _issue_sort_key,
+    prompt_audit_issue_sort_key,
 )
 from packages.story_core.runtime_config import (
     StageRuntimeSettings,
@@ -23,6 +23,7 @@ from packages.story_core.runtime_config import (
 
 
 DEEP_CONTENT_LIMIT = 80_000
+DEEP_PAYLOAD_LIMIT = 120_000
 
 _NO_EXPLICIT_DUPLICATE = "没有发现明确重复行"
 _NO_EXPLICIT_CONFLICT = "没有发现明确冲突"
@@ -56,7 +57,7 @@ class _SemanticResponse(_StrictDeepAuditModel):
 
 class DeepAuditRuntime(_StrictDeepAuditModel):
     provider: str = Field(min_length=1, max_length=50)
-    model: str = Field(min_length=1, max_length=500)
+    model: str = Field(min_length=1)
     elapsed_seconds: float = Field(ge=0)
     prompt_characters: int = Field(ge=0, le=DEEP_CONTENT_LIMIT)
 
@@ -83,13 +84,29 @@ class DeepPromptAuditor:
         content: str,
         local_result: PromptAuditResult,
     ) -> DeepPromptAuditResult:
+        try:
+            validated_local_result = PromptAuditResult.model_validate(
+                local_result.model_dump()
+            )
+        except ValidationError as exc:
+            raise ValueError("prompt_audit_local_result_invalid") from exc
         if not content.strip():
             raise ValueError("content_required")
         if len(content) > DEEP_CONTENT_LIMIT:
             raise ValueError("prompt_audit_deep_content_too_long")
         content_hash = sha256(content.encode("utf-8")).hexdigest()
-        if content_hash != local_result.content_sha256:
+        if content_hash != validated_local_result.content_sha256:
             raise ValueError("prompt_audit_local_result_mismatch")
+
+        user_content = json.dumps(
+            {
+                "content": content,
+                "local_result": validated_local_result.model_dump(),
+            },
+            ensure_ascii=False,
+        )
+        if len(user_content) > DEEP_PAYLOAD_LIMIT:
+            raise ValueError("prompt_audit_deep_payload_too_long")
 
         try:
             runtime = self._runtime_resolver("planner")
@@ -104,13 +121,7 @@ class DeepPromptAuditor:
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {
-                            "content": content,
-                            "local_result": local_result.model_dump(),
-                        },
-                        ensure_ascii=False,
-                    ),
+                    "content": user_content,
                 },
             ],
             "response_format": {"type": "json_object"},
@@ -141,7 +152,7 @@ class DeepPromptAuditor:
         except ValidationError as exc:
             raise ValueError("prompt_audit_deep_invalid_response") from exc
 
-        merged = local_result.model_copy(deep=True)
+        merged = validated_local_result.model_copy(deep=True)
         seen = {
             (item.code, item.evidence, item.location)
             for item in [*merged.must_fix, *merged.suggestions]
@@ -164,8 +175,8 @@ class DeepPromptAuditor:
             else:
                 merged.suggestions.append(converted)
 
-        merged.must_fix.sort(key=_issue_sort_key)
-        merged.suggestions.sort(key=_issue_sort_key)
+        merged.must_fix.sort(key=prompt_audit_issue_sort_key)
+        merged.suggestions.sort(key=prompt_audit_issue_sort_key)
         merged_codes = {item.code for item in [*merged.must_fix, *merged.suggestions]}
         if "semantic_duplicate" in merged_codes:
             merged.passed_checks = [
@@ -176,14 +187,17 @@ class DeepPromptAuditor:
                 check for check in merged.passed_checks if check != _NO_EXPLICIT_CONFLICT
             ]
 
-        return DeepPromptAuditResult.model_validate(
-            {
-                **merged.model_dump(),
-                "runtime": {
-                    "provider": runtime.provider,
-                    "model": runtime.model,
-                    "elapsed_seconds": round(max(0.0, finished_at - started_at), 3),
-                    "prompt_characters": len(content),
-                },
-            }
-        )
+        try:
+            return DeepPromptAuditResult.model_validate(
+                {
+                    **merged.model_dump(),
+                    "runtime": {
+                        "provider": runtime.provider,
+                        "model": runtime.model,
+                        "elapsed_seconds": round(max(0.0, finished_at - started_at), 3),
+                        "prompt_characters": len(content),
+                    },
+                }
+            )
+        except ValidationError as exc:
+            raise ValueError("prompt_audit_deep_invalid_response") from exc

@@ -86,7 +86,7 @@ class PromptAuditResult(_StrictPromptAuditModel):
     passed_checks: list[str] = Field(default_factory=list)
 
 
-def _issue_sort_key(issue: PromptAuditIssue) -> tuple[int, str, str]:
+def prompt_audit_issue_sort_key(issue: PromptAuditIssue) -> tuple[int, str, str]:
     return (-issue.estimated_reduction_characters, issue.code, issue.location)
 
 
@@ -449,7 +449,7 @@ def audit_prompt(
             ),
             sections=sections,
         ),
-        must_fix=sorted(must_fix, key=_issue_sort_key),
-        suggestions=sorted(suggestions, key=_issue_sort_key),
+        must_fix=sorted(must_fix, key=prompt_audit_issue_sort_key),
+        suggestions=sorted(suggestions, key=prompt_audit_issue_sort_key),
         passed_checks=passed_checks,
     )

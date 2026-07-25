@@ -3,6 +3,8 @@ from hashlib import sha256
 
 import pytest
 
+import packages.story_core.prompt_audit as prompt_audit
+import packages.story_core.prompt_audit_deep as prompt_audit_deep
 from packages.story_core.prompt_audit import (
     PromptAuditIssue,
     PromptAuditResult,
@@ -19,10 +21,10 @@ from packages.story_core.runtime_config import StageRuntimeSettings
 CONTENT = "请保持角色动机一致，并让结尾形成悬念。"
 
 
-def runtime(*, provider="openai", api_key="secret") -> StageRuntimeSettings:
+def runtime(*, provider="openai", api_key="secret", model="planner-model") -> StageRuntimeSettings:
     return StageRuntimeSettings(
         provider=provider,
-        model="planner-model",
+        model=model,
         api_key=api_key,
         base_url="https://llm.example/v1",
         codex_command="codex-test",
@@ -294,3 +296,73 @@ def test_elapsed_time_is_never_negative():
     ).analyze(content=CONTENT, local_result=local_result())
 
     assert result.runtime.elapsed_seconds == 0.0
+
+
+def test_mutated_invalid_local_result_is_rejected_before_runtime_or_model():
+    local = local_result()
+    local.summary.characters = -1
+    resolver_calls = []
+    post_calls = []
+    auditor = DeepPromptAuditor(
+        runtime_resolver=lambda stage: resolver_calls.append(stage) or runtime(),
+        post_json=lambda *args, **kwargs: post_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(ValueError, match="^prompt_audit_local_result_invalid$"):
+        auditor.analyze(content=CONTENT, local_result=local)
+
+    assert resolver_calls == []
+    assert post_calls == []
+
+
+def test_oversized_complete_user_payload_is_rejected_without_model_call():
+    local = local_result()
+    local.passed_checks = ["x" * prompt_audit_deep.DEEP_PAYLOAD_LIMIT]
+    resolver_calls = []
+    post_calls = []
+    auditor = DeepPromptAuditor(
+        runtime_resolver=lambda stage: resolver_calls.append(stage) or runtime(),
+        post_json=lambda *args, **kwargs: post_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(ValueError, match="^prompt_audit_deep_payload_too_long$"):
+        auditor.analyze(content=CONTENT, local_result=local)
+
+    assert resolver_calls == []
+    assert post_calls == []
+
+
+def test_runtime_model_name_longer_than_500_characters_is_preserved():
+    model = "m" * 501
+    result = DeepPromptAuditor(
+        runtime_resolver=lambda stage: runtime(model=model),
+        post_json=lambda *args, **kwargs: response([]),
+        clock=lambda: 1.0,
+    ).analyze(content=CONTENT, local_result=local_result())
+
+    assert result.runtime.model == model
+
+
+def test_final_result_validation_error_maps_to_invalid_response():
+    with pytest.raises(ValueError, match="^prompt_audit_deep_invalid_response$"):
+        DeepPromptAuditor(
+            runtime_resolver=lambda stage: runtime(model=""),
+            post_json=lambda *args, **kwargs: response([]),
+            clock=lambda: 1.0,
+        ).analyze(content=CONTENT, local_result=local_result())
+
+
+def test_prompt_audit_exposes_shared_issue_sort_key():
+    low = PromptAuditIssue(
+        code="z",
+        title="low",
+        evidence="low",
+        location="later",
+        suggestion="low",
+        estimated_reduction_characters=1,
+    )
+    high = low.model_copy(
+        update={"code": "a", "title": "high", "estimated_reduction_characters": 2}
+    )
+
+    assert sorted([low, high], key=prompt_audit.prompt_audit_issue_sort_key) == [high, low]
