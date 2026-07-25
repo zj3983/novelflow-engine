@@ -1,6 +1,8 @@
 import json
+import os
 import threading
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1705,6 +1707,151 @@ def test_manual_outline_update_waits_for_successful_generated_transaction(
         (card["name"], card["role"])
         for card in state["characters"]
     ]
+
+
+def _prepare_synced_markdown_outline(root: Path, outline: dict) -> Path:
+    from packages.story_core.outline_markdown_sync import export_outline_to_markdown
+
+    baseline = deepcopy(outline)
+    baseline["overall"]["ending_direction"] = "Baseline markdown ending."
+    (root / ".webnovel" / "outline.json").write_text(
+        json.dumps(baseline, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    outline_dir = root / "大纲"
+    outline_dir.mkdir(parents=True, exist_ok=True)
+    overview_path = outline_dir / "总纲.md"
+    overview_path.write_text(
+        """# 总纲
+
+## 故事一句话
+Baseline story.
+
+## 核心主线
+- **主线目标**：Baseline goal.
+- **主要阻力**：Baseline conflict.
+
+## 主角成长线
+- **关键跃迁节点**：Baseline growth.
+- **终局定位**：Baseline ending.
+
+## 分卷纲要
+""",
+        encoding="utf-8",
+    )
+    assert export_outline_to_markdown(root, baseline) == "ok"
+    assert "Baseline markdown ending." in overview_path.read_text(encoding="utf-8")
+    return overview_path
+
+
+@pytest.mark.parametrize("generated_fails", [True, False])
+def test_markdown_newer_sync_waits_for_generated_outline_transaction(
+    tmp_path,
+    monkeypatch,
+    generated_fails: bool,
+) -> None:
+    root = tmp_path / "novel"
+    generated_store = _make_minimal_file_project(root)
+    reader_store = FileProjectStore(root)
+    plan = _generated_opening_plan()
+    overview_path = _prepare_synced_markdown_outline(
+        root,
+        plan.outline.model_dump(mode="json"),
+    )
+    generated_paused = threading.Event()
+    release_generated = threading.Event()
+    reader_started = threading.Event()
+    markdown_sync_write_entered = threading.Event()
+    errors: dict[str, BaseException] = {}
+    results: dict[str, dict] = {}
+    import packages.story_core.file_project_store as store_module
+    import packages.story_core.outline_markdown_sync as sync_module
+
+    real_replace = store_module.os.replace
+    generated_replace_calls = 0
+
+    def coordinated_replace(source, target):
+        nonlocal generated_replace_calls
+        if threading.current_thread().name != "generated-outline-save":
+            return real_replace(source, target)
+        generated_replace_calls += 1
+        result = real_replace(source, target)
+        if generated_replace_calls == 1:
+            generated_paused.set()
+            assert release_generated.wait(timeout=2)
+        elif generated_fails and generated_replace_calls == 2:
+            raise OSError("simulated generated save failure")
+        return result
+
+    real_sync_write = sync_module._write_json_atomic
+
+    def tracked_sync_write(path, payload):
+        if threading.current_thread().name == "markdown-outline-reader":
+            markdown_sync_write_entered.set()
+        return real_sync_write(path, payload)
+
+    monkeypatch.setattr(store_module.os, "replace", coordinated_replace)
+    monkeypatch.setattr(sync_module, "_write_json_atomic", tracked_sync_write)
+
+    def save_generated() -> None:
+        try:
+            results["generated"] = generated_store.save_generated_outline_plan(
+                plan,
+                mode="initial",
+            )
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["generated"] = exc
+
+    def read_outline() -> None:
+        reader_started.set()
+        try:
+            results["reader"] = reader_store.project_outline()
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["reader"] = exc
+
+    generated_thread = threading.Thread(
+        target=save_generated,
+        name="generated-outline-save",
+    )
+    generated_thread.start()
+    assert generated_paused.wait(timeout=2)
+
+    overview_text = overview_path.read_text(encoding="utf-8")
+    overview_path.write_text(
+        overview_text.replace(
+            "Baseline markdown ending.",
+            "Concurrent markdown ending.",
+        ),
+        encoding="utf-8",
+    )
+    assert "Concurrent markdown ending." in overview_path.read_text(encoding="utf-8")
+    json_path = root / ".webnovel" / "outline.json"
+    newer_mtime = max(overview_path.stat().st_mtime, json_path.stat().st_mtime) + 100
+    os.utime(overview_path, (newer_mtime, newer_mtime))
+
+    reader_thread = threading.Thread(target=read_outline, name="markdown-outline-reader")
+    reader_thread.start()
+    assert reader_started.wait(timeout=2)
+    sync_entered_while_generated_paused = markdown_sync_write_entered.wait(timeout=0.25)
+    release_generated.set()
+    generated_thread.join(timeout=3)
+    reader_thread.join(timeout=3)
+
+    assert not generated_thread.is_alive()
+    assert not reader_thread.is_alive()
+    assert sync_entered_while_generated_paused is False
+    assert "reader" not in errors
+    if generated_fails:
+        assert isinstance(errors.get("generated"), OSError)
+        assert "generated" not in results
+    else:
+        assert "generated" not in errors
+        assert results["generated"]["outline"]["chapters"]
+    assert results["reader"]["overall"]["ending_direction"] == (
+        "Concurrent markdown ending."
+    )
+    final_outline = json.loads(json_path.read_text(encoding="utf-8"))
+    assert final_outline["overall"]["ending_direction"] == "Concurrent markdown ending."
 
 
 def test_update_outline_rejects_core_ending_before_current_chapter(tmp_path) -> None:

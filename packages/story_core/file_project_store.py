@@ -3043,6 +3043,7 @@ class FileProjectStore:
         )
         return self.opening_setup()
 
+    @_with_project_update_lock
     def project_outline(self) -> dict[str, Any]:
         # 先尝试 Markdown 大纲双向同步（last-writer-wins）；同步失败静默降级，
         # 绝不能因为 md 解析/导出问题搞挂读接口。
