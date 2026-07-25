@@ -37,6 +37,7 @@ _ECONOMY_DENIAL = re.compile(
     r"[^，。；;！？!?\n]{0,8}(?:交易|卖出|兑换)"
 )
 _NUMBERED_CHAPTER = re.compile(r"第(?:[一二三四五六七八九十百千万零〇两\d]+|[Nn])章")
+_CLAUSE_SPLIT = re.compile(r"[\n。；;]+")
 
 
 def market_rules() -> tuple[str, ...]:
@@ -61,42 +62,81 @@ def _text_entries(value: Any) -> tuple[str, ...]:
     return ()
 
 
-def _has_ordered_new_contract(text: str) -> bool:
-    scope_positions = tuple(
-        match.start()
-        for match in re.finditer(r"第一章|第1章|本章", text)
-    )
-    transaction_positions = tuple(
-        match.start()
-        for match in re.finditer(r"卖出裂纹狼心|交易成交", text)
-    )
-    exchange_position = text.find("官方兑换")
-    urgency_position = text.find("现实急账")
-    if not transaction_positions:
-        return False
-    transaction_position = min(transaction_positions)
-    relevant_scopes = tuple(position for position in scope_positions if position < transaction_position)
-    if not relevant_scopes or not (transaction_position < exchange_position < urgency_position):
-        return False
-    scope_position = max(relevant_scopes)
-    return not any(
-        scope_position < match.start() <= urgency_position
-        for match in _NUMBERED_CHAPTER.finditer(text)
-    )
+def _is_first_chapter(marker: str) -> bool:
+    return marker[1:-1] in ("一", "1")
 
 
-def _has_non_first_numbered_chapter(text: str) -> bool:
-    return any(
-        match.group()[1:-1] not in ("一", "1")
-        for match in _NUMBERED_CHAPTER.finditer(text)
-    )
+def _scoped_clauses(text: str) -> tuple[tuple[bool | None, str], ...]:
+    scoped: list[tuple[bool | None, str]] = []
+    current_scope: bool | None = None
+    for clause in _CLAUSE_SPLIT.split(text):
+        clause = clause.strip()
+        if not clause:
+            continue
+        markers = tuple(_NUMBERED_CHAPTER.finditer(clause))
+        if not markers:
+            if current_scope is None and "本章" in clause:
+                current_scope = True
+            scoped.append((current_scope, clause))
+            continue
+        prefix = clause[: markers[0].start()].strip()
+        if prefix:
+            prefix_scope = (
+                True if current_scope is None and "本章" in prefix else current_scope
+            )
+            scoped.append((prefix_scope, prefix))
+        for index, marker in enumerate(markers):
+            current_scope = _is_first_chapter(marker.group())
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(clause)
+            scoped.append((current_scope, clause[marker.start() : end].strip()))
+    return tuple(scoped)
 
 
-def _denies_current_economy(text: str) -> bool:
-    return any(
-        not match.group().endswith("担保交易")
-        for match in _ECONOMY_DENIAL.finditer(text)
+def _first_chapter_ranges(text: str) -> tuple[str, ...]:
+    ranges: list[str] = []
+    current: list[str] = []
+    for is_first_chapter, clause in _scoped_clauses(text):
+        if is_first_chapter:
+            current.append(clause)
+        elif current:
+            ranges.append("\n".join(current))
+            current = []
+    if current:
+        ranges.append("\n".join(current))
+    return tuple(ranges)
+
+
+def _ordered_new_chain(text: str) -> tuple[int, int, int] | None:
+    for transaction in re.finditer(r"卖出裂纹狼心|交易成交", text):
+        exchange = text.find("官方兑换", transaction.end())
+        if exchange < 0:
+            continue
+        urgency = text.find("现实急账", exchange + len("官方兑换"))
+        if urgency >= 0:
+            return transaction.start(), exchange, urgency
+    return None
+
+
+def _first_chapter_range_authorized(text: str) -> bool:
+    denial_matches = tuple(_ECONOMY_DENIAL.finditer(text))
+    legacy_denials = tuple(
+        match for match in denial_matches if match.group().endswith("担保交易")
     )
+    current_denials = tuple(
+        match for match in denial_matches if not match.group().endswith("担保交易")
+    )
+    new_chain = _ordered_new_chain(text)
+    if new_chain is not None and not current_denials:
+        transaction_position = new_chain[0]
+        last_legacy_denial = max(
+            (match.end() for match in legacy_denials),
+            default=-1,
+        )
+        if transaction_position > last_legacy_denial:
+            return True
+    # Read compatibility only. New prompt rules must never emit legacy markers.
+    legacy_contract = any(marker in text for marker in _LEGACY_OPENING_MARKERS)
+    return legacy_contract and not denial_matches
 
 
 def first_chapter_market_exchange_authorized(
@@ -107,12 +147,8 @@ def first_chapter_market_exchange_authorized(
         *_text_entries(event_plan or {}),
         *(str(item) for item in (world_facts or [])),
     )
-    for text in entries:
-        if _has_non_first_numbered_chapter(text) or _denies_current_economy(text):
-            continue
-        if _has_ordered_new_contract(text):
-            return True
-        # Legacy project input only; new prompt rules must never emit these markers.
-        if any(marker in text for marker in _LEGACY_OPENING_MARKERS):
-            return True
-    return False
+    return any(
+        _first_chapter_range_authorized(chapter_range)
+        for entry in entries
+        for chapter_range in _first_chapter_ranges(entry)
+    )
