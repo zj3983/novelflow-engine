@@ -82,6 +82,36 @@ def test_resolve_trope_contract_returns_exact_contract_fields_for_known_template
     }
 
 
+def test_resolve_trope_contract_keeps_known_template_when_current_beat_is_none_or_blank():
+    templates = [
+        {
+            "id": "trial",
+            "name": "Trial by Fire",
+            "trigger": "A public challenge appears.",
+            "beats": ["accept the challenge", "win with a cost"],
+            "payoff": "The crowd sees the protagonist differently.",
+            "avoid": ["free victory", "off-screen resolution"],
+        }
+    ]
+
+    assert resolve_trope_contract(templates, "trial", None) == {
+        "template_id": "trial",
+        "name": "Trial by Fire",
+        "trigger": "A public challenge appears.",
+        "current_beat": "",
+        "payoff": "The crowd sees the protagonist differently.",
+        "avoid": ["free victory", "off-screen resolution"],
+    }
+    assert resolve_trope_contract(templates, "trial", "   ") == {
+        "template_id": "trial",
+        "name": "Trial by Fire",
+        "trigger": "A public challenge appears.",
+        "current_beat": "",
+        "payoff": "The crowd sees the protagonist differently.",
+        "avoid": ["free victory", "off-screen resolution"],
+    }
+
+
 def test_resolve_trope_contract_returns_empty_dict_for_unknown_template_or_beat():
     templates = [
         {
@@ -96,6 +126,47 @@ def test_resolve_trope_contract_returns_empty_dict_for_unknown_template_or_beat(
 
     assert resolve_trope_contract(templates, "missing", "accept the challenge") == {}
     assert resolve_trope_contract(templates, "trial", "wrong beat") == {}
+
+
+def test_merge_and_resolve_compare_full_normalized_ids_and_beats_without_compacted_prefix_collisions():
+    shared_prefix_id = "template-" + ("A" * 395)
+    shared_prefix_beat = "beat-" + ("B" * 76)
+    exact_template_id = shared_prefix_id + "-exact"
+    duplicate_after_compaction_id = shared_prefix_id + "-different"
+    exact_beat = shared_prefix_beat + "-exact"
+    different_beat = shared_prefix_beat + "-different"
+
+    merged = merge_trope_templates(
+        [
+            [
+                {
+                    "id": f"  {exact_template_id}  ",
+                    "name": "Exact Template",
+                    "trigger": "specific trigger",
+                    "beats": [exact_beat],
+                    "payoff": "specific payoff",
+                    "avoid": ["specific avoid"],
+                }
+            ],
+            [
+                {
+                    "id": duplicate_after_compaction_id,
+                    "name": "Generic Variant",
+                    "trigger": "generic trigger",
+                    "beats": [different_beat],
+                    "payoff": "generic payoff",
+                    "avoid": ["generic avoid"],
+                }
+            ],
+        ]
+    )
+
+    assert [template["id"] for template in merged] == [
+        exact_template_id,
+        duplicate_after_compaction_id,
+    ]
+    assert resolve_trope_contract(merged, exact_template_id, exact_beat)["current_beat"] == exact_beat
+    assert resolve_trope_contract(merged, exact_template_id, different_beat) == {}
 
 
 def test_compact_trope_candidates_retains_contract_fields_and_bounds_text_and_lists():
@@ -121,6 +192,41 @@ def test_compact_trope_candidates_retains_contract_fields_and_bounds_text_and_li
     assert len(compacted[0]["payoff"]) <= 400
     assert compacted[0]["beats"] == ["beat 1", "beat 2", "beat 3", "beat 4"]
     assert compacted[0]["avoid"] == ["avoid 1", "avoid 2", "avoid 3", "avoid 4"]
+
+
+def test_merge_and_resolve_return_deep_copy_isolated_data():
+    templates = [
+        {
+            "id": "trial",
+            "name": "Trial by Fire",
+            "trigger": "A public challenge appears.",
+            "beats": ["accept the challenge"],
+            "payoff": "The crowd sees the protagonist differently.",
+            "avoid": ["free victory"],
+        }
+    ]
+
+    merged = merge_trope_templates([templates])
+    merged[0]["beats"].append("mutated")
+    merged[0]["avoid"].append("mutated")
+
+    fresh_merged = merge_trope_templates([templates])
+    assert fresh_merged == [
+        {
+            "id": "trial",
+            "name": "Trial by Fire",
+            "trigger": "A public challenge appears.",
+            "beats": ["accept the challenge"],
+            "payoff": "The crowd sees the protagonist differently.",
+            "avoid": ["free victory"],
+        }
+    ]
+
+    contract = resolve_trope_contract(templates, "trial", None)
+    contract["avoid"].append("mutated")
+
+    fresh_contract = resolve_trope_contract(templates, "trial", None)
+    assert fresh_contract["avoid"] == ["free victory"]
 
 
 def test_compact_trope_candidates_ignores_malformed_values_and_returns_deep_copy_isolated_data():
