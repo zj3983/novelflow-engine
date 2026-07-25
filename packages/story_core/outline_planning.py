@@ -204,7 +204,7 @@ def validate_generated_trope_selection(
     outline_payload = validated.outline.model_dump(mode="json")
     for chapter in validated.outline.chapters:
         beat = chapter.trope_beat
-        if beat is None or beat == "":
+        if beat is None:
             continue
         context = select_outline_context(outline_payload, chapter.chapter_number)
         active_arc = context.get("active_arc")

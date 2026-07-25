@@ -49,6 +49,7 @@ from packages.story_core.outline_planning import (
     GeneratedOutlinePlan,
     validate_generated_continuation_plan,
     validate_generated_opening_plan,
+    validate_generated_trope_selection,
 )
 from packages.story_core.outline_planning_generation import OutlinePlanningBrief
 from packages.story_core.prose_style_review import review_prose_style
@@ -3156,6 +3157,12 @@ class FileProjectStore:
         return None
 
     @staticmethod
+    def _chapter_ranges_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
+        return int(left["start_chapter"]) <= int(right["end_chapter"]) and int(
+            right["start_chapter"]
+        ) <= int(left["end_chapter"])
+
+    @staticmethod
     def _validate_generated_locked_tropes_match(
         current: dict[str, Any],
         generated: dict[str, Any],
@@ -3165,12 +3172,20 @@ class FileProjectStore:
             for arc in current.get("arcs", [])
             if isinstance(arc, dict) and str(arc.get("id") or "").strip()
         }
+        locked_current_arcs = [
+            arc
+            for arc in current_arcs.values()
+            if arc.get("trope_id") is not None
+        ]
         for arc in generated.get("arcs", []):
             if not isinstance(arc, dict):
                 continue
             arc_id = str(arc.get("id") or "")
             current_arc = current_arcs.get(arc_id)
             if not current_arc:
+                for locked_arc in locked_current_arcs:
+                    if FileProjectStore._chapter_ranges_overlap(arc, locked_arc):
+                        raise ValueError(f"locked_arc_overlap:{arc_id}")
                 continue
             current_trope_id = current_arc.get("trope_id")
             generated_trope_id = arc.get("trope_id")
@@ -3288,6 +3303,8 @@ class FileProjectStore:
                 continue
             merged_arc = merge_character_profile(existing_arc, arc)
             merged_arc["end_chapter"] = max(int(existing_arc["end_chapter"]), int(arc["end_chapter"]))
+            if existing_arc.get("trope_id") is not None:
+                merged_arc["trope_id"] = existing_arc["trope_id"]
             merged_arc["long_term_antagonist_traces"] = list(
                 dict.fromkeys(
                     [
@@ -3428,6 +3445,13 @@ class FileProjectStore:
                 generated_outline,
                 current_chapter=current_chapter,
             )
+        final_validation_payload = validated.model_dump(mode="json")
+        final_validation_payload["outline"] = generated_outline
+        validate_generated_trope_selection(
+            final_validation_payload,
+            trope_candidates,
+            expected_primary_trope_id=expected_primary_trope_id,
+        )
         cards = self._merge_generated_character_cards(
             [card.model_dump(mode="json") for card in validated.characters]
         )

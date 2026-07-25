@@ -135,6 +135,14 @@ def test_trope_validator_rejects_invalid_primary_arc_and_beat() -> None:
         validate_generated_trope_selection(plan, _trope_templates())
 
 
+def test_trope_validator_rejects_empty_string_beat_when_candidates_exist() -> None:
+    plan = _trope_plan()
+    plan["outline"]["chapters"][0]["trope_beat"] = ""
+
+    with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:1$"):
+        validate_generated_trope_selection(plan, _trope_templates())
+
+
 def test_trope_validator_uses_active_arc_precedence_for_overlapping_arcs() -> None:
     plan = _trope_plan()
     plan["outline"]["arcs"] = [
@@ -169,6 +177,20 @@ def test_trope_validator_requires_all_nulls_when_no_candidates() -> None:
 
     plan["outline"]["chapters"][0]["trope_beat"] = "beat-a1"
     with pytest.raises(ValueError, match="^unexpected_chapter_trope_beat:1$"):
+        validate_generated_trope_selection(plan, [])
+
+    plan = _trope_plan()
+    plan["outline"]["arcs"][0]["trope_id"] = None
+    for chapter in plan["outline"]["chapters"]:
+        chapter["trope_beat"] = None
+    with pytest.raises(ValueError, match="^unexpected_primary_trope_id$"):
+        validate_generated_trope_selection(plan, [])
+
+    plan = _trope_plan()
+    plan["outline"]["overall"]["primary_trope_id"] = None
+    for chapter in plan["outline"]["chapters"]:
+        chapter["trope_beat"] = None
+    with pytest.raises(ValueError, match="^unexpected_arc_trope_id:opening$"):
         validate_generated_trope_selection(plan, [])
 
 
@@ -366,6 +388,20 @@ def test_generator_rejects_selected_primary_trope_drift() -> None:
 
     assert isinstance(exc_info.value.__cause__, ValueError)
     assert str(exc_info.value.__cause__) == "unexpected_primary_trope_id"
+
+
+def test_generator_allows_direct_initial_model_to_choose_primary_trope() -> None:
+    recording = RecordingRuntime()
+    payload = _brief().model_dump(mode="json")
+    payload["opening_direction"]["primary_trope_id"] = None
+
+    plan = recording.generator().generate(
+        OutlinePlanningBrief.model_validate(payload),
+        mode="initial",
+    )
+
+    assert plan.outline.overall.primary_trope_id == "low_status_reversal"
+    assert recording.prompt_context["opening_direction"]["primary_trope_id"] is None
 
 
 def test_extend_rejects_existing_primary_trope_drift() -> None:
