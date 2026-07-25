@@ -142,7 +142,7 @@ class _EconomyUnit:
 @dataclass(frozen=True)
 class _ItemMention:
     item: str
-    identified: bool
+    identified: bool | None
     unit_index: int
     position: int
 
@@ -164,12 +164,12 @@ _MARKET_SCENE_TERMS = (
     "求购成交",
     "立即出售",
 )
-_REAL_SETTLEMENT_TERMS = ("现实账户", "现实结算")
+_REAL_SETTLEMENT_TERMS = ("现实账户", "现实结算", "现实到账")
 _MARKET_COMPLETION_TERMS = ("成交", "卖出", "出售")
 _DIRECT_SETTLEMENT_TERMS = ("直接", "进入", "转入", "打进", "到账", "现实结算")
 _DIRECT_SETTLEMENT_DENIAL = re.compile(
-    r"(?:不会|不能|并非|不是|不应|不得|不可能)"
-    r"[^。！？!?；;]{0,12}(?:直接)?(?:进入|转入|打进|到账|现实结算)"
+    r"(?:没有|不需要|不必|无需|不用|不会|不能|并非|不是|不再|不应|不得|不可能)"
+    r"(?:再|继续|被|要求)?\s*(?:直接)?(?:进入|转入|打进|到账|现实结算)"
 )
 _NAME_PANEL_PATTERN = re.compile(r"【名称\s*[:：]\s*(?P<item>[^】]{1,20})】")
 _ITEM_USE_PATTERN = re.compile(
@@ -178,9 +178,16 @@ _ITEM_USE_PATTERN = re.compile(
 _ITEM_IDENTIFIED_PATTERN = re.compile(
     r"(?P<item>[一-龥A-Za-z0-9·]{2,20})(?:已识别|已经识别|已显示正式名称|已经显示正式名称)"
 )
+_INLINE_IDENTIFIED_ITEM_PATTERN = re.compile(
+    r"(?:已经|已)识别的(?P<item>[一-龥A-Za-z0-9·]{1,20}?)(?=提交鉴定|送去鉴定|送去验货|交给鉴定师)"
+)
 _ITEM_UNIDENTIFIED_PATTERNS = (
     re.compile(r"(?P<item>[一-龥A-Za-z0-9·]{1,20})(?:仍是|仍为|还是|标为|显示为)?未鉴定"),
     re.compile(r"未鉴定的(?P<item>[一-龥A-Za-z0-9·]{1,20})"),
+)
+_CURRENT_ITEM_PATTERNS = (
+    re.compile(r"(?:拿起|取出|看向|查看)(?:一件|一块|一颗|一个)?(?P<item>[一-龥A-Za-z0-9·]{1,16})"),
+    re.compile(r"当前(?:查看|拿着)的是(?P<item>[一-龥A-Za-z0-9·]{1,16})"),
 )
 _APPRAISAL_ACTION_PATTERNS = (
     re.compile(
@@ -206,7 +213,23 @@ _FUNDED_ORDER_TERMS = (
 )
 _COMPLETED_ORDER_TERMS = ("立即出售", "显示成交", "已经成交", "已成交", "成交后", "成交以后", "成交")
 _BUYER_RECONFIRM_PATTERN = re.compile(r"(?:等待|等)买家(?:再次)?确认|买家再次确认")
-_NEGATED_WAIT_MARKERS = ("不再", "无需", "无须", "不用", "不必", "不会", "不能", "并非", "不是")
+_NEGATED_WAIT_MARKERS = (
+    "没有",
+    "不需要",
+    "不必",
+    "无需",
+    "无须",
+    "不用",
+    "不会",
+    "不能",
+    "并非",
+    "不是",
+    "不再",
+)
+_FUNDED_ORDER_PATTERN = re.compile(
+    r"求购单(?:里|里的|中|中的|其中|其中的)?"
+    r"[^，。！？!?；;]{0,8}?(?:资金|游戏币)(?:已经|已)?(?:被)?冻结(?:了)?"
+)
 
 
 def _economy_units(text: str) -> tuple[_EconomyUnit, ...]:
@@ -255,51 +278,65 @@ def _is_direct_reality_settlement(unit: _EconomyUnit) -> bool:
 
 
 def _has_exchange_between(
-    market_unit: _EconomyUnit,
-    settlement_unit: _EconomyUnit,
+    units: tuple[_EconomyUnit, ...],
+    market_index: int,
+    settlement_index: int,
+    market_position: int,
+    reality_position: int,
 ) -> bool:
-    market_position = min(
-        market_unit.text.find(term)
-        for term in _MARKET_SCENE_TERMS
-        if term in market_unit.text
-    )
-    reality_position = min(
-        settlement_unit.text.find(term)
-        for term in _REAL_SETTLEMENT_TERMS
-        if term in settlement_unit.text
-    )
-    if market_unit is settlement_unit:
-        exchange = market_unit.text.find("官方兑换", market_position, reality_position)
-        return exchange >= 0
-    exchange_after_market = market_unit.text.find("官方兑换", market_position)
-    exchange_before_reality = settlement_unit.text.find("官方兑换", 0, reality_position)
-    return exchange_after_market >= 0 or exchange_before_reality >= 0
+    for unit in units[market_index : settlement_index + 1]:
+        start = 0
+        while True:
+            index = unit.text.find("官方兑换", start)
+            if index < 0:
+                break
+            position = unit.start + index
+            if market_position < position < reality_position:
+                return True
+            start = index + len("官方兑换")
+    return False
 
 
 def _has_direct_market_settlement(units: tuple[_EconomyUnit, ...]) -> bool:
     for index, market_unit in enumerate(units):
         if not _is_market_completion(market_unit):
             continue
-        for settlement_unit in units[index : index + 2]:
+        market_position = market_unit.start + min(
+            market_unit.text.find(term)
+            for term in _MARKET_SCENE_TERMS
+            if term in market_unit.text
+        )
+        for settlement_index in range(index, len(units)):
+            settlement_unit = units[settlement_index]
+            paragraph_gap = settlement_unit.paragraph_index - market_unit.paragraph_index
+            if paragraph_gap > 2:
+                break
             if not _is_direct_reality_settlement(settlement_unit):
                 continue
-            if _has_exchange_between(market_unit, settlement_unit):
+            reality_position = settlement_unit.start + min(
+                settlement_unit.text.find(term)
+                for term in _REAL_SETTLEMENT_TERMS
+                if term in settlement_unit.text
+            )
+            if reality_position <= market_position:
                 continue
-            if settlement_unit is market_unit:
-                market_position = min(
-                    market_unit.text.find(term) for term in _MARKET_SCENE_TERMS if term in market_unit.text
-                )
-                reality_position = min(
-                    market_unit.text.find(term) for term in _REAL_SETTLEMENT_TERMS if term in market_unit.text
-                )
-                if reality_position <= market_position:
-                    continue
+            if _has_exchange_between(
+                units,
+                index,
+                settlement_index,
+                market_position,
+                reality_position,
+            ):
+                continue
             return True
     return False
 
 
 def _clean_item_name(value: str) -> str:
     item = value.strip(" ，。；：、【】")
+    for prefix in ("已经识别的", "已识别的"):
+        if item.startswith(prefix):
+            item = item[len(prefix) :]
     for marker in ("面板写着", "面板显示", "系统显示", "写着", "显示", "标着", "旁边的", "旁边"):
         if marker in item:
             item = item.rsplit(marker, 1)[-1]
@@ -316,10 +353,11 @@ def _item_mentions(units: tuple[_EconomyUnit, ...]) -> tuple[_ItemMention, ...]:
             *_NAME_PANEL_PATTERN.finditer(unit.text),
             *_ITEM_USE_PATTERN.finditer(unit.text),
             *_ITEM_IDENTIFIED_PATTERN.finditer(unit.text),
+            *_INLINE_IDENTIFIED_ITEM_PATTERN.finditer(unit.text),
         ]
         for match in identified_matches:
             item = _clean_item_name(match.group("item"))
-            if item:
+            if item and not item.endswith(("把", "将", "对")):
                 mentions.append(_ItemMention(item, True, unit_index, unit.start + match.start()))
         if "裂纹狼心" in unit.text and any(term in unit.text for term in ("用途", "正式名称", "已识别")):
             mentions.append(
@@ -330,6 +368,11 @@ def _item_mentions(units: tuple[_EconomyUnit, ...]) -> tuple[_ItemMention, ...]:
                 item = _clean_item_name(match.group("item"))
                 if item:
                     mentions.append(_ItemMention(item, False, unit_index, unit.start + match.start()))
+        for pattern in _CURRENT_ITEM_PATTERNS:
+            for match in pattern.finditer(unit.text):
+                item = _clean_item_name(match.group("item"))
+                if item:
+                    mentions.append(_ItemMention(item, None, unit_index, unit.start + match.start()))
     return tuple(sorted(mentions, key=lambda mention: mention.position))
 
 
@@ -341,7 +384,7 @@ def _appraisal_actions(units: tuple[_EconomyUnit, ...]) -> tuple[_AppraisalActio
             for match in pattern.finditer(unit.text):
                 item = _clean_item_name(match.group("item"))
                 if item:
-                    actions.append(_AppraisalAction(item, unit_index, unit.start + match.start()))
+                    actions.append(_AppraisalAction(item, unit_index, unit.start + match.end()))
                     explicit_positions.update(
                         range(unit.start + match.start(), unit.start + match.end())
                     )
@@ -366,7 +409,13 @@ def _has_reappraised_identified_item(units: tuple[_EconomyUnit, ...]) -> bool:
         nearby = [
             mention
             for mention in mentions
-            if mention.position < action.position and 0 <= action.unit_index - mention.unit_index <= 1
+            if (
+                mention.position < action.position
+                and 0
+                <= units[action.unit_index].paragraph_index
+                - units[mention.unit_index].paragraph_index
+                <= 2
+            )
         ]
         if action.item in _ITEM_PRONOUNS or action.item == _IMPLICIT_ITEM_REFERENCE:
             if nearby and nearby[-1].identified:
@@ -404,10 +453,14 @@ def _buyer_reconfirm_positions(units: tuple[_EconomyUnit, ...]) -> list[tuple[in
 
 
 def _funded_order_positions(units: tuple[_EconomyUnit, ...]) -> list[tuple[int, int]]:
-    return _event_positions(
+    positions = _event_positions(
         tuple(unit for unit in units if "求购单" in unit.text),
         _FUNDED_ORDER_TERMS,
     )
+    for unit in units:
+        for match in _FUNDED_ORDER_PATTERN.finditer(unit.text):
+            positions.append((unit.paragraph_index, unit.start + match.start()))
+    return sorted(set(positions), key=lambda event: event[1])
 
 
 def _has_buyer_reconfirmation_after_funded_sale(units: tuple[_EconomyUnit, ...]) -> bool:

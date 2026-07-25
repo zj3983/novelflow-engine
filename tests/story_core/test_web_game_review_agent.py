@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.web_game_review import review_web_game_chapter, web_game_review_rules
 from packages.story_core.orchestrator import _merge_writing_review_quality, _opening_writer_rules
 
@@ -128,6 +130,63 @@ def test_web_game_review_does_not_let_earlier_exchange_hide_direct_market_settle
     review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
 
     assert any("交易与现实兑换混成了一步" in issue for issue in review["issues"]), review
+
+
+@pytest.mark.parametrize(
+    ("body", "issue_fragment"),
+    [
+        (
+            "交易行显示求购单已经成交。\n\n夜烬顺手关掉了背包。\n\n卖出所得直接转入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "裂纹狼心已显示正式名称。\n\n夜烬看了一眼门外。\n\n他把它提交鉴定。",
+            "又被送去鉴定或验货",
+        ),
+        ("求购成交所得直接现实到账。", "交易与现实兑换混成了一步"),
+        (
+            "求购单里的资金被冻结了。\n\n夜烬点下立即出售，界面显示成交。\n\n系统要求等待买家再次确认。",
+            "仍在等待买家再次确认",
+        ),
+        ("夜烬把已经识别的裂纹狼心提交鉴定。", "又被送去鉴定或验货"),
+    ],
+)
+def test_web_game_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
+    body: str,
+    issue_fragment: str,
+):
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=f"网游《神域》里，{body}",
+        event_plan={},
+        world_facts=[],
+    )
+
+    matching = [issue for issue in review["issues"] if issue_fragment in issue]
+    assert matching, review
+    assert all("必须修复" in issue for issue in matching)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "交易行显示求购单已经成交。\n\n夜烬停了一会儿。\n\n款项没有直接进入现实账户，必须另走独立官方兑换。",
+        "求购单里的资金被冻结了。\n\n夜烬立即出售，界面显示成交。\n\n系统没有要求等待买家确认。",
+        "交易行成交后游戏币进入游戏钱包。\n\n他打开独立官方兑换页面。\n\n确认兑换价和手续费后，现实账户到账。",
+        "裂纹狼心用途是锻造。\n\n旁边的披风仍未鉴定。\n\n他把披风交给鉴定师。",
+        "裂纹狼心已识别。\n\n夜烬随后拿起披风，当前查看的是披风。\n\n他把它提交鉴定。",
+        "交易行显示求购单成交。\n\n夜烬离开市场。\n\n两天后他完成了另一项任务。\n\n现实账户到账的是旧工资。",
+    ],
+)
+def test_web_game_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=f"网游《神域》里，{body}",
+        event_plan={},
+        world_facts=[],
+    )
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
 
 
 def test_web_game_review_rejects_login_after_disconnected_broadband_without_network_source():

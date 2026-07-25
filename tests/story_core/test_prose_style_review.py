@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.prose_style_review import anti_ai_style_rules, sanitize_prose_style, review_prose_style
 
 
@@ -208,6 +210,61 @@ def test_prose_style_review_ignores_negated_chains_and_appraisal_of_another_item
     review = review_prose_style(body)
 
     assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+@pytest.mark.parametrize(
+    ("body", "issue_fragment"),
+    [
+        (
+            "交易行里的求购已经成交。\n\n夜烬喝了口水。\n\n成交所得直接到账现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "焰纹石用途是强化武器。\n\n夜烬翻开下一页。\n\n他把这颗材料交给鉴定师。",
+            "又被送去鉴定或验货",
+        ),
+        ("求购成交所得直接现实到账。", "交易与现实兑换混成了一步"),
+        (
+            "求购单里的资金被冻结了。\n\n夜烬点下立即出售。\n\n成交后仍需等待买家再次确认。",
+            "仍在等待买家再次确认",
+        ),
+        ("夜烬把已经识别的裂纹狼心提交鉴定。", "又被送去鉴定或验货"),
+    ],
+)
+def test_prose_style_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
+    body: str,
+    issue_fragment: str,
+):
+    review = review_prose_style(body)
+
+    matching = [issue for issue in review["issues"] if issue_fragment in issue]
+    assert matching, review
+    assert all("必须修复" in issue for issue in matching)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "交易行里的求购已经成交。\n\n夜烬抬头看了一眼。\n\n款项没有直接进入现实账户，必须另走独立官方兑换。",
+        "求购单里的资金被冻结了。\n\n夜烬点下立即出售。\n\n系统没有要求等待买家确认。",
+        "求购单成交后游戏币进入游戏钱包。\n\n他打开独立官方兑换页面。\n\n确认手续费和预计到账后，现实账户到账。",
+        "裂纹狼心用途是锻造。\n\n旁边还有一件未鉴定披风。\n\n夜烬把披风交给鉴定师。",
+        "裂纹狼心已经识别。\n\n夜烬取出披风，当前拿着的是披风。\n\n他把它提交鉴定。",
+        "交易行里的拍卖物已经成交。\n\n夜烬去了城外。\n\n公会开始另一场战斗。\n\n现实账户收到的是项目尾款。",
+    ],
+)
+def test_prose_style_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):
+    review = review_prose_style(body)
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+def test_prose_style_review_does_not_apply_unrelated_negation_to_direct_settlement():
+    body = "求购单已经成交。他不是买家，成交所得直接进入现实账户。"
+
+    review = review_prose_style(body)
+
+    assert any("交易与现实兑换混成了一步" in issue for issue in review["issues"]), review
 
 
 def test_prose_style_review_flags_panel_followed_by_rule_explanation():

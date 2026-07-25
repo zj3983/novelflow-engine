@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.world_consistency_review import review_world_event_consistency
 
 
@@ -119,6 +121,53 @@ def test_world_consistency_review_does_not_treat_unrelated_frozen_funds_as_funde
         "这笔普通订单需要等待买家确认。"
     )
 
+    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+@pytest.mark.parametrize(
+    ("body", "issue_fragment"),
+    [
+        (
+            "拍卖物已经成交。\n\n夜烬收起菜单。\n\n那笔款项直接打进现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "【名称：裂纹狼心】【用途：锻造】\n\n夜烬走到窗口旁。\n\n他送这颗材料去鉴定。",
+            "又被送去鉴定或验货",
+        ),
+        ("求购成交所得直接现实到账。", "交易与现实兑换混成了一步"),
+        (
+            "求购单里的资金被冻结了。\n\n订单随即成交。\n\n页面仍让他等买家再次确认。",
+            "仍在等待买家再次确认",
+        ),
+        ("把已经识别的裂纹狼心提交鉴定。", "又被送去鉴定或验货"),
+    ],
+)
+def test_world_consistency_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
+    body: str,
+    issue_fragment: str,
+):
+    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+
+    matching = [issue for issue in review["issues"] if issue_fragment in issue]
+    assert matching, review
+    assert all("必须修复" in issue for issue in matching)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "求购成交的提示亮起。\n\n夜烬关掉背包。\n\n款项不需要直接进入现实账户，必须另走独立官方兑换。",
+        "求购单里的资金被冻结了。\n\n订单显示成交。\n\n系统没有要求等待买家确认。",
+        "求购单成交，游戏币进入游戏钱包。\n\n夜烬进入独立官方兑换页面。\n\n确认额度和预计到账后，现实账户收到款项。",
+        "裂纹狼心已经识别。\n\n披风仍是未鉴定状态。\n\n夜烬把披风送去鉴定。",
+        "裂纹狼心已显示正式名称。\n\n夜烬拿起一块矿石，当前查看的是矿石。\n\n他把它提交鉴定。",
+        "裂纹狼心已经识别。\n\n夜烬离开仓库。\n\n第二天他去了矿洞。\n\n回来后把它提交鉴定。",
+    ],
+)
+def test_world_consistency_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):
     review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
 
     assert not any("经济边界" in issue for issue in review["issues"]), review
