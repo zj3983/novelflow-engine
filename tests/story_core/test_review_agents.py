@@ -1,3 +1,4 @@
+import packages.story_core.editor_agent as editor_agent_module
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.reader_agent import review_reader_agent
 from packages.story_core.reviewer_agent import review_reviewer_agent
@@ -31,6 +32,20 @@ def test_editor_agent_exposes_prose_reviews():
     assert "prose_quality_review" in review
     assert "prose_style_review" in review
     assert "ai_flavor_review" in review
+
+
+def test_editor_agent_passes_explicit_genre_context_to_style_review(monkeypatch):
+    captured = {}
+
+    def fake_style_review(body, *, genre_context=None):
+        captured["genre_context"] = genre_context
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(editor_agent_module, "review_prose_style", fake_style_review)
+
+    review_editor_agent("plain body", genre_context={"genre": "xuanhuan"})
+
+    assert captured["genre_context"] == {"genre": "xuanhuan"}
 
 
 def test_reviewer_agent_exposes_hard_rule_reviews():

@@ -1,3 +1,9 @@
+from pathlib import Path
+
+import pytest
+
+import packages.story_core.orchestrator as orchestrator_module
+
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.genre_types.urban import URBAN
 from packages.story_core.models import CharacterState, StoryState
@@ -10,6 +16,7 @@ from packages.story_core.orchestrator import (
     _writer_fact_section,
 )
 from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
+from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
 
 
 def test_body_prompt_has_no_unselected_plain_style_fallback():
@@ -36,15 +43,34 @@ def test_web_game_method_loads_only_trade_language_for_trade_scene():
     text = "\n".join(
         _web_game_writing_method_lines(
             2,
-            {"chapter_goal": "打开交易行，查看求购单并按一口价出售材料"},
+            {"chapter_goal": "打开交易行，按一口价挂单并等待买家购买材料"},
         )
     )
 
     assert "求购单" in text
     assert "一口价" in text
+    assert "接受现有求购单价格" in text
+    assert "立即出售并直接成交" in text
     assert "平台封存" in text
     assert "进本" not in text
     assert "坦克" not in text
+
+
+def test_web_game_method_requests_at_most_three_language_cards(monkeypatch):
+    requested_limits = []
+
+    def record_selection(plan, *, max_cards):
+        requested_limits.append(max_cards)
+        return []
+
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.select_game_language_cards",
+        record_selection,
+    )
+
+    _web_game_writing_method_lines(1, {"chapter_goal": "登录后卖出材料并官方兑换"})
+
+    assert requested_limits == [3]
 
 
 def test_web_game_method_loads_only_combat_language_for_combat_scene():
@@ -579,19 +605,158 @@ def test_web_game_first_chapter_whole_body_prompt_has_plain_four_beat_contract()
     assert prompt.index("整章顺序") < prompt.index("## 本章事实")
 
 
-def test_trade_authorized_first_chapter_prompt_uses_the_actual_five_step_order():
+def test_trade_authorized_first_chapter_prompt_uses_market_then_exchange_order():
     story = StoryState(story_id="s-trade-order", outline="网游开服后匿名处理稀有材料。", genre="网游", style="白描")
     prompt = StoryOrchestrator()._body_prompt(
         story,
         1,
         {
             "governance": {"chapter_intent": {"first_chapter_trade_authorized": True}},
-            "event_plan": {"chapter_title": "第一笔到账", "turn": "担保交易到账并付清急账"},
+            "event_plan": {"chapter_title": "第一笔到账", "turn": "卖出裂纹狼心，再走官方兑换渠道并付清急账"},
         },
     )
 
-    assert "现实压力 -> 登录建号 -> 低级验证 -> 匿名交割与急账处理 -> 下一步" in prompt
+    assert "交易行游戏币成交 -> 官方兑换 -> 现实账户到账 -> 处理急账" in prompt
+    assert "已冻结游戏币的现有求购单" in prompt
+    assert "独立官方兑换页面" in prompt
+    assert "担保交易" not in prompt
     assert "第一章只完成开服现场、建号、低级验证和下一步决定" not in prompt
+
+
+def test_formal_prompts_normalize_legacy_plan_review_and_source_body_without_changing_amounts():
+    legacy_trade = "\u62c5\u4fdd\u4ea4\u6613"
+    legacy_delivery = "\u5c01\u5b58\u4ea4\u5272"
+    legacy_appraisal = "\u63d0\u4ea4\u9274\u5b9a"
+    forbidden_currency = "\u4eba\u6c11\u5e01"
+    story = StoryState(
+        story_id="s-legacy-prompt",
+        outline=f"第一章通过裂纹狼心{legacy_trade}解决现实急账。",
+        genre="网游",
+        style="升级流",
+        author_constraints=[f"第一章必须通过裂纹狼心{legacy_trade}解决现实急账。"],
+    )
+    plan = {"event_plan": {"turn": f"完成{legacy_trade}并处理急账"}}
+    review = {"issues": [f"补足裂纹狼心{legacy_appraisal}"], "revision_plan": [f"删除{legacy_delivery}"]}
+    source_body = f"裂纹狼心{legacy_appraisal}后{legacy_delivery}，到账1764.00{forbidden_currency}。"
+    orchestrator = StoryOrchestrator()
+
+    prompts = (
+        orchestrator._plan_prompt(story, 1),
+        orchestrator._body_prompt(story, 1, plan),
+        orchestrator._revision_prompt(story, 1, source_body, plan, review),
+    )
+
+    for prompt in prompts:
+        assert all(term not in prompt for term in (legacy_trade, legacy_delivery, legacy_appraisal, forbidden_currency))
+        assert "交易行" in prompt
+        assert "官方兑换" in prompt
+        assert "现实账户" in prompt
+        assert "处理急账" in prompt
+    assert "1764.00元" in prompts[-1]
+
+
+def test_each_formal_prompt_normalizes_once_at_its_final_output(monkeypatch):
+    story = StoryState(
+        story_id="s-single-migration-exit",
+        outline="第一章通过裂纹狼心担保交易解决现实急账。",
+        genre="网游",
+        style="升级流",
+    )
+    plan = {"event_plan": {"turn": "裂纹狼心通过担保平台成交"}}
+    review = {"issues": ["裂纹狼心提交鉴定"]}
+    original = orchestrator_module.normalize_legacy_economy_prompt_value
+    calls: list[tuple[bool, int]] = []
+
+    def track(value, *, game_context, chapter_number):
+        calls.append((game_context, chapter_number))
+        return original(value, game_context=game_context, chapter_number=chapter_number)
+
+    monkeypatch.setattr(orchestrator_module, "normalize_legacy_economy_prompt_value", track)
+    orchestrator = StoryOrchestrator()
+
+    for build in (
+        lambda: orchestrator._plan_prompt(story, 1),
+        lambda: orchestrator._body_prompt(story, 1, plan),
+        lambda: orchestrator._revision_prompt(story, 1, "裂纹狼心担保交易。", plan, review),
+    ):
+        calls.clear()
+        build()
+        assert calls == [(True, 1)]
+
+
+def test_revision_prompt_migrates_real_order_status_appraisal_sentence() -> None:
+    story = StoryState(
+        story_id="s-real-order-appraisal",
+        outline="第一章在交易行卖出裂纹狼心，再走官方兑换渠道解决现实急账。",
+        genre="网游",
+        style="升级流",
+    )
+    source_body = "裂纹狼心从背包中消失，订单状态变成‘鉴定中’。"
+
+    plan = {
+        "governance": {"chapter_intent": {"first_chapter_trade_authorized": True}},
+        "event_plan": {"turn": story.outline},
+    }
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, source_body, plan, {})
+
+    assert "鉴定中" not in prompt
+    assert "求购单显示已成交" in prompt
+    assert "订单状态变成" not in prompt
+    for line in opening_market_exchange_flow_lines():
+        assert prompt.count(line) == 1
+
+
+def test_real_chapter_one_revision_prompt_uses_natural_local_trade_migration() -> None:
+    worktree_root = Path(__file__).resolve().parents[2]
+    candidates = (
+        worktree_root / "data" / "exported-projects" / "p-gou-webgame-restored",
+        worktree_root.parent.parent / "data" / "exported-projects" / "p-gou-webgame-restored",
+    )
+    project_root = next((candidate for candidate in candidates if candidate.exists()), None)
+    if project_root is None:
+        pytest.skip("real p-gou-webgame-restored fixture is unavailable")
+    chapter_path = next((project_root / "chapters").glob("0001-*.md"), None)
+    if chapter_path is None:
+        pytest.skip("real chapter one fixture is unavailable")
+
+    source_body = chapter_path.read_text(encoding="utf-8")
+    if not any(
+        marker in source_body
+        for marker in ("担保净到账", "订单状态变成鉴定中", "匿名担保交易已完成")
+    ):
+        pytest.skip("real chapter fixture already uses the current market/exchange flow")
+    story = StoryState(
+        story_id="s-real-chapter-one-migration",
+        outline="第一章在交易行卖出裂纹狼心，再走官方兑换渠道解决现实急账。",
+        genre="网游",
+        style="升级流",
+    )
+
+    plan = {
+        "governance": {"chapter_intent": {"first_chapter_trade_authorized": True}},
+        "event_plan": {"turn": story.outline},
+    }
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, source_body, plan, {})
+
+    assert "夜烬点下立即出售" in prompt
+    assert "求购单显示已成交" in prompt
+    assert "订单状态变成" not in prompt
+    assert "匿名提交" not in prompt
+    assert "鉴定中" not in prompt
+    source_section = prompt.split("## 原正文", 1)[1]
+    local_steps = (
+        "夜烬点下立即出售",
+        "求购单显示已成交",
+        "游戏币已进入钱包",
+        "他随后打开独立的官方兑换页面",
+        "现实账户到账1764.00元",
+    )
+    assert [source_section.index(step) for step in local_steps] == sorted(
+        source_section.index(step) for step in local_steps
+    )
+    assert "求购单已成交，官方兑换完成" not in source_section
+    for line in opening_market_exchange_flow_lines():
+        assert prompt.count(line) == 1
 
 
 def test_web_game_writer_prompt_moves_on_after_a_panel_instead_of_explaining_it():

@@ -6,6 +6,7 @@ from typing import Any
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.game_level_gap import assess_level_gap, extract_level_gap_case
+from packages.story_core.web_game_economy import detect_economy_boundary_violations
 
 
 GAME_CONTEXT_TOKENS = (
@@ -20,6 +21,7 @@ GAME_CONTEXT_TOKENS = (
     "千倍爆率",
     "game_webnovel",
 )
+_FULL_REAL_CURRENCY_NAME = "\u4eba\u6c11\u5e01"
 
 NAMED_NPCS = ("灰烬村村长", "药剂师洛婶", "职业导师艾伦", "仓库管理员铁栓", "修理匠老葛")
 NPC_ALIASES = {
@@ -164,7 +166,7 @@ def web_game_review_rules() -> list[str]:
         "表达方式：规则和系统必须藏进界面提示、人物动作、交易结果、玩家闲聊和主角判断里，少用服务节点、后台分析、低权重标签等产品/工程说明腔。",
         "装备账本：购买、替换、修理、耐久变化和关键消耗品必须进入章节摘要或账本，不能上一章买了装备、下一章当没发生。",
         "NPC设定：命名NPC重点出场必须交代地点、服务/价格或门槛、利益诉求/口吻和信息边界，不能只作为任务牌子。",
-        "经济规则：没有世界档案明确设定前，不得把金币直接换算成人民币；新手阶段优先使用铜币、银币、材料和市场询价。",
+        "经济规则：没有世界档案明确设定前，不得把金币直接换算成现实货币；新手阶段优先使用铜币、银币、材料和市场询价。",
         "公会压迫：公会只能通过重复模式、稀有物、资源点目击、NPC任务异常、榜单或多处线索逐步逼近，不能全知全能。",
         "背景预算：第一章只完整展开现实入口、游戏入口、首次验证和领先预期；NPC服务、论坛、公会追查和实际交易后移。",
         "联网连续性：如果正文写家庭宽带断网、停机或路由器无信号，登录全沉浸游戏前必须交代移动数据、设备eSIM或其他有效联网方式。",
@@ -790,7 +792,7 @@ def review_web_game_chapter(
     if boundary_chapter:
         drift_terms = [
             term
-            for term in ("寄售", "成交", "到账", "手续费", "换钱", "换人民币")
+            for term in ("寄售", "成交", "到账", "手续费", "换钱", f"换{_FULL_REAL_CURRENCY_NAME}")
             if _has_asserted_plain_term(body, term)
         ]
         if drift_terms:
@@ -960,10 +962,11 @@ def review_web_game_chapter(
             plan="把可见信息降级为价格、数量、批次、时间戳、手续费、匿名流水、资源点目击或论坛传闻；坐标和身份只能通过后续多源线索逐步逼近。",
         )
 
-    fixed_exchange_rate_forbidden = "不得把金币直接换算成人民币" in facts_text or "汇率" in facts_text
-    explicit_exchange_rate = _has_any(facts_text, ("官方兑换", "黑市行情", "稳定汇率", "金币=人民币"))
+    forbidden_currency_name = _FULL_REAL_CURRENCY_NAME
+    fixed_exchange_rate_forbidden = f"不得把金币直接换算成{forbidden_currency_name}" in facts_text or "汇率" in facts_text
+    explicit_exchange_rate = _has_any(facts_text, ("官方兑换", "黑市行情", "稳定汇率", f"金币={forbidden_currency_name}"))
     invented_exchange_rate = re.search(
-        r"(?:1|一)\s*金(?:币)?\s*(?:=|等于|约等于|能换|可以换|折合)\s*\d+(?:\.\d+)?\s*(?:元|人民币|RMB)",
+        rf"(?:1|一)\s*金(?:币)?\s*(?:=|等于|约等于|能换|可以换|折合)\s*\d+(?:\.\d+)?\s*(?:元|{forbidden_currency_name}|RMB)",
         body,
     )
     if invented_exchange_rate and (fixed_exchange_rate_forbidden or not explicit_exchange_rate):
@@ -972,7 +975,7 @@ def review_web_game_chapter(
             revision_plan=revision_plan,
             scores=scores,
             score_key="economy_rules",
-            issue="章节写死了金币与人民币汇率，但世界档案没有明确官方兑换或黑市行情。",
+            issue="章节写死了金币与现实货币的汇率，但世界档案没有明确官方兑换或黑市行情。",
             plan="删除固定现实汇率，改写为开服期行情未稳、玩家询价、游戏内铜币/银币/金币价格或市场猜测。",
         )
 
@@ -986,6 +989,17 @@ def review_web_game_chapter(
             score_key="economy_rules",
             issue=f"章节货币显示未按 1金币=100银币=10000铜币 归一，出现 {examples} 这类余额。",
             plan="重算并归一显示余额：铜币满100应进位为银币，银币满100应进位为金币；同时同步修正交易到账、支出和剩余金额。",
+        )
+
+    for violation in detect_economy_boundary_violations(body):
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="economy_rules",
+            issue=f"[必须修复]经济边界：{violation.issue}",
+            plan=violation.revision,
+            score=3,
         )
 
     material_issues = _material_inventory_issues(body)

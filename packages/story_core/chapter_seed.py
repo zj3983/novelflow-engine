@@ -5,13 +5,16 @@ import re
 from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
-from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.genre_plugins import is_game_genre, merge_plugin_rulebooks, plugin_simulation_blueprint, select_genre_plugins
 from packages.story_core.models import NovelProject, StoryState
 from packages.story_core.novel_type_catalog import (
     normalize_novel_type_ids,
     novel_type_id_from_metadata_fact,
     resolve_novel_type_id,
+)
+from packages.story_core.web_game_economy import (
+    first_chapter_market_exchange_authorized,
+    opening_market_exchange_flow_lines,
 )
 from packages.story_core.trope_runtime import merge_trope_templates, resolve_trope_contract
 
@@ -165,10 +168,10 @@ def _contract_for_game(chapter_number: int) -> dict[str, list[str]]:
             ],
             "forbidden_moves": [
                 "禁止单次低级材料交易暴露坐标、现实身份、隐藏天赋或精确刷怪点。",
-                "禁止写死金币兑人民币汇率，除非世界档案已有明确官方兑换或黑市行情。",
+                "禁止写死游戏币与现实货币的固定汇率，除非世界档案已有明确官方兑换行情。",
                 "禁止第一章出现赵胖子追债、商人脚本盯盘、公会会长、白袍据点、论坛围观或任何公会追查戏。",
                 "禁止第一章把交易、任务提交或补给写成公开炫耀；若项目账本未允许办理服务，第一章不得擅自提交、到账、修理或买药。",
-                "禁止第一章提现、换算人民币、商人盯盘或形成市场追踪；游戏内铜币和补给收益只有在项目账本/章节计划允许时才兑现。",
+                "禁止第一章擅自兑换现实款项、商人盯盘或形成市场追踪；游戏内铜币和补给收益只有在项目账本/章节计划允许时才兑现。",
                 "禁止第一章完整展开多个命名NPC、多个服务点或多地图跑腿。",
                 "禁止把规则写成百科说明，必须通过界面、交易、对话和行动展示。",
                 "禁止在正文出现作者术语或创作术语，例如爽点、钩子、节奏、读者、网文规则、生成、审稿。",
@@ -522,7 +525,7 @@ def _writing_contract(story: StoryState, chapter_number: int, is_game: bool) -> 
     }
 
 
-def _authorized_trade_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
+def _authorized_market_exchange_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
     adapted = deepcopy(blueprint)
     for template in adapted.get("opening_scene_templates", []):
         if template.get("id") == "reality_entry":
@@ -531,22 +534,20 @@ def _authorized_trade_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
             )
         elif template.get("id") == "chapter_1_next_step":
             template["purpose"] = (
-                "完成裂纹狼心担保交易和现实到账，再把材料来源、隐藏优势与后续路线继续藏住。"
+                "先在交易行获得游戏币，再走官方兑换让现实账户到账并处理急账，同时藏住材料来源和隐藏优势。"
             )
             template["conflict"] = (
                 "主角必须在不暴露隐藏爆率和现实身份的前提下完成交易，并承担可追溯记录带来的后续风险。"
             )
             template["must_show"] = [
-                "担保交易",
-                "真实到账",
-                "现实急账处理",
+                *opening_market_exchange_flow_lines(),
                 "若大纲未锁定各笔账单数额，不要自行编造分项金额，只写付清并保留正确余额",
                 "下一步目标",
             ]
     return adapted
 
 
-def _authorized_trade_rulebook(rulebook: dict[str, list[str]]) -> dict[str, list[str]]:
+def _authorized_market_exchange_rulebook(rulebook: dict[str, list[str]]) -> dict[str, list[str]]:
     adapted = deepcopy(rulebook)
     blocked_phrases = (
         "第一章不得实际交易",
@@ -557,7 +558,7 @@ def _authorized_trade_rulebook(rulebook: dict[str, list[str]]) -> dict[str, list
             value for value in values if not any(phrase in value for phrase in blocked_phrases)
         ]
     adapted.setdefault("chapter_formula", []).append(
-        "项目大纲明确要求第一章完成担保交易时，以项目大纲为准；写清买家依据、担保路径、真实到账和现实急账处理，但不要提前引发公会全知或论坛扩散。"
+        "项目大纲明确要求第一章解决现实急账时，按交易行游戏币成交、官方兑换、现实账户到账、处理急账的顺序执行；不要提前引发公会全知或论坛扩散。"
     )
     return adapted
 
@@ -638,14 +639,14 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
     )
     rulebook = merge_plugin_rulebooks(prompt_plugins)
     is_game = "game_webnovel" in plugin_ids
-    allow_first_chapter_trade = chapter_number == 1 and first_chapter_trade_authorized(
+    allow_first_chapter_trade = chapter_number == 1 and first_chapter_market_exchange_authorized(
         world_facts=[*story.world_facts, *story.author_constraints]
     )
     if allow_first_chapter_trade:
-        rulebook = _authorized_trade_rulebook(rulebook)
+        rulebook = _authorized_market_exchange_rulebook(rulebook)
     simulation_blueprint = plugin_simulation_blueprint(prompt_plugins)
     if allow_first_chapter_trade:
-        simulation_blueprint = _authorized_trade_blueprint(simulation_blueprint)
+        simulation_blueprint = _authorized_market_exchange_blueprint(simulation_blueprint)
     contract = _contract_for_game(chapter_number) if is_game else _generic_contract()
     outline_anchor = _outline_anchor(story, chapter_number)
     trope_contract = _outline_trope_contract(story, chapter_number, prompt_plugins)

@@ -15,7 +15,10 @@ from typing import Any
 from urllib.parse import quote
 
 from packages.story_core.chapter_direction import build_chapter_direction_options
-from packages.story_core.chapter_scope import first_chapter_trade_authorized
+from packages.story_core.web_game_economy import (
+    first_chapter_market_exchange_authorized,
+    normalize_legacy_economy_prompt_value,
+)
 from packages.story_core.character_portraits import complete_character_portrait as complete_portrait
 from packages.story_core.character_profiles import (
     merge_character_profile,
@@ -486,13 +489,17 @@ def _chapter_outline_title(outline_context: Any, chapter_number: int) -> str | N
     return title if planned_number == chapter_number and title else None
 
 
-def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
+def _manual_chapter_quality_report(
+    chapter: dict[str, Any],
+    *,
+    genre_context: Any = None,
+) -> dict[str, Any]:
     quality_report = validate_bundle(chapter)
     body = str(chapter.get("body") or "")
     length_review = _chapter_length_review(body)
     ai_flavor_review = review_ai_flavor(body)
     reader_feel_review = review_reader_feel(body)
-    prose_style_review = review_prose_style(body)
+    prose_style_review = review_prose_style(body, genre_context=genre_context)
     cold_reader_review = review_cold_reader_experience(
         body,
         previous_summary=str((chapter.get("event_plan") or {}).get("summary") or ""),
@@ -504,6 +511,7 @@ def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
     )
     editor_agent_review = review_editor_agent(
         body,
+        genre_context=genre_context,
         prose_style_review=prose_style_review,
         ai_flavor_review=ai_flavor_review,
     )
@@ -2920,6 +2928,22 @@ class FileProjectStore:
             project["relationship_graph"] = graph_from_character_cards(project.get("character_profiles"))
         return project
 
+    def _review_genre_context(self) -> dict[str, Any]:
+        project = self.project()
+        state = self.state()
+        blueprint = (
+            project.get("world_blueprint")
+            if isinstance(project.get("world_blueprint"), dict)
+            else {}
+        )
+        genre_ids = normalize_novel_type_ids(state.get("genre_plugin_ids"))
+        if not genre_ids:
+            genre_ids = normalize_novel_type_ids(blueprint.get("genre_plugin_ids"))
+        return {
+            "genre": str(state.get("genre") or project.get("genre") or ""),
+            "genre_plugin_ids": genre_ids,
+        }
+
     def opening_brief(self) -> dict[str, Any]:
         payload = self._read_json(self.webnovel_dir / "opening_brief.json", {})
         return OpeningBrief.model_validate(payload).model_dump(mode="json")
@@ -4048,7 +4072,10 @@ class FileProjectStore:
             "manual_instructions": instructions or [],
         }
         chapter = self._hydrate_chapter_display_fields(chapter, updated_story)
-        review = _manual_chapter_quality_report(chapter)
+        review = _manual_chapter_quality_report(
+            chapter,
+            genre_context=self._review_genre_context(),
+        )
         chapter["quality_report"] = review
         self._append_workflow_log(
             chapter_number=chapter_number,
@@ -4398,7 +4425,7 @@ class FileProjectStore:
                 variant_payload.setdefault("axes", ["千倍爆率转化为任务/装备/技能/路线领先"])
                 variant_payload.setdefault(
                     "avoid",
-                    ["公开炫耀清道夫委托", "市场玩家盯盘", "提现换算人民币", "公会追查", "把材料账本写成第一章公开高潮"],
+                    ["公开炫耀清道夫委托", "市场玩家盯盘", "擅自走官方兑换", "公会追查", "把材料账本写成第一章公开高潮"],
                 )
                 variant_payload["skip_expansion"] = False
         variant_payload.setdefault("skip_expansion", False)
@@ -4416,7 +4443,7 @@ class FileProjectStore:
             chapter_number,
         )
         story_payload["author_constraints"] = direction_payload["author_constraints"]
-        if chapter_number == 1 and first_chapter_trade_authorized(
+        if chapter_number == 1 and first_chapter_market_exchange_authorized(
             world_facts=direction_payload["author_constraints"],
         ):
             stale_trade_lesson_terms = (
@@ -4550,7 +4577,10 @@ class FileProjectStore:
         chapter["updated_story"] = updated_story
 
         chapter = self._hydrate_chapter_display_fields(chapter, updated_story)
-        review = _manual_chapter_quality_report(chapter)
+        review = _manual_chapter_quality_report(
+            chapter,
+            genre_context=self._review_genre_context(),
+        )
         chapter["quality_report"] = review
         self._append_workflow_log(
             chapter_number=chapter_number,
@@ -4764,7 +4794,21 @@ class FileProjectStore:
                 return option
         raise ValueError(f"unknown_chapter_direction:{direction_id}")
 
-    def writing_packet(self, chapter_number: int | None = None) -> dict[str, Any]:
+    def writing_packet(
+        self,
+        chapter_number: int | None = None,
+    ) -> dict[str, Any]:
+        packet, game_context, target = self._build_writing_packet(chapter_number)
+        return normalize_legacy_economy_prompt_value(
+            packet,
+            game_context=game_context,
+            chapter_number=target,
+        )
+
+    def _build_writing_packet(
+        self,
+        chapter_number: int | None = None,
+    ) -> tuple[dict[str, Any], bool, int]:
         state = self._generation_state(self.state())
         project = self.project()
         world_blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
@@ -4892,7 +4936,7 @@ class FileProjectStore:
         if int(target or 0) <= current_chapter:
             packet_project.pop("current_focus", None)
         packet_project["world_blueprint"] = scoped_world
-        return {
+        packet = {
             "schema_version": "file-writing-packet/v1",
             "root": str(self.root),
             "target_chapter": target,
@@ -4959,6 +5003,7 @@ class FileProjectStore:
             "chapter_direction_options": chapter_direction_options,
             "skill_context": {key: value for key, value in skill_context.items() if value},
         }
+        return packet, is_game_story, int(target or 0)
 
     def _prompt_plan_from_chapter(self, chapter: dict[str, Any]) -> dict[str, Any]:
         plan: dict[str, Any] = {}
@@ -5148,7 +5193,7 @@ class FileProjectStore:
         story_payload["world_context"] = direction_payload["world_context"]
         story = StoryState.model_validate(story_payload)
         orchestrator = StoryOrchestrator()
-        writing_packet = self.writing_packet(target)
+        writing_packet, _, _ = self._build_writing_packet(target)
         plan = self._prompt_plan_from_chapter(chapter)
         plan["scene_cards"] = writing_packet.get("scene_cards", [])
         body = str(chapter.get("body") or "")
@@ -5250,7 +5295,7 @@ class FileProjectStore:
                 title="章节规划补全 Prompt",
                 agent="director",
                 stage="剧情计划生成",
-                content=orchestrator._plan_prompt(story, target),
+                content=orchestrator._render_plan_prompt(story, target),
                 source="rebuilt_from_state_before_chapter",
                 description="生成 event_plan、chapter_intent、scene_cards 等结构化剧情计划。",
                 module_keys=["core_context", "outline_context"],
@@ -5260,7 +5305,7 @@ class FileProjectStore:
                 title="整章正文 Prompt",
                 agent="writer",
                 stage="整章正文生成",
-                content=orchestrator._body_prompt(story, target, plan),
+                content=orchestrator._render_body_prompt(story, target, plan),
                 source="rebuilt_from_chapter_plan",
                 description="整章正文实际提示词，按输出要求、本章方向、本章事实、出场人物和正文写法五块装配。",
                 module_keys=[
@@ -5313,7 +5358,7 @@ class FileProjectStore:
                         title="审稿改稿 Prompt",
                         agent="writer",
                         stage="审稿改稿",
-                        content=orchestrator._revision_prompt(
+                        content=orchestrator._render_revision_prompt(
                             story,
                             target,
                             source_body_placeholder,
@@ -5381,6 +5426,16 @@ class FileProjectStore:
                 module_keys=["review_context"],
             )
         )
+
+        game_context = self._is_game_story_payload(project, state)
+        for entry in [*modules, *prompts]:
+            content = normalize_legacy_economy_prompt_value(
+                str(entry.get("content") or ""),
+                game_context=game_context,
+                chapter_number=target,
+            )
+            entry["content"] = content
+            entry["chars"] = len(content)
 
         return {
             "schema_version": "file-project-prompt-preview/v1",

@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from packages.story_core.genre_plugins import is_game_genre_context
+from packages.story_core.web_game_economy import detect_economy_boundary_violations
+
 
 AI_CLICHE_TERMS = (
     "心中一紧",
@@ -403,7 +406,7 @@ def _transaction_process_explanation_problems(body: str) -> list[str]:
     return problems
 
 
-def review_prose_style(body: str) -> dict[str, Any]:
+def review_prose_style(body: str, *, genre_context: Any = None) -> dict[str, Any]:
     """Review whether prose avoids common AI-fiction texture problems."""
 
     scores = {
@@ -415,6 +418,18 @@ def review_prose_style(body: str) -> dict[str, Any]:
     }
     issues: list[str] = []
     revision_plan: list[str] = []
+
+    if is_game_genre_context(body, genre_context):
+        for violation in detect_economy_boundary_violations(body):
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="game_term_precision",
+                issue=f"[必须修复]经济边界：{violation.issue}",
+                plan=violation.revision,
+                score=3,
+            )
 
     cliches = _repeated_terms(body, AI_CLICHE_TERMS)
     if cliches:

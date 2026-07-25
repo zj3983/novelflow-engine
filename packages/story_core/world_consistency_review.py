@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.story_core.genre_plugins import is_game_genre_context
+from packages.story_core.web_game_economy import detect_economy_boundary_violations
+
 
 TRACKING_OVERREACH_TERMS = (
     "锁定他的坐标",
@@ -430,6 +433,7 @@ def review_world_event_consistency(
     world_events: list[dict[str, Any]] | None = None,
     scene_cards: list[dict[str, Any]] | None = None,
     chapter_number: int | None = None,
+    genre_context: Any = None,
 ) -> dict[str, Any]:
     """Review whether prose obeys simulated world-event boundaries."""
 
@@ -447,6 +451,18 @@ def review_world_event_consistency(
     issues: list[str] = []
     revision_plan: list[str] = []
     scene_contract_failures: list[dict[str, Any]] = []
+
+    if is_game_genre_context(body, genre_context):
+        for violation in detect_economy_boundary_violations(body):
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="systemic_consistency",
+                issue=f"[必须修复]经济边界：{violation.issue}",
+                plan=violation.revision,
+                score=3,
+            )
 
     market_events = [
         event

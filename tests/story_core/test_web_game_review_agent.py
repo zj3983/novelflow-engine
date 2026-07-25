@@ -1,5 +1,19 @@
+import pytest
+
 from packages.story_core.web_game_review import review_web_game_chapter, web_game_review_rules
 from packages.story_core.orchestrator import _merge_writing_review_quality, _opening_writer_rules
+
+
+def test_web_game_review_does_not_apply_economy_checks_to_explicit_non_game_context():
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body="拍卖物已经成交，这笔成交款直接进入现实账户。",
+        event_plan={"novel_type": "xuanhuan"},
+        world_facts=[],
+    )
+
+    assert review["pass"]
+    assert not any("经济边界" in issue for issue in review["issues"])
 
 
 def test_web_game_review_requires_panel_before_first_monster_fight():
@@ -51,6 +65,201 @@ def test_web_game_review_accepts_plain_text_monster_panel_without_brackets():
     )
 
     assert not any("怪物面板" in issue for issue in review["issues"])
+
+
+def test_web_game_review_requires_fix_for_explicit_economy_boundary_violations():
+    forbidden_currency_name = "\u4eba\u6c11\u5e01"
+    body = (
+        "《神域》里，夜烬把裂纹狼心卖给求购单，交易行把成交所得直接打进现实账户。\n\n"
+        "裂纹狼心的正式名称和锻造用途已经显示出来，他还是把它提交鉴定，平台又安排验货。\n\n"
+        "这张求购单的资金已经冻结，立即出售也显示成交，系统却让他继续等待买家再次确认。\n\n"
+        f"界面还把结算单位完整写成{forbidden_currency_name}。"
+    )
+
+    review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 4
+    assert all("必须修复" in issue for issue in economy_issues)
+    plans = "\n".join(review["revision_plan"])
+    assert "交易行只进游戏钱包" in plans
+    assert "已识别物不重复鉴定" in plans
+    assert "资金冻结的求购单应立即成交" in plans
+    assert "独立官方兑换" in plans
+    assert forbidden_currency_name not in plans
+
+
+def test_web_game_review_accepts_separated_exchange_and_conservative_economy_terms():
+    body = (
+        "《神域》里，夜烬选中一张已经冻结游戏币的求购单，立即出售裂纹狼心，成交后游戏币进入游戏钱包。\n\n"
+        "他随后离开交易行，打开独立的官方兑换页面，确认兑换价、额度、手续费和预计到账，现实账户很快收到款项。\n\n"
+        "背包里的未知矿石只显示未鉴定，他把矿石交给鉴定师。另一个玩家在聊天栏里问了一句求购，柜台旁也有人提到账。"
+    )
+
+    review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+def test_web_game_review_detects_ordered_economy_chains_across_adjacent_units():
+    body = (
+        "《神域》里，交易行显示那件拍卖物已经成交。\n\n"
+        "下一秒，卖出所得直接打进现实账户。\n\n"
+        "【名称：裂纹狼心】【用途：锻造材料】\n\n"
+        "夜烬看完面板，还是把它提交鉴定。\n\n"
+        "另一张求购单显示资金已经冻结。\n\n"
+        "夜烬点下立即出售，界面显示成交。\n\n"
+        "系统却让他等待买家再次确认。"
+    )
+
+    review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 3
+
+
+def test_web_game_review_ignores_negated_economy_chains_and_other_unidentified_item():
+    body = (
+        "《神域》的交易行显示求购单已经成交。\n\n"
+        "款项不会直接进入现实账户，必须另走独立官方兑换。\n\n"
+        "裂纹狼心的用途是锻造；旁边的披风仍未鉴定，他把披风交给鉴定师。\n\n"
+        "另一张求购单显示资金已经冻结。\n\n"
+        "夜烬点下立即出售，界面显示成交。\n\n"
+        "成交以后不再等待买家确认，游戏币直接进入游戏钱包。"
+    )
+
+    review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+def test_web_game_review_does_not_let_earlier_exchange_hide_direct_market_settlement():
+    body = (
+        "《神域》里，夜烬先退出官方兑换页面再打开交易行，"
+        "求购单成交后，卖出所得直接转入现实账户。"
+    )
+
+    review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
+
+    assert any("交易与现实兑换混成了一步" in issue for issue in review["issues"]), review
+
+
+@pytest.mark.parametrize(
+    ("body", "issue_fragment"),
+    [
+        (
+            "交易行显示求购单已经成交。\n\n夜烬顺手关掉了背包。\n\n卖出所得直接转入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "裂纹狼心已显示正式名称。\n\n夜烬看了一眼门外。\n\n他把它提交鉴定。",
+            "又被送去鉴定或验货",
+        ),
+        ("求购成交所得直接现实到账。", "交易与现实兑换混成了一步"),
+        (
+            "求购单里的资金被冻结了。\n\n夜烬点下立即出售，界面显示成交。\n\n系统要求等待买家再次确认。",
+            "仍在等待买家再次确认",
+        ),
+        ("夜烬把已经识别的裂纹狼心提交鉴定。", "又被送去鉴定或验货"),
+        (
+            "交易行显示求购单成交。\n\n夜烬摘下头盔。\n\n这笔成交款直接进入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "甲求购单资金冻结。\n\n甲求购单随即成交。\n\n甲求购单仍要求等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "拍卖物成交，游戏币到账。钱随后直接转入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "甲玩家的求购单资金冻结。\n\n甲玩家的订单成交。\n\n甲玩家等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "拍卖物成交，游戏币到账。钱很快就直接转入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "甲玩家的第一张求购单资金冻结。\n\n甲玩家的第一张订单成交。\n\n甲玩家的第一张订单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "甲玩家的第一张求购单资金冻结。\n\n该订单成交。\n\n同一订单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "拍卖物成交，游戏币到账。\n\n款项由交易行支付，随后直接进入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "夜烬看见甲玩家的A单求购资金已经冻结。\n\n甲玩家的A单求购成交。\n\n甲玩家的A单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "拍卖物成交，游戏币到账。\n\n那笔钱是卖材料赚来的，随后直接进入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "他看见夜烬的求购单资金已经冻结。\n\n夜烬的订单成交。\n\n夜烬还在等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "清风明月的求购单资金冻结。\n\n清风明月的订单成交。\n\n清风明月还在等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+    ],
+)
+def test_web_game_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
+    body: str,
+    issue_fragment: str,
+):
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=f"网游《神域》里，{body}",
+        event_plan={},
+        world_facts=[],
+    )
+
+    matching = [issue for issue in review["issues"] if issue_fragment in issue]
+    assert matching, review
+    assert all("必须修复" in issue for issue in matching)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "交易行显示求购单已经成交。\n\n夜烬停了一会儿。\n\n款项没有直接进入现实账户，必须另走独立官方兑换。",
+        "求购单里的资金被冻结了。\n\n夜烬立即出售，界面显示成交。\n\n系统没有要求等待买家确认。",
+        "交易行成交后游戏币进入游戏钱包。\n\n他打开独立官方兑换页面。\n\n确认兑换价和手续费后，现实账户到账。",
+        "裂纹狼心用途是锻造。\n\n旁边的披风仍未鉴定。\n\n他把披风交给鉴定师。",
+        "裂纹狼心已识别。\n\n夜烬随后拿起披风，当前查看的是披风。\n\n他把它提交鉴定。",
+        "交易行显示求购单成交。\n\n夜烬离开市场。\n\n两天后他完成了另一项任务。\n\n现实账户到账的是旧工资。",
+        "交易行显示求购单成交。\n\n夜烬退出游戏。\n\n公司工资到账现实账户。",
+        "交易行显示求购单成交。\n\n夜烬退出游戏。\n\n现实账户出现一笔到账通知，没有注明交易来源。",
+        "交易行显示求购单成交。\n\n夜烬停了一会儿。\n\n款项没有被交易行直接打进现实账户。",
+        "交易行显示求购单成交。\n\n夜烬停了一会儿。\n\n这笔钱不需要由交易行直接转入现实账户。",
+        "裂纹狼心已经识别。\n\n夜烬换成了一把长剑。\n\n他把它提交鉴定。",
+        "甲求购单资金冻结。\n\n乙求购单随即成交。\n\n丙求购单仍要求等待买家确认。",
+        "拍卖物成交，游戏币到账。\n\n夜烬关掉菜单。\n\n那笔钱来自公司奖金，随后直接转入现实账户。",
+        "甲玩家的求购单资金冻结。\n\n乙玩家的普通订单成交。\n\n丙玩家等待买家确认。",
+        "拍卖物成交，游戏币到账。\n\n夜烬关掉菜单。\n\n那笔钱是朋友归还的借款，随后直接转入现实账户。",
+        "甲玩家的第一张求购单资金冻结。\n\n甲玩家的第二张订单成交。\n\n甲玩家的第三张订单等待买家确认。",
+        "夜烬的求购单资金冻结。\n\n洛婶的订单成交。\n\n艾伦的订单等待买家确认。",
+        "夜烬的求购单资金冻结。\n\n商人的普通订单成交。\n\n守卫等待买家确认。",
+        "夜烬有一张求购单，资金已经冻结。\n\n洛婶有一张订单显示成交。\n\n艾伦还在等待买家确认。",
+    ],
+)
+def test_web_game_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=f"网游《神域》里，{body}",
+        event_plan={},
+        world_facts=[],
+    )
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
 
 
 def test_web_game_review_rejects_login_after_disconnected_broadband_without_network_source():
@@ -353,9 +562,10 @@ def test_web_game_review_allows_bounded_realtime_visibility_language():
 
 
 def test_web_game_review_rejects_unset_real_money_exchange_rate():
+    forbidden_currency_name = "\u4eba\u6c11\u5e01"
     body = (
         "夜烬卖出狼皮后看着到账提示。"
-        "他立刻按1金币=100人民币计算收益，确认今天已经能付房租。"
+        f"他立刻按1金币=100{forbidden_currency_name}计算收益，确认今天已经能付房租。"
         "交易行里其他玩家还在用铜币和银币询价。"
     ) * 35
 
@@ -363,7 +573,7 @@ def test_web_game_review_rejects_unset_real_money_exchange_rate():
         chapter_number=1,
         body=body,
         event_plan={},
-        world_facts=["没有明确设定前，不得把金币直接换算成人民币。"],
+        world_facts=[f"没有明确设定前，不得把金币直接换算成{forbidden_currency_name}。"],
     )
 
     assert review["pass"] is False

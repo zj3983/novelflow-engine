@@ -8,6 +8,10 @@ from packages.story_core.dual_state import project_character_for_scene, scene_ki
 from packages.story_core.memory import build_character_cards
 from packages.story_core.simulation import is_game_story
 from packages.story_core.writing_learning import learning_snapshot
+from packages.story_core.web_game_economy import (
+    normalize_legacy_economy_prompt_value,
+    opening_market_exchange_flow_lines,
+)
 from packages.story_core.writing_taskbook import first_chapter_whole_body_contract
 
 
@@ -269,9 +273,9 @@ def _hard_locks(game_genre: bool, target_chapter: int, *, first_chapter_trade: b
         if target_chapter == 1:
             locks.append("第一章聚焦现实压力、登录建号、职业面板、首杀验证、爆率领先感和章末下一步。")
             locks.append(
-                "第一章按大纲完成匿名担保交易、到账和现实急账处理；禁止公会正面追查和论坛爆帖。"
+                "第一章按顺序完成：" + " ".join(opening_market_exchange_flow_lines()) + " 禁止公会正面追查和论坛爆帖。"
                 if first_chapter_trade
-                else "第一章禁止实际寄售成交、到账、手续费结算、公会正面追查和论坛爆帖。"
+                else "第一章禁止交易行实际成交、官方兑换、现实账户到账、公会正面追查和论坛爆帖。"
             )
             locks.append("怪物类型前后一致。")
         return locks
@@ -497,7 +501,7 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
     style_rules = _style_rules(game_genre)
     governance_gate = governance_quality_gate(governance)
 
-    return {
+    packet = {
         "schema_version": "codex-writing-packet/v1",
         "chapter_number": target_chapter,
         "scene_kind": scene_kind,
@@ -557,3 +561,8 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
             "note": "Manual draft submission is disabled. Use continue_generation or agent-revise for chapter progression.",
         },
     }
+    return normalize_legacy_economy_prompt_value(
+        packet,
+        game_context=game_genre,
+        chapter_number=target_chapter,
+    )

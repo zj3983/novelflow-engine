@@ -19,10 +19,14 @@ from packages.story_core.chapter_governance import build_chapter_governance, gov
 from packages.story_core.chapter_planning import build_outline_chapter_plan
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.chapter_plot_contract import build_chapter_plot_contract
-from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.craft import is_game_story
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.genre_types.game_webnovel import select_game_language_cards
+from packages.story_core.web_game_economy import (
+    first_chapter_market_exchange_authorized,
+    normalize_legacy_economy_prompt_value,
+    opening_market_exchange_flow_lines,
+)
 from packages.story_core.generation_progress import report_generation_progress
 from packages.story_core.http_retry import RetryConfig, post_json_with_retry
 from packages.story_core.memory import (
@@ -100,6 +104,7 @@ from packages.story_core.review_report import format_review_report
 from packages.story_core.scene_contract_repair import build_scene_contract_repair_plan
 
 
+_FORBIDDEN_REAL_CURRENCY_NAME = "\u4eba\u6c11\u5e01"
 VALID_CADENCES = {"urgent", "measured", "breathing"}
 MIN_CHAPTER_CHARS = 4200
 MAX_CHAPTER_CHARS = 5500
@@ -195,6 +200,111 @@ def _repair_outline_amount_anchors(body: str, anchor: Any) -> str:
             repaired = repaired[: match.start()] + f"{match.group(1)}{opening}" + repaired[match.end() :]
         elif opening not in repaired[:1200]:
             repaired = f"苏叶登录游戏前，账户余额{opening}。\n\n{repaired.lstrip()}"
+    arrival_pattern = re.compile(
+        r"(?P<label>预计到账(?:金额)?|实际到账(?:金额)?|现实账户(?:收到|到账)|"
+        r"手机(?:银行)?(?:提示|弹出提示|收到提示)?(?:进账|到账)|到账金额|实收|到账)"
+        r"(?P<separator>\s*(?:[：:]\s*)?)"
+        r"(?P<amount>\d+(?:\.\d{1,2})?\s*元)"
+    )
+    urgency_pattern = re.compile(
+        r"(?:付清|处理|缴清|还清)[^。！？\n]{0,50}(?:现实急账|急账|房租|账单|最低还款)"
+        r"|(?:现实急账|急账|账单)[^。！？\n]{0,30}(?:付清|处理|缴清|还清)"
+    )
+
+    def sentence_start(text: str, index: int) -> int:
+        return max(
+            text.rfind("。", 0, index),
+            text.rfind("！", 0, index),
+            text.rfind("？", 0, index),
+            text.rfind("!", 0, index),
+            text.rfind("?", 0, index),
+            text.rfind("\n", 0, index),
+        ) + 1
+
+    def remove_minimal_phrases(text: str, matches: list[re.Match[str]]) -> str:
+        for match in reversed(matches):
+            start, end = match.span()
+            exchange_prefix = re.search(
+                r"官方兑换(?:完成|成功)[ \t]*[，,][ \t]*$",
+                text[:start],
+            )
+            if exchange_prefix:
+                start = exchange_prefix.start()
+            own_sentence_start = sentence_start(text, start)
+            sentence_ends = [
+                position
+                for marker in ("。", "！", "？", "!", "?", "\n")
+                if (position := text.find(marker, end)) >= 0
+            ]
+            own_sentence_end = min(sentence_ends) if sentence_ends else len(text)
+            owns_sentence = (
+                not text[own_sentence_start:start].strip()
+                and not text[end:own_sentence_end].strip()
+            )
+            if owns_sentence:
+                start = own_sentence_start
+                end = own_sentence_end + (1 if own_sentence_end < len(text) else 0)
+                while end < len(text) and text[end].isspace():
+                    end += 1
+            elif end < len(text) and text[end] in "，,":
+                end += 1
+            elif exchange_prefix and end < len(text) and text[end] in "。！？!?":
+                end += 1
+            elif start > 0 and text[start - 1] in "，,":
+                start -= 1
+            text = text[:start] + text[end:]
+        return text
+
+    def insert_exchange_before(text: str, index: int, paragraph: str) -> str:
+        insert_at = sentence_start(text, index)
+        prefix = text[:insert_at]
+        suffix = text[insert_at:]
+        before = "" if not prefix or prefix.endswith("\n") else "\n\n"
+        after = "" if not suffix or suffix.startswith("\n") else "\n\n"
+        return f"{prefix}{before}{paragraph}{after}{suffix}"
+
+    if arrival:
+        repaired = arrival_pattern.sub(
+            lambda match: f"{match.group('label')}{match.group('separator')}{arrival}",
+            repaired,
+        )
+        arrival_matches = list(arrival_pattern.finditer(repaired))
+        receipt_matches = [
+            match
+            for match in arrival_matches
+            if not match.group("label").startswith("预计")
+        ]
+        urgency_match = urgency_pattern.search(repaired)
+        late_receipts = (
+            [match for match in receipt_matches if match.start() > urgency_match.start()]
+            if urgency_match
+            else []
+        )
+        has_receipt_before_urgency = bool(
+            urgency_match
+            and any(match.start() < urgency_match.start() for match in receipt_matches)
+        )
+        needs_exchange_scene = not receipt_matches
+        if late_receipts:
+            repaired = remove_minimal_phrases(repaired, late_receipts)
+            needs_exchange_scene = not has_receipt_before_urgency
+
+        if needs_exchange_scene:
+            exchange_paragraph = (
+                "他离开交易行，打开独立官方兑换页面。"
+                f"页面显示兑换价、额度、手续费和预计到账；确认兑换后，现实账户收到{arrival}。"
+            )
+            urgency_match = urgency_pattern.search(repaired)
+            if urgency_match:
+                repaired = insert_exchange_before(
+                    repaired,
+                    urgency_match.start(),
+                    exchange_paragraph,
+                )
+            else:
+                balance_matches = list(balance_pattern.finditer(repaired))
+                insert_at = balance_matches[-1].start() if len(balance_matches) >= 2 else len(repaired)
+                repaired = insert_exchange_before(repaired, insert_at, exchange_paragraph)
     if ending:
         balance_matches = list(balance_pattern.finditer(repaired))
         if len(balance_matches) >= 2:
@@ -202,17 +312,6 @@ def _repair_outline_amount_anchors(body: str, anchor: Any) -> str:
             repaired = repaired[: match.start()] + f"{match.group(1)}{ending}" + repaired[match.end() :]
         elif ending not in repaired[-1600:]:
             repaired = f"{repaired.rstrip()}\n\n付清现实急账后，账户余额{ending}。"
-
-    arrival_pattern = re.compile(
-        r"((?:预计|实际)?到账(?:金额)?|实收)\s*(?:[：:]\s*)?\d+(?:\.\d{1,2})?\s*元"
-    )
-    arrival_match = arrival_pattern.search(repaired)
-    if arrival:
-        if arrival_match:
-            label = arrival_match.group(1)
-            repaired = repaired[: arrival_match.start()] + f"{label}{arrival}" + repaired[arrival_match.end() :]
-        elif arrival not in repaired:
-            repaired = f"{repaired.rstrip()}\n\n担保交易完成，{arrival}到账。"
     return repaired
 
 
@@ -1392,6 +1491,7 @@ def _character_context_for_prompt(story: StoryState, plan: Any | None = None, *,
                 "motivation": compact_text(str(profile.get("core_motivation", "")), 120),
                 "behavior_logic": compact_text(str(profile.get("behavior_logic", "")), 120),
                 "interaction_mode": compact_text(str(profile.get("interaction_mode", "")), 120),
+                "goals": compact_list(raw.get("goals", []), max_items=2, item_chars=120),
                 "speech_tendency": compact_text(str(chapter_usage.get("speech_tendency", "")), 100),
                 "action_tendency": compact_text(str(chapter_usage.get("action_tendency", "")), 100),
                 "risk_posture": compact_text(str(voice.get("risk_posture", "")), 100),
@@ -3133,6 +3233,13 @@ def _review_protagonist_names(event_plan: dict[str, Any], simulation_plan: dict[
     return tuple(names[:4])
 
 
+def _story_review_genre_context(story: StoryState) -> dict[str, Any]:
+    return {
+        "genre": story.genre,
+        "genre_plugin_ids": list(story.genre_plugin_ids),
+    }
+
+
 def _review_chapter_body(
     chapter_number: int,
     body: str,
@@ -3141,12 +3248,13 @@ def _review_chapter_body(
     simulation_plan: dict | None = None,
     world_events: list[dict] | None = None,
     scene_cards: list[dict] | None = None,
+    genre_context: Any = None,
 ) -> dict:
     compact_body = "".join(body.split())
     facts_text = "\n".join(world_facts or [])
     plan_text = json.dumps(event_plan, ensure_ascii=False)
     game_context = is_game_genre("\n".join([body, facts_text, plan_text]))
-    chapter_one_trade_payoff = first_chapter_trade_authorized(event_plan, world_facts)
+    chapter_one_trade_payoff = first_chapter_market_exchange_authorized(event_plan, world_facts)
     simulation_plan = simulation_plan or {}
     min_chapter_chars = _chapter_review_min_chars(simulation_plan)
     issues: list[str] = []
@@ -3187,7 +3295,7 @@ def _review_chapter_body(
             scores["continuity"] = min(scores["continuity"], 4)
             issues.append(f"大纲金额不一致：正文必须保留明确到账金额{expected_text}。")
             revision_plan.append(
-                f"把担保交易的净到账金额改为{expected_text}，并同步核对支付急账后的现实余额；不要自行改价或手续费。"
+                f"把官方兑换后的现实账户到账金额改为{expected_text}，并同步核对支付急账后的现实余额；不要自行改价或手续费。"
             )
         opening_matches = re.findall(r"最后\s*(\d+(?:\.\d{1,2})?)\s*元", anchor_text)
         if opening_matches and not any(f"{value}元" in body[:1200] for value in opening_matches):
@@ -3285,15 +3393,16 @@ def _review_chapter_body(
 
     forbids_fixed_exchange_rate = "不得写死" in facts_text and "汇率" in facts_text
     has_explicit_exchange_rate = not forbids_fixed_exchange_rate and any(
-        token in facts_text for token in ("稳定汇率", "金币=人民币", "金币兑人民币")
+        token in facts_text
+        for token in ("稳定汇率", "金币=现实货币", "金币兑现实货币", f"金币={_FORBIDDEN_REAL_CURRENCY_NAME}", f"金币兑{_FORBIDDEN_REAL_CURRENCY_NAME}")
     )
     invented_exchange_rate = re.search(
-        r"(?:1|一)\s*(?:枚)?金币\s*(?:=|约等于|等于|能换|可以换|折合)\s*\d+(?:\.\d+)?\s*(?:元|人民币|RMB)",
+        rf"(?:1|一)\s*(?:枚)?金币\s*(?:=|约等于|等于|能换|可以换|折合)\s*\d+(?:\.\d+)?\s*(?:元|{_FORBIDDEN_REAL_CURRENCY_NAME}|RMB)",
         body,
     )
     if invented_exchange_rate and not has_explicit_exchange_rate:
         scores["genre_rules"] = min(scores["genre_rules"], 5)
-        issues.append("章节写死了金币与人民币汇率，但世界档案没有明确官方兑换或黑市行情。")
+        issues.append("章节写死了游戏币与现实货币的汇率，但世界档案没有明确官方兑换行情。")
         revision_plan.append("删除固定现实汇率，改写为开服期行情未稳、商人询价、游戏内铜币/银币/金币价格或市场猜测。")
 
     for match in re.finditer(r"(\d+)\s*铜币[（(]\s*(?:(\d+)\s*金)?\s*(?:(\d+)\s*银)?\s*(?:(\d+)\s*铜)?\s*[）)]", body):
@@ -3643,8 +3752,8 @@ def _review_chapter_body(
 
     with ThreadPoolExecutor(max_workers=10) as _pool:
         _futures = {
-            "consistency": _pool.submit(review_world_event_consistency, body, world_events=world_events or [], scene_cards=scene_cards or [], chapter_number=chapter_number),
-            "style": _pool.submit(review_prose_style, body),
+            "consistency": _pool.submit(review_world_event_consistency, body, world_events=world_events or [], scene_cards=scene_cards or [], chapter_number=chapter_number, genre_context=genre_context),
+            "style": _pool.submit(review_prose_style, body, genre_context=genre_context),
             "prose_quality": _pool.submit(review_prose_quality, body),
             "adversarial_cut": _pool.submit(review_adversarial_cuts, body),
             "ai_flavor": _pool.submit(review_ai_flavor, body),
@@ -3707,7 +3816,7 @@ def _review_chapter_body(
     with ThreadPoolExecutor(max_workers=3) as _pool:
         _agent_futs = {
             "reader_agent": _pool.submit(review_reader_agent, body, previous_summary=_previous_summary, cold_reader_review=cold_reader_review),
-            "editor_agent": _pool.submit(review_editor_agent, body, prose_quality_review=prose_quality_review, prose_style_review=style_review, ai_flavor_review=ai_flavor_review),
+            "editor_agent": _pool.submit(review_editor_agent, body, genre_context=genre_context, prose_quality_review=prose_quality_review, prose_style_review=style_review, ai_flavor_review=ai_flavor_review),
             "reviewer_agent": _pool.submit(review_reviewer_agent, chapter_number=chapter_number, body=body, event_plan=event_plan, world_facts=world_facts or [], protagonist_names=_protagonist_names, critical_review=critical_review, web_game_review=web_game_review, progression_lead_review=progression_lead_review),
         }
         for _name, _fut in _agent_futs.items():
@@ -4957,7 +5066,7 @@ def _web_game_writing_method_lines(
         "隐藏优势只在幕后起作用。别人可以误判，但不能凭一次低级掉落看穿主角。",
         "玩家和NPC按现代中文习惯说完整的话；游戏内说前置任务、条件没满足或登记不了，不单说门槛。",
     ]
-    for card in select_game_language_cards(plan or {}, max_cards=5):
+    for card in select_game_language_cards(plan or {}, max_cards=3):
         lines.append(
             f"语言卡[{card.card_id}]：常用{'、'.join(card.preferred)}；"
             f"避开{'、'.join(card.avoid)}；例：{card.example}"
@@ -5021,7 +5130,7 @@ def _build_world_state_review(issues: list[str], revision_plan: list[str]) -> di
 
     for issue in issues:
         text = str(issue)
-        if any(token in text for token in ("汇率", "人民币", "金币", "银币", "铜币", "价格", "材料", "交易行", "市场", "手续费")):
+        if any(token in text for token in ("汇率", _FORBIDDEN_REAL_CURRENCY_NAME, "金币", "银币", "铜币", "价格", "材料", "交易行", "市场", "手续费")):
             add(
                 "economy",
                 text,
@@ -5430,6 +5539,19 @@ class StoryOrchestrator:
         chapter_number: int,
         director_context: dict[str, Any] | None = None,
     ) -> str:
+        rendered = self._render_plan_prompt(story, chapter_number, director_context)
+        return normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=bool(_story_game_context(story, director_context or {})),
+            chapter_number=chapter_number,
+        )
+
+    def _render_plan_prompt(
+        self,
+        story: StoryState,
+        chapter_number: int,
+        director_context: dict[str, Any] | None = None,
+    ) -> str:
         director_context = director_context or _director_context_payload(story, chapter_number)
         snapshot = _director_prompt_snapshot(director_context.get("project_snapshot", {}))
         chapter_seed = _director_prompt_chapter_seed(director_context.get("chapter_seed", {}))
@@ -5448,6 +5570,14 @@ class StoryOrchestrator:
         return render_prompt_template(get_effective_prompt_template("director"), values)
 
     def _body_prompt(self, story: StoryState, chapter_number: int, plan: dict) -> str:
+        rendered = self._render_body_prompt(story, chapter_number, plan)
+        return normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=bool(_story_game_context(story, plan)),
+            chapter_number=chapter_number,
+        )
+
+    def _render_body_prompt(self, story: StoryState, chapter_number: int, plan: dict) -> str:
         plan = plan if isinstance(plan, dict) else {}
         plan = {**plan, "writing_taskbook": ensure_writing_taskbook(chapter_number, plan, genre=story.genre, style=story.style)}
         style_guidance = plan.get("style_guidance") if isinstance(plan.get("style_guidance"), dict) else {}
@@ -5500,7 +5630,7 @@ class StoryOrchestrator:
             ),
         ]
         section_text = ["\n".join(section) for section in sections]
-        return render_prompt_template(
+        rendered = render_prompt_template(
             get_effective_prompt_template("writer"),
             {
                 "output_section": section_text[0],
@@ -5510,8 +5640,18 @@ class StoryOrchestrator:
                 "prose_method": section_text[4],
             },
         ).strip()
+        return rendered
 
     def _revision_prompt(self, story: StoryState, chapter_number: int, body: str, plan: dict, review: dict) -> str:
+        rendered = self._render_revision_prompt(story, chapter_number, body, plan, review)
+        return normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=bool(_story_game_context(story, plan)),
+            chapter_number=chapter_number,
+        )
+
+    def _render_revision_prompt(self, story: StoryState, chapter_number: int, body: str, plan: dict, review: dict) -> str:
+        body = str(body)
         plan = plan if isinstance(plan, dict) else {}
         plan = {**plan, "writing_taskbook": ensure_writing_taskbook(chapter_number, plan, genre=story.genre, style=story.style)}
         review = review if isinstance(review, dict) else {}
@@ -5522,7 +5662,7 @@ class StoryOrchestrator:
         if not scene_repair_plan:
             scene_repair_plan = build_scene_contract_repair_plan(review, plan.get("scene_cards", []))
         scene_repair_summary = _scene_repair_writer_summary(scene_repair_plan)
-        base_prompt = self._body_prompt(story, chapter_number, plan)
+        base_prompt = self._render_body_prompt(story, chapter_number, plan)
         consolidated_review = build_simplified_review(review)
         review_issues = consolidated_review.get("issues") if isinstance(consolidated_review.get("issues"), list) else []
         review_actions = consolidated_review.get("revision_plan") if isinstance(consolidated_review.get("revision_plan"), list) else []
@@ -5559,7 +5699,7 @@ class StoryOrchestrator:
                 "改完后检查：修改目标逐项完成，删词清零，缺失场面已经正面写出；不要输出检查说明。",
             ]
         )
-        return render_prompt_template(
+        rendered = render_prompt_template(
             get_effective_prompt_template("revision"),
             {
                 "body_prompt": base_prompt,
@@ -5567,6 +5707,7 @@ class StoryOrchestrator:
                 "source_body": body,
             },
         )
+        return rendered
 
     def _write_chapter_in_segments(
         self,
@@ -5975,6 +6116,7 @@ class StoryOrchestrator:
                 getattr(bundle, "simulation_plan", {}),
                 getattr(bundle, "world_events", []),
                 getattr(bundle, "scene_cards", []),
+                genre_context=_story_review_genre_context(story),
             )
             patched_review["expression_patch_report"] = patch_report
             patched_quality = _merge_writing_review_quality(validate_bundle(quality_seed), patched_review)
@@ -6025,6 +6167,7 @@ class StoryOrchestrator:
             getattr(bundle, "simulation_plan", {}),
             getattr(bundle, "world_events", []),
             getattr(bundle, "scene_cards", []),
+            genre_context=_story_review_genre_context(story),
         )
         quality_report = _merge_writing_review_quality(validate_bundle(quality_seed), writing_review)
         safety = choose_best_revision(
@@ -6343,7 +6486,7 @@ class StoryOrchestrator:
         scene_cards = _compact_first_chapter_scene_cards(
             scene_cards,
             chapter_number=chapter_number,
-            trade_authorized=first_chapter_trade_authorized(
+            trade_authorized=first_chapter_market_exchange_authorized(
                 world_facts=[*working_story.world_facts, *working_story.author_constraints],
             ),
         )
@@ -6522,12 +6665,12 @@ class StoryOrchestrator:
         body = _repair_outline_amount_anchors(body, chapter_seed.get("outline_anchor"))
 
         if _should_expand_chapter(body, writer_plan):
-            allow_trade_payoff = chapter_number == 1 and first_chapter_trade_authorized(
+            allow_trade_payoff = chapter_number == 1 and first_chapter_market_exchange_authorized(
                 event_plan,
                 _review_context_facts(story),
             )
             expansion_scope = (
-                "第一章按大纲补足匿名担保交易、现实到账和急账处理，不新增公会追查或论坛扩散。"
+                "第一章按大纲补足以下顺序：" + " ".join(opening_market_exchange_flow_lines()) + " 不新增公会追查或论坛扩散。"
                 if allow_trade_payoff
                 else "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。"
             )
@@ -6612,6 +6755,7 @@ class StoryOrchestrator:
             simulation_plan,
             world_events,
             scene_cards,
+            genre_context=_story_review_genre_context(story),
         )
         revision_safety_report = None
         accepted_revision_actions: list[str] = []
@@ -6679,6 +6823,7 @@ class StoryOrchestrator:
                     simulation_plan,
                     world_events,
                     scene_cards,
+                    genre_context=_story_review_genre_context(story),
                 )
                 candidate_quality = {
                     "ok": bool(candidate_review.get("pass")),
@@ -6738,7 +6883,7 @@ class StoryOrchestrator:
                 reason="超字数时压缩无损细节，保留主线和关键钩子",
                 inputs={"chapter_number": chapter_number, "current_chars": _chapter_char_count(body)},
             )
-            allow_trade_payoff = chapter_number == 1 and first_chapter_trade_authorized(
+            allow_trade_payoff = chapter_number == 1 and first_chapter_market_exchange_authorized(
                 event_plan,
                 _review_context_facts(story),
             )
@@ -6753,7 +6898,9 @@ class StoryOrchestrator:
                 else ""
             )
             chapter_one_scope = (
-                "第一章必须原样保留角色面板、怪物面板、千倍爆率、现实职业/技能来源、见习冒险者（未转职）、裂纹狼心担保交易、现实到账和付清急账；不要新增游戏内任务提交、修理或买药。"
+                "第一章必须原样保留角色面板、怪物面板、千倍爆率、现实职业/技能来源、见习冒险者（未转职），并按以下顺序完成："
+                + " ".join(opening_market_exchange_flow_lines())
+                + " 不要新增游戏内任务提交、修理或买药。"
                 + (f" 以下金额必须原样保留，不得改写、换算或删除：{locked_amounts}。" if locked_amounts else "")
                 if allow_trade_payoff
                 else "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。"
@@ -6803,6 +6950,7 @@ class StoryOrchestrator:
                     simulation_plan,
                     world_events,
                     scene_cards,
+                    genre_context=_story_review_genre_context(story),
                 )
                 quality_preserved = _compression_review_not_worse(writing_review, candidate_review)
                 before_issue_count = len((writing_review or {}).get("issues", []))
@@ -6850,6 +6998,7 @@ class StoryOrchestrator:
                 simulation_plan,
                 world_events,
                 scene_cards,
+                genre_context=_story_review_genre_context(story),
             )
 
         review_gate = build_simplified_review({"writing_review": writing_review})

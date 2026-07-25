@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from packages.story_core.book_style import book_style_prompt
+from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
 
 
 FIRST_CHAPTER_NOISE_BANS = (
@@ -61,7 +62,7 @@ def first_chapter_whole_body_contract(*, game_genre: bool, trade_authorized: boo
     if not game_genre:
         return {}
     beat_map = (
-        "现实压力 -> 登录建号 -> 低级验证 -> 匿名交割与急账处理 -> 下一步"
+        "现实压力 -> 登录建号 -> 低级验证 -> 交易行游戏币成交 -> 官方兑换 -> 现实账户到账 -> 处理急账 -> 下一步"
         if trade_authorized
         else "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子"
     )
@@ -465,23 +466,23 @@ def _first_chapter_scenes(plan: dict[str, Any], *, trade_authorized: bool = Fals
             key="decision_hook",
             title="暗中吃下第一笔",
             goal=(
-                "按本章计划完成裂纹狼心担保交易，让现实款项到账并处理急账；交易保持匿名，不扩大成市场风波。"
+                "按本章计划先在交易行卖出裂纹狼心获得游戏币，再走官方兑换让现实账户到账并处理急账；不扩大成市场风波。"
                 if trade_authorized
                 else "材料分开处理，至少兑现一个小收益闭环；让夜烬把多余材料和来源藏住，只把普通玩家也会做的一项服务办掉，留下下一章抢先完成任务或摸到新路线的钩子。"
             ),
             required_surface=(
-                "担保交易到账并处理现实急账、交易匿名、金额沿用大纲、现实余额随付款结果更新、来源没有暴露、下一章具体行动目标"
+                "；".join([*opening_market_exchange_flow_lines(), "金额只沿用既有连续性事实", "现实余额随付款结果更新", "来源没有暴露", "下一章具体行动目标"])
                 if trade_authorized
                 else "面板或背包更新、职业/等级/经验/生命/法力/耐久沿用前文不重开一套属性、交掉一小份材料或任务、保留多余材料、少量铜币/修理/药水至少兑现一项、清道夫或柜台只按普通流程办理、现实压力仍在、下一章具体任务/装备/技能/地图前置任务、章末一个不华丽的情绪动作如松一口气/没忍住看余额/把背包关了又打开"
             ),
             forbidden_surface=(
                 f"一次性交空全部材料、公会/论坛/公共频道反应、市场玩家盯盘、{forbidden}"
                 if trade_authorized
-                else f"材料公开换成大钱、一次性交空全部材料、完整公开服务戏、公会/论坛/公共频道反应、市场玩家盯盘、提现或换算人民币、{forbidden}"
+                else f"材料公开换成大钱、一次性交空全部材料、完整公开服务戏、公会/论坛/公共频道反应、市场玩家盯盘、官方兑换或现实账户到账、{forbidden}"
             ),
             entry_state="夜烬刚完成小验证，手里有异常材料，但还没处理。",
             exit_state=(
-                "担保交易和现实急账处理完成，来源没有暴露，下一章承接游戏内升级和任务进度。"
+                "交易行游戏币成交、官方兑换和现实急账处理完成，来源没有暴露，下一章承接游戏内升级和任务进度。"
                 if trade_authorized
                 else "本章确认千倍爆率能带来领先；至少一个小收益已经兑现，来源没有暴露，下一章从任务进度、装备修理、技能或新路线前置任务继续。"
             ),
@@ -620,7 +621,7 @@ def build_writing_taskbook(
             )
         global_forbidden.extend(item for item in noise_bans if item not in global_forbidden)
         global_required.append(
-            "第一章完成登录、低级验证、担保交易到账并处理现实急账；交易保持匿名，论坛、公会追查后移。"
+            "第一章完成登录、低级验证，并按以下顺序收束：" + " ".join(opening_market_exchange_flow_lines()) + " 论坛、公会追查后移。"
             if trade_authorized
             else "第一章只完成登录、低级验证和领先预期；材料只是通行券，交易、论坛、公会追查后移，提交委托、修理和买药水也后移。"
         )

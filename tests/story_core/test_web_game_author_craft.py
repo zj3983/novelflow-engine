@@ -26,8 +26,11 @@ def test_plain_writer_phrase_translates_backend_server_and_quest_terms():
 def test_trade_authorized_director_card_does_not_ban_trade_payoff():
     card = build_web_game_director_card(
         chapter_number=1,
-        event_plan={"turn": "第一章必须通过裂纹狼心担保交易解决现实急账。"},
+        event_plan={"turn": "第一章卖出裂纹狼心，再走官方兑换渠道解决现实急账。"},
     )
 
     assert "成交" not in card["boundary_chapter_bans"]
     assert "到账" not in card["boundary_chapter_bans"]
+    assert "已冻结游戏币的现有求购单" in str(card)
+    assert "官方兑换" in str(card)
+    assert "担保交易" not in str(card)

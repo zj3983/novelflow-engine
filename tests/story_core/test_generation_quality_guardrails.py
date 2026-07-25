@@ -1,4 +1,5 @@
 from packages.story_core.agent_base import compact_list
+import packages.story_core.orchestrator as orchestrator_module
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.models import NovelProject
 from packages.story_core.models import StoryState
@@ -35,6 +36,62 @@ def test_compact_list_treats_single_string_as_one_item():
     assert compact_list("混沌之种已经完成首次验证。", max_items=5) == ["混沌之种已经完成首次验证。"]
 
 
+def test_chapter_review_passes_explicit_genre_context_to_shared_reviewers(monkeypatch):
+    captured = {}
+
+    def fake_style(body, *, genre_context=None):
+        captured["style"] = genre_context
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    def fake_consistency(body, **kwargs):
+        captured["consistency"] = kwargs.get("genre_context")
+        return {
+            "pass": True,
+            "scores": {},
+            "issues": [],
+            "revision_plan": [],
+            "scene_contract_failures": [],
+        }
+
+    monkeypatch.setattr(orchestrator_module, "review_prose_style", fake_style)
+    monkeypatch.setattr(orchestrator_module, "review_world_event_consistency", fake_consistency)
+
+    _review_chapter_body(
+        1,
+        "plain body",
+        {},
+        [],
+        genre_context={"genre": "xuanhuan"},
+    )
+
+    assert captured == {
+        "style": {"genre": "xuanhuan"},
+        "consistency": {"genre": "xuanhuan"},
+    }
+
+
+def test_chapter_review_enables_economy_checks_for_mixed_game_plugin_context():
+    body = "拍卖物成交后，这笔成交款直接进入现实账户。"
+
+    mixed = _review_chapter_body(
+        1,
+        body,
+        {},
+        [],
+        genre_context={"genre_plugin_ids": ["xuanhuan", "game_webnovel"]},
+    )
+    non_game = _review_chapter_body(
+        1,
+        body,
+        {},
+        [],
+        genre_context={"genre_plugin_ids": ["xuanhuan"]},
+    )
+
+    assert any("经济边界" in issue for issue in mixed["issues"])
+    assert not any("经济边界" in issue for issue in non_game["issues"])
+
+
 def test_rebalanced_short_draft_can_grow_into_target_range():
     short = "短" * 3300
     candidate = "正文" * 2300
@@ -65,7 +122,7 @@ def test_compression_accepts_small_lower_boundary_tolerance():
 def test_locked_outline_amounts_are_repaired_from_structured_anchor():
     body = (
         "苏叶看着账户余额7.40元，戴上头盔。\n\n"
-        "担保订单成交价305.20元，平台随后发来到账通知。\n\n"
+        "交易行求购单成交后，游戏币进入钱包。\n\n"
         "付清房租、宽带和信用卡最低还款后，账户余额100.00元。"
     )
     anchor = {
@@ -77,11 +134,124 @@ def test_locked_outline_amounts_are_repaired_from_structured_anchor():
     repaired = _repair_outline_amount_anchors(body, anchor)
 
     assert "余额27.60元" in repaired
-    assert "成交价305.20元" in repaired
-    assert "1764.00元到账" in repaired
+    assert "游戏币进入钱包" in repaired
+    assert "现实账户收到1764.00元" in repaired
     assert "余额312.60元" in repaired
     assert "7.40元" not in repaired
     assert "100.00元" not in repaired
+    assert repaired.index("交易行求购单成交") < repaired.index("官方兑换页面")
+    assert repaired.index("官方兑换页面") < repaired.index("现实账户收到1764.00元")
+    assert repaired.index("现实账户收到1764.00元") < repaired.index("付清房租")
+    assert repaired.index("付清房租") < repaired.rindex("余额312.60元")
+
+
+def test_outline_amount_repair_moves_late_arrival_before_urgent_payment() -> None:
+    body = (
+        "交易行求购单成交，游戏币进入钱包。\n\n"
+        "付清现实急账后，账户余额100.00元。\n\n"
+        "官方兑换完成，现实账户收到305.20元。"
+    )
+    anchor = {"trade_arrival": "1764.00元", "ending_balance": "312.60元"}
+
+    repaired = _repair_outline_amount_anchors(body, anchor)
+
+    assert repaired.count("现实账户收到1764.00元") == 1
+    assert "305.20元" not in repaired
+    assert repaired.index("交易行求购单成交") < repaired.index("官方兑换页面")
+    assert repaired.index("官方兑换页面") < repaired.index("现实账户收到1764.00元")
+    assert repaired.index("现实账户收到1764.00元") < repaired.index("付清现实急账")
+    assert repaired.index("付清现实急账") < repaired.rindex("余额312.60元")
+    assert "官方兑换完成" not in repaired
+
+
+def test_outline_amount_repair_inserts_before_whole_urgency_sentence() -> None:
+    body = "交易行求购单成交，游戏币进入钱包。然后他处理急账，准备给房东回消息。"
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "然后他处理急账，准备给房东回消息。" in repaired
+    assert "然后他\n" not in repaired
+    assert repaired.index("现实账户收到1764.00元") < repaired.index("然后他处理急账")
+
+
+def test_outline_amount_repair_moves_only_late_arrival_phrase_and_keeps_sentence() -> None:
+    body = (
+        "交易行求购单成交，游戏币进入钱包。他先付清现实急账。"
+        "队友发来消息，现实账户收到305.20元，他决定稍后回复。"
+    )
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "队友发来消息，他决定稍后回复。" in repaired
+    assert "队友发来消息" in repaired
+    assert "他决定稍后回复" in repaired
+    assert repaired.count("现实账户收到1764.00元") == 1
+    assert repaired.index("现实账户收到1764.00元") < repaired.index("付清现实急账")
+
+
+def test_outline_amount_repair_removes_late_duplicate_when_earlier_receipt_exists() -> None:
+    body = (
+        "现实账户收到305.20元，他随后付清现实急账。"
+        "队友发来消息，实际到账300.00元，他决定稍后回复。"
+    )
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert repaired.count("1764.00元") == 1
+    assert "队友发来消息，他决定稍后回复。" in repaired
+    assert "官方兑换页面" not in repaired
+
+
+def test_outline_amount_repair_removes_independent_late_receipt_period_cleanly() -> None:
+    body = "他先付清现实急账。现实账户收到305.20元。队友随后发来消息。"
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "队友随后发来消息。" in repaired
+    assert "。。" not in repaired
+    assert repaired.count("现实账户收到1764.00元") == 1
+
+
+def test_outline_amount_repair_removes_independent_late_receipt_exclamation_cleanly() -> None:
+    body = "他先付清现实急账。手机提示进账305.20元！队友随后发来消息。"
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "队友随后发来消息。" in repaired
+    assert "。！" not in repaired
+    assert repaired.count("现实账户收到1764.00元") == 1
+
+
+def test_outline_amount_repair_updates_expected_and_actual_arrival_amounts() -> None:
+    body = "页面显示预计到账1700.00元，确认兑换后实际到账1690.00元。"
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "预计到账1764.00元" in repaired
+    assert "实际到账1764.00元" in repaired
+    assert "1700.00元" not in repaired
+    assert "1690.00元" not in repaired
+
+
+def test_outline_amount_repair_recognizes_mobile_credit_without_duplicate_exchange() -> None:
+    body = "手机提示进账305.20元，他看了一眼就去付清现实急账。"
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "手机提示进账1764.00元" in repaired
+    assert "官方兑换页面" not in repaired
+    assert repaired.count("1764.00元") == 1
+
+
+def test_outline_amount_repair_does_not_insert_exchange_before_opening_balance() -> None:
+    body = "苏叶看着账户余额27.60元。\n\n交易行求购单成交，游戏币进入钱包。"
+    anchor = {"opening_balance": "27.60元", "trade_arrival": "1764.00元", "ending_balance": "312.60元"}
+
+    repaired = _repair_outline_amount_anchors(body, anchor)
+
+    assert repaired.index("余额27.60元") < repaired.index("交易行求购单成交")
+    assert repaired.index("交易行求购单成交") < repaired.index("官方兑换页面")
+    assert repaired.index("现实账户收到1764.00元") < repaired.rindex("余额312.60元")
 
 
 def test_compact_list_accepts_model_object_instead_of_array():

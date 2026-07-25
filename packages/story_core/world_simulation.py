@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.genre_plugins import GAME_WEBNOVEL, plugin_simulation_blueprint
 from packages.story_core.game_world_simulator import simulate_game_world
 from packages.story_core.game_level_gap import level_gap_rule_text
 from packages.story_core.models import SceneCard, StoryState, WorldEvent
+from packages.story_core.web_game_economy import (
+    first_chapter_market_exchange_authorized,
+    opening_market_exchange_flow_lines,
+)
 from packages.story_core.simulation import is_game_story
 from packages.story_core.world_pulse import visibility_inbox_consumed_ids, visibility_inbox_for_chapter
 
@@ -213,7 +216,7 @@ def simulate_world_events(
         if is_game
         else {}
     )
-    allow_first_chapter_trade = chapter_number == 1 and first_chapter_trade_authorized(
+    allow_first_chapter_trade = chapter_number == 1 and first_chapter_market_exchange_authorized(
         simulation_plan,
         [
             *story.world_facts,
@@ -238,8 +241,9 @@ def simulate_world_events(
 
     events: list[WorldEvent] = []
     if chapter_number == 1:
+        opening_flow = opening_market_exchange_flow_lines()
         next_step_action = (
-            "用裂纹狼心完成担保交易，让款项真实到账并处理现实急账，同时藏住材料来源和隐藏爆率。"
+            " ".join(opening_flow)
             if allow_first_chapter_trade
             else "把首次验证得到的材料分开处理，暗中办成一项小服务，剩下的材料和来源继续藏住。"
         )
@@ -250,7 +254,7 @@ def simulate_world_events(
         )
         next_step_consequences = (
             [
-                "担保交易完成并真实到账，现实急账得到处理。",
+                "交易行游戏币成交后进入独立官方兑换，现实账户到账并处理急账。",
                 "交易只留下有限记录，本章不提前发生公会追查、论坛扩散或全服市场盯盘。",
                 "章末转向隐藏等级、任务线索或交易痕迹带来的下一步压力。",
             ]

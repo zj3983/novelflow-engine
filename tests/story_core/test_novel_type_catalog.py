@@ -8,10 +8,41 @@ from packages.story_core.chapter_governance import build_chapter_governance
 from packages.story_core.chapter_seed import _is_game_story as chapter_seed_is_game_story, build_chapter_seed
 from packages.story_core.genre_plugins import (
     is_game_genre,
+    is_game_genre_context,
     plugin_prompt_guide,
     plugin_simulation_blueprint,
     select_genre_plugins,
 )
+
+
+@pytest.mark.parametrize(
+    "context",
+    (
+        ["xuanhuan", "game_webnovel"],
+        {"genre_plugin_ids": ["xuanhuan", "game_webnovel"]},
+        {
+            "project": {
+                "world_blueprint": {
+                    "genre_plugin_ids": ["xuanhuan", "game_webnovel"]
+                }
+            }
+        },
+    ),
+)
+def test_game_genre_context_prioritizes_explicit_game_plugin_in_mixed_metadata(context):
+    assert is_game_genre_context("plain prose", context)
+
+
+@pytest.mark.parametrize(
+    "context",
+    (
+        ["xuanhuan", "xianxia"],
+        {"genre_plugin_ids": ["xuanhuan"]},
+        {"project": {"world_blueprint": {"genre_plugin_ids": ["xianxia"]}}},
+    ),
+)
+def test_game_genre_context_keeps_explicit_non_game_only_metadata_disabled(context):
+    assert not is_game_genre_context("交易行和游戏币只是背景词", context)
 from packages.story_core.models import ChapterSummary, CharacterState, NovelProject, StoryState
 from packages.story_core.orchestrator import (
     StoryOrchestrator,

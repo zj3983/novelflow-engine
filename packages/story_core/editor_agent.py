@@ -30,6 +30,7 @@ def _merge_unique(items: list[str], additions: list[Any], *, limit: int = 12) ->
 def review_editor_agent(
     body: str,
     *,
+    genre_context: Any = None,
     prose_quality_review: dict[str, Any] | None = None,
     prose_style_review: dict[str, Any] | None = None,
     ai_flavor_review: dict[str, Any] | None = None,
@@ -37,7 +38,7 @@ def review_editor_agent(
     """Editor agent: structure, rhythm, dialogue, and prose texture."""
 
     quality = prose_quality_review or review_prose_quality(body)
-    style = prose_style_review or review_prose_style(body)
+    style = prose_style_review or review_prose_style(body, genre_context=genre_context)
     ai = ai_flavor_review or review_ai_flavor(body)
     issues: list[str] = []
     _merge_unique(issues, quality.get("issues", []))

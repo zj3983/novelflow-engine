@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.prose_style_review import anti_ai_style_rules, sanitize_prose_style, review_prose_style
 
 
@@ -141,6 +143,203 @@ def test_prose_style_review_accepts_player_facing_game_terms():
     review = review_prose_style(body)
 
     assert review["pass"]
+
+
+def test_prose_style_review_gates_economy_checks_by_genre_context():
+    body = "拍卖物已经成交，这笔成交款直接进入现实账户。"
+
+    non_game = review_prose_style(body, genre_context={"novel_type": "xuanhuan"})
+    web_game = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
+
+    assert not any("经济边界" in issue for issue in non_game["issues"])
+    assert any("经济边界" in issue for issue in web_game["issues"])
+
+
+def test_prose_style_review_requires_fix_for_explicit_economy_boundary_violations():
+    forbidden_currency_name = "\u4eba\u6c11\u5e01"
+    body = (
+        "夜烬卖出拍卖物，交易行成交所得直接现实结算，款项进了现实账户。\n\n"
+        "【名称：裂纹狼心】【用途：锻造】信息已经完整显示，他又提交鉴定，等平台验货。\n\n"
+        "求购单的游戏币已经冻结，立即出售显示成交以后，系统仍要求等待买家确认。\n\n"
+        f"结算栏使用了{forbidden_currency_name}这个完整名称。"
+    )
+
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 4
+    assert all("必须修复" in issue for issue in economy_issues)
+    assert review["scores"]["game_term_precision"] <= 4
+    plans = "\n".join(review["revision_plan"])
+    assert "交易行只进游戏钱包" in plans
+    assert "已识别物不重复鉴定" in plans
+    assert "资金冻结的求购单应立即成交" in plans
+    assert "独立官方兑换" in plans
+    assert forbidden_currency_name not in plans
+
+
+def test_prose_style_review_accepts_valid_exchange_unidentified_item_and_isolated_terms():
+    body = (
+        "夜烬选中资金已经冻结的求购单，点下立即出售，裂纹狼心成交后游戏币进入游戏钱包。\n\n"
+        "他退出交易行，打开独立官方兑换页面，确认兑换价、额度、手续费和预计到账，随后现实账户到账。\n\n"
+        "那件披风仍是未鉴定状态，他把披风交给鉴定师。队伍频道里有人求购药草，也有人问奖励到账没有。"
+    )
+
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+def test_prose_style_review_detects_ordered_economy_chains_across_adjacent_units():
+    body = (
+        "夜烬在交易行卖出拍卖物，成交提示跳了出来。\n\n"
+        "紧接着，那笔款项直接到账现实账户。\n\n"
+        "面板写着焰纹石用途是强化武器。\n\n"
+        "他却把这颗材料交给鉴定师。\n\n"
+        "求购单里的游戏币已经冻结。\n\n"
+        "夜烬点下立即出售。\n\n"
+        "成交以后，页面还让他继续等待买家确认。"
+    )
+
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 3
+
+
+def test_prose_style_review_ignores_negated_chains_and_appraisal_of_another_item():
+    body = (
+        "交易行里的求购已经成交。\n\n"
+        "这笔钱并非直接进入现实账户，而是必须另走独立官方兑换。\n\n"
+        "裂纹狼心用途是锻造；旁边的披风仍未鉴定，他把披风交给鉴定师。\n\n"
+        "求购单里的游戏币已经冻结。\n\n"
+        "夜烬点下立即出售。\n\n"
+        "成交以后不用等待买家确认，游戏币马上进入游戏钱包。"
+    )
+
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+@pytest.mark.parametrize(
+    ("body", "issue_fragment"),
+    [
+        (
+            "交易行里的求购已经成交。\n\n夜烬喝了口水。\n\n成交所得直接到账现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "焰纹石用途是强化武器。\n\n夜烬翻开下一页。\n\n他把这颗材料交给鉴定师。",
+            "又被送去鉴定或验货",
+        ),
+        ("求购成交所得直接现实到账。", "交易与现实兑换混成了一步"),
+        (
+            "求购单里的资金被冻结了。\n\n夜烬点下立即出售。\n\n成交后仍需等待买家再次确认。",
+            "仍在等待买家再次确认",
+        ),
+        ("夜烬把已经识别的裂纹狼心提交鉴定。", "又被送去鉴定或验货"),
+        (
+            "交易行里的求购已经成交。\n\n夜烬关掉设备。\n\n这笔求购所得直接到账现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "交易行里的求购已经成交。\n\n夜烬关掉设备。\n\n这笔成交款不是工资，而是交易所得，随后直接进入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "A单求购资金已经冻结。\n\nA单求购随即成交。\n\nA单求购仍需等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "求购成交，游戏币到账。钱随后直接进入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "甲玩家的求购单资金冻结。\n\n甲玩家的订单成交。\n\n甲玩家等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "求购成交，游戏币到账。钱很快就直接进入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "甲玩家的A单求购资金已经冻结。\n\n甲玩家的A单求购成交。\n\n甲玩家的A单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "甲玩家的A单求购资金已经冻结。\n\n该订单成交。\n\n同一订单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "求购成交，游戏币到账。\n\n款项由求购平台归还，随后直接转入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "夜烬看见甲玩家的A单求购资金已经冻结。\n\n甲玩家的A单求购成交。\n\n甲玩家的A单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "求购成交，游戏币到账。\n\n那笔钱是卖材料赚来的，随后直接转入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "他注意到夜烬的求购单资金已经冻结。\n\n夜烬的订单成交。\n\n夜烬还在等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "清风明月的求购单资金冻结。\n\n清风明月的订单成交。\n\n清风明月还在等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+    ],
+)
+def test_prose_style_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
+    body: str,
+    issue_fragment: str,
+):
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
+
+    matching = [issue for issue in review["issues"] if issue_fragment in issue]
+    assert matching, review
+    assert all("必须修复" in issue for issue in matching)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "交易行里的求购已经成交。\n\n夜烬抬头看了一眼。\n\n款项没有直接进入现实账户，必须另走独立官方兑换。",
+        "求购单里的资金被冻结了。\n\n夜烬点下立即出售。\n\n系统没有要求等待买家确认。",
+        "求购单成交后游戏币进入游戏钱包。\n\n他打开独立官方兑换页面。\n\n确认手续费和预计到账后，现实账户到账。",
+        "裂纹狼心用途是锻造。\n\n旁边还有一件未鉴定披风。\n\n夜烬把披风交给鉴定师。",
+        "裂纹狼心已经识别。\n\n夜烬取出披风，当前拿着的是披风。\n\n他把它提交鉴定。",
+        "交易行里的拍卖物已经成交。\n\n夜烬去了城外。\n\n公会开始另一场战斗。\n\n现实账户收到的是项目尾款。",
+        "交易行里的求购已经成交。\n\n夜烬退出游戏。\n\n公司奖金到账现实账户。",
+        "交易行里的求购已经成交。\n\n夜烬退出游戏。\n\n现实账户弹出到账提醒，来源没有显示。",
+        "交易行里的求购已经成交。\n\n夜烬抬头看了一眼。\n\n款项没有被交易行直接打进现实账户。",
+        "交易行里的求购已经成交。\n\n夜烬抬头看了一眼。\n\n这笔钱不需要由交易行直接转入现实账户。",
+        "裂纹狼心已经识别。\n\n夜烬换上了一把长剑。\n\n他把它提交鉴定。",
+        "甲求购单资金冻结。\n\n乙求购单成交。\n\n丙求购单等待买家确认。",
+        "求购成交，游戏币到账。\n\n夜烬放下头盔。\n\n那笔钱是报销款，随后直接转入现实账户。",
+        "甲玩家的求购单资金冻结。\n\n乙玩家的普通订单成交。\n\n丙玩家等待买家确认。",
+        "求购成交，游戏币到账。\n\n夜烬放下头盔。\n\n款项由朋友归还，随后直接转入现实账户。",
+        "甲玩家的A单求购资金已经冻结。\n\n甲玩家的B单求购成交。\n\n甲玩家的C单等待买家确认。",
+        "夜烬的求购单资金冻结。\n\n洛婶的订单成交。\n\n艾伦的订单等待买家确认。",
+        "夜烬的求购单资金冻结。\n\n洛婶的订单成交。\n\n艾伦等待买家确认。",
+        "夜烬有一张求购单，资金已经冻结。\n\n洛婶有一张订单显示成交。\n\n艾伦还在等待买家确认。",
+    ],
+)
+def test_prose_style_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+def test_prose_style_review_does_not_apply_unrelated_negation_to_direct_settlement():
+    body = "求购单已经成交。他不是买家，成交所得直接进入现实账户。"
+
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
+
+    assert any("交易与现实兑换混成了一步" in issue for issue in review["issues"]), review
 
 
 def test_prose_style_review_flags_panel_followed_by_rule_explanation():

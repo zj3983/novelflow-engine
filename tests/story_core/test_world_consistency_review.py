@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.world_consistency_review import review_world_event_consistency
 
 
@@ -41,6 +43,245 @@ def test_world_consistency_review_accepts_weak_trade_trace():
 
     assert review["pass"]
     assert review["issues"] == []
+
+
+def test_world_consistency_review_requires_fix_for_explicit_economy_boundary_violations():
+    forbidden_currency_name = "\u4eba\u6c11\u5e01"
+    body = (
+        "拍卖物成交以后，交易行把卖出所得直接转入现实账户。\n\n"
+        "【裂纹狼心】【用途：锻造材料】夜烬看完信息，又把裂纹狼心送去验货。\n\n"
+        "求购单已有资金冻结，立即出售显示成交后，夜烬仍在等待买家再次确认。\n\n"
+        f"结算说明里出现了{forbidden_currency_name}。"
+    )
+
+    review = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        chapter_number=4,
+        genre_context={"novel_type": "game_webnovel"},
+    )
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 4
+    assert all("必须修复" in issue for issue in economy_issues)
+    assert review["scores"]["systemic_consistency"] <= 4
+    plans = "\n".join(review["revision_plan"])
+    assert "交易行只进游戏钱包" in plans
+    assert "已识别物不重复鉴定" in plans
+    assert "资金冻结的求购单应立即成交" in plans
+    assert "独立官方兑换" in plans
+    assert forbidden_currency_name not in plans
+
+
+def test_world_consistency_review_gates_economy_checks_by_genre_context():
+    body = "拍卖物已经成交，这笔成交款直接进入现实账户。"
+
+    non_game = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        genre_context={"novel_type": "xuanhuan"},
+    )
+    web_game = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        genre_context={"novel_type": "game_webnovel"},
+    )
+
+    assert not any("经济边界" in issue for issue in non_game["issues"])
+    assert any("经济边界" in issue for issue in web_game["issues"])
+
+
+def test_world_consistency_review_accepts_separated_exchange_and_isolated_terms():
+    body = (
+        "求购单的游戏币已经冻结。夜烬点下立即出售，裂纹狼心成交，游戏币进入游戏钱包。\n\n"
+        "他关掉交易行，进入独立官方兑换页面，确认兑换价、额度、手续费和预计到账，随后现实账户到账。\n\n"
+        "一件未鉴定披风交给鉴定师。远处有人喊求购，另一个人问任务奖励什么时候到账。"
+    )
+
+    review = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        chapter_number=4,
+        genre_context={"novel_type": "game_webnovel"},
+    )
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+def test_world_consistency_review_detects_ordered_economy_chains_across_adjacent_units():
+    body = (
+        "求购成交的提示刚刚亮起。卖出所得转入现实账户。\n\n"
+        "裂纹狼心已显示正式名称。\n\n"
+        "夜烬随后送这件物品去鉴定。\n\n"
+        "一张求购单标着已付款。\n\n"
+        "这张订单随即成交。\n\n"
+        "随后页面仍要等买家再次确认。"
+    )
+
+    review = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        chapter_number=4,
+        genre_context={"novel_type": "game_webnovel"},
+    )
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 3
+
+
+def test_world_consistency_review_ignores_negation_and_distant_unrelated_events():
+    body = (
+        "拍卖行显示装备已经成交。\n\n"
+        "款项不能直接进入现实账户，必须进入独立官方兑换页面。\n\n"
+        "裂纹狼心的用途是锻造；披风仍是未鉴定状态，夜烬把披风送去鉴定。\n\n"
+        "求购单显示资金冻结。\n\n"
+        "夜烬选择立即出售。\n\n"
+        "系统提示无需等待买家确认。\n\n"
+        "他离开市场去做了三天任务。\n\n"
+        "公会在另一座城开会。\n\n"
+        "现实账户直接到账的是他的旧工资。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+def test_world_consistency_review_does_not_treat_unrelated_frozen_funds_as_funded_buy_order():
+    body = (
+        "现实账户因为旧账显示资金冻结。\n\n"
+        "夜烬随后看见一张普通求购单，点下立即出售，界面显示成交。\n\n"
+        "这笔普通订单需要等待买家确认。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
+@pytest.mark.parametrize(
+    ("body", "issue_fragment"),
+    [
+        (
+            "拍卖物已经成交。\n\n夜烬收起菜单。\n\n那笔款项直接打进现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "【名称：裂纹狼心】【用途：锻造】\n\n夜烬走到窗口旁。\n\n他送这颗材料去鉴定。",
+            "又被送去鉴定或验货",
+        ),
+        ("求购成交所得直接现实到账。", "交易与现实兑换混成了一步"),
+        (
+            "求购单里的资金被冻结了。\n\n订单随即成交。\n\n页面仍让他等买家再次确认。",
+            "仍在等待买家再次确认",
+        ),
+        ("把已经识别的裂纹狼心提交鉴定。", "又被送去鉴定或验货"),
+        (
+            "拍卖行显示装备成交。\n\n夜烬下线。\n\n这笔拍卖所得直接打进现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "第一条求购单资金冻结。\n\n第一条求购单成交。\n\n第一条求购单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "拍卖物成交，游戏币进入钱包。\n\n夜烬看了眼时间。\n\n那笔钱随后直接打进现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "甲玩家的求购单资金冻结。\n\n甲玩家成交。\n\n甲玩家等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "拍卖物成交，游戏币进入钱包。\n\n钱很快就直接打进现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "甲玩家的第一条求购单资金冻结。\n\n甲玩家的第一条订单成交。\n\n甲玩家的第一条订单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "甲玩家的第一条求购单资金冻结。\n\n该订单成交。\n\n同一订单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "拍卖物成交，游戏币到账。\n\n款项由拍卖行发放，随后直接打进现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "他发现甲玩家的A单求购资金已经冻结。\n\n甲玩家的A单求购成交。\n\n甲玩家的A单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "拍卖物成交，游戏币到账。\n\n那笔钱是卖材料赚来的，随后直接打进现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "旁边有人发现夜烬的求购单资金已经冻结。\n\n夜烬的订单成交。\n\n夜烬还在等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "清风明月的求购单资金冻结。\n\n清风明月的订单成交。\n\n清风明月还在等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+    ],
+)
+def test_world_consistency_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
+    body: str,
+    issue_fragment: str,
+):
+    review = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        chapter_number=4,
+        genre_context={"novel_type": "game_webnovel"},
+    )
+
+    matching = [issue for issue in review["issues"] if issue_fragment in issue]
+    assert matching, review
+    assert all("必须修复" in issue for issue in matching)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "求购成交的提示亮起。\n\n夜烬关掉背包。\n\n款项不需要直接进入现实账户，必须另走独立官方兑换。",
+        "求购单里的资金被冻结了。\n\n订单显示成交。\n\n系统没有要求等待买家确认。",
+        "求购单成交，游戏币进入游戏钱包。\n\n夜烬进入独立官方兑换页面。\n\n确认额度和预计到账后，现实账户收到款项。",
+        "裂纹狼心已经识别。\n\n披风仍是未鉴定状态。\n\n夜烬把披风送去鉴定。",
+        "裂纹狼心已显示正式名称。\n\n夜烬拿起一块矿石，当前查看的是矿石。\n\n他把它提交鉴定。",
+        "裂纹狼心已经识别。\n\n夜烬离开仓库。\n\n第二天他去了矿洞。\n\n回来后把它提交鉴定。",
+        "拍卖物已经成交。\n\n夜烬退出游戏。\n\n公司薪水到账现实账户。",
+        "拍卖物已经成交。\n\n夜烬退出游戏。\n\n现实账户收到到账提醒，但没有写明来源。",
+        "拍卖物已经成交。\n\n夜烬收起菜单。\n\n款项没有被交易行直接打进现实账户。",
+        "拍卖物已经成交。\n\n夜烬收起菜单。\n\n这笔钱不需要由交易行直接转入现实账户。",
+        "裂纹狼心已识别。\n\n夜烬改拿一把长剑。\n\n他把它提交鉴定。",
+        "甲求购单资金冻结。\n\n乙求购单成交。\n\n丙求购单等待买家确认。",
+        "拍卖物成交，游戏币到账。\n\n夜烬退出游戏。\n\n那笔钱是公司退款，随后直接进入现实账户。",
+        "甲玩家的求购单资金冻结。\n\n乙玩家的普通订单成交。\n\n丙玩家等待买家确认。",
+        "拍卖物成交，游戏币到账。\n\n夜烬退出游戏。\n\n这笔款来自朋友归还的借款，随后直接进入现实账户。",
+        "甲玩家的第一条求购单资金冻结。\n\n甲玩家的第二条订单成交。\n\n甲玩家的第三条订单等待买家确认。",
+        "苏叶的求购单资金冻结。\n\n洛婶的订单成交。\n\n艾伦的订单等待买家确认。",
+        "苏叶的求购单资金冻结。\n\n洛婶的订单成交。\n\n艾伦等待买家确认。",
+        "夜烬有一张求购单，资金已经冻结。\n\n洛婶有一张订单显示成交。\n\n艾伦还在等待买家确认。",
+    ],
+)
+def test_world_consistency_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):
+    review = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        chapter_number=4,
+        genre_context={"novel_type": "game_webnovel"},
+    )
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
 
 
 def test_world_consistency_review_accepts_outsider_misread_alias():

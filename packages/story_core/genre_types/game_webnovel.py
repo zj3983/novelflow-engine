@@ -5,6 +5,12 @@ from typing import Any
 
 from packages.story_core.genre_types.base import GenrePlugin
 from packages.story_core.game_level_gap import level_gap_rule_text
+from packages.story_core.web_game_economy import (
+    appraisal_rules,
+    exchange_rules,
+    first_chapter_market_exchange_authorized,
+    market_rules,
+)
 
 
 @dataclass(frozen=True)
@@ -54,10 +60,17 @@ GAME_WEBNOVEL_LANGUAGE_CARDS = (
     ),
     GameLanguageCard(
         card_id="trade",
-        trigger_terms=("交易", "交易行", "拍卖行", "上架", "出售", "求购", "一口价", "成交", "手续费", "到账", "寄售"),
-        preferred=("交易行", "上架", "求购单", "一口价", "成交", "手续费", "到账"),
-        avoid=("平台封存", "封存交割", "现实结算", "字段权限", "交易流转"),
-        example="写“他点下出售，订单变成已成交”，不解释平台后台怎样验货。",
+        trigger_terms=("交易", "交易行", "拍卖行", "上架", "挂单", "出售", "卖出", "立即出售", "求购", "一口价", "成交", "手续费", "游戏币到账", "寄售"),
+        preferred=("交易行", "求购单", "挂单", "立即出售", "一口价", "成交", "手续费", "游戏币到账"),
+        avoid=("平台封存", "字段权限", "交易流转"),
+        example="写“卖家按一口价挂单，等待买家购买；若接受现有求购单价格，则点立即出售并直接成交，游戏币到账”。",
+    ),
+    GameLanguageCard(
+        card_id="currency_exchange",
+        trigger_terms=("官方兑换", "官方兑换渠道", "兑换渠道", "兑换价", "兑换额度", "现实货币", "现实账户", "预计到账"),
+        preferred=("兑换价", "额度", "手续费", "预计到账", "现实账户"),
+        avoid=("交易行兑现实货币", "游戏物品直达现实账户", "市场与兑换混写"),
+        example="写“确认额度和手续费后，界面显示现实账户预计到账金额”。",
     ),
     GameLanguageCard(
         card_id="group_dungeon",
@@ -95,7 +108,8 @@ _LANGUAGE_CARD_PRIORITY_MARKERS = {
     "login_server": ("entry_login", "登录建号", "创建角色"),
     "combat": ("small_verification", "低级怪小验证", "怪物面板"),
     "loot_inventory": ("异常掉落", "掉落异常", "战利品"),
-    "trade": ("担保交易", "匿名交割", "第一笔到账"),
+    "trade": ("交易行出售", "挂单成交", "游戏币到账"),
+    "currency_exchange": ("官方兑换", "兑换渠道", "兑换价", "现实账户"),
     "group_dungeon": ("副本开荒", "进入副本", "团队副本"),
     "guild_social": ("公会招募", "固定团招募", "公会频道"),
 }
@@ -120,7 +134,7 @@ def select_game_language_cards(
 ) -> list[GameLanguageCard]:
     """Select a compact set of player-facing language cards for one chapter."""
 
-    limit = max(1, int(max_cards))
+    limit = min(3, max(1, int(max_cards)))
     text = _language_plan_text(plan)
     selected = [GAME_WEBNOVEL_LANGUAGE_CARDS[0]]
     scored: list[tuple[int, int, GameLanguageCard]] = []
@@ -130,6 +144,18 @@ def select_game_language_cards(
             score += 1000
         if score:
             scored.append((score, index, card))
+
+    scored_card_ids = {card.card_id for _, _, card in scored}
+    market_exchange_pair = {"trade", "currency_exchange"}
+    legacy_opening_authorized = first_chapter_market_exchange_authorized(
+        plan if isinstance(plan, dict) else {"turn": text},
+        [],
+    )
+    if market_exchange_pair.issubset(scored_card_ids) or legacy_opening_authorized:
+        cards_by_id = {card.card_id: card for card in GAME_WEBNOVEL_LANGUAGE_CARDS}
+        selected.extend((cards_by_id["trade"], cards_by_id["currency_exchange"]))
+        return selected[:limit]
+
     scored.sort(key=lambda item: (-item[0], item[1]))
     selected.extend(card for _, _, card in scored[: max(0, limit - 1)])
     return selected
@@ -155,9 +181,12 @@ GAME_WEBNOVEL = GenrePlugin(
             "每章至少形成一次小收益闭环：目标、行动、收益反馈、新压力。",
         ),
         "economy_rules": (
+            *market_rules(),
+            *appraisal_rules(),
+            *exchange_rules(),
             "网游币制默认使用 1金币=100银币=10000铜币；新手村低级材料优先用铜币或银币计价，金币是大额单位。",
-            "开服初期现实汇率尚未稳定，除非世界档案明确给出官方兑换或黑市行情，否则不得写死“1金币=多少人民币”。",
             "金币、材料、装备价格要体现供需关系，交易行、当面交易和公会垄断都会影响价格。",
+            "开服初期兑换价尚未稳定，除非世界档案明确给出官方兑换规则，否则不得写死游戏币与现实货币的兑换比例。",
             "稀有掉落不能随意变现，必须考虑买家来源、匿名出售、压价、追踪和信誉风险。",
             "主角短期变强可以靠信息差，但不能无代价暴富到破坏世界经济。",
             "低级材料不是主冲突：它们只作为任务、装备、技能或路线前置条件的证据，不承担引发市场风暴或第一章服务闭环的戏剧职责。",

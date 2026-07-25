@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import re
 
 from packages.story_core.models import NovelProject
 from packages.story_core.novel_type_catalog import has_explicit_non_game_type, normalize_novel_type_ids
@@ -114,6 +115,8 @@ def select_genre_plugins(project: NovelProject, *, max_plugins: int = 2, min_sco
 
 def is_game_genre(text: str) -> bool:
     haystack = str(text or "")
+    if re.search(r"(?<![A-Za-z0-9_])game_webnovel(?![A-Za-z0-9_])", haystack, re.IGNORECASE):
+        return True
     if has_explicit_non_game_type(haystack):
         return False
     strong_tokens = (
@@ -131,6 +134,47 @@ def is_game_genre(text: str) -> bool:
     if any(token in haystack for token in strong_tokens):
         return True
     return sum(1 for token in weak_tokens if token in haystack) >= 2
+
+
+def _context_genre_ids(context: Any) -> list[str]:
+    if hasattr(context, "model_dump"):
+        context = context.model_dump(mode="json")
+    if isinstance(context, dict):
+        result: list[str] = []
+        for key, value in context.items():
+            if key in {"genre_plugin_ids", "novel_type", "novel_type_id", "genre"}:
+                candidates = normalize_novel_type_ids(value)
+            elif isinstance(value, (dict, list, tuple, set)):
+                candidates = _context_genre_ids(value)
+            else:
+                candidates = []
+            for candidate in candidates:
+                if candidate not in result:
+                    result.append(candidate)
+        return result
+    if isinstance(context, (list, tuple, set)):
+        result = normalize_novel_type_ids(list(context))
+        for value in context:
+            if isinstance(value, (dict, list, tuple, set)):
+                for candidate in _context_genre_ids(value):
+                    if candidate not in result:
+                        result.append(candidate)
+        return result
+    return normalize_novel_type_ids(context)
+
+
+def is_game_genre_context(body: str, context: Any = None) -> bool:
+    """Resolve game genre from prose plus optional project/review metadata."""
+
+    if context is None:
+        return is_game_genre(body)
+    genre_ids = _context_genre_ids(context)
+    if "game_webnovel" in genre_ids:
+        return True
+    if genre_ids:
+        return False
+    context_text = json.dumps(context, ensure_ascii=False, default=str)
+    return is_game_genre(f"{context_text}\n{body}")
 
 
 def merge_plugin_rulebooks(plugins: list[GenrePlugin]) -> dict[str, list[str]]:
