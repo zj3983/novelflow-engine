@@ -188,7 +188,11 @@ def _normalize_local_transaction_terms(clause: str) -> str:
     )
 
 
-def _normalize_legacy_trade_window(value: str, amount: str) -> str:
+def _normalize_legacy_trade_window(
+    value: str,
+    expected_amount: str,
+    actual_amount: str,
+) -> str:
     normalized = _LEGACY_LISTING_NET_PATTERN.sub("", value)
     normalized = _LEGACY_TRADE_WINDOW_ACTION_PATTERN.sub(
         lambda match: (
@@ -221,7 +225,7 @@ def _normalize_legacy_trade_window(value: str, amount: str) -> str:
         "【兑换价：当前官方报价。】"
         "【可用额度：足够完成本次兑换。】"
         "【手续费：已计入预计到账。】"
-        f"【预计到账：{amount}元。】"
+        f"【预计到账：{expected_amount}元。】"
         "他确认兑换。"
     )
     normalized = _ADJACENT_LEGACY_TRADE_RESULTS_PATTERN.sub(
@@ -230,7 +234,7 @@ def _normalize_legacy_trade_window(value: str, amount: str) -> str:
         count=1,
     )
     normalized = _LEGACY_ACTUAL_NET_PATTERN.sub(
-        f"【现实账户到账{amount}元。】",
+        f"【现实账户到账{actual_amount}元。】",
         normalized,
         count=1,
     )
@@ -267,13 +271,24 @@ def _normalize_legacy_trade_windows(value: str) -> str:
             )
         )
         listing = listing_candidates[-1] if listing_candidates else None
-        listing_context = value[listing.start() : action.start()] if listing is not None else ""
-        if listing is None or not any(marker in listing_context for marker in ("求购", "订单")):
+        listing_context = (
+            value[max(cursor, listing.start() - 500) : action.start()]
+            if listing is not None
+            else ""
+        )
+        if listing is None or not any(marker in listing_context for marker in ("求购", "裂纹狼心")):
             search_from = action.end()
             continue
-        amount = listing.group("amount")
+        expected_amount = listing.group("amount")
+        actual_amount = actual.group("amount")
         parts.append(value[cursor : listing.start()])
-        parts.append(_normalize_legacy_trade_window(value[listing.start() : actual.end()], amount))
+        parts.append(
+            _normalize_legacy_trade_window(
+                value[listing.start() : actual.end()],
+                expected_amount,
+                actual_amount,
+            )
+        )
         cursor = actual.end()
         search_from = cursor
     if not parts:
