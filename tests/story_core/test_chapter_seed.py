@@ -123,11 +123,16 @@ def test_chapter_seed_resolves_one_locked_trope_contract_specific_before_generic
         "payoff": "specific payoff",
         "avoid": ["specific avoid"],
     }
-    surface = str(seed)
+    surface = str(seed["trope_contract"])
     assert "unused-specific" not in surface
     assert "unused-generic" not in surface
     assert "generic stage" not in surface
-    assert "trope_templates" not in seed.get("simulation_blueprint", {})
+    blueprint_templates = seed["simulation_blueprint"]["trope_templates"]
+    assert {template["id"] for template in blueprint_templates} == {
+        "shared-stage",
+        "unused-specific",
+        "unused-generic",
+    }
 
 
 def test_chapter_seed_omits_trope_contract_for_unknown_id_or_invalid_beat(monkeypatch):

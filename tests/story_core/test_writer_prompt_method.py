@@ -1,3 +1,5 @@
+from packages.story_core.chapter_seed import build_chapter_seed
+from packages.story_core.genre_types.urban import URBAN
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.orchestrator import (
     StoryOrchestrator,
@@ -7,6 +9,34 @@ from packages.story_core.orchestrator import (
     _writer_fact_section,
 )
 from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
+
+
+TROPE_PROGRESS_GUIDANCE = "This chapter must create observable progress for current_beat; do not merely mention it."
+TROPE_AVOID_GUIDANCE = "Always follow avoid rules conservatively."
+
+
+def _urban_trope(template_id: str) -> dict[str, object]:
+    return next(template for template in URBAN.trope_templates if template["id"] == template_id)
+
+
+def _urban_story_with_trope(template_id: str, beat: str | None) -> StoryState:
+    return StoryState(
+        story_id=f"s-real-trope-{template_id}",
+        outline="Urban professional pressure story.",
+        genre="urban",
+        genre_plugin_ids=["urban"],
+        style="plain",
+        outline_context={
+            "overall": {"primary_trope_id": template_id},
+            "active_arc": {"trope_id": template_id},
+            "chapter": {
+                "chapter_number": 1,
+                "title": "Proof",
+                "goal": "Build a visible professional result.",
+                "trope_beat": beat,
+            },
+        },
+    )
 
 
 def test_segment_prompt_puts_scene_method_before_guardrails():
@@ -327,6 +357,70 @@ def test_game_writer_prompt_keeps_game_facts_and_adds_trope_contract(monkeypatch
     assert "当前阶段套路" in prompt
     assert "first-advantage" in prompt
     assert "This chapter must create observable progress for current_beat; do not merely mention it." in prompt
+
+
+def test_real_non_game_director_and_writer_prompts_include_selected_trope_only():
+    selected_id = "professional_save_the_day"
+    unrelated_id = "shenhao_system_spend"
+    beat = _urban_trope(selected_id)["beats"][0]
+    story = _urban_story_with_trope(selected_id, str(beat))
+
+    seed = build_chapter_seed(story, 1)
+    blueprint_ids = {template["id"] for template in seed["simulation_blueprint"]["trope_templates"]}
+    plan_prompt = StoryOrchestrator()._plan_prompt(story, 1)
+    body_prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Proof"}})
+
+    assert selected_id in blueprint_ids
+    assert unrelated_id in blueprint_ids
+    assert seed["trope_contract"]["template_id"] == selected_id
+    for prompt in (plan_prompt, body_prompt):
+        assert "当前阶段套路" in prompt
+        assert selected_id in prompt
+        assert str(beat) in prompt
+        assert unrelated_id not in prompt
+        assert "trope_templates" not in prompt
+    assert TROPE_PROGRESS_GUIDANCE in body_prompt
+    assert TROPE_AVOID_GUIDANCE in body_prompt
+
+
+def test_real_non_game_prompts_omit_trope_contract_for_deleted_template_id():
+    unrelated_id = "shenhao_system_spend"
+    story = _urban_story_with_trope("deleted-template", "missing beat")
+
+    seed = build_chapter_seed(story, 1)
+    plan_prompt = StoryOrchestrator()._plan_prompt(story, 1)
+    body_prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Proof"}})
+
+    assert unrelated_id in {template["id"] for template in seed["simulation_blueprint"]["trope_templates"]}
+    assert "trope_contract" not in seed
+    for prompt in (plan_prompt, body_prompt):
+        assert "当前阶段套路" not in prompt
+        assert TROPE_PROGRESS_GUIDANCE not in prompt
+        assert TROPE_AVOID_GUIDANCE not in prompt
+        assert "deleted-template" not in prompt
+        assert unrelated_id not in prompt
+        assert "trope_templates" not in prompt
+
+
+def test_real_non_game_prompts_omit_trope_contract_for_invalid_beat():
+    selected_id = "professional_save_the_day"
+    unrelated_id = "shenhao_system_spend"
+    story = _urban_story_with_trope(selected_id, "not a valid trope beat")
+
+    seed = build_chapter_seed(story, 1)
+    plan_prompt = StoryOrchestrator()._plan_prompt(story, 1)
+    body_prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Proof"}})
+
+    assert unrelated_id in {template["id"] for template in seed["simulation_blueprint"]["trope_templates"]}
+    assert "trope_contract" not in seed
+    for prompt in (plan_prompt, body_prompt):
+        assert "当前阶段套路" not in prompt
+        assert TROPE_PROGRESS_GUIDANCE not in prompt
+        assert TROPE_AVOID_GUIDANCE not in prompt
+        assert selected_id not in prompt
+        assert "not a valid trope beat" not in prompt
+        assert unrelated_id not in prompt
+        assert "trope_templates" not in prompt
 
 
 def test_writer_direction_drops_generic_taskbook_placeholders():

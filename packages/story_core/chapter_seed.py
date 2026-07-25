@@ -615,14 +615,6 @@ def _outline_trope_contract(
     return resolve_trope_contract(templates, trope_id, chapter.get("trope_beat"))
 
 
-def _without_trope_template_library(value: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    result = deepcopy(value)
-    result.pop("trope_templates", None)
-    return result
-
-
 def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]:
     """Build the compact pre-writing contract that connects world simulation to prose."""
     proxy_project = _proxy_project(story)
@@ -653,7 +645,6 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
     simulation_blueprint = plugin_simulation_blueprint(plugins)
     if allow_first_chapter_trade:
         simulation_blueprint = _authorized_trade_blueprint(simulation_blueprint)
-    simulation_blueprint = _without_trope_template_library(simulation_blueprint)
     contract = _contract_for_game(chapter_number) if is_game else _generic_contract()
     outline_anchor = _outline_anchor(story, chapter_number)
     trope_contract = _outline_trope_contract(story, chapter_number, prompt_plugins)
