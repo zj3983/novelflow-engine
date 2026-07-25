@@ -181,6 +181,50 @@ def test_scheduled_trope_beat_rejects_negated_or_planned_mentions():
     assert landed["diagnostics"]["trope_beat_covered"] is True
 
 
+def test_scheduled_trope_beat_allows_unrelated_negation_before_clear_action():
+    review = review_plot_spine_completion(
+        "他没有犹豫，当场在雨夜接下挑战，赢得信任且不暴露底牌。",
+        _trope_plan(),
+    )
+    nearby_negation = review_plot_spine_completion(
+        "他没有接下挑战，只是站在雨夜里等待。",
+        _trope_plan(),
+    )
+    english_nearby_negation = review_plot_spine_completion(
+        "Lin didn't claim reward before sunset.",
+        _trope_plan(current_beat="claim reward"),
+    )
+
+    assert review["pass"] is True
+    assert review["diagnostics"]["trope_beat_covered"] is True
+    assert nearby_negation["pass"] is False
+    assert nearby_negation["diagnostics"]["trope_beat_covered"] is False
+    assert english_nearby_negation["pass"] is False
+    assert english_nearby_negation["diagnostics"]["trope_beat_covered"] is False
+
+
+def test_short_chinese_trope_beat_requires_affirmative_action():
+    landed = review_plot_spine_completion(
+        "他当场开门，看见屋内证据。",
+        _trope_plan(current_beat="开门"),
+    )
+    negated = review_plot_spine_completion(
+        "他没有开门，只是在门外等待。",
+        _trope_plan(current_beat="开门"),
+    )
+    questioned = review_plot_spine_completion(
+        "他会开门吗？旁人都在猜。",
+        _trope_plan(current_beat="开门"),
+    )
+
+    assert landed["pass"] is True
+    assert landed["diagnostics"]["trope_beat_covered"] is True
+    assert negated["pass"] is False
+    assert negated["diagnostics"]["trope_beat_covered"] is False
+    assert questioned["pass"] is False
+    assert questioned["diagnostics"]["trope_beat_covered"] is False
+
+
 def test_scheduled_trope_beat_handles_english_and_symbol_beats_conservatively():
     plan = _trope_plan(current_beat="unlock VIP-3 badge")
 

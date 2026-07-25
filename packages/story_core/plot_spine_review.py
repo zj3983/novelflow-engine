@@ -130,26 +130,66 @@ def _trope_action_anchors(text: str) -> list[str]:
         if len(run) >= 4:
             anchors.append(run)
             anchors.extend(run[index : index + 4] for index in range(len(run) - 3))
+        elif len(run) >= 2:
+            anchors.append(run)
     latin_phrase = _normalized_trope_phrase(text)
     if latin_phrase and _LATIN_SYMBOL_RUN.search(latin_phrase):
         anchors.append(latin_phrase)
     return list(dict.fromkeys(anchors))
 
 
-def _trope_sentence_is_invalid(sentence: str) -> bool:
-    latin_tokens = _latin_symbol_tokens(sentence)
+def _trope_anchor_contexts(sentence: str, anchors: list[str]) -> list[tuple[str, bool]]:
+    raw_sentence = str(sentence or "")
+    lowered_sentence = _normalized_trope_phrase(raw_sentence)
+    contexts: list[tuple[str, bool]] = []
+    for anchor in anchors:
+        if not anchor:
+            continue
+        is_latin_anchor = bool(_LATIN_SYMBOL_RUN.search(anchor))
+        haystack = lowered_sentence if is_latin_anchor else raw_sentence
+        needle = _normalized_trope_phrase(anchor) if is_latin_anchor else anchor
+        start = 0
+        while needle:
+            index = haystack.find(needle, start)
+            if index < 0:
+                break
+            prefix_window = 12 if is_latin_anchor else 4
+            suffix_window = 8 if is_latin_anchor else 4
+            context = haystack[
+                max(0, index - prefix_window) : min(len(haystack), index + len(needle) + suffix_window)
+            ]
+            contexts.append((context, is_latin_anchor))
+            start = index + 1
+    return contexts
+
+
+def _trope_sentence_is_invalid(sentence: str, anchors: list[str]) -> bool:
     if any(term in sentence for term in _TROPE_QUESTION_TERMS):
-        return True
-    if _LATIN_CONTRACTED_NEGATION.search(sentence):
-        return True
-    if any(term in sentence for term in _TROPE_NEGATION_TERMS) or any(
-        term in latin_tokens for term in _TROPE_NEGATION_LATIN_TERMS
-    ):
         return True
     if any(term in sentence for term in _TROPE_OTHER_ACTOR_TERMS):
         return True
-    has_plan_marker = any(term in sentence for term in _TROPE_PLAN_ONLY_TERMS) or any(
-        term in latin_tokens for term in _TROPE_PLAN_ONLY_LATIN_TERMS
+
+    anchor_contexts = _trope_anchor_contexts(sentence, anchors)
+    if any(
+        any(term in context for term in _TROPE_NEGATION_TERMS)
+        or (
+            is_latin_anchor
+            and (
+                _LATIN_CONTRACTED_NEGATION.search(context)
+                or any(term in _latin_symbol_tokens(context) for term in _TROPE_NEGATION_LATIN_TERMS)
+            )
+        )
+        for context, is_latin_anchor in anchor_contexts
+    ):
+        return True
+
+    has_plan_marker = any(
+        any(term in context for term in _TROPE_PLAN_ONLY_TERMS)
+        or (
+            is_latin_anchor
+            and any(term in _latin_symbol_tokens(context) for term in _TROPE_PLAN_ONLY_LATIN_TERMS)
+        )
+        for context, is_latin_anchor in anchor_contexts
     )
     if has_plan_marker and not any(
         term in sentence for term in _TROPE_ACTION_CONFIRM_TERMS
@@ -176,9 +216,9 @@ def _trope_beat_coverage(body: str, beat: str) -> tuple[bool, float]:
         best_ratio = max(best_ratio, sentence_ratio)
         if sentence_ratio < 0.25:
             continue
-        if _trope_sentence_is_invalid(sentence):
-            continue
         if not _trope_sentence_has_anchor(sentence, anchors):
+            continue
+        if _trope_sentence_is_invalid(sentence, anchors):
             continue
         return True, sentence_ratio
 
