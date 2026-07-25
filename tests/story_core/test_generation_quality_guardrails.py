@@ -104,6 +104,66 @@ def test_outline_amount_repair_moves_late_arrival_before_urgent_payment() -> Non
     assert repaired.index("官方兑换页面") < repaired.index("现实账户收到1764.00元")
     assert repaired.index("现实账户收到1764.00元") < repaired.index("付清现实急账")
     assert repaired.index("付清现实急账") < repaired.rindex("余额312.60元")
+    assert "官方兑换完成" not in repaired
+
+
+def test_outline_amount_repair_inserts_before_whole_urgency_sentence() -> None:
+    body = "交易行求购单成交，游戏币进入钱包。然后他处理急账，准备给房东回消息。"
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "然后他处理急账，准备给房东回消息。" in repaired
+    assert "然后他\n" not in repaired
+    assert repaired.index("现实账户收到1764.00元") < repaired.index("然后他处理急账")
+
+
+def test_outline_amount_repair_moves_only_late_arrival_phrase_and_keeps_sentence() -> None:
+    body = (
+        "交易行求购单成交，游戏币进入钱包。他先付清现实急账。"
+        "队友发来消息，现实账户收到305.20元，他决定稍后回复。"
+    )
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "队友发来消息，他决定稍后回复。" in repaired
+    assert "队友发来消息" in repaired
+    assert "他决定稍后回复" in repaired
+    assert repaired.count("现实账户收到1764.00元") == 1
+    assert repaired.index("现实账户收到1764.00元") < repaired.index("付清现实急账")
+
+
+def test_outline_amount_repair_removes_late_duplicate_when_earlier_receipt_exists() -> None:
+    body = (
+        "现实账户收到305.20元，他随后付清现实急账。"
+        "队友发来消息，实际到账300.00元，他决定稍后回复。"
+    )
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert repaired.count("1764.00元") == 1
+    assert "队友发来消息，他决定稍后回复。" in repaired
+    assert "官方兑换页面" not in repaired
+
+
+def test_outline_amount_repair_updates_expected_and_actual_arrival_amounts() -> None:
+    body = "页面显示预计到账1700.00元，确认兑换后实际到账1690.00元。"
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "预计到账1764.00元" in repaired
+    assert "实际到账1764.00元" in repaired
+    assert "1700.00元" not in repaired
+    assert "1690.00元" not in repaired
+
+
+def test_outline_amount_repair_recognizes_mobile_credit_without_duplicate_exchange() -> None:
+    body = "手机提示进账305.20元，他看了一眼就去付清现实急账。"
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "手机提示进账1764.00元" in repaired
+    assert "官方兑换页面" not in repaired
+    assert repaired.count("1764.00元") == 1
 
 
 def test_outline_amount_repair_does_not_insert_exchange_before_opening_balance() -> None:

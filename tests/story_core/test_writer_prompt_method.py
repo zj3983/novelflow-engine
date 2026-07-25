@@ -1,3 +1,5 @@
+import packages.story_core.orchestrator as orchestrator_module
+
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.genre_types.urban import URBAN
 from packages.story_core.models import CharacterState, StoryState
@@ -629,7 +631,7 @@ def test_formal_prompts_normalize_legacy_plan_review_and_source_body_without_cha
         author_constraints=[f"第一章必须通过裂纹狼心{legacy_trade}解决现实急账。"],
     )
     plan = {"event_plan": {"turn": f"完成{legacy_trade}并处理急账"}}
-    review = {"issues": [f"补足{legacy_appraisal}"], "revision_plan": [f"删除{legacy_delivery}"]}
+    review = {"issues": [f"补足裂纹狼心{legacy_appraisal}"], "revision_plan": [f"删除{legacy_delivery}"]}
     source_body = f"裂纹狼心{legacy_appraisal}后{legacy_delivery}，到账1764.00{forbidden_currency}。"
     orchestrator = StoryOrchestrator()
 
@@ -646,6 +648,35 @@ def test_formal_prompts_normalize_legacy_plan_review_and_source_body_without_cha
         assert "现实账户" in prompt
         assert "处理急账" in prompt
     assert "1764.00元" in prompts[-1]
+
+
+def test_each_formal_prompt_normalizes_once_at_its_final_output(monkeypatch):
+    story = StoryState(
+        story_id="s-single-migration-exit",
+        outline="第一章通过裂纹狼心担保交易解决现实急账。",
+        genre="网游",
+        style="升级流",
+    )
+    plan = {"event_plan": {"turn": "裂纹狼心通过担保平台成交"}}
+    review = {"issues": ["裂纹狼心提交鉴定"]}
+    original = orchestrator_module.normalize_legacy_economy_prompt_value
+    calls: list[tuple[bool, int]] = []
+
+    def track(value, *, game_context, chapter_number):
+        calls.append((game_context, chapter_number))
+        return original(value, game_context=game_context, chapter_number=chapter_number)
+
+    monkeypatch.setattr(orchestrator_module, "normalize_legacy_economy_prompt_value", track)
+    orchestrator = StoryOrchestrator()
+
+    for build in (
+        lambda: orchestrator._plan_prompt(story, 1),
+        lambda: orchestrator._body_prompt(story, 1, plan),
+        lambda: orchestrator._revision_prompt(story, 1, "裂纹狼心担保交易。", plan, review),
+    ):
+        calls.clear()
+        build()
+        assert calls == [(True, 1)]
 
 
 def test_web_game_writer_prompt_moves_on_after_a_panel_instead_of_explaining_it():

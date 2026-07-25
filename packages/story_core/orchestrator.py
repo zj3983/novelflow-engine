@@ -201,51 +201,94 @@ def _repair_outline_amount_anchors(body: str, anchor: Any) -> str:
         elif opening not in repaired[:1200]:
             repaired = f"苏叶登录游戏前，账户余额{opening}。\n\n{repaired.lstrip()}"
     arrival_pattern = re.compile(
-        r"((?:预计|实际)?到账(?:金额)?|实收|现实账户(?:收到|到账))\s*(?:[：:]\s*)?\d+(?:\.\d{1,2})?\s*元"
+        r"(?P<label>预计到账(?:金额)?|实际到账(?:金额)?|现实账户(?:收到|到账)|"
+        r"手机(?:银行)?(?:提示|弹出提示|收到提示)?(?:进账|到账)|到账金额|实收|到账)"
+        r"(?P<separator>\s*(?:[：:]\s*)?)"
+        r"(?P<amount>\d+(?:\.\d{1,2})?\s*元)"
     )
-    arrival_match = arrival_pattern.search(repaired)
-    if arrival:
-        if arrival_match:
-            urgency_pattern = re.compile(
-                r"(?:付清|处理|缴清|还清)[^。！？\n]{0,50}(?:现实急账|急账|房租|账单|最低还款)"
-                r"|(?:现实急账|急账|账单)[^。！？\n]{0,30}(?:付清|处理|缴清|还清)"
+    urgency_pattern = re.compile(
+        r"(?:付清|处理|缴清|还清)[^。！？\n]{0,50}(?:现实急账|急账|房租|账单|最低还款)"
+        r"|(?:现实急账|急账|账单)[^。！？\n]{0,30}(?:付清|处理|缴清|还清)"
+    )
+
+    def sentence_start(text: str, index: int) -> int:
+        return max(
+            text.rfind("。", 0, index),
+            text.rfind("！", 0, index),
+            text.rfind("？", 0, index),
+            text.rfind("!", 0, index),
+            text.rfind("?", 0, index),
+            text.rfind("\n", 0, index),
+        ) + 1
+
+    def remove_minimal_phrases(text: str, matches: list[re.Match[str]]) -> str:
+        for match in reversed(matches):
+            start, end = match.span()
+            exchange_prefix = re.search(
+                r"官方兑换(?:完成|成功)[ \t]*[，,][ \t]*$",
+                text[:start],
             )
-            urgency_match = urgency_pattern.search(repaired)
-            if urgency_match and arrival_match.start() > urgency_match.start():
-                sentence_start = max(
-                    repaired.rfind("。", 0, arrival_match.start()),
-                    repaired.rfind("！", 0, arrival_match.start()),
-                    repaired.rfind("？", 0, arrival_match.start()),
-                    repaired.rfind("\n", 0, arrival_match.start()),
-                ) + 1
-                sentence_ends = [
-                    index
-                    for marker in ("。", "！", "？", "\n")
-                    if (index := repaired.find(marker, arrival_match.end())) >= 0
-                ]
-                sentence_end = min(sentence_ends) + 1 if sentence_ends else len(repaired)
-                repaired = (repaired[:sentence_start] + repaired[sentence_end:]).strip()
-                arrival_match = None
-            else:
-                label = arrival_match.group(1)
-                repaired = repaired[: arrival_match.start()] + f"{label}{arrival}" + repaired[arrival_match.end() :]
-        if arrival_match is None:
+            if exchange_prefix:
+                start = exchange_prefix.start()
+            if end < len(text) and text[end] in "，,":
+                end += 1
+            elif exchange_prefix and end < len(text) and text[end] in "。！？!?":
+                end += 1
+            elif start > 0 and text[start - 1] in "，,":
+                start -= 1
+            text = text[:start] + text[end:]
+        return text
+
+    def insert_exchange_before(text: str, index: int, paragraph: str) -> str:
+        insert_at = sentence_start(text, index)
+        prefix = text[:insert_at]
+        suffix = text[insert_at:]
+        before = "" if not prefix or prefix.endswith("\n") else "\n\n"
+        after = "" if not suffix or suffix.startswith("\n") else "\n\n"
+        return f"{prefix}{before}{paragraph}{after}{suffix}"
+
+    if arrival:
+        repaired = arrival_pattern.sub(
+            lambda match: f"{match.group('label')}{match.group('separator')}{arrival}",
+            repaired,
+        )
+        arrival_matches = list(arrival_pattern.finditer(repaired))
+        receipt_matches = [
+            match
+            for match in arrival_matches
+            if not match.group("label").startswith("预计")
+        ]
+        urgency_match = urgency_pattern.search(repaired)
+        late_receipts = (
+            [match for match in receipt_matches if match.start() > urgency_match.start()]
+            if urgency_match
+            else []
+        )
+        has_receipt_before_urgency = bool(
+            urgency_match
+            and any(match.start() < urgency_match.start() for match in receipt_matches)
+        )
+        needs_exchange_scene = not receipt_matches
+        if late_receipts:
+            repaired = remove_minimal_phrases(repaired, late_receipts)
+            needs_exchange_scene = not has_receipt_before_urgency
+
+        if needs_exchange_scene:
             exchange_paragraph = (
                 "他离开交易行，打开独立官方兑换页面。"
                 f"页面显示兑换价、额度、手续费和预计到账；确认兑换后，现实账户收到{arrival}。"
             )
-            urgency_pattern = re.compile(
-                r"(?:付清|处理|缴清|还清)[^。！？\n]{0,50}(?:现实急账|急账|房租|账单|最低还款)"
-                r"|(?:现实急账|急账|账单)[^。！？\n]{0,30}(?:付清|处理|缴清|还清)"
-            )
             urgency_match = urgency_pattern.search(repaired)
             if urgency_match:
-                insert_at = urgency_match.start()
-                repaired = f"{repaired[:insert_at].rstrip()}\n\n{exchange_paragraph}\n\n{repaired[insert_at:].lstrip()}"
+                repaired = insert_exchange_before(
+                    repaired,
+                    urgency_match.start(),
+                    exchange_paragraph,
+                )
             else:
                 balance_matches = list(balance_pattern.finditer(repaired))
                 insert_at = balance_matches[-1].start() if len(balance_matches) >= 2 else len(repaired)
-                repaired = f"{repaired[:insert_at].rstrip()}\n\n{exchange_paragraph}\n\n{repaired[insert_at:].lstrip()}"
+                repaired = insert_exchange_before(repaired, insert_at, exchange_paragraph)
     if ending:
         balance_matches = list(balance_pattern.finditer(repaired))
         if len(balance_matches) >= 2:
@@ -1453,11 +1496,11 @@ def _character_context_for_prompt(story: StoryState, plan: Any | None = None, *,
                 "scene_portrait": build_scene_portrait_slice(card),
             }
         )
-    return normalize_legacy_economy_prompt_value({
+    return {
         "selection": "planned_characters" if requested else "fallback_active_characters",
         "requested_names": sorted(requested),
         "cards": compact_cards,
-    })
+    }
 
 
 def _character_context_summary_for_prompt(context: dict[str, Any]) -> dict[str, Any]:
@@ -1771,16 +1814,7 @@ def _director_characters(story: StoryState, *, limit: int = 4) -> list[Any]:
     return [item[2] for item in ranked[:limit]]
 
 
-def _prompt_safe_story(story: StoryState) -> StoryState:
-    prompt_story = story.model_copy(deep=True)
-    for field_name in type(prompt_story).model_fields:
-        current = getattr(prompt_story, field_name)
-        setattr(prompt_story, field_name, normalize_legacy_economy_prompt_value(current))
-    return prompt_story
-
-
 def _story_snapshot(story: StoryState) -> dict:
-    story = _prompt_safe_story(story)
     latest = story.chapter_summaries[-1] if story.chapter_summaries else None
     memory_query = " ".join(
         [
@@ -1792,7 +1826,7 @@ def _story_snapshot(story: StoryState) -> dict:
     )
     relevant_memories = retrieve_relevant_memories(story, memory_query, limit=6)
     prompt_ledger = _compact_prompt_ledger(story.progression_ledger)
-    return normalize_legacy_economy_prompt_value({
+    return {
         "outline": compact_text(story.outline, 1600),
         "outline_context": story.outline_context,
         "genre": story.genre,
@@ -1861,7 +1895,7 @@ def _story_snapshot(story: StoryState) -> dict:
             }
             for c in _director_characters(story)
         ],
-    })
+    }
 
 
 def _director_snapshot_summary(snapshot: dict) -> dict:
@@ -1926,12 +1960,11 @@ def _director_snapshot_summary(snapshot: dict) -> dict:
 
 
 def _director_context_payload(story: StoryState, chapter_number: int) -> dict[str, Any]:
-    story = _prompt_safe_story(story)
     relevant_characters = _director_characters(story, limit=4)
     selector_plan = {
         "character_moves": [{"name": character.name} for character in relevant_characters]
     }
-    return normalize_legacy_economy_prompt_value({
+    return {
         "project_snapshot": _director_snapshot_summary(_story_snapshot(story)),
         "chapter_seed": _writer_seed_summary(
             _compact_chapter_seed_for_prompt(build_chapter_seed(story, chapter_number))
@@ -1941,7 +1974,7 @@ def _director_context_payload(story: StoryState, chapter_number: int) -> dict[st
             selector_plan,
             max_items=4,
         ),
-    })
+    }
 
 
 def _planning_character_names(payload: Any) -> list[str]:
@@ -5482,10 +5515,20 @@ class StoryOrchestrator:
         chapter_number: int,
         director_context: dict[str, Any] | None = None,
     ) -> str:
-        story = _prompt_safe_story(story)
-        director_context = normalize_legacy_economy_prompt_value(
-            director_context or _director_context_payload(story, chapter_number)
+        rendered = self._render_plan_prompt(story, chapter_number, director_context)
+        return normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=bool(_story_game_context(story, director_context or {})),
+            chapter_number=chapter_number,
         )
+
+    def _render_plan_prompt(
+        self,
+        story: StoryState,
+        chapter_number: int,
+        director_context: dict[str, Any] | None = None,
+    ) -> str:
+        director_context = director_context or _director_context_payload(story, chapter_number)
         snapshot = _director_prompt_snapshot(director_context.get("project_snapshot", {}))
         chapter_seed = _director_prompt_chapter_seed(director_context.get("chapter_seed", {}))
         character_cards = _director_prompt_character_cards(director_context.get("character_cards", {}))
@@ -5498,17 +5541,20 @@ class StoryOrchestrator:
             "character_cards": _plain_prompt_json(character_cards),
         }
         if not _story_game_context(story, {}):
-            return normalize_legacy_economy_prompt_value(
-                render_prompt_template(get_effective_prompt_template("director_generic"), values)
-            )
+            return render_prompt_template(get_effective_prompt_template("director_generic"), values)
         values["active_characters"] = ", ".join(char_names)
-        return normalize_legacy_economy_prompt_value(
-            render_prompt_template(get_effective_prompt_template("director"), values)
-        )
+        return render_prompt_template(get_effective_prompt_template("director"), values)
 
     def _body_prompt(self, story: StoryState, chapter_number: int, plan: dict) -> str:
-        story = _prompt_safe_story(story)
-        plan = normalize_legacy_economy_prompt_value(plan if isinstance(plan, dict) else {})
+        rendered = self._render_body_prompt(story, chapter_number, plan)
+        return normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=bool(_story_game_context(story, plan)),
+            chapter_number=chapter_number,
+        )
+
+    def _render_body_prompt(self, story: StoryState, chapter_number: int, plan: dict) -> str:
+        plan = plan if isinstance(plan, dict) else {}
         plan = {**plan, "writing_taskbook": ensure_writing_taskbook(chapter_number, plan, genre=story.genre, style=story.style)}
         style_guidance = plan.get("style_guidance") if isinstance(plan.get("style_guidance"), dict) else {}
         if not style_guidance:
@@ -5570,14 +5616,21 @@ class StoryOrchestrator:
                 "prose_method": section_text[4],
             },
         ).strip()
-        return normalize_legacy_economy_prompt_value(rendered)
+        return rendered
 
     def _revision_prompt(self, story: StoryState, chapter_number: int, body: str, plan: dict, review: dict) -> str:
-        story = _prompt_safe_story(story)
-        body = str(normalize_legacy_economy_prompt_value(body))
-        plan = normalize_legacy_economy_prompt_value(plan if isinstance(plan, dict) else {})
+        rendered = self._render_revision_prompt(story, chapter_number, body, plan, review)
+        return normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=bool(_story_game_context(story, plan)),
+            chapter_number=chapter_number,
+        )
+
+    def _render_revision_prompt(self, story: StoryState, chapter_number: int, body: str, plan: dict, review: dict) -> str:
+        body = str(body)
+        plan = plan if isinstance(plan, dict) else {}
         plan = {**plan, "writing_taskbook": ensure_writing_taskbook(chapter_number, plan, genre=story.genre, style=story.style)}
-        review = normalize_legacy_economy_prompt_value(review if isinstance(review, dict) else {})
+        review = review if isinstance(review, dict) else {}
         forbidden_terms = _revision_forbidden_terms(review, plan)
         style_guidance = plan.get("style_guidance", {})
         target_chars = _plan_target_chars(plan)
@@ -5585,7 +5638,7 @@ class StoryOrchestrator:
         if not scene_repair_plan:
             scene_repair_plan = build_scene_contract_repair_plan(review, plan.get("scene_cards", []))
         scene_repair_summary = _scene_repair_writer_summary(scene_repair_plan)
-        base_prompt = self._body_prompt(story, chapter_number, plan)
+        base_prompt = self._render_body_prompt(story, chapter_number, plan)
         consolidated_review = build_simplified_review(review)
         review_issues = consolidated_review.get("issues") if isinstance(consolidated_review.get("issues"), list) else []
         review_actions = consolidated_review.get("revision_plan") if isinstance(consolidated_review.get("revision_plan"), list) else []
@@ -5630,7 +5683,7 @@ class StoryOrchestrator:
                 "source_body": body,
             },
         )
-        return normalize_legacy_economy_prompt_value(rendered)
+        return rendered
 
     def _write_chapter_in_segments(
         self,

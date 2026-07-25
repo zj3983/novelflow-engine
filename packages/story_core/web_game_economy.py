@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 
@@ -53,26 +53,28 @@ _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = tuple(
         reverse=True,
     )
 )
-_ANONYMOUS_SUBMIT_ECONOMIC_TERMS: tuple[str, ...] = (
+_FIRST_CHAPTER_TRANSACTION_MARKERS: tuple[str, ...] = (
     "裂纹狼心",
-    "物品",
-    "商品",
-    "装备",
-    "材料",
     "交易行",
-    "挂单",
-    "求购",
-    "收购",
+    "求购单",
     "出售",
     "成交",
-    "游戏币",
-    "虚拟资产",
-    "稀有资产",
+    "持牌虚拟资产担保平台",
+    "担保交易平台",
     "担保平台",
-    "订单",
-    "交割",
+    "担保订单",
+    "担保交割",
+    "稀有资产担保",
 )
 _PROMPT_CLAUSE_SEPARATOR = re.compile(r"([，。；！？!?：:\n]+)")
+_CLAUSE_SCOPED_LEGACY_FLOW_TERMS: tuple[str, ...] = (
+    "提交鉴定",
+    "鉴定中",
+    "鉴定求购",
+)
+_CLAUSE_SCOPED_LEGACY_FLOW_PATTERN = re.compile(
+    "|".join(re.escape(term) for term in _CLAUSE_SCOPED_LEGACY_FLOW_TERMS)
+)
 
 _LEGACY_PROMPT_FLOW_TERMS: tuple[str, ...] = (
     "裂纹狼心提交鉴定后，系统给出一条求购匹配",
@@ -81,9 +83,6 @@ _LEGACY_PROMPT_FLOW_TERMS: tuple[str, ...] = (
     "平台验货",
     "封存交割",
     "匿名交割",
-    "提交鉴定",
-    "鉴定中",
-    "鉴定求购",
     "担保订单",
     "担保交易",
     "现实结算",
@@ -141,22 +140,25 @@ def opening_market_exchange_flow_lines() -> tuple[str, ...]:
     return _OPENING_MARKET_EXCHANGE_FLOW
 
 
-def _normalize_anonymous_submit_clauses(value: str) -> str:
+def _has_first_chapter_transaction_marker(clause: str) -> bool:
+    return any(term in clause for term in _FIRST_CHAPTER_TRANSACTION_MARKERS)
+
+
+def _normalize_clause_scoped_terms(
+    value: str,
+    replace_flow: Callable[[re.Match[str]], str],
+) -> str:
     parts = _PROMPT_CLAUSE_SEPARATOR.split(value)
     for index in range(0, len(parts), 2):
         clause = parts[index]
-        if "匿名提交" in clause and any(
-            term in clause for term in _ANONYMOUS_SUBMIT_ECONOMIC_TERMS
-        ):
-            parts[index] = clause.replace("匿名提交", "立即出售")
+        if not _has_first_chapter_transaction_marker(clause):
+            continue
+        clause = clause.replace("匿名提交", "立即出售")
+        parts[index] = _CLAUSE_SCOPED_LEGACY_FLOW_PATTERN.sub(replace_flow, clause)
     return "".join(parts)
 
 
 def _normalize_legacy_economy_prompt_text(value: str) -> str:
-    normalized = _normalize_anonymous_submit_clauses(value)
-    for legacy, current in _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS:
-        normalized = normalized.replace(legacy, current)
-
     inserted_flow = False
 
     def replace_flow(_match: re.Match[str]) -> str:
@@ -166,31 +168,84 @@ def _normalize_legacy_economy_prompt_text(value: str) -> str:
         inserted_flow = True
         return " ".join(_OPENING_MARKET_EXCHANGE_FLOW)
 
+    normalized = _normalize_clause_scoped_terms(value, replace_flow)
+    for legacy, current in _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS:
+        normalized = normalized.replace(legacy, current)
     normalized = _LEGACY_PROMPT_FLOW_PATTERN.sub(replace_flow, normalized)
     normalized = _NUMBERED_FORBIDDEN_CURRENCY.sub(
         lambda match: f"{match.group('amount')}元",
         normalized,
     )
     normalized = normalized.replace(_FORBIDDEN_CURRENCY_NAME, "现实货币")
-    return normalized.replace("担保", "官方兑换")
+    return normalized
 
 
-def normalize_legacy_economy_prompt_value(value: Any) -> Any:
+def normalize_legacy_economy_prompt_value(
+    value: Any,
+    *,
+    game_context: bool,
+    chapter_number: int,
+) -> Any:
     """Return a prompt-safe copy while leaving stored project data unchanged."""
 
+    if not game_context or int(chapter_number or 0) != 1:
+        return value
     if isinstance(value, str):
         return _normalize_legacy_economy_prompt_text(value)
     if isinstance(value, Mapping):
-        return {
-            normalize_legacy_economy_prompt_value(key): normalize_legacy_economy_prompt_value(item)
+        items = [
+            (
+                key,
+                normalize_legacy_economy_prompt_value(
+                    item,
+                    game_context=game_context,
+                    chapter_number=chapter_number,
+                ),
+            )
             for key, item in value.items()
-        }
+        ]
+        if isinstance(value, dict):
+            return type(value)(items)
+        try:
+            return type(value)(items)
+        except (TypeError, ValueError):
+            return value
     if isinstance(value, list):
-        return [normalize_legacy_economy_prompt_value(item) for item in value]
+        return [
+            normalize_legacy_economy_prompt_value(
+                item,
+                game_context=game_context,
+                chapter_number=chapter_number,
+            )
+            for item in value
+        ]
     if isinstance(value, tuple):
-        return tuple(normalize_legacy_economy_prompt_value(item) for item in value)
+        return tuple(
+            normalize_legacy_economy_prompt_value(
+                item,
+                game_context=game_context,
+                chapter_number=chapter_number,
+            )
+            for item in value
+        )
     if isinstance(value, set):
-        return {normalize_legacy_economy_prompt_value(item) for item in value}
+        return {
+            normalize_legacy_economy_prompt_value(
+                item,
+                game_context=game_context,
+                chapter_number=chapter_number,
+            )
+            for item in value
+        }
+    if isinstance(value, frozenset):
+        return frozenset(
+            normalize_legacy_economy_prompt_value(
+                item,
+                game_context=game_context,
+                chapter_number=chapter_number,
+            )
+            for item in value
+        )
     return value
 
 

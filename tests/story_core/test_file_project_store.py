@@ -3233,7 +3233,7 @@ def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module
         "quality_report": {
             "writing_review": {
                 "pass": False,
-                "issues": [f"补足{legacy_appraisal}和{legacy_delivery}"],
+                    "issues": [f"补足裂纹狼心{legacy_appraisal}和{legacy_delivery}"],
                 "revision_plan": [f"完成{legacy_trade}"],
             }
         },
@@ -3285,8 +3285,22 @@ def test_real_project_prompt_preview_is_read_only_and_contains_no_legacy_economy
     entries = {
         item["key"]: item["content"]
         for item in [*preview["modules"], *preview["prompts"]]
-        if item["key"] in {"director_plan", "writer_body", "revision", "core_context", "character_context", "packet_context"}
+        if item["key"]
+        in {
+            "director_plan",
+            "writer_body",
+            "revision",
+            "core_context",
+            "character_context",
+            "genre_context",
+            "review_context",
+            "packet_context",
+        }
     }
+    entries["writing_packet"] = json.dumps(
+        FileProjectStore(root).writing_packet(1),
+        ensure_ascii=False,
+    )
     forbidden_currency = "\u4eba\u6c11\u5e01"
     legacy_pattern = re.compile(
         "|".join(
@@ -3304,10 +3318,31 @@ def test_real_project_prompt_preview_is_read_only_and_contains_no_legacy_economy
         )
     )
 
-    assert set(entries) == {"director_plan", "writer_body", "revision", "core_context", "character_context", "packet_context"}
-    for content in entries.values():
+    assert set(entries) == {
+        "director_plan",
+        "writer_body",
+        "revision",
+        "core_context",
+        "character_context",
+        "genre_context",
+        "review_context",
+        "packet_context",
+        "writing_packet",
+    }
+    flow_keys = {
+        "director_plan",
+        "writer_body",
+        "revision",
+        "core_context",
+        "character_context",
+        "packet_context",
+        "writing_packet",
+    }
+    for key, content in entries.items():
         assert legacy_pattern.search(content) is None
-        assert all(line in content for line in opening_market_exchange_flow_lines())
+        if key in flow_keys:
+            positions = [content.index(line) for line in opening_market_exchange_flow_lines()]
+            assert positions == sorted(positions)
     assert {path: path.read_bytes() for path in before} == before
 
 

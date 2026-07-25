@@ -4767,7 +4767,21 @@ class FileProjectStore:
                 return option
         raise ValueError(f"unknown_chapter_direction:{direction_id}")
 
-    def writing_packet(self, chapter_number: int | None = None) -> dict[str, Any]:
+    def writing_packet(
+        self,
+        chapter_number: int | None = None,
+    ) -> dict[str, Any]:
+        packet, game_context, target = self._build_writing_packet(chapter_number)
+        return normalize_legacy_economy_prompt_value(
+            packet,
+            game_context=game_context,
+            chapter_number=target,
+        )
+
+    def _build_writing_packet(
+        self,
+        chapter_number: int | None = None,
+    ) -> tuple[dict[str, Any], bool, int]:
         state = self._generation_state(self.state())
         project = self.project()
         world_blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
@@ -4962,7 +4976,7 @@ class FileProjectStore:
             "chapter_direction_options": chapter_direction_options,
             "skill_context": {key: value for key, value in skill_context.items() if value},
         }
-        return normalize_legacy_economy_prompt_value(packet)
+        return packet, is_game_story, int(target or 0)
 
     def _prompt_plan_from_chapter(self, chapter: dict[str, Any]) -> dict[str, Any]:
         plan: dict[str, Any] = {}
@@ -4982,7 +4996,7 @@ class FileProjectStore:
             value = chapter.get(key)
             if value not in (None, "", [], {}):
                 plan[key] = value
-        return normalize_legacy_economy_prompt_value(plan)
+        return plan
 
     @staticmethod
     def _prompt_entry(
@@ -5152,7 +5166,7 @@ class FileProjectStore:
         story_payload["world_context"] = direction_payload["world_context"]
         story = StoryState.model_validate(story_payload)
         orchestrator = StoryOrchestrator()
-        writing_packet = self.writing_packet(target)
+        writing_packet, _, _ = self._build_writing_packet(target)
         plan = self._prompt_plan_from_chapter(chapter)
         plan["scene_cards"] = writing_packet.get("scene_cards", [])
         body = str(chapter.get("body") or "")
@@ -5162,11 +5176,11 @@ class FileProjectStore:
                 review = self.review(target)
             except FileNotFoundError:
                 review = {}
-        review = normalize_legacy_economy_prompt_value(self._prompt_review_payload(review))
+        review = self._prompt_review_payload(review)
 
         core_context = _story_snapshot(story)
-        character_context = normalize_legacy_economy_prompt_value(_character_context_for_prompt(story, plan))
-        genre_context = normalize_legacy_economy_prompt_value(_genre_context_for_prompt(story, target, plan))
+        character_context = _character_context_for_prompt(story, plan)
+        genre_context = _genre_context_for_prompt(story, target, plan)
         modules: list[dict[str, Any]] = [
             self._prompt_entry(
                 key="core_context",
@@ -5254,7 +5268,7 @@ class FileProjectStore:
                 title="章节规划补全 Prompt",
                 agent="director",
                 stage="剧情计划生成",
-                content=orchestrator._plan_prompt(story, target),
+                content=orchestrator._render_plan_prompt(story, target),
                 source="rebuilt_from_state_before_chapter",
                 description="生成 event_plan、chapter_intent、scene_cards 等结构化剧情计划。",
                 module_keys=["core_context", "outline_context"],
@@ -5264,7 +5278,7 @@ class FileProjectStore:
                 title="整章正文 Prompt",
                 agent="writer",
                 stage="整章正文生成",
-                content=orchestrator._body_prompt(story, target, plan),
+                content=orchestrator._render_body_prompt(story, target, plan),
                 source="rebuilt_from_chapter_plan",
                 description="整章正文实际提示词，按输出要求、本章方向、本章事实、出场人物和正文写法五块装配。",
                 module_keys=[
@@ -5317,7 +5331,7 @@ class FileProjectStore:
                         title="审稿改稿 Prompt",
                         agent="writer",
                         stage="审稿改稿",
-                        content=orchestrator._revision_prompt(
+                        content=orchestrator._render_revision_prompt(
                             story,
                             target,
                             source_body_placeholder,
@@ -5385,6 +5399,16 @@ class FileProjectStore:
                 module_keys=["review_context"],
             )
         )
+
+        game_context = self._is_game_story_payload(project, state)
+        for entry in [*modules, *prompts]:
+            content = normalize_legacy_economy_prompt_value(
+                str(entry.get("content") or ""),
+                game_context=game_context,
+                chapter_number=target,
+            )
+            entry["content"] = content
+            entry["chars"] = len(content)
 
         return {
             "schema_version": "file-project-prompt-preview/v1",

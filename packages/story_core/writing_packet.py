@@ -561,4 +561,8 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
             "note": "Manual draft submission is disabled. Use continue_generation or agent-revise for chapter progression.",
         },
     }
-    return normalize_legacy_economy_prompt_value(packet)
+    return normalize_legacy_economy_prompt_value(
+        packet,
+        game_context=game_genre,
+        chapter_number=target_chapter,
+    )

@@ -106,7 +106,7 @@ def test_legacy_economy_prompt_normalization_is_recursive_pure_and_keeps_amounts
     }
     original = deepcopy(source)
 
-    normalized = normalize_legacy_economy_prompt_value(source)
+    normalized = normalize_legacy_economy_prompt_value(source, game_context=True, chapter_number=1)
     rendered = str(normalized)
 
     assert source == original
@@ -137,15 +137,27 @@ def test_real_project_legacy_vocabulary_uses_specific_longest_first_replacements
     legacy: str,
     current: str,
 ) -> None:
-    normalized = normalize_legacy_economy_prompt_value(f"记录：{legacy}。")
+    normalized = normalize_legacy_economy_prompt_value(
+        f"记录：{legacy}。",
+        game_context=True,
+        chapter_number=1,
+    )
 
     assert normalized == f"记录：{current}。"
     assert "担保" not in normalized
 
 
 def test_anonymous_submit_changes_only_in_economy_context() -> None:
-    assert normalize_legacy_economy_prompt_value("裂纹狼心选择匿名提交。") == "裂纹狼心选择立即出售。"
-    assert normalize_legacy_economy_prompt_value("匿名提交读者反馈。") == "匿名提交读者反馈。"
+    assert normalize_legacy_economy_prompt_value(
+        "裂纹狼心选择匿名提交。",
+        game_context=True,
+        chapter_number=1,
+    ) == "裂纹狼心选择立即出售。"
+    assert normalize_legacy_economy_prompt_value(
+        "匿名提交读者反馈。",
+        game_context=True,
+        chapter_number=1,
+    ) == "匿名提交读者反馈。"
 
 
 def test_anonymous_submit_uses_clause_context_inside_a_mixed_long_prompt() -> None:
@@ -154,7 +166,7 @@ def test_anonymous_submit_uses_clause_context_inside_a_mixed_long_prompt() -> No
         "交易行要求物品匿名提交；匿名提交编辑意见。"
     )
 
-    normalized = normalize_legacy_economy_prompt_value(source)
+    normalized = normalize_legacy_economy_prompt_value(source, game_context=True, chapter_number=1)
 
     assert normalized == (
         "官方兑换渠道处理订单。裂纹狼心选择立即出售，匿名提交读者反馈。\n"
@@ -162,10 +174,84 @@ def test_anonymous_submit_uses_clause_context_inside_a_mixed_long_prompt() -> No
     )
 
 
+@pytest.mark.parametrize(
+    ("game_context", "chapter_number"),
+    [(False, 1), (True, 10)],
+)
+def test_legacy_prompt_migration_requires_web_game_first_chapter_scope(
+    game_context: bool,
+    chapter_number: int,
+) -> None:
+    source = "裂纹狼心通过担保交易完成现实结算。"
+
+    assert normalize_legacy_economy_prompt_value(
+        source,
+        game_context=game_context,
+        chapter_number=chapter_number,
+    ) == source
+
+
+def test_legacy_prompt_migration_preserves_mapping_keys_and_container_types() -> None:
+    source = {
+        "担保订单": "裂纹狼心通过担保交易成交。",
+        "nested": {"担保平台": "担保订单号A-17"},
+        "list": ["担保平台"],
+        "tuple": ("担保交割",),
+        "set": {"稀有资产担保"},
+    }
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert set(normalized) == set(source)
+    assert "担保订单" in normalized
+    assert "担保平台" in normalized["nested"]
+    assert isinstance(normalized["list"], list)
+    assert isinstance(normalized["tuple"], tuple)
+    assert isinstance(normalized["set"], set)
+    assert "担保交易" not in normalized["担保订单"]
+    assert normalized["nested"]["担保平台"] == "官方兑换流水号A-17"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "银行愿意为这笔贷款提供担保。",
+        "古剑提交鉴定后才能收入宗门库房。",
+        "匿名提交物品举报。",
+    ),
+)
+def test_legacy_prompt_migration_keeps_unrelated_language(source: str) -> None:
+    assert normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    ) == source
+
+
+def test_web_game_first_chapter_legacy_wolf_heart_flow_still_migrates() -> None:
+    source = "裂纹狼心提交鉴定后进入担保平台，随后匿名提交到求购单并成交。"
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert "提交鉴定" not in normalized
+    assert "匿名提交" not in normalized
+    assert "担保平台" not in normalized
+    assert "立即出售" in normalized
+    assert "官方兑换" in normalized
+
+
 def test_specific_replacements_do_not_leave_duplicate_or_partial_order_words() -> None:
     source = "持牌虚拟资产担保平台生成担保订单号，买家确认收购后完成担保交割。"
 
-    normalized = normalize_legacy_economy_prompt_value(source)
+    normalized = normalize_legacy_economy_prompt_value(source, game_context=True, chapter_number=1)
 
     assert normalized == "官方兑换渠道生成官方兑换流水号，求购单已成交后完成交易行成交与官方兑换。"
     assert "官方兑换流水号号" not in normalized
