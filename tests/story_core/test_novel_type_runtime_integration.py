@@ -19,7 +19,12 @@ from packages.story_core.genre_plugins import plugin_prompt_guide, select_genre_
 from packages.story_core.genre_types import EASTERN_FANTASY
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.models import NovelProject, StoryState
-from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG, novel_type_options
+from packages.story_core.novel_type_catalog import (
+    NOVEL_TYPE_CATALOG,
+    novel_type_options,
+    novel_type_prompt_context,
+    runtime_novel_type,
+)
 from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator, OpeningBrief
 from packages.story_core.outline_planning_generation import (
@@ -86,7 +91,18 @@ def _runtime_settings(_: str) -> StageRuntimeSettings:
     )
 
 
-def _directions_payload() -> dict:
+def _primary_trope_id_for(novel_type_id: str) -> str | None:
+    record = runtime_novel_type(novel_type_id)
+    candidates = (
+        novel_type_prompt_context(record).get("genre_trope_templates", [])
+        if record is not None
+        else []
+    )
+    return str(candidates[0]["id"]) if candidates else None
+
+
+def _directions_payload(novel_type_id: str) -> dict:
+    primary_trope_id = _primary_trope_id_for(novel_type_id)
     return {
         "directions": [
             {
@@ -97,6 +113,7 @@ def _directions_payload() -> dict:
                 "main_conflict": f"冲突{index}",
                 "growth_path": f"成长{index}",
                 "opening_promise": f"承诺{index}",
+                "primary_trope_id": primary_trope_id,
             }
             for index in range(1, 4)
         ]
@@ -572,7 +589,7 @@ def test_opening_prompt_reads_latest_runtime_description_and_promise(
         captured["payload"] = payload
         return {
             "choices": [
-                {"message": {"content": json.dumps(_directions_payload(), ensure_ascii=False)}}
+                {"message": {"content": json.dumps(_directions_payload(novel_type_id), ensure_ascii=False)}}
             ]
         }
 
@@ -645,7 +662,7 @@ def test_generation_prompt_caps_runtime_novel_type_context(
         if generator_kind == "opening":
             return {
                 "choices": [
-                    {"message": {"content": json.dumps(_directions_payload(), ensure_ascii=False)}}
+                    {"message": {"content": json.dumps(_directions_payload("xuanhuan"), ensure_ascii=False)}}
                 ]
             }
         raise RuntimeError("stop after prompt capture")
@@ -712,7 +729,7 @@ def test_generation_prompt_keeps_normal_short_runtime_type_content_complete(
         captured["payload"] = payload
         return {
             "choices": [
-                {"message": {"content": json.dumps(_directions_payload(), ensure_ascii=False)}}
+                {"message": {"content": json.dumps(_directions_payload("xuanhuan"), ensure_ascii=False)}}
             ]
         }
 
