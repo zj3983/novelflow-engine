@@ -1388,6 +1388,37 @@ def _review_progress_snapshot(review: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _review_trope_avoid_guidance(review: dict[str, Any] | None) -> list[str]:
+    if not isinstance(review, dict):
+        return []
+    sources: list[dict[str, Any]] = [review]
+    for key in ("writing_review", "plot_spine_review"):
+        value = review.get(key)
+        if isinstance(value, dict):
+            sources.append(value)
+    writing = review.get("writing_review")
+    if isinstance(writing, dict) and isinstance(writing.get("plot_spine_review"), dict):
+        sources.append(writing["plot_spine_review"])
+
+    guidance: list[str] = []
+    seen: set[str] = set()
+    for source in sources:
+        diagnostics = source.get("diagnostics") if isinstance(source.get("diagnostics"), dict) else {}
+        avoid = diagnostics.get("trope_avoid") if isinstance(diagnostics, dict) else []
+        if isinstance(avoid, str):
+            avoid_items = [avoid]
+        elif isinstance(avoid, list):
+            avoid_items = avoid
+        else:
+            avoid_items = []
+        for item in avoid_items:
+            text = str(item).strip()
+            if text and text not in seen:
+                seen.add(text)
+                guidance.append(text)
+    return guidance[:8]
+
+
 def _slim_prompt_value(value: Any, *, depth: int = 0) -> Any:
     if depth > 5:
         return compact_text(str(value), 160)
@@ -5261,6 +5292,7 @@ class StoryOrchestrator:
         consolidated_review = build_simplified_review(review)
         review_issues = consolidated_review.get("issues") if isinstance(consolidated_review.get("issues"), list) else []
         review_actions = consolidated_review.get("revision_plan") if isinstance(consolidated_review.get("revision_plan"), list) else []
+        trope_avoid_guidance = _review_trope_avoid_guidance(review)
         manual_instructions = compact_list(review.get("manual_instructions", []), max_items=3, item_chars=150)
         modification_lines = [
             "## 综合审稿修改",
@@ -5277,6 +5309,8 @@ class StoryOrchestrator:
                 fallback = compact_text(str(item.get("suggestion") or ""), 120)
                 action = compact_text(str(review_actions[index - 1]), 120) if index <= len(review_actions) else fallback
                 modification_lines.append(f"{index}. 问题：{message} 修改：{action}")
+        if trope_avoid_guidance:
+            modification_lines.append(f"套路避让：{'；'.join(trope_avoid_guidance)}")
         if style_guidance:
             modification_lines.append(f"表达提醒：{_plain_prompt_json(_slim_prompt_value(style_guidance))}")
         if scene_repair_summary:

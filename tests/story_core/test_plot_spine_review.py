@@ -1,6 +1,7 @@
 from packages.story_core.orchestrator import _review_chapter_body
 from packages.story_core.plot_spine_review import review_plot_spine_completion
 from packages.story_core.prose_rule_review import HARD_REVIEWERS, SOFT_REVIEWERS
+from packages.story_core.simplified_review import build_simplified_review
 
 
 def _plot_plan():
@@ -166,6 +167,10 @@ def test_empty_trope_beat_is_not_forced_but_avoid_guidance_is_reported():
     assert not any("套路节点未兑现" in issue for issue in review["issues"])
     assert review["diagnostics"]["trope_beat_covered"] == "not_scheduled"
     assert review["diagnostics"]["trope_avoid"] == ["不要换套路", "不要提前解决整条主线"]
+
+    simplified = build_simplified_review({"writing_review": review})
+    assert simplified["needs_revision"] is False
+    assert simplified["categories"]["hard"]["count"] == 0
 
 
 def test_chapter_body_review_retains_scheduled_trope_issue_and_avoid_guidance():

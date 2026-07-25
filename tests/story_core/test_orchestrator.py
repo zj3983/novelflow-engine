@@ -335,6 +335,94 @@ def test_attach_trope_contract_to_simulation_plan_deepcopies_only_resolved_contr
     assert "trope_candidates" not in attached
 
 
+def test_trope_beat_miss_triggers_existing_revision_prompt_with_avoid_guidance(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
+    initial_body = "林站在屋檐下想了想明天的安排，最后没有回应邀请就离开了。"
+    revised_body = "林在雨夜接下挑战，赢得信任且不暴露底牌。"
+    revision_prompts: list[str] = []
+
+    def review(_chapter, body, *_args, **_kwargs):
+        if body == initial_body:
+            return {
+                "pass": False,
+                "issues": ["套路节点未兑现：本章未写出当前节点「雨夜接下挑战」的正文动作或反馈。"],
+                "revision_plan": ["按套路节点改：本章必须兑现「雨夜接下挑战」，并落到回报「赢得信任且不暴露底牌」。"],
+                "plot_spine_review": {
+                    "diagnostics": {
+                        "trope_avoid": ["不要换套路", "不要提前解决整条主线"],
+                    }
+                },
+            }
+        return {"pass": True, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(orchestrator_module, "_review_chapter_body", review)
+    story = StoryState(
+        story_id="s-trope-revision-gate",
+        outline="urban story",
+        genre="urban",
+        style="plain",
+        outline_context={
+            "chapter": {
+                "chapter_number": 1,
+                "title": "Rain Duel",
+                "goal": "answer the invitation",
+                "obstacle": "public pressure",
+                "action": "accept the rain duel",
+                "turn": "wins trust without revealing the hidden card",
+                "payoff": "wins trust",
+                "ending_hook": "check who sent the invitation",
+                "cast": ["Lin"],
+            }
+        },
+        characters=[CharacterState(name="Lin", role="protagonist")],
+    )
+    orchestrator = StoryOrchestrator()
+    calls: list[str] = []
+    memory = json.dumps(
+        {
+            "summary": "林接下挑战。",
+            "facts": [{"text": "林雨夜接下挑战", "evidence": "雨夜接下挑战"}],
+            "unresolved_threads": [],
+            "next_focus": "追查邀请来源",
+            "chapter_title": "雨夜挑战",
+            "character_updates": [],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        ensure_ascii=False,
+    )
+
+    writer_calls = 0
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        nonlocal writer_calls
+        calls.append(agent)
+        if agent == "planner":
+            raise AssertionError("complete outline_context should skip planner")
+        if agent == "writer" and writer_calls == 0:
+            writer_calls += 1
+            return initial_body, ""
+        if agent == "writer":
+            writer_calls += 1
+            revision_prompts.append(prompt)
+            return revised_body, ""
+        if agent == "memory":
+            return memory, ""
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    bundle = orchestrator.generate_next_chapter(story)
+
+    assert calls == ["writer", "writer", "memory"]
+    assert bundle.body == revised_body
+    assert "雨夜接下挑战" in revision_prompts[0]
+    assert "赢得信任且不暴露底牌" in revision_prompts[0]
+    assert "不要换套路" in revision_prompts[0]
+    assert "不要提前解决整条主线" in revision_prompts[0]
+
+
 def test_incomplete_chapter_outline_uses_planner_model(monkeypatch):
     story = StoryState(
         story_id="s-model-planning-fallback",
