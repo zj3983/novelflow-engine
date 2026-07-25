@@ -1,4 +1,5 @@
 from packages.story_core.genre_types.game_webnovel import GAME_WEBNOVEL, select_game_language_cards
+from packages.story_core.web_game_economy import appraisal_rules, exchange_rules, market_rules
 
 
 def _ids(plan: dict[str, object]) -> list[str]:
@@ -43,7 +44,7 @@ def test_trade_card_uses_only_in_game_market_language():
 
     assert all(
         marker in card.preferred
-        for marker in ("交易行", "求购单", "挂单", "立即出售", "成交", "手续费", "游戏币到账")
+        for marker in ("交易行", "求购单", "挂单", "立即出售", "一口价", "成交", "手续费", "游戏币到账")
     )
     assert all(marker not in text for marker in ("官方兑换", "兑换价", "现实账户", "鉴定", "验货"))
 
@@ -60,6 +61,12 @@ def test_currency_exchange_card_uses_separate_official_channel_language():
 
     assert all(marker in card.preferred for marker in ("兑换价", "额度", "手续费", "预计到账", "现实账户"))
     assert all(marker not in text for marker in ("求购", "鉴定", "拍卖物直接现实结算"))
+
+
+def test_selling_then_official_exchange_selects_market_exchange_pair():
+    ids = _ids({"chapter_goal": "卖出裂纹狼心，随后官方兑换"})
+
+    assert ids == ["base", "trade", "currency_exchange"]
 
 
 def test_language_cards_select_server_language_for_login_scene():
@@ -111,14 +118,14 @@ def test_language_cards_select_guild_social_for_raid_recruitment():
     assert ids == ["base", "guild_social"]
 
 
-def test_complex_opening_keeps_deterministic_top_three_cards():
+def test_complex_opening_prioritizes_market_exchange_pair():
     cards = select_game_language_cards(
         {
             "writing_taskbook": {
                 "scenes": [
                     {"key": "entry_login", "title": "现实压力与登录建号"},
                     {"key": "small_verification", "title": "低级怪小验证", "must_show": ["怪物面板", "异常掉落"]},
-                    {"key": "decision_hook", "title": "暗中吃下第一笔", "goal": "完成匿名担保交易"},
+                    {"key": "decision_hook", "title": "分开完成两步结算", "goal": "卖出裂纹狼心，随后进入官方兑换渠道"},
                 ]
             }
         },
@@ -126,26 +133,32 @@ def test_complex_opening_keeps_deterministic_top_three_cards():
     )
     ids = [card.card_id for card in cards]
 
-    assert ids == ["base", "login_server", "combat"]
+    assert ids == ["base", "trade", "currency_exchange"]
 
 
-def test_legacy_trade_plan_selects_trade_card_with_current_language():
-    cards = select_game_language_cards({"chapter_goal": "完成匿名担保交易"})
-    ids = [card.card_id for card in cards]
+def test_legacy_trade_markers_select_current_market_exchange_pair():
+    for marker in ("担保交易", "匿名交割", "第一笔到账"):
+        cards = select_game_language_cards({"chapter_goal": f"完成{marker}"})
+        ids = [card.card_id for card in cards]
 
-    assert ids == ["base", "trade"]
-    trade = next(card for card in cards if card.card_id == "trade")
-    text = "\n".join((*trade.preferred, *trade.avoid, trade.example))
-    assert all(marker not in text for marker in ("担保交易", "匿名交割", "验货"))
+        assert ids == ["base", "trade", "currency_exchange"]
+        card_text = "\n".join(
+            text
+            for card in cards
+            for text in (*card.preferred, *card.avoid, card.example)
+        )
+        assert all(
+            old_marker not in card_text
+            for old_marker in ("担保交易", "匿名交割", "第一笔到账", "验货")
+        )
 
 
 def test_economy_rules_separate_market_appraisal_and_official_exchange():
     rules = GAME_WEBNOVEL.rulebook["economy_rules"]
     text = "\n".join(rules)
     forbidden_currency = "\u4eba\u6c11\u5e01"
+    boundary_rules = (*market_rules(), *appraisal_rules(), *exchange_rules())
 
-    assert "交易行只使用游戏币结算" in text
-    assert "已识别的可交易物品不走鉴定" in text
-    assert "独立的官方兑换渠道" in text
-    assert all(marker in text for marker in ("现实货币", "现实账户"))
+    assert rules[: len(boundary_rules)] == boundary_rules
+    assert all(marker in text for marker in ("游戏币", "已识别物品不重复鉴定", "官方兑换渠道", "现实账户"))
     assert forbidden_currency not in text

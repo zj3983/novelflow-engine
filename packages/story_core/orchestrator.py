@@ -4957,7 +4957,7 @@ def _web_game_writing_method_lines(
         "隐藏优势只在幕后起作用。别人可以误判，但不能凭一次低级掉落看穿主角。",
         "玩家和NPC按现代中文习惯说完整的话；游戏内说前置任务、条件没满足或登记不了，不单说门槛。",
     ]
-    for card in select_game_language_cards(plan or {}, max_cards=5):
+    for card in select_game_language_cards(plan or {}, max_cards=3):
         lines.append(
             f"语言卡[{card.card_id}]：常用{'、'.join(card.preferred)}；"
             f"避开{'、'.join(card.avoid)}；例：{card.example}"

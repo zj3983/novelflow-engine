@@ -47,6 +47,23 @@ def test_web_game_method_loads_only_trade_language_for_trade_scene():
     assert "坦克" not in text
 
 
+def test_web_game_method_requests_at_most_three_language_cards(monkeypatch):
+    requested_limits = []
+
+    def record_selection(plan, *, max_cards):
+        requested_limits.append(max_cards)
+        return []
+
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.select_game_language_cards",
+        record_selection,
+    )
+
+    _web_game_writing_method_lines(1, {"chapter_goal": "登录后卖出材料并官方兑换"})
+
+    assert requested_limits == [3]
+
+
 def test_web_game_method_loads_only_combat_language_for_combat_scene():
     text = "\n".join(
         _web_game_writing_method_lines(
