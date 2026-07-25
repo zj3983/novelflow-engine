@@ -96,6 +96,7 @@ _LEGACY_SAMPLE_WAIT_RESULT_PATTERN = re.compile(
     r"夜烬盯着订单页面，食指轻轻敲着膝盖。屏幕终于一跳。\s*"
     r"【样本符合求购要求。】"
 )
+_PARAGRAPH_BREAK_PATTERN = re.compile(r"(?:\r?\n[\t ]*){2,}")
 _CHAPTER_SCOPE_MARKER = re.compile(
     r"第\s*(?P<chinese>[零〇一二两三四五六七八九十百千万\d]+)\s*章"
     r"|(?:[\"']?chapter_number[\"']?)\s*[:：]\s*[\"']?(?P<json>\d+)[\"']?"
@@ -241,6 +242,36 @@ def _normalize_legacy_trade_window(
     return normalized
 
 
+def _listing_has_trade_paragraph_context(
+    value: str,
+    listing_start: int,
+    lower_bound: int,
+) -> bool:
+    paragraphs: list[tuple[int, int, str]] = []
+    paragraph_start = lower_bound
+    for separator in _PARAGRAPH_BREAK_PATTERN.finditer(value, lower_bound):
+        text = value[paragraph_start : separator.start()]
+        if text.strip():
+            paragraphs.append((paragraph_start, separator.start(), text))
+        paragraph_start = separator.end()
+    tail = value[paragraph_start:]
+    if tail.strip():
+        paragraphs.append((paragraph_start, len(value), tail))
+
+    for index, (start, end, text) in enumerate(paragraphs):
+        if not start <= listing_start < end:
+            continue
+        candidates = [text]
+        if index > 0:
+            candidates.append(paragraphs[index - 1][2])
+        return any(
+            marker in paragraph
+            for paragraph in candidates
+            for marker in ("求购单", "求购", "裂纹狼心")
+        )
+    return False
+
+
 def _normalize_legacy_trade_windows(value: str) -> str:
     parts: list[str] = []
     cursor = 0
@@ -271,12 +302,11 @@ def _normalize_legacy_trade_windows(value: str) -> str:
             )
         )
         listing = listing_candidates[-1] if listing_candidates else None
-        listing_context = (
-            value[max(cursor, listing.start() - 500) : action.start()]
-            if listing is not None
-            else ""
-        )
-        if listing is None or not any(marker in listing_context for marker in ("求购", "裂纹狼心")):
+        if listing is None or not _listing_has_trade_paragraph_context(
+            value,
+            listing.start(),
+            cursor,
+        ):
             search_from = action.end()
             continue
         expected_amount = listing.group("amount")

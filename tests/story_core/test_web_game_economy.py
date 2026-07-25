@@ -536,7 +536,7 @@ def test_amounts_and_anonymous_action_without_old_trade_results_do_not_form_a_wi
 
 def test_trade_window_uses_captured_amount_without_inventing_coin_price_or_rate() -> None:
     source = (
-        "求购单详情。【担保净到账93.25元。】夜烬还在比较价格。"
+        "求购单详情。\n\n【要求：可匿名。】【担保净到账93.25元。】\n\n"
         "夜烬点下匿名提交。裂纹狼心从背包中消失，订单状态变成鉴定中。"
         "等待的半分钟里，村口仍有人排队。"
         "夜烬盯着订单页面，食指轻轻敲着膝盖。屏幕终于一跳。"
@@ -556,6 +556,49 @@ def test_trade_window_uses_captured_amount_without_inventing_coin_price_or_rate(
     assert "1764.00" not in normalized
     assert "成交价：93.25元" not in normalized
     assert "汇率" not in normalized
+
+
+def test_unrelated_paragraph_between_wolf_context_and_amount_panel_breaks_association() -> None:
+    source = (
+        "裂纹狼心的旧说明还在页面上。\n\n"
+        "村口有人讨论天气，和交易没有关系。\n\n"
+        "【担保净到账45.00元。】\n\n"
+        "夜烬点下匿名提交。裂纹狼心从背包中消失，订单状态变成鉴定中。"
+        "夜烬盯着订单页面，食指轻轻敲着膝盖。屏幕终于一跳。"
+        "【样本符合求购要求。】【买家确认收购。】【匿名担保交易已完成。】"
+        "【净到账44.00元。】"
+    )
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert "成交价：按求购单标价" not in normalized
+    assert "兑换价：当前官方报价" not in normalized
+    assert "现实账户到账44.00元" not in normalized
+
+
+def test_long_purchase_paragraph_still_associates_without_a_character_limit() -> None:
+    long_detail = "求购单详情：" + "卖家要求与物品说明。" * 70
+    source = (
+        f"{long_detail}【担保净到账71.50元。】\n\n"
+        "夜烬点下匿名提交。裂纹狼心从背包中消失，订单状态变成鉴定中。"
+        "夜烬盯着订单页面，食指轻轻敲着膝盖。屏幕终于一跳。"
+        "【样本符合求购要求。】【买家确认收购。】【匿名担保交易已完成。】"
+        "【净到账70.00元。】"
+    )
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert len(long_detail) > 500
+    assert "【预计到账：71.50元。】" in normalized
+    assert "【现实账户到账70.00元。】" in normalized
 
 
 def test_plain_amount_panel_without_purchase_or_wolf_context_does_not_form_trade_window() -> None:
