@@ -1750,6 +1750,8 @@ def test_extend_generated_outline_plan_fills_missing_rolling_window_chapters(tmp
     saved = store.save_generated_outline_plan(addition, mode="extend")
 
     assert [item["chapter_number"] for item in saved["outline"]["chapters"]] == list(range(1, 51))
+    assert saved["outline"]["arcs"][0]["trope_id"] == "low_status_reversal"
+    assert saved["outline"]["chapters"][0]["trope_beat"] == "低位压力"
     assert saved["outline"]["arcs"][0]["end_chapter"] == 150
     assert saved["outline"]["arcs"][0]["long_term_antagonist_traces"] == [
         "旧名册被换过",
