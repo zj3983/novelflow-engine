@@ -45,7 +45,7 @@ _VIEWPOINT_ALTERNATIVE_RE = re.compile(
     r"|(?:第一人称\s*(?:、|和)\s*第三人称|第三人称\s*(?:、|和)\s*第一人称)"
     r"\s*(?:均可|任选)"
 )
-_WORD_COUNT_SEGMENT_RE = re.compile(r"[^，,。.\r\n]+")
+_WORD_COUNT_SEGMENT_RE = re.compile(r"[^，,。.；;\r\n]+")
 _WORD_COUNT_STAGE_RE = re.compile(r"初稿|终稿")
 
 
@@ -261,15 +261,13 @@ def _first_disjoint_word_count_pair(
 
     for segment_match in _WORD_COUNT_SEGMENT_RE.finditer(content):
         ranges, are_alternatives = _word_count_ranges_in_segment(segment_match.group(0))
+        if are_alternatives:
+            continue
         for current in ranges:
             disjoint_pair = compare_with_previous(current)
             if disjoint_pair is not None:
                 return disjoint_pair
-            if not are_alternatives:
-                update_extrema(current)
-        if are_alternatives:
-            for current in ranges:
-                update_extrema(current)
+            update_extrema(current)
 
     return None
 

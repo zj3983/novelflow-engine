@@ -453,6 +453,29 @@ def test_word_count_ranges_presented_as_explicit_alternatives_do_not_conflict():
     assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
 
 
+@pytest.mark.parametrize("final_range", ["1100-1150字", "2100-2200字"])
+def test_alternate_word_count_group_is_isolated_from_later_ranges(final_range):
+    result = audit_prompt(
+        mode="final_call",
+        content=(
+            "1000-1200字或2000-2500字中任选。"
+            f"最终要求{final_range}"
+        ),
+    )
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
+
+
+@pytest.mark.parametrize("separator", ["；", ";"])
+def test_semicolons_separate_draft_and_final_word_count_stages(separator):
+    result = audit_prompt(
+        mode="final_call",
+        content=f"初稿控制在1000-1200字{separator}终稿控制在2000-2500字",
+    )
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
+
+
 def test_many_overlapping_word_ranges_complete_in_linear_time():
     unit = "1000-2000字,"
     content = (unit * (199_000 // len(unit)))[:199_000]
