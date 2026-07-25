@@ -157,6 +157,18 @@ def test_web_game_review_does_not_let_earlier_exchange_hide_direct_market_settle
             "甲求购单资金冻结。\n\n甲求购单随即成交。\n\n甲求购单仍要求等待买家确认。",
             "仍在等待买家再次确认",
         ),
+        (
+            "拍卖物成交，游戏币到账。钱随后直接转入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "甲玩家的求购单资金冻结。\n\n甲玩家的订单成交。\n\n甲玩家等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "夜烬的求购单资金冻结。\n\n商人的普通订单成交。\n\n守卫等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
     ],
 )
 def test_web_game_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
@@ -190,6 +202,8 @@ def test_web_game_review_detects_explicit_economy_boundaries_in_three_paragraph_
         "交易行显示求购单成交。\n\n夜烬停了一会儿。\n\n这笔钱不需要由交易行直接转入现实账户。",
         "裂纹狼心已经识别。\n\n夜烬换成了一把长剑。\n\n他把它提交鉴定。",
         "甲求购单资金冻结。\n\n乙求购单随即成交。\n\n丙求购单仍要求等待买家确认。",
+        "拍卖物成交，游戏币到账。\n\n夜烬关掉菜单。\n\n那笔钱来自公司奖金，随后直接转入现实账户。",
+        "甲玩家的求购单资金冻结。\n\n乙玩家的普通订单成交。\n\n丙玩家等待买家确认。",
     ],
 )
 def test_web_game_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):

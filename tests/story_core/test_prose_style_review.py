@@ -241,6 +241,18 @@ def test_prose_style_review_ignores_negated_chains_and_appraisal_of_another_item
             "A单求购资金已经冻结。\n\nA单求购随即成交。\n\nA单求购仍需等待买家确认。",
             "仍在等待买家再次确认",
         ),
+        (
+            "求购成交，游戏币到账。钱随后直接进入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "甲玩家的求购单资金冻结。\n\n甲玩家的订单成交。\n\n甲玩家等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "夜烬的求购单资金冻结。\n\n洛婶的订单成交。\n\n艾伦等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
     ],
 )
 def test_prose_style_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
@@ -269,6 +281,8 @@ def test_prose_style_review_detects_explicit_economy_boundaries_in_three_paragra
         "交易行里的求购已经成交。\n\n夜烬抬头看了一眼。\n\n这笔钱不需要由交易行直接转入现实账户。",
         "裂纹狼心已经识别。\n\n夜烬换上了一把长剑。\n\n他把它提交鉴定。",
         "甲求购单资金冻结。\n\n乙求购单成交。\n\n丙求购单等待买家确认。",
+        "求购成交，游戏币到账。\n\n夜烬放下头盔。\n\n那笔钱是报销款，随后直接转入现实账户。",
+        "甲玩家的求购单资金冻结。\n\n乙玩家的普通订单成交。\n\n丙玩家等待买家确认。",
     ],
 )
 def test_prose_style_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):

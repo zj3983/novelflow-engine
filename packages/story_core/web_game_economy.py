@@ -175,6 +175,7 @@ _REAL_SETTLEMENT_TERMS = ("现实账户", "现实结算", "现实到账")
 _MARKET_SETTLEMENT_SOURCE_TERMS = (
     "这笔款",
     "这笔钱",
+    "那笔钱",
     "成交款",
     "成交所得",
     "交易所得",
@@ -183,6 +184,9 @@ _MARKET_SETTLEMENT_SOURCE_TERMS = (
     "求购成交所得",
     "卖出所得",
     "款项",
+)
+_MARKET_MONEY_PRONOUN = re.compile(
+    r"(?:^|[，。；：、\s])钱(?=(?:随后|随即|接着|又|便|就|直接|被|由|转入|打进|进入|到账))"
 )
 _INDEPENDENT_SETTLEMENT_SOURCE_TERMS = (
     "工资",
@@ -265,6 +269,7 @@ _FUNDED_ORDER_PATTERN = re.compile(
     r"[^，。！？!?；;]{0,8}?(?:资金|游戏币)(?:已经|已)?(?:被)?冻结(?:了)?"
 )
 _ORDER_ID_PATTERNS = (
+    re.compile(r"(?P<id>[甲乙丙丁戊己庚辛壬癸A-Z])玩家(?:的)?"),
     re.compile(r"第(?P<id>[一二三四五六七八九十百\d]+)(?:条|张)(?:求购单|订单)"),
     re.compile(r"(?P<id>[甲乙丙丁戊己庚辛壬癸A-Z])(?:号)?(?:求购单|订单)"),
     re.compile(r"(?P<id>[A-Z])单(?:求购)?"),
@@ -331,7 +336,9 @@ def _is_direct_reality_settlement(unit: _EconomyUnit) -> bool:
         return False
     if _has_independent_settlement_source(unit.text):
         return False
-    has_market_source = any(term in unit.text for term in _MARKET_SETTLEMENT_SOURCE_TERMS)
+    has_market_source = any(
+        term in unit.text for term in _MARKET_SETTLEMENT_SOURCE_TERMS
+    ) or _MARKET_MONEY_PRONOUN.search(unit.text)
     if not has_market_source and not _is_market_completion(unit):
         return False
     return _DIRECT_SETTLEMENT_DENIAL.search(unit.text) is None
