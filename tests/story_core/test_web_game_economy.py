@@ -248,6 +248,55 @@ def test_web_game_first_chapter_legacy_wolf_heart_flow_still_migrates() -> None:
     assert "官方兑换" in normalized
 
 
+@pytest.mark.parametrize("later_marker", ("第十章", "第10章", "第2章"))
+def test_legacy_prompt_migration_preserves_explicit_later_chapter_ranges(later_marker: str) -> None:
+    source = f"第一章通过裂纹狼心担保交易处理急账。{later_marker}建立担保交易制度，银行继续提供担保。"
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert "第一章通过裂纹狼心担保交易" not in normalized
+    assert f"{later_marker}建立担保交易制度，银行继续提供担保。" in normalized
+
+
+def test_legacy_prompt_migration_preserves_later_chapter_in_structured_json_text() -> None:
+    source = (
+        '{"chapter_number": 1, "goal": "裂纹狼心担保交易"}\n'
+        '{"chapter_number": 10, "goal": "建立担保交易制度"}'
+    )
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert '"chapter_number": 1' in normalized
+    assert '"chapter_number": 10, "goal": "建立担保交易制度"' in normalized
+    assert normalized.count("担保交易") == 1
+
+
+def test_legacy_prompt_migration_uses_nested_mapping_chapter_number_scope() -> None:
+    source = {
+        "chapters": [
+            {"chapter_number": 1, "goal": "裂纹狼心担保交易"},
+            {"chapter_number": 10, "goal": "建立担保交易制度"},
+        ]
+    }
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert "担保交易" not in normalized["chapters"][0]["goal"]
+    assert normalized["chapters"][1] == source["chapters"][1]
+
+
 def test_specific_replacements_do_not_leave_duplicate_or_partial_order_words() -> None:
     source = "持牌虚拟资产担保平台生成担保订单号，买家确认收购后完成担保交割。"
 

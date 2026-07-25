@@ -230,7 +230,23 @@ def _repair_outline_amount_anchors(body: str, anchor: Any) -> str:
             )
             if exchange_prefix:
                 start = exchange_prefix.start()
-            if end < len(text) and text[end] in "，,":
+            own_sentence_start = sentence_start(text, start)
+            sentence_ends = [
+                position
+                for marker in ("。", "！", "？", "!", "?", "\n")
+                if (position := text.find(marker, end)) >= 0
+            ]
+            own_sentence_end = min(sentence_ends) if sentence_ends else len(text)
+            owns_sentence = (
+                not text[own_sentence_start:start].strip()
+                and not text[end:own_sentence_end].strip()
+            )
+            if owns_sentence:
+                start = own_sentence_start
+                end = own_sentence_end + (1 if own_sentence_end < len(text) else 0)
+                while end < len(text) and text[end].isspace():
+                    end += 1
+            elif end < len(text) and text[end] in "，,":
                 end += 1
             elif exchange_prefix and end < len(text) and text[end] in "。！？!?":
                 end += 1

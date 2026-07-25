@@ -145,6 +145,26 @@ def test_outline_amount_repair_removes_late_duplicate_when_earlier_receipt_exist
     assert "官方兑换页面" not in repaired
 
 
+def test_outline_amount_repair_removes_independent_late_receipt_period_cleanly() -> None:
+    body = "他先付清现实急账。现实账户收到305.20元。队友随后发来消息。"
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "队友随后发来消息。" in repaired
+    assert "。。" not in repaired
+    assert repaired.count("现实账户收到1764.00元") == 1
+
+
+def test_outline_amount_repair_removes_independent_late_receipt_exclamation_cleanly() -> None:
+    body = "他先付清现实急账。手机提示进账305.20元！队友随后发来消息。"
+
+    repaired = _repair_outline_amount_anchors(body, {"trade_arrival": "1764.00元"})
+
+    assert "队友随后发来消息。" in repaired
+    assert "。！" not in repaired
+    assert repaired.count("现实账户收到1764.00元") == 1
+
+
 def test_outline_amount_repair_updates_expected_and_actual_arrival_amounts() -> None:
     body = "页面显示预计到账1700.00元，确认兑换后实际到账1690.00元。"
 

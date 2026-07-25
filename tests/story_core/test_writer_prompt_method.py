@@ -679,6 +679,21 @@ def test_each_formal_prompt_normalizes_once_at_its_final_output(monkeypatch):
         assert calls == [(True, 1)]
 
 
+def test_revision_prompt_migrates_real_order_status_appraisal_sentence() -> None:
+    story = StoryState(
+        story_id="s-real-order-appraisal",
+        outline="第一章卖出裂纹狼心解决现实急账。",
+        genre="网游",
+        style="升级流",
+    )
+    source_body = "裂纹狼心从背包中消失，订单状态变成‘鉴定中’。"
+
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, source_body, {}, {})
+
+    assert "鉴定中" not in prompt
+    assert "官方兑换" in prompt
+
+
 def test_web_game_writer_prompt_moves_on_after_a_panel_instead_of_explaining_it():
     story = StoryState(story_id="s-panel-transition", outline="网游开服。", genre="网游", style="白描")
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})

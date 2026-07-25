@@ -3317,6 +3317,9 @@ def test_real_project_prompt_preview_is_read_only_and_contains_no_legacy_economy
             )
         )
     )
+    future_chapter_pattern = re.compile(
+        r"第(?:[二三四五六七八九十百千万零〇两]+|(?:[2-9]\d*|1\d+))章"
+    )
 
     assert set(entries) == {
         "director_plan",
@@ -3339,10 +3342,13 @@ def test_real_project_prompt_preview_is_read_only_and_contains_no_legacy_economy
         "writing_packet",
     }
     for key, content in entries.items():
-        assert legacy_pattern.search(content) is None
+        for match in legacy_pattern.finditer(content):
+            line_start = content.rfind("\n", 0, match.start()) + 1
+            assert future_chapter_pattern.search(content[line_start : match.start()]) is not None
         if key in flow_keys:
             positions = [content.index(line) for line in opening_market_exchange_flow_lines()]
             assert positions == sorted(positions)
+    assert "第5章写担保名单" in entries["core_context"]
     assert {path: path.read_bytes() for path in before} == before
 
 

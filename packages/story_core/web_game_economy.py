@@ -57,6 +57,8 @@ _FIRST_CHAPTER_TRANSACTION_MARKERS: tuple[str, ...] = (
     "裂纹狼心",
     "交易行",
     "求购单",
+    "订单状态",
+    "订单",
     "出售",
     "成交",
     "持牌虚拟资产担保平台",
@@ -74,6 +76,10 @@ _CLAUSE_SCOPED_LEGACY_FLOW_TERMS: tuple[str, ...] = (
 )
 _CLAUSE_SCOPED_LEGACY_FLOW_PATTERN = re.compile(
     "|".join(re.escape(term) for term in _CLAUSE_SCOPED_LEGACY_FLOW_TERMS)
+)
+_CHAPTER_SCOPE_MARKER = re.compile(
+    r"第\s*(?P<chinese>[零〇一二两三四五六七八九十百千万\d]+)\s*章"
+    r"|(?:[\"']?chapter_number[\"']?)\s*[:：]\s*[\"']?(?P<json>\d+)[\"']?"
 )
 
 _LEGACY_PROMPT_FLOW_TERMS: tuple[str, ...] = (
@@ -158,7 +164,7 @@ def _normalize_clause_scoped_terms(
     return "".join(parts)
 
 
-def _normalize_legacy_economy_prompt_text(value: str) -> str:
+def _normalize_legacy_economy_prompt_segment(value: str) -> str:
     inserted_flow = False
 
     def replace_flow(_match: re.Match[str]) -> str:
@@ -180,6 +186,70 @@ def _normalize_legacy_economy_prompt_text(value: str) -> str:
     return normalized
 
 
+def _chapter_scope_number(match: re.Match[str]) -> int:
+    raw = str(match.group("json") or match.group("chinese") or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    digits = {
+        "零": 0,
+        "〇": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    units = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+    total = 0
+    section = 0
+    number = 0
+    for char in raw:
+        if char in digits:
+            number = digits[char]
+            continue
+        unit = units.get(char)
+        if unit is None:
+            return 0
+        if unit == 10000:
+            section += number
+            total += (section or 1) * unit
+            section = 0
+            number = 0
+        else:
+            section += (number or 1) * unit
+            number = 0
+    return total + section + number
+
+
+def _normalize_legacy_economy_prompt_line(value: str) -> str:
+    markers = list(_CHAPTER_SCOPE_MARKER.finditer(value))
+    if not markers:
+        return _normalize_legacy_economy_prompt_segment(value)
+
+    parts = [_normalize_legacy_economy_prompt_segment(value[: markers[0].start()])]
+    for index, marker in enumerate(markers):
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(value)
+        segment = value[marker.start() : end]
+        parts.append(
+            _normalize_legacy_economy_prompt_segment(segment)
+            if _chapter_scope_number(marker) == 1
+            else segment
+        )
+    return "".join(parts)
+
+
+def _normalize_legacy_economy_prompt_text(value: str) -> str:
+    return "".join(
+        _normalize_legacy_economy_prompt_line(line)
+        for line in value.splitlines(keepends=True)
+    )
+
+
 def normalize_legacy_economy_prompt_value(
     value: Any,
     *,
@@ -193,6 +263,12 @@ def normalize_legacy_economy_prompt_value(
     if isinstance(value, str):
         return _normalize_legacy_economy_prompt_text(value)
     if isinstance(value, Mapping):
+        scoped_chapter = value.get("chapter_number")
+        try:
+            if scoped_chapter is not None and int(scoped_chapter) >= 2:
+                return value
+        except (TypeError, ValueError):
+            pass
         items = [
             (
                 key,
