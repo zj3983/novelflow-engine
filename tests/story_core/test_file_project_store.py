@@ -1537,6 +1537,176 @@ def test_generated_plan_failed_transaction_does_not_rollback_concurrent_success(
     assert len(FileProjectStore(root).project_outline()["chapters"]) == 30
 
 
+def test_manual_outline_update_waits_for_failed_generated_transaction(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "novel"
+    generated_store = _make_minimal_file_project(root)
+    manual_store = FileProjectStore(root)
+    manual_outline = _generated_opening_plan().outline.model_dump(mode="json")
+    manual_outline["overall"]["ending_direction"] = "Manual ending after rollback."
+    generated_paused = threading.Event()
+    release_generated = threading.Event()
+    manual_started = threading.Event()
+    manual_write_entered = threading.Event()
+    errors: dict[str, BaseException] = {}
+    import packages.story_core.file_project_store as module
+
+    real_replace = module.os.replace
+    generated_replace_calls = 0
+
+    def coordinated_replace(source, target):
+        nonlocal generated_replace_calls
+        if threading.current_thread().name != "failing-generated-save":
+            return real_replace(source, target)
+        generated_replace_calls += 1
+        if generated_replace_calls == 1:
+            result = real_replace(source, target)
+            generated_paused.set()
+            assert release_generated.wait(timeout=2)
+            return result
+        if generated_replace_calls == 2:
+            raise OSError("simulated generated save failure")
+        return real_replace(source, target)
+
+    original_manual_write = manual_store._write_json_atomic
+
+    def tracked_manual_write(path, payload):
+        manual_write_entered.set()
+        return original_manual_write(path, payload)
+
+    monkeypatch.setattr(module.os, "replace", coordinated_replace)
+    monkeypatch.setattr(manual_store, "_write_json_atomic", tracked_manual_write)
+
+    def save_generated() -> None:
+        try:
+            generated_store.save_generated_outline_plan(
+                _generated_opening_plan(),
+                mode="initial",
+            )
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["generated"] = exc
+
+    def update_manually() -> None:
+        manual_started.set()
+        try:
+            manual_store.update_project_outline(manual_outline)
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["manual"] = exc
+
+    generated_thread = threading.Thread(
+        target=save_generated,
+        name="failing-generated-save",
+    )
+    generated_thread.start()
+    assert generated_paused.wait(timeout=2)
+    manual_thread = threading.Thread(target=update_manually, name="manual-outline-update")
+    manual_thread.start()
+    assert manual_started.wait(timeout=2)
+    manual_entered_while_generated_paused = manual_write_entered.wait(timeout=0.25)
+    release_generated.set()
+    generated_thread.join(timeout=3)
+    manual_thread.join(timeout=3)
+
+    assert not generated_thread.is_alive()
+    assert not manual_thread.is_alive()
+    assert manual_entered_while_generated_paused is False
+    assert isinstance(errors.get("generated"), OSError)
+    assert "manual" not in errors
+    assert FileProjectStore(root).project_outline()["overall"]["ending_direction"] == (
+        "Manual ending after rollback."
+    )
+
+
+def test_manual_outline_update_waits_for_successful_generated_transaction(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "novel"
+    generated_store = _make_minimal_file_project(root)
+    manual_store = FileProjectStore(root)
+    plan = _generated_opening_plan()
+    manual_outline = plan.outline.model_dump(mode="json")
+    manual_outline["overall"]["ending_direction"] = "Manual ending after generation."
+    generated_paused = threading.Event()
+    release_generated = threading.Event()
+    manual_started = threading.Event()
+    manual_write_entered = threading.Event()
+    errors: dict[str, BaseException] = {}
+    import packages.story_core.file_project_store as module
+
+    real_replace = module.os.replace
+    generated_replace_calls = 0
+
+    def coordinated_replace(source, target):
+        nonlocal generated_replace_calls
+        if threading.current_thread().name != "successful-generated-save":
+            return real_replace(source, target)
+        generated_replace_calls += 1
+        result = real_replace(source, target)
+        if generated_replace_calls == 1:
+            generated_paused.set()
+            assert release_generated.wait(timeout=2)
+        return result
+
+    original_manual_write = manual_store._write_json_atomic
+
+    def tracked_manual_write(path, payload):
+        manual_write_entered.set()
+        return original_manual_write(path, payload)
+
+    monkeypatch.setattr(module.os, "replace", coordinated_replace)
+    monkeypatch.setattr(manual_store, "_write_json_atomic", tracked_manual_write)
+
+    def save_generated() -> None:
+        try:
+            generated_store.save_generated_outline_plan(plan, mode="initial")
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["generated"] = exc
+
+    def update_manually() -> None:
+        manual_started.set()
+        try:
+            manual_store.update_project_outline(manual_outline)
+        except BaseException as exc:  # Capture worker failures for the main assertion thread.
+            errors["manual"] = exc
+
+    generated_thread = threading.Thread(
+        target=save_generated,
+        name="successful-generated-save",
+    )
+    generated_thread.start()
+    assert generated_paused.wait(timeout=2)
+    manual_thread = threading.Thread(target=update_manually, name="manual-outline-update")
+    manual_thread.start()
+    assert manual_started.wait(timeout=2)
+    manual_entered_while_generated_paused = manual_write_entered.wait(timeout=0.25)
+    release_generated.set()
+    generated_thread.join(timeout=3)
+    manual_thread.join(timeout=3)
+
+    assert not generated_thread.is_alive()
+    assert not manual_thread.is_alive()
+    assert manual_entered_while_generated_paused is False
+    assert errors == {}
+    saved = FileProjectStore(root)
+    outline = saved.project_outline()
+    project = saved.project()
+    state = saved.state()
+    assert outline["overall"]["ending_direction"] == "Manual ending after generation."
+    assert len(outline["chapters"]) == 30
+    assert project["pipeline_stage"] == "world_ready"
+    assert state["outline"] == outline["overall"]["story"]
+    assert [
+        (card["name"], card["role"])
+        for card in project["character_profiles"]
+    ] == [
+        (card["name"], card["role"])
+        for card in state["characters"]
+    ]
+
+
 def test_update_outline_rejects_core_ending_before_current_chapter(tmp_path) -> None:
     root = tmp_path / "novel"
     store = _make_minimal_file_project(root, state={"current_chapter": 21})

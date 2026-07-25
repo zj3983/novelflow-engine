@@ -3059,6 +3059,7 @@ class FileProjectStore:
             return {**normalize_project_outline(self._read_json(path, {})), "source": "saved"}
         return {**outline_from_legacy_project(self.project()), "source": "legacy"}
 
+    @_with_project_update_lock
     def update_project_outline(self, payload: dict[str, Any]) -> dict[str, Any]:
         outline_payload = dict(payload)
         outline_payload.pop("source", None)
