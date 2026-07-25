@@ -70,6 +70,28 @@ def test_chapter_review_passes_explicit_genre_context_to_shared_reviewers(monkey
     }
 
 
+def test_chapter_review_enables_economy_checks_for_mixed_game_plugin_context():
+    body = "拍卖物成交后，这笔成交款直接进入现实账户。"
+
+    mixed = _review_chapter_body(
+        1,
+        body,
+        {},
+        [],
+        genre_context={"genre_plugin_ids": ["xuanhuan", "game_webnovel"]},
+    )
+    non_game = _review_chapter_body(
+        1,
+        body,
+        {},
+        [],
+        genre_context={"genre_plugin_ids": ["xuanhuan"]},
+    )
+
+    assert any("经济边界" in issue for issue in mixed["issues"])
+    assert not any("经济边界" in issue for issue in non_game["issues"])
+
+
 def test_rebalanced_short_draft_can_grow_into_target_range():
     short = "短" * 3300
     candidate = "正文" * 2300

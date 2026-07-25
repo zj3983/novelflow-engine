@@ -235,7 +235,9 @@ _LOCAL_ACTION_NEGATION = re.compile(
     r"[^，,。！？!?；;\r\n]{0,14}$"
 )
 _ORDER_CLAUSE_BREAK = re.compile(r"[，,、]")
-_ORDER_IDENTITY_RESET_PATTERN = re.compile(r"(?:另一张订单|另一个求购单)")
+_ORDER_IDENTITY_RESET_PATTERN = re.compile(
+    r"(?:另一(?:张|条|笔|个)(?:订单|求购单)|别的(?:订单|求购单))"
+)
 _NAME_PANEL_PATTERN = re.compile(r"【名称\s*[:：]\s*(?P<item>[^】]{1,20})】")
 _ITEM_USE_PATTERN = re.compile(
     r"(?P<item>[一-龥A-Za-z0-9·]{2,20})(?:的)?用途(?:是|为|写着|标为|[:：])"
