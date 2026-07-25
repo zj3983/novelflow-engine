@@ -15,7 +15,10 @@ from typing import Any
 from urllib.parse import quote
 
 from packages.story_core.chapter_direction import build_chapter_direction_options
-from packages.story_core.web_game_economy import first_chapter_market_exchange_authorized
+from packages.story_core.web_game_economy import (
+    first_chapter_market_exchange_authorized,
+    normalize_legacy_economy_prompt_value,
+)
 from packages.story_core.character_portraits import complete_character_portrait as complete_portrait
 from packages.story_core.character_profiles import (
     merge_character_profile,
@@ -4892,7 +4895,7 @@ class FileProjectStore:
         if int(target or 0) <= current_chapter:
             packet_project.pop("current_focus", None)
         packet_project["world_blueprint"] = scoped_world
-        return {
+        packet = {
             "schema_version": "file-writing-packet/v1",
             "root": str(self.root),
             "target_chapter": target,
@@ -4959,6 +4962,7 @@ class FileProjectStore:
             "chapter_direction_options": chapter_direction_options,
             "skill_context": {key: value for key, value in skill_context.items() if value},
         }
+        return normalize_legacy_economy_prompt_value(packet)
 
     def _prompt_plan_from_chapter(self, chapter: dict[str, Any]) -> dict[str, Any]:
         plan: dict[str, Any] = {}
@@ -4978,7 +4982,7 @@ class FileProjectStore:
             value = chapter.get(key)
             if value not in (None, "", [], {}):
                 plan[key] = value
-        return plan
+        return normalize_legacy_economy_prompt_value(plan)
 
     @staticmethod
     def _prompt_entry(
@@ -5158,11 +5162,11 @@ class FileProjectStore:
                 review = self.review(target)
             except FileNotFoundError:
                 review = {}
-        review = self._prompt_review_payload(review)
+        review = normalize_legacy_economy_prompt_value(self._prompt_review_payload(review))
 
         core_context = _story_snapshot(story)
-        character_context = _character_context_for_prompt(story, plan)
-        genre_context = _genre_context_for_prompt(story, target, plan)
+        character_context = normalize_legacy_economy_prompt_value(_character_context_for_prompt(story, plan))
+        genre_context = normalize_legacy_economy_prompt_value(_genre_context_for_prompt(story, target, plan))
         modules: list[dict[str, Any]] = [
             self._prompt_entry(
                 key="core_context",

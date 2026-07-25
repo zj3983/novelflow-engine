@@ -29,6 +29,28 @@ _OPENING_MARKET_EXCHANGE_FLOW: tuple[str, ...] = (
     "现实账户到账后处理急账。",
 )
 
+_LEGACY_PROMPT_FLOW_TERMS: tuple[str, ...] = (
+    "裂纹狼心提交鉴定后，系统给出一条求购匹配",
+    "交易行直接现实结算",
+    "买家再次确认",
+    "平台验货",
+    "封存交割",
+    "匿名交割",
+    "提交鉴定",
+    "鉴定中",
+    "鉴定求购",
+    "担保订单",
+    "担保交易",
+    "现实结算",
+)
+_LEGACY_PROMPT_FLOW_PATTERN = re.compile(
+    "|".join(re.escape(term) for term in _LEGACY_PROMPT_FLOW_TERMS)
+)
+_FORBIDDEN_CURRENCY_NAME = "人民币"
+_NUMBERED_FORBIDDEN_CURRENCY = re.compile(
+    rf"(?P<amount>(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万点]+))\s*{_FORBIDDEN_CURRENCY_NAME}"
+)
+
 _LEGACY_OPENING_MARKERS: tuple[str, ...] = (
     "第一章必须通过裂纹狼心担保交易",
     "第一章必须解决现实急账",
@@ -72,6 +94,43 @@ def opening_market_exchange_flow_lines() -> tuple[str, ...]:
     """Return the canonical writer-facing opening flow in scene order."""
 
     return _OPENING_MARKET_EXCHANGE_FLOW
+
+
+def _normalize_legacy_economy_prompt_text(value: str) -> str:
+    inserted_flow = False
+
+    def replace_flow(_match: re.Match[str]) -> str:
+        nonlocal inserted_flow
+        if inserted_flow:
+            return "交易与兑换流程"
+        inserted_flow = True
+        return " ".join(_OPENING_MARKET_EXCHANGE_FLOW)
+
+    normalized = _LEGACY_PROMPT_FLOW_PATTERN.sub(replace_flow, value)
+    normalized = _NUMBERED_FORBIDDEN_CURRENCY.sub(
+        lambda match: f"{match.group('amount')}元",
+        normalized,
+    )
+    return normalized.replace(_FORBIDDEN_CURRENCY_NAME, "现实货币")
+
+
+def normalize_legacy_economy_prompt_value(value: Any) -> Any:
+    """Return a prompt-safe copy while leaving stored project data unchanged."""
+
+    if isinstance(value, str):
+        return _normalize_legacy_economy_prompt_text(value)
+    if isinstance(value, Mapping):
+        return {
+            normalize_legacy_economy_prompt_value(key): normalize_legacy_economy_prompt_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [normalize_legacy_economy_prompt_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(normalize_legacy_economy_prompt_value(item) for item in value)
+    if isinstance(value, set):
+        return {normalize_legacy_economy_prompt_value(item) for item in value}
+    return value
 
 
 def _text_entries(value: Any) -> tuple[str, ...]:

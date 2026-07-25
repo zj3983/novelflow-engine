@@ -82,6 +82,39 @@ def test_locked_outline_amounts_are_repaired_from_structured_anchor():
     assert "余额312.60元" in repaired
     assert "7.40元" not in repaired
     assert "100.00元" not in repaired
+    assert repaired.index("交易行求购单成交") < repaired.index("官方兑换页面")
+    assert repaired.index("官方兑换页面") < repaired.index("现实账户收到1764.00元")
+    assert repaired.index("现实账户收到1764.00元") < repaired.index("付清房租")
+    assert repaired.index("付清房租") < repaired.rindex("余额312.60元")
+
+
+def test_outline_amount_repair_moves_late_arrival_before_urgent_payment() -> None:
+    body = (
+        "交易行求购单成交，游戏币进入钱包。\n\n"
+        "付清现实急账后，账户余额100.00元。\n\n"
+        "官方兑换完成，现实账户收到305.20元。"
+    )
+    anchor = {"trade_arrival": "1764.00元", "ending_balance": "312.60元"}
+
+    repaired = _repair_outline_amount_anchors(body, anchor)
+
+    assert repaired.count("现实账户收到1764.00元") == 1
+    assert "305.20元" not in repaired
+    assert repaired.index("交易行求购单成交") < repaired.index("官方兑换页面")
+    assert repaired.index("官方兑换页面") < repaired.index("现实账户收到1764.00元")
+    assert repaired.index("现实账户收到1764.00元") < repaired.index("付清现实急账")
+    assert repaired.index("付清现实急账") < repaired.rindex("余额312.60元")
+
+
+def test_outline_amount_repair_does_not_insert_exchange_before_opening_balance() -> None:
+    body = "苏叶看着账户余额27.60元。\n\n交易行求购单成交，游戏币进入钱包。"
+    anchor = {"opening_balance": "27.60元", "trade_arrival": "1764.00元", "ending_balance": "312.60元"}
+
+    repaired = _repair_outline_amount_anchors(body, anchor)
+
+    assert repaired.index("余额27.60元") < repaired.index("交易行求购单成交")
+    assert repaired.index("交易行求购单成交") < repaired.index("官方兑换页面")
+    assert repaired.index("现实账户收到1764.00元") < repaired.rindex("余额312.60元")
 
 
 def test_compact_list_accepts_model_object_instead_of_array():

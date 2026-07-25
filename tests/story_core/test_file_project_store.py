@@ -32,6 +32,7 @@ from packages.story_core.outline_planning import GeneratedOutlinePlan
 from packages.story_core.skill_packs import import_skill_pack_from_path
 from packages.story_core.orchestrator import _failed_bundle
 from packages.story_core.world_blueprint_context import flatten_selected_rules
+from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
 
 
 def _long_test_body(label: str = "Night Ember keeps the chapter grounded.") -> str:
@@ -3181,6 +3182,77 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert "game_world_simulation" not in by_key["writer_body"]["content"]
     assert by_key["writer_body"]["chars"] < 18000
     assert modules["packet_context"]["chars"] < 12000
+
+
+def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module(tmp_path):
+    root = tmp_path / "legacy-webgame"
+    legacy_trade = "\u62c5\u4fdd\u4ea4\u6613"
+    legacy_delivery = "\u533f\u540d\u4ea4\u5272"
+    legacy_appraisal = "\u63d0\u4ea4\u9274\u5b9a"
+    forbidden_currency = "\u4eba\u6c11\u5e01"
+    old_constraint = f"第一章必须通过裂纹狼心{legacy_trade}解决现实急账。"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-legacy-economy",
+            "title": "旧经济流程测试",
+            "active_story_id": "s-legacy-economy",
+            "world_blueprint": {"world_rules": [f"裂纹狼心先{legacy_appraisal}，再{legacy_delivery}。"]},
+        },
+        state={
+            "story_id": "s-legacy-economy",
+            "outline": old_constraint,
+            "genre": "网游",
+            "style": "升级流",
+            "current_chapter": 1,
+            "author_constraints": [old_constraint],
+            "world_facts": [f"到账1764.00{forbidden_currency}，付清急账后余额312.60元。"],
+            "characters": [
+                {"name": "苏叶", "role": "protagonist", "goals": [f"完成{legacy_trade}并处理急账"]}
+            ],
+        },
+    )
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "第一笔到账",
+        "body": _long_test_body(f"裂纹狼心{legacy_appraisal}后进入{legacy_delivery}。"),
+        "event_plan": {"turn": old_constraint},
+        "writing_taskbook": {
+            "chapter_number": 1,
+            "chapter_goal": old_constraint,
+            "global_required": [f"完成{legacy_trade}"],
+            "scenes": [],
+        },
+        "quality_report": {
+            "writing_review": {
+                "pass": False,
+                "issues": [f"补足{legacy_appraisal}和{legacy_delivery}"],
+                "revision_plan": [f"完成{legacy_trade}"],
+            }
+        },
+    }
+    store._write_json(root / ".story-system" / "chapters" / "0001.json", chapter)
+    store._write_json(root / ".story-system" / "reviews" / "0001.json", chapter["quality_report"])
+
+    preview = store.prompt_preview(1)
+    entries = {
+        item["key"]: item["content"]
+        for item in [*preview["modules"], *preview["prompts"]]
+        if item["key"] in {"director_plan", "writer_body", "revision", "core_context", "character_context", "packet_context"}
+    }
+    forbidden = (legacy_trade, legacy_delivery, legacy_appraisal, forbidden_currency)
+
+    assert set(entries) == {"director_plan", "writer_body", "revision", "core_context", "character_context", "packet_context"}
+    for content in entries.values():
+        assert all(term not in content for term in forbidden)
+        assert "1764.00" in content or "交易行" in content
+        assert all(line in content for line in opening_market_exchange_flow_lines())
+
+    stored_state = json.dumps(store.state(), ensure_ascii=False)
+    stored_chapter = json.dumps(store.chapter(1), ensure_ascii=False)
+    assert legacy_trade in stored_state
+    assert forbidden_currency in stored_state
+    assert legacy_appraisal in stored_chapter
 
 
 def test_file_project_writing_packet_includes_enabled_skill_context(tmp_path, monkeypatch):

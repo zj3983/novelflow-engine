@@ -1,10 +1,12 @@
 import pytest
+from copy import deepcopy
 
 from packages.story_core.web_game_economy import (
     appraisal_rules,
     exchange_rules,
     first_chapter_market_exchange_authorized,
     market_rules,
+    normalize_legacy_economy_prompt_value,
     opening_market_exchange_flow_lines,
 )
 
@@ -88,6 +90,31 @@ def test_opening_market_exchange_flow_lines_define_the_four_ordered_steps() -> N
         "\u4eba\u6c11\u5e01",
     )
     assert all(term not in rendered for term in forbidden)
+
+
+def test_legacy_economy_prompt_normalization_is_recursive_pure_and_keeps_amounts() -> None:
+    legacy_trade = "\u62c5\u4fdd\u4ea4\u6613"
+    legacy_delivery = "\u533f\u540d\u4ea4\u5272"
+    legacy_appraisal = "\u63d0\u4ea4\u9274\u5b9a"
+    forbidden_currency = "\u4eba\u6c11\u5e01"
+    source = {
+        "outline": f"第一章通过{legacy_trade}到账1764.00元。",
+        "facts": [
+            f"裂纹狼心{legacy_appraisal}后进入{legacy_delivery}。",
+            {"rate": f"1金币=100{forbidden_currency}"},
+        ],
+    }
+    original = deepcopy(source)
+
+    normalized = normalize_legacy_economy_prompt_value(source)
+    rendered = str(normalized)
+
+    assert source == original
+    assert normalized is not source
+    assert "1764.00元" in rendered
+    assert "1金币=100元" in rendered
+    assert all(line.rstrip("。") in rendered for line in opening_market_exchange_flow_lines())
+    assert all(term not in rendered for term in (legacy_trade, legacy_delivery, legacy_appraisal, forbidden_currency))
 
 
 def test_implementation_plan_wording_does_not_require_market_name() -> None:

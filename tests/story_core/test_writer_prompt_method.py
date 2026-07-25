@@ -616,6 +616,38 @@ def test_trade_authorized_first_chapter_prompt_uses_market_then_exchange_order()
     assert "第一章只完成开服现场、建号、低级验证和下一步决定" not in prompt
 
 
+def test_formal_prompts_normalize_legacy_plan_review_and_source_body_without_changing_amounts():
+    legacy_trade = "\u62c5\u4fdd\u4ea4\u6613"
+    legacy_delivery = "\u5c01\u5b58\u4ea4\u5272"
+    legacy_appraisal = "\u63d0\u4ea4\u9274\u5b9a"
+    forbidden_currency = "\u4eba\u6c11\u5e01"
+    story = StoryState(
+        story_id="s-legacy-prompt",
+        outline=f"第一章通过裂纹狼心{legacy_trade}解决现实急账。",
+        genre="网游",
+        style="升级流",
+        author_constraints=[f"第一章必须通过裂纹狼心{legacy_trade}解决现实急账。"],
+    )
+    plan = {"event_plan": {"turn": f"完成{legacy_trade}并处理急账"}}
+    review = {"issues": [f"补足{legacy_appraisal}"], "revision_plan": [f"删除{legacy_delivery}"]}
+    source_body = f"裂纹狼心{legacy_appraisal}后{legacy_delivery}，到账1764.00{forbidden_currency}。"
+    orchestrator = StoryOrchestrator()
+
+    prompts = (
+        orchestrator._plan_prompt(story, 1),
+        orchestrator._body_prompt(story, 1, plan),
+        orchestrator._revision_prompt(story, 1, source_body, plan, review),
+    )
+
+    for prompt in prompts:
+        assert all(term not in prompt for term in (legacy_trade, legacy_delivery, legacy_appraisal, forbidden_currency))
+        assert "交易行" in prompt
+        assert "官方兑换" in prompt
+        assert "现实账户" in prompt
+        assert "处理急账" in prompt
+    assert "1764.00元" in prompts[-1]
+
+
 def test_web_game_writer_prompt_moves_on_after_a_panel_instead_of_explaining_it():
     story = StoryState(story_id="s-panel-transition", outline="网游开服。", genre="网游", style="白描")
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})

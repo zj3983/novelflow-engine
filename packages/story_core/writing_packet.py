@@ -8,7 +8,10 @@ from packages.story_core.dual_state import project_character_for_scene, scene_ki
 from packages.story_core.memory import build_character_cards
 from packages.story_core.simulation import is_game_story
 from packages.story_core.writing_learning import learning_snapshot
-from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
+from packages.story_core.web_game_economy import (
+    normalize_legacy_economy_prompt_value,
+    opening_market_exchange_flow_lines,
+)
 from packages.story_core.writing_taskbook import first_chapter_whole_body_contract
 
 
@@ -498,7 +501,7 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
     style_rules = _style_rules(game_genre)
     governance_gate = governance_quality_gate(governance)
 
-    return {
+    packet = {
         "schema_version": "codex-writing-packet/v1",
         "chapter_number": target_chapter,
         "scene_kind": scene_kind,
@@ -558,3 +561,4 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
             "note": "Manual draft submission is disabled. Use continue_generation or agent-revise for chapter progression.",
         },
     }
+    return normalize_legacy_economy_prompt_value(packet)
