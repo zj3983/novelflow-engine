@@ -609,6 +609,15 @@ def test_requirements_at_single_word_positions_do_not_become_word_count_targets(
     assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
 
 
+def test_word_counts_for_different_assigned_texts_do_not_conflict():
+    result = audit_prompt(
+        mode="final_call",
+        content="让甲写2000字检讨，让乙写5000字论文。",
+    )
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
+
+
 def test_draft_and_final_word_ranges_are_not_compared_across_stages():
     result = audit_prompt(
         mode="final_call",
