@@ -435,6 +435,24 @@ def test_draft_and_final_word_ranges_are_not_compared_across_stages():
     assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
 
 
+def test_word_count_ranges_with_stage_labels_inside_segments_do_not_conflict():
+    result = audit_prompt(
+        mode="final_call",
+        content="初稿控制在1000-1200字，终稿控制在2000-2500字。",
+    )
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
+
+
+def test_word_count_ranges_presented_as_explicit_alternatives_do_not_conflict():
+    result = audit_prompt(
+        mode="final_call",
+        content="字数可在1000-1200字或2000-2500字中任选。",
+    )
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
+
+
 def test_many_overlapping_word_ranges_complete_in_linear_time():
     unit = "1000-2000字,"
     content = (unit * (199_000 // len(unit)))[:199_000]

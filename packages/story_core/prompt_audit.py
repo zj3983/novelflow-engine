@@ -45,7 +45,8 @@ _VIEWPOINT_ALTERNATIVE_RE = re.compile(
     r"|(?:第一人称\s*(?:、|和)\s*第三人称|第三人称\s*(?:、|和)\s*第一人称)"
     r"\s*(?:均可|任选)"
 )
-_WORD_COUNT_STAGE_RE = re.compile(r"(初稿|终稿)\s*[:：]?\s*$")
+_WORD_COUNT_SEGMENT_RE = re.compile(r"[^，,。.\r\n]+")
+_WORD_COUNT_STAGE_RE = re.compile(r"初稿|终稿")
 
 
 class _StrictPromptAuditModel(BaseModel):
@@ -184,10 +185,28 @@ def _oversized_section_issues(
     return issues
 
 
-def _word_count_stage(content: str, range_start: int) -> str | None:
-    adjacent_prefix = content[max(0, range_start - 16) : range_start]
-    match = _WORD_COUNT_STAGE_RE.search(adjacent_prefix)
-    return match.group(1) if match else None
+def _word_count_stage(segment: str) -> str | None:
+    match = _WORD_COUNT_STAGE_RE.search(segment)
+    return match.group(0) if match else None
+
+
+def _word_count_ranges_in_segment(
+    segment: str,
+) -> tuple[list[tuple[int, int, str, str | None]], bool]:
+    matches = list(_WORD_COUNT_RANGE_RE.finditer(segment))
+    stage = _word_count_stage(segment)
+    ranges = [
+        (
+            min(int(match.group(1)), int(match.group(2))),
+            max(int(match.group(1)), int(match.group(2))),
+            match.group(0),
+            stage,
+        )
+        for match in matches
+    ]
+    qualifier_present = "任选" in segment or "均可" in segment
+    or_after_first_range = bool(matches) and segment.find("或", matches[0].end()) >= 0
+    return ranges, len(matches) >= 2 and qualifier_present and or_after_first_range
 
 
 def _first_disjoint_word_count_pair(
@@ -196,15 +215,9 @@ def _first_disjoint_word_count_pair(
     min_high_by_stage: dict[str | None, tuple[int, int, str, str | None]] = {}
     max_low_by_stage: dict[str | None, tuple[int, int, str, str | None]] = {}
 
-    for match in _WORD_COUNT_RANGE_RE.finditer(content):
-        first = int(match.group(1))
-        second = int(match.group(2))
-        current = (
-            min(first, second),
-            max(first, second),
-            match.group(0),
-            _word_count_stage(content, match.start()),
-        )
+    def compare_with_previous(
+        current: tuple[int, int, str, str | None],
+    ) -> tuple[tuple[int, int, str, str | None], tuple[int, int, str, str | None]] | None:
         stage = current[3]
         compatible_stages = (
             (None, "初稿")
@@ -237,10 +250,26 @@ def _first_disjoint_word_count_pair(
         if previous_max_low is not None and current[1] < previous_max_low[0]:
             return previous_max_low, current
 
+        return None
+
+    def update_extrema(current: tuple[int, int, str, str | None]) -> None:
+        stage = current[3]
         if stage not in min_high_by_stage or current[1] < min_high_by_stage[stage][1]:
             min_high_by_stage[stage] = current
         if stage not in max_low_by_stage or current[0] > max_low_by_stage[stage][0]:
             max_low_by_stage[stage] = current
+
+    for segment_match in _WORD_COUNT_SEGMENT_RE.finditer(content):
+        ranges, are_alternatives = _word_count_ranges_in_segment(segment_match.group(0))
+        for current in ranges:
+            disjoint_pair = compare_with_previous(current)
+            if disjoint_pair is not None:
+                return disjoint_pair
+            if not are_alternatives:
+                update_extrema(current)
+        if are_alternatives:
+            for current in ranges:
+                update_extrema(current)
 
     return None
 
