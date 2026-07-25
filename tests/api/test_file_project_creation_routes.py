@@ -13,6 +13,7 @@ from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import StoryState
 from packages.story_core.novel_type_library import NovelTypeLibrary
+from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.runtime_config import StageRuntimeSettings
 
@@ -471,7 +472,14 @@ def test_file_project_creation_leaves_unexpected_disk_errors_as_500(creation_api
     legacy_create.assert_not_called()
 
 
-def _opening_direction(direction_id: str, title: str) -> dict[str, str]:
+def _urban_primary_trope_ids() -> list[str]:
+    return [
+        str(item["id"])
+        for item in novel_type_prompt_context(runtime_novel_type("urban"))["genre_trope_templates"]
+    ]
+
+
+def _opening_direction(direction_id: str, title: str, *, primary_trope_id: str) -> dict[str, str]:
     return {
         "id": direction_id,
         "title": title,
@@ -480,16 +488,18 @@ def _opening_direction(direction_id: str, title: str) -> dict[str, str]:
         "main_conflict": f"Conflict {direction_id}",
         "growth_path": f"Growth {direction_id}",
         "opening_promise": f"Promise {direction_id}",
+        "primary_trope_id": primary_trope_id,
     }
 
 
 def _opening_direction_payload() -> dict:
+    trope_ids = _urban_primary_trope_ids()
     return {
         "schema_version": "opening-directions/v1",
         "directions": [
-            _opening_direction("direction-1", "First direction"),
-            _opening_direction("direction-2", "Second direction"),
-            _opening_direction("direction-3", "Third direction"),
+            _opening_direction("direction-1", "First direction", primary_trope_id=trope_ids[0]),
+            _opening_direction("direction-2", "Second direction", primary_trope_id=trope_ids[1]),
+            _opening_direction("direction-3", "Third direction", primary_trope_id=trope_ids[2]),
         ],
         "selected_id": "",
     }
@@ -594,7 +604,7 @@ def test_generate_and_select_direction_only_updates_allowed_fields(creation_api,
             "main_conflict": "Conflict direction-2",
             "growth_path": "Growth direction-2",
             "ending_direction": "Promise direction-2",
-            "primary_trope_id": None,
+            "primary_trope_id": _urban_primary_trope_ids()[1],
             "core_ending_chapter": 1,
             "extension_ceiling_chapter": 1,
             "current_strategy": "observe",
@@ -765,7 +775,29 @@ def test_invalid_model_output_returns_502_and_preserves_previous_candidates(crea
     monkeypatch.setattr(
         file_project_routes,
         "opening_direction_generator",
-        _FakeOpeningDirectionGenerator({"directions": [_opening_direction("only", "Only one")]}),
+        _FakeOpeningDirectionGenerator(
+            {
+                "schema_version": "opening-directions/v1",
+                "directions": [
+                    _opening_direction(
+                        "direction-1",
+                        "First direction",
+                        primary_trope_id="not-a-real-trope",
+                    ),
+                    _opening_direction(
+                        "direction-2",
+                        "Second direction",
+                        primary_trope_id=_urban_primary_trope_ids()[1],
+                    ),
+                    _opening_direction(
+                        "direction-3",
+                        "Third direction",
+                        primary_trope_id=_urban_primary_trope_ids()[2],
+                    ),
+                ],
+                "selected_id": "",
+            }
+        ),
     )
 
     response = client.post(f"/file-projects/{project['project_id']}/opening-directions")

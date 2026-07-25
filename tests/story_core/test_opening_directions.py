@@ -1,16 +1,20 @@
 import json
 import os
 import inspect
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+import packages.story_core.opening_directions as opening_directions_module
 import packages.story_core.file_project_store as file_project_store_module
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import NovelProject, NovelProjectSummary
+from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.opening_directions import (
     LLMOpeningDirectionGenerator,
     OpeningBrief,
+    OpeningDirection,
     OpeningDirectionSet,
 )
 from packages.story_core.project_outline import normalize_project_outline
@@ -21,7 +25,24 @@ def test_generator_constructor_does_not_accept_legacy_strategy_resolver():
     assert "strategy_resolver" not in inspect.signature(LLMOpeningDirectionGenerator).parameters
 
 
-def direction(direction_id: str, *, title: str | None = None) -> dict[str, str]:
+_AUTO_TROPE = object()
+
+
+def _urban_primary_trope_ids() -> list[str]:
+    return [
+        str(item["id"])
+        for item in novel_type_prompt_context(runtime_novel_type("urban"))["genre_trope_templates"]
+    ]
+
+
+def direction(
+    direction_id: str,
+    *,
+    title: str | None = None,
+    primary_trope_id: object | str | None = _AUTO_TROPE,
+) -> dict[str, str | None]:
+    if primary_trope_id is _AUTO_TROPE:
+        primary_trope_id = _urban_primary_trope_ids()[0]
     return {
         "id": direction_id,
         "title": title or f"Title {direction_id}",
@@ -30,13 +51,19 @@ def direction(direction_id: str, *, title: str | None = None) -> dict[str, str]:
         "main_conflict": f"Conflict {direction_id}",
         "growth_path": f"Growth {direction_id}",
         "opening_promise": f"Promise {direction_id}",
+        "primary_trope_id": primary_trope_id,
     }
 
 
 def direction_set(*, selected_id: str = "") -> dict:
+    trope_ids = _urban_primary_trope_ids()
     return {
         "schema_version": "opening-directions/v1",
-        "directions": [direction("direction-1"), direction("direction-2"), direction("direction-3")],
+        "directions": [
+            direction("direction-1", primary_trope_id=trope_ids[0]),
+            direction("direction-2", primary_trope_id=trope_ids[1]),
+            direction("direction-3", primary_trope_id=trope_ids[2]),
+        ],
         "selected_id": selected_id,
     }
 
@@ -129,6 +156,18 @@ def test_opening_brief_is_strict_and_trims_required_text():
         )
 
 
+def test_opening_direction_primary_trope_id_trims_strings_and_preserves_none():
+    trimmed = OpeningDirection.model_validate(
+        {**direction("direction-1"), "primary_trope_id": "  chosen-trope  "}
+    )
+    none_value = OpeningDirection.model_validate(
+        {**direction("direction-1"), "primary_trope_id": None}
+    )
+
+    assert trimmed.primary_trope_id == "chosen-trope"
+    assert none_value.primary_trope_id is None
+
+
 @pytest.mark.parametrize("pipeline_stage", ["direction_ready", "outlining"])
 def test_project_pipeline_types_accept_opening_stages(pipeline_stage):
     payload = {
@@ -197,6 +236,10 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     assert prompt_context["regeneration_guidance"] == ""
     assert prompt_context["genre_trope_templates"]
     assert "genre_trope_templates" in captured["payload"]["messages"][1]["content"]
+    system_prompt = captured["payload"]["messages"][0]["content"]
+    assert "primary_trope_id" in system_prompt
+    assert "choose one listed primary_trope_id" in system_prompt
+    assert "Return null only when candidate list empty" in system_prompt
     entire_prompt = json.dumps(captured["payload"]["messages"], ensure_ascii=False)
     assert "SECRET_CHARACTER_CARD" not in entire_prompt
     assert "SECRET_HISTORY_CHAPTER" not in entire_prompt
@@ -246,6 +289,157 @@ def test_generator_rejects_guidance_longer_than_1000_after_trimming():
         )
 
     assert runtime_calls == []
+
+
+def test_generator_accepts_known_primary_trope_choices(monkeypatch):
+    candidates = [{"id": "trope-a"}, {"id": "trope-b"}]
+    monkeypatch.setattr(
+        opening_directions_module,
+        "runtime_novel_type",
+        lambda _: SimpleNamespace(id="urban"),
+    )
+    monkeypatch.setattr(
+        opening_directions_module,
+        "novel_type_prompt_context",
+        lambda _: {
+            "genre_label": "Urban",
+            "genre_description": "desc",
+            "genre_core_promises": [],
+            "genre_rulebook": {},
+            "genre_quality_checks": [],
+            "genre_trope_templates": candidates,
+        },
+    )
+    generator = LLMOpeningDirectionGenerator(
+        post_json=lambda *args, **kwargs: {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "directions": [
+                                    direction("direction-1", primary_trope_id="trope-a"),
+                                    direction("direction-2", primary_trope_id="trope-b"),
+                                    direction("direction-3", primary_trope_id="trope-a"),
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        },
+        runtime_resolver=lambda _: StageRuntimeSettings(
+            provider="codexcli",
+            model="direction-test-model",
+            base_url="http://runtime.test",
+            codex_command="codex-test",
+        ),
+    )
+
+    result = generator.generate(OpeningBrief(novel_type_id="urban", idea="Known trope"))
+
+    assert [item.primary_trope_id for item in result.directions] == ["trope-a", "trope-b", "trope-a"]
+
+
+@pytest.mark.parametrize("primary_trope_id", [None, "", "unknown-trope"])
+def test_generator_rejects_missing_blank_or_unknown_primary_trope_when_candidates_exist(
+    monkeypatch,
+    primary_trope_id,
+):
+    monkeypatch.setattr(
+        opening_directions_module,
+        "runtime_novel_type",
+        lambda _: SimpleNamespace(id="urban"),
+    )
+    monkeypatch.setattr(
+        opening_directions_module,
+        "novel_type_prompt_context",
+        lambda _: {
+            "genre_label": "Urban",
+            "genre_description": "desc",
+            "genre_core_promises": [],
+            "genre_rulebook": {},
+            "genre_quality_checks": [],
+            "genre_trope_templates": [{"id": "trope-a"}],
+        },
+    )
+    generator = LLMOpeningDirectionGenerator(
+        post_json=lambda *args, **kwargs: {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "directions": [
+                                    direction("direction-1", primary_trope_id=primary_trope_id),
+                                    direction("direction-2", primary_trope_id="trope-a"),
+                                    direction("direction-3", primary_trope_id="trope-a"),
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        },
+        runtime_resolver=lambda _: StageRuntimeSettings(
+            provider="codexcli",
+            model="direction-test-model",
+            base_url="http://runtime.test",
+            codex_command="codex-test",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="^opening_direction_generation_failed$"):
+        generator.generate(OpeningBrief(novel_type_id="urban", idea="Unknown trope"))
+
+
+def test_generator_allows_null_primary_trope_only_when_candidate_list_empty(monkeypatch):
+    monkeypatch.setattr(
+        opening_directions_module,
+        "runtime_novel_type",
+        lambda _: SimpleNamespace(id="urban"),
+    )
+    monkeypatch.setattr(
+        opening_directions_module,
+        "novel_type_prompt_context",
+        lambda _: {
+            "genre_label": "Urban",
+            "genre_description": "desc",
+            "genre_core_promises": [],
+            "genre_rulebook": {},
+            "genre_quality_checks": [],
+            "genre_trope_templates": [],
+        },
+    )
+    generator = LLMOpeningDirectionGenerator(
+        post_json=lambda *args, **kwargs: {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "directions": [
+                                    direction("direction-1", primary_trope_id=None),
+                                    direction("direction-2", primary_trope_id=None),
+                                    direction("direction-3", primary_trope_id=None),
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        },
+        runtime_resolver=lambda _: StageRuntimeSettings(
+            provider="codexcli",
+            model="direction-test-model",
+            base_url="http://runtime.test",
+            codex_command="codex-test",
+        ),
+    )
+
+    result = generator.generate(OpeningBrief(novel_type_id="urban", idea="No trope choices"))
+
+    assert [item.primary_trope_id for item in result.directions] == [None, None, None]
 
 
 def test_store_passes_trimmed_guidance_without_persisting_it(tmp_path):
@@ -357,6 +551,30 @@ def test_invalid_generated_payload_preserves_previous_candidates(tmp_path):
     with pytest.raises(ValueError):
         store.generate_opening_directions(
             StaticDirectionGenerator({"directions": [direction("a"), direction("b")]})
+        )
+
+    assert directions_path.read_bytes() == before
+
+
+def test_store_rejects_fake_generator_with_unknown_primary_trope_without_overwriting_candidates(tmp_path):
+    store = make_opening_store(tmp_path)
+    directions_path = store.webnovel_dir / "opening_directions.json"
+    directions_path.write_text(json.dumps(direction_set(), indent=2), encoding="utf-8")
+    before = directions_path.read_bytes()
+
+    with pytest.raises(ValueError, match="^opening_direction_generation_failed$"):
+        store.generate_opening_directions(
+            StaticDirectionGenerator(
+                {
+                    "schema_version": "opening-directions/v1",
+                    "directions": [
+                        direction("direction-1", primary_trope_id="not-a-real-trope"),
+                        direction("direction-2"),
+                        direction("direction-3"),
+                    ],
+                    "selected_id": "",
+                }
+            )
         )
 
     assert directions_path.read_bytes() == before

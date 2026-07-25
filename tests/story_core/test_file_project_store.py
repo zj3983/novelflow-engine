@@ -1452,6 +1452,49 @@ def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path
             calls.append((brief, mode, guidance))
             return _generated_opening_plan()
 
+    (store.webnovel_dir / "opening_directions.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "opening-directions/v1",
+                "directions": [
+                    {
+                        "id": "direction-1",
+                        "title": "方向一",
+                        "hook": "林照看守断香炉。",
+                        "protagonist_goal": "守住香火。",
+                        "main_conflict": "有人想毁掉旧案。",
+                        "growth_path": "从守住现场开始掌握宗门规则。",
+                        "opening_promise": "每次解决具体问题都会换来一条可验证线索。",
+                        "primary_trope_id": "selected-trope",
+                    },
+                    {
+                        "id": "direction-2",
+                        "title": "方向二",
+                        "hook": "另一条方向。",
+                        "protagonist_goal": "另一目标。",
+                        "main_conflict": "另一冲突。",
+                        "growth_path": "另一成长。",
+                        "opening_promise": "另一承诺。",
+                        "primary_trope_id": "unused-trope",
+                    },
+                    {
+                        "id": "direction-3",
+                        "title": "方向三",
+                        "hook": "第三条方向。",
+                        "protagonist_goal": "第三目标。",
+                        "main_conflict": "第三冲突。",
+                        "growth_path": "第三成长。",
+                        "opening_promise": "第三承诺。",
+                        "primary_trope_id": "backup-trope",
+                    },
+                ],
+                "selected_id": "direction-1",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
     store.generate_outline_plan(RecordingGenerator(), mode="initial", guidance="  对手有现实利益  ")
 
     brief, mode, guidance = calls[0]
@@ -1459,10 +1502,47 @@ def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path
     assert guidance == "对手有现实利益"
     assert brief.novel_type_id == "xuanhuan"
     assert brief.opening_direction.hook == "林照看守断香炉。"
+    assert brief.opening_direction.primary_trope_id == "selected-trope"
     assert brief.existing_characters == []
     assert brief.existing_character_names == []
     secret = "对手有现实利益".encode("utf-8")
     assert all(secret not in path.read_bytes() for path in store.root.rglob("*") if path.is_file())
+
+
+def test_planning_brief_falls_back_to_saved_overall_primary_trope_id(tmp_path) -> None:
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "Fallback Trope",
+            "seed_outline": "Seed outline",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": [], "characters": []},
+    )
+    (store.webnovel_dir / "outline.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "project-outline/v1",
+                "overall": {
+                    "story": "Saved hook",
+                    "protagonist_goal": "Saved goal",
+                    "main_conflict": "Saved conflict",
+                    "growth_path": "Saved growth",
+                    "ending_direction": "Saved promise",
+                    "primary_trope_id": "saved-overall-trope",
+                },
+                "arcs": [],
+                "chapters": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    brief = store._planning_brief()
+
+    assert brief.opening_direction.primary_trope_id == "saved-overall-trope"
 
 
 def test_planning_brief_keeps_all_character_names_while_limiting_detailed_cards(tmp_path) -> None:

@@ -89,6 +89,7 @@ def _brief() -> OutlinePlanningBrief:
             "main_conflict": "有人要毁掉旧案证据。",
             "growth_path": "从守住现场开始掌握宗门规则。",
             "opening_promise": "每次解决具体问题都会换来一条可验证线索。",
+            "primary_trope_id": "sect_case_files",
         },
         author_constraints=["白描，对话完整自然。"],
     )
@@ -205,6 +206,7 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "current_strategy",
     }
     assert prompt["one_time_guidance"] == "反派要有现实利益"
+    assert prompt["opening_direction"]["primary_trope_id"] == "sect_case_files"
     assert prompt["genre_trope_templates"]
     assert "genre_trope_templates" in request["payload"]["messages"][1]["content"]
     schema_text = json.dumps(prompt["output_schema"], ensure_ascii=False)

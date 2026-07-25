@@ -35,11 +35,16 @@ from packages.story_core.genre_plugins import select_genre_plugins
 from packages.story_core.models import CharacterState, NovelProject, StoryState
 from packages.story_core.novel_type_catalog import (
     normalize_novel_type_ids,
+    novel_type_prompt_context,
     novel_type_id_from_metadata_fact,
     resolve_novel_type_id,
     runtime_novel_type,
 )
-from packages.story_core.opening_directions import OpeningBrief, OpeningDirectionSet
+from packages.story_core.opening_directions import (
+    OpeningBrief,
+    OpeningDirectionSet,
+    validate_opening_direction_set_primary_tropes,
+)
 from packages.story_core.outline_planning import (
     GeneratedOutlinePlan,
     validate_generated_continuation_plan,
@@ -2921,6 +2926,21 @@ class FileProjectStore:
             "next_path": f"/projects/{quote(public_project_id, safe='')}/{next_page}",
         }
 
+    def _opening_direction_trope_candidates(
+        self,
+        brief: OpeningBrief | dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        validated_brief = OpeningBrief.model_validate(brief or self.opening_brief())
+        genre = runtime_novel_type(validated_brief.novel_type_id)
+        if genre is None:
+            raise ValueError("invalid_novel_type")
+        prompt_context = novel_type_prompt_context(genre)
+        return [
+            dict(item)
+            for item in prompt_context.get("genre_trope_templates", [])
+            if isinstance(item, dict)
+        ]
+
     def generate_opening_directions(
         self, generator: Any, *, guidance: str = ""
     ) -> dict[str, Any]:
@@ -2928,9 +2948,13 @@ class FileProjectStore:
         if existing and existing.get("selected_id"):
             raise ValueError("direction_already_selected")
         brief = OpeningBrief.model_validate(self.opening_brief())
+        trope_candidates = self._opening_direction_trope_candidates(brief)
         result = generator.generate(brief, guidance=guidance.strip())
         try:
-            directions = OpeningDirectionSet.model_validate(result)
+            directions = validate_opening_direction_set_primary_tropes(
+                OpeningDirectionSet.model_validate(result),
+                trope_candidates,
+            )
         except (TypeError, ValueError) as exc:
             raise ValueError("opening_direction_generation_failed") from exc
         project = {**self.project(), "pipeline_stage": "direction_ready"}
@@ -2969,6 +2993,7 @@ class FileProjectStore:
                     "main_conflict": selected.main_conflict,
                     "growth_path": selected.growth_path,
                     "ending_direction": selected.opening_promise,
+                    "primary_trope_id": selected.primary_trope_id,
                 },
                 "arcs": [],
                 "chapters": [],
@@ -3021,7 +3046,11 @@ class FileProjectStore:
             )
         return {**normalized, "source": "saved"}
 
-    def _planning_opening_direction(self, project: dict[str, Any], outline: dict[str, Any]) -> dict[str, str]:
+    def _planning_opening_direction(
+        self,
+        project: dict[str, Any],
+        outline: dict[str, Any],
+    ) -> dict[str, Any]:
         directions = self.opening_directions()
         selected_id = str((directions or {}).get("selected_id") or "")
         selected = next(
@@ -3034,12 +3063,22 @@ class FileProjectStore:
         )
         if selected:
             return {
-                key: str(selected.get(key) or "")
-                for key in ("title", "hook", "protagonist_goal", "main_conflict", "growth_path", "opening_promise")
+                "title": str(selected.get("title") or ""),
+                "hook": str(selected.get("hook") or ""),
+                "protagonist_goal": str(selected.get("protagonist_goal") or ""),
+                "main_conflict": str(selected.get("main_conflict") or ""),
+                "growth_path": str(selected.get("growth_path") or ""),
+                "opening_promise": str(selected.get("opening_promise") or ""),
+                "primary_trope_id": selected.get("primary_trope_id"),
             }
         overall = outline.get("overall") if isinstance(outline.get("overall"), dict) else {}
         seed = str(project.get("seed_outline") or project.get("world_summary") or overall.get("story") or project.get("title") or "")
         focus = str(project.get("current_focus") or overall.get("protagonist_goal") or seed)
+        primary_trope_id = overall.get("primary_trope_id")
+        if isinstance(primary_trope_id, str):
+            primary_trope_id = primary_trope_id.strip() or None
+        else:
+            primary_trope_id = None
         return {
             "title": str(project.get("title") or ""),
             "hook": str(overall.get("story") or seed),
@@ -3047,6 +3086,7 @@ class FileProjectStore:
             "main_conflict": str(overall.get("main_conflict") or project.get("world_summary") or seed),
             "growth_path": str(overall.get("growth_path") or "主角在连续行动、代价和反馈中取得真实成长。"),
             "opening_promise": str(overall.get("ending_direction") or "开篇建立的核心冲突会得到阶段性兑现。"),
+            "primary_trope_id": primary_trope_id,
         }
 
     def _planning_brief(self) -> OutlinePlanningBrief:

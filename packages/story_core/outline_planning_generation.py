@@ -34,6 +34,7 @@ class PlanningOpeningDirection(_PlanningInput):
     main_conflict: str = Field(min_length=1, max_length=500)
     growth_path: str = Field(min_length=1, max_length=500)
     opening_promise: str = Field(min_length=1, max_length=500)
+    primary_trope_id: str | None = Field(default=None, max_length=120)
 
 
 class OutlinePlanningBrief(_PlanningInput):
