@@ -1530,11 +1530,11 @@ def _trope_contract_guidance(contract: Any) -> list[str]:
         return []
     current_beat = str(contract.get("current_beat") or "").strip()
     progress_rule = (
-        "This chapter must create observable progress for current_beat; do not merely mention it."
+        "本章产生可观察推进，不能只提到节点，必须让当前节点在行动、反馈或关系变化中落地。"
         if current_beat
-        else "Maintain the trigger/payoff/avoid stage promise; do not force a full trope beat and do not switch tropes."
+        else "只保持阶段承诺，不强行完成整套节点，也不得自行换套路。"
     )
-    return [progress_rule, "Always follow avoid rules conservatively."]
+    return [progress_rule, "始终保守遵守 avoid 规则。"]
 
 
 def _writer_seed_summary(seed: Any) -> dict[str, Any]:

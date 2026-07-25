@@ -600,12 +600,13 @@ def _outline_trope_contract(
     context = story.outline_context if isinstance(story.outline_context, dict) else {}
     active_arc = context.get("active_arc") if isinstance(context.get("active_arc"), dict) else {}
     chapter = context.get("chapter") if isinstance(context.get("chapter"), dict) else {}
-    try:
-        planned_number = int(chapter.get("chapter_number") or 0)
-    except (TypeError, ValueError):
-        planned_number = 0
-    if planned_number != chapter_number:
-        chapter = {}
+    if "chapter_number" in chapter and chapter.get("chapter_number") not in (None, ""):
+        try:
+            planned_number = int(chapter.get("chapter_number"))
+        except (TypeError, ValueError):
+            planned_number = chapter_number
+        if planned_number != chapter_number:
+            return {}
     trope_id = str(active_arc.get("trope_id") or "").strip()
     if not trope_id:
         return {}
@@ -642,7 +643,7 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
     )
     if allow_first_chapter_trade:
         rulebook = _authorized_trade_rulebook(rulebook)
-    simulation_blueprint = plugin_simulation_blueprint(plugins)
+    simulation_blueprint = plugin_simulation_blueprint(prompt_plugins)
     if allow_first_chapter_trade:
         simulation_blueprint = _authorized_trade_blueprint(simulation_blueprint)
     contract = _contract_for_game(chapter_number) if is_game else _generic_contract()

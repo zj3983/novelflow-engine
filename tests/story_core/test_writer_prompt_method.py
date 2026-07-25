@@ -11,8 +11,12 @@ from packages.story_core.orchestrator import (
 from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
 
 
-TROPE_PROGRESS_GUIDANCE = "This chapter must create observable progress for current_beat; do not merely mention it."
-TROPE_AVOID_GUIDANCE = "Always follow avoid rules conservatively."
+TROPE_PROGRESS_GUIDANCE = "本章产生可观察推进"
+TROPE_EMPTY_BEAT_GUIDANCE = "只保持阶段承诺，不强行完成整套节点，也不得自行换套路"
+TROPE_AVOID_GUIDANCE = "保守遵守 avoid 规则"
+OLD_ENGLISH_PROGRESS_GUIDANCE = "This chapter must create observable progress for current_beat; do not merely mention it."
+OLD_ENGLISH_EMPTY_BEAT_GUIDANCE = "Maintain the trigger/payoff/avoid stage promise; do not force a full trope beat and do not switch tropes."
+OLD_ENGLISH_AVOID_GUIDANCE = "Always follow avoid rules conservatively."
 
 
 def _urban_trope(template_id: str) -> dict[str, object]:
@@ -289,8 +293,11 @@ def test_non_game_writer_prompt_receives_trope_contract_without_game_fact_label(
     assert "当前阶段套路" in prompt
     assert "public-turnaround" in prompt
     assert "collect visible proof" in prompt
-    assert "This chapter must create observable progress for current_beat; do not merely mention it." in prompt
-    assert "Always follow avoid rules conservatively." in prompt
+    assert TROPE_PROGRESS_GUIDANCE in prompt
+    assert "不能只提到节点" in prompt
+    assert TROPE_AVOID_GUIDANCE in prompt
+    assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
+    assert OLD_ENGLISH_AVOID_GUIDANCE not in prompt
     assert "游戏主角" not in prompt
 
 
@@ -316,8 +323,10 @@ def test_empty_beat_writer_prompt_keeps_contract_without_forcing_full_beat(monke
 
     assert "slow-burn" in prompt
     assert '"current_beat": ""' in prompt
-    assert "Maintain the trigger/payoff/avoid stage promise; do not force a full trope beat and do not switch tropes." in prompt
-    assert "This chapter must create observable progress for current_beat" not in prompt
+    assert TROPE_EMPTY_BEAT_GUIDANCE in prompt
+    assert TROPE_PROGRESS_GUIDANCE not in prompt
+    assert OLD_ENGLISH_EMPTY_BEAT_GUIDANCE not in prompt
+    assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
 
 
 def test_writer_fact_section_omits_trope_guidance_when_contract_missing():
@@ -327,7 +336,8 @@ def test_writer_fact_section_omits_trope_guidance_when_contract_missing():
 
     assert "当前阶段套路" not in rendered
     assert "current_beat" not in rendered
-    assert "Always follow avoid rules conservatively." not in rendered
+    assert TROPE_AVOID_GUIDANCE not in rendered
+    assert OLD_ENGLISH_AVOID_GUIDANCE not in rendered
 
 
 def test_game_writer_prompt_keeps_game_facts_and_adds_trope_contract(monkeypatch):
@@ -356,7 +366,10 @@ def test_game_writer_prompt_keeps_game_facts_and_adds_trope_contract(monkeypatch
     assert "Lv.1" in prompt
     assert "当前阶段套路" in prompt
     assert "first-advantage" in prompt
-    assert "This chapter must create observable progress for current_beat; do not merely mention it." in prompt
+    assert TROPE_PROGRESS_GUIDANCE in prompt
+    assert "不能只提到节点" in prompt
+    assert TROPE_AVOID_GUIDANCE in prompt
+    assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
 
 
 def test_real_non_game_director_and_writer_prompts_include_selected_trope_only():
@@ -381,6 +394,9 @@ def test_real_non_game_director_and_writer_prompts_include_selected_trope_only()
         assert "trope_templates" not in prompt
     assert TROPE_PROGRESS_GUIDANCE in body_prompt
     assert TROPE_AVOID_GUIDANCE in body_prompt
+    assert "不能只提到节点" in body_prompt
+    assert OLD_ENGLISH_PROGRESS_GUIDANCE not in body_prompt
+    assert OLD_ENGLISH_AVOID_GUIDANCE not in body_prompt
 
 
 def test_real_non_game_prompts_omit_trope_contract_for_deleted_template_id():
@@ -397,6 +413,8 @@ def test_real_non_game_prompts_omit_trope_contract_for_deleted_template_id():
         assert "当前阶段套路" not in prompt
         assert TROPE_PROGRESS_GUIDANCE not in prompt
         assert TROPE_AVOID_GUIDANCE not in prompt
+        assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
+        assert OLD_ENGLISH_AVOID_GUIDANCE not in prompt
         assert "deleted-template" not in prompt
         assert unrelated_id not in prompt
         assert "trope_templates" not in prompt
@@ -417,6 +435,8 @@ def test_real_non_game_prompts_omit_trope_contract_for_invalid_beat():
         assert "当前阶段套路" not in prompt
         assert TROPE_PROGRESS_GUIDANCE not in prompt
         assert TROPE_AVOID_GUIDANCE not in prompt
+        assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
+        assert OLD_ENGLISH_AVOID_GUIDANCE not in prompt
         assert selected_id not in prompt
         assert "not a valid trope beat" not in prompt
         assert unrelated_id not in prompt

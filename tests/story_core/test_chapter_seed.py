@@ -133,6 +133,10 @@ def test_chapter_seed_resolves_one_locked_trope_contract_specific_before_generic
         "unused-specific",
         "unused-generic",
     }
+    shared_blueprint = next(template for template in blueprint_templates if template["id"] == "shared-stage")
+    assert shared_blueprint["name"] == "specific stage"
+    assert shared_blueprint["trigger"] == "specific trigger"
+    assert shared_blueprint["beats"] == ["specific beat"]
 
 
 def test_chapter_seed_omits_trope_contract_for_unknown_id_or_invalid_beat(monkeypatch):
@@ -206,6 +210,64 @@ def test_chapter_seed_retains_trope_contract_with_empty_beat_in_prompt_summaries
     summary = _writer_seed_summary(seed)
     assert summary["当前阶段套路"] == seed["trope_contract"]
     assert _director_prompt_chapter_seed(summary)["当前阶段套路"] == seed["trope_contract"]
+
+
+def test_chapter_seed_preserves_trope_beat_when_chapter_number_absent(monkeypatch):
+    plugin = _ascii_plugin(
+        "urban",
+        {
+            "id": "locked-stage",
+            "name": "locked",
+            "trigger": "trigger",
+            "beats": ["valid beat"],
+            "payoff": "payoff",
+            "avoid": ["avoid"],
+        },
+    )
+    monkeypatch.setattr(chapter_seed_module, "select_genre_plugins", lambda *args, **kwargs: [plugin])
+    story = StoryState(
+        story_id="s-trope-absent-number",
+        outline="urban story",
+        genre="urban",
+        style="plain",
+        outline_context={
+            "active_arc": {"trope_id": "locked-stage"},
+            "chapter": {"trope_beat": "valid beat"},
+        },
+    )
+
+    seed = build_chapter_seed(story, 1)
+
+    assert seed["trope_contract"]["current_beat"] == "valid beat"
+
+
+def test_chapter_seed_omits_trope_contract_when_chapter_number_mismatches(monkeypatch):
+    plugin = _ascii_plugin(
+        "urban",
+        {
+            "id": "locked-stage",
+            "name": "locked",
+            "trigger": "trigger",
+            "beats": ["valid beat"],
+            "payoff": "payoff",
+            "avoid": ["avoid"],
+        },
+    )
+    monkeypatch.setattr(chapter_seed_module, "select_genre_plugins", lambda *args, **kwargs: [plugin])
+    story = StoryState(
+        story_id="s-trope-mismatched-number",
+        outline="urban story",
+        genre="urban",
+        style="plain",
+        outline_context={
+            "active_arc": {"trope_id": "locked-stage"},
+            "chapter": {"chapter_number": 2, "trope_beat": "valid beat"},
+        },
+    )
+
+    seed = build_chapter_seed(story, 1)
+
+    assert "trope_contract" not in seed
 
 
 def test_game_chapter_seed_turns_rules_into_generation_contract():
