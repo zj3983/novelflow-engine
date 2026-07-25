@@ -762,21 +762,35 @@ def _same_order(*events: _OrderEvent) -> bool:
     return True
 
 
+def _order_context_reset_positions(units: tuple[_EconomyUnit, ...]) -> tuple[int, ...]:
+    return tuple(
+        unit.start + match.start()
+        for unit in units
+        for match in _ORDER_IDENTITY_RESET_PATTERN.finditer(unit.text)
+    )
+
+
 def _has_buyer_reconfirmation_after_funded_sale(units: tuple[_EconomyUnit, ...]) -> bool:
     funded_events = _funded_order_positions(units)
     completed_events = _order_events_for_terms(units, _COMPLETED_ORDER_TERMS)
     confirm_events = _buyer_reconfirm_positions(units)
+    reset_positions = _order_context_reset_positions(units)
     for funded in funded_events:
         for completed in completed_events:
             if (
                 completed.position <= funded.position
                 or completed.paragraph_index > funded.paragraph_index + 2
+                or any(funded.position < position < completed.position for position in reset_positions)
             ):
                 continue
             for confirm in confirm_events:
                 if (
                     confirm.position > completed.position
                     and confirm.paragraph_index <= funded.paragraph_index + 2
+                    and not any(
+                        completed.position < position < confirm.position
+                        for position in reset_positions
+                    )
                     and _same_order(funded, completed, confirm)
                 ):
                     return True
