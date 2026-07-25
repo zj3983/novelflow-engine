@@ -130,7 +130,7 @@ def test_resolve_trope_contract_returns_empty_dict_for_unknown_template_or_beat(
 
 def test_merge_and_resolve_compare_full_normalized_ids_and_beats_without_compacted_prefix_collisions():
     shared_prefix_id = "template-" + ("A" * 100)
-    shared_prefix_beat = "beat-" + ("B" * 395)
+    shared_prefix_beat = "beat-" + ("B" * 160)
     exact_template_id = shared_prefix_id + "-exact"
     duplicate_after_compaction_id = shared_prefix_id + "-different"
     exact_beat = shared_prefix_beat + "-exact"
@@ -223,12 +223,22 @@ def test_overlong_trope_ids_are_ignored_by_projection_merge_and_resolution():
 
 
 def test_compact_trope_candidates_retains_contract_fields_and_bounds_text_and_lists():
+    max_length_beat = "b" * 180
+    overlong_beat = "c" * 181
     templates = [
         {
             "id": "  long-id  ",
             "name": "  " + ("N" * 500) + "  ",
             "trigger": "  " + ("T" * 500) + "  ",
-            "beats": [f" beat {index} " for index in range(1, 8)],
+            "beats": [
+                " beat 1 ",
+                "beat  2",
+                "beat 3",
+                "beat 4",
+                " beat 5 ",
+                max_length_beat,
+                overlong_beat,
+            ],
             "payoff": "  " + ("P" * 500) + "  ",
             "avoid": [f" avoid {index} " for index in range(1, 8)],
             "ignored": "value",
@@ -243,7 +253,14 @@ def test_compact_trope_candidates_retains_contract_fields_and_bounds_text_and_li
     assert len(compacted[0]["name"]) <= 400
     assert len(compacted[0]["trigger"]) <= 400
     assert len(compacted[0]["payoff"]) <= 400
-    assert compacted[0]["beats"] == ["beat 1", "beat 2", "beat 3", "beat 4"]
+    assert compacted[0]["beats"] == [
+        "beat 1",
+        "beat  2",
+        "beat 3",
+        "beat 4",
+        "beat 5",
+        max_length_beat,
+    ]
     assert compacted[0]["avoid"] == ["avoid 1", "avoid 2", "avoid 3", "avoid 4"]
 
 
@@ -280,6 +297,34 @@ def test_merge_and_resolve_return_deep_copy_isolated_data():
 
     fresh_contract = resolve_trope_contract(templates, "trial", None)
     assert fresh_contract["avoid"] == ["free victory"]
+
+
+def test_every_projected_beat_round_trips_through_resolution():
+    templates = [
+        {
+            "id": "trial",
+            "name": "Trial by Fire",
+            "trigger": "A public challenge appears.",
+            "beats": [
+                " beat 1 ",
+                "beat  2",
+                "beat 3",
+                "beat 4",
+                "beat 5",
+                "b" * 180,
+                "c" * 181,
+            ],
+            "payoff": "The crowd sees the protagonist differently.",
+            "avoid": ["free victory"],
+        }
+    ]
+
+    compacted = compact_trope_candidates(templates)
+
+    for beat in compacted[0]["beats"]:
+        assert resolve_trope_contract(templates, "trial", beat)["current_beat"] == beat
+
+    assert resolve_trope_contract(templates, "trial", "c" * 181) == {}
 
 
 def test_compact_trope_candidates_ignores_malformed_values_and_returns_deep_copy_isolated_data():

@@ -7,6 +7,8 @@ from typing import Any
 from packages.story_core.agent_base import compact_list, compact_text
 
 _MAX_TROPE_ID_CHARS = 120
+_MAX_TROPE_BEAT_CHARS = 180
+_MAX_PROJECTED_BEATS = 8
 
 
 def _normalize_scalar(value: Any) -> str:
@@ -31,6 +33,14 @@ def _normalize_string_list(value: Any) -> list[str]:
     ]
 
 
+def _normalize_beats(value: Any) -> list[str]:
+    return [
+        beat
+        for beat in _normalize_string_list(value)
+        if len(beat) <= _MAX_TROPE_BEAT_CHARS
+    ]
+
+
 def _normalize_template(template: Any) -> dict[str, Any] | None:
     if not isinstance(template, dict):
         return None
@@ -41,7 +51,7 @@ def _normalize_template(template: Any) -> dict[str, Any] | None:
         "id": template_id,
         "name": _normalize_scalar(template.get("name")),
         "trigger": _normalize_scalar(template.get("trigger")),
-        "beats": _normalize_string_list(template.get("beats")),
+        "beats": _normalize_beats(template.get("beats")),
         "payoff": _normalize_scalar(template.get("payoff")),
         "avoid": _normalize_string_list(template.get("avoid")),
     }
@@ -60,7 +70,7 @@ def compact_trope_candidates(templates: Iterable[dict[str, Any]]) -> list[dict[s
                 "id": normalized["id"],
                 "name": compact_text(normalized["name"], 400),
                 "trigger": compact_text(normalized["trigger"], 400),
-                "beats": compact_list(normalized["beats"]),
+                "beats": deepcopy(normalized["beats"][:_MAX_PROJECTED_BEATS]),
                 "payoff": compact_text(normalized["payoff"], 400),
                 "avoid": compact_list(normalized["avoid"]),
             }
