@@ -22,7 +22,7 @@ function IssueList({ issues, emptyText }: { issues: PromptAuditIssue[]; emptyTex
   return (
     <div className="ws-prompt-audit__issues">
       {issues.map((issue) => (
-        <article className="ws-prompt-audit__issue" key={`${issue.code}-${issue.location}-${issue.title}`}>
+        <article className="ws-prompt-audit__issue" key={`${issue.code}-${issue.location}-${issue.evidence}`}>
           <div className="ws-prompt-audit__issue-head">
             <strong>{issue.title}</strong>
             <span>预计可减少 {issue.estimated_reduction_characters} 字符</span>
@@ -60,7 +60,7 @@ export function PromptAuditPanel({
           ) : null}
         </div>
         {onDeepAudit ? (
-          <button className="ws-btn" type="button" disabled={deepLoading} onClick={onDeepAudit}>
+          <button className="ws-btn" type="button" disabled={deepLoading || stale} onClick={onDeepAudit}>
             {deepLoading ? "检查中..." : "AI 深度检查"}
           </button>
         ) : null}

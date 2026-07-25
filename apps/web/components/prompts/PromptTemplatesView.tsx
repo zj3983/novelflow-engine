@@ -28,6 +28,7 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [auditResult, setAuditResult] = useState<PromptAuditResult | null>(null);
+  const [auditedContent, setAuditedContent] = useState("");
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState("");
   const auditRequestId = useRef(0);
@@ -40,6 +41,7 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
   async function loadTemplates(preferredKey?: string) {
     auditRequestId.current += 1;
     setAuditResult(null);
+    setAuditedContent("");
     setAuditError("");
     setAuditLoading(false);
     setLoading(true);
@@ -70,26 +72,30 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
     setMessage("");
     setError("");
     setAuditResult(null);
+    setAuditedContent("");
     setAuditError("");
     setAuditLoading(false);
   }
 
   async function runAudit() {
     if (!selected) return;
+    const requestContent = content;
     const requestId = auditRequestId.current + 1;
     auditRequestId.current = requestId;
     setAuditLoading(true);
     setAuditError("");
     setAuditResult(null);
+    setAuditedContent("");
     try {
       const result = await auditPrompt({
         mode: "template",
-        content,
+        content: requestContent,
         template_key: selected.key,
         required_variables: selected.required_variables,
       });
       if (requestId === auditRequestId.current) {
         setAuditResult(result);
+        setAuditedContent(requestContent);
       }
     } catch (reason) {
       if (requestId === auditRequestId.current) {
@@ -99,6 +105,15 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
       if (requestId === auditRequestId.current) {
         setAuditLoading(false);
       }
+    }
+  }
+
+  function editContent(nextContent: string) {
+    setContent(nextContent);
+    if (auditLoading) {
+      auditRequestId.current += 1;
+      setAuditLoading(false);
+      setAuditError("");
     }
   }
 
@@ -178,7 +193,7 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
             <textarea
               className="ws-textarea ws-template-editor__textarea"
               value={content}
-              onChange={(event) => setContent(event.target.value)}
+              onChange={(event) => editContent(event.target.value)}
               spellCheck={false}
             />
           </label>
@@ -205,7 +220,7 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
           {error ? <p className="ws-inline-error" role="alert">保存失败：{error}</p> : null}
           {auditLoading ? <p className="ws-card__hint" role="status">提示词检查中...</p> : null}
           {auditError ? <p className="ws-inline-error" role="alert">检查失败：{auditError}</p> : null}
-          {auditResult ? <PromptAuditPanel result={auditResult} stale={false} /> : null}
+          {auditResult ? <PromptAuditPanel result={auditResult} stale={auditedContent !== content} /> : null}
         </section>
       ) : (
         <p className="ws-card__hint">没有可编辑的提示词模板。</p>

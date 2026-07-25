@@ -164,3 +164,34 @@ test("切换模板后忽略先前模板的延迟检查响应", async ({ page }) 
   await auditResponse;
   await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
 });
+
+test("检查结果显示后继续编辑会保留结果并标记过期", async ({ page }) => {
+  await mockPromptAuditPage(page);
+
+  await page.goto(PROJECT_PATH);
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  await expect(page.getByRole("heading", { name: "提示词检查" })).toBeVisible();
+  await page.getByLabel("原始模板").fill("结果后的新内容\n{{output_section}}\n{{chapter_direction}}");
+
+  await expect(page.getByText("重复指令", { exact: true })).toBeVisible();
+  await expect(page.getByText("内容已变化，请重新检查。", { exact: true })).toBeVisible();
+});
+
+test("检查期间编辑会忽略延迟响应并立即结束检查状态", async ({ page }) => {
+  let releaseAudit!: () => void;
+  let markAuditStarted!: () => void;
+  const auditGate = new Promise<void>((resolve) => { releaseAudit = resolve; });
+  const auditStarted = new Promise<void>((resolve) => { markAuditStarted = resolve; });
+  await mockPromptAuditPage(page, { auditStarted: markAuditStarted, waitForAudit: auditGate });
+
+  await page.goto(PROJECT_PATH);
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  await auditStarted;
+  await page.getByLabel("原始模板").fill("请求期间的新内容\n{{output_section}}\n{{chapter_direction}}");
+
+  await expect(page.getByRole("button", { name: "检查提示词" })).toBeEnabled();
+  const auditResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit"));
+  releaseAudit();
+  await auditResponse;
+  await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
+});

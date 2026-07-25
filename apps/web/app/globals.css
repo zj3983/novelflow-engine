@@ -601,18 +601,17 @@ body {
 .ws-prompt-audit__summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
 }
 
 .ws-prompt-audit__summary span {
   min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--ws-line);
-  border-radius: 6px;
+  padding: 4px 12px;
   color: var(--ws-ink-muted);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+.ws-prompt-audit__summary span + span { border-left: 1px solid var(--ws-line); }
 
 .ws-prompt-audit__summary strong {
   color: var(--ws-ink);
@@ -635,14 +634,12 @@ body {
 
 .ws-prompt-audit__issues {
   display: grid;
-  gap: 8px;
 }
 
 .ws-prompt-audit__issue {
   min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--ws-line);
-  border-radius: 6px;
+  padding: 10px 0;
+  border-top: 1px solid var(--ws-line);
   overflow-wrap: anywhere;
 }
 
@@ -1937,6 +1934,9 @@ body {
   .ws-prompt-audit__summary {
     grid-template-columns: 1fr;
   }
+
+  .ws-prompt-audit__summary span { padding: 7px 0; }
+  .ws-prompt-audit__summary span + span { border-top: 1px solid var(--ws-line); border-left: 0; }
 
   .ws-prompt-audit__issue-head {
     align-items: flex-start;
