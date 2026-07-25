@@ -585,6 +585,92 @@ body {
 
 .ws-inline-success { color: #167347; }
 .ws-inline-error { color: var(--ws-danger); }
+.ws-inline-warning { color: var(--ws-warn); }
+
+.ws-prompt-audit {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--ws-line);
+}
+
+.ws-prompt-audit > .ws-section-head { margin-bottom: 0; }
+
+.ws-prompt-audit__summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ws-prompt-audit__summary span {
+  min-width: 0;
+  padding: 4px 12px;
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ws-prompt-audit__summary span + span { border-left: 1px solid var(--ws-line); }
+
+.ws-prompt-audit__summary strong {
+  color: var(--ws-ink);
+  font-size: 15px;
+}
+
+.ws-prompt-audit__group {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.ws-prompt-audit__group h3 {
+  margin: 0;
+  color: var(--ws-ink);
+  font-size: 14px;
+}
+
+.ws-prompt-audit__group > .ws-card__hint { margin: 0; }
+
+.ws-prompt-audit__issues {
+  display: grid;
+}
+
+.ws-prompt-audit__issue {
+  min-width: 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--ws-line);
+  overflow-wrap: anywhere;
+}
+
+.ws-prompt-audit__issue-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ws-prompt-audit__issue-head span,
+.ws-prompt-audit__issue p,
+.ws-prompt-audit__issue dl {
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+}
+
+.ws-prompt-audit__issue p { margin: 6px 0; }
+.ws-prompt-audit__issue dl { display: grid; gap: 4px; margin: 0; }
+.ws-prompt-audit__issue dl div { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 8px; }
+.ws-prompt-audit__issue dt { font-weight: 800; }
+.ws-prompt-audit__issue dd { margin: 0; }
+
+.ws-prompt-audit__passed {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--ws-ink-muted);
+  font-size: 13px;
+}
 
 .ws-prompt-section {
   min-width: 0;
@@ -1843,6 +1929,19 @@ body {
     flex: 1;
     min-width: 0;
     padding: 0 10px;
+  }
+
+  .ws-prompt-audit__summary {
+    grid-template-columns: 1fr;
+  }
+
+  .ws-prompt-audit__summary span { padding: 7px 0; }
+  .ws-prompt-audit__summary span + span { border-top: 1px solid var(--ws-line); border-left: 0; }
+
+  .ws-prompt-audit__issue-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .ws-outline-tabs {

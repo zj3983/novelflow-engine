@@ -152,7 +152,11 @@ def get_default_prompt_template(key: str) -> PromptTemplate:
 
 
 def template_variables(content: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(_VARIABLE_PATTERN.findall(content)))
+    return tuple(dict.fromkeys(template_variable_occurrences(content)))
+
+
+def template_variable_occurrences(content: str) -> tuple[str, ...]:
+    return tuple(_VARIABLE_PATTERN.findall(content))
 
 
 def validate_prompt_template(template: PromptTemplate) -> None:
