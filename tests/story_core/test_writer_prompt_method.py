@@ -744,7 +744,7 @@ def test_real_chapter_one_revision_prompt_uses_natural_local_trade_migration() -
         "求购单显示已成交",
         "游戏币已进入钱包",
         "他随后打开独立的官方兑换页面",
-        "现实账户到账：1764.00元",
+        "现实账户到账1764.00元",
     )
     assert [source_section.index(step) for step in local_steps] == sorted(
         source_section.index(step) for step in local_steps

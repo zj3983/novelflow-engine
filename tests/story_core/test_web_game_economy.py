@@ -428,35 +428,62 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     end_marker = "手机的到账震动透过头盔提醒传来。"
     segment = body[start : body.index(end_marker, start) + len(end_marker)]
 
+    ancient_sword_before = "古剑交给鉴定师以后，等待鉴定结果期间，柜台显示【样本符合求购要求。】\n\n"
+    ancient_sword_after = "\n\n古剑的鉴定仍在继续，页面显示【样本符合求购要求。】"
     normalized = normalize_legacy_economy_prompt_value(
-        segment,
+        ancient_sword_before + segment + ancient_sword_after,
         game_context=True,
         chapter_number=1,
     )
 
-    expected_fragments = (
+    ordered_fragments = (
         "夜烬点下立即出售",
         "求购单显示已成交",
         "【游戏币已进入钱包。】",
         "他随后打开独立的官方兑换页面。",
-        "【现实账户到账：1764.00元。】",
+        "兑换价",
+        "可用额度",
+        "手续费",
+        "预计到账1764.00元",
+        "确认兑换",
+        "【现实账户到账1764.00元。】",
     )
-    assert all(fragment in normalized for fragment in expected_fragments)
-    assert [normalized.index(fragment) for fragment in expected_fragments] == sorted(
-        normalized.index(fragment) for fragment in expected_fragments
+    assert all(fragment in normalized for fragment in ordered_fragments)
+    assert [normalized.index(fragment) for fragment in ordered_fragments] == sorted(
+        normalized.index(fragment) for fragment in ordered_fragments
     )
     assert normalized.count("求购单显示已成交") == 1
-    assert "确认成交以后，村口不断有玩家跑进跑出" in normalized
-    assert "【官方兑换预计到账1764.00元。】" in normalized
+    assert normalized.count("成交") == 1
+    assert "交易完成以后，村口不断有玩家跑进跑出" in normalized
     assert "一个法杖玩家坐在喷泉边回蓝" in normalized
     assert "手机的到账震动透过头盔提醒传来" in normalized
+    sale_index = normalized.index("夜烬点下立即出售")
+    market_index = normalized.index("求购单显示已成交", sale_index)
+    wallet_index = normalized.index("【游戏币已进入钱包。】", market_index)
+    exchange_index = normalized.index("他随后打开独立的官方兑换页面。", wallet_index)
+    assert "等待" not in normalized[market_index:wallet_index]
+    assert "村口" not in normalized[market_index:wallet_index]
+    assert "官方兑换" not in normalized[:sale_index]
+    assert "预计到账" not in normalized[:sale_index]
+    assert "【担保净到账1764.00元。】" not in normalized
+    assert normalized.count(ancient_sword_before.strip()) == 1
+    assert normalized.count(ancient_sword_after.strip()) == 1
+    assert normalized.index(ancient_sword_before.strip()) < sale_index < normalized.index(
+        ancient_sword_after.strip()
+    )
+    exchange_sentence = (
+        "他随后打开独立的官方兑换页面。页面显示兑换价、可用额度、手续费和预计到账1764.00元；确认兑换。"
+    )
+    assert exchange_sentence in normalized
+    assert exchange_index == normalized.index(exchange_sentence)
     assert all(
         term not in normalized
         for term in (
             "等待的半分钟里",
-            "样本符合求购要求",
             "买家确认收购",
             "匿名担保交易已完成",
+            "夜烬盯着订单页面",
+            "屏幕终于一跳",
             "担保",
             "求购单已成交，官方兑换完成",
         )
@@ -473,6 +500,26 @@ def test_appraisal_wait_outside_wolf_heart_trade_context_stays_unchanged() -> No
     )
 
     assert normalized == source
+
+
+def test_amounts_and_anonymous_action_without_old_trade_results_do_not_form_a_window() -> None:
+    source = (
+        "【担保净到账88元。】求购单还在展示。夜烬点下匿名提交。"
+        "古剑交给鉴定师以后，等待鉴定结果期间，柜台显示【样本符合求购要求。】"
+        "【净到账88元。】"
+    )
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert "古剑交给鉴定师以后，等待鉴定结果期间" in normalized
+    assert "【样本符合求购要求。】" in normalized
+    assert "游戏币已进入钱包" not in normalized
+    assert "页面显示兑换价、可用额度、手续费" not in normalized
+    assert "官方兑换预计到账" not in normalized
 
 
 @pytest.mark.parametrize(

@@ -44,7 +44,6 @@ _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = tuple(
             ("担保交易已完成", "已进入独立官方兑换页面"),
             ("买家确认收购", "求购单已成交"),
             ("担保名单", "官方兑换记录"),
-            ("担保净到账", "官方兑换预计到账"),
             ("担保到账", "官方兑换到账"),
             ("担保交割", "交易行成交与官方兑换"),
             ("担保订单", "官方兑换流水"),
@@ -75,6 +74,20 @@ _ORDER_STATUS_APPRAISAL_PATTERN = re.compile(
 _ANONYMOUS_SUBMIT_ACTION_PATTERN = re.compile(
     r"(?P<action>点下|点击|选择|按下)\s*匿名提交(?!反馈|投诉|意见|举报)"
 )
+_LEGACY_TRADE_WINDOW_ACTION_PATTERN = re.compile(
+    r"(?P<actor>夜烬|他)(?P<middle>[^。！？!?\n]{0,40}?)(?P<action>点下|点击|选择|按下)\s*匿名提交"
+    r"(?!反馈|投诉|意见|举报)"
+)
+_LEGACY_LISTING_NET_PATTERN = re.compile(
+    r"【担保净到账\s*[:：]?\s*(?P<amount>\d+(?:\.\d+)?)\s*元[。.]?】"
+)
+_LEGACY_ACTUAL_NET_PATTERN = re.compile(
+    r"【净到账\s*[:：]?\s*(?P<amount>\d+(?:\.\d+)?)\s*元[。.]?】"
+)
+_LEGACY_TRADE_STATUS_PATTERN = re.compile(
+    r"(?P<item>裂纹狼心从背包中消失，)?"
+    r"订单状态变成\s*(?:[“‘\"']\s*)?鉴定中(?:\s*[”’\"'])?[。.]?"
+)
 _ADJACENT_LEGACY_TRADE_RESULTS_PATTERN = re.compile(
     r"【\s*买家确认收购[。.]?\s*】\s*"
     r"【\s*(?:匿名)?担保交易已完成[。.]?\s*】"
@@ -82,9 +95,9 @@ _ADJACENT_LEGACY_TRADE_RESULTS_PATTERN = re.compile(
 _LEGACY_APPRAISAL_WAIT_PATTERN = re.compile(
     r"等待的半分钟里|等待鉴定(?:结果)?(?:的)?(?:半分钟|片刻|期间|过程中)?"
 )
-_OFFICIAL_EXCHANGE_NET_ARRIVAL_PATTERN = re.compile(
-    r"(?P<page>他随后打开独立的官方兑换页面。[\t \r\n]*)"
-    r"【净到账\s*[:：]?\s*(?P<amount>\d+(?:\.\d+)?)\s*元。】"
+_LEGACY_SAMPLE_WAIT_RESULT_PATTERN = re.compile(
+    r"夜烬盯着订单页面，食指轻轻敲着膝盖。屏幕终于一跳。\s*"
+    r"【样本符合求购要求。】"
 )
 _CHAPTER_SCOPE_MARKER = re.compile(
     r"第\s*(?P<chinese>[零〇一二两三四五六七八九十百千万\d]+)\s*章"
@@ -178,30 +191,86 @@ def _normalize_local_transaction_terms(clause: str) -> str:
     )
 
 
-def _normalize_legacy_trade_sequence(value: str) -> str:
-    normalized = _ADJACENT_LEGACY_TRADE_RESULTS_PATTERN.sub(
-        "他随后打开独立的官方兑换页面。",
-        value,
-    )
-    if "裂纹狼心" in normalized:
-        normalized = normalized.replace("【样本符合求购要求。】", "【游戏币已进入钱包。】")
-
-        def replace_wait(match: re.Match[str]) -> str:
-            nearby = normalized[max(0, match.start() - 240) : match.start()]
-            if "裂纹狼心" in nearby and any(
-                marker in nearby for marker in ("订单状态", "鉴定中", "匿名提交", "立即出售")
-            ):
-                return "确认成交以后"
-            return match.group()
-
-        normalized = _LEGACY_APPRAISAL_WAIT_PATTERN.sub(replace_wait, normalized)
-    normalized = _OFFICIAL_EXCHANGE_NET_ARRIVAL_PATTERN.sub(
+def _normalize_legacy_trade_window(value: str, amount: str) -> str:
+    normalized = _LEGACY_LISTING_NET_PATTERN.sub("", value)
+    normalized = _LEGACY_TRADE_WINDOW_ACTION_PATTERN.sub(
         lambda match: (
-            f"{match.group('page')}【现实账户到账：{match.group('amount')}元。】"
+            f"{match.group('actor')}{match.group('middle')}{match.group('action')}立即出售"
         ),
         normalized,
+        count=1,
+    )
+    has_wallet_result = "游戏币已进入钱包" in normalized
+
+    def replace_status(match: re.Match[str]) -> str:
+        item = match.group("item") or ""
+        wallet = "" if has_wallet_result else "【游戏币已进入钱包。】"
+        return f"{item}求购单显示已成交。{wallet}"
+
+    normalized = _LEGACY_TRADE_STATUS_PATTERN.sub(replace_status, normalized, count=1)
+    normalized = _LEGACY_APPRAISAL_WAIT_PATTERN.sub("交易完成以后", normalized)
+    normalized = _LEGACY_SAMPLE_WAIT_RESULT_PATTERN.sub("", normalized, count=1)
+    normalized = normalized.replace("【样本符合求购要求。】", "")
+    exchange_step = (
+        "他随后打开独立的官方兑换页面。"
+        f"页面显示兑换价、可用额度、手续费和预计到账{amount}元；确认兑换。"
+    )
+    normalized = _ADJACENT_LEGACY_TRADE_RESULTS_PATTERN.sub(
+        exchange_step,
+        normalized,
+        count=1,
+    )
+    normalized = _LEGACY_ACTUAL_NET_PATTERN.sub(
+        f"【现实账户到账{amount}元。】",
+        normalized,
+        count=1,
     )
     return normalized
+
+
+def _normalize_legacy_trade_windows(value: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    search_from = 0
+    while action := _LEGACY_TRADE_WINDOW_ACTION_PATTERN.search(value, search_from):
+        actual = _LEGACY_ACTUAL_NET_PATTERN.search(value, action.end())
+        if actual is None:
+            break
+        status = _LEGACY_TRADE_STATUS_PATTERN.search(value, action.end(), actual.start())
+        results = (
+            _ADJACENT_LEGACY_TRADE_RESULTS_PATTERN.search(value, status.end(), actual.start())
+            if status is not None
+            else None
+        )
+        next_action = (
+            _LEGACY_TRADE_WINDOW_ACTION_PATTERN.search(value, action.end(), status.start())
+            if status is not None
+            else None
+        )
+        if status is None or results is None or next_action is not None:
+            search_from = action.end()
+            continue
+        listing_candidates = tuple(
+            _LEGACY_LISTING_NET_PATTERN.finditer(
+                value,
+                max(cursor, action.start() - 2000),
+                action.start(),
+            )
+        )
+        listing = listing_candidates[-1] if listing_candidates else None
+        listing_context = value[listing.start() : action.start()] if listing is not None else ""
+        if listing is None or not any(marker in listing_context for marker in ("求购", "订单")):
+            search_from = action.end()
+            continue
+        amount = listing.group("amount")
+        parts.append(value[cursor : listing.start()])
+        parts.append(_normalize_legacy_trade_window(value[listing.start() : actual.end()], amount))
+        cursor = actual.end()
+        search_from = cursor
+    if not parts:
+        return value
+    parts.append(value[cursor:])
+    return "".join(parts)
 
 
 def _next_sentence_has_transaction_marker(parts: list[str], index: int) -> bool:
@@ -243,7 +312,7 @@ def _normalize_legacy_economy_prompt_segment(value: str) -> str:
             replacement = replacement.rstrip("。！？!?") + terminal
         return replacement
 
-    normalized = _normalize_legacy_trade_sequence(value)
+    normalized = _normalize_legacy_trade_windows(value)
     normalized = _normalize_clause_scoped_terms(normalized)
     for legacy, current in _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS:
         normalized = normalized.replace(legacy, current)
