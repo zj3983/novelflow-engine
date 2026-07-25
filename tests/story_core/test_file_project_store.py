@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 from copy import deepcopy
 from pathlib import Path
@@ -3190,7 +3191,13 @@ def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module
     legacy_delivery = "\u533f\u540d\u4ea4\u5272"
     legacy_appraisal = "\u63d0\u4ea4\u9274\u5b9a"
     forbidden_currency = "\u4eba\u6c11\u5e01"
-    old_constraint = f"第一章必须通过裂纹狼心{legacy_trade}解决现实急账。"
+    real_project_legacy_terms = (
+        "持牌虚拟资产担保平台、担保交易平台、担保平台、担保订单、担保订单号、"
+        "担保交割、稀有资产担保、匿名提交、买家确认收购"
+    )
+    old_constraint = (
+        f"第一章必须通过裂纹狼心{legacy_trade}解决现实急账；旧记录包含{real_project_legacy_terms}。"
+    )
     store = _make_minimal_file_project(
         root,
         project={
@@ -3240,7 +3247,7 @@ def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module
         for item in [*preview["modules"], *preview["prompts"]]
         if item["key"] in {"director_plan", "writer_body", "revision", "core_context", "character_context", "packet_context"}
     }
-    forbidden = (legacy_trade, legacy_delivery, legacy_appraisal, forbidden_currency)
+    forbidden = (legacy_trade, legacy_delivery, legacy_appraisal, forbidden_currency, "担保", "买家确认")
 
     assert set(entries) == {"director_plan", "writer_body", "revision", "core_context", "character_context", "packet_context"}
     for content in entries.values():
@@ -3253,6 +3260,55 @@ def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module
     assert legacy_trade in stored_state
     assert forbidden_currency in stored_state
     assert legacy_appraisal in stored_chapter
+
+
+def test_real_project_prompt_preview_is_read_only_and_contains_no_legacy_economy_terms():
+    worktree_root = Path(__file__).resolve().parents[2]
+    candidates = (
+        worktree_root / "data" / "exported-projects" / "p-gou-webgame-restored",
+        worktree_root.parent.parent / "data" / "exported-projects" / "p-gou-webgame-restored",
+    )
+    root = next((candidate for candidate in candidates if candidate.exists()), None)
+    if root is None:
+        pytest.skip("current p-gou-webgame-restored project is unavailable")
+
+    watched = [
+        root / ".webnovel" / "project.json",
+        root / ".webnovel" / "state.json",
+        root / ".webnovel" / "outline.json",
+        *sorted((root / "chapters").glob("0001-*.md")),
+    ]
+    before = {path: path.read_bytes() for path in watched if path.exists()}
+
+    preview = FileProjectStore(root).prompt_preview(1)
+
+    entries = {
+        item["key"]: item["content"]
+        for item in [*preview["modules"], *preview["prompts"]]
+        if item["key"] in {"director_plan", "writer_body", "revision", "core_context", "character_context", "packet_context"}
+    }
+    forbidden_currency = "\u4eba\u6c11\u5e01"
+    legacy_pattern = re.compile(
+        "|".join(
+            re.escape(term)
+            for term in (
+                "担保",
+                "匿名交割",
+                "封存交割",
+                "提交鉴定",
+                "鉴定中",
+                "平台验货",
+                "买家确认",
+                forbidden_currency,
+            )
+        )
+    )
+
+    assert set(entries) == {"director_plan", "writer_body", "revision", "core_context", "character_context", "packet_context"}
+    for content in entries.values():
+        assert legacy_pattern.search(content) is None
+        assert all(line in content for line in opening_market_exchange_flow_lines())
+    assert {path: path.read_bytes() for path in before} == before
 
 
 def test_file_project_writing_packet_includes_enabled_skill_context(tmp_path, monkeypatch):

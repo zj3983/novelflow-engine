@@ -29,6 +29,43 @@ _OPENING_MARKET_EXCHANGE_FLOW: tuple[str, ...] = (
     "现实账户到账后处理急账。",
 )
 
+_LEGACY_SPECIFIC_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        (
+            ("持牌虚拟资产担保平台", "官方兑换渠道"),
+            ("匿名担保交易已完成", "求购单已成交，官方兑换完成"),
+            ("担保交易平台", "交易行与官方兑换渠道"),
+            ("持牌担保平台", "官方兑换渠道"),
+            ("担保订单编号", "官方兑换流水编号"),
+            ("担保订单号", "官方兑换流水号"),
+            ("稀有资产担保", "交易行成交与官方兑换"),
+            ("担保稀有资产", "兑换稀有资产"),
+            ("担保交易已完成", "求购单已成交，官方兑换完成"),
+            ("买家确认收购", "求购单已成交"),
+            ("担保名单", "官方兑换记录"),
+            ("担保净到账", "官方兑换净到账"),
+            ("担保到账", "官方兑换到账"),
+            ("担保交割", "交易行成交与官方兑换"),
+            ("担保订单", "官方兑换流水"),
+            ("担保平台", "官方兑换渠道"),
+        ),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+)
+_ECONOMIC_CONTEXT_TERMS: tuple[str, ...] = (
+    "裂纹狼心",
+    "交易行",
+    "求购",
+    "收购",
+    "游戏币",
+    "虚拟资产",
+    "稀有资产",
+    "担保",
+    "订单",
+    "交割",
+)
+
 _LEGACY_PROMPT_FLOW_TERMS: tuple[str, ...] = (
     "裂纹狼心提交鉴定后，系统给出一条求购匹配",
     "交易行直接现实结算",
@@ -97,6 +134,13 @@ def opening_market_exchange_flow_lines() -> tuple[str, ...]:
 
 
 def _normalize_legacy_economy_prompt_text(value: str) -> str:
+    economic_context = any(term in value for term in _ECONOMIC_CONTEXT_TERMS)
+    normalized = value
+    for legacy, current in _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS:
+        normalized = normalized.replace(legacy, current)
+    if economic_context:
+        normalized = normalized.replace("匿名提交", "立即出售")
+
     inserted_flow = False
 
     def replace_flow(_match: re.Match[str]) -> str:
@@ -106,12 +150,13 @@ def _normalize_legacy_economy_prompt_text(value: str) -> str:
         inserted_flow = True
         return " ".join(_OPENING_MARKET_EXCHANGE_FLOW)
 
-    normalized = _LEGACY_PROMPT_FLOW_PATTERN.sub(replace_flow, value)
+    normalized = _LEGACY_PROMPT_FLOW_PATTERN.sub(replace_flow, normalized)
     normalized = _NUMBERED_FORBIDDEN_CURRENCY.sub(
         lambda match: f"{match.group('amount')}元",
         normalized,
     )
-    return normalized.replace(_FORBIDDEN_CURRENCY_NAME, "现实货币")
+    normalized = normalized.replace(_FORBIDDEN_CURRENCY_NAME, "现实货币")
+    return normalized.replace("担保", "官方兑换")
 
 
 def normalize_legacy_economy_prompt_value(value: Any) -> Any:

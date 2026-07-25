@@ -117,6 +117,47 @@ def test_legacy_economy_prompt_normalization_is_recursive_pure_and_keeps_amounts
     assert all(term not in rendered for term in (legacy_trade, legacy_delivery, legacy_appraisal, forbidden_currency))
 
 
+@pytest.mark.parametrize(
+    ("legacy", "current"),
+    [
+        ("持牌虚拟资产担保平台", "官方兑换渠道"),
+        ("担保交易平台", "交易行与官方兑换渠道"),
+        ("持牌担保平台", "官方兑换渠道"),
+        ("担保平台", "官方兑换渠道"),
+        ("担保订单", "官方兑换流水"),
+        ("担保订单号", "官方兑换流水号"),
+        ("担保交割", "交易行成交与官方兑换"),
+        ("稀有资产担保", "交易行成交与官方兑换"),
+        ("买家确认收购", "求购单已成交"),
+        ("担保名单", "官方兑换记录"),
+        ("担保到账", "官方兑换到账"),
+    ],
+)
+def test_real_project_legacy_vocabulary_uses_specific_longest_first_replacements(
+    legacy: str,
+    current: str,
+) -> None:
+    normalized = normalize_legacy_economy_prompt_value(f"记录：{legacy}。")
+
+    assert normalized == f"记录：{current}。"
+    assert "担保" not in normalized
+
+
+def test_anonymous_submit_changes_only_in_economy_context() -> None:
+    assert normalize_legacy_economy_prompt_value("裂纹狼心选择匿名提交。") == "裂纹狼心选择立即出售。"
+    assert normalize_legacy_economy_prompt_value("匿名提交读者反馈。") == "匿名提交读者反馈。"
+
+
+def test_specific_replacements_do_not_leave_duplicate_or_partial_order_words() -> None:
+    source = "持牌虚拟资产担保平台生成担保订单号，买家确认收购后完成担保交割。"
+
+    normalized = normalize_legacy_economy_prompt_value(source)
+
+    assert normalized == "官方兑换渠道生成官方兑换流水号，求购单已成交后完成交易行成交与官方兑换。"
+    assert "官方兑换流水号号" not in normalized
+    assert "担保" not in normalized
+
+
 def test_implementation_plan_wording_does_not_require_market_name() -> None:
     assert first_chapter_market_exchange_authorized(
         {"turn": "第一章卖出裂纹狼心，再走官方兑换渠道解决现实急账。"},
