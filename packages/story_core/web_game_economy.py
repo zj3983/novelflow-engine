@@ -193,6 +193,10 @@ _MONEY_SOURCE_REBINDING = re.compile(
     r"|由(?P<actor>[^，,。！？!?；;\r\n]{1,16})(?:支付|归还|发放))"
 )
 _MARKET_PAYMENT_ACTOR_PATTERN = re.compile(r"(?:交易行|拍卖行|求购平台|交易平台|拍卖平台)")
+_MARKET_SALES_SOURCE_PATTERN = re.compile(
+    r"(?:卖(?:出)?|出售|售出)[^，,。！？!?；;\r\n]{0,12}(?:所得|赚来|收入|款)"
+    r"|(?:成交|交易|拍卖|求购)[^，,。！？!?；;\r\n]{0,12}(?:所得|赚来|收入|款)"
+)
 _INDEPENDENT_SETTLEMENT_SOURCE_TERMS = (
     "工资",
     "薪水",
@@ -274,17 +278,24 @@ _FUNDED_ORDER_PATTERN = re.compile(
     r"[^，。！？!?；;]{0,8}?(?:资金|游戏币)(?:已经|已)?(?:被)?冻结(?:了)?"
 )
 _ORDER_POSSESSIVE_OWNER_PATTERN = re.compile(
-    r"(?:^|[，、：；])\s*(?P<owner>[一-龥A-Za-z0-9·]{1,6})的"
+    r"(?:^|[，、：；。！？!?\s])\s*(?P<owner>[一-龥A-Za-z0-9·]{1,8}?)的"
     r"(?:(?:第[一二三四五六七八九十百\d]+(?:条|张))?"
     r"(?:普通)?(?:求购单|订单)|[A-Z]单(?:求购)?)"
 )
 _ORDER_PLAYER_OWNER_PATTERN = re.compile(r"(?P<owner>[甲乙丙丁戊己庚辛壬癸A-Z])玩家")
+_ORDER_NARRATED_OWNER_PATTERN = re.compile(
+    r"(?:看见|发现|查看|得知|注意到)\s*(?P<owner>[一-龥A-Za-z0-9·]{1,8}?)的"
+    r"(?:(?:第[一二三四五六七八九十百\d]+(?:条|张))?"
+    r"(?:普通)?(?:求购单|订单)|[A-Z]单(?:求购)?)"
+)
 _ORDER_HOLDER_OWNER_PATTERN = re.compile(
-    r"(?:^|[，、：；])\s*(?P<owner>[一-龥A-Za-z0-9·]{1,6})"
+    r"(?:^|[，、：；。！？!?\s])\s*(?P<owner>[一-龥A-Za-z0-9·]{1,8}?)"
     r"(?=有一张(?:求购单|订单))"
 )
 _ORDER_WAITING_OWNER_PATTERN = re.compile(
-    r"(?:^|[，、：；])\s*(?P<owner>[一-龥A-Za-z0-9·]{1,3})"
+    r"(?:^|[，、：；。！？!?\s])\s*"
+    r"(?P<owner>(?!(?:[一-龥A-Za-z0-9·]{0,7})(?:订单|求购|系统|页面|界面|成交|要求|仍需|还需))"
+    r"[一-龥A-Za-z0-9·]{1,8}?)"
     r"(?=(?:(?:还在|仍在|正在)?等待)买家(?:再次)?确认)"
 )
 _ORDER_LABEL_PATTERNS = (
@@ -362,7 +373,9 @@ def _has_market_money_reference(text: str) -> bool:
         if rebinding is None:
             return True
         source = rebinding.group("actor") or rebinding.group("description") or ""
-        if _MARKET_PAYMENT_ACTOR_PATTERN.search(source):
+        if _MARKET_PAYMENT_ACTOR_PATTERN.search(source) or _MARKET_SALES_SOURCE_PATTERN.search(
+            source
+        ):
             return True
     return False
 
@@ -541,6 +554,8 @@ def _order_identity(text: str) -> tuple[str | None, str | None, bool]:
             break
 
     owner_match = _ORDER_PLAYER_OWNER_PATTERN.search(text)
+    if owner_match is None:
+        owner_match = _ORDER_NARRATED_OWNER_PATTERN.search(text)
     if owner_match is None:
         owner_match = _ORDER_POSSESSIVE_OWNER_PATTERN.search(text)
     if owner_match is None:

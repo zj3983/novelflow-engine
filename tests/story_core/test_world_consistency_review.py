@@ -179,6 +179,18 @@ def test_world_consistency_review_does_not_treat_unrelated_frozen_funds_as_funde
             "他发现甲玩家的A单求购资金已经冻结。\n\n甲玩家的A单求购成交。\n\n甲玩家的A单等待买家确认。",
             "仍在等待买家再次确认",
         ),
+        (
+            "拍卖物成交，游戏币到账。\n\n那笔钱是卖材料赚来的，随后直接打进现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "旁边有人发现夜烬的求购单资金已经冻结。\n\n夜烬的订单成交。\n\n夜烬还在等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
+        (
+            "清风明月的求购单资金冻结。\n\n清风明月的订单成交。\n\n清风明月还在等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
     ],
 )
 def test_world_consistency_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
