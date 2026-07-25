@@ -36,11 +36,14 @@ _ECONOMY_DENIAL = re.compile(
     r"(?:不(?:得|再|允许|能|应|必)?|禁止|严禁|不可|无需|无须|拒绝)"
     r"[^，。；;！？!?\n]{0,8}(?:交易|卖出|兑换)"
 )
+_PURPOSE_LINK_DENIAL_PATTERN = r"(?:并非|并不(?:是)?|不是|不)(?:用于|用来|为了)"
+_OUTCOME_DENIAL_PATTERN = r"(?:并不能|不能|无法|不)"
 _FLOW_PURPOSE_DENIAL = re.compile(
     r"(?:卖出裂纹狼心|交易成交)"
-    r"(?:并非|并不(?:是)?|不是|不)(?:用于|用来|为了)(?:官方)?兑换"
+    rf"{_PURPOSE_LINK_DENIAL_PATTERN}(?:官方)?兑换"
     r"|官方兑换(?:渠道)?"
-    r"(?:并非|并不(?:是)?|不是|不)(?:用于|用来|为了)(?:解决|处理)现实急账"
+    rf"(?:{_PURPOSE_LINK_DENIAL_PATTERN}|{_OUTCOME_DENIAL_PATTERN})"
+    r"(?:解决|处理)现实急账"
 )
 _NUMBERED_CHAPTER = re.compile(r"第(?:[一二三四五六七八九十百千万零〇两\d]+|[Nn])章")
 _CLAUSE_SPLIT = re.compile(r"[\n。；;]+")

@@ -205,6 +205,9 @@ def test_complete_new_chain_is_independent_of_legacy_denial(text: str) -> None:
         "第一章卖出裂纹狼心不是为了兑换，随后走官方兑换解决现实急账。",
         "第一章卖出裂纹狼心并非为了兑换，随后走官方兑换解决现实急账。",
         "第一章交易成交并非用于官方兑换，随后官方兑换解决现实急账。",
+        "第一章卖出裂纹狼心，但官方兑换不能解决现实急账。",
+        "第一章卖出裂纹狼心，但官方兑换不解决现实急账。",
+        "第一章卖出裂纹狼心，但官方兑换并不能处理现实急账。",
     ),
 )
 def test_flow_purpose_denial_does_not_authorize_new_chain(text: str) -> None:
