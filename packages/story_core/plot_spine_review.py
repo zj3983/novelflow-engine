@@ -59,6 +59,9 @@ _STOP_TERMS = {
 }
 
 _CJK_RUN = re.compile(r"[\u4e00-\u9fff]{2,}")
+_TROPE_NEGATION_TERMS = ("没有", "没能", "未能", "并未", "不曾", "拒绝", "不肯", "不愿", "没接", "未接")
+_TROPE_PLAN_ONLY_TERMS = ("打算", "计划", "准备", "想要", "以后", "明天再", "下一章", "心里盘算", "只是在心里")
+_TROPE_ACTION_CONFIRM_TERMS = ("当场", "立刻", "马上", "直接", "终于", "已经", "真的", "随后", "于是")
 
 
 def _terms(text: str) -> set[str]:
@@ -81,6 +84,42 @@ def _coverage(body: str, text: str) -> float:
         return 1.0
     hits = sum(1 for term in terms if term in body)
     return hits / len(terms)
+
+
+def _trope_action_anchors(text: str) -> list[str]:
+    anchors: list[str] = []
+    for run in _CJK_RUN.findall(str(text or "")):
+        if len(run) >= 4:
+            anchors.append(run)
+            anchors.extend(run[index : index + 4] for index in range(len(run) - 3))
+    return list(dict.fromkeys(anchors))
+
+
+def _trope_beat_coverage(body: str, beat: str) -> tuple[bool, float]:
+    ratio = _coverage(body, beat)
+    if ratio < 0.25:
+        return False, ratio
+
+    anchors = _trope_action_anchors(beat)
+    sentences = [part for part in re.split(r"[。！？!?；;\n]", str(body or "")) if part.strip()]
+    for sentence in sentences:
+        if _coverage(sentence, beat) < 0.25:
+            continue
+        if "拒绝邀请" in sentence:
+            return False, ratio
+        for anchor in anchors:
+            start = sentence.find(anchor)
+            if start < 0:
+                continue
+            local_prefix = sentence[max(0, start - 8) : start]
+            if any(term in local_prefix for term in _TROPE_NEGATION_TERMS):
+                return False, ratio
+        if any(term in sentence for term in _TROPE_PLAN_ONLY_TERMS) and not any(
+            term in sentence for term in _TROPE_ACTION_CONFIRM_TERMS
+        ):
+            return False, ratio
+
+    return True, ratio
 
 
 def _compact_trope_avoid(value: Any) -> list[str]:
@@ -200,8 +239,7 @@ def review_plot_spine_completion(
     trope_beat_coverage = 0.0
     trope_beat_covered: bool | str = "not_scheduled"
     if trope_beat:
-        trope_beat_coverage = _coverage(body, trope_beat)
-        trope_beat_covered = trope_beat_coverage >= 0.25
+        trope_beat_covered, trope_beat_coverage = _trope_beat_coverage(body, trope_beat)
         if not trope_beat_covered:
             scores["trope_beat_missing"] = 5
             issues.append(f"套路节点未兑现：本章未写出当前节点「{trope_beat}」的正文动作或反馈。")

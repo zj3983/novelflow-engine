@@ -157,6 +157,28 @@ def test_scheduled_trope_beat_passes_when_covered_and_keeps_avoid_guidance():
     assert review["diagnostics"]["trope_avoid"] == ["不要换套路", "不要提前解决整条主线"]
 
 
+def test_scheduled_trope_beat_rejects_negated_or_planned_mentions():
+    negated = review_plot_spine_completion(
+        "林在雨夜没有接下挑战，当场拒绝邀请，只把赢得信任的可能性压到以后。",
+        _trope_plan(),
+    )
+    planned = review_plot_spine_completion(
+        "林打算在雨夜接下挑战，也计划赢得信任且不暴露底牌，但这一章只是在心里盘算。",
+        _trope_plan(),
+    )
+    landed = review_plot_spine_completion(
+        "林在雨夜接下挑战，当场用一场硬碰硬赢得信任且不暴露底牌。",
+        _trope_plan(),
+    )
+
+    assert negated["pass"] is False
+    assert negated["diagnostics"]["trope_beat_covered"] is False
+    assert planned["pass"] is False
+    assert planned["diagnostics"]["trope_beat_covered"] is False
+    assert landed["pass"] is True
+    assert landed["diagnostics"]["trope_beat_covered"] is True
+
+
 def test_empty_trope_beat_is_not_forced_but_avoid_guidance_is_reported():
     body = "林听见邀请，克制地守住这一阶段的承诺。"
 

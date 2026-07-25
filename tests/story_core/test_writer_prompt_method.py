@@ -730,6 +730,59 @@ def test_revision_prompt_reuses_five_sections_and_adds_only_revision_material():
     assert "scores" not in prompt
 
 
+def test_revision_prompt_reuses_plan_chapter_seed_when_build_seed_drifts(monkeypatch):
+    locked_contract = {
+        "template_id": "locked-contract",
+        "name": "Locked Contract",
+        "trigger": "locked trigger",
+        "current_beat": "locked beat",
+        "payoff": "locked payoff",
+        "avoid": ["locked avoid"],
+    }
+    drift_contract = {
+        "template_id": "drift-contract",
+        "name": "Drift Contract",
+        "trigger": "drift trigger",
+        "current_beat": "drift beat",
+        "payoff": "drift payoff",
+        "avoid": ["drift avoid"],
+    }
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.build_chapter_seed",
+        lambda story, chapter_number: {
+            "chapter_number": chapter_number,
+            "trope_contract": drift_contract,
+        },
+    )
+    story = StoryState(story_id="s-revision-seed-lock", outline="urban pressure", genre="urban", style="plain")
+
+    prompt = StoryOrchestrator()._revision_prompt(
+        story,
+        1,
+        "old body",
+        {
+            "event_plan": {"chapter_title": "Proof"},
+            "chapter_seed": {
+                "chapter_number": 1,
+                "trope_contract": locked_contract,
+            },
+        },
+        {
+            "pass": False,
+            "issues": ["套路节点未兑现：本章未写出当前节点「locked beat」的正文动作或反馈。"],
+            "revision_plan": ["按套路节点改：本章必须兑现「locked beat」，并落到回报「locked payoff」。"],
+            "plot_spine_review": {"diagnostics": {"trope_avoid": ["locked avoid"]}},
+        },
+    )
+
+    assert "locked-contract" in prompt
+    assert "locked beat" in prompt
+    assert "locked avoid" in prompt
+    assert "drift-contract" not in prompt
+    assert "drift beat" not in prompt
+    assert "drift avoid" not in prompt
+
+
 def test_game_writer_prompt_explains_monster_panel_frequency_and_fields():
     story = StoryState(story_id="s-monster-panel", outline="夜烬进入新地图打怪。", genre="网游", style="白描")
 

@@ -5232,7 +5232,8 @@ class StoryOrchestrator:
         replaced_defaults = set(skill_context.get("_replaced_defaults", []))
         skill_context_for_prompt = {key: value for key, value in skill_context.items() if key != "_replaced_defaults"}
         include_genre_method = "genre_context" not in replaced_defaults
-        chapter_seed = build_chapter_seed(story, chapter_number)
+        plan_seed = plan.get("chapter_seed")
+        chapter_seed = deepcopy(plan_seed) if isinstance(plan_seed, dict) and plan_seed else build_chapter_seed(story, chapter_number)
         is_game = _story_game_context(story, plan)
         if is_game:
             game_defaults_for_seed = _game_genre_defaults(story)
