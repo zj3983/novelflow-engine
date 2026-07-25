@@ -746,8 +746,15 @@ def _funded_order_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEvent
 
 
 def _same_order(*events: _OrderEvent) -> bool:
-    if any(event.resets_identity for event in events):
+    if any(event.resets_identity for event in events[1:]):
         return False
+    if events and events[0].resets_identity:
+        for event in events[1:]:
+            for field in ("owner", "label"):
+                value = getattr(event, field)
+                starting_value = getattr(events[0], field)
+                if value is not None and value != starting_value:
+                    return False
     for field in ("owner", "label"):
         values = {getattr(event, field) for event in events if getattr(event, field) is not None}
         if len(values) > 1:

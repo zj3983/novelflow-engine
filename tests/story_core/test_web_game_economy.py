@@ -55,6 +55,10 @@ def _economy_violation_codes(body: str) -> set[str]:
             "funded_order_waits_for_buyer",
         ),
         (
+            "另一张求购单显示资金已经冻结。夜烬点下立即出售，系统却让他等待买家再次确认。",
+            "funded_order_waits_for_buyer",
+        ),
+        (
             "拍卖物成交。打开官方兑换页面，确认报价、额度和手续费。\n\n这笔成交款直接进入现实账户。",
             "market_direct_reality_settlement",
         ),
@@ -90,6 +94,7 @@ def test_detector_flags_explicit_economy_boundary_chains(
         ),
         "甲玩家的A单资金冻结，乙玩家的B单成交，丙玩家的C单等待买家确认。",
         "A单求购资金冻结。另一张订单成交。A单等待买家确认。",
+        "A单求购资金冻结。另一张求购单成交。A单等待买家确认。",
         "A单求购资金冻结。另一个求购单成交。A单等待买家确认。",
         "A单求购资金冻结。另一条求购单成交。A单等待买家确认。",
         "A单求购资金冻结。另一笔订单成交。A单等待买家确认。",
