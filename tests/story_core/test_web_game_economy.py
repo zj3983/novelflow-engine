@@ -6,12 +6,73 @@ from copy import deepcopy
 
 from packages.story_core.web_game_economy import (
     appraisal_rules,
+    detect_economy_boundary_violations,
     exchange_rules,
     first_chapter_market_exchange_authorized,
     market_rules,
     normalize_legacy_economy_prompt_value,
     opening_market_exchange_flow_lines,
 )
+
+
+def _economy_violation_codes(body: str) -> set[str]:
+    return {violation.code for violation in detect_economy_boundary_violations(body)}
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_code"),
+    (
+        (
+            "拍卖物已经成交。官方兑换暂时不可用。\n\n这笔成交款直接进入现实账户。",
+            "market_direct_reality_settlement",
+        ),
+        (
+            "求购已经成交。他没有使用官方兑换。\n\n求购所得直接打进现实账户。",
+            "market_direct_reality_settlement",
+        ),
+        (
+            "交易行卖出材料。官方兑换失败。\n\n这笔钱直接转入现实账户。",
+            "market_direct_reality_settlement",
+        ),
+        (
+            "求购成交。这笔钱不是奖金，而是卖材料所得，随后直接进入现实账户。",
+            "market_direct_reality_settlement",
+        ),
+        (
+            "求购成交。奖金并未到账；这笔成交款直接进入现实账户。",
+            "market_direct_reality_settlement",
+        ),
+        (
+            "甲玩家的A单资金冻结，甲玩家的A单成交，甲玩家的A单等待买家确认。",
+            "funded_order_waits_for_buyer",
+        ),
+        (
+            "甲玩家的A单已经挂出。\n\n资金随后冻结。\n\n该订单成交并等待买家确认。",
+            "funded_order_waits_for_buyer",
+        ),
+    ),
+)
+def test_detector_flags_explicit_economy_boundary_chains(
+    body: str,
+    expected_code: str,
+) -> None:
+    assert expected_code in _economy_violation_codes(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "拍卖物成交。进入官方兑换页面并确认兑换，兑换成功后现实账户到账。",
+        "求购成交。官方兑换尚未确认，成交款仍留在游戏钱包。",
+        "求购成交。这笔钱不是卖出所得，公司奖金随后直接进入现实账户。",
+        "裂纹狼心已经识别，但他没有把裂纹狼心提交鉴定。",
+        "裂纹狼心用途是锻造，他不需要送裂纹狼心去鉴定。",
+        "甲玩家的A单资金冻结，乙玩家的B单成交，丙玩家的C单等待买家确认。",
+        "甲玩家的A单已经挂出。\n\n夜烬离开柜台。资金随后冻结。\n\nA单成交并等待买家确认。",
+    ),
+)
+def test_detector_ignores_negated_or_unrelated_economy_events(body: str) -> None:
+    assert not _economy_violation_codes(body)
 
 
 def test_market_rules_define_only_in_game_trading() -> None:
@@ -427,6 +488,8 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     start = body.index("第三条求购单发布于三分钟前")
     end_marker = "手机的到账震动透过头盔提醒传来。"
     segment = body[start : body.index(end_marker, start) + len(end_marker)]
+    if not any(marker in segment for marker in ("匿名提交", "订单状态变成鉴定中", "担保净到账")):
+        pytest.skip("real chapter fixture already uses the current market/exchange flow")
 
     ancient_sword_inside = "古剑交给鉴定师，等待鉴定结果。【样本符合求购要求】\n\n"
     insert_at = segment.index("夜烬盯着订单页面")

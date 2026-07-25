@@ -145,6 +145,16 @@ def test_prose_style_review_accepts_player_facing_game_terms():
     assert review["pass"]
 
 
+def test_prose_style_review_gates_economy_checks_by_genre_context():
+    body = "拍卖物已经成交，这笔成交款直接进入现实账户。"
+
+    non_game = review_prose_style(body, genre_context={"novel_type": "xuanhuan"})
+    web_game = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
+
+    assert not any("经济边界" in issue for issue in non_game["issues"])
+    assert any("经济边界" in issue for issue in web_game["issues"])
+
+
 def test_prose_style_review_requires_fix_for_explicit_economy_boundary_violations():
     forbidden_currency_name = "\u4eba\u6c11\u5e01"
     body = (
@@ -154,7 +164,7 @@ def test_prose_style_review_requires_fix_for_explicit_economy_boundary_violation
         f"结算栏使用了{forbidden_currency_name}这个完整名称。"
     )
 
-    review = review_prose_style(body)
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
 
     economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
     assert len(economy_issues) == 4
@@ -175,7 +185,7 @@ def test_prose_style_review_accepts_valid_exchange_unidentified_item_and_isolate
         "那件披风仍是未鉴定状态，他把披风交给鉴定师。队伍频道里有人求购药草，也有人问奖励到账没有。"
     )
 
-    review = review_prose_style(body)
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
 
     assert not any("经济边界" in issue for issue in review["issues"]), review
 
@@ -191,7 +201,7 @@ def test_prose_style_review_detects_ordered_economy_chains_across_adjacent_units
         "成交以后，页面还让他继续等待买家确认。"
     )
 
-    review = review_prose_style(body)
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
 
     economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
     assert len(economy_issues) == 3
@@ -207,7 +217,7 @@ def test_prose_style_review_ignores_negated_chains_and_appraisal_of_another_item
         "成交以后不用等待买家确认，游戏币马上进入游戏钱包。"
     )
 
-    review = review_prose_style(body)
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
 
     assert not any("经济边界" in issue for issue in review["issues"]), review
 
@@ -287,7 +297,7 @@ def test_prose_style_review_detects_explicit_economy_boundaries_in_three_paragra
     body: str,
     issue_fragment: str,
 ):
-    review = review_prose_style(body)
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
 
     matching = [issue for issue in review["issues"] if issue_fragment in issue]
     assert matching, review
@@ -319,7 +329,7 @@ def test_prose_style_review_detects_explicit_economy_boundaries_in_three_paragra
     ],
 )
 def test_prose_style_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):
-    review = review_prose_style(body)
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
 
     assert not any("经济边界" in issue for issue in review["issues"]), review
 
@@ -327,7 +337,7 @@ def test_prose_style_review_accepts_negated_or_separated_three_paragraph_economy
 def test_prose_style_review_does_not_apply_unrelated_negation_to_direct_settlement():
     body = "求购单已经成交。他不是买家，成交所得直接进入现实账户。"
 
-    review = review_prose_style(body)
+    review = review_prose_style(body, genre_context={"novel_type": "game_webnovel"})
 
     assert any("交易与现实兑换混成了一步" in issue for issue in review["issues"]), review
 

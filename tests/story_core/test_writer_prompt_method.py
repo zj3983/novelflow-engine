@@ -720,6 +720,11 @@ def test_real_chapter_one_revision_prompt_uses_natural_local_trade_migration() -
         pytest.skip("real chapter one fixture is unavailable")
 
     source_body = chapter_path.read_text(encoding="utf-8")
+    if not any(
+        marker in source_body
+        for marker in ("担保净到账", "订单状态变成鉴定中", "匿名担保交易已完成")
+    ):
+        pytest.skip("real chapter fixture already uses the current market/exchange flow")
     story = StoryState(
         story_id="s-real-chapter-one-migration",
         outline="第一章在交易行卖出裂纹狼心，再走官方兑换渠道解决现实急账。",

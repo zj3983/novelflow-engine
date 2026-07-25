@@ -4,6 +4,18 @@ from packages.story_core.web_game_review import review_web_game_chapter, web_gam
 from packages.story_core.orchestrator import _merge_writing_review_quality, _opening_writer_rules
 
 
+def test_web_game_review_does_not_apply_economy_checks_to_explicit_non_game_context():
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body="拍卖物已经成交，这笔成交款直接进入现实账户。",
+        event_plan={"novel_type": "xuanhuan"},
+        world_facts=[],
+    )
+
+    assert review["pass"]
+    assert not any("经济边界" in issue for issue in review["issues"])
+
+
 def test_web_game_review_requires_panel_before_first_monster_fight():
     body = (
         "《天启之门》开服后，夜烬走到灰狼坡。"

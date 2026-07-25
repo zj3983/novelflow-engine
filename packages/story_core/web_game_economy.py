@@ -169,6 +169,7 @@ _MARKET_SCENE_TERMS = (
     "交易行",
     "拍卖行",
     "拍卖物",
+    "求购",
     "求购单",
     "求购成交",
     "立即出售",
@@ -197,6 +198,7 @@ _MARKET_SALES_SOURCE_PATTERN = re.compile(
     r"(?:卖(?:出)?|出售|售出)[^，,。！？!?；;\r\n]{0,12}(?:所得|赚来|收入|款)"
     r"|(?:成交|交易|拍卖|求购)[^，,。！？!?；;\r\n]{0,12}(?:所得|赚来|收入|款)"
 )
+_SOURCE_NEGATION_PATTERN = re.compile(r"(?:不是|并非|不属于|并不是)\s*$")
 _INDEPENDENT_SETTLEMENT_SOURCE_TERMS = (
     "工资",
     "薪水",
@@ -214,6 +216,20 @@ _DIRECT_SETTLEMENT_DENIAL = re.compile(
     r"\s*(?:(?:被|由)\s*(?:交易行|拍卖行|平台|系统)?\s*)?"
     r"(?:再|继续|要求)?\s*(?:直接)?(?:进入|转入|打进|到账|现实结算)"
 )
+_COMPLETED_EXCHANGE_PATTERN = re.compile(
+    r"(?:确认(?:了)?兑换(?!价)|兑换(?:已经|已)?(?:成功|完成)|(?:成功|完成)(?:了)?官方兑换|"
+    r"确认[^。！？!?；;\r\n]{0,24}(?:兑换价|额度|手续费|预计到账))"
+)
+_NEGATED_EXCHANGE_PATTERN = re.compile(
+    r"(?:没有|并未|未|不需要|不必|无需|不用|不会|不能|尚未|无法)"
+    r"[^。！？!?；;\r\n]{0,12}(?:使用|完成|确认)?[^。！？!?；;\r\n]{0,8}官方兑换"
+    r"|官方兑换[^。！？!?；;\r\n]{0,12}(?:不可用|未开放|失败|尚未确认|没有完成)"
+)
+_LOCAL_ACTION_NEGATION = re.compile(
+    r"(?:没有|并未|未|不需要|不必|无需|无须|不用|不会|不能|不再)"
+    r"[^，,。！？!?；;\r\n]{0,14}$"
+)
+_ORDER_CLAUSE_BREAK = re.compile(r"[，,、]")
 _NAME_PANEL_PATTERN = re.compile(r"【名称\s*[:：]\s*(?P<item>[^】]{1,20})】")
 _ITEM_USE_PATTERN = re.compile(
     r"(?P<item>[一-龥A-Za-z0-9·]{2,20})(?:的)?用途(?:是|为|写着|标为|[:：])"
@@ -276,6 +292,9 @@ _NEGATED_WAIT_MARKERS = (
 _FUNDED_ORDER_PATTERN = re.compile(
     r"求购单(?:里|里的|中|中的|其中|其中的)?"
     r"[^，。！？!?；;]{0,8}?(?:资金|游戏币)(?:已经|已)?(?:被)?冻结(?:了)?"
+)
+_FUNDED_MONEY_PATTERN = re.compile(
+    r"(?:资金|游戏币)(?:已经|已|随后)?(?:被)?冻结(?:了)?"
 )
 _ORDER_POSSESSIVE_OWNER_PATTERN = re.compile(
     r"(?:^|[，、：；。！？!?\s])\s*(?P<owner>[一-龥A-Za-z0-9·]{1,8}?)的"
@@ -353,30 +372,42 @@ def _is_market_completion(unit: _EconomyUnit) -> bool:
     )
 
 
+def _term_is_negated(text: str, index: int) -> bool:
+    return _SOURCE_NEGATION_PATTERN.search(text[max(0, index - 8) : index]) is not None
+
+
+def _has_asserted_term(text: str, terms: tuple[str, ...]) -> bool:
+    return any(
+        not _term_is_negated(text, match.start())
+        for term in terms
+        for match in re.finditer(re.escape(term), text)
+    )
+
+
 def _has_independent_settlement_source(text: str) -> bool:
-    for source in _INDEPENDENT_SETTLEMENT_SOURCE_TERMS:
-        start = 0
-        while True:
-            index = text.find(source, start)
-            if index < 0:
-                break
-            prefix = text[max(0, index - 6) : index]
-            if not any(marker in prefix for marker in ("不是", "并非", "不属于", "并不是")):
-                return True
-            start = index + len(source)
-    return False
+    return _has_asserted_term(text, _INDEPENDENT_SETTLEMENT_SOURCE_TERMS)
 
 
 def _has_market_money_reference(text: str) -> bool:
     for match in _MARKET_MONEY_TO_REALITY_PATTERN.finditer(text):
-        rebinding = _MONEY_SOURCE_REBINDING.search(match.group("link").strip())
+        link = match.group("link").strip()
+        reference = match.group("reference")
+        rebinding = _MONEY_SOURCE_REBINDING.search(link)
         if rebinding is None:
+            if _has_independent_settlement_source(link) and not _has_asserted_term(
+                link, _MARKET_TRANSACTION_SOURCE_TERMS
+            ):
+                continue
             return True
         source = rebinding.group("actor") or rebinding.group("description") or ""
         if _MARKET_PAYMENT_ACTOR_PATTERN.search(source) or _MARKET_SALES_SOURCE_PATTERN.search(
             source
         ):
             return True
+        if any(term in reference for term in ("成交", "交易", "拍卖", "求购", "卖出")):
+            return True
+        if _has_independent_settlement_source(source):
+            continue
     return False
 
 
@@ -385,10 +416,8 @@ def _is_direct_reality_settlement(unit: _EconomyUnit) -> bool:
         return False
     if not any(term in unit.text for term in _DIRECT_SETTLEMENT_TERMS):
         return False
-    if _has_independent_settlement_source(unit.text):
-        return False
-    has_market_source = any(
-        term in unit.text for term in _MARKET_TRANSACTION_SOURCE_TERMS
+    has_market_source = _has_asserted_term(
+        unit.text, _MARKET_TRANSACTION_SOURCE_TERMS
     ) or _has_market_money_reference(unit.text)
     if not has_market_source and not _is_market_completion(unit):
         return False
@@ -402,16 +431,21 @@ def _has_exchange_between(
     market_position: int,
     reality_position: int,
 ) -> bool:
+    official_exchange_seen = False
     for unit in units[market_index : settlement_index + 1]:
-        start = 0
-        while True:
-            index = unit.text.find("官方兑换", start)
-            if index < 0:
-                break
-            position = unit.start + index
-            if market_position < position < reality_position:
-                return True
-            start = index + len("官方兑换")
+        bounded_text = unit.text
+        if unit.start < market_position:
+            bounded_text = bounded_text[market_position - unit.start + 1 :]
+        if unit.start + len(unit.text) > reality_position:
+            bounded_text = bounded_text[: max(0, reality_position - unit.start)]
+        if "官方兑换" in bounded_text:
+            official_exchange_seen = True
+        if (
+            official_exchange_seen
+            and _COMPLETED_EXCHANGE_PATTERN.search(bounded_text)
+            and _NEGATED_EXCHANGE_PATTERN.search(bounded_text) is None
+        ):
+            return True
     return False
 
 
@@ -500,6 +534,8 @@ def _appraisal_actions(units: tuple[_EconomyUnit, ...]) -> tuple[_AppraisalActio
         explicit_positions: set[int] = set()
         for pattern in _APPRAISAL_ACTION_PATTERNS:
             for match in pattern.finditer(unit.text):
+                if _LOCAL_ACTION_NEGATION.search(unit.text[: match.start()]):
+                    continue
                 item = _clean_item_name(match.group("item"))
                 if item:
                     actions.append(_AppraisalAction(item, unit_index, unit.start + match.end()))
@@ -513,7 +549,10 @@ def _appraisal_actions(units: tuple[_EconomyUnit, ...]) -> tuple[_AppraisalActio
                 if index < 0:
                     break
                 position = unit.start + index
-                if position not in explicit_positions:
+                if (
+                    position not in explicit_positions
+                    and _LOCAL_ACTION_NEGATION.search(unit.text[:index]) is None
+                ):
                     actions.append(
                         _AppraisalAction(_IMPLICIT_ITEM_REFERENCE, unit_index, position)
                     )
@@ -568,6 +607,19 @@ def _order_identity(text: str) -> tuple[str | None, str | None, bool]:
     return owner, label, _ORDER_REFERENCE_PATTERN.search(text) is not None
 
 
+def _order_event_span(text: str, start: int, end: int) -> str:
+    left = 0
+    for match in _ORDER_CLAUSE_BREAK.finditer(text, 0, start):
+        left = match.end()
+    right_match = _ORDER_CLAUSE_BREAK.search(text, end)
+    right = right_match.start() if right_match else len(text)
+    return text[left:right].strip()
+
+
+def _order_identity_at(text: str, start: int, end: int) -> tuple[str | None, str | None, bool]:
+    return _order_identity(_order_event_span(text, start, end))
+
+
 def _order_events_for_terms(
     units: tuple[_EconomyUnit, ...],
     terms: tuple[str, ...],
@@ -576,15 +628,19 @@ def _order_events_for_terms(
 ) -> list[_OrderEvent]:
     events: list[_OrderEvent] = []
     for unit in units:
-        owner, label, referential = _order_identity(unit.text)
-        if require_order_context and "求购单" not in unit.text and label is None:
-            continue
         for term in terms:
             start = 0
             while True:
                 index = unit.text.find(term, start)
                 if index < 0:
                     break
+                span = _order_event_span(unit.text, index, index + len(term))
+                owner, label, referential = _order_identity(span)
+                if require_order_context and not any(
+                    marker in span for marker in ("求购单", "订单", "单求购")
+                ) and label is None:
+                    start = index + len(term)
+                    continue
                 events.append(
                     _OrderEvent(
                         paragraph_index=unit.paragraph_index,
@@ -601,11 +657,13 @@ def _order_events_for_terms(
 def _buyer_reconfirm_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEvent]:
     events: list[_OrderEvent] = []
     for unit in units:
-        owner, label, referential = _order_identity(unit.text)
         for match in _BUYER_RECONFIRM_PATTERN.finditer(unit.text):
             prefix = unit.text[max(0, match.start() - 10) : match.start()]
             if any(marker in prefix for marker in _NEGATED_WAIT_MARKERS):
                 continue
+            owner, label, referential = _order_identity_at(
+                unit.text, match.start(), match.end()
+            )
             events.append(
                 _OrderEvent(
                     paragraph_index=unit.paragraph_index,
@@ -619,14 +677,39 @@ def _buyer_reconfirm_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEv
 
 
 def _funded_order_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEvent]:
-    positions = _order_events_for_terms(
-        units,
-        _FUNDED_ORDER_TERMS,
-        require_order_context=True,
-    )
-    for unit in units:
-        owner, label, referential = _order_identity(unit.text)
-        for match in _FUNDED_ORDER_PATTERN.finditer(unit.text):
+    positions: list[_OrderEvent] = []
+    for unit_index, unit in enumerate(units):
+        matches = [
+            match
+            for term in _FUNDED_ORDER_TERMS
+            for match in re.finditer(re.escape(term), unit.text)
+        ]
+        matches.extend(_FUNDED_ORDER_PATTERN.finditer(unit.text))
+        matches.extend(_FUNDED_MONEY_PATTERN.finditer(unit.text))
+        for match in matches:
+            span = _order_event_span(unit.text, match.start(), match.end())
+            owner, label, referential = _order_identity(span)
+            has_order_context = any(
+                marker in span for marker in ("求购单", "订单", "单求购")
+            ) or label is not None
+            if not has_order_context:
+                prior_span = unit.text[: match.start()].rstrip(" ，,、")
+                prior_match = list(_ORDER_CLAUSE_BREAK.finditer(prior_span))
+                if prior_match:
+                    prior_span = prior_span[prior_match[-1].end() :].strip()
+                if not prior_span and unit_index > 0:
+                    prior_unit = units[unit_index - 1]
+                    if unit.paragraph_index - prior_unit.paragraph_index <= 1:
+                        prior_span = _order_event_span(
+                            prior_unit.text, len(prior_unit.text), len(prior_unit.text)
+                        )
+                prior_owner, prior_label, _ = _order_identity(prior_span)
+                prior_has_order = any(
+                    marker in prior_span for marker in ("求购单", "订单", "单求购")
+                ) or prior_label is not None
+                if not prior_has_order:
+                    continue
+                owner, label, referential = prior_owner, prior_label, True
             positions.append(
                 _OrderEvent(
                     paragraph_index=unit.paragraph_index,
@@ -643,10 +726,6 @@ def _same_order(*events: _OrderEvent) -> bool:
     for field in ("owner", "label"):
         values = {getattr(event, field) for event in events if getattr(event, field) is not None}
         if len(values) > 1:
-            return False
-        if values and any(
-            getattr(event, field) is None and not event.referential for event in events
-        ):
             return False
     return True
 

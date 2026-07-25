@@ -54,7 +54,13 @@ def test_world_consistency_review_requires_fix_for_explicit_economy_boundary_vio
         f"结算说明里出现了{forbidden_currency_name}。"
     )
 
-    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+    review = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        chapter_number=4,
+        genre_context={"novel_type": "game_webnovel"},
+    )
 
     economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
     assert len(economy_issues) == 4
@@ -68,6 +74,26 @@ def test_world_consistency_review_requires_fix_for_explicit_economy_boundary_vio
     assert forbidden_currency_name not in plans
 
 
+def test_world_consistency_review_gates_economy_checks_by_genre_context():
+    body = "拍卖物已经成交，这笔成交款直接进入现实账户。"
+
+    non_game = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        genre_context={"novel_type": "xuanhuan"},
+    )
+    web_game = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        genre_context={"novel_type": "game_webnovel"},
+    )
+
+    assert not any("经济边界" in issue for issue in non_game["issues"])
+    assert any("经济边界" in issue for issue in web_game["issues"])
+
+
 def test_world_consistency_review_accepts_separated_exchange_and_isolated_terms():
     body = (
         "求购单的游戏币已经冻结。夜烬点下立即出售，裂纹狼心成交，游戏币进入游戏钱包。\n\n"
@@ -75,7 +101,13 @@ def test_world_consistency_review_accepts_separated_exchange_and_isolated_terms(
         "一件未鉴定披风交给鉴定师。远处有人喊求购，另一个人问任务奖励什么时候到账。"
     )
 
-    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+    review = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        chapter_number=4,
+        genre_context={"novel_type": "game_webnovel"},
+    )
 
     assert not any("经济边界" in issue for issue in review["issues"]), review
 
@@ -90,7 +122,13 @@ def test_world_consistency_review_detects_ordered_economy_chains_across_adjacent
         "随后页面仍要等买家再次确认。"
     )
 
-    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+    review = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        chapter_number=4,
+        genre_context={"novel_type": "game_webnovel"},
+    )
 
     economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
     assert len(economy_issues) == 3
@@ -197,7 +235,13 @@ def test_world_consistency_review_detects_explicit_economy_boundaries_in_three_p
     body: str,
     issue_fragment: str,
 ):
-    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+    review = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        chapter_number=4,
+        genre_context={"novel_type": "game_webnovel"},
+    )
 
     matching = [issue for issue in review["issues"] if issue_fragment in issue]
     assert matching, review
@@ -229,7 +273,13 @@ def test_world_consistency_review_detects_explicit_economy_boundaries_in_three_p
     ],
 )
 def test_world_consistency_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):
-    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+    review = review_world_event_consistency(
+        body,
+        world_events=[],
+        scene_cards=[],
+        chapter_number=4,
+        genre_context={"novel_type": "game_webnovel"},
+    )
 
     assert not any("经济边界" in issue for issue in review["issues"]), review
 

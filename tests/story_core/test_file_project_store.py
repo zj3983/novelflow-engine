@@ -3279,6 +3279,14 @@ def test_real_project_prompt_preview_is_read_only_and_contains_no_legacy_economy
         *sorted((root / "chapters").glob("0001-*.md")),
     ]
     before = {path: path.read_bytes() for path in watched if path.exists()}
+    legacy_fixture_text = "\n".join(
+        payload.decode("utf-8", errors="ignore") for payload in before.values()
+    )
+    if not any(
+        marker in legacy_fixture_text
+        for marker in ("担保净到账", "订单状态变成鉴定中", "匿名担保交易已完成")
+    ):
+        pytest.skip("real project fixture no longer contains the legacy economy flow")
 
     preview = FileProjectStore(root).prompt_preview(1)
 

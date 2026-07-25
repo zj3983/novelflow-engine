@@ -133,6 +133,15 @@ def is_game_genre(text: str) -> bool:
     return sum(1 for token in weak_tokens if token in haystack) >= 2
 
 
+def is_game_genre_context(body: str, context: Any = None) -> bool:
+    """Resolve game genre from prose plus optional project/review metadata."""
+
+    if context is None:
+        return is_game_genre(body)
+    context_text = json.dumps(context, ensure_ascii=False, default=str)
+    return is_game_genre(f"{context_text}\n{body}")
+
+
 def merge_plugin_rulebooks(plugins: list[GenrePlugin]) -> dict[str, list[str]]:
     merged: dict[str, list[str]] = {field: [] for field in RULEBOOK_FIELDS}
     for plugin in plugins:
