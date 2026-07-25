@@ -129,8 +129,8 @@ def test_resolve_trope_contract_returns_empty_dict_for_unknown_template_or_beat(
 
 
 def test_merge_and_resolve_compare_full_normalized_ids_and_beats_without_compacted_prefix_collisions():
-    shared_prefix_id = "template-" + ("A" * 395)
-    shared_prefix_beat = "beat-" + ("B" * 76)
+    shared_prefix_id = "template-" + ("A" * 100)
+    shared_prefix_beat = "beat-" + ("B" * 395)
     exact_template_id = shared_prefix_id + "-exact"
     duplicate_after_compaction_id = shared_prefix_id + "-different"
     exact_beat = shared_prefix_beat + "-exact"
@@ -167,6 +167,59 @@ def test_merge_and_resolve_compare_full_normalized_ids_and_beats_without_compact
     ]
     assert resolve_trope_contract(merged, exact_template_id, exact_beat)["current_beat"] == exact_beat
     assert resolve_trope_contract(merged, exact_template_id, different_beat) == {}
+
+
+def test_overlong_trope_ids_are_ignored_by_projection_merge_and_resolution():
+    valid_id = "v" * 120
+    overlong_id = "o" * 121
+    templates = [
+        {
+            "id": overlong_id,
+            "name": "Overlong Template",
+            "trigger": "should be ignored",
+            "beats": ["beat"],
+            "payoff": "ignored",
+            "avoid": ["ignored"],
+        },
+        {
+            "id": valid_id,
+            "name": "Valid Template",
+            "trigger": "kept",
+            "beats": ["beat"],
+            "payoff": "payoff",
+            "avoid": ["avoid"],
+        },
+    ]
+
+    assert compact_trope_candidates(templates) == [
+        {
+            "id": valid_id,
+            "name": "Valid Template",
+            "trigger": "kept",
+            "beats": ["beat"],
+            "payoff": "payoff",
+            "avoid": ["avoid"],
+        }
+    ]
+    assert merge_trope_templates([templates]) == [
+        {
+            "id": valid_id,
+            "name": "Valid Template",
+            "trigger": "kept",
+            "beats": ["beat"],
+            "payoff": "payoff",
+            "avoid": ["avoid"],
+        }
+    ]
+    assert resolve_trope_contract(templates, overlong_id, "beat") == {}
+    assert resolve_trope_contract(templates, valid_id, "beat") == {
+        "template_id": valid_id,
+        "name": "Valid Template",
+        "trigger": "kept",
+        "current_beat": "beat",
+        "payoff": "payoff",
+        "avoid": ["avoid"],
+    }
 
 
 def test_compact_trope_candidates_retains_contract_fields_and_bounds_text_and_lists():

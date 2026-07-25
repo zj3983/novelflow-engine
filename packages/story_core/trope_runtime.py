@@ -6,6 +6,8 @@ from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
 
+_MAX_TROPE_ID_CHARS = 120
+
 
 def _normalize_scalar(value: Any) -> str:
     if value is None or isinstance(value, (dict, list, tuple, set)):
@@ -33,7 +35,7 @@ def _normalize_template(template: Any) -> dict[str, Any] | None:
     if not isinstance(template, dict):
         return None
     template_id = _normalize_scalar(template.get("id"))
-    if not template_id:
+    if not template_id or len(template_id) > _MAX_TROPE_ID_CHARS:
         return None
     return {
         "id": template_id,
@@ -85,7 +87,7 @@ def resolve_trope_contract(
     current_beat: str | None,
 ) -> dict[str, Any]:
     normalized_template_id = _normalize_scalar(template_id)
-    if not normalized_template_id:
+    if not normalized_template_id or len(normalized_template_id) > _MAX_TROPE_ID_CHARS:
         return {}
     normalized_beat = _normalize_scalar(current_beat)
     for template in templates:
