@@ -15,6 +15,10 @@ from packages.story_core.novel_type_ids import (
     NOVEL_TYPE_ID_ALIASES,
     canonical_novel_type_id,
 )
+from packages.story_core.trope_runtime import (
+    compact_trope_candidates,
+    merge_trope_templates,
+)
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,29 @@ class NovelType:
     label: str
     description: str
     keywords: tuple[str, ...]
+
+
+class _NovelTypePromptContext(Mapping[str, Any]):
+    def __init__(self, base: dict[str, Any], extras: dict[str, Any]) -> None:
+        self._base = deepcopy(base)
+        self._extras = deepcopy(extras)
+
+    def __getitem__(self, key: str) -> Any:
+        if key in self._extras:
+            return deepcopy(self._extras[key])
+        return deepcopy(self._base[key])
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._base)
+
+    def __len__(self) -> int:
+        return len(self._base)
+
+    def to_dict(self, *, include_trope_templates: bool = True) -> dict[str, Any]:
+        payload = deepcopy(self._base)
+        if include_trope_templates:
+            payload.update(deepcopy(self._extras))
+        return payload
 
 
 def _catalog_item(record: Any) -> NovelType:
@@ -299,9 +326,22 @@ def novel_type_id_from_metadata_fact(value: Any) -> str:
     return resolve_novel_type_id(match.group(1).strip())
 
 
-def novel_type_prompt_context(record: Any) -> dict[str, Any]:
+def novel_type_prompt_context(record: Any) -> Mapping[str, Any]:
     from packages.story_core.agent_base import compact_list, compact_text
 
+    specific_trope_templates = list(getattr(record, "trope_templates", ()) or ())
+    generic_record = None
+    if str(getattr(record, "id", "") or "").strip() != DEFAULT_NOVEL_TYPE_ID:
+        generic_record = runtime_novel_type(DEFAULT_NOVEL_TYPE_ID)
+    generic_trope_templates = (
+        list(getattr(generic_record, "trope_templates", ()) or [])
+        if generic_record is not None
+        else []
+    )
+    merged_trope_templates = compact_trope_candidates(
+        merge_trope_templates([specific_trope_templates, generic_trope_templates])
+    )
+    specific_candidate_count = len(compact_trope_candidates(specific_trope_templates))
     context = {
         "genre_label": compact_text(str(record.name), 100),
         "genre_description": compact_text(str(record.description), 700),
@@ -321,12 +361,31 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
         *context["genre_rulebook"].values(),
         context["genre_quality_checks"],
     ]
-    while len(json.dumps(context, ensure_ascii=False)) > 6000:
+    trope_candidates = deepcopy(merged_trope_templates)
+    while (
+        len(
+            json.dumps(
+                {**context, "genre_trope_templates": trope_candidates},
+                ensure_ascii=False,
+            )
+        )
+        > 6000
+    ):
+        if len(trope_candidates) > max(1, specific_candidate_count):
+            trope_candidates.pop()
+            continue
+        if len(trope_candidates) > 1:
+            trope_candidates.pop()
+            specific_candidate_count = min(specific_candidate_count, len(trope_candidates))
+            continue
         candidates = [items for items in lists if len(items) > 1]
         if not candidates:
             break
         max(candidates, key=lambda items: len(items[-1])).pop()
-    return context
+    return _NovelTypePromptContext(
+        context,
+        {"genre_trope_templates": trope_candidates},
+    )
 
 
 def novel_type_options() -> list[dict[str, Any]]:

@@ -24,6 +24,7 @@ class OverallOutline(_OutlineModel):
     main_conflict: str = ""
     growth_path: str = ""
     ending_direction: str = ""
+    primary_trope_id: str | None = None
     core_ending_chapter: int = Field(default=1, ge=1, strict=True)
     extension_ceiling_chapter: int = Field(default=1, ge=1, strict=True)
     current_strategy: OutlineStrategy = "observe"
@@ -38,6 +39,7 @@ class ArcOutline(_OutlineModel):
     goal: str = ""
     obstacle: str = ""
     payoff: str = ""
+    trope_id: str | None = None
     end_state: str = ""
     stage_antagonist: str = ""
     long_term_antagonist_traces: list[str] = Field(default_factory=list)
@@ -75,6 +77,7 @@ class ChapterPlan(_OutlineModel):
     turn: str = ""
     payoff: str = ""
     ending_hook: str = ""
+    trope_beat: str | None = None
     cast: list[str] = Field(default_factory=list)
 
     @field_validator("chapter_number", mode="before")
@@ -251,6 +254,7 @@ def select_outline_context(
             "main_conflict",
             "growth_path",
             "ending_direction",
+            "primary_trope_id",
             "current_strategy",
             "ending_contract",
         )
@@ -266,6 +270,7 @@ def select_outline_context(
                 "goal",
                 "obstacle",
                 "payoff",
+                "trope_id",
                 "game_line_payoff",
                 "reality_line_payoff",
                 "end_state",

@@ -61,6 +61,7 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "main_conflict",
         "growth_path",
         "ending_direction",
+        "primary_trope_id",
         "core_ending_chapter",
         "extension_ceiling_chapter",
         "current_strategy",
@@ -74,6 +75,7 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "goal",
         "obstacle",
         "payoff",
+        "trope_id",
         "end_state",
         "stage_antagonist",
         "long_term_antagonist_traces",
@@ -91,6 +93,7 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "turn",
         "payoff",
         "ending_hook",
+        "trope_beat",
         "cast",
     }
 
@@ -144,6 +147,20 @@ def test_old_outline_defaults_to_non_expanding_observe_mode() -> None:
         "continue_route": "",
         "close_route": "",
     }
+
+
+def test_legacy_outlines_normalize_missing_trope_fields_to_none() -> None:
+    normalized = normalize_project_outline(
+        {
+            "overall": {"story": "旧版总纲"},
+            "arcs": [{"id": "opening", "start_chapter": 1, "end_chapter": 3}],
+            "chapters": [{"chapter_number": 1, "title": "第一章"}],
+        }
+    )
+
+    assert normalized["overall"]["primary_trope_id"] is None
+    assert normalized["arcs"][0]["trope_id"] is None
+    assert normalized["chapters"][0]["trope_beat"] is None
 
 
 def test_extension_ceiling_cannot_precede_core_ending() -> None:
@@ -384,6 +401,7 @@ def test_legacy_project_projects_into_three_levels_without_mutation() -> None:
             "goal": "先查清祖祠失火原因。",
             "obstacle": "",
             "payoff": "",
+            "trope_id": None,
             "end_state": "",
             "stage_antagonist": "",
             "long_term_antagonist_traces": [],
@@ -412,6 +430,7 @@ def test_legacy_projection_tolerates_missing_or_malformed_optional_sections() ->
             "main_conflict": "",
             "growth_path": "",
             "ending_direction": "",
+            "primary_trope_id": None,
             "core_ending_chapter": 1,
             "extension_ceiling_chapter": 1,
             "current_strategy": "observe",
@@ -503,6 +522,38 @@ def test_selection_overlap_tiebreakers_do_not_depend_on_input_order() -> None:
     ]
 
     assert selected_ids == ["alpha", "alpha"]
+
+
+def test_selection_context_preserves_trope_fields() -> None:
+    outline = normalize_project_outline(
+        {
+            "overall": {
+                "story": "总纲",
+                "primary_trope_id": "golden_finger_first_test",
+            },
+            "arcs": [
+                {
+                    "id": "opening",
+                    "start_chapter": 1,
+                    "end_chapter": 5,
+                    "trope_id": "resource_gate",
+                }
+            ],
+            "chapters": [
+                {
+                    "chapter_number": 3,
+                    "title": "试探",
+                    "trope_beat": "付出代价拿到部分资源",
+                }
+            ],
+        }
+    )
+
+    context = select_outline_context(outline, 3)
+
+    assert context["overall"]["primary_trope_id"] == "golden_finger_first_test"
+    assert context["active_arc"]["trope_id"] == "resource_gate"
+    assert context["chapter"]["trope_beat"] == "付出代价拿到部分资源"
 
 
 def test_selection_returns_none_when_chapter_has_no_matching_details() -> None:
