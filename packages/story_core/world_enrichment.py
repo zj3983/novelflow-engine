@@ -236,7 +236,7 @@ def _merge_living_world(project: NovelProject, incoming_world: dict[str, Any], c
     default_resource_flow = _as_dict(defaults.get("economy")).get("resource_flow")
     plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
     resource_flow_sources = (
-        ([*market_rules(), *exchange_rules()], incoming_resource_flow, current_resource_flow, default_resource_flow)
+        ([*market_rules(), *exchange_rules()], current_resource_flow, incoming_resource_flow, default_resource_flow)
         if "game_webnovel" in plugin_ids
         else (incoming_resource_flow, current_resource_flow, default_resource_flow)
     )
@@ -1413,8 +1413,8 @@ def _merge_enrichment(project: NovelProject, parsed: dict[str, Any]) -> NovelPro
         sources = (
             (
                 [*market_rules(), *appraisal_rules(), *exchange_rules()],
-                incoming_world.get(field),
                 current_world.get(field),
+                incoming_world.get(field),
                 plugin_rulebook.get(field, []),
             )
             if field == "economy_rules" and "game_webnovel" in plugin_ids

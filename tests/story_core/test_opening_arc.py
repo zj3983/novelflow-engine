@@ -74,7 +74,11 @@ def test_game_economy_boundaries_survive_saturated_model_output():
     project = NovelProject(
         project_id="p-economy-saturated",
         title="Economy Saturated",
-        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "living_world": {"economy": {"resource_flow": ["旧项目专属资源流"]}},
+            "economy_rules": ["旧项目专属兑换规则"],
+        },
     )
     parsed = {
         "world_blueprint": {
@@ -91,15 +95,17 @@ def test_game_economy_boundaries_survive_saturated_model_output():
 
     assert resource_flow == [
         *resource_boundaries,
-        *model_resource_flow[: 10 - len(resource_boundaries)],
+        "旧项目专属资源流",
+        *model_resource_flow[: 10 - len(resource_boundaries) - 1],
     ]
     assert economy_rules == [
         *economy_boundaries,
-        *model_economy_rules[: 12 - len(economy_boundaries)],
+        "旧项目专属兑换规则",
+        *model_economy_rules[: 12 - len(economy_boundaries) - 1],
     ]
 
 
-def test_game_economy_merge_keeps_model_and_old_project_specific_rules():
+def test_game_economy_merge_keeps_current_then_incoming_specific_rules():
     project = NovelProject(
         project_id="p-game-economy-specific",
         title="Game Economy Specific",
@@ -124,13 +130,13 @@ def test_game_economy_merge_keeps_model_and_old_project_specific_rules():
 
     assert resource_flow[: len(resource_boundaries) + 2] == [
         *resource_boundaries,
-        "模型专属资源流",
         "旧项目专属资源流",
+        "模型专属资源流",
     ]
     assert economy_rules[: len(economy_boundaries) + 2] == [
         *economy_boundaries,
-        "模型专属市场规则",
         "旧项目专属兑换规则",
+        "模型专属市场规则",
     ]
     assert len(resource_flow) == 10
     assert len(economy_rules) == 12
