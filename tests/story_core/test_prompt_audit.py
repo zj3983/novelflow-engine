@@ -534,6 +534,24 @@ def test_explicit_whole_prompt_single_word_count_conflicts_with_target_range():
     assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
 
 
+def test_direct_write_single_word_count_conflicts_with_target_range():
+    result = audit_prompt(
+        mode="final_call",
+        content="请写2000字，目标字数5000-6000字。",
+    )
+
+    assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
+
+
+def test_direct_requirement_ranges_conflict_after_reversing_endpoints():
+    result = audit_prompt(
+        mode="final_call",
+        content="正文要求1200~1000字，另一处要求2500至2000字。",
+    )
+
+    assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -585,7 +603,7 @@ def test_single_word_positions_without_target_context_do_not_conflict():
 def test_requirements_at_single_word_positions_do_not_become_word_count_targets():
     result = audit_prompt(
         mode="final_call",
-        content="要求在第2000字埋下伏笔，要求在第5000字回收伏笔。",
+        content="要求在第2000字埋下伏笔。要求在第5000字回收伏笔。",
     )
 
     assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
