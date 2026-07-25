@@ -53,6 +53,14 @@ def score_quality_report(quality: dict[str, Any]) -> float:
     return round(score, 2)
 
 
+def _review_issue_count(quality: dict[str, Any]) -> int:
+    quality = _as_dict(quality)
+    writing_review = _as_dict(quality.get("writing_review"))
+    primary_issues = _as_list(writing_review.get("issues")) or _as_list(quality.get("issues"))
+    normalized = {str(issue).strip() for issue in primary_issues if str(issue).strip()}
+    return len(normalized)
+
+
 def choose_best_revision(
     *,
     original_body: str,
@@ -66,7 +74,22 @@ def choose_best_revision(
     original_chars = len("".join(str(original_body or "").split()))
     candidate_chars = len("".join(str(candidate_body or "").split()))
     forced_reject_reason = ""
-    if original_chars >= 1000 and candidate_chars < original_chars * 0.65:
+    original_in_preferred_range = 4200 <= original_chars <= 5500
+    original_passed = bool(_as_dict(original_quality).get("ok")) and bool(
+        _as_dict(_as_dict(original_quality).get("writing_review")).get("pass")
+    )
+    candidate_passed = bool(_as_dict(candidate_quality).get("ok")) and bool(
+        _as_dict(_as_dict(candidate_quality).get("writing_review")).get("pass")
+    )
+    original_issue_count = _review_issue_count(original_quality)
+    candidate_issue_count = _review_issue_count(candidate_quality)
+    if original_in_preferred_range and not candidate_passed and not 4200 <= candidate_chars <= 5500:
+        forced_reject_reason = "failed_candidate_left_preferred_length"
+        candidate_score -= 120.0
+    elif not original_passed and not candidate_passed and candidate_issue_count >= original_issue_count:
+        forced_reject_reason = "failed_candidate_did_not_reduce_issues"
+        candidate_score -= 120.0
+    elif original_chars >= 1000 and candidate_chars < original_chars * 0.65:
         forced_reject_reason = "candidate_severely_shorter"
         candidate_score -= 80.0
     elif original_chars >= 3900 and candidate_chars < 3900:
@@ -86,6 +109,8 @@ def choose_best_revision(
         "min_delta": min_delta,
         "original_chars": original_chars,
         "candidate_chars": candidate_chars,
+        "original_issue_count": original_issue_count,
+        "candidate_issue_count": candidate_issue_count,
     }
     if accepted:
         return {

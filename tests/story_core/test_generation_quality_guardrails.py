@@ -22,6 +22,9 @@ from packages.story_core.orchestrator import (
     _rebalanced_body_is_acceptable,
     _repair_outline_amount_anchors,
     _should_extract_final_memory,
+    _should_run_full_revision,
+    _compact_first_chapter_scene_cards,
+    _compression_review_not_worse,
     _should_expand_chapter,
 )
 from packages.story_core.prose_rule_review import review_emotion_quota, review_paragraph_form
@@ -74,10 +77,10 @@ def test_locked_outline_amounts_are_repaired_from_structured_anchor():
     repaired = _repair_outline_amount_anchors(body, anchor)
 
     assert "余额27.60元" in repaired
-    assert "成交价1764.00元" in repaired
+    assert "成交价305.20元" in repaired
+    assert "1764.00元到账" in repaired
     assert "余额312.60元" in repaired
     assert "7.40元" not in repaired
-    assert "305.20元" not in repaired
     assert "100.00元" not in repaired
 
 
@@ -148,6 +151,56 @@ def test_final_memory_accepts_advisory_review_but_rejects_hard_errors():
         body,
         {"needs_revision": True, "has_hard_errors": True},
     ) is False
+
+
+def test_full_revision_only_runs_for_hard_errors():
+    assert _should_run_full_revision({"needs_revision": True, "has_hard_errors": False}) is False
+    assert _should_run_full_revision({"needs_revision": True, "has_hard_errors": True}) is True
+
+
+def test_compression_review_must_not_add_hard_or_total_issues():
+    before = {
+        "issues": ["第一章缺少带身份栏的角色面板。", "段首主语重复。"],
+    }
+    improved = {"issues": ["段首主语重复。"]}
+    worsened = {
+        "issues": [
+            "第一章缺少带身份栏的角色面板。",
+            "首次正式交战前缺少简洁怪物面板。",
+            "段首主语重复。",
+        ]
+    }
+
+    assert _compression_review_not_worse(before, improved) is True
+    assert _compression_review_not_worse(before, worsened) is False
+
+
+def test_first_chapter_scene_cards_keep_four_core_scenes_and_drop_variant_numbers():
+    cards = [
+        {"scene_id": "s0-plot-simulation", "purpose": "后台计划"},
+        {"scene_id": "s2-c1-reality-entry", "purpose": "现实入口"},
+        {"scene_id": "s3-c1-character-create", "purpose": "建号"},
+        {
+            "scene_id": "s4-c1-small-verify",
+            "purpose": "首次验证",
+            "must_show": ["低级怪物", "变体boundary-durability-route：生命46/100、法力0/60、法杖2/10"],
+            "ending_pressure": "变体boundary-durability-route：法杖2/10",
+            "state_delta": {"simulation": {"variant": "boundary-durability-route"}},
+        },
+        {"scene_id": "s5-c1-npc-service", "purpose": "可选NPC服务"},
+        {"scene_id": "s6-c1-next-step-hook", "purpose": "交易与结尾"},
+    ]
+
+    compacted = _compact_first_chapter_scene_cards(cards, chapter_number=1, trade_authorized=True)
+
+    assert [card["scene_id"] for card in compacted] == [
+        "s2-c1-reality-entry",
+        "s3-c1-character-create",
+        "s4-c1-small-verify",
+        "s6-c1-next-step-hook",
+    ]
+    assert "boundary-durability-route" not in str(compacted)
+    assert "46/100" not in str(compacted)
 
 
 def test_metaphor_limiter_never_rewrites_like_into_ungrammatical_gen():
@@ -427,6 +480,29 @@ def test_first_chapter_review_honors_project_authorized_trade_payoff():
     assert not any("边界章目标漂移" in issue for issue in review["issues"])
 
 
+def test_first_chapter_review_allows_future_repair_plan_without_marking_service_complete():
+    body = (
+        "《神域》开服，夜烬用基础火球术击杀灰狼，确认千倍爆率。"
+        "他没有修理装备，也没有买药。接下来要先修好法杖，再回灰狼坡补齐任务材料。"
+    )
+
+    review = _review_chapter_body(1, body, {}, ["网游"], {}, [], [])
+
+    assert not any("第一章账本越界" in issue for issue in review["issues"])
+
+
+def test_first_chapter_review_allows_price_check_and_unfinished_repair_intent():
+    body = (
+        "《神域》开服，夜烬用基础火球术击杀灰狼，确认千倍爆率。"
+        "药剂铺的价牌写着最低级的法力药水要十二枚铜币，他的钱袋还是空的。"
+        "他转向铁匠铺，准备问清修理需要多少铜币，等法杖修好以后再回灰狼坡。"
+    )
+
+    review = _review_chapter_body(1, body, {}, ["网游", "第一章允许完成现实交易"], {}, [], [])
+
+    assert not any("第一章账本越界" in issue for issue in review["issues"])
+
+
 def test_authorized_trade_does_not_treat_item_utility_as_guild_pressure():
     body = (
         "《天启之门》开服，苏叶以夜烬的游戏ID进入游戏，完成角色创建并去灰狼坡刷怪。"
@@ -441,6 +517,22 @@ def test_authorized_trade_does_not_treat_item_utility_as_guild_pressure():
 
     assert not any("第一章节奏过载" in issue for issue in review["issues"])
     assert not any("第一章外部压力过早" in issue for issue in review["issues"])
+
+
+def test_authorized_trade_ignores_ambient_chat_other_players_and_negated_forum_pressure():
+    body = (
+        "《神域》开服，苏叶以夜烬的游戏ID进入游戏，完成角色创建并去灰狼坡刷怪。"
+        "广场有人喊‘收铜币，价格私聊’，坡外也有普通玩家三人一组围杀灰狼。"
+        "裂纹狼心可供公会图鉴收集，也能用于二环解毒剂。担保交易实际到账1764.00元，"
+        "苏叶补上房租并付清信用卡最低还款。之后他没有去论坛搜索，买家也不知道材料来源。"
+    )
+    world_facts = ["第一章必须通过裂纹狼心担保交易解决现实急账。"]
+
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+
+    assert not any("第一章节奏过载" in issue for issue in review["issues"])
+    assert not any("第一章外部压力过早" in issue for issue in review["issues"])
+    assert not any("第一章冲突越级" in issue for issue in review["issues"])
 
 
 def test_review_rejects_trade_amount_that_differs_from_outline_anchor():
@@ -507,6 +599,112 @@ def test_amount_anchor_repair_keeps_distinct_opening_and_ending_when_draft_has_o
     assert "余额27.60元" in repaired[:1200]
     assert "1764.00元" in repaired
     assert "余额312.60元" in repaired[-1600:]
+
+
+def test_amount_anchor_repair_preserves_gross_trade_price_when_arrival_is_net():
+    repaired = _repair_outline_amount_anchors(
+        "成交价1800.00元，服务费36.00元，预计到账1700.00元。",
+        {"trade_arrival": "1764.00元"},
+    )
+
+    assert "成交价1800.00元" in repaired
+    assert "服务费36.00元" in repaired
+    assert "预计到账1764.00元" in repaired
+
+
+def test_amount_anchor_repair_replaces_chinese_word_balance_without_duplicating_opening():
+    repaired = _repair_outline_amount_anchors(
+        "苏叶看着银行卡可用余额只剩四十六块八毛三，把手机扣在桌上。",
+        {"opening_balance": "46.83元"},
+    )
+
+    assert repaired.startswith("苏叶看着银行卡可用余额只剩46.83元")
+    assert repaired.count("46.83元") == 1
+    assert "苏叶登录游戏前" not in repaired
+
+
+def test_amount_anchor_repair_normalizes_balance_split_across_sentence_boundary():
+    repaired = _repair_outline_amount_anchors(
+        "苏叶看了一眼账户余额。46.83元。随后戴上头盔。",
+        {"opening_balance": "46.83元"},
+    )
+
+    assert "账户余额46.83元" in repaired
+    assert repaired.count("46.83元") == 1
+    assert "苏叶登录游戏前" not in repaired
+
+
+def test_amount_anchor_repair_recognizes_bank_account_remaining_without_balance_word():
+    repaired = _repair_outline_amount_anchors(
+        "他切回余额页面，看见银行卡里只剩四十六块八毛三。",
+        {"opening_balance": "46.83元"},
+    )
+
+    assert "银行卡里只剩46.83元" in repaired
+    assert "苏叶登录游戏前" not in repaired
+
+
+def test_amount_anchor_repair_replaces_chinese_ending_balance_with_stop_wording():
+    repaired = _repair_outline_amount_anchors(
+        "银行卡里只剩四十六块八毛三。到账后付清两笔急账，银行卡余额停在三百三十二块六毛。",
+        {"opening_balance": "46.83元", "ending_balance": "332.60元"},
+    )
+
+    assert "银行卡里只剩46.83元" in repaired
+    assert "银行卡余额停在332.60元" in repaired
+    assert "付清现实急账后" not in repaired
+
+
+def test_review_rejects_ending_balance_shown_before_real_world_payments():
+    body = (
+        "苏叶登录前看见账户余额46.83元。"
+        "担保交易完成，1764.00元到账。手机上立刻显示银行卡余额332.60元。"
+        "随后他才把房租转了过去，又确认支付信用卡最低还款。"
+        "两笔急账付清后，账户余额332.60元。"
+    )
+    world_facts = [
+        "第一章必须通过裂纹狼心担保交易解决现实急账。",
+        '{"story":"苏叶以最后46.83元进入游戏。"}',
+        '{"payoff":"担保交易到账1764.00元，现实余额变为332.60元。"}',
+    ]
+
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+
+    assert any("现实余额出现顺序错误" in issue for issue in review["issues"])
+
+
+def test_review_rejects_opening_balance_repeated_after_trade_arrival():
+    body = (
+        "苏叶登录前看见账户余额46.83元。"
+        "担保交易完成，1764.00元到账，银行通知随后显示账户余额变成46.83元。"
+        "他接着支付房租，又完成信用卡最低还款，最后账户余额332.60元。"
+    )
+    world_facts = [
+        "第一章必须通过裂纹狼心担保交易解决现实急账。",
+        "苏叶以最后46.83元进入游戏。",
+        "担保交易到账1764.00元，付清急账后现实余额变为332.60元。",
+    ]
+
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+
+    assert any("到账后余额仍停在登录前金额" in issue for issue in review["issues"])
+
+
+def test_review_rejects_same_amount_as_gross_price_and_net_arrival_with_fee():
+    body = (
+        "苏叶登录前看见账户余额46.83元。"
+        "成交价1764.00元，服务费36.00元，预计到账1764.00元。"
+        "他付清急账后，账户余额332.60元。"
+    )
+    world_facts = [
+        "第一章必须通过裂纹狼心担保交易解决现实急账。",
+        '{"story":"苏叶以最后46.83元进入游戏。"}',
+        '{"payoff":"担保交易到账1764.00元，现实余额变为332.60元。"}',
+    ]
+
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+
+    assert any("交易金额流水矛盾" in issue for issue in review["issues"])
 
 
 def test_first_chapter_sanitizer_merges_overfragmented_paragraphs():
@@ -758,6 +956,23 @@ def test_first_chapter_sanitizer_normalizes_starting_identity_and_stackable_bag(
     assert "背包：15/20" not in cleaned
     assert "背包：2/20" in cleaned
     assert "数量叠在图标角上" in cleaned
+
+
+def test_first_chapter_sanitizer_keeps_empty_starting_backpack_empty():
+    body = "角色面板显示：游戏ID夜烬，身份见习冒险者（未转职），Lv.1，背包：0/20。"
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "背包：0/20" in cleaned
+    assert "背包：2/20" not in cleaned
+
+
+def test_first_chapter_sanitizer_removes_obvious_doubled_weapon_typo():
+    body = "夜烬冲上去，用法法杖末端端连砸两下。"
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert "用法杖末端连砸两下" in cleaned
 
 
 def test_chapter_body_review_uses_event_plan_protagonist_names_for_speech_gate():

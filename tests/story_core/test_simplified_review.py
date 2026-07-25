@@ -127,3 +127,22 @@ def test_simplified_review_blocks_locked_outline_amount_mismatches():
 
     assert report["has_hard_errors"] is True
     assert report["categories"]["hard"]["count"] == 3
+
+
+def test_simplified_review_blocks_missing_required_game_surfaces_but_not_repetition():
+    report = build_simplified_review(
+        {
+            "writing_review": {
+                "issues": [
+                    "第一章缺少带身份栏的角色面板。",
+                    "首次正式交战前缺少简洁怪物面板。",
+                    "场景卡必写内容缺失：s6 缺少真实到账、现实急账处理。",
+                    "段首主语连续重复：获得连续作为段首出现3次。",
+                ]
+            }
+        }
+    )
+
+    assert report["has_hard_errors"] is True
+    assert report["categories"]["hard"]["count"] == 3
+    assert report["categories"]["ai_flavor"]["count"] == 1

@@ -4,6 +4,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from packages.story_core.book_style import book_style_prompt
+
 
 FIRST_CHAPTER_NOISE_BANS = (
     "材料公开处理成大钱",
@@ -20,7 +22,7 @@ FIRST_CHAPTER_NOISE_BANS = (
 
 WRITER_TERM_REPLACEMENTS = (
     ("让世界根据主角行动给出可见反应", "主角动手以后，马上出现一个具体结果或麻烦"),
-    ("收益和代价落收到反馈本或关系里", "让收获和代价都能看见，并改变下一步或人物关系"),
+    ("收益和代价落到账本或关系里", "让收获和代价都能看见，并改变下一步或人物关系"),
     ("NPC/环境/任务/对手反应", "现场人物、环境或对手的反应"),
     ("关键账本或状态", "眼前最要紧的东西或处境"),
     ("确认边界", "试清楚能不能走"),
@@ -33,31 +35,6 @@ WRITER_TERM_REPLACEMENTS = (
     ("结算链", "账"),
     ("基准", "底线"),
     ("诊断", "检查"),
-)
-
-
-GENERIC_STYLE_CONTRACT = (
-    "白话正文：普通读者一眼能懂，少比喻，少华丽修辞，少作者总结。",
-    "反馈要看得见：用动作、物件、对话、环境变化和角色反应承载信息。",
-    "现代中文对话：台词要能顺口念出来，话题先摆出来，再接判断或行动；不要把后台事实直译成台词。",
-    "少解释只针对旁白，不是让人物省略连接词和因果；不要写成名词清单加命令的电报句。",
-    "情绪要落动作：不写“他很焦虑”，写手指停顿、视线躲开、没忍住又看一眼。",
-    "段落要有疏密：爆点和转折要有清楚落点，关键场景必须有连续动作块。",
-    "视角限知：主角只能知道自己能看见、听见、问到、试出来的信息。",
-    "后台词翻译：不要写边界、推演、审稿、场景卡、结算链、基准、诊断等工作流词。",
-)
-
-GAME_STYLE_CONTRACT = (
-    "白话爽文：普通读者一眼能懂，少比喻，少华丽修辞，少作者总结。",
-    "反馈要看得见：面板、掉落、经验、任务进度、装备前置条件、血蓝、耐久和玩家对比优先于解释。",
-    "怪物面板只在该类怪物第一次正式交战前展示：普通怪写名称、等级、生命和攻击方式；同类普通怪后续不重复，精英怪和首领另加技能、特性。",
-    "网游爽点落在领先感：普通玩家还在重复刷，主角已经更快凑齐任务、装备、技能或地图入口。",
-    "现代中文对话：台词要能顺口念出来，话题先摆出来，再接判断或行动；不要把后台事实直译成台词。",
-    "少解释只针对旁白，不是让人物省略连接词和因果；不要写成名词清单加命令的电报句。",
-    "情绪要落动作：不写“他很焦虑”，写手指停顿、视线躲开、没忍住又看余额。",
-    "段落要有疏密：爆点和转折要有清楚落点，关键场景必须有连续动作块。",
-    "视角限知：主角只能知道自己能看见、听见、问到、试出来的信息。",
-    "后台词翻译：不要写边界、推演、审稿、场景卡、结算链、基准、诊断等工作流词。",
 )
 
 
@@ -80,12 +57,17 @@ GAME_CRAFT_TEMPLATES = (
 )
 
 
-def first_chapter_whole_body_contract(*, game_genre: bool) -> dict[str, Any]:
+def first_chapter_whole_body_contract(*, game_genre: bool, trade_authorized: bool = False) -> dict[str, Any]:
     if not game_genre:
         return {}
+    beat_map = (
+        "现实压力 -> 登录建号 -> 低级验证 -> 匿名交割与急账处理 -> 下一步"
+        if trade_authorized
+        else "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子"
+    )
     return {
         "mode": "whole_body_only",
-        "beat_map": "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子",
+        "beat_map": beat_map,
         "beats": [
             "现实压力：用余额、房租、旧设备、身体反应或生活细节说明为什么现在必须登录。",
             "登录建号：必须出现“角色面板”四个字，写清游戏ID、统一初始身份见习冒险者（未转职）、Lv.1短面板、初始武器或技能，以及开服现场质感。",
@@ -93,9 +75,8 @@ def first_chapter_whole_body_contract(*, game_genre: bool) -> dict[str, Any]:
             "下一步钩子：材料分开处理，章末优先落到职业导师木牌、任务牌、装备、技能或地图入口的前置任务；可以有柜台/窗口，也可以暗中办理一项小服务，但外人只看见普通排队。",
         ],
         "style": [
-            "整体接近白描：句子清楚，动作具体，少修辞，少比喻。",
-            "不要用华丽词语、夸张比喻或谜语式暗示制造气氛。",
-            "读者要一眼知道角色在做什么、怕什么、想试什么、下一步去哪里。",
+            "句子要完整，动作、原因和结果要接得上。",
+            "读者要看得出角色在做什么、怕什么、想试什么、下一步去哪里。",
             "少写验证、逻辑、收益、路线这种判断词，改成试一把、看一眼、包快满、前置任务还没做完。",
         ],
         "dialogue": [
@@ -109,7 +90,7 @@ def first_chapter_whole_body_contract(*, game_genre: bool) -> dict[str, Any]:
         ],
         "avoid": [
             "不用分段生成；按整章连续正文自然写出四拍。",
-            "不要提前完成变现、成交、到账、手续费扣款、公共频道扩散、论坛爆帖、公会追查或市场玩家盯盘。",
+            "变现、成交、到账和手续费扣款必须服从本章计划；公共频道扩散、论坛爆帖、公会追查或市场玩家盯盘不得擅自提前。",
             "第一章不要让药剂师或药铺承担职业任务、职业试炼、全局市场分析或玩家生态判断；药剂师若出现，只能讲药材、库存、价格和她不知道的边界。",
             "第一章可以写NPC窗口、任务牌或职业导师木牌；是否提交材料、领取铜币、修装备或买药水必须跟随项目账本/章节计划，未允许时只露出前置条件和下一步目标。",
             "不要把开局身份写成独有职业；第一章所有玩家都是见习冒险者，夜烬只是选了法杖和基础火球术。背包同类材料堆叠，灰狼毒腺×8、粗糙狼皮×7应写成占用两个材料格或2/20。",
@@ -435,12 +416,19 @@ def _apply_plot_to_scenes(scenes: list[WritingTaskScene], plot: dict[str, Any]) 
     return result
 
 
-def _first_chapter_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
+def _first_chapter_scenes(plan: dict[str, Any], *, trade_authorized: bool = False) -> list[WritingTaskScene]:
     target = max(4200, _target_chars_int(plan, fallback=4200))
     first = max(950, int(target * 0.34))
     second = max(1100, int(target * 0.42))
     third = max(800, target - first - second)
-    forbidden = "、".join(FIRST_CHAPTER_NOISE_BANS)
+    noise_bans = FIRST_CHAPTER_NOISE_BANS
+    if trade_authorized:
+        noise_bans = tuple(
+            item
+            for item in noise_bans
+            if item not in {"材料公开处理成大钱", "交易行寄售已经完成", "公开扣费或大额收款反馈"}
+        )
+    forbidden = "、".join(noise_bans)
     outline_anchor = plan.get("outline_anchor") if isinstance(plan.get("outline_anchor"), dict) else {}
     opening_balance = str(outline_anchor.get("opening_balance") or "").strip()
     balance_surface = (
@@ -452,8 +440,8 @@ def _first_chapter_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
         WritingTaskScene(
             key="entry_login",
             title="现实压力与登录建号",
-            goal="用一个具体生活瞬间压住夜烬的处境，再让他戴上旧设备进入《天启之门》，完成建号、初始身份确认和武器/基础技能选择。",
-            required_surface=f"{balance_surface}、催缴压力、旧头盔或登录入口、《天启之门》开服、全沉浸/开服倒计时/玩家涌入/登录公告至少一个可见背景入口、游戏ID夜烬、初始身份见习冒险者（未转职）、Lv.1短面板固定为经验0/100、生命100/100、法力60/60、钱袋为空或背包为空、新手法杖10/10、基础火球术、章首一个具体情绪动作如手指停顿/喉咙发紧/苦笑半秒；不要展开力量/敏捷/体质/智力等扩展属性",
+            goal="用一个具体生活瞬间交代夜烬的处境，再让他戴上旧设备进入本书设定的游戏，完成建号、初始身份确认和武器/基础技能选择。",
+            required_surface=f"{balance_surface}、催缴压力、现实职业/技能来源、旧头盔或登录入口、本书设定的游戏名、全沉浸/开服倒计时/玩家涌入/登录公告至少一个可见背景入口、游戏ID夜烬、初始身份见习冒险者（未转职）、正文明确写出‘角色面板’四个字，Lv.1短面板固定为经验0/100、生命100/100、法力60/60、钱袋为空或背包为空、新手法杖10/10、基础火球术、章首一个具体情绪动作如手指停顿/喉咙发紧/苦笑半秒；不要展开力量/敏捷/体质/智力等扩展属性",
             forbidden_surface=f"首次打怪、掉落、NPC长谈、交易操作、家庭网络已断却不交代移动数据/设备eSIM等有效联网方式就直接登录、{forbidden}",
             entry_state="现实出租屋，夜烬还没进游戏。",
             exit_state="夜烬建号完成，职业、等级、经验、血蓝、货币和初始装备可见。",
@@ -465,7 +453,7 @@ def _first_chapter_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
             key="small_verification",
             title="低级怪小验证",
             goal="只打一小轮低级怪，让夜烬亲眼看到千倍爆率会把普通流程压短，让他比别人更快凑齐任务或装备前置条件。",
-            required_surface="第一次低级怪战斗前显示简洁怪物面板（名称、等级、生命、攻击方式）、基础火球术或明确的近身应急、击杀后才露出掉落异常、底层协议校验通过、千倍爆率或掉落判定×1000、混沌之种未解析、血蓝/法力/耐久消耗、经验或任务材料进度变化、旁人正常低掉落形成对比、没有铜币收益、战斗中一次疼痛/后怕/侥幸的身体反应",
+            required_surface="第一次低级怪战斗前正文明确写出‘怪物面板’四个字，并显示名称、等级、生命、攻击方式；写出基础火球术或明确的近身应急、击杀后才露出掉落异常、底层协议校验通过、千倍爆率、掉落判定×1000、混沌之种未解析、血蓝/法力/耐久消耗、经验或任务材料进度变化、旁人正常低掉落形成对比、没有铜币收益、战斗中一次疼痛/后怕/侥幸的身体反应",
             forbidden_surface=f"大量刷怪、材料换钱、市场波动、玩家势力追查、论坛扩散、{forbidden}",
             entry_state="夜烬Lv.1，装备和背包刚可见，尚未验证掉落。",
             exit_state="小规模验证结束：异常可信但没解释清楚，夜烬看见自己能比普通玩家更快完成下一步。",
@@ -476,11 +464,27 @@ def _first_chapter_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
         WritingTaskScene(
             key="decision_hook",
             title="暗中吃下第一笔",
-            goal="材料分开处理，至少兑现一个小收益闭环；让夜烬把多余材料和来源藏住，只把普通玩家也会做的一项服务办掉，留下下一章抢先完成任务或摸到新路线的钩子。",
-            required_surface="面板或背包更新、职业/等级/经验/生命/法力/耐久沿用前文不重开一套属性、交掉一小份材料或任务、保留多余材料、少量铜币/修理/药水至少兑现一项、清道夫或柜台只按普通流程办理、现实压力仍在、下一章具体任务/装备/技能/地图前置任务、章末一个不华丽的情绪动作如松一口气/没忍住看余额/把背包关了又打开",
-            forbidden_surface=f"材料公开换成大钱、一次性交空全部材料、完整公开服务戏、公会/论坛/公共频道反应、市场玩家盯盘、提现或换算人民币、{forbidden}",
+            goal=(
+                "按本章计划完成裂纹狼心担保交易，让现实款项到账并处理急账；交易保持匿名，不扩大成市场风波。"
+                if trade_authorized
+                else "材料分开处理，至少兑现一个小收益闭环；让夜烬把多余材料和来源藏住，只把普通玩家也会做的一项服务办掉，留下下一章抢先完成任务或摸到新路线的钩子。"
+            ),
+            required_surface=(
+                "担保交易到账并处理现实急账、交易匿名、金额沿用大纲、现实余额随付款结果更新、来源没有暴露、下一章具体行动目标"
+                if trade_authorized
+                else "面板或背包更新、职业/等级/经验/生命/法力/耐久沿用前文不重开一套属性、交掉一小份材料或任务、保留多余材料、少量铜币/修理/药水至少兑现一项、清道夫或柜台只按普通流程办理、现实压力仍在、下一章具体任务/装备/技能/地图前置任务、章末一个不华丽的情绪动作如松一口气/没忍住看余额/把背包关了又打开"
+            ),
+            forbidden_surface=(
+                f"一次性交空全部材料、公会/论坛/公共频道反应、市场玩家盯盘、{forbidden}"
+                if trade_authorized
+                else f"材料公开换成大钱、一次性交空全部材料、完整公开服务戏、公会/论坛/公共频道反应、市场玩家盯盘、提现或换算人民币、{forbidden}"
+            ),
             entry_state="夜烬刚完成小验证，手里有异常材料，但还没处理。",
-            exit_state="本章确认千倍爆率能带来领先；至少一个小收益已经兑现，来源没有暴露，下一章从任务进度、装备修理、技能或新路线前置任务继续。",
+            exit_state=(
+                "担保交易和现实急账处理完成，来源没有暴露，下一章承接游戏内升级和任务进度。"
+                if trade_authorized
+                else "本章确认千倍爆率能带来领先；至少一个小收益已经兑现，来源没有暴露，下一章从任务进度、装备修理、技能或新路线前置任务继续。"
+            ),
             handoff="下一章承接这个具体麻烦，不把第一章改成公开赚钱或被人追踪。",
             target_chars=third,
             source_ids=["ch1-decision-hook"],
@@ -579,11 +583,16 @@ def build_writing_taskbook(
 ) -> dict[str, Any]:
     plan = plan if isinstance(plan, dict) else {}
     game_context = _looks_like_game_context(plan, genre)
-    scenes = _first_chapter_scenes(plan) if chapter_number == 1 and game_context else _generic_scenes(plan)
-    simulation_plan = _simulation_plan(plan)
-    event_plan = _event_plan(plan)
     governance = plan.get("governance") if isinstance(plan.get("governance"), dict) else {}
     chapter_intent = governance.get("chapter_intent") if isinstance(governance.get("chapter_intent"), dict) else {}
+    trade_authorized = bool(chapter_intent.get("first_chapter_trade_authorized"))
+    scenes = (
+        _first_chapter_scenes(plan, trade_authorized=trade_authorized)
+        if chapter_number == 1 and game_context
+        else _generic_scenes(plan)
+    )
+    simulation_plan = _simulation_plan(plan)
+    event_plan = _event_plan(plan)
     global_required = [
         *_plot_required_lines(_plot_simulation(simulation_plan)),
         *_longform_contract_required_lines(
@@ -602,15 +611,26 @@ def build_writing_taskbook(
     global_required.extend(world_required)
     global_forbidden.extend(world_forbidden)
     if chapter_number == 1 and game_context:
-        global_forbidden.extend(item for item in FIRST_CHAPTER_NOISE_BANS if item not in global_forbidden)
-        global_required.append("第一章只完成登录、低级验证和领先预期；材料只是通行券，交易、论坛、公会追查后移，提交委托、修理和买药水也后移。")
+        noise_bans = FIRST_CHAPTER_NOISE_BANS
+        if trade_authorized:
+            noise_bans = tuple(
+                item
+                for item in noise_bans
+                if item not in {"材料公开处理成大钱", "交易行寄售已经完成", "公开扣费或大额收款反馈"}
+            )
+        global_forbidden.extend(item for item in noise_bans if item not in global_forbidden)
+        global_required.append(
+            "第一章完成登录、低级验证、担保交易到账并处理现实急账；交易保持匿名，论坛、公会追查后移。"
+            if trade_authorized
+            else "第一章只完成登录、低级验证和领先预期；材料只是通行券，交易、论坛、公会追查后移，提交委托、修理和买药水也后移。"
+        )
         global_required.append("三段各至少一个情绪锚点：章首现实压力、战斗受伤/后怕、章末决定都要落到身体动作，不写空泛感慨。")
     taskbook = WritingTaskBook(
         chapter_number=chapter_number,
         chapter_title=_chapter_title(plan),
         chapter_goal=_chapter_goal(plan),
         target_chars=_target_chars_text(plan),
-        style_contract=list(GAME_STYLE_CONTRACT if game_context else GENERIC_STYLE_CONTRACT),
+        style_contract=[style_prompt] if (style_prompt := book_style_prompt(style)) else [],
         craft_templates=list(GAME_CRAFT_TEMPLATES if game_context else GENERIC_CRAFT_TEMPLATES),
         global_required=global_required,
         global_forbidden=global_forbidden,

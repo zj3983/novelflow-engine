@@ -65,6 +65,7 @@ from packages.story_core.models import (
 )
 
 from packages.story_core.novel_type_catalog import resolve_novel_type_id
+from packages.story_core.book_style import normalize_book_style
 
 from packages.story_core.orchestrator import _merge_writing_review_quality, _review_chapter_body
 
@@ -3487,6 +3488,12 @@ def update_project(project_id: str, payload: UpdateProjectRequest) -> ProjectRes
 
     if payload.world_blueprint is not None:
         world_blueprint_patch = dict(payload.world_blueprint)
+        if "writing_style" in world_blueprint_patch:
+            raw_writing_style = str(world_blueprint_patch.get("writing_style") or "").strip()
+            normalized_writing_style = normalize_book_style(raw_writing_style)
+            if raw_writing_style and not normalized_writing_style:
+                raise HTTPException(status_code=400, detail="invalid_writing_style")
+            world_blueprint_patch["writing_style"] = normalized_writing_style
         if "genre_plugin_ids" in world_blueprint_patch:
             raw_genre_ids = world_blueprint_patch.get("genre_plugin_ids")
             if raw_genre_ids is None:
@@ -3537,6 +3544,8 @@ def update_project(project_id: str, payload: UpdateProjectRequest) -> ProjectRes
 
 
     store.update_project(project)
+    if payload.world_blueprint is not None and "writing_style" in payload.world_blueprint:
+        store.sync_project_context(project_id)
 
     return _serialize_project(project)
 

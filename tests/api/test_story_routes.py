@@ -516,6 +516,50 @@ def test_regular_project_world_blueprint_patch_merges_fields_and_preserves_expli
     assert cleared_type.json()["world_blueprint"]["monster_profiles"] == [{"id": "wolf", "name": "灰狼"}]
 
 
+def test_regular_project_saves_and_clears_optional_writing_style():
+    story_id = "s-optional-writing-style"
+    project_id = "p-optional-writing-style"
+    assert client.post(
+        "/stories",
+        json={"story_id": story_id, "outline": "开篇。", "genre": "都市", "style": "白描、现代中文"},
+    ).status_code == 200
+    assert client.post(
+        "/projects",
+        json={"project_id": project_id, "title": "可选文风", "active_story_id": story_id},
+    ).status_code == 200
+
+    selected = client.patch(
+        f"/projects/{project_id}",
+        json={"world_blueprint": {"writing_style": "幽默"}},
+    )
+
+    assert selected.status_code == 200
+    assert selected.json()["world_blueprint"]["writing_style"] == "幽默"
+    assert client.get(f"/stories/{story_id}").json()["style"] == "幽默"
+
+    cleared = client.patch(
+        f"/projects/{project_id}",
+        json={"world_blueprint": {"writing_style": ""}},
+    )
+
+    assert cleared.status_code == 200
+    assert cleared.json()["world_blueprint"]["writing_style"] == ""
+    assert client.get(f"/stories/{story_id}").json()["style"] == ""
+
+
+def test_regular_project_rejects_unknown_writing_style():
+    project_id = "p-invalid-writing-style"
+    assert client.post("/projects", json={"project_id": project_id, "title": "Invalid Style"}).status_code == 200
+
+    response = client.patch(
+        f"/projects/{project_id}",
+        json={"world_blueprint": {"writing_style": "通用白描"}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid_writing_style"
+
+
 def test_regular_project_updates_are_serialized_per_project(monkeypatch):
     import apps.api.routes.stories as story_routes
 

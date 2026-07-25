@@ -203,7 +203,7 @@ def _runtime_generation_responses():
     }
     return {
         "planner": (json.dumps(plan, ensure_ascii=False), ""),
-        "writer": ("第一章\n\n主角确认线索后离开现场。", ""),
+        "writer": ("主角确认线索后离开现场。" * 400, ""),
         "memory": (json.dumps(memory, ensure_ascii=False), ""),
     }
 

@@ -21,6 +21,7 @@ def test_web_game_review_rejects_first_chapter_missing_initial_identity_and_pane
     assert review["pass"] is False
     assert any("初始身份" in issue for issue in review["issues"])
     assert any("角色面板" in issue for issue in review["issues"])
+    assert any("正文中明确写出“角色面板”" in item for item in review["revision_plan"])
 
 
 def test_web_game_review_allows_first_chapter_initial_identity_panel_and_single_npc():

@@ -191,6 +191,43 @@ def test_actionable_chapter_outline_skips_planner_model(monkeypatch):
     assert bundle.event_plan["chapter_satisfaction"]["visible_payoff"] == "提交任务并升到二级"
 
 
+def test_writer_request_failure_is_preserved_in_failed_bundle(monkeypatch):
+    story = StoryState(
+        story_id="s-writer-request-failure",
+        outline="夜烬完成灰狼材料任务。",
+        outline_context={
+            "chapter": {
+                "chapter_number": 1,
+                "title": "第一笔收入",
+                "goal": "完成灰狼材料任务",
+                "obstacle": "灰狼刷新点竞争激烈",
+                "action": "夜烬换到侧坡收集材料",
+                "turn": "材料比预想更快凑齐",
+                "payoff": "提交任务并升到二级",
+                "ending_hook": "交易行出现新的收购单",
+                "cast": ["夜烬"],
+            }
+        },
+        genre="game fantasy",
+        style="webnovel",
+        characters=[CharacterState(name="夜烬", role="protagonist")],
+    )
+    orchestrator = StoryOrchestrator()
+    writer_error = "整章写作 第1章 model_request_failed:codexcli_failed:command not found"
+
+    def fake_timed_chat(_story, _prompt, *, agent, **_kwargs):
+        if agent == "writer":
+            return "", writer_error
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    bundle = orchestrator.generate_next_chapter(story)
+
+    assert bundle.quality_report["failure_reason"] == writer_error
+    assert writer_error in bundle.quality_report["issues"]
+
+
 def test_incomplete_chapter_outline_uses_planner_model(monkeypatch):
     story = StoryState(
         story_id="s-model-planning-fallback",
@@ -275,6 +312,11 @@ def _disable_optional_writing_passes(monkeypatch):
     )
 
 
+def _reviewable_body(text: str) -> str:
+    compact_chars = max(1, len("".join(text.split())))
+    return text * (4300 // compact_chars + 1)
+
+
 def test_orchestrator_persists_only_memory_extracted_after_final_body(monkeypatch):
     _disable_optional_writing_passes(monkeypatch)
     monkeypatch.setattr(
@@ -290,7 +332,7 @@ def test_orchestrator_persists_only_memory_extracted_after_final_body(monkeypatc
         characters=[CharacterState(name="林照", role="主角", current_emotion="平静", location="祖祠")],
         progression_ledger={"protagonist": {"location": "祖祠"}},
     )
-    final_body = "林照把断香炉搬回偏殿。周执事让他明早去账房回话。"
+    final_body = _reviewable_body("林照把断香炉搬回偏殿。周执事让他明早去账房回话。")
     calls = []
     orchestrator = StoryOrchestrator()
 
@@ -402,7 +444,7 @@ def test_orchestrator_memory_failure_uses_body_fallback_without_planned_state(mo
         characters=[CharacterState(name="林照", role="主角", current_emotion="平静", location="祖祠")],
         progression_ledger={"protagonist": {"location": "祖祠"}},
     )
-    final_body = "林照把断香炉搬回偏殿。"
+    final_body = _reviewable_body("林照把断香炉搬回偏殿。")
     orchestrator = StoryOrchestrator()
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
@@ -439,7 +481,7 @@ def test_grounded_memory_without_title_does_not_use_director_conflict_for_title(
     plan["chapter_intent"]["chapter_title"] = "导演计划标题"
     plan["chapter_intent"]["next_focus"] = "回村补给并购买药水"
     plan["event_plan"]["next_focus"] = "回村补给并购买药水"
-    body = "夜烬打倒灰狼。"
+    body = _reviewable_body("夜烬打倒灰狼。")
     memory = {
         "summary": body,
         "facts": [{"text": "夜烬打倒灰狼", "evidence": "夜烬打倒灰狼"}],
@@ -534,8 +576,8 @@ def test_refresh_revised_bundle_reextracts_memory_from_revised_body(monkeypatch)
 def test_memory_extraction_uses_selected_revision_body(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
-    initial_body = "林照按计划把断香炉留在东院。"
-    revised_body = "林照把断香炉搬回偏殿。周执事让他明早去账房回话。"
+    initial_body = _reviewable_body("林照按计划把断香炉留在东院。")
+    revised_body = _reviewable_body("林照把断香炉搬回偏殿。周执事让他明早去账房回话。")
 
     def review(body_chapter, body, *_args, **_kwargs):
         if body == initial_body:
@@ -584,16 +626,13 @@ def test_memory_extraction_uses_selected_revision_body(monkeypatch):
     assert bundle.chapter_summary["facts"] == ["断香炉已搬回偏殿"]
 
 
-def test_dialogue_issue_triggers_one_revision_and_learns_only_after_acceptance(monkeypatch):
+def test_dialogue_advice_does_not_trigger_full_revision_but_updates_memory(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
-    initial_body = "林照问：“账房？”周执事说：“明早。”"
-    revised_body = "林照把断香炉搬回偏殿。周执事让他明早去账房回话。"
+    initial_body = _reviewable_body("林照问：“账房？”周执事说：“明早。”")
 
     def review(_chapter, body, *_args, **_kwargs):
-        if body == initial_body:
-            return {"pass": False, "issues": ["对话不够自然，人物只说短句。"]}
-        return {"pass": True, "issues": []}
+        return {"pass": False, "issues": ["对话不够自然，人物只说短句。"]}
 
     monkeypatch.setattr(orchestrator_module, "_review_chapter_body", review)
     story = StoryState(
@@ -610,10 +649,8 @@ def test_dialogue_issue_triggers_one_revision_and_learns_only_after_acceptance(m
         calls.append((agent, stage))
         if agent == "planner":
             return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
-        if agent == "writer" and "审稿改稿" not in stage:
-            return initial_body, ""
         if agent == "writer":
-            return revised_body, ""
+            return initial_body, ""
         if agent == "memory":
             return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
         raise AssertionError(agent)
@@ -621,16 +658,17 @@ def test_dialogue_issue_triggers_one_revision_and_learns_only_after_acceptance(m
     monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
     bundle = orchestrator.generate_next_chapter(story)
 
-    assert [agent for agent, _stage in calls] == ["planner", "writer", "writer", "memory"]
-    assert bundle.body == revised_body
-    assert bundle.quality_report["revision_safety"]["accepted"] is True
-    assert any("已验证改法" in lesson and "对话" in lesson for lesson in bundle.updated_story.writing_lessons)
+    assert [agent for agent, _stage in calls] == ["planner", "writer", "memory"]
+    assert bundle.body == initial_body
+    assert "revision_safety" not in bundle.quality_report
+    assert bundle.quality_report["memory_sync"]["status"] != "skipped"
+    assert bundle.updated_story.writing_lessons == []
 
 
 def test_ordinary_prose_advice_does_not_trigger_revision_or_learning(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
-    body = "林照把断香炉搬回偏殿。周执事让他明早去账房回话。"
+    body = _reviewable_body("林照把断香炉搬回偏殿。周执事让他明早去账房回话。")
     monkeypatch.setattr(
         orchestrator_module,
         "_review_chapter_body",
@@ -664,10 +702,10 @@ def test_ordinary_prose_advice_does_not_trigger_revision_or_learning(monkeypatch
     assert bundle.updated_story.writing_lessons == []
 
 
-def test_unresolved_dialogue_revision_is_rejected_and_not_learned(monkeypatch):
+def test_unresolved_dialogue_advice_is_not_sent_to_full_revision(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
-    body = "林照问：“账房？”周执事说：“明早。”"
+    body = _reviewable_body("林照问：“账房？”周执事说：“明早。”")
     monkeypatch.setattr(
         orchestrator_module,
         "_review_chapter_body",
@@ -695,9 +733,9 @@ def test_unresolved_dialogue_revision_is_rejected_and_not_learned(monkeypatch):
     bundle = orchestrator.generate_next_chapter(story)
 
     assert bundle.body == body
-    assert bundle.quality_report["revision_safety"]["accepted"] is False
-    assert bundle.quality_report["revision_safety"]["selected"] == "original"
+    assert "revision_safety" not in bundle.quality_report
     assert "accepted_revision_actions" not in bundle.quality_report
+    assert bundle.quality_report["memory_sync"]["status"] != "skipped"
     assert bundle.updated_story.writing_lessons == []
 
 
@@ -709,7 +747,7 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
         if body == "first draft":
             return {
                 "pass": False,
-                "issues": ["对话太快，读者抓不到真实反应。"],
+                "issues": ["连续性冲突：人物状态与上一章不一致。"],
                 "revision_plan": ["把对话拆成两三句，让主角先停顿。"],
             }
         return {"pass": True, "issues": []}

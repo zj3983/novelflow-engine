@@ -46,6 +46,31 @@ def test_first_chapter_governance_separates_intent_context_and_rule_stack():
     assert "爽点" in "、".join(governance["rule_stack"]["diagnostic_only"])
 
 
+def test_first_chapter_trade_contract_overrides_generic_trade_bans():
+    story = _web_game_story()
+    story.world_facts.append("第一章必须通过裂纹狼心担保交易解决现实急账。")
+    bundle = ChapterBundle(
+        chapter_number=1,
+        chapter_title="第1章 第一笔到账",
+        body="",
+        next_outline="完成担保交易并付清急账。",
+        updated_story=story,
+        event_plan={"turn": "第一章必须通过裂纹狼心担保交易解决现实急账。"},
+    )
+
+    governance = build_chapter_governance(story, bundle, chapter_number=1)
+
+    must_include = "、".join(governance["chapter_intent"]["must_include"])
+    must_avoid = "、".join(governance["chapter_intent"]["must_avoid"])
+    assert "担保交易到账并处理现实急账" in must_include
+    assert "交易行实际成交" not in must_avoid
+    assert "到账/手续费结算" not in must_avoid
+
+    packet = build_codex_writing_packet(story, bundle)
+    packet_locks = "、".join(packet["hard_locks"])
+    assert "第一章禁止实际寄售成交" not in packet_locks
+
+
 def test_writing_packet_embeds_governance_without_mixing_diagnostic_terms_into_hard_locks():
     story = _web_game_story()
     bundle = ChapterBundle(

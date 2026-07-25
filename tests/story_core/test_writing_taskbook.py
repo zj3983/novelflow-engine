@@ -6,6 +6,37 @@ from packages.story_core.writing_taskbook import (
 )
 
 
+def test_taskbook_has_no_style_contract_when_style_is_unselected():
+    taskbook = build_writing_taskbook(chapter_number=2, genre="都市", style="", plan={})
+
+    assert taskbook["style_contract"] == []
+    assert "通用白描" not in str(taskbook)
+
+
+def test_taskbook_uses_one_selected_style_prompt():
+    taskbook = build_writing_taskbook(chapter_number=2, genre="都市", style="幽默", plan={})
+
+    assert taskbook["style_contract"] == [
+        "幽默：让笑点来自人物反应、处境反差和顺口接话，不刻意抖包袱。"
+    ]
+
+
+def test_trade_authorized_first_chapter_taskbook_does_not_reintroduce_old_game_or_trade_ban():
+    taskbook = build_writing_taskbook(
+        chapter_number=1,
+        genre="网游",
+        plan={
+            "governance": {"chapter_intent": {"first_chapter_trade_authorized": True}},
+            "event_plan": {"turn": "第一章完成裂纹狼心担保交易并付清急账。"},
+        },
+    )
+
+    rendered = str(taskbook)
+    assert "天启之门" not in rendered
+    assert "第一章只完成登录、低级验证和领先预期" not in rendered
+    assert "担保交易到账并处理现实急账" in rendered
+
+
 def test_first_chapter_taskbook_keeps_only_three_useful_scenes():
     taskbook = build_writing_taskbook(
         chapter_number=1,

@@ -10,6 +10,8 @@ HARD_TOKENS = (
     "字数不足",
     "章节字数偏少",
     "字数超出",
+    "缺少带身份栏的角色面板",
+    "缺少简洁怪物面板",
     "题材污染",
     "设定冲突",
     "人物错位",
@@ -23,6 +25,8 @@ HARD_TOKENS = (
     "开篇余额不一致",
     "大纲金额不一致",
     "章末余额不一致",
+    "现实余额出现顺序错误",
+    "交易金额流水矛盾",
 )
 
 AI_FLAVOR_TOKENS = (
@@ -119,6 +123,19 @@ def _collect_revision_plans(report: dict[str, Any]) -> list[str]:
 
 
 def _category(message: str) -> str:
+    if "场景卡必写内容缺失" in message and any(
+        marker in message
+        for marker in (
+            "s2-c1-",
+            "s3-c1-",
+            "s4-c1-",
+            "s6-c1-",
+            "现实职业/技能来源",
+            "真实到账",
+            "现实急账处理",
+        )
+    ):
+        return "hard"
     if any(token in message for token in HARD_TOKENS):
         return "hard"
     if any(token in message for token in AI_FLAVOR_TOKENS):

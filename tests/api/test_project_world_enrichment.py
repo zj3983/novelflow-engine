@@ -187,7 +187,7 @@ def test_project_generation_syncs_explicit_xianxia_context_before_engine(tmp_pat
     synced = captured["story"]
     assert synced.outline == "林照被分去祖祠看守断香炉。"
     assert synced.genre == "xianxia"
-    assert synced.style == "白描、现代中文"
+    assert synced.style == ""
     assert "小说类型：xianxia" in synced.world_facts
     assert "当前焦点：第一章写祖祠守炉，不写游戏登录。" in synced.world_facts
     assert synced.author_constraints == ["不写网游面板、背包、掉落、铜币或玩家生态。"]

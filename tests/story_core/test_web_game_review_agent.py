@@ -16,6 +16,7 @@ def test_web_game_review_requires_panel_before_first_monster_fight():
     )
 
     assert any("怪物面板" in issue for issue in review["issues"])
+    assert any("正文中明确写出“怪物面板”" in item for item in review["revision_plan"])
 
 
 def test_web_game_review_accepts_compact_first_monster_panel():
@@ -23,6 +24,23 @@ def test_web_game_review_accepts_compact_first_monster_panel():
         "《天启之门》开服后，夜烬走到灰狼坡。"
         "【灰狼】【等级：1】【生命：80/80】【攻击方式：扑咬】"
         "灰狼从石头后扑出来，他抬手放出火球，随后击杀了灰狼。"
+    ) * 20
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"ordered_actions": ["夜烬第一次和灰狼正式交战"]},
+        world_facts=["这是夜烬第一次遇见灰狼。"],
+    )
+
+    assert not any("怪物面板" in issue for issue in review["issues"])
+
+
+def test_web_game_review_accepts_plain_text_monster_panel_without_brackets():
+    body = (
+        "《神域》开服后，夜烬走到灰狼坡。正式交战前，他凝神查看怪物面板。"
+        "名称：灰狼，等级：1，生命：80/80，攻击方式：扑咬。"
+        "灰狼从石头后扑出来，他抬手放出基础火球术，随后击杀了灰狼。"
     ) * 20
 
     review = review_web_game_chapter(
@@ -264,6 +282,18 @@ def test_web_game_review_allows_first_chapter_trade_board_without_trade_completi
     )
 
     assert review["pass"] is True, review
+
+
+def test_web_game_review_accepts_commission_progress_as_progression_payoff():
+    body = (
+        "《神域》开服，夜烬以见习冒险者身份选择新手法杖和基础火球术，钱袋为空。"
+        "灰狼倒下后，底层协议校验通过，混沌之种和千倍爆率同时出现。"
+        "清道夫委托进度已经到了8/16，别人还在等第一份毒腺。"
+    )
+
+    review = review_web_game_chapter(chapter_number=1, body=body, event_plan={}, world_facts=[])
+
+    assert not any("进度领先钩子" in issue for issue in review["issues"])
 
 
 def test_web_game_review_does_not_force_first_chapter_full_npc_service():

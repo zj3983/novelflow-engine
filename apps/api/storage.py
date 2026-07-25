@@ -25,6 +25,7 @@ from packages.story_core.models import (
     WorldBible,
 )
 from packages.story_core.dual_state import normalize_dual_state
+from packages.story_core.book_style import normalize_book_style
 from packages.story_core.genre_plugins import select_genre_plugins
 from packages.story_core.novel_type_catalog import normalize_novel_type_ids
 from packages.story_core.runtime_config import get_runtime_strategy_settings
@@ -553,12 +554,6 @@ def _sync_project_character_profiles(story: StoryState, project: NovelProject) -
         )
 
 
-def _default_story_style_for_genre(plugin_id: str) -> str:
-    if plugin_id == "game_webnovel":
-        return "升级流"
-    return "白描、现代中文"
-
-
 def _sync_project_generation_context(story: StoryState, project: NovelProject, *, has_history: bool) -> None:
     story.author_constraints = list(project.author_constraints)
     story.world_facts = _project_world_facts(project)
@@ -587,16 +582,12 @@ def _sync_project_generation_context(story: StoryState, project: NovelProject, *
     first_generation = not has_history
     outline_compact = "".join(story.outline.split())
     placeholder_outline = not outline_compact or set(outline_compact) <= {"?", "？"}
-    style_compact = "".join(story.style.split())
-    placeholder_style = not style_compact or set(style_compact) <= {"?", "？"}
     if project.seed_outline and (first_generation or placeholder_outline):
         story.outline = project.seed_outline
     if primary_genre:
         story.genre = primary_genre
-    if primary_genre and (not story.style or first_generation or placeholder_style):
-        story.style = _default_story_style_for_genre(primary_genre)
-    elif not story.style or first_generation or placeholder_style:
-        story.style = "白描、现代中文"
+    world_blueprint = project.world_blueprint if isinstance(project.world_blueprint, dict) else {}
+    story.style = normalize_book_style(world_blueprint.get("writing_style"))
 
     ledger = project.world_blueprint.get("progression_ledger") if isinstance(project.world_blueprint, dict) else None
     ledger_keys = set(ledger) if isinstance(ledger, dict) else set()

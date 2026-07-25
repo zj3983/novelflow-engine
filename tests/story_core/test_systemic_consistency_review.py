@@ -46,3 +46,14 @@ def test_world_consistency_review_accepts_systemic_ledger_and_visibility_surface
 
     assert review["scores"]["systemic_consistency"] == 8
     assert review["issues"] == []
+
+
+def test_world_consistency_review_does_not_treat_hidden_identity_protection_as_exposure():
+    body = (
+        "平台提示买家不能查看卖方现实身份，匿名交易也不会公开隐藏天赋。"
+        "担保交易完成后，夜烬的来源没有暴露。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=[_systemic_scene_card()])
+
+    assert not any("visibility break" in issue.lower() for issue in review["issues"])

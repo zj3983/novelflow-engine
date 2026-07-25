@@ -186,7 +186,7 @@ def test_project_context_replaces_placeholder_story_metadata_after_chapter_exist
 
     assert story.outline == project.seed_outline
     assert story.genre == "xianxia"
-    assert story.style == "白描、现代中文"
+    assert story.style == ""
 
 
 def test_xianxia_negative_game_constraints_do_not_activate_game_character_defaults():
@@ -240,7 +240,7 @@ def test_project_context_updates_explicit_genre_without_replacing_real_writing_c
 
     assert story.genre == "xuanhuan"
     assert story.outline == "已经写过的真实大纲"
-    assert story.style == "克制白描，人物说话自然"
+    assert story.style == ""
 
 
 def test_project_context_replaces_incompatible_ledger_and_non_game_profile_state():

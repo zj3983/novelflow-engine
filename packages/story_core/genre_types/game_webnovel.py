@@ -1,7 +1,138 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
 from packages.story_core.genre_types.base import GenrePlugin
 from packages.story_core.game_level_gap import level_gap_rule_text
+
+
+@dataclass(frozen=True)
+class GameLanguageCard:
+    card_id: str
+    trigger_terms: tuple[str, ...]
+    preferred: tuple[str, ...]
+    avoid: tuple[str, ...]
+    example: str
+
+
+GAME_WEBNOVEL_LANGUAGE_CARDS = (
+    GameLanguageCard(
+        card_id="base",
+        trigger_terms=(),
+        preferred=("玩家能看见的界面词", "玩家会顺口说的游戏词", "动作后的直接结果"),
+        avoid=("服务器实现", "数据字段", "后台流程", "运营报告", "区域分片", "登记资格"),
+        example="写“任务进度变成1/16”，不写“系统完成数据同步”。",
+    ),
+    GameLanguageCard(
+        card_id="login_server",
+        trigger_terms=("登录", "建号", "创建角色", "服务器", "区服", "开服", "新手村", "分线", "位面"),
+        preferred=("服务器", "区服", "分线", "位面", "换线", "排队登录"),
+        avoid=("负载分片", "承载节点", "区域分片", "跨区数据同步"),
+        example="写“新手村又开了几条分线”，不解释服务器怎样分配玩家。",
+    ),
+    GameLanguageCard(
+        card_id="quest",
+        trigger_terms=("任务", "委托", "接取", "接任务", "交任务", "任务进度", "任务物品", "解锁", "前置"),
+        preferred=("接任务", "交任务", "任务进度", "任务物品", "完成", "解锁后续任务"),
+        avoid=("登记资格", "服务节点", "任务门槛", "流程校验"),
+        example="写“交掉《清理灰狼》就能接《后坡巡查》”。",
+    ),
+    GameLanguageCard(
+        card_id="combat",
+        trigger_terms=("战斗", "击杀", "灰狼", "怪物", "拉怪", "仇恨", "抢怪", "火球", "伤害", "生命", "法力"),
+        preferred=("刷新", "拉怪", "仇恨", "抢怪", "归属", "残血", "回蓝", "卡位", "脱战"),
+        avoid=("战斗模型", "控制变量", "仇恨算法", "行为树"),
+        example="写“灰狼转头扑向他”，需要时再让熟练玩家说“仇恨转了”。",
+    ),
+    GameLanguageCard(
+        card_id="loot_inventory",
+        trigger_terms=("掉落", "战利品", "拾取", "背包", "任务物品", "绑定", "可交易", "材料", "狼心", "毒腺", "狼皮", "狼牙"),
+        preferred=("出了", "掉了", "拾取", "战利品", "叠加", "绑定", "可交易", "放进背包"),
+        avoid=("配方验证", "样本判定", "数据用途", "掉落数据集"),
+        example="写“毒腺叠进原来的格子，任务进度跳到1/16”。",
+    ),
+    GameLanguageCard(
+        card_id="trade",
+        trigger_terms=("交易", "交易行", "拍卖行", "上架", "出售", "求购", "一口价", "成交", "手续费", "到账", "寄售"),
+        preferred=("交易行", "上架", "求购单", "一口价", "成交", "手续费", "到账"),
+        avoid=("平台封存", "封存交割", "现实结算", "字段权限", "交易流转"),
+        example="写“他点下出售，订单变成已成交”，不解释平台后台怎样验货。",
+    ),
+    GameLanguageCard(
+        card_id="group_dungeon",
+        trigger_terms=("组队", "队伍", "小队", "副本", "地下城", "首领", "团本", "坦克", "治疗", "灭团"),
+        preferred=("组队", "进本", "坦克", "治疗", "输出", "开怪", "灭团", "拾取分配"),
+        avoid=("协作单元", "战斗岗位矩阵", "实例化空间", "团队资源调度"),
+        example="写“坦克先开怪，治疗等他站稳再抬血”。",
+    ),
+    GameLanguageCard(
+        card_id="equipment_progression",
+        trigger_terms=("装备", "武器", "法杖", "耐久", "修理", "属性", "技能", "专精", "天赋", "换装"),
+        preferred=("装备等级", "品质", "耐久", "修理", "需求等级", "绑定", "换装", "技能冷却"),
+        avoid=("属性矩阵", "装备参数模型", "成长数据管线", "技能配置项"),
+        example="写“法杖只剩两点耐久，回村后得先修一下”，不用解释耐久系统怎样结算。",
+    ),
+    GameLanguageCard(
+        card_id="guild_social",
+        trigger_terms=("公会", "会长", "团长", "招募", "开荒", "公会频道", "团队进度", "固定团"),
+        preferred=("公会频道", "招募", "开荒", "团长", "固定团", "团队进度", "活动时间"),
+        avoid=("组织节点", "成员资源调度", "协作网络", "社交关系数据"),
+        example="写“公会频道正在招人开荒”，不写“组织开始调度成员资源”。",
+    ),
+)
+
+
+_IGNORED_LANGUAGE_PLAN_KEYS = (
+    "avoid",
+    "forbidden",
+    "must_not",
+    "prohibit",
+    "ban",
+)
+
+_LANGUAGE_CARD_PRIORITY_MARKERS = {
+    "login_server": ("entry_login", "登录建号", "创建角色"),
+    "combat": ("small_verification", "低级怪小验证", "怪物面板"),
+    "loot_inventory": ("异常掉落", "掉落异常", "战利品"),
+    "trade": ("担保交易", "匿名交割", "第一笔到账"),
+    "group_dungeon": ("副本开荒", "进入副本", "团队副本"),
+    "guild_social": ("公会招募", "固定团招募", "公会频道"),
+}
+
+
+def _language_plan_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return "\n".join(
+            _language_plan_text(item)
+            for key, item in value.items()
+            if not any(marker in str(key).lower() for marker in _IGNORED_LANGUAGE_PLAN_KEYS)
+        )
+    if isinstance(value, (list, tuple, set)):
+        return "\n".join(_language_plan_text(item) for item in value)
+    return str(value or "")
+
+
+def select_game_language_cards(
+    plan: dict[str, Any] | str | None,
+    *,
+    max_cards: int = 3,
+) -> list[GameLanguageCard]:
+    """Select a compact set of player-facing language cards for one chapter."""
+
+    limit = max(1, int(max_cards))
+    text = _language_plan_text(plan)
+    selected = [GAME_WEBNOVEL_LANGUAGE_CARDS[0]]
+    scored: list[tuple[int, int, GameLanguageCard]] = []
+    for index, card in enumerate(GAME_WEBNOVEL_LANGUAGE_CARDS[1:], start=1):
+        score = sum(text.count(term) for term in card.trigger_terms)
+        if any(marker in text for marker in _LANGUAGE_CARD_PRIORITY_MARKERS.get(card.card_id, ())):
+            score += 1000
+        if score:
+            scored.append((score, index, card))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    selected.extend(card for _, _, card in scored[: max(0, limit - 1)])
+    return selected
 
 
 GAME_WEBNOVEL = GenrePlugin(
@@ -50,7 +181,7 @@ GAME_WEBNOVEL = GenrePlugin(
             "开场用压力或收益钩子抓人，中段用行动选择推动规则运转，结尾留下更大的资源或身份压力。",
             "每章都要同时推进主角成长、世界规则展示和领先感：普通玩家还在跑重复流程时，主角已经拿到下一项任务、装备、技能或地图入口。",
             "网游第一章只聚焦一个核心事件：现实压力、登录/建号、选择游戏ID、选择职业、角色面板、首次领先验证、章末下一步目标。",
-            "第一章不得实际交易或公会追踪；交易行、商人玩家、公会外围和论坛反应移到第二章以后逐步展开。",
+            "第一章是否完成实际交易必须服从项目大纲；公会追踪、商人盯盘和论坛扩散移到有足够公开证据后逐步展开。",
             "第一章是否交低级任务、领取铜币、修理或买药，必须跟随项目账本/章节计划；未允许时只写价牌、队伍、前置条件和下一步目标，不能擅自结算。",
         ),
         "forbidden_breaks": (

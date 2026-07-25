@@ -12,6 +12,7 @@ def test_codex_cli_always_uses_payload_model_when_environment_conflicts(monkeypa
     def fake_run(args, **kwargs):
         captured["args"] = args
         captured["env"] = kwargs["env"]
+        captured["cwd"] = kwargs["cwd"]
         output_path = Path(args[args.index("--output-last-message") + 1])
         output_path.write_text("ok", encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -36,6 +37,8 @@ def test_codex_cli_always_uses_payload_model_when_environment_conflicts(monkeypa
     assert args[args.index("--sandbox") + 1] == "read-only"
     assert "--skip-git-repo-check" in args
     assert captured["env"]["CODEX_HOME"] != str(source_codex_home)
+    assert Path(captured["cwd"]).name.startswith("novel_codexcli_")
+    assert Path(captured["cwd"]) != Path.cwd()
 
 
 def test_codex_cli_rejects_empty_payload_model(monkeypatch):

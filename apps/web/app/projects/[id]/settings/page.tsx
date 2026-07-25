@@ -28,6 +28,8 @@ const STATUS_LABEL = {
   completed: "已完成",
 } as const;
 
+const BOOK_STYLE_OPTIONS = ["幽默", "轻松", "热血", "冷峻", "细腻"] as const;
+
 function statusLabel(status: ProjectStatus | undefined): string {
   const key = String(status || "draft");
   return key in STATUS_LABEL ? STATUS_LABEL[key as keyof typeof STATUS_LABEL] : key;
@@ -43,6 +45,7 @@ export default function ProjectSettingsPage() {
   const source = project?.storage_source ? SOURCE_LABEL[project.storage_source] : "数据库";
   const mountedRef = useRef(true);
   const saveRequestIdRef = useRef(0);
+  const saveStyleRequestIdRef = useRef(0);
   const typeSelectionTouchedRef = useRef(false);
   const typeSelectionInitializedRef = useRef(false);
   const [novelTypes, setNovelTypes] = useState<NovelType[]>([]);
@@ -52,12 +55,16 @@ export default function ProjectSettingsPage() {
   const [typesLoadVersion, setTypesLoadVersion] = useState(0);
   const [savingType, setSavingType] = useState(false);
   const [typeMessage, setTypeMessage] = useState<TypeMessage | null>(null);
+  const [selectedStyle, setSelectedStyle] = useState("");
+  const [savingStyle, setSavingStyle] = useState(false);
+  const [styleMessage, setStyleMessage] = useState<TypeMessage | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       saveRequestIdRef.current += 1;
+      saveStyleRequestIdRef.current += 1;
     };
   }, []);
 
@@ -94,6 +101,10 @@ export default function ProjectSettingsPage() {
     }
   }, [novelTypes, project, typesError, typesLoading]);
 
+  useEffect(() => {
+    setSelectedStyle(project?.world_blueprint?.writing_style || "");
+  }, [project?.project_id, project?.world_blueprint?.writing_style]);
+
   const selectedType = useMemo(
     () => novelTypes.find((type) => type.id === selectedTypeId),
     [novelTypes, selectedTypeId],
@@ -127,6 +138,36 @@ export default function ProjectSettingsPage() {
       setTypeMessage({ kind: "error", text: "保存失败，请检查服务后重试。" });
     } finally {
       if (mountedRef.current && requestId === saveRequestIdRef.current) setSavingType(false);
+    }
+  }
+
+  async function saveWritingStyle(nextStyle: string) {
+    if (!project) return;
+    const previousStyle = selectedStyle;
+    const requestId = ++saveStyleRequestIdRef.current;
+    setSelectedStyle(nextStyle);
+    setSavingStyle(true);
+    setStyleMessage(null);
+    try {
+      const nextBlueprint: ImportedWorldBlueprint = {
+        ...(project.world_blueprint ?? {}),
+        writing_style: nextStyle,
+      };
+      await updateProject(projectId, { world_blueprint: nextBlueprint }, { fallbackToMock: false });
+      if (!mountedRef.current || requestId !== saveStyleRequestIdRef.current) return;
+      setStyleMessage({
+        kind: "success",
+        text: nextStyle
+          ? `文风已保存为：${nextStyle}。下一次写作会读取这个选择。`
+          : "已清空文风选择。下一次写作不会注入额外文风。",
+      });
+      refresh();
+    } catch {
+      if (!mountedRef.current || requestId !== saveStyleRequestIdRef.current) return;
+      setSelectedStyle(previousStyle);
+      setStyleMessage({ kind: "error", text: "文风保存失败，请检查服务后重试。" });
+    } finally {
+      if (mountedRef.current && requestId === saveStyleRequestIdRef.current) setSavingStyle(false);
     }
   }
 
@@ -200,6 +241,42 @@ export default function ProjectSettingsPage() {
             {typeMessage?.kind === "error" ? (
               <p className="ws-project-create__error" role="alert" aria-live="assertive">
                 {typeMessage.text}
+              </p>
+            ) : null}
+          </section>
+
+          <section className="ws-card ws-novel-type-card">
+            <div className="ws-section-head">
+              <div>
+                <p className="ws-card__title">文风</p>
+                <p className="ws-card__hint">只控制表达倾向，不改变大纲、人物和题材规则。不选择时不添加额外文风。</p>
+              </div>
+              <span className="ws-toolbar__meta">{selectedStyle || "未选择"}</span>
+            </div>
+            <label className="ws-character-mini ws-novel-type-field">
+              <strong>当前文风</strong>
+              <select
+                className="ws-input"
+                value={selectedStyle}
+                disabled={!project || projectLoading || savingStyle}
+                onChange={(event) => void saveWritingStyle(event.target.value)}
+              >
+                <option value="">未选择</option>
+                {BOOK_STYLE_OPTIONS.map((style) => (
+                  <option key={style} value={style}>
+                    {style}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {styleMessage?.kind === "success" ? (
+              <p className="ws-card__hint" role="status" aria-live="polite">
+                {styleMessage.text}
+              </p>
+            ) : null}
+            {styleMessage?.kind === "error" ? (
+              <p className="ws-project-create__error" role="alert" aria-live="assertive">
+                {styleMessage.text}
               </p>
             ) : null}
           </section>

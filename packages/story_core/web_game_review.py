@@ -255,7 +255,7 @@ def _first_chapter_anchor_issues(body: str, *, allow_trade_payoff: bool = False)
                 "在角色面板或钱袋里写清一枚铜都没有，并用它压住章末选择。",
             )
         )
-    if not _has_any(body, ("任务进度", "任务门槛", "装备门槛", "技能门槛", "路线", "领先", "更快", "少跑", "早一步", "提前凑齐")):
+    if not _has_any(body, ("任务进度", "委托进度", "任务门槛", "装备门槛", "技能门槛", "路线", "领先", "更快", "少跑", "早一步", "提前凑齐")):
         issues.append(
             (
                 "progression_payoff",
@@ -718,7 +718,11 @@ def review_web_game_chapter(
     monster_surface = _has_any(combined, ("怪物", "野怪", "灰狼", "灰鼠", "精英", "首领", "BOSS", "Boss", "boss"))
     first_encounter = chapter_number == 1 or _has_any("\n".join([plan_text, facts_text]), ("第一次", "首次", "初见", "新敌人"))
     panel_fields = ("等级：", "生命：", "攻击方式：")
-    has_basic_monster_panel = "【" in body and all(field in body for field in panel_fields)
+    panel_marker = body.find("怪物面板")
+    natural_panel = body[panel_marker:panel_marker + 240] if panel_marker >= 0 else ""
+    has_basic_monster_panel = all(field in natural_panel for field in panel_fields) or (
+        "【" in body and all(field in body for field in panel_fields)
+    )
     if combat_surface and monster_surface and first_encounter and not has_basic_monster_panel:
         _append_issue(
             issues=issues,
@@ -726,7 +730,7 @@ def review_web_game_chapter(
             scores=scores,
             score_key="monster_panel",
             issue="首次与该类怪物正式交战前缺少简洁怪物面板，读者无法直接确认敌人的等级、生命和攻击方式。",
-            plan="在第一次交手前补一次怪物面板，只写名称、等级、生命和攻击方式；同类普通怪后续不要重复展示，掉落等击杀后再结算。",
+            plan="在第一次交手前补一次简短面板，正文中明确写出“怪物面板”，并只写名称、等级、生命和攻击方式；同类普通怪后续不要重复展示，掉落等击杀后再结算。",
         )
     elite_or_boss = _has_any(body, ("精英", "首领", "BOSS", "Boss", "boss"))
     if combat_surface and elite_or_boss and has_basic_monster_panel and not all(field in body for field in ("技能：", "特性：")):
@@ -779,7 +783,7 @@ def review_web_game_chapter(
             plan="删除未授权的前世、穿越、疾病、网贷等背景；现实压力只写项目档案已有的账单和工作技能来源，不套用其他作品的金额或账单。",
         )
 
-    boundary_chapter = chapter_number == 1 and _has_any(
+    boundary_chapter = chapter_number == 1 and not chapter_one_trade_payoff and _has_any(
         combined,
         ("确认边界", "边界章", "验证边界", "试探边界", "不是赚钱", "不换钱", "not money", "boundary"),
     )
@@ -842,7 +846,7 @@ def review_web_game_chapter(
             scores=scores,
             score_key="class_equipment",
             issue="第一章缺少带身份栏的角色面板；当前等级、身份、经验、主武器/基础技能没有形成可追踪账本。",
-            plan="补一个克制的角色面板，包含游戏ID夜烬、等级1、身份见习冒险者（未转职）、经验0/100、新手法杖、基础火球术、初始背包或钱袋。",
+            plan="补一个克制的面板，正文中明确写出“角色面板”，包含游戏ID夜烬、等级1、身份见习冒险者（未转职）、经验0/100、新手法杖、基础火球术、初始背包或钱袋。",
         )
     if needs_class_panel and _has_any(body, panel_markers) and not _has_any(
         body,

@@ -43,10 +43,10 @@ def test_first_chapter_packet_contains_contract():
     assert packet["prose_renderer"]["role"] == "prose_renderer_only"
     assert "world_simulation" in packet["prose_renderer"]["do_not_use_for"]
     assert "review_verdicts" in packet["prose_renderer"]["do_not_use_for"]
-    assert any("少用比喻和形容词" in rule for rule in packet["style_rules"])
-    assert any("番茄爆款网文" in rule for rule in packet["style_rules"])
-    assert any("rhetoric sparse" in rule for rule in packet["prose_renderer"]["body_contract"])
-    assert any("Tomato-style webnovel language" in rule for rule in packet["prose_renderer"]["body_contract"])
+    assert any("人物行动、选择和结果要接得上" in rule for rule in packet["style_rules"])
+    assert all("番茄爆款网文" not in rule for rule in packet["style_rules"])
+    assert any("sentences complete" in rule for rule in packet["prose_renderer"]["body_contract"])
+    assert all("Tomato-style" not in rule for rule in packet["prose_renderer"]["body_contract"])
     assert packet["title_contract"]["style"] == "tomato_concrete_short_title"
     assert any("真实章节目录" in rule for rule in packet["title_contract"]["rules"])
     assert "清道夫委托" in packet["title_contract"]["examples"]
@@ -55,7 +55,7 @@ def test_first_chapter_packet_contains_contract():
     assert any(card["id"] == "validation" for card in packet["scene_cards"])
     assert packet["whole_chapter_contract"]["mode"] == "whole_body_only"
     assert "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子" in packet["whole_chapter_contract"]["beat_map"]
-    assert any("白描" in item for item in packet["whole_chapter_contract"]["style"])
+    assert any("句子要完整" in item for item in packet["whole_chapter_contract"]["style"])
     assert any("自然对话" in item for item in packet["whole_chapter_contract"]["dialogue"])
     assert any("谜语式" in item for item in packet["whole_chapter_contract"]["avoid"])
 

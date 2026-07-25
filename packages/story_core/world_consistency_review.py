@@ -19,7 +19,32 @@ INTERNAL_FIELD_TERMS = ("world_events", "scene_cards", "visible_to", "state_delt
 UNCHECKABLE_BEAT_CHARS = "，。；：、,.!?！？"
 
 SCENE_BEAT_ALIASES: dict[str, tuple[tuple[str, ...], ...]] = {
-    "现实职业/技能来源": (("风控", "测试员", "外包", "工作", "项目"), ("概率", "流水", "模型", "漏洞", "规则")),
+    "真实到账": (("真实到账", "实际到账", "到账提示", "到账通知", "银行通知", "账户收入", "到账："),),
+    "现实急账处理": (("现实急账", "急账处理", "急账已解决", "补上房租", "房租已补", "最低还款", "逾期倒计时消失"),),
+    "担保交易": (("担保交易", "担保平台", "匿名鉴定", "完成交割", "交割完成"),),
+    "现实职业/技能来源": (
+        ("风控", "测试员", "外包", "测试工作", "工作", "项目", "职业玩家", "道具估价", "交易平台"),
+        (
+            "概率",
+            "流水",
+            "模型",
+            "漏洞",
+            "规则",
+            "数值",
+            "流程测试",
+            "任务条件",
+            "怪物行为",
+            "伤害公式",
+            "测试过程",
+            "测试报告",
+            "法系模板",
+            "施法距离",
+            "技能冷却",
+            "估价",
+            "审核装备",
+            "核价格",
+        ),
+    ),
     "为什么登录游戏": (("房租", "停职", "余额", "缺钱", "变现", "下个月"),),
     "主角风险偏好": (("风险", "低调", "风控", "隔离", "封号"),),
     "游戏ID": (("游戏ID", "ID：", "ID:", "夜烬", "输入名字", "角色名"),),
@@ -230,6 +255,42 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term.lower() in lowered for term in terms)
 
 
+def _has_asserted_sensitive_exposure(body: str) -> bool:
+    asserted_phrases = (
+        "locked his coordinates",
+        "locked the coordinates",
+        "identified his hidden talent",
+        "identified the hidden talent",
+        "revealed his real identity",
+        "锁定坐标",
+        "锁定他的坐标",
+        "查到现实身份",
+        "确认现实身份",
+        "识别出现实身份",
+        "公开现实身份",
+        "暴露现实身份",
+        "查到隐藏天赋",
+        "确认隐藏天赋",
+        "识别出隐藏天赋",
+        "公开隐藏天赋",
+        "暴露隐藏天赋",
+    )
+    negation_markers = ("不", "没", "未", "无", "不能", "不会", "无法", "不可", "没有", "并未", "并不")
+    lowered = body.lower()
+    for phrase in asserted_phrases:
+        start = 0
+        needle = phrase.lower()
+        while True:
+            index = lowered.find(needle, start)
+            if index < 0:
+                break
+            prefix = lowered[max(0, index - 16):index]
+            if not any(marker in prefix for marker in negation_markers):
+                return True
+            start = index + len(needle)
+    return False
+
+
 def _review_scene_contract_consumption(
     body: str,
     scene_cards: list[dict[str, Any]],
@@ -331,21 +392,7 @@ def _review_systemic_consistency(
                 score=5,
             )
 
-        if visibility_layers.get("guild") and _contains_any(
-            body,
-            (
-                "locked his coordinates",
-                "locked the coordinates",
-                "identified his hidden talent",
-                "identified the hidden talent",
-                "real identity",
-                "precise coordinates",
-                "锁定坐标",
-                "锁定他的坐标",
-                "现实身份",
-                "隐藏天赋",
-            ),
-        ):
+        if visibility_layers.get("guild") and _has_asserted_sensitive_exposure(body):
             _append_issue(
                 issues=issues,
                 revision_plan=revision_plan,

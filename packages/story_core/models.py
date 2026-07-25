@@ -79,7 +79,7 @@ class AgentSettings(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalize_legacy_mode(cls, value):
-        if isinstance(value, dict) and value.get("mode") == "Rule-based":
+        if isinstance(value, dict) and value.get("mode") in {"Rule-based", "provider-configured"}:
             next_value = dict(value)
             next_value["mode"] = "LLM-assisted"
             return next_value

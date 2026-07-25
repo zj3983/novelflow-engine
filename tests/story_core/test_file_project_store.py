@@ -6,10 +6,25 @@ from types import SimpleNamespace
 import pytest
 
 from packages.story_core.file_project_store import (
+    ChapterQualityError,
     FileProjectStore,
+    _assert_auto_chapter_quality,
     _chapter_outline_title,
     _regeneration_quality_blocking,
 )
+
+
+def test_auto_quality_gate_allows_advisory_review_and_records_warning():
+    report = {
+        "ok": False,
+        "issues": ["writing_review"],
+        "writing_review": {"pass": False, "issues": ["对话仍不自然。"]},
+        "simplified_review": {"has_hard_errors": False, "needs_revision": True},
+    }
+
+    _assert_auto_chapter_quality(report, operation="regenerate")
+
+    assert report["quality_warning"]["needs_revision"] is True
 from packages.story_core.models import ChapterSummary, StoryState, TimelineEvent
 from packages.story_core.outline_planning import GeneratedOutlinePlan
 from packages.story_core.skill_packs import import_skill_pack_from_path
@@ -28,6 +43,11 @@ def test_first_chapter_regeneration_removes_post_chapter_character_states(tmp_pa
     reset = store._reset_first_chapter_regeneration_state(
         {
             "current_chapter": 1,
+            "world_facts": [
+                "《神域》是全沉浸网游。",
+                "夜烬已完成灰石裂缝外沿复查，获得灰石二段通行记录。",
+                "寄售功能将于开服次日夜间开放测试，提现规则将同步公示。",
+            ],
             "characters": [
                 {
                     "name": "苏叶",
@@ -45,6 +65,9 @@ def test_first_chapter_regeneration_removes_post_chapter_character_states(tmp_pa
     assert "real_state" not in protagonist
     assert "game_state" not in protagonist
     assert not any("312.60元" in item for item in protagonist["memory"])
+    assert "天启之门" not in str(protagonist)
+    assert protagonist["location"] == "现实出租屋，等待游戏开服"
+    assert reset["world_facts"] == ["《神域》是全沉浸网游。"]
 
 
 def test_chapter_outline_title_uses_matching_detailed_outline_title():
@@ -59,7 +82,7 @@ def test_chapter_outline_title_uses_matching_detailed_outline_title():
     assert _chapter_outline_title(outline_context, 2) is None
 
 
-def test_regeneration_gate_treats_prose_and_scene_feedback_as_advisory():
+def test_regeneration_gate_blocks_missing_first_chapter_core_scene_fact():
     writing_review = {
         "issues": [
             "第一章外部压力过早：公会信息提前介入。",
@@ -69,10 +92,10 @@ def test_regeneration_gate_treats_prose_and_scene_feedback_as_advisory():
         "critical_review": {"hard_issues": [], "severity_summary": {"has_hard_violation": False}},
     }
 
-    assert _regeneration_quality_blocking({"issues": ["writing_review"]}, writing_review) is False
+    assert _regeneration_quality_blocking({"issues": ["writing_review"]}, writing_review) is True
 
 
-def test_regeneration_gate_does_not_let_heuristic_critical_review_override_simplified_gate():
+def test_regeneration_gate_blocks_missing_first_monster_panel():
     writing_review = {
         "issues": ["首次与怪物交战前缺少简洁怪物面板。"],
         "critical_review": {
@@ -81,7 +104,7 @@ def test_regeneration_gate_does_not_let_heuristic_critical_review_override_simpl
         },
     }
 
-    assert _regeneration_quality_blocking({"issues": ["writing_review"]}, writing_review) is False
+    assert _regeneration_quality_blocking({"issues": ["writing_review"]}, writing_review) is True
 
 
 def _make_minimal_file_project(root, *, state=None, project=None):
@@ -783,6 +806,112 @@ def test_chapter_ledger_does_not_copy_monster_level_and_hp_to_protagonist(tmp_pa
     assert protagonist["level"] == "Lv.2"
     assert protagonist["hp"] == "110/110"
     assert protagonist["mp"] == "66/66"
+
+
+def test_default_protagonist_speech_profile_does_not_request_explanatory_dialogue(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    card = store._protagonist_character_card(
+        {
+            "current_chapter": 0,
+            "progression_ledger": {"protagonist": {"real_name": "苏叶", "game_id": "夜烬"}},
+        }
+    )
+
+    speech_style = card["performance_profile"]["speech_style"]
+    assert "解释选择时把原因说清" not in speech_style
+    assert "只说当下会说的话" in speech_style
+
+
+def test_character_merge_migrates_only_the_legacy_explanatory_speech_template(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    merged = store._merge_character_cards(
+        [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "performance_profile": {
+                    "speech_style": "白话、完整、少装腔；解释选择时把原因说清。",
+                    "action_style": "保留用户动作风格",
+                },
+            }
+        ],
+        [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "performance_profile": {
+                    "speech_style": "白话、完整、少装腔；只说当下会说的话，理由藏在语气、动作和必要回答里。",
+                    "action_style": "新的默认动作风格",
+                },
+            }
+        ],
+    )
+
+    profile = merged[0]["performance_profile"]
+    assert "解释选择时把原因说清" not in profile["speech_style"]
+    assert "只说当下会说的话" in profile["speech_style"]
+    assert profile["action_style"] == "保留用户动作风格"
+
+
+def test_project_and_state_loading_migrate_the_legacy_explanatory_speech_template(tmp_path):
+    legacy_card = {
+        "name": "苏叶",
+        "role": "protagonist",
+        "game_id": "夜烬",
+        "performance_profile": {
+            "speech_style": "白话、完整、少装腔；解释选择时把原因说清。",
+            "action_style": "保留动作风格",
+        },
+    }
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "Web Game",
+            "genre": "game_webnovel",
+            "character_profiles": [legacy_card],
+        },
+        state={
+            "story_id": "s-file",
+            "genre": "game_webnovel",
+            "characters": [legacy_card],
+        },
+    )
+
+    project_profile = store.project()["character_profiles"][0]["performance_profile"]
+    state_profile = store.state()["characters"][0]["performance_profile"]
+    assert "解释选择时把原因说清" not in project_profile["speech_style"]
+    assert "解释选择时把原因说清" not in state_profile["speech_style"]
+    assert project_profile["action_style"] == "保留动作风格"
+
+
+def test_update_project_saves_and_clears_optional_writing_style(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-style",
+            "title": "Style Novel",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={"story_id": "s-style", "style": "白描、现代中文", "world_facts": []},
+    )
+
+    selected = store.update_project({"world_blueprint": {"writing_style": "幽默"}})
+
+    assert selected["world_blueprint"]["writing_style"] == "幽默"
+    assert store.state()["style"] == "幽默"
+
+    cleared = store.update_project({"world_blueprint": {"writing_style": ""}})
+
+    assert cleared["world_blueprint"]["writing_style"] == ""
+    assert store.state()["style"] == ""
+
+
+def test_update_project_rejects_unknown_writing_style(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+
+    with pytest.raises(ValueError, match="invalid_writing_style"):
+        store.update_project({"world_blueprint": {"writing_style": "通用白描"}})
 
 
 def test_chapter_ledger_scopes_weapon_durability_and_quantity_backpack_lines(tmp_path):
@@ -2058,6 +2187,10 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert "任务必须先登记" not in by_key["writer_body"]["content"]
     assert "材料价格必须来自任务" not in by_key["writer_body"]["content"]
     assert "网游写法方法卡" in by_key["writer_body"]["content"]
+    assert "语言卡[base]" in by_key["writer_body"]["content"]
+    assert "语言卡[combat]" in by_key["writer_body"]["content"]
+    assert "语言卡[quest]" in by_key["writer_body"]["content"]
+    assert "语言卡[group_dungeon]" not in by_key["writer_body"]["content"]
     assert "genre_context" in by_key["writer_body"]["module_keys"]
     assert "web_game" in modules["genre_context"]["content"]
 
@@ -3566,7 +3699,15 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
             assert [character.name for character in story.characters] == ["苏叶"]
             assert story.characters[0].game_panel.game_id == "夜烬"
             assert story.characters[0].game_panel.inventory == {}
-            updated_story = story.model_copy(update={"current_chapter": 1})
+            updated_story = story.model_copy(
+                update={
+                    "current_chapter": 1,
+                    "timeline": [TimelineEvent(chapter_number=1, summary="新版第一章完成。", impact="推进开局。")],
+                    "chapter_summaries": [
+                        ChapterSummary(chapter_number=1, chapter_title=f"新版-{variant}", summary="新版第一章完成。")
+                    ],
+                }
+            )
             return SimpleNamespace(
                 chapter_number=1,
                 chapter_title=f"新版-{variant}",
@@ -3621,7 +3762,15 @@ def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):
             seen_guidance.append(temporary)
             assert temporary["source"] == "book_dissection"
             assert temporary["text"] == guidance
-            updated_story = story.model_copy(update={"current_chapter": 1})
+            updated_story = story.model_copy(
+                update={
+                    "current_chapter": 1,
+                    "timeline": [TimelineEvent(chapter_number=1, summary="Guided rewrite completed.", impact="The opening advanced.")],
+                    "chapter_summaries": [
+                        ChapterSummary(chapter_number=1, chapter_title="Guided One", summary="Guidance shaped the rewrite.")
+                    ],
+                }
+            )
             return SimpleNamespace(
                 chapter_number=1,
                 chapter_title="Guided One",
@@ -3795,7 +3944,7 @@ def test_file_project_store_blocks_failed_generated_quality_report(tmp_path):
     assert not (root / ".story-system" / "chapters" / "0001.json").exists()
 
 
-def test_file_project_store_saves_generated_chapter_with_advisory_review(tmp_path):
+def test_file_project_store_persists_generated_chapter_with_unpassed_advisory_review(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(
         root,
@@ -3845,11 +3994,61 @@ def test_file_project_store_saves_generated_chapter_with_advisory_review(tmp_pat
                 },
             )
 
-    result = store.generate_next_chapter(engine=FakeEngine())
+    generated = store.generate_next_chapter(engine=FakeEngine())
 
-    assert result["chapter_number"] == 1
-    saved = json.loads((root / ".story-system" / "chapters" / "0001.json").read_text(encoding="utf-8"))
-    assert saved["quality_report"]["quality_warning"]["status"] == "needs_revision"
+    assert generated["chapter_number"] == 1
+    assert (root / ".story-system" / "chapters" / "0001.json").exists()
+    assert not list((root / ".story-system" / "failed-drafts").glob("*-generate-ch1.json"))
+
+
+def test_file_project_store_preserves_rejected_regeneration_as_failed_draft(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded game story.",
+            "genre": "webgame",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    store.write_chapter(chapter_number=1, title="Old One", body="Old accepted body.", summary="Old summary.")
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="Rejected One",
+                body=_long_test_body("The panel and required scene facts are still missing."),
+                cadence="manual",
+                next_outline="Continue.",
+                updated_story=story.model_copy(update={"current_chapter": 1}),
+                chapter_summary={
+                    "chapter_title": "Rejected One",
+                    "cadence": "manual",
+                    "summary": "This draft did not pass review.",
+                    "facts": [],
+                    "next_focus": "Continue.",
+                    "primary_conflict": "cost",
+                    "secondary_conflict": "visibility",
+                    "event_beat": "attempted",
+                },
+                quality_report={
+                    "ok": False,
+                    "issues": ["writing_review"],
+                    "writing_review": {"pass": False, "issues": ["第一章缺少带身份栏的角色面板。"]},
+                    "simplified_review": {"has_hard_errors": True, "needs_revision": True},
+                },
+            )
+
+    with pytest.raises(ChapterQualityError):
+        store.regenerate_chapter(1, engine=FakeEngine())
+
+    assert list((root / ".story-system" / "failed-drafts").glob("*-regenerate-ch1.json"))
+    saved = store.chapter(1)
+    assert saved["chapter_title"] == "Old One"
 
 
 def test_persist_bundle_quality_failure_raises_chapter_quality_error_with_report(tmp_path):
@@ -4092,5 +4291,6 @@ def test_file_project_store_reads_exported_layout(tmp_path):
     assert packet["prose_renderer"]["skill"] == "chinese-novelist"
     assert packet["prose_renderer"]["role"] == "prose_renderer_only"
     assert packet["title_contract"]["style"] == "tomato_concrete_short_title"
-    assert any("番茄爆款网文" in rule for rule in packet["style_rules"])
+    assert any("句子要完整" in rule for rule in packet["style_rules"])
+    assert all("番茄爆款网文" not in rule for rule in packet["style_rules"])
     assert packet["recent_chapters"][0]["next_focus"] == "补齐毒腺"

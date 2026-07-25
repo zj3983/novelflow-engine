@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from packages.story_core.book_style import book_style_prompt, normalize_book_style
+
 
 WEB_GAME_OPENING_GUIDANCE: dict[str, Any] = {
     "profile_id": "web_game_leveling_opening",
@@ -69,21 +71,18 @@ def _is_web_game(genre: str, world_events: list[dict[str, Any]], scene_cards: li
 def build_style_guidance(
     *,
     genre: str,
+    style: str = "",
     chapter_number: int,
     world_events: list[dict[str, Any]] | None = None,
     scene_cards: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    world_events = world_events or []
-    scene_cards = scene_cards or []
-    if chapter_number <= 3 and _is_web_game(genre, world_events, scene_cards):
-        return deepcopy(WEB_GAME_OPENING_GUIDANCE)
+    selected_style = normalize_book_style(style)
+    if not selected_style:
+        return {}
     return {
-        "profile_id": "generic_plain_prose",
-        "genre": "generic",
-        "voice": "清楚、自然、少解释，多用动作和场景承载信息",
-        "chapter_pattern": "目标 -> 行动 -> 反馈 -> 新压力",
-        "show_rules": ["规则和设定优先通过动作、对话、界面或环境反馈表现。"],
-        "avoid_rules": ["不要写成说明书，不要连续机械短段。"],
+        "profile_id": f"book_style:{selected_style}",
+        "style": selected_style,
+        "voice": book_style_prompt(selected_style),
     }
 
 

@@ -4,13 +4,12 @@ from packages.story_core.prose_style_review import anti_ai_style_rules, sanitize
 def test_anti_ai_style_rules_include_generation_and_revision_constraints():
     rules = anti_ai_style_rules()
 
-    assert any("拒绝华丽辞藻堆砌" in rule for rule in rules)
-    assert any("人物说话要完整自然" in rule for rule in rules)
+    assert any("人物说话完整自然" in rule for rule in rules)
     assert any("一章分3到4个叙事段落" in rule for rule in rules)
     assert any("动作 + 微表情 + 细微生理反应" in rule for rule in rules)
-    assert any("番茄白话风" in rule for rule in rules)
-    assert any("修辞配额" in rule for rule in rules)
-    assert any("白描不是把句子全部切短" in rule for rule in rules)
+    assert any("不要把后台词写进正文和标题" in rule for rule in rules)
+    assert any("不要把句子全部切短" in rule for rule in rules)
+    assert all("固定文风" not in rule for rule in rules)
     assert any("走到门口" in rule for rule in rules)
 
 
@@ -111,6 +110,60 @@ def test_prose_style_review_flags_stiff_backend_language():
     assert not review["pass"]
     assert review["scores"]["plain_tomato_language"] < 8
     assert any("后台硬词" in issue for issue in review["issues"])
+
+
+def test_prose_style_review_flags_backend_terms_in_game_prose():
+    body = (
+        "新手区按负载分片和区域分片运行，任务完成后可登记后坡巡查资格。"
+        "裂纹狼心进入配方验证，平台封存交割后等待现实结算。"
+    )
+
+    review = review_prose_style(body)
+
+    assert not review["pass"]
+    assert any("后台硬词" in issue for issue in review["issues"])
+
+
+def test_prose_style_review_accepts_countdown_and_natural_claim_dialogue():
+    body = "周围的玩家一起喊着：‘三、二、一——’\n\n有人急得大喊：‘别抢，我先打的！’"
+
+    review = review_prose_style(body)
+
+    assert not any("现代中文对话不自然" in issue for issue in review["issues"])
+
+
+def test_prose_style_review_accepts_player_facing_game_terms():
+    body = (
+        "新手村开了好几条分线。夜烬接下任务，打完灰狼就能解锁后坡任务。"
+        "他打开交易行，看见一条现成的求购单，确认价格后直接成交。"
+    )
+
+    review = review_prose_style(body)
+
+    assert review["pass"]
+
+
+def test_prose_style_review_flags_panel_followed_by_rule_explanation():
+    body = "角色面板：等级Lv.1，法力60/60。\n\n这说明他的法力还很充足，规则就是这样。"
+
+    review = review_prose_style(body)
+
+    assert not review["pass"]
+    assert any("面板后重复解释" in issue for issue in review["issues"])
+    assert any("面板只保留" in item for item in review["revision_plan"])
+
+
+def test_prose_style_review_flags_transaction_process_explanation():
+    body = (
+        "裂纹狼心提交鉴定后，系统给出一条求购匹配。"
+        "求购方看不到卖家ID和掉落分片，平台验货以后直接封存交割。"
+    )
+
+    review = review_prose_style(body)
+
+    assert not review["pass"]
+    assert any("交易流程说明" in issue for issue in review["issues"])
+    assert any("点击、反馈和物品变化" in item for item in review["revision_plan"])
 
 
 def test_prose_style_review_flags_unnatural_staff_shorthand():

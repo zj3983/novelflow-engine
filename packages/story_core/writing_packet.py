@@ -257,7 +257,7 @@ def _default_first_chapter_scenes(game_genre: bool) -> list[dict[str, Any]]:
     return _default_first_chapter_scenes_game() if game_genre else _default_first_chapter_scenes_generic()
 
 
-def _hard_locks(game_genre: bool, target_chapter: int) -> list[str]:
+def _hard_locks(game_genre: bool, target_chapter: int, *, first_chapter_trade: bool = False) -> list[str]:
     if game_genre:
         locks = [
             "现实姓名和游戏ID必须分层；现实段落可称现实姓名，游戏内行动优先称游戏ID。",
@@ -267,13 +267,13 @@ def _hard_locks(game_genre: bool, target_chapter: int) -> list[str]:
             "低级材料不会一次扰乱市场；交易行、公会、商人只能看到价格波动、批次、时间戳等弱线索。",
         ]
         if target_chapter == 1:
-            locks.extend(
-                [
-                    "第一章只聚焦：现实压力、登录建号、职业面板、首杀验证、爆率领先感和章末下一步。",
-                    "第一章禁止实际寄售成交、到账、手续费结算、公会正面追查和论坛爆帖。",
-                    "怪物类型前后一致。",
-                ]
+            locks.append("第一章聚焦现实压力、登录建号、职业面板、首杀验证、爆率领先感和章末下一步。")
+            locks.append(
+                "第一章按大纲完成匿名担保交易、到账和现实急账处理；禁止公会正面追查和论坛爆帖。"
+                if first_chapter_trade
+                else "第一章禁止实际寄售成交、到账、手续费结算、公会正面追查和论坛爆帖。"
             )
+            locks.append("怪物类型前后一致。")
         return locks
 
     locks = [
@@ -294,12 +294,12 @@ def _hard_locks(game_genre: bool, target_chapter: int) -> list[str]:
 
 def _style_rules(game_genre: bool) -> list[str]:
     base = [
-        "句子按场面自然长短；人物对话要像正常说话，不能把理由压成几个词。少成语套话，少华丽辞藻。",
-        "少用比喻和形容词，不堆意象；优先写动作、选择、即时后果和具体细节。",
-        '语言贴近番茄爆款网文的白话节奏：目标清楚、反馈直接，旁白少做抽象解释；每个场景都要有目标、阻力、收益或危机。少解释只针对旁白，对话不能省略连接词和因果，必须把原因、条件或态度说完整。',
+        "句子按场面自然长短；人物对话要像正常说话，不能把理由压成几个词。",
+        "人物行动、选择和结果要接得上，不用抽象总结代替正在发生的事情。",
+        "每个场景都要有目标、阻力、结果或危机；对话不能省略必要的连接词、原因、条件和态度。",
         "章节标题贴近番茄常见短章名：4到10字左右，优先用具体事件、地点、道具、关系或冲突；不要写营销句、说明句或后台账本。",
         "用动作、对话、环境细节表现设定，不要停下来写说明书。",
-        "人物说话要接地气，配角有自己的立场和口吻，但不要全知。",
+        "人物说话要符合身份、关系和场合，配角有自己的立场和口吻，但不要全知。",
     ]
     if game_genre:
         base.extend(
@@ -430,8 +430,8 @@ def prose_renderer_contract() -> dict[str, Any]:
             "do not replace scenes with abstract conclusions",
             "keep numbers, names, objects, places, and visible state traceable to the packet",
             "consume every scene_contract.visible_consequences item on page; if it is not visible to a reader, the scene is unfinished",
-            "keep rhetoric sparse: avoid dense metaphors, adjective chains, and lyrical description",
-            "use Tomato-style webnovel language: clear goal, immediate payoff, visible cost, natural sentence length, and an ending hook",
+            "keep sentences complete and make each action, reason, and consequence easy to follow",
+            "make dialogue fit the speaker, relationship, and situation instead of compressing it into command fragments",
         ],
     }
 
@@ -480,7 +480,13 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         build_character_cards(story),
         scene_kind=scene_kind,
     )
-    hard_locks = _hard_locks(game_genre, target_chapter)
+    governance = build_chapter_governance(story, bundle, chapter_number=target_chapter)
+    governance_intent = governance.get("chapter_intent") if isinstance(governance.get("chapter_intent"), dict) else {}
+    hard_locks = _hard_locks(
+        game_genre,
+        target_chapter,
+        first_chapter_trade=bool(governance_intent.get("first_chapter_trade_authorized")),
+    )
     real_name = str(protagonist_locks.get("real_name") or "").strip()
     game_id = str(protagonist_locks.get("game_id") or "").strip()
     if game_genre and (real_name or game_id):
@@ -489,7 +495,6 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         hard_locks.insert(0, f"主角姓名：{real_name}；通篇称呼必须一致。")
 
     style_rules = _style_rules(game_genre)
-    governance = build_chapter_governance(story, bundle, chapter_number=target_chapter)
     governance_gate = governance_quality_gate(governance)
 
     return {

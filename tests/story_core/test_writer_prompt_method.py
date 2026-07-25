@@ -3,9 +3,59 @@ from packages.story_core.orchestrator import (
     StoryOrchestrator,
     _character_context_for_prompt,
     _compact_writer_plan_for_prompt,
+    _web_game_writing_method_lines,
     _writer_character_section,
 )
 from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
+
+
+def test_body_prompt_has_no_unselected_plain_style_fallback():
+    story = StoryState(story_id="s-no-style", outline="公司发生一场争执。", genre="都市", style="")
+
+    prompt = StoryOrchestrator()._body_prompt(story, 2, {"event_plan": {"chapter_title": "争执"}})
+
+    assert "通用白描" not in prompt
+    assert "整体用白描" not in prompt
+    assert "番茄白话风" not in prompt
+    assert "表达风格：" not in prompt
+
+
+def test_body_prompt_injects_selected_style_once():
+    story = StoryState(story_id="s-humor", outline="公司发生一场争执。", genre="都市", style="幽默")
+
+    prompt = StoryOrchestrator()._body_prompt(story, 2, {"event_plan": {"chapter_title": "争执"}})
+
+    expected = "表达风格：幽默：让笑点来自人物反应、处境反差和顺口接话，不刻意抖包袱。"
+    assert prompt.count(expected) == 1
+
+
+def test_web_game_method_loads_only_trade_language_for_trade_scene():
+    text = "\n".join(
+        _web_game_writing_method_lines(
+            2,
+            {"chapter_goal": "打开交易行，查看求购单并按一口价出售材料"},
+        )
+    )
+
+    assert "求购单" in text
+    assert "一口价" in text
+    assert "平台封存" in text
+    assert "进本" not in text
+    assert "坦克" not in text
+
+
+def test_web_game_method_loads_only_combat_language_for_combat_scene():
+    text = "\n".join(
+        _web_game_writing_method_lines(
+            2,
+            {"chapter_goal": "在灰狼坡拉怪，卡位以后脱战回蓝"},
+        )
+    )
+
+    assert "拉怪" in text
+    assert "脱战" in text
+    assert "一口价" not in text
+    assert "求购单" not in text
 
 
 def test_segment_prompt_puts_scene_method_before_guardrails():
@@ -13,7 +63,7 @@ def test_segment_prompt_puts_scene_method_before_guardrails():
     prompt = build_segment_prompt(chapter_number=1, spec=spec, plan={})
 
     assert "输出要求：只写连续小说正文" in prompt
-    assert "把这一场写成白话小说" in prompt
+    assert "把这一场写成连续小说正文" in prompt
     assert "要有完整来回" in prompt
     assert "情绪放进动作、停顿和回答里" in prompt
     assert "写法施工单" not in prompt
@@ -228,7 +278,7 @@ def test_fallback_body_prompt_uses_same_scene_method():
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "旧楼"}})
 
     assert "## 输出要求" in prompt
-    assert "写成一章顺着人物行动自然展开的白话小说" in prompt
+    assert "写成一章顺着人物行动自然展开的连续正文" in prompt
     assert "人物说话要有来有回" in prompt
     assert "## 本章方向" in prompt
     assert "写法施工单" not in prompt
@@ -303,24 +353,132 @@ def test_web_game_first_chapter_whole_body_prompt_has_plain_four_beat_contract()
     story = StoryState(story_id="s-whole-ch1", outline="网游开服，千倍爆率。", genre="网游", style="番茄升级流")
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})
 
-    assert "整章四拍" in prompt
+    assert "整章顺序" in prompt
     assert "网游写法方法卡" in prompt
     assert "遇到阻力后付出代价" in prompt
     assert "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子" in prompt
     assert "本次不用分段生成" in prompt
-    assert "白描" in prompt
+    assert "白描" not in prompt
     assert "自然对话" in prompt
-    assert "白描不是把句子全部切短" in prompt
-    assert "句子清楚，动作具体，台词像正常人说话" in prompt
+    assert "句子随动作和对话自然变化，保持现代中文语序" in prompt
     assert "规则从动作和反馈里露出来" in prompt
-    assert prompt.index("整章四拍") < prompt.index("## 本章事实")
+    assert prompt.index("整章顺序") < prompt.index("## 本章事实")
+
+
+def test_trade_authorized_first_chapter_prompt_uses_the_actual_five_step_order():
+    story = StoryState(story_id="s-trade-order", outline="网游开服后匿名处理稀有材料。", genre="网游", style="白描")
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        1,
+        {
+            "governance": {"chapter_intent": {"first_chapter_trade_authorized": True}},
+            "event_plan": {"chapter_title": "第一笔到账", "turn": "担保交易到账并付清急账"},
+        },
+    )
+
+    assert "现实压力 -> 登录建号 -> 低级验证 -> 匿名交割与急账处理 -> 下一步" in prompt
+    assert "第一章只完成开服现场、建号、低级验证和下一步决定" not in prompt
+
+
+def test_web_game_writer_prompt_moves_on_after_a_panel_instead_of_explaining_it():
+    story = StoryState(story_id="s-panel-transition", outline="网游开服。", genre="网游", style="白描")
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})
+
+    assert "面板后不复述字段含义" in prompt
+    assert "下一句直接写人物的动作、选择或受到的影响" in prompt
+
+
+def test_writer_system_prompt_distinguishes_prose_from_json_work():
+    orchestrator = StoryOrchestrator()
+
+    prose_prompt = orchestrator._model_system_prompt(False)
+    json_prompt = orchestrator._model_system_prompt(True)
+
+    assert "中文网文作者" in prose_prompt
+    assert "不解释创作规则" in prose_prompt
+    assert "novel simulation engine" not in prose_prompt
+    assert "json format only" in json_prompt
+
+
+def test_web_game_writer_seed_is_rendered_as_clean_chinese_not_python_data():
+    story = StoryState(
+        story_id="s-clean-seed",
+        outline="网游开服。",
+        genre="网游",
+        style="白描",
+        outline_context={
+            "overall": {"story": "苏叶以最后46.83元等待《神域》开服。"},
+            "chapter": {
+                "chapter_number": 1,
+                "title": "第一笔到账",
+                "opening_balance": "46.83元",
+                "trade_arrival": "1764.00元",
+                "ending_balance": "332.60元",
+            }
+        },
+    )
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "第一笔到账"}})
+
+    assert "章节：1" not in prompt
+    assert "当前职业路线为当前职业" not in prompt
+    assert "{'" not in prompt
+
+
+def test_writer_prompt_keeps_style_voice_without_profile_metadata_or_duplicate_pattern():
+    story = StoryState(story_id="s-style-slice", outline="网游开服。", genre="网游", style="白描")
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        1,
+        {
+            "event_plan": {"chapter_title": "灰狼坡"},
+            "style_guidance": {
+                "profile_id": "web_game_leveling_opening",
+                "genre": "web_game_leveling",
+                "voice": "直白、紧凑、生活化",
+                "chapter_pattern": "现实压力 -> 游戏入口 -> 领先验证",
+                "show_rules": ["用面板表现优势。"],
+                "avoid_rules": ["不要写成说明书。"],
+            },
+        },
+    )
+
+    assert "表达风格：直白、紧凑、生活化" in prompt
+    assert "profile_id" not in prompt
+    assert "chapter_pattern" not in prompt
+    assert "用面板表现优势" not in prompt
+
+
+def test_first_chapter_prompt_explains_amount_sequence_without_changing_prices():
+    story = StoryState(
+        story_id="s-amount-sequence",
+        outline="匿名处理稀有材料并付清急账。",
+        genre="网游",
+        style="白描",
+        outline_context={
+            "overall": {"story": "苏叶以最后46.83元等待《神域》开服。"},
+            "chapter": {
+                "chapter_number": 1,
+                "goal": "苏叶以最后46.83元登录游戏。",
+                "payoff": "担保交易到账1764.00元，付清急账后现实余额变为332.60元。",
+                "opening_balance": "46.83元",
+                "trade_arrival": "1764.00元",
+                "ending_balance": "332.60元",
+            }
+        },
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "第一笔到账"}})
+
+    assert "金额顺序" in prompt
+    assert "支付完成后才写章末余额332.60元" in prompt
+    assert "净到账1764.00元不能同时写成成交总价" in prompt
 
 
 def test_body_prompt_uses_writer_facing_material_not_backend_contract_keys():
     story = StoryState(story_id="s-writer-facing", outline="网游开服，千倍爆率。", genre="网游", style="番茄升级流")
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})
 
-    assert "本章可用材料" in prompt
+    assert "章节：1" not in prompt
     assert "看得见的小进展" in prompt
     assert "生成前世界推演契约" not in prompt
     assert "writing_contract" not in prompt
@@ -408,7 +566,7 @@ def test_body_prompt_translates_planning_jargon_into_natural_chinese():
                         "title": "库房",
                         "goal": "确认关键账本或状态",
                         "required_surface": "NPC/环境/任务/对手反应",
-                        "exit_state": "收益和代价落收到反馈本或关系里",
+                        "exit_state": "收益和代价落到账本或关系里",
                     }
                 ],
             }
@@ -419,7 +577,7 @@ def test_body_prompt_translates_planning_jargon_into_natural_chinese():
         "关键账本或状态",
         "让世界根据主角行动给出可见反应",
         "NPC/环境/任务/对手反应",
-        "收益和代价落收到反馈本或关系里",
+        "收益和代价落到账本或关系里",
     ):
         assert jargon not in prompt
     assert "主角动手以后，马上出现一个具体结果或麻烦" in prompt
@@ -488,7 +646,7 @@ def test_revision_prompt_keeps_method_and_separates_viewpoint_rule():
     )
 
     assert "## 输出要求" in prompt
-    assert "写成一章顺着人物行动自然展开的白话小说" in prompt
+    assert "写成一章顺着人物行动自然展开的连续正文" in prompt
     assert "写法施工单" not in prompt
     assert "第三人称有限视角" in prompt
     assert "## 综合审稿修改" in prompt
@@ -581,5 +739,51 @@ def test_game_writer_prompt_only_includes_monsters_named_in_chapter_plan():
     assert "本章怪物卡" in prompt
     assert "灰狼" in prompt and "扑咬" in prompt and "灰狼毒腺" in prompt
     assert "熔岩蜥蜴" not in prompt
+
+
+def test_game_writer_prompt_filters_unplanned_common_monster_drops_from_locked_chapter_ledger():
+    story = StoryState(
+        story_id="s-monster-ledger",
+        outline="夜烬在灰狼坡验证异常掉落，并卖掉裂纹狼心。",
+        genre="网游",
+        style="白描",
+        monster_profiles=[
+            {
+                "name": "灰狼",
+                "level": "1",
+                "hp": "82",
+                "attack_mode": "扑咬",
+                "drops": [
+                    "灰狼毒腺：用于清道夫委托",
+                    "粗糙狼皮：用于新手护具",
+                    "磨损狼牙：用于箭簇制造",
+                    "裂纹狼心：稀有样本",
+                ],
+            }
+        ],
+    )
+    plan = {
+        "event_plan": {
+            "chapter_title": "灰狼坡的第一笔到账",
+            "ordered_actions": ["击杀灰狼", "匿名卖掉裂纹狼心"],
+        },
+        "scene_cards": [
+            {
+                "state_delta": {
+                    "game_world_simulation": {
+                        "final_state": {"inventory": {"灰狼毒腺": 8, "粗糙狼皮": 7}}
+                    }
+                }
+            }
+        ],
+    }
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, plan)
+
+    assert "灰狼毒腺" in prompt
+    assert "粗糙狼皮" in prompt
+    assert "裂纹狼心" in prompt
+    assert "磨损狼牙" not in prompt
+    assert "本章普通掉落账本：灰狼毒腺、粗糙狼皮" in prompt
 
 

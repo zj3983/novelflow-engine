@@ -236,6 +236,37 @@ def test_choose_best_revision_accepts_smoother_chapter_after_removing_repetition
     assert result["selected"] == "candidate"
 
 
+def test_choose_best_revision_keeps_in_range_draft_when_failed_candidate_grows_out_of_range():
+    original = _quality(False, {"genre_rules": 7, "prose_style_meta_language": 7}, ["缺少怪物面板"])
+    candidate = _quality(False, {"genre_rules": 8, "prose_style_meta_language": 8}, ["对话仍不自然"])
+
+    result = choose_best_revision(
+        original_body="原" * 5211,
+        original_quality=original,
+        candidate_body="改" * 6197,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["selected"] == "original"
+    assert result["report"]["reason"] == "failed_candidate_left_preferred_length"
+
+
+def test_choose_best_revision_rejects_failed_candidate_without_fewer_issues():
+    original = _quality(False, {"genre_rules": 6, "prose_style_meta_language": 6}, ["问题一", "问题二"])
+    candidate = _quality(False, {"genre_rules": 8, "prose_style_meta_language": 8}, ["新问题一", "新问题二"])
+
+    result = choose_best_revision(
+        original_body="原" * 5730,
+        original_quality=original,
+        candidate_body="改" * 6754,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["report"]["reason"] == "failed_candidate_did_not_reduce_issues"
+
+
 def test_choose_best_segment_revision_rejects_worse_local_rewrite():
     original_review = {"pass": False, "issues": ["偏短"], "scores": {"segment_scope": 8, "segment_surface": 5, "segment_style": 8}}
     candidate_review = {

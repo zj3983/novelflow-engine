@@ -2526,3 +2526,88 @@ test("项目加载成功但故事加载失败时仍显示项目并报告故事�
   releaseStory();
   await expect(page.getByText(/故事加载失败/)).toBeVisible();
 });
+
+test("项目文风可以选择也可以清空", async ({ page }) => {
+  const project = {
+    project_id: "file:style-settings-fixture",
+    title: "文风设置测试",
+    source_path: "",
+    seed_outline: "",
+    world_summary: "",
+    current_focus: "",
+    author_constraints: [],
+    world_blueprint: { genre_plugin_ids: ["web_game_leveling"], writing_style: "" },
+    character_profiles: [],
+    relationship_graph: [],
+    enabled_skill_ids: [],
+    status: "writing",
+    pipeline_stage: "world_ready",
+    active_story_id: "file:style-settings-fixture",
+    branches: [],
+    storage_source: "file",
+  };
+  const savedStyles: string[] = [];
+
+  await page.route("**/novel-types", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        {
+          id: "web_game_leveling",
+          name: "网游升级",
+          description: "网游规则",
+          keywords: [],
+          core_promises: [],
+          ledger_fields: [],
+          rulebook: {
+            progression_rules: [], economy_rules: [], quest_rules: [], faction_rules: [],
+            panel_rules: [], chapter_formula: [], forbidden_breaks: [],
+          },
+          quality_checks: [],
+          trope_templates: [],
+          builtin: true,
+        },
+      ]),
+    });
+  });
+  await page.route("**/file-projects/file%3Astyle-settings-fixture", async (route) => {
+    if (route.request().method() === "PUT") {
+      const payload = route.request().postDataJSON() as { world_blueprint?: { writing_style?: string } };
+      project.world_blueprint = { ...project.world_blueprint, ...(payload.world_blueprint ?? {}) };
+      savedStyles.push(project.world_blueprint.writing_style || "");
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Astyle-settings-fixture", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        story_id: "file:style-settings-fixture",
+        outline: "",
+        genre: "网游",
+        style: project.world_blueprint.writing_style,
+        current_chapter: 1,
+        agent_settings: {},
+        agent_runtime: { recent_events: [] },
+        author_constraints: [],
+        world_facts: [],
+        characters: [],
+        history: [],
+      }),
+    });
+  });
+
+  await page.goto("/projects/file%3Astyle-settings-fixture/settings");
+  const styleSelect = page.getByLabel("当前文风");
+  await expect(styleSelect).toHaveValue("");
+
+  await styleSelect.selectOption("幽默");
+  await expect(page.getByText("文风已保存为：幽默。下一次写作会读取这个选择。")).toBeVisible();
+  await expect.poll(() => savedStyles).toContain("幽默");
+
+  await styleSelect.selectOption("");
+  await expect(page.getByText("已清空文风选择。下一次写作不会注入额外文风。")).toBeVisible();
+  await expect.poll(() => savedStyles.at(-1)).toBe("");
+});

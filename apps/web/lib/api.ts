@@ -745,6 +745,7 @@ export type ImportedCharacterProfile = {
 };
 
 export type ImportedWorldBlueprint = {
+  writing_style?: string;
   premise?: string;
   world_rules?: string[];
   power_system?: string[];
@@ -1129,6 +1130,55 @@ export type PromptTemplatesResponse = {
   schema_version: "prompt-templates/v1" | "project-prompt-templates/v1";
   project_id?: string;
   templates: PromptTemplateEntry[];
+};
+
+export type PromptAuditMode = "template" | "final_call";
+
+export type PromptAuditIssue = {
+  code: string;
+  title: string;
+  evidence: string;
+  location: string;
+  suggestion: string;
+  estimated_reduction_characters: number;
+};
+
+export type PromptAuditResult = {
+  schema_version: "prompt-audit/v1";
+  mode: PromptAuditMode;
+  content_sha256: string;
+  summary: {
+    characters: number;
+    lines: number;
+    estimated_redundant_characters: number;
+    estimated_reduction_percent: number;
+    sections: Array<{
+      title: string;
+      characters: number;
+      percent: number;
+    }>;
+  };
+  must_fix: PromptAuditIssue[];
+  suggestions: PromptAuditIssue[];
+  passed_checks: string[];
+};
+
+export type PromptAuditRuntime = {
+  provider: string;
+  model: string;
+  elapsed_seconds: number;
+  prompt_characters: number;
+};
+
+export type DeepPromptAuditResult = PromptAuditResult & {
+  runtime: PromptAuditRuntime;
+};
+
+export type PromptAuditRequest = {
+  mode: PromptAuditMode;
+  content: string;
+  template_key?: string;
+  required_variables?: string[];
 };
 
 export type PromptContextEntry = PromptPreviewEntry & {
@@ -2593,6 +2643,34 @@ export async function fetchProjectPromptPreview(
 
 export async function fetchGlobalPromptTemplates(): Promise<PromptTemplatesResponse> {
   return (await tryFetchJson(`${apiBase()}/prompt-templates`, { method: "GET" })) as PromptTemplatesResponse;
+}
+
+export async function auditPrompt(payload: PromptAuditRequest): Promise<PromptAuditResult> {
+  return (await tryFetchJson(`${apiBase()}/prompt-audit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })) as PromptAuditResult;
+}
+
+export async function deepAuditPrompt(
+  payload: PromptAuditRequest,
+  localResult: PromptAuditResult,
+): Promise<DeepPromptAuditResult> {
+  const sanitizedLocalResult: PromptAuditResult = {
+    schema_version: localResult.schema_version,
+    mode: localResult.mode,
+    content_sha256: localResult.content_sha256,
+    summary: localResult.summary,
+    must_fix: localResult.must_fix,
+    suggestions: localResult.suggestions,
+    passed_checks: localResult.passed_checks,
+  };
+  return (await tryFetchJson(`${apiBase()}/prompt-audit/deep`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, local_result: sanitizedLocalResult }),
+  }, 360000)) as DeepPromptAuditResult;
 }
 
 export async function saveGlobalPromptTemplate(

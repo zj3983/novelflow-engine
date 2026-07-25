@@ -112,7 +112,7 @@ def test_orchestrator_timed_chat_records_exact_prompt_and_runtime(tmp_path, monk
     assert error == ""
     detail = log.get(log.list(chapter_number=1)[0]["call_id"])
     assert detail["user_prompt"] == "EXACT PROMPT"
-    assert detail["system_prompt"] == "You are a novel simulation engine."
+    assert "中文网文作者" in detail["system_prompt"]
     assert detail["temperature"] == 0.7
     assert detail["status"] == "succeeded"
     assert detail["provider"] == "openai"

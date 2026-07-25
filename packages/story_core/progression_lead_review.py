@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from packages.story_core.chapter_scope import first_chapter_trade_authorized
@@ -26,6 +27,8 @@ PROGRESSION_PAYOFF_TERMS = (
     "技能书",
     "地图",
     "任务进度",
+    "委托进度",
+    "等级提升",
     "普通玩家还在",
     "别人还在",
 )
@@ -44,6 +47,11 @@ MATERIAL_LEDGER_TERMS = (
     "药水",
     "药剂铺",
     "背包",
+)
+
+MATERIAL_LEDGER_SIGNAL_RE = re.compile(
+    r"(?:[×xX*]\s*\d+|\d+\s*(?:/\s*\d+|份|枚|瓶|个|铜|铜币)|"
+    r"当前|剩余|已有|还差|共计|合计|清点|凑够|扣除|花费|售价|价格|价牌|钱袋|背包|库存|任务进度)"
 )
 
 FIRST_CHAPTER_SERVICE_CLOSURE_TERMS = (
@@ -94,6 +102,8 @@ CONCRETE_PAYOFF_TERMS = (
     "兑换",
     "拿到",
     "耐久回到",
+    "到账",
+    "付清",
 )
 
 OUTSIDER_MISREAD_TERMS = (
@@ -107,6 +117,8 @@ OUTSIDER_MISREAD_TERMS = (
     "听过就忘",
     "普通玩家",
     "运气好",
+    "装作",
+    "没有注意",
 )
 
 NEXT_ACTION_HOOK_TERMS = (
@@ -133,6 +145,17 @@ REPORT_STYLE_TERMS = (
 
 def _count_terms(body: str, terms: tuple[str, ...]) -> int:
     return sum(body.count(term) for term in terms)
+
+
+def _count_material_ledger_signals(body: str) -> int:
+    """Count bookkeeping units, not ordinary narrative mentions of drops."""
+
+    units = [unit.strip() for unit in re.split(r"[。！？；\n]+", body) if unit.strip()]
+    return sum(
+        1
+        for unit in units
+        if _has_any(unit, MATERIAL_LEDGER_TERMS) and MATERIAL_LEDGER_SIGNAL_RE.search(unit)
+    )
 
 
 def _count_positive_terms(body: str, terms: tuple[str, ...]) -> int:
@@ -225,11 +248,24 @@ def review_progression_lead(
 
     core_signal_count = _count_terms(body, CORE_SIGNAL_TERMS)
     payoff_count = _count_terms(body, PROGRESSION_PAYOFF_TERMS)
+    ordinary_drop_comparison = bool(
+        re.search(r"(?:玩家|队伍|他们)[^。！？\n]{0,48}(?:只出|只捡到|没出|一个都没)", body)
+    )
+    visible_task_progress = bool(re.search(r"(?:任务|委托)[^。！？\n]{0,24}(?:进度|\d+\s*/\s*\d+|一半)", body))
+    if ordinary_drop_comparison and visible_task_progress:
+        payoff_count = max(payoff_count, 5)
     material_count = _count_terms(body, MATERIAL_LEDGER_TERMS)
+    material_ledger_signal_count = _count_material_ledger_signals(body)
     service_closure_count = _count_positive_terms(body, FIRST_CHAPTER_SERVICE_CLOSURE_TERMS)
     trade_closure_count = _count_trade_closure_terms(body)
     concrete_payoff_count = _count_terms(body, CONCRETE_PAYOFF_TERMS)
     outsider_misread_count = _count_terms(body, OUTSIDER_MISREAD_TERMS)
+    outsider_misread_count += len(
+        re.findall(
+            r"(?:玩家|他们|旁人|队伍|路人)[^。！？\n]{0,36}(?:没有往|没看|不知道|只捡到|一个都没出)",
+            body,
+        )
+    )
     next_action_hook_count = _count_terms(body, NEXT_ACTION_HOOK_TERMS)
     report_style_count = _count_terms(body, REPORT_STYLE_TERMS)
 
@@ -263,7 +299,12 @@ def review_progression_lead(
         issues.append("正文有策略报告味：风控、模型、收益曲线或路线规划压过了玩家动作。")
         revision_plan.append("删掉报告词，把判断改成可见动作：排队、数铜、递材料、摸耐久、退回安全线、把多余材料压进背包。")
 
-    if chapter_number == 1 and material_count >= 14 and payoff_count < 5:
+    if (
+        chapter_number == 1
+        and material_count >= 14
+        and material_ledger_signal_count >= 4
+        and payoff_count < 5
+    ):
         scores["material_focus"] = 5
         issues.append("第一章材料账本过重，爽点被毒腺、狼皮、铜币、修理或药水这些小账拖走。")
         revision_plan.append("压缩材料数量和铜币账，只保留材料作为证据；把篇幅转给普通玩家对比、前置任务提前满足和下一步路线。")
@@ -289,6 +330,7 @@ def review_progression_lead(
             "core_signal_count": core_signal_count,
             "progression_payoff_count": payoff_count,
             "material_ledger_count": material_count,
+            "material_ledger_signal_count": material_ledger_signal_count,
             "service_closure_count": service_closure_count,
             "trade_closure_count": trade_closure_count,
             "concrete_payoff_count": concrete_payoff_count,

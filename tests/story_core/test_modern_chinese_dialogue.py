@@ -86,7 +86,7 @@ def test_taskbook_exposes_modern_chinese_dialogue_method():
     assert "我就在坡口打两只看看" in section
     assert "柜台不认" in section
     assert "你手里没毒腺" in section
-    assert "少解释只针对旁白" in section
+    assert "对话场面" in section
 
 
 def test_segment_prompt_includes_modern_chinese_dialogue_filter():

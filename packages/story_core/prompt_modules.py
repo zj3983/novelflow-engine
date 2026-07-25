@@ -36,7 +36,7 @@ MODULES: tuple[PromptModuleSpec, ...] = (
     PromptModuleSpec("dialogue_context", "对话情绪", "dialogue", "writing", "dialogue", "本场对话的情绪目标、关系限制和台词后的变化。", ("character_context", "chapter_plan")),
     PromptModuleSpec("genre_context", "题材规则", "genre", "writing", "genre", "按小说类型加载的写法和世界表面规则。", role="default_provider", replaceable=True),
     PromptModuleSpec("writing_taskbook", "写作任务书", "writer", "writing", "craft", "把剧情包翻译成正文可执行的场景任务。", ("chapter_plan",)),
-    PromptModuleSpec("style_context", "表达方法", "writer", "writing", "style", "白描、口语、节奏和反 AI 表达方法。", role="default_provider", replaceable=True),
+    PromptModuleSpec("style_context", "可选文风", "writer", "writing", "style", "项目明确选择的文风；未选择时不注入。", role="default_provider", replaceable=True),
     PromptModuleSpec("skill_context_writer", "正文 Skill", "skill", "writing", "writer", "用户启用的正文写作技能。", role="skill", replaceable=True),
     PromptModuleSpec("skill_context_dialogue", "对话 Skill", "skill", "writing", "dialogue", "用户启用的对话技能。", role="skill", replaceable=True),
     PromptModuleSpec("skill_context_style", "风格 Skill", "skill", "writing", "style", "用户启用的风格技能。", role="skill", replaceable=True),

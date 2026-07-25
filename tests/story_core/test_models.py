@@ -14,6 +14,12 @@ def test_agent_settings_defaults_follow_environment_models(monkeypatch):
     assert settings.character_model == "qwen3.6-plus-fast"
 
 
+def test_agent_settings_migrates_provider_configured_mode():
+    settings = AgentSettings.model_validate({"mode": "provider-configured"})
+
+    assert settings.mode == "LLM-assisted"
+
+
 def test_agent_runtime_state_uses_only_writing_stages():
     runtime = AgentRuntimeState()
 

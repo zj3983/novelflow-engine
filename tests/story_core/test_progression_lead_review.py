@@ -39,6 +39,87 @@ def test_progression_lead_review_accepts_opening_that_turns_drops_into_route_lea
     assert review["metrics"]["outsider_misread_count"] >= 1
 
 
+def test_progression_lead_review_recognizes_level_and_quest_progress_as_visible_lead():
+    body = (
+        "《神域》开服，夜烬击杀灰狼时看见混沌之种和掉落判定×1000。"
+        "第二只灰狼倒下后，面板提示等级提升至Lv.2，清道夫委托进度变成8/16。"
+        "坡外三名玩家打了四只灰狼，只捡到两颗狼牙，毒腺一个都没出。"
+        "他们没有往灌木深处看，也不知道夜烬已经拿到八份毒腺。"
+        "夜烬收起掉落，下一步要补齐委托，再去后坡。"
+    )
+
+    review = review_progression_lead(
+        chapter_number=1,
+        body=body,
+        event_plan={},
+        world_facts=["第一章允许完成裂纹狼心担保交易"],
+    )
+
+    assert not any("没有把千倍爆率转成明确领先感" in issue for issue in review["issues"])
+    assert not any("缺少外人误判" in issue for issue in review["issues"])
+
+
+def test_progression_lead_review_accepts_disguised_route_and_ordinary_drop_comparison():
+    body = (
+        "《神域》开服，夜烬看见混沌之种和掉落判定×1000。"
+        "他的清道夫委托进度已经到了8/16，毒腺×8、狼皮×7叠在两个材料格里。"
+        "坡上玩家杀了第五只灰狼也只出一张皮，毒腺一个都没见。"
+        "有人经过时，夜烬就收起法杖，装作正在找怪，对方没有注意他背包里的材料。"
+        "他已经走完委托的一半，下一步补齐毒腺就去后坡。"
+    )
+
+    review = review_progression_lead(chapter_number=1, body=body, event_plan={}, world_facts=[])
+
+    assert not any("缺少外人误判" in issue for issue in review["issues"])
+    assert not any("材料账本过重" in issue for issue in review["issues"])
+
+
+def test_progression_lead_review_counts_real_arrival_and_paid_bills_as_visible_payoff():
+    body = (
+        "《神域》开服，夜烬通过担保交易卖出裂纹狼心，净到账1764.00元。"
+        "苏叶退出游戏后付清房租和信用卡最低还款，账户余额停在332.60元。"
+        "旁边玩家只当他正常下线，下一步回灰狼坡补齐委托。"
+    )
+
+    review = review_progression_lead(chapter_number=1, body=body, event_plan={}, world_facts=[])
+
+    assert not any("网游爽点没有落成可见收益" in issue for issue in review["issues"])
+
+
+def test_progression_lead_review_does_not_treat_narrative_drops_as_material_ledger():
+    body = (
+        "《神域》开服，夜烬在灰狼坡验证千倍爆率，混沌之种提示掉落判定×1000。"
+        "灰狼倒下，毒腺落在草叶旁，狼皮压住一截枯枝，狼牙滚进石缝。"
+        "他拾起材料时，旁边玩家只当他运气好。"
+        "第二处战斗痕迹里也能看见毒腺、狼皮和狼牙，地上的材料被火光照亮。"
+        "坡脚还有玩家谈起毒腺、狼皮、狼牙和材料，却没人知道异常来自哪里。"
+        "他把毒腺、狼皮和狼牙收好，下一步准备去后坡入口。"
+    )
+
+    review = review_progression_lead(chapter_number=1, body=body, event_plan={}, world_facts=[])
+
+    assert review["metrics"]["material_ledger_count"] >= 14
+    assert review["metrics"]["material_ledger_signal_count"] < 4
+    assert not any("材料账本过重" in issue for issue in review["issues"])
+
+
+def test_progression_lead_review_still_flags_repeated_quantity_bookkeeping():
+    body = (
+        "《神域》开服，夜烬在灰狼坡验证千倍爆率，混沌之种提示掉落判定×1000。"
+        "背包里已有毒腺×8、狼皮×7、狼牙×4。"
+        "任务进度显示毒腺8/16，清道夫委托还差毒腺×8。"
+        "钱袋当前0铜，委托奖励30铜，修理价格12铜。"
+        "药水价格8铜，库存还有两瓶药水，剩余材料要继续清点。"
+        "他拿到第一份掉落，旁边玩家只当他运气好，下一步准备再打。"
+    )
+
+    review = review_progression_lead(chapter_number=1, body=body, event_plan={}, world_facts=[])
+
+    assert review["metrics"]["material_ledger_count"] >= 14
+    assert review["metrics"]["material_ledger_signal_count"] >= 4
+    assert any("材料账本过重" in issue for issue in review["issues"])
+
+
 def test_progression_lead_review_does_not_treat_trade_notice_as_closure():
     body = (
         "《天启之门》开服公告写着材料处理功能将在开服次日夜间开放测试，提现相关说法同步公示。"

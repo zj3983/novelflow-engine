@@ -107,6 +107,15 @@ OLD_SLOGAN_PAYOFF_TERMS = (
 )
 
 MECHANICAL_EXPLANATION_TERMS = (
+    "这说明",
+    "这意味着",
+    "也就是说",
+    "换句话说",
+    "这代表",
+    "他立即明白",
+    "他立刻明白",
+    "夜烬立即明白",
+    "夜烬立刻明白",
     "意味着",
     "理由很直接",
     "很清楚",
@@ -120,6 +129,31 @@ MECHANICAL_EXPLANATION_TERMS = (
     "模型",
     "异常",
     "等于",
+)
+
+PANEL_EXPLANATION_TERMS = (
+    "这说明",
+    "这意味着",
+    "也就是说",
+    "换句话说",
+    "这代表",
+    "规则是",
+    "规则在",
+    "异常只",
+    "机制是",
+)
+
+TRANSACTION_PROCESS_EXPLANATION_TERMS = (
+    "提交鉴定后",
+    "系统给出",
+    "求购匹配",
+    "求购方看不到",
+    "卖家ID",
+    "掉落分片",
+    "平台验货",
+    "封存交割",
+    "无法看到卖家",
+    "不会显示卖家",
 )
 
 STIFF_WEBNOVEL_OUTPUT_TERMS = (
@@ -137,6 +171,16 @@ STIFF_WEBNOVEL_OUTPUT_TERMS = (
     "阈值",
     "基准",
     "诊断",
+    "负载分片",
+    "承载节点",
+    "区域分片",
+    "巡查资格",
+    "登记巡查资格",
+    "配方验证",
+    "平台封存",
+    "封存交割",
+    "现实结算",
+    "字段权限",
 )
 
 BAD_STAFF_TERMS = (
@@ -188,10 +232,9 @@ def anti_ai_style_rules() -> list[str]:
     """Prompt-ready anti-AI prose rules shared by generation and revision."""
 
     return [
-        '拒绝华丽辞藻堆砌、拒绝成语套话、拒绝书面生硬表达、拒绝流水账、不要模板化心理描写、用词口语化生活化、句子按场面自然长短、人物说话要完整自然、人物行为符合人设、前后逻辑严谨、不要重复句式。',
-        "白描不是把句子全部切短：写清人物正在做什么、为什么这么做，以及动作带来的结果；情绪落在停顿、手势、语气和选择里。",
-        "白描示例：他走到门口，先听了听里面的动静，才抬手敲门；不要写成‘他谨慎判断后决定进入’。",
-        "固定文风：默认偏直白爽文；如项目指定古风氛围感或细腻日常，则贴合指定风格。句子长短错落，少长难句，不用千篇一律的玄幻套话。",
+        "避免书面生硬、流水账、模板化心理和重复句式；人物说话完整自然，行为符合人设，前后逻辑严谨。",
+        "不要把句子全部切短：写清人物正在做什么、为什么这么做，以及动作带来的结果；情绪放在停顿、手势、语气和选择里。",
+        "动作示例：他走到门口，先听了听里面的动静，才抬手敲门；不要写成‘他谨慎判断后决定进入’。",
         "一章分3到4个叙事段落推进：开局铺垫、冲突发生、高潮互动、结尾留钩子；不要一次性把事件压成流水账。",
         "生成后自检第一步：替换心中一紧、五味杂陈、脸色一变、眸光一凝、身形一闪、霎时间、此刻、见状、不由得、殊不知、与此同时等AI高频套话。",
         "用动作 + 微表情 + 细微生理反应替代抽象心理；例如用指尖收紧、肩线绷住、笑意变淡，而不是直接写心中一紧。",
@@ -201,8 +244,9 @@ def anti_ai_style_rules() -> list[str]:
         "修正逻辑并防吃设定：核对实力、身份、伏笔、时间、地点、道具、装备、货币和任务状态；删除强行降智、强行巧合、强行煽情。",
         "改写对话：配角说话要符合身份，接地气，别绕太远；加说话动作，删除像念台词的空洞废话。",
         "对白结构要求：对方先说一句（催/抱怨/提醒），主角一句完整回应（说清原因和选择），对方再有一句真实反应；别让一段台词只剩命令和短语。",
-        "番茄白话风：不要把后台词写进正文和标题。边界/验证/服务节点/信息边界/逻辑/模型/阈值/可见性，要换成试一把、问一嘴、柜台能不能办、先别卖、包快满、药水不够、法杖快断。",
-        "修辞配额：每800字最多1个比喻，形容词不要连着堆；优先写动作、对话、面板提示、背包格、耐久和直接后果。",
+        "不要把后台词写进正文和标题。边界/验证/服务节点/信息边界/逻辑/模型/阈值/可见性，要换成角色能说出口、能看见、能处理的具体事情。",
+        "交易、鉴定和任务办理也要写现场：写角色点了什么、界面弹出什么、物品或钱怎样变化；不要旁白解释平台怎样验货、谁能看见哪些字段或后台怎样流转。",
+        "不要连续堆形容词；网游场景中的信息优先落到动作、对话、面板提示、背包格、耐久和直接后果。",
     ]
 
 
@@ -248,6 +292,8 @@ def _modern_chinese_dialogue_problems(body: str) -> list[str]:
         compact = re.sub(r"\s+", "", sentence)
         if not compact or len(compact) > 22:
             return False
+        if compact.startswith("别抢") and "我先" in compact:
+            return False
         for snippet in DIALOGUE_COMMAND_SNIPPETS:
             if snippet in compact:
                 return True
@@ -288,6 +334,9 @@ def _modern_chinese_dialogue_problems(body: str) -> list[str]:
         if re.fullmatch(r"[\u4e00-\u9fff]{2,4}[，,][\u4e00-\u9fff]{2,4}", inner):
             problems.append(inner)
         for sentence in re.split(r"[。！？!?]", inner):
+            compact_sentence = re.sub(r"\s+", "", sentence).strip("—-…‘’“”\"'")
+            if re.fullmatch(r"[一二三四五六七八九十](?:、[一二三四五六七八九十])+", compact_sentence):
+                continue
             if sentence.count("、") >= 2 and sentence.count("，") >= 2:
                 problems.append(f"清单式短句“{sentence}”")
                 continue
@@ -319,6 +368,39 @@ def _mechanical_short_paragraph_ratio(body: str) -> float:
         return 0.0
     short_count = sum(1 for paragraph in paragraphs if len(paragraph) <= 28)
     return short_count / len(paragraphs)
+
+
+def _panel_explanation_problems(body: str) -> list[str]:
+    """Catch a UI panel followed by an author-facing explanation.
+
+    A panel is a reader-visible event. Repeating its meaning in a sentence
+    immediately after the block is the main way backend notes leak into prose.
+    Keep the check local so ordinary explanatory dialogue is not penalized.
+    """
+    problems: list[str] = []
+    panel_markers = ("角色面板", "怪物面板", "状态面板", "属性面板")
+    sentences = re.split(r"(?<=[。！？!?])", body)
+    for index, sentence in enumerate(sentences):
+        if not any(marker in sentence for marker in panel_markers):
+            continue
+        window = "".join(sentences[index : index + 3])
+        hits = [term for term in PANEL_EXPLANATION_TERMS if term in window]
+        if hits:
+            problems.append(f"面板后重复解释：{'、'.join(hits[:3])}")
+    return problems
+
+
+def _transaction_process_explanation_problems(body: str) -> list[str]:
+    """Catch backend transaction rules narrated instead of shown on screen."""
+
+    problems: list[str] = []
+    sentences = [item for item in re.split(r"(?<=[。！？!?])", body) if item.strip()]
+    for index in range(len(sentences)):
+        window = "".join(sentences[index : index + 2])
+        hits = [term for term in TRANSACTION_PROCESS_EXPLANATION_TERMS if term in window]
+        if len(hits) >= 3:
+            problems.append(f"交易流程说明：{'、'.join(hits[:4])}")
+    return problems
 
 
 def review_prose_style(body: str) -> dict[str, Any]:
@@ -398,6 +480,28 @@ def review_prose_style(body: str) -> dict[str, Any]:
         )
 
     mechanical_terms = _repeated_terms(body, MECHANICAL_EXPLANATION_TERMS)
+    panel_explanations = _panel_explanation_problems(body)
+    if panel_explanations:
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="mechanical_texture",
+            issue="；".join(panel_explanations[:2]),
+            plan="面板只保留角色当场看见的字段；面板结束后直接接动作、选择或对话，删掉重复解释数字和规则的句子。",
+            score=5,
+        )
+    transaction_explanations = _transaction_process_explanation_problems(body)
+    if transaction_explanations:
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="mechanical_texture",
+            issue="；".join(transaction_explanations[:2]),
+            plan="把交易规则说明改成角色当场的点击、反馈和物品变化；界面只显示必要状态，不解释平台后台流程和信息权限。",
+            score=5,
+        )
     short_ratio = _mechanical_short_paragraph_ratio(body)
     if short_ratio >= 0.5 or (short_ratio >= 0.38 and len(mechanical_terms) >= 2) or len(mechanical_terms) >= 6:
         sample = "、".join(mechanical_terms[:6]) or f"短段比例{short_ratio:.0%}"

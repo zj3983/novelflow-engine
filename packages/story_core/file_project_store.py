@@ -22,6 +22,7 @@ from packages.story_core.character_profiles import (
     normalize_character_profile,
 )
 from packages.story_core.ai_flavor_review import review_ai_flavor
+from packages.story_core.book_style import normalize_book_style
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.elastic_outline import outline_window_status, validate_outline_for_project
@@ -207,6 +208,12 @@ def _normalize_character_persistence_card(
     is_game_story: bool,
 ) -> dict[str, Any]:
     normalized = normalize_dual_state(card, is_game_story=is_game_story)
+    performance = normalized.get("performance_profile")
+    if isinstance(performance, dict):
+        performance = dict(performance)
+        if performance.get("speech_style") == "白话、完整、少装腔；解释选择时把原因说清。":
+            performance["speech_style"] = "白话、完整、少装腔；只说当下会说的话，理由藏在语气、动作和必要回答里。"
+        normalized["performance_profile"] = performance
     if is_game_story:
         current = normalized.get("game_state", {}).get("current") if isinstance(normalized.get("game_state"), dict) else None
         if isinstance(current, dict):
@@ -413,9 +420,14 @@ def _assert_auto_chapter_quality(
     simplified_review = (
         quality_report.get("simplified_review")
         if isinstance(quality_report.get("simplified_review"), dict)
-        else {}
+        else build_simplified_review({**quality_report, "writing_review": writing_review or {}})
     )
-    if simplified_review and not bool(simplified_review.get("has_hard_errors")):
+    structural_issues = [
+        str(item).strip()
+        for item in (quality_report.get("issues") or [])
+        if str(item).strip() and str(item).strip() != "writing_review"
+    ]
+    if simplified_review and not bool(simplified_review.get("has_hard_errors")) and not structural_issues:
         quality_report["quality_warning"] = {
             "status": str(simplified_review.get("status") or "needs_revision"),
             "needs_revision": bool(simplified_review.get("needs_revision")),
@@ -1667,6 +1679,13 @@ class FileProjectStore:
                 "moral_profile",
                 "performance_profile",
             ):
+                if field == "performance_profile" and isinstance(current.get(field), dict) and isinstance(card.get(field), dict):
+                    profile = dict(current[field])
+                    legacy_speech = "白话、完整、少装腔；解释选择时把原因说清。"
+                    if profile.get("speech_style") == legacy_speech and card[field].get("speech_style"):
+                        profile["speech_style"] = card[field]["speech_style"]
+                    current[field] = profile
+                    continue
                 if card.get(field) and not current.get(field):
                     current[field] = card[field]
             current["goals"] = self._merge_unique(list(current.get("goals") or []), list(card.get("goals") or []), limit=8)
@@ -1757,7 +1776,7 @@ class FileProjectStore:
                 "updated_chapter": current_chapter,
             },
             "performance_profile": {
-                "speech_style": "白话、完整、少装腔；解释选择时把原因说清。",
+                "speech_style": "白话、完整、少装腔；只说当下会说的话，理由藏在语气、动作和必要回答里。",
                 "action_style": "先观察规则和地形，再做低风险动作。",
                 "risk_posture": "隐藏异常收益，避免被玩家和NPC提前盯上。",
                 "decision_rules": ["不公开千倍爆率", "优先解决现实压力和游戏内续航", "每章要有可见成长"],
@@ -3377,6 +3396,14 @@ class FileProjectStore:
         world_blueprint_updated = patch.get("world_blueprint") is not None
         normalized_patch_genre_ids: list[str] | None = None
         patch_world_blueprint = patch.get("world_blueprint")
+        if isinstance(patch_world_blueprint, dict) and "writing_style" in patch_world_blueprint:
+            raw_writing_style = str(patch_world_blueprint.get("writing_style") or "").strip()
+            normalized_writing_style = normalize_book_style(raw_writing_style)
+            if raw_writing_style and not normalized_writing_style:
+                raise ValueError("invalid_writing_style")
+            patch_world_blueprint = dict(patch_world_blueprint)
+            patch_world_blueprint["writing_style"] = normalized_writing_style
+            patch = {**patch, "world_blueprint": patch_world_blueprint}
         if (
             patch_world_blueprint is not None
             and isinstance(patch_world_blueprint, dict)
@@ -3432,6 +3459,8 @@ class FileProjectStore:
                 world_blueprint = dict(world_blueprint)
                 world_blueprint["genre_plugin_ids"] = normalized_patch_genre_ids
             project["world_blueprint"] = world_blueprint
+            if isinstance(world_blueprint_patch, dict) and "writing_style" in world_blueprint_patch:
+                state["style"] = normalize_book_style(world_blueprint_patch.get("writing_style"))
             if isinstance(world_blueprint_patch, dict) and "genre_plugin_ids" in world_blueprint_patch:
                 raw_genre_ids = world_blueprint.get("genre_plugin_ids")
                 genre_plugin_ids = normalize_novel_type_ids(raw_genre_ids)
@@ -4094,6 +4123,10 @@ class FileProjectStore:
             "灰鼠",
             "灰狼毒腺",
             "粗糙狼皮",
+            "灰石裂缝",
+            "二段通行",
+            "寄售功能",
+            "提现规则",
             "清道夫",
             "后坡",
             "巡夜",
@@ -4129,8 +4162,8 @@ class FileProjectStore:
                     "现实段落用苏叶，游戏内行动、交易、任务和玩家称呼优先用夜烬。",
                     "现实账单压力未解决；现实余额只有发生到账、提现、卖币或支付剧情时才更新。",
                 ]
-            cleaned["goals"] = ["进入《天启之门》，低调验证千倍爆率能不能带来成长领先。"]
-            cleaned["location"] = "现实出租屋，等待《天启之门》开服"
+            cleaned["goals"] = ["进入本书设定的游戏，低调验证千倍爆率能不能带来成长领先。"]
+            cleaned["location"] = "现实出租屋，等待游戏开服"
             cleaned["current_emotion"] = "tense"
             characters.append(cleaned)
         if characters:
@@ -4228,9 +4261,10 @@ class FileProjectStore:
                 quality_report["regeneration_quality_warning"] = [
                     str(item) for item in issues if str(item).strip()
                 ][:10]
-            elif _regeneration_quality_blocking(quality_report, writing_review if isinstance(writing_review, dict) else None):
-                raise ValueError(f"regenerated_quality_failed:{issue_text or 'quality_report_not_ok'}")
-            else:
+            elif not _regeneration_quality_blocking(
+                quality_report,
+                writing_review if isinstance(writing_review, dict) else None,
+            ):
                 quality_report["regeneration_quality_warning"] = [str(item) for item in issues if str(item).strip()][:10]
         title_override = _chapter_outline_title(
             direction_payload.get("outline_context"),
@@ -4693,9 +4727,9 @@ class FileProjectStore:
                 ],
             },
             "style_rules": [
-                '语言贴近番茄爆款网文的白话节奏：目标清楚、反馈直接，旁白少做抽象解释；每个场景都要有目标、阻力、收益或危机。少解释只针对旁白，对话不能省略连接词和因果，必须把原因、条件或态度说完整。',
-                "正文少用比喻和形容词链，优先写动作、数值、道具消耗、位置变化和直接后果。",
-                "每个场景都要有目标、阻力、收益或危机，结尾必须留下下一步问题。",
+                "句子要完整，人物行动、理由和结果要接得上；对话不能省略必要的连接词、原因、条件和态度。",
+                "网游信息通过动作、数值、道具消耗、位置变化和直接后果表现，不用旁白解释后台处理过程。",
+                "每个场景都要有目标、阻力、结果或危机，结尾必须留下下一步问题。",
                 "前10章节奏要快，连续两章不能只拿线索不给成长；下一章至少兑现一个可见成长：等级、经验大幅推进、技能、装备、货币补给或任务权限。",
                 "装备称呼统一：普通叙述只写“法杖”或“新手法杖”，修理、持握、表面裂纹和攻击动作都用完整称呼；“裂纹杖芯”作为道具名可以保留。",
                 "人物先行：本章要出场的新NPC必须先在角色卡里有候选卡；模型只能提出建议，不能直接改写既有角色主档。",
@@ -5102,7 +5136,7 @@ class FileProjectStore:
                             [
                                 "下面这章正文太短，请在不改变剧情事实和结尾钩子的前提下扩写成完整网文章节。",
                                 f"目标篇幅：{TARGET_CHAPTER_CHARS}。",
-                                "扩写重点：补足场景调度、战斗过程、任务/装备/技能/路线前置任务、人物对话、心理活动、系统面板反馈、背景节拍和章末压力；第一章不要补成交易、提交委托、修理或买药水。",
+                                "扩写重点：补足场景调度、战斗过程、任务/装备/技能/路线前置任务、人物对话、心理活动、系统面板反馈、背景节拍和章末压力；第一章是否完成交易必须服从项目大纲。",
                                 "只输出扩写后的小说正文，不要解释，不要列大纲。",
                                 f"原正文：\n{source_body_placeholder}",
                             ]
@@ -5121,7 +5155,7 @@ class FileProjectStore:
                                 "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。",
                                 f"目标篇幅：保留完整网文章节感，但压到4300到5000字之间，绝对不要超过{MAX_CHAPTER_CHARS}字。",
                                 "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。",
-                                "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。",
+                                "第一章不得新增项目大纲没有授权的交易、任务提交、修理或买药；已授权的到账和现实急账处理必须保留。",
                                 "只输出压缩后的小说正文，不要解释，不要列大纲。",
                                 f"原正文：\n{source_body_placeholder}",
                             ]

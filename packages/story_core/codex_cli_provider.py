@@ -192,7 +192,7 @@ def post_json_via_codex_cli(
             errors="replace",
             capture_output=True,
             timeout=cfg.timeout,
-            cwd=os.getcwd(),
+            cwd=temp_dir,
             env=subprocess_env,
         )
         if completed.returncode != 0:

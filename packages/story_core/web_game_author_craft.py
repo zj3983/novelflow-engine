@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
+from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.writing_taskbook import writer_facing_text
 
 
@@ -17,6 +18,7 @@ def build_web_game_author_craft(chapter_number: int, *, chapter_goal: str = "") 
 
     early = chapter_number <= 3
     boundary_focus = chapter_number == 1 or any(token in chapter_goal for token in ("边界", "验证", "试探", "boundary"))
+    trade_authorized = chapter_number == 1 and first_chapter_trade_authorized({"turn": chapter_goal}, [])
     return {
         "schema_version": "web-game-author-craft/v1",
         "lineage": [
@@ -57,20 +59,22 @@ def build_web_game_author_craft(chapter_number: int, *, chapter_goal: str = "") 
         },
         "boundary_chapter_contract": {
             "enabled": boundary_focus,
-            "pleasure": "第一章的爽点不是到账，而是试清楚系统认什么、不认什么。",
+            "pleasure": (
+                "第一章先试清楚异常，再按大纲让匿名担保交易到账；爽点来自异常第一次解决现实问题。"
+                if trade_authorized
+                else "第一章的爽点不是到账，而是试清楚系统认什么、不认什么。"
+            ),
             "must_answer": [
                 "系统承认什么反馈",
                 "NPC这边能办什么、不能办什么",
                 "主角付出什么资源代价",
                 "下一步还缺哪一个条件",
             ],
-            "must_not_drift_to": [
-                "实际寄售",
-                "成交到账",
-                "手续费扣款",
-                "人民币换算",
-                "论坛或公会追查",
-            ],
+            "must_not_drift_to": (
+                ["论坛或公会追查"]
+                if trade_authorized
+                else ["实际寄售", "成交到账", "手续费扣款", "人民币换算", "论坛或公会追查"]
+            ),
         },
     }
 
@@ -101,28 +105,29 @@ def _reaction_ladder(chapter_number: int, boundary_focus: bool) -> list[str]:
     ]
 
 
+def plain_world_rule_phrase(text: str) -> str:
+    """Translate backend worldbuilding terms without changing rule meaning."""
+
+    replacements = (
+        ("采用全球同服、分区承载架构，亿级玩家共享公共事件与市场，但由区域分片维持并发运行", "全球同服，玩家数量很多，同一区域会开出多条分线"),
+        ("完成清道夫委托后登记巡查资格", "完成清道夫委托后可以接后坡巡查任务"),
+        ("完成清道夫委托后登记", "完成清道夫委托后可以接后坡巡查任务"),
+        ("登记后坡巡查资格", "解锁后坡巡查任务"),
+        ("登记巡查资格", "解锁后续巡查任务"),
+        ("分区承载架构", "分区和分线"),
+        ("区域分片", "分线"),
+        ("维持并发运行", "分流玩家"),
+    )
+    result = text
+    for old, new in replacements:
+        result = result.replace(old, new)
+    return result
+
+
 def plain_writer_phrase(text: str) -> str:
     """Translate internal planning words before they reach writer prompts."""
 
     replacements = (
-        ("实际寄售", "把材料拿去处理"),
-        ("匿名寄售", "匿名处理材料"),
-        ("寄售成功", "材料处理成功"),
-        ("寄售", "材料处理"),
-        ("上架", "摆上去处理"),
-        ("挂单", "挂出去处理"),
-        ("成交到账", "交易完成"),
-        ("成交", "交易完成"),
-        ("到账", "收到反馈"),
-        ("手续费扣款", "扣掉一笔费用"),
-        ("手续费", "扣费"),
-        ("人民币换算", "现实换钱"),
-        ("换钱", "处理材料"),
-        ("交易行", "市场柜台"),
-        ("商人正面盯盘", "市场玩家盯上来"),
-        ("商人正面登场", "市场玩家正面登场"),
-        ("商人玩家", "市场玩家"),
-        ("商人", "市场玩家"),
         ("赵胖子", "现实债主"),
         ("白袍据点视角", "玩家势力据点视角"),
         ("白袍", "玩家势力"),
@@ -152,7 +157,7 @@ def plain_writer_phrase(text: str) -> str:
         ("边界", "门路"),
         ("验证", "试"),
     )
-    result = text
+    result = plain_world_rule_phrase(text)
     for old, new in replacements:
         result = result.replace(old, new)
     return writer_facing_text(result)
@@ -196,6 +201,7 @@ def build_web_game_director_card(
     event_plan = event_plan if isinstance(event_plan, dict) else {}
     goal = chapter_goal or str(simulation_plan.get("chapter_goal") or event_plan.get("turn") or event_plan.get("next_focus") or "")
     boundary_focus = chapter_number == 1 or any(token in goal for token in ("边界", "验证", "试探", "boundary"))
+    trade_authorized = chapter_number == 1 and first_chapter_trade_authorized(event_plan, [goal])
     visible_actions = compact_list(
         [
             str(item.get("action") if isinstance(item, dict) else item)
@@ -225,7 +231,7 @@ def build_web_game_director_card(
             "主角保持限知，只能使用自己看见、听见、问到、试出来的信息。",
         ],
         "boundary_chapter_bans": (
-            ["寄售", "成交", "到账", "手续费扣款", "换钱", "论坛热帖", "公会追查"]
+            (["论坛热帖", "公会追查"] if trade_authorized else ["寄售", "成交", "到账", "手续费扣款", "换钱", "论坛热帖", "公会追查"])
             if boundary_focus
             else []
         ),

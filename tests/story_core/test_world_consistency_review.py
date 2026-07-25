@@ -186,6 +186,65 @@ def test_world_consistency_review_accepts_npc_location_or_window_alias():
     assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
 
 
+def test_world_consistency_review_accepts_natural_job_and_bank_arrival_wording():
+    body = (
+        "苏叶以前在游戏工作室做职业玩家兼道具估价，后来转去交易平台审核装备截图和价格。"
+        "担保订单成交后，手机弹出银行通知：尾号账户收入1764.00元。"
+        "他随即补上房租，又付清信用卡最低还款。"
+    )
+    scene_cards = [
+        {"scene_id": "reality", "must_show": ["现实职业/技能来源"]},
+        {"scene_id": "payoff", "must_show": ["真实到账", "现实急账处理"]},
+    ]
+
+    review = review_world_event_consistency(
+        body=body,
+        world_events=[],
+        scene_cards=scene_cards,
+        chapter_number=1,
+    )
+
+    assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
+
+
+def test_world_consistency_review_accepts_natural_payout_and_urgent_bill_wording():
+    scene_cards = [
+        {
+            "scene_id": "s6-c1-next-step-hook",
+            "must_show": ["真实到账", "现实急账处理"],
+        }
+    ]
+    body = (
+        "平台扣除服务费后实际到账1764.00元。苏叶先补上房租，又付了信用卡最低还款，"
+        "两笔急账处理完，银行卡可用余额停在332.60元。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=scene_cards, chapter_number=1)
+
+    assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
+
+
+def test_world_consistency_review_accepts_test_work_and_guaranteed_platform_aliases():
+    scene_cards = [
+        {
+            "scene_id": "s2-c1-reality-entry",
+            "must_show": ["现实职业/技能来源"],
+        },
+        {
+            "scene_id": "s6-c1-next-step-hook",
+            "must_show": ["担保交易"],
+        },
+    ]
+    body = (
+        "苏叶以前在游戏外包公司做数值和流程测试，专门从掉落、任务条件和怪物行为里找问题。"
+        "他把裂纹狼心交给持牌担保平台，匿名鉴定后完成交割。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=scene_cards, chapter_number=1)
+
+    assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
+
+
 def test_world_consistency_review_accepts_event_action_alias_surface():
     world_events = [
         {

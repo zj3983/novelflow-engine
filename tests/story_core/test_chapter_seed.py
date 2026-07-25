@@ -287,9 +287,9 @@ def test_orchestrator_prompts_use_chapter_seed_contract():
     assert "本章连续性材料" in plan_prompt
     assert "生成前世界推演契约" not in plan_prompt
     assert "writing_contract" not in plan_prompt
-    assert "本章可用材料" in body_prompt
+    assert "章节：1" not in body_prompt
     assert "人物情绪" in body_prompt
-    assert "整章四拍" in body_prompt
+    assert "整章顺序" in body_prompt
     assert "chapter-seed/v1" not in body_prompt
     assert "生成前世界推演契约" not in body_prompt
     assert "emotional_arc" not in body_prompt
@@ -513,9 +513,9 @@ def test_body_prompt_includes_style_coach_and_scene_card_guidance():
 
     prompt = StoryOrchestrator()._body_prompt(story, 2, plan)
 
-    assert "表达提醒" in prompt
     assert "写作教练 Style Coach" not in prompt
-    assert "web_game_leveling_opening" in prompt
+    assert "web_game_leveling_opening" not in prompt
+    assert "chapter_pattern" not in prompt
     assert "## 本章方向" in prompt
     assert "灰烬村交易行" in prompt
     assert "界面操作" in prompt
