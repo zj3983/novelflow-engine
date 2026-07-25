@@ -3409,6 +3409,9 @@ class FileProjectStore:
                 trope_templates=trope_candidates,
                 expected_primary_trope_id=expected_primary_trope_id,
                 fallback_outline=current_outline if mode == "regenerate" else None,
+                committed_through_chapter=(
+                    current_chapter if mode == "regenerate" else None
+                ),
             )
         else:
             existing_character_names: set[str] = set()
@@ -3439,6 +3442,7 @@ class FileProjectStore:
                 trope_templates=trope_candidates,
                 expected_primary_trope_id=expected_primary_trope_id,
                 fallback_outline=current_outline,
+                committed_through_chapter=current_chapter,
             )
 
         generated_outline = validated.outline.model_dump(mode="json")
@@ -3467,6 +3471,9 @@ class FileProjectStore:
             trope_candidates,
             expected_primary_trope_id=expected_primary_trope_id,
             fallback_outline=current_outline if mode in {"extend", "regenerate"} else None,
+            committed_through_chapter=(
+                current_chapter if mode in {"extend", "regenerate"} else None
+            ),
         )
         cards = self._merge_generated_character_cards(
             [card.model_dump(mode="json") for card in validated.characters]

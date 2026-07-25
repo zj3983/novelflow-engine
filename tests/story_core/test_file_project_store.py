@@ -2067,6 +2067,54 @@ def test_deleted_trope_library_still_rejects_unknown_new_arc_id(
     assert _file_snapshot(root) == before
 
 
+def _prepare_deleted_trope_boundary_regeneration(tmp_path, monkeypatch):
+    root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    current_outline["chapters"][19]["trope_beat"] = "committed orphan beat"
+    current_outline["chapters"][20]["trope_beat"] = "future orphan beat"
+    store.update_project_outline(current_outline)
+    current_outline = store.project_outline()
+    current_outline.pop("source", None)
+    monkeypatch.setattr(store, "_current_project_trope_candidates", lambda *_: [])
+    return root, store, current_outline
+
+
+def test_regenerate_rejects_future_fallback_orphan_beat(tmp_path, monkeypatch) -> None:
+    root, store, current_outline = _prepare_deleted_trope_boundary_regeneration(
+        tmp_path,
+        monkeypatch,
+    )
+    plan = _regeneration_plan_from_current(
+        current_outline,
+        first_trope_beat="future orphan beat",
+    )
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^unexpected_chapter_trope_beat:21$"):
+        store.save_generated_outline_plan(plan, mode="regenerate")
+
+    assert _file_snapshot(root) == before
+
+
+def test_regenerate_keeps_committed_orphan_beat_but_clears_future_beat(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _, store, current_outline = _prepare_deleted_trope_boundary_regeneration(
+        tmp_path,
+        monkeypatch,
+    )
+    plan = _regeneration_plan_from_current(current_outline, first_trope_beat=None)
+
+    saved = store.save_generated_outline_plan(plan, mode="regenerate")
+
+    chapters = {
+        chapter["chapter_number"]: chapter
+        for chapter in saved["outline"]["chapters"]
+    }
+    assert chapters[20]["trope_beat"] == "committed orphan beat"
+    assert chapters[21]["trope_beat"] is None
+
+
 @pytest.mark.parametrize("mode", ["extend", "regenerate"])
 def test_generated_outline_preserves_omitted_locked_arc_after_merge(tmp_path, mode: str) -> None:
     root, store, current_outline = _prepare_extendable_outline(tmp_path, locked_inner_arc=True)

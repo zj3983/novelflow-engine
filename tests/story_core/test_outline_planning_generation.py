@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import inspect
 
 import pytest
@@ -172,6 +173,48 @@ def test_trope_validator_requires_primary_when_candidates_exist() -> None:
 
     with pytest.raises(ValueError, match="^invalid_primary_trope_id$"):
         validate_generated_trope_selection(plan, _trope_templates())
+
+
+def test_trope_validator_does_not_grandfather_fallback_beats_by_default() -> None:
+    plan = _trope_plan()
+    fallback = deepcopy(plan["outline"])
+    plan["outline"]["overall"]["primary_trope_id"] = "deleted-trope"
+    plan["outline"]["arcs"][0]["trope_id"] = "deleted-trope"
+    plan["outline"]["chapters"][0]["trope_beat"] = "deleted beat"
+    fallback["overall"]["primary_trope_id"] = "deleted-trope"
+    fallback["arcs"][0]["trope_id"] = "deleted-trope"
+    fallback["chapters"][0]["trope_beat"] = "deleted beat"
+
+    with pytest.raises(ValueError, match="^unexpected_chapter_trope_beat:1$"):
+        validate_generated_trope_selection(
+            plan,
+            [],
+            expected_primary_trope_id="deleted-trope",
+            fallback_outline=fallback,
+        )
+
+    validate_generated_trope_selection(
+        plan,
+        [],
+        expected_primary_trope_id="deleted-trope",
+        fallback_outline=fallback,
+        committed_through_chapter=1,
+    )
+
+
+def test_trope_validator_does_not_grandfather_changed_beat_for_current_template() -> None:
+    plan = _trope_plan()
+    fallback = deepcopy(plan["outline"])
+    plan["outline"]["chapters"][0]["trope_beat"] = "removed beat"
+    fallback["chapters"][0]["trope_beat"] = "removed beat"
+
+    with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:1$"):
+        validate_generated_trope_selection(
+            plan,
+            _trope_templates(),
+            fallback_outline=fallback,
+            committed_through_chapter=1,
+        )
 
 
 def test_trope_validator_requires_all_nulls_when_no_candidates() -> None:

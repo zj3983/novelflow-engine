@@ -59,6 +59,7 @@ def validate_generated_opening_plan(
     trope_templates: list[dict[str, Any]] | None = None,
     expected_primary_trope_id: str | None = None,
     fallback_outline: dict[str, Any] | None = None,
+    committed_through_chapter: int | None = None,
 ) -> GeneratedOutlinePlan:
     """Validate an AI-generated opening plan without constraining manual drafts."""
 
@@ -120,6 +121,7 @@ def validate_generated_opening_plan(
             trope_templates,
             expected_primary_trope_id=expected_primary_trope_id,
             fallback_outline=fallback_outline,
+            committed_through_chapter=committed_through_chapter,
         )
     return plan
 
@@ -132,6 +134,7 @@ def validate_generated_continuation_plan(
     trope_templates: list[dict[str, Any]] | None = None,
     expected_primary_trope_id: str | None = None,
     fallback_outline: dict[str, Any] | None = None,
+    committed_through_chapter: int | None = None,
 ) -> GeneratedOutlinePlan:
     """Validate an incremental plan without requiring opening-only structure."""
 
@@ -168,6 +171,7 @@ def validate_generated_continuation_plan(
             trope_templates,
             expected_primary_trope_id=expected_primary_trope_id,
             fallback_outline=fallback_outline,
+            committed_through_chapter=committed_through_chapter,
         )
     return plan
 
@@ -177,6 +181,7 @@ def validate_generated_trope_selection(
     trope_templates: list[dict[str, Any]],
     expected_primary_trope_id: str | None = None,
     fallback_outline: dict[str, Any] | None = None,
+    committed_through_chapter: int | None = None,
 ) -> GeneratedOutlinePlan:
     """Validate generated trope locks against the active project candidates."""
 
@@ -206,6 +211,7 @@ def validate_generated_trope_selection(
         int(chapter["chapter_number"]): chapter
         for chapter in (fallback or {}).get("chapters", [])
     }
+    committed_through = max(0, int(committed_through_chapter or 0))
 
     for arc in validated.outline.arcs:
         if arc.trope_id in candidates_by_id:
@@ -260,7 +266,9 @@ def validate_generated_trope_selection(
         )
         fallback_active_arc = fallback_context.get("active_arc")
         if (
-            fallback_chapter is not None
+            chapter.chapter_number <= committed_through
+            and fallback_chapter is not None
+            and str(active_trope_id or "") not in candidates_by_id
             and beat == fallback_chapter.get("trope_beat")
             and isinstance(active_arc, dict)
             and isinstance(fallback_active_arc, dict)
