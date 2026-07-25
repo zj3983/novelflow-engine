@@ -27,14 +27,14 @@ class _StrictPromptAuditModel(BaseModel):
 class PromptAuditSection(_StrictPromptAuditModel):
     title: str
     characters: int = Field(ge=0)
-    lines: int = Field(ge=0)
+    percent: float = Field(ge=0, le=100)
 
 
 class PromptAuditSummary(_StrictPromptAuditModel):
     characters: int = Field(ge=0)
     lines: int = Field(ge=0)
-    duplicate_characters: int = Field(default=0, ge=0)
-    duplicate_percentage: float = Field(default=0.0, ge=0, le=100)
+    estimated_redundant_characters: int = Field(default=0, ge=0)
+    estimated_reduction_percent: float = Field(default=0.0, ge=0, le=100)
     sections: list[PromptAuditSection] = Field(default_factory=list)
 
 
