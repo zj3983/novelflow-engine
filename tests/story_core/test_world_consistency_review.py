@@ -43,6 +43,41 @@ def test_world_consistency_review_accepts_weak_trade_trace():
     assert review["issues"] == []
 
 
+def test_world_consistency_review_requires_fix_for_explicit_economy_boundary_violations():
+    forbidden_currency_name = "\u4eba\u6c11\u5e01"
+    body = (
+        "拍卖物成交以后，交易行把卖出所得直接转入现实账户。\n\n"
+        "【裂纹狼心】【用途：锻造材料】夜烬看完信息，又把裂纹狼心送去验货。\n\n"
+        "求购单已有资金冻结，立即出售显示成交后，夜烬仍在等待买家再次确认。\n\n"
+        f"结算说明里出现了{forbidden_currency_name}。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 4
+    assert all("必须修复" in issue for issue in economy_issues)
+    assert review["scores"]["systemic_consistency"] <= 4
+    plans = "\n".join(review["revision_plan"])
+    assert "交易行只进游戏钱包" in plans
+    assert "已识别物不重复鉴定" in plans
+    assert "资金冻结的求购单应立即成交" in plans
+    assert "独立官方兑换" in plans
+    assert forbidden_currency_name not in plans
+
+
+def test_world_consistency_review_accepts_separated_exchange_and_isolated_terms():
+    body = (
+        "求购单的游戏币已经冻结。夜烬点下立即出售，裂纹狼心成交，游戏币进入游戏钱包。\n\n"
+        "他关掉交易行，进入独立官方兑换页面，确认兑换价、额度、手续费和预计到账，随后现实账户到账。\n\n"
+        "一件未鉴定披风交给鉴定师。远处有人喊求购，另一个人问任务奖励什么时候到账。"
+    )
+
+    review = review_world_event_consistency(body, world_events=[], scene_cards=[], chapter_number=4)
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
 def test_world_consistency_review_accepts_outsider_misread_alias():
     world_events = [
         {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -117,10 +118,144 @@ _LEGACY_PROMPT_FLOW_TERMS: tuple[str, ...] = (
 _LEGACY_PROMPT_FLOW_PATTERN = re.compile(
     rf"(?:{'|'.join(re.escape(term) for term in _LEGACY_PROMPT_FLOW_TERMS)})(?P<terminal>[。！？!?])?"
 )
-_FORBIDDEN_CURRENCY_NAME = "人民币"
+_FORBIDDEN_CURRENCY_NAME = "\u4eba\u6c11\u5e01"
 _NUMBERED_FORBIDDEN_CURRENCY = re.compile(
     rf"(?P<amount>(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万点]+))\s*{_FORBIDDEN_CURRENCY_NAME}"
 )
+
+
+@dataclass(frozen=True)
+class EconomyBoundaryViolation:
+    code: str
+    issue: str
+    revision: str
+
+
+_ECONOMY_PARAGRAPH_SPLIT = re.compile(r"(?:\r?\n\s*){2,}")
+_ECONOMY_SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;])")
+_MARKET_SCENE_TERMS = (
+    "交易行",
+    "拍卖行",
+    "拍卖物",
+    "求购单",
+    "求购成交",
+    "立即出售",
+)
+_REAL_SETTLEMENT_TERMS = ("现实账户", "现实结算")
+_APPRAISAL_ACTION_TERMS = ("提交鉴定", "送去鉴定", "交给鉴定师", "送去验货", "平台验货", "安排验货")
+_IDENTIFIED_STATE_TERMS = ("已识别", "已经识别", "正式名称", "用途：", "用途:", "【名称：", "【名称:")
+_FUNDED_ORDER_TERMS = (
+    "资金已冻结",
+    "资金已经冻结",
+    "资金冻结",
+    "已付款",
+    "已经付款",
+    "游戏币已冻结",
+    "游戏币已经冻结",
+    "游戏币冻结",
+)
+_COMPLETED_ORDER_TERMS = ("立即出售", "显示成交", "已经成交", "已成交", "成交后", "成交以后")
+_BUYER_RECONFIRM_PATTERNS = (
+    re.compile(r"(?:仍|还|继续)?\s*(?:等待|等)买家(?:再次)?确认"),
+    re.compile(r"买家再次确认"),
+)
+
+
+def _asserted_action(text: str, action: str) -> bool:
+    start = 0
+    while True:
+        index = text.find(action, start)
+        if index < 0:
+            return False
+        prefix = text[max(0, index - 6) : index]
+        if not any(marker in prefix for marker in ("不", "无需", "不用", "没有", "未曾", "不再")):
+            return True
+        start = index + len(action)
+
+
+def _has_direct_market_settlement(text: str) -> bool:
+    for paragraph in _ECONOMY_PARAGRAPH_SPLIT.split(text):
+        for sentence in _ECONOMY_SENTENCE_SPLIT.split(paragraph):
+            market_positions = [sentence.find(term) for term in _MARKET_SCENE_TERMS if term in sentence]
+            reality_positions = [sentence.find(term) for term in _REAL_SETTLEMENT_TERMS if term in sentence]
+            if not market_positions or not reality_positions:
+                continue
+            market = min(market_positions)
+            reality = min(position for position in reality_positions if position >= 0)
+            exchange = sentence.find("官方兑换", market, reality)
+            direct = any(term in sentence[market : reality + 8] for term in ("直接", "所得", "款项", "转入", "打进"))
+            if reality > market and exchange < 0 and direct:
+                return True
+    return False
+
+
+def _has_reappraised_identified_item(text: str) -> bool:
+    for paragraph in _ECONOMY_PARAGRAPH_SPLIT.split(text):
+        appraisal = any(_asserted_action(paragraph, action) for action in _APPRAISAL_ACTION_TERMS)
+        if not appraisal:
+            continue
+        if "裂纹狼心" in paragraph or any(term in paragraph for term in _IDENTIFIED_STATE_TERMS):
+            return True
+    return False
+
+
+def _has_buyer_reconfirmation_after_funded_sale(text: str) -> bool:
+    for paragraph in _ECONOMY_PARAGRAPH_SPLIT.split(text):
+        if "求购单" not in paragraph:
+            continue
+        funded_positions = [paragraph.find(term) for term in _FUNDED_ORDER_TERMS if term in paragraph]
+        completed_positions = [paragraph.find(term) for term in _COMPLETED_ORDER_TERMS if term in paragraph]
+        confirm_positions = [
+            match.start()
+            for pattern in _BUYER_RECONFIRM_PATTERNS
+            for match in pattern.finditer(paragraph)
+        ]
+        if funded_positions and completed_positions and confirm_positions:
+            funded = min(funded_positions)
+            completed = min(position for position in completed_positions if position >= 0)
+            confirm = min(confirm_positions)
+            if funded < completed < confirm:
+                return True
+    return False
+
+
+def detect_economy_boundary_violations(body: str) -> tuple[EconomyBoundaryViolation, ...]:
+    """Find only explicit market, appraisal and exchange boundary violations."""
+
+    violations: list[EconomyBoundaryViolation] = []
+    if _has_direct_market_settlement(body):
+        violations.append(
+            EconomyBoundaryViolation(
+                code="market_direct_reality_settlement",
+                issue="交易行成交所得被直接写入现实账户，交易与现实兑换混成了一步。",
+                revision="交易行只进游戏钱包；现实收益必须在离开交易行后走独立官方兑换。",
+            )
+        )
+    if _has_reappraised_identified_item(body):
+        violations.append(
+            EconomyBoundaryViolation(
+                code="identified_item_reappraised",
+                issue="已显示正式名称、用途或已识别状态的物品又被送去鉴定或验货。",
+                revision="已识别物不重复鉴定；只有明确标为未鉴定的物品才交给鉴定师。",
+            )
+        )
+    if _has_buyer_reconfirmation_after_funded_sale(body):
+        violations.append(
+            EconomyBoundaryViolation(
+                code="funded_order_waits_for_buyer",
+                issue="已有资金冻结或已付款的求购单成交后，仍在等待买家再次确认。",
+                revision="资金冻结的求购单应立即成交，成交后游戏币直接进入游戏钱包，不再等待买家确认。",
+            )
+        )
+    if _FORBIDDEN_CURRENCY_NAME in body:
+        violations.append(
+            EconomyBoundaryViolation(
+                code="forbidden_currency_name",
+                issue="正文使用了禁止出现的完整现实货币名称。",
+                revision="删除完整现实货币名称；交易行只进游戏钱包，现实收益走独立官方兑换。",
+            )
+        )
+    return tuple(violations)
 
 _LEGACY_OPENING_MARKERS: tuple[str, ...] = (
     "第一章必须通过裂纹狼心担保交易",

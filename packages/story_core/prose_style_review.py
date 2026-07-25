@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from packages.story_core.web_game_economy import detect_economy_boundary_violations
+
 
 AI_CLICHE_TERMS = (
     "心中一紧",
@@ -415,6 +417,17 @@ def review_prose_style(body: str) -> dict[str, Any]:
     }
     issues: list[str] = []
     revision_plan: list[str] = []
+
+    for violation in detect_economy_boundary_violations(body):
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="game_term_precision",
+            issue=f"[必须修复]经济边界：{violation.issue}",
+            plan=violation.revision,
+            score=3,
+        )
 
     cliches = _repeated_terms(body, AI_CLICHE_TERMS)
     if cliches:

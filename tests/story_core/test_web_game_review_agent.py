@@ -53,6 +53,40 @@ def test_web_game_review_accepts_plain_text_monster_panel_without_brackets():
     assert not any("怪物面板" in issue for issue in review["issues"])
 
 
+def test_web_game_review_requires_fix_for_explicit_economy_boundary_violations():
+    forbidden_currency_name = "\u4eba\u6c11\u5e01"
+    body = (
+        "《神域》里，夜烬把裂纹狼心卖给求购单，交易行把成交所得直接打进现实账户。\n\n"
+        "裂纹狼心的正式名称和锻造用途已经显示出来，他还是把它提交鉴定，平台又安排验货。\n\n"
+        "这张求购单的资金已经冻结，立即出售也显示成交，系统却让他继续等待买家再次确认。\n\n"
+        f"界面还把结算单位完整写成{forbidden_currency_name}。"
+    )
+
+    review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 4
+    assert all("必须修复" in issue for issue in economy_issues)
+    plans = "\n".join(review["revision_plan"])
+    assert "交易行只进游戏钱包" in plans
+    assert "已识别物不重复鉴定" in plans
+    assert "资金冻结的求购单应立即成交" in plans
+    assert "独立官方兑换" in plans
+    assert forbidden_currency_name not in plans
+
+
+def test_web_game_review_accepts_separated_exchange_and_conservative_economy_terms():
+    body = (
+        "《神域》里，夜烬选中一张已经冻结游戏币的求购单，立即出售裂纹狼心，成交后游戏币进入游戏钱包。\n\n"
+        "他随后离开交易行，打开独立的官方兑换页面，确认兑换价、额度、手续费和预计到账，现实账户很快收到款项。\n\n"
+        "背包里的未知矿石只显示未鉴定，他把矿石交给鉴定师。另一个玩家在聊天栏里问了一句求购，柜台旁也有人提到账。"
+    )
+
+    review = review_web_game_chapter(chapter_number=4, body=body, event_plan={}, world_facts=[])
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
 def test_web_game_review_rejects_login_after_disconnected_broadband_without_network_source():
     body = (
         "家里的宽带已经断网两天，路由器指示灯全灭。"

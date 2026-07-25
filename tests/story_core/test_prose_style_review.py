@@ -143,6 +143,41 @@ def test_prose_style_review_accepts_player_facing_game_terms():
     assert review["pass"]
 
 
+def test_prose_style_review_requires_fix_for_explicit_economy_boundary_violations():
+    forbidden_currency_name = "\u4eba\u6c11\u5e01"
+    body = (
+        "夜烬卖出拍卖物，交易行成交所得直接现实结算，款项进了现实账户。\n\n"
+        "【名称：裂纹狼心】【用途：锻造】信息已经完整显示，他又提交鉴定，等平台验货。\n\n"
+        "求购单的游戏币已经冻结，立即出售显示成交以后，系统仍要求等待买家确认。\n\n"
+        f"结算栏使用了{forbidden_currency_name}这个完整名称。"
+    )
+
+    review = review_prose_style(body)
+
+    economy_issues = [issue for issue in review["issues"] if "经济边界" in issue]
+    assert len(economy_issues) == 4
+    assert all("必须修复" in issue for issue in economy_issues)
+    assert review["scores"]["game_term_precision"] <= 4
+    plans = "\n".join(review["revision_plan"])
+    assert "交易行只进游戏钱包" in plans
+    assert "已识别物不重复鉴定" in plans
+    assert "资金冻结的求购单应立即成交" in plans
+    assert "独立官方兑换" in plans
+    assert forbidden_currency_name not in plans
+
+
+def test_prose_style_review_accepts_valid_exchange_unidentified_item_and_isolated_terms():
+    body = (
+        "夜烬选中资金已经冻结的求购单，点下立即出售，裂纹狼心成交后游戏币进入游戏钱包。\n\n"
+        "他退出交易行，打开独立官方兑换页面，确认兑换价、额度、手续费和预计到账，随后现实账户到账。\n\n"
+        "那件披风仍是未鉴定状态，他把披风交给鉴定师。队伍频道里有人求购药草，也有人问奖励到账没有。"
+    )
+
+    review = review_prose_style(body)
+
+    assert not any("经济边界" in issue for issue in review["issues"]), review
+
+
 def test_prose_style_review_flags_panel_followed_by_rule_explanation():
     body = "角色面板：等级Lv.1，法力60/60。\n\n这说明他的法力还很充足，规则就是这样。"
 
