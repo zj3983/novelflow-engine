@@ -171,6 +171,7 @@ export function PromptCallsView({ projectId, chapterNumber }: { projectId: strin
             type="button"
             className={selected?.call_id === call.call_id ? "ws-call-item is-active" : "ws-call-item"}
             aria-label={`查看调用 ${call.call_id}`}
+            aria-pressed={selected?.call_id === call.call_id}
             onClick={() => void openCall(call)}
           >
             <strong>第 {call.attempt} 次 · {call.stage}</strong>
