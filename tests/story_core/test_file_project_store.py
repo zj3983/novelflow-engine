@@ -110,6 +110,14 @@ def _make_minimal_file_project(root, *, state=None, project=None):
     return FileProjectStore(root)
 
 
+def _file_snapshot(root) -> dict:
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def _planning_card(name: str, tier: str, *, age: int = 30) -> dict:
     return {
         "name": name,
@@ -141,6 +149,7 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
                     "main_conflict": "有人销毁证据。",
                     "growth_path": "逐步取得调查旧档的权力。",
                     "ending_direction": "旧案公开。",
+                    "primary_trope_id": "low_status_reversal",
                 },
                 "arcs": [
                     {
@@ -151,6 +160,7 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
                         "goal": "找到换名册的人",
                         "obstacle": "赵衡控制清点权",
                         "payoff": "取得查档资格",
+                        "trope_id": "low_status_reversal",
                         "end_state": "祖祠不再由赵衡独占",
                         "stage_antagonist": "赵衡",
                         "long_term_antagonist_traces": ["旧名册被换过"],
@@ -166,6 +176,7 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
                         "turn": "旧名册出现矛盾",
                         "payoff": "得到可验证线索",
                         "ending_hook": "有人提前来过",
+                        "trope_beat": "低位压力" if number == 1 else None,
                         "cast": ["林照", "赵衡"],
                     }
                     for number in range(1, 31)
@@ -267,6 +278,28 @@ def test_save_generated_plan_updates_outline_project_and_state_together(tmp_path
     assert store.project()["character_profiles"][0]["identity_profile"]["occupation"] == "守祠杂役"
     assert store.state()["characters"][0]["identity_profile"]["age"] == 21
     assert list((root / ".story-system" / "plans").glob("*-initial.json"))
+
+
+def test_save_generated_plan_revalidates_tropes_before_writes(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "Fake Trope Bypass",
+            "active_story_id": "s-file",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": []},
+    )
+    payload = _generated_opening_plan().model_dump(mode="json")
+    payload["outline"]["overall"]["primary_trope_id"] = "not-a-candidate"
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^invalid_primary_trope_id$"):
+        store.save_generated_outline_plan(GeneratedOutlinePlan.model_validate(payload), mode="initial")
+
+    assert _file_snapshot(root) == before
 
 
 def test_save_generated_plan_builds_canonical_relationship_graph(tmp_path):
@@ -1599,6 +1632,7 @@ def test_extend_generated_outline_plan_fills_missing_rolling_window_chapters(tmp
     addition = GeneratedOutlinePlan.model_validate(
         {
             "outline": {
+                "overall": current_outline["overall"],
                 "arcs": [
                     {
                         **current_outline["arcs"][0],
@@ -1705,6 +1739,71 @@ def test_extend_direct_save_revalidates_cast_and_new_cards_without_writes(
     } == before
 
 
+@pytest.mark.parametrize(
+    "overall_trope_id,arc_trope_id,error",
+    [
+        ("golden_finger_first_test", "low_status_reversal", "unexpected_primary_trope_id"),
+        ("low_status_reversal", "golden_finger_first_test", "locked_arc_trope_drift:opening"),
+    ],
+)
+def test_extend_rejects_locked_trope_drift_without_writes(
+    tmp_path,
+    overall_trope_id: str,
+    arc_trope_id: str,
+    error: str,
+) -> None:
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(root)
+    store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+    state = store.state()
+    state["current_chapter"] = 20
+    store._write_json(store.webnovel_dir / "state.json", state)
+    current_outline = store.project_outline()
+    current_outline.pop("source", None)
+    current_outline["overall"].update(
+        core_ending_chapter=150,
+        extension_ceiling_chapter=500,
+        current_strategy="expand",
+        ending_contract="Close both lines.",
+    )
+    current_outline["arcs"][0].update(
+        end_chapter=150,
+        game_line_payoff="Win the game arc.",
+        reality_line_payoff="Resolve the reality pressure.",
+        extension_gate={"continue_route": "Enter the city.", "close_route": "Close the case."},
+    )
+    store.update_project_outline(current_outline)
+    addition = GeneratedOutlinePlan.model_validate(
+        {
+            "outline": {
+                "overall": {**current_outline["overall"], "primary_trope_id": overall_trope_id},
+                "arcs": [{**current_outline["arcs"][0], "trope_id": arc_trope_id}],
+                "chapters": [
+                    {
+                        "chapter_number": number,
+                        "goal": "继续追查旧案",
+                        "obstacle": "旧档房封门",
+                        "action": "林照争取查档资格",
+                        "turn": "发现新的经手人",
+                        "payoff": "锁定下一条线索",
+                        "ending_hook": "经手人已经离宗",
+                        "trope_beat": None,
+                        "cast": ["林照", "New"],
+                    }
+                    for number in range(31, 51)
+                ],
+            },
+            "characters": [_planning_card("New", "supporting")],
+        }
+    )
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match=f"^{error}$"):
+        store.save_generated_outline_plan(addition, mode="extend")
+
+    assert _file_snapshot(root) == before
+
+
 def test_regenerate_preserves_committed_chapter_outline(tmp_path) -> None:
     store = _make_minimal_file_project(tmp_path / "novel")
     store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
@@ -1732,8 +1831,14 @@ def test_regenerate_preserves_committed_chapter_outline(tmp_path) -> None:
 
     payload = _generated_opening_plan().model_dump(mode="json")
     template = payload["outline"]["chapters"][0]
+    payload["outline"]["arcs"] = current_outline["arcs"]
     payload["outline"]["chapters"] = [
-        {**template, "chapter_number": number, "title": f"Regenerated {number}"}
+        {
+            **template,
+            "chapter_number": number,
+            "title": f"Regenerated {number}",
+            "trope_beat": None,
+        }
         for number in range(21, 51)
     ]
     payload["outline"]["overall"]["story"] = "Regenerated future story"

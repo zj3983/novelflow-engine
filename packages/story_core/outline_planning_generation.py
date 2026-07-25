@@ -75,6 +75,12 @@ class LLMOutlinePlanningGenerator:
             genre = runtime_novel_type(validated.novel_type_id)
             if genre is None:
                 raise ValueError("invalid_novel_type")
+            genre_context = novel_type_prompt_context(genre)
+            trope_candidates = [
+                dict(item)
+                for item in genre_context.get("genre_trope_templates", [])
+                if isinstance(item, dict)
+            ]
             window = outline_window_status(
                 validated.existing_outline,
                 current_chapter=validated.current_chapter,
@@ -119,6 +125,30 @@ class LLMOutlinePlanningGenerator:
                     ]
                 )
             )
+            opening_primary_trope_id = str(
+                validated.opening_direction.primary_trope_id or ""
+            ).strip() or None
+            existing_overall = (
+                validated.existing_outline.get("overall")
+                if isinstance(validated.existing_outline.get("overall"), dict)
+                else {}
+            )
+            existing_primary_trope_id = str(
+                existing_overall.get("primary_trope_id") or ""
+            ).strip() or None
+            expected_primary_trope_id = (
+                existing_primary_trope_id
+                if mode in {"regenerate", "extend"} and existing_primary_trope_id
+                else opening_primary_trope_id
+            )
+
+            trope_validation_rules = [
+                "If prompt_context.genre_trope_templates is non-empty, overall.primary_trope_id must be one id from those candidates.",
+                "If prompt_context.genre_trope_templates is non-empty, every arc.trope_id must be one id from those candidates and must not change inside that arc.",
+                "chapter.trope_beat only on milestone chapters; when present it must exactly equal a beat from the active arc's trope template.",
+                "Do not assign trope_beat to every chapter.",
+                "If prompt_context.genre_trope_templates is empty, overall.primary_trope_id, every arc.trope_id, and every chapter.trope_beat must be null.",
+            ]
 
             if mode == "extend":
                 validation_rules = [
@@ -126,6 +156,7 @@ class LLMOutlinePlanningGenerator:
                     "characters must contain only newly introduced character cards; do not repeat cards named in prompt_context.existing_character_names.",
                     "Every chapter cast name must equal either a name in prompt_context.existing_character_names or a name in characters.",
                     "Every new character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
+                    *trope_validation_rules,
                 ]
             else:
                 validation_rules = [
@@ -135,11 +166,12 @@ class LLMOutlinePlanningGenerator:
                     "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order.",
                     "Every name in every chapter cast must exactly equal a name in characters.",
                     "Every character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
+                    *trope_validation_rules,
                 ]
 
             prompt_context = {
                 "mode": mode,
-                **novel_type_prompt_context(genre),
+                **genre_context,
                 "title": validated.title,
                 "opening_direction": validated.opening_direction.model_dump(mode="json"),
                 "author_constraints": validated.author_constraints,
@@ -170,6 +202,10 @@ class LLMOutlinePlanningGenerator:
                             "For extend, characters must contain only newly introduced character cards, while chapter cast may also use names from prompt_context.existing_character_names. "
                             "Every core arc must state a concrete game_line_payoff and reality_line_payoff. "
                             "observe follows the core route, expand uses only the next continue_route, and close uses the active close_route. "
+                            "Choose one overall.primary_trope_id from prompt_context.genre_trope_templates and one arc.trope_id per arc from those same candidates. "
+                            "Use chapter.trope_beat only on milestone chapters, and the value must exactly equal a beat of that arc's locked template. "
+                            "Do not assign trope_beat to every chapter. Do not change trope_id inside an arc. "
+                            "Use null for overall.primary_trope_id, arc.trope_id, and chapter.trope_beat when prompt_context.genre_trope_templates is empty. "
                             "你负责生成中文长篇网文的结构化开书计划，不写正文。只返回 JSON，根字段必须是 "
                             "outline 和 characters。initial/regenerate 模式必须给出完整总纲和全部核心卷，"
                             "但细纲只能覆盖目标章节，并给出4至6张具体角色卡。角色卡必须包括主角、阶段对手、长期反派和重要配角，"
@@ -200,10 +236,14 @@ class LLMOutlinePlanningGenerator:
                     parsed,
                     expected_chapter_numbers=target_chapter_numbers,
                     existing_character_names=set(existing_character_names),
+                    trope_templates=trope_candidates,
+                    expected_primary_trope_id=expected_primary_trope_id,
                 )
             return validate_generated_opening_plan(
                 parsed,
                 expected_chapter_numbers=target_chapter_numbers,
+                trope_templates=trope_candidates,
+                expected_primary_trope_id=expected_primary_trope_id,
             )
         except Exception as exc:
             if isinstance(exc, ValueError):
