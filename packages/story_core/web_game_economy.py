@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -57,8 +58,6 @@ _FIRST_CHAPTER_TRANSACTION_MARKERS: tuple[str, ...] = (
     "裂纹狼心",
     "交易行",
     "求购单",
-    "订单状态",
-    "订单",
     "出售",
     "成交",
     "持牌虚拟资产担保平台",
@@ -68,7 +67,8 @@ _FIRST_CHAPTER_TRANSACTION_MARKERS: tuple[str, ...] = (
     "担保交割",
     "稀有资产担保",
 )
-_PROMPT_CLAUSE_SEPARATOR = re.compile(r"([，。；！？!?：:\n]+)")
+_PROMPT_CLAUSE_SEPARATOR = re.compile(r"([。；！？!?\n]+)")
+_PROMPT_SOFT_CLAUSE_SEPARATOR = re.compile(r"([，,]+)")
 _CLAUSE_SCOPED_LEGACY_FLOW_TERMS: tuple[str, ...] = (
     "提交鉴定",
     "鉴定中",
@@ -80,6 +80,7 @@ _CLAUSE_SCOPED_LEGACY_FLOW_PATTERN = re.compile(
 _CHAPTER_SCOPE_MARKER = re.compile(
     r"第\s*(?P<chinese>[零〇一二两三四五六七八九十百千万\d]+)\s*章"
     r"|(?:[\"']?chapter_number[\"']?)\s*[:：]\s*[\"']?(?P<json>\d+)[\"']?"
+    r"|(?P<current>本章)"
 )
 
 _LEGACY_PROMPT_FLOW_TERMS: tuple[str, ...] = (
@@ -94,7 +95,7 @@ _LEGACY_PROMPT_FLOW_TERMS: tuple[str, ...] = (
     "现实结算",
 )
 _LEGACY_PROMPT_FLOW_PATTERN = re.compile(
-    "|".join(re.escape(term) for term in _LEGACY_PROMPT_FLOW_TERMS)
+    rf"(?:{'|'.join(re.escape(term) for term in _LEGACY_PROMPT_FLOW_TERMS)})(?P<terminal>[。！？!?])?"
 )
 _FORBIDDEN_CURRENCY_NAME = "人民币"
 _NUMBERED_FORBIDDEN_CURRENCY = re.compile(
@@ -150,17 +151,37 @@ def _has_first_chapter_transaction_marker(clause: str) -> bool:
     return any(term in clause for term in _FIRST_CHAPTER_TRANSACTION_MARKERS)
 
 
+def _normalize_anonymous_submit_soft_clauses(value: str) -> str:
+    parts = _PROMPT_SOFT_CLAUSE_SEPARATOR.split(value)
+    for index in range(0, len(parts), 2):
+        clause = parts[index]
+        if "匿名提交" in clause and _has_first_chapter_transaction_marker(clause):
+            parts[index] = clause.replace("匿名提交", "立即出售")
+    return "".join(parts)
+
+
 def _normalize_clause_scoped_terms(
     value: str,
     replace_flow: Callable[[re.Match[str]], str],
 ) -> str:
     parts = _PROMPT_CLAUSE_SEPARATOR.split(value)
     for index in range(0, len(parts), 2):
-        clause = parts[index]
+        clause = _normalize_anonymous_submit_soft_clauses(parts[index])
+        parts[index] = clause
         if not _has_first_chapter_transaction_marker(clause):
             continue
-        clause = clause.replace("匿名提交", "立即出售")
+        has_scoped_flow = _CLAUSE_SCOPED_LEGACY_FLOW_PATTERN.search(clause) is not None
         parts[index] = _CLAUSE_SCOPED_LEGACY_FLOW_PATTERN.sub(replace_flow, clause)
+        if (
+            has_scoped_flow
+            and index + 1 < len(parts)
+            and parts[index].endswith(("。", "！", "？", "!", "?"))
+            and parts[index + 1]
+            and parts[index + 1][0] in "。！？!?"
+        ):
+            terminal = parts[index + 1][0]
+            parts[index] = parts[index].rstrip("。！？!?") + terminal
+            parts[index + 1] = parts[index + 1][1:]
     return "".join(parts)
 
 
@@ -169,10 +190,15 @@ def _normalize_legacy_economy_prompt_segment(value: str) -> str:
 
     def replace_flow(_match: re.Match[str]) -> str:
         nonlocal inserted_flow
+        terminal = _match.groupdict().get("terminal")
         if inserted_flow:
-            return "交易与兑换流程"
-        inserted_flow = True
-        return " ".join(_OPENING_MARKET_EXCHANGE_FLOW)
+            replacement = "交易与兑换流程"
+        else:
+            inserted_flow = True
+            replacement = " ".join(_OPENING_MARKET_EXCHANGE_FLOW)
+        if terminal:
+            replacement = replacement.rstrip("。！？!?") + terminal
+        return replacement
 
     normalized = _normalize_clause_scoped_terms(value, replace_flow)
     for legacy, current in _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS:
@@ -187,6 +213,8 @@ def _normalize_legacy_economy_prompt_segment(value: str) -> str:
 
 
 def _chapter_scope_number(match: re.Match[str]) -> int:
+    if match.group("current"):
+        return 1
     raw = str(match.group("json") or match.group("chinese") or "").strip()
     if raw.isdigit():
         return int(raw)
@@ -226,7 +254,7 @@ def _chapter_scope_number(match: re.Match[str]) -> int:
     return total + section + number
 
 
-def _normalize_legacy_economy_prompt_line(value: str) -> str:
+def _normalize_legacy_economy_scoped_text(value: str) -> str:
     markers = list(_CHAPTER_SCOPE_MARKER.finditer(value))
     if not markers:
         return _normalize_legacy_economy_prompt_segment(value)
@@ -243,11 +271,85 @@ def _normalize_legacy_economy_prompt_line(value: str) -> str:
     return "".join(parts)
 
 
+def _future_chapter_json_spans(value: str) -> tuple[tuple[int, int], ...]:
+    stack: list[int] = []
+    candidates: list[tuple[int, int]] = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(value):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append(index)
+        elif char == "}" and stack:
+            candidates.append((stack.pop(), index + 1))
+
+    protected: list[tuple[int, int]] = []
+    for start, end in candidates:
+        try:
+            payload = json.loads(value[start:end])
+            chapter_number = int(payload.get("chapter_number")) if isinstance(payload, dict) else 0
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if chapter_number >= 2:
+            protected.append((start, end))
+
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(protected):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return tuple(merged)
+
+
+def _normalize_json_string_scopes(value: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    start: int | None = None
+    escaped = False
+    for index, char in enumerate(value):
+        if start is None:
+            if char == '"':
+                parts.append(_normalize_legacy_economy_scoped_text(value[cursor:index]))
+                start = index
+            continue
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            parts.append(_normalize_legacy_economy_scoped_text(value[start : index + 1]))
+            cursor = index + 1
+            start = None
+    if start is not None:
+        parts.append(_normalize_legacy_economy_scoped_text(value[start:]))
+    else:
+        parts.append(_normalize_legacy_economy_scoped_text(value[cursor:]))
+    return "".join(parts)
+
+
 def _normalize_legacy_economy_prompt_text(value: str) -> str:
-    return "".join(
-        _normalize_legacy_economy_prompt_line(line)
-        for line in value.splitlines(keepends=True)
-    )
+    protected = _future_chapter_json_spans(value)
+    if not protected:
+        return _normalize_json_string_scopes(value)
+
+    parts: list[str] = []
+    cursor = 0
+    for start, end in protected:
+        parts.append(_normalize_json_string_scopes(value[cursor:start]))
+        parts.append(value[start:end])
+        cursor = end
+    parts.append(_normalize_json_string_scopes(value[cursor:]))
+    return "".join(parts)
 
 
 def normalize_legacy_economy_prompt_value(

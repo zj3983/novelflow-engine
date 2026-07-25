@@ -279,6 +279,34 @@ def test_legacy_prompt_migration_preserves_later_chapter_in_structured_json_text
     assert normalized.count("担保交易") == 1
 
 
+def test_legacy_prompt_migration_keeps_multiline_later_chapter_scope() -> None:
+    source = "第一章通过裂纹狼心担保交易处理急账。\n第十章\n建立担保交易制度，银行继续提供担保。"
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert "第一章通过裂纹狼心担保交易" not in normalized
+    assert "第十章\n建立担保交易制度，银行继续提供担保。" in normalized
+
+
+def test_future_json_object_is_protected_without_scoping_over_following_current_text() -> None:
+    future_object = '{\n  "chapter_number": 10,\n  "goal": "建立担保交易制度"\n}'
+    source = f"规划记录：\n{future_object}\n当前旧约束：裂纹狼心担保交易处理急账。"
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert future_object in normalized
+    assert "当前旧约束：裂纹狼心担保交易" not in normalized
+    assert "官方兑换" in normalized
+
+
 def test_legacy_prompt_migration_uses_nested_mapping_chapter_number_scope() -> None:
     source = {
         "chapters": [
@@ -295,6 +323,36 @@ def test_legacy_prompt_migration_uses_nested_mapping_chapter_number_scope() -> N
 
     assert "担保交易" not in normalized["chapters"][0]["goal"]
     assert normalized["chapters"][1] == source["chapters"][1]
+
+
+def test_order_complaint_and_isolated_order_status_do_not_create_trade_context() -> None:
+    source = "匿名提交订单投诉。订单状态变成鉴定中。"
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert normalized == source
+
+
+@pytest.mark.parametrize(
+    ("source", "forbidden"),
+    (
+        ("裂纹狼心通过担保交易。", "。。"),
+        ("裂纹狼心提交鉴定！", "。！"),
+    ),
+)
+def test_legacy_flow_replacement_keeps_one_terminal_mark(source: str, forbidden: str) -> None:
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert forbidden not in normalized
+    assert normalized[-1] in "。！"
 
 
 def test_specific_replacements_do_not_leave_duplicate_or_partial_order_words() -> None:
