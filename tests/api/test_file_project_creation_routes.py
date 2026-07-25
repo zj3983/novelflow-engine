@@ -807,7 +807,7 @@ def test_invalid_model_output_returns_502_and_preserves_previous_candidates(crea
     assert (directions_path.read_bytes(), project_path.read_bytes()) == before
 
 
-@pytest.mark.parametrize("brief_problem", ["missing", "corrupt", "invalid_novel_type"])
+@pytest.mark.parametrize("brief_problem", ["missing", "corrupt"])
 def test_invalid_local_opening_brief_returns_422_without_calling_model(
     creation_api,
     monkeypatch,
@@ -818,12 +818,8 @@ def test_invalid_local_opening_brief_returns_422_without_calling_model(
     brief_path = root / ".webnovel" / "opening_brief.json"
     if brief_problem == "missing":
         brief_path.unlink()
-    elif brief_problem == "corrupt":
-        brief_path.write_text("{not-json", encoding="utf-8")
     else:
-        brief = json.loads(brief_path.read_text(encoding="utf-8"))
-        brief["novel_type_id"] = "unknown-type"
-        brief_path.write_text(json.dumps(brief), encoding="utf-8")
+        brief_path.write_text("{not-json", encoding="utf-8")
 
     calls = {"runtime": 0, "post": 0}
 
@@ -847,9 +843,26 @@ def test_invalid_local_opening_brief_returns_422_without_calling_model(
     response = client.post(f"/file-projects/{project['project_id']}/opening-directions")
 
     assert response.status_code == 422
-    if brief_problem == "invalid_novel_type":
-        assert response.json()["detail"] == "invalid_novel_type"
     assert calls == {"runtime": 0, "post": 0}
+
+
+def test_invalid_opening_brief_type_is_ignored_when_project_has_explicit_current_type(
+    creation_api,
+    monkeypatch,
+):
+    client, _, _ = creation_api
+    project, root = _create_inspiration_project(client)
+    brief_path = root / ".webnovel" / "opening_brief.json"
+    brief = json.loads(brief_path.read_text(encoding="utf-8"))
+    brief["novel_type_id"] = "unknown-type"
+    brief_path.write_text(json.dumps(brief), encoding="utf-8")
+    generator = _FakeOpeningDirectionGenerator()
+    monkeypatch.setattr(file_project_routes, "opening_direction_generator", generator)
+
+    response = client.post(f"/file-projects/{project['project_id']}/opening-directions")
+
+    assert response.status_code == 200
+    assert generator.calls == 1
 
 
 @pytest.mark.parametrize(

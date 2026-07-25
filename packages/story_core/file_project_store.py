@@ -2941,6 +2941,31 @@ class FileProjectStore:
             if isinstance(item, dict)
         ]
 
+    def _current_opening_direction_novel_type_id(
+        self,
+        brief: OpeningBrief | dict[str, Any] | None = None,
+    ) -> str:
+        validated_brief = OpeningBrief.model_validate(brief or self.opening_brief())
+        project = self.project()
+        world_blueprint = (
+            project.get("world_blueprint")
+            if isinstance(project.get("world_blueprint"), dict)
+            else {}
+        )
+        raw_ids = world_blueprint.get("genre_plugin_ids")
+        if isinstance(raw_ids, str):
+            has_explicit_type = bool(raw_ids.strip())
+        elif isinstance(raw_ids, list):
+            has_explicit_type = any(str(item).strip() for item in raw_ids)
+        else:
+            has_explicit_type = False
+        normalized_ids = normalize_novel_type_ids(raw_ids)
+        if normalized_ids:
+            return normalized_ids[0]
+        if has_explicit_type:
+            raise ValueError("invalid_novel_type")
+        return validated_brief.novel_type_id
+
     def generate_opening_directions(
         self, generator: Any, *, guidance: str = ""
     ) -> dict[str, Any]:
@@ -2948,14 +2973,23 @@ class FileProjectStore:
         if existing and existing.get("selected_id"):
             raise ValueError("direction_already_selected")
         brief = OpeningBrief.model_validate(self.opening_brief())
-        trope_candidates = self._opening_direction_trope_candidates(brief)
-        result = generator.generate(brief, guidance=guidance.strip())
         try:
+            current_type_id = self._current_opening_direction_novel_type_id(brief)
+        except ValueError as exc:
+            if isinstance(exc, ValueError) and str(exc) == "invalid_novel_type":
+                raise ValueError("opening_direction_generation_failed") from exc
+            raise
+        effective_brief = brief.model_copy(update={"novel_type_id": current_type_id})
+        trope_candidates = self._opening_direction_trope_candidates(effective_brief)
+        try:
+            result = generator.generate(effective_brief, guidance=guidance.strip())
             directions = validate_opening_direction_set_primary_tropes(
                 OpeningDirectionSet.model_validate(result),
                 trope_candidates,
             )
         except (TypeError, ValueError) as exc:
+            if isinstance(exc, ValueError) and str(exc) == "opening_direction_generation_failed":
+                raise
             raise ValueError("opening_direction_generation_failed") from exc
         project = {**self.project(), "pipeline_stage": "direction_ready"}
         self._replace_json_transaction(
