@@ -1418,6 +1418,19 @@ def _compact_trope_contract_for_prompt(value: Any) -> dict[str, Any]:
     }
 
 
+def _attach_trope_contract_to_simulation_plan(
+    simulation_plan: dict[str, Any] | None,
+    chapter_seed: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(simulation_plan, dict):
+        return simulation_plan
+    if not isinstance(chapter_seed, dict) or not isinstance(chapter_seed.get("trope_contract"), dict):
+        return simulation_plan
+    result = deepcopy(simulation_plan)
+    result["trope_contract"] = deepcopy(chapter_seed["trope_contract"])
+    return result
+
+
 def _compact_chapter_seed_for_prompt(seed: Any) -> dict[str, Any]:
     if not isinstance(seed, dict):
         return {}
@@ -6029,6 +6042,7 @@ class StoryOrchestrator:
             chapter_seed=chapter_seed,
             plot_authority="director",
         ).model_dump()
+        simulation_plan = _attach_trope_contract_to_simulation_plan(simulation_plan, chapter_seed) or {}
         world_simulation_decision_result = world_simulation_decision(
             working_story,
             chapter_number,

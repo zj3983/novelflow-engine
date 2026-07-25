@@ -83,6 +83,16 @@ def _coverage(body: str, text: str) -> float:
     return hits / len(terms)
 
 
+def _compact_trope_avoid(value: Any) -> list[str]:
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = []
+    return [str(item).strip()[:180] for item in items[:8] if str(item).strip()]
+
+
 def _field_is_covered(key: str, body: str, text: str, threshold: float) -> tuple[bool, float]:
     ratio = _coverage(body, text)
     if ratio >= threshold:
@@ -115,7 +125,10 @@ def review_plot_spine_completion(
     plot = simulation_plan.get("plot_simulation")
     contract = simulation_plan.get("longform_plot_contract")
     contract = contract if isinstance(contract, dict) else {}
-    if (not isinstance(plot, dict) or not plot) and not contract:
+    trope_contract = simulation_plan.get("trope_contract")
+    trope_contract = trope_contract if isinstance(trope_contract, dict) else {}
+    trope_avoid = _compact_trope_avoid(trope_contract.get("avoid"))
+    if (not isinstance(plot, dict) or not plot) and not contract and not trope_contract:
         return {"pass": True, "issues": [], "revision_plan": [], "scores": {}}
     plot = plot if isinstance(plot, dict) else {}
 
@@ -182,6 +195,19 @@ def review_plot_spine_completion(
         issues.append(f"长篇后续承接偏弱：缺少{labels}。")
         revision_plan.append("补一处章末可执行动作，让本章新增道具、任务、人物或线索能推动下一章。")
 
+    trope_beat = str(trope_contract.get("current_beat") or "").strip()
+    trope_payoff = str(trope_contract.get("payoff") or "").strip()
+    trope_beat_coverage = 0.0
+    trope_beat_covered: bool | str = "not_scheduled"
+    if trope_beat:
+        trope_beat_coverage = _coverage(body, trope_beat)
+        trope_beat_covered = trope_beat_coverage >= 0.25
+        if not trope_beat_covered:
+            scores["trope_beat_missing"] = 5
+            issues.append(f"套路节点未兑现：本章未写出当前节点「{trope_beat}」的正文动作或反馈。")
+            payoff_clause = f"，并落到回报「{trope_payoff}」" if trope_payoff else ""
+            revision_plan.append(f"按套路节点改：本章必须兑现「{trope_beat}」{payoff_clause}；不要只提到节点名，要写成行动、反馈或关系变化。")
+
     return {
         "pass": not issues,
         "issues": issues,
@@ -193,5 +219,8 @@ def review_plot_spine_completion(
             "contract_missing": list(dict.fromkeys(contract_missing)),
             "contract_partial": list(dict.fromkeys(contract_partial)),
             "coverage": ratios,
+            "trope_avoid": trope_avoid,
+            "trope_beat_covered": trope_beat_covered,
+            "trope_beat_coverage": round(trope_beat_coverage, 2),
         },
     }
