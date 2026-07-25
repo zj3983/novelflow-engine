@@ -189,6 +189,7 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "genre_core_promises",
         "genre_rulebook",
         "genre_quality_checks",
+        "genre_trope_templates",
         "title",
         "opening_direction",
         "author_constraints",
@@ -204,6 +205,8 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "current_strategy",
     }
     assert prompt["one_time_guidance"] == "反派要有现实利益"
+    assert prompt["genre_trope_templates"]
+    assert "genre_trope_templates" in request["payload"]["messages"][1]["content"]
     schema_text = json.dumps(prompt["output_schema"], ensure_ascii=False)
     assert '"start_chapter"' in schema_text
     assert '"long_term_antagonist_traces"' in schema_text

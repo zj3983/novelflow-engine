@@ -676,7 +676,9 @@ def test_generation_prompt_caps_runtime_novel_type_context(
         "genre_core_promises",
         "genre_rulebook",
         "genre_quality_checks",
+        "genre_trope_templates",
     }
+    assert "genre_trope_templates" in captured["payload"]["messages"][1]["content"]
     assert len(serialized) <= 6000
 
 

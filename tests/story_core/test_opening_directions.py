@@ -187,6 +187,7 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
         "genre_core_promises",
         "genre_rulebook",
         "genre_quality_checks",
+        "genre_trope_templates",
         "working_title",
         "idea",
         "regeneration_guidance",
@@ -194,6 +195,8 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     assert prompt_context["idea"] == "SECRET_IDEA"
     assert prompt_context["working_title"] == "SECRET_WORKING_TITLE"
     assert prompt_context["regeneration_guidance"] == ""
+    assert prompt_context["genre_trope_templates"]
+    assert "genre_trope_templates" in captured["payload"]["messages"][1]["content"]
     entire_prompt = json.dumps(captured["payload"]["messages"], ensure_ascii=False)
     assert "SECRET_CHARACTER_CARD" not in entire_prompt
     assert "SECRET_HISTORY_CHAPTER" not in entire_prompt

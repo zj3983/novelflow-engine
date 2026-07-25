@@ -102,6 +102,10 @@ def test_novel_type_prompt_context_merges_type_specific_tropes_before_generic_an
 
     context = novel_type_prompt_context(specific)
 
+    assert isinstance(context, dict)
+    assert dict(context) == context
+    assert {**context} == context
+    assert "genre_trope_templates" in json.dumps(context, ensure_ascii=False)
     assert [item["id"] for item in context["genre_trope_templates"]] == [
         "shared",
         "specific_only",
@@ -172,11 +176,54 @@ def test_novel_type_prompt_context_trims_generic_trope_candidates_first_to_stay_
     template_ids = [item["id"] for item in context["genre_trope_templates"]]
     generic_ids = template_ids[2:]
 
-    assert len(json.dumps(context.to_dict(), ensure_ascii=False)) <= 6000
+    assert len(json.dumps({**context}, ensure_ascii=False)) <= 6000
     assert template_ids[:2] == ["specific_a", "specific_b"]
     assert generic_ids
     assert len(generic_ids) < len(generic_template_ids)
     assert generic_ids == generic_template_ids[: len(generic_ids)]
+
+
+def test_novel_type_prompt_context_removes_final_type_specific_candidate_only_after_base_lists_shrink(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    escaped = '\\"\\\\' * 260
+    escaped_beat = '\\"\\\\' * 45
+    specific = _prompt_context_record(
+        "custom_type",
+        [
+            _trope_template(
+                "specific_only",
+                name=f"name-{escaped}",
+                trigger=f"trigger-{escaped}",
+                beats=[escaped_beat] * 8,
+                payoff=f"payoff-{escaped}",
+                avoid=[f"avoid-{escaped}"],
+            )
+        ],
+    )
+    generic = _prompt_context_record(
+        "generic_webnovel",
+        [_trope_template("generic_only", beats=["generic beat"])],
+    )
+    specific.core_promises = tuple(f"promise-{index}-{escaped}" for index in range(8))
+    specific.rulebook = {
+        "chapter_formula": tuple(f"rule-{index}-{escaped}" for index in range(6))
+    }
+    specific.quality_checks = tuple(f"check-{index}-{escaped}" for index in range(10))
+
+    monkeypatch.setattr(
+        novel_type_catalog,
+        "runtime_novel_type",
+        lambda value: generic if value == "generic_webnovel" else None,
+    )
+
+    context = novel_type_prompt_context(specific)
+
+    assert len(json.dumps({**context}, ensure_ascii=False)) <= 6000
+    assert context["genre_trope_templates"] == []
+    assert len(context["genre_core_promises"]) < 8
+    assert len(context["genre_rulebook"]["chapter_formula"]) < 6
+    assert len(context["genre_quality_checks"]) < 10
 
 
 def test_xuanhuan_prompt_uses_non_game_phase_and_subtype_method():
