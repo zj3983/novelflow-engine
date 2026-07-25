@@ -87,7 +87,7 @@ def test_game_world_facts_include_currency_guardrails():
     facts = _project_world_facts(enriched)
 
     assert any("1金币=100银币=10000铜币" in fact for fact in facts)
-    assert any("不得写死“1金币=多少人民币”" in fact for fact in facts)
+    assert any("不得写死游戏币与现实货币的兑换比例" in fact for fact in facts)
 
 
 def test_event_plan_carries_exposition_beats_into_snapshot_flow():
@@ -283,7 +283,7 @@ def test_opening_review_rejects_invented_real_money_exchange_rate():
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "公会试探。"},
-        ["经济规则：开服初期现实汇率尚未稳定，除非世界档案明确给出官方兑换或黑市行情，否则不得写死“1金币=多少人民币”。"],
+        ["经济规则：开服初期兑换价尚未稳定，除非世界档案明确给出官方兑换规则，否则不得写死游戏币与现实货币的兑换比例。"],
     )
 
     assert review["pass"] is False

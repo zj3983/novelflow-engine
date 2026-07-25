@@ -1,8 +1,12 @@
-from packages.story_core.genre_types.game_webnovel import select_game_language_cards
+from packages.story_core.genre_types.game_webnovel import GAME_WEBNOVEL, select_game_language_cards
 
 
 def _ids(plan: dict[str, object]) -> list[str]:
     return [card.card_id for card in select_game_language_cards(plan)]
+
+
+def _card(plan: dict[str, object], card_id: str):
+    return next(card for card in select_game_language_cards(plan) if card.card_id == card_id)
 
 
 def test_language_cards_select_quest_and_combat_for_gray_wolf_task():
@@ -25,6 +29,37 @@ def test_language_cards_select_loot_and_trade_for_sale_scene():
     )
 
     assert ids == ["base", "trade", "loot_inventory"]
+
+
+def test_trade_card_uses_only_in_game_market_language():
+    card = _card(
+        {
+            "chapter_goal": "在交易行查看求购单，把裂纹狼心挂单或立即出售",
+            "ordered_actions": ["确认成交", "扣除手续费", "游戏币到账"],
+        },
+        "trade",
+    )
+    text = "\n".join((*card.preferred, *card.avoid, card.example))
+
+    assert all(
+        marker in card.preferred
+        for marker in ("交易行", "求购单", "挂单", "立即出售", "成交", "手续费", "游戏币到账")
+    )
+    assert all(marker not in text for marker in ("官方兑换", "兑换价", "现实账户", "鉴定"))
+
+
+def test_currency_exchange_card_uses_separate_official_channel_language():
+    card = _card(
+        {
+            "chapter_goal": "成交后进入官方兑换渠道",
+            "ordered_actions": ["查看兑换价", "确认兑换额度", "现实账户预计到账"],
+        },
+        "currency_exchange",
+    )
+    text = "\n".join((*card.preferred, *card.avoid, card.example))
+
+    assert all(marker in card.preferred for marker in ("兑换价", "额度", "手续费", "预计到账", "现实账户"))
+    assert all(marker not in text for marker in ("求购", "鉴定", "拍卖物直接现实结算"))
 
 
 def test_language_cards_select_server_language_for_login_scene():
@@ -93,3 +128,19 @@ def test_complex_opening_prioritizes_login_combat_loot_and_trade_cards():
 
     assert ids[0] == "base"
     assert {"login_server", "combat", "loot_inventory", "trade"}.issubset(ids)
+
+    trade = next(card for card in cards if card.card_id == "trade")
+    assert "担保交易" not in "\n".join((*trade.preferred, *trade.avoid, trade.example))
+    assert "匿名交割" not in "\n".join((*trade.preferred, *trade.avoid, trade.example))
+
+
+def test_economy_rules_separate_market_appraisal_and_official_exchange():
+    rules = GAME_WEBNOVEL.rulebook["economy_rules"]
+    text = "\n".join(rules)
+    forbidden_currency = "\u4eba\u6c11\u5e01"
+
+    assert "交易行只使用游戏币结算" in text
+    assert "已识别的可交易物品不走鉴定" in text
+    assert "独立的官方兑换渠道" in text
+    assert all(marker in text for marker in ("现实货币", "现实账户"))
+    assert forbidden_currency not in text
