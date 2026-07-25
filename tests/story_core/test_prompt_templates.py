@@ -7,10 +7,19 @@ from packages.story_core.prompt_templates import (
     prompt_template_scope,
     render_prompt_template,
     save_global_prompt_template,
+    template_variable_occurrences,
 )
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import StoryState
 from packages.story_core.orchestrator import StoryOrchestrator
+
+
+def test_template_variable_occurrences_preserves_duplicates_and_order():
+    assert template_variable_occurrences("{{chapter}} {{chapter}} {{output}}") == (
+        "chapter",
+        "chapter",
+        "output",
+    )
 
 
 def test_writer_template_source_contains_placeholders_not_project_content():
