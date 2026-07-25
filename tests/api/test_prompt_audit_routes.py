@@ -33,6 +33,16 @@ def _deep_result(content: str, mode: str = "final_call") -> DeepPromptAuditResul
     )
 
 
+def test_init_routes_is_idempotent():
+    first = init_prompt_audit_routes()
+    second = init_prompt_audit_routes()
+
+    assert first is second is prompt_audit_routes.router
+    paths = [route.path for route in prompt_audit_routes.router.routes]
+    assert paths.count("/prompt-audit") == 1
+    assert paths.count("/prompt-audit/deep") == 1
+
+
 def test_local_template_audit_returns_schema_variable_issues_and_content_hash():
     content = "{{output_section}}\n{{unexpected}}\n{{output_section}}"
 
@@ -191,7 +201,9 @@ def test_unknown_value_error_does_not_leak_internal_text(monkeypatch):
 
     monkeypatch.setattr(prompt_audit_routes.deep_auditor, "analyze", fail)
 
-    response = _client().post(
+    app = FastAPI()
+    app.include_router(init_prompt_audit_routes())
+    response = TestClient(app, raise_server_exceptions=False).post(
         "/prompt-audit/deep",
         json={
             "mode": "final_call",
@@ -200,8 +212,51 @@ def test_unknown_value_error_does_not_leak_internal_text(monkeypatch):
         },
     )
 
+    assert response.status_code == 500
+    assert response.json() == {"detail": "prompt_audit_internal_error"}
+
+
+def test_request_models_forbid_unknown_fields(monkeypatch):
+    content = "strict request"
+    local_result = audit_prompt(mode="final_call", content=content)
+    monkeypatch.setattr(
+        prompt_audit_routes.deep_auditor,
+        "analyze",
+        lambda **kwargs: pytest.fail(f"analyze called with {kwargs}"),
+    )
+
+    local_response = _client().post(
+        "/prompt-audit",
+        json={"mode": "final_call", "content": content, "contnet": "typo"},
+    )
+    deep_response = _client().post(
+        "/prompt-audit/deep",
+        json={
+            "mode": "final_call",
+            "content": content,
+            "local_result": local_result.model_dump(),
+            "contnet": "typo",
+        },
+    )
+
+    assert local_response.status_code == 422
+    assert deep_response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"template_key": "x" * 201},
+        {"required_variables": [f"variable_{index}" for index in range(201)]},
+    ],
+)
+def test_request_model_rejects_oversized_template_metadata(field):
+    response = _client().post(
+        "/prompt-audit",
+        json={"mode": "final_call", "content": "text", **field},
+    )
+
     assert response.status_code == 422
-    assert response.json() == {"detail": "prompt_audit_invalid_request"}
 
 
 @pytest.mark.parametrize(
@@ -229,3 +284,6 @@ def test_main_app_keeps_health_root_and_project_independent_routes(monkeypatch):
         json={"mode": "final_call", "content": "no project id"},
     )
     assert audit.status_code == 200
+    paths = [route.path for route in app.routes]
+    assert paths.count("/prompt-audit") == 1
+    assert paths.count("/prompt-audit/deep") == 1

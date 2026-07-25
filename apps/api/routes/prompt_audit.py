@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from packages.story_core.prompt_audit import PromptAuditResult, audit_prompt
 from packages.story_core.prompt_audit_deep import (
@@ -30,11 +30,15 @@ _SAFE_UNPROCESSABLE_ERRORS = {
 }
 
 
-class PromptAuditRequest(BaseModel):
+class _StrictPromptAuditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class PromptAuditRequest(_StrictPromptAuditRequest):
     mode: str
     content: str
-    template_key: str = ""
-    required_variables: list[str] = Field(default_factory=list)
+    template_key: str = Field(default="", max_length=200)
+    required_variables: list[str] = Field(default_factory=list, max_length=200)
 
 
 class DeepPromptAuditRequest(PromptAuditRequest):
@@ -47,37 +51,39 @@ def _raise_audit_http_error(exc: ValueError) -> NoReturn:
         raise HTTPException(status_code=503, detail=error_code) from exc
     if error_code in _BAD_GATEWAY_ERRORS:
         raise HTTPException(status_code=502, detail=error_code) from exc
-    detail = (
-        error_code
-        if error_code in _SAFE_UNPROCESSABLE_ERRORS
-        else "prompt_audit_invalid_request"
-    )
-    raise HTTPException(status_code=422, detail=detail) from exc
+    if error_code in _SAFE_UNPROCESSABLE_ERRORS:
+        raise HTTPException(status_code=422, detail=error_code) from exc
+    raise HTTPException(
+        status_code=500,
+        detail="prompt_audit_internal_error",
+    ) from exc
+
+
+@router.post("/prompt-audit", response_model=PromptAuditResult)
+def run_prompt_audit(payload: PromptAuditRequest) -> PromptAuditResult:
+    try:
+        return audit_prompt(
+            mode=payload.mode,
+            content=payload.content,
+            template_key=payload.template_key,
+            required_variables=payload.required_variables,
+        )
+    except ValueError as exc:
+        _raise_audit_http_error(exc)
+
+
+@router.post("/prompt-audit/deep", response_model=DeepPromptAuditResult)
+def run_deep_prompt_audit(payload: DeepPromptAuditRequest) -> DeepPromptAuditResult:
+    try:
+        if payload.local_result.mode != payload.mode:
+            raise ValueError("prompt_audit_local_result_mismatch")
+        return deep_auditor.analyze(
+            content=payload.content,
+            local_result=payload.local_result,
+        )
+    except ValueError as exc:
+        _raise_audit_http_error(exc)
 
 
 def init_prompt_audit_routes() -> APIRouter:
-    @router.post("/prompt-audit", response_model=PromptAuditResult)
-    def run_prompt_audit(payload: PromptAuditRequest) -> PromptAuditResult:
-        try:
-            return audit_prompt(
-                mode=payload.mode,
-                content=payload.content,
-                template_key=payload.template_key,
-                required_variables=payload.required_variables,
-            )
-        except ValueError as exc:
-            _raise_audit_http_error(exc)
-
-    @router.post("/prompt-audit/deep", response_model=DeepPromptAuditResult)
-    def run_deep_prompt_audit(payload: DeepPromptAuditRequest) -> DeepPromptAuditResult:
-        try:
-            if payload.local_result.mode != payload.mode:
-                raise ValueError("prompt_audit_local_result_mismatch")
-            return deep_auditor.analyze(
-                content=payload.content,
-                local_result=payload.local_result,
-            )
-        except ValueError as exc:
-            _raise_audit_http_error(exc)
-
     return router
