@@ -344,15 +344,15 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
         if len(trope_candidates) > specific_candidate_count:
             trope_candidates.pop()
             continue
-        candidates = [items for items in lists if len(items) > 1]
-        if candidates:
-            max(candidates, key=lambda items: len(items[-1])).pop()
+        base_lists = [items for items in lists if items]
+        if base_lists:
+            max(base_lists, key=lambda items: len(items[-1])).pop()
             continue
         if trope_candidates:
             trope_candidates.pop()
             specific_candidate_count = min(specific_candidate_count, len(trope_candidates))
             continue
-        break
+        raise ValueError("novel_type_prompt_context_exceeds_size_cap")
     return deepcopy(context)
 
 

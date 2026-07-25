@@ -27,6 +27,7 @@ from packages.story_core.novel_type_catalog import (
     NOVEL_TYPE_CATALOG,
     novel_type_prompt_context,
     novel_type_options,
+    runtime_novel_type,
 )
 
 
@@ -186,8 +187,8 @@ def test_novel_type_prompt_context_trims_generic_trope_candidates_first_to_stay_
 def test_novel_type_prompt_context_removes_final_type_specific_candidate_only_after_base_lists_shrink(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    escaped = '\\"\\\\' * 260
-    escaped_beat = '\\"\\\\' * 45
+    escaped = "\x00" * 400
+    escaped_beat = "\x00" * 180
     specific = _prompt_context_record(
         "custom_type",
         [
@@ -224,6 +225,53 @@ def test_novel_type_prompt_context_removes_final_type_specific_candidate_only_af
     assert len(context["genre_core_promises"]) < 8
     assert len(context["genre_rulebook"]["chapter_formula"]) < 6
     assert len(context["genre_quality_checks"]) < 10
+
+
+def test_novel_type_prompt_context_trims_candidate_free_singleton_base_lists_until_json_bound(
+) -> None:
+    escaped_singleton = "\x00" * 180
+    rulebook = {
+        field: (escaped_singleton,)
+        for field in (
+            "progression_rules",
+            "economy_rules",
+            "quest_rules",
+            "faction_rules",
+            "panel_rules",
+            "chapter_formula",
+            "forbidden_breaks",
+        )
+    }
+    record = SimpleNamespace(
+        id="custom_type",
+        name="custom-type",
+        description="description",
+        core_promises=(escaped_singleton,),
+        rulebook=rulebook,
+        quality_checks=(escaped_singleton,),
+        trope_templates=(),
+    )
+
+    context = novel_type_prompt_context(record)
+
+    assert len(json.dumps({**context}, ensure_ascii=False)) <= 6000
+    assert context["genre_trope_templates"] == []
+    assert sum(len(items) for items in context["genre_rulebook"].values()) < len(rulebook)
+    assert len(context["genre_core_promises"]) in {0, 1}
+    assert len(context["genre_quality_checks"]) in {0, 1}
+
+
+def test_builtin_novel_type_prompt_context_keeps_nonempty_base_content_and_candidates() -> None:
+    record = runtime_novel_type("generic_webnovel")
+
+    assert record is not None
+    context = novel_type_prompt_context(record)
+
+    assert len(json.dumps({**context}, ensure_ascii=False)) <= 6000
+    assert context["genre_core_promises"]
+    assert any(items for items in context["genre_rulebook"].values())
+    assert context["genre_quality_checks"]
+    assert context["genre_trope_templates"]
 
 
 def test_xuanhuan_prompt_uses_non_game_phase_and_subtype_method():
