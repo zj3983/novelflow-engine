@@ -4,6 +4,7 @@ from packages.story_core.orchestrator import (
     _character_context_for_prompt,
     _compact_writer_plan_for_prompt,
     _writer_character_section,
+    _writer_fact_section,
 )
 from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
 
@@ -233,6 +234,99 @@ def test_fallback_body_prompt_uses_same_scene_method():
     assert "## 本章方向" in prompt
     assert "写法施工单" not in prompt
     assert prompt.index("## 本章方向") < prompt.index("## 本章事实")
+
+
+def test_non_game_writer_prompt_receives_trope_contract_without_game_fact_label(monkeypatch):
+    contract = {
+        "template_id": "public-turnaround",
+        "name": "Public turnaround",
+        "trigger": "public pressure",
+        "current_beat": "collect visible proof",
+        "payoff": "reputation turns",
+        "avoid": ["no instant full vindication"],
+    }
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.build_chapter_seed",
+        lambda story, chapter_number: {
+            "chapter_number": chapter_number,
+            "trope_contract": contract,
+        },
+    )
+    story = StoryState(story_id="s-urban-trope", outline="urban pressure", genre="urban", style="plain")
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Proof"}})
+
+    assert "当前阶段套路" in prompt
+    assert "public-turnaround" in prompt
+    assert "collect visible proof" in prompt
+    assert "This chapter must create observable progress for current_beat; do not merely mention it." in prompt
+    assert "Always follow avoid rules conservatively." in prompt
+    assert "游戏主角" not in prompt
+
+
+def test_empty_beat_writer_prompt_keeps_contract_without_forcing_full_beat(monkeypatch):
+    contract = {
+        "template_id": "slow-burn",
+        "name": "Slow burn",
+        "trigger": "stage promise",
+        "current_beat": "",
+        "payoff": "later payoff",
+        "avoid": ["do not switch tropes"],
+    }
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.build_chapter_seed",
+        lambda story, chapter_number: {
+            "chapter_number": chapter_number,
+            "trope_contract": contract,
+        },
+    )
+    story = StoryState(story_id="s-empty-beat", outline="slow chapter", genre="urban", style="plain")
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Promise"}})
+
+    assert "slow-burn" in prompt
+    assert '"current_beat": ""' in prompt
+    assert "Maintain the trigger/payoff/avoid stage promise; do not force a full trope beat and do not switch tropes." in prompt
+    assert "This chapter must create observable progress for current_beat" not in prompt
+
+
+def test_writer_fact_section_omits_trope_guidance_when_contract_missing():
+    story = StoryState(story_id="s-no-trope", outline="plain", genre="urban", style="plain")
+
+    rendered = "\n".join(_writer_fact_section(story, 1, {}, chapter_seed={"chapter_number": 1}))
+
+    assert "当前阶段套路" not in rendered
+    assert "current_beat" not in rendered
+    assert "Always follow avoid rules conservatively." not in rendered
+
+
+def test_game_writer_prompt_keeps_game_facts_and_adds_trope_contract(monkeypatch):
+    contract = {
+        "template_id": "first-advantage",
+        "name": "First advantage",
+        "trigger": "first test",
+        "current_beat": "visible gain",
+        "payoff": "advantage lands",
+        "avoid": ["no global exposure"],
+    }
+    monkeypatch.setattr(
+        "packages.story_core.orchestrator.build_chapter_seed",
+        lambda story, chapter_number: {
+            "chapter_number": chapter_number,
+            "trope_contract": contract,
+            "current_state": {"protagonist": {"level": "Lv.1"}},
+        },
+    )
+    story = StoryState(story_id="s-game-trope", outline="网游开服", genre="网游", style="白描")
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Start"}})
+
+    assert "游戏主角" in prompt
+    assert "本章可用材料" in prompt
+    assert "Lv.1" in prompt
+    assert "当前阶段套路" in prompt
+    assert "first-advantage" in prompt
+    assert "This chapter must create observable progress for current_beat; do not merely mention it." in prompt
 
 
 def test_writer_direction_drops_generic_taskbook_placeholders():

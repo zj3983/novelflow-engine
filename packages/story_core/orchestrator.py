@@ -1405,6 +1405,19 @@ def _slim_prompt_value(value: Any, *, depth: int = 0) -> Any:
     return value
 
 
+def _compact_trope_contract_for_prompt(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "template_id": compact_text(str(value.get("template_id") or ""), 180),
+        "name": compact_text(str(value.get("name") or ""), 180),
+        "trigger": compact_text(str(value.get("trigger") or ""), 180),
+        "current_beat": compact_text(str(value.get("current_beat") or ""), 180),
+        "payoff": compact_text(str(value.get("payoff") or ""), 180),
+        "avoid": compact_list(value.get("avoid", []), max_items=8, item_chars=180),
+    }
+
+
 def _compact_chapter_seed_for_prompt(seed: Any) -> dict[str, Any]:
     if not isinstance(seed, dict):
         return {}
@@ -1412,6 +1425,7 @@ def _compact_chapter_seed_for_prompt(seed: Any) -> dict[str, Any]:
         "schema_version",
         "chapter_number",
         "chapter_contract",
+        "trope_contract",
         "outline_anchor",
         "writing_contract",
         "simulation_axes",
@@ -1422,6 +1436,8 @@ def _compact_chapter_seed_for_prompt(seed: Any) -> dict[str, Any]:
         "must_not_write",
     )
     compacted = {key: _slim_prompt_value(seed.get(key)) for key in keep_keys if seed.get(key) not in (None, "", [], {})}
+    if seed.get("trope_contract") not in (None, "", [], {}):
+        compacted["trope_contract"] = _compact_trope_contract_for_prompt(seed.get("trope_contract"))
     current_state = compacted.get("current_state")
     if isinstance(current_state, dict):
         slim_state: dict[str, Any] = {}
@@ -1509,14 +1525,27 @@ def _compact_writer_plan_for_prompt(plan: Any) -> dict[str, Any]:
     return {key: value for key, value in result.items() if value not in (None, "", [], {})}
 
 
+def _trope_contract_guidance(contract: Any) -> list[str]:
+    if not isinstance(contract, dict) or not contract:
+        return []
+    current_beat = str(contract.get("current_beat") or "").strip()
+    progress_rule = (
+        "This chapter must create observable progress for current_beat; do not merely mention it."
+        if current_beat
+        else "Maintain the trigger/payoff/avoid stage promise; do not force a full trope beat and do not switch tropes."
+    )
+    return [progress_rule, "Always follow avoid rules conservatively."]
+
+
 def _writer_seed_summary(seed: Any) -> dict[str, Any]:
     compacted = _compact_chapter_seed_for_prompt(seed)
     if not compacted:
         return {}
     writing_contract = compacted.get("writing_contract") if isinstance(compacted.get("writing_contract"), dict) else {}
     chapter_contract = compacted.get("chapter_contract") if isinstance(compacted.get("chapter_contract"), dict) else {}
+    trope_contract = compacted.get("trope_contract") if isinstance(compacted.get("trope_contract"), dict) else {}
     continuity = compacted.get("continuity") if isinstance(compacted.get("continuity"), dict) else {}
-    return {
+    summary = {
         "章节": compacted.get("chapter_number"),
         "本章硬锚点": compacted.get("outline_anchor", {}),
         "上一章": compact_text(str(continuity.get("latest_summary") or ""), 160),
@@ -1542,6 +1571,10 @@ def _writer_seed_summary(seed: Any) -> dict[str, Any]:
         "正文要露出": compact_list(compacted.get("must_show", []), max_items=3, item_chars=70),
         "正文别写": compact_list(compacted.get("must_not_write", []), max_items=3, item_chars=70),
     }
+    if trope_contract:
+        summary["当前阶段套路"] = trope_contract
+        summary["套路写作提醒"] = _trope_contract_guidance(trope_contract)
+    return summary
 
 
 def _director_characters(story: StoryState, *, limit: int = 4) -> list[Any]:
@@ -1855,6 +1888,8 @@ def _director_prompt_chapter_seed(value: Any) -> dict[str, Any]:
         "下一步",
         "本章目标",
         "本章要兑现",
+        "当前阶段套路",
+        "套路写作提醒",
         "这章可以兑现的小进展",
         "这章不能提前写",
         "情绪走向",
@@ -1868,6 +1903,8 @@ def _director_prompt_chapter_seed(value: Any) -> dict[str, Any]:
         if isinstance(item, list):
             max_items = 3 if key == "行动顺序" else 2
             result[key] = compact_list(item, max_items=max_items, item_chars=80)
+        elif isinstance(item, dict):
+            result[key] = _compact_trope_contract_for_prompt(item) if key == "当前阶段套路" else _slim_prompt_value(item)
         else:
             result[key] = compact_text(str(item), 130)
     return result
@@ -4386,12 +4423,27 @@ def _compact_world_context_for_prompt(
     }
 
 
+def _writer_trope_contract_lines(seed: dict[str, Any]) -> list[str]:
+    contract = seed.get("当前阶段套路") if isinstance(seed.get("当前阶段套路"), dict) else {}
+    if not contract:
+        contract = seed.get("trope_contract") if isinstance(seed.get("trope_contract"), dict) else {}
+    if not contract:
+        return []
+    guidance = seed.get("套路写作提醒") if isinstance(seed.get("套路写作提醒"), list) else _trope_contract_guidance(contract)
+    return [
+        f"当前阶段套路：{_plain_prompt_json(_compact_trope_contract_for_prompt(contract))}",
+        *[str(item) for item in guidance if str(item).strip()],
+    ]
+
+
 def _writer_fact_section(
     story: StoryState,
     chapter_number: int,
     plan: dict[str, Any],
     *,
+    chapter_seed: dict[str, Any] | None = None,
     game_seed: dict[str, Any] | None = None,
+    is_game: bool = False,
 ) -> list[str]:
     lines = ["## 本章事实"]
     if story.outline:
@@ -4433,14 +4485,22 @@ def _writer_fact_section(
             lines.append(f"上一章留下：{compact_text(latest.summary, 160)}")
         if latest.next_focus:
             lines.append(f"当前承接：{compact_text(latest.next_focus, 100)}")
-    seed = game_seed if isinstance(game_seed, dict) else {}
+    seed = chapter_seed if isinstance(chapter_seed, dict) else game_seed if isinstance(game_seed, dict) else {}
     if seed:
-        game_defaults = _game_genre_defaults(story)
-        lines.append(
-            f"游戏主角：游戏ID为{game_defaults['game_id']}，当前职业路线为{game_defaults['class_path']}。"
-        )
-        lines.append("本章可用材料：")
-        lines.extend(_writer_value_lines(seed, max_items=8))
+        if is_game:
+            game_defaults = _game_genre_defaults(story)
+            lines.append(
+                f"游戏主角：游戏ID为{game_defaults['game_id']}，当前职业路线为{game_defaults['class_path']}。"
+            )
+            material_seed = {
+                key: value
+                for key, value in seed.items()
+                if key not in {"当前阶段套路", "套路写作提醒", "trope_contract"}
+            }
+            if material_seed:
+                lines.append("本章可用材料：")
+                lines.extend(_writer_value_lines(material_seed, max_items=8))
+        lines.extend(_writer_trope_contract_lines(seed))
     governance = plan.get("governance") if isinstance(plan.get("governance"), dict) else {}
     if governance:
         lines.append("本章事实边界：")
@@ -5140,7 +5200,7 @@ class StoryOrchestrator:
             )
             chapter_seed_for_prompt = _writer_seed_summary(_plain_prompt_payload(json.loads(chapter_seed_text)))
         else:
-            chapter_seed_for_prompt = {}
+            chapter_seed_for_prompt = _writer_seed_summary(_plain_prompt_payload(chapter_seed))
         sections = [
             _writer_output_section(chapter_number, plan),
             _writer_direction_section(chapter_number, plan, is_game=is_game),
@@ -5148,7 +5208,8 @@ class StoryOrchestrator:
                 story,
                 chapter_number,
                 plan,
-                game_seed=chapter_seed_for_prompt,
+                chapter_seed=chapter_seed_for_prompt,
+                is_game=is_game,
             ),
             _writer_character_section(character_context, dialogue_context),
             _writer_craft_section(
