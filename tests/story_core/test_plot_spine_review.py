@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.orchestrator import _review_chapter_body
 from packages.story_core.plot_spine_review import review_plot_spine_completion
 from packages.story_core.prose_rule_review import HARD_REVIEWERS, SOFT_REVIEWERS
@@ -212,6 +214,23 @@ def test_english_control_words_do_not_match_substrings_inside_action_words():
     assert notice["diagnostics"]["trope_beat_covered"] is True
     assert planet["pass"] is True
     assert planet["diagnostics"]["trope_beat_covered"] is True
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Lin didn't unlock VIP-3 badge before the hearing.",
+        "Lin doesn't unlock VIP-3 badge before the hearing.",
+        "Lin won't unlock VIP-3 badge before the hearing.",
+        "Lin can't unlock VIP-3 badge before the hearing.",
+        "Lin won’t unlock VIP-3 badge before the hearing.",
+    ],
+)
+def test_english_contracted_negation_rejects_full_beat_mentions(body):
+    review = review_plot_spine_completion(body, _trope_plan(current_beat="unlock VIP-3 badge"))
+
+    assert review["pass"] is False
+    assert review["diagnostics"]["trope_beat_covered"] is False
 
 
 def test_scheduled_trope_beat_rejects_question_pending_and_split_mentions():

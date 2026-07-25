@@ -60,6 +60,7 @@ _STOP_TERMS = {
 
 _CJK_RUN = re.compile(r"[\u4e00-\u9fff]{2,}")
 _LATIN_SYMBOL_RUN = re.compile(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*")
+_LATIN_CONTRACTED_NEGATION = re.compile(r"\b\w+n['’]t\b", re.IGNORECASE)
 _TROPE_NEGATION_TERMS = ("没有", "没能", "未能", "尚未", "并未", "不曾", "拒绝", "不肯", "不愿", "没接", "未接")
 _TROPE_NEGATION_LATIN_TERMS = ("not", "never", "refuse", "refused")
 _TROPE_QUESTION_TERMS = ("吗", "呢", "？", "?")
@@ -138,6 +139,8 @@ def _trope_action_anchors(text: str) -> list[str]:
 def _trope_sentence_is_invalid(sentence: str) -> bool:
     latin_tokens = _latin_symbol_tokens(sentence)
     if any(term in sentence for term in _TROPE_QUESTION_TERMS):
+        return True
+    if _LATIN_CONTRACTED_NEGATION.search(sentence):
         return True
     if any(term in sentence for term in _TROPE_NEGATION_TERMS) or any(
         term in latin_tokens for term in _TROPE_NEGATION_LATIN_TERMS
