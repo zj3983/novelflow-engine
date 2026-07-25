@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.web_game_economy import (
     appraisal_rules,
     exchange_rules,
@@ -60,6 +62,13 @@ def test_new_opening_contract_authorizes_market_then_exchange() -> None:
     )
 
 
+def test_implementation_plan_wording_does_not_require_market_name() -> None:
+    assert first_chapter_market_exchange_authorized(
+        {"turn": "第一章卖出裂纹狼心，再走官方兑换渠道解决现实急账。"},
+        [],
+    )
+
+
 def test_contract_can_be_split_between_event_plan_and_world_facts() -> None:
     assert first_chapter_market_exchange_authorized(
         {"ordered_actions": ["在交易行卖出裂纹狼心"]},
@@ -74,8 +83,19 @@ def test_incomplete_new_contract_is_not_authorized() -> None:
     )
 
 
-def test_legacy_opening_contract_remains_readable() -> None:
+@pytest.mark.parametrize(
+    "marker",
+    (
+        "第一章必须通过裂纹狼心担保交易",
+        "第一章必须解决现实急账",
+        "第一章通过裂纹狼心担保交易解决",
+        "第一章的裂纹狼心担保交易",
+        "第一章已经通过担保交易解决现实急账",
+        "第一章已通过担保交易解决现实急账",
+    ),
+)
+def test_original_legacy_opening_markers_remain_readable(marker: str) -> None:
     assert first_chapter_market_exchange_authorized(
-        {"turn": "第一章必须通过裂纹狼心担保交易解决现实急账。"},
+        {"turn": marker},
         [],
     )

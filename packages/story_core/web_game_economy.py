@@ -22,8 +22,9 @@ _APPRAISAL_RULES: tuple[str, ...] = (
 )
 
 _LEGACY_OPENING_MARKERS: tuple[str, ...] = (
-    "第一章必须通过裂纹狼心担保交易解决现实急账",
-    "第一章通过裂纹狼心担保交易解决现实急账",
+    "第一章必须通过裂纹狼心担保交易",
+    "第一章必须解决现实急账",
+    "第一章通过裂纹狼心担保交易解决",
     "第一章的裂纹狼心担保交易",
     "第一章已经通过担保交易解决现实急账",
     "第一章已通过担保交易解决现实急账",
@@ -54,8 +55,7 @@ def first_chapter_market_exchange_authorized(
         )
     )
     new_contract = (
-        "交易行" in context
-        and "卖出裂纹狼心" in context
+        "卖出裂纹狼心" in context
         and "官方兑换渠道" in context
         and "现实急账" in context
     )
