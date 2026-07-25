@@ -397,7 +397,9 @@ test("深度检查期间编辑内容会忽略旧响应并结束 loading", async 
   await expect(page.getByText("AI 深度检查中，请稍候...", { exact: true })).toHaveCount(0);
   const deepResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit/deep"));
   releaseDeep();
-  await deepResponse;
+  const response = await deepResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await expect(page.getByText("语义焦点可更明确", { exact: true })).toHaveCount(0);
   await expect(page.getByText("重复指令", { exact: true })).toBeVisible();
 });
@@ -419,7 +421,9 @@ test("本地重新检查成功会忽略在途深度检查并重置深度状态",
 
   const deepResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit/deep"));
   releaseDeep();
-  await deepResponse;
+  const response = await deepResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await expect(page.getByText("语义焦点可更明确", { exact: true })).toHaveCount(0);
   await expect(page.getByText("重复指令", { exact: true })).toBeVisible();
 });
@@ -440,7 +444,9 @@ test("深度检查期间切换模板会忽略旧响应并结束 loading", async 
   await expect(page.getByText("AI 深度检查中，请稍候...", { exact: true })).toHaveCount(0);
   const deepResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit/deep"));
   releaseDeep();
-  await deepResponse;
+  const response = await deepResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await expect(page.getByText("语义焦点可更明确", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
 });
@@ -474,7 +480,9 @@ test("切换模板后忽略先前模板的延迟检查响应", async ({ page }) 
   await expect(page.getByRole("button", { name: "检查提示词" })).toBeEnabled();
   const auditResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit"));
   releaseAudit();
-  await auditResponse;
+  const response = await auditResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
 });
 
@@ -505,7 +513,9 @@ test("检查期间编辑会忽略延迟响应并立即结束检查状态", async
   await expect(page.getByRole("button", { name: "检查提示词" })).toBeEnabled();
   const auditResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit"));
   releaseAudit();
-  await auditResponse;
+  const response = await auditResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
 });
 
@@ -603,7 +613,9 @@ test("切换真实调用会清空诊断并忽略旧调用的延迟本地结果",
   await expect(page.getByRole("button", { name: "检查这次调用" })).toBeEnabled();
   const auditResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit"));
   releaseAudit();
-  await auditResponse;
+  const response = await auditResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
   await expect(page.getByText(FIRST_CALL_PROMPT, { exact: true })).toHaveCount(0);
 });
@@ -625,7 +637,9 @@ test("切换真实调用会清空诊断并忽略旧调用的延迟深度结果",
   await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
   const deepResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit/deep"));
   releaseDeep();
-  await deepResponse;
+  const response = await deepResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await expect(page.getByText("语义焦点可更明确", { exact: true })).toHaveCount(0);
 });
 
@@ -649,7 +663,9 @@ test("重新本地检查会结束深度 loading 并忽略先前的延迟深度�
 
   const deepResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit/deep"));
   releaseDeep();
-  await deepResponse;
+  const response = await deepResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await expect(page.getByText("语义焦点可更明确", { exact: true })).toHaveCount(0);
   await expect(page.getByText(/openai \/ gpt-5-mini.*1\.25.*321/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "AI 深度检查" })).toBeEnabled();
@@ -673,7 +689,9 @@ test("章节变化会结束本地 loading 并忽略先前章节的延迟结果",
   await expect(page.getByText("提示词检查中...", { exact: true })).toHaveCount(0);
   const auditResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit"));
   releaseAudit();
-  await auditResponse;
+  const response = await auditResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
 });
 
@@ -693,7 +711,9 @@ test("切换工作台视图会使真实调用的延迟深度检查失效", async
   await expect(page.getByText("AI 深度检查中，请稍候...", { exact: true })).toHaveCount(0);
   const deepResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit/deep"));
   releaseDeep();
-  await deepResponse;
+  const response = await deepResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await page.getByRole("tab", { name: "实际调用" }).click();
   await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
   await expect(page.getByText("语义焦点可更明确", { exact: true })).toHaveCount(0);
@@ -713,7 +733,9 @@ test("切换工作台视图会使真实调用的延迟检查失效", async ({ pa
   await expect(page.getByRole("tab", { name: "上下文模块" })).toHaveAttribute("aria-selected", "true");
   const auditResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit"));
   releaseAudit();
-  await auditResponse;
+  const response = await auditResponse;
+  await response.finished();
+  await page.waitForTimeout(50);
   await page.getByRole("tab", { name: "实际调用" }).click();
   await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
 });
