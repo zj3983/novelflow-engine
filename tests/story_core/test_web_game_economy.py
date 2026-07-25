@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from copy import deepcopy
@@ -408,6 +409,70 @@ def test_anonymous_feedback_action_stays_unchanged_before_trade_sentence(action:
     )
 
     assert action in normalized
+
+
+def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_steps() -> None:
+    worktree_root = Path(__file__).resolve().parents[2]
+    candidates = (
+        worktree_root / "data" / "exported-projects" / "p-gou-webgame-restored",
+        worktree_root.parent.parent / "data" / "exported-projects" / "p-gou-webgame-restored",
+    )
+    project_root = next((candidate for candidate in candidates if candidate.exists()), None)
+    if project_root is None:
+        pytest.skip("real p-gou-webgame-restored fixture is unavailable")
+    chapter_path = next((project_root / "chapters").glob("0001-*.md"), None)
+    if chapter_path is None:
+        pytest.skip("real chapter one fixture is unavailable")
+    body = chapter_path.read_text(encoding="utf-8")
+    start = body.index("第三条求购单发布于三分钟前")
+    end_marker = "手机的到账震动透过头盔提醒传来。"
+    segment = body[start : body.index(end_marker, start) + len(end_marker)]
+
+    normalized = normalize_legacy_economy_prompt_value(
+        segment,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    expected_fragments = (
+        "夜烬点下立即出售",
+        "求购单显示已成交",
+        "【游戏币已进入钱包。】",
+        "他随后打开独立的官方兑换页面。",
+        "【现实账户到账：1764.00元。】",
+    )
+    assert all(fragment in normalized for fragment in expected_fragments)
+    assert [normalized.index(fragment) for fragment in expected_fragments] == sorted(
+        normalized.index(fragment) for fragment in expected_fragments
+    )
+    assert normalized.count("求购单显示已成交") == 1
+    assert "确认成交以后，村口不断有玩家跑进跑出" in normalized
+    assert "【官方兑换预计到账1764.00元。】" in normalized
+    assert "一个法杖玩家坐在喷泉边回蓝" in normalized
+    assert "手机的到账震动透过头盔提醒传来" in normalized
+    assert all(
+        term not in normalized
+        for term in (
+            "等待的半分钟里",
+            "样本符合求购要求",
+            "买家确认收购",
+            "匿名担保交易已完成",
+            "担保",
+            "求购单已成交，官方兑换完成",
+        )
+    )
+
+
+def test_appraisal_wait_outside_wolf_heart_trade_context_stays_unchanged() -> None:
+    source = "古剑交给鉴定师以后，等待鉴定结果期间，他去院外喝了杯茶。"
+
+    normalized = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert normalized == source
 
 
 @pytest.mark.parametrize(

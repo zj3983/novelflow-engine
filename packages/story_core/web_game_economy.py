@@ -34,17 +34,17 @@ _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = tuple(
     sorted(
         (
             ("持牌虚拟资产担保平台", "官方兑换渠道"),
-            ("匿名担保交易已完成", "求购单已成交，官方兑换完成"),
+            ("匿名担保交易已完成", "已进入独立官方兑换页面"),
             ("担保交易平台", "交易行与官方兑换渠道"),
             ("持牌担保平台", "官方兑换渠道"),
             ("担保订单编号", "官方兑换流水编号"),
             ("担保订单号", "官方兑换流水号"),
             ("稀有资产担保", "交易行成交与官方兑换"),
             ("担保稀有资产", "兑换稀有资产"),
-            ("担保交易已完成", "求购单已成交，官方兑换完成"),
+            ("担保交易已完成", "已进入独立官方兑换页面"),
             ("买家确认收购", "求购单已成交"),
             ("担保名单", "官方兑换记录"),
-            ("担保净到账", "官方兑换净到账"),
+            ("担保净到账", "官方兑换预计到账"),
             ("担保到账", "官方兑换到账"),
             ("担保交割", "交易行成交与官方兑换"),
             ("担保订单", "官方兑换流水"),
@@ -74,6 +74,17 @@ _ORDER_STATUS_APPRAISAL_PATTERN = re.compile(
 )
 _ANONYMOUS_SUBMIT_ACTION_PATTERN = re.compile(
     r"(?P<action>点下|点击|选择|按下)\s*匿名提交(?!反馈|投诉|意见|举报)"
+)
+_ADJACENT_LEGACY_TRADE_RESULTS_PATTERN = re.compile(
+    r"【\s*买家确认收购[。.]?\s*】\s*"
+    r"【\s*(?:匿名)?担保交易已完成[。.]?\s*】"
+)
+_LEGACY_APPRAISAL_WAIT_PATTERN = re.compile(
+    r"等待的半分钟里|等待鉴定(?:结果)?(?:的)?(?:半分钟|片刻|期间|过程中)?"
+)
+_OFFICIAL_EXCHANGE_NET_ARRIVAL_PATTERN = re.compile(
+    r"(?P<page>他随后打开独立的官方兑换页面。[\t \r\n]*)"
+    r"【净到账\s*[:：]?\s*(?P<amount>\d+(?:\.\d+)?)\s*元。】"
 )
 _CHAPTER_SCOPE_MARKER = re.compile(
     r"第\s*(?P<chinese>[零〇一二两三四五六七八九十百千万\d]+)\s*章"
@@ -167,6 +178,32 @@ def _normalize_local_transaction_terms(clause: str) -> str:
     )
 
 
+def _normalize_legacy_trade_sequence(value: str) -> str:
+    normalized = _ADJACENT_LEGACY_TRADE_RESULTS_PATTERN.sub(
+        "他随后打开独立的官方兑换页面。",
+        value,
+    )
+    if "裂纹狼心" in normalized:
+        normalized = normalized.replace("【样本符合求购要求。】", "【游戏币已进入钱包。】")
+
+        def replace_wait(match: re.Match[str]) -> str:
+            nearby = normalized[max(0, match.start() - 240) : match.start()]
+            if "裂纹狼心" in nearby and any(
+                marker in nearby for marker in ("订单状态", "鉴定中", "匿名提交", "立即出售")
+            ):
+                return "确认成交以后"
+            return match.group()
+
+        normalized = _LEGACY_APPRAISAL_WAIT_PATTERN.sub(replace_wait, normalized)
+    normalized = _OFFICIAL_EXCHANGE_NET_ARRIVAL_PATTERN.sub(
+        lambda match: (
+            f"{match.group('page')}【现实账户到账：{match.group('amount')}元。】"
+        ),
+        normalized,
+    )
+    return normalized
+
+
 def _next_sentence_has_transaction_marker(parts: list[str], index: int) -> bool:
     if index + 2 >= len(parts):
         return False
@@ -206,7 +243,8 @@ def _normalize_legacy_economy_prompt_segment(value: str) -> str:
             replacement = replacement.rstrip("。！？!?") + terminal
         return replacement
 
-    normalized = _normalize_clause_scoped_terms(value)
+    normalized = _normalize_legacy_trade_sequence(value)
+    normalized = _normalize_clause_scoped_terms(normalized)
     for legacy, current in _LEGACY_SPECIFIC_PROMPT_REPLACEMENTS:
         normalized = normalized.replace(legacy, current)
     normalized = _LEGACY_PROMPT_FLOW_PATTERN.sub(replace_flow, normalized)

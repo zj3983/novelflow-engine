@@ -738,6 +738,18 @@ def test_real_chapter_one_revision_prompt_uses_natural_local_trade_migration() -
     assert "订单状态变成" not in prompt
     assert "匿名提交" not in prompt
     assert "鉴定中" not in prompt
+    source_section = prompt.split("## 原正文", 1)[1]
+    local_steps = (
+        "夜烬点下立即出售",
+        "求购单显示已成交",
+        "游戏币已进入钱包",
+        "他随后打开独立的官方兑换页面",
+        "现实账户到账：1764.00元",
+    )
+    assert [source_section.index(step) for step in local_steps] == sorted(
+        source_section.index(step) for step in local_steps
+    )
+    assert "求购单已成交，官方兑换完成" not in source_section
     for line in opening_market_exchange_flow_lines():
         assert prompt.count(line) == 1
 
