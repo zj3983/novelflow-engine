@@ -27,6 +27,25 @@ _LIST_PREFIX_RE = re.compile(
     r"^(?:(?:[-*+])|(?:\d+[.)、])|(?:(?:十|[一二三四五六七八九])[、.]))\s*"
 )
 _WORD_COUNT_RANGE_RE = re.compile(r"(\d{2,6})\s*[-—~到至]\s*(\d{2,6})\s*字")
+_OUTPUT_NEGATION_PREFIX_PATTERN = r"(?:不要|禁止|无需|不需要|不能|请勿|不得)"
+_OUTPUT_REQUIREMENT_TARGET_PATTERN = (
+    r"(?:最后\s*输出\s*分析报告|输出\s*(?:分析报告|分析|报告|解释))"
+)
+_NEGATED_OUTPUT_REQUIREMENT_RE = re.compile(
+    rf"{_OUTPUT_NEGATION_PREFIX_PATTERN}\s*{_OUTPUT_REQUIREMENT_TARGET_PATTERN}"
+)
+_POSITIVE_OUTPUT_REQUIREMENT_RE = re.compile(
+    r"(?:最后输出分析报告|输出分析|输出报告|输出解释)"
+)
+_NEGATED_VIEWPOINT_RE = re.compile(
+    rf"{_OUTPUT_NEGATION_PREFIX_PATTERN}\s*(?:使用|采用)?\s*(?:第一人称|第三人称)"
+)
+_VIEWPOINT_ALTERNATIVE_RE = re.compile(
+    r"(?:第一人称\s*或\s*第三人称|第三人称\s*或\s*第一人称)(?:\s*(?:均可|任选))?"
+    r"|(?:第一人称\s*(?:、|和)\s*第三人称|第三人称\s*(?:、|和)\s*第一人称)"
+    r"\s*(?:均可|任选)"
+)
+_WORD_COUNT_STAGE_RE = re.compile(r"(初稿|终稿)\s*[:：]?\s*$")
 
 
 class _StrictPromptAuditModel(BaseModel):
@@ -165,18 +184,73 @@ def _oversized_section_issues(
     return issues
 
 
+def _word_count_stage(content: str, range_start: int) -> str | None:
+    adjacent_prefix = content[max(0, range_start - 16) : range_start]
+    match = _WORD_COUNT_STAGE_RE.search(adjacent_prefix)
+    return match.group(1) if match else None
+
+
+def _first_disjoint_word_count_pair(
+    content: str,
+) -> tuple[tuple[int, int, str, str | None], tuple[int, int, str, str | None]] | None:
+    min_high_by_stage: dict[str | None, tuple[int, int, str, str | None]] = {}
+    max_low_by_stage: dict[str | None, tuple[int, int, str, str | None]] = {}
+
+    for match in _WORD_COUNT_RANGE_RE.finditer(content):
+        first = int(match.group(1))
+        second = int(match.group(2))
+        current = (
+            min(first, second),
+            max(first, second),
+            match.group(0),
+            _word_count_stage(content, match.start()),
+        )
+        stage = current[3]
+        compatible_stages = (
+            (None, "初稿")
+            if stage == "初稿"
+            else (None, "终稿")
+            if stage == "终稿"
+            else (None, "初稿", "终稿")
+        )
+        previous_min_high = min(
+            (
+                min_high_by_stage[compatible_stage]
+                for compatible_stage in compatible_stages
+                if compatible_stage in min_high_by_stage
+            ),
+            key=lambda item: item[1],
+            default=None,
+        )
+        if previous_min_high is not None and current[0] > previous_min_high[1]:
+            return previous_min_high, current
+
+        previous_max_low = max(
+            (
+                max_low_by_stage[compatible_stage]
+                for compatible_stage in compatible_stages
+                if compatible_stage in max_low_by_stage
+            ),
+            key=lambda item: item[0],
+            default=None,
+        )
+        if previous_max_low is not None and current[1] < previous_max_low[0]:
+            return previous_max_low, current
+
+        if stage not in min_high_by_stage or current[1] < min_high_by_stage[stage][1]:
+            min_high_by_stage[stage] = current
+        if stage not in max_low_by_stage or current[0] > max_low_by_stage[stage][0]:
+            max_low_by_stage[stage] = current
+
+    return None
+
+
 def _conflict_issues(content: str) -> list[PromptAuditIssue]:
     issues: list[PromptAuditIssue] = []
     output_body_only = re.search(r"只输出(?:小说)?正文", content)
-    without_negated_output = re.sub(
-        r"(?:不要|禁止|无需|不需要)\s*"
-        r"(?:最后\s*输出\s*分析报告|输出\s*(?:分析报告|分析|报告|解释))",
-        "",
-        content,
-    )
-    positive_extra_output = re.search(
-        r"(?:最后输出分析报告|输出分析|输出报告|输出解释)",
-        without_negated_output,
+    without_negated_output = _NEGATED_OUTPUT_REQUIREMENT_RE.sub("", content)
+    positive_extra_output = _POSITIVE_OUTPUT_REQUIREMENT_RE.search(
+        without_negated_output
     )
     if output_body_only and positive_extra_output:
         issues.append(
@@ -190,7 +264,13 @@ def _conflict_issues(content: str) -> list[PromptAuditIssue]:
             )
         )
 
-    if "第一人称" in content and "第三人称" in content:
+    viewpoint_content = _NEGATED_VIEWPOINT_RE.sub("", content)
+    has_viewpoint_alternative = _VIEWPOINT_ALTERNATIVE_RE.search(viewpoint_content)
+    if (
+        "第一人称" in viewpoint_content
+        and "第三人称" in viewpoint_content
+        and not has_viewpoint_alternative
+    ):
         issues.append(
             PromptAuditIssue(
                 code="conflicting_viewpoint",
@@ -202,21 +282,7 @@ def _conflict_issues(content: str) -> list[PromptAuditIssue]:
             )
         )
 
-    ranges = [
-        (min(int(match.group(1)), int(match.group(2))),
-         max(int(match.group(1)), int(match.group(2))),
-         match.group(0))
-        for match in _WORD_COUNT_RANGE_RE.finditer(content)
-    ]
-    disjoint_pair = next(
-        (
-            (left, right)
-            for index, left in enumerate(ranges)
-            for right in ranges[index + 1 :]
-            if left[1] < right[0] or right[1] < left[0]
-        ),
-        None,
-    )
+    disjoint_pair = _first_disjoint_word_count_pair(content)
     if disjoint_pair is not None:
         left, right = disjoint_pair
         issues.append(

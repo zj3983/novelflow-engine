@@ -1,4 +1,5 @@
 from hashlib import sha256
+from time import perf_counter
 
 import pytest
 from pydantic import ValidationError
@@ -368,6 +369,9 @@ def test_three_mechanical_conflicts_are_must_fix_items():
         "只输出正文，无需输出解释",
         "只输出正文，不需要输出分析",
         "只输出正文，不要最后输出分析报告",
+        "只输出正文，不能输出分析",
+        "只输出正文，请勿输出报告",
+        "只输出正文，不得输出解释",
     ],
 )
 def test_explicitly_negated_extra_output_does_not_conflict(content):
@@ -380,6 +384,28 @@ def test_positive_extra_output_still_conflicts():
     result = audit_prompt(mode="final_call", content="只输出正文，最后输出分析报告")
 
     assert [issue.code for issue in result.must_fix] == ["conflicting_output_format"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "不要使用第一人称，采用第三人称",
+        "第一人称或第三人称均可",
+    ],
+)
+def test_viewpoint_alternatives_and_explicit_negation_do_not_conflict(content):
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert all(issue.code != "conflicting_viewpoint" for issue in result.must_fix)
+
+
+def test_simultaneous_viewpoint_requirements_still_conflict():
+    result = audit_prompt(
+        mode="final_call",
+        content="全文使用第一人称，同时使用第三人称",
+    )
+
+    assert [issue.code for issue in result.must_fix] == ["conflicting_viewpoint"]
 
 
 def test_overlapping_word_ranges_do_not_conflict():
@@ -398,6 +424,27 @@ def test_reversed_disjoint_word_ranges_are_normalized_before_comparison():
     )
 
     assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
+
+
+def test_draft_and_final_word_ranges_are_not_compared_across_stages():
+    result = audit_prompt(
+        mode="final_call",
+        content="初稿1000-1200字，终稿2000-2500字。",
+    )
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
+
+
+def test_many_overlapping_word_ranges_complete_in_linear_time():
+    unit = "1000-2000字,"
+    content = (unit * (199_000 // len(unit)))[:199_000]
+
+    started_at = perf_counter()
+    result = audit_prompt(mode="final_call", content=content)
+    elapsed = perf_counter() - started_at
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
+    assert elapsed < 2.0
 
 
 def test_redundant_summary_and_issue_sorting_are_stable():
