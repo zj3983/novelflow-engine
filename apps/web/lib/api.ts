@@ -2656,10 +2656,19 @@ export async function deepAuditPrompt(
   payload: PromptAuditRequest,
   localResult: PromptAuditResult,
 ): Promise<DeepPromptAuditResult> {
+  const sanitizedLocalResult: PromptAuditResult = {
+    schema_version: localResult.schema_version,
+    mode: localResult.mode,
+    content_sha256: localResult.content_sha256,
+    summary: localResult.summary,
+    must_fix: localResult.must_fix,
+    suggestions: localResult.suggestions,
+    passed_checks: localResult.passed_checks,
+  };
   return (await tryFetchJson(`${apiBase()}/prompt-audit/deep`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...payload, local_result: localResult }),
+    body: JSON.stringify({ ...payload, local_result: sanitizedLocalResult }),
   }, 360000)) as DeepPromptAuditResult;
 }
 

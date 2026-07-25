@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { deepAuditPrompt, type DeepPromptAuditResult } from "../lib/api";
+
 const PROJECT_ID = "file:prompt-audit-fixture";
 const PROJECT_PATH = `/projects/${encodeURIComponent(PROJECT_ID)}/prompts`;
 const REQUIRED_VARIABLES = ["output_section", "chapter_direction"];
@@ -151,6 +153,43 @@ async function mockPromptAuditPage(page: Page, options: AuditMockOptions = {}) {
 
   return { auditBodies, deepAuditBodies, templatePutMethods };
 }
+
+test("deepAuditPrompt 仅序列化本地检查结果的白名单字段", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: { local_result: Record<string, unknown> } | undefined;
+  const localWithRuntime = {
+    ...auditResult,
+    runtime: deepAuditResult.runtime,
+    unexpected_field: "must not be sent",
+  } as DeepPromptAuditResult & { unexpected_field: string };
+
+  try {
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body)) as { local_result: Record<string, unknown> };
+      return new Response(JSON.stringify(deepAuditResult), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await deepAuditPrompt({ mode: "template", content: "test content" }, localWithRuntime);
+
+    expect(capturedBody).toBeDefined();
+    expect(capturedBody?.local_result.runtime).toBeUndefined();
+    expect(capturedBody?.local_result.unexpected_field).toBeUndefined();
+    expect(capturedBody?.local_result).toEqual({
+      schema_version: auditResult.schema_version,
+      mode: auditResult.mode,
+      content_sha256: auditResult.content_sha256,
+      summary: auditResult.summary,
+      must_fix: auditResult.must_fix,
+      suggestions: auditResult.suggestions,
+      passed_checks: auditResult.passed_checks,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("检查当前未保存的模板并显示紧凑诊断", async ({ page }) => {
   const api = await mockPromptAuditPage(page);
