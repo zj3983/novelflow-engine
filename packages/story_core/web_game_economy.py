@@ -161,6 +161,7 @@ class _OrderEvent:
     owner: str | None
     label: str | None
     referential: bool
+    resets_identity: bool = False
 
 
 _ECONOMY_PARAGRAPH_BREAK = re.compile(r"(?:\r?\n[\t ]*){2,}")
@@ -212,24 +213,29 @@ _INDEPENDENT_SETTLEMENT_SOURCE_TERMS = (
 _MARKET_COMPLETION_TERMS = ("成交", "卖出", "出售")
 _DIRECT_SETTLEMENT_TERMS = ("直接", "进入", "转入", "打进", "到账", "现实结算")
 _DIRECT_SETTLEMENT_DENIAL = re.compile(
-    r"(?:没有|不需要|不必|无需|不用|不会|不能|并非|不是|不再|不应|不得|不可能)"
+    r"(?:没有|并未|尚未|还没|不需要|不必|无需|不用|不会|不能|并非|不是|不再|不应|不得|不可能)"
     r"\s*(?:(?:被|由)\s*(?:交易行|拍卖行|平台|系统)?\s*)?"
     r"(?:再|继续|要求)?\s*(?:直接)?(?:进入|转入|打进|到账|现实结算)"
 )
-_COMPLETED_EXCHANGE_PATTERN = re.compile(
-    r"(?:确认(?:了)?兑换(?!价)|兑换(?:已经|已)?(?:成功|完成)|(?:成功|完成)(?:了)?官方兑换|"
-    r"确认[^。！？!?；;\r\n]{0,24}(?:兑换价|额度|手续费|预计到账))"
+_EXCHANGE_SUBMIT_PATTERN = re.compile(
+    r"(?:点下|点击|按下|提交|发起|确认)(?:了)?[^。！？!?；;\r\n]{0,8}(?:兑换|换汇)"
 )
-_NEGATED_EXCHANGE_PATTERN = re.compile(
-    r"(?:没有|并未|未|不需要|不必|无需|不用|不会|不能|尚未|无法)"
-    r"[^。！？!?；;\r\n]{0,12}(?:使用|完成|确认)?[^。！？!?；;\r\n]{0,8}官方兑换"
-    r"|官方兑换[^。！？!?；;\r\n]{0,12}(?:不可用|未开放|失败|尚未确认|没有完成)"
+_EXCHANGE_COMPLETION_PATTERN = re.compile(
+    r"(?:兑换(?:申请)?(?:已经|已)?(?:受理|成功|完成)|"
+    r"(?:游戏币|兑换款)(?:已经|已)(?:扣除|划扣)|"
+    r"现实账户(?:实际)?(?:到账|收到款项))"
+)
+_EXCHANGE_CANCELLATION_PATTERN = re.compile(
+    r"(?:(?:放弃|取消|撤销|退出|离开)[^。！？!?；;\r\n]{0,10}(?:官方)?兑换|"
+    r"(?:官方)?兑换[^。！？!?；;\r\n]{0,10}(?:失败|驳回|未受理|不可用|中止|取消)|"
+    r"(?:没有|并未|未|尚未|还没)[^。！？!?；;\r\n]{0,8}(?:继续|完成|确认)?兑换)"
 )
 _LOCAL_ACTION_NEGATION = re.compile(
-    r"(?:没有|并未|未|不需要|不必|无需|无须|不用|不会|不能|不再)"
+    r"(?:没有|并未|未|禁止|不允许|不需要|不必|无需|无须|不用|不会|不能|不再)"
     r"[^，,。！？!?；;\r\n]{0,14}$"
 )
 _ORDER_CLAUSE_BREAK = re.compile(r"[，,、]")
+_ORDER_IDENTITY_RESET_PATTERN = re.compile(r"(?:另一张订单|另一个求购单)")
 _NAME_PANEL_PATTERN = re.compile(r"【名称\s*[:：]\s*(?P<item>[^】]{1,20})】")
 _ITEM_USE_PATTERN = re.compile(
     r"(?P<item>[一-龥A-Za-z0-9·]{2,20})(?:的)?用途(?:是|为|写着|标为|[:：])"
@@ -432,6 +438,8 @@ def _has_exchange_between(
     reality_position: int,
 ) -> bool:
     official_exchange_seen = False
+    exchange_submitted = False
+    exchange_completed = False
     for unit in units[market_index : settlement_index + 1]:
         bounded_text = unit.text
         if unit.start < market_position:
@@ -440,13 +448,15 @@ def _has_exchange_between(
             bounded_text = bounded_text[: max(0, reality_position - unit.start)]
         if "官方兑换" in bounded_text:
             official_exchange_seen = True
-        if (
-            official_exchange_seen
-            and _COMPLETED_EXCHANGE_PATTERN.search(bounded_text)
-            and _NEGATED_EXCHANGE_PATTERN.search(bounded_text) is None
-        ):
-            return True
-    return False
+        if _EXCHANGE_CANCELLATION_PATTERN.search(bounded_text):
+            exchange_submitted = False
+            exchange_completed = False
+            continue
+        if official_exchange_seen and _EXCHANGE_SUBMIT_PATTERN.search(bounded_text):
+            exchange_submitted = True
+        if exchange_submitted and _EXCHANGE_COMPLETION_PATTERN.search(bounded_text):
+            exchange_completed = True
+    return official_exchange_seen and exchange_submitted and exchange_completed
 
 
 def _has_direct_market_settlement(units: tuple[_EconomyUnit, ...]) -> bool:
@@ -648,6 +658,7 @@ def _order_events_for_terms(
                         owner=owner,
                         label=label,
                         referential=referential,
+                        resets_identity=_ORDER_IDENTITY_RESET_PATTERN.search(span) is not None,
                     )
                 )
                 start = index + len(term)
@@ -671,6 +682,10 @@ def _buyer_reconfirm_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEv
                     owner=owner,
                     label=label,
                     referential=referential,
+                    resets_identity=_ORDER_IDENTITY_RESET_PATTERN.search(
+                        _order_event_span(unit.text, match.start(), match.end())
+                    )
+                    is not None,
                 )
             )
     return events
@@ -697,16 +712,21 @@ def _funded_order_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEvent
                 prior_match = list(_ORDER_CLAUSE_BREAK.finditer(prior_span))
                 if prior_match:
                     prior_span = prior_span[prior_match[-1].end() :].strip()
-                if not prior_span and unit_index > 0:
+                prior_owner, prior_label, _ = _order_identity(prior_span)
+                prior_has_order = any(
+                    marker in prior_span for marker in ("求购单", "订单", "单求购")
+                ) or prior_label is not None
+                if not prior_has_order and unit_index > 0:
                     prior_unit = units[unit_index - 1]
                     if unit.paragraph_index - prior_unit.paragraph_index <= 1:
                         prior_span = _order_event_span(
                             prior_unit.text, len(prior_unit.text), len(prior_unit.text)
                         )
-                prior_owner, prior_label, _ = _order_identity(prior_span)
-                prior_has_order = any(
-                    marker in prior_span for marker in ("求购单", "订单", "单求购")
-                ) or prior_label is not None
+                        prior_owner, prior_label, _ = _order_identity(prior_span)
+                        prior_has_order = any(
+                            marker in prior_span
+                            for marker in ("求购单", "订单", "单求购")
+                        ) or prior_label is not None
                 if not prior_has_order:
                     continue
                 owner, label, referential = prior_owner, prior_label, True
@@ -717,12 +737,15 @@ def _funded_order_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEvent
                     owner=owner,
                     label=label,
                     referential=referential,
+                    resets_identity=_ORDER_IDENTITY_RESET_PATTERN.search(span) is not None,
                 )
             )
     return sorted(set(positions), key=lambda event: event.position)
 
 
 def _same_order(*events: _OrderEvent) -> bool:
+    if any(event.resets_identity for event in events):
+        return False
     for field in ("owner", "label"):
         values = {getattr(event, field) for event in events if getattr(event, field) is not None}
         if len(values) > 1:

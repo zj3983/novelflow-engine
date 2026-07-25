@@ -1,4 +1,5 @@
 from packages.story_core.agent_base import compact_list
+import packages.story_core.orchestrator as orchestrator_module
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.models import NovelProject
 from packages.story_core.models import StoryState
@@ -33,6 +34,40 @@ from packages.story_core.world_enrichment import _merge_enrichment
 
 def test_compact_list_treats_single_string_as_one_item():
     assert compact_list("混沌之种已经完成首次验证。", max_items=5) == ["混沌之种已经完成首次验证。"]
+
+
+def test_chapter_review_passes_explicit_genre_context_to_shared_reviewers(monkeypatch):
+    captured = {}
+
+    def fake_style(body, *, genre_context=None):
+        captured["style"] = genre_context
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    def fake_consistency(body, **kwargs):
+        captured["consistency"] = kwargs.get("genre_context")
+        return {
+            "pass": True,
+            "scores": {},
+            "issues": [],
+            "revision_plan": [],
+            "scene_contract_failures": [],
+        }
+
+    monkeypatch.setattr(orchestrator_module, "review_prose_style", fake_style)
+    monkeypatch.setattr(orchestrator_module, "review_world_event_consistency", fake_consistency)
+
+    _review_chapter_body(
+        1,
+        "plain body",
+        {},
+        [],
+        genre_context={"genre": "xuanhuan"},
+    )
+
+    assert captured == {
+        "style": {"genre": "xuanhuan"},
+        "consistency": {"genre": "xuanhuan"},
+    }
 
 
 def test_rebalanced_short_draft_can_grow_into_target_range():

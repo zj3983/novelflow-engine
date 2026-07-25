@@ -7,14 +7,40 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import packages.story_core.file_project_store as file_project_store_module
 
 from packages.story_core.file_project_store import (
     ChapterQualityError,
     FileProjectStore,
     _assert_auto_chapter_quality,
     _chapter_outline_title,
+    _manual_chapter_quality_report,
     _regeneration_quality_blocking,
 )
+
+
+def test_manual_quality_report_passes_explicit_genre_context_to_style_review(monkeypatch):
+    captured = {}
+
+    def fake_style(body, *, genre_context=None):
+        captured["genre_context"] = genre_context
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(file_project_store_module, "review_prose_style", fake_style)
+
+    _manual_chapter_quality_report(
+        {
+            "chapter_number": 1,
+            "chapter_title": "test",
+            "body": "plain body",
+            "next_outline": "continue",
+            "chapter_summary": {"summary": "test", "facts": []},
+            "updated_story": {"timeline": [], "chapter_summaries": []},
+        },
+        genre_context={"genre_plugin_ids": ["game_webnovel"]},
+    )
+
+    assert captured["genre_context"] == {"genre_plugin_ids": ["game_webnovel"]}
 
 
 def test_auto_quality_gate_allows_advisory_review_and_records_warning():

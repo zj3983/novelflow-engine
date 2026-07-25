@@ -489,13 +489,17 @@ def _chapter_outline_title(outline_context: Any, chapter_number: int) -> str | N
     return title if planned_number == chapter_number and title else None
 
 
-def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
+def _manual_chapter_quality_report(
+    chapter: dict[str, Any],
+    *,
+    genre_context: Any = None,
+) -> dict[str, Any]:
     quality_report = validate_bundle(chapter)
     body = str(chapter.get("body") or "")
     length_review = _chapter_length_review(body)
     ai_flavor_review = review_ai_flavor(body)
     reader_feel_review = review_reader_feel(body)
-    prose_style_review = review_prose_style(body)
+    prose_style_review = review_prose_style(body, genre_context=genre_context)
     cold_reader_review = review_cold_reader_experience(
         body,
         previous_summary=str((chapter.get("event_plan") or {}).get("summary") or ""),
@@ -507,6 +511,7 @@ def _manual_chapter_quality_report(chapter: dict[str, Any]) -> dict[str, Any]:
     )
     editor_agent_review = review_editor_agent(
         body,
+        genre_context=genre_context,
         prose_style_review=prose_style_review,
         ai_flavor_review=ai_flavor_review,
     )
@@ -2923,6 +2928,22 @@ class FileProjectStore:
             project["relationship_graph"] = graph_from_character_cards(project.get("character_profiles"))
         return project
 
+    def _review_genre_context(self) -> dict[str, Any]:
+        project = self.project()
+        state = self.state()
+        blueprint = (
+            project.get("world_blueprint")
+            if isinstance(project.get("world_blueprint"), dict)
+            else {}
+        )
+        genre_ids = normalize_novel_type_ids(state.get("genre_plugin_ids"))
+        if not genre_ids:
+            genre_ids = normalize_novel_type_ids(blueprint.get("genre_plugin_ids"))
+        return {
+            "genre": str(state.get("genre") or project.get("genre") or ""),
+            "genre_plugin_ids": genre_ids,
+        }
+
     def opening_brief(self) -> dict[str, Any]:
         payload = self._read_json(self.webnovel_dir / "opening_brief.json", {})
         return OpeningBrief.model_validate(payload).model_dump(mode="json")
@@ -4051,7 +4072,10 @@ class FileProjectStore:
             "manual_instructions": instructions or [],
         }
         chapter = self._hydrate_chapter_display_fields(chapter, updated_story)
-        review = _manual_chapter_quality_report(chapter)
+        review = _manual_chapter_quality_report(
+            chapter,
+            genre_context=self._review_genre_context(),
+        )
         chapter["quality_report"] = review
         self._append_workflow_log(
             chapter_number=chapter_number,
@@ -4553,7 +4577,10 @@ class FileProjectStore:
         chapter["updated_story"] = updated_story
 
         chapter = self._hydrate_chapter_display_fields(chapter, updated_story)
-        review = _manual_chapter_quality_report(chapter)
+        review = _manual_chapter_quality_report(
+            chapter,
+            genre_context=self._review_genre_context(),
+        )
         chapter["quality_report"] = review
         self._append_workflow_log(
             chapter_number=chapter_number,

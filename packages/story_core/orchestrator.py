@@ -3233,6 +3233,13 @@ def _review_protagonist_names(event_plan: dict[str, Any], simulation_plan: dict[
     return tuple(names[:4])
 
 
+def _story_review_genre_context(story: StoryState) -> dict[str, Any]:
+    return {
+        "genre": story.genre,
+        "genre_plugin_ids": list(story.genre_plugin_ids),
+    }
+
+
 def _review_chapter_body(
     chapter_number: int,
     body: str,
@@ -3241,6 +3248,7 @@ def _review_chapter_body(
     simulation_plan: dict | None = None,
     world_events: list[dict] | None = None,
     scene_cards: list[dict] | None = None,
+    genre_context: Any = None,
 ) -> dict:
     compact_body = "".join(body.split())
     facts_text = "\n".join(world_facts or [])
@@ -3744,8 +3752,8 @@ def _review_chapter_body(
 
     with ThreadPoolExecutor(max_workers=10) as _pool:
         _futures = {
-            "consistency": _pool.submit(review_world_event_consistency, body, world_events=world_events or [], scene_cards=scene_cards or [], chapter_number=chapter_number),
-            "style": _pool.submit(review_prose_style, body),
+            "consistency": _pool.submit(review_world_event_consistency, body, world_events=world_events or [], scene_cards=scene_cards or [], chapter_number=chapter_number, genre_context=genre_context),
+            "style": _pool.submit(review_prose_style, body, genre_context=genre_context),
             "prose_quality": _pool.submit(review_prose_quality, body),
             "adversarial_cut": _pool.submit(review_adversarial_cuts, body),
             "ai_flavor": _pool.submit(review_ai_flavor, body),
@@ -3808,7 +3816,7 @@ def _review_chapter_body(
     with ThreadPoolExecutor(max_workers=3) as _pool:
         _agent_futs = {
             "reader_agent": _pool.submit(review_reader_agent, body, previous_summary=_previous_summary, cold_reader_review=cold_reader_review),
-            "editor_agent": _pool.submit(review_editor_agent, body, prose_quality_review=prose_quality_review, prose_style_review=style_review, ai_flavor_review=ai_flavor_review),
+            "editor_agent": _pool.submit(review_editor_agent, body, genre_context=genre_context, prose_quality_review=prose_quality_review, prose_style_review=style_review, ai_flavor_review=ai_flavor_review),
             "reviewer_agent": _pool.submit(review_reviewer_agent, chapter_number=chapter_number, body=body, event_plan=event_plan, world_facts=world_facts or [], protagonist_names=_protagonist_names, critical_review=critical_review, web_game_review=web_game_review, progression_lead_review=progression_lead_review),
         }
         for _name, _fut in _agent_futs.items():
@@ -6108,6 +6116,7 @@ class StoryOrchestrator:
                 getattr(bundle, "simulation_plan", {}),
                 getattr(bundle, "world_events", []),
                 getattr(bundle, "scene_cards", []),
+                genre_context=_story_review_genre_context(story),
             )
             patched_review["expression_patch_report"] = patch_report
             patched_quality = _merge_writing_review_quality(validate_bundle(quality_seed), patched_review)
@@ -6158,6 +6167,7 @@ class StoryOrchestrator:
             getattr(bundle, "simulation_plan", {}),
             getattr(bundle, "world_events", []),
             getattr(bundle, "scene_cards", []),
+            genre_context=_story_review_genre_context(story),
         )
         quality_report = _merge_writing_review_quality(validate_bundle(quality_seed), writing_review)
         safety = choose_best_revision(
@@ -6745,6 +6755,7 @@ class StoryOrchestrator:
             simulation_plan,
             world_events,
             scene_cards,
+            genre_context=_story_review_genre_context(story),
         )
         revision_safety_report = None
         accepted_revision_actions: list[str] = []
@@ -6812,6 +6823,7 @@ class StoryOrchestrator:
                     simulation_plan,
                     world_events,
                     scene_cards,
+                    genre_context=_story_review_genre_context(story),
                 )
                 candidate_quality = {
                     "ok": bool(candidate_review.get("pass")),
@@ -6938,6 +6950,7 @@ class StoryOrchestrator:
                     simulation_plan,
                     world_events,
                     scene_cards,
+                    genre_context=_story_review_genre_context(story),
                 )
                 quality_preserved = _compression_review_not_worse(writing_review, candidate_review)
                 before_issue_count = len((writing_review or {}).get("issues", []))
@@ -6985,6 +6998,7 @@ class StoryOrchestrator:
                 simulation_plan,
                 world_events,
                 scene_cards,
+                genre_context=_story_review_genre_context(story),
             )
 
         review_gate = build_simplified_review({"writing_review": writing_review})
