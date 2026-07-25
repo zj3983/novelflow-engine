@@ -60,9 +60,11 @@ _STOP_TERMS = {
 
 _CJK_RUN = re.compile(r"[\u4e00-\u9fff]{2,}")
 _LATIN_SYMBOL_RUN = re.compile(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*")
-_TROPE_NEGATION_TERMS = ("没有", "没能", "未能", "尚未", "并未", "不曾", "拒绝", "不肯", "不愿", "没接", "未接", "not", "never", "refuse", "refused")
+_TROPE_NEGATION_TERMS = ("没有", "没能", "未能", "尚未", "并未", "不曾", "拒绝", "不肯", "不愿", "没接", "未接")
+_TROPE_NEGATION_LATIN_TERMS = ("not", "never", "refuse", "refused")
 _TROPE_QUESTION_TERMS = ("吗", "呢", "？", "?")
-_TROPE_PLAN_ONLY_TERMS = ("打算", "计划", "准备", "想要", "以后", "明天再", "下一章", "心里盘算", "只是在心里", "plan", "plans", "planned", "intend", "intends")
+_TROPE_PLAN_ONLY_TERMS = ("打算", "计划", "准备", "想要", "以后", "明天再", "下一章", "心里盘算", "只是在心里")
+_TROPE_PLAN_ONLY_LATIN_TERMS = ("plan", "plans", "planned", "intend", "intends")
 _TROPE_ACTION_CONFIRM_TERMS = ("当场", "立刻", "马上", "直接", "终于", "已经", "真的", "随后", "于是")
 _TROPE_OTHER_ACTOR_TERMS = ("别人", "旁人", "有人", "其他人", "另一边")
 
@@ -100,6 +102,15 @@ def _trope_terms(text: str) -> set[str]:
     return {term for term in terms if term}
 
 
+def _latin_symbol_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for match in _LATIN_SYMBOL_RUN.findall(str(text or "")):
+        token = match.lower()
+        tokens.add(token)
+        tokens.update(piece for piece in re.split(r"[-_]", token) if piece)
+    return tokens
+
+
 def _trope_term_coverage(text: str, terms: set[str]) -> float:
     if not terms:
         return 0.0
@@ -125,14 +136,19 @@ def _trope_action_anchors(text: str) -> list[str]:
 
 
 def _trope_sentence_is_invalid(sentence: str) -> bool:
-    lowered = sentence.lower()
+    latin_tokens = _latin_symbol_tokens(sentence)
     if any(term in sentence for term in _TROPE_QUESTION_TERMS):
         return True
-    if any(term in lowered for term in _TROPE_NEGATION_TERMS):
+    if any(term in sentence for term in _TROPE_NEGATION_TERMS) or any(
+        term in latin_tokens for term in _TROPE_NEGATION_LATIN_TERMS
+    ):
         return True
     if any(term in sentence for term in _TROPE_OTHER_ACTOR_TERMS):
         return True
-    if any(term in lowered for term in _TROPE_PLAN_ONLY_TERMS) and not any(
+    has_plan_marker = any(term in sentence for term in _TROPE_PLAN_ONLY_TERMS) or any(
+        term in latin_tokens for term in _TROPE_PLAN_ONLY_LATIN_TERMS
+    )
+    if has_plan_marker and not any(
         term in sentence for term in _TROPE_ACTION_CONFIRM_TERMS
     ):
         return True

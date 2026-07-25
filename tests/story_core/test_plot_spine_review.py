@@ -198,6 +198,22 @@ def test_scheduled_trope_beat_handles_english_and_symbol_beats_conservatively():
     assert landed["diagnostics"]["trope_beat_covered"] is True
 
 
+def test_english_control_words_do_not_match_substrings_inside_action_words():
+    notice = review_plot_spine_completion(
+        "Lin steps onto the stage and receive notice from the tribunal before anyone can object.",
+        _trope_plan(current_beat="receive notice"),
+    )
+    planet = review_plot_spine_completion(
+        "Lin fires the final engine, crosses the gate, and reach planet K-7 in full view.",
+        _trope_plan(current_beat="reach planet K-7"),
+    )
+
+    assert notice["pass"] is True
+    assert notice["diagnostics"]["trope_beat_covered"] is True
+    assert planet["pass"] is True
+    assert planet["diagnostics"]["trope_beat_covered"] is True
+
+
 def test_scheduled_trope_beat_rejects_question_pending_and_split_mentions():
     questioned = review_plot_spine_completion(
         "林会在雨夜接下挑战吗？旁人只是猜测他能赢得信任。",
