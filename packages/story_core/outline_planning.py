@@ -12,7 +12,7 @@ from packages.story_core.character_profiles import (
     StoryDriveProfile,
 )
 from packages.story_core.models import CharacterPerformanceProfile
-from packages.story_core.project_outline import ProjectOutline, select_outline_context
+from packages.story_core.project_outline import ProjectOutline, normalize_project_outline, select_outline_context
 from packages.story_core.trope_runtime import compact_trope_candidates
 
 
@@ -58,6 +58,7 @@ def validate_generated_opening_plan(
     expected_chapter_numbers: list[int] | None = None,
     trope_templates: list[dict[str, Any]] | None = None,
     expected_primary_trope_id: str | None = None,
+    fallback_outline: dict[str, Any] | None = None,
 ) -> GeneratedOutlinePlan:
     """Validate an AI-generated opening plan without constraining manual drafts."""
 
@@ -118,6 +119,7 @@ def validate_generated_opening_plan(
             plan,
             trope_templates,
             expected_primary_trope_id=expected_primary_trope_id,
+            fallback_outline=fallback_outline,
         )
     return plan
 
@@ -129,6 +131,7 @@ def validate_generated_continuation_plan(
     existing_character_names: set[str],
     trope_templates: list[dict[str, Any]] | None = None,
     expected_primary_trope_id: str | None = None,
+    fallback_outline: dict[str, Any] | None = None,
 ) -> GeneratedOutlinePlan:
     """Validate an incremental plan without requiring opening-only structure."""
 
@@ -164,6 +167,7 @@ def validate_generated_continuation_plan(
             plan,
             trope_templates,
             expected_primary_trope_id=expected_primary_trope_id,
+            fallback_outline=fallback_outline,
         )
     return plan
 
@@ -172,6 +176,7 @@ def validate_generated_trope_selection(
     plan: Any,
     trope_templates: list[dict[str, Any]],
     expected_primary_trope_id: str | None = None,
+    fallback_outline: dict[str, Any] | None = None,
 ) -> GeneratedOutlinePlan:
     """Validate generated trope locks against the active project candidates."""
 
@@ -202,6 +207,21 @@ def validate_generated_trope_selection(
             raise ValueError(f"invalid_arc_trope_id:{arc.id}")
 
     outline_payload = validated.outline.model_dump(mode="json")
+    if fallback_outline is not None:
+        generated_arc_ids = {str(arc["id"]) for arc in outline_payload["arcs"]}
+        fallback = normalize_project_outline(fallback_outline)
+        outline_payload = {
+            **outline_payload,
+            "arcs": [
+                *outline_payload["arcs"],
+                *(
+                    arc
+                    for arc in fallback["arcs"]
+                    if arc.get("trope_id") is not None
+                    and str(arc["id"]) not in generated_arc_ids
+                ),
+            ],
+        }
     for chapter in validated.outline.chapters:
         beat = chapter.trope_beat
         if beat is None:

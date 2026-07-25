@@ -238,12 +238,19 @@ class LLMOutlinePlanningGenerator:
                     existing_character_names=set(existing_character_names),
                     trope_templates=trope_candidates,
                     expected_primary_trope_id=expected_primary_trope_id,
+                    fallback_outline=validated.existing_outline,
                 )
+            fallback_outline = (
+                validated.existing_outline
+                if mode == "regenerate"
+                else None
+            )
             return validate_generated_opening_plan(
                 parsed,
                 expected_chapter_numbers=target_chapter_numbers,
                 trope_templates=trope_candidates,
                 expected_primary_trope_id=expected_primary_trope_id,
+                fallback_outline=fallback_outline,
             )
         except Exception as exc:
             if isinstance(exc, ValueError):

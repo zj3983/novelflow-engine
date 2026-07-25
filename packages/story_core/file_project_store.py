@@ -3157,15 +3157,11 @@ class FileProjectStore:
         return None
 
     @staticmethod
-    def _chapter_ranges_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
-        return int(left["start_chapter"]) <= int(right["end_chapter"]) and int(
-            right["start_chapter"]
-        ) <= int(left["end_chapter"])
-
-    @staticmethod
     def _validate_generated_locked_tropes_match(
         current: dict[str, Any],
         generated: dict[str, Any],
+        *,
+        current_chapter: int,
     ) -> None:
         current_arcs = {
             str(arc.get("id")): arc
@@ -3184,7 +3180,19 @@ class FileProjectStore:
             current_arc = current_arcs.get(arc_id)
             if not current_arc:
                 for locked_arc in locked_current_arcs:
-                    if FileProjectStore._chapter_ranges_overlap(arc, locked_arc):
+                    exact_range = (
+                        int(arc["start_chapter"]) == int(locked_arc["start_chapter"])
+                        and int(arc["end_chapter"]) == int(locked_arc["end_chapter"])
+                    )
+                    committed_overlap = max(
+                        int(arc["start_chapter"]),
+                        int(locked_arc["start_chapter"]),
+                    ) <= min(
+                        int(arc["end_chapter"]),
+                        int(locked_arc["end_chapter"]),
+                        current_chapter,
+                    )
+                    if exact_range or committed_overlap:
                         raise ValueError(f"locked_arc_overlap:{arc_id}")
                 continue
             current_trope_id = current_arc.get("trope_id")
@@ -3399,6 +3407,7 @@ class FileProjectStore:
                 expected_chapter_numbers=expected_chapter_numbers,
                 trope_templates=trope_candidates,
                 expected_primary_trope_id=expected_primary_trope_id,
+                fallback_outline=current_outline if mode == "regenerate" else None,
             )
         else:
             existing_character_names: set[str] = set()
@@ -3428,11 +3437,16 @@ class FileProjectStore:
                 existing_character_names=existing_character_names,
                 trope_templates=trope_candidates,
                 expected_primary_trope_id=expected_primary_trope_id,
+                fallback_outline=current_outline,
             )
 
         generated_outline = validated.outline.model_dump(mode="json")
         if mode in {"extend", "regenerate"}:
-            self._validate_generated_locked_tropes_match(current_outline, generated_outline)
+            self._validate_generated_locked_tropes_match(
+                current_outline,
+                generated_outline,
+                current_chapter=current_chapter,
+            )
         if mode == "extend":
             generated_outline = self._extend_outline(
                 current_outline,

@@ -1938,7 +1938,54 @@ def test_generated_outline_preserves_omitted_locked_arc_after_merge(tmp_path, mo
 
 
 @pytest.mark.parametrize("mode", ["extend", "regenerate"])
-def test_generated_outline_rejects_renamed_arc_overlapping_locked_arc_without_writes(
+def test_generated_outline_accepts_future_nested_arc_inside_locked_arc(
+    tmp_path,
+    mode: str,
+) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    nested = {
+        **current_outline["arcs"][0],
+        "id": "future-nested",
+        "title": "Future nested",
+        "start_chapter": 31,
+        "end_chapter": 45,
+        "trope_id": "golden_finger_first_test",
+        "goal": "Test the anomaly",
+    }
+    plan = (
+        _extension_plan(current_outline, arcs=[*current_outline["arcs"], nested])
+        if mode == "extend"
+        else _regeneration_plan_from_current(current_outline, arcs=[*current_outline["arcs"], nested])
+    )
+
+    saved = store.save_generated_outline_plan(plan, mode=mode)
+
+    assert any(arc["id"] == "future-nested" for arc in saved["outline"]["arcs"])
+    assert _file_snapshot(root)
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generated_outline_rejects_renamed_arc_overlapping_committed_locked_range_without_writes(
+    tmp_path,
+    mode: str,
+) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    renamed = {**current_outline["arcs"][0], "id": "renamed-opening", "start_chapter": 10, "end_chapter": 30}
+    plan = (
+        _extension_plan(current_outline, arcs=[renamed])
+        if mode == "extend"
+        else _regeneration_plan_from_current(current_outline, arcs=[*current_outline["arcs"], renamed])
+    )
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match="^locked_arc_overlap:renamed-opening$"):
+        store.save_generated_outline_plan(plan, mode=mode)
+
+    assert _file_snapshot(root) == before
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generated_outline_rejects_renamed_arc_exactly_replacing_locked_range_without_writes(
     tmp_path,
     mode: str,
 ) -> None:
@@ -1969,20 +2016,60 @@ def test_regenerate_rejects_same_id_locked_trope_drift_without_writes(tmp_path) 
     assert _file_snapshot(root) == before
 
 
-def test_extend_validates_final_merged_trope_beats_against_preserved_active_arc(
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generated_outline_accepts_omitted_locked_arc_as_trope_beat_context(
     tmp_path,
+    mode: str,
 ) -> None:
     root, store, current_outline = _prepare_extendable_outline(tmp_path, locked_inner_arc=True)
     generated_arcs = [arc for arc in current_outline["arcs"] if arc["id"] != "locked-inner"]
-    plan = _extension_plan(
-        current_outline,
-        arcs=generated_arcs,
-        first_trope_beat="低位压力",
+    if mode == "extend":
+        plan = _extension_plan(
+            current_outline,
+            arcs=generated_arcs,
+            first_trope_beat="异常出现",
+        )
+    else:
+        plan = _regeneration_plan_from_current(current_outline, arcs=generated_arcs)
+        payload = plan.model_dump(mode="json")
+        for chapter in payload["outline"]["chapters"]:
+            if chapter["chapter_number"] == 31:
+                chapter["trope_beat"] = "异常出现"
+        plan = GeneratedOutlinePlan.model_validate(payload)
+
+    saved = store.save_generated_outline_plan(plan, mode=mode)
+
+    assert any(
+        arc["id"] == "locked-inner" and arc["trope_id"] == "golden_finger_first_test"
+        for arc in saved["outline"]["arcs"]
     )
+    assert _file_snapshot(root)
+
+
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generated_outline_rejects_invalid_beat_after_locked_arc_context_merge(
+    tmp_path,
+    mode: str,
+) -> None:
+    root, store, current_outline = _prepare_extendable_outline(tmp_path, locked_inner_arc=True)
+    generated_arcs = [arc for arc in current_outline["arcs"] if arc["id"] != "locked-inner"]
+    if mode == "extend":
+        plan = _extension_plan(
+            current_outline,
+            arcs=generated_arcs,
+            first_trope_beat="低位压力",
+        )
+    else:
+        plan = _regeneration_plan_from_current(current_outline, arcs=generated_arcs)
+        payload = plan.model_dump(mode="json")
+        for chapter in payload["outline"]["chapters"]:
+            if chapter["chapter_number"] == 31:
+                chapter["trope_beat"] = "低位压力"
+        plan = GeneratedOutlinePlan.model_validate(payload)
     before = _file_snapshot(root)
 
     with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:31$"):
-        store.save_generated_outline_plan(plan, mode="extend")
+        store.save_generated_outline_plan(plan, mode=mode)
 
     assert _file_snapshot(root) == before
 

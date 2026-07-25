@@ -439,6 +439,54 @@ def test_extend_rejects_existing_primary_trope_drift() -> None:
     assert str(exc_info.value.__cause__) == "unexpected_primary_trope_id"
 
 
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_generator_uses_existing_locked_arc_context_for_omitted_arc_beats(mode: str) -> None:
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["arcs"] = [
+            arc
+            for arc in prompt["existing_outline"]["arcs"]
+            if arc["id"] != "locked-inner"
+        ]
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": number,
+                "trope_beat": "异常出现" if number == 31 else None,
+                "cast": ["林照", "New"] if mode == "extend" else template["cast"],
+            }
+            for number in prompt["target_chapter_numbers"]
+        ]
+        if mode == "extend":
+            plan["characters"] = [_card("New", "supporting")]
+        return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    existing_chapters = list(range(1, 31)) if mode == "extend" else list(range(1, 51))
+    brief = fixture.brief(current_chapter=20, existing_chapters=existing_chapters)
+    payload = brief.model_dump(mode="json")
+    payload["existing_outline"]["arcs"].append(
+        {
+            **payload["existing_outline"]["arcs"][0],
+            "id": "locked-inner",
+            "start_chapter": 31,
+            "end_chapter": 50,
+            "trope_id": "golden_finger_first_test",
+        }
+    )
+    payload["existing_character_names"] = ["林照"]
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    )
+
+    plan = generator.generate(OutlinePlanningBrief.model_validate(payload), mode=mode)
+
+    assert any(chapter.trope_beat == "异常出现" for chapter in plan.outline.chapters)
+
+
 def test_extend_prompt_requests_only_missing_window_chapters(generator_fixture) -> None:
     brief = generator_fixture.brief(
         current_chapter=20,
