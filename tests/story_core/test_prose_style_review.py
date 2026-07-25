@@ -229,6 +229,18 @@ def test_prose_style_review_ignores_negated_chains_and_appraisal_of_another_item
             "仍在等待买家再次确认",
         ),
         ("夜烬把已经识别的裂纹狼心提交鉴定。", "又被送去鉴定或验货"),
+        (
+            "交易行里的求购已经成交。\n\n夜烬关掉设备。\n\n这笔求购所得直接到账现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "交易行里的求购已经成交。\n\n夜烬关掉设备。\n\n这笔成交款不是工资，而是交易所得，随后直接进入现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "A单求购资金已经冻结。\n\nA单求购随即成交。\n\nA单求购仍需等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
     ],
 )
 def test_prose_style_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
@@ -251,6 +263,12 @@ def test_prose_style_review_detects_explicit_economy_boundaries_in_three_paragra
         "裂纹狼心用途是锻造。\n\n旁边还有一件未鉴定披风。\n\n夜烬把披风交给鉴定师。",
         "裂纹狼心已经识别。\n\n夜烬取出披风，当前拿着的是披风。\n\n他把它提交鉴定。",
         "交易行里的拍卖物已经成交。\n\n夜烬去了城外。\n\n公会开始另一场战斗。\n\n现实账户收到的是项目尾款。",
+        "交易行里的求购已经成交。\n\n夜烬退出游戏。\n\n公司奖金到账现实账户。",
+        "交易行里的求购已经成交。\n\n夜烬退出游戏。\n\n现实账户弹出到账提醒，来源没有显示。",
+        "交易行里的求购已经成交。\n\n夜烬抬头看了一眼。\n\n款项没有被交易行直接打进现实账户。",
+        "交易行里的求购已经成交。\n\n夜烬抬头看了一眼。\n\n这笔钱不需要由交易行直接转入现实账户。",
+        "裂纹狼心已经识别。\n\n夜烬换上了一把长剑。\n\n他把它提交鉴定。",
+        "甲求购单资金冻结。\n\n乙求购单成交。\n\n丙求购单等待买家确认。",
     ],
 )
 def test_prose_style_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):

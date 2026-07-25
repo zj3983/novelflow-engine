@@ -143,6 +143,14 @@ def test_world_consistency_review_does_not_treat_unrelated_frozen_funds_as_funde
             "仍在等待买家再次确认",
         ),
         ("把已经识别的裂纹狼心提交鉴定。", "又被送去鉴定或验货"),
+        (
+            "拍卖行显示装备成交。\n\n夜烬下线。\n\n这笔拍卖所得直接打进现实账户。",
+            "交易与现实兑换混成了一步",
+        ),
+        (
+            "第一条求购单资金冻结。\n\n第一条求购单成交。\n\n第一条求购单等待买家确认。",
+            "仍在等待买家再次确认",
+        ),
     ],
 )
 def test_world_consistency_review_detects_explicit_economy_boundaries_in_three_paragraph_window(
@@ -165,6 +173,12 @@ def test_world_consistency_review_detects_explicit_economy_boundaries_in_three_p
         "裂纹狼心已经识别。\n\n披风仍是未鉴定状态。\n\n夜烬把披风送去鉴定。",
         "裂纹狼心已显示正式名称。\n\n夜烬拿起一块矿石，当前查看的是矿石。\n\n他把它提交鉴定。",
         "裂纹狼心已经识别。\n\n夜烬离开仓库。\n\n第二天他去了矿洞。\n\n回来后把它提交鉴定。",
+        "拍卖物已经成交。\n\n夜烬退出游戏。\n\n公司薪水到账现实账户。",
+        "拍卖物已经成交。\n\n夜烬退出游戏。\n\n现实账户收到到账提醒，但没有写明来源。",
+        "拍卖物已经成交。\n\n夜烬收起菜单。\n\n款项没有被交易行直接打进现实账户。",
+        "拍卖物已经成交。\n\n夜烬收起菜单。\n\n这笔钱不需要由交易行直接转入现实账户。",
+        "裂纹狼心已识别。\n\n夜烬改拿一把长剑。\n\n他把它提交鉴定。",
+        "甲求购单资金冻结。\n\n乙求购单成交。\n\n丙求购单等待买家确认。",
     ],
 )
 def test_world_consistency_review_accepts_negated_or_separated_three_paragraph_economy_flows(body: str):

@@ -154,6 +154,13 @@ class _AppraisalAction:
     position: int
 
 
+@dataclass(frozen=True)
+class _OrderEvent:
+    paragraph_index: int
+    position: int
+    order_id: str | None
+
+
 _ECONOMY_PARAGRAPH_BREAK = re.compile(r"(?:\r?\n[\t ]*){2,}")
 _ECONOMY_SENTENCE = re.compile(r"[^。！？!?；;\r\n]+[。！？!?；;]?")
 _MARKET_SCENE_TERMS = (
@@ -165,11 +172,34 @@ _MARKET_SCENE_TERMS = (
     "立即出售",
 )
 _REAL_SETTLEMENT_TERMS = ("现实账户", "现实结算", "现实到账")
+_MARKET_SETTLEMENT_SOURCE_TERMS = (
+    "这笔款",
+    "这笔钱",
+    "成交款",
+    "成交所得",
+    "交易所得",
+    "拍卖所得",
+    "求购所得",
+    "求购成交所得",
+    "卖出所得",
+    "款项",
+)
+_INDEPENDENT_SETTLEMENT_SOURCE_TERMS = (
+    "工资",
+    "薪水",
+    "薪资",
+    "奖金",
+    "退款",
+    "报销",
+    "项目尾款",
+    "旧工资",
+)
 _MARKET_COMPLETION_TERMS = ("成交", "卖出", "出售")
 _DIRECT_SETTLEMENT_TERMS = ("直接", "进入", "转入", "打进", "到账", "现实结算")
 _DIRECT_SETTLEMENT_DENIAL = re.compile(
     r"(?:没有|不需要|不必|无需|不用|不会|不能|并非|不是|不再|不应|不得|不可能)"
-    r"(?:再|继续|被|要求)?\s*(?:直接)?(?:进入|转入|打进|到账|现实结算)"
+    r"\s*(?:(?:被|由)\s*(?:交易行|拍卖行|平台|系统)?\s*)?"
+    r"(?:再|继续|要求)?\s*(?:直接)?(?:进入|转入|打进|到账|现实结算)"
 )
 _NAME_PANEL_PATTERN = re.compile(r"【名称\s*[:：]\s*(?P<item>[^】]{1,20})】")
 _ITEM_USE_PATTERN = re.compile(
@@ -187,6 +217,10 @@ _ITEM_UNIDENTIFIED_PATTERNS = (
 )
 _CURRENT_ITEM_PATTERNS = (
     re.compile(r"(?:拿起|取出|看向|查看)(?:一件|一块|一颗|一个)?(?P<item>[一-龥A-Za-z0-9·]{1,16})"),
+    re.compile(
+        r"(?:换成|换上|改拿|转向)(?:了)?(?:一把|一柄|一件|一块|一颗|一个)?"
+        r"(?P<item>[一-龥A-Za-z0-9·]{1,16})"
+    ),
     re.compile(r"当前(?:查看|拿着)的是(?P<item>[一-龥A-Za-z0-9·]{1,16})"),
 )
 _APPRAISAL_ACTION_PATTERNS = (
@@ -230,6 +264,13 @@ _FUNDED_ORDER_PATTERN = re.compile(
     r"求购单(?:里|里的|中|中的|其中|其中的)?"
     r"[^，。！？!?；;]{0,8}?(?:资金|游戏币)(?:已经|已)?(?:被)?冻结(?:了)?"
 )
+_ORDER_ID_PATTERNS = (
+    re.compile(r"第(?P<id>[一二三四五六七八九十百\d]+)(?:条|张)(?:求购单|订单)"),
+    re.compile(r"(?P<id>[甲乙丙丁戊己庚辛壬癸A-Z])(?:号)?(?:求购单|订单)"),
+    re.compile(r"(?P<id>[A-Z])单(?:求购)?"),
+    re.compile(r"(?:求购单|订单)(?:号|编号)[:：#-]?(?P<id>[A-Z0-9甲乙丙丁戊己庚辛壬癸-]+)"),
+    re.compile(r"(?:求购单|订单)(?P<id>[甲乙丙丁戊己庚辛壬癸A-Z]\d*)"),
+)
 
 
 def _economy_units(text: str) -> tuple[_EconomyUnit, ...]:
@@ -269,10 +310,29 @@ def _is_market_completion(unit: _EconomyUnit) -> bool:
     )
 
 
+def _has_independent_settlement_source(text: str) -> bool:
+    for source in _INDEPENDENT_SETTLEMENT_SOURCE_TERMS:
+        start = 0
+        while True:
+            index = text.find(source, start)
+            if index < 0:
+                break
+            prefix = text[max(0, index - 6) : index]
+            if not any(marker in prefix for marker in ("不是", "并非", "不属于", "并不是")):
+                return True
+            start = index + len(source)
+    return False
+
+
 def _is_direct_reality_settlement(unit: _EconomyUnit) -> bool:
     if not any(term in unit.text for term in _REAL_SETTLEMENT_TERMS):
         return False
     if not any(term in unit.text for term in _DIRECT_SETTLEMENT_TERMS):
+        return False
+    if _has_independent_settlement_source(unit.text):
+        return False
+    has_market_source = any(term in unit.text for term in _MARKET_SETTLEMENT_SOURCE_TERMS)
+    if not has_market_source and not _is_market_completion(unit):
         return False
     return _DIRECT_SETTLEMENT_DENIAL.search(unit.text) is None
 
@@ -427,54 +487,100 @@ def _has_reappraised_identified_item(units: tuple[_EconomyUnit, ...]) -> bool:
     return False
 
 
-def _event_positions(units: tuple[_EconomyUnit, ...], terms: tuple[str, ...]) -> list[tuple[int, int]]:
-    positions: list[tuple[int, int]] = []
+def _order_identifier(text: str) -> str | None:
+    for pattern in _ORDER_ID_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group("id")
+    return None
+
+
+def _order_events_for_terms(
+    units: tuple[_EconomyUnit, ...],
+    terms: tuple[str, ...],
+    *,
+    require_order_context: bool = False,
+) -> list[_OrderEvent]:
+    events: list[_OrderEvent] = []
     for unit in units:
+        order_id = _order_identifier(unit.text)
+        if require_order_context and "求购单" not in unit.text and order_id is None:
+            continue
         for term in terms:
             start = 0
             while True:
                 index = unit.text.find(term, start)
                 if index < 0:
                     break
-                positions.append((unit.paragraph_index, unit.start + index))
+                events.append(
+                    _OrderEvent(
+                        paragraph_index=unit.paragraph_index,
+                        position=unit.start + index,
+                        order_id=order_id,
+                    )
+                )
                 start = index + len(term)
-    return sorted(set(positions), key=lambda event: event[1])
+    return sorted(set(events), key=lambda event: event.position)
 
 
-def _buyer_reconfirm_positions(units: tuple[_EconomyUnit, ...]) -> list[tuple[int, int]]:
-    positions: list[tuple[int, int]] = []
+def _buyer_reconfirm_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEvent]:
+    events: list[_OrderEvent] = []
     for unit in units:
+        order_id = _order_identifier(unit.text)
         for match in _BUYER_RECONFIRM_PATTERN.finditer(unit.text):
-            prefix = unit.text[max(0, match.start() - 6) : match.start()]
+            prefix = unit.text[max(0, match.start() - 10) : match.start()]
             if any(marker in prefix for marker in _NEGATED_WAIT_MARKERS):
                 continue
-            positions.append((unit.paragraph_index, unit.start + match.start()))
-    return positions
+            events.append(
+                _OrderEvent(
+                    paragraph_index=unit.paragraph_index,
+                    position=unit.start + match.start(),
+                    order_id=order_id,
+                )
+            )
+    return events
 
 
-def _funded_order_positions(units: tuple[_EconomyUnit, ...]) -> list[tuple[int, int]]:
-    positions = _event_positions(
-        tuple(unit for unit in units if "求购单" in unit.text),
+def _funded_order_positions(units: tuple[_EconomyUnit, ...]) -> list[_OrderEvent]:
+    positions = _order_events_for_terms(
+        units,
         _FUNDED_ORDER_TERMS,
+        require_order_context=True,
     )
     for unit in units:
+        order_id = _order_identifier(unit.text)
         for match in _FUNDED_ORDER_PATTERN.finditer(unit.text):
-            positions.append((unit.paragraph_index, unit.start + match.start()))
-    return sorted(set(positions), key=lambda event: event[1])
+            positions.append(
+                _OrderEvent(
+                    paragraph_index=unit.paragraph_index,
+                    position=unit.start + match.start(),
+                    order_id=order_id,
+                )
+            )
+    return sorted(set(positions), key=lambda event: event.position)
+
+
+def _same_order(*events: _OrderEvent) -> bool:
+    explicit_ids = {event.order_id for event in events if event.order_id is not None}
+    return len(explicit_ids) <= 1
 
 
 def _has_buyer_reconfirmation_after_funded_sale(units: tuple[_EconomyUnit, ...]) -> bool:
     funded_events = _funded_order_positions(units)
-    completed_events = _event_positions(units, _COMPLETED_ORDER_TERMS)
+    completed_events = _order_events_for_terms(units, _COMPLETED_ORDER_TERMS)
     confirm_events = _buyer_reconfirm_positions(units)
-    for funded_paragraph, funded_position in funded_events:
-        for completed_paragraph, completed_position in completed_events:
-            if completed_position <= funded_position or completed_paragraph > funded_paragraph + 2:
+    for funded in funded_events:
+        for completed in completed_events:
+            if (
+                completed.position <= funded.position
+                or completed.paragraph_index > funded.paragraph_index + 2
+            ):
                 continue
-            for confirm_paragraph, confirm_position in confirm_events:
+            for confirm in confirm_events:
                 if (
-                    confirm_position > completed_position
-                    and confirm_paragraph <= funded_paragraph + 2
+                    confirm.position > completed.position
+                    and confirm.paragraph_index <= funded.paragraph_index + 2
+                    and _same_order(funded, completed, confirm)
                 ):
                     return True
     return False
