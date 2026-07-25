@@ -36,7 +36,7 @@ _ECONOMY_DENIAL = re.compile(
     r"(?:不(?:得|再|允许|能|应|必)?|禁止|严禁|不可|无需|无须|拒绝)"
     r"[^，。；;！？!?\n]{0,8}(?:交易|卖出|兑换)"
 )
-_NUMBERED_CHAPTER = re.compile(r"第[一二三四五六七八九十百千万零〇两\d]+章")
+_NUMBERED_CHAPTER = re.compile(r"第(?:[一二三四五六七八九十百千万零〇两\d]+|[Nn])章")
 
 
 def market_rules() -> tuple[str, ...]:
@@ -64,7 +64,7 @@ def _text_entries(value: Any) -> tuple[str, ...]:
 def _has_ordered_new_contract(text: str) -> bool:
     scope_positions = tuple(
         match.start()
-        for match in re.finditer(r"第一章|本章", text)
+        for match in re.finditer(r"第一章|第1章|本章", text)
     )
     transaction_positions = tuple(
         match.start()
@@ -85,6 +85,20 @@ def _has_ordered_new_contract(text: str) -> bool:
     )
 
 
+def _has_non_first_numbered_chapter(text: str) -> bool:
+    return any(
+        match.group()[1:-1] not in ("一", "1")
+        for match in _NUMBERED_CHAPTER.finditer(text)
+    )
+
+
+def _denies_current_economy(text: str) -> bool:
+    return any(
+        not match.group().endswith("担保交易")
+        for match in _ECONOMY_DENIAL.finditer(text)
+    )
+
+
 def first_chapter_market_exchange_authorized(
     event_plan: dict[str, Any] | None = None,
     world_facts: list[str] | None = None,
@@ -93,9 +107,12 @@ def first_chapter_market_exchange_authorized(
         *_text_entries(event_plan or {}),
         *(str(item) for item in (world_facts or [])),
     )
-    if any(_ECONOMY_DENIAL.search(text) for text in entries):
-        return False
-    if any(_has_ordered_new_contract(text) for text in entries):
-        return True
-    # Legacy project input only; new prompt rules must never emit these markers.
-    return any(marker in text for text in entries for marker in _LEGACY_OPENING_MARKERS)
+    for text in entries:
+        if _has_non_first_numbered_chapter(text) or _denies_current_economy(text):
+            continue
+        if _has_ordered_new_contract(text):
+            return True
+        # Legacy project input only; new prompt rules must never emit these markers.
+        if any(marker in text for marker in _LEGACY_OPENING_MARKERS):
+            return True
+    return False

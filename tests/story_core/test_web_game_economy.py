@@ -88,6 +88,7 @@ def test_contract_cannot_be_assembled_across_separate_entries() -> None:
     (
         "第一章不得卖出裂纹狼心，第二章再走官方兑换渠道解决现实急账。",
         "第一章只处理战斗，第二章卖出裂纹狼心，再走官方兑换渠道解决现实急账。",
+        "第二章，本章卖出裂纹狼心，再走官方兑换渠道解决现实急账。",
         "第一章先走官方兑换渠道解决现实急账，再卖出裂纹狼心。",
         "卖出裂纹狼心后，再走官方兑换渠道解决现实急账。",
     ),
@@ -136,10 +137,29 @@ def test_all_legacy_opening_markers_remain_readable(marker: str) -> None:
 )
 def test_explicit_denial_overrides_new_and_legacy_authorization(denial: str) -> None:
     assert not first_chapter_market_exchange_authorized(
-        {"turn": "第一章卖出裂纹狼心，再走官方兑换渠道解决现实急账。"},
-        [denial],
+        {"turn": f"第一章卖出裂纹狼心，再走官方兑换渠道解决现实急账；{denial}。"},
+        [],
     )
     assert not first_chapter_market_exchange_authorized(
-        {"turn": "第一章必须解决现实急账"},
-        [denial],
+        {"turn": f"第一章必须解决现实急账；{denial}。"},
+        [],
+    )
+
+
+def test_other_chapter_denial_does_not_override_first_chapter_contract() -> None:
+    assert first_chapter_market_exchange_authorized(
+        {"turn": "第一章卖出裂纹狼心，再走官方兑换渠道解决现实急账。"},
+        ["第二章不交易。"],
+    )
+
+
+def test_replacing_legacy_trade_with_new_chain_is_authorized() -> None:
+    assert first_chapter_market_exchange_authorized(
+        {
+            "turn": (
+                "第一章不再使用担保交易，改为卖出裂纹狼心，"
+                "再走官方兑换渠道解决现实急账。"
+            )
+        },
+        [],
     )
