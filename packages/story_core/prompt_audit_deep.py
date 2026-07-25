@@ -14,7 +14,7 @@ from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.prompt_audit import (
     PromptAuditIssue,
     PromptAuditResult,
-    prompt_audit_issue_sort_key,
+    limit_prompt_audit_issues,
 )
 from packages.story_core.runtime_config import (
     StageRuntimeSettings,
@@ -170,13 +170,15 @@ class DeepPromptAuditor:
                 suggestion=finding.suggestion,
                 estimated_reduction_characters=finding.estimated_reduction_characters,
             )
-            if finding.severity == "must_fix":
+            if finding.code == "semantic_conflict":
                 merged.must_fix.append(converted)
             else:
                 merged.suggestions.append(converted)
 
-        merged.must_fix.sort(key=prompt_audit_issue_sort_key)
-        merged.suggestions.sort(key=prompt_audit_issue_sort_key)
+        merged.must_fix, merged.suggestions = limit_prompt_audit_issues(
+            merged.must_fix,
+            merged.suggestions,
+        )
         merged_codes = {item.code for item in [*merged.must_fix, *merged.suggestions]}
         if "semantic_duplicate" in merged_codes:
             merged.passed_checks = [

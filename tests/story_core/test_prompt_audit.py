@@ -252,6 +252,28 @@ def test_duplicate_lines_report_only_later_exact_normalized_occurrences():
     )
 
 
+def test_duplicate_complete_chinese_sentence_within_one_line_is_reported():
+    content = "请保持节奏紧凑。请保持节奏紧凑。"
+
+    result = audit_prompt(mode="final_call", content=content)
+
+    duplicates = [
+        issue for issue in result.suggestions if issue.code == "duplicate_sentence"
+    ]
+    assert len(duplicates) == 1
+    assert duplicates[0].evidence == "请保持节奏紧凑。"
+    assert duplicates[0].location == "第1行"
+    assert duplicates[0].estimated_reduction_characters == len("请保持节奏紧凑。")
+
+
+def test_duplicate_sentence_check_stays_within_a_line_and_requires_complete_chinese_sentences():
+    content = "请保持节奏紧凑。\n请保持节奏紧凑。\nkeep pace. keep pace."
+
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert all(issue.code != "duplicate_sentence" for issue in result.suggestions)
+
+
 def test_duplicate_line_length_boundary_uses_normalized_characters():
     eleven_characters = "一二三四五六七八九十。"
     twelve_characters = "一二三四五六七八九十甲。"
@@ -426,6 +448,42 @@ def test_reversed_disjoint_word_ranges_are_normalized_before_comparison():
     assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "目标字数 2000 字。目标字数 5000 字。",
+        "目标字数 2000 字。另一处要求 5000-6000 字。",
+        "目标字数 5000-6000 字。另一处要求 2000 字。",
+    ],
+)
+def test_disjoint_single_word_counts_and_ranges_conflict(content):
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "目标字数 2000 字或 5000 字，任选其一。",
+        "初稿目标字数 2000 字，终稿目标字数 5000 字。",
+    ],
+)
+def test_single_word_count_alternatives_and_distinct_stages_do_not_conflict(content):
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
+
+
+def test_single_word_positions_without_target_context_do_not_conflict():
+    result = audit_prompt(
+        mode="final_call",
+        content="在第2000字埋下伏笔，在第5000字回收伏笔。",
+    )
+
+    assert all(issue.code != "conflicting_word_count" for issue in result.must_fix)
+
+
 def test_draft_and_final_word_ranges_are_not_compared_across_stages():
     result = audit_prompt(
         mode="final_call",
@@ -503,3 +561,38 @@ def test_redundant_summary_and_issue_sorting_are_stable():
         expected_redundant * 100 / len(content), 1
     )
     assert first.model_dump() == second.model_dump()
+
+
+def test_issue_output_is_globally_capped_with_a_visible_truncation_summary():
+    lines = [f"第{index:03d}条规则要求人物行为始终符合当前动机。" for index in range(150)]
+    content = "\n".join([*lines, *lines])
+
+    result = audit_prompt(mode="final_call", content=content)
+
+    issues = [*result.must_fix, *result.suggestions]
+    truncation = [issue for issue in issues if issue.code == "issues_truncated"]
+    assert len(issues) == 100
+    assert len(truncation) == 1
+    assert truncation[0].title == "审计结果已截断"
+    assert "150" in truncation[0].evidence
+    assert result.summary.estimated_redundant_characters == sum(map(len, lines))
+
+
+def test_prompt_audit_result_rejects_more_than_global_issue_limit():
+    issue = PromptAuditIssue(
+        code="example",
+        title="Example",
+        evidence="evidence",
+        location="prompt",
+        suggestion="suggestion",
+        estimated_reduction_characters=0,
+    )
+
+    with pytest.raises(ValidationError):
+        prompt_audit.PromptAuditResult(
+            mode="final_call",
+            content_sha256="0" * 64,
+            summary=prompt_audit.PromptAuditSummary(characters=1, lines=1),
+            must_fix=[issue] * 50,
+            suggestions=[issue] * 51,
+        )

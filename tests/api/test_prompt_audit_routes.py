@@ -248,6 +248,7 @@ def test_request_models_forbid_unknown_fields(monkeypatch):
     [
         {"template_key": "x" * 201},
         {"required_variables": [f"variable_{index}" for index in range(201)]},
+        {"required_variables": ["x" * 201]},
     ],
 )
 def test_request_model_rejects_oversized_template_metadata(field):

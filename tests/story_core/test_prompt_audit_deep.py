@@ -277,6 +277,54 @@ def test_merge_deduplicates_sorts_cleans_passed_checks_and_does_not_mutate_local
     assert result.summary.estimated_redundant_characters == local.summary.estimated_redundant_characters
 
 
+def test_semantic_issue_severity_is_forced_by_code():
+    findings = [
+        issue(
+            severity="suggestion",
+            code="semantic_conflict",
+            title="conflict",
+            evidence="conflicting requirements",
+        ),
+        issue(
+            severity="must_fix",
+            code="semantic_duplicate",
+            title="duplicate",
+            evidence="duplicate requirement",
+        ),
+    ]
+
+    result = DeepPromptAuditor(
+        post_json=lambda *args, **kwargs: response(findings),
+        runtime_resolver=lambda stage: runtime(),
+        clock=lambda: 1.0,
+    ).analyze(content=CONTENT, local_result=local_result())
+
+    assert [item.code for item in result.must_fix] == ["semantic_conflict"]
+    assert [item.code for item in result.suggestions] == ["semantic_duplicate"]
+
+
+def test_deep_merge_preserves_global_issue_limit_and_reports_truncation():
+    lines = [f"第{index:03d}条规则要求人物行为始终符合当前动机。" for index in range(90)]
+    content = "\n".join([*lines, *lines])
+    findings = [
+        issue(
+            evidence=f"semantic duplicate {index}",
+            location=f"第{index}段",
+        )
+        for index in range(20)
+    ]
+
+    result = DeepPromptAuditor(
+        post_json=lambda *args, **kwargs: response(findings),
+        runtime_resolver=lambda stage: runtime(),
+        clock=lambda: 1.0,
+    ).analyze(content=content, local_result=local_result(content))
+
+    issues = [*result.must_fix, *result.suggestions]
+    assert len(issues) == 100
+    assert sum(item.code == "issues_truncated" for item in issues) == 1
+
+
 def test_markdown_fenced_json_uses_shared_parser():
     result = DeepPromptAuditor(
         post_json=lambda *args, **kwargs: response([issue()], fenced=True),

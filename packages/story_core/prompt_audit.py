@@ -7,7 +7,7 @@ from hashlib import sha256
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from packages.story_core.prompt_templates import (
     template_variable_occurrences,
@@ -21,12 +21,17 @@ LOCAL_CONTENT_LIMIT = 200_000
 LONG_PROMPT_WARNING = 40_000
 SECTION_CHARACTER_LIMIT = 12_000
 SECTION_PERCENT_LIMIT = 45
+PROMPT_AUDIT_ISSUE_LIMIT = 100
 
 _MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 _LIST_PREFIX_RE = re.compile(
     r"^(?:(?:[-*+])|(?:\d+[.)、])|(?:(?:十|[一二三四五六七八九])[、.]))\s*"
 )
-_WORD_COUNT_RANGE_RE = re.compile(r"(\d{2,6})\s*[-—~到至]\s*(\d{2,6})\s*字")
+_WORD_COUNT_RE = re.compile(
+    r"(?:(\d{2,6})\s*[-—~到至]\s*(\d{2,6})|(\d{2,6}))\s*字"
+)
+_WORD_COUNT_SINGLE_CONTEXT_RE = re.compile(r"目标字数|字数|要求|控制")
+_CHINESE_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？])")
 _OUTPUT_NEGATION_PREFIX_PATTERN = r"(?:不要|禁止|无需|不需要|不能|请勿|不得)"
 _OUTPUT_REQUIREMENT_TARGET_PATTERN = (
     r"(?:最后\s*输出\s*分析报告|输出\s*(?:分析报告|分析|报告|解释))"
@@ -85,9 +90,58 @@ class PromptAuditResult(_StrictPromptAuditModel):
     suggestions: list[PromptAuditIssue] = Field(default_factory=list)
     passed_checks: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def validate_global_issue_limit(self) -> "PromptAuditResult":
+        if len(self.must_fix) + len(self.suggestions) > PROMPT_AUDIT_ISSUE_LIMIT:
+            raise ValueError("prompt_audit_issue_limit_exceeded")
+        return self
+
 
 def prompt_audit_issue_sort_key(issue: PromptAuditIssue) -> tuple[int, str, str]:
     return (-issue.estimated_reduction_characters, issue.code, issue.location)
+
+
+def limit_prompt_audit_issues(
+    must_fix: list[PromptAuditIssue],
+    suggestions: list[PromptAuditIssue],
+    *,
+    total_issues: int | None = None,
+) -> tuple[list[PromptAuditIssue], list[PromptAuditIssue]]:
+    existing_truncation = any(
+        issue.code == "issues_truncated" for issue in [*must_fix, *suggestions]
+    )
+    must_fix = [issue for issue in must_fix if issue.code != "issues_truncated"]
+    suggestions = [issue for issue in suggestions if issue.code != "issues_truncated"]
+    known_total = total_issues if total_issues is not None else len(must_fix) + len(suggestions)
+    if not existing_truncation and known_total <= PROMPT_AUDIT_ISSUE_LIMIT:
+        return (
+            sorted(must_fix, key=prompt_audit_issue_sort_key),
+            sorted(suggestions, key=prompt_audit_issue_sort_key),
+        )
+
+    regular_limit = PROMPT_AUDIT_ISSUE_LIMIT - 1
+    limited_must_fix = sorted(must_fix, key=prompt_audit_issue_sort_key)[:regular_limit]
+    suggestion_slots = regular_limit - len(limited_must_fix)
+    limited_suggestions = sorted(suggestions, key=prompt_audit_issue_sort_key)[
+        :suggestion_slots
+    ]
+    evidence = (
+        f"共发现 {known_total} 项，已汇总返回 {PROMPT_AUDIT_ISSUE_LIMIT} 项（含本提示）。"
+        if not existing_truncation
+        else f"发现的问题超过 {PROMPT_AUDIT_ISSUE_LIMIT} 项，结果已汇总（含本提示）。"
+    )
+    limited_suggestions.append(
+        PromptAuditIssue(
+            code="issues_truncated",
+            title="审计结果已截断",
+            evidence=evidence,
+            location="审计结果",
+            suggestion="优先处理已返回问题，精简提示词后重新审计。",
+            estimated_reduction_characters=0,
+        )
+    )
+    limited_suggestions.sort(key=prompt_audit_issue_sort_key)
+    return limited_must_fix, limited_suggestions
 
 
 def normalize_audit_line(line: str) -> str:
@@ -119,6 +173,38 @@ def _duplicate_line_issues(content: str) -> list[PromptAuditIssue]:
             )
         else:
             seen.add(normalized)
+    return issues
+
+
+def _duplicate_sentence_issues(content: str) -> list[PromptAuditIssue]:
+    issues: list[PromptAuditIssue] = []
+    seen_lines: set[str] = set()
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        normalized_line = normalize_audit_line(line)
+        if not normalized_line or normalized_line in seen_lines:
+            continue
+        seen_lines.add(normalized_line)
+        seen_sentences: set[str] = set()
+        for raw_sentence in _CHINESE_SENTENCE_SPLIT_RE.split(line):
+            if not raw_sentence.endswith(("。", "！", "？")):
+                continue
+            sentence = " ".join(raw_sentence.strip().split())
+            chinese_characters = sum("\u4e00" <= char <= "\u9fff" for char in sentence)
+            if chinese_characters < 6:
+                continue
+            if sentence in seen_sentences:
+                issues.append(
+                    PromptAuditIssue(
+                        code="duplicate_sentence",
+                        title="发现同一行内重复完整句",
+                        evidence=sentence,
+                        location=f"第{line_number}行",
+                        suggestion="删除或合并这句重复内容。",
+                        estimated_reduction_characters=len(sentence),
+                    )
+                )
+            else:
+                seen_sentences.add(sentence)
     return issues
 
 
@@ -192,21 +278,38 @@ def _word_count_stage(segment: str) -> str | None:
 
 def _word_count_ranges_in_segment(
     segment: str,
+    qualifier_suffix: str = "",
 ) -> tuple[list[tuple[int, int, str, str | None]], bool]:
-    matches = list(_WORD_COUNT_RANGE_RE.finditer(segment))
+    matches = list(_WORD_COUNT_RE.finditer(segment))
     stage = _word_count_stage(segment)
-    ranges = [
-        (
-            min(int(match.group(1)), int(match.group(2))),
-            max(int(match.group(1)), int(match.group(2))),
-            match.group(0),
-            stage,
-        )
-        for match in matches
-    ]
-    qualifier_present = "任选" in segment or "均可" in segment
-    or_after_first_range = bool(matches) and segment.find("或", matches[0].end()) >= 0
-    return ranges, len(matches) >= 2 and qualifier_present and or_after_first_range
+    ranges = []
+    first_included_match: re.Match[str] | None = None
+    previous_included_match: re.Match[str] | None = None
+    for match in matches:
+        if match.group(3) is not None:
+            context = segment[max(0, match.start() - 24) : match.start()]
+            continues_alternative = (
+                previous_included_match is not None
+                and "或" in segment[previous_included_match.end() : match.start()]
+            )
+            if not _WORD_COUNT_SINGLE_CONTEXT_RE.search(context) and not continues_alternative:
+                continue
+            low = high = int(match.group(3))
+        else:
+            low = min(int(match.group(1)), int(match.group(2)))
+            high = max(int(match.group(1)), int(match.group(2)))
+        ranges.append((low, high, match.group(0), stage))
+        if first_included_match is None:
+            first_included_match = match
+        previous_included_match = match
+    qualifier_text = segment + qualifier_suffix
+    qualifier_present = "任选" in qualifier_text or "均可" in qualifier_text
+    or_after_first_range = (
+        first_included_match is not None
+        and len(ranges) >= 2
+        and segment.find("或", first_included_match.end()) >= 0
+    )
+    return ranges, len(ranges) >= 2 and qualifier_present and or_after_first_range
 
 
 def _first_disjoint_word_count_pair(
@@ -260,7 +363,10 @@ def _first_disjoint_word_count_pair(
             max_low_by_stage[stage] = current
 
     for segment_match in _WORD_COUNT_SEGMENT_RE.finditer(content):
-        ranges, are_alternatives = _word_count_ranges_in_segment(segment_match.group(0))
+        ranges, are_alternatives = _word_count_ranges_in_segment(
+            segment_match.group(0),
+            content[segment_match.end() : segment_match.end() + 8],
+        )
         if are_alternatives:
             continue
         for current in ranges:
@@ -416,7 +522,10 @@ def audit_prompt(
             )
         )
 
-    duplicate_issues = _duplicate_line_issues(content)
+    duplicate_issues = [
+        *_duplicate_line_issues(content),
+        *_duplicate_sentence_issues(content),
+    ]
     suggestions.extend(duplicate_issues)
     if not duplicate_issues:
         passed_checks.append("没有发现明确重复行")
@@ -437,6 +546,12 @@ def audit_prompt(
         sum(issue.estimated_reduction_characters for issue in duplicate_issues),
     )
 
+    limited_must_fix, limited_suggestions = limit_prompt_audit_issues(
+        must_fix,
+        suggestions,
+        total_issues=len(must_fix) + len(suggestions),
+    )
+
     return PromptAuditResult(
         mode=mode,
         content_sha256=sha256(content.encode("utf-8")).hexdigest(),
@@ -449,7 +564,7 @@ def audit_prompt(
             ),
             sections=sections,
         ),
-        must_fix=sorted(must_fix, key=prompt_audit_issue_sort_key),
-        suggestions=sorted(suggestions, key=prompt_audit_issue_sort_key),
+        must_fix=limited_must_fix,
+        suggestions=limited_suggestions,
         passed_checks=passed_checks,
     )

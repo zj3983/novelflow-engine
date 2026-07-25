@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import NoReturn
+from typing import Annotated, NoReturn
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,7 +38,10 @@ class PromptAuditRequest(_StrictPromptAuditRequest):
     mode: str
     content: str
     template_key: str = Field(default="", max_length=200)
-    required_variables: list[str] = Field(default_factory=list, max_length=200)
+    required_variables: list[Annotated[str, Field(max_length=200)]] = Field(
+        default_factory=list,
+        max_length=200,
+    )
 
 
 class DeepPromptAuditRequest(PromptAuditRequest):
