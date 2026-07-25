@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
+  auditPrompt,
+  deepAuditPrompt,
   fetchProjectPromptCall,
   fetchProjectPromptCalls,
+  type DeepPromptAuditResult,
+  type PromptAuditResult,
   type PromptCallDetail,
   type PromptCallSummary,
 } from "../../lib/api";
+import { PromptAuditPanel } from "./PromptAuditPanel";
 
 function callStatus(status: string): string {
   if (status === "succeeded") return "成功";
@@ -22,11 +27,35 @@ export function PromptCallsView({ projectId, chapterNumber }: { projectId: strin
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState("");
   const [error, setError] = useState("");
+  const [localAuditResult, setLocalAuditResult] = useState<PromptAuditResult | null>(null);
+  const [displayAuditResult, setDisplayAuditResult] = useState<PromptAuditResult | DeepPromptAuditResult | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState("");
+  const [deepLoading, setDeepLoading] = useState(false);
+  const [deepError, setDeepError] = useState("");
+  const detailRequestId = useRef(0);
+  const auditRequestId = useRef(0);
+  const deepRequestId = useRef(0);
+
+  function clearAuditState() {
+    auditRequestId.current += 1;
+    deepRequestId.current += 1;
+    setLocalAuditResult(null);
+    setDisplayAuditResult(null);
+    setAuditLoading(false);
+    setAuditError("");
+    setDeepLoading(false);
+    setDeepError("");
+  }
 
   useEffect(() => {
     let cancelled = false;
+    detailRequestId.current += 1;
+    clearAuditState();
     setLoading(true);
+    setCalls([]);
     setSelected(null);
+    setDetailLoading("");
     setError("");
     fetchProjectPromptCalls(projectId, chapterNumber)
       .then((response) => {
@@ -38,18 +67,90 @@ export function PromptCallsView({ projectId, chapterNumber }: { projectId: strin
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      detailRequestId.current += 1;
+      auditRequestId.current += 1;
+      deepRequestId.current += 1;
+    };
   }, [chapterNumber, projectId]);
 
   async function openCall(call: PromptCallSummary) {
+    const requestId = detailRequestId.current + 1;
+    detailRequestId.current = requestId;
+    clearAuditState();
+    setSelected(null);
     setDetailLoading(call.call_id);
     setError("");
     try {
-      setSelected(await fetchProjectPromptCall(projectId, call.call_id));
+      const result = await fetchProjectPromptCall(projectId, call.call_id);
+      if (requestId === detailRequestId.current) {
+        setSelected(result);
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (requestId === detailRequestId.current) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
-      setDetailLoading("");
+      if (requestId === detailRequestId.current) {
+        setDetailLoading("");
+      }
+    }
+  }
+
+  async function runAudit() {
+    if (!selected || auditLoading) return;
+    const requestContent = selected.user_prompt;
+    const requestId = auditRequestId.current + 1;
+    auditRequestId.current = requestId;
+    deepRequestId.current += 1;
+    setAuditLoading(true);
+    setAuditError("");
+    setDeepLoading(false);
+    setDeepError("");
+    setLocalAuditResult(null);
+    setDisplayAuditResult(null);
+    try {
+      const result = await auditPrompt({ mode: "final_call", content: requestContent });
+      if (requestId === auditRequestId.current) {
+        setLocalAuditResult(result);
+        setDisplayAuditResult(result);
+      }
+    } catch (reason) {
+      if (requestId === auditRequestId.current) {
+        setAuditError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (requestId === auditRequestId.current) {
+        setAuditLoading(false);
+      }
+    }
+  }
+
+  async function runDeepAudit() {
+    if (!selected || !localAuditResult || deepLoading) return;
+    const requestContent = selected.user_prompt;
+    const requestLocalResult = localAuditResult;
+    const requestId = deepRequestId.current + 1;
+    deepRequestId.current = requestId;
+    setDeepLoading(true);
+    setDeepError("");
+    try {
+      const result = await deepAuditPrompt(
+        { mode: "final_call", content: requestContent },
+        requestLocalResult,
+      );
+      if (requestId === deepRequestId.current) {
+        setDisplayAuditResult(result);
+      }
+    } catch (reason) {
+      if (requestId === deepRequestId.current) {
+        setDeepError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (requestId === deepRequestId.current) {
+        setDeepLoading(false);
+      }
     }
   }
 
@@ -100,9 +201,25 @@ export function PromptCallsView({ projectId, chapterNumber }: { projectId: strin
                 <pre className="ws-prompt-text">{selected.system_prompt}</pre>
               </details>
             ) : null}
-            <h3 className="ws-card__title">发给模型的完整提示词</h3>
+            <div className="ws-section-head">
+              <h3 className="ws-card__title">发给模型的完整提示词</h3>
+              <button className="ws-btn" type="button" disabled={auditLoading} onClick={() => void runAudit()}>
+                {auditLoading ? "检查中..." : "检查这次调用"}
+              </button>
+            </div>
             <pre className="ws-prompt-text">{selected.user_prompt}</pre>
             <p className="ws-card__hint">读取模块：{selected.module_keys?.join("、") || "未记录"}</p>
+            {auditLoading ? <p className="ws-card__hint" role="status">提示词检查中...</p> : null}
+            {auditError ? <p className="ws-inline-error" role="alert">检查失败：{auditError}</p> : null}
+            {displayAuditResult ? (
+              <PromptAuditPanel
+                result={displayAuditResult}
+                stale={false}
+                deepLoading={deepLoading}
+                deepError={deepError}
+                onDeepAudit={localAuditResult ? () => void runDeepAudit() : undefined}
+              />
+            ) : null}
           </>
         ) : (
           <p className="ws-card__hint">选择一条调用，查看当时真正发送给模型的完整内容。</p>

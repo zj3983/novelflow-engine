@@ -5,6 +5,10 @@ import { deepAuditPrompt, type DeepPromptAuditResult } from "../lib/api";
 const PROJECT_ID = "file:prompt-audit-fixture";
 const PROJECT_PATH = `/projects/${encodeURIComponent(PROJECT_ID)}/prompts`;
 const REQUIRED_VARIABLES = ["output_section", "chapter_direction"];
+const FIRST_CALL_PROMPT = "真实调用一的完整提示词";
+const SECOND_CALL_PROMPT = "真实调用二的完整提示词";
+const SYSTEM_ONLY_SECRET = "SYSTEM_ONLY_AUDIT_SECRET";
+const OUTPUT_ONLY_SECRET = "OUTPUT_ONLY_AUDIT_SECRET";
 
 const templatesResponse = {
   schema_version: "project-prompt-templates/v1",
@@ -80,6 +84,35 @@ const deepAuditResult = {
   },
 };
 
+const promptCallsResponse = {
+  schema_version: "prompt-call-list/v1",
+  project_id: PROJECT_ID,
+  chapter_number: 1,
+  calls: [
+    { call_id: "pc-audit", chapter_number: 1, stage: "正文写作", agent: "writer", attempt: 1, status: "succeeded", provider: "openai", model: "gpt-5-mini", prompt_chars: FIRST_CALL_PROMPT.length },
+    { call_id: "pc-second", chapter_number: 1, stage: "章节审稿", agent: "reviewer", attempt: 2, status: "succeeded", provider: "openai", model: "gpt-5-mini", prompt_chars: SECOND_CALL_PROMPT.length },
+  ],
+};
+
+const promptCallDetails = {
+  "pc-audit": {
+    ...promptCallsResponse.calls[0],
+    user_prompt: FIRST_CALL_PROMPT,
+    system_prompt: SYSTEM_ONLY_SECRET,
+    output_summary: OUTPUT_ONLY_SECRET,
+    module_keys: ["character_context"],
+    template_source: "global_default",
+  },
+  "pc-second": {
+    ...promptCallsResponse.calls[1],
+    user_prompt: SECOND_CALL_PROMPT,
+    system_prompt: "第二条调用的系统提示词",
+    output_summary: "第二条调用的模型输出",
+    module_keys: ["chapter_context"],
+    template_source: "project_override",
+  },
+};
+
 type AuditMockOptions = {
   auditStatus?: number;
   auditStarted?: () => void;
@@ -103,26 +136,30 @@ async function mockPromptAuditPage(page: Page, options: AuditMockOptions = {}) {
   const templatePutMethods: string[] = [];
 
   await page.route("**/prompt-audit/deep", async (route) => {
-    deepAuditBodies.push(route.request().postDataJSON());
+    const body = route.request().postDataJSON() as { mode?: string };
+    deepAuditBodies.push(body);
     deepStarted?.();
     await waitForDeep;
     await route.fulfill({
       status: deepStatus,
       contentType: "application/json",
       body: deepStatus === 200
-        ? JSON.stringify(deepAuditResult)
+        ? JSON.stringify({ ...deepAuditResult, mode: body.mode ?? deepAuditResult.mode })
         : JSON.stringify({ detail: "AI 服务暂时不可用" }),
     });
   });
 
   await page.route("**/prompt-audit", async (route) => {
-    auditBodies.push(route.request().postDataJSON());
+    const body = route.request().postDataJSON() as { mode?: string };
+    auditBodies.push(body);
     auditStarted?.();
     await waitForAudit;
     await route.fulfill({
       status: auditStatus,
       contentType: "application/json",
-      body: auditStatus === 200 ? JSON.stringify(auditResult) : JSON.stringify({ detail: "服务暂不可用" }),
+      body: auditStatus === 200
+        ? JSON.stringify({ ...auditResult, mode: body.mode ?? auditResult.mode })
+        : JSON.stringify({ detail: "服务暂不可用" }),
     });
   });
 
@@ -131,6 +168,15 @@ async function mockPromptAuditPage(page: Page, options: AuditMockOptions = {}) {
     const pathname = decodeURIComponent(new URL(request.url()).pathname);
     if (pathname.endsWith("/prompt-templates")) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(templatesResponse) });
+      return;
+    }
+    if (pathname.endsWith("/prompt-calls")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(promptCallsResponse) });
+      return;
+    }
+    const callId = pathname.match(/\/prompt-calls\/(pc-audit|pc-second)$/)?.[1] as keyof typeof promptCallDetails | undefined;
+    if (callId) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(promptCallDetails[callId]) });
       return;
     }
     if (pathname.includes("/prompt-templates/") && request.method() === "PUT") {
@@ -152,6 +198,12 @@ async function mockPromptAuditPage(page: Page, options: AuditMockOptions = {}) {
   });
 
   return { auditBodies, deepAuditBodies, templatePutMethods };
+}
+
+async function openRecordedCall(page: Page, callId = "pc-audit") {
+  await page.goto(`${PROJECT_PATH}?view=calls&chapter=1`);
+  await page.getByRole("button", { name: `查看调用 ${callId}` }).click();
+  await expect(page.getByText(promptCallDetails[callId as keyof typeof promptCallDetails].user_prompt, { exact: true })).toBeVisible();
 }
 
 test("deepAuditPrompt 仅序列化本地检查结果的白名单字段", async () => {
@@ -406,5 +458,115 @@ test("检查期间编辑会忽略延迟响应并立即结束检查状态", async
   const auditResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit"));
   releaseAudit();
   await auditResponse;
+  await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
+});
+
+test("真实调用仅检查 user_prompt，深度检查只在显式点击后运行", async ({ page }) => {
+  const api = await mockPromptAuditPage(page);
+
+  await openRecordedCall(page);
+  expect(api.auditBodies).toHaveLength(0);
+  expect(api.deepAuditBodies).toHaveLength(0);
+  await page.getByRole("button", { name: "检查这次调用" }).click();
+
+  await expect.poll(() => api.auditBodies).toEqual([{
+    mode: "final_call",
+    content: FIRST_CALL_PROMPT,
+  }]);
+  expect(JSON.stringify(api.auditBodies[0])).not.toContain(SYSTEM_ONLY_SECRET);
+  expect(JSON.stringify(api.auditBodies[0])).not.toContain(OUTPUT_ONLY_SECRET);
+  expect(api.deepAuditBodies).toHaveLength(0);
+  await expect(page.getByText("重复指令", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "AI 深度检查" })).toBeEnabled();
+
+  await page.getByRole("button", { name: "AI 深度检查" }).click();
+
+  await expect.poll(() => api.deepAuditBodies).toHaveLength(1);
+  expect(api.deepAuditBodies[0]).toEqual({
+    mode: "final_call",
+    content: FIRST_CALL_PROMPT,
+    local_result: { ...auditResult, mode: "final_call" },
+  });
+  expect((api.deepAuditBodies[0] as { local_result: Record<string, unknown> }).local_result).not.toHaveProperty("runtime");
+  await expect(page.getByText("语义焦点可更明确", { exact: true })).toBeVisible();
+  await expect(page.getByText(/openai \/ gpt-5-mini.*1\.25.*321/)).toBeVisible();
+});
+
+test("真实调用本地检查失败时保留调用详情和完整提示词", async ({ page }) => {
+  await mockPromptAuditPage(page, { auditStatus: 503 });
+
+  await openRecordedCall(page);
+  await page.getByRole("button", { name: "检查这次调用" }).click();
+
+  await expect(page.getByRole("alert").filter({ hasText: "检查失败：服务暂不可用" })).toBeVisible();
+  await expect(page.getByText(FIRST_CALL_PROMPT, { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /正文写作/ })).toBeVisible();
+});
+
+test("真实调用深度检查失败时保留本地诊断", async ({ page }) => {
+  const api = await mockPromptAuditPage(page, { deepStatus: 503 });
+
+  await openRecordedCall(page);
+  await page.getByRole("button", { name: "检查这次调用" }).click();
+  await page.getByRole("button", { name: "AI 深度检查" }).click();
+
+  await expect(page.getByRole("alert").filter({ hasText: "深度检查失败：AI 服务暂时不可用" })).toBeVisible();
+  await expect(page.getByText("重复指令", { exact: true })).toBeVisible();
+  await expect(page.getByText(FIRST_CALL_PROMPT, { exact: true })).toBeVisible();
+  expect(api.deepAuditBodies).toHaveLength(1);
+});
+
+test("切换真实调用会清空诊断并忽略旧调用的延迟本地结果", async ({ page }) => {
+  let releaseAudit!: () => void;
+  let markAuditStarted!: () => void;
+  const auditGate = new Promise<void>((resolve) => { releaseAudit = resolve; });
+  const auditStarted = new Promise<void>((resolve) => { markAuditStarted = resolve; });
+  await mockPromptAuditPage(page, { auditStarted: markAuditStarted, waitForAudit: auditGate });
+
+  await openRecordedCall(page);
+  await page.getByRole("button", { name: "检查这次调用" }).click();
+  await auditStarted;
+  await page.getByRole("button", { name: "查看调用 pc-second" }).click();
+
+  await expect(page.getByText(SECOND_CALL_PROMPT, { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "检查这次调用" })).toBeEnabled();
+  releaseAudit();
+  await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
+  await expect(page.getByText(FIRST_CALL_PROMPT, { exact: true })).toHaveCount(0);
+});
+
+test("切换真实调用会清空诊断并忽略旧调用的延迟深度结果", async ({ page }) => {
+  let releaseDeep!: () => void;
+  let markDeepStarted!: () => void;
+  const deepGate = new Promise<void>((resolve) => { releaseDeep = resolve; });
+  const deepStarted = new Promise<void>((resolve) => { markDeepStarted = resolve; });
+  await mockPromptAuditPage(page, { deepStarted: markDeepStarted, waitForDeep: deepGate });
+
+  await openRecordedCall(page);
+  await page.getByRole("button", { name: "检查这次调用" }).click();
+  await page.getByRole("button", { name: "AI 深度检查" }).click();
+  await deepStarted;
+  await page.getByRole("button", { name: "查看调用 pc-second" }).click();
+
+  await expect(page.getByText(SECOND_CALL_PROMPT, { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
+  releaseDeep();
+  await expect(page.getByText("语义焦点可更明确", { exact: true })).toHaveCount(0);
+});
+
+test("切换工作台视图会使真实调用的延迟检查失效", async ({ page }) => {
+  let releaseAudit!: () => void;
+  let markAuditStarted!: () => void;
+  const auditGate = new Promise<void>((resolve) => { releaseAudit = resolve; });
+  const auditStarted = new Promise<void>((resolve) => { markAuditStarted = resolve; });
+  await mockPromptAuditPage(page, { auditStarted: markAuditStarted, waitForAudit: auditGate });
+
+  await openRecordedCall(page);
+  await page.getByRole("button", { name: "检查这次调用" }).click();
+  await auditStarted;
+  await page.getByRole("tab", { name: "上下文模块" }).click();
+  await expect(page.getByRole("tab", { name: "上下文模块" })).toHaveAttribute("aria-selected", "true");
+  releaseAudit();
+  await page.getByRole("tab", { name: "实际调用" }).click();
   await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
 });
