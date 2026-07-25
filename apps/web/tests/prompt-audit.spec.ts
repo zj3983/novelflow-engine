@@ -17,6 +17,15 @@ const templatesResponse = {
       version: "sha256:template",
       source: "global_default",
     },
+    {
+      key: "reviewer",
+      title: "章节审稿",
+      stage: "review",
+      content: "检查章节质量\n{{output_section}}",
+      required_variables: ["output_section"],
+      version: "sha256:reviewer",
+      source: "global_default",
+    },
   ],
 };
 
@@ -48,12 +57,21 @@ const auditResult = {
   passed_checks: ["必需变量齐全", "未发现互相冲突的指令"],
 };
 
-async function mockPromptAuditPage(page: Page, auditStatus = 200) {
+type AuditMockOptions = {
+  auditStatus?: number;
+  auditStarted?: () => void;
+  waitForAudit?: Promise<void>;
+};
+
+async function mockPromptAuditPage(page: Page, options: AuditMockOptions = {}) {
+  const { auditStatus = 200, auditStarted, waitForAudit } = options;
   const auditBodies: unknown[] = [];
   const templatePutMethods: string[] = [];
 
   await page.route("**/prompt-audit", async (route) => {
     auditBodies.push(route.request().postDataJSON());
+    auditStarted?.();
+    await waitForAudit;
     await route.fulfill({
       status: auditStatus,
       contentType: "application/json",
@@ -115,7 +133,7 @@ test("检查当前未保存的模板并显示紧凑诊断", async ({ page }) => 
 });
 
 test("检查失败时保留未保存内容且不保存模板", async ({ page }) => {
-  const api = await mockPromptAuditPage(page, 503);
+  const api = await mockPromptAuditPage(page, { auditStatus: 503 });
   const editedContent = "尚未保存的正文\n{{output_section}}\n{{chapter_direction}}";
 
   await page.goto(PROJECT_PATH);
@@ -125,4 +143,24 @@ test("检查失败时保留未保存内容且不保存模板", async ({ page }) 
   await expect(page.getByRole("alert").filter({ hasText: "检查失败：" })).toBeVisible();
   await expect(page.getByLabel("原始模板")).toHaveValue(editedContent);
   expect(api.templatePutMethods).toHaveLength(0);
+});
+
+test("切换模板后忽略先前模板的延迟检查响应", async ({ page }) => {
+  let releaseAudit!: () => void;
+  let markAuditStarted!: () => void;
+  const auditGate = new Promise<void>((resolve) => { releaseAudit = resolve; });
+  const auditStarted = new Promise<void>((resolve) => { markAuditStarted = resolve; });
+  await mockPromptAuditPage(page, { auditStarted: markAuditStarted, waitForAudit: auditGate });
+
+  await page.goto(PROJECT_PATH);
+  await page.getByRole("button", { name: "检查提示词" }).click();
+  await auditStarted;
+  await page.getByRole("button", { name: /章节审稿/ }).click();
+
+  await expect(page.getByLabel("原始模板")).toHaveValue("检查章节质量\n{{output_section}}");
+  await expect(page.getByRole("button", { name: "检查提示词" })).toBeEnabled();
+  const auditResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/prompt-audit"));
+  releaseAudit();
+  await auditResponse;
+  await expect(page.getByRole("heading", { name: "提示词检查" })).toHaveCount(0);
 });

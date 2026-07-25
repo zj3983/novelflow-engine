@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   auditPrompt,
@@ -30,6 +30,7 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
   const [auditResult, setAuditResult] = useState<PromptAuditResult | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState("");
+  const auditRequestId = useRef(0);
 
   const selected = useMemo(
     () => templates.find((template) => template.key === selectedKey) ?? templates[0] ?? null,
@@ -37,6 +38,10 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
   );
 
   async function loadTemplates(preferredKey?: string) {
+    auditRequestId.current += 1;
+    setAuditResult(null);
+    setAuditError("");
+    setAuditLoading(false);
     setLoading(true);
     setError("");
     try {
@@ -59,30 +64,41 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
   }, [projectId]);
 
   function selectTemplate(template: PromptTemplateEntry) {
+    auditRequestId.current += 1;
     setSelectedKey(template.key);
     setContent(template.content);
     setMessage("");
     setError("");
     setAuditResult(null);
     setAuditError("");
+    setAuditLoading(false);
   }
 
   async function runAudit() {
     if (!selected) return;
+    const requestId = auditRequestId.current + 1;
+    auditRequestId.current = requestId;
     setAuditLoading(true);
     setAuditError("");
     setAuditResult(null);
     try {
-      setAuditResult(await auditPrompt({
+      const result = await auditPrompt({
         mode: "template",
         content,
         template_key: selected.key,
         required_variables: selected.required_variables,
-      }));
+      });
+      if (requestId === auditRequestId.current) {
+        setAuditResult(result);
+      }
     } catch (reason) {
-      setAuditError(reason instanceof Error ? reason.message : String(reason));
+      if (requestId === auditRequestId.current) {
+        setAuditError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
-      setAuditLoading(false);
+      if (requestId === auditRequestId.current) {
+        setAuditLoading(false);
+      }
     }
   }
 

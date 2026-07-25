@@ -1,12 +1,18 @@
-import type { PromptAuditIssue, PromptAuditResult } from "../../lib/api";
+import type { DeepPromptAuditResult, PromptAuditIssue, PromptAuditResult } from "../../lib/api";
 
 type PromptAuditPanelProps = {
-  result: PromptAuditResult;
+  result: PromptAuditResult | DeepPromptAuditResult;
   stale?: boolean;
   deepLoading?: boolean;
   deepError?: string;
   onDeepAudit?: () => void;
 };
+
+function hasRuntime(
+  result: PromptAuditResult | DeepPromptAuditResult,
+): result is DeepPromptAuditResult {
+  return "runtime" in result;
+}
 
 function IssueList({ issues, emptyText }: { issues: PromptAuditIssue[]; emptyText: string }) {
   if (!issues.length) {
@@ -40,15 +46,16 @@ export function PromptAuditPanel({
   onDeepAudit,
 }: PromptAuditPanelProps) {
   const { summary } = result;
+  const runtime = hasRuntime(result) ? result.runtime : null;
 
   return (
     <section className="ws-prompt-audit" aria-labelledby="prompt-audit-title">
       <div className="ws-section-head">
         <div>
           <h2 id="prompt-audit-title" className="ws-card__title">提示词检查</h2>
-          {result.runtime ? (
+          {runtime ? (
             <p className="ws-card__hint">
-              {result.runtime.provider} / {result.runtime.model} · {result.runtime.elapsed_seconds} 秒 · 输入 {result.runtime.prompt_characters} 字符
+              {runtime.provider} / {runtime.model} · {runtime.elapsed_seconds} 秒 · 输入 {runtime.prompt_characters} 字符
             </p>
           ) : null}
         </div>

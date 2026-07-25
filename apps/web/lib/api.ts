@@ -1160,12 +1160,17 @@ export type PromptAuditResult = {
   must_fix: PromptAuditIssue[];
   suggestions: PromptAuditIssue[];
   passed_checks: string[];
-  runtime?: {
-    provider: string;
-    model: string;
-    elapsed_seconds: number;
-    prompt_characters: number;
-  };
+};
+
+export type PromptAuditRuntime = {
+  provider: string;
+  model: string;
+  elapsed_seconds: number;
+  prompt_characters: number;
+};
+
+export type DeepPromptAuditResult = PromptAuditResult & {
+  runtime: PromptAuditRuntime;
 };
 
 export type PromptAuditRequest = {
@@ -2650,12 +2655,12 @@ export async function auditPrompt(payload: PromptAuditRequest): Promise<PromptAu
 export async function deepAuditPrompt(
   payload: PromptAuditRequest,
   localResult: PromptAuditResult,
-): Promise<PromptAuditResult> {
+): Promise<DeepPromptAuditResult> {
   return (await tryFetchJson(`${apiBase()}/prompt-audit/deep`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...payload, local_result: localResult }),
-  }, 360000)) as PromptAuditResult;
+  }, 360000)) as DeepPromptAuditResult;
 }
 
 export async function saveGlobalPromptTemplate(
