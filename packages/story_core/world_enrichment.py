@@ -14,7 +14,7 @@ from packages.story_core.genre_plugins import (
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.models import NovelProject
 from packages.story_core.runtime_config import resolve_stage_runtime
-from packages.story_core.web_game_economy import exchange_rules, market_rules
+from packages.story_core.web_game_economy import appraisal_rules, exchange_rules, market_rules
 
 
 class WorldEnrichmentError(RuntimeError):
@@ -1411,7 +1411,12 @@ def _merge_enrichment(project: NovelProject, parsed: dict[str, Any]) -> NovelPro
     plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
     for field in RULEBOOK_FIELDS:
         sources = (
-            (plugin_rulebook.get(field, []), incoming_world.get(field), current_world.get(field))
+            (
+                [*market_rules(), *appraisal_rules(), *exchange_rules()],
+                incoming_world.get(field),
+                current_world.get(field),
+                plugin_rulebook.get(field, []),
+            )
             if field == "economy_rules" and "game_webnovel" in plugin_ids
             else (incoming_world.get(field), current_world.get(field), plugin_rulebook.get(field, []))
         )

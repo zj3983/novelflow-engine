@@ -3,8 +3,8 @@ import json
 from apps.api.storage import _project_world_facts, _sync_project_character_profiles
 from packages.story_core.models import CharacterState, NovelProject, StoryState
 from packages.story_core.orchestrator import _normalize_event_plan, _review_chapter_body, _story_snapshot
-from packages.story_core.web_game_economy import exchange_rules, market_rules
-from packages.story_core.world_enrichment import _build_prompt, _merge_enrichment, _plugin_metadata
+from packages.story_core.web_game_economy import appraisal_rules, exchange_rules, market_rules
+from packages.story_core.world_enrichment import _build_prompt, _merge_enrichment
 
 
 def test_world_enrichment_adds_game_golden_three_chapters():
@@ -74,11 +74,7 @@ def test_game_economy_boundaries_survive_saturated_model_output():
     project = NovelProject(
         project_id="p-economy-saturated",
         title="Economy Saturated",
-        world_blueprint={
-            "genre_plugin_ids": ["game_webnovel"],
-            "living_world": {"economy": {"resource_flow": ["旧资源流"]}},
-            "economy_rules": ["旧经济规则"],
-        },
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
     )
     parsed = {
         "world_blueprint": {
@@ -90,12 +86,54 @@ def test_game_economy_boundaries_survive_saturated_model_output():
     enriched = _merge_enrichment(project, parsed)
     resource_flow = enriched.world_blueprint["living_world"]["economy"]["resource_flow"]
     economy_rules = enriched.world_blueprint["economy_rules"]
-    boundaries = [*market_rules(), *exchange_rules()]
-    _, plugin_rulebook = _plugin_metadata(project)
+    resource_boundaries = [*market_rules(), *exchange_rules()]
+    economy_boundaries = [*market_rules(), *appraisal_rules(), *exchange_rules()]
 
-    assert resource_flow == [*boundaries, *model_resource_flow[: 10 - len(boundaries)]]
-    assert economy_rules == plugin_rulebook["economy_rules"][:12]
-    assert all(rule in economy_rules[:9] for rule in boundaries)
+    assert resource_flow == [
+        *resource_boundaries,
+        *model_resource_flow[: 10 - len(resource_boundaries)],
+    ]
+    assert economy_rules == [
+        *economy_boundaries,
+        *model_economy_rules[: 12 - len(economy_boundaries)],
+    ]
+
+
+def test_game_economy_merge_keeps_model_and_old_project_specific_rules():
+    project = NovelProject(
+        project_id="p-game-economy-specific",
+        title="Game Economy Specific",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "living_world": {"economy": {"resource_flow": ["旧项目专属资源流"]}},
+            "economy_rules": ["旧项目专属兑换规则"],
+        },
+    )
+    parsed = {
+        "world_blueprint": {
+            "living_world": {"economy": {"resource_flow": ["模型专属资源流"]}},
+            "economy_rules": ["模型专属市场规则"],
+        }
+    }
+
+    enriched = _merge_enrichment(project, parsed)
+    resource_flow = enriched.world_blueprint["living_world"]["economy"]["resource_flow"]
+    economy_rules = enriched.world_blueprint["economy_rules"]
+    resource_boundaries = [*market_rules(), *exchange_rules()]
+    economy_boundaries = [*market_rules(), *appraisal_rules(), *exchange_rules()]
+
+    assert resource_flow[: len(resource_boundaries) + 2] == [
+        *resource_boundaries,
+        "模型专属资源流",
+        "旧项目专属资源流",
+    ]
+    assert economy_rules[: len(economy_boundaries) + 2] == [
+        *economy_boundaries,
+        "模型专属市场规则",
+        "旧项目专属兑换规则",
+    ]
+    assert len(resource_flow) == 10
+    assert len(economy_rules) == 12
 
 
 def test_non_game_economy_merge_keeps_model_then_old_data_priority():
