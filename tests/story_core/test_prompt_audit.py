@@ -3,6 +3,7 @@ from hashlib import sha256
 import pytest
 from pydantic import ValidationError
 
+import packages.story_core.prompt_audit as prompt_audit
 from packages.story_core.prompt_audit import (
     LONG_PROMPT_WARNING,
     PromptAuditIssue,
@@ -23,7 +24,10 @@ def test_template_audit_reports_missing_unknown_and_repeated_variables_in_stable
         "missing_required_variable",
         "unknown_template_variable",
     ]
-    assert [issue.code for issue in result.suggestions] == ["repeated_template_variable"]
+    assert [issue.code for issue in result.suggestions] == [
+        "duplicate_line",
+        "repeated_template_variable",
+    ]
     assert [issue.evidence for issue in result.must_fix] == [
         "{{chapter_direction}}",
         "{{unexpected}}",
@@ -36,13 +40,19 @@ def test_template_audit_reports_missing_unknown_and_repeated_variables_in_stable
         "在模板中补充必需占位符。",
         "移除该占位符，或将其声明为必需变量。",
     ]
-    assert result.suggestions[0].title == "模板变量重复"
-    assert result.suggestions[0].suggestion == "确认重复出现的占位符是否为有意设置。"
-    assert result.suggestions[0].evidence == "{{output_section}}"
+    repeated_variable = next(
+        issue for issue in result.suggestions if issue.code == "repeated_template_variable"
+    )
+    assert repeated_variable.title == "模板变量重复"
+    assert repeated_variable.suggestion == "确认重复出现的占位符是否为有意设置。"
+    assert repeated_variable.evidence == "{{output_section}}"
     assert result.summary.characters == len("{{output_section}}\n{{unexpected}}\n{{output_section}}")
     assert result.summary.lines == 3
-    assert result.summary.estimated_redundant_characters == 0
-    assert result.summary.estimated_reduction_percent == 0.0
+    assert result.summary.estimated_redundant_characters == len("{{output_section}}")
+    assert result.summary.estimated_reduction_percent == round(
+        len("{{output_section}}") * 100 / len("{{output_section}}\n{{unexpected}}\n{{output_section}}"),
+        1,
+    )
     assert result.summary.sections == []
     assert "模板变量完整且没有未知变量" not in result.passed_checks
 
@@ -173,7 +183,12 @@ def test_clean_template_records_variable_check_as_passed():
         required_variables=("chapter_direction",),
     )
 
-    assert result.passed_checks == ["模板变量完整且没有未知变量"]
+    assert result.passed_checks == [
+        "模板变量完整且没有未知变量",
+        "没有发现明确重复行",
+        "没有发现过大区块",
+        "没有发现明确冲突",
+    ]
 
 
 def test_prompt_audit_models_are_strict():
@@ -199,3 +214,153 @@ def test_prompt_audit_models_are_strict():
 def test_prompt_audit_section_rejects_string_numbers(arguments):
     with pytest.raises(ValidationError):
         PromptAuditSection(**arguments)
+
+
+@pytest.mark.parametrize(
+    ("line", "normalized"),
+    [
+        ("  -  对话必须   符合人物关系。 ", "对话必须 符合人物关系。"),
+        ("2) 对话必须符合人物关系。", "对话必须符合人物关系。"),
+        ("三、 对话必须符合人物关系。", "对话必须符合人物关系。"),
+        ("十. 对话必须符合人物关系。", "对话必须符合人物关系。"),
+    ],
+)
+def test_normalize_audit_line_removes_only_deterministic_list_syntax(line, normalized):
+    assert prompt_audit.normalize_audit_line(line) == normalized
+
+
+def test_duplicate_lines_report_only_later_exact_normalized_occurrences():
+    content = "\n".join(
+        [
+            "1. 对话必须符合人物关系。",
+            "2. 对话必须符合人物关系。",
+            "对话要符合当前场面的关系。",
+        ]
+    )
+
+    result = audit_prompt(mode="final_call", content=content)
+
+    duplicates = [issue for issue in result.suggestions if issue.code == "duplicate_line"]
+    assert len(duplicates) == 1
+    assert duplicates[0].location == "第2行"
+    assert duplicates[0].evidence == "2. 对话必须符合人物关系。"
+    assert duplicates[0].title == "发现明确重复行"
+    assert duplicates[0].suggestion == "删除或合并这条重复内容。"
+    assert duplicates[0].estimated_reduction_characters == len(
+        "2. 对话必须符合人物关系。"
+    )
+
+
+def test_short_lines_and_markdown_headings_are_not_duplicate_lines():
+    content = "短标题\n短标题\n# 这是一个足够长的Markdown标题\n# 这是一个足够长的Markdown标题"
+
+    result = audit_prompt(mode="template", content=content)
+
+    assert all(issue.code != "duplicate_line" for issue in result.suggestions)
+    assert "没有发现明确重复行" in result.passed_checks
+
+
+def test_markdown_sections_report_names_character_counts_and_percentages():
+    content = "序言\n# 角色\n甲乙\n## 规则\n丙丁丁"
+
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert [section.model_dump() for section in result.summary.sections] == [
+        {"title": "开头", "characters": len("序言\n"), "percent": 15.0},
+        {"title": "角色", "characters": len("甲乙\n"), "percent": 15.0},
+        {"title": "规则", "characters": len("丙丁丁"), "percent": 15.0},
+    ]
+
+
+def test_explicit_empty_markdown_section_is_reported_but_empty_opening_is_not():
+    result = audit_prompt(mode="final_call", content="# 空区块\n## 下一节\n正文")
+
+    assert [section.model_dump() for section in result.summary.sections] == [
+        {"title": "空区块", "characters": 0, "percent": 0.0},
+        {"title": "下一节", "characters": 2, "percent": 13.3},
+    ]
+
+
+def test_oversized_section_is_only_a_suggestion_and_boundaries_do_not_warn():
+    over_characters = audit_prompt(mode="final_call", content="# 大节\n" + "x" * 12_001)
+    over_percent = audit_prompt(
+        mode="final_call",
+        content="# 大节\n" + "x" * 46 + "\n# 小节\n" + "y" * 46,
+    )
+    at_character_boundary = audit_prompt(
+        mode="final_call",
+        content=(
+            "# 大节\n"
+            + "x" * 11_999
+            + "\n# 小节一\n"
+            + "y" * 10_000
+            + "\n# 小节二\n"
+            + "z" * 10_000
+        ),
+    )
+    at_percent_boundary = audit_prompt(
+        mode="final_call",
+        content="# A\n" + "x" * 44 + "\n# B\n" + "y" * 23 + "\n# C\n" + "z" * 19,
+    )
+
+    assert "oversized_section" in [issue.code for issue in over_characters.suggestions]
+    assert "oversized_section" in [issue.code for issue in over_percent.suggestions]
+    assert all(issue.code != "oversized_section" for issue in over_characters.must_fix)
+    assert all(
+        issue.code != "oversized_section"
+        for result in (at_character_boundary, at_percent_boundary)
+        for issue in result.suggestions
+    )
+
+
+def test_three_mechanical_conflicts_are_must_fix_items():
+    content = (
+        "只输出小说正文，同时最后输出分析报告。\n"
+        "采用第一人称，并且采用第三人称。\n"
+        "正文控制在1000-1200字，另要求2000至2500字。"
+    )
+
+    result = audit_prompt(mode="template", content=content)
+
+    assert [issue.code for issue in result.must_fix] == [
+        "conflicting_output_format",
+        "conflicting_viewpoint",
+        "conflicting_word_count",
+    ]
+    assert all(issue.title and issue.suggestion for issue in result.must_fix)
+    assert "没有发现明确冲突" not in result.passed_checks
+
+
+def test_negated_analysis_and_overlapping_word_ranges_do_not_conflict():
+    content = "只输出正文，不要输出分析报告。字数为1000到2000字，也可1500—2500字。"
+
+    result = audit_prompt(mode="final_call", content=content)
+
+    assert result.must_fix == []
+    assert "没有发现明确冲突" in result.passed_checks
+
+
+def test_reversed_disjoint_word_ranges_are_normalized_before_comparison():
+    result = audit_prompt(
+        mode="final_call",
+        content="正文要求1200~1000字，另一处要求2500至2000字。",
+    )
+
+    assert [issue.code for issue in result.must_fix] == ["conflicting_word_count"]
+
+
+def test_redundant_summary_and_issue_sorting_are_stable():
+    repeated = "这是一条足够长并且会被重复的明确规则。"
+    content = "\n".join([repeated, repeated, repeated])
+
+    first = audit_prompt(mode="final_call", content=content)
+    second = audit_prompt(mode="final_call", content=content)
+
+    duplicates = [issue for issue in first.suggestions if issue.code == "duplicate_line"]
+    expected_redundant = len(repeated) * 2
+    assert [issue.location for issue in duplicates] == ["第2行", "第3行"]
+    assert first.summary.estimated_redundant_characters == expected_redundant
+    assert first.summary.estimated_reduction_percent == round(
+        expected_redundant * 100 / len(content), 1
+    )
+    assert first.model_dump() == second.model_dump()
