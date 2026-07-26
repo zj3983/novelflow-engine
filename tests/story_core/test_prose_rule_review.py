@@ -86,6 +86,32 @@ def test_review_does_not_treat_another_characters_gaze_as_a_ui_subject():
 
 
 @pytest.mark.parametrize(
+    ("body", "expected_hit"),
+    [
+        ("周满站在前置条件旁边，等林照开口。", "站在前置条件旁边"),
+        ("周满站在前置条件边上。", "站在前置条件边上"),
+        ("周满站在前置条件边上的台阶。", "站在前置条件边上"),
+    ],
+)
+def test_review_flags_compound_planning_meta_locations(body, expected_hit):
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is False
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert any(expected_hit in issue for issue in review["issues"])
+
+
+@pytest.mark.parametrize("continuation", ["时", "后", "前", "之后", "以前", "的时候"])
+def test_review_flags_planning_meta_actions_with_sentence_continuations(continuation):
+    phrase = f"推开前置条件{continuation}"
+    review = review_diagnostic_terms_in_body(f"周满{phrase}，林照退了一步。")
+
+    assert review["pass"] is False
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert any(phrase in issue for issue in review["issues"])
+
+
+@pytest.mark.parametrize(
     "phrase",
     [
         "站在“前置条件”边",

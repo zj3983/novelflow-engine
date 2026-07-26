@@ -81,20 +81,24 @@ _PLANNING_META_TERM_PATTERN = (
     r"\s*[”’」』》】）\"]?"
 )
 _PLANNING_META_RIGHT_BOUNDARY_PATTERN = r"(?=$|[\s，。！？；：、,.!?;:])"
+_PLANNING_META_LOCATION_SUFFIX_PATTERN = r"(?:旁边|边上|边|旁|前|后)"
+_PLANNING_META_ACTION_CONTINUATION_PATTERN = r"(?:之后|以前|的时候|时|后|前)?"
 _PLANNING_META_ENTITY_PATTERNS = (
     re.compile(
         rf"(?:站在|走到|退到|靠在|停在|蹲在)(?:了)?\s*"
-        rf"{_PLANNING_META_TERM_PATTERN}(?:边|旁|前|后)?"
-        rf"{_PLANNING_META_RIGHT_BOUNDARY_PATTERN}"
+        rf"{_PLANNING_META_TERM_PATTERN}"
+        rf"(?:{_PLANNING_META_LOCATION_SUFFIX_PATTERN}|{_PLANNING_META_RIGHT_BOUNDARY_PATTERN})"
     ),
     re.compile(
         rf"(?:迈出|推开|关上)(?:了)?\s*"
         rf"{_PLANNING_META_TERM_PATTERN}"
+        rf"{_PLANNING_META_ACTION_CONTINUATION_PATTERN}"
         rf"{_PLANNING_META_RIGHT_BOUNDARY_PATTERN}"
     ),
     re.compile(
         rf"(?:把|将)\s*{_PLANNING_META_TERM_PATTERN}"
         rf"(?:迈出|推开|关上)(?:了)?"
+        rf"{_PLANNING_META_ACTION_CONTINUATION_PATTERN}"
         rf"{_PLANNING_META_RIGHT_BOUNDARY_PATTERN}"
     ),
 )
