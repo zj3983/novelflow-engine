@@ -42,6 +42,7 @@ class NovelTypeWriteRequest(BaseModel):
     rulebook: NovelTypeRulebookRequest = Field(default_factory=NovelTypeRulebookRequest)
     quality_checks: list[str] = Field(default_factory=list)
     trope_templates: list[dict[str, Any]] = Field(default_factory=list)
+    power_system_template: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("name", "description", mode="before")
     @classmethod

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.main import app
 from apps.api.routes import stories as story_routes
+from apps.api.routes.novel_types import NovelTypeWriteRequest
 from apps.api.storage import SQLiteStoryStore
 from packages.story_core.models import NovelProject
 
@@ -108,8 +109,33 @@ def test_get_returns_complete_types_in_stable_order(novel_type_api):
         "rulebook",
         "quality_checks",
         "trope_templates",
+        "power_system_template",
         "builtin",
     }
+
+
+def test_get_power_template_round_trips_through_put(novel_type_api):
+    client, _, _ = novel_type_api
+    original = next(
+        item for item in client.get("/novel-types").json() if item["id"] == "xuanhuan"
+    )
+    expected_template = original["power_system_template"]
+    original.pop("builtin")
+
+    updated = client.put("/novel-types/xuanhuan", json=original)
+
+    assert expected_template
+    assert updated.status_code == 200
+    assert updated.json()["power_system_template"] == expected_template
+
+
+def test_write_request_power_template_defaults_are_independent():
+    first = NovelTypeWriteRequest(id="first", name="First")
+    second = NovelTypeWriteRequest(id="second", name="Second")
+
+    first.power_system_template["marker"] = True
+
+    assert second.power_system_template == {}
 
 
 def test_create_edit_and_delete_unused_custom_type(novel_type_api):
