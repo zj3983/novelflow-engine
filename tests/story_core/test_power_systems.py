@@ -450,6 +450,61 @@ def test_normalization_preserves_bounded_extended_path_schema() -> None:
     assert normalized["transfer_task"] == "完成 转职试炼"
 
 
+def test_normalization_is_idempotent_at_truncated_whitespace_boundaries() -> None:
+    boundary = "界" * 239 + " \t" + "尾部"
+    spec = {
+        "name": boundary,
+        **{
+            field: [boundary]
+            for field in (
+                "origin", "skills", "equipment", "resources", "advancement",
+                "costs", "counters", "boundaries", "social_impact", "visibility",
+                "continuity_ledger",
+            )
+        },
+        "attributes": [{"name": boundary, "effect": boundary}],
+        "paths": [
+            {
+                field: [boundary]
+                if field in {
+                    "core_attributes", "weapons", "armor", "strengths", "weaknesses",
+                    "skill_categories", "branches", "advancement",
+                }
+                else boundary
+                for field in (
+                    "name", "role", "core_resource", "core_attributes", "weapons", "armor",
+                    "combat_loop", "strengths", "weaknesses", "skill_categories", "branches",
+                    "transfer_task", "advancement",
+                )
+            }
+        ],
+        "stages": [
+            {field: boundary for field in ("name", "entry", "change", "failure")}
+        ],
+    }
+
+    first = normalize_power_system_spec(spec)
+    second = normalize_power_system_spec(first)
+
+    assert second == first
+    assert not first["name"].endswith(" ")
+
+
+def test_normalization_bounds_raw_string_examination() -> None:
+    class CountingString(str):
+        examined = 0
+
+        def __iter__(self):
+            for character in super().__iter__():
+                self.examined += 1
+                yield character
+
+    hostile = CountingString(" " * 5_000 + "x" * 10_000_000)
+
+    assert normalize_power_system_spec({"name": hostile}) == {}
+    assert 0 < hostile.examined <= 4_096
+
+
 def test_normalization_bounds_large_mapping_iteration() -> None:
     class CountingMapping(dict):
         yielded = 0
@@ -522,6 +577,34 @@ def test_legacy_summary_redacts_currency_units_before_amounts() -> None:
     assert "Lv.30" in joined
     for exact in ("金币100", "银币50", "铜币1,000", "元100", "人民币100"):
         assert exact not in joined
+
+
+def test_legacy_summary_preserves_lexical_yuan_and_mechanics_percentages() -> None:
+    spec = complete_spec()
+    spec["origin"] = ["元婴境消耗100元婴丹，暴击率提高20%，抗性20%，支付100元。"]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert "元婴境" in joined
+    assert "100元婴丹" in joined
+    assert "暴击率提高20%" in joined
+    assert "抗性20%" in joined
+    assert "支付100元" not in joined
+
+
+@pytest.mark.parametrize(
+    "term",
+    ["手续费", "费率", "税", "佣金", "折扣", "利息", "收益率", "提现", "到账", "交易费"],
+)
+def test_legacy_summary_redacts_percentages_only_in_financial_context(term: str) -> None:
+    spec = complete_spec()
+    spec["origin"] = [f"暴击率提高20%，{term}12.5%，抗性20%"]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert f"{term}12.5%" not in joined
+    assert "暴击率提高20%" in joined
+    assert "抗性20%" in joined
 
 
 def test_legacy_summary_never_invents_absent_sections_and_handles_hostile_input() -> None:

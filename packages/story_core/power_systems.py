@@ -71,6 +71,7 @@ PATH_TEXT_LIST_FIELDS = (
 )
 
 _MAX_STRING = 240
+_MAX_RAW_TEXT_SCAN = 4_096
 _MAX_LIST = 64
 _MAX_NUMBER = 1_000_000
 _MAPPING_SCAN_CAP = 64
@@ -144,14 +145,34 @@ def _has_key(value: Any, key: str) -> bool:
 
 
 def _text(value: Any, limit: int = _MAX_STRING) -> str:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or limit <= 0:
         return ""
-    cleaned = "".join(
-        " " if character.isspace() else character if character.isprintable() else ""
-        for character in value
-    )
-    compact = " ".join(cleaned.split())
-    return compact[:limit]
+    compact: list[str] = []
+    emitted = 0
+    pending_space = False
+    try:
+        characters = islice(value, _MAX_RAW_TEXT_SCAN)
+        for character in characters:
+            if not isinstance(character, str) or len(character) != 1:
+                continue
+            if str.isspace(character):
+                pending_space = bool(compact)
+                continue
+            if not str.isprintable(character):
+                continue
+            if pending_space and emitted + 1 < limit:
+                compact.append(" ")
+                emitted += 1
+            pending_space = False
+            if emitted >= limit:
+                break
+            compact.append(character)
+            emitted += 1
+            if emitted >= limit:
+                break
+    except Exception:
+        pass
+    return "".join(compact).rstrip()
 
 
 def _items(value: Any) -> list[Any]:
@@ -478,7 +499,8 @@ def validate_power_system_spec(
 
 
 _FORMATTED_NUMBER = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
-_CURRENCY_UNIT = r"(?:元|金币|银币|铜币|块钱|美元|人民币)"
+_CJK_LETTER = r"\u3400-\u9fff"
+_CURRENCY_UNIT = rf"(?:金币|银币|铜币|块钱|美元|人民币|元(?![{_CJK_LETTER}]))"
 _CURRENCY_AMOUNT = re.compile(
     rf"(?:"
     rf"(?:RMB|CNY|[¥￥$])\s*{_FORMATTED_NUMBER}\s*[百千万亿]?\s*(?:{_CURRENCY_UNIT})?"
@@ -488,10 +510,41 @@ _CURRENCY_AMOUNT = re.compile(
     re.IGNORECASE,
 )
 _PERCENTAGE = re.compile(rf"{_FORMATTED_NUMBER}\s*[%％]")
+_FINANCIAL_PERCENTAGE_TERMS = (
+    "手续费",
+    "费率",
+    "税",
+    "佣金",
+    "折扣",
+    "利息",
+    "收益率",
+    "提现",
+    "到账",
+    "交易费",
+)
+_CLAUSE_BOUNDARIES = "，,。；;！？!?\n"
+
+
+def _redact_financial_percentages(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        left = max(value.rfind(boundary, 0, match.start()) for boundary in _CLAUSE_BOUNDARIES)
+        right_candidates = [
+            position
+            for boundary in _CLAUSE_BOUNDARIES
+            if (position := value.find(boundary, match.end())) >= 0
+        ]
+        right = min(right_candidates, default=len(value))
+        clause = value[left + 1 : right]
+        if any(term in clause for term in _FINANCIAL_PERCENTAGE_TERMS):
+            return ""
+        return match.group(0)
+
+    return _PERCENTAGE.sub(replace, value)
 
 
 def _redact_exact_money(value: str) -> str:
-    return _text(_PERCENTAGE.sub("", _CURRENCY_AMOUNT.sub("", value)))
+    without_currency = _CURRENCY_AMOUNT.sub("", value)
+    return _text(_redact_financial_percentages(without_currency))
 
 
 def legacy_power_summary(spec: Any) -> list[str]:
