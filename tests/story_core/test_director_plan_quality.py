@@ -26,6 +26,24 @@ def _story() -> StoryState:
     )
 
 
+def _complete_plan(ordered_actions: list[object]) -> dict:
+    return {
+        "character_moves": {},
+        "event_plan": {
+            "ordered_actions": ordered_actions,
+            "chapter_satisfaction": {
+                "core_event": "林照拿到祖祠账册",
+                "obstacle": "赵管事提前锁住侧门",
+                "visible_payoff": "账册当场打开",
+                "cost": "赵管事记住林照的查账意图",
+                "state_change": "林照确认香灰被人调换",
+                "next_hook": "账册里少了三个名字",
+            },
+            "chapter_end_hook": {"type": "悬念钩", "strength": "medium", "content": "缺失名单指向内院"},
+        },
+    }
+
+
 def test_director_quality_gate_rejects_missing_contract_and_continuity_errors():
     plan = {
         "character_moves": [
@@ -189,7 +207,7 @@ def test_text_ordered_action_infers_known_real_name_and_triggers_game_id_guard()
     assert [item["name"] for item in event_plan["ordered_actions"]] == ["苏叶", "夜烬"]
 
 
-def test_text_ordered_actions_use_earliest_known_name_and_leave_unknown_text_unnamed():
+def test_text_ordered_actions_only_infer_known_actor_at_sentence_start():
     story = StoryState(
         story_id="ordered-name-inference",
         outline="林照与周满查祖祠。",
@@ -202,7 +220,14 @@ def test_text_ordered_actions_use_earliest_known_name_and_leave_unknown_text_unn
     )
 
     event_plan = _normalize_event_plan(
-        {"ordered_actions": ["章首从青烟写起", "林照询问周满"]},
+        {
+            "ordered_actions": [
+                "章首从青烟写起",
+                "林照询问周满",
+                "路人拦住林照",
+                "章首从青烟写起，林照推开侧门",
+            ]
+        },
         chapter_number=2,
         story=story,
     )
@@ -210,7 +235,55 @@ def test_text_ordered_actions_use_earliest_known_name_and_leave_unknown_text_unn
     assert [(item["name"], item["action"]) for item in event_plan["ordered_actions"]] == [
         ("", "章首从青烟写起"),
         ("林照", "林照询问周满"),
+        ("", "路人拦住林照"),
+        ("", "章首从青烟写起，林照推开侧门"),
     ]
+
+
+def test_game_quality_gate_scans_reality_name_without_treating_target_as_actor():
+    plan = _complete_plan(["灰狼扑向苏叶"])
+
+    issues = _director_plan_quality_issues(_story(), plan)
+    event_plan = _normalize_event_plan(plan["event_plan"], chapter_number=2, story=_story())
+
+    assert event_plan["ordered_actions"][0]["name"] == ""
+    assert any("苏叶" in issue and "夜烬" in issue for issue in issues)
+
+
+def test_quality_gate_rejects_placeholder_actors_at_text_action_start():
+    story = StoryState(
+        story_id="placeholder-text-actors",
+        outline="林照查祖祠。",
+        genre="玄幻",
+        style="白描",
+        characters=[CharacterState(name="林照", role="主角")],
+    )
+
+    for action, actor in (("路人拦住林照", "路人"), ("收购方上门压价", "收购方")):
+        issues = _director_plan_quality_issues(story, _complete_plan([action]))
+
+        assert any(actor in issue and "占位" in issue for issue in issues), action
+
+    conflicting_issues = _director_plan_quality_issues(
+        story,
+        _complete_plan([{"name": "林照", "action": "路人拦住林照"}]),
+    )
+
+    assert any("角色“路人”" in issue for issue in conflicting_issues)
+
+
+def test_quality_gate_keeps_concrete_xuanhuan_text_actions_valid():
+    story = StoryState(
+        story_id="xuanhuan-text-actions",
+        outline="林照与周满查祖祠。",
+        genre="玄幻",
+        style="白描",
+        characters=[CharacterState(name="林照", role="主角"), CharacterState(name="周满", role="配角")],
+    )
+
+    issues = _director_plan_quality_issues(story, _complete_plan(["林照询问周满", "周满检查香灰"]))
+
+    assert issues == []
 
 
 def test_writer_event_plan_drops_missing_null_and_blank_actions_from_mixed_input():

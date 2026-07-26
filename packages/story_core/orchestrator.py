@@ -2276,14 +2276,14 @@ def _normalize_ordered_actions(
     for move in moves:
         if str(move.get("name") or "").strip():
             continue
-        action = str(move.get("action") or "")
+        action = str(move.get("action") or "").lstrip()
         matches = [
-            (position, -len(name), order, name)
+            (-len(name), order, name)
             for order, name in enumerate(known_names)
-            if (position := action.find(name)) >= 0
+            if action.startswith(name)
         ]
         if matches:
-            move["name"] = min(matches)[3]
+            move["name"] = min(matches)[2]
     return moves
 
 
@@ -2381,9 +2381,10 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     lead = next((character for character in story.characters if character.role in {"主角", "protagonist"}), None)
     if is_game_story(story) and lead and lead.game_id:
         for move in moves:
-            if str(move.get("name") or "").strip() != lead.name:
-                continue
+            name = str(move.get("name") or "").strip()
             action_text = " ".join(str(move.get(key) or "") for key in ("goal", "action"))
+            if name != lead.name and lead.name not in action_text:
+                continue
             if not any(marker in action_text for marker in ("现实", "下线", "手机", "银行卡", "房租")):
                 issues.append(f"游戏内行动使用了现实姓名“{lead.name}”，应使用游戏ID“{lead.game_id}”。")
                 break
@@ -2391,8 +2392,11 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     generic_suffixes = ("收购方", "管理员", "工作人员", "路人", "玩家甲", "店员", "商人玩家")
     for move in moves:
         name = str(move.get("name") or "").strip()
-        if name and name.endswith(generic_suffixes):
-            issues.append(f"角色“{name}”是岗位或占位称呼；删除该角色，或先使用已有具名角色卡。")
+        action = str(move.get("action") or "").lstrip()
+        text_actor = next((actor for actor in generic_suffixes if action.startswith(actor)), "")
+        placeholder_actor = name if name.endswith(generic_suffixes) else text_actor
+        if placeholder_actor:
+            issues.append(f"角色“{placeholder_actor}”是岗位或占位称呼；删除该角色，或先使用已有具名角色卡。")
             break
 
     known_text = "\n".join(
