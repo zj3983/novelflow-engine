@@ -194,34 +194,138 @@ _CONTRADICTORY_LEVEL_TWENTY = re.compile(
     r"第二次\s*(?:职业)?(?:转职|晋升|进阶)|再次\s*(?:职业)?转职|二次\s*(?:职业)?转职|二转|第二职业\s*(?:晋升|进阶)"
 )
 _LEVEL_TEN = re.compile(r"(?i)(?:lv\.?\s*10|10\s*级)")
+_OUTLINE_NARRATIVE_FIELDS = frozenset(
+    {
+        "action",
+        "beat",
+        "close_route",
+        "continue_route",
+        "current_strategy",
+        "description",
+        "end_state",
+        "ending_contract",
+        "ending_direction",
+        "ending_hook",
+        "game_line_payoff",
+        "goal",
+        "growth_path",
+        "key_event",
+        "main_conflict",
+        "obstacle",
+        "payoff",
+        "progression",
+        "progression_path",
+        "protagonist_goal",
+        "reality_line_payoff",
+        "stage_antagonist",
+        "story",
+        "summary",
+        "synopsis",
+        "title",
+        "turn",
+    }
+)
+_OUTLINE_DICT_CONTAINERS = frozenset(
+    {"extension_gate", "overall", "outline", "progression", "summary"}
+)
+_OUTLINE_LIST_CONTAINERS = frozenset(
+    {
+        "arc_beats",
+        "arcs",
+        "beats",
+        "chapter_beats",
+        "chapters",
+        "events",
+        "key_events",
+        "plot_beats",
+        "progression_beats",
+        "summaries",
+    }
+)
+_OUTLINE_EXCLUDED_KEY_PARTS = (
+    "note",
+    "author",
+    "dialogue",
+    "quote",
+    "excerpt",
+    "instruction",
+    "constraint",
+    "rule",
+    "raw",
+    "source",
+)
 
 
-def _clean_outline_value(value: Any) -> tuple[Any, bool]:
-    if isinstance(value, dict):
-        changed = False
-        result = {}
-        for key, item in value.items():
-            cleaned, item_changed = _clean_outline_value(item)
-            result[key] = cleaned
-            changed = changed or item_changed
-        return result, changed
-    if isinstance(value, list):
-        changed = False
-        result = []
-        for item in value:
-            cleaned, item_changed = _clean_outline_value(item)
-            result.append(cleaned)
-            changed = changed or item_changed
-        return result, changed
-    if not isinstance(value, str):
-        return value, False
-
+def _clean_outline_text(value: str) -> tuple[str, bool]:
     cleaned = value
     if _LEVEL_TWENTY.search(cleaned):
         cleaned = _CONTRADICTORY_LEVEL_TWENTY.sub("职业专精", cleaned)
     if _LEVEL_TEN.search(cleaned) and "正式法系职业" in cleaned:
         cleaned = cleaned.replace("正式法系职业", "元素法师")
     return cleaned, cleaned != value
+
+
+def _outline_key(key: Any) -> str:
+    return str(key).strip().casefold()
+
+
+def _outline_key_is_excluded(key: str) -> bool:
+    return any(part in key for part in _OUTLINE_EXCLUDED_KEY_PARTS)
+
+
+def _clean_outline_list(value: list[Any]) -> tuple[list[Any], bool]:
+    result: list[Any] = []
+    changed = False
+    for item in value:
+        if isinstance(item, dict):
+            cleaned, item_changed = _clean_outline_mapping(item)
+        elif isinstance(item, list):
+            cleaned, item_changed = _clean_outline_list(item)
+        elif isinstance(item, str):
+            cleaned, item_changed = _clean_outline_text(item)
+        else:
+            cleaned, item_changed = item, False
+        result.append(cleaned)
+        changed = changed or item_changed
+    return result, changed
+
+
+def _clean_outline_mapping(value: dict[Any, Any]) -> tuple[dict[Any, Any], bool]:
+    result: dict[Any, Any] = {}
+    changed = False
+    for key, item in value.items():
+        normalized_key = _outline_key(key)
+        item_changed = False
+        if _outline_key_is_excluded(normalized_key):
+            cleaned = item
+        elif isinstance(item, str) and normalized_key in _OUTLINE_NARRATIVE_FIELDS:
+            cleaned, item_changed = _clean_outline_text(item)
+        elif isinstance(item, dict) and normalized_key in _OUTLINE_DICT_CONTAINERS:
+            cleaned, item_changed = _clean_outline_mapping(item)
+        elif isinstance(item, list) and normalized_key in _OUTLINE_LIST_CONTAINERS:
+            cleaned, item_changed = _clean_outline_list(item)
+        else:
+            cleaned = item
+        result[key] = cleaned
+        changed = changed or item_changed
+    return result, changed
+
+
+def _clean_outline_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, dict):
+        return _clean_outline_mapping(value)
+    if isinstance(value, list):
+        result: list[Any] = []
+        changed = False
+        for item in value:
+            if isinstance(item, dict):
+                cleaned, item_changed = _clean_outline_mapping(item)
+            else:
+                cleaned, item_changed = item, False
+            result.append(cleaned)
+            changed = changed or item_changed
+        return result, changed
+    return value, False
 
 
 def _read_json(path: Path) -> tuple[Any, bytes]:
@@ -261,19 +365,60 @@ def _is_managed_markdown(path: Path) -> bool:
         return False
 
 
-def _atomic_write(path: Path, content: bytes) -> None:
+def _stage_write(path: Path, content: bytes) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        return temporary
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _transactional_write(writes: list[tuple[Path, bytes]]) -> None:
+    originals = {
+        path: (path.exists(), path.read_bytes() if path.exists() else b"")
+        for path, _ in writes
+    }
+    staged: list[tuple[Path, Path]] = []
+    replaced: list[Path] = []
+    try:
+        for path, content in writes:
+            staged.append((path, _stage_write(path, content)))
+        try:
+            for path, temporary in staged:
+                os.replace(temporary, path)
+                replaced.append(path)
+        except Exception as commit_error:
+            rollback_errors: list[Exception] = []
+            for path in reversed(replaced):
+                existed, original = originals[path]
+                try:
+                    if existed:
+                        restoration = _stage_write(path, original)
+                        try:
+                            os.replace(restoration, path)
+                        finally:
+                            restoration.unlink(missing_ok=True)
+                    else:
+                        path.unlink(missing_ok=True)
+                except Exception as rollback_error:
+                    rollback_errors.append(rollback_error)
+            if rollback_errors:
+                raise RuntimeError(
+                    f"transaction failed and rollback failed: {rollback_errors!r}"
+                ) from commit_error
+            raise
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        for _, temporary in staged:
+            temporary.unlink(missing_ok=True)
 
 
 def _backup(metadata_dir: Path, project_bytes: bytes, outline_bytes: bytes) -> Path:
@@ -348,12 +493,14 @@ def upgrade_project(
         if backup:
             backup_path = _backup(metadata, project_bytes, outline_bytes)
             result["backup_path"] = str(backup_path)
+        writes: list[tuple[Path, bytes]] = []
         if project_changed:
-            _atomic_write(project_path, expected_project_bytes)
+            writes.append((project_path, expected_project_bytes))
         if outline_file_changed:
-            _atomic_write(outline_path, expected_outline_bytes)
+            writes.append((outline_path, expected_outline_bytes))
         if power_changed:
-            _atomic_write(power_path, expected_power)
+            writes.append((power_path, expected_power))
+        _transactional_write(writes)
         return result
     except Exception as exc:
         return {

@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+import scripts.upgrade_project_power_system as migration
 from packages.story_core.power_systems import (
     legacy_power_summary,
     validate_power_system_spec,
@@ -260,6 +261,88 @@ def test_outline_without_targeted_conflicts_keeps_exact_bytes(project_dir: Path)
     assert result["valid"] is True
     assert outline_path.read_bytes() == original
     assert not any(change.startswith("outline.json:") for change in result["changes"])
+
+
+def test_outline_cleanup_only_edits_allowlisted_narrative_fields(project_dir: Path) -> None:
+    outline_path = project_dir / ".webnovel" / "outline.json"
+    outline = _load(outline_path)
+    protected = "Lv.20第二次职业进阶，Lv.10正式法系职业"
+    outline.update(
+        {
+            "author_note": protected,
+            "dialogue": protected,
+            "quote_excerpt": protected,
+            "negative_instruction": f"不要改写：{protected}",
+            "world_rule": protected,
+            "raw_source": protected,
+            "metadata": {"text": protected},
+            "beats": [
+                "Lv.20第二次职业进阶",
+                {"summary": "主角在Lv.10成为正式法系职业"},
+            ],
+            "key_events": [
+                {"description": "Lv.20再次转职被改为既有职业强化"},
+            ],
+        }
+    )
+    outline_path.write_bytes(_json_bytes(outline))
+
+    result = upgrade_project(project_dir)
+    migrated = _load(outline_path)
+
+    assert result["valid"] is True
+    assert migrated["beats"] == [
+        "Lv.20职业专精",
+        {"summary": "主角在Lv.10成为元素法师"},
+    ]
+    assert migrated["key_events"][0]["description"] == "Lv.20职业专精被改为既有职业强化"
+    for key in (
+        "author_note",
+        "dialogue",
+        "quote_excerpt",
+        "negative_instruction",
+        "world_rule",
+        "raw_source",
+    ):
+        assert migrated[key] == outline[key]
+    assert migrated["metadata"] == outline["metadata"]
+
+
+def test_replacement_failure_rolls_back_every_target_and_cleans_temps(
+    project_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    targets = (
+        project_dir / ".webnovel" / "project.json",
+        project_dir / ".webnovel" / "outline.json",
+        project_dir / "设定集" / "力量体系.md",
+    )
+    before = {path: (path.exists(), path.read_bytes()) for path in targets}
+    real_replace = migration.os.replace
+    calls = 0
+
+    def fail_second_replace(source: str | Path, destination: str | Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert len(list(project_dir.rglob(".*.tmp"))) == len(targets)
+        if calls == 2:
+            raise OSError("injected second replacement failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(migration.os, "replace", fail_second_replace)
+
+    result = upgrade_project(project_dir, backup=False)
+
+    assert calls >= 3
+    assert result["changed"] is False
+    assert result["valid"] is False
+    assert result["backup_path"] is None
+    assert "injected second replacement failure" in result["changes"][0]
+    assert {
+        path: (path.exists(), path.read_bytes() if path.exists() else b"")
+        for path in targets
+    } == before
+    assert not list(project_dir.rglob(".*.tmp"))
 
 
 def test_malformed_json_is_invalid_and_atomic(project_dir: Path) -> None:
