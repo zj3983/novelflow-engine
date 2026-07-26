@@ -101,6 +101,61 @@ def test_cold_reader_review_resolves_genre_plugin_ids(
     assert excluded_advice not in revision_text
 
 
+def test_cold_reader_review_prefers_recognized_plugin_id_over_genre_alias():
+    review = review_cold_reader_experience(
+        "他停在原地。",
+        genre_context={"genre": "游戏", "genre_plugin_ids": ["xuanhuan"]},
+    )
+
+    revision_text = "\n".join(review["revision_plan"])
+    assert "人物处境" in revision_text
+    assert "现实期限" not in revision_text
+
+
+def test_cold_reader_review_does_not_infer_genre_from_notes():
+    review = review_cold_reader_experience(
+        "他停在原地。",
+        genre_context={"notes": ["fantasy"]},
+    )
+
+    revision_text = "\n".join(review["revision_plan"])
+    assert "人物目标" in revision_text
+    assert "人物处境" not in revision_text
+    assert "现实期限" not in revision_text
+
+
+def test_cold_reader_review_unknown_plugin_id_falls_back_to_generic_profile():
+    review = review_cold_reader_experience(
+        "他停在原地。",
+        genre_context={"genre_plugin_ids": ["custom_unknown"]},
+    )
+
+    revision_text = "\n".join(review["revision_plan"])
+    assert "人物目标" in revision_text
+    assert "人物处境" not in revision_text
+    assert "现实期限" not in revision_text
+
+
+def test_cold_reader_review_uses_genre_when_plugin_ids_are_unrecognized():
+    review = review_cold_reader_experience(
+        "他停在原地。",
+        genre_context={"genre": "网游", "genre_plugin_ids": ["custom_unknown"]},
+    )
+
+    revision_text = "\n".join(review["revision_plan"])
+    assert "现实期限" in revision_text
+    assert "人物处境" not in revision_text
+
+
+def test_cold_reader_review_keeps_protocol_as_game_payoff():
+    review = review_cold_reader_experience(
+        "底层协议浮现，代价已经明确。",
+        genre_context={"genre": "网游"},
+    )
+
+    assert review["scores"]["page_turn"] >= 4
+
+
 def test_cold_reader_review_without_genre_uses_only_generic_terms_and_advice():
     body = (
         "交易行、公会、NPC、材料异动、修炼、宗门、天命道骨、太虚剑宗、"

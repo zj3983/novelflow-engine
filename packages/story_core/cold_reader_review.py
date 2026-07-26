@@ -44,7 +44,18 @@ GENRE_PROFILES: dict[str, dict[str, Any]] = {
             "药水",
             "耐久",
         ),
-        "payoff_terms": ("稀有", "未鉴定", "晶核", "额外", "千倍", "异常", "隐藏", "掉落", "装备"),
+        "payoff_terms": (
+            "稀有",
+            "未鉴定",
+            "晶核",
+            "额外",
+            "千倍",
+            "异常",
+            "隐藏",
+            "掉落",
+            "装备",
+            "协议",
+        ),
         "overload_terms": (
             "隐藏优势",
             "底层协议",
@@ -81,40 +92,28 @@ GENERIC_CARE_SUGGESTION = "补清人物目标和失败代价，让读者知道�
 GENERIC_LOOP_SUGGESTION = "至少让一段重复行动出现质变：结果改变、代价升级、关系转折或新阻碍介入。"
 
 
-def _genre_values(context: Any) -> list[str]:
-    if hasattr(context, "model_dump"):
-        context = context.model_dump(mode="json")
-    if isinstance(context, dict):
-        values: list[str] = []
-        for key, value in context.items():
-            if key in {"genre_plugin_ids", "novel_type", "novel_type_id", "genre", "genre_family"}:
-                if isinstance(value, (list, tuple, set)):
-                    values.extend(str(item) for item in value)
-                else:
-                    values.append(str(value or ""))
-            elif isinstance(value, (dict, list, tuple, set)):
-                values.extend(_genre_values(value))
-        return values
-    if isinstance(context, (list, tuple, set)):
-        values: list[str] = []
-        for value in context:
-            values.extend(_genre_values(value))
-        return values
-    return [str(context or "")]
-
-
 def _genre_profile(genre_context: Any) -> dict[str, Any] | None:
-    values = [value.strip() for value in _genre_values(genre_context) if value.strip()]
-    normalized_ids = {
-        genre_id
-        for value in values
-        for genre_id in normalize_novel_type_ids(value)
-    }
-    lowered_values = {value.casefold() for value in values}
+    if hasattr(genre_context, "model_dump"):
+        genre_context = genre_context.model_dump(mode="json")
+    if isinstance(genre_context, dict):
+        normalized_ids = set(normalize_novel_type_ids(genre_context.get("genre_plugin_ids")))
+        if normalized_ids:
+            for profile in GENRE_PROFILES.values():
+                if normalized_ids.intersection(profile["ids"]):
+                    return profile
+            return None
+        genre = str(genre_context.get("genre") or "").strip()
+    elif isinstance(genre_context, str):
+        genre = genre_context.strip()
+    else:
+        return None
+
+    normalized_genre_ids = set(normalize_novel_type_ids(genre))
+    lowered_genre = genre.casefold()
     for profile in GENRE_PROFILES.values():
-        if normalized_ids.intersection(profile["ids"]):
+        if normalized_genre_ids.intersection(profile["ids"]):
             return profile
-        if lowered_values.intersection(alias.casefold() for alias in profile["aliases"]):
+        if lowered_genre in {alias.casefold() for alias in profile["aliases"]}:
             return profile
     return None
 
