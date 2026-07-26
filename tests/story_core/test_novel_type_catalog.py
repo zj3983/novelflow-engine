@@ -230,6 +230,33 @@ def test_prompt_context_sanitizes_nested_numeric_scalars_before_sizing() -> None
     assert progression == {"huge": 1_000_000, "nan": 0.0, "infinity": 0.0}
 
 
+def test_prompt_context_handles_oversized_malformed_power_list_fields() -> None:
+    record = _prompt_context_record("custom_type", [])
+    record.name = "\x00" * 100
+    record.description = "\x00" * 700
+    record.power_system_template.update(
+        {
+            "required_sections": {
+                f"section-{index}": "required-section-" * 30
+                for index in range(20)
+            },
+            "ledger_fields": "current_stage",
+            "quality_checks": "quality-check-" * 100,
+            "fixed_milestones": 10,
+        }
+    )
+
+    context = novel_type_prompt_context(record)
+    power_template = context["genre_power_system_template"]
+    serialized = json.dumps(context, ensure_ascii=False, allow_nan=False)
+
+    assert len(serialized) <= 6000
+    assert isinstance(power_template["required_sections"], list)
+    assert isinstance(power_template["fixed_milestones"], list)
+    assert isinstance(power_template.get("ledger_fields", []), list)
+    assert isinstance(power_template.get("quality_checks", []), list)
+
+
 def test_novel_type_prompt_context_merges_type_specific_tropes_before_generic_and_dedupes_ids(
     monkeypatch: pytest.MonkeyPatch,
 ):

@@ -156,6 +156,22 @@ def test_compact_template_sanitizes_nested_scalar_values_for_strict_json():
     json.dumps(compact, ensure_ascii=False, allow_nan=False)
 
 
+def test_compact_template_normalizes_known_list_fields_from_malformed_shapes():
+    compact = compact_power_system_template(
+        {
+            "required_sections": {"first": "origin", "second": "stages"},
+            "ledger_fields": "current_stage",
+            "quality_checks": {"primary": "bounded", "empty": ""},
+            "fixed_milestones": 10,
+        }
+    )
+
+    assert compact["required_sections"] == ["origin", "stages"]
+    assert compact["ledger_fields"] == ["current_stage"]
+    assert compact["quality_checks"] == ["bounded"]
+    assert compact["fixed_milestones"] == [10]
+
+
 def test_other_templates_require_two_paths_and_at_least_three_stages():
     for plugin in BUILTIN_PLUGINS:
         if plugin is GAME_WEBNOVEL:

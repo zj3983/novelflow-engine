@@ -373,6 +373,7 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "genre_rulebook",
         "genre_quality_checks",
         "genre_trope_templates",
+        "genre_power_system_template",
         "title",
         "opening_direction",
         "author_constraints",
@@ -390,6 +391,9 @@ def test_generator_requests_one_compact_structured_plan() -> None:
     assert prompt["one_time_guidance"] == "反派要有现实利益"
     assert prompt["opening_direction"]["primary_trope_id"] == "low_status_reversal"
     assert prompt["genre_trope_templates"]
+    assert prompt["genre_power_system_template"]["system_form"]
+    assert prompt["genre_power_system_template"]["required_sections"]
+    assert prompt["genre_power_system_template"]["minimum_path_count"] >= 1
     assert "genre_trope_templates" in request["payload"]["messages"][1]["content"]
     schema_text = json.dumps(prompt["output_schema"], ensure_ascii=False)
     assert '"start_chapter"' in schema_text

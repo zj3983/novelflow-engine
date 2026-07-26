@@ -228,6 +228,7 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
         "genre_rulebook",
         "genre_quality_checks",
         "genre_trope_templates",
+        "genre_power_system_template",
         "working_title",
         "idea",
         "regeneration_guidance",
@@ -236,6 +237,9 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     assert prompt_context["working_title"] == "SECRET_WORKING_TITLE"
     assert prompt_context["regeneration_guidance"] == ""
     assert prompt_context["genre_trope_templates"]
+    assert prompt_context["genre_power_system_template"]["system_form"]
+    assert prompt_context["genre_power_system_template"]["required_sections"]
+    assert prompt_context["genre_power_system_template"]["minimum_path_count"] >= 1
     assert "genre_trope_templates" in captured["payload"]["messages"][1]["content"]
     system_prompt = captured["payload"]["messages"][0]["content"]
     assert "primary_trope_id" in system_prompt

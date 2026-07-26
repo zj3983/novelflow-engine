@@ -410,17 +410,21 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
     }
     power_template = context["genre_power_system_template"]
     lists = [
-        context["genre_core_promises"],
-        *context["genre_rulebook"].values(),
-        context["genre_quality_checks"],
-        power_template.get("quality_checks", []),
+        items
+        for items in (
+            context["genre_core_promises"],
+            *context["genre_rulebook"].values(),
+            context["genre_quality_checks"],
+            power_template.get("quality_checks", []),
+        )
+        if isinstance(items, list)
     ]
     while _prompt_context_exceeds_cap(context):
         trope_candidates = context["genre_trope_templates"]
         if len(trope_candidates) > specific_candidate_count:
             trope_candidates.pop()
             continue
-        base_lists = [items for items in lists if items]
+        base_lists = [items for items in lists if isinstance(items, list) and items]
         if base_lists:
             max(base_lists, key=lambda items: len(items[-1])).pop()
             continue

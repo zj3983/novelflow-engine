@@ -216,6 +216,27 @@ def _bounded_integer(value: Any, *, default: int, minimum: int, maximum: int) ->
     return min(max(value, minimum), maximum)
 
 
+def _known_list_items(value: Any) -> list[Any]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        return list(value.values())
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if value is None:
+        return []
+    return [value]
+
+
+def _compact_text_list(value: Any, *, max_items: int, item_chars: int) -> list[str]:
+    compact: list[str] = []
+    for item in _known_list_items(value)[:max_items]:
+        text = _compact_object_string(item, item_chars)
+        if text:
+            compact.append(text)
+    return compact
+
+
 def _compact_json_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
@@ -245,27 +266,30 @@ def compact_power_system_template(template: Mapping[str, object]) -> dict[str, o
         for field in _COMPACT_TEMPLATE_FIELDS
         if field in template
     }
-    required_sections = template.get("required_sections")
-    if isinstance(required_sections, (list, tuple)):
-        compact["required_sections"] = [
-            _compact_object_string(item, _REQUIRED_SECTIONS_ITEM_CAP)
-            for item in required_sections[:_COMPACT_LIST_CAP]
-        ]
+    if "required_sections" in template:
+        compact["required_sections"] = _compact_text_list(
+            template["required_sections"],
+            max_items=_COMPACT_LIST_CAP,
+            item_chars=_REQUIRED_SECTIONS_ITEM_CAP,
+        )
+    for field in ("ledger_fields", "quality_checks"):
+        if field in template:
+            compact[field] = _compact_text_list(
+                template[field],
+                max_items=_COMPACT_LIST_CAP,
+                item_chars=_COMPACT_STRING_CAP,
+            )
     if "minimum_path_count" in template:
         compact["minimum_path_count"] = _bounded_integer(
             template["minimum_path_count"], default=2, minimum=1, maximum=64
         )
     if "fixed_milestones" in template:
-        milestones = template["fixed_milestones"]
-        valid_milestones = (
-            [
-                item
-                for item in milestones
-                if isinstance(item, int) and not isinstance(item, bool)
-            ]
-            if isinstance(milestones, (list, tuple))
-            else []
-        )
+        milestones = _known_list_items(template["fixed_milestones"])
+        valid_milestones = [
+            item
+            for item in milestones
+            if isinstance(item, int) and not isinstance(item, bool)
+        ]
         compact["fixed_milestones"] = [
             _bounded_integer(item, default=0, minimum=0, maximum=1_000_000)
             for item in valid_milestones[:_FIXED_MILESTONE_CAP]
