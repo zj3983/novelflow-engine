@@ -119,6 +119,75 @@ def _trope_plan() -> dict:
     return plan
 
 
+def _outline_power_spec() -> dict:
+    return {
+        "name": "神域职业体系",
+        "origin": ["职业权能来自转职试炼"],
+        "stages": [
+            {"name": "见习者", "level": 1, "entry": "创建角色", "change": "获得通用能力", "failure": "重新建号"},
+            {"name": "正式职业", "level": 10, "entry": "完成正式转职", "change": "获得职业资源", "failure": "任务冷却"},
+            {"name": "专精", "level": 20, "entry": "完成专精试炼", "change": "强化方向", "failure": "材料损失"},
+            {"name": "进阶职业", "level": 30, "entry": "完成分支任务", "change": "获得分支能力", "failure": "晋升延期"},
+            {"name": "传承", "level": 60, "entry": "完成传承试炼", "change": "获得职业权柄", "failure": "传承反噬"},
+        ],
+        "paths": [{"name": "法师", "branches": ["元素法师", "秘术法师"], "advancement": ["元素核心试炼"], "role": "远程输出"}],
+        "advancement": ["晋升必须满足条件并支付材料"],
+        "costs": ["失败损失材料并进入冷却"],
+        "counters": ["沉默克制施法"],
+        "boundaries": ["不得无条件跨阶段"],
+        "continuity_ledger": ["level", "class_path", "skills", "equipment", "resources", "conditions"],
+        "skills": ["完整技能目录不应进入大纲"],
+        "equipment": ["完整装备目录不应进入大纲"],
+        "social_impact": ["不应进入大纲"],
+        "visibility": ["不应进入大纲"],
+    }
+
+
+def test_outline_prompt_receives_compact_power_contract_and_explicit_game_milestones() -> None:
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["system"] = payload["messages"][0]["content"]
+        captured["context"] = json.loads(payload["messages"][1]["content"])
+        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    payload = _brief().model_dump(mode="json")
+    payload["novel_type_id"] = "game_webnovel"
+    payload["power_system_spec"] = _outline_power_spec()
+    generator = LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve)
+
+    generator.generate(OutlinePlanningBrief.model_validate(payload), mode="initial")
+
+    power = captured["context"]["power_system"]
+    assert [stage["level"] for stage in power["stages"]] == [1, 10, 20, 30, 60]
+    assert power["paths"] == [{"name": "法师", "branches": ["元素法师", "秘术法师"], "advancement": ["元素核心试炼"]}]
+    assert "skills" not in power and "equipment" not in power
+    contract = "\n".join([captured["system"], *captured["context"]["validation_rules"]])
+    assert "Lv10" in contract and "正式转职" in contract
+    assert "Lv20" in contract and "专精" in contract and "第二次转职" in contract
+    assert "Lv30" in contract and "进阶分支" in contract
+    assert "Lv60" in contract and "传承" in contract
+    assert "不得虚构" in contract and "技能" in contract and "装备" in contract
+    assert "先安排解锁" in contract and "账本" in contract
+    assert "条件" in contract and "代价" in contract and "失败" in contract
+
+
+def test_outline_prompt_does_not_fabricate_power_contract_for_legacy_brief() -> None:
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured.update(json.loads(payload["messages"][1]["content"]))
+        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve).generate(
+        _brief(), mode="initial"
+    )
+
+    assert "power_system" not in captured
+
+
 def test_trope_validator_rejects_invalid_primary_arc_and_beat() -> None:
     plan = _trope_plan()
     plan["outline"]["overall"]["primary_trope_id"] = "missing"

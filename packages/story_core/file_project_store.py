@@ -80,7 +80,7 @@ from packages.story_core.reviewer_agent import review_reviewer_agent
 from packages.story_core.simplified_review import build_simplified_review
 from packages.story_core.workflow_telemetry import append_workflow_telemetry
 from packages.story_core.writing_learning import learning_snapshot, lessons_from_quality_report, merge_writing_lessons
-from packages.story_core.writing_packet import prose_renderer_contract
+from packages.story_core.writing_packet import power_system_context_for_state, prose_renderer_contract
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.writing_taskbook import format_taskbook_brief_section
 from packages.story_core.world_blueprint_context import (
@@ -3297,6 +3297,11 @@ class FileProjectStore:
             existing_character_names=existing_character_names,
             current_chapter=int(state.get("current_chapter") or 0),
             recent_chapter_summaries=[dict(item) for item in summaries[-3:] if isinstance(item, dict)],
+            power_system_spec=(
+                dict(blueprint.get("power_system_spec"))
+                if isinstance(blueprint.get("power_system_spec"), dict)
+                else {}
+            ),
         )
 
     def _merge_generated_character_cards(self, generated: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -4736,6 +4741,8 @@ class FileProjectStore:
             relevance_text,
             max_rules=8,
         )
+        if isinstance(world_blueprint.get("power_system_spec"), dict):
+            scoped_world["power_system_spec"] = deepcopy(world_blueprint["power_system_spec"])
         state_genre_ids = state.get("genre_plugin_ids")
         project_genre_ids = world_blueprint.get("genre_plugin_ids")
         genre_plugin_ids = normalize_novel_type_ids(state_genre_ids)
@@ -4936,6 +4943,11 @@ class FileProjectStore:
         if int(target or 0) <= current_chapter:
             packet_project.pop("current_focus", None)
         packet_project["world_blueprint"] = scoped_world
+        power_system = power_system_context_for_state(
+            world_blueprint.get("power_system_spec"),
+            progression_ledger=state.get("progression_ledger"),
+            characters=state.get("characters"),
+        )
         packet = {
             "schema_version": "file-writing-packet/v1",
             "root": str(self.root),
@@ -5003,6 +5015,8 @@ class FileProjectStore:
             "chapter_direction_options": chapter_direction_options,
             "skill_context": {key: value for key, value in skill_context.items() if value},
         }
+        if power_system:
+            packet["power_system"] = power_system
         return packet, is_game_story, int(target or 0)
 
     def _prompt_plan_from_chapter(self, chapter: dict[str, Any]) -> dict[str, Any]:
@@ -5094,6 +5108,7 @@ class FileProjectStore:
             "schema_version": packet.get("schema_version"),
             "target_chapter": packet.get("target_chapter"),
             "scene_kind": packet.get("scene_kind"),
+            "power_system": self._slim_prompt_preview_value(packet.get("power_system")),
             "instruction": self._compact_text(packet.get("instruction"), 260),
             "hard_locks": [self._compact_text(item, 160) for item in packet.get("hard_locks", [])[:10]],
             "scene_cards": self._slim_prompt_preview_value(packet.get("scene_cards", [])[:6]),
@@ -5196,6 +5211,8 @@ class FileProjectStore:
         writing_packet, _, _ = self._build_writing_packet(target)
         plan = self._prompt_plan_from_chapter(chapter)
         plan["scene_cards"] = writing_packet.get("scene_cards", [])
+        if isinstance(writing_packet.get("power_system"), dict):
+            plan["power_system"] = writing_packet["power_system"]
         body = str(chapter.get("body") or "")
         review = chapter.get("quality_report") if isinstance(chapter.get("quality_report"), dict) else {}
         if not review and chapter:

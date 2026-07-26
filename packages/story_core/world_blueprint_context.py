@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from packages.story_core.power_systems import power_system_prompt_slice
+
 
 MANAGED_MARKER = "<!-- managed: world-blueprint/v1 -->"
 
@@ -71,6 +73,25 @@ _RULE_KEYWORDS = {
         "现实工作",
     ),
 }
+
+_POWER_SPEC_KEYWORDS = (
+    "power",
+    "combat",
+    "class",
+    "advancement",
+    "level",
+    "skill",
+    "equipment",
+    "力量",
+    "战斗",
+    "职业",
+    "转职",
+    "进阶",
+    "晋升",
+    "等级",
+    "技能",
+    "装备",
+)
 
 _CJK_SEQUENCE = re.compile(r"[\u4e00-\u9fff]+")
 _GENERIC_QUEST_TERMS = (
@@ -493,6 +514,10 @@ def select_world_context(
     seen_rules = set(world_rules)
 
     relevance = str(relevance_text or "").casefold()
+    if any(keyword.casefold() in relevance for keyword in _POWER_SPEC_KEYWORDS):
+        power_context = outline_power_system_context(blueprint.get("power_system_spec"))
+        if power_context:
+            selected["power_system_spec"] = power_context
     matched_modules = [
         (field, _rule_values(blueprint, field))
         for field in RULE_FIELDS[1:]
@@ -530,6 +555,70 @@ def select_world_context(
             selected[field] = matching_entities
 
     return selected
+
+
+def outline_power_system_context(spec: Any) -> dict[str, Any]:
+    """Build the compact all-stage contract needed by outline planning."""
+
+    base = power_system_prompt_slice(spec)
+    if not base:
+        return {}
+
+    stages: list[dict[str, Any]] = []
+    seen_levels: set[Any] = set()
+    pending_stages = [
+        stage for stage in base.get("stages", []) if isinstance(stage, dict)
+    ]
+    position = 0
+    while position < len(pending_stages):
+        stage = pending_stages[position]
+        position += 1
+        if not isinstance(stage, dict):
+            continue
+        level = stage.get("level")
+        for candidate in power_system_prompt_slice(spec, stage_hint=level).get("stages", []):
+            if not isinstance(candidate, dict):
+                continue
+            identity = candidate.get("level", candidate.get("name"))
+            if identity in seen_levels:
+                continue
+            seen_levels.add(identity)
+            stages.append(deepcopy(candidate))
+            pending_stages.append(candidate)
+
+    paths: list[dict[str, Any]] = []
+    for path in base.get("paths", []):
+        if not isinstance(path, dict):
+            continue
+        name = str(path.get("name") or "").strip()
+        matched = power_system_prompt_slice(spec, path_hint=name).get("paths", [])
+        source = matched[0] if matched and isinstance(matched[0], dict) else path
+        compact_path = {
+            key: deepcopy(source[key])
+            for key in ("name", "branches", "advancement")
+            if source.get(key) not in (None, "", [], {})
+        }
+        if compact_path:
+            paths.append(compact_path)
+
+    result = {
+        key: deepcopy(base[key])
+        for key in (
+            "name",
+            "origin",
+            "advancement",
+            "costs",
+            "counters",
+            "boundaries",
+            "continuity_ledger",
+        )
+        if base.get(key) not in (None, "", [], {})
+    }
+    if stages:
+        result["stages"] = stages
+    if paths:
+        result["paths"] = paths
+    return result
 
 
 def flatten_selected_rules(selected: Any) -> list[Any]:

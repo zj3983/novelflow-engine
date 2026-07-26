@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES, compact_list, compact_text
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate
 from packages.story_core.dual_state import project_character_for_scene, scene_kind_for_cards
 from packages.story_core.memory import build_character_cards
+from packages.story_core.power_systems import power_system_prompt_slice
 from packages.story_core.simulation import is_game_story
 from packages.story_core.writing_learning import learning_snapshot
 from packages.story_core.web_game_economy import (
@@ -13,6 +15,100 @@ from packages.story_core.web_game_economy import (
     opening_market_exchange_flow_lines,
 )
 from packages.story_core.writing_taskbook import first_chapter_whole_body_contract
+
+
+_LEVEL_ALIASES = ("level", "current_level", "lv", "等级", "当前等级")
+_PATH_ALIASES = (
+    "class_path",
+    "current_class",
+    "class",
+    "profession",
+    "career",
+    "path",
+    "职业路线",
+    "职业",
+)
+
+
+def _state_alias_value(sources: list[Any], aliases: tuple[str, ...]) -> Any:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in aliases:
+            value = source.get(key)
+            if value not in (None, "", [], {}):
+                return value
+    return None
+
+
+def _level_hint(value: Any) -> int | float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"\d+(?:\.\d+)?", value)
+    if not match:
+        return None
+    number = float(match.group(0))
+    return int(number) if number.is_integer() else number
+
+
+def _power_progression_hints(
+    ledger: Any,
+    characters: Any,
+) -> tuple[int | float | None, str | None]:
+    sources: list[Any] = []
+    if isinstance(ledger, dict):
+        for key in ("protagonist", "player", "character", "game_state", "current_state"):
+            value = ledger.get(key)
+            if isinstance(value, dict):
+                sources.extend((value, value.get("current")))
+        sources.append(ledger)
+
+    characters = characters if isinstance(characters, list) else []
+    protagonist = next(
+        (
+            character
+            for character in characters
+            if str(getattr(character, "role", "") or "").casefold()
+            in {"protagonist", "主角"}
+        ),
+        characters[0] if characters else None,
+    )
+    if protagonist is not None:
+        payload = _character_model_payload(protagonist)
+        for key in ("game_state", "game_panel", "state", "current_state"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                sources.extend((value, value.get("current")))
+
+    level = _level_hint(_state_alias_value(sources, _LEVEL_ALIASES))
+    raw_path = _state_alias_value(sources, _PATH_ALIASES)
+    path = str(raw_path).strip() if raw_path not in (None, "") else None
+    return level, path or None
+
+
+def power_system_context_for_state(
+    spec: Any,
+    *,
+    progression_ledger: Any = None,
+    characters: Any = None,
+) -> dict[str, Any]:
+    if not isinstance(spec, dict) or not spec:
+        return {}
+    level, path = _power_progression_hints(progression_ledger, characters)
+    return power_system_prompt_slice(spec, stage_hint=level, path_hint=path)
+
+
+def writing_power_system_context(story: Any) -> dict[str, Any]:
+    world_context = getattr(story, "world_context", {})
+    if not isinstance(world_context, dict):
+        return {}
+    return power_system_context_for_state(
+        world_context.get("power_system_spec"),
+        progression_ledger=getattr(story, "progression_ledger", {}),
+        characters=getattr(story, "characters", []),
+    )
 
 
 def _as_list(value: Any, *, max_items: int = 8, item_chars: int = 120) -> list[str]:
@@ -500,6 +596,7 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
 
     style_rules = _style_rules(game_genre)
     governance_gate = governance_quality_gate(governance)
+    power_system = writing_power_system_context(story)
 
     packet = {
         "schema_version": "codex-writing-packet/v1",
@@ -561,6 +658,8 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
             "note": "Manual draft submission is disabled. Use continue_generation or agent-revise for chapter progression.",
         },
     }
+    if power_system:
+        packet["power_system"] = power_system
     return normalize_legacy_economy_prompt_value(
         packet,
         game_context=game_genre,

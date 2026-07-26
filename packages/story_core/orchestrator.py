@@ -87,6 +87,7 @@ from packages.story_core.writing_taskbook import (
 )
 from packages.story_core.world_consistency_review import review_world_event_consistency
 from packages.story_core.world_blueprint_context import flatten_selected_rules
+from packages.story_core.writing_packet import writing_power_system_context
 from packages.story_core.world_pulse import advance_world_pulse
 from packages.story_core.world_simulation_gate import world_simulation_decision
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
@@ -322,7 +323,16 @@ def _review_context_facts(story: StoryState) -> list[str]:
         for key in ("overall", "chapter")
         if isinstance(outline_context.get(key), dict)
     ]
-    return list(dict.fromkeys([*story.world_facts, *story.author_constraints, *outline_facts]))
+    facts = [*story.world_facts, *story.author_constraints, *outline_facts]
+    power_system = writing_power_system_context(story)
+    if power_system:
+        facts.extend(
+            [
+                f"力量体系审稿上下文：{json.dumps(power_system, ensure_ascii=False)}",
+                "力量体系审稿检查：检查虚构技能或装备、免费晋升、不可能的等级差；所有解锁和消耗必须能回写连续性账本。",
+            ]
+        )
+    return list(dict.fromkeys(facts))
 
 
 def _should_extract_final_memory(body: str, review_gate: dict[str, Any] | None) -> bool:
@@ -1842,7 +1852,7 @@ def _story_snapshot(story: StoryState) -> dict:
     )
     relevant_memories = retrieve_relevant_memories(story, memory_query, limit=6)
     prompt_ledger = _compact_prompt_ledger(story.progression_ledger)
-    return {
+    snapshot = {
         "outline": compact_text(story.outline, 1600),
         "outline_context": story.outline_context,
         "genre": story.genre,
@@ -1912,6 +1922,10 @@ def _story_snapshot(story: StoryState) -> dict:
             for c in _director_characters(story)
         ],
     }
+    power_system = writing_power_system_context(story)
+    if power_system:
+        snapshot["power_system"] = power_system
+    return snapshot
 
 
 def _director_snapshot_summary(snapshot: dict) -> dict:
@@ -1919,7 +1933,7 @@ def _director_snapshot_summary(snapshot: dict) -> dict:
     ledger = snapshot.get("progression_ledger") if isinstance(snapshot.get("progression_ledger"), dict) else {}
     visibility = snapshot.get("visibility_inbox") if isinstance(snapshot.get("visibility_inbox"), dict) else {}
     characters = snapshot.get("characters") if isinstance(snapshot.get("characters"), list) else []
-    return {
+    result = {
         "outline": compact_text(str(snapshot.get("outline") or ""), 1200),
         "outline_context": snapshot.get("outline_context") if isinstance(snapshot.get("outline_context"), dict) else {},
         "genre": snapshot.get("genre"),
@@ -1973,6 +1987,9 @@ def _director_snapshot_summary(snapshot: dict) -> dict:
             if isinstance(item, dict)
         ],
     }
+    if isinstance(snapshot.get("power_system"), dict) and snapshot["power_system"]:
+        result["power_system"] = _slim_prompt_value(snapshot["power_system"])
+    return result
 
 
 def _director_context_payload(story: StoryState, chapter_number: int) -> dict[str, Any]:
@@ -2100,6 +2117,8 @@ def _director_prompt_snapshot(snapshot: Any) -> dict[str, Any]:
         "world_pulse": _slim_prompt_value(snapshot.get("world_pulse", {})),
         "visibility": _slim_prompt_value(snapshot.get("visibility_inbox", {})),
     }
+    if isinstance(snapshot.get("power_system"), dict) and snapshot["power_system"]:
+        result["power_system"] = _slim_prompt_value(snapshot["power_system"])
     return {key: value for key, value in result.items() if value not in (None, "", [], {})}
 
 
@@ -4809,6 +4828,17 @@ def _writer_fact_section(
     relevant_world_entities = world_context.get("entities") if isinstance(world_context.get("entities"), list) else []
     if relevant_world_entities:
         lines.append(f"本章地点与阵营：{'；'.join(relevant_world_entities)}")
+    power_system = (
+        plan.get("power_system")
+        if isinstance(plan.get("power_system"), dict) and plan.get("power_system")
+        else writing_power_system_context(story)
+    )
+    if power_system:
+        lines.append(f"本章力量体系契约：{_plain_prompt_json(power_system)}")
+        lines.append(
+            "力量连续性检查：不得虚构技能或装备，不得免费晋升，不得制造不可能的等级差；"
+            "解锁、消耗和状态变化必须与连续性账本一致。"
+        )
     monster_cards = _monster_context_for_prompt(story, plan)
     if monster_cards:
         lines.append("本章怪物卡：" + "；".join(_writer_monster_card_line(card) for card in monster_cards))

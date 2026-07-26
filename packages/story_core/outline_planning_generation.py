@@ -18,6 +18,7 @@ from packages.story_core.runtime_config import (
     StageRuntimeSettings,
     resolve_stage_runtime,
 )
+from packages.story_core.world_blueprint_context import outline_power_system_context
 
 
 PlanningMode = Literal["initial", "regenerate", "extend"]
@@ -47,6 +48,7 @@ class OutlinePlanningBrief(_PlanningInput):
     existing_character_names: list[str] = Field(default_factory=list)
     current_chapter: int = Field(default=0, ge=0)
     recent_chapter_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    power_system_spec: dict[str, Any] = Field(default_factory=dict)
 
 
 class LLMOutlinePlanningGenerator:
@@ -153,6 +155,16 @@ class LLMOutlinePlanningGenerator:
                 "All outline narrative text may describe financial outcomes but must not contain "
                 "exact currency amounts, account balances, or fee percentages."
             )
+            power_system = outline_power_system_context(validated.power_system_spec)
+            power_contract_rules = (
+                [
+                    "游戏力量里程碑必须固定：Lv10是正式转职，Lv20是专精节点而不是第二次转职，Lv30进入进阶分支，Lv60进入传承。",
+                    "不得虚构主角已经拥有的技能或装备；新技能、新装备和其他能力必须先安排解锁过程，兑现后写入连续性账本。",
+                    "每次晋升必须写明进入条件、支付代价和失败后果，不得免费晋升或无条件跨越阶段。",
+                ]
+                if power_system
+                else []
+            )
 
             if mode == "extend":
                 validation_rules = [
@@ -174,6 +186,7 @@ class LLMOutlinePlanningGenerator:
                 ]
 
             validation_rules.append(financial_outline_rule)
+            validation_rules.extend(power_contract_rules)
 
             prompt_context = {
                 "mode": mode,
@@ -194,6 +207,8 @@ class LLMOutlinePlanningGenerator:
                 "output_schema": GeneratedOutlinePlan.model_json_schema(),
                 "validation_rules": validation_rules,
             }
+            if power_system:
+                prompt_context["power_system"] = power_system
             payload = {
                 "model": runtime.model,
                 "messages": [
@@ -201,6 +216,7 @@ class LLMOutlinePlanningGenerator:
                         "role": "system",
                         "content": (
                             f"{financial_outline_rule} "
+                            f"{' '.join(power_contract_rules)} "
                             "Follow prompt_context.output_schema exactly. Do not add fields, rename fields, "
                             "or use values outside the declared enums. Return every required field. "
                             "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order. "

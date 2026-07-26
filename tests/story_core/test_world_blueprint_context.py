@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 
 import pytest
 
@@ -461,6 +462,85 @@ def test_flatten_selected_rules_uses_rule_field_order():
         "面板",
         "现实",
     ]
+
+
+def _structured_power_spec() -> dict:
+    return {
+        "name": "神域职业体系",
+        "origin": ["觉醒石授予职业权能"],
+        "stages": [
+            {"name": "见习者", "level": 1, "entry": "创建角色", "change": "获得通用能力", "failure": "重新建号"},
+            {"name": "正式职业", "level": 10, "entry": "完成转职任务", "change": "获得职业资源", "failure": "任务冷却"},
+            {"name": "专精", "level": 20, "entry": "完成专精试炼", "change": "强化战斗方向", "failure": "材料损失"},
+            {"name": "进阶职业", "level": 30, "entry": "完成分支任务", "change": "获得分支能力", "failure": "晋升延期"},
+            {"name": "传承", "level": 60, "entry": "完成传承试炼", "change": "获得职业权柄", "failure": "传承反噬"},
+        ],
+        "paths": [
+            {
+                "name": "法师",
+                "role": "远程输出",
+                "core_resource": "法力",
+                "weapons": ["法杖"],
+                "armor": ["布甲"],
+                "skill_categories": ["元素法术"],
+                "combat_loop": "施法叠印记后引爆",
+                "branches": ["元素法师", "秘术法师"],
+                "advancement": ["收集元素核心"],
+            },
+            {
+                "name": "战士",
+                "role": "近战承伤",
+                "core_resource": "怒气",
+                "weapons": ["剑盾"],
+                "branches": ["盾战士", "狂战士"],
+                "advancement": ["完成战团试炼"],
+            },
+        ],
+        "skills": ["技能由导师和技能书授予"],
+        "equipment": ["装备受职业熟练度限制"],
+        "resources": ["职业资源通过战斗恢复"],
+        "advancement": ["晋升必须同时满足等级、任务和材料"],
+        "costs": ["透支会造成虚弱"],
+        "counters": ["沉默克制持续施法"],
+        "boundaries": ["不得无条件跨越两个阶段"],
+        "social_impact": ["公会按职业配置队伍"],
+        "visibility": ["敌人只能看到公开等级"],
+        "continuity_ledger": ["level", "class_path", "skills", "equipment", "resources", "conditions"],
+    }
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["power", "combat", "class", "advancement", "level", "skill", "equipment", "职业", "进阶"],
+)
+def test_select_world_context_includes_compact_power_contract_for_relevant_queries(query):
+    blueprint = {"power_system_spec": _structured_power_spec()}
+    original = deepcopy(blueprint)
+
+    selected = select_world_context(blueprint, query, max_rules=2)
+    power = selected["power_system_spec"]
+
+    assert [stage["level"] for stage in power["stages"]] == [1, 10, 20, 30, 60]
+    assert power["paths"] == [
+        {"name": "法师", "branches": ["元素法师", "秘术法师"], "advancement": ["收集元素核心"]},
+        {"name": "战士", "branches": ["盾战士", "狂战士"], "advancement": ["完成战团试炼"]},
+    ]
+    assert {"advancement", "costs", "counters", "boundaries", "continuity_ledger"} <= set(power)
+    assert not ({"social_impact", "visibility", "skills", "equipment", "attributes"} & set(power))
+    assert len(json.dumps(power, ensure_ascii=False, separators=(",", ":"))) <= 5000
+    assert len(flatten_selected_rules(selected)) <= 2
+    assert blueprint == original
+    power["stages"][0]["name"] = "外部修改"
+    assert blueprint == original
+
+
+def test_select_world_context_omits_structured_power_for_unrelated_or_legacy_projects():
+    assert "power_system_spec" not in select_world_context(
+        {"power_system_spec": _structured_power_spec()},
+        "只写茶馆对话",
+    )
+    legacy = {"power_system": ["旧版力量规则"]}
+    assert select_world_context(legacy, "职业升级") == {"power_system": ["旧版力量规则"]}
 
 
 def test_world_markdown_rendering_is_ordered_and_shows_quest_chain_stages_without_mutation():

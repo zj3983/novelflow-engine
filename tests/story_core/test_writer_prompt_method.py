@@ -14,9 +14,83 @@ from packages.story_core.orchestrator import (
     _web_game_writing_method_lines,
     _writer_character_section,
     _writer_fact_section,
+    _review_context_facts,
 )
 from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
 from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
+from packages.story_core.writing_packet import build_codex_writing_packet
+
+
+def _writer_power_spec() -> dict:
+    return {
+        "name": "神域职业体系",
+        "origin": ["职业权能来自试炼"],
+        "stages": [
+            {"name": "见习者", "level": 1, "entry": "创建角色", "change": "通用能力", "failure": "重新建号"},
+            {"name": "正式职业", "level": 10, "entry": "正式转职任务", "change": "职业资源", "failure": "任务冷却"},
+            {"name": "专精", "level": 20, "entry": "专精试炼", "change": "强化方向", "failure": "材料损失"},
+            {"name": "进阶职业", "level": 30, "entry": "分支任务", "change": "分支能力", "failure": "晋升延期"},
+        ],
+        "paths": [
+            {"name": "法师", "branches": ["元素法师", "秘术法师"], "role": "远程输出", "advancement": ["元素核心试炼"]},
+            {"name": "战士", "branches": ["盾战士", "狂战士"], "role": "近战承伤", "advancement": ["战团试炼"]},
+        ],
+        "skills": ["技能必须通过导师、技能书或试炼获得"],
+        "equipment": ["装备必须来自掉落、制作或交易"],
+        "resources": ["法力通过休息或药剂恢复"],
+        "advancement": ["晋升必须满足等级、任务和材料"],
+        "costs": ["透支会造成虚弱"],
+        "counters": ["沉默克制持续施法"],
+        "boundaries": ["不得无条件跨越两个阶段"],
+        "continuity_ledger": ["level", "class_path", "skills", "equipment", "resources", "conditions"],
+    }
+
+
+def _writer_power_story() -> StoryState:
+    return StoryState(
+        story_id="s-power-prompts",
+        outline="夜烬推进元素法师路线。",
+        genre="网游",
+        style="白描",
+        progression_ledger={"protagonist": {"level": 12, "class_path": "元素法师"}},
+        world_context={"power_system_spec": _writer_power_spec()},
+    )
+
+
+def test_chapter_planner_and_writer_receive_packet_power_system_slice():
+    story = _writer_power_story()
+    packet = build_codex_writing_packet(story, chapter_number=3)
+    plan = {"event_plan": {"chapter_title": "元素试炼"}, "power_system": packet["power_system"]}
+
+    director_prompt = StoryOrchestrator()._plan_prompt(story, 3)
+    writer_prompt = StoryOrchestrator()._body_prompt(story, 3, plan)
+
+    for prompt in (director_prompt, writer_prompt):
+        assert "神域职业体系" in prompt
+        assert "正式职业" in prompt and "专精" in prompt
+        assert "元素法师" in prompt
+        assert "透支会造成虚弱" in prompt
+        assert "不得无条件跨越两个阶段" in prompt
+    assert "战士" not in writer_prompt
+
+
+def test_reviewer_and_revision_context_receive_power_contract_and_explicit_checks():
+    story = _writer_power_story()
+    facts = "\n".join(_review_context_facts(story))
+    prompt = StoryOrchestrator()._revision_prompt(
+        story,
+        3,
+        "夜烬抬手施法。",
+        {"event_plan": {"chapter_title": "元素试炼"}},
+        {"issues": ["晋升缺少代价"], "revision_plan": ["补足失败后果"]},
+    )
+
+    for context in (facts, prompt):
+        assert "costs" in context and "boundaries" in context and "continuity_ledger" in context
+        assert "正式职业" in context and "专精" in context and "元素法师" in context
+        assert "虚构技能" in context
+        assert "免费晋升" in context
+        assert "不可能的等级差" in context
 
 
 def test_body_prompt_has_no_unselected_plain_style_fallback():

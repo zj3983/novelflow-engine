@@ -1,9 +1,100 @@
 import json
+from copy import deepcopy
 
 from packages.story_core.engine import ChapterBundle
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.writing_packet import build_codex_writing_packet
+
+
+def _packet_power_spec() -> dict:
+    return {
+        "name": "神域职业体系",
+        "origin": ["职业权能来自试炼"],
+        "stages": [
+            {"name": "见习者", "level": 1, "entry": "创建角色", "change": "通用能力", "failure": "重新建号"},
+            {"name": "正式职业", "level": 10, "entry": "转职任务", "change": "职业资源", "failure": "任务冷却"},
+            {"name": "专精", "level": 20, "entry": "专精试炼", "change": "强化方向", "failure": "材料损失"},
+            {"name": "进阶职业", "level": 30, "entry": "分支任务", "change": "分支能力", "failure": "晋升延期"},
+            {"name": "传承", "level": 60, "entry": "传承试炼", "change": "职业权柄", "failure": "传承反噬"},
+        ],
+        "paths": [
+            {"name": "法师", "branches": ["元素法师", "秘术法师"], "role": "远程输出", "advancement": ["元素核心试炼"]},
+            {"name": "战士", "branches": ["盾战士", "狂战士"], "role": "近战承伤", "advancement": ["战团试炼"]},
+        ],
+        "skills": ["技能必须通过导师、技能书或试炼获得"],
+        "equipment": ["装备必须来自掉落、制作或交易"],
+        "resources": ["法力通过休息与药剂恢复"],
+        "advancement": ["晋升同时需要等级、任务和材料"],
+        "costs": ["透支会造成虚弱"],
+        "counters": ["沉默克制持续施法"],
+        "boundaries": ["不得无条件跨越两个阶段"],
+        "continuity_ledger": ["level", "class_path", "skills", "equipment", "resources", "conditions"],
+    }
+
+
+def _power_story(*, ledger: dict | None = None, characters: list[CharacterState] | None = None) -> StoryState:
+    return StoryState(
+        story_id="s-power-packet",
+        outline="职业成长",
+        genre="网游",
+        style="白描",
+        progression_ledger=ledger or {},
+        characters=characters or [],
+        world_context={"power_system_spec": _packet_power_spec()},
+    )
+
+
+def test_packet_uses_ledger_level_and_branch_to_select_current_next_stage_and_path():
+    story = _power_story(ledger={"protagonist": {"level": "Lv.12", "class_path": "元素法师"}})
+    source = deepcopy(story.world_context["power_system_spec"])
+
+    packet = build_codex_writing_packet(story, chapter_number=3)
+
+    power = packet["power_system"]
+    assert [stage["level"] for stage in power["stages"]] == [10, 20]
+    assert [path["name"] for path in power["paths"]] == ["法师"]
+    assert power["paths"][0]["role"] == "远程输出"
+    assert {"costs", "boundaries", "continuity_ledger"} <= set(power)
+    assert len(json.dumps(power, ensure_ascii=False, separators=(",", ":"))) <= 5000
+    power["stages"][0]["name"] = "外部修改"
+    assert story.world_context["power_system_spec"] == source
+
+
+def test_packet_uses_character_world_state_aliases_and_respects_stage_boundaries():
+    protagonist = CharacterState(
+        name="苏叶",
+        role="主角",
+        game_state={"current": {"current_level": "20级", "profession": "秘术法师"}},
+    )
+    packet = build_codex_writing_packet(_power_story(characters=[protagonist]), chapter_number=4)
+
+    assert [stage["level"] for stage in packet["power_system"]["stages"]] == [20, 30]
+    assert [path["name"] for path in packet["power_system"]["paths"]] == ["法师"]
+
+
+def test_packet_uses_conservative_power_fallback_without_progression_state():
+    packet = build_codex_writing_packet(_power_story(), chapter_number=1)
+
+    assert [stage["level"] for stage in packet["power_system"]["stages"]] == [1, 10, 20]
+    assert packet["power_system"]["paths"] == [
+        {"name": "法师", "branches": ["元素法师", "秘术法师"]},
+        {"name": "战士", "branches": ["盾战士", "狂战士"]},
+    ]
+
+
+def test_packet_omits_power_system_for_absent_and_legacy_world_context():
+    absent = StoryState(story_id="s-none", outline="现实故事", genre="都市", style="白描")
+    legacy = StoryState(
+        story_id="s-legacy",
+        outline="旧项目",
+        genre="网游",
+        style="白描",
+        world_context={"power_system": ["旧版职业规则"]},
+    )
+
+    assert "power_system" not in build_codex_writing_packet(absent, chapter_number=1)
+    assert "power_system" not in build_codex_writing_packet(legacy, chapter_number=1)
 
 
 def test_first_chapter_packet_contains_contract():
@@ -279,7 +370,10 @@ def test_file_project_packet_and_prompt_preview_share_scene_kind_and_state_conte
         "project_id": "p-dual",
         "title": "双状态测试",
         "active_story_id": "s-dual",
-        "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        "world_blueprint": {
+            "genre_plugin_ids": ["game_webnovel"],
+            "power_system_spec": _packet_power_spec(),
+        },
         "character_profiles": [
             {
                 "name": "苏叶",
@@ -299,6 +393,7 @@ def test_file_project_packet_and_prompt_preview_share_scene_kind_and_state_conte
         "outline": "双状态测试",
         "characters": project["character_profiles"],
         "world_facts": [],
+        "progression_ledger": {"protagonist": {"level": 12, "class_path": "元素法师"}},
     }
     outline = {
         "overall": {"story": "双状态测试"},
@@ -327,6 +422,10 @@ def test_file_project_packet_and_prompt_preview_share_scene_kind_and_state_conte
     character_module = next(item for item in preview["modules"] if item["key"] == "character_context")
 
     assert packet["scene_kind"] == "game"
+    assert [stage["level"] for stage in packet["power_system"]["stages"]] == [10, 20]
+    assert [path["name"] for path in packet["power_system"]["paths"]] == ["法师"]
+    assert '"power_system"' in preview["modules"][-1]["content"]
+    assert "神域职业体系" in prompts["writer_body"]["content"]
     assert '"scene_kind": "game"' in preview["modules"][-1]["content"]
     assert '"game_state"' in character_module["content"]
     assert '"real_state"' not in character_module["content"]
