@@ -7,6 +7,7 @@ import {
   type ImportedWorldBlueprint,
   type ProjectResponse,
 } from "../../lib/api";
+import { hasStructuredPowerSystem, StructuredPowerSystem } from "./StructuredPowerSystem";
 
 export type EditableWorldRuleField =
   | "world_rules"
@@ -78,7 +79,7 @@ export const WORLD_RULE_EDITOR_SECTIONS: ReadonlyArray<{
 ];
 
 function rulesText(value?: string[]) {
-  return (value ?? []).join("\n");
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").join("\n") : "";
 }
 
 const EDITABLE_WORLD_RULE_FIELDS: EditableWorldRuleField[] = [
@@ -238,6 +239,9 @@ export function WorldRulesEditor({ projectId, blueprint, onSaved }: Props) {
   const [editorState, setEditorState] = useState(() => createWorldRulesEditorState(blueprint));
   const [saving, setSaving] = useState<EditableWorldRuleField | null>(null);
   const blueprintStore = useRef<WorldBlueprintStore>({ current: blueprint });
+  const hasStructuredPower = hasStructuredPowerSystem(blueprint.power_system_spec as unknown);
+  const hasLegacyPower = Array.isArray(blueprint.power_system)
+    && blueprint.power_system.some((item) => typeof item === "string" && item.trim());
 
   useEffect(() => {
     syncWorldBlueprintStore(blueprintStore.current, blueprint);
@@ -306,6 +310,9 @@ export function WorldRulesEditor({ projectId, blueprint, onSaved }: Props) {
           <p className="ws-card__hint">每行解析为一条规则，空行不会保存。</p>
         </div>
       </div>
+
+      {hasStructuredPower ? <StructuredPowerSystem spec={blueprint.power_system_spec} /> : null}
+      {!hasStructuredPower && hasLegacyPower ? <p className="ws-card__hint">力量体系需要补全</p> : null}
 
       <div className="ws-form-grid">
         {WORLD_RULE_EDITOR_SECTIONS.map((section) => (

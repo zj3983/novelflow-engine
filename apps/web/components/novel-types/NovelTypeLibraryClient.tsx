@@ -33,6 +33,7 @@ type Draft = {
   rulebook: Record<keyof NovelTypeRulebook, string>;
   quality_checks: string;
   trope_templates: string;
+  power_system_template: string;
   builtin: boolean;
 };
 
@@ -70,6 +71,7 @@ function draftFromType(record: NovelType): Draft {
     ) as Draft["rulebook"],
     quality_checks: toLines(record.quality_checks),
     trope_templates: JSON.stringify(record.trope_templates, null, 2),
+    power_system_template: JSON.stringify(canonicalJson(record.power_system_template ?? {}), null, 2),
     builtin: record.builtin,
   };
 }
@@ -91,6 +93,7 @@ function blankDraft(): Draft {
 
 function parseDraft(draft: Draft): NovelTypeWriteRequest {
   let templates: unknown;
+  let powerSystemTemplate: unknown;
   try {
     templates = JSON.parse(draft.trope_templates || "[]");
   } catch {
@@ -98,6 +101,14 @@ function parseDraft(draft: Draft): NovelTypeWriteRequest {
   }
   if (!Array.isArray(templates) || templates.some((item) => !item || typeof item !== "object" || Array.isArray(item))) {
     throw new Error("套路模板必须是有效的 JSON 数组，数组中的每一项都应是对象。");
+  }
+  try {
+    powerSystemTemplate = JSON.parse(draft.power_system_template || "{}");
+  } catch {
+    throw new Error("力量体系骨架必须是有效的 JSON 对象。");
+  }
+  if (!powerSystemTemplate || typeof powerSystemTemplate !== "object" || Array.isArray(powerSystemTemplate)) {
+    throw new Error("力量体系骨架必须是 JSON 对象，不能是数组或空值。");
   }
   if (!draft.id.trim()) throw new Error("请填写类型 ID。");
   if (!/^[a-z][a-z0-9_-]{0,63}$/.test(draft.id.trim())) {
@@ -117,6 +128,7 @@ function parseDraft(draft: Draft): NovelTypeWriteRequest {
     ) as NovelTypeRulebook,
     quality_checks: fromLines(draft.quality_checks),
     trope_templates: templates as Array<Record<string, unknown>>,
+    power_system_template: powerSystemTemplate as Record<string, unknown>,
   };
 }
 
@@ -134,10 +146,16 @@ function canonicalJson(value: unknown): unknown {
 
 function normalizedDraft(draft: Draft): string {
   let templates: unknown;
+  let powerSystemTemplate: unknown;
   try {
     templates = canonicalJson(JSON.parse(draft.trope_templates || "[]"));
   } catch {
     templates = draft.trope_templates.trim();
+  }
+  try {
+    powerSystemTemplate = canonicalJson(JSON.parse(draft.power_system_template || "{}"));
+  } catch {
+    powerSystemTemplate = draft.power_system_template.trim();
   }
   return JSON.stringify({
     id: draft.id.trim(),
@@ -149,6 +167,7 @@ function normalizedDraft(draft: Draft): string {
     rulebook: Object.fromEntries(RULEBOOK_FIELDS.map(({ key }) => [key, fromLines(draft.rulebook[key])])),
     quality_checks: fromLines(draft.quality_checks),
     trope_templates: templates,
+    power_system_template: powerSystemTemplate,
     builtin: draft.builtin,
   });
 }
@@ -484,9 +503,14 @@ export function NovelTypeLibraryClient() {
             <Field label="质量检查（每行一项）">
               <textarea rows={6} value={draft.quality_checks} disabled={busy} onChange={(event) => setDraft({ ...draft, quality_checks: event.target.value })} />
             </Field>
-            <Field label="套路模板（JSON 数组）" hint='格式示例：[ { "id": "template_id", "name": "模板名", "beats": [] } ]。保存前会校验数组和对象结构。'>
-              <textarea className={styles.jsonInput} rows={14} value={draft.trope_templates} disabled={busy} spellCheck={false} onChange={(event) => setDraft({ ...draft, trope_templates: event.target.value })} />
-            </Field>
+            <div className={styles.twoColumns}>
+              <Field label="套路模板（JSON 数组）" hint='格式示例：[ { "id": "template_id", "name": "模板名", "beats": [] } ]。保存前会校验数组和对象结构。'>
+                <textarea className={styles.jsonInput} rows={14} value={draft.trope_templates} disabled={busy} spellCheck={false} onChange={(event) => setDraft({ ...draft, trope_templates: event.target.value })} />
+              </Field>
+              <Field label="力量体系骨架 JSON" hint="使用 JSON 对象定义体系形式、阶段和路线约束；空骨架填写 {}。">
+                <textarea className={styles.jsonInput} rows={14} value={draft.power_system_template} disabled={busy} spellCheck={false} onChange={(event) => setDraft({ ...draft, power_system_template: event.target.value })} />
+              </Field>
+            </div>
           </section>
 
           <footer className={styles.actions}>
