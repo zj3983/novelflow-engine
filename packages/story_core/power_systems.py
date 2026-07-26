@@ -351,9 +351,14 @@ def _inferred_stage_level(stage: Mapping[str, Any]) -> int | None:
     return int(match.group(1) or match.group(2))
 
 
-def _is_level_twenty_second_transfer(stage: Mapping[str, Any]) -> bool:
+def _is_level_twenty_second_transfer(
+    stage: Mapping[str, Any], *, specialization_fallback: bool = False
+) -> bool:
     text = " ".join(_text(_mapping_get(stage, field)) for field in STAGE_FIELDS if field != "level")
-    tied_to_specialization = _inferred_stage_level(stage) == 20 or "专精" in text
+    stage_name = _text(_mapping_get(stage, "name"))
+    tied_to_specialization = _inferred_stage_level(stage) == 20 or (
+        specialization_fallback and "专精" in stage_name
+    )
     if not tied_to_specialization:
         return False
     return bool(
@@ -404,7 +409,10 @@ def validate_power_system_spec(
     path_names = [path["name"].casefold() for path in paths if path.get("name")]
     if len(path_names) != len(set(path_names)):
         violations.add("paths.duplicate_names")
-    if any(len(set(path.get("branches", []))) < 2 for path in paths):
+    if any(
+        len({branch.casefold() for branch in path.get("branches", [])}) < 2
+        for path in paths
+    ):
         violations.add("paths.distinct_branches")
 
     ledger = normalized.get("continuity_ledger", [])
@@ -423,6 +431,12 @@ def validate_power_system_spec(
         game_path_names = {path.get("name") for path in paths}
         if not _GAME_CLASSES.issubset(game_path_names):
             violations.add("game.missing_classes")
+        if (
+            len(paths) != len(_GAME_CLASSES)
+            or len(game_path_names) != len(_GAME_CLASSES)
+            or game_path_names != _GAME_CLASSES
+        ):
+            violations.add("game.invalid_classes")
         milestones = tuple(_inferred_stage_level(stage) for stage in stages)
         expected_milestones = tuple(sorted(_GAME_MILESTONES))
         if milestones != expected_milestones:
@@ -448,7 +462,14 @@ def validate_power_system_spec(
             violations.add("game.path_missing_weapon_affinity")
         if any(not path.get("armor") for path in paths):
             violations.add("game.path_missing_armor_affinity")
-        if any(_is_level_twenty_second_transfer(stage) for stage in stages):
+        has_inferred_level = bool(levels)
+        if any(
+            _is_level_twenty_second_transfer(
+                stage,
+                specialization_fallback=not has_inferred_level and index == 2,
+            )
+            for index, stage in enumerate(stages)
+        ):
             violations.add("game.level20_second_transfer")
 
     if missing or violations:
@@ -462,6 +483,7 @@ _CURRENCY_AMOUNT = re.compile(
     rf"(?:"
     rf"(?:RMB|CNY|[¥￥$])\s*{_FORMATTED_NUMBER}\s*[百千万亿]?\s*(?:{_CURRENCY_UNIT})?"
     rf"|{_FORMATTED_NUMBER}\s*[百千万亿]?\s*{_CURRENCY_UNIT}"
+    rf"|{_CURRENCY_UNIT}\s*{_FORMATTED_NUMBER}\s*[百千万亿]?"
     rf")",
     re.IGNORECASE,
 )

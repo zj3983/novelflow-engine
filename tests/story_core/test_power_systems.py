@@ -213,6 +213,13 @@ def test_validation_rejects_duplicate_path_names_case_insensitively() -> None:
     assert "paths.duplicate_names" in validation_error(spec).violations
 
 
+def test_validation_rejects_duplicate_branches_casefolded_after_whitespace_normalization() -> None:
+    spec = complete_spec()
+    spec["paths"][0]["branches"] = ["Fire Mage", " fire   mage "]
+
+    assert "paths.distinct_branches" in validation_error(spec).violations
+
+
 @pytest.mark.parametrize(
     ("ledger", "code"),
     [
@@ -274,9 +281,42 @@ def test_game_validation_rejects_level_twenty_as_second_transfer(phrase: str) ->
 
 def test_game_validation_allows_second_transfer_outside_level_twenty() -> None:
     spec = complete_spec()
-    spec["stages"][3]["entry"] = "Lv.30第二次转职"
+    spec["stages"][3]["name"] = "Lv.30专精进阶"
+    spec["stages"][3]["entry"] = "第二次转职"
 
     assert validate_power_system_spec(spec, novel_type_id="game_webnovel")["name"] == "神域职业体系"
+
+
+def test_game_validation_does_not_use_specialization_fallback_when_any_level_is_known() -> None:
+    spec = complete_spec()
+    spec["stages"][2].pop("level")
+    spec["stages"][2]["name"] = "专精"
+    spec["stages"][2]["entry"] = "第二次转职"
+
+    error = validation_error(spec)
+
+    assert "game.invalid_milestones" in error.violations
+    assert "game.level20_second_transfer" not in error.violations
+
+
+def test_game_validation_uses_canonical_specialization_fallback_when_no_levels_are_known() -> None:
+    spec = complete_spec()
+    for index, stage in enumerate(spec["stages"]):
+        stage.pop("level")
+        stage["name"] = "专精" if index == 2 else f"阶段{chr(65 + index)}"
+        stage["entry"] = "第二次转职" if index == 2 else "完成试炼"
+
+    assert "game.level20_second_transfer" in validation_error(spec).violations
+
+
+@pytest.mark.parametrize("extra_name", ["骑士", "战士"])
+def test_game_validation_requires_exactly_the_six_canonical_class_paths(extra_name: str) -> None:
+    spec = complete_spec()
+    extra = deepcopy(spec["paths"][0])
+    extra["name"] = extra_name
+    spec["paths"].append(extra)
+
+    assert "game.invalid_classes" in validation_error(spec).violations
 
 
 def test_custom_template_and_generic_fallback_are_used() -> None:
@@ -468,6 +508,19 @@ def test_legacy_summary_redacts_formatted_currency_magnitudes_and_fees() -> None
 
     assert "Lv.20" in joined
     for exact in ("1,234.50", "2,000", "100万", "88.5", "7铜币", "12.5%"):
+        assert exact not in joined
+
+
+def test_legacy_summary_redacts_currency_units_before_amounts() -> None:
+    spec = complete_spec()
+    spec["origin"] = [
+        "Lv.30奖励金币100、银币50、铜币1,000，费用元100、人民币100"
+    ]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert "Lv.30" in joined
+    for exact in ("金币100", "银币50", "铜币1,000", "元100", "人民币100"):
         assert exact not in joined
 
 
