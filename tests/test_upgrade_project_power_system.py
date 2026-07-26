@@ -101,8 +101,14 @@ def _load(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def test_migration_payload_builder_delegates_to_extracted_project_data() -> None:
+def test_migration_payload_builder_delegates_to_extracted_project_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert migration._build_power_system_spec() == build_power_system_spec()
+    sentinel = {"sentinel": object()}
+    monkeypatch.setattr(migration, "build_power_system_spec", lambda: sentinel)
+
+    assert migration._build_power_system_spec() is sentinel
 
 
 def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
@@ -662,19 +668,30 @@ def test_malformed_json_is_invalid_and_atomic(project_dir: Path) -> None:
     assert not (project_dir / ".webnovel" / "backups").exists()
 
 
-def test_cli_emits_json_and_returns_nonzero_for_invalid_project(project_dir: Path) -> None:
-    script = Path(__file__).parents[1] / "scripts" / "upgrade_project_power_system.py"
+def test_cli_emits_json_and_returns_nonzero_for_invalid_project(
+    project_dir: Path, tmp_path: Path
+) -> None:
+    script = (
+        Path(__file__).parents[1] / "scripts" / "upgrade_project_power_system.py"
+    ).resolve()
+    absolute_project_dir = project_dir.resolve()
     valid = subprocess.run(
-        [sys.executable, str(script), str(project_dir), "--check", "--no-backup"],
-        cwd=script.parents[1],
+        [
+            sys.executable,
+            str(script),
+            str(absolute_project_dir),
+            "--check",
+            "--no-backup",
+        ],
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=False,
     )
     invalid = subprocess.run(
-        [sys.executable, str(script), str(project_dir / "missing")],
-        cwd=script.parents[1],
+        [sys.executable, str(script), str(absolute_project_dir / "missing")],
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         encoding="utf-8",
