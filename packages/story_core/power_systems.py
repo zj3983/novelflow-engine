@@ -517,6 +517,7 @@ _FINANCIAL_SEMANTIC_TERMS = (
     "购买",
     "价格",
     "售价",
+    "定价",
     "费用",
     "手续费",
     "费率",
@@ -535,6 +536,25 @@ _FINANCIAL_SEMANTIC_TERMS = (
     "余额",
     "人民币",
     "RMB",
+    "门票",
+    "需要",
+    "需",
+    "花费",
+    "花",
+    "值",
+    "缴纳",
+)
+_POWER_RESOURCE_SEMANTIC_TERMS = (
+    "获得",
+    "恢复",
+    "消耗",
+    "收集",
+    "凝聚",
+    "炼化",
+    "突破",
+    "提升",
+    "注入",
+    "吸收",
 )
 _GAMEPLAY_SEMANTIC_TERMS = (
     "暴击",
@@ -547,6 +567,24 @@ _GAMEPLAY_SEMANTIC_TERMS = (
     "法力",
     "冷却",
     "加成",
+)
+_POWER_RESOURCE_SUFFIX_STARTS = "核魂丹婴力气神灵素晶"
+_TRANSACTION_ACTION_SUFFIXES = (
+    "购买",
+    "支付",
+    "交易",
+    "出售",
+    "售卖",
+    "兑换",
+    "解锁",
+    "缴纳",
+    "扣除",
+    "花费",
+    "才能",
+    "才可",
+    "方可",
+    "进入",
+    "到账",
 )
 _CLAUSE_BOUNDARIES = "，,。；;！？!?\n"
 _SEMANTIC_CONTEXT_WINDOW = 24
@@ -568,25 +606,39 @@ def _semantic_bounds(value: str, start: int, end: int) -> tuple[int, int]:
     return max(left_edges, default=lower), min(right_edges, default=upper)
 
 
-def _nearest_semantic_distance(
+def _nearest_preceding_semantic_distance(
     value: str,
     *,
     start: int,
     end: int,
     terms: Sequence[str],
 ) -> int | None:
-    lower, upper = _semantic_bounds(value, start, end)
+    lower, _ = _semantic_bounds(value, start, end)
     nearest: int | None = None
     for term in terms:
         search_from = lower
-        while (position := value.find(term, search_from, upper)) >= 0:
+        while (position := value.find(term, search_from, start)) >= 0:
             term_end = position + len(term)
             if term_end <= start:
                 distance = start - term_end
-            elif position >= end:
-                distance = position - end
-            else:
-                distance = 0
+                nearest = distance if nearest is None else min(nearest, distance)
+            search_from = position + 1
+    return nearest
+
+
+def _nearest_following_semantic_distance(
+    value: str,
+    *,
+    start: int,
+    end: int,
+    terms: Sequence[str],
+) -> int | None:
+    _, upper = _semantic_bounds(value, start, end)
+    nearest: int | None = None
+    for term in terms:
+        search_from = end
+        while (position := value.find(term, search_from, upper)) >= 0:
+            distance = position - end
             nearest = distance if nearest is None else min(nearest, distance)
             search_from = position + 1
     return nearest
@@ -594,26 +646,64 @@ def _nearest_semantic_distance(
 
 def _redact_ambiguous_yuan(value: str) -> str:
     def replace(match: re.Match[str]) -> str:
-        financial_distance = _nearest_semantic_distance(
+        financial_distance = _nearest_preceding_semantic_distance(
             value,
             start=match.start(),
             end=match.end(),
             terms=_FINANCIAL_SEMANTIC_TERMS,
         )
-        return "" if financial_distance is not None else match.group(0)
+        resource_distance = _nearest_preceding_semantic_distance(
+            value,
+            start=match.start(),
+            end=match.end(),
+            terms=_POWER_RESOURCE_SEMANTIC_TERMS,
+        )
+        if financial_distance is not None or resource_distance is not None:
+            if financial_distance is not None and (
+                resource_distance is None or financial_distance <= resource_distance
+            ):
+                return ""
+            return match.group(0)
+
+        _, upper = _semantic_bounds(value, match.start(), match.end())
+        suffix = value[match.end() : upper].lstrip()
+        if suffix.startswith(tuple(_POWER_RESOURCE_SUFFIX_STARTS)):
+            return match.group(0)
+        if not suffix or suffix.startswith(_TRANSACTION_ACTION_SUFFIXES):
+            return ""
+        return match.group(0)
 
     return _AMBIGUOUS_YUAN_AMOUNT.sub(replace, value)
 
 
 def _redact_financial_percentages(value: str) -> str:
     def replace(match: re.Match[str]) -> str:
-        financial_distance = _nearest_semantic_distance(
+        financial_distance = _nearest_preceding_semantic_distance(
             value,
             start=match.start(),
             end=match.end(),
             terms=_FINANCIAL_SEMANTIC_TERMS,
         )
-        gameplay_distance = _nearest_semantic_distance(
+        gameplay_distance = _nearest_preceding_semantic_distance(
+            value,
+            start=match.start(),
+            end=match.end(),
+            terms=_GAMEPLAY_SEMANTIC_TERMS,
+        )
+        if financial_distance is not None or gameplay_distance is not None:
+            if financial_distance is not None and (
+                gameplay_distance is None or financial_distance <= gameplay_distance
+            ):
+                return ""
+            return match.group(0)
+
+        financial_distance = _nearest_following_semantic_distance(
+            value,
+            start=match.start(),
+            end=match.end(),
+            terms=_FINANCIAL_SEMANTIC_TERMS,
+        )
+        gameplay_distance = _nearest_following_semantic_distance(
             value,
             start=match.start(),
             end=match.end(),

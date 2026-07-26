@@ -623,6 +623,33 @@ def test_legacy_summary_redacts_yuan_only_with_local_financial_semantics(context
     assert "100元" not in joined
 
 
+@pytest.mark.parametrize(
+    ("sentence", "preserved"),
+    [
+        ("购买道具后获得100元核", "100元核"),
+        ("支付代价后恢复100元力", "100元力"),
+        ("支付100元购买", None),
+        ("门票100元才能进入", None),
+        ("需100元才能进入", None),
+        ("花100元解锁", None),
+        ("记录为100元。", None),
+    ],
+)
+def test_legacy_summary_binds_yuan_to_nearest_preceding_governing_cue(
+    sentence: str,
+    preserved: str | None,
+) -> None:
+    spec = complete_spec()
+    spec["origin"] = [sentence]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    if preserved is None:
+        assert "100元" not in joined
+    else:
+        assert preserved in joined
+
+
 def test_legacy_summary_preserves_yuan_power_stage_and_path_text() -> None:
     spec = complete_spec()
     spec["stages"][0]["name"] = "3级元婴"
@@ -671,6 +698,26 @@ def test_legacy_summary_redacts_financial_percentage_across_conjunction() -> Non
     spec["origin"] = ["手续费同时调整为12.5%"]
 
     assert "12.5%" not in "\n".join(legacy_power_summary(spec))
+
+
+def test_legacy_summary_percentages_use_nearest_preceding_governing_cue() -> None:
+    spec = complete_spec()
+    spec["origin"] = ["手续费同时调整为12.5%并使暴击率20%"]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert "12.5%" not in joined
+    assert "暴击率20%" in joined
+
+
+def test_legacy_summary_percentage_uses_following_cue_only_without_preceding_cue() -> None:
+    spec = complete_spec()
+    spec["origin"] = ["20%的暴击率，12.5%的手续费"]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert "20%的暴击率" in joined
+    assert "12.5%的手续费" not in joined
 
 
 @pytest.mark.parametrize(
