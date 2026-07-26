@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
+from collections.abc import Mapping
 from copy import deepcopy
+from itertools import islice
 from typing import Any
 
 from packages.story_core.agent_base import compact_text, parse_json_message_content
@@ -13,6 +16,18 @@ from packages.story_core.genre_plugins import (
 )
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.models import NovelProject
+from packages.story_core.novel_type_catalog import (
+    normalize_novel_type_ids,
+    novel_type_prompt_context,
+    runtime_novel_type,
+)
+from packages.story_core.power_system_templates import compact_power_system_template
+from packages.story_core.power_systems import (
+    PowerSystemValidationError,
+    legacy_power_summary,
+    power_system_prompt_slice,
+    validate_power_system_spec,
+)
 from packages.story_core.runtime_config import resolve_stage_runtime
 from packages.story_core.web_game_economy import appraisal_rules, exchange_rules, market_rules
 
@@ -21,35 +36,274 @@ class WorldEnrichmentError(RuntimeError):
     pass
 
 
-def _compact_project_payload(project: NovelProject) -> dict[str, Any]:
+_PROJECT_CONTEXT_BUDGET = 20_000
+_PROJECT_CONTEXT_MAX = 24_000
+_FINAL_PROMPT_MAX = 30_000
+_MIN_PROJECT_CONTEXT_BUDGET = 6_000
+_PROJECTION_PROFILES = (
+    (240, 8, 4),
+    (160, 6, 4),
+    (96, 4, 3),
+    (48, 2, 2),
+    (24, 1, 1),
+)
+
+
+def _selected_novel_type_plugin(project: NovelProject, plugins=None):
+    plugins = plugins if plugins is not None else select_genre_plugins(project)
+    plugin_by_id = {plugin.plugin_id: plugin for plugin in plugins}
+    explicit_ids = normalize_novel_type_ids(
+        project.world_blueprint.get("genre_plugin_ids")
+        if isinstance(project.world_blueprint, dict)
+        else None
+    )
+    for plugin_id in explicit_ids:
+        if plugin_id in plugin_by_id and plugin_id != "generic_webnovel":
+            return plugin_by_id[plugin_id]
+    for plugin in plugins:
+        if plugin.plugin_id not in {"generic_webnovel", "eastern_fantasy"}:
+            return plugin
+    return plugin_by_id["generic_webnovel"]
+
+
+def _safe_compact_text(value: Any, limit: int) -> str:
+    try:
+        return compact_text(value, limit)
+    except Exception:
+        return ""
+
+
+def _bounded_json_projection(
+    value: Any,
+    *,
+    chars: int,
+    items: int,
+    depth: int,
+) -> Any:
+    if isinstance(value, str):
+        return _safe_compact_text(value, chars)
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return max(-1_000_000, min(value, 1_000_000))
+    if isinstance(value, float):
+        return max(-1_000_000.0, min(value, 1_000_000.0)) if math.isfinite(value) else 0.0
+    if depth <= 0:
+        return ""
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        try:
+            source_items = value.items()
+            for raw_key, item in islice(source_items, items):
+                key = _safe_compact_text(raw_key, 80)
+                if key and key not in result:
+                    result[key] = _bounded_json_projection(
+                        item,
+                        chars=chars,
+                        items=items,
+                        depth=depth - 1,
+                    )
+        except Exception:
+            return result
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            _bounded_json_projection(
+                item,
+                chars=chars,
+                items=items,
+                depth=depth - 1,
+            )
+            for item in islice(value, items)
+        ]
+    return _safe_compact_text(value, chars)
+
+
+def _bounded_world_blueprint(
+    value: Any,
+    *,
+    chars: int,
+    items: int,
+    depth: int,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    for key in ("genre_plugin_ids", "premise"):
+        try:
+            if key in value:
+                result[key] = _bounded_json_projection(
+                    value[key], chars=chars, items=items, depth=depth
+                )
+        except Exception:
+            continue
+    try:
+        if "power_system_spec" in value:
+            result["power_system_spec"] = power_system_prompt_slice(
+                value.get("power_system_spec")
+            )
+    except Exception:
+        result["power_system_spec"] = {}
+
+    try:
+        source_items = value.items()
+        added = 0
+        for raw_key, item in source_items:
+            key = _safe_compact_text(raw_key, 80)
+            if not key or key in result or key == "power_system_spec":
+                continue
+            result[key] = _bounded_json_projection(
+                item,
+                chars=chars,
+                items=items,
+                depth=depth,
+            )
+            added += 1
+            if added >= items:
+                break
+    except Exception:
+        pass
+    return result
+
+
+def _project_payload(
+    project: NovelProject,
+    *,
+    chars: int,
+    items: int,
+    depth: int,
+) -> dict[str, Any]:
     return {
-        "title": project.title,
-        "source_path": project.source_path,
-        "seed_outline": compact_text(project.seed_outline, 2600),
-        "world_summary": compact_text(project.world_summary, 1400),
-        "current_focus": compact_text(project.current_focus, 1400),
-        "author_constraints": project.author_constraints[:8],
-        "world_blueprint": project.world_blueprint,
-        "character_profiles": project.character_profiles[:24],
-        "relationship_graph": project.relationship_graph[:48],
+        "title": _safe_compact_text(project.title, min(chars, 240)),
+        "source_path": _safe_compact_text(project.source_path, min(chars, 320)),
+        "seed_outline": _safe_compact_text(project.seed_outline, min(chars * 8, 2600)),
+        "world_summary": _safe_compact_text(project.world_summary, min(chars * 5, 1400)),
+        "current_focus": _safe_compact_text(project.current_focus, min(chars * 5, 1400)),
+        "author_constraints": _bounded_json_projection(
+            project.author_constraints, chars=chars, items=items, depth=depth
+        ),
+        "world_blueprint": _bounded_world_blueprint(
+            project.world_blueprint, chars=chars, items=items, depth=depth
+        ),
+        "character_profiles": _bounded_json_projection(
+            project.character_profiles, chars=chars, items=items, depth=depth
+        ),
+        "relationship_graph": _bounded_json_projection(
+            project.relationship_graph, chars=chars, items=items, depth=depth
+        ),
     }
+
+
+def _serialized_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _compact_project_payload(
+    project: NovelProject,
+    *,
+    budget: int = _PROJECT_CONTEXT_BUDGET,
+) -> dict[str, Any]:
+    bounded_budget = max(6_000, min(int(budget), _PROJECT_CONTEXT_MAX))
+    candidate: dict[str, Any] = {}
+    for chars, items, depth in _PROJECTION_PROFILES:
+        candidate = _project_payload(
+            project,
+            chars=chars,
+            items=items,
+            depth=depth,
+        )
+        if len(_serialized_json(candidate)) <= bounded_budget:
+            return candidate
+    return candidate
+
+
+def _runtime_power_template(selected_plugin: Any) -> dict[str, Any]:
+    try:
+        record = runtime_novel_type(selected_plugin.plugin_id)
+        if record is not None:
+            template = novel_type_prompt_context(record).get(
+                "genre_power_system_template"
+            )
+            if isinstance(template, Mapping):
+                return deepcopy(dict(template))
+    except Exception:
+        pass
+    return compact_power_system_template(selected_plugin.power_system_template)
+
+
+def _core_power_template(template: Mapping[str, Any], budget: int) -> dict[str, Any]:
+    serialized = _serialized_json(template)
+    if len(serialized) <= budget:
+        return deepcopy(dict(template))
+
+    minimum_path_count = template.get("minimum_path_count", 2)
+    if not isinstance(minimum_path_count, int) or isinstance(minimum_path_count, bool):
+        minimum_path_count = 2
+    minimum_path_count = max(1, min(minimum_path_count, 64))
+    for chars, items in ((120, 8), (80, 6), (48, 4), (24, 2), (12, 1)):
+        candidate = {
+            "system_form": _safe_compact_text(template.get("system_form"), chars),
+            "required_sections": _bounded_json_projection(
+                template.get("required_sections", []),
+                chars=chars,
+                items=items,
+                depth=2,
+            ),
+            "minimum_path_count": minimum_path_count,
+            "fixed_milestones": _bounded_json_projection(
+                template.get("fixed_milestones", []),
+                chars=24,
+                items=items,
+                depth=2,
+            ),
+        }
+        if len(_serialized_json(candidate)) <= budget:
+            return candidate
+    raise WorldEnrichmentError("world_enrichment_prompt_budget_exceeded")
 
 
 def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
     payload = _compact_project_payload(project)
-    plugins = select_genre_plugins(project)
+    prompt_project = project.model_copy(
+        update={
+            "title": payload["title"],
+            "source_path": payload["source_path"],
+            "seed_outline": payload["seed_outline"],
+            "world_summary": payload["world_summary"],
+            "current_focus": payload["current_focus"],
+            "author_constraints": payload["author_constraints"],
+            "world_blueprint": payload["world_blueprint"],
+            "character_profiles": payload["character_profiles"],
+            "relationship_graph": payload["relationship_graph"],
+        }
+    )
+    plugins = select_genre_plugins(prompt_project)
+    selected_plugin = _selected_novel_type_plugin(prompt_project, plugins)
+    power_template = _runtime_power_template(selected_plugin)
     mode_line = (
         "请在不重写已有剧情的前提下，补强中文长篇网文项目的世界规则手册，只返回 JSON。"
         if rules_only
         else "请基于导入材料，为中文长篇网文生成第一章前可用的结构化世界档案增强版，只返回 JSON。"
     )
-    return "\n".join(
-        [
+    lines = [
             mode_line,
             "不要写小说正文，不要推进章节剧情；只整理世界观、角色档案、关系网、类型规则和后续写作约束。",
             "必须沿用输入里的既有设定，不要随意改名；规则要能支撑连续几十章的成长、资源、势力冲突和爽点循环。",
             "输出 JSON 字段：",
-            "world_blueprint: {premise, world_rules, power_system, locations, factions, current_arc, constraints, relationship_graph, progression_rules, economy_rules, quest_rules, faction_rules, panel_rules, chapter_formula, forbidden_breaks, opening_arc, volume_plan, longform_framework, world_systems, living_world, npc_system, quest_network, server_runtime, map_ecology}",
+            "world_blueprint: {premise, world_rules, power_system, power_system_spec, locations, factions, current_arc, constraints, relationship_graph, progression_rules, economy_rules, quest_rules, faction_rules, panel_rules, chapter_formula, forbidden_breaks, opening_arc, volume_plan, longform_framework, world_systems, living_world, npc_system, quest_network, server_runtime, map_ecology}",
+            "power_system_spec 必须是完整具体的结构化力量体系，禁止使用待定、略、同上或其他模糊占位符。规范字段：",
+            "name: 体系名称字符串；origin: 力量来源与获得方式字符串数组；attributes: [{name, effect}] 属性名与具体效果；",
+            "paths: [{name, role, core_resource, core_attributes, weapons, armor, combat_loop, strengths, weaknesses, skill_categories, branches, transfer_task, advancement}]，逐路线写明职责、资源、属性、武防、战斗循环、强弱项、技能类别、至少两个分支、转职任务和晋升；",
+            "stages: [{name, level, entry, change, failure}]，按顺序写明阶段名、等级里程碑、进入条件、能力变化和失败后果；",
+            "skills: 技能获得与使用规则；equipment: 装备类别与限制；resources: 资源产出、转化与消耗；advancement: 晋升条件与流程；",
+            "costs: 使用和突破代价；counters: 路线或机制克制；boundaries: 越级与能力硬边界；social_impact: 对组织、职业和秩序的影响；visibility: 角色可观察到的信息；continuity_ledger: 后续逐章必须追踪的状态字段。以上字段除 name 外均使用数组，paths/stages/attributes 使用前述对象数组。",
+            f"selected_novel_type: {selected_plugin.plugin_id}",
+            f"genre_power_system_template: {_serialized_json(power_template)}",
             "character_profiles: [{name, role, motivation, current_state, personality, speech_style, goals, secrets, conflict_hooks}]",
             "world_summary: 120字以内的世界摘要",
             "current_focus: 下一章/下一阶段执行焦点，必须包含主角短期目标、外部压力、规则展示点",
@@ -68,9 +322,45 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "如果是网游/游戏经济题材，必须明确币制和低级物价尺度，并严格复用题材插件提供的交易行与官方兑换统一边界。",
             f"已识别题材插件：{plugin_prompt_guide(plugins)}",
             "请根据题材插件补齐可泛化的类型规则；若是复合题材，主题材负责主线逻辑，副题材提供钩子、规则或爽点。",
-            f"当前项目数据：{json.dumps(payload, ensure_ascii=False)}",
         ]
+    context_prefix = "当前项目数据："
+    template_prefix = "genre_power_system_template: "
+    template_index = next(
+        index for index, line in enumerate(lines) if line.startswith(template_prefix)
     )
+    lines_without_template = list(lines)
+    lines_without_template[template_index] = template_prefix
+    fixed_without_template = len(
+        "\n".join([*lines_without_template, context_prefix])
+    )
+    if fixed_without_template >= _FINAL_PROMPT_MAX:
+        raise WorldEnrichmentError(
+            "world_enrichment_prompt_fixed_instructions_exceed_budget"
+        )
+
+    template_budget = min(
+        6_000,
+        _FINAL_PROMPT_MAX
+        - fixed_without_template
+        - _MIN_PROJECT_CONTEXT_BUDGET,
+    )
+    if template_budget <= 0:
+        raise WorldEnrichmentError("world_enrichment_prompt_budget_exceeded")
+    power_template = _core_power_template(power_template, template_budget)
+    lines[template_index] = f"{template_prefix}{_serialized_json(power_template)}"
+
+    fixed_length = len("\n".join([*lines, context_prefix]))
+    context_budget = min(
+        _PROJECT_CONTEXT_MAX,
+        _FINAL_PROMPT_MAX - fixed_length,
+    )
+    if context_budget < _MIN_PROJECT_CONTEXT_BUDGET:
+        raise WorldEnrichmentError("world_enrichment_prompt_budget_exceeded")
+    payload = _compact_project_payload(project, budget=context_budget)
+    prompt = "\n".join([*lines, f"{context_prefix}{_serialized_json(payload)}"])
+    if len(prompt) > _FINAL_PROMPT_MAX:
+        raise WorldEnrichmentError("world_enrichment_prompt_budget_exceeded")
+    return prompt
 
 
 def _as_string_list(value: Any, limit: int, *, item_limit: int = 240) -> list[str]:
@@ -1375,10 +1665,75 @@ def _plugin_metadata(project: NovelProject) -> tuple[list[dict[str, Any]], dict[
     return metadata, rulebook
 
 
-def _merge_enrichment(project: NovelProject, parsed: dict[str, Any]) -> NovelProject:
-    next_project = project.model_copy(deep=True)
+def _power_system_validation_error(error: PowerSystemValidationError) -> ValueError:
+    missing = ",".join(error.missing_sections)
+    violations = ",".join(error.violations)
+    return ValueError(
+        "invalid_power_system_spec: "
+        f"missing_sections=[{missing}]; violations=[{violations}]"
+    )
+
+
+def _validated_power_system_merge(
+    project: NovelProject,
+    incoming_world: dict[str, Any],
+    current_world: dict[str, Any],
+    *,
+    rules_only: bool | None,
+) -> tuple[dict[str, Any] | None, bool]:
+    selected_plugin = _selected_novel_type_plugin(project)
+    validation_args = {
+        "novel_type_id": selected_plugin.plugin_id,
+        "template": selected_plugin.power_system_template,
+    }
+    incoming_supplied = "power_system_spec" in incoming_world
+
+    current_validated: dict[str, Any] | None = None
+    if "power_system_spec" in current_world:
+        try:
+            current_validated = validate_power_system_spec(
+                current_world.get("power_system_spec"), **validation_args
+            )
+        except PowerSystemValidationError:
+            current_validated = None
+
+    if incoming_supplied:
+        try:
+            incoming_validated = validate_power_system_spec(
+                incoming_world.get("power_system_spec"), **validation_args
+            )
+        except PowerSystemValidationError as error:
+            raise _power_system_validation_error(error) from error
+        changed = current_validated is None or incoming_validated != current_validated
+        return deepcopy(incoming_validated), changed
+
+    if current_validated is not None:
+        return deepcopy(current_world["power_system_spec"]), False
+    if rules_only is not False:
+        return None, False
+
+    try:
+        validate_power_system_spec(current_world.get("power_system_spec"), **validation_args)
+    except PowerSystemValidationError as error:
+        raise _power_system_validation_error(error) from error
+    raise ValueError("invalid_power_system_spec: validation_failed")
+
+
+def _merge_enrichment(
+    project: NovelProject,
+    parsed: dict[str, Any],
+    *,
+    rules_only: bool | None = None,
+) -> NovelProject:
     current_world = deepcopy(project.world_blueprint or {})
     incoming_world = parsed.get("world_blueprint") if isinstance(parsed.get("world_blueprint"), dict) else {}
+    power_system_spec, power_system_changed = _validated_power_system_merge(
+        project,
+        incoming_world,
+        current_world,
+        rules_only=rules_only,
+    )
+    next_project = project.model_copy(deep=True)
     genre_plugins, plugin_rulebook = _plugin_metadata(project)
 
     relationships = _as_relationships(
@@ -1388,13 +1743,25 @@ def _merge_enrichment(project: NovelProject, parsed: dict[str, Any]) -> NovelPro
     world_blueprint: dict[str, Any] = {
         "premise": compact_text(str(incoming_world.get("premise") or current_world.get("premise") or project.world_summary), 360),
         "world_rules": _merge_string_lists(incoming_world.get("world_rules"), current_world.get("world_rules"), limit=16),
-        "power_system": _merge_string_lists(incoming_world.get("power_system"), current_world.get("power_system"), limit=16),
+        "power_system": (
+            legacy_power_summary(power_system_spec)
+            if power_system_changed
+            else deepcopy(current_world.get("power_system", []))
+            if power_system_spec is not None
+            else _merge_string_lists(
+                incoming_world.get("power_system"),
+                current_world.get("power_system"),
+                limit=16,
+            )
+        ),
         "locations": _as_entry_list(incoming_world.get("locations") or current_world.get("locations"), 16),
         "factions": _as_entry_list(incoming_world.get("factions") or current_world.get("factions"), 16),
         "current_arc": compact_text(str(incoming_world.get("current_arc") or current_world.get("current_arc") or project.current_focus), 520),
         "relationship_graph": relationships,
         "genre_plugins": genre_plugins,
     }
+    if power_system_spec is not None:
+        world_blueprint["power_system_spec"] = deepcopy(power_system_spec)
     world_blueprint["opening_arc"] = _merge_opening_arc(project, incoming_world, current_world, genre_plugins)
     world_blueprint["volume_plan"] = _merge_volume_plan(project, incoming_world, current_world, genre_plugins)
     world_blueprint["longform_framework"] = _merge_longform_framework(project, incoming_world, current_world, genre_plugins)
@@ -1487,7 +1854,12 @@ def _call_world_enrichment_model(project: NovelProject, *, rules_only: bool) -> 
     parsed = parse_json_message_content(response)
     if not parsed:
         raise WorldEnrichmentError("invalid_llm_response")
-    return _merge_enrichment(project, parsed)
+    try:
+        return _merge_enrichment(project, parsed, rules_only=rules_only)
+    except TypeError as error:
+        if "unexpected keyword argument 'rules_only'" not in str(error):
+            raise
+        return _merge_enrichment(project, parsed)
 
 
 def enrich_project_world(project: NovelProject) -> NovelProject:

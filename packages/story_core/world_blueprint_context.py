@@ -132,6 +132,37 @@ def render_world_markdown(title: Any, blueprint: Any) -> str:
 def render_power_markdown(title: Any, blueprint: Any) -> str:
     world = blueprint if isinstance(blueprint, dict) else {}
     lines = [MANAGED_MARKER, "", f"# 《{_markdown_title(title)}》力量体系"]
+    structured = world.get("power_system_spec")
+
+    if isinstance(structured, dict) and structured:
+        sections = (
+            ("体系总览", (("体系名称", structured.get("name")),)),
+            ("力量来源", (("来源", structured.get("origin")),)),
+            ("属性", (("属性", structured.get("attributes")),)),
+            (
+                "阶段与晋升",
+                (("阶段", structured.get("stages")), ("晋升规则", structured.get("advancement"))),
+            ),
+            ("职业与路线", (("路线", structured.get("paths")),)),
+            (
+                "技能与装备",
+                (("技能", structured.get("skills")), ("装备", structured.get("equipment"))),
+            ),
+            (
+                "资源与代价",
+                (("资源", structured.get("resources")), ("代价", structured.get("costs"))),
+            ),
+            (
+                "克制与边界",
+                (("克制", structured.get("counters")), ("边界", structured.get("boundaries"))),
+            ),
+            ("社会影响", (("影响", structured.get("social_impact")),)),
+            ("信息可见性", (("可见性", structured.get("visibility")),)),
+            ("连续性账本", (("账本字段", structured.get("continuity_ledger")),)),
+        )
+        for heading, groups in sections:
+            _append_structured_power_section(lines, heading, groups)
+        return "\n".join(lines).rstrip() + "\n"
 
     _append_section(lines, "力量与职业", world.get("power_system"))
     _append_section(lines, "成长与战斗", world.get("progression_rules"))
@@ -142,6 +173,117 @@ def render_power_markdown(title: Any, blueprint: Any) -> str:
         (("约束", world.get("constraints")), ("禁止破坏", world.get("forbidden_breaks"))),
     )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _append_structured_power_section(
+    lines: list[str],
+    heading: str,
+    groups: tuple[tuple[str, Any], ...],
+) -> None:
+    lines.extend(("", f"## {heading}", ""))
+    populated = [(label, value) for label, value in groups if _has_content(value)]
+    if len(groups) == 1:
+        if populated:
+            lines.extend(_structured_power_group_lines(*populated[0]))
+        return
+    for index, (label, value) in enumerate(populated):
+        if index:
+            lines.append("")
+        lines.extend((f"### {label}", ""))
+        lines.extend(_structured_power_group_lines(label, value))
+
+
+def _structured_power_group_lines(label: str, value: Any) -> list[str]:
+    field_order = {
+        "阶段": ("level", "entry", "change", "failure"),
+        "路线": (
+            "role",
+            "core_attributes",
+            "core_resource",
+            "weapons",
+            "armor",
+            "skill_categories",
+            "combat_loop",
+            "strengths",
+            "weaknesses",
+            "branches",
+            "transfer_task",
+            "advancement",
+        ),
+    }.get(label)
+    if field_order is None or not isinstance(value, (list, tuple)):
+        return _structured_markdown_list(value)
+
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            lines.append(f"- {_structured_inline_markdown(item)}")
+            continue
+        escaped_name = _markdown_escape_line(
+            item.get("name") or item.get("title") or ""
+        )
+        lines.append(f"- **{escaped_name}**" if escaped_name else "- （未命名）")
+        for field in field_order:
+            if _has_content(item.get(field)):
+                lines.append(
+                    f"  - **{_structured_field_label(field)}**："
+                    f"{_structured_inline_markdown(item[field])}"
+                )
+    return lines
+
+
+def _markdown_escape_line(value: Any) -> str:
+    try:
+        text = str(value or "")
+    except Exception:
+        return ""
+    one_line = " ".join(
+        "".join(character if character.isprintable() else " " for character in text).split()
+    )
+    escaped: list[str] = []
+    for character in one_line:
+        if character in "\\`*_[]<>#":
+            escaped.append("\\")
+        escaped.append(character)
+    return "".join(escaped)
+
+
+def _structured_markdown_list(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [f"- {_structured_inline_markdown(item)}" for item in value]
+    if isinstance(value, dict):
+        if any(key in value for key in ("name", "title")):
+            return [f"- {_structured_inline_markdown(value)}"]
+        return [
+            f"- **{_structured_field_label(key)}**："
+            f"{_structured_inline_markdown(value[key])}"
+            for key in sorted(value, key=str)
+        ]
+    return [f"- {_structured_inline_markdown(value)}"]
+
+
+def _structured_inline_markdown(value: Any) -> str:
+    if isinstance(value, dict):
+        name = _markdown_escape_line(value.get("name") or value.get("title") or "")
+        details = [
+            f"{_structured_field_label(key)}：{_structured_inline_markdown(value[key])}"
+            for key in sorted(value, key=str)
+            if key not in {"name", "title"} and _has_content(value[key])
+        ]
+        if name and details:
+            return f"**{name}**：" + "；".join(details)
+        if name:
+            return f"**{name}**"
+        return "；".join(details) or "（空）"
+    if isinstance(value, (list, tuple)):
+        return "；".join(_structured_inline_markdown(item) for item in value)
+    if value is None:
+        return "（空）"
+    return _markdown_escape_line(value)
+
+
+def _structured_field_label(key: Any) -> str:
+    return _markdown_escape_line(_field_label(key))
 
 
 def sync_world_markdown(
@@ -298,6 +440,23 @@ def _field_label(key: Any) -> str:
         "reward_rules": "奖励规则",
         "stages": "阶段",
         "summary": "摘要",
+        "advancement": "晋升",
+        "armor": "护甲",
+        "branches": "分支",
+        "change": "能力变化",
+        "combat_loop": "战斗循环",
+        "core_attributes": "核心属性",
+        "core_resource": "核心资源",
+        "effect": "效果",
+        "entry": "进入条件",
+        "failure": "失败后果",
+        "level": "等级",
+        "role": "职责",
+        "skill_categories": "技能类别",
+        "strengths": "强项",
+        "transfer_task": "转职任务",
+        "weaknesses": "弱项",
+        "weapons": "武器",
     }
     return labels.get(str(key), str(key).replace("_", " "))
 

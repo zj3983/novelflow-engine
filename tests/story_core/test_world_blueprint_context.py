@@ -541,6 +541,173 @@ def test_power_markdown_renders_all_rule_groups_without_mutation():
     assert blueprint == original
 
 
+def test_power_markdown_prefers_structured_spec_with_exact_order_and_nested_details():
+    blueprint = {
+        "power_system": ["旧版力量段落不得显示"],
+        "power_system_spec": {
+            "name": "神域职业体系",
+            "origin": ["觉醒石连接神域权限"],
+            "attributes": [{"name": "智力", "effect": "提高法术强度"}],
+            "stages": [
+                {
+                    "name": "正式职业",
+                    "level": 10,
+                    "entry": "完成导师试炼",
+                    "change": "解锁职业资源",
+                    "failure": "试炼冷却七日",
+                }
+            ],
+            "paths": [
+                {
+                    "name": "法师",
+                    "role": "远程元素输出",
+                    "core_resource": "法力与元素印记",
+                    "core_attributes": ["智力", "精神"],
+                    "weapons": ["法杖", "魔典"],
+                    "armor": ["布甲"],
+                    "skill_categories": ["元素法术", "护盾法术"],
+                    "combat_loop": "施法叠印记后引爆",
+                    "strengths": ["远程爆发"],
+                    "weaknesses": ["近身受限"],
+                    "branches": ["烈焰法师", "冰霜法师"],
+                    "transfer_task": "守住元素回廊",
+                    "advancement": ["收集元素核心"],
+                }
+            ],
+            "skills": ["导师和技能书授予技能"],
+            "equipment": ["法杖增幅元素法术"],
+            "resources": ["元素核心来自首领掉落"],
+            "advancement": ["等级、任务和材料同时满足"],
+            "costs": ["透支法力会造成虚弱"],
+            "counters": ["沉默克制持续施法"],
+            "boundaries": ["不得无条件跨越两个阶段"],
+            "social_impact": ["公会按职业配置队伍"],
+            "visibility": ["敌人只能看到公开等级"],
+            "continuity_ledger": ["level", "class_path", "skills", "equipment"],
+        },
+    }
+    original = deepcopy(blueprint)
+
+    rendered = blueprint_context.render_power_markdown("神域", blueprint)
+
+    headings = [
+        "## 体系总览",
+        "## 力量来源",
+        "## 属性",
+        "## 阶段与晋升",
+        "## 职业与路线",
+        "## 技能与装备",
+        "## 资源与代价",
+        "## 克制与边界",
+        "## 社会影响",
+        "## 信息可见性",
+        "## 连续性账本",
+    ]
+    assert [rendered.index(heading) for heading in headings] == sorted(
+        rendered.index(heading) for heading in headings
+    )
+    for concrete_text in (
+        "神域职业体系", "正式职业", "完成导师试炼", "试炼冷却七日",
+        "法师", "远程元素输出", "烈焰法师", "冰霜法师", "守住元素回廊",
+    ):
+        assert concrete_text in rendered
+    assert "旧版力量段落不得显示" not in rendered
+    assert "## 力量与职业" not in rendered
+    assert "\n".join(
+        (
+            "- **正式职业**",
+            "  - **等级**：10",
+            "  - **进入条件**：完成导师试炼",
+            "  - **能力变化**：解锁职业资源",
+            "  - **失败后果**：试炼冷却七日",
+        )
+    ) in rendered
+    assert "\n".join(
+        (
+            "- **法师**",
+            "  - **职责**：远程元素输出",
+            "  - **核心属性**：智力；精神",
+            "  - **核心资源**：法力与元素印记",
+            "  - **武器**：法杖；魔典",
+            "  - **护甲**：布甲",
+            "  - **技能类别**：元素法术；护盾法术",
+            "  - **战斗循环**：施法叠印记后引爆",
+            "  - **强项**：远程爆发",
+            "  - **弱项**：近身受限",
+            "  - **分支**：烈焰法师；冰霜法师",
+            "  - **转职任务**：守住元素回廊",
+            "  - **晋升**：收集元素核心",
+        )
+    ) in rendered
+    assert blueprint == original
+
+
+def test_structured_power_markdown_escapes_dynamic_structure_syntax():
+    blueprint = {
+        "power_system_spec": {
+            "name": "bad**\n## injected",
+            "origin": ["[source] `code` <tag> # heading"],
+            "attributes": [
+                {
+                    "name": "attr_name",
+                    "effect": "line\n* effect",
+                    "bad\n## key-injected": "value",
+                }
+            ],
+            "stages": [
+                {
+                    "name": "stage**\n## injected",
+                    "level": 10,
+                    "entry": "[gate] `tick` <tag> _x_ \\ path",
+                    "change": "change#value",
+                    "failure": "failure\x00value",
+                }
+            ],
+            "paths": [
+                {
+                    "name": "path**\n## injected",
+                    "role": "role [tank]",
+                    "core_attributes": ["power_one"],
+                    "core_resource": "mana`pool`",
+                    "weapons": ["staff*one"],
+                    "armor": ["robe<cloth>"],
+                    "skill_categories": ["burst#magic"],
+                    "combat_loop": "cast\nthen burst",
+                    "strengths": ["range[far]"],
+                    "weaknesses": ["silence_weak"],
+                    "branches": ["fire**mage", "ice`mage`"],
+                    "transfer_task": "enter ## trial",
+                    "advancement": ["rank > novice"],
+                }
+            ],
+            "skills": ["skill [one]"],
+            "equipment": ["gear `one`"],
+            "resources": ["resource <one>"],
+            "advancement": ["advance #one"],
+            "costs": ["cost *one*"],
+            "counters": ["counter _one_"],
+            "boundaries": ["boundary > one"],
+            "social_impact": ["guild [impact]"],
+            "visibility": ["visible `rank`"],
+            "continuity_ledger": ["level#value"],
+        }
+    }
+
+    rendered = blueprint_context.render_power_markdown("神域", blueprint)
+
+    assert rendered.count("\n## ") == 11
+    assert "\n## injected" not in rendered
+    assert "\n## key-injected" not in rendered
+    assert "- **stage\\*\\* \\#\\# injected**" in rendered
+    assert "- **path\\*\\* \\#\\# injected**" in rendered
+    assert (
+        "  - **进入条件**：\\[gate\\] \\`tick\\` \\<tag\\> "
+        "\\_x\\_ \\\\ path"
+    ) in rendered
+    assert "  - **分支**：fire\\*\\*mage；ice\\`mage\\`" in rendered
+    assert "  - **战斗循环**：cast then burst" in rendered
+
+
 def test_sync_world_markdown_creates_and_refreshes_managed_files_without_mutation(tmp_path):
     blueprint = {
         "premise": "旧背景",
