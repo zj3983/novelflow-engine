@@ -752,6 +752,7 @@ export type ImportedWorldBlueprint = {
   premise?: string;
   world_rules?: string[];
   power_system?: string[];
+  power_system_spec?: PowerSystemSpec;
   locations?: ImportedWorldEntry[];
   factions?: ImportedWorldEntry[];
   current_arc?: string;
@@ -777,6 +778,53 @@ export type ImportedWorldBlueprint = {
   map_ecology?: ImportedMapEcology;
   relationship_graph?: ImportedRelationshipEdge[];
   monster_profiles?: ImportedMonsterProfile[];
+};
+
+export type PowerSystemAttribute = {
+  name?: string;
+  effect?: string;
+};
+
+export type PowerSystemStage = {
+  name?: string;
+  level?: number;
+  entry?: string;
+  change?: string;
+  failure?: string;
+};
+
+export type PowerSystemPath = {
+  name?: string;
+  role?: string;
+  core_resource?: string;
+  core_attributes?: string[];
+  weapons?: string[];
+  armor?: string[];
+  combat_loop?: string;
+  strengths?: string[];
+  weaknesses?: string[];
+  skill_categories?: string[];
+  branches?: string[];
+  transfer_task?: string;
+  advancement?: string[];
+};
+
+export type PowerSystemSpec = {
+  name?: string;
+  origin?: string[];
+  attributes?: PowerSystemAttribute[];
+  paths?: PowerSystemPath[];
+  stages?: PowerSystemStage[];
+  skills?: string[];
+  equipment?: string[];
+  resources?: string[];
+  advancement?: string[];
+  costs?: string[];
+  counters?: string[];
+  boundaries?: string[];
+  social_impact?: string[];
+  visibility?: string[];
+  continuity_ledger?: string[];
 };
 
 export type ImportedMonsterProfile = {

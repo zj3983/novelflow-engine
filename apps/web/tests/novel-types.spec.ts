@@ -10,6 +10,7 @@ type NovelTypeFixture = {
   rulebook: Record<string, string[]>;
   quality_checks: string[];
   trope_templates: Array<Record<string, unknown>>;
+  power_system_template?: Record<string, unknown>;
   builtin: boolean;
 };
 
@@ -48,6 +49,10 @@ function fixtures(): NovelTypeFixture[] {
           avoid: "无代价碾压",
         },
       ],
+      power_system_template: {
+        system_form: "九境灵脉",
+        progression_shape: { stages: ["淬体", "筑基"] },
+      },
       builtin: true,
     },
     {
@@ -243,7 +248,78 @@ test("导航进入全局小说类型库，选择并保存内置类型", async ({
         avoid: "无代价碾压",
       },
     ],
+    power_system_template: {
+      progression_shape: { stages: ["淬体", "筑基"] },
+      system_form: "九境灵脉",
+    },
   });
+});
+
+test("力量体系骨架以规范 JSON 编辑并随保存请求提交", async ({ page }) => {
+  const api = await mockNovelTypes(page);
+  await page.goto("/novel-types", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("status")).toContainText("已载入");
+
+  const input = page.getByLabel("力量体系骨架 JSON");
+  await expect(input).toHaveValue(JSON.stringify({
+    progression_shape: { stages: ["淬体", "筑基"] },
+    system_form: "九境灵脉",
+  }, null, 2));
+
+  await input.fill('{"system_form":"六职神域","minimum_path_count":6}');
+  await page.getByRole("button", { name: "保存修改" }).click();
+
+  await expect.poll(() => api.requests.filter((request) => request.method === "PUT")).toHaveLength(1);
+  expect(api.requests.at(-1)?.payload?.power_system_template).toEqual({
+    system_form: "六职神域",
+    minimum_path_count: 6,
+  });
+});
+
+test("力量体系骨架拒绝无效或非对象 JSON 且不发送保存请求", async ({ page }) => {
+  const api = await mockNovelTypes(page);
+  await page.goto("/novel-types", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("status")).toContainText("已载入");
+
+  const input = page.getByLabel("力量体系骨架 JSON");
+  await input.fill("{bad json}");
+  await page.getByRole("button", { name: "保存修改" }).click();
+  await expect(page.locator('p[role="alert"]')).toContainText("力量体系骨架必须是有效的 JSON 对象");
+  expect(api.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+
+  for (const value of ["[]", "null", '"text"']) {
+    await input.fill(value);
+    await page.getByRole("button", { name: "保存修改" }).click();
+    await expect(page.locator('p[role="alert"]')).toContainText("力量体系骨架必须是 JSON 对象，不能是数组或空值");
+  }
+  expect(api.requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+});
+
+test("力量体系骨架按规范值判断脏状态并可重置遗漏字段", async ({ page }) => {
+  const api = await mockNovelTypes(page);
+  await page.goto("/novel-types", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("status")).toContainText("已载入");
+
+  const input = page.getByLabel("力量体系骨架 JSON");
+  await input.fill('{"system_form":"临时体系"}');
+  await page.getByRole("button", { name: "取消 / 重置" }).click();
+  await expect(input).toHaveValue(JSON.stringify({
+    progression_shape: { stages: ["淬体", "筑基"] },
+    system_form: "九境灵脉",
+  }, null, 2));
+
+  await input.fill('{"system_form":"九境灵脉","progression_shape":{"stages":["淬体","筑基"]}}');
+  await page.getByRole("button", { name: /竞技体育/ }).click();
+  await expect(input).toHaveValue("{}");
+
+  await input.fill('{"system_form":"赛事异能"}');
+  await page.getByRole("button", { name: "取消 / 重置" }).click();
+  await expect(input).toHaveValue("{}");
+
+  await page.getByLabel("类型名称").fill("竞技体育修订");
+  await page.getByRole("button", { name: "保存修改" }).click();
+  await expect.poll(() => api.requests.filter((request) => request.method === "PUT")).toHaveLength(1);
+  expect(api.requests.at(-1)?.payload?.power_system_template).toEqual({});
 });
 
 test("桌面为左列表右编辑器，并支持搜索、标记和键盘访问", async ({ page }) => {
@@ -260,6 +336,16 @@ test("桌面为左列表右编辑器，并支持搜索、标记和键盘访问",
   expect(editorBox).not.toBeNull();
   expect(editorBox!.x).toBeGreaterThan(listBox!.x + listBox!.width - 1);
   expect(Math.abs(editorBox!.y - listBox!.y)).toBeLessThan(2);
+
+  const tropeBox = await page.getByLabel("套路模板（JSON 数组）").boundingBox();
+  const powerBox = await page.getByLabel("力量体系骨架 JSON").boundingBox();
+  expect(tropeBox).not.toBeNull();
+  expect(powerBox).not.toBeNull();
+  expect(powerBox!.y).toBeGreaterThanOrEqual(tropeBox!.y + tropeBox!.height - 1);
+  for (const box of [tropeBox!, powerBox!]) {
+    expect(box.x).toBeGreaterThanOrEqual(editorBox!.x);
+    expect(box.x + box.width).toBeLessThanOrEqual(editorBox!.x + editorBox!.width);
+  }
 
   await expect(list.getByText("内置", { exact: true })).toBeVisible();
   await expect(list.getByText("自定义", { exact: true })).toBeVisible();
@@ -309,6 +395,7 @@ test("新建并删除自定义类型", async ({ page }) => {
     name: "历史架空",
     keywords: ["历史", "权谋"],
     trope_templates: [],
+    power_system_template: {},
   });
 
   page.once("dialog", (dialog) => dialog.accept());

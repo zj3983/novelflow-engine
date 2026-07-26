@@ -2277,6 +2277,148 @@ test("世界观页面显示并编辑怪物图鉴", async ({ page }) => {
   await expect.poll(() => savedBlueprint).toMatchObject({ monster_profiles: [{ name: "灰狼", hp: "90" }] });
 });
 
+const structuredPowerSystemSpec = {
+  name: "神域六职体系",
+  origin: ["觉醒石连接神域权限"],
+  attributes: [
+    { name: "力量", effect: "提高近战伤害" },
+    { name: "智力", effect: "提高法术强度" },
+  ],
+  stages: [
+    { name: "见习者", level: 1, entry: "完成觉醒", change: "解锁基础技能", failure: "重新训练" },
+    { name: "正式职业", level: 10, entry: "完成导师试炼", change: "解锁职业资源", failure: "冷却七日" },
+    { name: "进阶职业", level: 20, entry: "完成转职任务", change: "选择首个分支", failure: "损失转职材料" },
+    { name: "专精职业", level: 30, entry: "通过专精考核", change: "解锁专精循环", failure: "专精声望下降" },
+    { name: "传奇职业", level: 60, entry: "完成传奇仪式", change: "建立领域", failure: "领域核心受损" },
+  ],
+  paths: [
+    { name: "战士", role: "前排承伤", core_resource: "怒气", branches: ["盾卫", "狂战士"] },
+    { name: "法师", role: "远程元素输出", core_resource: "法力", branches: ["烈焰法师", "冰霜法师"] },
+    { name: "游侠", role: "远程机动输出", core_resource: "专注", branches: ["神射手", "驭兽游侠"] },
+    { name: "盗贼", role: "近战爆发", core_resource: "连击点", branches: ["刺客", "影舞者"] },
+    { name: "牧师", role: "治疗与净化", core_resource: "信仰", branches: ["圣愈者", "审判官"] },
+    { name: "召唤师", role: "召唤物协同", core_resource: "契约槽", branches: ["兽群使", "元素契约师"] },
+  ],
+  skills: ["技能书与导师授予技能"],
+  equipment: ["装备受职业与等级限制"],
+  resources: ["首领掉落职业材料"],
+  advancement: ["等级、任务和材料同时满足"],
+  costs: ["透支职业资源会造成虚弱"],
+  counters: ["沉默克制持续施法"],
+  boundaries: ["不得无条件跨越两个阶段"],
+  social_impact: ["公会按职业配置队伍"],
+  visibility: ["敌人只能看到公开等级", "<script>不可执行</script>"],
+  continuity_ledger: ["level", "class_path", "skills", "equipment"],
+};
+
+async function mockWorldPowerPage(
+  page: Page,
+  id: string,
+  worldBlueprint: Record<string, unknown>,
+) {
+  const encodedId = encodeURIComponent(`file:${id}`);
+  const project = {
+    project_id: `file:${id}`,
+    title: "力量体系展示测试",
+    source_path: "",
+    seed_outline: "",
+    world_summary: "",
+    current_focus: "",
+    author_constraints: [],
+    world_blueprint: worldBlueprint,
+    character_profiles: [],
+    relationship_graph: [],
+    enabled_skill_ids: [],
+    status: "simulating",
+    pipeline_stage: "world_ready",
+    active_story_id: `file:${id}`,
+    branches: [],
+    storage_source: "file",
+  };
+  await page.route(`**/file-projects/${encodedId}`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route(`**/file-stories/${encodedId}`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: `file:${id}`,
+      outline: "",
+      genre: "网游",
+      style: "白描",
+      current_chapter: 1,
+      agent_settings: {},
+      agent_runtime: { recent_events: [] },
+      author_constraints: [],
+      world_facts: [],
+      characters: [],
+      history: [],
+      parent_story_id: null,
+      branched_from_chapter: null,
+    }) });
+  });
+}
+
+test("世界观展示结构化力量体系的完整章节、六职业与分支", async ({ page }) => {
+  await mockWorldPowerPage(page, "structured-power", {
+    power_system: ["旧版力量摘要不得重复显示"],
+    power_system_spec: structuredPowerSystemSpec,
+  });
+  await page.goto("/projects/file%3Astructured-power/world");
+
+  const structured = page.getByLabel("结构化力量体系");
+  await expect(structured).toBeVisible();
+  for (const heading of [
+    "体系总览", "力量来源", "属性", "阶段与晋升", "职业与路线", "技能与装备",
+    "资源与代价", "克制与边界", "社会影响", "信息可见性", "连续性账本",
+  ]) {
+    await expect(structured.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+  }
+  for (const name of ["战士", "法师", "游侠", "盗贼", "牧师", "召唤师", "烈焰法师", "冰霜法师", "兽群使", "元素契约师"]) {
+    await expect(structured.getByText(name, { exact: true })).toBeVisible();
+  }
+  await expect(page.getByText("力量体系需要补全", { exact: true })).toHaveCount(0);
+  await expect(page.locator("p, li, dd, dt").filter({ hasText: "旧版力量摘要不得重复显示" })).toHaveCount(0);
+  await expect(page.getByLabel("等级、职业与技能")).toHaveValue("旧版力量摘要不得重复显示");
+  await expect(structured.locator(".ws-card")).toHaveCount(0);
+  await expect(structured.getByText("<script>不可执行</script>", { exact: true })).toBeVisible();
+  await expect(page.locator("script").filter({ hasText: "不可执行" })).toHaveCount(0);
+});
+
+test("世界观仅在旧力量摘要存在时提示需要补全", async ({ page }) => {
+  await mockWorldPowerPage(page, "legacy-power", { power_system: ["旧版力量规则"] });
+  await page.goto("/projects/file%3Alegacy-power/world");
+  await expect(page.getByText("力量体系需要补全", { exact: true })).toBeVisible();
+
+  await mockWorldPowerPage(page, "empty-power", {});
+  await page.goto("/projects/file%3Aempty-power/world");
+  await expect(page.getByText("力量体系需要补全", { exact: true })).toHaveCount(0);
+});
+
+test("世界观安全忽略数组和标量力量体系规格", async ({ page }) => {
+  await mockWorldPowerPage(page, "array-power", { power_system_spec: [{ name: "错误数组" }] });
+  await page.goto("/projects/file%3Aarray-power/world");
+  await expect(page.getByRole("heading", { name: "世界规则" })).toBeVisible();
+  await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
+
+  await mockWorldPowerPage(page, "scalar-power", { power_system_spec: "错误标量" });
+  await page.goto("/projects/file%3Ascalar-power/world");
+  await expect(page.getByRole("heading", { name: "世界规则" })).toBeVisible();
+  await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
+});
+
+test("结构化力量体系在 360px 宽度内换行且无横向溢出", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await mockWorldPowerPage(page, "mobile-power", { power_system_spec: structuredPowerSystemSpec });
+  await page.goto("/projects/file%3Amobile-power/world");
+
+  const structured = page.getByLabel("结构化力量体系");
+  await expect(structured).toBeVisible();
+  const bounds = await structured.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(360);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 test("世界观真实路由常驻展示完整编辑区并在刷新时保留草稿", async ({ page }) => {
   let savedPayload: { world_summary?: string; world_blueprint?: Record<string, unknown> } = {};
   let projectGetCount = 0;
