@@ -379,6 +379,115 @@ def test_commit_and_rollback_failure_reports_persistent_change(
     assert not list(project_dir.rglob(".*.tmp"))
 
 
+def test_commit_rollback_and_cleanup_failures_preserve_primary_error(
+    project_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_replace = migration.os.replace
+    real_unlink = Path.unlink
+    replace_calls = 0
+    locked_temps: set[Path] = set()
+
+    def fail_commit_and_rollback(source: str | Path, destination: str | Path) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        source_path = Path(source)
+        if replace_calls == 2:
+            locked_temps.add(source_path)
+            raise OSError("PRIMARY COMMIT FAILURE")
+        if replace_calls == 3:
+            locked_temps.add(source_path)
+            raise OSError("ROLLBACK RESTORE FAILURE")
+        real_replace(source, destination)
+
+    def fail_locked_cleanup(self: Path, missing_ok: bool = False) -> None:
+        if self in locked_temps:
+            raise PermissionError("LOCKED TEMP CLEANUP FAILURE")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(migration.os, "replace", fail_commit_and_rollback)
+    monkeypatch.setattr(Path, "unlink", fail_locked_cleanup)
+
+    result = upgrade_project(project_dir, backup=False)
+
+    assert result["valid"] is False
+    assert result["changed"] is True
+    assert result["rollback_failed"] is True
+    assert result["cleanup_failed"] is True
+    assert result["state"] == "indeterminate"
+    assert "PRIMARY COMMIT FAILURE" in result["changes"][0]
+    assert "ROLLBACK RESTORE FAILURE" in " ".join(result["rollback_errors"])
+    assert "LOCKED TEMP CLEANUP FAILURE" in " ".join(result["cleanup_errors"])
+    assert set(map(Path, result["residual_temp_paths"])) == locked_temps
+    assert all(path.exists() for path in locked_temps)
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    for path in locked_temps:
+        path.unlink(missing_ok=True)
+
+
+def test_cleanup_failure_after_successful_commit_reports_valid_changed_state(
+    project_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_replace = migration.os.replace
+    real_unlink = Path.unlink
+    residuals: set[Path] = set()
+
+    def replace_but_leave_residual(source: str | Path, destination: str | Path) -> None:
+        source_path = Path(source)
+        content = source_path.read_bytes()
+        real_replace(source_path, destination)
+        source_path.write_bytes(content)
+        residuals.add(source_path)
+
+    def fail_residual_cleanup(self: Path, missing_ok: bool = False) -> None:
+        if self in residuals:
+            raise PermissionError("RESIDUAL TEMP LOCKED")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(migration.os, "replace", replace_but_leave_residual)
+    monkeypatch.setattr(Path, "unlink", fail_residual_cleanup)
+
+    result = upgrade_project(project_dir, backup=False)
+
+    assert result["changed"] is True
+    assert result["valid"] is True
+    assert result["rollback_failed"] is False
+    assert result["cleanup_failed"] is True
+    assert result["state"] == "changed"
+    assert result["residual_temp_paths"]
+    assert "RESIDUAL TEMP LOCKED" in " ".join(result["cleanup_errors"])
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    for path in residuals:
+        path.unlink(missing_ok=True)
+
+
+def test_cli_returns_nonzero_when_cleanup_failed(
+    project_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        migration,
+        "upgrade_project",
+        lambda *args, **kwargs: {
+            "changed": True,
+            "valid": True,
+            "backup_path": None,
+            "changes": ["error: cleanup failed"],
+            "rollback_failed": False,
+            "cleanup_failed": True,
+            "state": "changed",
+            "rollback_errors": [],
+            "cleanup_errors": ["locked"],
+            "residual_temp_paths": ["temp"],
+        },
+    )
+
+    exit_code = migration.main([str(project_dir), "--no-backup"])
+
+    assert exit_code != 0
+    assert json.loads(capsys.readouterr().out)["cleanup_failed"] is True
+
+
 def test_second_backup_write_failure_publishes_no_partial_backup(
     project_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

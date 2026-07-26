@@ -32,8 +32,28 @@ class FilesystemContainmentError(ValueError):
 
 
 class FilesystemTransactionError(RuntimeError):
-    def __init__(self, message: str, *, rollback_failed: bool) -> None:
-        self.rollback_failed = rollback_failed
+    def __init__(
+        self,
+        *,
+        primary_error: Exception | None,
+        rollback_errors: list[tuple[Path, Exception]],
+        cleanup_errors: list[tuple[Path, Exception]],
+        residual_temp_paths: list[Path],
+        changed: bool,
+        canonical_valid: bool,
+    ) -> None:
+        self.primary_error = primary_error
+        self.rollback_errors = tuple(rollback_errors)
+        self.cleanup_errors = tuple(cleanup_errors)
+        self.residual_temp_paths = tuple(residual_temp_paths)
+        self.rollback_failed = bool(rollback_errors)
+        self.cleanup_failed = bool(cleanup_errors)
+        self.changed = changed
+        self.canonical_valid = canonical_valid
+        if primary_error is not None:
+            message = f"primary failure: {type(primary_error).__name__}: {primary_error}"
+        else:
+            message = "canonical commit succeeded but temporary-file cleanup failed"
         super().__init__(message)
 
 
@@ -407,8 +427,12 @@ def _stage_write(root: Path, path: Path, content: bytes) -> Path:
             handle.flush()
             os.fsync(handle.fileno())
         return temporary
-    except Exception:
-        temporary.unlink(missing_ok=True)
+    except Exception as exc:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        setattr(exc, "_migration_temp_path", temporary)
         raise
 
 
@@ -441,36 +465,73 @@ def _transactional_write(
     if set(originals) != {path for path, _ in writes}:
         raise ValueError("transaction originals do not match write targets")
     staged: list[tuple[Path, Path]] = []
+    temporary_paths: list[Path] = []
     replaced: list[Path] = []
+    primary_error: Exception | None = None
+    rollback_errors: list[tuple[Path, Exception]] = []
+    canonical_valid = False
+
     try:
         for path, content in writes:
-            staged.append((path, _stage_write(root, path, content)))
+            temporary = _stage_write(root, path, content)
+            staged.append((path, temporary))
+            temporary_paths.append(temporary)
+    except Exception as staging_error:
+        primary_error = staging_error
+        failed_temp = getattr(staging_error, "_migration_temp_path", None)
+        if isinstance(failed_temp, Path):
+            temporary_paths.append(failed_temp)
+
+    if primary_error is None:
         try:
             for path, temporary in staged:
                 os.replace(temporary, path)
                 replaced.append(path)
+            canonical_valid = True
         except Exception as commit_error:
-            rollback_errors: list[Exception] = []
+            primary_error = commit_error
             for path in reversed(replaced):
                 existed, original = originals[path]
                 try:
                     if existed:
                         restoration = _stage_write(root, path, original)
-                        try:
-                            os.replace(restoration, path)
-                        finally:
-                            restoration.unlink(missing_ok=True)
+                        temporary_paths.append(restoration)
+                        os.replace(restoration, path)
                     else:
                         path.unlink(missing_ok=True)
                 except Exception as rollback_error:
-                    rollback_errors.append(rollback_error)
-            raise FilesystemTransactionError(
-                f"commit failed: {type(commit_error).__name__}: {commit_error}",
-                rollback_failed=bool(rollback_errors),
-            ) from commit_error
-    finally:
-        for _, temporary in staged:
+                    failed_temp = getattr(
+                        rollback_error, "_migration_temp_path", None
+                    )
+                    if isinstance(failed_temp, Path):
+                        temporary_paths.append(failed_temp)
+                    rollback_errors.append((path, rollback_error))
+
+    cleanup_errors: list[tuple[Path, Exception]] = []
+    for temporary in dict.fromkeys(temporary_paths):
+        try:
             temporary.unlink(missing_ok=True)
+        except Exception as cleanup_error:
+            cleanup_errors.append((temporary, cleanup_error))
+
+    residual_temp_paths: list[Path] = []
+    for temporary in dict.fromkeys(temporary_paths):
+        try:
+            if temporary.exists():
+                residual_temp_paths.append(temporary)
+        except OSError:
+            residual_temp_paths.append(temporary)
+
+    changed = _targets_differ(originals)
+    if primary_error is not None or cleanup_errors:
+        raise FilesystemTransactionError(
+            primary_error=primary_error,
+            rollback_errors=rollback_errors,
+            cleanup_errors=cleanup_errors,
+            residual_temp_paths=residual_temp_paths,
+            changed=changed,
+            canonical_valid=canonical_valid,
+        ) from primary_error
 
 
 def _write_fsynced_file(path: Path, content: bytes) -> None:
@@ -591,18 +652,53 @@ def upgrade_project(
         _transactional_write(root, writes, transaction_originals)
         return result
     except Exception as exc:
+        transaction_error = (
+            exc if isinstance(exc, FilesystemTransactionError) else None
+        )
         persistent_change = (
-            _targets_differ(transaction_originals)
+            transaction_error.changed
+            if transaction_error is not None
+            else _targets_differ(transaction_originals)
             if transaction_originals is not None
             else False
         )
-        rollback_failed = isinstance(exc, FilesystemTransactionError) and exc.rollback_failed
+        rollback_failed = bool(
+            transaction_error and transaction_error.rollback_failed
+        )
+        cleanup_failed = bool(
+            transaction_error and transaction_error.cleanup_failed
+        )
+        rollback_errors = (
+            [
+                f"{path}: {type(error).__name__}: {error}"
+                for path, error in transaction_error.rollback_errors
+            ]
+            if transaction_error is not None
+            else []
+        )
+        cleanup_errors = (
+            [
+                f"{path}: {type(error).__name__}: {error}"
+                for path, error in transaction_error.cleanup_errors
+            ]
+            if transaction_error is not None
+            else []
+        )
+        residual_temp_paths = (
+            [str(path) for path in transaction_error.residual_temp_paths]
+            if transaction_error is not None
+            else []
+        )
         return {
             "changed": persistent_change,
-            "valid": False,
+            "valid": bool(transaction_error and transaction_error.canonical_valid),
             "backup_path": result.get("backup_path"),
             "changes": [f"error: {type(exc).__name__}: {exc}"],
             "rollback_failed": rollback_failed,
+            "cleanup_failed": cleanup_failed,
+            "rollback_errors": rollback_errors,
+            "cleanup_errors": cleanup_errors,
+            "residual_temp_paths": residual_temp_paths,
             "state": (
                 "indeterminate"
                 if rollback_failed
@@ -623,7 +719,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     result = upgrade_project(args.project_dir, check=args.check, backup=not args.no_backup)
     print(json.dumps(result, ensure_ascii=False))
-    return 0 if result["valid"] else 1
+    return (
+        0
+        if result["valid"]
+        and not result.get("rollback_failed")
+        and not result.get("cleanup_failed")
+        else 1
+    )
 
 
 if __name__ == "__main__":
