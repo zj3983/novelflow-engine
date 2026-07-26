@@ -21,6 +21,19 @@ function recordList(value: unknown): UnknownRecord[] {
 }
 
 export function hasStructuredPowerSystem(value: unknown): value is PowerSystemSpec {
+  if (!hasPowerSystemDraft(value) || !text(value.name)) return false;
+
+  const requiredLists = [
+    "origin", "skills", "equipment", "resources", "advancement", "costs",
+    "counters", "boundaries", "social_impact", "visibility", "continuity_ledger",
+  ];
+  return recordList(value.attributes).length > 0
+    && recordList(value.stages).length >= 3
+    && recordList(value.paths).length > 0
+    && requiredLists.every((field) => textList(value[field]).length > 0);
+}
+
+export function hasPowerSystemDraft(value: unknown): value is UnknownRecord {
   return isRecord(value) && Object.keys(value).length > 0;
 }
 

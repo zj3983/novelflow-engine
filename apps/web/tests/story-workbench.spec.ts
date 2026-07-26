@@ -2405,6 +2405,14 @@ test("世界观安全忽略数组和标量力量体系规格", async ({ page }) 
   await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
 });
 
+test("世界观将残缺力量体系规格标记为需要补全", async ({ page }) => {
+  await mockWorldPowerPage(page, "incomplete-power", { power_system_spec: { name: "临时体系" } });
+  await page.goto("/projects/file%3Aincomplete-power/world");
+
+  await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
+  await expect(page.getByText("力量体系需要补全", { exact: true })).toBeVisible();
+});
+
 test("结构化力量体系在 360px 宽度内换行且无横向溢出", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await mockWorldPowerPage(page, "mobile-power", { power_system_spec: structuredPowerSystemSpec });

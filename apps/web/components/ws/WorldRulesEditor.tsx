@@ -7,7 +7,7 @@ import {
   type ImportedWorldBlueprint,
   type ProjectResponse,
 } from "../../lib/api";
-import { hasStructuredPowerSystem, StructuredPowerSystem } from "./StructuredPowerSystem";
+import { hasPowerSystemDraft, hasStructuredPowerSystem, StructuredPowerSystem } from "./StructuredPowerSystem";
 
 export type EditableWorldRuleField =
   | "world_rules"
@@ -239,7 +239,9 @@ export function WorldRulesEditor({ projectId, blueprint, onSaved }: Props) {
   const [editorState, setEditorState] = useState(() => createWorldRulesEditorState(blueprint));
   const [saving, setSaving] = useState<EditableWorldRuleField | null>(null);
   const blueprintStore = useRef<WorldBlueprintStore>({ current: blueprint });
-  const hasStructuredPower = hasStructuredPowerSystem(blueprint.power_system_spec as unknown);
+  const powerSystemSpec = blueprint.power_system_spec as unknown;
+  const hasStructuredPower = hasStructuredPowerSystem(powerSystemSpec);
+  const hasPowerDraft = hasPowerSystemDraft(powerSystemSpec);
   const hasLegacyPower = Array.isArray(blueprint.power_system)
     && blueprint.power_system.some((item) => typeof item === "string" && item.trim());
 
@@ -312,7 +314,7 @@ export function WorldRulesEditor({ projectId, blueprint, onSaved }: Props) {
       </div>
 
       {hasStructuredPower ? <StructuredPowerSystem spec={blueprint.power_system_spec} /> : null}
-      {!hasStructuredPower && hasLegacyPower ? <p className="ws-card__hint">力量体系需要补全</p> : null}
+      {!hasStructuredPower && (hasLegacyPower || hasPowerDraft) ? <p className="ws-card__hint">力量体系需要补全</p> : null}
 
       <div className="ws-form-grid">
         {WORLD_RULE_EDITOR_SECTIONS.map((section) => (
