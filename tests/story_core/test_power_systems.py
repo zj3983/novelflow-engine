@@ -650,6 +650,20 @@ def test_legacy_summary_binds_yuan_to_nearest_preceding_governing_cue(
         assert preserved in joined
 
 
+def test_legacy_summary_redacts_unknown_yuan_suffix_by_default() -> None:
+    spec = complete_spec()
+    spec["origin"] = ["记录显示100元很贵"]
+
+    assert "100元" not in "\n".join(legacy_power_summary(spec))
+
+
+def test_legacy_summary_power_suffix_is_positive_evidence_despite_financial_cue() -> None:
+    spec = complete_spec()
+    spec["origin"] = ["支付100元魂"]
+
+    assert "100元魂" in "\n".join(legacy_power_summary(spec))
+
+
 def test_legacy_summary_preserves_yuan_power_stage_and_path_text() -> None:
     spec = complete_spec()
     spec["stages"][0]["name"] = "3级元婴"
@@ -740,6 +754,28 @@ def test_legacy_summary_financial_percentage_wins_distance_ties() -> None:
     spec["origin"] = ["税20%暴击"]
 
     assert "20%" not in "\n".join(legacy_power_summary(spec))
+
+
+@pytest.mark.parametrize(
+    ("sentence", "preserved"),
+    [
+        ("暴击状态结束后12.5%的手续费", None),
+        ("暴击状态结束后12.5%作为手续费", None),
+        ("暴击率20%并收取12.5%手续费", "暴击率20%"),
+    ],
+)
+def test_legacy_summary_postfix_financial_noun_overrides_preceding_gameplay_cue(
+    sentence: str,
+    preserved: str | None,
+) -> None:
+    spec = complete_spec()
+    spec["origin"] = [sentence]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert "12.5%" not in joined
+    if preserved is not None:
+        assert preserved in joined
 
 
 def test_legacy_summary_never_invents_absent_sections_and_handles_hostile_input() -> None:

@@ -568,24 +568,11 @@ _GAMEPLAY_SEMANTIC_TERMS = (
     "冷却",
     "加成",
 )
-_POWER_RESOURCE_SUFFIX_STARTS = "核魂丹婴力气神灵素晶"
-_TRANSACTION_ACTION_SUFFIXES = (
-    "购买",
-    "支付",
-    "交易",
-    "出售",
-    "售卖",
-    "兑换",
-    "解锁",
-    "缴纳",
-    "扣除",
-    "花费",
-    "才能",
-    "才可",
-    "方可",
-    "进入",
-    "到账",
+_POWER_RESOURCE_SUFFIX_STARTS = "核魂丹婴力气神灵素晶初始"
+_POSTFIX_FINANCIAL_NOUN = re.compile(
+    r"^\s*(?:作为|的|为|作)?\s*(?:手续费|交易费|费率|佣金|利息|收益率|税)"
 )
+_POSTFIX_FINANCIAL_SCAN = 12
 _CLAUSE_BOUNDARIES = "，,。；;！？!?\n"
 _SEMANTIC_CONTEXT_WINDOW = 24
 
@@ -658,26 +645,25 @@ def _redact_ambiguous_yuan(value: str) -> str:
             end=match.end(),
             terms=_POWER_RESOURCE_SEMANTIC_TERMS,
         )
-        if financial_distance is not None or resource_distance is not None:
-            if financial_distance is not None and (
-                resource_distance is None or financial_distance <= resource_distance
-            ):
-                return ""
-            return match.group(0)
-
         _, upper = _semantic_bounds(value, match.start(), match.end())
         suffix = value[match.end() : upper].lstrip()
-        if suffix.startswith(tuple(_POWER_RESOURCE_SUFFIX_STARTS)):
+        has_power_suffix = suffix.startswith(tuple(_POWER_RESOURCE_SUFFIX_STARTS))
+        if resource_distance is not None and (
+            financial_distance is None or resource_distance < financial_distance
+        ):
             return match.group(0)
-        if not suffix or suffix.startswith(_TRANSACTION_ACTION_SUFFIXES):
-            return ""
-        return match.group(0)
+        if has_power_suffix:
+            return match.group(0)
+        return ""
 
     return _AMBIGUOUS_YUAN_AMOUNT.sub(replace, value)
 
 
 def _redact_financial_percentages(value: str) -> str:
     def replace(match: re.Match[str]) -> str:
+        postfix = value[match.end() : match.end() + _POSTFIX_FINANCIAL_SCAN]
+        if _POSTFIX_FINANCIAL_NOUN.match(postfix):
+            return ""
         financial_distance = _nearest_preceding_semantic_distance(
             value,
             start=match.start(),
