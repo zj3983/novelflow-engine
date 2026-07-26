@@ -28,7 +28,8 @@ from packages.story_core.orchestrator import (
     _compression_review_not_worse,
     _should_expand_chapter,
 )
-from packages.story_core.prose_rule_review import review_emotion_quota, review_paragraph_form
+from packages.story_core.prose_rule_review import review_critical_prose_rules, review_emotion_quota, review_paragraph_form
+from packages.story_core.simplified_review import build_simplified_review
 from packages.story_core.world_enrichment import _merge_enrichment
 
 
@@ -357,6 +358,15 @@ def test_final_memory_accepts_advisory_review_but_rejects_hard_errors():
 def test_full_revision_only_runs_for_hard_errors():
     assert _should_run_full_revision({"needs_revision": True, "has_hard_errors": False}) is False
     assert _should_run_full_revision({"needs_revision": True, "has_hard_errors": True}) is True
+
+
+def test_planning_meta_leak_critical_report_triggers_full_revision_gate():
+    critical_report = review_critical_prose_rules("周满说完，迈出前置条件。")
+    gate = build_simplified_review({"writing_review": {"critical_review": critical_report}})
+
+    assert critical_report["severity_summary"]["has_hard_violation"] is True
+    assert gate["has_hard_errors"] is True
+    assert _should_run_full_revision(gate) is True
 
 
 def test_compression_review_must_not_add_hard_or_total_issues():

@@ -31,6 +31,35 @@ def test_review_flags_fact_template_backend_terms_and_guide_terms():
     assert any("攻略说明" in issue for issue in review["issues"])
 
 
+def test_review_flags_planning_language_materialized_as_a_location():
+    body = "周满站在前置条件边，等林照开口。"
+
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is False
+    assert any("站在前置条件边" in issue for issue in review["issues"])
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert any("实际门" in item and "任务要求" in item for item in review["revision_plan"])
+
+
+def test_review_allows_planning_words_used_as_actual_task_requirements():
+    body = "这个任务需要先完成前置条件，赵管事才肯放人。"
+
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is True
+    assert review["scores"]["planning_meta_leak"] == 8
+
+
+def test_review_flags_planning_language_materialized_as_an_action_target():
+    review = review_diagnostic_terms_in_body("周满走到剧情节点旁，抬手推开章节前置条件。")
+
+    assert review["pass"] is False
+    assert any("走到剧情节点旁" in issue for issue in review["issues"])
+    assert any("推开章节前置条件" in issue for issue in review["issues"])
+    assert review["scores"]["planning_meta_leak"] == 5
+
+
 def test_review_flags_npc_boundary_overreach():
     body = (
         "洛婶把两瓶药剂推过来。\n\n"
@@ -95,6 +124,15 @@ def test_hard_violation_alone_triggers_revision():
     assert review["requires_revision"] is True
     assert review["severity_summary"]["has_hard_violation"] is True
     assert any("公会" in issue or "上报" in issue or "限知" in issue for issue in review["hard_issues"])
+
+
+def test_planning_language_materialized_as_action_is_a_hard_violation():
+    review = review_critical_prose_rules("周满说完，迈出前置条件。")
+
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert review["severity_summary"]["has_hard_violation"] is True
+    assert review["requires_revision"] is True
+    assert any("迈出前置条件" in issue for issue in review["hard_issues"])
 
 
 def test_single_soft_violation_does_not_trigger_revision():
