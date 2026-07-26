@@ -642,6 +642,72 @@ def test_power_markdown_prefers_structured_spec_with_exact_order_and_nested_deta
     assert blueprint == original
 
 
+def test_structured_power_markdown_escapes_dynamic_structure_syntax():
+    blueprint = {
+        "power_system_spec": {
+            "name": "bad**\n## injected",
+            "origin": ["[source] `code` <tag> # heading"],
+            "attributes": [
+                {
+                    "name": "attr_name",
+                    "effect": "line\n* effect",
+                    "bad\n## key-injected": "value",
+                }
+            ],
+            "stages": [
+                {
+                    "name": "stage**\n## injected",
+                    "level": 10,
+                    "entry": "[gate] `tick` <tag> _x_ \\ path",
+                    "change": "change#value",
+                    "failure": "failure\x00value",
+                }
+            ],
+            "paths": [
+                {
+                    "name": "path**\n## injected",
+                    "role": "role [tank]",
+                    "core_attributes": ["power_one"],
+                    "core_resource": "mana`pool`",
+                    "weapons": ["staff*one"],
+                    "armor": ["robe<cloth>"],
+                    "skill_categories": ["burst#magic"],
+                    "combat_loop": "cast\nthen burst",
+                    "strengths": ["range[far]"],
+                    "weaknesses": ["silence_weak"],
+                    "branches": ["fire**mage", "ice`mage`"],
+                    "transfer_task": "enter ## trial",
+                    "advancement": ["rank > novice"],
+                }
+            ],
+            "skills": ["skill [one]"],
+            "equipment": ["gear `one`"],
+            "resources": ["resource <one>"],
+            "advancement": ["advance #one"],
+            "costs": ["cost *one*"],
+            "counters": ["counter _one_"],
+            "boundaries": ["boundary > one"],
+            "social_impact": ["guild [impact]"],
+            "visibility": ["visible `rank`"],
+            "continuity_ledger": ["level#value"],
+        }
+    }
+
+    rendered = blueprint_context.render_power_markdown("神域", blueprint)
+
+    assert rendered.count("\n## ") == 11
+    assert "\n## injected" not in rendered
+    assert "\n## key-injected" not in rendered
+    assert "- **stage\\*\\* \\#\\# injected**" in rendered
+    assert "- **path\\*\\* \\#\\# injected**" in rendered
+    assert (
+        "  - **进入条件**：\\[gate\\] \\`tick\\` \\<tag\\> "
+        "\\_x\\_ \\\\ path"
+    ) in rendered
+    assert "  - **分支**：fire\\*\\*mage；ice\\`mage\\`" in rendered
+    assert "  - **战斗循环**：cast then burst" in rendered
+
+
 def test_sync_world_markdown_creates_and_refreshes_managed_files_without_mutation(tmp_path):
     blueprint = {
         "premise": "旧背景",

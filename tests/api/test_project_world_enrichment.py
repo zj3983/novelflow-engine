@@ -15,7 +15,7 @@ from packages.story_core.power_system_templates import (
     compact_power_system_template,
     copy_power_system_template,
 )
-from packages.story_core.power_systems import legacy_power_summary
+from packages.story_core.power_systems import legacy_power_summary, validate_power_system_spec
 from packages.story_core import world_enrichment
 
 
@@ -133,13 +133,86 @@ def test_world_enrichment_prompt_requests_canonical_spec_and_carries_template_an
     assert "power_system_spec" in prompt
     assert "genre_power_system_template" in prompt
     assert '"fixed_milestones": [1, 10, 20, 30, 60]' in prompt
-    assert '"name": "神域职业体系"' in prompt
+    context_line = next(
+        line for line in prompt.splitlines() if line.startswith("当前项目数据：")
+    )
+    context = json.loads(context_line.removeprefix("当前项目数据："))
+    assert context["world_blueprint"]["power_system_spec"]["name"] == "神域职业体系"
     for field in (
         "name", "origin", "attributes", "paths", "stages", "skills", "equipment",
         "resources", "advancement", "costs", "counters", "boundaries",
         "social_impact", "visibility", "continuity_ledger",
     ):
         assert field in prompt
+
+
+def test_world_enrichment_prompt_bounds_hostile_maximum_project_context():
+    class Hostile:
+        def __str__(self):
+            raise RuntimeError("must not stringify hostile context")
+
+    spec = complete_game_power_spec()
+    long_text = "界" * 240
+    for field in (
+        "origin", "skills", "equipment", "resources", "advancement", "costs",
+        "counters", "boundaries", "social_impact", "visibility", "continuity_ledger",
+    ):
+        spec[field] = [f"{field}-{index}-{long_text}" for index in range(64)]
+    spec["continuity_ledger"][:6] = [
+        "level", "class_path", "skills", "equipment", "resources", "conditions"
+    ]
+    spec["attributes"] = [
+        {"name": f"属性{index}", "effect": long_text} for index in range(64)
+    ]
+    for path in spec["paths"]:
+        for field in (
+            "core_attributes", "weapons", "armor", "strengths", "weaknesses",
+            "skill_categories", "branches", "advancement",
+        ):
+            path[field] = [f"{field}-{index}-{long_text}" for index in range(64)]
+    spec["hostile_unknown"] = Hostile()
+    validate_power_system_spec(spec, novel_type_id="game_webnovel")
+    project = NovelProject(
+        project_id="p-hostile-prompt",
+        title="边界项目",
+        seed_outline=long_text * 20,
+        world_summary="核心前提必须保留",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "premise": "核心前提必须保留",
+            "power_system_spec": spec,
+            "oversized_systems": [
+                {"name": f"系统{index}", "details": [long_text] * 80}
+                for index in range(80)
+            ],
+            "hostile": Hostile(),
+        },
+        character_profiles=[
+            {"name": f"角色{index}", "notes": [long_text] * 80}
+            for index in range(80)
+        ],
+    )
+
+    prompt = world_enrichment._build_prompt(project)
+
+    context_prefix = "当前项目数据："
+    context_line = next(line for line in prompt.splitlines() if line.startswith(context_prefix))
+    context = json.loads(context_line.removeprefix(context_prefix))
+    serialized_context = json.dumps(
+        context, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    )
+    power_slice = context["world_blueprint"]["power_system_spec"]
+    assert len(prompt) <= 30_000
+    assert len(serialized_context) <= 24_000
+    assert context["title"] == "边界项目"
+    assert context["world_blueprint"]["genre_plugin_ids"] == ["game_webnovel"]
+    assert context["world_blueprint"]["premise"] == "核心前提必须保留"
+    assert power_slice["name"] == "神域职业体系"
+    assert len(power_slice["stages"]) >= 2
+    assert power_slice["stages"][0]["level"] == 1
+    assert len(power_slice["paths"]) >= 2
+    assert power_slice["paths"][0]["name"] == "战士"
+    assert power_slice != spec
 
 
 def test_world_enrichment_prompt_uses_explicit_custom_runtime_power_template(

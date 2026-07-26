@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
+from collections.abc import Mapping
 from copy import deepcopy
+from itertools import islice
 from typing import Any
 
 from packages.story_core.agent_base import compact_text, parse_json_message_content
@@ -18,6 +21,7 @@ from packages.story_core.power_system_templates import compact_power_system_temp
 from packages.story_core.power_systems import (
     PowerSystemValidationError,
     legacy_power_summary,
+    power_system_prompt_slice,
     validate_power_system_spec,
 )
 from packages.story_core.runtime_config import resolve_stage_runtime
@@ -26,6 +30,18 @@ from packages.story_core.web_game_economy import appraisal_rules, exchange_rules
 
 class WorldEnrichmentError(RuntimeError):
     pass
+
+
+_PROJECT_CONTEXT_BUDGET = 20_000
+_PROJECT_CONTEXT_MAX = 24_000
+_FINAL_PROMPT_MAX = 30_000
+_PROJECTION_PROFILES = (
+    (240, 8, 4),
+    (160, 6, 4),
+    (96, 4, 3),
+    (48, 2, 2),
+    (24, 1, 1),
+)
 
 
 def _selected_novel_type_plugin(project: NovelProject, plugins=None):
@@ -45,32 +61,186 @@ def _selected_novel_type_plugin(project: NovelProject, plugins=None):
     return plugin_by_id["generic_webnovel"]
 
 
-def _compact_project_payload(project: NovelProject) -> dict[str, Any]:
+def _safe_compact_text(value: Any, limit: int) -> str:
+    try:
+        return compact_text(value, limit)
+    except Exception:
+        return ""
+
+
+def _bounded_json_projection(
+    value: Any,
+    *,
+    chars: int,
+    items: int,
+    depth: int,
+) -> Any:
+    if isinstance(value, str):
+        return _safe_compact_text(value, chars)
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return max(-1_000_000, min(value, 1_000_000))
+    if isinstance(value, float):
+        return max(-1_000_000.0, min(value, 1_000_000.0)) if math.isfinite(value) else 0.0
+    if depth <= 0:
+        return ""
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        try:
+            source_items = value.items()
+            for raw_key, item in islice(source_items, items):
+                key = _safe_compact_text(raw_key, 80)
+                if key and key not in result:
+                    result[key] = _bounded_json_projection(
+                        item,
+                        chars=chars,
+                        items=items,
+                        depth=depth - 1,
+                    )
+        except Exception:
+            return result
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            _bounded_json_projection(
+                item,
+                chars=chars,
+                items=items,
+                depth=depth - 1,
+            )
+            for item in islice(value, items)
+        ]
+    return _safe_compact_text(value, chars)
+
+
+def _bounded_world_blueprint(
+    value: Any,
+    *,
+    chars: int,
+    items: int,
+    depth: int,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    for key in ("genre_plugin_ids", "premise"):
+        try:
+            if key in value:
+                result[key] = _bounded_json_projection(
+                    value[key], chars=chars, items=items, depth=depth
+                )
+        except Exception:
+            continue
+    try:
+        if "power_system_spec" in value:
+            result["power_system_spec"] = power_system_prompt_slice(
+                value.get("power_system_spec")
+            )
+    except Exception:
+        result["power_system_spec"] = {}
+
+    try:
+        source_items = value.items()
+        added = 0
+        for raw_key, item in source_items:
+            key = _safe_compact_text(raw_key, 80)
+            if not key or key in result or key == "power_system_spec":
+                continue
+            result[key] = _bounded_json_projection(
+                item,
+                chars=chars,
+                items=items,
+                depth=depth,
+            )
+            added += 1
+            if added >= items:
+                break
+    except Exception:
+        pass
+    return result
+
+
+def _project_payload(
+    project: NovelProject,
+    *,
+    chars: int,
+    items: int,
+    depth: int,
+) -> dict[str, Any]:
     return {
-        "title": project.title,
-        "source_path": project.source_path,
-        "seed_outline": compact_text(project.seed_outline, 2600),
-        "world_summary": compact_text(project.world_summary, 1400),
-        "current_focus": compact_text(project.current_focus, 1400),
-        "author_constraints": project.author_constraints[:8],
-        "world_blueprint": project.world_blueprint,
-        "character_profiles": project.character_profiles[:24],
-        "relationship_graph": project.relationship_graph[:48],
+        "title": _safe_compact_text(project.title, min(chars, 240)),
+        "source_path": _safe_compact_text(project.source_path, min(chars, 320)),
+        "seed_outline": _safe_compact_text(project.seed_outline, min(chars * 8, 2600)),
+        "world_summary": _safe_compact_text(project.world_summary, min(chars * 5, 1400)),
+        "current_focus": _safe_compact_text(project.current_focus, min(chars * 5, 1400)),
+        "author_constraints": _bounded_json_projection(
+            project.author_constraints, chars=chars, items=items, depth=depth
+        ),
+        "world_blueprint": _bounded_world_blueprint(
+            project.world_blueprint, chars=chars, items=items, depth=depth
+        ),
+        "character_profiles": _bounded_json_projection(
+            project.character_profiles, chars=chars, items=items, depth=depth
+        ),
+        "relationship_graph": _bounded_json_projection(
+            project.relationship_graph, chars=chars, items=items, depth=depth
+        ),
     }
+
+
+def _serialized_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _compact_project_payload(
+    project: NovelProject,
+    *,
+    budget: int = _PROJECT_CONTEXT_BUDGET,
+) -> dict[str, Any]:
+    bounded_budget = max(6_000, min(int(budget), _PROJECT_CONTEXT_MAX))
+    candidate: dict[str, Any] = {}
+    for chars, items, depth in _PROJECTION_PROFILES:
+        candidate = _project_payload(
+            project,
+            chars=chars,
+            items=items,
+            depth=depth,
+        )
+        if len(_serialized_json(candidate)) <= bounded_budget:
+            return candidate
+    return candidate
 
 
 def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
     payload = _compact_project_payload(project)
-    plugins = select_genre_plugins(project)
-    selected_plugin = _selected_novel_type_plugin(project, plugins)
+    prompt_project = project.model_copy(
+        update={
+            "title": payload["title"],
+            "source_path": payload["source_path"],
+            "seed_outline": payload["seed_outline"],
+            "world_summary": payload["world_summary"],
+            "current_focus": payload["current_focus"],
+            "author_constraints": payload["author_constraints"],
+            "world_blueprint": payload["world_blueprint"],
+            "character_profiles": payload["character_profiles"],
+            "relationship_graph": payload["relationship_graph"],
+        }
+    )
+    plugins = select_genre_plugins(prompt_project)
+    selected_plugin = _selected_novel_type_plugin(prompt_project, plugins)
     power_template = compact_power_system_template(selected_plugin.power_system_template)
     mode_line = (
         "请在不重写已有剧情的前提下，补强中文长篇网文项目的世界规则手册，只返回 JSON。"
         if rules_only
         else "请基于导入材料，为中文长篇网文生成第一章前可用的结构化世界档案增强版，只返回 JSON。"
     )
-    return "\n".join(
-        [
+    lines = [
             mode_line,
             "不要写小说正文，不要推进章节剧情；只整理世界观、角色档案、关系网、类型规则和后续写作约束。",
             "必须沿用输入里的既有设定，不要随意改名；规则要能支撑连续几十章的成长、资源、势力冲突和爽点循环。",
@@ -102,9 +272,15 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "如果是网游/游戏经济题材，必须明确币制和低级物价尺度，并严格复用题材插件提供的交易行与官方兑换统一边界。",
             f"已识别题材插件：{plugin_prompt_guide(plugins)}",
             "请根据题材插件补齐可泛化的类型规则；若是复合题材，主题材负责主线逻辑，副题材提供钩子、规则或爽点。",
-            f"当前项目数据：{json.dumps(payload, ensure_ascii=False)}",
         ]
+    context_prefix = "当前项目数据："
+    fixed_length = len("\n".join([*lines, context_prefix]))
+    context_budget = min(
+        _PROJECT_CONTEXT_MAX,
+        max(6_000, _FINAL_PROMPT_MAX - fixed_length),
     )
+    payload = _compact_project_payload(project, budget=context_budget)
+    return "\n".join([*lines, f"{context_prefix}{_serialized_json(payload)}"])
 
 
 def _as_string_list(value: Any, limit: int, *, item_limit: int = 240) -> list[str]:

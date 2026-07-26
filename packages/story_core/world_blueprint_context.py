@@ -212,21 +212,78 @@ def _structured_power_group_lines(label: str, value: Any) -> list[str]:
         ),
     }.get(label)
     if field_order is None or not isinstance(value, (list, tuple)):
-        return _markdown_list(value)
+        return _structured_markdown_list(value)
 
     lines: list[str] = []
     for item in value:
         if not isinstance(item, dict):
-            lines.append(f"- {_inline_markdown(item)}")
+            lines.append(f"- {_structured_inline_markdown(item)}")
             continue
-        name = str(item.get("name") or item.get("title") or "").strip()
-        lines.append(f"- **{name}**" if name else "- （未命名）")
+        escaped_name = _markdown_escape_line(
+            item.get("name") or item.get("title") or ""
+        )
+        lines.append(f"- **{escaped_name}**" if escaped_name else "- （未命名）")
         for field in field_order:
             if _has_content(item.get(field)):
                 lines.append(
-                    f"  - **{_field_label(field)}**：{_inline_markdown(item[field])}"
+                    f"  - **{_structured_field_label(field)}**："
+                    f"{_structured_inline_markdown(item[field])}"
                 )
     return lines
+
+
+def _markdown_escape_line(value: Any) -> str:
+    try:
+        text = str(value or "")
+    except Exception:
+        return ""
+    one_line = " ".join(
+        "".join(character if character.isprintable() else " " for character in text).split()
+    )
+    escaped: list[str] = []
+    for character in one_line:
+        if character in "\\`*_[]<>#":
+            escaped.append("\\")
+        escaped.append(character)
+    return "".join(escaped)
+
+
+def _structured_markdown_list(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [f"- {_structured_inline_markdown(item)}" for item in value]
+    if isinstance(value, dict):
+        if any(key in value for key in ("name", "title")):
+            return [f"- {_structured_inline_markdown(value)}"]
+        return [
+            f"- **{_structured_field_label(key)}**："
+            f"{_structured_inline_markdown(value[key])}"
+            for key in sorted(value, key=str)
+        ]
+    return [f"- {_structured_inline_markdown(value)}"]
+
+
+def _structured_inline_markdown(value: Any) -> str:
+    if isinstance(value, dict):
+        name = _markdown_escape_line(value.get("name") or value.get("title") or "")
+        details = [
+            f"{_structured_field_label(key)}：{_structured_inline_markdown(value[key])}"
+            for key in sorted(value, key=str)
+            if key not in {"name", "title"} and _has_content(value[key])
+        ]
+        if name and details:
+            return f"**{name}**：" + "；".join(details)
+        if name:
+            return f"**{name}**"
+        return "；".join(details) or "（空）"
+    if isinstance(value, (list, tuple)):
+        return "；".join(_structured_inline_markdown(item) for item in value)
+    if value is None:
+        return "（空）"
+    return _markdown_escape_line(value)
+
+
+def _structured_field_label(key: Any) -> str:
+    return _markdown_escape_line(_field_label(key))
 
 
 def sync_world_markdown(
