@@ -31,6 +31,16 @@ def test_public_facade_reexports_prompt_api() -> None:
     assert power_system_facade.power_system_prompt_slice is power_system_prompt.power_system_prompt_slice
 
 
+def test_public_facade_declares_exact_exports() -> None:
+    assert power_system_facade.__all__ == (
+        "PowerSystemValidationError",
+        "legacy_power_summary",
+        "normalize_power_system_spec",
+        "power_system_prompt_slice",
+        "validate_power_system_spec",
+    )
+
+
 def complete_spec() -> dict[str, object]:
     return {
         "name": "神域职业体系",
