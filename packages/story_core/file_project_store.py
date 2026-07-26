@@ -503,6 +503,7 @@ def _manual_chapter_quality_report(
     cold_reader_review = review_cold_reader_experience(
         body,
         previous_summary=str((chapter.get("event_plan") or {}).get("summary") or ""),
+        genre_context=genre_context,
     )
     reader_agent_review = review_reader_agent(
         body,

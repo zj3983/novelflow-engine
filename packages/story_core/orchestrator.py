@@ -3785,7 +3785,12 @@ def _review_chapter_body(
             "adversarial_cut": _pool.submit(review_adversarial_cuts, body),
             "ai_flavor": _pool.submit(review_ai_flavor, body),
             "reader_feel": _pool.submit(review_reader_feel, body),
-            "cold_reader": _pool.submit(review_cold_reader_experience, body, previous_summary=_previous_summary),
+            "cold_reader": _pool.submit(
+                review_cold_reader_experience,
+                body,
+                previous_summary=_previous_summary,
+                genre_context=genre_context,
+            ),
             "plot_spine": _pool.submit(review_plot_spine_completion, body, simulation_plan),
         }
         if game_context:

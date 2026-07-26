@@ -43,6 +43,48 @@ def test_manual_quality_report_passes_explicit_genre_context_to_style_review(mon
     assert captured["genre_context"] == {"genre_plugin_ids": ["game_webnovel"]}
 
 
+def test_manual_quality_report_forwards_genre_context_and_reuses_cold_reader_report(monkeypatch):
+    genre_context = {"genre": "玄幻", "genre_plugin_ids": ["xuanhuan"]}
+    captured = {"cold_reader_calls": 0}
+    cold_reader_report = {
+        "reviewer": "cold_reader/v1",
+        "pass": True,
+        "scores": {},
+        "issues": [],
+        "revision_plan": [],
+        "previous_summary_used": True,
+    }
+
+    def fake_cold_reader(body, *, previous_summary="", genre_context=None):
+        captured["cold_reader_calls"] += 1
+        captured["genre_context"] = genre_context
+        return cold_reader_report
+
+    def fake_reader_agent(body, *, previous_summary="", cold_reader_review=None):
+        captured["reader_agent_report"] = cold_reader_review
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(file_project_store_module, "review_cold_reader_experience", fake_cold_reader)
+    monkeypatch.setattr(file_project_store_module, "review_reader_agent", fake_reader_agent)
+
+    _manual_chapter_quality_report(
+        {
+            "chapter_number": 1,
+            "chapter_title": "test",
+            "body": "plain body",
+            "next_outline": "continue",
+            "event_plan": {"summary": "previous"},
+            "chapter_summary": {"summary": "test", "facts": []},
+            "updated_story": {"timeline": [], "chapter_summaries": []},
+        },
+        genre_context=genre_context,
+    )
+
+    assert captured["cold_reader_calls"] == 1
+    assert captured["genre_context"] is genre_context
+    assert captured["reader_agent_report"] is cold_reader_report
+
+
 def test_auto_quality_gate_allows_advisory_review_and_records_warning():
     report = {
         "ok": False,
