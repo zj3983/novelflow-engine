@@ -166,6 +166,35 @@ def test_prompt_context_cap_preserves_required_power_template_contract() -> None
     assert power_template["fixed_milestones"] == [1, 10, 20, 30, 60]
 
 
+def test_prompt_context_sanitizes_hostile_preserved_power_values_within_cap() -> None:
+    hostile = "\x00\x01\x1f" * 80 + "required-section-" * 30
+    record = _prompt_context_record("custom_type", [])
+    record.power_system_template = {
+        "system_form": hostile,
+        "required_sections": [f"{index}-{hostile}" for index in range(40)],
+        "minimum_path_count": 2,
+        "fixed_milestones": [1, 10, 20, 30, 60],
+    }
+
+    context = novel_type_prompt_context(record)
+    power_template = context["genre_power_system_template"]
+    serialized = json.dumps(context, ensure_ascii=False)
+
+    assert len(serialized) <= 6000
+    assert set(power_template) == {
+        "system_form",
+        "required_sections",
+        "minimum_path_count",
+        "fixed_milestones",
+    }
+    assert all(ord(character) >= 32 for character in power_template["system_form"])
+    assert all(
+        ord(character) >= 32
+        for section in power_template["required_sections"]
+        for character in section
+    )
+
+
 def test_novel_type_prompt_context_merges_type_specific_tropes_before_generic_and_dedupes_ids(
     monkeypatch: pytest.MonkeyPatch,
 ):

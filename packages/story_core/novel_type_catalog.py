@@ -304,6 +304,49 @@ def novel_type_id_from_metadata_fact(value: Any) -> str:
     return resolve_novel_type_id(match.group(1).strip())
 
 
+def _printable_text(value: Any, limit: int) -> str:
+    return "".join(
+        character for character in str(value or "") if character.isprintable()
+    )[:limit]
+
+
+def _emergency_compact_prompt_context(context: dict[str, Any]) -> None:
+    power_template = context["genre_power_system_template"]
+    required_sections = power_template.get("required_sections", [])
+    fixed_milestones = power_template.get("fixed_milestones", [])
+    minimum_path_count = power_template.get("minimum_path_count")
+
+    context["genre_label"] = _printable_text(context.get("genre_label"), 80)
+    context["genre_description"] = _printable_text(
+        context.get("genre_description"), 240
+    )
+    context["genre_core_promises"] = []
+    context["genre_rulebook"] = {
+        _printable_text(field, 40): []
+        for field in list(context.get("genre_rulebook", {}))[:12]
+    }
+    context["genre_quality_checks"] = []
+    context["genre_trope_templates"] = []
+    context["genre_power_system_template"] = {
+        "system_form": _printable_text(power_template.get("system_form"), 80),
+        "required_sections": [
+            _printable_text(item, 48) for item in list(required_sections)[:8]
+        ],
+        "minimum_path_count": (
+            minimum_path_count
+            if minimum_path_count is None
+            or isinstance(minimum_path_count, (bool, int, float))
+            else _printable_text(minimum_path_count, 32)
+        ),
+        "fixed_milestones": [
+            item
+            if item is None or isinstance(item, (bool, int, float))
+            else _printable_text(item, 24)
+            for item in list(fixed_milestones)[:8]
+        ],
+    }
+
+
 def novel_type_prompt_context(record: Any) -> dict[str, Any]:
     from packages.story_core.agent_base import compact_list, compact_text
 
@@ -372,7 +415,8 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
         if optional_power_fields:
             power_template.pop(optional_power_fields[-1])
             continue
-        raise ValueError("novel_type_prompt_context_exceeds_size_cap")
+        _emergency_compact_prompt_context(context)
+        break
     return deepcopy(context)
 
 

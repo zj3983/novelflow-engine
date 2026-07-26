@@ -42,7 +42,7 @@ class NovelTypeWriteRequest(BaseModel):
     rulebook: NovelTypeRulebookRequest = Field(default_factory=NovelTypeRulebookRequest)
     quality_checks: list[str] = Field(default_factory=list)
     trope_templates: list[dict[str, Any]] = Field(default_factory=list)
-    power_system_template: dict[str, Any] = Field(default_factory=dict)
+    power_system_template: dict[str, Any] | None = None
 
     @field_validator("name", "description", mode="before")
     @classmethod
@@ -55,6 +55,15 @@ class NovelTypeWriteRequest(BaseModel):
     @classmethod
     def trim_string_lists(cls, value: Any) -> Any:
         return _trim_string_list(value)
+
+    @field_validator("power_system_template")
+    @classmethod
+    def reject_null_power_system_template(
+        cls, value: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        if value is None:
+            raise ValueError("power_system_template must be an object when supplied")
+        return value
 
 
 def _trim_string_list(value: Any) -> Any:
@@ -70,8 +79,10 @@ def _serialize(record: NovelTypeRecord) -> dict[str, Any]:
     return record.to_dict()
 
 
-def _payload_dict(payload: NovelTypeWriteRequest) -> dict[str, Any]:
-    return payload.model_dump()
+def _payload_dict(
+    payload: NovelTypeWriteRequest, *, exclude_unset: bool = False
+) -> dict[str, Any]:
+    return payload.model_dump(exclude_unset=exclude_unset)
 
 
 def _project_uses_type(world_blueprint: Any, type_id: str) -> bool:
@@ -130,7 +141,11 @@ def init_novel_type_routes() -> APIRouter:
                 detail="Payload novel type ID must match the path ID",
             )
         try:
-            return _serialize(NovelTypeLibrary().update(type_id, _payload_dict(payload)))
+            return _serialize(
+                NovelTypeLibrary().update(
+                    type_id, _payload_dict(payload, exclude_unset=True)
+                )
+            )
         except KeyError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

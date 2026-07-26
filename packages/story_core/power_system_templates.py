@@ -195,23 +195,28 @@ _COMPACT_TEMPLATE_FIELDS = (
 _COMPACT_LIST_CAP = 12
 _COMPACT_MAPPING_CAP = 20
 _COMPACT_STRING_CAP = 180
+_REQUIRED_SECTIONS_ITEM_CAP = 80
+
+
+def _compact_string(value: str, limit: int = _COMPACT_STRING_CAP) -> str:
+    return "".join(character for character in value if character.isprintable())[:limit]
 
 
 def _compact_json_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
-            str(key)[:_COMPACT_STRING_CAP]: _compact_json_value(item)
+            _compact_string(str(key)): _compact_json_value(item)
             for key, item in list(value.items())[:_COMPACT_MAPPING_CAP]
         }
     if isinstance(value, (list, tuple)):
         return [_compact_json_value(item) for item in value[:_COMPACT_LIST_CAP]]
     if isinstance(value, str):
-        return value[:_COMPACT_STRING_CAP]
+        return _compact_string(value)
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     if value is None or isinstance(value, (bool, int, float)):
         return value
-    return str(value)[:_COMPACT_STRING_CAP]
+    return _compact_string(str(value))
 
 
 def compact_power_system_template(template: Mapping[str, object]) -> dict[str, object]:
@@ -220,4 +225,10 @@ def compact_power_system_template(template: Mapping[str, object]) -> dict[str, o
         for field in _COMPACT_TEMPLATE_FIELDS
         if field in template
     }
+    required_sections = template.get("required_sections")
+    if isinstance(required_sections, (list, tuple)):
+        compact["required_sections"] = [
+            _compact_string(str(item), _REQUIRED_SECTIONS_ITEM_CAP)
+            for item in required_sections[:_COMPACT_LIST_CAP]
+        ]
     return deepcopy(compact)

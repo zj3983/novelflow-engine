@@ -129,13 +129,76 @@ def test_get_power_template_round_trips_through_put(novel_type_api):
     assert updated.json()["power_system_template"] == expected_template
 
 
-def test_write_request_power_template_defaults_are_independent():
-    first = NovelTypeWriteRequest(id="first", name="First")
-    second = NovelTypeWriteRequest(id="second", name="Second")
+def test_write_request_distinguishes_omitted_and_explicit_empty_power_template():
+    omitted = NovelTypeWriteRequest(id="first", name="First")
+    explicit = NovelTypeWriteRequest(
+        id="second", name="Second", power_system_template={}
+    )
 
-    first.power_system_template["marker"] = True
+    assert omitted.power_system_template is None
+    assert "power_system_template" not in omitted.model_dump(exclude_unset=True)
+    assert explicit.power_system_template == {}
+    assert explicit.model_dump(exclude_unset=True)["power_system_template"] == {}
 
-    assert second.power_system_template == {}
+
+def test_put_omitting_power_template_preserves_builtin_override(novel_type_api):
+    client, _, _ = novel_type_api
+    payload = next(
+        item for item in client.get("/novel-types").json() if item["id"] == "xuanhuan"
+    )
+    payload.pop("builtin")
+    payload["power_system_template"] = {"system_form": "review override"}
+    assert client.put("/novel-types/xuanhuan", json=payload).status_code == 200
+
+    payload.pop("power_system_template")
+    payload["name"] = "Edited without template"
+    updated = client.put("/novel-types/xuanhuan", json=payload)
+
+    assert updated.status_code == 200
+    assert updated.json()["power_system_template"] == {"system_form": "review override"}
+
+
+def test_put_omitting_power_template_preserves_custom_override(novel_type_api):
+    client, _, _ = novel_type_api
+    payload = {
+        **_custom_payload(),
+        "power_system_template": {"system_form": "custom review override"},
+    }
+    created = client.post("/novel-types", json=payload)
+    expected_template = created.json()["power_system_template"]
+
+    payload.pop("power_system_template")
+    payload["name"] = "Updated without template"
+    updated = client.put("/novel-types/sports", json=payload)
+
+    assert updated.status_code == 200
+    assert updated.json()["power_system_template"] == expected_template
+
+
+def test_put_explicit_empty_power_template_applies_existing_merge_semantics(novel_type_api):
+    client, _, _ = novel_type_api
+    builtin = next(
+        item for item in client.get("/novel-types").json() if item["id"] == "xuanhuan"
+    )
+    builtin.pop("builtin")
+    builtin["power_system_template"] = {}
+    builtin_updated = client.put("/novel-types/xuanhuan", json=builtin)
+
+    custom_payload = {
+        **_custom_payload(),
+        "power_system_template": {"system_form": "custom review override"},
+    }
+    assert client.post("/novel-types", json=custom_payload).status_code == 201
+    custom_payload["power_system_template"] = {}
+    custom_updated = client.put("/novel-types/sports", json=custom_payload)
+
+    assert builtin_updated.status_code == 200
+    assert builtin_updated.json()["power_system_template"] == {}
+    assert custom_updated.status_code == 200
+    assert custom_updated.json()["power_system_template"]["system_form"]
+    assert custom_updated.json()["power_system_template"]["system_form"] != (
+        "custom review override"
+    )
 
 
 def test_create_edit_and_delete_unused_custom_type(novel_type_api):
@@ -209,6 +272,7 @@ def test_unknown_duplicate_and_custom_id_conflict_errors(novel_type_api):
         {**_custom_payload(), "keywords": ["valid", "   "]},
         {**_custom_payload(), "rulebook": {"unknown_rules": ["no"]}},
         {**_custom_payload(), "keywords": "league"},
+        {**_custom_payload(), "power_system_template": None},
     ],
 )
 def test_create_rejects_unknown_or_invalid_fields(novel_type_api, payload):
