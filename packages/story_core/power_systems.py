@@ -782,17 +782,25 @@ def _stage_slice(stages: list[dict[str, Any]], hint: Any) -> list[dict[str, Any]
 def _path_slice(paths: list[dict[str, Any]], hint: Any) -> list[dict[str, Any]]:
     if isinstance(hint, str):
         needle = _text(hint).casefold()
-        matches = [
-            path
-            for path in paths
-            if needle
-            and (
-                needle in path.get("name", "").casefold()
-                or any(needle in branch.casefold() for branch in path.get("branches", []))
-            )
-        ]
+        matches: list[tuple[int, int, int, int, dict[str, Any]]] = []
+        if needle:
+            for path_index, path in enumerate(paths):
+                aliases = [path.get("name", ""), *path.get("branches", [])]
+                for alias_index, alias in enumerate(aliases):
+                    candidate = _text(alias).casefold()
+                    if not candidate or not (needle in candidate or candidate in needle):
+                        continue
+                    matches.append(
+                        (
+                            len(candidate),
+                            int(candidate == needle),
+                            -path_index,
+                            -alias_index,
+                            path,
+                        )
+                    )
         if matches:
-            return matches
+            return [max(matches, key=lambda item: item[:4])[4]]
     return [
         {key: deepcopy(path[key]) for key in ("name", "branches") if key in path}
         for path in paths

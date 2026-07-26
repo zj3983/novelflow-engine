@@ -543,6 +543,67 @@ def test_select_world_context_omits_structured_power_for_unrelated_or_legacy_pro
     assert select_world_context(legacy, "职业升级") == {"power_system": ["旧版力量规则"]}
 
 
+@pytest.mark.parametrize("query", ["classic sword tale", "classification notes"])
+def test_english_power_relevance_does_not_match_inside_larger_words(query):
+    selected = select_world_context(
+        {"power_system_spec": _structured_power_spec()},
+        query,
+    )
+
+    assert "power_system_spec" not in selected
+
+
+def test_english_power_relevance_uses_tokens_while_chinese_keeps_substring_matching():
+    blueprint = {"power_system_spec": _structured_power_spec()}
+
+    assert "power_system_spec" in select_world_context(blueprint, "choose a CLASS-path")
+    assert "power_system_spec" in select_world_context(blueprint, "准备职业晋升试炼")
+
+
+def test_outline_power_context_reapplies_strict_budget_after_maximum_expansion():
+    spec = _structured_power_spec()
+    long_tail = "长" * 240
+    spec["stages"] = [
+        {
+            "name": f"阶段{index}",
+            "level": level,
+            "entry": f"条件{index}{long_tail}",
+            "change": f"变化{index}{long_tail}",
+            "failure": f"失败{index}{long_tail}",
+        }
+        for index, level in enumerate(
+            [1, 3, 5, 7, 9, 10, 12, 15, 18, 20, 24, 27, 30, 45, 60],
+            start=1,
+        )
+    ]
+    spec["paths"] = [
+        {
+            "name": f"路线{index:02d}",
+            "branches": [f"路线{index:02d}分支甲", f"路线{index:02d}分支乙"],
+            "advancement": [f"路线{index:02d}进阶{long_tail}" for _ in range(8)],
+            "role": long_tail,
+        }
+        for index in range(64)
+    ]
+    spec["costs"] = [f"代价{index}{long_tail}" for index in range(16)]
+    spec["counters"] = [f"克制{index}{long_tail}" for index in range(16)]
+    spec["boundaries"] = [f"边界{index}{long_tail}" for index in range(16)]
+
+    first = blueprint_context.outline_power_system_context(spec)
+    second = blueprint_context.outline_power_system_context(spec)
+    encoded = json.dumps(first, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+    assert first == second
+    assert len(encoded) <= 5000
+    assert first["name"] == "神域职业体系"
+    levels = {stage["level"] for stage in first["stages"]}
+    assert {1, 10, 20, 30, 60} <= levels
+    assert [path["name"] for path in first["paths"]] == [f"路线{index:02d}" for index in range(64)]
+    assert all(path.get("branches") for path in first["paths"])
+    assert all(field in first and first[field] for field in ("costs", "counters", "boundaries", "continuity_ledger"))
+    assert all("advancement" not in path for path in first["paths"])
+
+
 def test_world_markdown_rendering_is_ordered_and_shows_quest_chain_stages_without_mutation():
     blueprint = {
         "premise": "现实与神域同时运转。",

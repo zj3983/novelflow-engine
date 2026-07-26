@@ -9,6 +9,7 @@ from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.elastic_outline import outline_window_status
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
+from packages.story_core.novel_type_ids import canonical_novel_type_id
 from packages.story_core.outline_planning import (
     GeneratedOutlinePlan,
     validate_generated_continuation_plan,
@@ -78,6 +79,9 @@ class LLMOutlinePlanningGenerator:
             if genre is None:
                 raise ValueError("invalid_novel_type")
             genre_context = novel_type_prompt_context(genre)
+            effective_novel_type_id = canonical_novel_type_id(
+                getattr(genre, "id", None) or validated.novel_type_id
+            )
             trope_candidates = [
                 dict(item)
                 for item in genre_context.get("genre_trope_templates", [])
@@ -158,13 +162,17 @@ class LLMOutlinePlanningGenerator:
             power_system = outline_power_system_context(validated.power_system_spec)
             power_contract_rules = (
                 [
-                    "游戏力量里程碑必须固定：Lv10是正式转职，Lv20是专精节点而不是第二次转职，Lv30进入进阶分支，Lv60进入传承。",
                     "不得虚构主角已经拥有的技能或装备；新技能、新装备和其他能力必须先安排解锁过程，兑现后写入连续性账本。",
                     "每次晋升必须写明进入条件、支付代价和失败后果，不得免费晋升或无条件跨越阶段。",
                 ]
                 if power_system
                 else []
             )
+            if power_system and effective_novel_type_id == "game_webnovel":
+                power_contract_rules.insert(
+                    0,
+                    "游戏力量里程碑必须固定：Lv10是正式转职，Lv20是专精节点而不是第二次转职，Lv30进入进阶分支，Lv60进入传承。",
+                )
 
             if mode == "extend":
                 validation_rules = [

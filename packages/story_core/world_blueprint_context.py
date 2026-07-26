@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from pathlib import Path
 import re
 from typing import Any
 
-from packages.story_core.power_systems import power_system_prompt_slice
+from packages.story_core.power_systems import normalize_power_system_spec, power_system_prompt_slice
 
 
 MANAGED_MARKER = "<!-- managed: world-blueprint/v1 -->"
@@ -514,7 +515,7 @@ def select_world_context(
     seen_rules = set(world_rules)
 
     relevance = str(relevance_text or "").casefold()
-    if any(keyword.casefold() in relevance for keyword in _POWER_SPEC_KEYWORDS):
+    if _matches_power_spec(relevance):
         power_context = outline_power_system_context(blueprint.get("power_system_spec"))
         if power_context:
             selected["power_system_spec"] = power_context
@@ -563,46 +564,23 @@ def outline_power_system_context(spec: Any) -> dict[str, Any]:
     base = power_system_prompt_slice(spec)
     if not base:
         return {}
-
-    stages: list[dict[str, Any]] = []
-    seen_levels: set[Any] = set()
-    pending_stages = [
-        stage for stage in base.get("stages", []) if isinstance(stage, dict)
-    ]
-    position = 0
-    while position < len(pending_stages):
-        stage = pending_stages[position]
-        position += 1
-        if not isinstance(stage, dict):
-            continue
-        level = stage.get("level")
-        for candidate in power_system_prompt_slice(spec, stage_hint=level).get("stages", []):
-            if not isinstance(candidate, dict):
-                continue
-            identity = candidate.get("level", candidate.get("name"))
-            if identity in seen_levels:
-                continue
-            seen_levels.add(identity)
-            stages.append(deepcopy(candidate))
-            pending_stages.append(candidate)
+    normalized = normalize_power_system_spec(spec)
+    stages = deepcopy(normalized.get("stages", []))
 
     paths: list[dict[str, Any]] = []
-    for path in base.get("paths", []):
+    for path in normalized.get("paths", []):
         if not isinstance(path, dict):
             continue
-        name = str(path.get("name") or "").strip()
-        matched = power_system_prompt_slice(spec, path_hint=name).get("paths", [])
-        source = matched[0] if matched and isinstance(matched[0], dict) else path
         compact_path = {
-            key: deepcopy(source[key])
+            key: deepcopy(path[key])
             for key in ("name", "branches", "advancement")
-            if source.get(key) not in (None, "", [], {})
+            if path.get(key) not in (None, "", [], {})
         }
         if compact_path:
             paths.append(compact_path)
 
     result = {
-        key: deepcopy(base[key])
+        key: deepcopy(normalized[key])
         for key in (
             "name",
             "origin",
@@ -618,7 +596,93 @@ def outline_power_system_context(spec: Any) -> dict[str, Any]:
         result["stages"] = stages
     if paths:
         result["paths"] = paths
-    return result
+    return _fit_outline_power_budget(result)
+
+
+def _matches_power_spec(relevance: str) -> bool:
+    for keyword in _POWER_SPEC_KEYWORDS:
+        folded = keyword.casefold()
+        if keyword.isascii():
+            if re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(folded)}(?![A-Za-z0-9_])",
+                relevance,
+            ):
+                return True
+        elif folded in relevance:
+            return True
+    return False
+
+
+def _outline_json_length(value: dict[str, Any]) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False))
+
+
+def _outline_text(value: Any, limit: int) -> str:
+    return str(value or "")[:limit]
+
+
+def _major_outline_stages(stages: Any) -> list[dict[str, Any]]:
+    values = [stage for stage in stages if isinstance(stage, dict)] if isinstance(stages, list) else []
+    major_levels = {1, 10, 20, 30, 60}
+    selected = [
+        stage
+        for index, stage in enumerate(values)
+        if index == 0 or stage.get("level") in major_levels
+    ]
+    return selected or values[:1]
+
+
+def _fit_outline_power_budget(value: dict[str, Any]) -> dict[str, Any]:
+    if _outline_json_length(value) <= 5000:
+        return deepcopy(value)
+
+    required_lists = ("costs", "counters", "boundaries", "continuity_ledger")
+    stages = _major_outline_stages(value.get("stages"))
+    paths = value.get("paths") if isinstance(value.get("paths"), list) else []
+    for text_limit, list_limit in ((120, 4), (80, 2), (48, 1), (24, 1), (12, 1)):
+        candidate: dict[str, Any] = {"name": value.get("name")}
+        candidate["stages"] = [
+            {
+                key: (
+                    stage[key]
+                    if key == "level"
+                    else _outline_text(stage[key], text_limit)
+                )
+                for key in ("name", "level", "entry", "change", "failure")
+                if stage.get(key) not in (None, "", [], {})
+            }
+            for stage in stages
+        ]
+        candidate["paths"] = [
+            {
+                "name": path.get("name"),
+                "branches": [
+                    _outline_text(branch, text_limit)
+                    for branch in path.get("branches", [])[:2]
+                ],
+            }
+            for path in paths
+            if isinstance(path, dict) and path.get("name")
+        ]
+        for field in required_lists:
+            items = value.get(field) if isinstance(value.get(field), list) else []
+            candidate[field] = [
+                _outline_text(item, text_limit) for item in items[:list_limit]
+            ]
+        candidate = {
+            key: item
+            for key, item in candidate.items()
+            if item not in (None, "", [], {})
+        }
+        if _outline_json_length(candidate) <= 5000:
+            return candidate
+
+    fallback = deepcopy(candidate)
+    while fallback.get("paths") and _outline_json_length(fallback) > 5000:
+        fallback["paths"].pop()
+    while len(fallback.get("stages", [])) > 1 and _outline_json_length(fallback) > 5000:
+        fallback["stages"].pop(-2)
+    return fallback
 
 
 def flatten_selected_rules(selected: Any) -> list[Any]:

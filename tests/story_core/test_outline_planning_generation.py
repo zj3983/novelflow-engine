@@ -188,6 +188,31 @@ def test_outline_prompt_does_not_fabricate_power_contract_for_legacy_brief() -> 
     assert "power_system" not in captured
 
 
+def test_xianxia_structured_power_prompt_omits_game_only_milestone_rules() -> None:
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["system"] = payload["messages"][0]["content"]
+        captured["context"] = json.loads(payload["messages"][1]["content"])
+        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    payload = _brief().model_dump(mode="json")
+    payload["novel_type_id"] = "xianxia"
+    payload["power_system_spec"] = _outline_power_spec()
+
+    LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve).generate(
+        OutlinePlanningBrief.model_validate(payload), mode="initial"
+    )
+
+    contract = "\n".join([captured["system"], *captured["context"]["validation_rules"]])
+    assert "power_system" in captured["context"]
+    assert "不得虚构" in contract and "免费晋升" in contract
+    assert "Lv10" not in contract
+    assert "Lv20" not in contract
+    assert "第二次转职" not in contract
+
+
 def test_trope_validator_rejects_invalid_primary_arc_and_beat() -> None:
     plan = _trope_plan()
     plan["outline"]["overall"]["primary_trope_id"] = "missing"

@@ -827,6 +827,18 @@ def test_prompt_slice_matches_path_or_branch_case_insensitively(hint: str) -> No
     assert result["paths"] == [normalize_power_system_spec(spec)["paths"][1]]
 
 
+def test_prompt_slice_uses_longest_bidirectional_path_alias_for_production_class_name() -> None:
+    spec = complete_spec()
+    spec["paths"][0]["name"] = "元素"
+    spec["paths"][0]["branches"] = ["元素战士", "符文战士"]
+    spec["paths"][1]["branches"] = ["元素法师", "冰霜法师"]
+
+    result = power_system_prompt_slice(spec, stage_hint=12, path_hint="元素法师学徒")
+
+    assert result["paths"] == [normalize_power_system_spec(spec)["paths"][1]]
+    assert result["paths"][0]["branches"][0] == "元素法师"
+
+
 def test_prompt_slice_keeps_core_context_and_is_deep_independent_under_limit() -> None:
     source = complete_spec()
     result = power_system_prompt_slice(source, stage_hint=10, path_hint="战士")

@@ -97,6 +97,21 @@ def test_packet_omits_power_system_for_absent_and_legacy_world_context():
     assert "power_system" not in build_codex_writing_packet(legacy, chapter_number=1)
 
 
+def test_file_project_legacy_prompt_preview_has_exactly_no_power_system_key():
+    store = object.__new__(FileProjectStore)
+
+    preview = store._compact_prompt_preview_packet(
+        {
+            "schema_version": "file-writing-packet/v1",
+            "target_chapter": 2,
+            "scene_kind": "reality",
+            "state": {"story_id": "legacy", "genre": "都市", "style": "白描"},
+        }
+    )
+
+    assert "power_system" not in preview
+
+
 def test_first_chapter_packet_contains_contract():
     story = StoryState(
         story_id="s-writing-packet",

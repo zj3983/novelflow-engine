@@ -5104,11 +5104,10 @@ class FileProjectStore:
         characters = state.get("characters") if isinstance(state.get("characters"), list) else []
         recent_chapters = packet.get("recent_chapters") if isinstance(packet.get("recent_chapters"), list) else []
 
-        return {
+        preview = {
             "schema_version": packet.get("schema_version"),
             "target_chapter": packet.get("target_chapter"),
             "scene_kind": packet.get("scene_kind"),
-            "power_system": self._slim_prompt_preview_value(packet.get("power_system")),
             "instruction": self._compact_text(packet.get("instruction"), 260),
             "hard_locks": [self._compact_text(item, 160) for item in packet.get("hard_locks", [])[:10]],
             "scene_cards": self._slim_prompt_preview_value(packet.get("scene_cards", [])[:6]),
@@ -5173,6 +5172,10 @@ class FileProjectStore:
             ),
             "note": "提示词面板显示压缩写作包；完整写作包仍由 writing_packet 接口返回。",
         }
+        power_system = packet.get("power_system")
+        if isinstance(power_system, dict) and power_system:
+            preview["power_system"] = self._slim_prompt_preview_value(power_system)
+        return preview
 
     def prompt_preview(self, chapter_number: int | None = None) -> dict[str, Any]:
         from packages.story_core.orchestrator import (
