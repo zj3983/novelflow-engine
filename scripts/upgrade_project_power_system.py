@@ -27,6 +27,16 @@ from packages.story_core.world_blueprint_context import (  # noqa: E402
 )
 
 
+class FilesystemContainmentError(ValueError):
+    pass
+
+
+class FilesystemTransactionError(RuntimeError):
+    def __init__(self, message: str, *, rollback_failed: bool) -> None:
+        self.rollback_failed = rollback_failed
+        super().__init__(message)
+
+
 _PATH_DETAILS = (
     {
         "name": "战士",
@@ -365,13 +375,33 @@ def _is_managed_markdown(path: Path) -> bool:
         return False
 
 
-def _stage_write(path: Path, content: bytes) -> Path:
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _require_contained_path(root: Path, path: Path, label: str) -> None:
+    resolved_parent = path.parent.resolve(strict=False)
+    resolved_target = path.resolve(strict=False)
+    if not _is_relative_to(resolved_parent, root) or not _is_relative_to(
+        resolved_target, root
+    ):
+        raise FilesystemContainmentError(f"path_escape: {label}")
+
+
+def _stage_write(root: Path, path: Path, content: bytes) -> Path:
+    _require_contained_path(root, path.parent, "staging_parent")
     path.parent.mkdir(parents=True, exist_ok=True)
+    _require_contained_path(root, path.parent, "staging_parent")
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
     temporary = Path(temporary_name)
     try:
+        _require_contained_path(root, temporary, "staging_file")
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
             handle.flush()
@@ -382,16 +412,39 @@ def _stage_write(path: Path, content: bytes) -> Path:
         raise
 
 
-def _transactional_write(writes: list[tuple[Path, bytes]]) -> None:
-    originals = {
-        path: (path.exists(), path.read_bytes() if path.exists() else b"")
-        for path, _ in writes
-    }
+def _capture_targets(writes: list[tuple[Path, bytes]]) -> dict[Path, tuple[bool, bytes]]:
+    originals: dict[Path, tuple[bool, bytes]] = {}
+    for path, _ in writes:
+        existed = path.exists()
+        originals[path] = (existed, path.read_bytes() if existed else b"")
+    return originals
+
+
+def _targets_differ(originals: dict[Path, tuple[bool, bytes]]) -> bool:
+    for path, (existed, original) in originals.items():
+        try:
+            current_exists = path.exists()
+            if current_exists != existed:
+                return True
+            if current_exists and path.read_bytes() != original:
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _transactional_write(
+    root: Path,
+    writes: list[tuple[Path, bytes]],
+    originals: dict[Path, tuple[bool, bytes]],
+) -> None:
+    if set(originals) != {path for path, _ in writes}:
+        raise ValueError("transaction originals do not match write targets")
     staged: list[tuple[Path, Path]] = []
     replaced: list[Path] = []
     try:
         for path, content in writes:
-            staged.append((path, _stage_write(path, content)))
+            staged.append((path, _stage_write(root, path, content)))
         try:
             for path, temporary in staged:
                 os.replace(temporary, path)
@@ -402,7 +455,7 @@ def _transactional_write(writes: list[tuple[Path, bytes]]) -> None:
                 existed, original = originals[path]
                 try:
                     if existed:
-                        restoration = _stage_write(path, original)
+                        restoration = _stage_write(root, path, original)
                         try:
                             os.replace(restoration, path)
                         finally:
@@ -411,23 +464,49 @@ def _transactional_write(writes: list[tuple[Path, bytes]]) -> None:
                         path.unlink(missing_ok=True)
                 except Exception as rollback_error:
                     rollback_errors.append(rollback_error)
-            if rollback_errors:
-                raise RuntimeError(
-                    f"transaction failed and rollback failed: {rollback_errors!r}"
-                ) from commit_error
-            raise
+            raise FilesystemTransactionError(
+                f"commit failed: {type(commit_error).__name__}: {commit_error}",
+                rollback_failed=bool(rollback_errors),
+            ) from commit_error
     finally:
         for _, temporary in staged:
             temporary.unlink(missing_ok=True)
 
 
-def _backup(metadata_dir: Path, project_bytes: bytes, outline_bytes: bytes) -> Path:
+def _write_fsynced_file(path: Path, content: bytes) -> None:
+    with path.open("xb") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _backup(
+    root: Path, metadata_dir: Path, project_bytes: bytes, outline_bytes: bytes
+) -> Path:
+    backups_parent = metadata_dir / "backups"
+    _require_contained_path(root, backups_parent, "backups_parent")
+    backups_parent.mkdir(parents=True, exist_ok=True)
+    _require_contained_path(root, backups_parent, "backups_parent")
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=".power-system-", suffix=".tmp", dir=backups_parent
+        )
+    )
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    destination = metadata_dir / "backups" / f"power-system-{stamp}"
-    destination.mkdir(parents=True, exist_ok=False)
-    (destination / "project.json").write_bytes(project_bytes)
-    (destination / "outline.json").write_bytes(outline_bytes)
-    return destination
+    destination = backups_parent / f"power-system-{stamp}"
+    try:
+        _require_contained_path(root, staging, "backup_staging")
+        _require_contained_path(root, staging / "project.json", "backup_project")
+        _require_contained_path(root, staging / "outline.json", "backup_outline")
+        _require_contained_path(root, destination, "backup_destination")
+        _write_fsynced_file(staging / "project.json", project_bytes)
+        _write_fsynced_file(staging / "outline.json", outline_bytes)
+        os.replace(staging, destination)
+        return destination
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def upgrade_project(
@@ -439,11 +518,20 @@ def upgrade_project(
         "backup_path": None,
         "changes": [],
     }
+    transaction_originals: dict[Path, tuple[bool, bytes]] | None = None
     try:
-        root = Path(project_dir).resolve()
+        root = Path(project_dir).resolve(strict=True)
+        if not root.is_dir():
+            raise NotADirectoryError(f"project root is not a directory: {root}")
         metadata = root / ".webnovel"
         project_path = metadata / "project.json"
         outline_path = metadata / "outline.json"
+        power_path = root / "设定集" / "力量体系.md"
+        _require_contained_path(root, project_path, "project_json")
+        _require_contained_path(root, outline_path, "outline_json")
+        _require_contained_path(root, power_path, "power_markdown")
+        if backup:
+            _require_contained_path(root, metadata / "backups", "backups_parent")
         project, project_bytes = _read_json(project_path)
         outline, outline_bytes = _read_json(outline_path)
         if not isinstance(project, dict) or not isinstance(outline, (dict, list)):
@@ -466,7 +554,6 @@ def upgrade_project(
         project_changed = expected_project_bytes != project_bytes
         outline_file_changed = expected_outline_bytes != outline_bytes
 
-        power_path = root / "设定集" / "力量体系.md"
         expected_power = render_power_markdown(project.get("title"), blueprint).encode("utf-8")
         power_exists = power_path.exists()
         power_managed = power_exists and _is_managed_markdown(power_path)
@@ -490,9 +577,6 @@ def upgrade_project(
         if check or not will_write:
             return result
 
-        if backup:
-            backup_path = _backup(metadata, project_bytes, outline_bytes)
-            result["backup_path"] = str(backup_path)
         writes: list[tuple[Path, bytes]] = []
         if project_changed:
             writes.append((project_path, expected_project_bytes))
@@ -500,14 +584,32 @@ def upgrade_project(
             writes.append((outline_path, expected_outline_bytes))
         if power_changed:
             writes.append((power_path, expected_power))
-        _transactional_write(writes)
+        transaction_originals = _capture_targets(writes)
+        if backup:
+            backup_path = _backup(root, metadata, project_bytes, outline_bytes)
+            result["backup_path"] = str(backup_path)
+        _transactional_write(root, writes, transaction_originals)
         return result
     except Exception as exc:
+        persistent_change = (
+            _targets_differ(transaction_originals)
+            if transaction_originals is not None
+            else False
+        )
+        rollback_failed = isinstance(exc, FilesystemTransactionError) and exc.rollback_failed
         return {
-            "changed": False,
+            "changed": persistent_change,
             "valid": False,
             "backup_path": result.get("backup_path"),
             "changes": [f"error: {type(exc).__name__}: {exc}"],
+            "rollback_failed": rollback_failed,
+            "state": (
+                "indeterminate"
+                if rollback_failed
+                else "changed"
+                if persistent_change
+                else "unchanged"
+            ),
         }
 
 

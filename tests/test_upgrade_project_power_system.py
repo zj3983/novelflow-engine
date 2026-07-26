@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -343,6 +344,119 @@ def test_replacement_failure_rolls_back_every_target_and_cleans_temps(
         for path in targets
     } == before
     assert not list(project_dir.rglob(".*.tmp"))
+
+
+def test_commit_and_rollback_failure_reports_persistent_change(
+    project_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    targets = (
+        project_dir / ".webnovel" / "project.json",
+        project_dir / ".webnovel" / "outline.json",
+        project_dir / "设定集" / "力量体系.md",
+    )
+    before = {path: path.read_bytes() for path in targets}
+    real_replace = migration.os.replace
+    calls = 0
+
+    def fail_commit_and_rollback(source: str | Path, destination: str | Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls in {2, 3}:
+            raise OSError(f"injected replacement failure {calls}")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(migration.os, "replace", fail_commit_and_rollback)
+
+    result = upgrade_project(project_dir, backup=False)
+
+    assert result["valid"] is False
+    assert result["changed"] is True
+    assert result["rollback_failed"] is True
+    assert result["state"] == "indeterminate"
+    assert targets[0].read_bytes() != before[targets[0]]
+    assert targets[1].read_bytes() == before[targets[1]]
+    assert targets[2].read_bytes() == before[targets[2]]
+    assert not list(project_dir.rglob(".*.tmp"))
+
+
+def test_second_backup_write_failure_publishes_no_partial_backup(
+    project_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_write = migration._write_fsynced_file
+    calls = 0
+
+    def fail_second_write(path: Path, content: bytes) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected second backup write failure")
+        real_write(path, content)
+
+    monkeypatch.setattr(migration, "_write_fsynced_file", fail_second_write)
+
+    result = upgrade_project(project_dir)
+
+    backups = project_dir / ".webnovel" / "backups"
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert result["backup_path"] is None
+    assert not backups.exists() or not list(backups.iterdir())
+    assert not list(project_dir.rglob(".power-system-*.tmp"))
+
+
+def test_rejects_canonical_file_symlink_escape_before_external_change(
+    project_dir: Path, tmp_path: Path
+) -> None:
+    project_path = project_dir / ".webnovel" / "project.json"
+    external = tmp_path / "external-project.json"
+    external.write_bytes(project_path.read_bytes())
+    project_path.unlink()
+    try:
+        os.symlink(external, project_path)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"file symlink creation unavailable: {exc}")
+    before = external.read_bytes()
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "path_escape: project_json" in result["changes"][0]
+    assert external.read_bytes() == before
+    assert not (project_dir / ".webnovel" / "backups").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior")
+def test_rejects_settings_junction_escape_before_external_change(
+    project_dir: Path, tmp_path: Path
+) -> None:
+    settings = project_dir / "设定集"
+    original_settings = project_dir / "设定集-original"
+    external = tmp_path / "external-settings"
+    external.mkdir()
+    external_power = external / "力量体系.md"
+    external_power.write_text(f"{MANAGED_MARKER}\nexternal\n", encoding="utf-8")
+    settings.rename(original_settings)
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(settings), str(external)],
+        capture_output=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        original_settings.rename(settings)
+        pytest.skip("junction creation unavailable")
+    before = external_power.read_bytes()
+    try:
+        result = upgrade_project(project_dir)
+    finally:
+        os.rmdir(settings)
+        original_settings.rename(settings)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "path_escape: power_markdown" in result["changes"][0]
+    assert external_power.read_bytes() == before
+    assert not (project_dir / ".webnovel" / "backups").exists()
 
 
 def test_malformed_json_is_invalid_and_atomic(project_dir: Path) -> None:
