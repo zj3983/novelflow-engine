@@ -102,8 +102,12 @@ async function mockNovelTypes(page: Page, options?: MockOptions) {
     "access-control-allow-private-network": "true",
   };
 
-  await page.route(/^http:\/\/127\.0\.0\.1:8000\/novel-types(?:\/[^/?]+)?(?:\?.*)?$/, async (route: Route) => {
+  await page.route(/^http:\/\/127\.0\.0\.1:\d+\/novel-types(?:\/[^/?]+)?(?:\?.*)?$/, async (route: Route) => {
     const request = route.request();
+    if (request.isNavigationRequest()) {
+      await route.continue();
+      return;
+    }
     const method = request.method();
     const url = new URL(request.url());
     const responseHeaders = {
