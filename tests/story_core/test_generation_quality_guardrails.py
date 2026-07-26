@@ -287,6 +287,26 @@ def test_director_moves_accept_character_grouped_object():
     ]
 
 
+def test_director_moves_accept_grouped_text_actions_skip_blanks_and_limit_to_six():
+    moves = _normalize_moves(
+        {
+            "林照": ["动作1", "   ", "动作2"],
+            "赵管事": "动作3",
+            "周满": ["动作4", "动作5", "动作6", "动作7"],
+        },
+        allow_text_items=True,
+    )
+
+    assert [(move["name"], move["action"]) for move in moves] == [
+        ("林照", "动作1"),
+        ("林照", "动作2"),
+        ("赵管事", "动作3"),
+        ("周满", "动作4"),
+        ("周满", "动作5"),
+        ("周满", "动作6"),
+    ]
+
+
 def test_director_moves_use_group_name_for_invalid_names_without_stringifying_null():
     moves = _normalize_moves(
         {

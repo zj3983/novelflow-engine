@@ -41,6 +41,16 @@ def test_writer_template_source_contains_placeholders_not_project_content():
     assert "夜烬" not in template.content
 
 
+def test_generic_director_template_documents_action_object_shapes():
+    content = get_default_prompt_template("director_generic").content
+
+    assert "character_moves" in content
+    assert "action" in content
+    assert "{name, action}" in content
+    assert "chapter_satisfaction" in content
+    assert "chapter_end_hook" in content
+
+
 def test_render_rejects_missing_template_variable():
     template = PromptTemplate(
         key="writer",

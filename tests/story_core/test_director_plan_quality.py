@@ -1,7 +1,12 @@
 import json
 
 from packages.story_core.models import CharacterState, StoryState
-from packages.story_core.orchestrator import StoryOrchestrator, _director_plan_quality_issues, _normalize_intent
+from packages.story_core.orchestrator import (
+    StoryOrchestrator,
+    _director_plan_quality_issues,
+    _normalize_event_plan,
+    _normalize_intent,
+)
 
 
 def _story() -> StoryState:
@@ -119,6 +124,55 @@ def test_director_quality_gate_rejects_missing_blank_and_null_actions():
         issues = _director_plan_quality_issues(_story(), plan)
 
         assert any("可执行动作" in issue for issue in issues), incomplete_move
+
+
+def test_director_quality_gate_and_event_plan_normalization_accept_text_ordered_actions():
+    plan = {
+        "character_moves": {},
+        "event_plan": {
+            "ordered_actions": ["章首，林照核对祖祠账册", "林照带周满检查侧门香灰"],
+            "chapter_satisfaction": {
+                "core_event": "林照拿到祖祠账册",
+                "obstacle": "赵管事提前锁住侧门",
+                "visible_payoff": "账册当场打开",
+                "cost": "赵管事记住林照的查账意图",
+                "state_change": "林照确认香灰被人调换",
+                "next_hook": "账册里少了三个名字",
+            },
+            "chapter_end_hook": {"type": "悬念钩", "strength": "medium", "content": "缺失名单指向内院"},
+        },
+    }
+
+    issues = _director_plan_quality_issues(_story(), plan)
+    event_plan = _normalize_event_plan(plan["event_plan"], chapter_number=2, story=_story())
+
+    assert issues == []
+    assert [(item["name"], item["action"]) for item in event_plan["ordered_actions"]] == [
+        ("", "章首，林照核对祖祠账册"),
+        ("", "林照带周满检查侧门香灰"),
+    ]
+
+
+def test_director_quality_gate_rejects_blank_text_only_ordered_actions():
+    plan = {
+        "character_moves": {},
+        "event_plan": {
+            "ordered_actions": ["", "   "],
+            "chapter_satisfaction": {
+                "core_event": "林照拿到祖祠账册",
+                "obstacle": "赵管事提前锁住侧门",
+                "visible_payoff": "账册当场打开",
+                "cost": "赵管事记住林照的查账意图",
+                "state_change": "林照确认香灰被人调换",
+                "next_hook": "账册里少了三个名字",
+            },
+            "chapter_end_hook": {"type": "悬念钩", "strength": "medium", "content": "缺失名单指向内院"},
+        },
+    }
+
+    issues = _director_plan_quality_issues(_story(), plan)
+
+    assert any("可执行动作" in issue for issue in issues)
 
 
 def test_director_quality_gate_checks_materials_outside_moves():

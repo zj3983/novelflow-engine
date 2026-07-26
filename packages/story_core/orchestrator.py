@@ -2191,38 +2191,55 @@ def _director_prompt_character_cards(value: Any) -> dict[str, Any]:
     return {"cards": compact_cards}
 
 
-def _normalize_moves(raw_moves: object, *, require_action: bool = False) -> list[dict]:
+def _normalize_moves(
+    raw_moves: object,
+    *,
+    require_action: bool = False,
+    allow_text_items: bool = False,
+    require_name: bool = True,
+) -> list[dict]:
     moves: list[dict] = []
-    candidates: list[tuple[dict, str | None]] = []
+    candidates: list[tuple[dict | str, object]] = []
     if isinstance(raw_moves, list):
-        candidates.extend((item, None) for item in raw_moves if isinstance(item, dict))
+        candidates.extend(
+            (item, None)
+            for item in raw_moves
+            if isinstance(item, dict) or (allow_text_items and isinstance(item, str))
+        )
     elif isinstance(raw_moves, dict):
         for grouped_name, grouped_moves in raw_moves.items():
             if isinstance(grouped_moves, dict):
-                candidates.append((grouped_moves, str(grouped_name)))
+                candidates.append((grouped_moves, grouped_name))
             elif isinstance(grouped_moves, list):
                 candidates.extend(
-                    (item, str(grouped_name)) for item in grouped_moves if isinstance(item, dict)
+                    (item, grouped_name)
+                    for item in grouped_moves
+                    if isinstance(item, dict) or (allow_text_items and isinstance(item, str))
                 )
+            elif allow_text_items and isinstance(grouped_moves, str):
+                candidates.append((grouped_moves, grouped_name))
     else:
         return moves
     for item, grouped_name in candidates:
-        explicit_name = str(item.get("name") or "").strip()
-        name = explicit_name or str(grouped_name or "").strip()
-        if not name:
+        item_data = item if isinstance(item, dict) else {}
+        raw_action = str(item if isinstance(item, str) else item_data.get("action") or "").strip()
+        if isinstance(item, str) and not raw_action:
             continue
-        raw_action = str(item.get("action") or "").strip()
+        explicit_name = str(item_data.get("name") or "").strip()
+        name = explicit_name or str(grouped_name or "").strip()
+        if require_name and not name:
+            continue
         if require_action and not raw_action:
             continue
         moves.append(
             {
                 "name": name,
-                "goal": compact_text(str(item.get("goal") or "").strip() or "推进当前主线", 80),
-                "emotion": str(item.get("emotion") or "").strip() or "alert",
+                "goal": compact_text(str(item_data.get("goal") or "").strip() or "推进当前主线", 80),
+                "emotion": str(item_data.get("emotion") or "").strip() or "alert",
                 "action": compact_text(raw_action or "继续推进当前主线", 120),
-                "priority": _normalize_priority(item.get("priority")),
+                "priority": _normalize_priority(item_data.get("priority")),
                 "new_character_candidates": compact_list(
-                    item.get("new_character_candidates", []),
+                    item_data.get("new_character_candidates", []),
                     max_items=4,
                     item_chars=60,
                 ),
@@ -2231,6 +2248,15 @@ def _normalize_moves(raw_moves: object, *, require_action: bool = False) -> list
         if len(moves) == 6:
             break
     return moves
+
+
+def _normalize_ordered_actions(raw_actions: object, *, require_action: bool = False) -> list[dict]:
+    return _normalize_moves(
+        raw_actions,
+        require_action=require_action,
+        allow_text_items=True,
+        require_name=False,
+    )
 
 
 def _normalize_priority(raw: object) -> int:
@@ -2318,8 +2344,8 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
         issues.append("章节规划仍含空泛占位语，必须改成能直接写成场景的具体行动、阻力、结果和章末事件。")
 
     moves = [
-        *_normalize_moves(plan.get("character_moves"), require_action=True),
-        *_normalize_moves(event_plan.get("ordered_actions"), require_action=True),
+        *_normalize_moves(plan.get("character_moves"), require_action=True, allow_text_items=True),
+        *_normalize_ordered_actions(event_plan.get("ordered_actions"), require_action=True),
     ]
     if not moves:
         issues.append("导演计划缺少可执行动作。")
@@ -2476,7 +2502,7 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
         "turn": compact_text(str(raw_event_plan.get("turn", "")).strip(), 120),
         "pivot": compact_text(str(raw_event_plan.get("pivot", "")).strip(), 160),
         "collision": compact_text(str(raw_event_plan.get("collision", "")).strip(), 160),
-        "ordered_actions": _normalize_moves(raw_event_plan.get("ordered_actions")),
+        "ordered_actions": _normalize_ordered_actions(raw_event_plan.get("ordered_actions")),
         "exposition_beats": compact_list(raw_event_plan.get("exposition_beats", []), max_items=8, item_chars=180),
         "npc_beats": compact_list(raw_event_plan.get("npc_beats", []), max_items=6, item_chars=180),
         "quest_beats": compact_list(raw_event_plan.get("quest_beats", []), max_items=6, item_chars=180),
@@ -6438,7 +6464,7 @@ class StoryOrchestrator:
                     f"director_plan_quality_failed:{'; '.join(director_issues)}",
                 )
         plan_summary = {key: len(plan.get(key, [])) if isinstance(plan.get(key, []), list) else None for key in ("character_moves", "chapter_summary")}
-        action_briefs = _normalize_moves(plan.get("character_moves"))
+        action_briefs = _normalize_moves(plan.get("character_moves"), allow_text_items=True)
         chapter_intent = _normalize_intent(plan.get("chapter_intent"))
         event_plan = _normalize_event_plan(plan.get("event_plan"), chapter_number, working_story)
         memory_constraints = _normalize_memory_constraints(plan.get("memory_constraints"), working_story)
