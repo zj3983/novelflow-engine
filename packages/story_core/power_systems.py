@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from itertools import islice
 import json
 import math
 import re
@@ -32,12 +33,15 @@ PATH_FIELDS = (
     "name",
     "role",
     "core_resource",
+    "core_attributes",
     "weapons",
     "armor",
     "combat_loop",
     "strengths",
     "weaknesses",
+    "skill_categories",
     "branches",
+    "transfer_task",
     "advancement",
 )
 STAGE_FIELDS = ("name", "level", "entry", "change", "failure")
@@ -56,10 +60,12 @@ TEXT_LIST_FIELDS = (
     "continuity_ledger",
 )
 PATH_TEXT_LIST_FIELDS = (
+    "core_attributes",
     "weapons",
     "armor",
     "strengths",
     "weaknesses",
+    "skill_categories",
     "branches",
     "advancement",
 )
@@ -67,6 +73,7 @@ PATH_TEXT_LIST_FIELDS = (
 _MAX_STRING = 240
 _MAX_LIST = 64
 _MAX_NUMBER = 1_000_000
+_MAPPING_SCAN_CAP = 64
 _PROMPT_BUDGET = 5_000
 _GAME_CLASSES = frozenset(("战士", "法师", "游侠", "盗贼", "牧师", "召唤师"))
 _GAME_MILESTONES = frozenset((1, 10, 20, 30, 60))
@@ -104,10 +111,18 @@ class PowerSystemValidationError(ValueError):
 def _mapping_items(value: Any) -> list[tuple[Any, Any]]:
     if not isinstance(value, Mapping):
         return []
+    result: list[tuple[Any, Any]] = []
     try:
-        return list(value.items())
+        iterator = iter(islice(value.items(), _MAPPING_SCAN_CAP))
+        while True:
+            try:
+                result.append(next(iterator))
+            except StopIteration:
+                return result
+            except Exception:
+                return result
     except Exception:
-        return []
+        return result
 
 
 def _mapping_get(value: Any, key: str, default: Any = None) -> Any:
@@ -162,7 +177,7 @@ def _number(value: Any) -> int | float | None:
     if isinstance(value, float) and not math.isfinite(value):
         return 0
     bounded = min(max(value, -_MAX_NUMBER), _MAX_NUMBER)
-    return int(bounded) if isinstance(value, int) or bounded.is_integer() else bounded
+    return int(bounded) if isinstance(value, int) else float(bounded)
 
 
 def _normalize_record(value: Any, fields: Sequence[str]) -> dict[str, Any]:
@@ -256,7 +271,7 @@ def _is_empty(value: Any) -> bool:
 
 
 def _ledger_key(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+    return re.sub(r"[^a-z0-9\u3400-\u9fff]+", "_", value.casefold()).strip("_")
 
 
 _LEDGER_ALIASES = {
@@ -270,9 +285,19 @@ _LEDGER_ALIASES = {
             "rank",
             "realm",
             "class_path",
+            "当前等级",
+            "等级",
+            "阶段",
+            "境界",
+            "修为",
         )
     ),
-    "skills": frozenset(("skill", "skills", "ability", "abilities", "power", "powers")),
+    "skills": frozenset(
+        ("skill", "skills", "ability", "abilities", "power", "powers", "技能", "能力", "术法")
+    ),
+    "equipment": frozenset(
+        ("equipment", "gear", "weapon", "weapons", "armor", "装备", "武器", "护甲", "法宝")
+    ),
     "resources": frozenset(
         (
             "resource",
@@ -283,6 +308,10 @@ _LEDGER_ALIASES = {
             "energy",
             "mana",
             "experience",
+            "资源",
+            "材料",
+            "货币",
+            "经验",
         )
     ),
     "conditions": frozenset(
@@ -295,6 +324,10 @@ _LEDGER_ALIASES = {
             "status_effects",
             "debuff",
             "debuffs",
+            "状态",
+            "负面状态",
+            "状态效果",
+            "伤势",
         )
     ),
 }
@@ -304,21 +337,31 @@ def _ledger_covers(keys: set[str], aliases: frozenset[str]) -> bool:
     return any(key in aliases for key in keys)
 
 
-def _game_milestone(stage: Mapping[str, Any]) -> int | None:
-    level = _mapping_get(stage, "level")
-    if isinstance(level, (int, float)) and not isinstance(level, bool):
-        return int(level)
+def _inferred_stage_level(stage: Mapping[str, Any]) -> int | None:
+    if _has_key(stage, "level"):
+        level = _mapping_get(stage, "level")
+        return level if isinstance(level, int) and not isinstance(level, bool) else None
     text = " ".join(_text(_mapping_get(stage, field)) for field in ("name", "entry"))
-    match = re.search(r"(?i)(?:lv\.?\s*|等级\s*|)(60|30|20|10|1)(?!\d)\s*级?", text)
-    return int(match.group(1)) if match else None
+    match = re.search(
+        r"(?i:lv)\.?\s*(\d+)(?!\d)|(?<!\d)(\d+)\s*级",
+        text,
+    )
+    if not match:
+        return None
+    return int(match.group(1) or match.group(2))
 
 
 def _is_level_twenty_second_transfer(stage: Mapping[str, Any]) -> bool:
     text = " ".join(_text(_mapping_get(stage, field)) for field in STAGE_FIELDS if field != "level")
-    if _game_milestone(stage) != 20 and not re.search(r"(?i)(?:lv\.?\s*20|20\s*级)", text):
+    tied_to_specialization = _inferred_stage_level(stage) == 20 or "专精" in text
+    if not tied_to_specialization:
         return False
     return bool(
-        re.search(r"第二次\s*转职|二次\s*转职|(?i:second\s+(?:class\s+)?transfer)", text)
+        re.search(
+            r"第二次\s*转职|再次\s*转职|二次\s*转职|二转|第二职业\s*晋升|"
+            r"(?i:second\s+(?:class\s+)?transfer)",
+            text,
+        )
     )
 
 
@@ -345,7 +388,11 @@ def validate_power_system_spec(
     for field in ("name", "entry", "change", "failure"):
         if any(not stage.get(field) for stage in stages):
             violations.add(f"stages.missing_{field}")
-    levels = [stage["level"] for stage in stages if "level" in stage]
+    levels = [
+        level
+        for stage in stages
+        if (level := _inferred_stage_level(stage)) is not None
+    ]
     if any(current <= previous for previous, current in zip(levels, levels[1:])):
         violations.add("stages.levels_not_increasing")
 
@@ -354,6 +401,9 @@ def validate_power_system_spec(
         violations.add("paths.minimum_count")
     if any(not path.get("name") for path in paths):
         violations.add("paths.missing_name")
+    path_names = [path["name"].casefold() for path in paths if path.get("name")]
+    if len(path_names) != len(set(path_names)):
+        violations.add("paths.duplicate_names")
     if any(len(set(path.get("branches", []))) < 2 for path in paths):
         violations.add("paths.distinct_branches")
 
@@ -370,19 +420,26 @@ def validate_power_system_spec(
     except Exception:
         canonical_id = "generic_webnovel"
     if canonical_id == "game_webnovel":
-        path_names = {path.get("name") for path in paths}
-        if not _GAME_CLASSES.issubset(path_names):
+        game_path_names = {path.get("name") for path in paths}
+        if not _GAME_CLASSES.issubset(game_path_names):
             violations.add("game.missing_classes")
-        milestones = {_game_milestone(stage) for stage in stages}
+        milestones = tuple(_inferred_stage_level(stage) for stage in stages)
+        expected_milestones = tuple(sorted(_GAME_MILESTONES))
+        if milestones != expected_milestones:
+            violations.add("game.invalid_milestones")
         if not _GAME_MILESTONES.issubset(milestones):
             violations.add("game.missing_milestones")
         detail_fields = (
             "role",
             "core_resource",
+            "core_attributes",
             "combat_loop",
             "strengths",
             "weaknesses",
+            "skill_categories",
             "branches",
+            "transfer_task",
+            "advancement",
         )
         for field in detail_fields:
             if any(_is_empty(path.get(field)) for path in paths):
@@ -399,10 +456,16 @@ def validate_power_system_spec(
     return deepcopy(normalized)
 
 
+_FORMATTED_NUMBER = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+_CURRENCY_UNIT = r"(?:元|金币|银币|铜币|块钱|美元|人民币)"
 _CURRENCY_AMOUNT = re.compile(
-    r"(?:[¥￥$]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:金币|银币|铜币|元|块钱|美元|人民币))"
+    rf"(?:"
+    rf"(?:RMB|CNY|[¥￥$])\s*{_FORMATTED_NUMBER}\s*[百千万亿]?\s*(?:{_CURRENCY_UNIT})?"
+    rf"|{_FORMATTED_NUMBER}\s*[百千万亿]?\s*{_CURRENCY_UNIT}"
+    rf")",
+    re.IGNORECASE,
 )
-_PERCENTAGE = re.compile(r"\d+(?:\.\d+)?\s*[%％]")
+_PERCENTAGE = re.compile(rf"{_FORMATTED_NUMBER}\s*[%％]")
 
 
 def _redact_exact_money(value: str) -> str:

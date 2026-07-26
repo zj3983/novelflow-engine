@@ -28,12 +28,15 @@ def complete_spec() -> dict[str, object]:
                 "name": name,
                 "role": f"{name}队伍职责",
                 "core_resource": f"{name}职业资源",
+                "core_attributes": [f"{name}核心属性"],
                 "weapons": [f"{name}武器"],
                 "armor": [f"{name}护甲"],
                 "combat_loop": f"{name}战斗循环",
                 "strengths": [f"{name}强项"],
                 "weaknesses": [f"{name}弱项"],
+                "skill_categories": [f"{name}主动技能", f"{name}被动技能"],
                 "branches": [f"{name}分支甲", f"{name}分支乙"],
+                "transfer_task": f"完成{name}转职任务",
                 "advancement": [f"{name}进阶任务"],
             }
             for name in CLASSES
@@ -176,6 +179,10 @@ def test_validation_rejects_path_count_names_branches_and_game_details() -> None
         "game.missing_classes",
         "game.path_missing_weapon_affinity",
         "game.path_missing_weaknesses",
+        "game.path_missing_core_attributes",
+        "game.path_missing_skill_categories",
+        "game.path_missing_transfer_task",
+        "game.path_missing_advancement",
     } <= set(error.violations)
 
 
@@ -199,12 +206,21 @@ def test_validation_rejects_blank_path_name_and_generic_path_details() -> None:
     assert "paths.missing_name" in error.violations
 
 
+def test_validation_rejects_duplicate_path_names_case_insensitively() -> None:
+    spec = complete_spec()
+    spec["paths"][1]["name"] = " 战士 "
+
+    assert "paths.duplicate_names" in validation_error(spec).violations
+
+
 @pytest.mark.parametrize(
     ("ledger", "code"),
     [
-        (["progression", "skills", "resources"], "continuity_ledger.minimum_count"),
+        (
+            ["progression", "skills", "resources", "conditions"],
+            "continuity_ledger.missing_equipment",
+        ),
         (["level", "abilities", "materials", "equipment"], "continuity_ledger.missing_conditions"),
-        (["境界", "技能", "资源", "状态"], "continuity_ledger.missing_progression"),
     ],
 )
 def test_validation_requires_normalized_english_ledger_concepts(
@@ -220,17 +236,47 @@ def test_validation_requires_normalized_english_ledger_concepts(
 
 def test_validation_accepts_normalized_english_ledger_aliases() -> None:
     spec = complete_spec()
-    spec["continuity_ledger"] = ["current-level", "abilities", "materials", "status_effects"]
+    spec["continuity_ledger"] = [
+        "current-level",
+        "abilities",
+        "gear",
+        "materials",
+        "status_effects",
+    ]
 
     assert validate_power_system_spec(spec, novel_type_id="game_webnovel")["name"] == "神域职业体系"
 
 
-@pytest.mark.parametrize("phrase", ["Lv20第二次转职", "Lv.20 second transfer", "20级二次转职"])
+def test_validation_accepts_chinese_ledger_aliases() -> None:
+    spec = complete_spec()
+    spec["continuity_ledger"] = ["当前等级", "技能", "装备", "资源", "负面状态"]
+
+    assert validate_power_system_spec(spec, novel_type_id="game_webnovel")["name"] == "神域职业体系"
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "Lv20第二次转职",
+        "Lv.20 second transfer",
+        "20级二次转职",
+        "Lv20再次转职",
+        "Lv.20二转",
+        "20级第二职业晋升",
+    ],
+)
 def test_game_validation_rejects_level_twenty_as_second_transfer(phrase: str) -> None:
     spec = complete_spec()
     spec["stages"][2]["entry"] = phrase
 
     assert "game.level20_second_transfer" in validation_error(spec).violations
+
+
+def test_game_validation_allows_second_transfer_outside_level_twenty() -> None:
+    spec = complete_spec()
+    spec["stages"][3]["entry"] = "Lv.30第二次转职"
+
+    assert validate_power_system_spec(spec, novel_type_id="game_webnovel")["name"] == "神域职业体系"
 
 
 def test_custom_template_and_generic_fallback_are_used() -> None:
@@ -266,6 +312,42 @@ def test_game_milestones_may_be_expressed_in_stage_text() -> None:
         stage["name"] = f"Lv.{level} {stage['name']}"
 
     assert validate_power_system_spec(spec, novel_type_id="game_webnovel")["name"] == "神域职业体系"
+
+
+def test_inferred_stage_levels_must_strictly_increase() -> None:
+    spec = complete_spec()
+    for stage in spec["stages"]:
+        stage.pop("level")
+    for stage, token in zip(spec["stages"], ("LV1", "Lv.20", "10级", "LV30", "Lv60")):
+        stage["name"] = token
+
+    error = validation_error(spec)
+
+    assert "stages.levels_not_increasing" in error.violations
+    assert "game.invalid_milestones" in error.violations
+
+
+def test_stage_level_inference_ignores_arbitrary_prose_numbers() -> None:
+    spec = complete_spec()
+    spec["stages"][1].pop("level")
+    spec["stages"][1]["name"] = "材料试炼"
+    spec["stages"][1]["entry"] = "收集100个材料后进入"
+
+    assert validate_power_system_spec(spec, novel_type_id="missing-template")["name"] == "神域职业体系"
+
+
+def test_game_milestones_reject_float_levels_even_when_integral() -> None:
+    spec = complete_spec()
+    spec["stages"][1]["level"] = 10.0
+
+    assert "game.invalid_milestones" in validation_error(spec).violations
+
+
+def test_game_milestones_require_exact_sequence() -> None:
+    spec = complete_spec()
+    spec["stages"][1], spec["stages"][2] = spec["stages"][2], spec["stages"][1]
+
+    assert "game.invalid_milestones" in validation_error(spec).violations
 
 
 def validation_error_with_template(
@@ -309,6 +391,41 @@ def test_normalization_is_canonical_json_safe_bounded_and_deep_independent() -> 
     assert "修改" not in source["origin"]
 
 
+def test_normalization_preserves_bounded_extended_path_schema() -> None:
+    spec = complete_spec()
+    path = spec["paths"][0]
+    path["core_attributes"] = ["力量" * 300] * 100
+    path["skill_categories"] = ["主动", "被动"]
+    path["transfer_task"] = " 完成\x00 转职试炼 "
+
+    normalized = normalize_power_system_spec(spec)["paths"][0]
+
+    assert set(normalized) == {
+        "name", "role", "core_resource", "core_attributes", "weapons", "armor",
+        "combat_loop", "strengths", "weaknesses", "skill_categories", "branches",
+        "transfer_task", "advancement",
+    }
+    assert len(normalized["core_attributes"]) == 64
+    assert len(normalized["core_attributes"][0]) == 240
+    assert normalized["transfer_task"] == "完成 转职试炼"
+
+
+def test_normalization_bounds_large_mapping_iteration() -> None:
+    class CountingMapping(dict):
+        yielded = 0
+
+        def items(self):
+            for item in super().items():
+                self.yielded += 1
+                yield item
+
+    source = CountingMapping({f"noise_{index}": index for index in range(20_000)})
+    source["name"] = "有限体系"
+
+    assert normalize_power_system_spec(source)["name"] == "有限体系"
+    assert source.yielded <= 128
+
+
 @pytest.mark.parametrize("value", [None, [], "bad", 3, float("nan")])
 def test_normalization_returns_empty_mapping_for_invalid_top_level(value: object) -> None:
     assert normalize_power_system_spec(value) == {}
@@ -339,6 +456,19 @@ def test_legacy_summary_is_deterministic_bounded_and_redacts_exact_money() -> No
     assert "Lv.20" in joined
     labels = ("力量体系", "来源", "阶段", "路线", "资源", "代价", "边界")
     assert all(any(label in line for label in labels) for line in first)
+
+
+def test_legacy_summary_redacts_formatted_currency_magnitudes_and_fees() -> None:
+    spec = complete_spec()
+    spec["origin"] = [
+        "Lv.20需RMB 1,234.50或￥2,000，奖励100万金币、88.5银币、7铜币，手续费12.5%"
+    ]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert "Lv.20" in joined
+    for exact in ("1,234.50", "2,000", "100万", "88.5", "7铜币", "12.5%"):
+        assert exact not in joined
 
 
 def test_legacy_summary_never_invents_absent_sections_and_handles_hostile_input() -> None:
