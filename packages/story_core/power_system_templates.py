@@ -196,10 +196,17 @@ _COMPACT_LIST_CAP = 12
 _COMPACT_MAPPING_CAP = 20
 _COMPACT_STRING_CAP = 180
 _REQUIRED_SECTIONS_ITEM_CAP = 80
+_FIXED_MILESTONE_CAP = 16
 
 
 def _compact_string(value: str, limit: int = _COMPACT_STRING_CAP) -> str:
     return "".join(character for character in value if character.isprintable())[:limit]
+
+
+def _bounded_integer(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return min(max(value, minimum), maximum)
 
 
 def _compact_json_value(value: Any) -> Any:
@@ -230,5 +237,24 @@ def compact_power_system_template(template: Mapping[str, object]) -> dict[str, o
         compact["required_sections"] = [
             _compact_string(str(item), _REQUIRED_SECTIONS_ITEM_CAP)
             for item in required_sections[:_COMPACT_LIST_CAP]
+        ]
+    if "minimum_path_count" in template:
+        compact["minimum_path_count"] = _bounded_integer(
+            template["minimum_path_count"], default=2, minimum=1, maximum=64
+        )
+    if "fixed_milestones" in template:
+        milestones = template["fixed_milestones"]
+        valid_milestones = (
+            [
+                item
+                for item in milestones
+                if isinstance(item, int) and not isinstance(item, bool)
+            ]
+            if isinstance(milestones, (list, tuple))
+            else []
+        )
+        compact["fixed_milestones"] = [
+            _bounded_integer(item, default=0, minimum=0, maximum=1_000_000)
+            for item in valid_milestones[:_FIXED_MILESTONE_CAP]
         ]
     return deepcopy(compact)

@@ -311,7 +311,9 @@ def _printable_text(value: Any, limit: int) -> str:
 
 
 def _emergency_compact_prompt_context(context: dict[str, Any]) -> None:
-    power_template = context["genre_power_system_template"]
+    power_template = compact_power_system_template(
+        context["genre_power_system_template"]
+    )
     required_sections = power_template.get("required_sections", [])
     fixed_milestones = power_template.get("fixed_milestones", [])
     minimum_path_count = power_template.get("minimum_path_count")
@@ -344,6 +346,23 @@ def _emergency_compact_prompt_context(context: dict[str, Any]) -> None:
             else _printable_text(item, 24)
             for item in list(fixed_milestones)[:8]
         ],
+    }
+
+
+def _minimal_prompt_context() -> dict[str, Any]:
+    return {
+        "genre_label": "",
+        "genre_description": "",
+        "genre_core_promises": [],
+        "genre_rulebook": {},
+        "genre_quality_checks": [],
+        "genre_trope_templates": [],
+        "genre_power_system_template": {
+            "system_form": "",
+            "required_sections": [],
+            "minimum_path_count": 2,
+            "fixed_milestones": [],
+        },
     }
 
 
@@ -417,6 +436,9 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
             continue
         _emergency_compact_prompt_context(context)
         break
+    if len(json.dumps(context, ensure_ascii=False)) > 6000:
+        context.clear()
+        context.update(_minimal_prompt_context())
     return deepcopy(context)
 
 

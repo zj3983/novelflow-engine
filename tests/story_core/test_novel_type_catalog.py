@@ -195,6 +195,24 @@ def test_prompt_context_sanitizes_hostile_preserved_power_values_within_cap() ->
     )
 
 
+def test_prompt_context_bounds_huge_numeric_power_invariants_within_cap() -> None:
+    huge = 10**4000
+    record = _prompt_context_record("custom_type", [])
+    record.power_system_template = {
+        "system_form": "numeric bounds",
+        "required_sections": ["origin", "stages"],
+        "minimum_path_count": huge,
+        "fixed_milestones": [huge for _ in range(20)],
+    }
+
+    context = novel_type_prompt_context(record)
+    power_template = context["genre_power_system_template"]
+
+    assert len(json.dumps(context, ensure_ascii=False)) <= 6000
+    assert power_template["minimum_path_count"] == 64
+    assert power_template["fixed_milestones"] == [1_000_000] * 16
+
+
 def test_novel_type_prompt_context_merges_type_specific_tropes_before_generic_and_dedupes_ids(
     monkeypatch: pytest.MonkeyPatch,
 ):

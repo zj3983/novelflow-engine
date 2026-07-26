@@ -16,7 +16,11 @@ from packages.story_core.genre_types import (
     XIANXIA,
     XUANHUAN,
 )
-from packages.story_core.power_system_templates import POWER_SYSTEM_TEMPLATES, copy_power_system_template
+from packages.story_core.power_system_templates import (
+    POWER_SYSTEM_TEMPLATES,
+    compact_power_system_template,
+    copy_power_system_template,
+)
 
 
 BUILTIN_PLUGINS = (
@@ -96,6 +100,25 @@ def test_game_template_requires_six_classes_and_fixed_milestones():
 
     assert template["minimum_path_count"] == 6
     assert template["fixed_milestones"] == [1, 10, 20, 30, 60]
+
+
+def test_compact_template_bounds_numeric_invariants_and_rejects_booleans():
+    huge = 10**4000
+    compact = compact_power_system_template(
+        {
+            "minimum_path_count": huge,
+            "fixed_milestones": [False, -huge, huge, *range(20)],
+        }
+    )
+    invalid_minimum = compact_power_system_template({"minimum_path_count": True})
+
+    assert compact["minimum_path_count"] == 64
+    assert compact["fixed_milestones"] == [
+        0,
+        1_000_000,
+        *range(14),
+    ]
+    assert invalid_minimum["minimum_path_count"] == 2
 
 
 def test_other_templates_require_two_paths_and_at_least_three_stages():
