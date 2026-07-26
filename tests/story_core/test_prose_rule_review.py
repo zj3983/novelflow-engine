@@ -66,6 +66,9 @@ def test_review_allows_vr_prose_that_reads_a_task_requirement():
         "隐藏职业让他绕过任务前置条件，直接进入副本。",
         "隐藏职业让他跨过任务前置条件，直接进入副本。",
         "迈出前置条件满足后的第一步。",
+        "迈出前置条件后的第一步。",
+        "推开前置条件后面的木门。",
+        "推开前置条件之后的石门。",
     ],
 )
 def test_review_allows_abstract_rules_and_longer_phrases(body):
