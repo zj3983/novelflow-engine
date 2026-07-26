@@ -81,9 +81,18 @@ _GAME_CLASS_COUNT = 6
 _PLACEHOLDER_CONTENT = frozenset(
     (
         "\u5f85\u5b9a",
+        "\u5f85\u5b8c\u5584",
+        "\u5f85\u8865\u5145",
+        "\u5f85\u7ec6\u5316",
+        "\u540e\u7eed\u8865\u5145",
+        "\u540e\u7eed\u5b8c\u5584",
+        "\u6682\u7f3a",
+        "\u6682\u65e0",
         "\u7565",
         "\u540c\u4e0a",
         "\u7efc\u5408\u5b9e\u529b\u63d0\u5347",
+        "todo",
+        "tbd",
     )
 )
 _BASE_REQUIRED = frozenset(
@@ -483,10 +492,7 @@ def validate_power_system_spec(
         game_path_names = {path.get("name") for path in paths}
         if len(paths) < _GAME_CLASS_COUNT:
             violations.add("game.missing_classes")
-        if (
-            len(paths) != _GAME_CLASS_COUNT
-            or len(game_path_names) != _GAME_CLASS_COUNT
-        ):
+        if len(game_path_names) != len(paths):
             violations.add("game.invalid_classes")
         milestones = tuple(_inferred_stage_level(stage) for stage in stages)
         expected_milestones = tuple(sorted(_GAME_MILESTONES))

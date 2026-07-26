@@ -115,6 +115,19 @@ def test_game_spec_accepts_six_custom_named_classes_with_complete_details() -> N
     assert tuple(path["name"] for path in result["paths"]) == custom_names
 
 
+def test_game_spec_accepts_more_than_six_complete_classes() -> None:
+    spec = complete_spec()
+    extra_path = deepcopy(spec["paths"][0])
+    extra_path["name"] = "机关师"
+    extra_path["branches"] = ["傀儡师", "火器师"]
+    spec["paths"].append(extra_path)
+
+    result = validate_power_system_spec(spec, novel_type_id="game_webnovel")
+
+    assert len(result["paths"]) == 7
+    assert result["paths"][-1]["name"] == "机关师"
+
+
 @pytest.mark.parametrize(
     ("location", "placeholder"),
     [
@@ -122,6 +135,9 @@ def test_game_spec_accepts_six_custom_named_classes_with_complete_details() -> N
         (("stages", 0, "entry"), "\u7565"),
         (("paths", 0, "combat_loop"), "\u540c\u4e0a"),
         (("paths", 0, "advancement", 0), "\u7efc\u5408\u5b9e\u529b\u63d0\u5347"),
+        (("origin", 0), "待完善"),
+        (("stages", 0, "entry"), "后续补充"),
+        (("paths", 0, "combat_loop"), "TODO"),
     ],
 )
 def test_validation_rejects_placeholder_or_low_information_descriptions(
@@ -350,11 +366,10 @@ def test_game_validation_uses_canonical_specialization_fallback_when_no_levels_a
     assert "game.level20_second_transfer" in validation_error(spec).violations
 
 
-@pytest.mark.parametrize("extra_name", ["骑士", "战士"])
-def test_game_validation_requires_exactly_the_six_canonical_class_paths(extra_name: str) -> None:
+def test_game_validation_rejects_duplicate_class_paths() -> None:
     spec = complete_spec()
     extra = deepcopy(spec["paths"][0])
-    extra["name"] = extra_name
+    extra["name"] = "战士"
     spec["paths"].append(extra)
 
     assert "game.invalid_classes" in validation_error(spec).violations

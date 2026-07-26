@@ -23,13 +23,20 @@ function recordList(value: unknown): UnknownRecord[] {
 export function hasStructuredPowerSystem(value: unknown): value is PowerSystemSpec {
   if (!hasPowerSystemDraft(value) || !text(value.name)) return false;
 
+  const attributes = recordList(value.attributes);
+  const stages = recordList(value.stages);
+  const paths = recordList(value.paths);
   const requiredLists = [
     "origin", "skills", "equipment", "resources", "advancement", "costs",
     "counters", "boundaries", "social_impact", "visibility", "continuity_ledger",
   ];
-  return recordList(value.attributes).length > 0
-    && recordList(value.stages).length >= 3
-    && recordList(value.paths).length > 0
+  return attributes.length > 0
+    && attributes.every((attribute) => text(attribute.name) && text(attribute.effect))
+    && stages.length >= 3
+    && stages.every((stage) => text(stage.name) && text(stage.entry) && text(stage.change) && text(stage.failure))
+    && paths.length >= 2
+    && paths.every((path) => text(path.name) && new Set(textList(path.branches).map((branch) => branch.toLocaleLowerCase())).size >= 2)
+    && textList(value.continuity_ledger).length >= 4
     && requiredLists.every((field) => textList(value[field]).length > 0);
 }
 

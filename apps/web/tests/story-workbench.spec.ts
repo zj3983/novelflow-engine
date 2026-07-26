@@ -2411,6 +2411,17 @@ test("世界观将残缺力量体系规格标记为需要补全", async ({ page 
 
   await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
   await expect(page.getByText("力量体系需要补全", { exact: true })).toBeVisible();
+
+  await mockWorldPowerPage(page, "malformed-power", {
+    power_system_spec: {
+      ...structuredPowerSystemSpec,
+      stages: [{ name: "空阶段" }],
+      paths: [{ name: "单一路线", branches: ["唯一分支"] }],
+    },
+  });
+  await page.goto("/projects/file%3Amalformed-power/world");
+  await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
+  await expect(page.getByText("力量体系需要补全", { exact: true })).toBeVisible();
 });
 
 test("结构化力量体系在 360px 宽度内换行且无横向溢出", async ({ page }) => {
