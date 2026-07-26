@@ -2253,6 +2253,17 @@ def _normalize_moves(
     return moves
 
 
+def _story_character_names(story: StoryState) -> list[str]:
+    return list(
+        dict.fromkeys(
+            name
+            for character in story.characters
+            for name in (str(character.name or "").strip(), str(character.game_id or "").strip())
+            if name
+        )
+    )
+
+
 def _normalize_ordered_actions(
     raw_actions: object,
     *,
@@ -2265,14 +2276,7 @@ def _normalize_ordered_actions(
         allow_text_items=True,
         require_name=False,
     )
-    known_names = list(
-        dict.fromkeys(
-            name
-            for character in story.characters
-            for name in (str(character.name or "").strip(), str(character.game_id or "").strip())
-            if name
-        )
-    )
+    known_names = _story_character_names(story)
     for move in moves:
         if str(move.get("name") or "").strip():
             continue
@@ -2344,57 +2348,17 @@ def _normalize_intent(raw_intent: object) -> dict:
     }
 
 
-def _leading_action_actor_phrase(raw_action: object) -> str:
+def _leading_generic_actor_phrase(raw_action: object, generic_suffixes: tuple[str, ...]) -> str:
     first_clause = re.split(r"[，,。；;！？!?]", str(raw_action or "").lstrip(), maxsplit=1)[0]
-    action_verbs = (
-        "上门",
-        "拦住",
-        "挡住",
-        "阻止",
-        "询问",
-        "追问",
-        "问价",
-        "压价",
-        "看见",
-        "发现",
-        "注意到",
-        "盯住",
-        "盯着",
-        "跟上",
-        "跟随",
-        "走向",
-        "走到",
-        "走进",
-        "进入",
-        "来到",
-        "离开",
-        "推开",
-        "打开",
-        "检查",
-        "查看",
-        "拿出",
-        "递出",
-        "交出",
-        "提交",
-        "带走",
-        "要求",
-        "拒绝",
-        "答应",
-        "开口",
-        "宣布",
-        "击杀",
-        "攻击",
-        "扑向",
-        "抓住",
-        "拉住",
-        "开始",
-        "继续",
-        "转身",
-        "起身",
-        "出现",
-    )
-    positions = [position for verb in action_verbs if (position := first_clause.find(verb)) > 0]
-    return first_clause[: min(positions)].strip() if positions else ""
+    candidates: list[str] = []
+    for suffix in generic_suffixes:
+        position = first_clause.find(suffix)
+        if not 0 <= position <= 8:
+            continue
+        actor_phrase = first_clause[: position + len(suffix)]
+        if re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9_·]+", actor_phrase):
+            candidates.append(actor_phrase)
+    return min(candidates, key=len) if candidates else ""
 
 
 def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
@@ -2443,10 +2407,12 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
                 break
 
     generic_suffixes = ("收购方", "管理员", "工作人员", "路人", "玩家甲", "店员", "商人玩家")
+    known_names = _story_character_names(story)
     for move in moves:
         name = str(move.get("name") or "").strip()
-        actor_phrase = _leading_action_actor_phrase(move.get("action"))
-        text_actor = actor_phrase if actor_phrase.endswith(generic_suffixes) else ""
+        action = str(move.get("action") or "").lstrip()
+        known_text_actor = next((known for known in sorted(known_names, key=len, reverse=True) if action.startswith(known)), "")
+        text_actor = "" if known_text_actor else _leading_generic_actor_phrase(action, generic_suffixes)
         placeholder_actor = name if name.endswith(generic_suffixes) else text_actor
         if placeholder_actor:
             issues.append(f"角色“{placeholder_actor}”是岗位或占位称呼；删除该角色，或先使用已有具名角色卡。")

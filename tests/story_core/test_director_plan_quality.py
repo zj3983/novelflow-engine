@@ -261,9 +261,11 @@ def test_quality_gate_rejects_placeholder_actors_at_text_action_start():
 
     cases = (
         ("路人拦住林照", "路人"),
+        ("路人靠近林照", "路人"),
         ("收购方上门压价", "收购方"),
         ("白河仓库收购方上门压价", "白河仓库收购方"),
         ("陌生路人拦住林照", "陌生路人"),
+        ("陌生路人靠近林照", "陌生路人"),
     )
     for action, actor in cases:
         issues = _director_plan_quality_issues(story, _complete_plan([action]))
@@ -287,10 +289,22 @@ def test_quality_gate_does_not_treat_placeholder_targets_as_text_actors():
         characters=[CharacterState(name="林照", role="主角")],
     )
 
-    for action in ("林照询问收购方价格", "林照看见陌生路人"):
+    actions = (
+        "林照询问收购方价格",
+        "林照看见陌生路人",
+        "林照护送陌生路人进入祖祠",
+    )
+    for action in actions:
         issues = _director_plan_quality_issues(story, _complete_plan([action]))
 
         assert issues == [], action
+
+    game_id_issues = _director_plan_quality_issues(
+        _story(),
+        _complete_plan(["夜烬护送陌生路人进入祖祠"]),
+    )
+
+    assert not any("占位" in issue for issue in game_id_issues)
 
 
 def test_quality_gate_keeps_concrete_xuanhuan_text_actions_valid():
