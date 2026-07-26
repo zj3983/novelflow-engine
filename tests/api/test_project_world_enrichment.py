@@ -10,6 +10,7 @@ from apps.api.storage import SQLiteStoryStore, _project_world_facts
 from packages.story_core import novel_type_catalog, novel_type_library
 from packages.story_core.engine import ChapterBundle
 from packages.story_core.models import NovelProject, StoryState
+from packages.story_core.novel_type_catalog import novel_type_prompt_context
 from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.power_system_templates import (
     compact_power_system_template,
@@ -132,7 +133,7 @@ def test_world_enrichment_prompt_requests_canonical_spec_and_carries_template_an
 
     assert "power_system_spec" in prompt
     assert "genre_power_system_template" in prompt
-    assert '"fixed_milestones": [1, 10, 20, 30, 60]' in prompt
+    assert prompt_power_template(prompt)["fixed_milestones"] == [1, 10, 20, 30, 60]
     context_line = next(
         line for line in prompt.splitlines() if line.startswith("当前项目数据：")
     )
@@ -266,6 +267,81 @@ def test_world_enrichment_prompt_uses_persisted_builtin_runtime_template_overrid
     assert template == compact_power_system_template(persisted.power_system_template)
     assert template["system_form"] == "运行时覆盖职业体系"
     assert template["minimum_path_count"] == 8
+
+
+def test_world_enrichment_prompt_budgets_persisted_huge_custom_template(
+    isolated_novel_type_storage,
+):
+    huge = "超长运行时模板" * 500
+    NovelTypeLibrary().create(
+        {
+            "id": "huge_runtime_type",
+            "name": "超大运行时类型",
+            "power_system_template": {
+                "system_form": "保留体系形式-" + huge,
+                "required_sections": [
+                    "origin", "stages", "paths", "skills", "resources", "costs",
+                    "counters", "boundaries", "continuity_ledger",
+                ],
+                "progression_shape": {
+                    f"stage_{index}": [huge for _ in range(20)]
+                    for index in range(20)
+                },
+                "branching_rules": [huge for _ in range(40)],
+                "resource_rules": [huge for _ in range(40)],
+                "cost_rules": [huge for _ in range(40)],
+                "conflict_rules": [huge for _ in range(40)],
+                "ledger_fields": [huge for _ in range(40)],
+                "quality_checks": [huge for _ in range(40)],
+                "minimum_path_count": 7,
+                "fixed_milestones": [1, 10, 20, 40, 80],
+            },
+        }
+    )
+    persisted = NovelTypeLibrary().get("huge_runtime_type")
+    assert persisted is not None
+    expected = novel_type_prompt_context(persisted)["genre_power_system_template"]
+    project = NovelProject(
+        project_id="p-huge-template",
+        title="超大模板项目",
+        seed_outline=huge,
+        world_summary="核心前提",
+        world_blueprint={
+            "genre_plugin_ids": ["huge_runtime_type"],
+            "premise": "核心前提",
+            "oversized": [huge for _ in range(100)],
+        },
+    )
+
+    prompt = world_enrichment._build_prompt(project)
+
+    template = prompt_power_template(prompt)
+    context_prefix = "当前项目数据："
+    context_line = next(line for line in prompt.splitlines() if line.startswith(context_prefix))
+    context = json.loads(context_line.removeprefix(context_prefix))
+    assert len(prompt) <= world_enrichment._FINAL_PROMPT_MAX
+    assert template == expected
+    assert template["system_form"].startswith("保留体系形式-")
+    assert template["minimum_path_count"] == 7
+    assert template["fixed_milestones"] == [1, 10, 20, 40, 80]
+    assert context["title"] == "超大模板项目"
+    assert context["world_blueprint"]["genre_plugin_ids"] == ["huge_runtime_type"]
+    assert context["world_blueprint"]["premise"] == "核心前提"
+
+
+def test_world_enrichment_prompt_rejects_fixed_instructions_over_budget(monkeypatch):
+    monkeypatch.setattr(world_enrichment, "_FINAL_PROMPT_MAX", 100)
+    project = NovelProject(
+        project_id="p-fixed-overflow",
+        title="固定指令超限",
+        world_blueprint={"genre_plugin_ids": ["generic_webnovel"]},
+    )
+
+    with pytest.raises(
+        world_enrichment.WorldEnrichmentError,
+        match=r"^world_enrichment_prompt_fixed_instructions_exceed_budget$",
+    ):
+        world_enrichment._build_prompt(project)
 
 
 def test_valid_game_spec_replaces_structured_module_and_derives_legacy_summary():

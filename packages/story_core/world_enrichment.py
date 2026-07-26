@@ -16,7 +16,11 @@ from packages.story_core.genre_plugins import (
 )
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.models import NovelProject
-from packages.story_core.novel_type_catalog import normalize_novel_type_ids
+from packages.story_core.novel_type_catalog import (
+    normalize_novel_type_ids,
+    novel_type_prompt_context,
+    runtime_novel_type,
+)
 from packages.story_core.power_system_templates import compact_power_system_template
 from packages.story_core.power_systems import (
     PowerSystemValidationError,
@@ -35,6 +39,7 @@ class WorldEnrichmentError(RuntimeError):
 _PROJECT_CONTEXT_BUDGET = 20_000
 _PROJECT_CONTEXT_MAX = 24_000
 _FINAL_PROMPT_MAX = 30_000
+_MIN_PROJECT_CONTEXT_BUDGET = 6_000
 _PROJECTION_PROFILES = (
     (240, 8, 4),
     (160, 6, 4),
@@ -217,6 +222,51 @@ def _compact_project_payload(
     return candidate
 
 
+def _runtime_power_template(selected_plugin: Any) -> dict[str, Any]:
+    try:
+        record = runtime_novel_type(selected_plugin.plugin_id)
+        if record is not None:
+            template = novel_type_prompt_context(record).get(
+                "genre_power_system_template"
+            )
+            if isinstance(template, Mapping):
+                return deepcopy(dict(template))
+    except Exception:
+        pass
+    return compact_power_system_template(selected_plugin.power_system_template)
+
+
+def _core_power_template(template: Mapping[str, Any], budget: int) -> dict[str, Any]:
+    serialized = _serialized_json(template)
+    if len(serialized) <= budget:
+        return deepcopy(dict(template))
+
+    minimum_path_count = template.get("minimum_path_count", 2)
+    if not isinstance(minimum_path_count, int) or isinstance(minimum_path_count, bool):
+        minimum_path_count = 2
+    minimum_path_count = max(1, min(minimum_path_count, 64))
+    for chars, items in ((120, 8), (80, 6), (48, 4), (24, 2), (12, 1)):
+        candidate = {
+            "system_form": _safe_compact_text(template.get("system_form"), chars),
+            "required_sections": _bounded_json_projection(
+                template.get("required_sections", []),
+                chars=chars,
+                items=items,
+                depth=2,
+            ),
+            "minimum_path_count": minimum_path_count,
+            "fixed_milestones": _bounded_json_projection(
+                template.get("fixed_milestones", []),
+                chars=24,
+                items=items,
+                depth=2,
+            ),
+        }
+        if len(_serialized_json(candidate)) <= budget:
+            return candidate
+    raise WorldEnrichmentError("world_enrichment_prompt_budget_exceeded")
+
+
 def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
     payload = _compact_project_payload(project)
     prompt_project = project.model_copy(
@@ -234,7 +284,7 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
     )
     plugins = select_genre_plugins(prompt_project)
     selected_plugin = _selected_novel_type_plugin(prompt_project, plugins)
-    power_template = compact_power_system_template(selected_plugin.power_system_template)
+    power_template = _runtime_power_template(selected_plugin)
     mode_line = (
         "请在不重写已有剧情的前提下，补强中文长篇网文项目的世界规则手册，只返回 JSON。"
         if rules_only
@@ -253,7 +303,7 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "skills: 技能获得与使用规则；equipment: 装备类别与限制；resources: 资源产出、转化与消耗；advancement: 晋升条件与流程；",
             "costs: 使用和突破代价；counters: 路线或机制克制；boundaries: 越级与能力硬边界；social_impact: 对组织、职业和秩序的影响；visibility: 角色可观察到的信息；continuity_ledger: 后续逐章必须追踪的状态字段。以上字段除 name 外均使用数组，paths/stages/attributes 使用前述对象数组。",
             f"selected_novel_type: {selected_plugin.plugin_id}",
-            f"genre_power_system_template: {json.dumps(power_template, ensure_ascii=False)}",
+            f"genre_power_system_template: {_serialized_json(power_template)}",
             "character_profiles: [{name, role, motivation, current_state, personality, speech_style, goals, secrets, conflict_hooks}]",
             "world_summary: 120字以内的世界摘要",
             "current_focus: 下一章/下一阶段执行焦点，必须包含主角短期目标、外部压力、规则展示点",
@@ -274,13 +324,43 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "请根据题材插件补齐可泛化的类型规则；若是复合题材，主题材负责主线逻辑，副题材提供钩子、规则或爽点。",
         ]
     context_prefix = "当前项目数据："
+    template_prefix = "genre_power_system_template: "
+    template_index = next(
+        index for index, line in enumerate(lines) if line.startswith(template_prefix)
+    )
+    lines_without_template = list(lines)
+    lines_without_template[template_index] = template_prefix
+    fixed_without_template = len(
+        "\n".join([*lines_without_template, context_prefix])
+    )
+    if fixed_without_template >= _FINAL_PROMPT_MAX:
+        raise WorldEnrichmentError(
+            "world_enrichment_prompt_fixed_instructions_exceed_budget"
+        )
+
+    template_budget = min(
+        6_000,
+        _FINAL_PROMPT_MAX
+        - fixed_without_template
+        - _MIN_PROJECT_CONTEXT_BUDGET,
+    )
+    if template_budget <= 0:
+        raise WorldEnrichmentError("world_enrichment_prompt_budget_exceeded")
+    power_template = _core_power_template(power_template, template_budget)
+    lines[template_index] = f"{template_prefix}{_serialized_json(power_template)}"
+
     fixed_length = len("\n".join([*lines, context_prefix]))
     context_budget = min(
         _PROJECT_CONTEXT_MAX,
-        max(6_000, _FINAL_PROMPT_MAX - fixed_length),
+        _FINAL_PROMPT_MAX - fixed_length,
     )
+    if context_budget < _MIN_PROJECT_CONTEXT_BUDGET:
+        raise WorldEnrichmentError("world_enrichment_prompt_budget_exceeded")
     payload = _compact_project_payload(project, budget=context_budget)
-    return "\n".join([*lines, f"{context_prefix}{_serialized_json(payload)}"])
+    prompt = "\n".join([*lines, f"{context_prefix}{_serialized_json(payload)}"])
+    if len(prompt) > _FINAL_PROMPT_MAX:
+        raise WorldEnrichmentError("world_enrichment_prompt_budget_exceeded")
+    return prompt
 
 
 def _as_string_list(value: Any, limit: int, *, item_limit: int = 240) -> list[str]:
