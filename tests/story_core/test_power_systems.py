@@ -6,6 +6,8 @@ import math
 
 import pytest
 
+from packages.story_core import power_system_spec
+from packages.story_core import power_systems as power_system_facade
 from packages.story_core.power_systems import (
     PowerSystemValidationError,
     legacy_power_summary,
@@ -16,6 +18,12 @@ from packages.story_core.power_systems import (
 
 
 CLASSES = ("战士", "法师", "游侠", "盗贼", "牧师", "召唤师")
+
+
+def test_public_facade_reexports_specification_api() -> None:
+    assert power_system_facade.PowerSystemValidationError is power_system_spec.PowerSystemValidationError
+    assert power_system_facade.normalize_power_system_spec is power_system_spec.normalize_power_system_spec
+    assert power_system_facade.validate_power_system_spec is power_system_spec.validate_power_system_spec
 
 
 def complete_spec() -> dict[str, object]:
