@@ -132,6 +132,37 @@ def render_world_markdown(title: Any, blueprint: Any) -> str:
 def render_power_markdown(title: Any, blueprint: Any) -> str:
     world = blueprint if isinstance(blueprint, dict) else {}
     lines = [MANAGED_MARKER, "", f"# 《{_markdown_title(title)}》力量体系"]
+    structured = world.get("power_system_spec")
+
+    if isinstance(structured, dict) and structured:
+        sections = (
+            ("体系总览", (("体系名称", structured.get("name")),)),
+            ("力量来源", (("来源", structured.get("origin")),)),
+            ("属性", (("属性", structured.get("attributes")),)),
+            (
+                "阶段与晋升",
+                (("阶段", structured.get("stages")), ("晋升规则", structured.get("advancement"))),
+            ),
+            ("职业与路线", (("路线", structured.get("paths")),)),
+            (
+                "技能与装备",
+                (("技能", structured.get("skills")), ("装备", structured.get("equipment"))),
+            ),
+            (
+                "资源与代价",
+                (("资源", structured.get("resources")), ("代价", structured.get("costs"))),
+            ),
+            (
+                "克制与边界",
+                (("克制", structured.get("counters")), ("边界", structured.get("boundaries"))),
+            ),
+            ("社会影响", (("影响", structured.get("social_impact")),)),
+            ("信息可见性", (("可见性", structured.get("visibility")),)),
+            ("连续性账本", (("账本字段", structured.get("continuity_ledger")),)),
+        )
+        for heading, groups in sections:
+            _append_structured_power_section(lines, heading, groups)
+        return "\n".join(lines).rstrip() + "\n"
 
     _append_section(lines, "力量与职业", world.get("power_system"))
     _append_section(lines, "成长与战斗", world.get("progression_rules"))
@@ -142,6 +173,24 @@ def render_power_markdown(title: Any, blueprint: Any) -> str:
         (("约束", world.get("constraints")), ("禁止破坏", world.get("forbidden_breaks"))),
     )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _append_structured_power_section(
+    lines: list[str],
+    heading: str,
+    groups: tuple[tuple[str, Any], ...],
+) -> None:
+    lines.extend(("", f"## {heading}", ""))
+    populated = [(label, value) for label, value in groups if _has_content(value)]
+    if len(groups) == 1:
+        if populated:
+            lines.extend(_markdown_list(populated[0][1]))
+        return
+    for index, (label, value) in enumerate(populated):
+        if index:
+            lines.append("")
+        lines.extend((f"### {label}", ""))
+        lines.extend(_markdown_list(value))
 
 
 def sync_world_markdown(
@@ -298,6 +347,23 @@ def _field_label(key: Any) -> str:
         "reward_rules": "奖励规则",
         "stages": "阶段",
         "summary": "摘要",
+        "advancement": "晋升",
+        "armor": "护甲",
+        "branches": "分支",
+        "change": "能力变化",
+        "combat_loop": "战斗循环",
+        "core_attributes": "核心属性",
+        "core_resource": "核心资源",
+        "effect": "效果",
+        "entry": "进入条件",
+        "failure": "失败后果",
+        "level": "等级",
+        "role": "职责",
+        "skill_categories": "技能类别",
+        "strengths": "强项",
+        "transfer_task": "转职任务",
+        "weaknesses": "弱项",
+        "weapons": "武器",
     }
     return labels.get(str(key), str(key).replace("_", " "))
 

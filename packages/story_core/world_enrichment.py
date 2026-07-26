@@ -13,12 +13,36 @@ from packages.story_core.genre_plugins import (
 )
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.models import NovelProject
+from packages.story_core.novel_type_catalog import normalize_novel_type_ids
+from packages.story_core.power_system_templates import compact_power_system_template
+from packages.story_core.power_systems import (
+    PowerSystemValidationError,
+    legacy_power_summary,
+    validate_power_system_spec,
+)
 from packages.story_core.runtime_config import resolve_stage_runtime
 from packages.story_core.web_game_economy import appraisal_rules, exchange_rules, market_rules
 
 
 class WorldEnrichmentError(RuntimeError):
     pass
+
+
+def _selected_novel_type_plugin(project: NovelProject, plugins=None):
+    plugins = plugins if plugins is not None else select_genre_plugins(project)
+    plugin_by_id = {plugin.plugin_id: plugin for plugin in plugins}
+    explicit_ids = normalize_novel_type_ids(
+        project.world_blueprint.get("genre_plugin_ids")
+        if isinstance(project.world_blueprint, dict)
+        else None
+    )
+    for plugin_id in explicit_ids:
+        if plugin_id in plugin_by_id and plugin_id != "generic_webnovel":
+            return plugin_by_id[plugin_id]
+    for plugin in plugins:
+        if plugin.plugin_id not in {"generic_webnovel", "eastern_fantasy"}:
+            return plugin
+    return plugin_by_id["generic_webnovel"]
 
 
 def _compact_project_payload(project: NovelProject) -> dict[str, Any]:
@@ -38,6 +62,8 @@ def _compact_project_payload(project: NovelProject) -> dict[str, Any]:
 def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
     payload = _compact_project_payload(project)
     plugins = select_genre_plugins(project)
+    selected_plugin = _selected_novel_type_plugin(project, plugins)
+    power_template = compact_power_system_template(selected_plugin.power_system_template)
     mode_line = (
         "请在不重写已有剧情的前提下，补强中文长篇网文项目的世界规则手册，只返回 JSON。"
         if rules_only
@@ -49,7 +75,15 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "不要写小说正文，不要推进章节剧情；只整理世界观、角色档案、关系网、类型规则和后续写作约束。",
             "必须沿用输入里的既有设定，不要随意改名；规则要能支撑连续几十章的成长、资源、势力冲突和爽点循环。",
             "输出 JSON 字段：",
-            "world_blueprint: {premise, world_rules, power_system, locations, factions, current_arc, constraints, relationship_graph, progression_rules, economy_rules, quest_rules, faction_rules, panel_rules, chapter_formula, forbidden_breaks, opening_arc, volume_plan, longform_framework, world_systems, living_world, npc_system, quest_network, server_runtime, map_ecology}",
+            "world_blueprint: {premise, world_rules, power_system, power_system_spec, locations, factions, current_arc, constraints, relationship_graph, progression_rules, economy_rules, quest_rules, faction_rules, panel_rules, chapter_formula, forbidden_breaks, opening_arc, volume_plan, longform_framework, world_systems, living_world, npc_system, quest_network, server_runtime, map_ecology}",
+            "power_system_spec 必须是完整具体的结构化力量体系，禁止使用待定、略、同上或其他模糊占位符。规范字段：",
+            "name: 体系名称字符串；origin: 力量来源与获得方式字符串数组；attributes: [{name, effect}] 属性名与具体效果；",
+            "paths: [{name, role, core_resource, core_attributes, weapons, armor, combat_loop, strengths, weaknesses, skill_categories, branches, transfer_task, advancement}]，逐路线写明职责、资源、属性、武防、战斗循环、强弱项、技能类别、至少两个分支、转职任务和晋升；",
+            "stages: [{name, level, entry, change, failure}]，按顺序写明阶段名、等级里程碑、进入条件、能力变化和失败后果；",
+            "skills: 技能获得与使用规则；equipment: 装备类别与限制；resources: 资源产出、转化与消耗；advancement: 晋升条件与流程；",
+            "costs: 使用和突破代价；counters: 路线或机制克制；boundaries: 越级与能力硬边界；social_impact: 对组织、职业和秩序的影响；visibility: 角色可观察到的信息；continuity_ledger: 后续逐章必须追踪的状态字段。以上字段除 name 外均使用数组，paths/stages/attributes 使用前述对象数组。",
+            f"selected_novel_type: {selected_plugin.plugin_id}",
+            f"genre_power_system_template: {json.dumps(power_template, ensure_ascii=False)}",
             "character_profiles: [{name, role, motivation, current_state, personality, speech_style, goals, secrets, conflict_hooks}]",
             "world_summary: 120字以内的世界摘要",
             "current_focus: 下一章/下一阶段执行焦点，必须包含主角短期目标、外部压力、规则展示点",
@@ -1375,10 +1409,75 @@ def _plugin_metadata(project: NovelProject) -> tuple[list[dict[str, Any]], dict[
     return metadata, rulebook
 
 
-def _merge_enrichment(project: NovelProject, parsed: dict[str, Any]) -> NovelProject:
-    next_project = project.model_copy(deep=True)
+def _power_system_validation_error(error: PowerSystemValidationError) -> ValueError:
+    missing = ",".join(error.missing_sections)
+    violations = ",".join(error.violations)
+    return ValueError(
+        "invalid_power_system_spec: "
+        f"missing_sections=[{missing}]; violations=[{violations}]"
+    )
+
+
+def _validated_power_system_merge(
+    project: NovelProject,
+    incoming_world: dict[str, Any],
+    current_world: dict[str, Any],
+    *,
+    rules_only: bool | None,
+) -> tuple[dict[str, Any] | None, bool]:
+    selected_plugin = _selected_novel_type_plugin(project)
+    validation_args = {
+        "novel_type_id": selected_plugin.plugin_id,
+        "template": selected_plugin.power_system_template,
+    }
+    incoming_supplied = "power_system_spec" in incoming_world
+
+    current_validated: dict[str, Any] | None = None
+    if "power_system_spec" in current_world:
+        try:
+            current_validated = validate_power_system_spec(
+                current_world.get("power_system_spec"), **validation_args
+            )
+        except PowerSystemValidationError:
+            current_validated = None
+
+    if incoming_supplied:
+        try:
+            incoming_validated = validate_power_system_spec(
+                incoming_world.get("power_system_spec"), **validation_args
+            )
+        except PowerSystemValidationError as error:
+            raise _power_system_validation_error(error) from error
+        changed = current_validated is None or incoming_validated != current_validated
+        return deepcopy(incoming_validated), changed
+
+    if current_validated is not None:
+        return deepcopy(current_world["power_system_spec"]), False
+    if rules_only is not False:
+        return None, False
+
+    try:
+        validate_power_system_spec(current_world.get("power_system_spec"), **validation_args)
+    except PowerSystemValidationError as error:
+        raise _power_system_validation_error(error) from error
+    raise ValueError("invalid_power_system_spec: validation_failed")
+
+
+def _merge_enrichment(
+    project: NovelProject,
+    parsed: dict[str, Any],
+    *,
+    rules_only: bool | None = None,
+) -> NovelProject:
     current_world = deepcopy(project.world_blueprint or {})
     incoming_world = parsed.get("world_blueprint") if isinstance(parsed.get("world_blueprint"), dict) else {}
+    power_system_spec, power_system_changed = _validated_power_system_merge(
+        project,
+        incoming_world,
+        current_world,
+        rules_only=rules_only,
+    )
+    next_project = project.model_copy(deep=True)
     genre_plugins, plugin_rulebook = _plugin_metadata(project)
 
     relationships = _as_relationships(
@@ -1388,13 +1487,25 @@ def _merge_enrichment(project: NovelProject, parsed: dict[str, Any]) -> NovelPro
     world_blueprint: dict[str, Any] = {
         "premise": compact_text(str(incoming_world.get("premise") or current_world.get("premise") or project.world_summary), 360),
         "world_rules": _merge_string_lists(incoming_world.get("world_rules"), current_world.get("world_rules"), limit=16),
-        "power_system": _merge_string_lists(incoming_world.get("power_system"), current_world.get("power_system"), limit=16),
+        "power_system": (
+            legacy_power_summary(power_system_spec)
+            if power_system_changed
+            else deepcopy(current_world.get("power_system", []))
+            if power_system_spec is not None
+            else _merge_string_lists(
+                incoming_world.get("power_system"),
+                current_world.get("power_system"),
+                limit=16,
+            )
+        ),
         "locations": _as_entry_list(incoming_world.get("locations") or current_world.get("locations"), 16),
         "factions": _as_entry_list(incoming_world.get("factions") or current_world.get("factions"), 16),
         "current_arc": compact_text(str(incoming_world.get("current_arc") or current_world.get("current_arc") or project.current_focus), 520),
         "relationship_graph": relationships,
         "genre_plugins": genre_plugins,
     }
+    if power_system_spec is not None:
+        world_blueprint["power_system_spec"] = deepcopy(power_system_spec)
     world_blueprint["opening_arc"] = _merge_opening_arc(project, incoming_world, current_world, genre_plugins)
     world_blueprint["volume_plan"] = _merge_volume_plan(project, incoming_world, current_world, genre_plugins)
     world_blueprint["longform_framework"] = _merge_longform_framework(project, incoming_world, current_world, genre_plugins)
@@ -1487,7 +1598,12 @@ def _call_world_enrichment_model(project: NovelProject, *, rules_only: bool) -> 
     parsed = parse_json_message_content(response)
     if not parsed:
         raise WorldEnrichmentError("invalid_llm_response")
-    return _merge_enrichment(project, parsed)
+    try:
+        return _merge_enrichment(project, parsed, rules_only=rules_only)
+    except TypeError as error:
+        if "unexpected keyword argument 'rules_only'" not in str(error):
+            raise
+        return _merge_enrichment(project, parsed)
 
 
 def enrich_project_world(project: NovelProject) -> NovelProject:
