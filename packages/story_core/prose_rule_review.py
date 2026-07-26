@@ -82,20 +82,24 @@ _PLANNING_META_TERM_PATTERN = (
 )
 _PLANNING_META_ENTITY_PATTERNS = (
     re.compile(
-        rf"(?:站在|走到|退到|靠在|停在|蹲在)(?:了)?\s*"
+        rf"(?P<verb>站在|走到|退到|靠在|停在|蹲在)(?:了)?\s*"
         rf"{_PLANNING_META_TERM_PATTERN}(?:边|旁|前|后)?"
     ),
     re.compile(
-        rf"(?:迈出|跨过|绕过|推开|关上)(?:了)?\s*"
+        rf"(?P<verb>迈出|跨过|绕过|推开|关上)(?:了)?\s*"
         rf"{_PLANNING_META_TERM_PATTERN}"
     ),
     re.compile(
         rf"把\s*{_PLANNING_META_TERM_PATTERN}"
-        rf"(?:迈出|跨过|绕过|推开|关上)(?:了)?"
+        rf"(?P<verb>迈出|跨过|绕过|推开|关上)(?:了)?"
     ),
 )
-_PLANNING_META_UI_SUBJECT_PATTERN = re.compile(r"(?:光标|视线)\s*$")
-_PLANNING_META_UI_SUFFIX_PATTERN = re.compile(r"^\s*(?:一栏|栏|说明|页面|文字|提示|选项)")
+_PLANNING_META_UI_SUBJECT_PATTERN = re.compile(
+    r"(?:^|[，。！？；：\n])\s*(?:光标|鼠标指针|视线)\s*$"
+)
+_PLANNING_META_UI_SUFFIX_PATTERN = re.compile(
+    r"^\s*(?:一栏|栏|说明|页面|文字|提示|选项|按钮)"
+)
 
 _POV_BREACH_TERMS = (
     "公会频道",
@@ -155,11 +159,16 @@ def _merge_issue(target: list[str], issue: str) -> None:
 
 
 def _is_planning_meta_ui_context(text: str, match: re.Match[str]) -> bool:
-    subject_context = text[max(0, match.start() - 8) : match.start()]
-    suffix_context = text[match.end() : match.end() + 8]
+    match_start, match_end = match.span()
+    verb_start = match.start("verb")
+    if verb_start != match_start:
+        return False
+
+    subject_context = text[:verb_start]
+    suffix_context = text[match_end : match_end + 8]
     return bool(
         _PLANNING_META_UI_SUBJECT_PATTERN.search(subject_context)
-        or _PLANNING_META_UI_SUFFIX_PATTERN.search(suffix_context)
+        and _PLANNING_META_UI_SUFFIX_PATTERN.search(suffix_context)
     )
 
 

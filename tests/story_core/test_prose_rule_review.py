@@ -58,6 +58,7 @@ def test_review_allows_planning_words_used_as_actual_task_requirements():
     [
         "光标停在任务前置条件一栏。",
         "视线走到任务前置条件说明时，他停了一下。",
+        "鼠标指针停在任务前置条件按钮上。",
     ],
 )
 def test_review_allows_planning_words_in_ui_reading_context(body):
@@ -65,6 +66,16 @@ def test_review_allows_planning_words_in_ui_reading_context(body):
 
     assert review["pass"] is True
     assert review["scores"]["planning_meta_leak"] == 8
+
+
+def test_review_does_not_treat_another_characters_gaze_as_a_ui_subject():
+    body = "周满迎着赵管事的视线推开了前置条件。"
+
+    review = review_critical_prose_rules(body)
+
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert review["severity_summary"]["has_hard_violation"] is True
+    assert any("推开了前置条件" in issue for issue in review["hard_issues"])
 
 
 @pytest.mark.parametrize(
