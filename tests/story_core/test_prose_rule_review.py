@@ -75,6 +75,21 @@ def test_review_allows_abstract_rules_and_longer_phrases(body):
     assert review["scores"]["planning_meta_leak"] == 8
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "视线停在任务前置条件后续说明上。",
+        "任务进度停在前置条件后续检查阶段。",
+        "他站在前置条件边界之外思考规则。",
+    ],
+)
+def test_review_does_not_truncate_longer_words_as_location_suffixes(body):
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is True
+    assert review["scores"]["planning_meta_leak"] == 8
+
+
 def test_review_does_not_treat_another_characters_gaze_as_a_ui_subject():
     body = "周满迎着赵管事的视线推开了前置条件。"
 
@@ -91,6 +106,7 @@ def test_review_does_not_treat_another_characters_gaze_as_a_ui_subject():
         ("周满站在前置条件旁边，等林照开口。", "站在前置条件旁边"),
         ("周满站在前置条件边上。", "站在前置条件边上"),
         ("周满站在前置条件边上的台阶。", "站在前置条件边上"),
+        ("周满站在前置条件旁边的人身后。", "站在前置条件旁边"),
     ],
 )
 def test_review_flags_compound_planning_meta_locations(body, expected_hit):

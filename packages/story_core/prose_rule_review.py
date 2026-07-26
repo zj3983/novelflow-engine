@@ -80,14 +80,19 @@ _PLANNING_META_TERM_PATTERN = (
     r"(?:(?:章节|剧情|任务)\s*)?(?:前置条件|剧情节点)"
     r"\s*[”’」』》】）\"]?"
 )
-_PLANNING_META_RIGHT_BOUNDARY_PATTERN = r"(?=$|[\s，。！？；：、,.!?;:])"
-_PLANNING_META_LOCATION_SUFFIX_PATTERN = r"(?:旁边|边上|边|旁|前|后)"
+_PLANNING_META_RIGHT_BOUNDARY_PATTERN = r"(?=$|[\s，。！？；：、,.!?;:）】》」』”’)])"
+_PLANNING_META_LOCATION_SUFFIX_PATTERN = r"(?:旁边|边上|前面|后面|边|旁|前|后)"
+_PLANNING_META_LOCATION_END_PATTERN = (
+    rf"(?:{_PLANNING_META_LOCATION_SUFFIX_PATTERN}"
+    rf"(?:的|{_PLANNING_META_RIGHT_BOUNDARY_PATTERN})"
+    rf"|{_PLANNING_META_RIGHT_BOUNDARY_PATTERN})"
+)
 _PLANNING_META_ACTION_CONTINUATION_PATTERN = r"(?:之后|以前|的时候|时|后|前)?"
 _PLANNING_META_ENTITY_PATTERNS = (
     re.compile(
         rf"(?:站在|走到|退到|靠在|停在|蹲在)(?:了)?\s*"
         rf"{_PLANNING_META_TERM_PATTERN}"
-        rf"(?:{_PLANNING_META_LOCATION_SUFFIX_PATTERN}|{_PLANNING_META_RIGHT_BOUNDARY_PATTERN})"
+        rf"{_PLANNING_META_LOCATION_END_PATTERN}"
     ),
     re.compile(
         rf"(?:迈出|推开|关上)(?:了)?\s*"
