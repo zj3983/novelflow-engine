@@ -14,6 +14,7 @@ from typing import Any
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+TARGET_PROJECT_ID = "p-gou-webgame-restored"
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
@@ -29,6 +30,21 @@ from packages.story_core.world_blueprint_context import (  # noqa: E402
 
 class FilesystemContainmentError(ValueError):
     pass
+
+
+def _validate_target_project(root: Path, project: dict[str, Any] | None = None) -> None:
+    if root.name != TARGET_PROJECT_ID:
+        raise ValueError(
+            "this migration only supports project directory "
+            f"'{TARGET_PROJECT_ID}', got '{root.name}'"
+        )
+    if project is None or "project_id" not in project:
+        return
+    project_id = project["project_id"]
+    if project_id != TARGET_PROJECT_ID:
+        raise ValueError(
+            f"project.json project_id must be '{TARGET_PROJECT_ID}', got {project_id!r}"
+        )
 
 
 class FilesystemTransactionError(RuntimeError):
@@ -584,6 +600,7 @@ def upgrade_project(
         root = Path(project_dir).resolve(strict=True)
         if not root.is_dir():
             raise NotADirectoryError(f"project root is not a directory: {root}")
+        _validate_target_project(root)
         metadata = root / ".webnovel"
         project_path = metadata / "project.json"
         outline_path = metadata / "outline.json"
@@ -594,8 +611,11 @@ def upgrade_project(
         if backup:
             _require_contained_path(root, metadata / "backups", "backups_parent")
         project, project_bytes = _read_json(project_path)
+        if not isinstance(project, dict):
+            raise ValueError("project.json must contain a JSON object")
+        _validate_target_project(root, project)
         outline, outline_bytes = _read_json(outline_path)
-        if not isinstance(project, dict) or not isinstance(outline, (dict, list)):
+        if not isinstance(outline, (dict, list)):
             raise ValueError("project.json and outline.json must contain JSON objects or arrays")
 
         migrated_project = deepcopy(project)

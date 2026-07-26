@@ -37,7 +37,7 @@ def _json_bytes(value: object) -> bytes:
 
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
-    root = tmp_path / "legacy-project"
+    root = tmp_path / "p-gou-webgame-restored"
     metadata = root / ".webnovel"
     settings = root / "设定集"
     chapters = root / "chapters"
@@ -241,6 +241,78 @@ def test_check_reports_expected_changes_without_writes_or_backup(project_dir: Pa
     assert result["backup_path"] is None
     assert result["changes"]
     assert {path: path.read_bytes() for path in before} == before
+    assert not (project_dir / ".webnovel" / "backups").exists()
+
+
+def test_rejects_wrong_project_directory_before_writes_or_backup(
+    project_dir: Path, tmp_path: Path
+) -> None:
+    wrong_project_dir = tmp_path / "another-project"
+    project_dir.rename(wrong_project_dir)
+    before = {
+        path.relative_to(wrong_project_dir): path.read_bytes()
+        for path in wrong_project_dir.rglob("*")
+        if path.is_file()
+    }
+
+    result = upgrade_project(wrong_project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert result["backup_path"] is None
+    assert "p-gou-webgame-restored" in result["changes"][0]
+    assert {
+        path.relative_to(wrong_project_dir): path.read_bytes()
+        for path in wrong_project_dir.rglob("*")
+        if path.is_file()
+    } == before
+    assert not (wrong_project_dir / ".webnovel" / "backups").exists()
+
+
+def test_check_cli_rejects_wrong_project_directory_without_side_effects(
+    project_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wrong_project_dir = tmp_path / "copied-project"
+    project_dir.rename(wrong_project_dir)
+    project_bytes = (wrong_project_dir / ".webnovel" / "project.json").read_bytes()
+
+    exit_code = migration.main([str(wrong_project_dir), "--check"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code != 0
+    assert output["valid"] is False
+    assert output["changed"] is False
+    assert "p-gou-webgame-restored" in output["changes"][0]
+    assert (wrong_project_dir / ".webnovel" / "project.json").read_bytes() == project_bytes
+    assert not (wrong_project_dir / ".webnovel" / "backups").exists()
+
+
+def test_rejects_conflicting_project_id_before_writes_or_backup(
+    project_dir: Path,
+) -> None:
+    project_path = project_dir / ".webnovel" / "project.json"
+    project = _load(project_path)
+    assert isinstance(project, dict)
+    project["project_id"] = "some-other-project"
+    project_path.write_bytes(_json_bytes(project))
+    before = {
+        path.relative_to(project_dir): path.read_bytes()
+        for path in project_dir.rglob("*")
+        if path.is_file()
+    }
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert result["backup_path"] is None
+    assert "project_id" in result["changes"][0]
+    assert "p-gou-webgame-restored" in result["changes"][0]
+    assert {
+        path.relative_to(project_dir): path.read_bytes()
+        for path in project_dir.rglob("*")
+        if path.is_file()
+    } == before
     assert not (project_dir / ".webnovel" / "backups").exists()
 
 
