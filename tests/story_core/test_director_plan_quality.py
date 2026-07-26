@@ -76,6 +76,28 @@ def test_director_quality_gate_accepts_complete_continuous_plan():
     assert _director_plan_quality_issues(_story(), plan) == []
 
 
+def test_director_quality_gate_rejects_plan_without_executable_actions():
+    plan = {
+        "character_moves": [],
+        "event_plan": {
+            "ordered_actions": [],
+            "chapter_satisfaction": {
+                "core_event": "完成清道夫委托",
+                "obstacle": "法力不足",
+                "visible_payoff": "获得任务经验",
+                "cost": "消耗药水和法杖耐久",
+                "state_change": "任务变为已完成",
+                "next_hook": "NPC给出下一环线索",
+            },
+            "chapter_end_hook": {"type": "渴望钩", "strength": "medium", "content": "下一环任务出现"},
+        },
+    }
+
+    issues = _director_plan_quality_issues(_story(), plan)
+
+    assert any("可执行动作" in issue for issue in issues)
+
+
 def test_director_quality_gate_rejects_generic_placeholder_plan():
     plan = {
         "character_moves": [{"name": "夜烬", "action": "完成本章推进"}],
@@ -125,9 +147,11 @@ def test_director_quality_gate_rejects_collecting_material_already_sufficient_fo
     assert any("已有16份" in issue and "不应重复收集" in issue for issue in issues)
 
 
-def test_formal_project_retries_bad_director_plan_once_then_stops_before_writer(monkeypatch):
+def test_model_fallback_without_outline_context_retries_bad_plan_then_stops_before_writer(monkeypatch):
     orchestrator = StoryOrchestrator()
     calls: list[str] = []
+    story = _story()
+    story.outline_context = {}
     bad_plan = {
         "character_moves": [{"name": "苏叶", "action": "刷灰鼠毒腺"}],
         "chapter_intent": {"chapter_title": "错误计划"},
@@ -143,7 +167,7 @@ def test_formal_project_retries_bad_director_plan_once_then_stops_before_writer(
 
     monkeypatch.setattr(orchestrator, "_timed_chat", fake_chat)
 
-    bundle = orchestrator.generate_next_chapter(_story())
+    bundle = orchestrator.generate_next_chapter(story)
 
     assert calls == ["planner:剧情计划生成", "planner:剧情计划重做"]
     assert bundle.body.startswith("生成失败：director_plan_quality_failed")

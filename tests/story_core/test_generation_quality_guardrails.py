@@ -272,6 +272,20 @@ def test_director_move_priority_accepts_chinese_levels():
     assert [move["priority"] for move in moves] == [3, 2]
 
 
+def test_director_moves_accept_character_grouped_object():
+    moves = _normalize_moves(
+        {
+            "林照": [{"goal": "查清香火来源", "action": "带周满去祖祠查看香灰", "priority": "高"}],
+            "赵管事": {"goal": "压住消息", "action": "提前锁上祖祠侧门", "priority": 2},
+        }
+    )
+
+    assert [(move["name"], move["action"]) for move in moves] == [
+        ("林照", "带周满去祖祠查看香灰"),
+        ("赵管事", "提前锁上祖祠侧门"),
+    ]
+
+
 def test_expansion_candidate_must_land_inside_target_range():
     original = "原" * 4069
 

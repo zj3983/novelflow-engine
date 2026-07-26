@@ -2193,12 +2193,21 @@ def _director_prompt_character_cards(value: Any) -> dict[str, Any]:
 
 def _normalize_moves(raw_moves: object) -> list[dict]:
     moves: list[dict] = []
-    if not isinstance(raw_moves, list):
+    candidates: list[tuple[dict, str | None]] = []
+    if isinstance(raw_moves, list):
+        candidates.extend((item, None) for item in raw_moves if isinstance(item, dict))
+    elif isinstance(raw_moves, dict):
+        for grouped_name, grouped_moves in raw_moves.items():
+            if isinstance(grouped_moves, dict):
+                candidates.append((grouped_moves, str(grouped_name)))
+            elif isinstance(grouped_moves, list):
+                candidates.extend(
+                    (item, str(grouped_name)) for item in grouped_moves if isinstance(item, dict)
+                )
+    else:
         return moves
-    for item in raw_moves[:6]:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name", "")).strip()
+    for item, grouped_name in candidates:
+        name = str(item.get("name") if "name" in item else grouped_name or "").strip()
         if not name:
             continue
         moves.append(
@@ -2215,6 +2224,8 @@ def _normalize_moves(raw_moves: object) -> list[dict]:
                 ),
             }
         )
+        if len(moves) == 6:
+            break
     return moves
 
 
@@ -2275,11 +2286,6 @@ def _normalize_intent(raw_intent: object) -> dict:
     }
 
 
-def _director_quality_gate_enabled(story: StoryState) -> bool:
-    context = story.outline_context if isinstance(story.outline_context, dict) else {}
-    return context.get("schema_version") == "outline-context/v1"
-
-
 def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     if not isinstance(plan, dict):
         return ["导演产物不是JSON对象。"]
@@ -2307,14 +2313,12 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     if any(value in placeholder_phrases for value in [*satisfaction_values, str(hook.get("content") or "").strip()]):
         issues.append("章节规划仍含空泛占位语，必须改成能直接写成场景的具体行动、阻力、结果和章末事件。")
 
-    moves = []
-    for key in ("character_moves",):
-        value = plan.get(key)
-        if isinstance(value, list):
-            moves.extend(item for item in value if isinstance(item, dict))
-    ordered = event_plan.get("ordered_actions")
-    if isinstance(ordered, list):
-        moves.extend(item for item in ordered if isinstance(item, dict))
+    moves = [
+        *_normalize_moves(plan.get("character_moves")),
+        *_normalize_moves(event_plan.get("ordered_actions")),
+    ]
+    if not moves:
+        issues.append("导演计划缺少可执行动作。")
 
     lead = next((character for character in story.characters if character.role in {"主角", "protagonist"}), None)
     if is_game_story(story) and lead and lead.game_id:
@@ -2343,7 +2347,7 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
             json.dumps(story.outline_context, ensure_ascii=False),
         ]
     )
-    plan_text = json.dumps(plan, ensure_ascii=False)
+    plan_text = json.dumps(moves, ensure_ascii=False)
     material_pattern = re.compile(r"[\u4e00-\u9fff]{1,8}(?:毒腺|狼皮|鼠皮|兽皮|矿石|草药)")
     def _material_keys(value: object) -> set[str]:
         found: set[str] = set()
@@ -6375,7 +6379,7 @@ class StoryOrchestrator:
             return _failed_bundle(working_story, chapter_number, f"outline_plan_parse_failed:{exc}")
         director_issues = (
             _director_plan_quality_issues(working_story, plan)
-            if outline_plan is None and _director_quality_gate_enabled(working_story)
+            if planning_source == "model_fallback"
             else []
         )
         if director_issues:
