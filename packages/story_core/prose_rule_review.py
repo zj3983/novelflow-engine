@@ -75,10 +75,27 @@ _GUIDE_TERMS = (
     "仇恨值",
 )
 
-_PLANNING_META_ENTITY_PATTERNS = (
-    re.compile(r"(?:站在|走到|退到|靠在|停在|蹲在)(?:章节|剧情|任务)?(?:前置条件|剧情节点)(?:边|旁|前|后)?"),
-    re.compile(r"(?:迈出|跨过|绕过|推开|关上)(?:章节|剧情|任务)?(?:前置条件|剧情节点)"),
+_PLANNING_META_TERM_PATTERN = (
+    r"[“‘「『《\"]?\s*"
+    r"(?:(?:章节|剧情|任务)\s*)?(?:前置条件|剧情节点)"
+    r"\s*[”’」』》\"]?"
 )
+_PLANNING_META_ENTITY_PATTERNS = (
+    re.compile(
+        rf"(?:站在|走到|退到|靠在|停在|蹲在)(?:了)?\s*"
+        rf"{_PLANNING_META_TERM_PATTERN}(?:边|旁|前|后)?"
+    ),
+    re.compile(
+        rf"(?:迈出|跨过|绕过|推开|关上)(?:了)?\s*"
+        rf"{_PLANNING_META_TERM_PATTERN}"
+    ),
+    re.compile(
+        rf"把\s*{_PLANNING_META_TERM_PATTERN}"
+        rf"(?:迈出|跨过|绕过|推开|关上)(?:了)?"
+    ),
+)
+_PLANNING_META_UI_SUBJECT_PATTERN = re.compile(r"(?:光标|视线)\s*$")
+_PLANNING_META_UI_SUFFIX_PATTERN = re.compile(r"^\s*(?:一栏|栏|说明|页面|文字|提示|选项)")
 
 _POV_BREACH_TERMS = (
     "公会频道",
@@ -137,6 +154,25 @@ def _merge_issue(target: list[str], issue: str) -> None:
         target.append(issue)
 
 
+def _is_planning_meta_ui_context(text: str, match: re.Match[str]) -> bool:
+    subject_context = text[max(0, match.start() - 8) : match.start()]
+    suffix_context = text[match.end() : match.end() + 8]
+    return bool(
+        _PLANNING_META_UI_SUBJECT_PATTERN.search(subject_context)
+        or _PLANNING_META_UI_SUFFIX_PATTERN.search(suffix_context)
+    )
+
+
+def _planning_meta_entity_hits(text: str) -> list[str]:
+    hits: list[str] = []
+    for pattern in _PLANNING_META_ENTITY_PATTERNS:
+        for match in pattern.finditer(text):
+            phrase = match.group(0)
+            if not _is_planning_meta_ui_context(text, match) and phrase not in hits:
+                hits.append(phrase)
+    return hits
+
+
 def _paragraphs(text: str) -> list[str]:
     return [
         part.strip()
@@ -163,11 +199,7 @@ def review_diagnostic_terms_in_body(text: str) -> dict[str, Any]:
     hits = [term for term in _DIAGNOSTIC_TERMS if term in text]
     fact_hits = [term for term in _FACT_CONTRADICTION_TERMS if term in text]
     guide_hits = [term for term in _GUIDE_TERMS if term in text]
-    planning_meta_hits = list(dict.fromkeys(
-        match.group(0)
-        for pattern in _PLANNING_META_ENTITY_PATTERNS
-        for match in pattern.finditer(text)
-    ))
+    planning_meta_hits = _planning_meta_entity_hits(text)
 
     if hits:
         issues.append(f"正文混入后台/审稿术语：{'、'.join(hits[:5])}。")

@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.prose_rule_review import (
     CRITICAL_PROMPT_RULES,
     review_critical_prose_rules,
@@ -49,6 +51,47 @@ def test_review_allows_planning_words_used_as_actual_task_requirements():
 
     assert review["pass"] is True
     assert review["scores"]["planning_meta_leak"] == 8
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "光标停在任务前置条件一栏。",
+        "视线走到任务前置条件说明时，他停了一下。",
+    ],
+)
+def test_review_allows_planning_words_in_ui_reading_context(body):
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is True
+    assert review["scores"]["planning_meta_leak"] == 8
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "站在“前置条件”边",
+        "站在 前置条件 边",
+        "走到了剧情节点旁",
+        "推开了章节前置条件",
+        "把剧情节点推开",
+    ],
+)
+def test_review_flags_planning_language_materialization_variants(phrase):
+    review = review_diagnostic_terms_in_body(f"周满{phrase}，等林照开口。")
+
+    assert review["pass"] is False
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert any(phrase in issue for issue in review["issues"])
+
+
+def test_review_deduplicates_repeated_planning_meta_leak_phrases():
+    phrase = "推开了章节前置条件"
+    review = review_diagnostic_terms_in_body(f"周满{phrase}，转身又{phrase}。")
+
+    assert review["pass"] is False
+    planning_issue = next(issue for issue in review["issues"] if phrase in issue)
+    assert planning_issue.count(phrase) == 1
 
 
 def test_review_flags_planning_language_materialized_as_an_action_target():
