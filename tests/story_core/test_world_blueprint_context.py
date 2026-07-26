@@ -4,6 +4,7 @@ import json
 import pytest
 
 import packages.story_core.world_blueprint_context as blueprint_context
+from packages.story_core.power_systems import validate_power_system_spec
 from packages.story_core.world_blueprint_context import (
     flatten_selected_rules,
     merge_world_blueprint,
@@ -606,6 +607,76 @@ def test_outline_power_context_reapplies_strict_budget_after_maximum_expansion()
     assert all(path.get("branches") for path in first["paths"])
     assert all(path.get("advancement") for path in first["paths"])
     assert all(field in first and first[field] for field in ("costs", "counters", "boundaries", "continuity_ledger"))
+
+
+def test_outline_power_context_retains_oversized_xianxia_paths_without_advancement():
+    spec = _structured_power_spec()
+    long_tail = "cultivation-detail-" * 20
+    spec["attributes"] = [{"name": "spiritual root", "effect": "determines affinity"}]
+    spec["paths"] = [
+        {
+            "name": f"Dao Path {index:02d}",
+            "branches": [
+                f"Dao Path {index:02d} sword branch {long_tail}",
+                f"Dao Path {index:02d} alchemy branch {long_tail}",
+            ],
+        }
+        for index in range(64)
+    ]
+    validated = validate_power_system_spec(spec, novel_type_id="xianxia")
+
+    power = blueprint_context.outline_power_system_context(validated)
+    encoded = json.dumps(power, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+    assert len(encoded) <= 5000
+    assert power["paths"]
+    assert [path["name"] for path in power["paths"]] == [
+        f"Dao Path {index:02d}" for index in range(len(power["paths"]))
+    ]
+    assert all(path.get("branches") for path in power["paths"])
+    assert all("advancement" not in path for path in power["paths"])
+
+
+def test_outline_power_context_never_exceeds_budget_with_all_major_stages():
+    spec = _structured_power_spec()
+    long_tail = "major-stage-detail-" * 20
+    spec["stages"] = [
+        {
+            "name": f"Major Stage {index:02d} {long_tail}",
+            "level": (1, 10, 20, 30, 60)[index % 5],
+            "entry": f"entry {index:02d} {long_tail}",
+            "change": f"change {index:02d} {long_tail}",
+            "failure": f"failure {index:02d} {long_tail}",
+        }
+        for index in range(64)
+    ]
+    spec["paths"] = [
+        {
+            "name": f"Major Path {index:02d}",
+            "branches": [f"branch a {long_tail}", f"branch b {long_tail}"],
+            "advancement": [f"advance {long_tail}"],
+        }
+        for index in range(64)
+    ]
+    for field in ("origin", "advancement", "costs", "counters", "boundaries"):
+        spec[field] = [f"{field} {index:02d} {long_tail}" for index in range(64)]
+
+    first = blueprint_context.outline_power_system_context(spec)
+    second = blueprint_context.outline_power_system_context(spec)
+    encoded = json.dumps(first, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+    assert first == second
+    assert len(encoded) <= 5000
+    assert len(first["stages"]) >= 3
+    assert len(first["paths"]) >= 1
+    assert all(field in first and first[field] for field in (
+        "origin",
+        "advancement",
+        "costs",
+        "counters",
+        "boundaries",
+        "continuity_ledger",
+    ))
 
 
 def test_world_markdown_rendering_is_ordered_and_shows_quest_chain_stages_without_mutation():

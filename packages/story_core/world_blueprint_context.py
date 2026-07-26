@@ -632,67 +632,123 @@ def _major_outline_stages(stages: Any) -> list[dict[str, Any]]:
     return selected or values[:1]
 
 
-def _fit_outline_power_budget(value: dict[str, Any]) -> dict[str, Any]:
-    if _outline_json_length(value) <= 5000:
-        return deepcopy(value)
+def _compact_outline_contract(
+    value: dict[str, Any],
+    *,
+    stages: list[dict[str, Any]],
+    paths: list[dict[str, Any]],
+    text_limit: int,
+    list_limit: int,
+) -> dict[str, Any]:
+    candidate: dict[str, Any] = {"name": _outline_text(value.get("name"), text_limit)}
+    if stages:
+        candidate["stages"] = [
+            {
+                key: stage[key] if key == "level" else _outline_text(stage[key], text_limit)
+                for key in ("name", "level", "entry", "change", "failure")
+                if stage.get(key) not in (None, "", [], {})
+            }
+            for stage in stages
+        ]
 
-    required_lists = (
+    compact_paths: list[dict[str, Any]] = []
+    for path in paths:
+        branches = [
+            _outline_text(branch, text_limit)
+            for branch in path.get("branches", [])[:2]
+        ]
+        if not path.get("name") or not branches:
+            continue
+        compact_path = {
+            "name": _outline_text(path["name"], text_limit),
+            "branches": branches,
+        }
+        advancement = [
+            _outline_text(item, text_limit)
+            for item in path.get("advancement", [])[:list_limit]
+        ]
+        if advancement:
+            compact_path["advancement"] = advancement
+        compact_paths.append(compact_path)
+    if compact_paths:
+        candidate["paths"] = compact_paths
+
+    for field in (
         "origin",
         "advancement",
         "costs",
         "counters",
         "boundaries",
         "continuity_ledger",
-    )
+    ):
+        items = value.get(field) if isinstance(value.get(field), list) else []
+        if items:
+            candidate[field] = [
+                _outline_text(item, text_limit) for item in items[:list_limit]
+            ]
+    return candidate
+
+
+def _fit_outline_power_budget(value: dict[str, Any]) -> dict[str, Any]:
+    if _outline_json_length(value) <= 5000:
+        return deepcopy(value)
+
     stages = _major_outline_stages(value.get("stages"))
-    paths = value.get("paths") if isinstance(value.get("paths"), list) else []
+    paths = [
+        path
+        for path in (value.get("paths") if isinstance(value.get("paths"), list) else [])
+        if isinstance(path, dict) and path.get("name") and path.get("branches")
+    ]
     for text_limit, list_limit in ((120, 4), (80, 2), (48, 1), (24, 1), (12, 1)):
-        candidate: dict[str, Any] = {"name": value.get("name")}
-        candidate["stages"] = [
-            {
-                key: (
-                    stage[key]
-                    if key == "level"
-                    else _outline_text(stage[key], text_limit)
-                )
-                for key in ("name", "level", "entry", "change", "failure")
-                if stage.get(key) not in (None, "", [], {})
-            }
-            for stage in stages
-        ]
-        candidate["paths"] = [
-            {
-                "name": _outline_text(path.get("name"), text_limit),
-                "branches": [
-                    _outline_text(branch, text_limit)
-                    for branch in path.get("branches", [])[:2]
-                ],
-                "advancement": [
-                    _outline_text(item, text_limit)
-                    for item in path.get("advancement", [])[:list_limit]
-                ],
-            }
-            for path in paths
-            if (
-                isinstance(path, dict)
-                and path.get("name")
-                and path.get("branches")
-                and path.get("advancement")
-            )
-        ]
-        for field in required_lists:
-            items = value.get(field) if isinstance(value.get(field), list) else []
-            if items:
-                candidate[field] = [
-                    _outline_text(item, text_limit) for item in items[:list_limit]
-                ]
+        candidate = _compact_outline_contract(
+            value,
+            stages=stages,
+            paths=paths,
+            text_limit=text_limit,
+            list_limit=list_limit,
+        )
         if _outline_json_length(candidate) <= 5000:
             return candidate
 
-    fallback = deepcopy(candidate)
-    while len(fallback.get("paths", [])) > 1 and _outline_json_length(fallback) > 5000:
-        fallback["paths"].pop()
-    return fallback
+    retained_stages = list(stages)
+    retained_paths = list(paths)
+    while _outline_json_length(candidate) > 5000:
+        can_trim_stage = len(retained_stages) > 3
+        can_trim_path = len(retained_paths) > 1
+        if not can_trim_stage and not can_trim_path:
+            break
+        if can_trim_path and (not can_trim_stage or len(retained_paths) > len(retained_stages)):
+            retained_paths.pop()
+        else:
+            retained_stages.pop()
+        candidate = _compact_outline_contract(
+            value,
+            stages=retained_stages,
+            paths=retained_paths,
+            text_limit=12,
+            list_limit=1,
+        )
+
+    for text_limit in (8, 4, 2, 1):
+        if _outline_json_length(candidate) <= 5000:
+            return candidate
+        candidate = _compact_outline_contract(
+            value,
+            stages=retained_stages,
+            paths=retained_paths,
+            text_limit=text_limit,
+            list_limit=1,
+        )
+
+    if _outline_json_length(candidate) <= 5000:
+        return candidate
+    return _compact_outline_contract(
+        value,
+        stages=stages[:3],
+        paths=paths[:1],
+        text_limit=1,
+        list_limit=1,
+    )
 
 
 def flatten_selected_rules(selected: Any) -> list[Any]:
