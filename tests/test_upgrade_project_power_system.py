@@ -15,6 +15,7 @@ from packages.story_core.power_systems import (
     validate_power_system_spec,
 )
 from packages.story_core.world_blueprint_context import MANAGED_MARKER
+from scripts.p_gou_power_system_data import build_power_system_spec
 from scripts.upgrade_project_power_system import upgrade_project
 
 
@@ -98,6 +99,10 @@ def project_dir(tmp_path: Path) -> Path:
 
 def _load(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def test_migration_payload_builder_delegates_to_extracted_project_data() -> None:
+    assert migration._build_power_system_spec() == build_power_system_spec()
 
 
 def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
