@@ -82,23 +82,17 @@ _PLANNING_META_TERM_PATTERN = (
 )
 _PLANNING_META_ENTITY_PATTERNS = (
     re.compile(
-        rf"(?P<verb>站在|走到|退到|靠在|停在|蹲在)(?:了)?\s*"
+        rf"(?:站在|走到|退到|靠在|停在|蹲在)(?:了)?\s*"
         rf"{_PLANNING_META_TERM_PATTERN}(?:边|旁|前|后)?"
     ),
     re.compile(
-        rf"(?P<verb>迈出|跨过|绕过|推开|关上)(?:了)?\s*"
+        rf"(?:迈出|跨过|绕过|推开|关上)(?:了)?\s*"
         rf"{_PLANNING_META_TERM_PATTERN}"
     ),
     re.compile(
         rf"把\s*{_PLANNING_META_TERM_PATTERN}"
-        rf"(?P<verb>迈出|跨过|绕过|推开|关上)(?:了)?"
+        rf"(?:迈出|跨过|绕过|推开|关上)(?:了)?"
     ),
-)
-_PLANNING_META_UI_SUBJECT_PATTERN = re.compile(
-    r"(?:^|[，。！？；：\n])\s*(?:光标|鼠标指针|视线)\s*$"
-)
-_PLANNING_META_UI_SUFFIX_PATTERN = re.compile(
-    r"^\s*(?:一栏|栏|说明|页面|文字|提示|选项|按钮)"
 )
 
 _POV_BREACH_TERMS = (
@@ -158,26 +152,12 @@ def _merge_issue(target: list[str], issue: str) -> None:
         target.append(issue)
 
 
-def _is_planning_meta_ui_context(text: str, match: re.Match[str]) -> bool:
-    match_start, match_end = match.span()
-    verb_start = match.start("verb")
-    if verb_start != match_start:
-        return False
-
-    subject_context = text[:verb_start]
-    suffix_context = text[match_end : match_end + 8]
-    return bool(
-        _PLANNING_META_UI_SUBJECT_PATTERN.search(subject_context)
-        and _PLANNING_META_UI_SUFFIX_PATTERN.search(suffix_context)
-    )
-
-
 def _planning_meta_entity_hits(text: str) -> list[str]:
     hits: list[str] = []
     for pattern in _PLANNING_META_ENTITY_PATTERNS:
         for match in pattern.finditer(text):
             phrase = match.group(0)
-            if not _is_planning_meta_ui_context(text, match) and phrase not in hits:
+            if phrase not in hits:
                 hits.append(phrase)
     return hits
 

@@ -61,8 +61,15 @@ def test_review_allows_planning_words_used_as_actual_task_requirements():
         "鼠标指针停在任务前置条件按钮上。",
     ],
 )
-def test_review_allows_planning_words_in_ui_reading_context(body):
+def test_review_does_not_exempt_non_vr_ui_materialization(body):
     review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is False
+    assert review["scores"]["planning_meta_leak"] == 5
+
+
+def test_review_allows_vr_prose_that_reads_a_task_requirement():
+    review = review_diagnostic_terms_in_body("他看向任务说明里的前置条件。")
 
     assert review["pass"] is True
     assert review["scores"]["planning_meta_leak"] == 8
