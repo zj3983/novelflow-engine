@@ -153,6 +153,94 @@ def test_director_quality_gate_and_event_plan_normalization_accept_text_ordered_
     ]
 
 
+def test_ordered_action_object_is_one_action_instead_of_grouped_mapping():
+    event_plan = _normalize_event_plan(
+        {"ordered_actions": {"name": "林照", "action": "查香灰"}},
+        chapter_number=2,
+        story=_story(),
+    )
+
+    assert [(item["name"], item["action"]) for item in event_plan["ordered_actions"]] == [
+        ("林照", "查香灰")
+    ]
+
+
+def test_text_ordered_action_infers_known_real_name_and_triggers_game_id_guard():
+    plan = {
+        "character_moves": {},
+        "event_plan": {
+            "ordered_actions": ["苏叶击杀灰狼", "夜烬提交灰狼毒腺"],
+            "chapter_satisfaction": {
+                "core_event": "完成清道夫委托",
+                "obstacle": "法力不足",
+                "visible_payoff": "获得任务经验",
+                "cost": "消耗药水和法杖耐久",
+                "state_change": "任务变为已完成",
+                "next_hook": "NPC给出下一环线索",
+            },
+            "chapter_end_hook": {"type": "渴望钩", "strength": "medium", "content": "下一环任务出现"},
+        },
+    }
+
+    issues = _director_plan_quality_issues(_story(), plan)
+    event_plan = _normalize_event_plan(plan["event_plan"], chapter_number=2, story=_story())
+
+    assert any("苏叶" in issue and "夜烬" in issue for issue in issues)
+    assert [item["name"] for item in event_plan["ordered_actions"]] == ["苏叶", "夜烬"]
+
+
+def test_text_ordered_actions_use_earliest_known_name_and_leave_unknown_text_unnamed():
+    story = StoryState(
+        story_id="ordered-name-inference",
+        outline="林照与周满查祖祠。",
+        genre="悬疑",
+        style="白描",
+        characters=[
+            CharacterState(name="周满", role="配角"),
+            CharacterState(name="林照", role="主角"),
+        ],
+    )
+
+    event_plan = _normalize_event_plan(
+        {"ordered_actions": ["章首从青烟写起", "林照询问周满"]},
+        chapter_number=2,
+        story=story,
+    )
+
+    assert [(item["name"], item["action"]) for item in event_plan["ordered_actions"]] == [
+        ("", "章首从青烟写起"),
+        ("林照", "林照询问周满"),
+    ]
+
+
+def test_writer_event_plan_drops_missing_null_and_blank_actions_from_mixed_input():
+    event_plan = _normalize_event_plan(
+        {
+            "ordered_actions": [
+                {"name": "林照", "action": "查香灰"},
+                {},
+                {"name": "赵管事", "action": None},
+                {"name": "周满", "action": "   "},
+                None,
+                "林照询问周满",
+            ]
+        },
+        chapter_number=2,
+        story=StoryState(
+            story_id="ordered-action-filter",
+            outline="林照与周满查祖祠。",
+            genre="悬疑",
+            style="白描",
+            characters=[CharacterState(name="林照", role="主角"), CharacterState(name="周满", role="配角")],
+        ),
+    )
+
+    assert [(item["name"], item["action"]) for item in event_plan["ordered_actions"]] == [
+        ("林照", "查香灰"),
+        ("林照", "林照询问周满"),
+    ]
+
+
 def test_director_quality_gate_rejects_blank_text_only_ordered_actions():
     plan = {
         "character_moves": {},

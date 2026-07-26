@@ -324,6 +324,22 @@ def test_director_moves_use_group_name_for_invalid_names_without_stringifying_nu
     assert all("None" not in (move["name"], move["action"]) for move in moves)
 
 
+def test_writer_character_moves_drop_invalid_actions_from_mixed_input():
+    moves = _normalize_moves(
+        [
+            {"name": "林照", "action": "检查香灰"},
+            {},
+            {"name": "赵管事", "action": None},
+            {"name": "周满", "action": "   "},
+            None,
+        ],
+        require_action=True,
+        allow_text_items=True,
+    )
+
+    assert [(move["name"], move["action"]) for move in moves] == [("林照", "检查香灰")]
+
+
 def test_expansion_candidate_must_land_inside_target_range():
     original = "原" * 4069
 

@@ -2207,17 +2207,20 @@ def _normalize_moves(
             if isinstance(item, dict) or (allow_text_items and isinstance(item, str))
         )
     elif isinstance(raw_moves, dict):
-        for grouped_name, grouped_moves in raw_moves.items():
-            if isinstance(grouped_moves, dict):
-                candidates.append((grouped_moves, grouped_name))
-            elif isinstance(grouped_moves, list):
-                candidates.extend(
-                    (item, grouped_name)
-                    for item in grouped_moves
-                    if isinstance(item, dict) or (allow_text_items and isinstance(item, str))
-                )
-            elif allow_text_items and isinstance(grouped_moves, str):
-                candidates.append((grouped_moves, grouped_name))
+        if "name" in raw_moves or "action" in raw_moves:
+            candidates.append((raw_moves, None))
+        else:
+            for grouped_name, grouped_moves in raw_moves.items():
+                if isinstance(grouped_moves, dict):
+                    candidates.append((grouped_moves, grouped_name))
+                elif isinstance(grouped_moves, list):
+                    candidates.extend(
+                        (item, grouped_name)
+                        for item in grouped_moves
+                        if isinstance(item, dict) or (allow_text_items and isinstance(item, str))
+                    )
+                elif allow_text_items and isinstance(grouped_moves, str):
+                    candidates.append((grouped_moves, grouped_name))
     else:
         return moves
     for item, grouped_name in candidates:
@@ -2250,13 +2253,38 @@ def _normalize_moves(
     return moves
 
 
-def _normalize_ordered_actions(raw_actions: object, *, require_action: bool = False) -> list[dict]:
-    return _normalize_moves(
+def _normalize_ordered_actions(
+    raw_actions: object,
+    *,
+    story: StoryState,
+    require_action: bool = False,
+) -> list[dict]:
+    moves = _normalize_moves(
         raw_actions,
         require_action=require_action,
         allow_text_items=True,
         require_name=False,
     )
+    known_names = list(
+        dict.fromkeys(
+            name
+            for character in story.characters
+            for name in (str(character.name or "").strip(), str(character.game_id or "").strip())
+            if name
+        )
+    )
+    for move in moves:
+        if str(move.get("name") or "").strip():
+            continue
+        action = str(move.get("action") or "")
+        matches = [
+            (position, -len(name), order, name)
+            for order, name in enumerate(known_names)
+            if (position := action.find(name)) >= 0
+        ]
+        if matches:
+            move["name"] = min(matches)[3]
+    return moves
 
 
 def _normalize_priority(raw: object) -> int:
@@ -2345,7 +2373,7 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
 
     moves = [
         *_normalize_moves(plan.get("character_moves"), require_action=True, allow_text_items=True),
-        *_normalize_ordered_actions(event_plan.get("ordered_actions"), require_action=True),
+        *_normalize_ordered_actions(event_plan.get("ordered_actions"), story=story, require_action=True),
     ]
     if not moves:
         issues.append("导演计划缺少可执行动作。")
@@ -2502,7 +2530,11 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
         "turn": compact_text(str(raw_event_plan.get("turn", "")).strip(), 120),
         "pivot": compact_text(str(raw_event_plan.get("pivot", "")).strip(), 160),
         "collision": compact_text(str(raw_event_plan.get("collision", "")).strip(), 160),
-        "ordered_actions": _normalize_ordered_actions(raw_event_plan.get("ordered_actions")),
+        "ordered_actions": _normalize_ordered_actions(
+            raw_event_plan.get("ordered_actions"),
+            story=story,
+            require_action=True,
+        ),
         "exposition_beats": compact_list(raw_event_plan.get("exposition_beats", []), max_items=8, item_chars=180),
         "npc_beats": compact_list(raw_event_plan.get("npc_beats", []), max_items=6, item_chars=180),
         "quest_beats": compact_list(raw_event_plan.get("quest_beats", []), max_items=6, item_chars=180),
@@ -6464,7 +6496,11 @@ class StoryOrchestrator:
                     f"director_plan_quality_failed:{'; '.join(director_issues)}",
                 )
         plan_summary = {key: len(plan.get(key, [])) if isinstance(plan.get(key, []), list) else None for key in ("character_moves", "chapter_summary")}
-        action_briefs = _normalize_moves(plan.get("character_moves"), allow_text_items=True)
+        action_briefs = _normalize_moves(
+            plan.get("character_moves"),
+            require_action=True,
+            allow_text_items=True,
+        )
         chapter_intent = _normalize_intent(plan.get("chapter_intent"))
         event_plan = _normalize_event_plan(plan.get("event_plan"), chapter_number, working_story)
         memory_constraints = _normalize_memory_constraints(plan.get("memory_constraints"), working_story)
