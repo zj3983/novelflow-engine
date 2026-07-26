@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES, compact_list, compact_text
@@ -32,7 +33,7 @@ _PATH_ALIASES = (
 
 def _state_alias_value(sources: list[Any], aliases: tuple[str, ...]) -> Any:
     for source in sources:
-        if not isinstance(source, dict):
+        if not isinstance(source, Mapping):
             continue
         for key in aliases:
             value = source.get(key)
@@ -58,28 +59,30 @@ def _power_progression_hints(
     characters: Any,
 ) -> tuple[int | float | None, str | None]:
     sources: list[Any] = []
-    if isinstance(ledger, dict):
+    if isinstance(ledger, Mapping):
         for key in ("protagonist", "player", "character", "game_state", "current_state"):
             value = ledger.get(key)
-            if isinstance(value, dict):
+            if isinstance(value, Mapping):
                 sources.extend((value, value.get("current")))
         sources.append(ledger)
 
     characters = characters if isinstance(characters, list) else []
+    character_payloads = [_character_model_payload(character) for character in characters]
     protagonist = next(
         (
-            character
-            for character in characters
-            if str(getattr(character, "role", "") or "").casefold()
-            in {"protagonist", "主角"}
+            payload
+            for payload in character_payloads
+            if str(payload.get("role") or "").casefold()
+            in {"protagonist", "main", "主角"}
         ),
-        characters[0] if characters else None,
+        character_payloads[0] if character_payloads else None,
     )
     if protagonist is not None:
-        payload = _character_model_payload(protagonist)
+        payload = protagonist
+        sources.append(payload)
         for key in ("game_state", "game_panel", "state", "current_state"):
             value = payload.get(key)
-            if isinstance(value, dict):
+            if isinstance(value, Mapping):
                 sources.extend((value, value.get("current")))
 
     level = _level_hint(_state_alias_value(sources, _LEVEL_ALIASES))
@@ -167,7 +170,23 @@ def _character_model_payload(character: Any) -> dict[str, Any]:
         except TypeError:
             payload = character.model_dump()
         return payload if isinstance(payload, dict) else {}
-    return dict(character) if isinstance(character, dict) else {}
+    if isinstance(character, Mapping):
+        return dict(character)
+    fields = (
+        "name",
+        "role",
+        *_LEVEL_ALIASES,
+        *_PATH_ALIASES,
+        "game_state",
+        "game_panel",
+        "state",
+        "current_state",
+    )
+    return {
+        field: value
+        for field in fields
+        if (value := getattr(character, field, None)) not in (None, "", [], {})
+    }
 
 
 def _project_packet_character_cards(story: Any, cards: list[dict[str, Any]], *, scene_kind: str) -> list[dict[str, Any]]:

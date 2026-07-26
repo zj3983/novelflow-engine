@@ -636,7 +636,14 @@ def _fit_outline_power_budget(value: dict[str, Any]) -> dict[str, Any]:
     if _outline_json_length(value) <= 5000:
         return deepcopy(value)
 
-    required_lists = ("costs", "counters", "boundaries", "continuity_ledger")
+    required_lists = (
+        "origin",
+        "advancement",
+        "costs",
+        "counters",
+        "boundaries",
+        "continuity_ledger",
+    )
     stages = _major_outline_stages(value.get("stages"))
     paths = value.get("paths") if isinstance(value.get("paths"), list) else []
     for text_limit, list_limit in ((120, 4), (80, 2), (48, 1), (24, 1), (12, 1)):
@@ -655,33 +662,36 @@ def _fit_outline_power_budget(value: dict[str, Any]) -> dict[str, Any]:
         ]
         candidate["paths"] = [
             {
-                "name": path.get("name"),
+                "name": _outline_text(path.get("name"), text_limit),
                 "branches": [
                     _outline_text(branch, text_limit)
                     for branch in path.get("branches", [])[:2]
                 ],
+                "advancement": [
+                    _outline_text(item, text_limit)
+                    for item in path.get("advancement", [])[:list_limit]
+                ],
             }
             for path in paths
-            if isinstance(path, dict) and path.get("name")
+            if (
+                isinstance(path, dict)
+                and path.get("name")
+                and path.get("branches")
+                and path.get("advancement")
+            )
         ]
         for field in required_lists:
             items = value.get(field) if isinstance(value.get(field), list) else []
-            candidate[field] = [
-                _outline_text(item, text_limit) for item in items[:list_limit]
-            ]
-        candidate = {
-            key: item
-            for key, item in candidate.items()
-            if item not in (None, "", [], {})
-        }
+            if items:
+                candidate[field] = [
+                    _outline_text(item, text_limit) for item in items[:list_limit]
+                ]
         if _outline_json_length(candidate) <= 5000:
             return candidate
 
     fallback = deepcopy(candidate)
-    while fallback.get("paths") and _outline_json_length(fallback) > 5000:
+    while len(fallback.get("paths", [])) > 1 and _outline_json_length(fallback) > 5000:
         fallback["paths"].pop()
-    while len(fallback.get("stages", [])) > 1 and _outline_json_length(fallback) > 5000:
-        fallback["stages"].pop(-2)
     return fallback
 
 

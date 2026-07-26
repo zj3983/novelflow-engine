@@ -596,12 +596,16 @@ def test_outline_power_context_reapplies_strict_budget_after_maximum_expansion()
     assert first == second
     assert len(encoded) <= 5000
     assert first["name"] == "神域职业体系"
+    assert first["origin"]
+    assert first["advancement"]
     levels = {stage["level"] for stage in first["stages"]}
     assert {1, 10, 20, 30, 60} <= levels
-    assert [path["name"] for path in first["paths"]] == [f"路线{index:02d}" for index in range(64)]
+    retained_names = [path["name"] for path in first["paths"]]
+    assert retained_names
+    assert retained_names == [f"路线{index:02d}" for index in range(len(retained_names))]
     assert all(path.get("branches") for path in first["paths"])
+    assert all(path.get("advancement") for path in first["paths"])
     assert all(field in first and first[field] for field in ("costs", "counters", "boundaries", "continuity_ledger"))
-    assert all("advancement" not in path for path in first["paths"])
 
 
 def test_world_markdown_rendering_is_ordered_and_shows_quest_chain_stages_without_mutation():

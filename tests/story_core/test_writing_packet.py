@@ -1,10 +1,11 @@
 import json
+from collections import UserDict
 from copy import deepcopy
 
 from packages.story_core.engine import ChapterBundle
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import CharacterState, StoryState
-from packages.story_core.writing_packet import build_codex_writing_packet
+from packages.story_core.writing_packet import build_codex_writing_packet, power_system_context_for_state
 
 
 def _packet_power_spec() -> dict:
@@ -71,6 +72,33 @@ def test_packet_uses_character_world_state_aliases_and_respects_stage_boundaries
 
     assert [stage["level"] for stage in packet["power_system"]["stages"]] == [20, 30]
     assert [path["name"] for path in packet["power_system"]["paths"]] == ["法师"]
+
+
+def test_mapping_characters_choose_explicit_protagonist_after_leading_npc():
+    characters = [
+        UserDict({"name": "守门人", "role": "NPC", "level": 60, "class_path": "战士"}),
+        UserDict({"name": "夜烬", "role": "main", "level": "Lv.12", "class_path": "元素法师学徒"}),
+    ]
+
+    power = power_system_context_for_state(_packet_power_spec(), characters=characters)
+
+    assert [stage["level"] for stage in power["stages"]] == [10, 20]
+    assert [path["name"] for path in power["paths"]] == ["法师"]
+
+
+def test_authoritative_ledger_power_hints_override_character_mapping_state():
+    characters = [
+        UserDict({"name": "夜烬", "role": "主角", "level": 12, "class_path": "元素法师学徒"}),
+    ]
+
+    power = power_system_context_for_state(
+        _packet_power_spec(),
+        progression_ledger={"protagonist": {"level": 20, "class_path": "战士"}},
+        characters=characters,
+    )
+
+    assert [stage["level"] for stage in power["stages"]] == [20, 30]
+    assert [path["name"] for path in power["paths"]] == ["战士"]
 
 
 def test_packet_uses_conservative_power_fallback_without_progression_state():
