@@ -1,4 +1,5 @@
 import packages.story_core.orchestrator as orchestrator_module
+import pytest
 
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.orchestrator import _review_chapter_body
@@ -73,6 +74,31 @@ def test_cold_reader_review_counts_only_xuanhuan_overload_terms():
 
     assert any(issue["type"] == "cognitive_overload" for issue in xuanhuan["issues"])
     assert not any(issue["type"] == "cognitive_overload" for issue in game["issues"])
+
+
+@pytest.mark.parametrize(
+    ("plugin_id", "body", "expected_advice", "excluded_advice"),
+    (
+        ("game_webnovel", "任务指向交易行，代价已经明确。", "现实期限", "人物处境"),
+        ("xuanhuan", "修炼遇到突破，代价已经明确。", "人物处境", "现实期限"),
+        ("xianxia", "修炼遇到突破，代价已经明确。", "人物处境", "现实期限"),
+    ),
+)
+def test_cold_reader_review_resolves_genre_plugin_ids(
+    plugin_id,
+    body,
+    expected_advice,
+    excluded_advice,
+):
+    review = review_cold_reader_experience(
+        body,
+        genre_context={"genre_plugin_ids": [plugin_id]},
+    )
+
+    revision_text = "\n".join(review["revision_plan"])
+    assert review["scores"]["page_turn"] >= 3
+    assert expected_advice in revision_text
+    assert excluded_advice not in revision_text
 
 
 def test_cold_reader_review_without_genre_uses_only_generic_terms_and_advice():
