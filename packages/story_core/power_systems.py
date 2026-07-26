@@ -499,8 +499,8 @@ def validate_power_system_spec(
 
 
 _FORMATTED_NUMBER = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
-_CJK_LETTER = r"\u3400-\u9fff"
-_CURRENCY_UNIT = rf"(?:金币|银币|铜币|块钱|美元|人民币|元(?![{_CJK_LETTER}]))"
+_LEXICAL_YUAN_PREFIXES = "婴素神气灵力初始"
+_CURRENCY_UNIT = rf"(?:金币|银币|铜币|块钱|美元|人民币|元(?![{_LEXICAL_YUAN_PREFIXES}]))"
 _CURRENCY_AMOUNT = re.compile(
     rf"(?:"
     rf"(?:RMB|CNY|[¥￥$])\s*{_FORMATTED_NUMBER}\s*[百千万亿]?\s*(?:{_CURRENCY_UNIT})?"
@@ -523,19 +523,39 @@ _FINANCIAL_PERCENTAGE_TERMS = (
     "交易费",
 )
 _CLAUSE_BOUNDARIES = "，,。；;！？!?\n"
+_CONJUNCTION_BOUNDARIES = ("同时", "并且", "以及", "但", "而", "且", "并")
+_PERCENTAGE_CONTEXT_WINDOW = 24
+
+
+def _percentage_context(value: str, match: re.Match[str]) -> str:
+    lower = max(0, match.start() - _PERCENTAGE_CONTEXT_WINDOW)
+    upper = min(len(value), match.end() + _PERCENTAGE_CONTEXT_WINDOW)
+    left_edges = [
+        position + 1
+        for boundary in _CLAUSE_BOUNDARIES
+        if (position := value.rfind(boundary, lower, match.start())) >= 0
+    ]
+    right_edges = [
+        position
+        for boundary in _CLAUSE_BOUNDARIES
+        if (position := value.find(boundary, match.end(), upper)) >= 0
+    ]
+    for boundary in _CONJUNCTION_BOUNDARIES:
+        left = value.rfind(boundary, lower, match.start())
+        if left >= 0:
+            left_edges.append(left + len(boundary))
+        right = value.find(boundary, match.end(), upper)
+        if right >= 0:
+            right_edges.append(right)
+    start = max(left_edges, default=lower)
+    end = min(right_edges, default=upper)
+    return value[start:end]
 
 
 def _redact_financial_percentages(value: str) -> str:
     def replace(match: re.Match[str]) -> str:
-        left = max(value.rfind(boundary, 0, match.start()) for boundary in _CLAUSE_BOUNDARIES)
-        right_candidates = [
-            position
-            for boundary in _CLAUSE_BOUNDARIES
-            if (position := value.find(boundary, match.end())) >= 0
-        ]
-        right = min(right_candidates, default=len(value))
-        clause = value[left + 1 : right]
-        if any(term in clause for term in _FINANCIAL_PERCENTAGE_TERMS):
+        context = _percentage_context(value, match)
+        if any(term in context for term in _FINANCIAL_PERCENTAGE_TERMS):
             return ""
         return match.group(0)
 

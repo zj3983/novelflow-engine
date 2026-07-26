@@ -593,6 +593,32 @@ def test_legacy_summary_preserves_lexical_yuan_and_mechanics_percentages() -> No
 
 
 @pytest.mark.parametrize(
+    "compound",
+    ["元婴", "元素", "元神", "元气", "元灵", "元力", "元初", "元始"],
+)
+def test_legacy_summary_preserves_explicit_lexical_yuan_compounds(compound: str) -> None:
+    spec = complete_spec()
+    spec["origin"] = [f"保留100{compound}设定，100元购买药品，支付100元购买"]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert f"100{compound}" in joined
+    assert "100元购买药品" not in joined
+    assert "支付100元购买" not in joined
+
+
+def test_legacy_summary_preserves_yuan_power_stage_and_path_text() -> None:
+    spec = complete_spec()
+    spec["stages"][0]["name"] = "3级元婴"
+    spec["paths"][0]["name"] = "元素法师"
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert "3级元婴" in joined
+    assert "元素法师" in joined
+
+
+@pytest.mark.parametrize(
     "term",
     ["手续费", "费率", "税", "佣金", "折扣", "利息", "收益率", "提现", "到账", "交易费"],
 )
@@ -605,6 +631,23 @@ def test_legacy_summary_redacts_percentages_only_in_financial_context(term: str)
     assert f"{term}12.5%" not in joined
     assert "暴击率提高20%" in joined
     assert "抗性20%" in joined
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "手续费12.5%同时暴击率提高20%",
+        "12.5%的手续费同时暴击率提高20%",
+    ],
+)
+def test_legacy_summary_classifies_each_percentage_by_nearest_context(sentence: str) -> None:
+    spec = complete_spec()
+    spec["origin"] = [sentence]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert "12.5%" not in joined
+    assert "暴击率提高20%" in joined
 
 
 def test_legacy_summary_never_invents_absent_sections_and_handles_hostile_input() -> None:
