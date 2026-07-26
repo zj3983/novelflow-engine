@@ -2344,6 +2344,59 @@ def _normalize_intent(raw_intent: object) -> dict:
     }
 
 
+def _leading_action_actor_phrase(raw_action: object) -> str:
+    first_clause = re.split(r"[，,。；;！？!?]", str(raw_action or "").lstrip(), maxsplit=1)[0]
+    action_verbs = (
+        "上门",
+        "拦住",
+        "挡住",
+        "阻止",
+        "询问",
+        "追问",
+        "问价",
+        "压价",
+        "看见",
+        "发现",
+        "注意到",
+        "盯住",
+        "盯着",
+        "跟上",
+        "跟随",
+        "走向",
+        "走到",
+        "走进",
+        "进入",
+        "来到",
+        "离开",
+        "推开",
+        "打开",
+        "检查",
+        "查看",
+        "拿出",
+        "递出",
+        "交出",
+        "提交",
+        "带走",
+        "要求",
+        "拒绝",
+        "答应",
+        "开口",
+        "宣布",
+        "击杀",
+        "攻击",
+        "扑向",
+        "抓住",
+        "拉住",
+        "开始",
+        "继续",
+        "转身",
+        "起身",
+        "出现",
+    )
+    positions = [position for verb in action_verbs if (position := first_clause.find(verb)) > 0]
+    return first_clause[: min(positions)].strip() if positions else ""
+
+
 def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     if not isinstance(plan, dict):
         return ["导演产物不是JSON对象。"]
@@ -2392,8 +2445,8 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     generic_suffixes = ("收购方", "管理员", "工作人员", "路人", "玩家甲", "店员", "商人玩家")
     for move in moves:
         name = str(move.get("name") or "").strip()
-        action = str(move.get("action") or "").lstrip()
-        text_actor = next((actor for actor in generic_suffixes if action.startswith(actor)), "")
+        actor_phrase = _leading_action_actor_phrase(move.get("action"))
+        text_actor = actor_phrase if actor_phrase.endswith(generic_suffixes) else ""
         placeholder_actor = name if name.endswith(generic_suffixes) else text_actor
         if placeholder_actor:
             issues.append(f"角色“{placeholder_actor}”是岗位或占位称呼；删除该角色，或先使用已有具名角色卡。")

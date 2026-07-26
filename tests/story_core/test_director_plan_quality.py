@@ -259,10 +259,16 @@ def test_quality_gate_rejects_placeholder_actors_at_text_action_start():
         characters=[CharacterState(name="林照", role="主角")],
     )
 
-    for action, actor in (("路人拦住林照", "路人"), ("收购方上门压价", "收购方")):
+    cases = (
+        ("路人拦住林照", "路人"),
+        ("收购方上门压价", "收购方"),
+        ("白河仓库收购方上门压价", "白河仓库收购方"),
+        ("陌生路人拦住林照", "陌生路人"),
+    )
+    for action, actor in cases:
         issues = _director_plan_quality_issues(story, _complete_plan([action]))
 
-        assert any(actor in issue and "占位" in issue for issue in issues), action
+        assert any(f"角色“{actor}”" in issue and "占位" in issue for issue in issues), action
 
     conflicting_issues = _director_plan_quality_issues(
         story,
@@ -270,6 +276,21 @@ def test_quality_gate_rejects_placeholder_actors_at_text_action_start():
     )
 
     assert any("角色“路人”" in issue for issue in conflicting_issues)
+
+
+def test_quality_gate_does_not_treat_placeholder_targets_as_text_actors():
+    story = StoryState(
+        story_id="placeholder-text-targets",
+        outline="林照向收购方询价。",
+        genre="玄幻",
+        style="白描",
+        characters=[CharacterState(name="林照", role="主角")],
+    )
+
+    for action in ("林照询问收购方价格", "林照看见陌生路人"):
+        issues = _director_plan_quality_issues(story, _complete_plan([action]))
+
+        assert issues == [], action
 
 
 def test_quality_gate_keeps_concrete_xuanhuan_text_actions_valid():
