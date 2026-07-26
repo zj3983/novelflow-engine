@@ -2191,7 +2191,7 @@ def _director_prompt_character_cards(value: Any) -> dict[str, Any]:
     return {"cards": compact_cards}
 
 
-def _normalize_moves(raw_moves: object) -> list[dict]:
+def _normalize_moves(raw_moves: object, *, require_action: bool = False) -> list[dict]:
     moves: list[dict] = []
     candidates: list[tuple[dict, str | None]] = []
     if isinstance(raw_moves, list):
@@ -2207,15 +2207,19 @@ def _normalize_moves(raw_moves: object) -> list[dict]:
     else:
         return moves
     for item, grouped_name in candidates:
-        name = str(item.get("name") if "name" in item else grouped_name or "").strip()
+        explicit_name = str(item.get("name") or "").strip()
+        name = explicit_name or str(grouped_name or "").strip()
         if not name:
+            continue
+        raw_action = str(item.get("action") or "").strip()
+        if require_action and not raw_action:
             continue
         moves.append(
             {
                 "name": name,
-                "goal": compact_text(str(item.get("goal", "")).strip() or "推进当前主线", 80),
-                "emotion": str(item.get("emotion", "")).strip() or "alert",
-                "action": compact_text(str(item.get("action", "")).strip() or "继续推进当前主线", 120),
+                "goal": compact_text(str(item.get("goal") or "").strip() or "推进当前主线", 80),
+                "emotion": str(item.get("emotion") or "").strip() or "alert",
+                "action": compact_text(raw_action or "继续推进当前主线", 120),
                 "priority": _normalize_priority(item.get("priority")),
                 "new_character_candidates": compact_list(
                     item.get("new_character_candidates", []),
@@ -2314,8 +2318,8 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
         issues.append("章节规划仍含空泛占位语，必须改成能直接写成场景的具体行动、阻力、结果和章末事件。")
 
     moves = [
-        *_normalize_moves(plan.get("character_moves")),
-        *_normalize_moves(event_plan.get("ordered_actions")),
+        *_normalize_moves(plan.get("character_moves"), require_action=True),
+        *_normalize_moves(event_plan.get("ordered_actions"), require_action=True),
     ]
     if not moves:
         issues.append("导演计划缺少可执行动作。")
@@ -2347,7 +2351,7 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
             json.dumps(story.outline_context, ensure_ascii=False),
         ]
     )
-    plan_text = json.dumps(moves, ensure_ascii=False)
+    plan_text = json.dumps(plan, ensure_ascii=False)
     material_pattern = re.compile(r"[\u4e00-\u9fff]{1,8}(?:毒腺|狼皮|鼠皮|兽皮|矿石|草药)")
     def _material_keys(value: object) -> set[str]:
         found: set[str] = set()

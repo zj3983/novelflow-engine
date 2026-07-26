@@ -98,6 +98,52 @@ def test_director_quality_gate_rejects_plan_without_executable_actions():
     assert any("可执行动作" in issue for issue in issues)
 
 
+def test_director_quality_gate_rejects_missing_blank_and_null_actions():
+    for incomplete_move in ({"name": "夜烬"}, {"name": "夜烬", "action": "   "}, {"name": "夜烬", "action": None}):
+        plan = {
+            "character_moves": [incomplete_move],
+            "event_plan": {
+                "ordered_actions": [],
+                "chapter_satisfaction": {
+                    "core_event": "完成清道夫委托",
+                    "obstacle": "法力不足",
+                    "visible_payoff": "获得任务经验",
+                    "cost": "消耗药水和法杖耐久",
+                    "state_change": "任务变为已完成",
+                    "next_hook": "NPC给出下一环线索",
+                },
+                "chapter_end_hook": {"type": "渴望钩", "strength": "medium", "content": "下一环任务出现"},
+            },
+        }
+
+        issues = _director_plan_quality_issues(_story(), plan)
+
+        assert any("可执行动作" in issue for issue in issues), incomplete_move
+
+
+def test_director_quality_gate_checks_materials_outside_moves():
+    plan = {
+        "character_moves": [{"name": "夜烬", "action": "提交灰狼毒腺"}],
+        "chapter_intent": {"next_focus": "向洛婶确认后续委托"},
+        "event_plan": {
+            "ordered_actions": [],
+            "chapter_satisfaction": {
+                "core_event": "完成清道夫委托",
+                "obstacle": "法力不足",
+                "visible_payoff": "交出灰鼠毒腺并获得任务经验",
+                "cost": "消耗药水和法杖耐久",
+                "state_change": "任务变为已完成",
+                "next_hook": "NPC给出下一环线索",
+            },
+            "chapter_end_hook": {"type": "渴望钩", "strength": "medium", "content": "下一环任务出现"},
+        },
+    }
+
+    issues = _director_plan_quality_issues(_story(), plan)
+
+    assert any("灰鼠毒腺" in issue and "灰狼毒腺" in issue for issue in issues)
+
+
 def test_director_quality_gate_rejects_generic_placeholder_plan():
     plan = {
         "character_moves": [{"name": "夜烬", "action": "完成本章推进"}],

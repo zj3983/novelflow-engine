@@ -40,16 +40,17 @@ def _make_plan(story, chapter_number: int) -> dict:
     char_moves = []
     for c in active_chars:
         goal = c.goals[0] if c.goals else "推进主线"
+        move_name = c.game_id or c.name
         priority = 9 if is_urgent else (0 if is_breathing else 1)
         candidates = []
         for secret in getattr(c, "secrets", []):
             if "archivist" in str(secret).lower() or "档案" in str(secret):
                 candidates.append("Archivist")
         char_moves.append({
-            "name": c.name,
+            "name": move_name,
             "goal": goal,
             "emotion": c.current_emotion or "determined",
-            "action": f"{c.name} 开始执行 {goal}",
+            "action": f"{move_name} 开始执行 {goal}",
             "priority": priority,
             "new_character_candidates": candidates,
         })
@@ -100,6 +101,19 @@ def _make_plan(story, chapter_number: int) -> dict:
             "ordered_actions": char_moves,
             "stakes": "如果失败，后果严重。",
             "next_focus": next_focus,
+            "chapter_satisfaction": {
+                "core_event": f"{lead}发现关键线索",
+                "obstacle": f"{opposition}阻止调查继续推进",
+                "visible_payoff": f"{lead}拿到可验证的关键证据",
+                "cost": "调查行动暴露了主角的关注方向",
+                "state_change": "关键事件从无头绪变为可以继续追查",
+                "next_hook": next_focus,
+            },
+            "chapter_end_hook": {
+                "type": "悬念钩",
+                "strength": "medium",
+                "content": f"新的证据迫使{lead}继续追查",
+            },
         },
         "memory_constraints": {
             "must_keep_facts": ["主角正在调查关键事件"],

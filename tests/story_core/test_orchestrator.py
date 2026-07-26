@@ -505,7 +505,24 @@ def _post_draft_plan() -> dict:
             {"name": "林照", "goal": "去东院", "emotion": "愤怒", "action": "搬炉", "priority": 1}
         ],
         "chapter_intent": {"chapter_title": "计划标题", "next_focus": "去东院"},
-        "event_plan": {"turn": "计划把炉搬到东院", "next_focus": "去东院", "world_reactions": []},
+        "event_plan": {
+            "turn": "计划把炉搬到东院",
+            "next_focus": "去东院",
+            "world_reactions": [],
+            "chapter_satisfaction": {
+                "core_event": "林照处理断香炉的去向",
+                "obstacle": "周执事要求林照立刻作出决定",
+                "visible_payoff": "林照确认断香炉仍有调查价值",
+                "cost": "林照的行动引起周执事注意",
+                "state_change": "断香炉从无人看管变为由林照负责",
+                "next_hook": "账房要求林照次日回话",
+            },
+            "chapter_end_hook": {
+                "type": "悬念钩",
+                "strength": "medium",
+                "content": "账房要求林照次日回话",
+            },
+        },
         "memory_constraints": {
             "ledger_updates": {"protagonist": {"location": "东院", "spirit_stones": 99}}
         },
@@ -1000,7 +1017,24 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
             plan = {
                 "character_moves": [{"name": "夜烬", "goal": "找到第一条可复盘支线", "emotion": "紧张", "action": "观察"}],
                 "chapter_intent": {"chapter_title": "第一章 开局试验", "next_focus": "推进清道夫任务"},
-                "event_plan": {"chapter_title": "第一章 开局试验", "next_focus": "推进清道夫任务", "turn": "稳住局面"},
+                "event_plan": {
+                    "chapter_title": "第一章 开局试验",
+                    "next_focus": "推进清道夫任务",
+                    "turn": "稳住局面",
+                    "chapter_satisfaction": {
+                        "core_event": "夜烬确认第一条支线线索",
+                        "obstacle": "灰烬村线索混乱且时间有限",
+                        "visible_payoff": "夜烬找到可复盘的任务入口",
+                        "cost": "夜烬的试探引起旁人警觉",
+                        "state_change": "清道夫任务从未知变为可以推进",
+                        "next_hook": "洛婶透露下一条任务线索",
+                    },
+                    "chapter_end_hook": {
+                        "type": "悬念钩",
+                        "strength": "medium",
+                        "content": "洛婶透露下一条任务线索",
+                    },
+                },
                 "memory_constraints": {},
                 "chapter_summary": {
                     "summary": "夜烬在灰烬村完成第一次试练。",

@@ -125,6 +125,19 @@ def _mock_story_chat(self, story, prompt: str, *, max_tokens: int, json_mode: bo
                     "world_reactions": ["外部势力注意到新的线索。"],
                     "stakes": "如果失败，线索会断裂。",
                     "next_focus": f"继续推进{lead}与{opposition}的线索",
+                    "chapter_satisfaction": {
+                        "core_event": f"{lead}发现关键线索",
+                        "obstacle": f"{opposition}阻止调查继续推进",
+                        "visible_payoff": f"{lead}拿到可验证的关键证据",
+                        "cost": "调查行动暴露了主角的关注方向",
+                        "state_change": "关键事件从无头绪变为可以继续追查",
+                        "next_hook": f"继续推进{lead}与{opposition}的线索",
+                    },
+                    "chapter_end_hook": {
+                        "type": "悬念钩",
+                        "strength": "medium",
+                        "content": f"新的证据迫使{lead}继续追查",
+                    },
                 },
                 "memory_constraints": {
                     "must_keep_facts": ["主角正在推进关键事件"],

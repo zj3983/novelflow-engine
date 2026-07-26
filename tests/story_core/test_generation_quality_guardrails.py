@@ -286,6 +286,23 @@ def test_director_moves_accept_character_grouped_object():
     ]
 
 
+def test_director_moves_use_group_name_for_invalid_names_without_stringifying_null():
+    moves = _normalize_moves(
+        {
+            "林照": [
+                {"name": None, "action": "检查香灰"},
+                {"name": "   ", "action": "追问守祠人"},
+                {"name": "周满", "action": "查看侧门"},
+            ],
+            "赵管事": {"action": None},
+        }
+    )
+
+    assert [move["name"] for move in moves] == ["林照", "林照", "周满", "赵管事"]
+    assert moves[-1]["action"] == "继续推进当前主线"
+    assert all("None" not in (move["name"], move["action"]) for move in moves)
+
+
 def test_expansion_candidate_must_land_inside_target_range():
     original = "原" * 4069
 
