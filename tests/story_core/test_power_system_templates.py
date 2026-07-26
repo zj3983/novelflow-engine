@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 
 import pytest
 
@@ -119,6 +120,40 @@ def test_compact_template_bounds_numeric_invariants_and_rejects_booleans():
         *range(14),
     ]
     assert invalid_minimum["minimum_path_count"] == 2
+
+
+def test_compact_template_sanitizes_nested_scalar_values_for_strict_json():
+    class UnsupportedValue:
+        def __str__(self) -> str:
+            return "\x00" + "unsupported" * 30
+
+    huge = 10**5000
+    compact = compact_power_system_template(
+        {
+            "progression_shape": {
+                "positive": huge,
+                "negative": -huge,
+                "nan": float("nan"),
+                "positive_infinity": float("inf"),
+                "negative_infinity": float("-inf"),
+                "large_float": 1e300,
+                "bool": True,
+                "unsupported": UnsupportedValue(),
+            }
+        }
+    )
+    progression = compact["progression_shape"]
+
+    assert progression["positive"] == 1_000_000
+    assert progression["negative"] == -1_000_000
+    assert progression["nan"] == 0.0
+    assert progression["positive_infinity"] == 0.0
+    assert progression["negative_infinity"] == 0.0
+    assert progression["large_float"] == 1_000_000.0
+    assert progression["bool"] is True
+    assert progression["unsupported"].startswith("unsupported")
+    assert len(progression["unsupported"]) == 180
+    json.dumps(compact, ensure_ascii=False, allow_nan=False)
 
 
 def test_other_templates_require_two_paths_and_at_least_three_stages():

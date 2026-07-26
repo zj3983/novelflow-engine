@@ -366,6 +366,14 @@ def _minimal_prompt_context() -> dict[str, Any]:
     }
 
 
+def _prompt_context_exceeds_cap(context: Mapping[str, Any]) -> bool:
+    try:
+        serialized = json.dumps(context, ensure_ascii=False, allow_nan=False)
+    except (OverflowError, TypeError, ValueError):
+        return True
+    return len(serialized) > 6000
+
+
 def novel_type_prompt_context(record: Any) -> dict[str, Any]:
     from packages.story_core.agent_base import compact_list, compact_text
 
@@ -407,7 +415,7 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
         context["genre_quality_checks"],
         power_template.get("quality_checks", []),
     ]
-    while len(json.dumps({**context}, ensure_ascii=False)) > 6000:
+    while _prompt_context_exceeds_cap(context):
         trope_candidates = context["genre_trope_templates"]
         if len(trope_candidates) > specific_candidate_count:
             trope_candidates.pop()
@@ -436,7 +444,7 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
             continue
         _emergency_compact_prompt_context(context)
         break
-    if len(json.dumps(context, ensure_ascii=False)) > 6000:
+    if _prompt_context_exceeds_cap(context):
         context.clear()
         context.update(_minimal_prompt_context())
     return deepcopy(context)

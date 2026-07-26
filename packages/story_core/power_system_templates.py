@@ -203,6 +203,13 @@ def _compact_string(value: str, limit: int = _COMPACT_STRING_CAP) -> str:
     return "".join(character for character in value if character.isprintable())[:limit]
 
 
+def _compact_object_string(value: Any, limit: int = _COMPACT_STRING_CAP) -> str:
+    try:
+        return _compact_string(str(value), limit)
+    except Exception:
+        return ""
+
+
 def _bounded_integer(value: Any, *, default: int, minimum: int, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return default
@@ -212,18 +219,24 @@ def _bounded_integer(value: Any, *, default: int, minimum: int, maximum: int) ->
 def _compact_json_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
-            _compact_string(str(key)): _compact_json_value(item)
+            _compact_object_string(key): _compact_json_value(item)
             for key, item in list(value.items())[:_COMPACT_MAPPING_CAP]
         }
     if isinstance(value, (list, tuple)):
         return [_compact_json_value(item) for item in value[:_COMPACT_LIST_CAP]]
     if isinstance(value, str):
         return _compact_string(value)
-    if isinstance(value, float) and not math.isfinite(value):
-        return str(value)
-    if value is None or isinstance(value, (bool, int, float)):
+    if isinstance(value, bool):
         return value
-    return _compact_string(str(value))
+    if isinstance(value, int):
+        return min(max(value, -1_000_000), 1_000_000)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return 0.0
+        return min(max(value, -1_000_000.0), 1_000_000.0)
+    if value is None:
+        return value
+    return _compact_object_string(value)
 
 
 def compact_power_system_template(template: Mapping[str, object]) -> dict[str, object]:
@@ -235,7 +248,7 @@ def compact_power_system_template(template: Mapping[str, object]) -> dict[str, o
     required_sections = template.get("required_sections")
     if isinstance(required_sections, (list, tuple)):
         compact["required_sections"] = [
-            _compact_string(str(item), _REQUIRED_SECTIONS_ITEM_CAP)
+            _compact_object_string(item, _REQUIRED_SECTIONS_ITEM_CAP)
             for item in required_sections[:_COMPACT_LIST_CAP]
         ]
     if "minimum_path_count" in template:

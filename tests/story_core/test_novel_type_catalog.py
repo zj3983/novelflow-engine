@@ -213,6 +213,23 @@ def test_prompt_context_bounds_huge_numeric_power_invariants_within_cap() -> Non
     assert power_template["fixed_milestones"] == [1_000_000] * 16
 
 
+def test_prompt_context_sanitizes_nested_numeric_scalars_before_sizing() -> None:
+    huge = 10**5000
+    record = _prompt_context_record("custom_type", [])
+    record.power_system_template["progression_shape"] = {
+        "huge": huge,
+        "nan": float("nan"),
+        "infinity": float("inf"),
+    }
+
+    context = novel_type_prompt_context(record)
+    progression = context["genre_power_system_template"]["progression_shape"]
+    serialized = json.dumps(context, ensure_ascii=False, allow_nan=False)
+
+    assert len(serialized) <= 6000
+    assert progression == {"huge": 1_000_000, "nan": 0.0, "infinity": 0.0}
+
+
 def test_novel_type_prompt_context_merges_type_specific_tropes_before_generic_and_dedupes_ids(
     monkeypatch: pytest.MonkeyPatch,
 ):
