@@ -76,22 +76,26 @@ _GUIDE_TERMS = (
 )
 
 _PLANNING_META_TERM_PATTERN = (
-    r"[“‘「『《\"]?\s*"
+    r"[“‘「『《【（\"]?\s*"
     r"(?:(?:章节|剧情|任务)\s*)?(?:前置条件|剧情节点)"
-    r"\s*[”’」』》\"]?"
+    r"\s*[”’」』》】）\"]?"
 )
+_PLANNING_META_RIGHT_BOUNDARY_PATTERN = r"(?=$|[\s，。！？；：、,.!?;:])"
 _PLANNING_META_ENTITY_PATTERNS = (
     re.compile(
         rf"(?:站在|走到|退到|靠在|停在|蹲在)(?:了)?\s*"
         rf"{_PLANNING_META_TERM_PATTERN}(?:边|旁|前|后)?"
+        rf"{_PLANNING_META_RIGHT_BOUNDARY_PATTERN}"
     ),
     re.compile(
-        rf"(?:迈出|跨过|绕过|推开|关上)(?:了)?\s*"
+        rf"(?:迈出|推开|关上)(?:了)?\s*"
         rf"{_PLANNING_META_TERM_PATTERN}"
+        rf"{_PLANNING_META_RIGHT_BOUNDARY_PATTERN}"
     ),
     re.compile(
-        rf"把\s*{_PLANNING_META_TERM_PATTERN}"
-        rf"(?:迈出|跨过|绕过|推开|关上)(?:了)?"
+        rf"(?:把|将)\s*{_PLANNING_META_TERM_PATTERN}"
+        rf"(?:迈出|推开|关上)(?:了)?"
+        rf"{_PLANNING_META_RIGHT_BOUNDARY_PATTERN}"
     ),
 )
 

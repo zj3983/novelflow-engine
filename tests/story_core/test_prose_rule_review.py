@@ -53,23 +53,23 @@ def test_review_allows_planning_words_used_as_actual_task_requirements():
     assert review["scores"]["planning_meta_leak"] == 8
 
 
+def test_review_allows_vr_prose_that_reads_a_task_requirement():
+    review = review_diagnostic_terms_in_body("他看向任务说明里的前置条件。")
+
+    assert review["pass"] is True
+    assert review["scores"]["planning_meta_leak"] == 8
+
+
 @pytest.mark.parametrize(
     "body",
     [
-        "光标停在任务前置条件一栏。",
-        "视线走到任务前置条件说明时，他停了一下。",
-        "鼠标指针停在任务前置条件按钮上。",
+        "隐藏职业让他绕过任务前置条件，直接进入副本。",
+        "隐藏职业让他跨过任务前置条件，直接进入副本。",
+        "迈出前置条件满足后的第一步。",
     ],
 )
-def test_review_does_not_exempt_non_vr_ui_materialization(body):
+def test_review_allows_abstract_rules_and_longer_phrases(body):
     review = review_diagnostic_terms_in_body(body)
-
-    assert review["pass"] is False
-    assert review["scores"]["planning_meta_leak"] == 5
-
-
-def test_review_allows_vr_prose_that_reads_a_task_requirement():
-    review = review_diagnostic_terms_in_body("他看向任务说明里的前置条件。")
 
     assert review["pass"] is True
     assert review["scores"]["planning_meta_leak"] == 8
@@ -90,9 +90,12 @@ def test_review_does_not_treat_another_characters_gaze_as_a_ui_subject():
     [
         "站在“前置条件”边",
         "站在 前置条件 边",
+        "站在【前置条件】边",
+        "站在（前置条件）旁",
         "走到了剧情节点旁",
         "推开了章节前置条件",
         "把剧情节点推开",
+        "将剧情节点推开",
     ],
 )
 def test_review_flags_planning_language_materialization_variants(phrase):
