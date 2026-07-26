@@ -9,10 +9,12 @@ import pytest
 from packages.story_core.novel_type_library import (
     NovelTypeLibrary,
     NovelTypeRecord,
+    novel_type_record_to_genre_plugin,
     resolve_genre_plugin,
     update_novel_type,
 )
 from packages.story_core.genre_plugins import select_genre_plugins
+from packages.story_core.genre_types import XUANHUAN
 from packages.story_core.models import NovelProject
 
 
@@ -34,6 +36,37 @@ def test_editing_builtin_type_preserves_id():
     assert updated.id == "xuanhuan"
     assert updated.name == "新版东方玄幻"
     assert updated.builtin is True
+
+
+def test_builtin_update_succeeds_with_power_system_template_field():
+    library = NovelTypeLibrary()
+
+    updated = library.update("xuanhuan", {"name": "新版东方玄幻"})
+
+    assert updated.name == "新版东方玄幻"
+    assert updated.power_system_template == XUANHUAN.power_system_template
+
+
+def test_record_and_resolved_plugin_preserve_canonical_power_template():
+    library = NovelTypeLibrary()
+    record = library.get("xuanhuan")
+
+    assert record is not None
+    converted = novel_type_record_to_genre_plugin(record)
+    resolved = resolve_genre_plugin("xuanhuan")
+
+    assert record.power_system_template == XUANHUAN.power_system_template
+    assert converted.power_system_template == XUANHUAN.power_system_template
+    assert resolved is not None
+    assert resolved.power_system_template == XUANHUAN.power_system_template
+    assert converted.power_system_template is not record.power_system_template
+
+    serialized = record.to_dict()
+    serialized["power_system_template"]["progression_shape"]["stages"][0]["name"] = "序列化副本"
+    converted.power_system_template["progression_shape"]["stages"][0]["name"] = "插件副本"
+
+    assert record.power_system_template == XUANHUAN.power_system_template
+    assert resolved.power_system_template == XUANHUAN.power_system_template
 
 
 def test_custom_type_survives_library_reconstruction():

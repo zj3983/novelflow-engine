@@ -89,6 +89,12 @@ def _trope_templates(value: Any) -> tuple[dict[str, object], ...]:
     return tuple(deepcopy(dict(item)) for item in value if isinstance(item, Mapping))
 
 
+def _power_system_template(value: Any) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    return deepcopy(dict(value))
+
+
 def _canonical_type_id(value: Any) -> str:
     return canonical_novel_type_id(value)
 
@@ -104,6 +110,7 @@ class NovelTypeRecord:
     rulebook: dict[str, tuple[str, ...]] = field(default_factory=dict)
     quality_checks: tuple[str, ...] = ()
     trope_templates: tuple[dict[str, object], ...] = ()
+    power_system_template: dict[str, object] = field(default_factory=dict)
     builtin: bool = False
 
     def __post_init__(self) -> None:
@@ -120,6 +127,7 @@ class NovelTypeRecord:
             setattr(self, field_name, _string_tuple(getattr(self, field_name)))
         self.rulebook = _normalized_rulebook(self.rulebook)
         self.trope_templates = _trope_templates(self.trope_templates)
+        self.power_system_template = _power_system_template(self.power_system_template)
         self.builtin = bool(self.builtin)
 
     @classmethod
@@ -146,6 +154,7 @@ class NovelTypeRecord:
             "rulebook": {name: list(rules) for name, rules in self.rulebook.items()},
             "quality_checks": list(self.quality_checks),
             "trope_templates": deepcopy(list(self.trope_templates)),
+            "power_system_template": deepcopy(self.power_system_template),
         }
         if include_builtin:
             payload["builtin"] = self.builtin
@@ -163,6 +172,7 @@ def _record_from_plugin(plugin: GenrePlugin) -> NovelTypeRecord:
         rulebook=plugin.rulebook,
         quality_checks=plugin.quality_checks,
         trope_templates=plugin.trope_templates,
+        power_system_template=deepcopy(plugin.power_system_template),
         builtin=True,
     )
 
@@ -445,4 +455,5 @@ def novel_type_record_to_genre_plugin(record: NovelTypeRecord) -> GenrePlugin:
         rulebook=deepcopy(record.rulebook),
         quality_checks=record.quality_checks,
         trope_templates=deepcopy(record.trope_templates),
+        power_system_template=deepcopy(record.power_system_template),
     )
