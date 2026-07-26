@@ -76,8 +76,16 @@ _MAX_LIST = 64
 _MAX_NUMBER = 1_000_000
 _MAPPING_SCAN_CAP = 64
 _PROMPT_BUDGET = 5_000
-_GAME_CLASSES = frozenset(("战士", "法师", "游侠", "盗贼", "牧师", "召唤师"))
 _GAME_MILESTONES = frozenset((1, 10, 20, 30, 60))
+_GAME_CLASS_COUNT = 6
+_PLACEHOLDER_CONTENT = frozenset(
+    (
+        "\u5f85\u5b9a",
+        "\u7565",
+        "\u540c\u4e0a",
+        "\u7efc\u5408\u5b9e\u529b\u63d0\u5347",
+    )
+)
 _BASE_REQUIRED = frozenset(
     (
         "name",
@@ -391,6 +399,27 @@ def _is_level_twenty_second_transfer(
     )
 
 
+def _is_placeholder_content(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    token = re.sub(
+        r"[\s,，。.!！?？:：;；、_()（）【】\[\]\"'“”‘’]+",
+        "",
+        value,
+    ).casefold()
+    return token in _PLACEHOLDER_CONTENT
+
+
+def _contains_placeholder_content(value: Any) -> bool:
+    if _is_placeholder_content(value):
+        return True
+    if isinstance(value, Mapping):
+        return any(_contains_placeholder_content(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return any(_contains_placeholder_content(item) for item in value)
+    return False
+
+
 def validate_power_system_spec(
     spec: Any,
     *,
@@ -407,6 +436,8 @@ def validate_power_system_spec(
         if _is_empty(normalized.get(section))
     }
     violations: set[str] = set()
+    if _contains_placeholder_content(normalized):
+        violations.add("content.placeholder_or_low_information")
 
     stages = normalized.get("stages", [])
     if len(stages) < 3:
@@ -450,12 +481,11 @@ def validate_power_system_spec(
         canonical_id = "generic_webnovel"
     if canonical_id == "game_webnovel":
         game_path_names = {path.get("name") for path in paths}
-        if not _GAME_CLASSES.issubset(game_path_names):
+        if len(paths) < _GAME_CLASS_COUNT:
             violations.add("game.missing_classes")
         if (
-            len(paths) != len(_GAME_CLASSES)
-            or len(game_path_names) != len(_GAME_CLASSES)
-            or game_path_names != _GAME_CLASSES
+            len(paths) != _GAME_CLASS_COUNT
+            or len(game_path_names) != _GAME_CLASS_COUNT
         ):
             violations.add("game.invalid_classes")
         milestones = tuple(_inferred_stage_level(stage) for stage in stages)

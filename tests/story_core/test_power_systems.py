@@ -97,6 +97,47 @@ def test_game_spec_accepts_complete_six_class_system_without_mutating_input() ->
     assert source == before
 
 
+def test_game_spec_accepts_six_custom_named_classes_with_complete_details() -> None:
+    spec = complete_spec()
+    custom_names = (
+        "\u5251\u58eb",
+        "\u672f\u58eb",
+        "\u730e\u4eba",
+        "\u523a\u5ba2",
+        "\u836f\u5e08",
+        "\u9a6d\u517d\u5e08",
+    )
+    for path, name in zip(spec["paths"], custom_names):
+        path["name"] = name
+
+    result = validate_power_system_spec(spec, novel_type_id="game_webnovel")
+
+    assert tuple(path["name"] for path in result["paths"]) == custom_names
+
+
+@pytest.mark.parametrize(
+    ("location", "placeholder"),
+    [
+        (("origin", 0), "\u5f85\u5b9a"),
+        (("stages", 0, "entry"), "\u7565"),
+        (("paths", 0, "combat_loop"), "\u540c\u4e0a"),
+        (("paths", 0, "advancement", 0), "\u7efc\u5408\u5b9e\u529b\u63d0\u5347"),
+    ],
+)
+def test_validation_rejects_placeholder_or_low_information_descriptions(
+    location: tuple[object, ...], placeholder: str
+) -> None:
+    spec = complete_spec()
+    target: object = spec
+    for key in location[:-1]:
+        target = target[key]  # type: ignore[index]
+    target[location[-1]] = placeholder  # type: ignore[index]
+
+    error = validation_error(spec)
+
+    assert "content.placeholder_or_low_information" in error.violations
+
+
 @pytest.mark.parametrize(
     "section",
     [
