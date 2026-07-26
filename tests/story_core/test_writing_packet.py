@@ -114,6 +114,60 @@ def test_mapping_characters_skip_frozen_protagonist_for_later_active_lead():
     assert [path["name"] for path in power["paths"]] == ["法师"]
 
 
+def test_mapping_characters_require_active_protagonist_lifecycle():
+    active = UserDict(
+        {
+            "name": "Active Lead",
+            "role": "main",
+            "lifecycle_state": "active",
+            "level": 12,
+            "class_path": "元素法师学徒",
+        }
+    )
+
+    for lifecycle_state in ("proposed", "rejected"):
+        pending = UserDict(
+            {
+                "name": "Pending Lead",
+                "role": "protagonist",
+                "lifecycle_state": lifecycle_state,
+                "level": 60,
+                "class_path": "战士",
+            }
+        )
+        power = power_system_context_for_state(
+            _packet_power_spec(),
+            characters=[pending, active],
+        )
+
+        assert [stage["level"] for stage in power["stages"]] == [10, 20]
+        assert [path["name"] for path in power["paths"]] == ["法师"]
+
+
+def test_character_objects_require_active_protagonist_lifecycle():
+    active = CharacterState(
+        name="Active Lead",
+        role="main",
+        lifecycle_state="active",
+        game_state={"current": {"level": 12, "class_path": "元素法师学徒"}},
+    )
+
+    for lifecycle_state in ("proposed", "rejected"):
+        pending = CharacterState(
+            name="Pending Lead",
+            role="protagonist",
+            lifecycle_state=lifecycle_state,
+            game_state={"current": {"level": 60, "class_path": "战士"}},
+        )
+        power = power_system_context_for_state(
+            _packet_power_spec(),
+            characters=[pending, active],
+        )
+
+        assert [stage["level"] for stage in power["stages"]] == [10, 20]
+        assert [path["name"] for path in power["paths"]] == ["法师"]
+
+
 def test_mapping_characters_skip_inactive_role_tagged_leads():
     inactive_states = [
         {"lifecycle_state": "inactive"},
@@ -121,6 +175,8 @@ def test_mapping_characters_skip_inactive_role_tagged_leads():
         {"lifecycle_state": "dead"},
         {"lifecycle_state": "frozen"},
         {"status": "inactive"},
+        {"status": "proposed"},
+        {"status": "rejected"},
         {"status": "retired"},
         {"status": "dead"},
         {"status": "frozen"},

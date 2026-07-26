@@ -30,7 +30,9 @@ _PATH_ALIASES = (
     "职业",
 )
 _PROTAGONIST_ROLES = frozenset(("protagonist", "main", "主角"))
-_INACTIVE_CHARACTER_STATES = frozenset(("inactive", "retired", "dead", "frozen"))
+_LEGACY_INELIGIBLE_CHARACTER_STATUSES = frozenset(
+    ("inactive", "rejected", "proposed", "frozen", "dead", "retired")
+)
 
 
 def _state_alias_value(sources: list[Any], aliases: tuple[str, ...]) -> Any:
@@ -102,11 +104,11 @@ def _power_progression_hints(
 def _character_is_active(payload: Mapping[str, Any]) -> bool:
     if payload.get("frozen") is True:
         return False
-    return all(
-        str(payload.get(field) or "").strip().casefold()
-        not in _INACTIVE_CHARACTER_STATES
-        for field in ("lifecycle_state", "status")
-    )
+    lifecycle = str(payload.get("lifecycle_state") or "").strip().casefold()
+    if lifecycle:
+        return lifecycle == "active"
+    status = str(payload.get("status") or "").strip().casefold()
+    return status not in _LEGACY_INELIGIBLE_CHARACTER_STATUSES
 
 
 def power_system_context_for_state(
