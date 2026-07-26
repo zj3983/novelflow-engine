@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from packages.story_core.genre_types.base import GenrePlugin
+from packages.story_core.power_system_templates import copy_power_system_template
 from packages.story_core.game_level_gap import level_gap_rule_text
 from packages.story_core.web_game_economy import (
     appraisal_rules,
@@ -219,6 +220,7 @@ GAME_WEBNOVEL = GenrePlugin(
         ),
     },
     quality_checks=("等级经验一致", "收益代价闭环", "市场反应", "势力压迫", "信息可见性", "系统提示克制"),
+    power_system_template=copy_power_system_template("game_webnovel"),
     trope_templates=(
         {
             "id": "login_character_creation",

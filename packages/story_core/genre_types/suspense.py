@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.story_core.genre_types.base import GenrePlugin
+from packages.story_core.power_system_templates import copy_power_system_template
 
 
 SUSPENSE = GenrePlugin(
@@ -35,6 +36,7 @@ SUSPENSE = GenrePlugin(
         ),
     },
     quality_checks=("公平线索", "时间线一致", "嫌疑动机", "反转可信", "钩子强度"),
+    power_system_template=copy_power_system_template("suspense"),
     trope_templates=(
         {
             "id": "impossible_incident",

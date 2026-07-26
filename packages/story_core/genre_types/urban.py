@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.story_core.genre_types.base import GenrePlugin
+from packages.story_core.power_system_templates import copy_power_system_template
 
 
 URBAN = GenrePlugin(
@@ -35,6 +36,7 @@ URBAN = GenrePlugin(
         ),
     },
     quality_checks=("现实逻辑", "利益闭环", "反转可信", "人际压力", "舆论反馈"),
+    power_system_template=copy_power_system_template("urban"),
     trope_templates=(
         {
             "id": "shenhao_system_spend",

@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from packages.story_core.genre_types.base import GenrePlugin
+from packages.story_core.power_system_templates import copy_power_system_template
 from packages.story_core.genre_types.eastern_fantasy import EASTERN_FANTASY, EASTERN_FANTASY_SIMULATION_BLUEPRINT
 
 
@@ -50,6 +51,7 @@ XIANXIA = GenrePlugin(
         ),
     },
     quality_checks=("境界一致", "修炼代价", "道法因果", "天劫铺垫", "渡劫合理", *_LEGACY_SHARED_METHOD_MARKERS),
+    power_system_template=copy_power_system_template("xianxia"),
     trope_templates=(
         {
             "id": "spirit_root_test",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.story_core.genre_types.base import GenrePlugin
+from packages.story_core.power_system_templates import copy_power_system_template
 
 
 XUANHUAN = GenrePlugin(
@@ -30,6 +31,7 @@ XUANHUAN = GenrePlugin(
         ),
     },
     quality_checks=("自创体系清楚", "异物反馈可见", "世界秘密递进"),
+    power_system_template=copy_power_system_template("xuanhuan"),
     trope_templates=(
         {
             "id": "bloodline_or_body_awaken",

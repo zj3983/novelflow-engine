@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.story_core.genre_types.base import GenrePlugin
+from packages.story_core.power_system_templates import copy_power_system_template
 
 
 RULES_MYSTERY = GenrePlugin(
@@ -35,6 +36,7 @@ RULES_MYSTERY = GenrePlugin(
         ),
     },
     quality_checks=("规则验证", "禁忌代价", "污染递进", "异常逻辑", "真相碎片"),
+    power_system_template=copy_power_system_template("rules_mystery"),
     trope_templates=(
         {
             "id": "rule_text_with_trap",

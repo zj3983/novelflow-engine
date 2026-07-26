@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.story_core.genre_types.base import GenrePlugin
+from packages.story_core.power_system_templates import copy_power_system_template
 
 
 GENERIC_WEBNOVEL = GenrePlugin(
@@ -42,6 +43,7 @@ GENERIC_WEBNOVEL = GenrePlugin(
         ),
     },
     quality_checks=("爽点闭环", "章末钩子", "设定一致", "角色动机", "连续追读"),
+    power_system_template=copy_power_system_template("generic_webnovel"),
     trope_templates=(
         {
             "id": "low_status_reversal",

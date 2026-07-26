@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.story_core.genre_types.base import GenrePlugin
+from packages.story_core.power_system_templates import copy_power_system_template
 
 
 ROMANCE = GenrePlugin(
@@ -35,6 +36,7 @@ ROMANCE = GenrePlugin(
         ),
     },
     quality_checks=("情绪递进", "关系拉扯", "误会合理", "潜台词", "外部阻碍"),
+    power_system_template=copy_power_system_template("romance"),
     trope_templates=(
         {
             "id": "contract_marriage_to_real_feeling",
