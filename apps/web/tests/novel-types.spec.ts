@@ -337,6 +337,16 @@ test("桌面为左列表右编辑器，并支持搜索、标记和键盘访问",
   expect(editorBox!.x).toBeGreaterThan(listBox!.x + listBox!.width - 1);
   expect(Math.abs(editorBox!.y - listBox!.y)).toBeLessThan(2);
 
+  const tropeBox = await page.getByLabel("套路模板（JSON 数组）").boundingBox();
+  const powerBox = await page.getByLabel("力量体系骨架 JSON").boundingBox();
+  expect(tropeBox).not.toBeNull();
+  expect(powerBox).not.toBeNull();
+  expect(powerBox!.y).toBeGreaterThanOrEqual(tropeBox!.y + tropeBox!.height - 1);
+  for (const box of [tropeBox!, powerBox!]) {
+    expect(box.x).toBeGreaterThanOrEqual(editorBox!.x);
+    expect(box.x + box.width).toBeLessThanOrEqual(editorBox!.x + editorBox!.width);
+  }
+
   await expect(list.getByText("内置", { exact: true })).toBeVisible();
   await expect(list.getByText("自定义", { exact: true })).toBeVisible();
   const search = page.getByLabel("搜索类型");

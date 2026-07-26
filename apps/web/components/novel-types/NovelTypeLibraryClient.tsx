@@ -503,14 +503,12 @@ export function NovelTypeLibraryClient() {
             <Field label="质量检查（每行一项）">
               <textarea rows={6} value={draft.quality_checks} disabled={busy} onChange={(event) => setDraft({ ...draft, quality_checks: event.target.value })} />
             </Field>
-            <div className={styles.twoColumns}>
-              <Field label="套路模板（JSON 数组）" hint='格式示例：[ { "id": "template_id", "name": "模板名", "beats": [] } ]。保存前会校验数组和对象结构。'>
-                <textarea className={styles.jsonInput} rows={14} value={draft.trope_templates} disabled={busy} spellCheck={false} onChange={(event) => setDraft({ ...draft, trope_templates: event.target.value })} />
-              </Field>
-              <Field label="力量体系骨架 JSON" hint="使用 JSON 对象定义体系形式、阶段和路线约束；空骨架填写 {}。">
-                <textarea className={styles.jsonInput} rows={14} value={draft.power_system_template} disabled={busy} spellCheck={false} onChange={(event) => setDraft({ ...draft, power_system_template: event.target.value })} />
-              </Field>
-            </div>
+            <Field label="套路模板（JSON 数组）" hint='格式示例：[ { "id": "template_id", "name": "模板名", "beats": [] } ]。保存前会校验数组和对象结构。'>
+              <textarea className={styles.jsonInput} rows={14} value={draft.trope_templates} disabled={busy} spellCheck={false} onChange={(event) => setDraft({ ...draft, trope_templates: event.target.value })} />
+            </Field>
+            <Field label="力量体系骨架 JSON" hint="使用 JSON 对象定义体系形式、阶段和路线约束；空骨架填写 {}。">
+              <textarea className={styles.jsonInput} rows={14} value={draft.power_system_template} disabled={busy} spellCheck={false} onChange={(event) => setDraft({ ...draft, power_system_template: event.target.value })} />
+            </Field>
           </section>
 
           <footer className={styles.actions}>
