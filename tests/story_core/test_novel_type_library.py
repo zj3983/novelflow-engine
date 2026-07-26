@@ -16,6 +16,7 @@ from packages.story_core.novel_type_library import (
 from packages.story_core.genre_plugins import select_genre_plugins
 from packages.story_core.genre_types import XUANHUAN
 from packages.story_core.models import NovelProject
+from packages.story_core.power_system_templates import copy_power_system_template
 
 
 def test_builtin_types_are_marked_builtin():
@@ -79,6 +80,66 @@ def test_custom_type_survives_library_reconstruction():
     assert reloaded == created
     assert reloaded is not None
     assert reloaded.builtin is False
+
+
+def test_custom_type_inherits_isolated_generic_power_template():
+    library = NovelTypeLibrary()
+    first = library.create({"id": "sports", "name": "竞技体育"})
+    second = library.create({"id": "survival", "name": "荒野求生"})
+    generic = copy_power_system_template("generic_webnovel")
+
+    assert first.power_system_template == generic
+    assert second.power_system_template == generic
+
+    first.power_system_template["required_sections"].append("custom_only")
+    generic["required_sections"].append("global_mutation")
+
+    assert "custom_only" not in second.power_system_template["required_sections"]
+    assert "global_mutation" not in library.get("sports").power_system_template["required_sections"]
+    assert "global_mutation" not in copy_power_system_template("generic_webnovel")["required_sections"]
+
+
+def test_custom_power_template_override_preserves_omitted_generic_sections_and_reloads():
+    library = NovelTypeLibrary()
+    created = library.create(
+        {
+            "id": "psychic_sports",
+            "name": "异能竞技",
+            "power_system_template": {
+                "system_form": "赛事异能体系",
+                "progression_shape": {"stages": [{"name": "地区联赛"}]},
+                "quality_checks": ["胜负必须来自可见训练与临场决策"],
+            },
+        }
+    )
+
+    reloaded = NovelTypeLibrary().get("psychic_sports")
+
+    assert reloaded == created
+    assert reloaded is not None
+    assert reloaded.power_system_template["system_form"] == "赛事异能体系"
+    assert reloaded.power_system_template["required_sections"]
+    assert reloaded.power_system_template["minimum_path_count"] == 2
+    assert reloaded.power_system_template["progression_shape"] == {
+        "stages": [{"name": "地区联赛"}]
+    }
+    assert reloaded.power_system_template["quality_checks"] == [
+        "胜负必须来自可见训练与临场决策"
+    ]
+
+
+def test_custom_power_template_update_returns_merged_generic_contract():
+    library = NovelTypeLibrary()
+    library.create({"id": "sports", "name": "竞技体育"})
+
+    updated = library.update(
+        "sports", {"power_system_template": {"system_form": "赛事异能体系"}}
+    )
+
+    assert updated.power_system_template["system_form"] == "赛事异能体系"
+    assert updated.power_system_template["required_sections"]
+    assert updated.power_system_template["minimum_path_count"] == 2
+    assert NovelTypeLibrary().get("sports") == updated
 
 
 def test_duplicate_id_fails():

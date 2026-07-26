@@ -148,6 +148,13 @@ def test_create_edit_and_delete_unused_custom_type(novel_type_api):
     assert created.json()["name"] == "Sports fiction"
     assert created.json()["keywords"] == ["league", "championship"]
     assert created.json()["builtin"] is False
+    assert created.json()["power_system_template"]["system_form"]
+    assert created.json()["power_system_template"]["required_sections"]
+
+    reloaded = next(
+        item for item in client.get("/novel-types").json() if item["id"] == "sports"
+    )
+    assert reloaded["power_system_template"] == created.json()["power_system_template"]
 
     updated_payload = _custom_payload()
     updated_payload["name"] = "Sports drama"
@@ -156,6 +163,7 @@ def test_create_edit_and_delete_unused_custom_type(novel_type_api):
     assert updated.status_code == 200
     assert updated.json()["id"] == "sports"
     assert updated.json()["name"] == "Sports drama"
+    assert updated.json()["power_system_template"]["required_sections"]
     assert client.delete("/novel-types/sports").status_code == 204
     assert all(item["id"] != "sports" for item in client.get("/novel-types").json())
 

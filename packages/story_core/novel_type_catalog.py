@@ -15,6 +15,7 @@ from packages.story_core.novel_type_ids import (
     NOVEL_TYPE_ID_ALIASES,
     canonical_novel_type_id,
 )
+from packages.story_core.power_system_templates import compact_power_system_template
 from packages.story_core.trope_runtime import (
     compact_trope_candidates,
     merge_trope_templates,
@@ -333,11 +334,16 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
             list(record.quality_checks), max_items=10, item_chars=180
         ),
         "genre_trope_templates": deepcopy(merged_trope_templates),
+        "genre_power_system_template": compact_power_system_template(
+            getattr(record, "power_system_template", {}) or {}
+        ),
     }
+    power_template = context["genre_power_system_template"]
     lists = [
         context["genre_core_promises"],
         *context["genre_rulebook"].values(),
         context["genre_quality_checks"],
+        power_template.get("quality_checks", []),
     ]
     while len(json.dumps({**context}, ensure_ascii=False)) > 6000:
         trope_candidates = context["genre_trope_templates"]
@@ -351,6 +357,20 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
         if trope_candidates:
             trope_candidates.pop()
             specific_candidate_count = min(specific_candidate_count, len(trope_candidates))
+            continue
+        optional_power_fields = [
+            field
+            for field in power_template
+            if field
+            not in {
+                "system_form",
+                "required_sections",
+                "minimum_path_count",
+                "fixed_milestones",
+            }
+        ]
+        if optional_power_fields:
+            power_template.pop(optional_power_fields[-1])
             continue
         raise ValueError("novel_type_prompt_context_exceeds_size_cap")
     return deepcopy(context)

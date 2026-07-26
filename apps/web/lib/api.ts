@@ -122,10 +122,13 @@ export type NovelType = {
   rulebook: NovelTypeRulebook;
   quality_checks: string[];
   trope_templates: Array<Record<string, unknown>>;
+  power_system_template?: Record<string, unknown>;
   builtin: boolean;
 };
 
 export type NovelTypeWriteRequest = Omit<NovelType, "builtin">;
+export type NovelTypeRecord = NovelType;
+export type NovelTypeWritePayload = NovelTypeWriteRequest;
 
 export type GenerationJobStatus = "queued" | "running" | "completed" | "failed";
 

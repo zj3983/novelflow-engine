@@ -60,6 +60,10 @@ from packages.story_core.novel_type_catalog import (
     novel_type_options,
     runtime_novel_type,
 )
+from packages.story_core.power_system_templates import (
+    compact_power_system_template,
+    copy_power_system_template,
+)
 
 
 def _trope_template(
@@ -93,7 +97,73 @@ def _prompt_context_record(
         rulebook={"chapter_formula": ("formula",)},
         quality_checks=("check",),
         trope_templates=tuple(templates),
+        power_system_template=copy_power_system_template("generic_webnovel"),
     )
+
+
+def test_compact_power_system_template_is_json_safe_bounded_and_isolated() -> None:
+    source = copy_power_system_template("game_webnovel")
+    source["quality_checks"] = ["q" * 250 for _ in range(30)]
+    source["progression_shape"]["unsafe_number"] = float("nan")
+
+    compact = compact_power_system_template(source)
+
+    serialized = json.dumps(compact, ensure_ascii=False, allow_nan=False)
+    assert json.loads(serialized) == compact
+    assert set(compact) == {
+        "system_form",
+        "required_sections",
+        "progression_shape",
+        "branching_rules",
+        "resource_rules",
+        "cost_rules",
+        "conflict_rules",
+        "ledger_fields",
+        "quality_checks",
+        "minimum_path_count",
+        "fixed_milestones",
+    }
+    assert len(compact["quality_checks"]) < 30
+    assert all(len(item) <= 180 for item in compact["quality_checks"])
+
+    compact["required_sections"].append("mutated")
+    assert "mutated" not in source["required_sections"]
+
+
+def test_novel_type_prompt_context_contains_compact_power_template() -> None:
+    record = runtime_novel_type("game_webnovel")
+
+    assert record is not None
+    context = novel_type_prompt_context(record)
+
+    assert context["genre_power_system_template"]["system_form"]
+    assert context["genre_power_system_template"]["required_sections"]
+    assert context["genre_power_system_template"]["minimum_path_count"] == 6
+    assert context["genre_power_system_template"]["fixed_milestones"] == [1, 10, 20, 30, 60]
+    assert len(json.dumps(context, ensure_ascii=False)) <= 6000
+
+
+def test_prompt_context_cap_preserves_required_power_template_contract() -> None:
+    escaped = "\x00" * 180
+    record = _prompt_context_record("custom_type", [])
+    record.core_promises = tuple(escaped for _ in range(8))
+    record.rulebook = {"chapter_formula": tuple(escaped for _ in range(6))}
+    record.quality_checks = tuple(escaped for _ in range(10))
+    record.power_system_template.update(
+        {
+            "quality_checks": [escaped for _ in range(20)],
+            "fixed_milestones": [1, 10, 20, 30, 60],
+        }
+    )
+
+    context = novel_type_prompt_context(record)
+    power_template = context["genre_power_system_template"]
+
+    assert len(json.dumps(context, ensure_ascii=False)) <= 6000
+    assert power_template["system_form"]
+    assert power_template["required_sections"]
+    assert power_template["minimum_path_count"] == 2
+    assert power_template["fixed_milestones"] == [1, 10, 20, 30, 60]
 
 
 def test_novel_type_prompt_context_merges_type_specific_tropes_before_generic_and_dedupes_ids(

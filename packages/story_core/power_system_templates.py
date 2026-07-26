@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
+import math
 from types import MappingProxyType
-from typing import cast
+from typing import Any, cast
 
 
 REQUIRED_SECTIONS = (
@@ -175,3 +177,47 @@ POWER_SYSTEM_TEMPLATES = cast(
 
 def copy_power_system_template(plugin_id: str) -> dict[str, object]:
     return cast(dict[str, object], _thaw(POWER_SYSTEM_TEMPLATES[plugin_id]))
+
+
+_COMPACT_TEMPLATE_FIELDS = (
+    "system_form",
+    "required_sections",
+    "progression_shape",
+    "branching_rules",
+    "resource_rules",
+    "cost_rules",
+    "conflict_rules",
+    "ledger_fields",
+    "quality_checks",
+    "minimum_path_count",
+    "fixed_milestones",
+)
+_COMPACT_LIST_CAP = 12
+_COMPACT_MAPPING_CAP = 20
+_COMPACT_STRING_CAP = 180
+
+
+def _compact_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key)[:_COMPACT_STRING_CAP]: _compact_json_value(item)
+            for key, item in list(value.items())[:_COMPACT_MAPPING_CAP]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_compact_json_value(item) for item in value[:_COMPACT_LIST_CAP]]
+    if isinstance(value, str):
+        return value[:_COMPACT_STRING_CAP]
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:_COMPACT_STRING_CAP]
+
+
+def compact_power_system_template(template: Mapping[str, object]) -> dict[str, object]:
+    compact = {
+        field: _compact_json_value(template[field])
+        for field in _COMPACT_TEMPLATE_FIELDS
+        if field in template
+    }
+    return deepcopy(compact)

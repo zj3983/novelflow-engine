@@ -23,6 +23,7 @@ from packages.story_core.genre_types import (
     GenrePlugin,
 )
 from packages.story_core.novel_type_ids import canonical_novel_type_id
+from packages.story_core.power_system_templates import copy_power_system_template
 
 
 _BUILTIN_PLUGINS = (
@@ -93,6 +94,13 @@ def _power_system_template(value: Any) -> dict[str, object]:
     if not isinstance(value, Mapping):
         return {}
     return deepcopy(dict(value))
+
+
+def _custom_power_system_template(value: Any) -> dict[str, object]:
+    template = copy_power_system_template("generic_webnovel")
+    if isinstance(value, Mapping):
+        template.update(deepcopy(dict(value)))
+    return template
 
 
 def _canonical_type_id(value: Any) -> str:
@@ -241,6 +249,9 @@ class NovelTypeLibrary:
             if not isinstance(payload, Mapping):
                 raise ValueError(f"Custom novel type {type_id!r} must be an object")
             merged = dict(payload)
+            merged["power_system_template"] = _custom_power_system_template(
+                payload.get("power_system_template")
+            )
             merged.update({"id": type_id, "builtin": False})
             records[type_id] = NovelTypeRecord.from_payload(merged)
             canonical_ids.add(canonical_id)
@@ -265,7 +276,15 @@ class NovelTypeLibrary:
                 _canonical_type_id(existing_id) for existing_id in records
             }:
                 raise ValueError(f"Novel type ID {record.id!r} already exists")
-            record = NovelTypeRecord.from_payload({**record.to_dict(), "builtin": False})
+            record = NovelTypeRecord.from_payload(
+                {
+                    **record.to_dict(),
+                    "power_system_template": _custom_power_system_template(
+                        record.power_system_template
+                    ),
+                    "builtin": False,
+                }
+            )
             stored["custom"][record.id] = record.to_dict(include_builtin=False)
             self._write(stored)
         _bump_library_revision()
@@ -290,6 +309,10 @@ class NovelTypeLibrary:
             merged = current.to_dict()
             merged.update(changes)
             merged.update({"id": current.id, "builtin": current.builtin})
+            if not current.builtin:
+                merged["power_system_template"] = _custom_power_system_template(
+                    merged.get("power_system_template")
+                )
             updated = NovelTypeRecord.from_payload(merged)
             updated_payload = updated.to_dict()
             if current.builtin:

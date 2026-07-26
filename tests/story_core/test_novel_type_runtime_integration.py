@@ -942,6 +942,9 @@ def test_opening_prompt_reads_latest_runtime_description_and_promise(
     prompt = json.loads(captured["payload"]["messages"][1]["content"])
     assert prompt["genre_description"] == description
     assert promise in prompt["genre_core_promises"]
+    assert prompt["genre_power_system_template"]["system_form"]
+    assert prompt["genre_power_system_template"]["required_sections"]
+    assert prompt["genre_power_system_template"]["minimum_path_count"] >= 1
 
 
 @pytest.mark.parametrize(
@@ -1034,6 +1037,7 @@ def test_generation_prompt_caps_runtime_novel_type_context(
         "genre_rulebook",
         "genre_quality_checks",
         "genre_trope_templates",
+        "genre_power_system_template",
     }
     assert "genre_trope_templates" in captured["payload"]["messages"][1]["content"]
     assert len(serialized) <= 6000
