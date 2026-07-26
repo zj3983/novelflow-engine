@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -109,6 +110,20 @@ def test_migration_payload_builder_delegates_to_extracted_project_data(
     monkeypatch.setattr(migration, "build_power_system_spec", lambda: sentinel)
 
     assert migration._build_power_system_spec() is sentinel
+
+
+def test_power_system_builder_locks_complete_payload_content_and_insertion_order() -> None:
+    serialized = json.dumps(
+        build_power_system_spec(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+    assert len(serialized) == 9799
+    assert hashlib.sha256(serialized).hexdigest() == (
+        "55b258a5be2fbfcbefe0fce7500c19c94295bcbada925cbb836af4d1ffb10603"
+    )
 
 
 def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
