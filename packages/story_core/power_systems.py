@@ -499,18 +499,25 @@ def validate_power_system_spec(
 
 
 _FORMATTED_NUMBER = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
-_LEXICAL_YUAN_PREFIXES = "婴素神气灵力初始"
-_CURRENCY_UNIT = rf"(?:金币|银币|铜币|块钱|美元|人民币|元(?![{_LEXICAL_YUAN_PREFIXES}]))"
-_CURRENCY_AMOUNT = re.compile(
+_UNAMBIGUOUS_CURRENCY_UNIT = r"(?:金币|银币|铜币|块钱|美元|人民币)"
+_UNAMBIGUOUS_CURRENCY_AMOUNT = re.compile(
     rf"(?:"
-    rf"(?:RMB|CNY|[¥￥$])\s*{_FORMATTED_NUMBER}\s*[百千万亿]?\s*(?:{_CURRENCY_UNIT})?"
-    rf"|{_FORMATTED_NUMBER}\s*[百千万亿]?\s*{_CURRENCY_UNIT}"
-    rf"|{_CURRENCY_UNIT}\s*{_FORMATTED_NUMBER}\s*[百千万亿]?"
+    rf"(?:RMB|CNY|[¥￥$])\s*{_FORMATTED_NUMBER}\s*[百千万亿]?"
+    rf"|{_FORMATTED_NUMBER}\s*[百千万亿]?\s*{_UNAMBIGUOUS_CURRENCY_UNIT}"
+    rf"|{_UNAMBIGUOUS_CURRENCY_UNIT}\s*{_FORMATTED_NUMBER}\s*[百千万亿]?"
     rf")",
     re.IGNORECASE,
 )
+_AMBIGUOUS_YUAN_AMOUNT = re.compile(
+    rf"(?:{_FORMATTED_NUMBER}\s*[百千万亿]?\s*元|元\s*{_FORMATTED_NUMBER}\s*[百千万亿]?)"
+)
 _PERCENTAGE = re.compile(rf"{_FORMATTED_NUMBER}\s*[%％]")
-_FINANCIAL_PERCENTAGE_TERMS = (
+_FINANCIAL_SEMANTIC_TERMS = (
+    "支付",
+    "购买",
+    "价格",
+    "售价",
+    "费用",
     "手续费",
     "费率",
     "税",
@@ -520,42 +527,101 @@ _FINANCIAL_PERCENTAGE_TERMS = (
     "收益率",
     "提现",
     "到账",
+    "交易",
     "交易费",
+    "收入",
+    "成本",
+    "租金",
+    "余额",
+    "人民币",
+    "RMB",
+)
+_GAMEPLAY_SEMANTIC_TERMS = (
+    "暴击",
+    "抗性",
+    "伤害",
+    "命中",
+    "闪避",
+    "速度",
+    "生命",
+    "法力",
+    "冷却",
+    "加成",
 )
 _CLAUSE_BOUNDARIES = "，,。；;！？!?\n"
-_CONJUNCTION_BOUNDARIES = ("同时", "并且", "以及", "但", "而", "且", "并")
-_PERCENTAGE_CONTEXT_WINDOW = 24
+_SEMANTIC_CONTEXT_WINDOW = 24
 
 
-def _percentage_context(value: str, match: re.Match[str]) -> str:
-    lower = max(0, match.start() - _PERCENTAGE_CONTEXT_WINDOW)
-    upper = min(len(value), match.end() + _PERCENTAGE_CONTEXT_WINDOW)
+def _semantic_bounds(value: str, start: int, end: int) -> tuple[int, int]:
+    lower = max(0, start - _SEMANTIC_CONTEXT_WINDOW)
+    upper = min(len(value), end + _SEMANTIC_CONTEXT_WINDOW)
     left_edges = [
         position + 1
         for boundary in _CLAUSE_BOUNDARIES
-        if (position := value.rfind(boundary, lower, match.start())) >= 0
+        if (position := value.rfind(boundary, lower, start)) >= 0
     ]
     right_edges = [
         position
         for boundary in _CLAUSE_BOUNDARIES
-        if (position := value.find(boundary, match.end(), upper)) >= 0
+        if (position := value.find(boundary, end, upper)) >= 0
     ]
-    for boundary in _CONJUNCTION_BOUNDARIES:
-        left = value.rfind(boundary, lower, match.start())
-        if left >= 0:
-            left_edges.append(left + len(boundary))
-        right = value.find(boundary, match.end(), upper)
-        if right >= 0:
-            right_edges.append(right)
-    start = max(left_edges, default=lower)
-    end = min(right_edges, default=upper)
-    return value[start:end]
+    return max(left_edges, default=lower), min(right_edges, default=upper)
+
+
+def _nearest_semantic_distance(
+    value: str,
+    *,
+    start: int,
+    end: int,
+    terms: Sequence[str],
+) -> int | None:
+    lower, upper = _semantic_bounds(value, start, end)
+    nearest: int | None = None
+    for term in terms:
+        search_from = lower
+        while (position := value.find(term, search_from, upper)) >= 0:
+            term_end = position + len(term)
+            if term_end <= start:
+                distance = start - term_end
+            elif position >= end:
+                distance = position - end
+            else:
+                distance = 0
+            nearest = distance if nearest is None else min(nearest, distance)
+            search_from = position + 1
+    return nearest
+
+
+def _redact_ambiguous_yuan(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        financial_distance = _nearest_semantic_distance(
+            value,
+            start=match.start(),
+            end=match.end(),
+            terms=_FINANCIAL_SEMANTIC_TERMS,
+        )
+        return "" if financial_distance is not None else match.group(0)
+
+    return _AMBIGUOUS_YUAN_AMOUNT.sub(replace, value)
 
 
 def _redact_financial_percentages(value: str) -> str:
     def replace(match: re.Match[str]) -> str:
-        context = _percentage_context(value, match)
-        if any(term in context for term in _FINANCIAL_PERCENTAGE_TERMS):
+        financial_distance = _nearest_semantic_distance(
+            value,
+            start=match.start(),
+            end=match.end(),
+            terms=_FINANCIAL_SEMANTIC_TERMS,
+        )
+        gameplay_distance = _nearest_semantic_distance(
+            value,
+            start=match.start(),
+            end=match.end(),
+            terms=_GAMEPLAY_SEMANTIC_TERMS,
+        )
+        if financial_distance is not None and (
+            gameplay_distance is None or financial_distance <= gameplay_distance
+        ):
             return ""
         return match.group(0)
 
@@ -563,8 +629,9 @@ def _redact_financial_percentages(value: str) -> str:
 
 
 def _redact_exact_money(value: str) -> str:
-    without_currency = _CURRENCY_AMOUNT.sub("", value)
-    return _text(_redact_financial_percentages(without_currency))
+    without_currency = _UNAMBIGUOUS_CURRENCY_AMOUNT.sub("", value)
+    without_yuan = _redact_ambiguous_yuan(without_currency)
+    return _text(_redact_financial_percentages(without_yuan))
 
 
 def legacy_power_summary(spec: Any) -> list[str]:

@@ -594,9 +594,9 @@ def test_legacy_summary_preserves_lexical_yuan_and_mechanics_percentages() -> No
 
 @pytest.mark.parametrize(
     "compound",
-    ["元婴", "元素", "元神", "元气", "元灵", "元力", "元初", "元始"],
+    ["元核", "元魂", "元丹", "元婴", "元素", "元神", "元气", "元灵", "元力", "元初", "元始"],
 )
-def test_legacy_summary_preserves_explicit_lexical_yuan_compounds(compound: str) -> None:
+def test_legacy_summary_preserves_nonfinancial_yuan_power_compounds(compound: str) -> None:
     spec = complete_spec()
     spec["origin"] = [f"保留100{compound}设定，100元购买药品，支付100元购买"]
 
@@ -605,6 +605,22 @@ def test_legacy_summary_preserves_explicit_lexical_yuan_compounds(compound: str)
     assert f"100{compound}" in joined
     assert "100元购买药品" not in joined
     assert "支付100元购买" not in joined
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "支付", "购买", "价格", "售价", "费用", "手续费", "到账", "提现",
+        "交易", "收入", "成本", "租金", "余额", "人民币", "RMB",
+    ],
+)
+def test_legacy_summary_redacts_yuan_only_with_local_financial_semantics(context: str) -> None:
+    spec = complete_spec()
+    spec["origin"] = [f"{context}调整为100元。"]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert "100元" not in joined
 
 
 def test_legacy_summary_preserves_yuan_power_stage_and_path_text() -> None:
@@ -648,6 +664,35 @@ def test_legacy_summary_classifies_each_percentage_by_nearest_context(sentence: 
 
     assert "12.5%" not in joined
     assert "暴击率提高20%" in joined
+
+
+def test_legacy_summary_redacts_financial_percentage_across_conjunction() -> None:
+    spec = complete_spec()
+    spec["origin"] = ["手续费同时调整为12.5%"]
+
+    assert "12.5%" not in "\n".join(legacy_power_summary(spec))
+
+
+@pytest.mark.parametrize(
+    "gameplay_term",
+    ["暴击", "抗性", "伤害", "命中", "闪避", "速度", "生命", "法力", "冷却", "加成"],
+)
+def test_legacy_summary_preserves_percentage_when_gameplay_semantics_are_nearer(
+    gameplay_term: str,
+) -> None:
+    spec = complete_spec()
+    spec["origin"] = [f"手续费调整后{gameplay_term}提高20%"]
+
+    joined = "\n".join(legacy_power_summary(spec))
+
+    assert f"{gameplay_term}提高20%" in joined
+
+
+def test_legacy_summary_financial_percentage_wins_distance_ties() -> None:
+    spec = complete_spec()
+    spec["origin"] = ["税20%暴击"]
+
+    assert "20%" not in "\n".join(legacy_power_summary(spec))
 
 
 def test_legacy_summary_never_invents_absent_sections_and_handles_hostile_input() -> None:
