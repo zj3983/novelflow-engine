@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,8 +7,14 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from apps.api.routes import stories as story_routes
 from apps.api.storage import SQLiteStoryStore, _project_world_facts
+from packages.story_core import novel_type_catalog, novel_type_library
 from packages.story_core.engine import ChapterBundle
 from packages.story_core.models import NovelProject, StoryState
+from packages.story_core.novel_type_library import NovelTypeLibrary
+from packages.story_core.power_system_templates import (
+    compact_power_system_template,
+    copy_power_system_template,
+)
 from packages.story_core.power_systems import legacy_power_summary
 from packages.story_core import world_enrichment
 
@@ -72,6 +79,51 @@ def game_project(*, power_system_spec=None, power_system=None) -> NovelProject:
     return NovelProject(project_id="p-power", title="神域", world_blueprint=blueprint)
 
 
+@pytest.fixture
+def isolated_novel_type_storage(monkeypatch, tmp_path):
+    missing = object()
+    original_pin = getattr(novel_type_catalog._CONVERSION_KEYS, "pin", missing)
+    monkeypatch.setenv(
+        "NOVEL_AUTOGROWTH_NOVEL_TYPES_PATH",
+        str(tmp_path / "novel-types.json"),
+    )
+    monkeypatch.setattr(novel_type_catalog, "_SNAPSHOT_TOKEN", None)
+    monkeypatch.setattr(novel_type_catalog, "_RECORD_SNAPSHOT", {})
+    monkeypatch.setattr(novel_type_catalog, "_CATALOG_SNAPSHOT", {})
+    monkeypatch.setattr(
+        novel_type_library,
+        "_LIBRARY_REVISION",
+        novel_type_library._LIBRARY_REVISION,
+    )
+    monkeypatch.setattr(
+        novel_type_library,
+        "_LIBRARY_REVISION_WRITER_THREAD_ID",
+        novel_type_library._LIBRARY_REVISION_WRITER_THREAD_ID,
+    )
+    monkeypatch.setattr(
+        novel_type_library,
+        "_LIBRARY_WRITER_REVISIONS",
+        dict(novel_type_library._LIBRARY_WRITER_REVISIONS),
+    )
+    monkeypatch.setattr(
+        novel_type_library,
+        "_PATH_LOCKS",
+        dict(novel_type_library._PATH_LOCKS),
+    )
+    yield
+    if original_pin is missing:
+        if hasattr(novel_type_catalog._CONVERSION_KEYS, "pin"):
+            del novel_type_catalog._CONVERSION_KEYS.pin
+    else:
+        novel_type_catalog._CONVERSION_KEYS.pin = original_pin
+
+
+def prompt_power_template(prompt: str) -> dict[str, object]:
+    prefix = "genre_power_system_template: "
+    line = next(line for line in prompt.splitlines() if line.startswith(prefix))
+    return json.loads(line.removeprefix(prefix))
+
+
 def test_world_enrichment_prompt_requests_canonical_spec_and_carries_template_and_current_spec():
     current_spec = complete_game_power_spec()
     project = game_project(power_system_spec=current_spec)
@@ -88,6 +140,59 @@ def test_world_enrichment_prompt_requests_canonical_spec_and_carries_template_an
         "social_impact", "visibility", "continuity_ledger",
     ):
         assert field in prompt
+
+
+def test_world_enrichment_prompt_uses_explicit_custom_runtime_power_template(
+    isolated_novel_type_storage,
+):
+    NovelTypeLibrary().create(
+        {
+            "id": "arena_progression",
+            "name": "竞技成长",
+            "power_system_template": {
+                "system_form": "赛季段位与异能体系",
+                "minimum_path_count": 4,
+            },
+        }
+    )
+    project = NovelProject(
+        project_id="p-custom-template",
+        title="竞技场",
+        world_blueprint={"genre_plugin_ids": ["arena_progression"]},
+    )
+    persisted = NovelTypeLibrary().get("arena_progression")
+
+    template = prompt_power_template(world_enrichment._build_prompt(project))
+
+    assert persisted is not None
+    assert template == compact_power_system_template(persisted.power_system_template)
+    assert template["system_form"] == "赛季段位与异能体系"
+    assert template["minimum_path_count"] == 4
+
+
+def test_world_enrichment_prompt_uses_persisted_builtin_runtime_template_override(
+    isolated_novel_type_storage,
+):
+    template_override = copy_power_system_template("game_webnovel")
+    template_override["system_form"] = "运行时覆盖职业体系"
+    template_override["minimum_path_count"] = 8
+    NovelTypeLibrary().update(
+        "game_webnovel",
+        {"power_system_template": template_override},
+    )
+    project = NovelProject(
+        project_id="p-builtin-template",
+        title="覆盖测试",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+    persisted = NovelTypeLibrary().get("game_webnovel")
+
+    template = prompt_power_template(world_enrichment._build_prompt(project))
+
+    assert persisted is not None
+    assert template == compact_power_system_template(persisted.power_system_template)
+    assert template["system_form"] == "运行时覆盖职业体系"
+    assert template["minimum_path_count"] == 8
 
 
 def test_valid_game_spec_replaces_structured_module_and_derives_legacy_summary():

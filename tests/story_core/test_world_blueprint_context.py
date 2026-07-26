@@ -562,7 +562,13 @@ def test_power_markdown_prefers_structured_spec_with_exact_order_and_nested_deta
                     "name": "法师",
                     "role": "远程元素输出",
                     "core_resource": "法力与元素印记",
+                    "core_attributes": ["智力", "精神"],
+                    "weapons": ["法杖", "魔典"],
+                    "armor": ["布甲"],
+                    "skill_categories": ["元素法术", "护盾法术"],
                     "combat_loop": "施法叠印记后引爆",
+                    "strengths": ["远程爆发"],
+                    "weaknesses": ["近身受限"],
                     "branches": ["烈焰法师", "冰霜法师"],
                     "transfer_task": "守住元素回廊",
                     "advancement": ["收集元素核心"],
@@ -607,6 +613,32 @@ def test_power_markdown_prefers_structured_spec_with_exact_order_and_nested_deta
         assert concrete_text in rendered
     assert "旧版力量段落不得显示" not in rendered
     assert "## 力量与职业" not in rendered
+    assert "\n".join(
+        (
+            "- **正式职业**",
+            "  - **等级**：10",
+            "  - **进入条件**：完成导师试炼",
+            "  - **能力变化**：解锁职业资源",
+            "  - **失败后果**：试炼冷却七日",
+        )
+    ) in rendered
+    assert "\n".join(
+        (
+            "- **法师**",
+            "  - **职责**：远程元素输出",
+            "  - **核心属性**：智力；精神",
+            "  - **核心资源**：法力与元素印记",
+            "  - **武器**：法杖；魔典",
+            "  - **护甲**：布甲",
+            "  - **技能类别**：元素法术；护盾法术",
+            "  - **战斗循环**：施法叠印记后引爆",
+            "  - **强项**：远程爆发",
+            "  - **弱项**：近身受限",
+            "  - **分支**：烈焰法师；冰霜法师",
+            "  - **转职任务**：守住元素回廊",
+            "  - **晋升**：收集元素核心",
+        )
+    ) in rendered
     assert blueprint == original
 
 

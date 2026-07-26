@@ -184,13 +184,49 @@ def _append_structured_power_section(
     populated = [(label, value) for label, value in groups if _has_content(value)]
     if len(groups) == 1:
         if populated:
-            lines.extend(_markdown_list(populated[0][1]))
+            lines.extend(_structured_power_group_lines(*populated[0]))
         return
     for index, (label, value) in enumerate(populated):
         if index:
             lines.append("")
         lines.extend((f"### {label}", ""))
-        lines.extend(_markdown_list(value))
+        lines.extend(_structured_power_group_lines(label, value))
+
+
+def _structured_power_group_lines(label: str, value: Any) -> list[str]:
+    field_order = {
+        "阶段": ("level", "entry", "change", "failure"),
+        "路线": (
+            "role",
+            "core_attributes",
+            "core_resource",
+            "weapons",
+            "armor",
+            "skill_categories",
+            "combat_loop",
+            "strengths",
+            "weaknesses",
+            "branches",
+            "transfer_task",
+            "advancement",
+        ),
+    }.get(label)
+    if field_order is None or not isinstance(value, (list, tuple)):
+        return _markdown_list(value)
+
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            lines.append(f"- {_inline_markdown(item)}")
+            continue
+        name = str(item.get("name") or item.get("title") or "").strip()
+        lines.append(f"- **{name}**" if name else "- （未命名）")
+        for field in field_order:
+            if _has_content(item.get(field)):
+                lines.append(
+                    f"  - **{_field_label(field)}**：{_inline_markdown(item[field])}"
+                )
+    return lines
 
 
 def sync_world_markdown(
