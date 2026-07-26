@@ -69,6 +69,7 @@ def test_review_allows_vr_prose_that_reads_a_task_requirement():
         "迈出前置条件后的第一步。",
         "推开前置条件后面的木门。",
         "推开前置条件之后的石门。",
+        "推开前置条件之前的步骤。",
     ],
 )
 def test_review_allows_abstract_rules_and_longer_phrases(body):
@@ -124,7 +125,7 @@ def test_review_flags_compound_planning_meta_locations(body, expected_hit):
     assert any(expected_hit in issue for issue in review["issues"])
 
 
-@pytest.mark.parametrize("continuation", ["时", "后", "前", "之后", "以前", "的时候"])
+@pytest.mark.parametrize("continuation", ["时", "后", "前", "之后", "之前", "以前", "以后", "的时候"])
 def test_review_flags_planning_meta_actions_with_sentence_continuations(continuation):
     phrase = f"推开前置条件{continuation}"
     review = review_diagnostic_terms_in_body(f"周满{phrase}，林照退了一步。")
@@ -138,7 +139,9 @@ def test_review_flags_planning_meta_actions_with_sentence_continuations(continua
     ("body", "expected_hit"),
     [
         ("周满推开前置条件后继续前进。", "推开前置条件后"),
+        ("周满推开前置条件以后继续前进。", "推开前置条件以后"),
         ("周满把剧情节点推开后继续前进。", "把剧情节点推开后"),
+        ("周满把剧情节点推开之前。", "把剧情节点推开之前"),
     ],
 )
 def test_review_flags_action_continuations_without_punctuation(body, expected_hit):

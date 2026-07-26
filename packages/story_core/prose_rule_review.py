@@ -88,7 +88,7 @@ _PLANNING_META_LOCATION_END_PATTERN = (
     rf"|{_PLANNING_META_RIGHT_BOUNDARY_PATTERN})"
 )
 _PLANNING_META_ACTION_CONTINUATION_PATTERN = (
-    r"(?:(?:之后|以前|的时候|时|后(?!续)|前)(?!的|面))"
+    r"(?:(?:之后|之前|以前|以后|的时候|时|后(?!续)|前)(?!的|面))"
 )
 _PLANNING_META_ACTION_END_PATTERN = (
     rf"(?:{_PLANNING_META_ACTION_CONTINUATION_PATTERN}"
