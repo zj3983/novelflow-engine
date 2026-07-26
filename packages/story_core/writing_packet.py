@@ -29,6 +29,8 @@ _PATH_ALIASES = (
     "职业路线",
     "职业",
 )
+_PROTAGONIST_ROLES = frozenset(("protagonist", "main", "主角"))
+_INACTIVE_CHARACTER_STATES = frozenset(("inactive", "retired", "dead", "frozen"))
 
 
 def _state_alias_value(sources: list[Any], aliases: tuple[str, ...]) -> Any:
@@ -68,14 +70,20 @@ def _power_progression_hints(
 
     characters = characters if isinstance(characters, list) else []
     character_payloads = [_character_model_payload(character) for character in characters]
+    eligible_payloads = [
+        payload for payload in character_payloads if _character_is_active(payload)
+    ]
     protagonist = next(
         (
             payload
-            for payload in character_payloads
-            if str(payload.get("role") or "").casefold()
-            in {"protagonist", "main", "主角"}
+            for payload in eligible_payloads
+            if str(payload.get("role") or "").casefold() in _PROTAGONIST_ROLES
         ),
-        character_payloads[0] if character_payloads else None,
+        eligible_payloads[0]
+        if eligible_payloads
+        else character_payloads[0]
+        if character_payloads
+        else None,
     )
     if protagonist is not None:
         payload = protagonist
@@ -89,6 +97,16 @@ def _power_progression_hints(
     raw_path = _state_alias_value(sources, _PATH_ALIASES)
     path = str(raw_path).strip() if raw_path not in (None, "") else None
     return level, path or None
+
+
+def _character_is_active(payload: Mapping[str, Any]) -> bool:
+    if payload.get("frozen") is True:
+        return False
+    return all(
+        str(payload.get(field) or "").strip().casefold()
+        not in _INACTIVE_CHARACTER_STATES
+        for field in ("lifecycle_state", "status")
+    )
 
 
 def power_system_context_for_state(
@@ -175,6 +193,9 @@ def _character_model_payload(character: Any) -> dict[str, Any]:
     fields = (
         "name",
         "role",
+        "frozen",
+        "lifecycle_state",
+        "status",
         *_LEVEL_ALIASES,
         *_PATH_ALIASES,
         "game_state",

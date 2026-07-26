@@ -792,8 +792,8 @@ def _path_slice(paths: list[dict[str, Any]], hint: Any) -> list[dict[str, Any]]:
                         continue
                     matches.append(
                         (
-                            len(candidate),
                             int(candidate == needle),
+                            len(candidate),
                             -path_index,
                             -alias_index,
                             path,

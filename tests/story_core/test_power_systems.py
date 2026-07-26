@@ -827,6 +827,18 @@ def test_prompt_slice_matches_path_or_branch_case_insensitively(hint: str) -> No
     assert result["paths"] == [normalize_power_system_spec(spec)["paths"][1]]
 
 
+def test_prompt_slice_prefers_exact_path_alias_over_longer_contains_match() -> None:
+    spec = complete_spec()
+    spec["paths"][0]["name"] = "Mage"
+    spec["paths"][0]["branches"] = ["Wizard", "Sorcerer"]
+    spec["paths"][1]["name"] = "Fire Mage"
+    spec["paths"][1]["branches"] = ["Flame Adept", "Ember Sage"]
+
+    result = power_system_prompt_slice(spec, path_hint="Mage")
+
+    assert result["paths"] == [normalize_power_system_spec(spec)["paths"][0]]
+
+
 def test_prompt_slice_uses_longest_bidirectional_path_alias_for_production_class_name() -> None:
     spec = complete_spec()
     spec["paths"][0]["name"] = "元素"

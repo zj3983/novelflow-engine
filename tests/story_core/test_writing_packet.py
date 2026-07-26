@@ -86,6 +86,74 @@ def test_mapping_characters_choose_explicit_protagonist_after_leading_npc():
     assert [path["name"] for path in power["paths"]] == ["法师"]
 
 
+def test_mapping_characters_skip_frozen_protagonist_for_later_active_lead():
+    characters = [
+        UserDict(
+            {
+                "name": "Archived Lead",
+                "role": "protagonist",
+                "frozen": True,
+                "level": 60,
+                "class_path": "战士",
+            }
+        ),
+        UserDict(
+            {
+                "name": "Active Lead",
+                "role": "main",
+                "lifecycle_state": "active",
+                "level": "Lv.12",
+                "class_path": "元素法师学徒",
+            }
+        ),
+    ]
+
+    power = power_system_context_for_state(_packet_power_spec(), characters=characters)
+
+    assert [stage["level"] for stage in power["stages"]] == [10, 20]
+    assert [path["name"] for path in power["paths"]] == ["法师"]
+
+
+def test_mapping_characters_skip_inactive_role_tagged_leads():
+    inactive_states = [
+        {"lifecycle_state": "inactive"},
+        {"lifecycle_state": "retired"},
+        {"lifecycle_state": "dead"},
+        {"lifecycle_state": "frozen"},
+        {"status": "inactive"},
+        {"status": "retired"},
+        {"status": "dead"},
+        {"status": "frozen"},
+    ]
+    active = UserDict(
+        {
+            "name": "Active Lead",
+            "role": "main",
+            "lifecycle_state": "active",
+            "level": 12,
+            "class_path": "元素法师学徒",
+        }
+    )
+
+    for state in inactive_states:
+        inactive = UserDict(
+            {
+                "name": "Inactive Lead",
+                "role": "protagonist",
+                "level": 60,
+                "class_path": "战士",
+                **state,
+            }
+        )
+        power = power_system_context_for_state(
+            _packet_power_spec(),
+            characters=[inactive, active],
+        )
+
+        assert [stage["level"] for stage in power["stages"]] == [10, 20]
+        assert [path["name"] for path in power["paths"]] == ["法师"]
+
+
 def test_authoritative_ledger_power_hints_override_character_mapping_state():
     characters = [
         UserDict({"name": "夜烬", "role": "主角", "level": 12, "class_path": "元素法师学徒"}),
