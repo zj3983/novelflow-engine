@@ -519,13 +519,18 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     if chapter_path is None:
         pytest.skip("real chapter one fixture is unavailable")
     body = chapter_path.read_text(encoding="utf-8")
-    start = body.index("第三条求购单发布于三分钟前")
+    start_marker = "第三条求购单发布于三分钟前"
     end_marker = "手机的到账震动透过头盔提醒传来。"
+    if start_marker not in body or end_marker not in body:
+        pytest.skip("real chapter fixture no longer contains the legacy trade sequence")
+    start = body.index(start_marker)
     segment = body[start : body.index(end_marker, start) + len(end_marker)]
     if not any(marker in segment for marker in ("匿名提交", "订单状态变成鉴定中", "担保净到账")):
         pytest.skip("real chapter fixture already uses the current market/exchange flow")
 
     ancient_sword_inside = "古剑交给鉴定师，等待鉴定结果。【样本符合求购要求】\n\n"
+    if "夜烬盯着订单页面" not in segment:
+        pytest.skip("real chapter fixture no longer has the legacy insertion anchor")
     insert_at = segment.index("夜烬盯着订单页面")
     segment = segment[:insert_at] + ancient_sword_inside + segment[insert_at:]
     normalized = normalize_legacy_economy_prompt_value(
