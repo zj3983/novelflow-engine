@@ -57,6 +57,23 @@ def test_attribute_allocation_rejects_negated_action_with_modifier_before_points
     assert not has_character_attribute_allocation("夜烬没有把刚拿到的五点全部加到智力上", "智力", 5)
 
 
+def test_attribute_allocation_rejects_quoted_conditional_hypothesis():
+    body = "短发玩家说：‘如果夜烬把五点加到智力上，确认后智力就会从五变成十，可用属性点归零。’"
+
+    assert not has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+    assert not has_positive_attribute_allocation_confirmation(body, protagonist_aliases={"夜烬"})
+
+
+def test_attribute_allocation_accepts_real_action_after_quoted_hypothesis():
+    body = (
+        "短发玩家说：‘如果夜烬把五点加到智力上，确认后智力就会从五变成十。’"
+        "夜烬没有接话，转身打开面板，把五点加到智力上。随后他点下确认，可用属性点归零。"
+    )
+
+    assert has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+    assert has_positive_attribute_allocation_confirmation(body, protagonist_aliases={"夜烬"})
+
+
 def test_attribute_allocation_default_rejects_explicit_bystander_subject():
     assert not has_character_attribute_allocation("《神域》里，短发玩家把五点加到智力上", "智力", 5)
 

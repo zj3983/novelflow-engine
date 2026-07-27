@@ -973,6 +973,62 @@ def test_web_game_review_reports_explicit_carry_remaining_mismatch():
     assert any(issue.startswith("attribute_allocation_mismatch:") for issue in review["issues"]), review
 
 
+def test_web_game_review_rejects_carry_without_reason_in_raw_decision():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬看着可用属性点还剩5点，决定先留着。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5},
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
+def test_web_game_review_uses_custom_attribute_keys_from_allocation_decision():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="夜烬打开面板，把五点加到幸运上。随后他点下确认，可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "allocate", "allocations": {"幸运": 5}, "remaining": 0},
+        },
+        world_facts=[],
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_reports_mismatch_when_body_allocates_to_different_attribute():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="夜烬打开面板，把五点加到敏捷上。随后他点下确认，可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "allocate", "allocations": {"幸运": 5}, "remaining": 0},
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_mismatch:") for issue in review["issues"]), review
+
+
+def test_web_game_review_rejects_quoted_conditional_allocation_as_actual_event():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="短发玩家说：‘如果夜烬把五点加到智力上，确认后智力就会从五变成十，可用属性点归零。’",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
 def test_web_game_review_ignores_future_or_negated_allocation_text_without_current_decision():
     review = review_web_game_chapter(
         chapter_number=4,

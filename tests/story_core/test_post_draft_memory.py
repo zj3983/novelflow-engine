@@ -604,6 +604,61 @@ def test_attribute_allocation_accepts_character_action_through_system_panel():
     assert result["ledger_updates"] == payload["ledger_updates"]
 
 
+def test_attribute_allocation_memory_rejects_quoted_conditional_hypothesis():
+    body = "短发玩家说：‘如果夜烬把五点加到智力上，确认后智力就会从五变成十，可用属性点归零。’"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {"allocations": {"智力": 5}, "remaining": 0}
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点归零",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
+def test_attribute_allocation_memory_prefers_directive_over_final_attribute_mirrors():
+    body = "夜烬打开面板，把五点加到智力上。确认后，智力从五变成十，可用属性点归零。夜烬站在灰狼坡。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attributes": {"智力": 10},
+                    "unallocated_attribute_points": 0,
+                    "attribute_allocation": {"allocations": {"智力": 5}, "remaining": 0},
+                    "location": "灰狼坡",
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attributes.智力": "智力从五变成十",
+                "protagonist.unallocated_attribute_points": "可用属性点归零",
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点归零",
+                "protagonist.location": "灰狼坡",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {
+        "protagonist": {
+            "attribute_allocation": {"allocations": {"智力": 5}, "remaining": 0},
+            "location": "灰狼坡",
+        }
+    }
+
+
 def test_non_protagonist_attributes_do_not_require_protagonist_allocation_action():
     result = normalize_post_draft_memory(
         {

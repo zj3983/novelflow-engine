@@ -107,6 +107,7 @@ def build_post_draft_memory_prompt(
             "ledger_updates只写正文已落地的叶子；ledger_evidence用protagonist.location这类扁平路径逐项给证据。",
             "自由属性加点必须同时写成：ledger_updates.protagonist.attribute_allocation={allocations:{智力:5}, remaining:0, reason?:...}；"
             "并给出protagonist.attribute_allocation.allocations.智力和protagonist.attribute_allocation.remaining两条ledger_evidence。"
+            "加点只返回attribute_allocation这个增量指令；不得同时返回attributes中的最终属性镜像或unallocated_attribute_points。"
             "只有正文明确写出人物把几点加到哪项、并确认结果或剩余点数时才可落账；只列最终面板不算。",
             "证据可以忽略空白和常见中英文标点差异，但禁止同义改写、模糊匹配或语义猜测。",
             "返回字段：summary, facts, unresolved_threads, next_focus, chapter_title, character_updates, ledger_updates, ledger_evidence。",
@@ -447,6 +448,34 @@ def _drop_attribute_allocation_update(
     rejected.append({"kind": "ledger_update", "path": "protagonist.attribute_allocation", "reason": "attribute_allocation_not_visible_in_body"})
 
 
+def _prefer_attribute_allocation_directive(
+    accepted: dict[str, Any], accepted_evidence: dict[str, str], rejected: list[dict[str, str]]
+) -> None:
+    protagonist = accepted.get("protagonist")
+    if not isinstance(protagonist, dict):
+        return
+    directive = protagonist.get("attribute_allocation")
+    allocations = directive.get("allocations") if isinstance(directive, dict) else None
+    if not isinstance(allocations, dict):
+        return
+    attributes = protagonist.get("attributes")
+    if isinstance(attributes, dict):
+        for attribute in allocations:
+            if attribute not in attributes:
+                continue
+            attributes.pop(attribute, None)
+            path = f"protagonist.attributes.{attribute}"
+            accepted_evidence.pop(path, None)
+            rejected.append({"kind": "ledger_update", "path": path, "reason": "attribute_allocation_directive_authoritative"})
+        if not attributes:
+            protagonist.pop("attributes", None)
+    if "unallocated_attribute_points" in protagonist:
+        protagonist.pop("unallocated_attribute_points", None)
+        path = "protagonist.unallocated_attribute_points"
+        accepted_evidence.pop(path, None)
+        rejected.append({"kind": "ledger_update", "path": path, "reason": "attribute_allocation_directive_authoritative"})
+
+
 def _normalize_ledger_updates(
     updates: Any,
     evidence_by_path: Any,
@@ -517,6 +546,8 @@ def _normalize_ledger_updates(
             )
         ):
             _drop_attribute_allocation_update(accepted, accepted_evidence, rejected)
+        else:
+            _prefer_attribute_allocation_directive(accepted, accepted_evidence, rejected)
     return accepted, accepted_evidence
 
 

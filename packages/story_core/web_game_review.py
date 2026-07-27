@@ -374,7 +374,6 @@ def _invalid_currency_displays(body: str) -> list[str]:
     return invalid[:3]
 
 
-_ATTRIBUTE_NAMES = ("力量", "体质", "敏捷", "智力", "精神", "感知")
 _ATTRIBUTE_DECISION_MODES = {"allocate", "carry"}
 
 
@@ -400,10 +399,10 @@ def _current_attribute_allocation_decision(event_plan: dict[str, Any]) -> dict[s
 
 
 def _attribute_action_values(
-    body: str, protagonist_aliases: Iterable[str] | None = None
+    body: str, attributes: Iterable[str], protagonist_aliases: Iterable[str] | None = None
 ) -> dict[str, int]:
     values: dict[str, int] = {}
-    for attribute in _ATTRIBUTE_NAMES:
+    for attribute in attributes:
         points = character_attribute_allocation_points(
             body, attribute, protagonist_aliases=protagonist_aliases
         )
@@ -434,8 +433,18 @@ def _review_attribute_allocation_decision(
     scores: dict[str, int],
     protagonist_aliases: Iterable[str] | None = None,
 ) -> None:
+    raw_decision = event_plan.get("attribute_allocation_decision")
     decision = _current_attribute_allocation_decision(event_plan)
     if not decision:
+        if isinstance(raw_decision, dict) and raw_decision.get("mode") == "carry":
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="class_equipment",
+                issue="attribute_allocation_missing: 当前章节计划保留属性点，但没有给出保留理由。",
+                plan="补出保留属性点的具体理由，并让正文中的人物选择与计划一致。",
+            )
         return
     if decision["mode"] == "carry":
         remaining = latest_attribute_points(body)
@@ -464,9 +473,14 @@ def _review_attribute_allocation_decision(
         return
 
     expected = decision["allocations"]
-    actual = _attribute_action_values(body, protagonist_aliases)
+    actual = _attribute_action_values(body, expected, protagonist_aliases)
+    has_any_allocation_action = has_character_attribute_allocation(
+        body, protagonist_aliases=protagonist_aliases
+    )
     actual_remaining = latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases)
-    if actual and actual != expected or actual_remaining is not None and actual_remaining != decision["remaining"]:
+    if (
+        has_any_allocation_action and actual != expected
+    ) or actual_remaining is not None and actual_remaining != decision["remaining"]:
         _append_issue(
             issues=issues,
             revision_plan=revision_plan,

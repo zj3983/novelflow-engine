@@ -2686,6 +2686,14 @@ def _apply_ledger_updates(
         nested_level_update = updates_protagonist["level"]
     if rule and isinstance(updates_protagonist, dict):
         directive = updates_protagonist.pop("attribute_allocation", None)
+        if isinstance(directive, dict) and isinstance(directive.get("allocations"), dict):
+            direct_attributes = updates_protagonist.get("attributes")
+            if isinstance(direct_attributes, dict):
+                for attribute in directive["allocations"]:
+                    direct_attributes.pop(attribute, None)
+                if not direct_attributes:
+                    updates_protagonist.pop("attributes", None)
+            updates_protagonist.pop("unallocated_attribute_points", None)
         if not updates_protagonist:
             updates.pop("protagonist", None)
 

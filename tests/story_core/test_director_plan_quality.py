@@ -167,6 +167,17 @@ def test_director_quality_gate_uses_flat_legacy_available_points_for_carry() -> 
     assert not any("attribute_allocation_decision" in issue for issue in _director_plan_quality_issues(story, plan))
 
 
+def test_director_quality_gate_rejects_carry_without_reason() -> None:
+    story = _attribute_story(available_points=5)
+    plan = _complete_plan(["夜烬打开面板处理属性点"])
+    plan["event_plan"].update(
+        turn="本章保留属性点",
+        attribute_allocation_decision={"mode": "carry", "remaining": 5},
+    )
+
+    assert any("attribute_allocation_decision" in issue for issue in _director_plan_quality_issues(story, plan))
+
+
 def test_director_quality_gate_classifies_malformed_allocation_items() -> None:
     malformed_allocations = [None, "智力+5", {}, {"智力": "5"}, {"智力": True}, {"智力": 0}, {"未知": 1}]
 

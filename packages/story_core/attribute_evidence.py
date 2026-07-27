@@ -44,6 +44,8 @@ _BYSTANDER_SUBJECT_PREFIX = re.compile(r"(?:^|[，,])\s*(?:(?:短发|长发|高�
 _ACTION_CONTINUATIONS = {"随后", "然后", "接着", "再", "便", "就", "先", "又"}
 _ACTION_MODIFIERS = ("直接", "果断", "又", "重新", "干脆", "索性", "还是")
 _GENERIC_REASON_TERMS = {"先", "为了", "因为", "属性点", "属性", "点", "保留", "留着", "分配", "决定", "原因", "目的", "以后", "再用", "留给"}
+_CONDITIONAL_MARKERS = ("如果", "假如", "要是", "若", "倘若")
+_ASYMMETRIC_QUOTES = (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"))
 
 
 def parse_count(value: str) -> int | None:
@@ -74,6 +76,21 @@ def sentence_bounds(text: str, position: int) -> tuple[int, int]:
 def _is_explanatory_sentence(text: str, position: int) -> bool:
     start, end = sentence_bounds(text, position)
     return any(pattern.search(text[start:end]) for pattern in _EXPLANATORY_SUBJECT_PATTERNS)
+
+
+def _is_inside_quote(text: str, position: int) -> bool:
+    """Return whether a position belongs to a quoted statement, not narration."""
+
+    prefix = text[:position]
+    if prefix.count('"') % 2:
+        return True
+    return any(prefix.rfind(opening) > prefix.rfind(closing) for opening, closing in _ASYMMETRIC_QUOTES)
+
+
+def _is_conditional_sentence(text: str, position: int) -> bool:
+    start, end = sentence_bounds(text, position)
+    sentence = text[start:end]
+    return any(marker in sentence for marker in _CONDITIONAL_MARKERS)
 
 
 def _is_negated_before(text: str, position: int, *, carry: bool = False) -> bool:
@@ -157,7 +174,11 @@ def _protagonist_subject_before_bridge(prefix: str, aliases: tuple[str, ...]) ->
 
 def _has_character_action(text: str, action_start: int, protagonist_aliases: Iterable[str] | None = None) -> bool:
     start, _ = sentence_bounds(text, action_start)
-    if _is_explanatory_sentence(text, action_start):
+    if (
+        _is_explanatory_sentence(text, action_start)
+        or _is_inside_quote(text, action_start)
+        or _is_conditional_sentence(text, action_start)
+    ):
         return False
     prefix = text[start:action_start]
     bound_subject = _protagonist_subject_before_bridge(prefix, _normalized_aliases(protagonist_aliases))

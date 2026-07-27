@@ -294,11 +294,10 @@ def validate_attribute_allocation_decision(
     if mode == "carry":
         if "allocations" in decision or not normalized_rule["allow_carry"] or remaining != available:
             return {}
-        result: dict[str, Any] = {"mode": "carry", "remaining": remaining}
         reason = _compact_text(decision.get("reason"), _MAX_RESPEC_RULE)
-        if reason:
-            result["reason"] = reason
-        return result
+        if not reason:
+            return {}
+        return {"mode": "carry", "remaining": remaining, "reason": reason}
     if mode != "allocate":
         return {}
     allocations = decision.get("allocations")

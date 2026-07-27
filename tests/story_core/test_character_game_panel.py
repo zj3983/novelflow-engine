@@ -165,6 +165,51 @@ def test_game_ledger_updates_game_state_without_changing_real_state():
     assert character.game_panel.currency == "30铜币"
 
 
+def test_ledger_attribute_directive_does_not_double_apply_final_attribute_mirror():
+    story = StoryState(
+        story_id="s-attribute-directive-authority",
+        outline="网游开服。",
+        genre="网游",
+        style="白描",
+        characters=[CharacterState(name="苏叶", role="主角", game_id="夜烬")],
+        world_context={
+            "power_system_spec": {
+                "attribute_allocation": {
+                    "mode": "free",
+                    "points_per_level": 5,
+                    "starting_level": 1,
+                    "base_attributes": {"智力": 5},
+                    "allow_carry": True,
+                    "respec_rule": "仅限明确重置机会",
+                }
+            }
+        },
+        progression_ledger={
+            "protagonist": {
+                "level": "Lv.1",
+                "attributes": {"智力": 5},
+                "unallocated_attribute_points": 5,
+            }
+        },
+    )
+
+    _apply_ledger_updates(
+        story,
+        {
+            "protagonist": {
+                "attributes": {"智力": 10},
+                "unallocated_attribute_points": 0,
+                "attribute_allocation": {"allocations": {"智力": 5}, "remaining": 0},
+            }
+        },
+        chapter_number=1,
+    )
+
+    protagonist = story.progression_ledger["protagonist"]
+    assert protagonist["attributes"]["智力"] == 10
+    assert protagonist["unallocated_attribute_points"] == 0
+
+
 def test_game_ledger_sync_records_changed_fields_once_with_chapter_fact():
     story = StoryState(
         story_id="s-game-history",
