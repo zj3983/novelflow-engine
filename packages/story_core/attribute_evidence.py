@@ -51,6 +51,10 @@ _CONDITIONAL_MARKERS = ("如果", "假如", "要是", "倘若")
 _CLAUSE_START_RUO_PATTERN = re.compile(r"(?:^|[，,；;：:])\s*(?P<ruo>若)")
 _ASYMMETRIC_QUOTES = (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"))
 _POSITION_OWNER_NOUNS = ("面板", "界面", "提示", "窗口")
+_DISCOURSE_PREFIXES = ("此时", "随后", "这时", "只见")
+_SUBJECT_ACTION_PATTERN = re.compile(
+    r"(?:^|[，,；;])\s*(?P<subject>[\u4e00-\u9fffA-Za-z0-9_]{1,12})(?:说|道|表示|提到|确认|加点|看)"
+)
 
 
 def parse_count(value: str) -> int | None:
@@ -452,6 +456,31 @@ def _attribute_point_results(body: str) -> list[tuple[int, int]]:
     return sorted(results)
 
 
+def _strip_discourse_prefix(value: str) -> str:
+    for prefix in _DISCOURSE_PREFIXES:
+        if value.startswith(prefix):
+            return value[len(prefix) :]
+    return value
+
+
+def _nearest_explicit_subject(sentence: str) -> str | None:
+    subjects = [
+        _strip_discourse_prefix(match.group("subject"))
+        for match in _SUBJECT_ACTION_PATTERN.finditer(sentence)
+    ]
+    return next((subject for subject in reversed(subjects) if subject not in {"他", "她", "自己"}), None)
+
+
+def _owner_is_protagonist(sentence: str, owner_span: tuple[int, int], aliases: tuple[str, ...]) -> bool:
+    owner = _strip_discourse_prefix(sentence[owner_span[0] : owner_span[1]].strip())
+    if any(alias in owner for alias in aliases):
+        return True
+    if owner not in {"他", "她", "自己"}:
+        return False
+    subject = _nearest_explicit_subject(sentence[: owner_span[0]])
+    return subject is None or any(alias in subject for alias in aliases)
+
+
 def _remaining_candidate_subject(
     body: str, position: int, protagonist_aliases: Iterable[str] | None
 ) -> bool | None:
@@ -460,26 +489,18 @@ def _remaining_candidate_subject(
     start, _ = sentence_bounds(body, position)
     sentence = body[start:position]
     aliases = _normalized_aliases(protagonist_aliases)
-    speaker = re.search(r"(?:^|[，,；;])\s*(?P<subject>[\u4e00-\u9fffA-Za-z0-9_]{1,12})(?:说|道|表示|提到)", sentence)
-    if speaker and speaker.group("subject") not in aliases:
-        return False
     panel_owner = re.search(
         r"(?P<owner>[\u4e00-\u9fffA-Za-z0-9_]{1,12})的(?:角色)?(?:面板|界面|提示|窗口)(?:上|中|里|内)?的?\s*$",
         sentence,
     )
     if panel_owner:
-        name = panel_owner.group("owner")
-        return True if name in aliases or name in {"他", "她", "自己"} else False
+        return _owner_is_protagonist(sentence, panel_owner.span("owner"), aliases)
     owner = re.search(r"(?P<owner>[\u4e00-\u9fffA-Za-z0-9_]{1,12})的\s*$", sentence)
     if owner:
         name = owner.group("owner")
         if name.endswith(("上", "中", "里", "内")) or any(noun in name for noun in _POSITION_OWNER_NOUNS):
             return None
-        if name in aliases:
-            return True
-        if name in {"他", "她", "自己"}:
-            return True if any(alias in sentence for alias in aliases) else None
-        return False
+        return _owner_is_protagonist(sentence, owner.span("owner"), aliases)
     if any(alias in sentence for alias in aliases):
         return True
     if re.search(r"(?:他|她|自己)", sentence):

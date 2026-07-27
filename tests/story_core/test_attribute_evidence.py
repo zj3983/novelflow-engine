@@ -227,6 +227,24 @@ def test_confirmed_allocation_accepts_a_protagonist_owned_panel_result(panel_own
     assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
 
 
+def test_confirmed_allocation_accepts_a_protagonist_alias_inside_a_panel_owner_prefix():
+    body = "夜烬把五点加到智力上。随后他确认加点。此时夜烬的面板上的可用属性点归零。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
+
+
+def test_confirmed_allocation_rejects_a_pronoun_panel_owned_by_a_nearer_bystander_subject():
+    body = "夜烬把五点加到智力上。随后他确认加点。短发玩家确认完，他的面板上的可用属性点还剩四点。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) is None
+
+
+def test_confirmed_allocation_accepts_a_pronoun_panel_owned_by_the_nearer_protagonist_subject():
+    body = "夜烬把五点加到智力上。夜烬确认完，他的面板上的可用属性点归零。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
+
+
 def test_confirmed_allocation_rejects_another_characters_owned_panel_result():
     body = "夜烬把五点加到智力上。随后他确认加点。短发玩家的面板上的可用属性点还剩四点。"
 
