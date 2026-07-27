@@ -702,6 +702,45 @@ def test_web_game_review_accepts_confirmed_attribute_result_without_explicit_rem
     assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
 
 
+def test_web_game_review_uses_final_remaining_points_after_confirmed_allocation():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=(
+            "《神域》里，夜烬获得5点，当前可用属性点5点。"
+            "他把五点加到智力上，确认加点后，可用属性点还剩0点。"
+        ),
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_accepts_character_action_through_system_panel():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬打开系统面板，把五点加到智力上。确认加点后，可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
 def test_web_game_review_reports_allocation_amount_and_remaining_mismatches():
     review = review_web_game_chapter(
         chapter_number=4,
@@ -752,6 +791,27 @@ def test_web_game_review_requires_local_carry_reason_instead_of_unrelated_becaus
     review = review_web_game_chapter(
         chapter_number=4,
         body="《神域》里，因为下雨，夜烬进了旅店。随后他看着可用属性点还剩五点，决定先留着。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "《神域》里，夜烬看着可用属性点还剩5点。他没有打算留着，因为马上要加智力。",
+        "《神域》里，可用属性点还剩5点。系统提示属性点可以保留，留给转职以后再用。",
+    ],
+)
+def test_web_game_review_rejects_negated_or_system_carry_instructions(body: str):
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=body,
         event_plan={
             "novel_type": "game_webnovel",
             "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},

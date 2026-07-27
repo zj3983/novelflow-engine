@@ -5,6 +5,13 @@ import re
 import unicodedata
 from typing import Any, Iterator
 
+from packages.story_core.attribute_evidence import (
+    has_character_attribute_allocation,
+    has_positive_attribute_allocation_confirmation,
+    latest_attribute_points,
+    latest_confirmed_attribute_points,
+)
+
 
 def _empty_result() -> dict[str, Any]:
     return {
@@ -290,8 +297,6 @@ _LEDGER_PATH_ALIASES = {
     "attributes": ("属性", "基础属性", "力量", "体质", "敏捷", "智力", "精神", "感知"),
     "unallocated_attribute_points": ("可用属性点", "剩余属性点", "自由属性点"),
     "attribute_allocation": ("属性点", "加点", "分配属性"),
-    "remaining": ("可用属性点", "剩余属性点", "自由属性点", "归零"),
-    "reason": (),
 }
 
 _COUNT_UNITS = (
@@ -372,100 +377,13 @@ def _ledger_value_supported(value: Any, body: str, evidence: str) -> bool:
     return False
 
 
-def _is_locally_negated(text: str, start: int) -> bool:
-    sentence_start = max(text.rfind(marker, 0, start) for marker in "。！？\n") + 1
-    prefix = text[sentence_start:start].rstrip()
-    return bool(re.search(r"(?:没有|没|未|并未|不)\s*(?:把|将)?\s*$", prefix))
-
-
-_ATTRIBUTE_ACTION_PATTERN = (
-    r"(?:\d+|[零一二两三四五六七八九十])\s*点(?:(?:自由)?属性点?)?[^。！？\n]{0,16}"
-    r"(?:全部)?(?:加到|加给|分配给|投入|点在)"
-)
-_ATTRIBUTE_CONFIRMATION_CONTEXT = ("属性点", "加点", "分配", "力量", "体质", "敏捷", "智力", "精神", "感知")
-_EXPLANATORY_ALLOCATION_MARKERS = ("系统", "规则", "示例", "提示说明", "界面说明")
-_CHARACTER_ALLOCATION_PREFIX = re.compile(
-    r"(?:他|她|我|玩家|角色|[\u4e00-\u9fff]{2,4})[^。！？\n]{0,20}"
-    r"(?:打开|抬手|伸手|把|将|决定|选择|分配|投入|加)\s*$"
-)
-
-
-def _sentence_bounds(text: str, position: int) -> tuple[int, int]:
-    start = max(text.rfind(marker, 0, position) for marker in "。！？\n") + 1
-    ends = [index for marker in "。！？\n" if (index := text.find(marker, position)) >= 0]
-    return start, min(ends) if ends else len(text)
-
-
-def _has_character_allocation_actor(body: str, action_start: int) -> bool:
-    sentence_start, sentence_end = _sentence_bounds(body, action_start)
-    sentence = body[sentence_start:sentence_end]
-    if any(marker in sentence for marker in _EXPLANATORY_ALLOCATION_MARKERS):
-        return False
-    return bool(_CHARACTER_ALLOCATION_PREFIX.search(body[sentence_start:action_start]))
-
-
-def _has_positive_confirmation(body: str) -> bool:
-    confirmations = list(re.finditer(r"确认|确定|生效|保存", body))
-    for action in re.finditer(_ATTRIBUTE_ACTION_PATTERN, body):
-        if _is_locally_negated(body, action.start()) or not _has_character_allocation_actor(body, action.start()):
-            continue
-        action_start, action_end = _sentence_bounds(body, action.start())
-        _, nearby_end = _sentence_bounds(body, action_end + 1)
-        for match in confirmations:
-            confirmation_start, confirmation_end = _sentence_bounds(body, match.start())
-            suffix = body[match.end() : match.end() + 8]
-            if confirmation_start not in (action_start, action_end + 1) or match.start() > nearby_end:
-                continue
-            if _is_locally_negated(body, match.start()) or re.match(r"\s*(?:不分配|不加点|不加属性)", suffix):
-                continue
-            confirmation_sentence = body[confirmation_start:confirmation_end]
-            confirmation_window = body[max(confirmation_start, match.start() - 8) : match.end() + 12]
-            if any(token in confirmation_window for token in ("修理", "订单", "交易", "任务")):
-                continue
-            if any(token in confirmation_sentence for token in _ATTRIBUTE_CONFIRMATION_CONTEXT):
-                return True
-    return False
-
-
-def _attribute_allocation_action_supported(body: str, attribute: str, points: int) -> bool:
-    if not isinstance(attribute, str) or not attribute or isinstance(points, bool) or not isinstance(points, int) or points <= 0:
-        return False
-    point_forms = (str(points), _NUMBER_WORDS.get(points, ""))
-    for point_form in point_forms:
-        if not point_form:
-            continue
-        pattern = (
-            rf"{re.escape(point_form)}\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
-            rf"(?:全部)?(?:加到|加给|分配给|投入|点在)\s*{re.escape(attribute)}(?:上|里)?"
-        )
-        match = re.search(pattern, body)
-        if match and not _is_locally_negated(body, match.start()) and _has_character_allocation_actor(body, match.start()):
-            return True
-    return False
-
-
-def _attribute_remaining_supported(value: Any, body: str, evidence: str) -> bool:
-    if _ledger_value_supported(value, body, evidence):
-        return True
-    return value == 0 and "归零" in body and any(
-        token in body for token in ("可用属性点", "剩余属性点", "自由属性点")
-    )
-
-
-def _has_attribute_allocation_action(body: str) -> bool:
-    return any(
-        not _is_locally_negated(body, match.start()) and _has_character_allocation_actor(body, match.start())
-        for match in re.finditer(_ATTRIBUTE_ACTION_PATTERN, body)
-    )
-
-
 def _attribute_state_value_supported(
     path_parts: tuple[str, ...], value: Any, body: str, evidence: str
 ) -> bool:
-    if not _has_attribute_allocation_action(body):
+    if not has_character_attribute_allocation(body):
         return False
     if path_parts[-1] == "unallocated_attribute_points":
-        return _attribute_remaining_supported(value, body, evidence)
+        return latest_confirmed_attribute_points(body) == value
     if "attributes" not in path_parts or not isinstance(value, int) or isinstance(value, bool):
         return False
     attribute = path_parts[-1]
@@ -479,6 +397,16 @@ def _attribute_state_value_supported(
     )
 
 
+def _is_protagonist_attribute_allocation_path(path_parts: tuple[str, ...]) -> bool:
+    return len(path_parts) >= 2 and path_parts[:2] == ("protagonist", "attribute_allocation")
+
+
+def _is_protagonist_attribute_state_path(path_parts: tuple[str, ...]) -> bool:
+    return bool(path_parts) and path_parts[0] == "protagonist" and (
+        "attributes" in path_parts or path_parts[-1] == "unallocated_attribute_points"
+    )
+
+
 def _attribute_allocation_group_supported(value: Any, body: str) -> bool:
     if not isinstance(value, dict):
         return False
@@ -486,14 +414,14 @@ def _attribute_allocation_group_supported(value: Any, body: str) -> bool:
     remaining = value.get("remaining")
     if not isinstance(allocations, dict) or not allocations or isinstance(remaining, bool) or not isinstance(remaining, int):
         return False
-    if not all(_attribute_allocation_action_supported(body, attribute, points) for attribute, points in allocations.items()):
+    if not all(has_character_attribute_allocation(body, attribute, points) for attribute, points in allocations.items()):
         return False
-    has_confirmation = _has_positive_confirmation(body)
+    has_confirmation = has_positive_attribute_allocation_confirmation(body)
     has_result = any(
         re.search(rf"{re.escape(attribute)}[^。！？\n]{{0,16}}(?:变成|提升到|增加到)\s*(?:{points}|{_NUMBER_WORDS.get(points, '')})", body)
         for attribute, points in allocations.items()
     )
-    has_remaining = _attribute_remaining_supported(remaining, body, body)
+    has_remaining = latest_confirmed_attribute_points(body) == remaining
     return has_confirmation and (has_result or has_remaining)
 
 
@@ -542,12 +470,15 @@ def _normalize_ledger_updates(
             )
             continue
         supports_value = _ledger_value_supported(value, body, evidence)
-        if path_parts[-1] == "remaining" and "attribute_allocation" in path_parts:
-            supports_value = _attribute_remaining_supported(value, body, evidence)
-        if path_parts[-1] == "unallocated_attribute_points" or "attributes" in path_parts:
+        if path_parts[-1] == "remaining" and _is_protagonist_attribute_allocation_path(path_parts):
+            supports_value = (
+                latest_confirmed_attribute_points(body) == value
+                and latest_attribute_points(evidence) == value
+            )
+        if _is_protagonist_attribute_state_path(path_parts):
             supports_value = _attribute_state_value_supported(path_parts, value, body, evidence)
         supports_path = _ledger_path_supported(path_parts, body, evidence)
-        if path_parts[-1] == "reason" and "attribute_allocation" in path_parts:
+        if path_parts[-1] in {"remaining", "reason"} and _is_protagonist_attribute_allocation_path(path_parts):
             supports_path = True
         if not supports_path or not supports_value:
             rejected.append(
@@ -562,8 +493,18 @@ def _normalize_ledger_updates(
         accepted_evidence[path] = evidence
     proposed_protagonist = updates.get("protagonist") if isinstance(updates.get("protagonist"), dict) else {}
     proposed_allocation = proposed_protagonist.get("attribute_allocation")
-    if proposed_allocation is not None and not _attribute_allocation_group_supported(proposed_allocation, body):
-        _drop_attribute_allocation_update(accepted, accepted_evidence, rejected)
+    if proposed_allocation is not None:
+        accepted_protagonist = accepted.get("protagonist")
+        accepted_allocation = (
+            accepted_protagonist.get("attribute_allocation")
+            if isinstance(accepted_protagonist, dict)
+            else None
+        )
+        if (
+            accepted_allocation != proposed_allocation
+            or not _attribute_allocation_group_supported(proposed_allocation, body)
+        ):
+            _drop_attribute_allocation_update(accepted, accepted_evidence, rejected)
     return accepted, accepted_evidence
 
 

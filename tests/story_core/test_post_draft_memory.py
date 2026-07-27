@@ -403,6 +403,99 @@ def test_attribute_allocation_accepts_pronoun_subject_without_known_game_id():
     assert result["ledger_updates"] == payload["ledger_updates"]
 
 
+def test_attribute_allocation_rejects_zero_remaining_from_unrelated_durability_text():
+    body = "夜烬把五点加到智力上，确认加点。可用属性点还是5点，法杖耐久归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {
+                        "allocations": {"智力": 5},
+                        "remaining": 0,
+                    }
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "法杖耐久归零",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
+def test_attribute_allocation_requires_local_remaining_evidence_even_when_body_has_zero_points():
+    body = "夜烬把五点加到智力上，确认加点后，可用属性点归零。法杖耐久也归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {
+                        "allocations": {"智力": 5},
+                        "remaining": 0,
+                    }
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "法杖耐久也归零",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
+def test_attribute_allocation_accepts_character_action_through_system_panel():
+    body = "夜烬打开系统面板，把五点加到智力上。确认加点后，可用属性点归零。"
+    payload = {
+        "ledger_updates": {
+            "protagonist": {
+                "attribute_allocation": {
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                }
+            }
+        },
+        "ledger_evidence": {
+            "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+            "protagonist.attribute_allocation.remaining": "可用属性点归零",
+        },
+    }
+
+    result = normalize_post_draft_memory(payload, body=body, existing_character_names={"夜烬"})
+
+    assert result["ledger_updates"] == payload["ledger_updates"]
+
+
+def test_non_protagonist_attributes_do_not_require_protagonist_allocation_action():
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "monster": {
+                    "attributes": {"力量": 12},
+                    "remaining": 0,
+                    "reason": "受伤",
+                }
+            },
+            "ledger_evidence": {
+                "monster.attributes.力量": "灰狼力量增加到12",
+                "monster.remaining": "剩余0点",
+                "monster.reason": "受伤",
+            },
+        },
+        body="灰狼力量增加到12，剩余0点的原因是受伤。",
+        existing_character_names=set(),
+    )
+
+    assert result["ledger_updates"] == {"monster": {"attributes": {"力量": 12}}}
+
+
 def test_attribute_state_aliases_accept_visible_post_allocation_values():
     body = "夜烬把五点加到智力上，确认后智力从五变成十，可用属性点归零。"
     result = normalize_post_draft_memory(

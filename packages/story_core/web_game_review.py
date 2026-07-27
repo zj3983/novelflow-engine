@@ -3,6 +3,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from packages.story_core.attribute_evidence import (
+    character_attribute_allocation_points,
+    has_character_attribute_allocation,
+    has_character_attribute_carry_choice_and_reason,
+    has_positive_attribute_allocation_confirmation,
+    latest_attribute_points,
+    latest_confirmed_attribute_points,
+    parse_count as _parse_count,
+)
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.game_level_gap import assess_level_gap, extract_level_gap_case
@@ -365,93 +374,6 @@ def _invalid_currency_displays(body: str) -> list[str]:
     return invalid[:3]
 
 
-_CN_NUMERAL_VALUES = {
-    "零": 0,
-    "一": 1,
-    "二": 2,
-    "两": 2,
-    "三": 3,
-    "四": 4,
-    "五": 5,
-    "六": 6,
-    "七": 7,
-    "八": 8,
-    "九": 9,
-}
-
-
-def _parse_count(value: str) -> int | None:
-    value = value.strip()
-    if not value:
-        return None
-    if value.isdigit():
-        return int(value)
-    if value in _CN_NUMERAL_VALUES:
-        return _CN_NUMERAL_VALUES[value]
-    if "十" in value:
-        left, _, right = value.partition("十")
-        tens = _CN_NUMERAL_VALUES.get(left, 1 if left == "" else None)
-        ones = _CN_NUMERAL_VALUES.get(right, 0 if right == "" else None)
-        if tens is not None and ones is not None:
-            return tens * 10 + ones
-    return None
-
-
-def _is_locally_negated(text: str, start: int) -> bool:
-    sentence_start = max(text.rfind(marker, 0, start) for marker in "。！？\n") + 1
-    prefix = text[sentence_start:start].rstrip()
-    return bool(re.search(r"(?:没有|没|未|并未|不)\s*(?:把|将)?\s*$", prefix))
-
-
-_ATTRIBUTE_ACTION_PATTERN = (
-    r"(?:\d+|[零一二两三四五六七八九十])\s*点(?:(?:自由)?属性点?)?[^。！？\n]{0,16}"
-    r"(?:全部)?(?:加到|加给|分配给|投入|点在)"
-)
-_ATTRIBUTE_CONFIRMATION_CONTEXT = ("属性点", "加点", "分配", "力量", "体质", "敏捷", "智力", "精神", "感知")
-_EXPLANATORY_ALLOCATION_MARKERS = ("系统", "规则", "示例", "提示说明", "界面说明")
-_CHARACTER_ALLOCATION_PREFIX = re.compile(
-    r"(?:他|她|我|玩家|角色|[\u4e00-\u9fff]{2,4})[^。！？\n]{0,20}"
-    r"(?:打开|抬手|伸手|把|将|决定|选择|分配|投入|加)\s*$"
-)
-
-
-def _sentence_bounds(text: str, position: int) -> tuple[int, int]:
-    start = max(text.rfind(marker, 0, position) for marker in "。！？\n") + 1
-    ends = [index for marker in "。！？\n" if (index := text.find(marker, position)) >= 0]
-    return start, min(ends) if ends else len(text)
-
-
-def _has_character_allocation_actor(body: str, action_start: int) -> bool:
-    sentence_start, sentence_end = _sentence_bounds(body, action_start)
-    sentence = body[sentence_start:sentence_end]
-    if any(marker in sentence for marker in _EXPLANATORY_ALLOCATION_MARKERS):
-        return False
-    return bool(_CHARACTER_ALLOCATION_PREFIX.search(body[sentence_start:action_start]))
-
-
-def _has_positive_confirmation(body: str) -> bool:
-    confirmations = list(re.finditer(r"确认|确定|生效|保存", body))
-    for action in re.finditer(_ATTRIBUTE_ACTION_PATTERN, body):
-        if _is_locally_negated(body, action.start()) or not _has_character_allocation_actor(body, action.start()):
-            continue
-        action_start, action_end = _sentence_bounds(body, action.start())
-        _, nearby_end = _sentence_bounds(body, action_end + 1)
-        for match in confirmations:
-            confirmation_start, confirmation_end = _sentence_bounds(body, match.start())
-            suffix = body[match.end() : match.end() + 8]
-            if confirmation_start not in (action_start, action_end + 1) or match.start() > nearby_end:
-                continue
-            if _is_locally_negated(body, match.start()) or re.match(r"\s*(?:不分配|不加点|不加属性)", suffix):
-                continue
-            confirmation_sentence = body[confirmation_start:confirmation_end]
-            confirmation_window = body[max(confirmation_start, match.start() - 8) : match.end() + 12]
-            if any(token in confirmation_window for token in ("修理", "订单", "交易", "任务")):
-                continue
-            if any(token in confirmation_sentence for token in _ATTRIBUTE_CONFIRMATION_CONTEXT):
-                return True
-    return False
-
-
 _ATTRIBUTE_NAMES = ("力量", "体质", "敏捷", "智力", "精神", "感知")
 _ATTRIBUTE_DECISION_MODES = {"allocate", "carry"}
 
@@ -479,54 +401,17 @@ def _current_attribute_allocation_decision(event_plan: dict[str, Any]) -> dict[s
 
 def _attribute_action_values(body: str) -> dict[str, int]:
     values: dict[str, int] = {}
-    count_pattern = r"(?P<count>\d+|[一二两三四五六七八九十]{1,3})"
     for attribute in _ATTRIBUTE_NAMES:
-        pattern = (
-            rf"{count_pattern}\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
-            rf"(?:全部)?(?:加到|加给|分配给|投入|点在)\s*{re.escape(attribute)}(?:上|里)?"
-        )
-        match = re.search(pattern, body)
-        if match and not _is_locally_negated(body, match.start()) and _has_character_allocation_actor(body, match.start()):
-            count = _parse_count(match.group("count"))
-            if count is not None:
-                values[attribute] = count
+        points = character_attribute_allocation_points(body, attribute)
+        if points is not None:
+            values[attribute] = points
     return values
 
 
-def _visible_remaining_points(body: str) -> int | None:
-    if re.search(r"(?:可用属性点|剩余属性点|自由属性点)[^。！？\n]{0,8}归零", body):
-        return 0
-    match = re.search(
-        r"(?:可用属性点|剩余属性点|自由属性点|属性点还剩)[^。！？\n]{0,8}"
-        r"(?P<count>\d+|[一二两三四五六七八九十]{1,3})\s*点?",
-        body,
-    )
-    return _parse_count(match.group("count")) if match else None
-
-
-def _has_local_carry_choice_and_reason(body: str) -> tuple[bool, bool]:
-    choice_pattern = r"暂时不加|先不加|留着|保留|攒着|不分配"
-    reason_pattern = r"因为|为了|留给|等到|等转职"
-    for choice in re.finditer(choice_pattern, body):
-        sentence_start = max(body.rfind(marker, 0, choice.start()) for marker in "。！？\n") + 1
-        sentence_end_candidates = [index for marker in "。！？\n" if (index := body.find(marker, choice.end())) >= 0]
-        sentence_end = min(sentence_end_candidates) if sentence_end_candidates else len(body)
-        sentence = body[sentence_start:sentence_end]
-        if re.search(reason_pattern, sentence):
-            return True, True
-        next_start = sentence_end + 1
-        next_end_candidates = [index for marker in "。！？\n" if (index := body.find(marker, next_start)) >= 0]
-        next_sentence = body[next_start : min(next_end_candidates) if next_end_candidates else len(body)].lstrip()
-        if re.match(rf"(?:{reason_pattern})", next_sentence):
-            return True, True
-        return True, False
-    return False, False
-
-
 def _has_allocation_result(body: str, expected: dict[str, int], remaining: int) -> bool:
-    if not _has_positive_confirmation(body):
+    if not has_positive_attribute_allocation_confirmation(body):
         return False
-    if _visible_remaining_points(body) == remaining:
+    if latest_confirmed_attribute_points(body) == remaining:
         return True
     return any(
         re.search(rf"{re.escape(attribute)}[^。！？\n]{{0,16}}(?:变成|提升到|增加到)\s*(?:\d+|[一二两三四五六七八九十]+)", body)
@@ -541,7 +426,7 @@ def _review_attribute_allocation_decision(
     if not decision:
         return
     if decision["mode"] == "carry":
-        remaining = _visible_remaining_points(body)
+        remaining = latest_attribute_points(body)
         if remaining is not None and remaining != decision["remaining"]:
             _append_issue(
                 issues=issues,
@@ -552,7 +437,7 @@ def _review_attribute_allocation_decision(
                 plan="按当前章节的结构化加点决定统一保留点数；正文明确写出的剩余点必须优先修正。",
             )
             return
-        has_choice, has_reason = _has_local_carry_choice_and_reason(body)
+        has_choice, has_reason = has_character_attribute_carry_choice_and_reason(body)
         if remaining != decision["remaining"] or not has_choice or not has_reason:
             _append_issue(
                 issues=issues,
@@ -566,7 +451,7 @@ def _review_attribute_allocation_decision(
 
     expected = decision["allocations"]
     actual = _attribute_action_values(body)
-    actual_remaining = _visible_remaining_points(body)
+    actual_remaining = latest_confirmed_attribute_points(body)
     if actual and actual != expected or actual_remaining is not None and actual_remaining != decision["remaining"]:
         _append_issue(
             issues=issues,
