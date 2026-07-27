@@ -5333,11 +5333,13 @@ class FileProjectStore:
                 source_body=source_body_placeholder,
                 game_context=game_context,
                 allow_trade_payoff=allow_trade_payoff,
+                chapter_number=target,
             )
             compression_prompt = _render_compression_length_prompt(
                 source_body=source_body_placeholder,
                 game_context=game_context,
                 allow_trade_payoff=allow_trade_payoff,
+                chapter_number=target,
                 outline_anchor=chapter_seed.get("outline_anchor"),
             )
             prompts.extend(

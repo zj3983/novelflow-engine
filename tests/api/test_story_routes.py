@@ -1956,6 +1956,7 @@ def test_project_agent_revise_updates_latest_chapter(monkeypatch):
     assert safety["accepted"] is True, json.dumps(safety, ensure_ascii=False, sort_keys=True)
     assert safety["selected"] == "candidate"
     assert safety["reason"] == "structural_length_error_resolved"
+    assert safety["candidate_score"] >= safety["original_score"] - 100
     assert safety["original_chars"] == 46
     assert safety["candidate_chars"] == 4309
     assert safety["candidate_issue_count"] == 9

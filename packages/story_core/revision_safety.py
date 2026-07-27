@@ -100,6 +100,7 @@ def choose_best_revision(
         and candidate_in_preferred_range
         and not candidate_has_hard_errors
         and candidate_issue_count <= original_issue_count + 3
+        and candidate_score >= original_score - 100.0
     )
     hard_error_preference_allowed = (
         hard_errors_resolved
@@ -121,6 +122,8 @@ def choose_best_revision(
     ):
         forced_reject_reason = "failed_candidate_did_not_reduce_issues"
         candidate_score -= 120.0
+    elif original_has_structural_length_error and candidate_score < original_score - 100.0:
+        forced_reject_reason = "candidate_score_regressed_too_much"
     elif original_chars >= 1000 and candidate_chars < original_chars * 0.65:
         forced_reject_reason = "candidate_severely_shorter"
         candidate_score -= 80.0

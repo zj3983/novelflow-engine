@@ -99,9 +99,17 @@ def test_auto_quality_gate_allows_advisory_review_and_records_warning():
 from packages.story_core.models import ChapterSummary, StoryState, TimelineEvent
 from packages.story_core.outline_planning import GeneratedOutlinePlan
 from packages.story_core.skill_packs import import_skill_pack_from_path
-from packages.story_core.orchestrator import _failed_bundle
+from packages.story_core.orchestrator import (
+    _failed_bundle,
+    _render_compression_length_prompt,
+    _render_expansion_length_prompt,
+)
+from packages.story_core.prompt_templates import prompt_template_scope
 from packages.story_core.world_blueprint_context import flatten_selected_rules
-from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
+from packages.story_core.web_game_economy import (
+    normalize_legacy_economy_prompt_value,
+    opening_market_exchange_flow_lines,
+)
 
 
 def _long_test_body(label: str = "Night Ember keeps the chapter grounded.") -> str:
@@ -3491,6 +3499,98 @@ def test_prompt_preview_uses_project_expansion_and_compression_template_override
     prompts = {item["key"]: item["content"] for item in preview["prompts"]}
     assert "PROJECT EXPANSION" in prompts["expansion"]
     assert "PROJECT COMPRESSION" in prompts["compression"]
+
+
+@pytest.mark.parametrize(
+    ("genre", "plugin_id", "game_context"),
+    [
+        ("网游", "game_webnovel", True),
+        ("玄幻", "xuanhuan", False),
+    ],
+)
+def test_project_length_template_runtime_matches_preview_economy_normalization(
+    tmp_path,
+    genre,
+    plugin_id,
+    game_context,
+):
+    root = tmp_path / f"length-template-contract-{plugin_id}"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": f"p-length-template-{plugin_id}",
+            "title": "Length Template Contract",
+            "active_story_id": f"s-length-template-{plugin_id}",
+            "world_blueprint": {"genre_plugin_ids": [plugin_id]},
+        },
+        state={
+            "story_id": f"s-length-template-{plugin_id}",
+            "outline": "主角处理第一章压力。",
+            "genre": genre,
+            "genre_plugin_ids": [plugin_id],
+            "style": "白描",
+            "current_chapter": 1,
+            "world_facts": [],
+            "characters": [{"name": "主角", "role": "protagonist"}],
+        },
+    )
+    body = _long_test_body()
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "第一章",
+            "body": body,
+            "event_plan": {"chapter_title": "第一章", "next_focus": "继续追查"},
+        },
+    )
+    store.set_prompt_template_override(
+        "expansion",
+        "CUSTOM EXPANSION 担保交易 {{target_chars}}\n{{expansion_focus}}\n{{source_body}}",
+    )
+    store.set_prompt_template_override(
+        "compression",
+        "CUSTOM COMPRESSION 担保订单 {{opening_line}}\n{{target_chars}}\n{{compression_method}}\n{{chapter_scope}}\n{{source_body}}",
+    )
+    source_body = f"[原正文由 source_body 注入；面板不展示正文全文；当前正文 {len(body)} 字。]"
+
+    with prompt_template_scope(store.prompt_template_object, store.prompt_template_source):
+        runtime_expansion = _render_expansion_length_prompt(
+            source_body=source_body,
+            game_context=game_context,
+            allow_trade_payoff=False,
+            chapter_number=1,
+        )
+        runtime_compression = _render_compression_length_prompt(
+            source_body=source_body,
+            game_context=game_context,
+            allow_trade_payoff=False,
+            chapter_number=1,
+        )
+
+    preview = store.prompt_preview(1)
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+
+    assert prompts["expansion"] == runtime_expansion
+    assert prompts["compression"] == runtime_compression
+    assert normalize_legacy_economy_prompt_value(
+        runtime_expansion,
+        game_context=game_context,
+        chapter_number=1,
+    ) == runtime_expansion
+    assert normalize_legacy_economy_prompt_value(
+        runtime_compression,
+        game_context=game_context,
+        chapter_number=1,
+    ) == runtime_compression
+    if game_context:
+        assert "担保交易" not in runtime_expansion
+        assert "担保订单" not in runtime_compression
+        assert "交易行" in runtime_expansion
+        assert "官方兑换流水" in runtime_compression
+    else:
+        assert "担保交易" in runtime_expansion
+        assert "担保订单" in runtime_compression
 
 
 def test_prompt_preview_uses_complete_runtime_story_payload_for_author_constraints(tmp_path):

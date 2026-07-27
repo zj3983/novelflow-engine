@@ -4166,6 +4166,7 @@ def _render_expansion_length_prompt(
     source_body: str,
     game_context: bool,
     allow_trade_payoff: bool,
+    chapter_number: int,
 ) -> str:
     if game_context:
         expansion_scope = (
@@ -4177,7 +4178,7 @@ def _render_expansion_length_prompt(
         )
     else:
         expansion_scope = "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。"
-    return render_prompt_template(
+    rendered = render_prompt_template(
         get_effective_prompt_template("expansion"),
         {
             "target_chars": TARGET_CHAPTER_CHARS,
@@ -4189,6 +4190,13 @@ def _render_expansion_length_prompt(
             "source_body": source_body,
         },
     )
+    return str(
+        normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=game_context,
+            chapter_number=chapter_number,
+        )
+    )
 
 
 def _render_compression_length_prompt(
@@ -4196,6 +4204,7 @@ def _render_compression_length_prompt(
     source_body: str,
     game_context: bool,
     allow_trade_payoff: bool,
+    chapter_number: int,
     outline_anchor: dict[str, Any] | None = None,
     target_chars: str | None = None,
     feedback: str = "",
@@ -4223,7 +4232,7 @@ def _render_compression_length_prompt(
         chapter_scope = "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。"
     if feedback.strip():
         compression_method = f"压缩反馈：{feedback.strip()}\n{compression_method}"
-    return render_prompt_template(
+    rendered = render_prompt_template(
         get_effective_prompt_template("compression"),
         {
             "opening_line": opening_line,
@@ -4233,6 +4242,13 @@ def _render_compression_length_prompt(
             "chapter_scope": chapter_scope,
             "source_body": source_body,
         },
+    )
+    return str(
+        normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=game_context,
+            chapter_number=chapter_number,
+        )
     )
 
 
@@ -6905,6 +6921,7 @@ class StoryOrchestrator:
                     source_body=body,
                     game_context=game_context,
                     allow_trade_payoff=allow_trade_payoff,
+                    chapter_number=chapter_number,
                 ),
                 max_tokens=7000,
                 json_mode=False,
@@ -7118,6 +7135,7 @@ class StoryOrchestrator:
                         source_body=before_body,
                         game_context=game_context,
                         allow_trade_payoff=allow_trade_payoff,
+                        chapter_number=chapter_number,
                         outline_anchor=outline_anchor,
                     ),
                     max_tokens=5000 if compress_round == 1 else 4500,
@@ -7178,6 +7196,7 @@ class StoryOrchestrator:
                             source_body=before_body,
                             game_context=game_context,
                             allow_trade_payoff=allow_trade_payoff,
+                            chapter_number=chapter_number,
                             outline_anchor=outline_anchor,
                             target_chars=(
                                 "保留完整网文章节感，调整到正常范围4200到5500字，"

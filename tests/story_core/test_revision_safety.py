@@ -270,10 +270,10 @@ def test_choose_best_revision_rejects_failed_candidate_without_fewer_issues():
 def test_choose_best_revision_prefers_in_range_candidate_that_repairs_structural_length_error():
     original_issues = [f"原问题{i}" for i in range(6)]
     candidate_issues = [f"候选软问题{i}" for i in range(9)]
-    original = _quality(False, {"genre_rules": 6}, original_issues)
+    original = _quality(False, {"genre_rules": 8.4}, original_issues)
     original["issues"] = ["body_too_short", *original_issues]
     original["has_hard_errors"] = True
-    candidate = _quality(False, {"genre_rules": 6}, candidate_issues)
+    candidate = _quality(False, {"genre_rules": 1.526}, candidate_issues)
     candidate["has_hard_errors"] = False
 
     result = choose_best_revision(
@@ -286,8 +286,32 @@ def test_choose_best_revision_prefers_in_range_candidate_that_repairs_structural
     assert result["accepted"] is True
     assert result["selected"] == "candidate"
     assert result["report"]["reason"] == "structural_length_error_resolved"
+    assert result["report"]["original_score"] == -25.0
+    assert result["report"]["candidate_score"] == -113.74
     assert result["report"]["original_issue_count"] == 6
     assert result["report"]["candidate_issue_count"] == 9
+
+
+def test_choose_best_revision_rejects_structural_repair_when_score_drops_more_than_100():
+    original = _quality(False, {"genre_rules": 5.44}, ["原问题"])
+    original["issues"] = ["body_too_short", "原问题"]
+    original["has_hard_errors"] = True
+    candidate = _quality(False, {"genre_rules": -6.4}, ["软问题一", "软问题二", "软问题三", "软问题四"])
+    candidate["has_hard_errors"] = False
+
+    result = choose_best_revision(
+        original_body="原" * 46,
+        original_quality=original,
+        candidate_body="改" * 4309,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["selected"] == "original"
+    assert result["report"]["reason"] == "candidate_score_regressed_too_much"
+    assert result["report"]["original_score"] == -14.6
+    assert result["report"]["candidate_score"] == -153.0
+    assert result["report"]["candidate_score"] < result["report"]["original_score"] - 100
 
 
 def test_choose_best_revision_structural_length_preference_handles_overlong_original():
