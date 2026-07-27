@@ -165,3 +165,52 @@ def test_revision_prompt_uses_only_consolidated_review_actions():
     assert "## 综合审稿修改" in prompt
     assert "原始修改意见7" not in prompt
     assert prompt.count("问题：") <= 3
+
+
+def test_revision_prompt_keeps_each_action_with_its_issue_after_reordering():
+    story = StoryState(story_id="s-review-pairs", outline="查清旧印", genre="xuanhuan", style="白描")
+    review = {
+        "issues": ["对话不够自然。", "设定冲突：规划实体写错。"],
+        "revision_plan": ["修对白。", "修规划词。"],
+    }
+
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文", {}, review)
+
+    assert "1. 问题：设定冲突：规划实体写错。 修改：修规划词。" in prompt
+    assert "2. 问题：对话不够自然。 修改：修对白。" in prompt
+    assert "问题：设定冲突：规划实体写错。 修改：修对白。" not in prompt
+
+
+def test_revision_prompt_prefers_nested_issue_specific_suggestion_over_aggregate_plan():
+    story = StoryState(story_id="s-review-specific", outline="查清旧印", genre="xuanhuan", style="白描")
+    message = "设定冲突：规划实体写错。"
+    review = {
+        "issues": [message],
+        "revision_plan": ["aggregate-wrong"],
+        "reviewer_agent_review": {
+            "issues": [{"message": message, "suggestion": "embedded-correct"}],
+        },
+    }
+
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文", {}, review)
+
+    assert f"问题：{message} 修改：embedded-correct" in prompt
+    assert "aggregate-wrong" not in prompt
+
+
+def test_revision_prompt_prefers_nested_paired_plan_over_aggregate_paired_plan():
+    story = StoryState(story_id="s-review-nested-pair", outline="查清旧印", genre="xuanhuan", style="白描")
+    message = "设定冲突：规划实体写错。"
+    review = {
+        "issues": [message],
+        "revision_plan": ["aggregate-wrong"],
+        "reviewer_agent_review": {
+            "issues": [message],
+            "revision_plan": ["nested-paired-correct"],
+        },
+    }
+
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文", {}, review)
+
+    assert f"问题：{message} 修改：nested-paired-correct" in prompt
+    assert "aggregate-wrong" not in prompt

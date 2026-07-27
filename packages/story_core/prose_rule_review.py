@@ -75,6 +75,59 @@ _GUIDE_TERMS = (
     "仇恨值",
 )
 
+_PLANNING_META_TERM_PATTERN = (
+    r"[“‘「『《【（\"]?\s*"
+    r"(?:(?:章节|剧情|任务)\s*)?(?:前置条件|剧情节点)"
+    r"\s*[”’」』》】）\"]?"
+)
+_PLANNING_META_RIGHT_BOUNDARY_PATTERN = r"(?=$|[\s，。！？；：、,.!?;:）】》」』”’)])"
+_PLANNING_META_LOCATION_SUFFIX_PATTERN = r"(?:旁边|边上|前面|后面|前方|后方|边|旁|前|后)"
+_PLANNING_META_LOCATION_END_PATTERN = (
+    rf"(?:(?:的\s*)?{_PLANNING_META_LOCATION_SUFFIX_PATTERN}"
+    rf"(?:的|{_PLANNING_META_RIGHT_BOUNDARY_PATTERN})"
+    rf"|{_PLANNING_META_RIGHT_BOUNDARY_PATTERN})"
+)
+_PLANNING_META_ACTION_CONTINUATION_PATTERN = (
+    r"(?:(?:之后|之前|以前|以后|的时候|时|后(?!续)|前)(?!的|面))"
+)
+_PLANNING_META_ACTION_END_PATTERN = (
+    rf"(?:{_PLANNING_META_ACTION_CONTINUATION_PATTERN}"
+    rf"|{_PLANNING_META_RIGHT_BOUNDARY_PATTERN})"
+)
+_PLANNING_META_CROSS_OUT_FOLLOWUP_PATTERN = r"(?=(?:进入|走向|来到|回到|继续|又|再|并))"
+_PLANNING_META_CROSS_OUT_END_PATTERN = (
+    rf"(?:{_PLANNING_META_ACTION_CONTINUATION_PATTERN}"
+    rf"|{_PLANNING_META_CROSS_OUT_FOLLOWUP_PATTERN}"
+    rf"|{_PLANNING_META_RIGHT_BOUNDARY_PATTERN})"
+)
+_PLANNING_META_ENTITY_PATTERNS = (
+    re.compile(
+        rf"(?:站在|走到|退到|靠在|停在|蹲在)(?:了)?\s*"
+        rf"{_PLANNING_META_TERM_PATTERN}"
+        rf"{_PLANNING_META_LOCATION_END_PATTERN}"
+    ),
+    re.compile(
+        rf"(?:迈出|推开|关上)(?:了)?\s*"
+        rf"{_PLANNING_META_TERM_PATTERN}"
+        rf"{_PLANNING_META_ACTION_END_PATTERN}"
+    ),
+    re.compile(
+        rf"跨出(?:了)?\s*"
+        rf"{_PLANNING_META_TERM_PATTERN}"
+        rf"{_PLANNING_META_CROSS_OUT_END_PATTERN}"
+    ),
+    re.compile(
+        rf"(?:把|将)\s*{_PLANNING_META_TERM_PATTERN}"
+        rf"(?:迈出|推开|关上)(?:了)?"
+        rf"{_PLANNING_META_ACTION_END_PATTERN}"
+    ),
+    re.compile(
+        rf"(?:把|将)\s*{_PLANNING_META_TERM_PATTERN}"
+        rf"跨出(?:了)?"
+        rf"{_PLANNING_META_CROSS_OUT_END_PATTERN}"
+    ),
+)
+
 _POV_BREACH_TERMS = (
     "公会频道",
     "通讯频道",
@@ -132,6 +185,16 @@ def _merge_issue(target: list[str], issue: str) -> None:
         target.append(issue)
 
 
+def _planning_meta_entity_hits(text: str) -> list[str]:
+    hits: list[str] = []
+    for pattern in _PLANNING_META_ENTITY_PATTERNS:
+        for match in pattern.finditer(text):
+            phrase = match.group(0)
+            if phrase not in hits:
+                hits.append(phrase)
+    return hits
+
+
 def _paragraphs(text: str) -> list[str]:
     return [
         part.strip()
@@ -158,6 +221,7 @@ def review_diagnostic_terms_in_body(text: str) -> dict[str, Any]:
     hits = [term for term in _DIAGNOSTIC_TERMS if term in text]
     fact_hits = [term for term in _FACT_CONTRADICTION_TERMS if term in text]
     guide_hits = [term for term in _GUIDE_TERMS if term in text]
+    planning_meta_hits = _planning_meta_entity_hits(text)
 
     if hits:
         issues.append(f"正文混入后台/审稿术语：{'、'.join(hits[:5])}。")
@@ -168,6 +232,9 @@ def review_diagnostic_terms_in_body(text: str) -> dict[str, Any]:
     if guide_hits:
         issues.append(f"战斗写成攻略说明：{'、'.join(guide_hits[:5])}。")
         revision_plan.append("把攻略术语改成动作、距离、错位、法力/体力消耗、装备震动和敌我反应。")
+    if planning_meta_hits:
+        issues.append(f"正文出现题材污染，规划元语言被写成实体：{'、'.join(planning_meta_hits[:5])}。")
+        revision_plan.append("把实体化的规划词改成实际门、台阶、规矩、任务要求或具体动作。")
 
     return {
         "pass": not issues,
@@ -176,6 +243,7 @@ def review_diagnostic_terms_in_body(text: str) -> dict[str, Any]:
         "scores": {
             "diagnostic_terms": 5 if hits or fact_hits else 8,
             "guide_terms": 5 if guide_hits else 8,
+            "planning_meta_leak": 5 if planning_meta_hits else 8,
         },
     }
 
@@ -641,6 +709,7 @@ def review_refrain_traps(text: str) -> dict[str, Any]:
 HARD_REVIEWERS: frozenset[str] = frozenset({
     "diagnostic_terms",          # 后台术语 / 事实矛盾词（前世/穿越模板）
     "guide_terms",                # 攻略术语（前摇 / DPS / 元素传导效率）
+    "planning_meta_leak",         # 规划元语言被写成可站立、跨越或推开的实体
     "pov_boundary",               # 公会内部频道 / 上帝视角宣告
     "npc_boundary",               # NPC 越权讲不该讲的
     "refrain_traps",              # 照抄 demo 复读句

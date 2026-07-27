@@ -125,6 +125,19 @@ def _mock_story_chat(self, story, prompt: str, *, max_tokens: int, json_mode: bo
                     "world_reactions": ["外部势力注意到新的线索。"],
                     "stakes": "如果失败，线索会断裂。",
                     "next_focus": f"继续推进{lead}与{opposition}的线索",
+                    "chapter_satisfaction": {
+                        "core_event": f"{lead}发现关键线索",
+                        "obstacle": f"{opposition}阻止调查继续推进",
+                        "visible_payoff": f"{lead}拿到可验证的关键证据",
+                        "cost": "调查行动暴露了主角的关注方向",
+                        "state_change": "关键事件从无头绪变为可以继续追查",
+                        "next_hook": f"继续推进{lead}与{opposition}的线索",
+                    },
+                    "chapter_end_hook": {
+                        "type": "悬念钩",
+                        "strength": "medium",
+                        "content": f"新的证据迫使{lead}继续追查",
+                    },
                 },
                 "memory_constraints": {
                     "must_keep_facts": ["主角正在推进关键事件"],
@@ -1867,6 +1880,17 @@ def test_project_agent_review_reports_missing_chapter():
 
 
 def test_project_agent_revise_updates_latest_chapter(monkeypatch):
+    from packages.story_core import orchestrator as orchestrator_module
+    from packages.story_core.simplified_review import build_simplified_review
+
+    safety_inputs = {}
+    real_choose_best_revision = orchestrator_module.choose_best_revision
+
+    def capture_safety(**kwargs):
+        safety_inputs.update(kwargs)
+        return real_choose_best_revision(**kwargs)
+
+    monkeypatch.setattr(orchestrator_module, "choose_best_revision", capture_safety)
     client.post(
         "/stories",
         json={
@@ -1896,7 +1920,17 @@ def test_project_agent_revise_updates_latest_chapter(monkeypatch):
         assert agent == "memory"
         return "", "memory unavailable"
 
+    def soft_candidate_review(*_args, **_kwargs):
+        issues = [f"候选软问题{i}" for i in range(9)]
+        return {
+            "pass": False,
+            "scores": {"genre_rules": 6},
+            "issues": issues,
+            "revision_plan": ["局部润色，不改变剧情。"] * len(issues),
+        }
+
     monkeypatch.setattr("packages.story_core.orchestrator.StoryOrchestrator._chat", fake_revision_chat)
+    monkeypatch.setattr(orchestrator_module, "_review_chapter_body", soft_candidate_review)
 
     response = client.post(
         "/projects/p-agent-revise/agent-revise",
@@ -1910,6 +1944,23 @@ def test_project_agent_revise_updates_latest_chapter(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["schema_version"] == "agent-revision/v1"
+    original_gate = build_simplified_review(safety_inputs["original_quality"])
+    candidate_gate = build_simplified_review(safety_inputs["candidate_quality"])
+    assert safety_inputs["original_quality"]["has_hard_errors"] is True, original_gate
+    assert safety_inputs["candidate_quality"]["has_hard_errors"] is False, json.dumps(
+        candidate_gate,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    safety = payload["review"]["quality"]["revision_safety"]
+    assert safety["accepted"] is True, json.dumps(safety, ensure_ascii=False, sort_keys=True)
+    assert safety["selected"] == "candidate"
+    assert safety["reason"] == "structural_length_error_resolved"
+    assert safety["candidate_score"] >= safety["original_score"] - 100
+    assert safety["original_chars"] == 46
+    assert safety["candidate_chars"] == 4309
+    assert safety["candidate_issue_count"] == 9
+    assert safety["candidate_issue_count"] <= safety["original_issue_count"] + 3
     assert payload["revision"]["changed"] is True
     assert payload["revision"]["previous_body_chars"] == len(original)
     assert payload["chapter"]["body"] == revised_body

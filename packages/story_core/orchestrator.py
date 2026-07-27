@@ -37,7 +37,7 @@ from packages.story_core.memory import (
     retrieve_relevant_memories,
 )
 from packages.story_core.models import DirectorDecision, StageRuntimeEntry, StoryState
-from packages.story_core.novel_type_catalog import normalize_novel_type_id
+from packages.story_core.novel_type_catalog import is_game_story_type, normalize_novel_type_id, normalize_novel_type_ids
 from packages.story_core.planner import build_chapter_title, build_conflict_summary, build_event_beat, compute_chapter_cadence, plan_next_outline
 from packages.story_core.post_draft_memory import (
     build_post_draft_memory_prompt,
@@ -2191,30 +2191,103 @@ def _director_prompt_character_cards(value: Any) -> dict[str, Any]:
     return {"cards": compact_cards}
 
 
-def _normalize_moves(raw_moves: object) -> list[dict]:
+def _normalize_moves(
+    raw_moves: object,
+    *,
+    require_action: bool = False,
+    allow_text_items: bool = False,
+    require_name: bool = True,
+) -> list[dict]:
     moves: list[dict] = []
-    if not isinstance(raw_moves, list):
+    candidates: list[tuple[dict | str, object]] = []
+    if isinstance(raw_moves, list):
+        candidates.extend(
+            (item, None)
+            for item in raw_moves
+            if isinstance(item, dict) or (allow_text_items and isinstance(item, str))
+        )
+    elif isinstance(raw_moves, dict):
+        if "name" in raw_moves or "action" in raw_moves:
+            candidates.append((raw_moves, None))
+        else:
+            for grouped_name, grouped_moves in raw_moves.items():
+                if isinstance(grouped_moves, dict):
+                    candidates.append((grouped_moves, grouped_name))
+                elif isinstance(grouped_moves, list):
+                    candidates.extend(
+                        (item, grouped_name)
+                        for item in grouped_moves
+                        if isinstance(item, dict) or (allow_text_items and isinstance(item, str))
+                    )
+                elif allow_text_items and isinstance(grouped_moves, str):
+                    candidates.append((grouped_moves, grouped_name))
+    else:
         return moves
-    for item in raw_moves[:6]:
-        if not isinstance(item, dict):
+    for item, grouped_name in candidates:
+        item_data = item if isinstance(item, dict) else {}
+        raw_action = str(item if isinstance(item, str) else item_data.get("action") or "").strip()
+        if isinstance(item, str) and not raw_action:
             continue
-        name = str(item.get("name", "")).strip()
-        if not name:
+        explicit_name = str(item_data.get("name") or "").strip()
+        name = explicit_name or str(grouped_name or "").strip()
+        if require_name and not name:
+            continue
+        if require_action and not raw_action:
             continue
         moves.append(
             {
                 "name": name,
-                "goal": compact_text(str(item.get("goal", "")).strip() or "推进当前主线", 80),
-                "emotion": str(item.get("emotion", "")).strip() or "alert",
-                "action": compact_text(str(item.get("action", "")).strip() or "继续推进当前主线", 120),
-                "priority": _normalize_priority(item.get("priority")),
+                "goal": compact_text(str(item_data.get("goal") or "").strip() or "推进当前主线", 80),
+                "emotion": str(item_data.get("emotion") or "").strip() or "alert",
+                "action": compact_text(raw_action or "继续推进当前主线", 120),
+                "priority": _normalize_priority(item_data.get("priority")),
                 "new_character_candidates": compact_list(
-                    item.get("new_character_candidates", []),
+                    item_data.get("new_character_candidates", []),
                     max_items=4,
                     item_chars=60,
                 ),
             }
         )
+        if len(moves) == 6:
+            break
+    return moves
+
+
+def _story_character_names(story: StoryState) -> list[str]:
+    return list(
+        dict.fromkeys(
+            name
+            for character in story.characters
+            for name in (str(character.name or "").strip(), str(character.game_id or "").strip())
+            if name
+        )
+    )
+
+
+def _normalize_ordered_actions(
+    raw_actions: object,
+    *,
+    story: StoryState,
+    require_action: bool = False,
+) -> list[dict]:
+    moves = _normalize_moves(
+        raw_actions,
+        require_action=require_action,
+        allow_text_items=True,
+        require_name=False,
+    )
+    known_names = _story_character_names(story)
+    for move in moves:
+        if str(move.get("name") or "").strip():
+            continue
+        action = str(move.get("action") or "").lstrip()
+        matches = [
+            (-len(name), order, name)
+            for order, name in enumerate(known_names)
+            if action.startswith(name)
+        ]
+        if matches:
+            move["name"] = min(matches)[2]
     return moves
 
 
@@ -2275,11 +2348,6 @@ def _normalize_intent(raw_intent: object) -> dict:
     }
 
 
-def _director_quality_gate_enabled(story: StoryState) -> bool:
-    context = story.outline_context if isinstance(story.outline_context, dict) else {}
-    return context.get("schema_version") == "outline-context/v1"
-
-
 def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     if not isinstance(plan, dict):
         return ["导演产物不是JSON对象。"]
@@ -2307,29 +2375,35 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     if any(value in placeholder_phrases for value in [*satisfaction_values, str(hook.get("content") or "").strip()]):
         issues.append("章节规划仍含空泛占位语，必须改成能直接写成场景的具体行动、阻力、结果和章末事件。")
 
-    moves = []
-    for key in ("character_moves",):
-        value = plan.get(key)
-        if isinstance(value, list):
-            moves.extend(item for item in value if isinstance(item, dict))
-    ordered = event_plan.get("ordered_actions")
-    if isinstance(ordered, list):
-        moves.extend(item for item in ordered if isinstance(item, dict))
+    character_moves = _normalize_moves(plan.get("character_moves"), require_action=True, allow_text_items=True)
+    ordered_moves = _normalize_ordered_actions(event_plan.get("ordered_actions"), story=story, require_action=True)
+    moves = [*character_moves, *ordered_moves]
+    if not moves:
+        issues.append("导演计划缺少可执行动作。")
 
     lead = next((character for character in story.characters if character.role in {"主角", "protagonist"}), None)
     if is_game_story(story) and lead and lead.game_id:
         for move in moves:
-            if str(move.get("name") or "").strip() != lead.name:
-                continue
+            name = str(move.get("name") or "").strip()
             action_text = " ".join(str(move.get(key) or "") for key in ("goal", "action"))
+            if name != lead.name and lead.name not in action_text:
+                continue
             if not any(marker in action_text for marker in ("现实", "下线", "手机", "银行卡", "房租")):
                 issues.append(f"游戏内行动使用了现实姓名“{lead.name}”，应使用游戏ID“{lead.game_id}”。")
                 break
 
     generic_suffixes = ("收购方", "管理员", "工作人员", "路人", "玩家甲", "店员", "商人玩家")
-    for move in moves:
+    structured_named_moves = [
+        *character_moves,
+        *_normalize_moves(
+            event_plan.get("ordered_actions"),
+            require_action=True,
+            allow_text_items=True,
+        ),
+    ]
+    for move in structured_named_moves:
         name = str(move.get("name") or "").strip()
-        if name and name.endswith(generic_suffixes):
+        if name.endswith(generic_suffixes):
             issues.append(f"角色“{name}”是岗位或占位称呼；删除该角色，或先使用已有具名角色卡。")
             break
 
@@ -2468,7 +2542,11 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
         "turn": compact_text(str(raw_event_plan.get("turn", "")).strip(), 120),
         "pivot": compact_text(str(raw_event_plan.get("pivot", "")).strip(), 160),
         "collision": compact_text(str(raw_event_plan.get("collision", "")).strip(), 160),
-        "ordered_actions": _normalize_moves(raw_event_plan.get("ordered_actions")),
+        "ordered_actions": _normalize_ordered_actions(
+            raw_event_plan.get("ordered_actions"),
+            story=story,
+            require_action=True,
+        ),
         "exposition_beats": compact_list(raw_event_plan.get("exposition_beats", []), max_items=8, item_chars=180),
         "npc_beats": compact_list(raw_event_plan.get("npc_beats", []), max_items=6, item_chars=180),
         "quest_beats": compact_list(raw_event_plan.get("quest_beats", []), max_items=6, item_chars=180),
@@ -3259,6 +3337,20 @@ def _story_review_genre_context(story: StoryState) -> dict[str, Any]:
     }
 
 
+def _has_explicit_review_genre_context(genre_context: Any) -> bool:
+    if isinstance(genre_context, dict):
+        if str(genre_context.get("genre") or "").strip():
+            return True
+        genre_ids = genre_context.get("genre_plugin_ids")
+        if isinstance(genre_ids, (list, tuple, set)):
+            return any(str(item or "").strip() for item in genre_ids)
+        return bool(str(genre_ids or "").strip())
+    return bool(
+        str(getattr(genre_context, "genre", "") or "").strip()
+        or any(str(item or "").strip() for item in (getattr(genre_context, "genre_plugin_ids", []) or []))
+    )
+
+
 def _review_chapter_body(
     chapter_number: int,
     body: str,
@@ -3272,7 +3364,11 @@ def _review_chapter_body(
     compact_body = "".join(body.split())
     facts_text = "\n".join(world_facts or [])
     plan_text = json.dumps(event_plan, ensure_ascii=False)
-    game_context = is_game_genre("\n".join([body, facts_text, plan_text]))
+    game_context = (
+        is_game_story_type(genre_context)
+        if _has_explicit_review_genre_context(genre_context)
+        else is_game_genre("\n".join([body, facts_text, plan_text]))
+    )
     chapter_one_trade_payoff = first_chapter_market_exchange_authorized(event_plan, world_facts)
     simulation_plan = simulation_plan or {}
     min_chapter_chars = _chapter_review_min_chars(simulation_plan)
@@ -3777,7 +3873,12 @@ def _review_chapter_body(
             "adversarial_cut": _pool.submit(review_adversarial_cuts, body),
             "ai_flavor": _pool.submit(review_ai_flavor, body),
             "reader_feel": _pool.submit(review_reader_feel, body),
-            "cold_reader": _pool.submit(review_cold_reader_experience, body, previous_summary=_previous_summary),
+            "cold_reader": _pool.submit(
+                review_cold_reader_experience,
+                body,
+                previous_summary=_previous_summary,
+                genre_context=genre_context,
+            ),
             "plot_spine": _pool.submit(review_plot_spine_completion, body, simulation_plan),
         }
         if game_context:
@@ -3987,6 +4088,9 @@ def _review_chapter_body(
         "scores": scores,
         "issues": issues,
         "revision_plan": revision_plan,
+        "web_game_review": web_game_review,
+        "consistency_review": consistency_review,
+        "prose_style_review": style_review,
         "prose_quality_review": prose_quality_review,
         "adversarial_cut_review": adversarial_cut_review,
         "reader_agent_review": reader_agent_review,
@@ -4020,6 +4124,9 @@ def _merge_writing_review_quality(quality: dict, writing_review: dict) -> dict:
     merged["writing_review"] = writing_review
     for key in (
         "critical_review",
+        "web_game_review",
+        "consistency_review",
+        "prose_style_review",
         "hook_review",
         "pacing_review",
         "beats_review",
@@ -4051,15 +4158,97 @@ def apply_expression_patches_from_review(body: str, writing_review: dict) -> tup
 
 
 def _story_game_context(story: StoryState, plan: dict[str, Any] | None = None) -> bool:
-    plan = plan if isinstance(plan, dict) else {}
-    if is_game_genre(str(getattr(story, "genre", "") or "")):
-        return True
-    return is_game_story(
-        story,
-        plan.get("event_plan", {}),
-        plan.get("simulation_plan", {}),
-        plan.get("scene_cards", []),
-        plan.get("craft_pack", {}),
+    return is_game_story_type(story)
+
+
+def _render_expansion_length_prompt(
+    *,
+    source_body: str,
+    game_context: bool,
+    allow_trade_payoff: bool,
+    chapter_number: int,
+) -> str:
+    if game_context:
+        expansion_scope = (
+            "第一章按大纲补足以下顺序："
+            + " ".join(opening_market_exchange_flow_lines())
+            + " 不新增公会追查或论坛扩散。"
+            if allow_trade_payoff
+            else "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。"
+        )
+    else:
+        expansion_scope = "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。"
+    rendered = render_prompt_template(
+        get_effective_prompt_template("expansion"),
+        {
+            "target_chars": TARGET_CHAPTER_CHARS,
+            "expansion_focus": (
+                "扩写已有场景中的行动、对话、阻力和结果，不新增独立的补丁段。"
+                "同一事实、判断和旁人误解只写一次；新增内容必须改变行动、关系或资源。"
+                f"{expansion_scope}"
+            ),
+            "source_body": source_body,
+        },
+    )
+    return str(
+        normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=game_context,
+            chapter_number=chapter_number,
+        )
+    )
+
+
+def _render_compression_length_prompt(
+    *,
+    source_body: str,
+    game_context: bool,
+    allow_trade_payoff: bool,
+    chapter_number: int,
+    outline_anchor: dict[str, Any] | None = None,
+    target_chars: str | None = None,
+    feedback: str = "",
+) -> str:
+    outline_anchor = outline_anchor if isinstance(outline_anchor, dict) else {}
+    locked_amounts = "、".join(
+        str(outline_anchor.get(key) or "").strip()
+        for key in ("opening_balance", "trade_arrival", "ending_balance")
+        if str(outline_anchor.get(key) or "").strip()
+    )
+    if game_context:
+        opening_line = "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。"
+        compression_method = "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。"
+        chapter_scope = (
+            "第一章必须原样保留角色面板、怪物面板、千倍爆率、现实职业/技能来源、见习冒险者（未转职），并按以下顺序完成："
+            + " ".join(opening_market_exchange_flow_lines())
+            + " 不要新增游戏内任务提交、修理或买药。"
+            + (f" 以下金额必须原样保留，不得改写、换算或删除：{locked_amounts}。" if locked_amounts else "")
+            if allow_trade_payoff
+            else "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。"
+        )
+    else:
+        opening_line = "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、世界规则、结尾钩子的前提下压缩。"
+        compression_method = "压缩方法：删重复解释、删绕圈心理、合并相似动作；保留核心冲突、人物反应、关键线索、代价、转折和下一步钩子。"
+        chapter_scope = "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。"
+    if feedback.strip():
+        compression_method = f"压缩反馈：{feedback.strip()}\n{compression_method}"
+    rendered = render_prompt_template(
+        get_effective_prompt_template("compression"),
+        {
+            "opening_line": opening_line,
+            "target_chars": target_chars
+            or f"保留完整网文章节感，调整到5000到5400字，绝对不要超过{MAX_CHAPTER_CHARS}字",
+            "compression_method": compression_method,
+            "chapter_scope": chapter_scope,
+            "source_body": source_body,
+        },
+    )
+    return str(
+        normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=game_context,
+            chapter_number=chapter_number,
+        )
     )
 
 
@@ -5695,7 +5884,6 @@ class StoryOrchestrator:
         base_prompt = self._render_body_prompt(story, chapter_number, plan)
         consolidated_review = build_simplified_review(review)
         review_issues = consolidated_review.get("issues") if isinstance(consolidated_review.get("issues"), list) else []
-        review_actions = consolidated_review.get("revision_plan") if isinstance(consolidated_review.get("revision_plan"), list) else []
         trope_avoid_guidance = _review_trope_avoid_guidance(review)
         manual_instructions = compact_list(review.get("manual_instructions", []), max_items=3, item_chars=150)
         modification_lines = [
@@ -5710,8 +5898,7 @@ class StoryOrchestrator:
                 if not isinstance(item, dict):
                     continue
                 message = compact_text(str(item.get("message") or ""), 100)
-                fallback = compact_text(str(item.get("suggestion") or ""), 120)
-                action = compact_text(str(review_actions[index - 1]), 120) if index <= len(review_actions) else fallback
+                action = compact_text(str(item.get("suggestion") or ""), 120)
                 modification_lines.append(f"{index}. 问题：{message} 修改：{action}")
         if trope_avoid_guidance:
             modification_lines.append(f"套路避让：{'；'.join(trope_avoid_guidance)}")
@@ -6124,7 +6311,11 @@ class StoryOrchestrator:
         manual_instructions = [str(instruction).strip() for instruction in (instructions or []) if str(instruction).strip()]
         revision_review["manual_instructions"] = manual_instructions
         original_quality_seed = bundle.model_dump()
+        original_quality_seed["manual_instructions"] = manual_instructions
         original_quality = _merge_writing_review_quality(validate_bundle(original_quality_seed), revision_review)
+        original_quality["has_hard_errors"] = bool(
+            build_simplified_review(original_quality).get("has_hard_errors")
+        )
         plan = {
             "character_moves": bundle.character_moves,
             "chapter_intent": bundle.chapter_intent,
@@ -6138,6 +6329,7 @@ class StoryOrchestrator:
             patched_body = _sanitize_generated_body(patched_body)
             quality_seed = bundle.model_dump()
             quality_seed["body"] = patched_body
+            quality_seed["manual_instructions"] = manual_instructions
             patched_review = _review_chapter_body(
                 bundle.chapter_number,
                 patched_body,
@@ -6150,6 +6342,9 @@ class StoryOrchestrator:
             )
             patched_review["expression_patch_report"] = patch_report
             patched_quality = _merge_writing_review_quality(validate_bundle(quality_seed), patched_review)
+            patched_quality["has_hard_errors"] = bool(
+                build_simplified_review(patched_quality).get("has_hard_errors")
+            )
             patch_safety = choose_best_revision(
                 original_body=bundle.body,
                 original_quality=original_quality,
@@ -6189,6 +6384,7 @@ class StoryOrchestrator:
         revised_body = _sanitize_generated_body(revised_body)
         quality_seed = bundle.model_dump()
         quality_seed["body"] = revised_body
+        quality_seed["manual_instructions"] = manual_instructions
         writing_review = _review_chapter_body(
             bundle.chapter_number,
             revised_body,
@@ -6200,6 +6396,9 @@ class StoryOrchestrator:
             genre_context=_story_review_genre_context(story),
         )
         quality_report = _merge_writing_review_quality(validate_bundle(quality_seed), writing_review)
+        quality_report["has_hard_errors"] = bool(
+            build_simplified_review(quality_report).get("has_hard_errors")
+        )
         safety = choose_best_revision(
             original_body=bundle.body,
             original_quality=original_quality,
@@ -6375,7 +6574,7 @@ class StoryOrchestrator:
             return _failed_bundle(working_story, chapter_number, f"outline_plan_parse_failed:{exc}")
         director_issues = (
             _director_plan_quality_issues(working_story, plan)
-            if outline_plan is None and _director_quality_gate_enabled(working_story)
+            if planning_source == "model_fallback"
             else []
         )
         if director_issues:
@@ -6425,7 +6624,11 @@ class StoryOrchestrator:
                     f"director_plan_quality_failed:{'; '.join(director_issues)}",
                 )
         plan_summary = {key: len(plan.get(key, [])) if isinstance(plan.get(key, []), list) else None for key in ("character_moves", "chapter_summary")}
-        action_briefs = _normalize_moves(plan.get("character_moves"))
+        action_briefs = _normalize_moves(
+            plan.get("character_moves"),
+            require_action=True,
+            allow_text_items=True,
+        )
         chapter_intent = _normalize_intent(plan.get("chapter_intent"))
         event_plan = _normalize_event_plan(plan.get("event_plan"), chapter_number, working_story)
         memory_constraints = _normalize_memory_constraints(plan.get("memory_constraints"), working_story)
@@ -6695,14 +6898,10 @@ class StoryOrchestrator:
         body = _repair_outline_amount_anchors(body, chapter_seed.get("outline_anchor"))
 
         if _should_expand_chapter(body, writer_plan):
-            allow_trade_payoff = chapter_number == 1 and first_chapter_market_exchange_authorized(
+            game_context = _story_game_context(working_story, writer_plan)
+            allow_trade_payoff = game_context and chapter_number == 1 and first_chapter_market_exchange_authorized(
                 event_plan,
                 _review_context_facts(story),
-            )
-            expansion_scope = (
-                "第一章按大纲补足以下顺序：" + " ".join(opening_market_exchange_flow_lines()) + " 不新增公会追查或论坛扩散。"
-                if allow_trade_payoff
-                else "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。"
             )
             self._emit_progress_with_artifact(
                 "章节扩写中...",
@@ -6718,13 +6917,11 @@ class StoryOrchestrator:
             )
             expanded_body, expand_error = self._timed_chat(
                 working_story,
-                render_prompt_template(
-                    get_effective_prompt_template("expansion"),
-                    {
-                        "target_chars": TARGET_CHAPTER_CHARS,
-                        "expansion_focus": f"扩写已有场景中的行动、对话、阻力和结果，不新增独立的补丁段。同一事实、判断和旁人误解只写一次；新增内容必须改变行动、关系或资源。{expansion_scope}",
-                        "source_body": body,
-                    },
+                _render_expansion_length_prompt(
+                    source_body=body,
+                    game_context=game_context,
+                    allow_trade_payoff=allow_trade_payoff,
+                    chapter_number=chapter_number,
                 ),
                 max_tokens=7000,
                 json_mode=False,
@@ -6739,7 +6936,7 @@ class StoryOrchestrator:
                 expanded_body,
                 chapter_number=chapter_number,
                 scene_cards=scene_cards,
-                game_story=is_game_story(working_story),
+                game_story=game_context,
             )
             candidate_body = _repair_outline_amount_anchors(
                 candidate_body,
@@ -6819,6 +7016,7 @@ class StoryOrchestrator:
                 "ok": bool(pre_revision_review.get("pass")),
                 "issues": pre_revision_review.get("issues", []),
                 "writing_review": pre_revision_review,
+                "has_hard_errors": bool(review_gate.get("has_hard_errors")),
             }
             revised_body, revision_error = self._timed_chat(
                 working_story,
@@ -6855,10 +7053,12 @@ class StoryOrchestrator:
                     scene_cards,
                     genre_context=_story_review_genre_context(story),
                 )
+                candidate_gate = build_simplified_review({"writing_review": candidate_review})
                 candidate_quality = {
                     "ok": bool(candidate_review.get("pass")),
                     "issues": candidate_review.get("issues", []),
                     "writing_review": candidate_review,
+                    "has_hard_errors": bool(candidate_gate.get("has_hard_errors")),
                 }
                 safety = choose_best_revision(
                     original_body=pre_revision_body,
@@ -6873,7 +7073,6 @@ class StoryOrchestrator:
                 writing_review = selected_review
                 revision_safety_report = safety["report"]
                 if safety.get("accepted"):
-                    candidate_gate = build_simplified_review({"writing_review": candidate_review})
                     unresolved_categories = {
                         category
                         for category in ("hard", "dialogue", "ai_flavor")
@@ -6901,6 +7100,11 @@ class StoryOrchestrator:
                     "rounds_done": revision_rounds_done,
                     "passed": not review_gate["needs_revision"],
                     "issues_remaining": len((writing_review or {}).get("issues", [])),
+                    "reason": revision_safety_report.get("reason") if revision_safety_report else None,
+                    "original_score": revision_safety_report.get("original_score") if revision_safety_report else None,
+                    "candidate_score": revision_safety_report.get("candidate_score") if revision_safety_report else None,
+                    "original_issue_count": revision_safety_report.get("original_issue_count") if revision_safety_report else None,
+                    "candidate_issue_count": revision_safety_report.get("candidate_issue_count") if revision_safety_report else None,
                 },
             )
 
@@ -6913,45 +7117,26 @@ class StoryOrchestrator:
                 reason="超字数时压缩无损细节，保留主线和关键钩子",
                 inputs={"chapter_number": chapter_number, "current_chars": _chapter_char_count(body)},
             )
-            allow_trade_payoff = chapter_number == 1 and first_chapter_market_exchange_authorized(
+            game_context = _story_game_context(working_story, writer_plan)
+            allow_trade_payoff = game_context and chapter_number == 1 and first_chapter_market_exchange_authorized(
                 event_plan,
                 _review_context_facts(story),
             )
             outline_anchor = chapter_seed.get("outline_anchor") if isinstance(chapter_seed, dict) else {}
-            locked_amounts = (
-                "、".join(
-                    str(outline_anchor.get(key) or "").strip()
-                    for key in ("opening_balance", "trade_arrival", "ending_balance")
-                    if str(outline_anchor.get(key) or "").strip()
-                )
-                if isinstance(outline_anchor, dict)
-                else ""
-            )
-            chapter_one_scope = (
-                "第一章必须原样保留角色面板、怪物面板、千倍爆率、现实职业/技能来源、见习冒险者（未转职），并按以下顺序完成："
-                + " ".join(opening_market_exchange_flow_lines())
-                + " 不要新增游戏内任务提交、修理或买药。"
-                + (f" 以下金额必须原样保留，不得改写、换算或删除：{locked_amounts}。" if locked_amounts else "")
-                if allow_trade_payoff
-                else "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。"
-            )
             best_acceptable_body = ""
+            compression_retry_attempted = False
             for compress_round in range(1, 2):
                 if not _should_compress_chapter(body):
                     break
                 before_body = body
-                target_range = "5000到5400字"
                 compressed_body, compress_error = self._timed_chat(
                     working_story,
-                    render_prompt_template(
-                        get_effective_prompt_template("compression"),
-                        {
-                            "opening_line": "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。",
-                            "target_chars": f"保留完整网文章节感，调整到{target_range}，绝对不要超过{MAX_CHAPTER_CHARS}字",
-                            "compression_method": "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。",
-                            "chapter_scope": chapter_one_scope,
-                            "source_body": before_body,
-                        },
+                    _render_compression_length_prompt(
+                        source_body=before_body,
+                        game_context=game_context,
+                        allow_trade_payoff=allow_trade_payoff,
+                        chapter_number=chapter_number,
+                        outline_anchor=outline_anchor,
                     ),
                     max_tokens=5000 if compress_round == 1 else 4500,
                     json_mode=False,
@@ -6965,7 +7150,7 @@ class StoryOrchestrator:
                     compressed_body,
                     chapter_number=chapter_number,
                     scene_cards=scene_cards,
-                    game_story=is_game_story(working_story),
+                    game_story=game_context,
                 )
                 candidate_body = _repair_outline_amount_anchors(
                     candidate_body,
@@ -6985,7 +7170,108 @@ class StoryOrchestrator:
                 quality_preserved = _compression_review_not_worse(writing_review, candidate_review)
                 before_issue_count = len((writing_review or {}).get("issues", []))
                 candidate_issues = list((candidate_review or {}).get("issues", []))
-                if _chapter_body_is_hard_length_acceptable(candidate_body) and quality_preserved:
+                candidate_action = _compression_candidate_action(before_body, candidate_body)
+                if (
+                    not compression_retry_attempted
+                    and candidate_action == "retry"
+                    and CHAPTER_HARD_MIN_CHARS <= candidate_chars < MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE
+                ):
+                    compression_retry_attempted = True
+                    short_candidate_chars = candidate_chars
+                    self._emit_progress_with_artifact(
+                        "章节压缩重试中...",
+                        "chapter_compress",
+                        source="writer",
+                        used_modules=["writer_agent", "prose_quality_review"],
+                        reason="压缩候选达到硬下限但低于正常篇幅，从原文保留更多内容后重试",
+                        inputs={
+                            "chapter_number": chapter_number,
+                            "before_chars": _chapter_char_count(before_body),
+                            "short_candidate_chars": candidate_chars,
+                        },
+                    )
+                    retry_text, retry_error = self._timed_chat(
+                        working_story,
+                        _render_compression_length_prompt(
+                            source_body=before_body,
+                            game_context=game_context,
+                            allow_trade_payoff=allow_trade_payoff,
+                            chapter_number=chapter_number,
+                            outline_anchor=outline_anchor,
+                            target_chars=(
+                                "保留完整网文章节感，调整到正常范围4200到5500字，"
+                                "建议5200到5500字，绝对不要低于4200字或超过5500字"
+                            ),
+                            feedback=f"上次压缩到{candidate_chars}字，结果过短；本轮必须保留更多关键场景和有效细节。",
+                        ),
+                        max_tokens=7000,
+                        json_mode=False,
+                        agent="writer",
+                        stage=f"章节压缩重试 第{chapter_number}章",
+                        timeout_seconds=_expansion_timeout_seconds(),
+                    )
+                    retry_chars = 0
+                    retry_quality_preserved = False
+                    retry_accepted = False
+                    retry_issue_count = None
+                    if not retry_error and retry_text.strip():
+                        retry_body = _sanitize_chapter_output(
+                            retry_text,
+                            chapter_number=chapter_number,
+                            scene_cards=scene_cards,
+                            game_story=game_context,
+                        )
+                        retry_body = _repair_outline_amount_anchors(
+                            retry_body,
+                            chapter_seed.get("outline_anchor"),
+                        )
+                        retry_chars = _chapter_char_count(retry_body)
+                        retry_review = _review_chapter_body(
+                            chapter_number,
+                            retry_body,
+                            event_plan,
+                            _review_context_facts(story),
+                            simulation_plan,
+                            world_events,
+                            scene_cards,
+                            genre_context=_story_review_genre_context(story),
+                        )
+                        retry_issues = list((retry_review or {}).get("issues", []))
+                        retry_issue_count = len(retry_issues)
+                        retry_quality_preserved = _compression_review_not_worse(
+                            writing_review,
+                            retry_review,
+                        )
+                        retry_accepted = (
+                            MIN_CHAPTER_CHARS <= retry_chars <= MAX_CHAPTER_CHARS
+                            and retry_chars < _chapter_char_count(before_body)
+                            and retry_quality_preserved
+                        )
+                        if retry_accepted:
+                            candidate_body = retry_body
+                            candidate_review = retry_review
+                            candidate_chars = retry_chars
+                            candidate_issues = retry_issues
+                            quality_preserved = retry_quality_preserved
+                            candidate_action = _compression_candidate_action(before_body, candidate_body)
+                    self._emit_progress_with_artifact(
+                        "章节压缩重试完成",
+                        "chapter_compress",
+                        source="writer",
+                        used_modules=["writer_agent", "prose_quality_review"],
+                        reason="重试只在正常篇幅、短于原文且审稿质量不恶化时采用",
+                        inputs={"chapter_number": chapter_number},
+                        outputs={
+                            "before_chars": _chapter_char_count(before_body),
+                            "short_candidate_chars": short_candidate_chars,
+                            "retry_chars": retry_chars,
+                            "quality_preserved": retry_quality_preserved,
+                            "accepted": retry_accepted,
+                            "issue_count": retry_issue_count,
+                            "error": retry_error or "",
+                        },
+                    )
+                if _compressed_body_is_acceptable(before_body, candidate_body) and quality_preserved:
                     target_midpoint = (MIN_CHAPTER_CHARS + MAX_CHAPTER_CHARS) // 2
                     if not best_acceptable_body or abs(candidate_chars - target_midpoint) < abs(
                         _chapter_char_count(best_acceptable_body) - target_midpoint
@@ -7009,7 +7295,6 @@ class StoryOrchestrator:
                 )
                 if not quality_preserved:
                     break
-                candidate_action = _compression_candidate_action(before_body, candidate_body)
                 if candidate_action in {"retry", "reject"}:
                     break
                 body = candidate_body

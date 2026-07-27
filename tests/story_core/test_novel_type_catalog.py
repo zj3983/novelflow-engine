@@ -60,6 +60,7 @@ from packages.story_core.novel_type_catalog import (
     novel_type_options,
     runtime_novel_type,
 )
+from packages.story_core.novel_type_ids import canonical_novel_type_id
 from packages.story_core.power_system_templates import (
     compact_power_system_template,
     copy_power_system_template,
@@ -810,6 +811,81 @@ def test_normalize_novel_type_ids_reuses_alias_case_and_deduplication_rules():
     assert novel_type_catalog.normalize_novel_type_ids(
         [" 东方玄幻 ", "XUANHUAN", "修仙", "XIANXIA", "网游升级", "GAME_WEBNOVEL"]
     ) == ["xuanhuan", "xianxia", "game_webnovel"]
+
+
+@pytest.mark.parametrize(
+    "legacy_type",
+    (
+        "web_game",
+        "web-game",
+        "web game",
+        "game_web",
+        "game-web",
+        "game web",
+        "game_webnovel",
+        "game-webnovel",
+        "game webnovel",
+        "game_fantasy",
+        "game-fantasy",
+        "game fantasy",
+    ),
+)
+def test_normalize_novel_type_id_supports_legacy_game_token_separators(legacy_type):
+    assert novel_type_catalog.normalize_novel_type_id(legacy_type) == "game_webnovel"
+
+
+def test_canonical_novel_type_id_preserves_builtin_ids():
+    assert canonical_novel_type_id("game_webnovel") == "game_webnovel"
+    assert canonical_novel_type_id("xuanhuan") == "xuanhuan"
+
+
+def test_canonical_novel_type_id_preserves_custom_ascii_ids():
+    assert canonical_novel_type_id("sports-fiction") == "sports-fiction"
+    assert canonical_novel_type_id("webgame") == "webgame"
+    assert canonical_novel_type_id("web-game") == "web-game"
+
+
+def test_custom_webgame_type_loads_without_invalidating_novel_type_library(monkeypatch, tmp_path):
+    from packages.story_core.novel_type_library import NovelTypeLibrary
+
+    storage_path = tmp_path / "novel-types.json"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_NOVEL_TYPES_PATH", str(storage_path))
+    library = NovelTypeLibrary()
+
+    created = library.create(
+        {
+            "id": "webgame",
+            "name": "Custom Webgame",
+            "description": "A custom type that owns this exact ID.",
+        }
+    )
+    reloaded_ids = {record.id for record in NovelTypeLibrary().list()}
+
+    assert created.id == "webgame"
+    assert {"webgame", "game_webnovel", "xuanhuan"}.issubset(reloaded_ids)
+    assert novel_type_catalog.normalize_novel_type_id("webgame") == "webgame"
+
+
+@pytest.mark.parametrize("genre", ("游戏", "虚拟现实", "vrmmo", "web_game"))
+def test_game_story_type_supports_explicit_compatibility_labels(genre):
+    story = SimpleNamespace(
+        genre=genre,
+        genre_plugin_ids=[],
+        outline="正文没有用于题材猜测的职责。",
+    )
+
+    assert novel_type_catalog.normalize_novel_type_id(genre) == "game_webnovel"
+    assert novel_type_catalog.is_game_story_type(story) is True
+
+
+def test_game_story_type_explicit_non_game_id_overrides_compatibility_genre():
+    story = SimpleNamespace(
+        genre="游戏",
+        genre_plugin_ids=["xuanhuan"],
+        outline="主角登录游戏后查看掉落和背包。",
+    )
+
+    assert novel_type_catalog.is_game_story_type(story) is False
 
 
 def test_explicit_non_game_type_recognizes_supported_metadata_shapes():

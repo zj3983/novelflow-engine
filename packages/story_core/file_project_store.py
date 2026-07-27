@@ -35,9 +35,9 @@ from packages.story_core.dual_state import (
     project_character_for_scene,
     scene_kind_for_cards,
 )
-from packages.story_core.genre_plugins import select_genre_plugins
-from packages.story_core.models import CharacterState, NovelProject, StoryState
+from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.novel_type_catalog import (
+    is_game_story_type,
     normalize_novel_type_ids,
     novel_type_prompt_context,
     novel_type_id_from_metadata_fact,
@@ -503,6 +503,7 @@ def _manual_chapter_quality_report(
     cold_reader_review = review_cold_reader_experience(
         body,
         previous_summary=str((chapter.get("event_plan") or {}).get("summary") or ""),
+        genre_context=genre_context,
     )
     reader_agent_review = review_reader_agent(
         body,
@@ -2869,48 +2870,16 @@ class FileProjectStore:
 
     @staticmethod
     def _is_game_story_payload(project: dict[str, Any], state: dict[str, Any] | None = None) -> bool:
-        def is_game_alias(value: Any) -> bool:
-            normalized = " ".join(
-                str(value or "")
-                .strip()
-                .casefold()
-                .replace("_", " ")
-                .replace("-", " ")
-                .split()
-            )
-            return normalized in {"网游", "web game", "game web", "game webnovel"}
-
         world_blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
-        raw_explicit_ids = world_blueprint.get("genre_plugin_ids")
-        if isinstance(raw_explicit_ids, str):
-            raw_explicit_ids = [raw_explicit_ids]
-        if any(is_game_alias(item) for item in (raw_explicit_ids if isinstance(raw_explicit_ids, list) else [])):
-            return True
-        explicit_ids = normalize_novel_type_ids(world_blueprint.get("genre_plugin_ids"))
-        if "game_webnovel" in explicit_ids:
-            return True
-        if explicit_ids:
-            return False
         state = state if isinstance(state, dict) else {}
-        raw_state_types = state.get("genre_plugin_ids")
-        if isinstance(raw_state_types, str):
-            raw_state_types = [raw_state_types]
-        if any(is_game_alias(item) for item in (raw_state_types if isinstance(raw_state_types, list) else [])):
-            return True
-        if is_game_alias(state.get("genre")):
-            return True
-        try:
-            project_model = NovelProject.model_validate(project)
-        except Exception:
-            project_model = None
-        if project_model is not None and any(
-            plugin.plugin_id == "game_webnovel" for plugin in select_genre_plugins(project_model)
-        ):
-            return True
         state_ids = normalize_novel_type_ids(state.get("genre_plugin_ids"))
-        if state_ids:
-            return "game_webnovel" in state_ids
-        return "game_webnovel" in normalize_novel_type_ids(state.get("genre"))
+        genre_plugin_ids = state_ids or normalize_novel_type_ids(world_blueprint.get("genre_plugin_ids"))
+        return is_game_story_type(
+            {
+                "genre_plugin_ids": genre_plugin_ids,
+                "genre": state.get("genre") or project.get("genre"),
+            }
+        )
 
     def project(self) -> dict[str, Any]:
         project = self._read_json(self.webnovel_dir / "project.json", {}) or self.master_setting().get("project", {}) or {}
@@ -4441,31 +4410,12 @@ class FileProjectStore:
         base_state["progression_ledger"] = ledger
 
         project = self.project()
-        story_payload = dict(base_state)
         direction_payload = self._story_state_payload_for_direction(
             base_state,
             project,
             chapter_number,
         )
-        story_payload["author_constraints"] = direction_payload["author_constraints"]
-        if chapter_number == 1 and first_chapter_market_exchange_authorized(
-            world_facts=direction_payload["author_constraints"],
-        ):
-            stale_trade_lesson_terms = (
-                "删除第一章实际交易",
-                "第一章不得交易",
-                "第一章不要交易",
-                "第一章提前展开交易",
-            )
-            story_payload["writing_lessons"] = [
-                lesson
-                for lesson in list(story_payload.get("writing_lessons") or [])
-                if not any(term in str(lesson) for term in stale_trade_lesson_terms)
-            ]
-        story_payload["outline_context"] = direction_payload["outline_context"]
-        story_payload["monster_profiles"] = direction_payload["monster_profiles"]
-        story_payload["world_context"] = direction_payload["world_context"]
-        story = StoryState.model_validate(story_payload)
+        story = StoryState.model_validate(direction_payload)
         generator = engine or StoryEngine()
         with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
             self.prompt_call_log()
@@ -5178,12 +5128,18 @@ class FileProjectStore:
         return preview
 
     def prompt_preview(self, chapter_number: int | None = None) -> dict[str, Any]:
+        with prompt_template_scope(self.prompt_template_object, self.prompt_template_source):
+            return self._prompt_preview(chapter_number)
+
+    def _prompt_preview(self, chapter_number: int | None = None) -> dict[str, Any]:
         from packages.story_core.orchestrator import (
-            MAX_CHAPTER_CHARS,
-            TARGET_CHAPTER_CHARS,
             StoryOrchestrator,
             _character_context_for_prompt,
             _genre_context_for_prompt,
+            _render_compression_length_prompt,
+            _render_expansion_length_prompt,
+            _review_context_facts,
+            _story_game_context,
             _story_snapshot,
         )
         from packages.story_core.prompt_modules import modules_for_stage, prompt_module_catalog
@@ -5200,16 +5156,12 @@ class FileProjectStore:
             chapter = {}
 
         state_before_chapter = self._state_before_chapter(target)
-        story_payload = dict(state_before_chapter)
         direction_payload = self._story_state_payload_for_direction(
             state_before_chapter,
             project,
             target,
         )
-        story_payload["outline_context"] = direction_payload["outline_context"]
-        story_payload["monster_profiles"] = direction_payload["monster_profiles"]
-        story_payload["world_context"] = direction_payload["world_context"]
-        story = StoryState.model_validate(story_payload)
+        story = StoryState.model_validate(direction_payload)
         orchestrator = StoryOrchestrator()
         writing_packet, _, _ = self._build_writing_packet(target)
         plan = self._prompt_plan_from_chapter(chapter)
@@ -5224,6 +5176,7 @@ class FileProjectStore:
             except FileNotFoundError:
                 review = {}
         review = self._prompt_review_payload(review)
+        game_context = _story_game_context(story)
 
         core_context = _story_snapshot(story)
         character_context = _character_context_for_prompt(story, plan)
@@ -5371,6 +5324,24 @@ class FileProjectStore:
 
         if body.strip():
             source_body_placeholder = f"[原正文由 source_body 注入；面板不展示正文全文；当前正文 {len(body)} 字。]"
+            allow_trade_payoff = game_context and target == 1 and first_chapter_market_exchange_authorized(
+                plan.get("event_plan") if isinstance(plan.get("event_plan"), dict) else {},
+                _review_context_facts(story),
+            )
+            chapter_seed = plan.get("chapter_seed") if isinstance(plan.get("chapter_seed"), dict) else {}
+            expansion_prompt = _render_expansion_length_prompt(
+                source_body=source_body_placeholder,
+                game_context=game_context,
+                allow_trade_payoff=allow_trade_payoff,
+                chapter_number=target,
+            )
+            compression_prompt = _render_compression_length_prompt(
+                source_body=source_body_placeholder,
+                game_context=game_context,
+                allow_trade_payoff=allow_trade_payoff,
+                chapter_number=target,
+                outline_anchor=chapter_seed.get("outline_anchor"),
+            )
             prompts.extend(
                 [
                     self._prompt_entry(
@@ -5394,15 +5365,7 @@ class FileProjectStore:
                         title="章节扩写 Prompt",
                         agent="writer",
                         stage="章节扩写",
-                        content="\n".join(
-                            [
-                                "下面这章正文太短，请在不改变剧情事实和结尾钩子的前提下扩写成完整网文章节。",
-                                f"目标篇幅：{TARGET_CHAPTER_CHARS}。",
-                                "扩写重点：补足场景调度、战斗过程、任务/装备/技能/路线前置任务、人物对话、心理活动、系统面板反馈、背景节拍和章末压力；第一章是否完成交易必须服从项目大纲。",
-                                "只输出扩写后的小说正文，不要解释，不要列大纲。",
-                                f"原正文：\n{source_body_placeholder}",
-                            ]
-                        ),
+                        content=expansion_prompt,
                         source="rebuilt_conditional_prompt",
                         description="正文低于目标篇幅时触发。",
                         module_keys=["source_body"],
@@ -5412,16 +5375,7 @@ class FileProjectStore:
                         title="章节压缩 Prompt",
                         agent="writer",
                         stage="章节压缩",
-                        content="\n".join(
-                            [
-                                "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。",
-                                f"目标篇幅：保留完整网文章节感，但压到4300到5000字之间，绝对不要超过{MAX_CHAPTER_CHARS}字。",
-                                "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。",
-                                "第一章不得新增项目大纲没有授权的交易、任务提交、修理或买药；已授权的到账和现实急账处理必须保留。",
-                                "只输出压缩后的小说正文，不要解释，不要列大纲。",
-                                f"原正文：\n{source_body_placeholder}",
-                            ]
-                        ),
+                        content=compression_prompt,
                         source="rebuilt_conditional_prompt",
                         description="正文超过目标篇幅时触发。",
                         module_keys=["source_body"],
@@ -5447,7 +5401,6 @@ class FileProjectStore:
             )
         )
 
-        game_context = self._is_game_story_payload(project, state)
         for entry in [*modules, *prompts]:
             content = normalize_legacy_economy_prompt_value(
                 str(entry.get("content") or ""),

@@ -61,7 +61,8 @@ _DEFAULT_TEMPLATES: dict[str, PromptTemplate] = {
                 "本章连续性材料：{{chapter_seed}}",
                 "相关角色卡：{{character_cards}}",
                 "输出JSON：character_moves；chapter_intent；event_plan。",
-                "event_plan包含ordered_actions、chapter_satisfaction、chapter_end_hook、world_reactions、stakes、next_focus；chapter_satisfaction包含core_event、obstacle、visible_payoff、cost、outsider_misread、state_change、next_hook。",
+                "character_moves为按角色名分组的动作对象或对象数组，例如 {\"林照\":[{\"action\":\"核对账册\"}]}；每个动作必须有具体action。",
+                "event_plan包含ordered_actions（建议 [{\"name\":\"角色名\",\"action\":\"具体动作\"}]）、chapter_satisfaction、chapter_end_hook、world_reactions、stakes、next_focus；chapter_satisfaction包含core_event、obstacle、visible_payoff、cost、outsider_misread、state_change、next_hook。",
                 "chapter_end_hook 使用结构：{type, strength, content}；type 只能是危机钩、悬念钩、渴望钩、反转钩、余韵钩；strength 只能是 strong、medium、weak。",
                 "要求：动作具体，焦点明确，事件链短但有效，不要写正文。",
             ]

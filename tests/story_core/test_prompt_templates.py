@@ -1,3 +1,6 @@
+import json
+import re
+
 import pytest
 
 from packages.story_core.prompt_templates import (
@@ -39,6 +42,22 @@ def test_writer_template_source_contains_placeholders_not_project_content():
     assert "{{character_context}}" in template.content
     assert "{{prose_method}}" in template.content
     assert "夜烬" not in template.content
+
+
+def test_generic_director_template_documents_action_object_shapes():
+    content = get_default_prompt_template("director_generic").content
+    ordered_actions_example = re.search(r"ordered_actions（建议 (\[.*?\])）", content)
+
+    assert "character_moves" in content
+    assert "action" in content
+    assert ordered_actions_example is not None
+    try:
+        parsed_example = json.loads(ordered_actions_example.group(1))
+    except json.JSONDecodeError:
+        pytest.fail("ordered_actions example must be valid JSON")
+    assert parsed_example == [{"name": "角色名", "action": "具体动作"}]
+    assert "chapter_satisfaction" in content
+    assert "chapter_end_hook" in content
 
 
 def test_render_rejects_missing_template_variable():

@@ -57,6 +57,23 @@ NOVEL_TYPE_ID_ALIASES = {
 }
 
 
+def is_legacy_game_type_alias(value: Any) -> bool:
+    type_id = str(value or "").strip().casefold()
+    legacy_game_id = "_".join(type_id.replace("_", " ").replace("-", " ").split())
+    return legacy_game_id in {
+        "webgame",
+        "web_game",
+        "game_web",
+        "game_webnovel",
+        "game_fantasy",
+    }
+
+
+def is_game_type_compatibility_alias(value: Any) -> bool:
+    type_id = str(value or "").strip().casefold()
+    return type_id in {"游戏", "虚拟现实", "vrmmo"} or is_legacy_game_type_alias(type_id)
+
+
 def canonical_novel_type_id(value: Any) -> str:
     type_id = str(value or "").strip().casefold()
     return NOVEL_TYPE_ID_ALIASES.get(type_id, type_id)

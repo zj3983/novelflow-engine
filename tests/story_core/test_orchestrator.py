@@ -7,7 +7,7 @@ from packages.story_core.generation_progress import generation_progress
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.genre_types.base import GenrePlugin
 from packages.story_core import orchestrator as orchestrator_module
-from packages.story_core.orchestrator import StoryOrchestrator
+from packages.story_core.orchestrator import StoryOrchestrator, _story_game_context
 
 _REAL_CHAT = StoryOrchestrator._chat
 
@@ -505,7 +505,24 @@ def _post_draft_plan() -> dict:
             {"name": "林照", "goal": "去东院", "emotion": "愤怒", "action": "搬炉", "priority": 1}
         ],
         "chapter_intent": {"chapter_title": "计划标题", "next_focus": "去东院"},
-        "event_plan": {"turn": "计划把炉搬到东院", "next_focus": "去东院", "world_reactions": []},
+        "event_plan": {
+            "turn": "计划把炉搬到东院",
+            "next_focus": "去东院",
+            "world_reactions": [],
+            "chapter_satisfaction": {
+                "core_event": "林照处理断香炉的去向",
+                "obstacle": "周执事要求林照立刻作出决定",
+                "visible_payoff": "林照确认断香炉仍有调查价值",
+                "cost": "林照的行动引起周执事注意",
+                "state_change": "断香炉从无人看管变为由林照负责",
+                "next_hook": "账房要求林照次日回话",
+            },
+            "chapter_end_hook": {
+                "type": "悬念钩",
+                "strength": "medium",
+                "content": "账房要求林照次日回话",
+            },
+        },
         "memory_constraints": {
             "ledger_updates": {"protagonist": {"location": "东院", "spirit_stones": 99}}
         },
@@ -547,6 +564,174 @@ def _disable_optional_writing_passes(monkeypatch):
 def _reviewable_body(text: str) -> str:
     compact_chars = max(1, len("".join(text.split())))
     return text * (4300 // compact_chars + 1)
+
+
+@pytest.mark.parametrize(
+    ("genre", "genre_plugin_ids", "outline", "required_terms", "forbidden_terms"),
+    [
+        (
+            "",
+            ["xuanhuan"],
+            "林照登录游戏后查看背包与掉落记录。",
+            ("剧情事实", "世界规则", "核心冲突", "人物反应", "关键线索", "代价", "转折"),
+            ("游戏账本", "面板反馈"),
+        ),
+        (
+            "",
+            ["game_webnovel"],
+            "林照守住断香炉，逼周执事先开口。",
+            ("游戏账本", "面板反馈"),
+            (),
+        ),
+        (
+            "",
+            [],
+            "网游里登录游戏后，主角查看游戏ID、交易行、爆率、掉落、背包、玩家和公会。",
+            ("剧情事实", "世界规则", "核心冲突", "人物反应", "关键线索", "代价", "转折"),
+            ("游戏账本", "面板反馈"),
+        ),
+    ],
+)
+def test_runtime_compression_prompt_is_isolated_by_genre(
+    monkeypatch,
+    genre,
+    genre_plugin_ids,
+    outline,
+    required_terms,
+    forbidden_terms,
+):
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "_review_chapter_body",
+        lambda *_args, **_kwargs: {"pass": True, "issues": [], "revision_plan": []},
+    )
+    initial_unit = (
+        "林照登录游戏后看见背包掉落异常。"
+        if genre_plugin_ids != ["game_webnovel"]
+        else "林照守住断香炉，逼周执事先开口。"
+    )
+    initial_body = (initial_unit * 500)[:5836]
+    compressed_body = ("林照守住断香炉，逼周执事先开口。" * 500)[:5200]
+    story = StoryState(
+        story_id=f"s-compression-prompt-{genre}",
+        outline=outline,
+        genre=genre,
+        genre_plugin_ids=genre_plugin_ids,
+        style="白描",
+        current_chapter=1,
+        characters=[CharacterState(name="林照", role="主角", location="祖祠")],
+    )
+    orchestrator = StoryOrchestrator()
+    compression_prompts = []
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        if agent == "planner":
+            return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
+        if agent == "writer" and stage.startswith("整章写作"):
+            return initial_body, ""
+        if agent == "writer" and stage.startswith("章节压缩"):
+            compression_prompts.append(prompt)
+            return compressed_body, ""
+        if agent == "memory":
+            return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
+        raise AssertionError((agent, stage))
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    orchestrator.generate_next_chapter(story)
+
+    assert len(compression_prompts) == 1
+    prompt = compression_prompts[0]
+    assert all(term in prompt for term in required_terms)
+    assert all(term not in prompt for term in forbidden_terms)
+    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompt
+
+
+def test_story_game_context_prefers_normalized_plugin_ids_over_text_fallback():
+    game_story = StoryState(
+        story_id="s-explicit-game",
+        outline="林照守住祖祠。",
+        genre="",
+        genre_plugin_ids=["game_webnovel"],
+        style="白描",
+    )
+    non_game_story = StoryState(
+        story_id="s-explicit-xuanhuan",
+        outline="主角登录游戏，查看掉落、背包和任务面板。",
+        genre="",
+        genre_plugin_ids=["xuanhuan"],
+        style="白描",
+    )
+    game_genre_story = StoryState(
+        story_id="s-explicit-game-genre",
+        outline="林照守住祖祠。",
+        genre="网游",
+        style="白描",
+    )
+    non_game_genre_story = StoryState(
+        story_id="s-explicit-xuanhuan-genre",
+        outline="主角登录游戏，查看掉落、背包和任务面板。",
+        genre="玄幻",
+        style="白描",
+    )
+    fallback_game_story = StoryState(
+        story_id="s-fallback-game-text",
+        outline="主角登录游戏，查看掉落、背包和任务面板。",
+        genre="",
+        style="白描",
+    )
+
+    assert _story_game_context(game_story) is True
+    assert _story_game_context(non_game_story) is False
+    assert _story_game_context(game_genre_story) is True
+    assert _story_game_context(non_game_genre_story) is False
+    assert _story_game_context(fallback_game_story) is False
+
+
+@pytest.mark.parametrize("genre_plugin_ids", [["xuanhuan"], []])
+def test_runtime_expansion_prompt_uses_non_game_scope_without_game_id(monkeypatch, genre_plugin_ids):
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "_review_chapter_body",
+        lambda *_args, **_kwargs: {"pass": True, "issues": [], "revision_plan": []},
+    )
+    initial_body = "林照登录游戏后看见背包掉落异常。" * 30
+    expanded_body = _reviewable_body("林照守住断香炉，逼周执事先开口。")
+    story = StoryState(
+        story_id=f"s-expansion-non-game-{'explicit' if genre_plugin_ids else 'untyped'}",
+        outline="主角登录游戏，查看掉落、背包和任务面板。",
+        genre="",
+        genre_plugin_ids=genre_plugin_ids,
+        style="白描",
+        current_chapter=1,
+        characters=[CharacterState(name="林照", role="主角", location="祖祠")],
+    )
+    orchestrator = StoryOrchestrator()
+    expansion_prompts = []
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        if agent == "planner":
+            return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
+        if agent == "writer" and stage.startswith("整章写作"):
+            return initial_body, ""
+        if agent == "writer" and stage.startswith("章节扩写"):
+            expansion_prompts.append(prompt)
+            return expanded_body, ""
+        if agent == "memory":
+            return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
+        raise AssertionError((agent, stage))
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    orchestrator.generate_next_chapter(story)
+
+    assert len(expansion_prompts) == 1
+    instructions = expansion_prompts[0].split("原正文：", 1)[0]
+    assert "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。" in instructions
+    assert all(term not in instructions for term in ("交易", "委托", "修理", "药水"))
 
 
 def test_orchestrator_persists_only_memory_extracted_after_final_body(monkeypatch):
@@ -994,13 +1179,39 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
     )
     orchestrator = StoryOrchestrator()
     events: list[object] = []
+    safety_results: list[dict] = []
+    real_choose_best_revision = orchestrator_module.choose_best_revision
+
+    def capture_safety(**kwargs):
+        result = real_choose_best_revision(**kwargs)
+        safety_results.append({"inputs": kwargs, "result": result})
+        return result
+
+    monkeypatch.setattr(orchestrator_module, "choose_best_revision", capture_safety)
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
         if agent == "planner":
             plan = {
                 "character_moves": [{"name": "夜烬", "goal": "找到第一条可复盘支线", "emotion": "紧张", "action": "观察"}],
                 "chapter_intent": {"chapter_title": "第一章 开局试验", "next_focus": "推进清道夫任务"},
-                "event_plan": {"chapter_title": "第一章 开局试验", "next_focus": "推进清道夫任务", "turn": "稳住局面"},
+                "event_plan": {
+                    "chapter_title": "第一章 开局试验",
+                    "next_focus": "推进清道夫任务",
+                    "turn": "稳住局面",
+                    "chapter_satisfaction": {
+                        "core_event": "夜烬确认第一条支线线索",
+                        "obstacle": "灰烬村线索混乱且时间有限",
+                        "visible_payoff": "夜烬找到可复盘的任务入口",
+                        "cost": "夜烬的试探引起旁人警觉",
+                        "state_change": "清道夫任务从未知变为可以推进",
+                        "next_hook": "洛婶透露下一条任务线索",
+                    },
+                    "chapter_end_hook": {
+                        "type": "悬念钩",
+                        "strength": "medium",
+                        "content": "洛婶透露下一条任务线索",
+                    },
+                },
                 "memory_constraints": {},
                 "chapter_summary": {
                     "summary": "夜烬在灰烬村完成第一次试练。",
@@ -1049,6 +1260,24 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
     assert "review_snapshot" in inputs
     assert isinstance(inputs.get("character_cards"), dict)
     assert inputs.get("outline")
+    assert safety_results
+    safety_inputs = safety_results[0]["inputs"]
+    assert safety_inputs["original_quality"]["has_hard_errors"] is True
+    assert safety_inputs["candidate_quality"]["has_hard_errors"] is False
+
+    completion_event = next(
+        entry for entry in dict_steps if entry.get("message") == "审稿改稿完成"
+    )
+    outputs = completion_event["artifact"]["outputs"]
+    safety_report = safety_results[0]["result"]["report"]
+    for key in (
+        "reason",
+        "original_score",
+        "candidate_score",
+        "original_issue_count",
+        "candidate_issue_count",
+    ):
+        assert outputs[key] == safety_report[key]
 
     plan_event = next(
         (entry for entry in dict_steps if str(entry.get("message", "")).startswith("剧情计划生成中")),

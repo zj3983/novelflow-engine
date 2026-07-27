@@ -43,6 +43,48 @@ def test_manual_quality_report_passes_explicit_genre_context_to_style_review(mon
     assert captured["genre_context"] == {"genre_plugin_ids": ["game_webnovel"]}
 
 
+def test_manual_quality_report_forwards_genre_context_and_reuses_cold_reader_report(monkeypatch):
+    genre_context = {"genre": "玄幻", "genre_plugin_ids": ["xuanhuan"]}
+    captured = {"cold_reader_calls": 0}
+    cold_reader_report = {
+        "reviewer": "cold_reader/v1",
+        "pass": True,
+        "scores": {},
+        "issues": [],
+        "revision_plan": [],
+        "previous_summary_used": True,
+    }
+
+    def fake_cold_reader(body, *, previous_summary="", genre_context=None):
+        captured["cold_reader_calls"] += 1
+        captured["genre_context"] = genre_context
+        return cold_reader_report
+
+    def fake_reader_agent(body, *, previous_summary="", cold_reader_review=None):
+        captured["reader_agent_report"] = cold_reader_review
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(file_project_store_module, "review_cold_reader_experience", fake_cold_reader)
+    monkeypatch.setattr(file_project_store_module, "review_reader_agent", fake_reader_agent)
+
+    _manual_chapter_quality_report(
+        {
+            "chapter_number": 1,
+            "chapter_title": "test",
+            "body": "plain body",
+            "next_outline": "continue",
+            "event_plan": {"summary": "previous"},
+            "chapter_summary": {"summary": "test", "facts": []},
+            "updated_story": {"timeline": [], "chapter_summaries": []},
+        },
+        genre_context=genre_context,
+    )
+
+    assert captured["cold_reader_calls"] == 1
+    assert captured["genre_context"] is genre_context
+    assert captured["reader_agent_report"] is cold_reader_report
+
+
 def test_auto_quality_gate_allows_advisory_review_and_records_warning():
     report = {
         "ok": False,
@@ -57,9 +99,17 @@ def test_auto_quality_gate_allows_advisory_review_and_records_warning():
 from packages.story_core.models import ChapterSummary, StoryState, TimelineEvent
 from packages.story_core.outline_planning import GeneratedOutlinePlan
 from packages.story_core.skill_packs import import_skill_pack_from_path
-from packages.story_core.orchestrator import _failed_bundle
+from packages.story_core.orchestrator import (
+    _failed_bundle,
+    _render_compression_length_prompt,
+    _render_expansion_length_prompt,
+)
+from packages.story_core.prompt_templates import prompt_template_scope
 from packages.story_core.world_blueprint_context import flatten_selected_rules
-from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
+from packages.story_core.web_game_economy import (
+    normalize_legacy_economy_prompt_value,
+    opening_market_exchange_flow_lines,
+)
 
 
 def _long_test_body(label: str = "Night Ember keeps the chapter grounded.") -> str:
@@ -3169,7 +3219,15 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert {"core_context", "character_context", "genre_context", "writing_taskbook", "packet_context"}.issubset(modules)
     assert "source_body" not in modules
     keys = {item["key"] for item in preview["prompts"]}
-    assert {"director_plan", "writer_body", "revision", "writing_taskbook", "review_agents"}.issubset(keys)
+    assert {
+        "director_plan",
+        "writer_body",
+        "revision",
+        "writing_taskbook",
+        "expansion",
+        "compression",
+        "review_agents",
+    }.issubset(keys)
     assert "style_adapt" not in keys
     by_key = {item["key"]: item for item in preview["prompts"]}
     assert "## 输出要求" in by_key["writer_body"]["content"]
@@ -3209,6 +3267,371 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert "game_world_simulation" not in by_key["writer_body"]["content"]
     assert by_key["writer_body"]["chars"] < 18000
     assert modules["packet_context"]["chars"] < 12000
+    assert "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。" in by_key["expansion"]["content"]
+    assert "游戏账本" in by_key["compression"]["content"]
+    assert "面板反馈" in by_key["compression"]["content"]
+    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in by_key["compression"]["content"]
+    assert "4300到5000字" not in by_key["compression"]["content"]
+
+
+def test_non_game_prompt_preview_uses_generic_expansion_and_compression(tmp_path):
+    root = tmp_path / "xuanhuan-novel"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-xuanhuan",
+            "title": "玄门旧案",
+            "active_story_id": "s-xuanhuan",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={
+            "story_id": "s-xuanhuan",
+            "outline": "林照登录游戏后查看背包、掉落和任务面板。",
+            "genre": "",
+            "genre_plugin_ids": ["xuanhuan"],
+            "style": "白描",
+            "current_chapter": 1,
+            "world_facts": ["断香炉牵动祖祠旧规。"],
+            "characters": [{"name": "林照", "role": "protagonist", "goal": "查清旧案"}],
+        },
+    )
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "守炉",
+        "body": _long_test_body("Lin guards the censer and follows the clue."),
+        "event_plan": {"chapter_title": "守炉", "next_focus": "追查账房来信"},
+    }
+    store._write_json(root / ".story-system" / "chapters" / "0001.json", chapter)
+
+    preview = store.prompt_preview(1)
+
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+    forbidden_terms = ("登录", "掉落", "背包", "血蓝", "耐久", "寄售", "到账", "任务提交", "系统面板")
+    assert all(term not in prompts["expansion"] for term in forbidden_terms)
+    assert all(term not in prompts["compression"] for term in forbidden_terms)
+    assert "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。" in prompts["expansion"]
+    assert "核心冲突" in prompts["compression"]
+    assert "人物反应" in prompts["compression"]
+    assert "关键线索" in prompts["compression"]
+    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompts["compression"]
+    assert "4300到5000字" not in prompts["compression"]
+
+
+def test_game_prompt_preview_uses_explicit_plugin_id_when_genre_is_empty(tmp_path):
+    root = tmp_path / "game-id-only"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-game-id", "title": "ID Game", "active_story_id": "s-game-id"},
+        state={
+            "story_id": "s-game-id",
+            "outline": "林照守住断香炉。",
+            "genre": "",
+            "genre_plugin_ids": ["game_webnovel"],
+            "style": "白描",
+            "current_chapter": 1,
+            "characters": [{"name": "林照", "role": "protagonist"}],
+        },
+    )
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "守炉",
+            "body": _long_test_body(),
+            "event_plan": {"chapter_title": "守炉", "next_focus": "追查来信"},
+        },
+    )
+
+    preview = store.prompt_preview(1)
+
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+    assert "游戏账本" in prompts["compression"]
+    assert "面板反馈" in prompts["compression"]
+    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompts["compression"]
+
+
+def test_untyped_game_text_runtime_and_preview_default_to_generic(tmp_path):
+    game_text = "网游里登录游戏后，主角查看游戏ID、交易行、爆率、掉落、背包、玩家和公会。"
+    root = tmp_path / "untyped-game-text"
+    project = {
+        "project_id": "p-untyped",
+        "title": "Untyped Story",
+        "active_story_id": "s-untyped",
+        "seed_outline": game_text,
+        "world_summary": game_text,
+    }
+    state = {
+        "story_id": "s-untyped",
+        "outline": game_text,
+        "genre": "",
+        "genre_plugin_ids": [],
+        "style": "白描",
+        "current_chapter": 1,
+        "world_facts": [game_text],
+        "characters": [{"name": "林照", "role": "protagonist"}],
+    }
+    store = _make_minimal_file_project(root, project=project, state=state)
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "守炉",
+            "body": _long_test_body(game_text),
+            "event_plan": {"chapter_title": "守炉", "next_focus": "追查来信"},
+        },
+    )
+
+    preview = store.prompt_preview(1)
+
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+    assert store._is_game_story_payload(project, state) is False
+    assert "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。" in prompts["expansion"]
+    assert "核心冲突、人物反应、关键线索、代价、转折和下一步钩子" in prompts["compression"]
+    assert "游戏账本" not in prompts["compression"]
+    assert "面板反馈" not in prompts["compression"]
+
+
+@pytest.mark.parametrize(
+    ("project_genre", "blueprint_ids", "state_genre", "state_ids", "expected_game"),
+    [
+        ("game_webnovel", [], "", [], True),
+        ("", ["game_webnovel"], "", ["xuanhuan"], False),
+        ("", ["xuanhuan"], "", ["game_webnovel"], True),
+        ("", [], "web game", [], True),
+        ("", [], "webgame", [], True),
+    ],
+)
+def test_prompt_preview_genre_contract_matches_runtime_effective_story(
+    tmp_path,
+    project_genre,
+    blueprint_ids,
+    state_genre,
+    state_ids,
+    expected_game,
+):
+    from packages.story_core.orchestrator import _story_game_context
+
+    root = tmp_path / f"genre-contract-{len(blueprint_ids)}-{len(state_ids)}-{state_genre or project_genre}"
+    project = {
+        "project_id": "p-genre-contract",
+        "title": "Genre Contract",
+        "active_story_id": "s-genre-contract",
+        "genre": project_genre,
+        "world_blueprint": {"genre_plugin_ids": blueprint_ids},
+    }
+    state = {
+        "story_id": "s-genre-contract",
+        "outline": "林照守住断香炉。",
+        "genre": state_genre,
+        "genre_plugin_ids": state_ids,
+        "style": "白描",
+        "current_chapter": 1,
+        "world_facts": [],
+        "characters": [{"name": "林照", "role": "protagonist"}],
+    }
+    store = _make_minimal_file_project(root, project=project, state=state)
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "守炉",
+            "body": _long_test_body(),
+            "event_plan": {"chapter_title": "守炉", "next_focus": "追查来信"},
+        },
+    )
+
+    effective_story = StoryState.model_validate(
+        store._story_state_payload_for_direction(store.state(), store.project(), 1)
+    )
+    preview = store.prompt_preview(1)
+
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+    assert _story_game_context(effective_story) is expected_game
+    assert store._is_game_story_payload(store.project(), store.state()) is expected_game
+    if expected_game:
+        assert "游戏账本" in prompts["compression"]
+    else:
+        assert "核心冲突" in prompts["compression"]
+        assert "游戏账本" not in prompts["compression"]
+
+
+def test_prompt_preview_uses_project_expansion_and_compression_template_overrides(tmp_path):
+    root = tmp_path / "prompt-preview-project-overrides"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-template-preview",
+            "title": "Template Preview",
+            "active_story_id": "s-template-preview",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={
+            "story_id": "s-template-preview",
+            "outline": "林照守住断香炉。",
+            "genre": "",
+            "genre_plugin_ids": ["xuanhuan"],
+            "style": "白描",
+            "current_chapter": 1,
+            "world_facts": [],
+            "characters": [{"name": "林照", "role": "protagonist"}],
+        },
+    )
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "守炉",
+            "body": _long_test_body(),
+            "event_plan": {"chapter_title": "守炉", "next_focus": "追查来信"},
+        },
+    )
+    store.set_prompt_template_override(
+        "expansion",
+        "PROJECT EXPANSION {{target_chars}}\n{{expansion_focus}}\n{{source_body}}",
+    )
+    store.set_prompt_template_override(
+        "compression",
+        "PROJECT COMPRESSION {{opening_line}}\n{{target_chars}}\n{{compression_method}}\n{{chapter_scope}}\n{{source_body}}",
+    )
+
+    preview = store.prompt_preview(1)
+
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+    assert "PROJECT EXPANSION" in prompts["expansion"]
+    assert "PROJECT COMPRESSION" in prompts["compression"]
+
+
+@pytest.mark.parametrize(
+    ("genre", "plugin_id", "game_context"),
+    [
+        ("网游", "game_webnovel", True),
+        ("玄幻", "xuanhuan", False),
+    ],
+)
+def test_project_length_template_runtime_matches_preview_economy_normalization(
+    tmp_path,
+    genre,
+    plugin_id,
+    game_context,
+):
+    root = tmp_path / f"length-template-contract-{plugin_id}"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": f"p-length-template-{plugin_id}",
+            "title": "Length Template Contract",
+            "active_story_id": f"s-length-template-{plugin_id}",
+            "world_blueprint": {"genre_plugin_ids": [plugin_id]},
+        },
+        state={
+            "story_id": f"s-length-template-{plugin_id}",
+            "outline": "主角处理第一章压力。",
+            "genre": genre,
+            "genre_plugin_ids": [plugin_id],
+            "style": "白描",
+            "current_chapter": 1,
+            "world_facts": [],
+            "characters": [{"name": "主角", "role": "protagonist"}],
+        },
+    )
+    body = _long_test_body()
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "第一章",
+            "body": body,
+            "event_plan": {"chapter_title": "第一章", "next_focus": "继续追查"},
+        },
+    )
+    store.set_prompt_template_override(
+        "expansion",
+        "CUSTOM EXPANSION 担保交易 {{target_chars}}\n{{expansion_focus}}\n{{source_body}}",
+    )
+    store.set_prompt_template_override(
+        "compression",
+        "CUSTOM COMPRESSION 担保订单 {{opening_line}}\n{{target_chars}}\n{{compression_method}}\n{{chapter_scope}}\n{{source_body}}",
+    )
+    source_body = f"[原正文由 source_body 注入；面板不展示正文全文；当前正文 {len(body)} 字。]"
+
+    with prompt_template_scope(store.prompt_template_object, store.prompt_template_source):
+        runtime_expansion = _render_expansion_length_prompt(
+            source_body=source_body,
+            game_context=game_context,
+            allow_trade_payoff=False,
+            chapter_number=1,
+        )
+        runtime_compression = _render_compression_length_prompt(
+            source_body=source_body,
+            game_context=game_context,
+            allow_trade_payoff=False,
+            chapter_number=1,
+        )
+
+    preview = store.prompt_preview(1)
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+
+    assert prompts["expansion"] == runtime_expansion
+    assert prompts["compression"] == runtime_compression
+    assert normalize_legacy_economy_prompt_value(
+        runtime_expansion,
+        game_context=game_context,
+        chapter_number=1,
+    ) == runtime_expansion
+    assert normalize_legacy_economy_prompt_value(
+        runtime_compression,
+        game_context=game_context,
+        chapter_number=1,
+    ) == runtime_compression
+    if game_context:
+        assert "担保交易" not in runtime_expansion
+        assert "担保订单" not in runtime_compression
+        assert "交易行" in runtime_expansion
+        assert "官方兑换流水" in runtime_compression
+    else:
+        assert "担保交易" in runtime_expansion
+        assert "担保订单" in runtime_compression
+
+
+def test_prompt_preview_uses_complete_runtime_story_payload_for_author_constraints(tmp_path):
+    root = tmp_path / "prompt-preview-effective-story"
+    project = {
+        "project_id": "p-effective-story",
+        "title": "Effective Story",
+        "active_story_id": "s-effective-story",
+        "author_constraints": ["PROJECT_RULE"],
+        "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+    }
+    state = {
+        "story_id": "s-effective-story",
+        "outline": "林照守住断香炉。",
+        "genre": "",
+        "genre_plugin_ids": ["xuanhuan"],
+        "style": "白描",
+        "current_chapter": 1,
+        "author_constraints": ["STATE_RULE"],
+        "world_facts": [],
+        "characters": [{"name": "林照", "role": "protagonist"}],
+    }
+    store = _make_minimal_file_project(root, project=project, state=state)
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "守炉",
+            "body": _long_test_body(),
+            "event_plan": {"chapter_title": "守炉", "next_focus": "追查来信"},
+        },
+    )
+
+    effective_payload = store._story_state_payload_for_direction(store.state(), store.project(), 1)
+    preview = store.prompt_preview(1)
+
+    modules = {item["key"]: item["content"] for item in preview["modules"]}
+    core_context = json.loads(modules["core_context"])
+    assert effective_payload["author_constraints"] == ["PROJECT_RULE"]
+    assert core_context["author_constraints"] == ["PROJECT_RULE"]
+    assert "STATE_RULE" not in modules["core_context"]
 
 
 def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module(tmp_path):
@@ -4910,6 +5333,59 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
     assert "skip_style_adapt" not in regenerated["simulation_variant"]
     assert regenerated["simulation_variant"]["skip_expansion"] is False
     assert (root / "chapters" / "0001-背包快满了.md").exists()
+
+
+def test_regenerate_uses_complete_runtime_story_payload_for_project_genre(monkeypatch, tmp_path):
+    root = tmp_path / "regenerate-effective-story"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-regenerate-effective",
+            "title": "Regenerate Effective",
+            "active_story_id": "s-regenerate-effective",
+            "genre": "game_webnovel",
+            "author_constraints": ["PROJECT_RULE"],
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+        state={
+            "story_id": "s-regenerate-effective",
+            "outline": "夜烬准备进入新手村。",
+            "genre": "",
+            "genre_plugin_ids": [],
+            "style": "白描",
+            "current_chapter": 1,
+            "author_constraints": ["STATE_RULE"],
+            "world_facts": [],
+            "characters": [{"name": "苏叶", "role": "protagonist", "game_id": "夜烬"}],
+        },
+    )
+    captured = {}
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            captured["story"] = story
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="重新开服",
+                chapter_summary={},
+                quality_report={"ok": True},
+            )
+
+    monkeypatch.setattr(
+        store,
+        "persist_bundle",
+        lambda bundle, **_kwargs: {
+            "chapter_number": bundle.chapter_number,
+            "chapter_title": bundle.chapter_title,
+        },
+    )
+
+    store.regenerate_chapter(1, engine=FakeEngine())
+
+    story = captured["story"]
+    assert story.genre == "game_webnovel"
+    assert story.genre_plugin_ids == ["game_webnovel"]
+    assert story.author_constraints == ["PROJECT_RULE"]
 
 
 def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):

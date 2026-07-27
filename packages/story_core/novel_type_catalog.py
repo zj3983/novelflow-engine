@@ -14,6 +14,7 @@ from packages.story_core.novel_type_ids import (
     EXPLICIT_NON_GAME_TYPE_IDS,
     NOVEL_TYPE_ID_ALIASES,
     canonical_novel_type_id,
+    is_game_type_compatibility_alias,
 )
 from packages.story_core.power_system_templates import compact_power_system_template
 from packages.story_core.trope_runtime import (
@@ -271,7 +272,28 @@ def normalize_novel_type_ids(value: Any) -> list[str]:
 
 
 def normalize_novel_type_id(value: Any) -> str:
-    return resolve_novel_type_id(value)
+    plugin_id = resolve_novel_type_id(value)
+    if plugin_id:
+        return plugin_id
+    if is_game_type_compatibility_alias(value):
+        return "game_webnovel"
+    genre = str(value or "").strip()
+    if genre.endswith("文"):
+        return resolve_novel_type_id(genre[:-1])
+    return ""
+
+
+def is_game_story_type(story: Any) -> bool:
+    if isinstance(story, Mapping):
+        genre_plugin_ids = story.get("genre_plugin_ids")
+        genre = story.get("genre")
+    else:
+        genre_plugin_ids = getattr(story, "genre_plugin_ids", [])
+        genre = getattr(story, "genre", "")
+    explicit_ids = normalize_novel_type_ids(genre_plugin_ids)
+    if explicit_ids:
+        return "game_webnovel" in explicit_ids
+    return normalize_novel_type_id(genre) == "game_webnovel"
 
 
 def runtime_novel_type(value: Any) -> Any:

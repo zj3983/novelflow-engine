@@ -1,4 +1,5 @@
 import packages.story_core.editor_agent as editor_agent_module
+from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.reader_agent import review_reader_agent
 from packages.story_core.reviewer_agent import review_reviewer_agent
@@ -6,13 +7,15 @@ from packages.story_core.reviewer_agent import review_reviewer_agent
 
 def test_reader_agent_wraps_cold_reader_report():
     body = "苏叶看着现实账单，接下委托。灰狼掉落异常，下一步去交易行找散人收材料。"
+    cold_reader_review = review_cold_reader_experience(body, genre_context={"genre": "网游"})
 
-    review = review_reader_agent(body)
+    review = review_reader_agent(body, cold_reader_review=cold_reader_review)
 
     assert review["reviewer"] == "reader_agent/v1"
     assert review["role"] == "读者 Agent"
     assert review["pass"] is True
     assert "cold_reader_review" in review
+    assert review["cold_reader_review"] is cold_reader_review
 
 
 def test_reader_agent_flags_weak_pull():

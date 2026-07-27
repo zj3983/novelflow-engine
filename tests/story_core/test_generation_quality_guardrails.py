@@ -28,7 +28,8 @@ from packages.story_core.orchestrator import (
     _compression_review_not_worse,
     _should_expand_chapter,
 )
-from packages.story_core.prose_rule_review import review_emotion_quota, review_paragraph_form
+from packages.story_core.prose_rule_review import review_critical_prose_rules, review_emotion_quota, review_paragraph_form
+from packages.story_core.simplified_review import build_simplified_review
 from packages.story_core.world_enrichment import _merge_enrichment
 
 
@@ -68,6 +69,98 @@ def test_chapter_review_passes_explicit_genre_context_to_shared_reviewers(monkey
         "style": {"genre": "xuanhuan"},
         "consistency": {"genre": "xuanhuan"},
     }
+
+
+def test_chapter_review_preserves_nested_reports_to_repair_aggregate_plan_shift(monkeypatch):
+    body = "网游正文"
+    local_issue_a = (
+        f"章节字数偏少：当前约{len(body)}字，"
+        f"番茄长篇建议至少{orchestrator_module._chapter_review_min_chars({})}字。"
+    )
+    issue_b = "设定冲突：issue B"
+    calls = {"web_game": 0, "consistency": 0, "style": 0}
+
+    def empty_review(*_args, **_kwargs):
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    def web_game_review(*_args, **_kwargs):
+        calls["web_game"] += 1
+        return {
+            "pass": False,
+            "scores": {},
+            "issues": [local_issue_a],
+            "revision_plan": ["web-extra-plan-for-A"],
+        }
+
+    def consistency_review(*_args, **_kwargs):
+        calls["consistency"] += 1
+        return {
+            "pass": False,
+            "scores": {},
+            "issues": [issue_b],
+            "revision_plan": ["fix-B"],
+            "scene_contract_failures": [],
+        }
+
+    def style_review(*_args, **_kwargs):
+        calls["style"] += 1
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(orchestrator_module, "review_web_game_chapter", web_game_review)
+    monkeypatch.setattr(orchestrator_module, "review_world_event_consistency", consistency_review)
+    monkeypatch.setattr(orchestrator_module, "review_prose_style", style_review)
+    for name in (
+        "review_prose_quality",
+        "review_adversarial_cuts",
+        "review_ai_flavor",
+        "review_reader_feel",
+        "review_cold_reader_experience",
+        "review_plot_spine_completion",
+        "review_progression_lead",
+        "review_critical_prose_rules",
+        "review_reader_agent",
+        "review_editor_agent",
+        "review_reviewer_agent",
+    ):
+        monkeypatch.setattr(orchestrator_module, name, empty_review)
+
+    writing_review = _review_chapter_body(
+        4,
+        body,
+        {"world_reactions": ["玩家继续练级。"], "next_focus": "继续推进。"},
+        [],
+    )
+    simplified = build_simplified_review({"writing_review": writing_review})
+    issue = next(item for item in simplified["issues"] if item["message"] == issue_b)
+
+    assert issue["suggestion"] == "fix-B"
+    assert simplified["revision_plan"][simplified["issues"].index(issue)] == "fix-B"
+    assert writing_review["web_game_review"]["revision_plan"] == ["web-extra-plan-for-A"]
+    assert writing_review["consistency_review"]["revision_plan"] == ["fix-B"]
+    assert writing_review["prose_style_review"] == {
+        "pass": True,
+        "scores": {},
+        "issues": [],
+        "revision_plan": [],
+    }
+    assert calls == {"web_game": 1, "consistency": 1, "style": 1}
+
+
+def test_quality_merge_propagates_nested_revision_reports():
+    writing_review = {
+        "pass": False,
+        "scores": {},
+        "issues": ["设定冲突：issue B"],
+        "revision_plan": ["fix-B"],
+        "web_game_review": {"issues": ["issue A"], "revision_plan": ["fix-A"]},
+        "consistency_review": {"issues": ["设定冲突：issue B"], "revision_plan": ["fix-B"]},
+        "prose_style_review": {"issues": [], "revision_plan": []},
+    }
+
+    merged = _merge_writing_review_quality({"ok": True, "issues": []}, writing_review)
+
+    for key in ("web_game_review", "consistency_review", "prose_style_review"):
+        assert merged[key] is writing_review[key]
 
 
 def test_chapter_review_enables_economy_checks_for_mixed_game_plugin_context():
@@ -272,6 +365,73 @@ def test_director_move_priority_accepts_chinese_levels():
     assert [move["priority"] for move in moves] == [3, 2]
 
 
+def test_director_moves_accept_character_grouped_object():
+    moves = _normalize_moves(
+        {
+            "林照": [{"goal": "查清香火来源", "action": "带周满去祖祠查看香灰", "priority": "高"}],
+            "赵管事": {"goal": "压住消息", "action": "提前锁上祖祠侧门", "priority": 2},
+        }
+    )
+
+    assert [(move["name"], move["action"]) for move in moves] == [
+        ("林照", "带周满去祖祠查看香灰"),
+        ("赵管事", "提前锁上祖祠侧门"),
+    ]
+
+
+def test_director_moves_accept_grouped_text_actions_skip_blanks_and_limit_to_six():
+    moves = _normalize_moves(
+        {
+            "林照": ["动作1", "   ", "动作2"],
+            "赵管事": "动作3",
+            "周满": ["动作4", "动作5", "动作6", "动作7"],
+        },
+        allow_text_items=True,
+    )
+
+    assert [(move["name"], move["action"]) for move in moves] == [
+        ("林照", "动作1"),
+        ("林照", "动作2"),
+        ("赵管事", "动作3"),
+        ("周满", "动作4"),
+        ("周满", "动作5"),
+        ("周满", "动作6"),
+    ]
+
+
+def test_director_moves_use_group_name_for_invalid_names_without_stringifying_null():
+    moves = _normalize_moves(
+        {
+            "林照": [
+                {"name": None, "action": "检查香灰"},
+                {"name": "   ", "action": "追问守祠人"},
+                {"name": "周满", "action": "查看侧门"},
+            ],
+            "赵管事": {"action": None},
+        }
+    )
+
+    assert [move["name"] for move in moves] == ["林照", "林照", "周满", "赵管事"]
+    assert moves[-1]["action"] == "继续推进当前主线"
+    assert all("None" not in (move["name"], move["action"]) for move in moves)
+
+
+def test_writer_character_moves_drop_invalid_actions_from_mixed_input():
+    moves = _normalize_moves(
+        [
+            {"name": "林照", "action": "检查香灰"},
+            {},
+            {"name": "赵管事", "action": None},
+            {"name": "周满", "action": "   "},
+            None,
+        ],
+        require_action=True,
+        allow_text_items=True,
+    )
+
+    assert [(move["name"], move["action"]) for move in moves] == [("林照", "检查香灰")]
+
+
 def test_expansion_candidate_must_land_inside_target_range():
     original = "原" * 4069
 
@@ -326,6 +486,15 @@ def test_final_memory_accepts_advisory_review_but_rejects_hard_errors():
 def test_full_revision_only_runs_for_hard_errors():
     assert _should_run_full_revision({"needs_revision": True, "has_hard_errors": False}) is False
     assert _should_run_full_revision({"needs_revision": True, "has_hard_errors": True}) is True
+
+
+def test_planning_meta_leak_critical_report_triggers_full_revision_gate():
+    critical_report = review_critical_prose_rules("周满说完，迈出前置条件。")
+    gate = build_simplified_review({"writing_review": {"critical_review": critical_report}})
+
+    assert critical_report["severity_summary"]["has_hard_violation"] is True
+    assert gate["has_hard_errors"] is True
+    assert _should_run_full_revision(gate) is True
 
 
 def test_compression_review_must_not_add_hard_or_total_issues():

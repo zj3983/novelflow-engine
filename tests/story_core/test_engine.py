@@ -185,9 +185,24 @@ def _patch_three_stage_generation(monkeypatch, responses):
 
 def _runtime_generation_responses():
     plan = {
-        "character_moves": [],
+        "character_moves": [{"name": "主角", "action": "确认现场留下的线索"}],
         "chapter_intent": {"chapter_title": "第一章", "cadence": "measured"},
-        "event_plan": {"chapter_title": "第一章"},
+        "event_plan": {
+            "chapter_title": "第一章",
+            "chapter_satisfaction": {
+                "core_event": "主角确认现场线索",
+                "obstacle": "线索残缺且时间有限",
+                "visible_payoff": "主角锁定下一处调查地点",
+                "cost": "调查方向被对手察觉",
+                "state_change": "案件从停滞转为可以继续追查",
+                "next_hook": "对手抢先赶往下一处地点",
+            },
+            "chapter_end_hook": {
+                "type": "悬念钩",
+                "strength": "medium",
+                "content": "对手抢先赶往下一处地点",
+            },
+        },
         "memory_constraints": {},
         "chapter_summary": {"summary": "计划摘要", "chapter_title": "第一章"},
     }

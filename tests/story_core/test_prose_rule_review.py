@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.prose_rule_review import (
     CRITICAL_PROMPT_RULES,
     review_critical_prose_rules,
@@ -29,6 +31,206 @@ def test_review_flags_fact_template_backend_terms_and_guide_terms():
     assert any("事实模板错误" in issue for issue in review["issues"])
     assert any("后台/审稿术语" in issue for issue in review["issues"])
     assert any("攻略说明" in issue for issue in review["issues"])
+
+
+def test_review_flags_planning_language_materialized_as_a_location():
+    body = "周满站在前置条件边，等林照开口。"
+
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is False
+    assert any("站在前置条件边" in issue for issue in review["issues"])
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert any("实际门" in item and "任务要求" in item for item in review["revision_plan"])
+
+
+def test_review_allows_planning_words_used_as_actual_task_requirements():
+    body = "这个任务需要先完成前置条件，赵管事才肯放人。"
+
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is True
+    assert review["scores"]["planning_meta_leak"] == 8
+
+
+def test_review_allows_vr_prose_that_reads_a_task_requirement():
+    review = review_diagnostic_terms_in_body("他看向任务说明里的前置条件。")
+
+    assert review["pass"] is True
+    assert review["scores"]["planning_meta_leak"] == 8
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "隐藏职业让他绕过任务前置条件，直接进入副本。",
+        "隐藏职业让他跨过任务前置条件，直接进入副本。",
+        "隐藏职业让他跨过任务前置条件进入副本。",
+        "跨出前置条件满足。",
+        "跨出前置条件满足后的第一步。",
+        "跨出任务前置条件说明后的第一步。",
+        "迈出前置条件满足后的第一步。",
+        "迈出前置条件后的第一步。",
+        "推开前置条件后面的木门。",
+        "推开前置条件之后的石门。",
+        "推开前置条件之前的步骤。",
+    ],
+)
+def test_review_allows_abstract_rules_and_longer_phrases(body):
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is True
+    assert review["scores"]["planning_meta_leak"] == 8
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "视线停在任务前置条件后续说明上。",
+        "任务进度停在前置条件后续检查阶段。",
+        "他站在前置条件边界之外思考规则。",
+    ],
+)
+def test_review_does_not_truncate_longer_words_as_location_suffixes(body):
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is True
+    assert review["scores"]["planning_meta_leak"] == 8
+
+
+def test_review_does_not_treat_another_characters_gaze_as_a_ui_subject():
+    body = "周满迎着赵管事的视线推开了前置条件。"
+
+    review = review_critical_prose_rules(body)
+
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert review["severity_summary"]["has_hard_violation"] is True
+    assert any("推开了前置条件" in issue for issue in review["hard_issues"])
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_hit"),
+    [
+        ("周满站在前置条件旁边，等林照开口。", "站在前置条件旁边"),
+        ("周满站在前置条件边上。", "站在前置条件边上"),
+        ("周满站在前置条件边上的台阶。", "站在前置条件边上"),
+        ("周满站在前置条件旁边的人身后。", "站在前置条件旁边"),
+        ("周满站在前置条件的旁边。", "站在前置条件的旁边"),
+        ("周满走到剧情节点的后面。", "走到剧情节点的后面"),
+        ("周满站在前置条件后方。", "站在前置条件后方"),
+        ("周满站在前置条件前方。", "站在前置条件前方"),
+    ],
+)
+def test_review_flags_compound_planning_meta_locations(body, expected_hit):
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is False
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert any(expected_hit in issue for issue in review["issues"])
+
+
+@pytest.mark.parametrize("continuation", ["时", "后", "前", "之后", "之前", "以前", "以后", "的时候"])
+def test_review_flags_planning_meta_actions_with_sentence_continuations(continuation):
+    phrase = f"推开前置条件{continuation}"
+    review = review_diagnostic_terms_in_body(f"周满{phrase}，林照退了一步。")
+
+    assert review["pass"] is False
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert any(phrase in issue for issue in review["issues"])
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_hit"),
+    [
+        ("周满推开前置条件后继续前进。", "推开前置条件后"),
+        ("周满推开前置条件以后继续前进。", "推开前置条件以后"),
+        ("周满把剧情节点推开后继续前进。", "把剧情节点推开后"),
+        ("周满把剧情节点推开之前。", "把剧情节点推开之前"),
+    ],
+)
+def test_review_flags_action_continuations_without_punctuation(body, expected_hit):
+    review = review_diagnostic_terms_in_body(body)
+
+    assert review["pass"] is False
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert any(expected_hit in issue for issue in review["issues"])
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "站在“前置条件”边",
+        "站在 前置条件 边",
+        "站在【前置条件】边",
+        "站在（前置条件）旁",
+        "走到了剧情节点旁",
+        "推开了章节前置条件",
+        "把剧情节点推开",
+        "将剧情节点推开",
+    ],
+)
+def test_review_flags_planning_language_materialization_variants(phrase):
+    review = review_diagnostic_terms_in_body(f"周满{phrase}，等林照开口。")
+
+    assert review["pass"] is False
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert any(phrase in issue for issue in review["issues"])
+
+
+def test_review_deduplicates_repeated_planning_meta_leak_phrases():
+    phrase = "推开了章节前置条件"
+    review = review_diagnostic_terms_in_body(f"周满{phrase}，转身又{phrase}。")
+
+    assert review["pass"] is False
+    planning_issue = next(issue for issue in review["issues"] if phrase in issue)
+    assert planning_issue.count(phrase) == 1
+
+
+def test_review_flags_planning_language_materialized_as_an_action_target():
+    review = review_diagnostic_terms_in_body("周满走到剧情节点旁，抬手推开章节前置条件。")
+
+    assert review["pass"] is False
+    assert any("走到剧情节点旁" in issue for issue in review["issues"])
+    assert any("推开章节前置条件" in issue for issue in review["issues"])
+    assert review["scores"]["planning_meta_leak"] == 5
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "跨出前置条件",
+        "跨出“前置条件”",
+        "跨出 前置条件",
+    ],
+)
+def test_review_flags_crossing_out_of_planning_meta_as_a_physical_action(phrase):
+    review = review_critical_prose_rules(f"周满{phrase}，又回过头。")
+
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert review["severity_summary"]["has_hard_violation"] is True
+    assert any(phrase in issue for issue in review["hard_issues"])
+
+
+@pytest.mark.parametrize(
+    "continued_action",
+    [
+        "进入副本",
+        "走向石门",
+        "来到殿外",
+        "回到原地",
+        "继续前进",
+        "又回过头",
+        "再往前走",
+        "并关上门",
+    ],
+)
+def test_review_flags_crossing_out_of_planning_meta_before_a_continued_action(continued_action):
+    phrase = "跨出任务前置条件"
+    review = review_critical_prose_rules(f"隐藏职业让他{phrase}{continued_action}。")
+
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert review["severity_summary"]["has_hard_violation"] is True
+    assert any(phrase in issue for issue in review["hard_issues"])
 
 
 def test_review_flags_npc_boundary_overreach():
@@ -95,6 +297,15 @@ def test_hard_violation_alone_triggers_revision():
     assert review["requires_revision"] is True
     assert review["severity_summary"]["has_hard_violation"] is True
     assert any("公会" in issue or "上报" in issue or "限知" in issue for issue in review["hard_issues"])
+
+
+def test_planning_language_materialized_as_action_is_a_hard_violation():
+    review = review_critical_prose_rules("周满说完，迈出前置条件。")
+
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert review["severity_summary"]["has_hard_violation"] is True
+    assert review["requires_revision"] is True
+    assert any("迈出前置条件" in issue for issue in review["hard_issues"])
 
 
 def test_single_soft_violation_does_not_trigger_revision():
