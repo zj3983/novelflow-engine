@@ -2348,19 +2348,6 @@ def _normalize_intent(raw_intent: object) -> dict:
     }
 
 
-def _leading_generic_actor_phrase(raw_action: object, generic_suffixes: tuple[str, ...]) -> str:
-    first_clause = re.split(r"[，,。；;！？!?]", str(raw_action or "").lstrip(), maxsplit=1)[0]
-    candidates: list[str] = []
-    for suffix in generic_suffixes:
-        position = first_clause.find(suffix)
-        if not 0 <= position <= 8:
-            continue
-        actor_phrase = first_clause[: position + len(suffix)]
-        if re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9_·]+", actor_phrase):
-            candidates.append(actor_phrase)
-    return min(candidates, key=len) if candidates else ""
-
-
 def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     if not isinstance(plan, dict):
         return ["导演产物不是JSON对象。"]
@@ -2388,10 +2375,9 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     if any(value in placeholder_phrases for value in [*satisfaction_values, str(hook.get("content") or "").strip()]):
         issues.append("章节规划仍含空泛占位语，必须改成能直接写成场景的具体行动、阻力、结果和章末事件。")
 
-    moves = [
-        *_normalize_moves(plan.get("character_moves"), require_action=True, allow_text_items=True),
-        *_normalize_ordered_actions(event_plan.get("ordered_actions"), story=story, require_action=True),
-    ]
+    character_moves = _normalize_moves(plan.get("character_moves"), require_action=True, allow_text_items=True)
+    ordered_moves = _normalize_ordered_actions(event_plan.get("ordered_actions"), story=story, require_action=True)
+    moves = [*character_moves, *ordered_moves]
     if not moves:
         issues.append("导演计划缺少可执行动作。")
 
@@ -2407,15 +2393,14 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
                 break
 
     generic_suffixes = ("收购方", "管理员", "工作人员", "路人", "玩家甲", "店员", "商人玩家")
-    known_names = _story_character_names(story)
-    for move in moves:
+    structured_named_moves = [
+        *character_moves,
+        *_normalize_moves(event_plan.get("ordered_actions"), require_action=True),
+    ]
+    for move in structured_named_moves:
         name = str(move.get("name") or "").strip()
-        action = str(move.get("action") or "").lstrip()
-        known_text_actor = next((known for known in sorted(known_names, key=len, reverse=True) if action.startswith(known)), "")
-        text_actor = "" if known_text_actor else _leading_generic_actor_phrase(action, generic_suffixes)
-        placeholder_actor = name if name.endswith(generic_suffixes) else text_actor
-        if placeholder_actor:
-            issues.append(f"角色“{placeholder_actor}”是岗位或占位称呼；删除该角色，或先使用已有具名角色卡。")
+        if name.endswith(generic_suffixes):
+            issues.append(f"角色“{name}”是岗位或占位称呼；删除该角色，或先使用已有具名角色卡。")
             break
 
     known_text = "\n".join(

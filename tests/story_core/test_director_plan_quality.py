@@ -250,61 +250,37 @@ def test_game_quality_gate_scans_reality_name_without_treating_target_as_actor()
     assert any("苏叶" in issue and "夜烬" in issue for issue in issues)
 
 
-def test_quality_gate_rejects_placeholder_actors_at_text_action_start():
+def test_quality_gate_allows_placeholder_terms_in_unstructured_text_actions():
     story = StoryState(
-        story_id="placeholder-text-actors",
+        story_id="placeholder-text-terms",
         outline="林照查祖祠。",
         genre="玄幻",
         style="白描",
         characters=[CharacterState(name="林照", role="主角")],
     )
 
-    cases = (
-        ("路人拦住林照", "路人"),
-        ("路人靠近林照", "路人"),
-        ("收购方上门压价", "收购方"),
-        ("白河仓库收购方上门压价", "白河仓库收购方"),
-        ("陌生路人拦住林照", "陌生路人"),
-        ("陌生路人靠近林照", "陌生路人"),
-    )
-    for action, actor in cases:
+    for action in ("询问收购方价格", "向陌生路人问路", "请店员拿出账册"):
         issues = _director_plan_quality_issues(story, _complete_plan([action]))
 
-        assert any(f"角色“{actor}”" in issue and "占位" in issue for issue in issues), action
-
-    conflicting_issues = _director_plan_quality_issues(
-        story,
-        _complete_plan([{"name": "林照", "action": "路人拦住林照"}]),
-    )
-
-    assert any("角色“路人”" in issue for issue in conflicting_issues)
+        assert issues == [], action
 
 
-def test_quality_gate_does_not_treat_placeholder_targets_as_text_actors():
+def test_quality_gate_rejects_structured_placeholder_actor_names():
     story = StoryState(
-        story_id="placeholder-text-targets",
+        story_id="structured-placeholder-actors",
         outline="林照向收购方询价。",
         genre="玄幻",
         style="白描",
         characters=[CharacterState(name="林照", role="主角")],
     )
+    ordered_plan = _complete_plan([{"name": "白河仓库收购方", "action": "上门压价"}])
+    grouped_plan = _complete_plan(["林照核对账册"])
+    grouped_plan["character_moves"] = {"白河仓库收购方": "上门压价"}
 
-    actions = (
-        "林照询问收购方价格",
-        "林照看见陌生路人",
-        "林照护送陌生路人进入祖祠",
-    )
-    for action in actions:
-        issues = _director_plan_quality_issues(story, _complete_plan([action]))
+    for plan in (ordered_plan, grouped_plan):
+        issues = _director_plan_quality_issues(story, plan)
 
-        assert issues == [], action
-
-    game_id_issues = _director_plan_quality_issues(
-        _story(),
-        _complete_plan(["夜烬护送陌生路人进入祖祠"]),
-    )
-
-    assert not any("占位" in issue for issue in game_id_issues)
+        assert any("白河仓库收购方" in issue and "占位" in issue for issue in issues)
 
 
 def test_quality_gate_keeps_concrete_xuanhuan_text_actions_valid():
