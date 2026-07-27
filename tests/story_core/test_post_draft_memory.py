@@ -576,7 +576,7 @@ def test_attribute_allocation_memory_rejects_bystander_remaining_after_protagoni
 
 
 def test_attribute_allocation_memory_rejects_a_known_named_bystander_panel_chain():
-    body = "夜烬把五点加到智力上。林峰看了夜烬一眼，他确认加点，提示消失后，他的面板上的可用属性点还剩四点。"
+    body = "夜烬把五点加到智力上。青锋看了夜烬一眼，他确认加点，提示消失后，他的面板上的可用属性点还剩四点。"
     result = normalize_post_draft_memory(
         {
             "ledger_updates": {"protagonist": {"attribute_allocation": {"allocations": {"智力": 5}, "remaining": 4}}},
@@ -586,7 +586,7 @@ def test_attribute_allocation_memory_rejects_a_known_named_bystander_panel_chain
             },
         },
         body=body,
-        existing_character_names={"夜烬", "林峰"},
+        existing_character_names={"夜烬", "林峰", "青锋"},
         protagonist_aliases={"夜烬"},
     )
 

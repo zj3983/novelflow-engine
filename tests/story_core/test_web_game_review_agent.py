@@ -1118,11 +1118,11 @@ def test_web_game_review_accepts_a_panel_location_result_after_protagonist_alloc
 def test_web_game_review_rejects_a_known_named_bystander_panel_chain():
     review = review_web_game_chapter(
         chapter_number=4,
-        body="夜烬把五点加到智力上。林峰看了夜烬一眼，他确认加点，提示消失后，他的面板上的可用属性点还剩4点。",
+        body="夜烬把五点加到智力上。青锋看了夜烬一眼，他确认加点，提示消失后，他的面板上的可用属性点还剩4点。",
         event_plan={"novel_type": "game_webnovel", "attribute_allocation_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 4}},
         world_facts=[],
         protagonist_aliases={"夜烬"},
-        character_names={"夜烬", "林峰"},
+        character_names={"夜烬", "林峰", "青锋"},
     )
 
     assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review

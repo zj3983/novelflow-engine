@@ -27,7 +27,7 @@ from packages.story_core.attribute_allocation import (
     planned_level_target,
     validate_attribute_allocation_decision,
 )
-from packages.story_core.attribute_evidence import protagonist_aliases_from_characters
+from packages.story_core.attribute_evidence import character_evidence_names, protagonist_aliases_from_characters
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate, review_chapter_governance
 from packages.story_core.chapter_planning import build_outline_chapter_plan
 from packages.story_core.chapter_seed import build_chapter_seed
@@ -3481,23 +3481,11 @@ def _story_review_genre_context(story: StoryState) -> dict[str, Any]:
 def _review_character_names(story: StoryState) -> tuple[str, ...]:
     """Names and game IDs available to evidence-based chapter review."""
 
-    names: set[str] = set()
-    for character in story.characters:
-        if character.lifecycle_state not in {"active", "approved"} or character.frozen:
-            continue
-        for value in (character.name, character.game_id):
-            name = str(value or "").strip()
-            if name:
-                names.add(name)
-        panel = getattr(character, "game_panel", None)
-        panel_game_id = (
-            panel.get("game_id")
-            if isinstance(panel, dict)
-            else getattr(panel, "game_id", "")
-        )
-        panel_name = str(panel_game_id or "").strip()
-        if panel_name:
-            names.add(panel_name)
+    names = character_evidence_names(
+        character
+        for character in story.characters
+        if character.lifecycle_state in {"active", "approved"} and not character.frozen
+    )
     return tuple(sorted(names, key=lambda value: (-len(value), value)))
 
 
@@ -6269,7 +6257,7 @@ class StoryOrchestrator:
         prompt = build_post_draft_memory_prompt(
             body,
             previous_summary=previous_summary.summary if previous_summary else "",
-            existing_character_names={character.name for character in story.characters},
+            existing_character_names=character_evidence_names(story.characters),
             genre=story.genre,
             fact_locks=fact_locks or {},
         )
@@ -6341,7 +6329,7 @@ class StoryOrchestrator:
         memory = normalize_post_draft_memory(
             payload,
             body=body,
-            existing_character_names={character.name for character in story.characters},
+            existing_character_names=character_evidence_names(story.characters),
             protagonist_aliases=protagonist_aliases_from_characters(story.characters),
         )
         has_grounded_memory = any(

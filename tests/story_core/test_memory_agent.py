@@ -188,13 +188,13 @@ def test_memory_agent_passes_real_name_and_game_id_as_protagonist_aliases(monkey
         agent_settings={"mode": "LLM-assisted"},
         characters=[
             CharacterState(name="苏叶", game_id="夜烬", role="主角"),
-            CharacterState(name="短发玩家", role="supporting"),
+            CharacterState(name="林峰", game_id="青锋", role="supporting"),
         ],
     )
 
     MemoryAgent(llm_provider=Provider()).remember(
         story,
-        body="短发玩家把五点加到智力上。",
+        body="青锋把五点加到智力上。",
         chapter_number=2,
         decision=DirectorDecision(),
         conflict_summary={},
@@ -203,4 +203,4 @@ def test_memory_agent_passes_real_name_and_game_id_as_protagonist_aliases(monkey
     )
 
     assert captured["protagonist_aliases"] == {"苏叶", "夜烬"}
-    assert captured["existing_character_names"] == {"苏叶", "短发玩家"}
+    assert captured["existing_character_names"] == {"苏叶", "夜烬", "林峰", "青锋"}

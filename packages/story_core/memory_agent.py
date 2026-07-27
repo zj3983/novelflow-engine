@@ -8,7 +8,7 @@ from packages.story_core.agent_base import (
     compact_text,
     parse_json_message_content,
 )
-from packages.story_core.attribute_evidence import protagonist_aliases_from_characters
+from packages.story_core.attribute_evidence import character_evidence_names, protagonist_aliases_from_characters
 from packages.story_core.memory import apply_post_chapter_updates
 from packages.story_core.models import DirectorDecision, StoryState, default_model_name
 from packages.story_core.post_draft_memory import (
@@ -106,7 +106,7 @@ class OpenAIMemorySummaryProvider(BaseOpenAIProvider):
         return build_post_draft_memory_prompt(
             body,
             previous_summary=(story.chapter_summaries[-1].summary if story.chapter_summaries else ""),
-            existing_character_names={character.name for character in story.characters},
+            existing_character_names=character_evidence_names(story.characters),
             genre=story.genre,
             fact_locks={
                 "chapter_number": chapter_number,
@@ -150,7 +150,7 @@ class MemoryAgent:
                 memory = normalize_post_draft_memory(
                     analysis,
                     body=body,
-                    existing_character_names={character.name for character in story.characters},
+                    existing_character_names=character_evidence_names(story.characters),
                     protagonist_aliases=protagonist_aliases_from_characters(story.characters),
                 )
 

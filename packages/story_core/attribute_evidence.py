@@ -257,6 +257,25 @@ def protagonist_aliases_from_characters(characters: Iterable[object]) -> set[str
     return aliases
 
 
+def character_evidence_names(characters: Iterable[object]) -> set[str]:
+    """Return non-empty card names and game IDs for local subject evidence."""
+
+    names: set[str] = set()
+    for character in characters:
+        if isinstance(character, dict):
+            values = (character.get("name"), character.get("game_id"))
+            panel = character.get("game_panel")
+        else:
+            values = (getattr(character, "name", ""), getattr(character, "game_id", ""))
+            panel = getattr(character, "game_panel", None)
+        panel_game_id = panel.get("game_id") if isinstance(panel, dict) else getattr(panel, "game_id", "")
+        for value in (*values, panel_game_id):
+            name = str(value or "").strip()
+            if name:
+                names.add(name)
+    return names
+
+
 def _normalized_aliases(protagonist_aliases: Iterable[str] | None) -> tuple[str, ...]:
     if protagonist_aliases is None:
         return ()

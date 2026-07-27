@@ -95,6 +95,7 @@ def test_orchestrator_memory_normalization_receives_protagonist_real_and_game_al
     captured = {}
 
     def fake_normalize(payload, *, body, existing_character_names, protagonist_aliases=None):
+        captured["existing_character_names"] = existing_character_names
         captured["protagonist_aliases"] = protagonist_aliases
         return {
             "summary": "记忆完成",
@@ -118,19 +119,20 @@ def test_orchestrator_memory_normalization_receives_protagonist_real_and_game_al
         style="紧凑",
         characters=[
             CharacterState(name="苏叶", game_id="夜烬", role="protagonist"),
-            CharacterState(name="短发玩家", role="supporting"),
+            CharacterState(name="林峰", game_id="青锋", role="supporting"),
         ],
     )
 
     memory, status = orchestrator._extract_final_body_memory(
         story,
-        "短发玩家把五点加到智力上。",
+        "青锋把五点加到智力上。",
         1,
     )
 
     assert status["status"] == "ok"
     assert memory["summary"] == "记忆完成"
     assert captured["protagonist_aliases"] == {"苏叶", "夜烬"}
+    assert captured["existing_character_names"] == {"苏叶", "夜烬", "林峰", "青锋"}
 
 
 def _attribute_rule() -> dict:
