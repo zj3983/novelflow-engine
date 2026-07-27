@@ -749,6 +749,46 @@ def test_character_update_evidence_stops_at_the_next_known_character(evidence: s
     assert result["character_updates"] == []
 
 
+def test_character_update_ignores_target_alias_used_as_an_object():
+    evidence = "赤霄看着青锋，脸色凝重。"
+
+    result = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "林峰", "emotion": "凝重", "evidence": evidence}
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body=evidence,
+        existing_character_names={"林峰", "周远"},
+        character_aliases_by_name={"林峰": {"青锋"}, "周远": {"赤霄"}},
+    )
+
+    assert result["character_updates"] == []
+
+
+def test_character_update_switches_subject_only_when_alias_starts_a_subclause():
+    evidence = "赤霄看着青锋，青锋脸色凝重。"
+
+    result = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "林峰", "emotion": "凝重", "evidence": evidence}
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body=evidence,
+        existing_character_names={"林峰", "周远"},
+        character_aliases_by_name={"林峰": {"青锋"}, "周远": {"赤霄"}},
+    )
+
+    assert result["character_updates"] == [
+        {"name": "林峰", "emotion": "凝重", "evidence": evidence}
+    ]
+
+
 def test_memory_prompt_lists_game_id_but_requires_real_character_name_for_updates():
     prompt = build_post_draft_memory_prompt(
         "青锋脸色凝重。",

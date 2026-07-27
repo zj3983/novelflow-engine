@@ -197,6 +197,52 @@ def _evidence_clauses(evidence: str) -> list[str]:
     return [clause.strip() for clause in re.split(r"[.!?。！？\n；;]+", evidence) if clause.strip()]
 
 
+_SUBCLAUSE_SEPARATOR = re.compile(r"[，,]+")
+_SUBJECT_LEADING_QUOTES = " \t\r\n\"'“”‘’「」『』"
+_SUBJECT_TIME_PREFIXES = (
+    "此时",
+    "随后",
+    "这时",
+    "这会儿",
+    "片刻后",
+    "过了一会儿",
+    "不久后",
+)
+
+
+def _subject_start(clause: str) -> int:
+    """Return the conservative position where a local subject may begin."""
+
+    start = 0
+    while start < len(clause) and clause[start] in _SUBJECT_LEADING_QUOTES:
+        start += 1
+    for prefix in _SUBJECT_TIME_PREFIXES:
+        if clause.startswith(prefix, start):
+            start += len(prefix)
+            while start < len(clause) and clause[start] in _SUBJECT_LEADING_QUOTES:
+                start += 1
+            break
+    return start
+
+
+def _subclause_subject(
+    clause: str,
+    *,
+    aliases_for_name: Mapping[str, set[str]],
+) -> str | None:
+    start = _subject_start(clause)
+    candidates = [
+        (alias, name)
+        for name, aliases in aliases_for_name.items()
+        for alias in aliases
+        if alias and clause.startswith(alias, start)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (-len(item[0]), item[1]))
+    return candidates[0][1]
+
+
 def _character_evidence_spans(
     evidence: str,
     target_name: str,
@@ -204,7 +250,7 @@ def _character_evidence_spans(
     aliases_by_name: Mapping[str, set[str]],
     known_names: set[str],
 ) -> list[str]:
-    """Keep each target span only until another known character takes the subject slot."""
+    """Keep a target's local text until another subject starts a subclause."""
 
     all_names = known_names | set(aliases_by_name)
     aliases_for_name = {
@@ -213,27 +259,25 @@ def _character_evidence_spans(
     }
     spans: list[str] = []
     for clause in _evidence_clauses(evidence):
-        anchors: set[tuple[int, int, str]] = set()
-        for name, aliases in aliases_for_name.items():
-            for alias in aliases:
-                if not alias:
-                    continue
-                anchors.update(
-                    (match.start(), match.end(), name)
-                    for match in re.finditer(re.escape(alias), clause)
-                )
-        ordered = sorted(anchors, key=lambda item: (item[0], -(item[1] - item[0]), item[2]))
-        for index, (start, _end, name) in enumerate(ordered):
-            if name != target_name:
+        current_subject: str | None = None
+        current_span: list[str] = []
+        for subclause in _SUBCLAUSE_SEPARATOR.split(clause):
+            subclause = subclause.strip()
+            if not subclause:
                 continue
-            stop = len(clause)
-            for next_start, _next_end, next_name in ordered[index + 1 :]:
-                if next_name != target_name:
-                    stop = next_start
-                    break
-            span = clause[start:stop].strip()
-            if span:
-                spans.append(span)
+            subject = _subclause_subject(
+                subclause,
+                aliases_for_name=aliases_for_name,
+            )
+            if subject is not None and subject != current_subject:
+                if current_subject == target_name and current_span:
+                    spans.append("，".join(current_span))
+                current_span = []
+                current_subject = subject
+            if current_subject == target_name:
+                current_span.append(subclause)
+        if current_subject == target_name and current_span:
+            spans.append("，".join(current_span))
     return spans
 
 
