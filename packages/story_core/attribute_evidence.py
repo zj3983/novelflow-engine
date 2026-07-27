@@ -19,8 +19,9 @@ _CN_NUMERAL_VALUES = {
 }
 _COUNT_PATTERN = r"\d+|[一二两三四五六七八九十百]{1,3}"
 _ATTRIBUTE_ALLOCATION_ACTIONS = r"(?:加到|加到了|加给|分配给|分配到了|投入(?!到|了)|投入到了|点在)"
+_ATTRIBUTE_ACTION_GAP = r"[^。！？\n，,；;“”‘’\"]{0,16}"
 _ATTRIBUTE_ACTION_PATTERN = (
-    rf"(?:{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
+    rf"(?:{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
     rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}"
 )
 _ATTRIBUTE_CONTEXT = ("属性点", "加点", "分配", "力量", "体质", "敏捷", "智力", "精神", "感知")
@@ -88,9 +89,16 @@ def _is_inside_quote(text: str, position: int) -> bool:
 
 
 def _is_conditional_sentence(text: str, position: int) -> bool:
-    start, end = sentence_bounds(text, position)
-    sentence = text[start:end]
-    return any(marker in sentence for marker in _CONDITIONAL_MARKERS)
+    """Reject a conditional action, without swallowing a later real turn."""
+
+    start, _ = sentence_bounds(text, position)
+    clauses = re.split(r"[，,；;]", text[start:position])
+    current_clause = clauses[-1]
+    if any(marker in current_clause for marker in _CONDITIONAL_MARKERS):
+        return True
+    if len(clauses) < 2 or not any(marker in clauses[-2] for marker in _CONDITIONAL_MARKERS):
+        return False
+    return bool(re.search(r"(?:就|会|才|便)\s*(?:把|将)\s*$", current_clause))
 
 
 def _is_negated_before(text: str, position: int, *, carry: bool = False) -> bool:
@@ -194,7 +202,7 @@ def _action_matches(body: str, attribute: str | None = None, points: int | None 
             if not form:
                 continue
             pattern = (
-                rf"{re.escape(form)}\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
+                rf"{re.escape(form)}\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
                 rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}\s*{re.escape(attribute)}(?:上|里)?"
             )
             yield from re.finditer(pattern, body)
@@ -234,7 +242,7 @@ def character_attribute_allocation_points(
     body: str, attribute: str, *, protagonist_aliases: Iterable[str] | None = None
 ) -> int | None:
     pattern = (
-        rf"(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
+        rf"(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
         rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}\s*{re.escape(attribute)}(?:上|里)?"
     )
     values: list[int] = []

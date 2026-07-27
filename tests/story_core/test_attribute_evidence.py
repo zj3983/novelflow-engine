@@ -74,6 +74,25 @@ def test_attribute_allocation_accepts_real_action_after_quoted_hypothesis():
     assert has_positive_attribute_allocation_confirmation(body, protagonist_aliases={"夜烬"})
 
 
+def test_attribute_allocation_accepts_actual_turn_after_same_sentence_condition():
+    body = "“如果保留五点会更灵活”，夜烬还是把五点加到智力上。随后他点下确认，可用属性点归零。"
+
+    assert has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+    assert has_positive_attribute_allocation_confirmation(body, protagonist_aliases={"夜烬"})
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "如果夜烬把五点加到智力上，确认后智力就会从五变成十。",
+        "如果拿到五点，夜烬就把五点加到智力上。",
+        "如果拿到五点，夜烬会把五点加到智力上。",
+    ],
+)
+def test_attribute_allocation_rejects_conditional_clause_or_conditional_continuation(body: str):
+    assert not has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+
+
 def test_attribute_allocation_default_rejects_explicit_bystander_subject():
     assert not has_character_attribute_allocation("《神域》里，短发玩家把五点加到智力上", "智力", 5)
 

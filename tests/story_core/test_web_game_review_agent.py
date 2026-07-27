@@ -1029,6 +1029,21 @@ def test_web_game_review_rejects_quoted_conditional_allocation_as_actual_event()
     assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
 
 
+def test_web_game_review_accepts_actual_turn_after_same_sentence_condition():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="“如果保留五点会更灵活”，夜烬还是把五点加到智力上。随后他点下确认，可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+        },
+        world_facts=[],
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
 def test_web_game_review_ignores_future_or_negated_allocation_text_without_current_decision():
     review = review_web_game_chapter(
         chapter_number=4,

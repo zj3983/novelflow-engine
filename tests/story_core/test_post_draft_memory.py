@@ -626,6 +626,30 @@ def test_attribute_allocation_memory_rejects_quoted_conditional_hypothesis():
     assert result["ledger_updates"] == {}
 
 
+def test_attribute_allocation_memory_accepts_actual_turn_after_same_sentence_condition():
+    body = "“如果保留五点会更灵活”，夜烬还是把五点加到智力上。随后他点下确认，可用属性点归零。"
+    payload = {
+        "ledger_updates": {
+            "protagonist": {
+                "attribute_allocation": {"allocations": {"智力": 5}, "remaining": 0}
+            }
+        },
+        "ledger_evidence": {
+            "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+            "protagonist.attribute_allocation.remaining": "可用属性点归零",
+        },
+    }
+
+    result = normalize_post_draft_memory(
+        payload,
+        body=body,
+        existing_character_names={"夜烬"},
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == payload["ledger_updates"]
+
+
 def test_attribute_allocation_memory_prefers_directive_over_final_attribute_mirrors():
     body = "夜烬打开面板，把五点加到智力上。确认后，智力从五变成十，可用属性点归零。夜烬站在灰狼坡。"
     result = normalize_post_draft_memory(
