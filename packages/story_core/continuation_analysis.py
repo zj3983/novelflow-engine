@@ -272,15 +272,28 @@ def _load_progress(
 ) -> list[ChapterAnalysis]:
     chapters_by_id = {chapter.chapter_id: chapter for chapter in chapters}
     raw_results = progress.get("chapter_results", [])
-    if not isinstance(raw_results, list):
+    raw_completed = progress.get("completed_chapter_ids", [])
+    raw_fingerprints = progress.get("chapter_fingerprints", {})
+    if (
+        not isinstance(raw_results, list)
+        or not isinstance(raw_completed, list)
+        or not isinstance(raw_fingerprints, dict)
+    ):
         return []
+    completed_ids = {item for item in raw_completed if isinstance(item, str)}
     valid_by_id: dict[str, ChapterAnalysis] = {}
     for raw in raw_results:
         try:
             result = ChapterAnalysis.model_validate(raw)
         except (TypeError, ValidationError):
             continue
-        if result.chapter_id not in chapters_by_id or result.chapter_id in valid_by_id:
+        chapter = chapters_by_id.get(result.chapter_id)
+        if (
+            chapter is None
+            or result.chapter_id not in completed_ids
+            or raw_fingerprints.get(result.chapter_id) != chapter.fingerprint
+            or result.chapter_id in valid_by_id
+        ):
             continue
         valid_by_id[result.chapter_id] = _normalize_chapter_result(result, chapters_by_id)
     return [valid_by_id[chapter.chapter_id] for chapter in chapters if chapter.chapter_id in valid_by_id]
@@ -317,6 +330,10 @@ def run_continuation_analysis(
         current.analysis_progress["chapter_results"] = [
             result.model_dump(mode="json") for result in completed
         ]
+        current.analysis_progress["chapter_fingerprints"] = {
+            result.chapter_id: chapters_by_id[result.chapter_id].fingerprint
+            for result in completed
+        }
 
     session = store.update(session_id, begin, expected_revision=session.revision)
     revision = session.revision
@@ -354,6 +371,10 @@ def run_continuation_analysis(
                 current.analysis_progress["chapter_results"] = [
                     result.model_dump(mode="json") for result in ordered
                 ]
+                current.analysis_progress["chapter_fingerprints"] = {
+                    result.chapter_id: chapters_by_id[result.chapter_id].fingerprint
+                    for result in ordered
+                }
 
             session = store.update(session_id, checkpoint, expected_revision=revision)
             revision = session.revision

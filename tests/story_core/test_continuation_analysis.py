@@ -108,6 +108,36 @@ def test_evidence_ref_validates_offsets() -> None:
         EvidenceRef(chapter_id="c1", excerpt_start=1, excerpt_end=1)
 
 
+def test_evidence_quote_is_optional_and_empty_quote_uses_range_only(
+    tmp_path: Path,
+) -> None:
+    store, session = _store_with_chapters(tmp_path, count=1)
+
+    class EmptyQuoteAnalyzer(FakeAnalyzer):
+        def merge(self, results, recent):
+            return ContinuationAnalysis(
+                story_overview="总览",
+                world=[
+                    ClaimItem(
+                        claim="范围已定位",
+                        confidence="confirmed",
+                        evidence=[
+                            EvidenceRef(
+                                chapter_id=session.chapters[0].chapter_id,
+                                excerpt_start=0,
+                                excerpt_end=2,
+                            )
+                        ],
+                    )
+                ],
+            )
+
+    result = run_continuation_analysis(store, session.session_id, EmptyQuoteAnalyzer())
+
+    assert result.world[0].confidence == "confirmed"
+    assert result.world[0].evidence[0].quote == ""
+
+
 def test_three_chapters_batch_size_one_persists_each_batch(tmp_path: Path) -> None:
     store, session = _store_with_chapters(tmp_path)
     analyzer = FakeAnalyzer()
@@ -122,6 +152,9 @@ def test_three_chapters_batch_size_one_persists_each_batch(tmp_path: Path) -> No
         chapter.chapter_id for chapter in loaded.chapters
     ]
     assert len(loaded.analysis_progress["chapter_results"]) == 3
+    assert loaded.analysis_progress["chapter_fingerprints"] == {
+        chapter.chapter_id: chapter.fingerprint for chapter in loaded.chapters
+    }
     assert len(analyzer.batch_calls) == 3
 
 
@@ -133,6 +166,9 @@ def test_resume_skips_completed_chapter(tmp_path: Path) -> None:
         lambda current: current.analysis_progress.update(
             completed_chapter_ids=[session.chapters[0].chapter_id],
             chapter_results=[first.model_dump(mode="json")],
+            chapter_fingerprints={
+                session.chapters[0].chapter_id: session.chapters[0].fingerprint
+            },
         ),
     )
     analyzer = FakeAnalyzer()
@@ -140,6 +176,57 @@ def test_resume_skips_completed_chapter(tmp_path: Path) -> None:
     run_continuation_analysis(store, session.session_id, analyzer, batch_size=10)
 
     assert [[chapter.number for chapter in batch] for batch in analyzer.batch_calls] == [[2, 3]]
+
+
+def test_same_id_changed_fingerprint_reanalyzes_only_stale_chapter(tmp_path: Path) -> None:
+    store, session = _store_with_chapters(tmp_path)
+    results = [_chapter_result(chapter) for chapter in session.chapters]
+
+    def seed_progress(current):
+        current.status = "analyzing"
+        current.analysis_progress = {
+            "completed_chapter_ids": [chapter.chapter_id for chapter in current.chapters],
+            "chapter_results": [result.model_dump(mode="json") for result in results],
+            "chapter_fingerprints": {
+                chapter.chapter_id: chapter.fingerprint for chapter in current.chapters
+            },
+        }
+
+    store.update(session.session_id, seed_progress)
+
+    def change_middle_chapter(current):
+        changed = current.chapters[1]
+        current.chapters[1] = changed.model_copy(
+            update={"body": "修改后的第二章正文", "fingerprint": "changed-fingerprint"}
+        )
+
+    store.update(session.session_id, change_middle_chapter)
+    analyzer = FakeAnalyzer()
+
+    run_continuation_analysis(store, session.session_id, analyzer)
+
+    assert [[chapter.number for chapter in batch] for batch in analyzer.batch_calls] == [[2]]
+    loaded = store.get(session.session_id)
+    assert loaded.analysis_progress["chapter_fingerprints"] == {
+        chapter.chapter_id: chapter.fingerprint for chapter in loaded.chapters
+    }
+
+
+def test_legacy_progress_without_fingerprint_is_reanalyzed(tmp_path: Path) -> None:
+    store, session = _store_with_chapters(tmp_path, count=2)
+    first = _chapter_result(session.chapters[0])
+    store.update(
+        session.session_id,
+        lambda current: current.analysis_progress.update(
+            completed_chapter_ids=[session.chapters[0].chapter_id],
+            chapter_results=[first.model_dump(mode="json")],
+        ),
+    )
+    analyzer = FakeAnalyzer()
+
+    run_continuation_analysis(store, session.session_id, analyzer)
+
+    assert [[chapter.number for chapter in batch] for batch in analyzer.batch_calls] == [[1, 2]]
 
 
 def test_failed_batch_keeps_checkpoint_and_resume_succeeds(tmp_path: Path) -> None:
