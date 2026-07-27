@@ -151,6 +151,26 @@ def test_markdown_same_level_interlude_is_a_chapter_boundary(tmp_path: Path) -> 
     assert all("# " not in chapter.body for chapter in result.chapters)
 
 
+def test_markdown_interlude_matches_adjacent_explicit_heading_level(tmp_path: Path) -> None:
+    from packages.story_core.continuation_import import scan_continuation_source
+
+    source = tmp_path / "mixed-levels.md"
+    _write(
+        source,
+        "# 第一章 开始\n开篇。\n## 第二章 转折\n转折。\n## 幕间\n幕间。\n## 第三章 继续\n继续。\n",
+    )
+
+    result = scan_continuation_source(source)
+
+    assert [chapter.title for chapter in result.chapters] == [
+        "第一章 开始",
+        "第二章 转折",
+        "幕间",
+        "第三章 继续",
+    ]
+    assert [chapter.body for chapter in result.chapters] == ["开篇。", "转折。", "幕间。", "继续。"]
+
+
 def test_markdown_fenced_headings_do_not_split_chapters(tmp_path: Path) -> None:
     from packages.story_core.continuation_import import scan_continuation_source
 
@@ -311,6 +331,28 @@ def test_short_gbk_text_is_selected_over_implausible_diagnostics() -> None:
     assert decode_novel_bytes(text.encode("gbk")) == (text, "gb18030")
 
 
+def test_default_and_diagnostic_encoding_contracts_are_separate(tmp_path: Path) -> None:
+    from packages.story_core.continuation_import import (
+        DEFAULT_ENCODINGS,
+        DIAGNOSTIC_ENCODINGS,
+        decode_novel_bytes,
+        scan_continuation_source,
+    )
+
+    assert DEFAULT_ENCODINGS == ("utf-8-sig", "utf-8", "gb18030", "gbk")
+    assert DIAGNOSTIC_ENCODINGS == ("big5", "utf-16-le", "utf-16-be")
+
+    text = "魑魅魍魉"
+    assert decode_novel_bytes(text.encode("gbk")) == (text, "gb18030")
+
+    (tmp_path / "第1章.txt").write_bytes(text.encode("gbk"))
+    result = scan_continuation_source(tmp_path)
+
+    assert result.encoding == "gb18030"
+    assert result.chapters[0].body == text
+    assert result.can_analyze is True
+
+
 def test_ambiguous_legacy_and_bomless_utf16_encodings_are_rejected() -> None:
     from packages.story_core.continuation_import import decode_novel_bytes
 
@@ -367,6 +409,18 @@ def test_dangerous_unicode_format_controls_are_blocked_by_scan(tmp_path: Path) -
 
     assert "source_text_unsafe" in result.warnings
     assert result.can_analyze is False
+
+
+def test_normal_unicode_joiners_and_variation_selectors_are_safe(tmp_path: Path) -> None:
+    from packages.story_core.continuation_import import scan_continuation_source
+
+    source = tmp_path / "emoji.txt"
+    _write(source, "第一章 技术\n👩‍💻正在工作\u200c，状态正常️。\n")
+
+    result = scan_continuation_source(source)
+
+    assert "source_text_unsafe" not in result.warnings
+    assert result.can_analyze is True
 
 
 def test_unheaded_directory_file_uses_the_file_as_a_chapter_boundary(tmp_path: Path) -> None:

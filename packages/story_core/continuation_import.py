@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 
 
 SUPPORTED_SUFFIXES = {".md", ".txt"}
-_LEGACY_CANDIDATE_ENCODINGS = ("gb18030", "gbk", "big5", "utf-16-le", "utf-16-be")
+DEFAULT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk")
+DIAGNOSTIC_ENCODINGS = ("big5", "utf-16-le", "utf-16-be")
 _UTF8_BOM = b"\xef\xbb\xbf"
 _UNSUPPORTED_DEFAULT_BOMS = (
     (b"\xff\xfe\x00\x00", "utf-32", "utf-32-le"),
@@ -33,6 +34,7 @@ _CHAPTER_TITLE_RE = re.compile(
 _MARKDOWN_TITLE_RE = re.compile(r"^\s{0,3}(?P<marks>#{1,6})[ \t]+(?P<title>.+?)\s*$")
 _FENCE_RE = re.compile(r"^\s{0,3}(?P<fence>`{3,}|~{3,})")
 _NATURAL_NUMBER_RE = re.compile(rf"第\s*([{_NUMBER_CHARS}]+)\s*[章节回卷]|(\d+)")
+_DANGEROUS_BIDI_CLASSES = {"LRE", "RLE", "LRO", "RLO", "PDF", "LRI", "RLI", "FSI", "PDI"}
 
 
 class ContinuationChapter(BaseModel):
@@ -92,28 +94,32 @@ def decode_novel_bytes(payload: bytes, forced_encoding: str | None = None) -> tu
     else:
         return utf8_text, "utf-8"
 
-    candidates: dict[str, str] = {}
-    seen_texts: set[str] = set()
-    for encoding in _LEGACY_CANDIDATE_ENCODINGS:
+    default_encoding = ""
+    default_text = ""
+    for encoding in DEFAULT_ENCODINGS[2:]:
         try:
             text = payload.decode(encoding, errors="strict")
         except UnicodeDecodeError:
             continue
-        if _has_private_use_characters(text) or text in seen_texts:
-            continue
-        candidates[encoding] = text
-        seen_texts.add(text)
+        default_encoding = encoding
+        default_text = text
+        break
+    if not default_encoding:
+        raise ValueError("source_encoding_unknown")
 
-    gb_encoding = next((encoding for encoding in ("gb18030", "gbk") if encoding in candidates), None)
-    if gb_encoding:
-        alternatives = [
-            text for encoding, text in candidates.items() if encoding not in {"gb18030", "gbk"}
-        ]
-        gb_score = _legacy_text_quality_score(candidates[gb_encoding])
-        alternative_scores = [_legacy_text_quality_score(text) for text in alternatives]
-        if not alternatives or gb_score >= max(alternative_scores) + 10:
-            return candidates[gb_encoding], gb_encoding
-    raise ValueError("source_encoding_unknown")
+    diagnostic_scores: list[int] = []
+    for encoding in DIAGNOSTIC_ENCODINGS:
+        try:
+            diagnostic_text = payload.decode(encoding, errors="strict")
+        except UnicodeDecodeError:
+            continue
+        if diagnostic_text != default_text:
+            diagnostic_scores.append(_legacy_text_quality_score(diagnostic_text))
+
+    default_score = _legacy_text_quality_score(default_text)
+    if diagnostic_scores and max(diagnostic_scores) >= default_score + 8:
+        raise ValueError("source_encoding_unknown")
+    return default_text, default_encoding
 
 
 def _contains_unsafe_text(text: str) -> bool:
@@ -121,25 +127,38 @@ def _contains_unsafe_text(text: str) -> bool:
         if char in "\t\n\r":
             continue
         category = unicodedata.category(char)
-        if category.startswith("C"):
+        if category in {"Cc", "Cs"}:
+            return True
+        if category == "Cf" and unicodedata.bidirectional(char) in _DANGEROUS_BIDI_CLASSES:
             return True
     return False
-
-
-def _has_private_use_characters(text: str) -> bool:
-    return any(unicodedata.category(char) == "Co" for char in text)
 
 
 def _legacy_text_quality_score(text: str) -> int:
     score = min(text.count("\n"), 5)
     score += sum(text.count(mark) for mark in "。！？") * 2
+    visible = [char for char in text if not char.isspace()]
+    cjk_count = 0
     for char in text:
-        if char in _COMMON_CHINESE_CHARS:
-            score += 3
+        category = unicodedata.category(char)
+        if "\u4e00" <= char <= "\u9fff":
+            cjk_count += 1
+            score += 2
+            if char in _COMMON_CHINESE_CHARS:
+                score += 3
         elif "\u3040" <= char <= "\u30ff":
-            score -= 4
+            score -= 5
         elif char.isascii() and char.isalnum():
-            score -= 1
+            score -= 2
+        elif category.startswith("C") or char == "\ufffd":
+            score -= 12
+    if visible:
+        cjk_ratio = cjk_count / len(visible)
+        if cjk_ratio >= 0.75:
+            score += 4
+        elif cjk_count and cjk_ratio < 0.5:
+            score -= 4
+        score += min(len(set(visible)), 4)
     for line in text.splitlines():
         title = line.strip().lstrip("#").strip()
         title = re.sub(r"[ \t]+#+[ \t]*$", "", title)
@@ -258,13 +277,26 @@ def _line_boundaries(text: str) -> list[tuple[int, int, str]]:
 
     explicit = [candidate for candidate in candidates if candidate.explicit]
     if explicit:
-        markdown_levels = [candidate.level for candidate in explicit if candidate.level is not None]
-        chapter_level = markdown_levels[0] if markdown_levels else None
-        selected = [
-            candidate
-            for candidate in candidates
-            if candidate.explicit or (chapter_level is not None and candidate.level == chapter_level)
-        ]
+        selected = []
+        for index, candidate in enumerate(candidates):
+            if candidate.explicit:
+                selected.append(candidate)
+                continue
+            previous_level = next(
+                (
+                    item.level
+                    for item in reversed(candidates[:index])
+                    if item.explicit and item.level is not None
+                ),
+                None,
+            )
+            next_level = next(
+                (item.level for item in candidates[index + 1 :] if item.explicit and item.level is not None),
+                None,
+            )
+            adjacent_levels = [level for level in (previous_level, next_level) if level is not None]
+            if adjacent_levels and all(candidate.level == level for level in adjacent_levels):
+                selected.append(candidate)
     else:
         levels = [candidate.level for candidate in candidates if candidate.level is not None]
         chapter_level = min(levels) if levels else None
