@@ -54,6 +54,20 @@ def test_directory_filenames_define_chapters_for_plain_body_files(tmp_path: Path
     assert result.can_analyze is True
 
 
+def test_directory_scans_short_gbk_body_files(tmp_path: Path) -> None:
+    from packages.story_core.continuation_import import scan_continuation_source
+
+    (tmp_path / "第10章.txt").write_bytes("夜雨长街".encode("gbk"))
+    (tmp_path / "第2章.txt").write_bytes("风起云涌".encode("gbk"))
+
+    result = scan_continuation_source(tmp_path)
+
+    assert result.encoding == "gb18030"
+    assert [chapter.number for chapter in result.chapters] == [2, 10]
+    assert [chapter.body for chapter in result.chapters] == ["风起云涌", "夜雨长街"]
+    assert result.can_analyze is True
+
+
 def test_natural_sort_ties_are_stable_for_recursive_creation_orders(tmp_path: Path) -> None:
     from packages.story_core.continuation_import import _natural_key, scan_continuation_source
 
@@ -122,6 +136,19 @@ def test_markdown_nested_sections_remain_in_chapter_body(tmp_path: Path) -> None
 
     assert [chapter.title for chapter in result.chapters] == ["第一章 起", "第二章 转"]
     assert "## 场景一" in result.chapters[0].body
+
+
+def test_markdown_same_level_interlude_is_a_chapter_boundary(tmp_path: Path) -> None:
+    from packages.story_core.continuation_import import scan_continuation_source
+
+    source = tmp_path / "interlude.md"
+    _write(source, "# 第一章 开始\n开篇正文。\n# 幕间\n幕间正文。\n# 第二章 继续\n后续正文。\n")
+
+    result = scan_continuation_source(source)
+
+    assert [chapter.title for chapter in result.chapters] == ["第一章 开始", "幕间", "第二章 继续"]
+    assert [chapter.body for chapter in result.chapters] == ["开篇正文。", "幕间正文。", "后续正文。"]
+    assert all("# " not in chapter.body for chapter in result.chapters)
 
 
 def test_markdown_fenced_headings_do_not_split_chapters(tmp_path: Path) -> None:
@@ -269,8 +296,19 @@ def test_encoding_detection_distinguishes_bom_and_plain_utf8() -> None:
 
     assert decode_novel_bytes(text.encode("utf-8")) == (text, "utf-8")
     assert decode_novel_bytes(text.encode("utf-8-sig")) == (text, "utf-8-sig")
-    assert decode_novel_bytes(text.encode("utf-16")) == (text, "utf-16-le")
-    assert decode_novel_bytes(text.encode("utf-32")) == (text, "utf-32-le")
+    with pytest.raises(ValueError, match="^source_encoding_unknown$"):
+        decode_novel_bytes(text.encode("utf-16"))
+    with pytest.raises(ValueError, match="^source_encoding_unknown$"):
+        decode_novel_bytes(text.encode("utf-32"))
+    assert decode_novel_bytes(text.encode("utf-16"), forced_encoding="utf-16") == (text, "utf-16")
+
+
+def test_short_gbk_text_is_selected_over_implausible_diagnostics() -> None:
+    from packages.story_core.continuation_import import decode_novel_bytes
+
+    text = "章节正文"
+
+    assert decode_novel_bytes(text.encode("gbk")) == (text, "gb18030")
 
 
 def test_ambiguous_legacy_and_bomless_utf16_encodings_are_rejected() -> None:
@@ -299,25 +337,36 @@ def test_ambiguous_short_legacy_text_requires_forced_encoding(text: str, encodin
     assert decode_novel_bytes(payload, forced_encoding=encoding) == (text, encoding)
 
 
-def test_binary_controls_are_rejected_even_with_forced_encoding(tmp_path: Path) -> None:
+def test_binary_controls_are_blocked_by_scan_after_successful_decode(tmp_path: Path) -> None:
     from packages.story_core.continuation_import import decode_novel_bytes, scan_continuation_source
 
     payload = b"# Chapter 1\nbody\x00\x01\x02\n"
-    with pytest.raises(ValueError, match="^source_encoding_unknown$"):
-        decode_novel_bytes(payload, forced_encoding="utf-8")
+    decoded = "# Chapter 1\nbody\x00\x01\x02\n"
+    assert decode_novel_bytes(payload) == (decoded, "utf-8")
+    assert decode_novel_bytes(payload, forced_encoding="utf-8") == (decoded, "utf-8")
 
     (tmp_path / "chapter.txt").write_bytes(payload)
-    with pytest.raises(ValueError, match="^source_encoding_unknown$"):
-        scan_continuation_source(tmp_path)
+    result = scan_continuation_source(tmp_path, forced_encoding="utf-8")
+
+    assert "source_text_unsafe" in result.warnings
+    assert result.can_analyze is False
 
 
-def test_dangerous_unicode_format_controls_are_rejected() -> None:
-    from packages.story_core.continuation_import import decode_novel_bytes
+def test_dangerous_unicode_format_controls_are_blocked_by_scan(tmp_path: Path) -> None:
+    from packages.story_core.continuation_import import decode_novel_bytes, scan_continuation_source
 
-    payload = "第一章 安全\n正文\u202e隐藏。\n".encode("utf-8")
+    text = "第一章 安全\n正文\u202e隐藏。\n"
+    payload = text.encode("utf-8")
 
-    with pytest.raises(ValueError, match="^source_encoding_unknown$"):
-        decode_novel_bytes(payload, forced_encoding="utf-8")
+    assert decode_novel_bytes(payload) == (text, "utf-8")
+    assert decode_novel_bytes(payload, forced_encoding="utf-8") == (text, "utf-8")
+
+    source = tmp_path / "unsafe.txt"
+    source.write_bytes(payload)
+    result = scan_continuation_source(source)
+
+    assert "source_text_unsafe" in result.warnings
+    assert result.can_analyze is False
 
 
 def test_unheaded_directory_file_uses_the_file_as_a_chapter_boundary(tmp_path: Path) -> None:

@@ -13,12 +13,18 @@ from pydantic import BaseModel, Field
 
 SUPPORTED_SUFFIXES = {".md", ".txt"}
 _LEGACY_CANDIDATE_ENCODINGS = ("gb18030", "gbk", "big5", "utf-16-le", "utf-16-be")
-_BOM_ENCODINGS = (
+_UTF8_BOM = b"\xef\xbb\xbf"
+_UNSUPPORTED_DEFAULT_BOMS = (
     (b"\xff\xfe\x00\x00", "utf-32", "utf-32-le"),
     (b"\x00\x00\xfe\xff", "utf-32", "utf-32-be"),
-    (b"\xef\xbb\xbf", "utf-8-sig", "utf-8-sig"),
     (b"\xff\xfe", "utf-16", "utf-16-le"),
     (b"\xfe\xff", "utf-16", "utf-16-be"),
+)
+_COMMON_CHINESE_CHARS = frozenset(
+    "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可"
+    "主发年动同工也能下过子说面而方后多定行学法所得经十三之进着等部家自二理起"
+    "小现实好应开合还因由其然前外天四日那事平相全表间样与关各重新内数正心明看"
+    "原利比但气第向道此变条结解意前文后章节目回卷故事小说繁體体中文风云涌夜雨长街"
 )
 _NUMBER_CHARS = "0-9零〇一二两三四五六七八九十百千万"
 _CHAPTER_TITLE_RE = re.compile(
@@ -63,32 +69,28 @@ class _Heading:
 
 def decode_novel_bytes(payload: bytes, forced_encoding: str | None = None) -> tuple[str, str]:
     if not forced_encoding:
-        for bom, codec, label in _BOM_ENCODINGS:
-            if payload.startswith(bom):
-                try:
-                    text = payload.decode(codec, errors="strict")
-                except UnicodeDecodeError as exc:
-                    raise ValueError("source_encoding_unknown") from exc
-                if _is_low_quality_text(text):
-                    raise ValueError("source_encoding_unknown")
-                return text, label
+        if payload.startswith(_UTF8_BOM):
+            try:
+                text = payload.decode("utf-8-sig", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise ValueError("source_encoding_unknown") from exc
+            return text, "utf-8-sig"
+        if any(payload.startswith(bom) for bom, _, _ in _UNSUPPORTED_DEFAULT_BOMS):
+            raise ValueError("source_encoding_unknown")
 
     if forced_encoding:
         try:
             text = payload.decode(forced_encoding, errors="strict")
         except (LookupError, UnicodeDecodeError):
             raise ValueError("source_encoding_unknown") from None
-        if not _is_low_quality_text(text):
-            return text, forced_encoding
-        raise ValueError("source_encoding_unknown")
+        return text, forced_encoding
 
     try:
         utf8_text = payload.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         pass
     else:
-        if not _is_low_quality_text(utf8_text):
-            return utf8_text, "utf-8"
+        return utf8_text, "utf-8"
 
     candidates: dict[str, str] = {}
     seen_texts: set[str] = set()
@@ -97,7 +99,7 @@ def decode_novel_bytes(payload: bytes, forced_encoding: str | None = None) -> tu
             text = payload.decode(encoding, errors="strict")
         except UnicodeDecodeError:
             continue
-        if _is_low_quality_text(text) or text in seen_texts:
+        if _has_private_use_characters(text) or text in seen_texts:
             continue
         candidates[encoding] = text
         seen_texts.add(text)
@@ -114,7 +116,7 @@ def decode_novel_bytes(payload: bytes, forced_encoding: str | None = None) -> tu
     raise ValueError("source_encoding_unknown")
 
 
-def _is_low_quality_text(text: str) -> bool:
+def _contains_unsafe_text(text: str) -> bool:
     for char in text:
         if char in "\t\n\r":
             continue
@@ -124,9 +126,20 @@ def _is_low_quality_text(text: str) -> bool:
     return False
 
 
+def _has_private_use_characters(text: str) -> bool:
+    return any(unicodedata.category(char) == "Co" for char in text)
+
+
 def _legacy_text_quality_score(text: str) -> int:
     score = min(text.count("\n"), 5)
     score += sum(text.count(mark) for mark in "。！？") * 2
+    for char in text:
+        if char in _COMMON_CHINESE_CHARS:
+            score += 3
+        elif "\u3040" <= char <= "\u30ff":
+            score -= 4
+        elif char.isascii() and char.isalnum():
+            score -= 1
     for line in text.splitlines():
         title = line.strip().lstrip("#").strip()
         title = re.sub(r"[ \t]+#+[ \t]*$", "", title)
@@ -245,7 +258,13 @@ def _line_boundaries(text: str) -> list[tuple[int, int, str]]:
 
     explicit = [candidate for candidate in candidates if candidate.explicit]
     if explicit:
-        selected = explicit
+        markdown_levels = [candidate.level for candidate in explicit if candidate.level is not None]
+        chapter_level = markdown_levels[0] if markdown_levels else None
+        selected = [
+            candidate
+            for candidate in candidates
+            if candidate.explicit or (chapter_level is not None and candidate.level == chapter_level)
+        ]
     else:
         levels = [candidate.level for candidate in candidates if candidate.level is not None]
         chapter_level = min(levels) if levels else None
@@ -376,8 +395,11 @@ def scan_continuation_source(
     encodings: list[str] = []
     total_chars = 0
     unconfirmed = False
+    unsafe_source = False
     for file_index, file_path in enumerate(files, start=1):
         text, encoding = decode_novel_bytes(file_path.read_bytes(), forced_encoding)
+        if _contains_unsafe_text(text):
+            unsafe_source = True
         encodings.append(encoding)
         total_chars += len(text)
         source_name = file_path.name if source_kind == "file" else file_path.relative_to(source).as_posix()
@@ -392,8 +414,16 @@ def scan_continuation_source(
         warnings.insert(0, "empty_source")
     if unconfirmed:
         warnings.insert(0, "chapter_boundaries_unconfirmed")
+    if unsafe_source:
+        warnings.insert(0, "source_text_unsafe")
     encoding = encodings[0] if len(set(encodings)) == 1 else "mixed"
-    blocking = {"empty_source", "empty_chapters", "duplicate_chapters", "chapter_boundaries_unconfirmed"}
+    blocking = {
+        "empty_source",
+        "empty_chapters",
+        "duplicate_chapters",
+        "chapter_boundaries_unconfirmed",
+        "source_text_unsafe",
+    }
     return ContinuationScanResult(
         source_path=str(source),
         source_kind=source_kind,
