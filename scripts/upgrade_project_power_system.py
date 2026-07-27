@@ -438,16 +438,27 @@ def _find_first_chapter(root: Path) -> tuple[Path, bytes]:
 
 
 def _find_workbench_first_chapter(root: Path) -> tuple[Path, bytes] | None:
+    story_system = root / ".story-system"
+    _require_contained_path(root, story_system, "workbench_directory")
+    if not story_system.exists():
+        return None
+    if not story_system.is_dir():
+        raise ValueError("workbench path must be a directory")
     chapters = root / ".story-system" / "chapters"
     _require_contained_path(root, chapters, "workbench_chapters_directory")
-    if not chapters.exists():
-        return None
     if not chapters.is_dir():
-        raise ValueError("workbench chapters path must be a directory")
+        raise FileNotFoundError("workbench chapters directory is required")
     path = chapters / "0001.json"
     _require_contained_path(root, path, "workbench_first_chapter_json")
     if not path.is_file():
         raise FileNotFoundError("workbench first chapter JSON is required")
+    candidates = [
+        candidate
+        for candidate in sorted(chapters.glob("*.json"))
+        if _FIRST_CHAPTER_FILENAME.fullmatch(candidate.stem)
+    ]
+    if len(candidates) != 1:
+        raise ValueError("could not identify a unique workbench first chapter JSON")
     raw = path.read_bytes()
     try:
         chapter = json.loads(raw.decode("utf-8-sig"))
@@ -464,11 +475,15 @@ def _find_workbench_first_chapter(root: Path) -> tuple[Path, bytes] | None:
 
 
 def _migrate_first_chapter_body(text: str) -> tuple[str, bool]:
-    present_markers = [marker for marker in _FIRST_CHAPTER_ATTRIBUTE_MARKERS if marker in text]
-    if len(present_markers) == len(_FIRST_CHAPTER_ATTRIBUTE_MARKERS):
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    canonical_scene_count = normalized.count(_FIRST_CHAPTER_ATTRIBUTE_SCENE)
+    marker_counts = [normalized.count(marker) for marker in _FIRST_CHAPTER_ATTRIBUTE_MARKERS]
+    if canonical_scene_count == 1 and all(count == 1 for count in marker_counts):
         return text, False
-    if present_markers:
-        raise ValueError("partial first chapter attribute scene")
+    if canonical_scene_count or any(marker_counts):
+        raise ValueError(
+            "invalid first chapter attribute scene: expected exactly one canonical scene"
+        )
     marker_index = text.find(_FIRST_CHAPTER_LEVEL_UP)
     if marker_index < 0:
         raise ValueError("first chapter level-up marker is missing")

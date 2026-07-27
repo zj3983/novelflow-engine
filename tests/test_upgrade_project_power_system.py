@@ -607,7 +607,7 @@ def test_rejects_partial_first_chapter_attribute_scene_without_writing(project_d
 
     assert result["valid"] is False
     assert result["changed"] is False
-    assert "partial first chapter attribute scene" in result["changes"][0]
+    assert "invalid first chapter attribute scene" in result["changes"][0]
     assert {path.relative_to(project_dir): path.read_bytes() for path in project_dir.rglob("*") if path.is_file()} == before
 
 
@@ -718,7 +718,7 @@ def test_rejects_partial_workbench_attribute_scene_without_writing(project_dir: 
 
     assert result["valid"] is False
     assert result["changed"] is False
-    assert "partial first chapter attribute scene" in result["changes"][0]
+    assert "invalid first chapter attribute scene" in result["changes"][0]
     assert {
         candidate.relative_to(project_dir): candidate.read_bytes()
         for candidate in project_dir.rglob("*")
@@ -735,6 +735,105 @@ def test_legacy_project_without_story_system_only_migrates_markdown(project_dir:
     assert (project_dir / "chapters" / "0001.md").read_text(encoding="utf-8-sig").count(
         "【获得5点自由属性。】"
     ) == 1
+
+
+@pytest.mark.parametrize("target", ["markdown", "workbench"])
+@pytest.mark.parametrize("variant", ["duplicate", "scattered"])
+def test_rejects_noncanonical_attribute_scene_without_writing(
+    project_dir: Path, target: str, variant: str
+) -> None:
+    if target == "markdown":
+        path = project_dir / "chapters" / "0001.md"
+        raw = path.read_bytes()
+        body = raw.decode("utf-8-sig")
+        chapter = None
+    else:
+        path = project_dir / ".story-system" / "chapters" / "0001.json"
+        raw = path.read_bytes()
+        chapter = _load(path)
+        assert isinstance(chapter, dict)
+        body = chapter["body"]
+        assert isinstance(body, str)
+    insert_at = body.index(migration._FIRST_CHAPTER_LEVEL_UP) + len(
+        migration._FIRST_CHAPTER_LEVEL_UP
+    )
+    if variant == "duplicate":
+        invalid_scene = (
+            migration._FIRST_CHAPTER_ATTRIBUTE_SCENE
+            + migration._FIRST_CHAPTER_ATTRIBUTE_SCENE
+        )
+    else:
+        invalid_scene = "\n\n" + "\n".join(
+            reversed(migration._FIRST_CHAPTER_ATTRIBUTE_MARKERS)
+        )
+    body = body[:insert_at] + invalid_scene + body[insert_at:]
+    if chapter is None:
+        path.write_bytes(migration._encode_text(body, raw))
+    else:
+        chapter["body"] = body
+        path.write_bytes(migration._encode_json(chapter, raw))
+    before = {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    }
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "invalid first chapter attribute scene" in result["changes"][0]
+    assert {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    } == before
+
+
+def test_rejects_missing_workbench_chapters_directory_without_writing(
+    project_dir: Path,
+) -> None:
+    shutil.rmtree(project_dir / ".story-system" / "chapters")
+    before = {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    }
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "workbench chapters directory is required" in result["changes"][0]
+    assert {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    } == before
+
+
+def test_rejects_ambiguous_workbench_first_chapter_without_writing(
+    project_dir: Path,
+) -> None:
+    path = project_dir / ".story-system" / "chapters" / "0001.json"
+    duplicate = path.with_name("第0001章.json")
+    duplicate.write_bytes(path.read_bytes())
+    before = {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    }
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "unique workbench first chapter JSON" in result["changes"][0]
+    assert {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    } == before
 
 
 def test_detailed_outline_uses_english_colon_and_appends_boundary_on_new_line(
