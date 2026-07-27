@@ -21,8 +21,11 @@ from packages.story_core.continuation_import import (
     scan_continuation_source,
 )
 from packages.story_core.continuation_sessions import (
+    ContinuationAnalysisLease,
     ContinuationImportSession,
     ContinuationSessionStore,
+    secure_read_bytes,
+    try_acquire_analysis_lease,
 )
 
 
@@ -191,10 +194,22 @@ def _validate_source_tree(source: Path) -> None:
 
 def _scan(payload: ScanRequest) -> ContinuationScanResult:
     source = _resolve_source(payload.source_path)
+    fixed_root = source.parent if source.is_file() else source
+
+    def read_source_bytes(path: Path) -> bytes:
+        try:
+            return secure_read_bytes(path, fixed_root=fixed_root)
+        except ValueError as exc:
+            if _error_code(exc) == "invalid_session_path":
+                raise ValueError("path_outside_allowed_roots") from None
+            raise
+
     try:
         _validate_source_tree(source)
         result = scan_continuation_source(
-            source, forced_encoding=payload.forced_encoding
+            source,
+            forced_encoding=payload.forced_encoding,
+            read_bytes=read_source_bytes,
         )
         _validate_source_tree(source)
         return result
@@ -310,22 +325,31 @@ def _analysis_task_key(store: ContinuationSessionStore, session_id: str) -> str:
     return f"{os.path.normcase(str(store.root))}:{session_id}"
 
 
-def _run_analysis_job(session_id: str, task_key: str | None = None) -> None:
-    store = _session_store()
-    key = task_key or _analysis_task_key(store, session_id)
+def _run_analysis_job(
+    session_id: str,
+    task_key: str | None = None,
+    lease: ContinuationAnalysisLease | None = None,
+) -> None:
+    store: ContinuationSessionStore | None = None
+    key = task_key or session_id
     try:
+        store = _session_store()
+        key = task_key or _analysis_task_key(store, session_id)
         run_continuation_analysis(store, session_id, build_continuation_analyzer())
     except Exception:
         current = None
-        try:
-            current = store.get(session_id)
-        except (OSError, ValueError):
-            pass
-        if current is not None and current.status != "failed":
+        if store is not None:
+            try:
+                current = store.get(session_id)
+            except (OSError, ValueError):
+                pass
+        if current is not None and current.status == "analyzing":
             _mark_analysis_failed(store, session_id)
     finally:
         with _ACTIVE_ANALYSIS_TASKS_LOCK:
             _ACTIVE_ANALYSIS_TASKS.discard(key)
+        if lease is not None:
+            lease.release()
 
 
 @router.post(
@@ -340,36 +364,46 @@ def analyze(session_id: str, background_tasks: BackgroundTasks) -> AnalysisJobRe
         session = store.get(session_id)
     except (OSError, ValueError) as exc:
         _raise_domain_error(exc)
-    with _ACTIVE_ANALYSIS_TASKS_LOCK:
-        try:
-            if session.status == "ready":
-                return AnalysisJobResponse(session_id=session_id, status="ready")
-            if task_key in _ACTIVE_ANALYSIS_TASKS:
-                return AnalysisJobResponse(session_id=session_id, status="analyzing")
-
-            if session.status != "analyzing":
-                def mark(current: ContinuationImportSession) -> None:
-                    current.status = "analyzing"
-                    current.error = ""
-
-                try:
-                    store.update(session_id, mark, expected_revision=session.revision)
-                except ValueError as exc:
-                    if _error_code(exc) != "session_revision_conflict":
-                        raise
-                    current = store.get(session_id)
-                    if current.status == "ready":
-                        return AnalysisJobResponse(session_id=session_id, status="ready")
-                    if current.status != "analyzing":
-                        raise
-            _ACTIVE_ANALYSIS_TASKS.add(task_key)
-        except (OSError, ValueError) as exc:
-            _raise_domain_error(exc)
+    if session.status == "ready":
+        return AnalysisJobResponse(session_id=session_id, status="ready")
     try:
-        background_tasks.add_task(_run_analysis_job, session_id, task_key)
+        lease = try_acquire_analysis_lease(store.root, session_id)
+    except (OSError, ValueError) as exc:
+        _raise_domain_error(exc)
+    if lease is None:
+        return AnalysisJobResponse(session_id=session_id, status="analyzing")
+
+    with _ACTIVE_ANALYSIS_TASKS_LOCK:
+        _ACTIVE_ANALYSIS_TASKS.add(task_key)
+    try:
+        if session.status != "analyzing":
+            def mark(current: ContinuationImportSession) -> None:
+                current.status = "analyzing"
+                current.error = ""
+
+            try:
+                store.update(session_id, mark, expected_revision=session.revision)
+            except ValueError as exc:
+                if _error_code(exc) != "session_revision_conflict":
+                    raise
+                current = store.get(session_id)
+                if current.status == "ready":
+                    with _ACTIVE_ANALYSIS_TASKS_LOCK:
+                        _ACTIVE_ANALYSIS_TASKS.discard(task_key)
+                    lease.release()
+                    return AnalysisJobResponse(session_id=session_id, status="ready")
+                if current.status != "analyzing":
+                    raise
+        background_tasks.add_task(_run_analysis_job, session_id, task_key, lease)
+    except (OSError, ValueError) as exc:
+        with _ACTIVE_ANALYSIS_TASKS_LOCK:
+            _ACTIVE_ANALYSIS_TASKS.discard(task_key)
+        lease.release()
+        _raise_domain_error(exc)
     except BaseException:
         with _ACTIVE_ANALYSIS_TASKS_LOCK:
             _ACTIVE_ANALYSIS_TASKS.discard(task_key)
+        lease.release()
         raise
     return AnalysisJobResponse(session_id=session_id, status="analyzing")
 

@@ -31,6 +31,8 @@ _SESSION_ID_RE = re.compile(r"^ci-[A-Za-z0-9][A-Za-z0-9_-]*$")
 _LOCK_REGISTRY_GUARD = threading.Lock()
 _LOCK_REGISTRY: dict[str, threading.RLock] = {}
 _LOCK_STATE = threading.local()
+_ANALYSIS_LEASE_GUARD = threading.Lock()
+_HELD_ANALYSIS_LEASES: set[str] = set()
 
 
 class ContinuationImportSession(BaseModel):
@@ -202,6 +204,11 @@ def _secure_read_bytes(path: Path, *, fixed_root: Path) -> bytes:
         return handle.read()
 
 
+def secure_read_bytes(path: Path, *, fixed_root: Path) -> bytes:
+    """Read a file through a handle that is verified against a fixed root."""
+    return _secure_read_bytes(path, fixed_root=fixed_root)
+
+
 def _directory_identity(path: Path) -> tuple[int, int]:
     if _is_link_or_junction(path):
         raise ValueError("invalid_session_path")
@@ -242,6 +249,75 @@ def _unlock_file(handle: BinaryIO) -> None:
         import fcntl
 
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+class ContinuationAnalysisLease:
+    def __init__(self, handle: BinaryIO, key: str) -> None:
+        self._handle = handle
+        self._key = key
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        try:
+            _unlock_file(self._handle)
+        finally:
+            try:
+                self._handle.close()
+            finally:
+                with _ANALYSIS_LEASE_GUARD:
+                    _HELD_ANALYSIS_LEASES.discard(self._key)
+
+
+def try_acquire_analysis_lease(
+    session_root: Path | str, session_id: str
+) -> ContinuationAnalysisLease | None:
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        raise ValueError("invalid_session_id")
+    root = Path(session_root).resolve(strict=True)
+    lease_root = root / ".analysis-leases"
+    lease_root.mkdir(mode=0o700, exist_ok=True)
+    resolved_lease_root = lease_root.resolve(strict=True)
+    if _is_link_or_junction(lease_root) or resolved_lease_root.parent != root:
+        raise ValueError("invalid_session_path")
+    lease_path = lease_root / f"{session_id}.lock"
+    key = _path_key(lease_path)
+    with _ANALYSIS_LEASE_GUARD:
+        if key in _HELD_ANALYSIS_LEASES:
+            return None
+        _HELD_ANALYSIS_LEASES.add(key)
+
+    handle: BinaryIO | None = None
+    try:
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lease_path, flags, 0o600)
+        handle = os.fdopen(descriptor, "r+b")
+        _validate_open_handle(
+            handle,
+            fixed_root=resolved_lease_root,
+            expected_path=lease_path.resolve(strict=False),
+        )
+        if handle.seek(0, os.SEEK_END) == 0:
+            handle.write(b"\0")
+            handle.flush()
+        try:
+            _try_lock_file(handle)
+        except (BlockingIOError, PermissionError):
+            handle.close()
+            handle = None
+            with _ANALYSIS_LEASE_GUARD:
+                _HELD_ANALYSIS_LEASES.discard(key)
+            return None
+        return ContinuationAnalysisLease(handle, key)
+    except BaseException:
+        if handle is not None:
+            handle.close()
+        with _ANALYSIS_LEASE_GUARD:
+            _HELD_ANALYSIS_LEASES.discard(key)
+        raise
 
 
 @contextmanager

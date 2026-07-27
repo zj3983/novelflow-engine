@@ -240,6 +240,52 @@ def test_create_rejects_link_swap_between_scan_and_session_backup(
     assert "outside-same-content" not in response.text
 
 
+@pytest.mark.parametrize("source_kind", ["file", "directory"])
+def test_scan_rejects_file_swapped_to_outside_link_during_secure_open(
+    client: TestClient,
+    allowed_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_kind: str,
+) -> None:
+    from packages.story_core import continuation_sessions
+
+    source_dir = allowed_root / "chapters"
+    source_dir.mkdir()
+    chapter = source_dir / "chapter.txt"
+    _write_book(chapter)
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("SECRET_BODY_MUST_NOT_LEAK", encoding="utf-8")
+    source = chapter if source_kind == "file" else source_dir
+    original_open = continuation_sessions.os.open
+    swapped = False
+
+    def swap_then_restore(path, flags, *args, **kwargs):
+        nonlocal swapped
+        candidate = Path(path)
+        if candidate == chapter and not swapped:
+            swapped = True
+            chapter.unlink()
+            chapter.symlink_to(outside)
+            try:
+                return original_open(path, flags, *args, **kwargs)
+            finally:
+                chapter.unlink()
+                _write_book(chapter)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(continuation_sessions.os, "open", swap_then_restore)
+
+    response = client.post(
+        "/continuation-imports/scan", json={"source_path": str(source)}
+    )
+
+    assert swapped
+    assert response.status_code == 403
+    assert response.json()["detail"] == "path_outside_allowed_roots"
+    assert "SECRET_BODY_MUST_NOT_LEAK" not in response.text
+
+
 def test_scan_reports_missing_path(client: TestClient, allowed_root: Path) -> None:
     response = client.post(
         "/continuation-imports/scan",
@@ -476,6 +522,126 @@ def test_background_failure_preserves_session_and_safe_error(
     assert fetched.json()["chapters"]
     assert fetched.json()["error"] == "continuation_analysis_failed"
     assert "token=abc" not in fetched.text
+
+
+def test_analysis_job_releases_claim_when_store_initialization_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    class Lease:
+        released = False
+
+        def release(self) -> None:
+            self.released = True
+
+    lease = Lease()
+    monkeypatch.setattr(
+        continuation_imports,
+        "_session_store",
+        lambda: (_ for _ in ()).throw(OSError("temporarily unavailable")),
+    )
+
+    continuation_imports._run_analysis_job("ci-test", "key", lease)
+
+    assert lease.released
+
+
+def test_analyze_releases_lease_when_background_registration_fails(
+    client: TestClient, allowed_root: Path
+) -> None:
+    from apps.api.routes import continuation_imports
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    class BrokenBackgroundTasks:
+        def add_task(self, *args, **kwargs) -> None:
+            raise RuntimeError("scheduler unavailable")
+
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    with pytest.raises(RuntimeError, match="scheduler unavailable"):
+        continuation_imports.analyze(session["session_id"], BrokenBackgroundTasks())
+
+    store = continuation_imports._session_store()
+    lease = try_acquire_analysis_lease(store.root, session["session_id"])
+    assert lease is not None
+    lease.release()
+
+
+def test_failed_job_does_not_overwrite_a_newer_ready_state(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    store = continuation_imports._session_store()
+
+    def become_ready_then_fail(active_store, session_id, analyzer) -> None:
+        current = active_store.get(session_id)
+
+        def ready(value) -> None:
+            value.status = "ready"
+            value.analysis = {"newer": True}
+
+        active_store.update(session_id, ready, expected_revision=current.revision)
+        raise RuntimeError("old worker failed")
+
+    monkeypatch.setattr(continuation_imports, "_session_store", lambda: store)
+    monkeypatch.setattr(
+        continuation_imports, "run_continuation_analysis", become_ready_then_fail
+    )
+
+    continuation_imports._run_analysis_job(session["session_id"])
+
+    current = store.get(session["session_id"])
+    assert current.status == "ready"
+    assert current.analysis == {"newer": True}
+
+
+def test_analyze_does_not_hold_registry_lock_during_session_update(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+    from packages.story_core.continuation_sessions import ContinuationSessionStore
+
+    monkeypatch.setattr(continuation_imports, "build_continuation_analyzer", _SuccessfulAnalyzer)
+
+    first_source = allowed_root / "first.txt"
+    second_source = allowed_root / "second.txt"
+    _write_book(first_source)
+    _write_book(second_source)
+    first = client.post("/continuation-imports", json={"source_path": str(first_source)}).json()
+    second = client.post("/continuation-imports", json={"source_path": str(second_source)}).json()
+    entered = threading.Event()
+    release = threading.Event()
+    original_update = ContinuationSessionStore.update
+
+    def blocking_update(store, session_id, *args, **kwargs):
+        if session_id == first["session_id"]:
+            entered.set()
+            assert release.wait(timeout=5)
+        return original_update(store, session_id, *args, **kwargs)
+
+    monkeypatch.setattr(ContinuationSessionStore, "update", blocking_update)
+
+    def post_analyze(session_id: str):
+        with TestClient(app, raise_server_exceptions=False) as thread_client:
+            return thread_client.post(f"/continuation-imports/{session_id}/analyze")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        blocked = executor.submit(post_analyze, first["session_id"])
+        assert entered.wait(timeout=5)
+        independent = executor.submit(post_analyze, second["session_id"])
+        response = independent.result(timeout=2)
+        release.set()
+        blocked.result(timeout=5)
+
+    assert response.status_code == 202
 
 
 def test_analysis_can_be_confirmed_with_revision_protection(

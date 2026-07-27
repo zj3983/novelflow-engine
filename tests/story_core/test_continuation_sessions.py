@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import threading
+import multiprocessing
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -723,3 +724,49 @@ def test_secure_open_rejects_session_directory_swapped_after_check(
     with pytest.raises(ValueError, match="^invalid_session_path$"):
         store.get(session.session_id)
     assert swapped is True
+def _try_analysis_lease_in_child(root: str, session_id: str, queue) -> None:
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    lease = try_acquire_analysis_lease(Path(root), session_id)
+    queue.put(lease is not None)
+    if lease is not None:
+        lease.release()
+
+
+def test_analysis_lease_is_nonblocking_across_processes(tmp_path: Path) -> None:
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    lease = try_acquire_analysis_lease(root, "ci-cross-process")
+    assert lease is not None
+    context = multiprocessing.get_context("spawn")
+    queue = context.Queue()
+    process = context.Process(
+        target=_try_analysis_lease_in_child,
+        args=(str(root), "ci-cross-process", queue),
+    )
+    process.start()
+    process.join(timeout=10)
+    try:
+        assert process.exitcode == 0
+        assert queue.get(timeout=2) is False
+    finally:
+        lease.release()
+
+    reacquired = try_acquire_analysis_lease(root, "ci-cross-process")
+    assert reacquired is not None
+    reacquired.release()
+
+
+def test_analysis_lease_is_nonblocking_in_same_process(tmp_path: Path) -> None:
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    first = try_acquire_analysis_lease(root, "ci-same-process")
+    assert first is not None
+    try:
+        assert try_acquire_analysis_lease(root, "ci-same-process") is None
+    finally:
+        first.release()

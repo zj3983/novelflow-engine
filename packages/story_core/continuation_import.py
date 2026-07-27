@@ -4,6 +4,7 @@ import hashlib
 import re
 import unicodedata
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -402,6 +403,8 @@ def _diagnostics(chapters: list[ContinuationChapter]) -> tuple[list[str], list[l
 def scan_continuation_source(
     path: Path | str,
     forced_encoding: str | None = None,
+    *,
+    read_bytes: Callable[[Path], bytes] | None = None,
 ) -> ContinuationScanResult:
     source = Path(path).expanduser().resolve(strict=False)
     source_kind: Literal["file", "directory"] = "directory" if source.is_dir() else "file"
@@ -428,8 +431,9 @@ def scan_continuation_source(
     total_chars = 0
     unconfirmed = False
     unsafe_source = False
+    byte_reader = read_bytes or Path.read_bytes
     for file_index, file_path in enumerate(files, start=1):
-        text, encoding = decode_novel_bytes(file_path.read_bytes(), forced_encoding)
+        text, encoding = decode_novel_bytes(byte_reader(file_path), forced_encoding)
         if _contains_unsafe_text(text):
             unsafe_source = True
         encodings.append(encoding)
