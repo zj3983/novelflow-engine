@@ -672,6 +672,23 @@ def test_attribute_allocation_memory_rejects_conditional_action_without_explicit
     assert result["ledger_updates"] == {}
 
 
+def test_attribute_allocation_memory_rejects_ruo_condition_without_a_fixed_expression_exception():
+    body = "若有机会，夜烬把五点加到智力上。确认后，智力会从五变成十，可用属性点归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {"protagonist": {"attribute_allocation": {"allocations": {"智力": 5}, "remaining": 0}}},
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点归零",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
 def test_attribute_allocation_memory_rejects_conditional_action_with_actuality_word():
     body = "如果拿到五点，夜烬还是把五点加到智力上。确认后，智力会从五变成十，可用属性点归零。"
     result = normalize_post_draft_memory(

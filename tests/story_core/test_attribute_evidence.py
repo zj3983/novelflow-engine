@@ -108,6 +108,9 @@ def test_attribute_allocation_rejects_conditional_clause_or_conditional_continua
         "若有五点，夜烬把五点加到智力上。",
         "若他拿到五点，夜烬把五点加到智力上。",
         "若玩家拿到五点，夜烬把五点加到智力上。",
+        "若有机会，夜烬把五点加到智力上。",
+        "若夜烬拿到五点，夜烬把五点加到智力上。",
+        "若想走法系，夜烬把五点加到智力上。",
     ],
 )
 def test_attribute_allocation_rejects_explicit_ruo_conditions(body: str):
@@ -117,8 +120,8 @@ def test_attribute_allocation_rejects_explicit_ruo_conditions(body: str):
 @pytest.mark.parametrize(
     ("body", "aliases"),
     [
-        ("若尘把五点加到智力上。", {"若尘"}),
-        ("夜烬若有所思了片刻，还是把五点加到智力上。", {"夜烬"}),
+        ("若尘打开面板，把五点加到智力上。", {"若尘"}),
+        ("若有所思地看了片刻，夜烬把五点加到智力上。", {"夜烬"}),
     ],
 )
 def test_attribute_allocation_keeps_non_conditional_ruo_words_as_real_narration(body: str, aliases: set[str]):
@@ -131,6 +134,12 @@ def test_attribute_allocation_rejects_english_single_quoted_and_unclosed_actions
 
     assert not has_character_attribute_allocation(quoted, "智力", 5, protagonist_aliases={"夜烬"})
     assert not has_character_attribute_allocation(unclosed, "智力", 5, protagonist_aliases={"夜烬"})
+
+
+def test_attribute_allocation_rejects_single_quoted_action_after_em_dash_dialogue():
+    body = "短发玩家说道——'夜烬把五点加到智力上，确认后可用属性点归零。'"
+
+    assert not has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
 
 
 def test_attribute_allocation_does_not_treat_apostrophes_as_quotes():
@@ -180,6 +189,38 @@ def test_attribute_carry_binds_remaining_to_the_real_protagonist_choice():
     assert character_attribute_carry_choice_evidence(
         body, "留给转职", protagonist_aliases={"夜烬"}
     ) == (True, True, 5)
+
+
+def test_attribute_carry_reads_remaining_from_the_previous_adjacent_sentence():
+    body = "可用属性点还剩五点。夜烬决定留着，因为等转职以后再分配。"
+
+    assert character_attribute_carry_choice_evidence(
+        body, "留给转职", protagonist_aliases={"夜烬"}
+    ) == (True, True, 5)
+
+
+def test_attribute_carry_ignores_a_quoted_bystander_remaining_in_the_previous_sentence():
+    body = "短发玩家说：‘我还剩四点。’夜烬决定留着，因为等转职以后再分配。"
+
+    assert character_attribute_carry_choice_evidence(
+        body, "留给转职", protagonist_aliases={"夜烬"}
+    ) == (True, True, None)
+
+
+def test_attribute_carry_does_not_reuse_a_remaining_value_outside_the_adjacent_window():
+    body = "可用属性点还剩五点。夜烬先去了修理铺。夜烬决定留着，因为等转职以后再分配。"
+
+    assert character_attribute_carry_choice_evidence(
+        body, "留给转职", protagonist_aliases={"夜烬"}
+    ) == (True, True, None)
+
+
+def test_attribute_carry_ignores_a_conditional_remaining_in_the_previous_sentence():
+    body = "如果夜烬还剩五点，他就能改走法系。夜烬决定留着，因为等转职以后再分配。"
+
+    assert character_attribute_carry_choice_evidence(
+        body, "留给转职", protagonist_aliases={"夜烬"}
+    ) == (True, True, None)
 
 
 def test_attribute_allocation_default_rejects_explicit_bystander_subject():

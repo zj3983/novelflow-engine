@@ -48,9 +48,7 @@ _ACTION_CONTINUATIONS = {"随后", "然后", "接着", "再", "便", "就", "先
 _ACTION_MODIFIERS = ("直接", "果断", "又", "重新", "干脆", "索性", "还是")
 _GENERIC_REASON_TERMS = {"先", "为了", "因为", "属性点", "属性", "点", "保留", "留着", "分配", "决定", "原因", "目的", "以后", "再用", "留给"}
 _CONDITIONAL_MARKERS = ("如果", "假如", "要是", "倘若")
-_RUO_CONDITION_PATTERN = re.compile(
-    r"若(?:是|要|能|拿到|获得|有(?=\s*(?:\d+|[零一二两三四五六七八九十百]+)\s*点)|他|她|我|你|主角|玩家)"
-)
+_CLAUSE_START_RUO_PATTERN = re.compile(r"(?:^|[，,；;：:])\s*(?P<ruo>若)")
 _ASYMMETRIC_QUOTES = (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"))
 
 
@@ -95,7 +93,7 @@ def _is_single_quote_opening(text: str, position: int) -> bool:
         return False
     if position == 0:
         return True
-    return text[position - 1].isspace() or text[position - 1] in ":：，。！？；;([{"
+    return text[position - 1].isspace() or text[position - 1] in ":：，、。！？；;—…([{（【《“‘「『"
 
 
 def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -182,15 +180,33 @@ def _unquoted_prefix(text: str, start: int, end: int) -> str:
     return "".join(parts)
 
 
-def _contains_condition(text: str) -> bool:
-    return any(marker in text for marker in _CONDITIONAL_MARKERS) or bool(_RUO_CONDITION_PATTERN.search(text))
+def _is_nonconditional_ruo_at_clause_start(
+    text: str, position: int, protagonist_aliases: Iterable[str] | None
+) -> bool:
+    if text.startswith("若有所思", position):
+        return True
+    return any(
+        alias.startswith("若") and text.startswith(alias, position)
+        for alias in _normalized_aliases(protagonist_aliases)
+    )
 
 
-def _is_conditional_sentence(text: str, position: int) -> bool:
+def _contains_condition(text: str, protagonist_aliases: Iterable[str] | None = None) -> bool:
+    if any(marker in text for marker in _CONDITIONAL_MARKERS):
+        return True
+    return any(
+        not _is_nonconditional_ruo_at_clause_start(text, match.start("ruo"), protagonist_aliases)
+        for match in _CLAUSE_START_RUO_PATTERN.finditer(text)
+    )
+
+
+def _is_conditional_sentence(
+    text: str, position: int, protagonist_aliases: Iterable[str] | None = None
+) -> bool:
     """Reject all unquoted conditions in the sentence before the action."""
 
     start, _ = sentence_bounds(text, position)
-    return _contains_condition(_unquoted_prefix(text, start, position))
+    return _contains_condition(_unquoted_prefix(text, start, position), protagonist_aliases)
 
 
 def _is_negated_before(text: str, position: int, *, carry: bool = False) -> bool:
@@ -272,18 +288,24 @@ def _protagonist_subject_before_bridge(prefix: str, aliases: tuple[str, ...]) ->
     return False
 
 
-def _is_real_action_context(text: str, action_start: int, *, carry: bool = False) -> bool:
+def _is_real_action_context(
+    text: str,
+    action_start: int,
+    *,
+    carry: bool = False,
+    protagonist_aliases: Iterable[str] | None = None,
+) -> bool:
     return not (
         _is_explanatory_sentence(text, action_start)
         or _is_inside_quote(text, action_start)
-        or _is_conditional_sentence(text, action_start)
+        or _is_conditional_sentence(text, action_start, protagonist_aliases)
         or _is_negated_before(text, action_start, carry=carry)
     )
 
 
 def _has_character_action(text: str, action_start: int, protagonist_aliases: Iterable[str] | None = None) -> bool:
     start, _ = sentence_bounds(text, action_start)
-    if not _is_real_action_context(text, action_start):
+    if not _is_real_action_context(text, action_start, protagonist_aliases=protagonist_aliases):
         return False
     prefix = text[start:action_start]
     bound_subject = _protagonist_subject_before_bridge(prefix, _normalized_aliases(protagonist_aliases))
@@ -399,6 +421,12 @@ def _next_nonempty_sentence_bounds(text: str, position: int) -> tuple[int, int]:
     return sentence_bounds(text, position)
 
 
+def _previous_nonempty_sentence_bounds(text: str, position: int) -> tuple[int, int]:
+    while position > 0 and text[position - 1] in "。！？\t\r\n ":
+        position -= 1
+    return sentence_bounds(text, position - 1) if position else (0, 0)
+
+
 def has_positive_attribute_allocation_confirmation(
     body: str, *, protagonist_aliases: Iterable[str] | None = None
 ) -> bool:
@@ -478,7 +506,9 @@ def character_attribute_carry_choice_evidence(
         start, end = sentence_bounds(body, choice.start())
         sentence = body[start:end]
         prefix = body[start:choice.start()]
-        if not _is_real_action_context(body, choice.start(), carry=True):
+        if not _is_real_action_context(
+            body, choice.start(), carry=True, protagonist_aliases=protagonist_aliases
+        ):
             continue
         direct_choice = choice.group(0) in ("暂时不加", "先不加")
         actor_pattern = _CHARACTER_SUBJECT_PREFIX if direct_choice else _CARRY_DECISION_PREFIX
@@ -490,13 +520,14 @@ def character_attribute_carry_choice_evidence(
         next_sentence = body[next_start:next_end].lstrip()
         if re.match(r"(?:因为|为了|留给|等(?:到)?|以便|好在)", next_sentence):
             context = f"{context} {next_sentence}"
-        local_ranges = [(start, end), (next_start, next_end)]
+        previous_start, previous_end = _previous_nonempty_sentence_bounds(body, start)
+        local_ranges = [(previous_start, previous_end), (start, end), (next_start, next_end)]
         local_points = [
             (position, points)
             for position, points in _attribute_point_results(body)
             if any(range_start <= position < range_end for range_start, range_end in local_ranges)
             and not _is_inside_quote(body, position)
-            and not _is_conditional_sentence(body, position)
+            and not _is_conditional_sentence(body, position, protagonist_aliases)
         ]
         return (
             True,

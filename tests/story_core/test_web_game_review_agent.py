@@ -1083,6 +1083,21 @@ def test_web_game_review_binds_carry_remaining_to_the_protagonist_choice():
     assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
 
 
+def test_web_game_review_binds_carry_remaining_from_the_previous_adjacent_sentence():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="可用属性点还剩5点。夜烬决定留着，因为等转职以后再分配。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
 def test_web_game_review_reports_mismatch_when_body_allocates_to_different_attribute():
     review = review_web_game_chapter(
         chapter_number=4,
