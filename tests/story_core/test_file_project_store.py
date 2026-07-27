@@ -5006,6 +5006,54 @@ def test_persist_bundle_uses_runtime_updated_story(tmp_path):
     assert state["current_chapter"] == 2
 
 
+def test_persist_old_chapter_rewrite_does_not_roll_back_global_state(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "current_chapter": 5,
+            "progression_ledger": {"protagonist": {"level": "Lv.5", "canonical": True}},
+            "world_facts": ["chapter five is canonical"],
+        },
+    )
+    bundle = SimpleNamespace(
+        chapter_number=2,
+        chapter_title="Rewritten Two",
+        body=_long_test_body("The rewritten second chapter remains local to its slot."),
+        cadence="manual",
+        next_outline="Continue without rolling back.",
+        updated_story={
+            "story_id": "s-file",
+            "current_chapter": 2,
+            "progression_ledger": {"protagonist": {"level": "Lv.2", "stale": True}},
+            "world_facts": ["stale chapter two state"],
+            "chapter_summaries": [],
+        },
+        quality_report={"ok": True, "issues": []},
+        chapter_summary={
+            "chapter_title": "Rewritten Two",
+            "cadence": "manual",
+            "summary": "Chapter two is rewritten in place.",
+            "facts": ["chapter two rewrite saved"],
+            "next_focus": "Continue without rolling back.",
+            "primary_conflict": "Historical rewrite.",
+            "secondary_conflict": "Global continuity.",
+            "event_beat": "Rewrite.",
+        },
+    )
+
+    store.persist_bundle(bundle, operation="regenerate")
+
+    state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    chapter = json.loads((root / ".story-system" / "chapters" / "0002.json").read_text(encoding="utf-8"))
+    assert chapter["chapter_number"] == 2
+    assert state["current_chapter"] == 5
+    assert state["progression_ledger"]["protagonist"] == {"level": "Lv.5", "canonical": True}
+    assert "chapter five is canonical" in state["world_facts"]
+    assert "stale chapter two state" not in state["world_facts"]
+
+
 def test_usable_bundle_state_keeps_valid_runtime_character_updates(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     current_state = {
@@ -5020,7 +5068,7 @@ def test_usable_bundle_state_keeps_valid_runtime_character_updates(tmp_path):
         "characters": [{"name": "Ari", "role": "protagonist", "current_emotion": "focused"}],
     }
 
-    usable = store._usable_bundle_state(updated_story, current_state)
+    usable = store._usable_bundle_state(updated_story, current_state, target_chapter=2)
 
     assert usable["characters"][0]["current_emotion"] == "focused"
 
@@ -5750,6 +5798,80 @@ def test_regenerate_without_snapshot_whitelists_stable_state_only(monkeypatch, t
             return SimpleNamespace(
                 chapter_number=2,
                 chapter_title="Conservative Rewrite",
+                quality_report={},
+                chapter_summary={},
+            )
+
+    monkeypatch.setattr(
+        store,
+        "persist_bundle",
+        lambda bundle, **_kwargs: {
+            "chapter_number": bundle.chapter_number,
+            "chapter_title": bundle.chapter_title,
+        },
+    )
+
+    store.regenerate_chapter(2, engine=FakeEngine())
+
+
+def test_regenerate_without_snapshot_uses_static_standard_character_profiles(monkeypatch, tmp_path):
+    root = tmp_path / "regenerate-standard-character-profiles"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-static-profiles",
+            "title": "Static Profiles",
+            "active_story_id": "s-static-profiles",
+            "character_profiles": [
+                {
+                    "name": "Ari",
+                    "role": "protagonist",
+                    "character_tier": "lead",
+                    "first_appearance": 1,
+                    "game_id": "Ember",
+                    "current_emotion": "CHAPTER2_EMOTION",
+                    "goals": ["CHAPTER2_GOAL"],
+                    "location": "CHAPTER2_LOCATION",
+                    "game_state": {"current": {"level": "Lv.9"}},
+                    "memory": ["CHAPTER2_MEMORY"],
+                }
+            ],
+            "characters": [{"name": "Legacy Ari", "role": "protagonist"}],
+        },
+        state={
+            "story_id": "s-static-profiles",
+            "outline": "Ari starts from the book baseline.",
+            "genre": "fantasy",
+            "style": "plain",
+            "current_chapter": 2,
+        },
+    )
+    store._write_json(
+        store.story_system_dir / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "Legacy First",
+            "body": _long_test_body("The first chapter establishes the setting."),
+        },
+    )
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            by_name = {character.name: character for character in story.characters}
+            assert "Legacy Ari" not in by_name
+            ari = by_name["Ari"]
+            assert ari.role == "protagonist"
+            assert ari.character_tier == "lead"
+            assert ari.first_appearance == 1
+            assert ari.game_id == "Ember"
+            assert ari.current_emotion == "neutral"
+            assert ari.goals == []
+            assert ari.location == ""
+            assert ari.game_state == {}
+            assert ari.memory == []
+            return SimpleNamespace(
+                chapter_number=2,
+                chapter_title="Static Profile Rewrite",
                 quality_report={},
                 chapter_summary={},
             )

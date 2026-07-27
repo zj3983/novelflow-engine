@@ -322,9 +322,9 @@ def _migrate_first_chapter_outline(value: Any, *, points_per_level: int) -> tupl
     chapters = value["chapters"]
     first_index = next(
         (index for index, chapter in enumerate(chapters) if isinstance(chapter, dict) and _chapter_number(chapter.get("chapter_number")) == 1),
-        0,
+        None,
     )
-    if first_index >= len(chapters) or not isinstance(chapters[first_index], dict):
+    if first_index is None or not isinstance(chapters[first_index], dict):
         return value, False
     migrated = deepcopy(value)
     chapter = migrated["chapters"][first_index]

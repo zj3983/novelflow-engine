@@ -1142,21 +1142,15 @@ class FileProjectStore:
             stripped["progression_ledger"] = ledger
         return stripped
 
-    def _usable_bundle_state(self, updated_story: Any, current_state: dict[str, Any]) -> dict[str, Any]:
+    def _validated_runtime_state(
+        self,
+        updated_story: Any,
+        current_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
         if not isinstance(updated_story, dict) or not updated_story:
-            return current_state
+            return None
         if updated_story.get("story_id") != current_state.get("story_id"):
-            return current_state
-        try:
-            bundle_chapter = int(updated_story.get("current_chapter") or 0)
-        except (TypeError, ValueError):
-            bundle_chapter = 0
-        try:
-            current_chapter = int(current_state.get("current_chapter") or 0)
-        except (TypeError, ValueError):
-            current_chapter = 0
-        if bundle_chapter > current_chapter + 1:
-            return current_state
+            return None
         has_runtime_state = any(
             isinstance(updated_story.get(key), expected_type)
             for key, expected_type in (
@@ -1167,8 +1161,30 @@ class FileProjectStore:
             )
         )
         if not has_runtime_state:
-            return current_state
+            return None
         return self._strip_temporary_generation_fields(dict(updated_story))
+
+    def _usable_bundle_state(
+        self,
+        updated_story: Any,
+        current_state: dict[str, Any],
+        *,
+        target_chapter: int,
+    ) -> dict[str, Any]:
+        usable = self._validated_runtime_state(updated_story, current_state)
+        if usable is None:
+            return current_state
+        try:
+            bundle_chapter = int(usable.get("current_chapter") or 0)
+            current_chapter = int(current_state.get("current_chapter") or 0)
+        except (TypeError, ValueError):
+            return current_state
+        if bundle_chapter != target_chapter or bundle_chapter not in {
+            current_chapter,
+            current_chapter + 1,
+        }:
+            return current_state
+        return usable
 
     def _chapter_summary_payload(self, chapter: dict[str, Any]) -> dict[str, Any]:
         chapter_number = int(chapter.get("chapter_number") or 0)
@@ -4179,7 +4195,11 @@ class FileProjectStore:
             operation=operation,
         )
 
-        base_state = self._usable_bundle_state(updated_story, self.state())
+        base_state = self._usable_bundle_state(
+            updated_story,
+            self.state(),
+            target_chapter=chapter_number,
+        )
         chapter = self._hydrate_chapter_display_fields(chapter, base_state)
         self._sync_after_chapter(chapter, base_state)
 
@@ -4387,24 +4407,27 @@ class FileProjectStore:
             if isinstance(project.get("world_blueprint"), dict)
             else {}
         )
-        project_characters = (
-            project.get("characters")
-            if isinstance(project.get("characters"), list)
-            else []
-        )
-        static_characters: list[dict[str, Any]] = []
-        for raw_character in project_characters:
-            if not isinstance(raw_character, dict):
-                continue
-            name = str(raw_character.get("name") or "").strip()
-            role = str(raw_character.get("role") or "").strip()
-            if not name or not role:
-                continue
-            character = {"name": name, "role": role}
-            for field in ("character_tier", "first_appearance", "game_id"):
-                if field in raw_character:
-                    character[field] = deepcopy(raw_character[field])
-            static_characters.append(character)
+        def static_character_cards(raw_characters: Any) -> list[dict[str, Any]]:
+            if not isinstance(raw_characters, list):
+                return []
+            cards: list[dict[str, Any]] = []
+            for raw_character in raw_characters:
+                if not isinstance(raw_character, dict):
+                    continue
+                name = str(raw_character.get("name") or "").strip()
+                role = str(raw_character.get("role") or "").strip()
+                if not name or not role:
+                    continue
+                character = {"name": name, "role": role}
+                for field in ("character_tier", "first_appearance", "game_id"):
+                    if field in raw_character:
+                        character[field] = deepcopy(raw_character[field])
+                cards.append(character)
+            return cards
+
+        static_characters = static_character_cards(project.get("character_profiles"))
+        if not static_characters:
+            static_characters = static_character_cards(project.get("characters"))
 
         baseline = {
             "story_id": str(
@@ -4470,8 +4493,8 @@ class FileProjectStore:
             return None
         if snapshot_chapter != chapter_number:
             return None
-        usable = self._usable_bundle_state(updated_story, current_state)
-        return None if usable is current_state else dict(usable)
+        usable = self._validated_runtime_state(updated_story, current_state)
+        return dict(usable) if usable is not None else None
 
     @staticmethod
     def _merge_regeneration_configuration(

@@ -87,6 +87,7 @@ def project_dir(tmp_path: Path) -> Path:
         ],
         "chapters": [
             {
+                "chapter_number": 1,
                 "title": "Lv.20大关卡，属性解锁",
                 "goal": "冲刺Lv.20突破，完成第二次职业进阶节点",
                 "turn": "智力+8，体质+3，法术伤害+15%",
@@ -468,6 +469,42 @@ def test_upgrade_is_idempotent_and_does_not_create_second_backup(project_dir: Pa
     assert second == {"changed": False, "valid": True, "backup_path": None, "changes": []}
     assert {path: path.read_bytes() for path in after_first} == after_first
     assert len(list((project_dir / ".webnovel" / "backups").glob("power-system-*"))) == 1
+
+
+def test_upgrade_skips_first_chapter_patch_when_outline_starts_at_chapter_two(
+    project_dir: Path,
+) -> None:
+    outline_path = project_dir / ".webnovel" / "outline.json"
+    outline = _load(outline_path)
+    outline["chapters"] = [
+        {"chapter_number": 2, "title": "Second", "goal": "Keep chapter two."},
+        {"chapter_number": 3, "title": "Third", "goal": "Keep chapter three."},
+    ]
+    outline_path.write_bytes(_json_bytes(outline))
+
+    first = upgrade_project(project_dir)
+
+    migrated_outline = _load(outline_path)
+    assert [chapter["chapter_number"] for chapter in migrated_outline["chapters"]] == [2, 3]
+    assert "level_target" not in migrated_outline["chapters"][0]
+    assert "attribute_allocation_decision" not in migrated_outline["chapters"][0]
+    migrated_project = _load(project_dir / ".webnovel" / "project.json")
+    assert "power_system_spec" in migrated_project["world_blueprint"]
+    after_first = {
+        path.relative_to(project_dir): path.read_bytes()
+        for path in project_dir.rglob("*")
+        if path.is_file()
+    }
+
+    second = upgrade_project(project_dir)
+
+    assert first["changed"] is True
+    assert second == {"changed": False, "valid": True, "backup_path": None, "changes": []}
+    assert {
+        path.relative_to(project_dir): path.read_bytes()
+        for path in project_dir.rglob("*")
+        if path.is_file()
+    } == after_first
 
 
 def test_check_reports_expected_changes_without_writes_or_backup(project_dir: Path) -> None:
