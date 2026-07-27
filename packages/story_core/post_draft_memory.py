@@ -254,7 +254,7 @@ def _normalize_character_updates(
         update = {"name": name}
         for field in ("emotion", "goal", "location"):
             field_value = _text(item.get(field))
-            if field_value and _literal_value_in_body(field_value, body):
+            if field_value and _evidence_matches(evidence, field_value):
                 update[field] = field_value
         if len(update) == 1:
             rejected.append(

@@ -35,7 +35,7 @@ class FakeLLMMemoryProvider:
                     "name": "Lin Yue",
                     "goal": "return at dawn",
                     "location": "west hall",
-                    "evidence": "Lin Yue secures the witness in the west hall",
+                    "evidence": "Lin Yue secures the witness in the west hall. Su Wan asks Lin Yue to return at dawn",
                 }
             ],
             "ledger_updates": {},
@@ -154,7 +154,9 @@ def test_memory_agent_uses_injected_llm_provider_when_assisted_mode_is_enabled()
     assert not updated.foreshadowing
     assert updated.characters[0].location == "west hall"
     assert updated.characters[0].goals[0] == "return at dawn"
-    assert updated.characters[0].memory[-1] == "第2章：Lin Yue secures the witness in the west hall"
+    assert updated.characters[0].memory[-1] == (
+        "第2章：Lin Yue secures the witness in the west hall. Su Wan asks Lin Yue to return at dawn"
+    )
 
 
 def test_memory_agent_passes_real_name_and_game_id_as_protagonist_aliases(monkeypatch):

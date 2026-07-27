@@ -26,7 +26,7 @@ def test_post_draft_memory_keeps_only_body_grounded_updates():
                 "emotion": "警惕",
                 "goal": "明早去账房",
                 "location": "偏殿",
-                    "evidence": "林照把断香炉搬回偏殿",
+                    "evidence": "林照把断香炉搬回偏殿。周执事让他明早去账房回话",
             },
             {"name": "陌生人", "emotion": "愤怒", "evidence": "陌生人"},
         ],
@@ -55,7 +55,7 @@ def test_post_draft_memory_keeps_only_body_grounded_updates():
         "name": "林照",
         "goal": "明早去账房",
         "location": "偏殿",
-        "evidence": "林照把断香炉搬回偏殿",
+        "evidence": "林照把断香炉搬回偏殿。周执事让他明早去账房回话",
     }
     assert result["ledger_updates"] == {"protagonist": {"location": "偏殿"}}
     assert any(
@@ -648,6 +648,48 @@ def test_character_update_uses_only_its_own_game_id_as_body_evidence():
         item.get("name") == "林峰" and item.get("reason") == "evidence_character_mismatch"
         for item in wrong_alias["rejected_updates"]
     )
+
+
+def test_character_update_fields_must_be_supported_by_the_same_evidence():
+    body = "青锋站在门口。青锋脸色凝重。"
+    doorway_evidence = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {
+                    "name": "林峰",
+                    "emotion": "凝重",
+                    "location": "门口",
+                    "evidence": "青锋站在门口",
+                }
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body=body,
+        existing_character_names={"林峰"},
+        character_aliases_by_name={"林峰": {"青锋"}},
+    )
+
+    assert doorway_evidence["character_updates"] == [
+        {"name": "林峰", "location": "门口", "evidence": "青锋站在门口"}
+    ]
+
+    emotion_evidence = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "林峰", "emotion": "凝重", "evidence": "青锋脸色凝重"}
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body=body,
+        existing_character_names={"林峰"},
+        character_aliases_by_name={"林峰": {"青锋"}},
+    )
+
+    assert emotion_evidence["character_updates"] == [
+        {"name": "林峰", "emotion": "凝重", "evidence": "青锋脸色凝重"}
+    ]
 
 
 def test_memory_prompt_lists_game_id_but_requires_real_character_name_for_updates():
