@@ -987,6 +987,43 @@ def test_web_game_review_rejects_carry_without_reason_in_raw_decision():
     assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "短发玩家说：‘夜烬决定留着，因为等转职以后再分配。可用属性点还剩五点。’",
+        "如果拿到五点，夜烬决定留着，因为等转职以后再分配。可用属性点还剩五点。",
+    ],
+)
+def test_web_game_review_rejects_quoted_or_conditional_carry(body: str):
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=body,
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
+def test_web_game_review_classifies_invalid_carry_remaining_as_mismatch_before_missing_reason():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="夜烬看着可用属性点还剩五点，决定留着，因为等转职以后再分配。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": "5", "reason": "留给转职"},
+        },
+        world_facts=[],
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert any(issue.startswith("attribute_allocation_mismatch:") for issue in review["issues"]), review
+
+
 def test_web_game_review_uses_custom_attribute_keys_from_allocation_decision():
     review = review_web_game_chapter(
         chapter_number=4,
@@ -999,6 +1036,21 @@ def test_web_game_review_uses_custom_attribute_keys_from_allocation_decision():
     )
 
     assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_rejects_extra_real_custom_attribute_allocation():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="夜烬把五点加到幸运上。接着他把一点加到敏捷上。随后他点下确认，可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "allocate", "allocations": {"幸运": 5}, "remaining": 0},
+        },
+        world_facts=[],
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert any(issue.startswith("attribute_allocation_mismatch:") for issue in review["issues"]), review
 
 
 def test_web_game_review_reports_mismatch_when_body_allocates_to_different_attribute():

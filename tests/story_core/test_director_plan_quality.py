@@ -175,7 +175,7 @@ def test_director_quality_gate_rejects_carry_without_reason() -> None:
         attribute_allocation_decision={"mode": "carry", "remaining": 5},
     )
 
-    assert any("attribute_allocation_decision" in issue for issue in _director_plan_quality_issues(story, plan))
+    assert "event_plan.attribute_allocation_decision 保留属性点必须填写理由。" in _director_plan_quality_issues(story, plan)
 
 
 def test_director_quality_gate_classifies_malformed_allocation_items() -> None:

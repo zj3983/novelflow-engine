@@ -4,8 +4,7 @@ import re
 from typing import Any, Iterable
 
 from packages.story_core.attribute_evidence import (
-    character_attribute_allocation_points,
-    has_character_attribute_allocation,
+    character_attribute_allocation_actions,
     has_character_attribute_carry_choice_and_reason,
     has_positive_attribute_allocation_confirmation,
     latest_attribute_points,
@@ -399,15 +398,11 @@ def _current_attribute_allocation_decision(event_plan: dict[str, Any]) -> dict[s
 
 
 def _attribute_action_values(
-    body: str, attributes: Iterable[str], protagonist_aliases: Iterable[str] | None = None
+    body: str, protagonist_aliases: Iterable[str] | None = None
 ) -> dict[str, int]:
     values: dict[str, int] = {}
-    for attribute in attributes:
-        points = character_attribute_allocation_points(
-            body, attribute, protagonist_aliases=protagonist_aliases
-        )
-        if points is not None:
-            values[attribute] = points
+    for attribute, points in character_attribute_allocation_actions(body, protagonist_aliases=protagonist_aliases):
+        values[attribute] = values.get(attribute, 0) + points
     return values
 
 
@@ -437,13 +432,20 @@ def _review_attribute_allocation_decision(
     decision = _current_attribute_allocation_decision(event_plan)
     if not decision:
         if isinstance(raw_decision, dict) and raw_decision.get("mode") == "carry":
+            reason = raw_decision.get("reason")
+            if isinstance(reason, str) and reason.strip():
+                issue = "attribute_allocation_mismatch: 当前章节保留属性点的剩余点数不合法。"
+                plan = "将 carry 的 remaining 改为非负整数，并与本章可保留点数一致。"
+            else:
+                issue = "attribute_allocation_missing: 当前章节计划保留属性点，但没有给出保留理由。"
+                plan = "补出保留属性点的具体理由，并让正文中的人物选择与计划一致。"
             _append_issue(
                 issues=issues,
                 revision_plan=revision_plan,
                 scores=scores,
                 score_key="class_equipment",
-                issue="attribute_allocation_missing: 当前章节计划保留属性点，但没有给出保留理由。",
-                plan="补出保留属性点的具体理由，并让正文中的人物选择与计划一致。",
+                issue=issue,
+                plan=plan,
             )
         return
     if decision["mode"] == "carry":
@@ -473,13 +475,10 @@ def _review_attribute_allocation_decision(
         return
 
     expected = decision["allocations"]
-    actual = _attribute_action_values(body, expected, protagonist_aliases)
-    has_any_allocation_action = has_character_attribute_allocation(
-        body, protagonist_aliases=protagonist_aliases
-    )
+    actual = _attribute_action_values(body, protagonist_aliases)
     actual_remaining = latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases)
     if (
-        has_any_allocation_action and actual != expected
+        actual and actual != expected
     ) or actual_remaining is not None and actual_remaining != decision["remaining"]:
         _append_issue(
             issues=issues,

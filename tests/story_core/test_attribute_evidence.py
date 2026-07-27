@@ -1,6 +1,10 @@
+import time
+
 import pytest
 
 from packages.story_core.attribute_evidence import (
+    character_attribute_allocation_actions,
+    has_character_attribute_carry_choice_and_reason,
     has_character_attribute_allocation,
     has_positive_attribute_allocation_confirmation,
     parse_count,
@@ -93,6 +97,77 @@ def test_attribute_allocation_accepts_actual_turn_after_same_sentence_condition(
 )
 def test_attribute_allocation_rejects_conditional_clause_or_conditional_continuation(body: str):
     assert not has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "若是拿到五点，夜烬把五点加到智力上。",
+        "若要拿到五点，夜烬把五点加到智力上。",
+    ],
+)
+def test_attribute_allocation_rejects_explicit_ruo_conditions(body: str):
+    assert not has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+
+
+@pytest.mark.parametrize(
+    ("body", "aliases"),
+    [
+        ("若尘把五点加到智力上。", {"若尘"}),
+        ("夜烬若有所思了片刻，还是把五点加到智力上。", {"夜烬"}),
+    ],
+)
+def test_attribute_allocation_keeps_non_conditional_ruo_words_as_real_narration(body: str, aliases: set[str]):
+    assert has_character_attribute_allocation(body, "智力", 5, protagonist_aliases=aliases)
+
+
+def test_attribute_allocation_rejects_english_single_quoted_and_unclosed_actions():
+    quoted = "短发玩家说：'夜烬把五点加到智力上，确认后可用属性点归零。'"
+    unclosed = "短发玩家说：'夜烬把五点加到智力上，确认后可用属性点归零。"
+
+    assert not has_character_attribute_allocation(quoted, "智力", 5, protagonist_aliases={"夜烬"})
+    assert not has_character_attribute_allocation(unclosed, "智力", 5, protagonist_aliases={"夜烬"})
+
+
+def test_attribute_allocation_does_not_treat_apostrophes_as_quotes():
+    body = "玩家's记录写完后，夜烬把五点加到智力上。"
+
+    assert has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+
+
+def test_attribute_allocation_lists_all_real_actions_without_hardcoded_attribute_names():
+    body = "夜烬把五点加到幸运上。接着他把一点加到敏捷上。"
+
+    assert character_attribute_allocation_actions(body, protagonist_aliases={"夜烬"}) == [("幸运", 5), ("敏捷", 1)]
+
+
+def test_attribute_allocation_quote_scan_handles_long_text_promptly():
+    body = ("'如果拿到五点，夜烬把五点加到智力上。'" * 600) + "夜烬把五点加到智力上。"
+    started = time.perf_counter()
+
+    assert has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+    assert time.perf_counter() - started < 1.0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "短发玩家说：‘夜烬决定留着，因为等转职以后再分配。’",
+        "如果拿到五点，夜烬决定留着，因为等转职以后再分配。",
+    ],
+)
+def test_attribute_carry_rejects_quoted_or_conditional_choices(body: str):
+    assert has_character_attribute_carry_choice_and_reason(
+        body, "留给转职", protagonist_aliases={"夜烬"}
+    ) == (False, False)
+
+
+def test_attribute_carry_accepts_real_protagonist_choice_and_reason():
+    body = "夜烬看着可用属性点还剩五点，决定留着，因为等转职以后再分配。"
+
+    assert has_character_attribute_carry_choice_and_reason(
+        body, "留给转职", protagonist_aliases={"夜烬"}
+    ) == (True, True)
 
 
 def test_attribute_allocation_default_rejects_explicit_bystander_subject():

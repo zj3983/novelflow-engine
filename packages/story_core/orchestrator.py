@@ -2400,6 +2400,11 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
                 issues.append("event_plan.attribute_allocation_decision 缺失：本章明确升级时必须 allocate 或 carry。")
             elif str(raw_decision.get("mode") or "").strip().lower() == "carry" and not attribute_rule["allow_carry"]:
                 issues.append("event_plan.attribute_allocation_decision 使用 carry，但当前规则禁止保留属性点。")
+            elif str(raw_decision.get("mode") or "").strip().lower() == "carry":
+                if not str(raw_decision.get("reason") or "").strip():
+                    issues.append("event_plan.attribute_allocation_decision 保留属性点必须填写理由。")
+                else:
+                    issues.append("event_plan.attribute_allocation_decision 的 remaining 必须等于预计剩余点数。")
             elif str(raw_decision.get("mode") or "").strip().lower() == "allocate":
                 allocations = raw_decision.get("allocations")
                 allocation_items_invalid = (
