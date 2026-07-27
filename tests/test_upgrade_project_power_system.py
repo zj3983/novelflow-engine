@@ -483,8 +483,32 @@ def test_advanced_project_preserves_current_attribute_state_and_card_mirrors(
         }
     )
     card = state["characters"][0]
-    card["game_panel"].update({"level": "Lv.5", "attributes": {"智力": 24}, "unallocated_attribute_points": 7})
-    card["game_state"]["current"].update({"level": "Lv.5", "attributes": {"智力": 24}, "unallocated_attribute_points": 7})
+    stale_awards = [
+        {"level": 2, "points": 1, "chapter": 1, "legacy": True},
+        {"level": 5, "points": 5, "chapter": 5},
+    ]
+    stale_allocations = [
+        {"chapter": 1, "allocations": {"智力": 1}, "remaining": 4},
+        {"chapter": 5, "allocations": {"智力": 5}, "remaining": 7},
+    ]
+    card["game_panel"].update(
+        {
+            "level": "Lv.5",
+            "attributes": {"智力": 24},
+            "unallocated_attribute_points": 7,
+            "attribute_point_awards": stale_awards,
+            "attribute_allocations": stale_allocations,
+        }
+    )
+    card["game_state"]["current"].update(
+        {
+            "level": "Lv.5",
+            "attributes": {"智力": 24},
+            "unallocated_attribute_points": 7,
+            "attribute_point_awards": stale_awards,
+            "attribute_allocations": stale_allocations,
+        }
+    )
     original_panel = deepcopy(card["game_panel"])
     original_current = deepcopy(card["game_state"]["current"])
     state_path.write_bytes(_json_bytes(state))
@@ -507,8 +531,15 @@ def test_advanced_project_preserves_current_attribute_state_and_card_mirrors(
         {"chapter": 3, "allocations": {"敏捷": 5}, "remaining": 2},
         {"chapter": 5, "allocations": {"智力": 5}, "remaining": 7},
     ]
-    assert migrated["characters"][0]["game_panel"] == original_panel
-    assert migrated["characters"][0]["game_state"]["current"] == original_current
+    for current, original in (
+        (migrated["characters"][0]["game_panel"], original_panel),
+        (migrated["characters"][0]["game_state"]["current"], original_current),
+    ):
+        assert current["level"] == original["level"] == "Lv.5"
+        assert current["attributes"] == original["attributes"] == {"智力": 24}
+        assert current["unallocated_attribute_points"] == original["unallocated_attribute_points"] == 7
+        assert current["attribute_point_awards"] == migrated_protagonist["attribute_point_awards"]
+        assert current["attribute_allocations"] == migrated_protagonist["attribute_allocations"]
 
 
 def test_rejects_marker_in_later_chapter_without_writing(project_dir: Path) -> None:

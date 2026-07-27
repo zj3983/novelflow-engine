@@ -543,7 +543,26 @@ def _migrate_state(state: Any, spec: dict[str, Any]) -> tuple[dict[str, Any], bo
     ]
     protagonist["attribute_allocations"] = _stable_history([*allocation_history, allocation])
 
+    history_sync = {
+        "attribute_point_awards": deepcopy(protagonist["attribute_point_awards"]),
+        "attribute_allocations": deepcopy(protagonist["attribute_allocations"]),
+    }
     if not _is_initial_attribute_snapshot(migrated, protagonist):
+        for card in _protagonist_cards(migrated):
+            panel = card.get("game_panel")
+            if not isinstance(panel, dict):
+                panel = {}
+                card["game_panel"] = panel
+            panel.update(deepcopy(history_sync))
+            game_state = card.get("game_state")
+            if not isinstance(game_state, dict):
+                game_state = {}
+                card["game_state"] = game_state
+            current = game_state.get("current")
+            if not isinstance(current, dict):
+                current = {}
+                game_state["current"] = current
+            current.update(deepcopy(history_sync))
         return migrated, migrated != state
 
     base_attributes = deepcopy(rule["base_attributes"])
