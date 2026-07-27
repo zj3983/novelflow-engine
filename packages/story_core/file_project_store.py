@@ -3940,6 +3940,31 @@ class FileProjectStore:
             raise FileNotFoundError(f"chapter_not_found:{target}")
         return self._hydrate_chapter_display_fields(chapter)
 
+    def chapter_index(self) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for number in self.chapter_numbers():
+            chapter = self._read_json(
+                self.story_system_dir / "chapters" / f"{number:04d}.json",
+                {},
+            )
+            if not isinstance(chapter, dict):
+                chapter = {}
+            chapter_summary = chapter.get("chapter_summary")
+            summary = chapter_summary if isinstance(chapter_summary, dict) else {}
+            body = str(chapter.get("body") or "")
+            entries.append(
+                {
+                    "chapter_number": int(chapter.get("chapter_number") or number),
+                    "chapter_title": str(chapter.get("chapter_title") or f"第{number}章"),
+                    "body_chars": len("".join(body.split())),
+                    "summary": str(summary.get("summary") or ""),
+                    "next_focus": str(chapter.get("next_outline") or summary.get("next_focus") or ""),
+                    "has_quality_report": isinstance(chapter.get("quality_report"), dict) and bool(chapter.get("quality_report")),
+                    "has_simulation": bool(chapter.get("simulation_status")),
+                }
+            )
+        return entries
+
     def review(self, chapter_number: int | None = None) -> dict[str, Any]:
         chapter = self.chapter(chapter_number)
         target = int(chapter.get("chapter_number") or chapter_number or 0)
@@ -4567,20 +4592,13 @@ class FileProjectStore:
     def summary(self) -> dict[str, Any]:
         project = self.project()
         state = self.state()
-        chapters = []
-        for number in self.chapter_numbers():
-            chapter = self._read_json(
-                self.story_system_dir / "chapters" / f"{number:04d}.json",
-                {},
-            )
-            if not isinstance(chapter, dict):
-                chapter = {}
-            chapters.append(
-                {
-                    "chapter_number": int(chapter.get("chapter_number") or number),
-                    "chapter_title": str(chapter.get("chapter_title") or f"第{number}章"),
-                }
-            )
+        chapters = [
+            {
+                "chapter_number": entry["chapter_number"],
+                "chapter_title": entry["chapter_title"],
+            }
+            for entry in self.chapter_index()
+        ]
         return {
             "schema_version": "file-project-summary/v1",
             "root": str(self.root),

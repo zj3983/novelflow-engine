@@ -240,6 +240,78 @@ def test_summary_reads_chapter_metadata_without_hydrating_full_chapters(tmp_path
     assert summary["chapters"][-1] == {"chapter_number": 3, "chapter_title": "Chapter 3"}
 
 
+def test_chapter_index_reads_each_file_once_without_display_hydration(tmp_path, monkeypatch):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    chapters_dir = store.story_system_dir / "chapters"
+    chapter_payloads = [
+        (
+            1,
+            {
+                "chapter_number": 1,
+                "chapter_title": "Chapter 1",
+                "body": "First draft body.\nWith whitespace.",
+                "chapter_summary": {"summary": "First summary.", "next_focus": "Carry on."},
+                "next_outline": "Open the sealed door.",
+                "simulation_status": {"status": "simulated"},
+                "quality_report": {"writing_review": {"pass": True, "issues": []}},
+            },
+        ),
+        (
+            2,
+            {
+                "chapter_number": 2,
+                "chapter_title": "Chapter 2",
+                "body": "Second draft body.",
+                "chapter_summary": {"summary": "Second summary.", "next_focus": "Keep moving."},
+                "next_outline": "Keep moving.",
+                "simulation_status": {"status": "simulated"},
+                "quality_report": {"writing_review": {"pass": True, "issues": []}},
+            },
+        ),
+    ]
+    for number, payload in chapter_payloads:
+        (chapters_dir / f"{number:04d}.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    read_counts: dict[str, int] = {}
+    original_read_json = store._read_json
+
+    def counting_read_json(path, default=None):
+        if path.parent == chapters_dir and path.suffix == ".json":
+            read_counts[path.name] = read_counts.get(path.name, 0) + 1
+        return original_read_json(path, default)
+
+    monkeypatch.setattr(
+        store,
+        "chapter",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("chapter_index must not hydrate full chapters")),
+    )
+    monkeypatch.setattr(store, "_read_json", counting_read_json)
+
+    index = store.chapter_index()
+
+    assert index == [
+        {
+            "chapter_number": 1,
+            "chapter_title": "Chapter 1",
+            "body_chars": len("Firstdraftbody.Withwhitespace."),
+            "summary": "First summary.",
+            "next_focus": "Open the sealed door.",
+            "has_quality_report": True,
+            "has_simulation": True,
+        },
+        {
+            "chapter_number": 2,
+            "chapter_title": "Chapter 2",
+            "body_chars": len("Seconddraftbody."),
+            "summary": "Second summary.",
+            "next_focus": "Keep moving.",
+            "has_quality_report": True,
+            "has_simulation": True,
+        },
+    ]
+    assert read_counts == {"0001.json": 1, "0002.json": 1}
+
+
 def _file_snapshot(root) -> dict:
     return {
         path.relative_to(root): path.read_bytes()
