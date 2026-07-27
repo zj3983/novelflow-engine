@@ -86,13 +86,13 @@ def _issue_text(issue: Any) -> str:
     return ""
 
 
-def _review_sources(report: dict[str, Any]) -> list[dict[str, Any]]:
-    sources: list[dict[str, Any]] = [report]
+def _review_sources(report: dict[str, Any]) -> list[tuple[dict[str, Any], int]]:
+    sources: list[tuple[dict[str, Any], int]] = [(report, 0)]
     writing = _as_dict(report.get("writing_review"))
-    sources.append(writing)
+    sources.append((writing, 0))
     for key in NESTED_REVIEW_KEYS:
-        sources.append(_as_dict(report.get(key)))
-        sources.append(_as_dict(writing.get(key)))
+        sources.append((_as_dict(report.get(key)), 1))
+        sources.append((_as_dict(writing.get(key)), 1))
     return sources
 
 
@@ -104,17 +104,17 @@ def _issue_suggestion(issue: Any) -> str:
 
 def _collect_issue_records(report: dict[str, Any]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for source in _review_sources(report):
+    for source, source_specificity in _review_sources(report):
         plans = source.get("revision_plan") if isinstance(source.get("revision_plan"), list) else []
         for index, issue in enumerate(source.get("issues") or []):
             message = _issue_text(issue)
             if not message or message in INTERNAL_ISSUES:
                 continue
             suggestion = _issue_suggestion(issue)
-            suggestion_priority = 2 if suggestion else 0
+            suggestion_priority = 3 if suggestion else 0
             if not suggestion and index < len(plans):
                 suggestion = str(plans[index] or "").strip()
-                suggestion_priority = 1 if suggestion else 0
+                suggestion_priority = 1 + source_specificity if suggestion else 0
             records.append(
                 {
                     "message": message,

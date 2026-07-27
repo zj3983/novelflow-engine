@@ -150,6 +150,25 @@ def test_simplified_review_replaces_aggregate_plan_with_later_embedded_suggestio
     assert report["revision_plan"] == ["embedded-correct"]
 
 
+def test_simplified_review_prefers_nested_paired_plan_over_aggregate_paired_plan():
+    message = "设定冲突：规划实体写错。"
+    report = build_simplified_review(
+        {
+            "writing_review": {
+                "issues": [message],
+                "revision_plan": ["aggregate-wrong"],
+                "reviewer_agent_review": {
+                    "issues": [message],
+                    "revision_plan": ["nested-paired-correct"],
+                },
+            }
+        }
+    )
+
+    assert report["issues"][0]["suggestion"] == "nested-paired-correct"
+    assert report["revision_plan"] == ["nested-paired-correct"]
+
+
 def test_simplified_review_exposes_one_consolidated_status():
     report = build_simplified_review(
         {

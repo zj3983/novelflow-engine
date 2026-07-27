@@ -196,3 +196,21 @@ def test_revision_prompt_prefers_nested_issue_specific_suggestion_over_aggregate
 
     assert f"问题：{message} 修改：embedded-correct" in prompt
     assert "aggregate-wrong" not in prompt
+
+
+def test_revision_prompt_prefers_nested_paired_plan_over_aggregate_paired_plan():
+    story = StoryState(story_id="s-review-nested-pair", outline="查清旧印", genre="xuanhuan", style="白描")
+    message = "设定冲突：规划实体写错。"
+    review = {
+        "issues": [message],
+        "revision_plan": ["aggregate-wrong"],
+        "reviewer_agent_review": {
+            "issues": [message],
+            "revision_plan": ["nested-paired-correct"],
+        },
+    }
+
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文", {}, review)
+
+    assert f"问题：{message} 修改：nested-paired-correct" in prompt
+    assert "aggregate-wrong" not in prompt

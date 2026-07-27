@@ -249,7 +249,7 @@ def test_choose_best_revision_keeps_in_range_draft_when_failed_candidate_grows_o
 
     assert result["accepted"] is False
     assert result["selected"] == "original"
-    assert result["report"]["reason"] == "failed_candidate_left_preferred_length"
+    assert result["report"]["reason"] == "candidate_above_chapter_maximum"
 
 
 def test_choose_best_revision_rejects_failed_candidate_without_fewer_issues():
@@ -259,7 +259,7 @@ def test_choose_best_revision_rejects_failed_candidate_without_fewer_issues():
     result = choose_best_revision(
         original_body="原" * 5730,
         original_quality=original,
-        candidate_body="改" * 6754,
+        candidate_body="改" * 5200,
         candidate_quality=candidate,
     )
 
@@ -267,10 +267,29 @@ def test_choose_best_revision_rejects_failed_candidate_without_fewer_issues():
     assert result["report"]["reason"] == "failed_candidate_did_not_reduce_issues"
 
 
-def test_choose_best_revision_accepts_normal_length_candidate_that_resolves_hard_errors():
-    original = _quality(False, {"genre_rules": 8}, ["设定冲突", "对话问题"])
+def test_choose_best_revision_rejects_severe_quality_regression_even_when_hard_errors_resolve():
+    original = _quality(False, {"genre_rules": 10}, ["设定冲突"])
     original["has_hard_errors"] = True
-    candidate = _quality(False, {"genre_rules": 5}, ["对话问题", "AI味", "节奏问题"])
+    candidate = _quality(False, {"genre_rules": -10}, [f"软问题{i}" for i in range(20)])
+    candidate["has_hard_errors"] = False
+
+    result = choose_best_revision(
+        original_body="原" * 5000,
+        original_quality=original,
+        candidate_body="改" * 5000,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["selected"] == "original"
+    assert result["report"]["candidate_issue_count"] == 20
+    assert result["report"]["candidate_score"] < result["report"]["original_score"] - 15
+
+
+def test_choose_best_revision_accepts_bounded_soft_regression_when_hard_errors_resolve():
+    original = _quality(False, {"genre_rules": 6}, ["设定冲突"])
+    original["has_hard_errors"] = True
+    candidate = _quality(False, {"genre_rules": 7}, ["对话问题", "AI味", "节奏问题"])
     candidate["has_hard_errors"] = False
 
     result = choose_best_revision(
@@ -283,6 +302,26 @@ def test_choose_best_revision_accepts_normal_length_candidate_that_resolves_hard
     assert result["accepted"] is True
     assert result["selected"] == "candidate"
     assert result["report"]["reason"] == "hard_errors_resolved"
+    assert result["report"]["candidate_issue_count"] == result["report"]["original_issue_count"] + 2
+    assert result["report"]["candidate_score"] >= result["report"]["original_score"] - 15
+
+
+def test_choose_best_revision_rejects_candidate_above_absolute_maximum():
+    original = _quality(False, {"genre_rules": 6}, ["设定冲突"])
+    original["has_hard_errors"] = True
+    candidate = _quality(True, {"genre_rules": 10})
+    candidate["has_hard_errors"] = False
+
+    result = choose_best_revision(
+        original_body="原" * 6000,
+        original_quality=original,
+        candidate_body="改" * 10000,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["selected"] == "original"
+    assert result["report"]["reason"] == "candidate_above_chapter_maximum"
 
 
 def test_choose_best_revision_rejects_too_short_candidate_even_when_hard_errors_resolve():
