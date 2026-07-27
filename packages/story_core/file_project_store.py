@@ -1151,18 +1151,33 @@ class FileProjectStore:
             return None
         if updated_story.get("story_id") != current_state.get("story_id"):
             return None
-        has_runtime_state = any(
-            isinstance(updated_story.get(key), expected_type)
-            for key, expected_type in (
-                ("progression_ledger", dict),
-                ("characters", list),
-                ("chapter_summaries", list),
-                ("time_state", dict),
-            )
-        )
-        if not has_runtime_state:
+        if not all(
+            isinstance(updated_story.get(field), str)
+            for field in ("story_id", "outline", "genre", "style")
+        ):
             return None
-        return self._strip_temporary_generation_fields(dict(updated_story))
+        chapter_number = updated_story.get("current_chapter")
+        if not isinstance(chapter_number, int) or isinstance(chapter_number, bool) or chapter_number < 0:
+            return None
+        try:
+            validated = StoryState.model_validate(updated_story)
+        except (TypeError, ValueError):
+            return None
+
+        usable = validated.model_dump(mode="json")
+        extra_contracts = {
+            "time_state": lambda value: isinstance(value, dict),
+            "novel_type": lambda value: isinstance(value, str),
+            "novel_type_id": lambda value: isinstance(value, str),
+            "novel_type_ids": lambda value: isinstance(value, list)
+            and all(isinstance(item, str) for item in value),
+        }
+        for field, is_valid in extra_contracts.items():
+            source = updated_story if field in updated_story else current_state
+            value = source.get(field)
+            if is_valid(value):
+                usable[field] = deepcopy(value)
+        return self._strip_temporary_generation_fields(usable)
 
     def _usable_bundle_state(
         self,
@@ -2292,9 +2307,17 @@ class FileProjectStore:
             "attribute_point_awards",
             "attribute_allocations",
         }
+
+        def valid_attribute_value(field: str, value: Any) -> bool:
+            if field == "attributes":
+                return isinstance(value, dict)
+            if field == "unallocated_attribute_points":
+                return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            return isinstance(value, list) and all(isinstance(item, dict) for item in value)
+
         for field, value in values.items():
             if field in attribute_fields:
-                if field not in protagonist:
+                if field not in protagonist or not valid_attribute_value(field, value):
                     continue
             elif value in (None, "", [], {}):
                 continue

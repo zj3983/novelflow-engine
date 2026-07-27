@@ -928,6 +928,39 @@ def test_game_character_sync_mirrors_complete_attribute_ledger(tmp_path):
         assert state_slice["attribute_allocations"] == allocations
 
 
+@pytest.mark.parametrize("invalid_points", ["oops", -1, True])
+def test_game_character_sync_ignores_invalid_attribute_ledger_values(tmp_path, invalid_points):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    existing = {
+        "attributes": {"Intelligence": 10},
+        "unallocated_attribute_points": 3,
+        "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 1}],
+        "attribute_allocations": [
+            {"chapter": 1, "allocations": {"Intelligence": 5}, "remaining": 0}
+        ],
+    }
+    character = {
+        "name": "Ari",
+        "role": "protagonist",
+        "game_state": {"current": deepcopy(existing)},
+        "game_panel": deepcopy(existing),
+    }
+    ledger = {
+        "protagonist": {
+            "attributes": None,
+            "unallocated_attribute_points": invalid_points,
+            "attribute_point_awards": {},
+            "attribute_allocations": [{"chapter": 2}, "not-a-record"],
+        }
+    }
+
+    store._sync_game_character_from_ledger(character, ledger, chapter_number=2)
+
+    for state_slice in (character["game_state"]["current"], character["game_panel"]):
+        for field, value in existing.items():
+            assert state_slice[field] == value
+
+
 def test_opening_ledger_derives_latest_project_balance_instead_of_fixed_amount(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     chapters = [
@@ -4979,10 +5012,15 @@ def test_persist_bundle_uses_runtime_updated_story(tmp_path):
         next_outline="Continue from the updated ledger.",
         updated_story={
             "story_id": "s-file",
+            "outline": "Canonical outline.",
+            "genre": "game_webnovel",
+            "style": "plain",
             "current_chapter": 2,
             "progression_ledger": {"economy": {"game_currency": "5铜"}},
             "world_facts": ["source:canonical"],
-            "timeline": [{"chapter_number": 2, "label": "第2章"}],
+            "timeline": [
+                {"chapter_number": 2, "summary": "Ledger settles.", "impact": "Currency updates."}
+            ],
             "chapter_summaries": [
                 {"chapter_number": 2, "chapter_title": "Ledger Chapter", "summary": "ledger settles"}
             ],
@@ -5058,19 +5096,48 @@ def test_usable_bundle_state_keeps_valid_runtime_character_updates(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     current_state = {
         "story_id": "s-file",
+        "outline": "Canonical outline.",
+        "genre": "game_webnovel",
+        "style": "plain",
         "current_chapter": 1,
         "characters": [{"name": "Ari", "role": "protagonist", "current_emotion": "stale"}],
     }
     updated_story = {
         "story_id": "s-file",
+        "outline": "Canonical outline.",
+        "genre": "game_webnovel",
+        "style": "plain",
         "current_chapter": 2,
         "progression_ledger": {"protagonist": {"level": "Lv.2"}},
         "characters": [{"name": "Ari", "role": "protagonist", "current_emotion": "focused"}],
+        "time_state": {"current_scene_time": "chapter two end"},
     }
 
     usable = store._usable_bundle_state(updated_story, current_state, target_chapter=2)
 
     assert usable["characters"][0]["current_emotion"] == "focused"
+    assert usable["time_state"] == {"current_scene_time": "chapter two end"}
+
+
+def test_usable_bundle_state_rejects_partial_updated_story(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    current_state = {
+        "story_id": "s-file",
+        "outline": "Canonical outline.",
+        "genre": "fantasy",
+        "style": "plain",
+        "current_chapter": 1,
+        "characters": [{"name": "Ari", "role": "protagonist"}],
+        "world_facts": ["canonical world fact"],
+    }
+
+    usable = store._usable_bundle_state(
+        {"story_id": "s-file", "current_chapter": 2, "characters": []},
+        current_state,
+        target_chapter=2,
+    )
+
+    assert usable == current_state
 
 
 def test_persist_bundle_keeps_runtime_character_and_syncs_attribute_history(tmp_path):
@@ -5105,8 +5172,10 @@ def test_persist_bundle_keeps_runtime_character_and_syncs_attribute_history(tmp_
         next_outline="Test the new build.",
         updated_story={
             "story_id": "s-file",
+            "outline": "Ari tests a new attribute build.",
             "current_chapter": 2,
             "genre": "game_webnovel",
+            "style": "plain",
             "progression_ledger": {
                 "protagonist": {
                     "level": "Lv.3",
