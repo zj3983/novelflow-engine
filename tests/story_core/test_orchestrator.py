@@ -94,8 +94,16 @@ def test_workflow_character_names_come_from_card_identities():
 def test_orchestrator_memory_normalization_receives_protagonist_real_and_game_aliases(monkeypatch):
     captured = {}
 
-    def fake_normalize(payload, *, body, existing_character_names, protagonist_aliases=None):
+    def fake_normalize(
+        payload,
+        *,
+        body,
+        existing_character_names,
+        evidence_character_names=None,
+        protagonist_aliases=None,
+    ):
         captured["existing_character_names"] = existing_character_names
+        captured["evidence_character_names"] = evidence_character_names
         captured["protagonist_aliases"] = protagonist_aliases
         return {
             "summary": "记忆完成",
@@ -132,7 +140,8 @@ def test_orchestrator_memory_normalization_receives_protagonist_real_and_game_al
     assert status["status"] == "ok"
     assert memory["summary"] == "记忆完成"
     assert captured["protagonist_aliases"] == {"苏叶", "夜烬"}
-    assert captured["existing_character_names"] == {"苏叶", "夜烬", "林峰", "青锋"}
+    assert captured["existing_character_names"] == {"苏叶", "林峰"}
+    assert captured["evidence_character_names"] == {"苏叶", "夜烬", "林峰", "青锋"}
 
 
 def _attribute_rule() -> dict:

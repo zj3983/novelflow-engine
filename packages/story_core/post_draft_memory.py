@@ -569,6 +569,7 @@ def normalize_post_draft_memory(
     *,
     body: str,
     existing_character_names: set[str],
+    evidence_character_names: set[str] | None = None,
     protagonist_aliases: set[str] | None = None,
 ) -> dict[str, Any]:
     """Drop every proposed state change that lacks literal final-prose evidence."""
@@ -606,7 +607,7 @@ def normalize_post_draft_memory(
         rejected=rejected,
     )
     other_character_names = (
-        set(existing_character_names) - set(protagonist_aliases)
+        set(evidence_character_names or existing_character_names) - set(protagonist_aliases)
         if protagonist_aliases
         else set()
     )

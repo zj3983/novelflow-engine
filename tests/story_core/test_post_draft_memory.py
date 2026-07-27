@@ -576,9 +576,13 @@ def test_attribute_allocation_memory_rejects_bystander_remaining_after_protagoni
 
 
 def test_attribute_allocation_memory_rejects_a_known_named_bystander_panel_chain():
-    body = "夜烬把五点加到智力上。青锋看了夜烬一眼，他确认加点，提示消失后，他的面板上的可用属性点还剩四点。"
+    body = "林峰站在一旁，显得得意。夜烬把五点加到智力上。青锋看了夜烬一眼，他确认加点，提示消失后，他的面板上的可用属性点还剩四点。"
     result = normalize_post_draft_memory(
         {
+            "character_updates": [
+                {"name": "青锋", "emotion": "得意", "evidence": "青锋看了夜烬一眼"},
+                {"name": "林峰", "emotion": "得意", "evidence": "林峰站在一旁，显得得意"},
+            ],
             "ledger_updates": {"protagonist": {"attribute_allocation": {"allocations": {"智力": 5}, "remaining": 4}}},
             "ledger_evidence": {
                 "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
@@ -586,11 +590,21 @@ def test_attribute_allocation_memory_rejects_a_known_named_bystander_panel_chain
             },
         },
         body=body,
-        existing_character_names={"夜烬", "林峰", "青锋"},
+        existing_character_names={"夜烬", "林峰"},
+        evidence_character_names={"夜烬", "林峰", "青锋"},
         protagonist_aliases={"夜烬"},
     )
 
     assert result["ledger_updates"] == {}
+    assert result["character_updates"] == [
+        {"name": "林峰", "emotion": "得意", "evidence": "林峰站在一旁，显得得意"}
+    ]
+    assert any(
+        item.get("kind") == "character_update"
+        and item.get("name") == "青锋"
+        and item.get("reason") == "unknown_character"
+        for item in result["rejected_updates"]
+    )
 
 
 def test_attribute_allocation_requires_local_remaining_evidence_even_when_body_has_zero_points():

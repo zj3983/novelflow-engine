@@ -27,7 +27,11 @@ from packages.story_core.attribute_allocation import (
     planned_level_target,
     validate_attribute_allocation_decision,
 )
-from packages.story_core.attribute_evidence import character_evidence_names, protagonist_aliases_from_characters
+from packages.story_core.attribute_evidence import (
+    character_evidence_names,
+    character_update_names,
+    protagonist_aliases_from_characters,
+)
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate, review_chapter_governance
 from packages.story_core.chapter_planning import build_outline_chapter_plan
 from packages.story_core.chapter_seed import build_chapter_seed
@@ -6257,7 +6261,7 @@ class StoryOrchestrator:
         prompt = build_post_draft_memory_prompt(
             body,
             previous_summary=previous_summary.summary if previous_summary else "",
-            existing_character_names=character_evidence_names(story.characters),
+            existing_character_names=character_update_names(story.characters),
             genre=story.genre,
             fact_locks=fact_locks or {},
         )
@@ -6329,7 +6333,8 @@ class StoryOrchestrator:
         memory = normalize_post_draft_memory(
             payload,
             body=body,
-            existing_character_names=character_evidence_names(story.characters),
+            existing_character_names=character_update_names(story.characters),
+            evidence_character_names=character_evidence_names(story.characters),
             protagonist_aliases=protagonist_aliases_from_characters(story.characters),
         )
         has_grounded_memory = any(

@@ -276,6 +276,18 @@ def character_evidence_names(characters: Iterable[object]) -> set[str]:
     return names
 
 
+def character_update_names(characters: Iterable[object]) -> set[str]:
+    """Return non-empty real names that may be used as character-update keys."""
+
+    names: set[str] = set()
+    for character in characters:
+        value = character.get("name") if isinstance(character, dict) else getattr(character, "name", "")
+        name = str(value or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
 def _normalized_aliases(protagonist_aliases: Iterable[str] | None) -> tuple[str, ...]:
     if protagonist_aliases is None:
         return ()
