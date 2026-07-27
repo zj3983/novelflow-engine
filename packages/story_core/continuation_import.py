@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -10,12 +12,20 @@ from pydantic import BaseModel, Field
 
 
 SUPPORTED_SUFFIXES = {".md", ".txt"}
-DEFAULT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk")
+DEFAULT_ENCODINGS = ("utf-8", "gb18030", "gbk")
+_BOM_ENCODINGS = (
+    (b"\xff\xfe\x00\x00", "utf-32", "utf-32-le"),
+    (b"\x00\x00\xfe\xff", "utf-32", "utf-32-be"),
+    (b"\xef\xbb\xbf", "utf-8-sig", "utf-8-sig"),
+    (b"\xff\xfe", "utf-16", "utf-16-le"),
+    (b"\xfe\xff", "utf-16", "utf-16-be"),
+)
 _NUMBER_CHARS = "0-9零〇一二两三四五六七八九十百千万"
 _CHAPTER_TITLE_RE = re.compile(
-    rf"^\s*(?:#{{1,6}}\s*)?第\s*(?P<number>[{_NUMBER_CHARS}]+)\s*[章节回卷](?P<title>.*)$"
+    rf"^\s*第\s*(?P<number>[{_NUMBER_CHARS}]+)\s*[章节回卷](?P<title>.*)$"
 )
-_MARKDOWN_TITLE_RE = re.compile(r"^\s{0,3}#{1,6}\s+(?P<title>.+?)\s*#*\s*$")
+_MARKDOWN_TITLE_RE = re.compile(r"^\s{0,3}(?P<marks>#{1,6})[ \t]+(?P<title>.+?)\s*$")
+_FENCE_RE = re.compile(r"^\s{0,3}(?P<fence>`{3,}|~{3,})")
 _NATURAL_NUMBER_RE = re.compile(rf"第\s*([{_NUMBER_CHARS}]+)\s*[章节回卷]|(\d+)")
 
 
@@ -42,23 +52,74 @@ class ContinuationScanResult(BaseModel):
     can_analyze: bool = False
 
 
+@dataclass(frozen=True)
+class _Heading:
+    start: int
+    body_start: int
+    title: str
+    level: int | None
+    explicit: bool
+
+
 def decode_novel_bytes(payload: bytes, forced_encoding: str | None = None) -> tuple[str, str]:
+    if not forced_encoding:
+        for bom, codec, label in _BOM_ENCODINGS:
+            if payload.startswith(bom):
+                try:
+                    text = payload.decode(codec, errors="strict")
+                except UnicodeDecodeError as exc:
+                    raise ValueError("source_encoding_unknown") from exc
+                if _is_low_quality_text(text):
+                    raise ValueError("source_encoding_unknown")
+                return text, label
+
     encodings = (forced_encoding,) if forced_encoding else DEFAULT_ENCODINGS
     for encoding in encodings:
         try:
-            return payload.decode(encoding, errors="strict"), encoding
+            text = payload.decode(encoding, errors="strict")
         except (LookupError, UnicodeDecodeError):
             continue
+        if not _is_low_quality_text(text):
+            return text, encoding
     raise ValueError("source_encoding_unknown")
+
+
+def _is_low_quality_text(text: str) -> bool:
+    for char in text:
+        if char in "\t\n\r":
+            continue
+        category = unicodedata.category(char)
+        if category.startswith("C"):
+            return True
+    return False
 
 
 def _chinese_number(value: str) -> int:
     if value.isdigit():
         return int(value)
 
-    digits = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
-              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    digits = {
+        "零": 0,
+        "〇": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
     units = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+    if any(char.isascii() and char.isdigit() for char in value):
+        raise ValueError("chapter_number_invalid")
+    if any(char not in digits and char not in units for char in value):
+        raise ValueError("chapter_number_invalid")
+    if not any(char in units for char in value):
+        return int("".join(str(digits[char]) for char in value))
+
     total = 0
     section = 0
     digit = 0
@@ -81,28 +142,68 @@ def _number_from_text(value: str) -> int | None:
     match = _NATURAL_NUMBER_RE.search(value)
     if not match:
         return None
-    return _chinese_number(match.group(1) or match.group(2))
+    try:
+        return _chinese_number(match.group(1) or match.group(2))
+    except ValueError:
+        return None
 
 
 def _natural_key(path: Path, base: Path) -> tuple[object, ...]:
-    relative = str(path.relative_to(base)).replace("\\", "/")
-    parts = re.split(r"(\d+)", relative.casefold())
-    return tuple(int(part) if part.isdigit() else part for part in parts)
+    relative = path.relative_to(base).as_posix()
+    normalized_relative = unicodedata.normalize("NFKC", relative).casefold()
+    parts = re.split(r"(\d+)", normalized_relative)
+    natural_parts = tuple(int(part) if part.isdigit() else part for part in parts)
+    return natural_parts, normalized_relative, relative
 
 
 def _line_boundaries(text: str) -> list[tuple[int, int, str]]:
-    boundaries: list[tuple[int, int, str]] = []
+    candidates: list[_Heading] = []
     offset = 0
+    fence_char = ""
+    fence_length = 0
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
-        chapter_match = _CHAPTER_TITLE_RE.match(content)
+        fence_match = _FENCE_RE.match(content)
+        if fence_match:
+            fence = fence_match.group("fence")
+            if not fence_char:
+                fence_char = fence[0]
+                fence_length = len(fence)
+            elif fence[0] == fence_char and len(fence) >= fence_length:
+                fence_char = ""
+                fence_length = 0
+            offset += len(line)
+            continue
+        if fence_char:
+            offset += len(line)
+            continue
+
         markdown_match = _MARKDOWN_TITLE_RE.match(content)
+        level = len(markdown_match.group("marks")) if markdown_match else None
+        if markdown_match:
+            title = re.sub(r"[ \t]+#+[ \t]*$", "", markdown_match.group("title")).strip()
+        else:
+            title = content.strip()
+        chapter_match = _CHAPTER_TITLE_RE.match(title)
         if chapter_match:
-            boundaries.append((offset, offset + len(line), content.strip().lstrip("#").strip()))
+            try:
+                _chinese_number(chapter_match.group("number"))
+            except ValueError:
+                pass
+            else:
+                candidates.append(_Heading(offset, offset + len(line), title, level, True))
         elif markdown_match:
-            boundaries.append((offset, offset + len(line), markdown_match.group("title").strip()))
+            candidates.append(_Heading(offset, offset + len(line), title, level, False))
         offset += len(line)
-    return boundaries
+
+    explicit = [candidate for candidate in candidates if candidate.explicit]
+    if explicit:
+        selected = explicit
+    else:
+        levels = [candidate.level for candidate in candidates if candidate.level is not None]
+        chapter_level = min(levels) if levels else None
+        selected = [candidate for candidate in candidates if candidate.level == chapter_level]
+    return [(heading.start, heading.body_start, heading.title) for heading in selected]
 
 
 def _build_chapter(
@@ -116,10 +217,8 @@ def _build_chapter(
 ) -> ContinuationChapter:
     clean_body = body.strip()
     fingerprint = hashlib.sha256(clean_body.encode("utf-8")).hexdigest()
-    identity = f"{source_name}\0{number}\0{title}\0{source_start}\0{source_end}\0{fingerprint}"
-    chapter_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
     return ContinuationChapter(
-        chapter_id=chapter_id,
+        chapter_id="",
         number=number,
         title=title,
         body=clean_body,
@@ -128,6 +227,17 @@ def _build_chapter(
         source_end=source_end,
         fingerprint=fingerprint,
     )
+
+
+def _assign_chapter_ids(chapters: list[ContinuationChapter]) -> None:
+    occurrences: dict[tuple[int, str, str], int] = defaultdict(int)
+    for chapter in chapters:
+        normalized_title = " ".join(unicodedata.normalize("NFKC", chapter.title).split()).casefold()
+        logical_key = (chapter.number, normalized_title, chapter.fingerprint)
+        occurrence = occurrences[logical_key]
+        occurrences[logical_key] += 1
+        identity = f"{chapter.number}\0{normalized_title}\0{chapter.fingerprint}\0{occurrence}"
+        chapter.chapter_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def _chapters_from_text(
@@ -226,9 +336,10 @@ def scan_continuation_source(
         source_name = file_path.name if source_kind == "file" else file_path.relative_to(source).as_posix()
         parsed, confirmed = _chapters_from_text(text, source_name, file_index, file_path.stem)
         chapters.extend(parsed)
-        if source_kind == "file" and text and not confirmed:
+        if text and not confirmed:
             unconfirmed = True
 
+    _assign_chapter_ids(chapters)
     warnings, duplicate_groups, numbering_gaps = _diagnostics(chapters)
     if not chapters:
         warnings.insert(0, "empty_source")
