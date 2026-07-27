@@ -161,6 +161,40 @@ def test_replace_treats_deleted_source_as_changed(tmp_path: Path) -> None:
     assert store.get(session.session_id) == session
 
 
+def test_replace_rejects_empty_file_changed_to_empty_directory(tmp_path: Path) -> None:
+    source = tmp_path / "novel.txt"
+    source.write_bytes(b"")
+    store = _store(tmp_path / "sessions")
+    session = store.create(_scan(source))
+    session_file = tmp_path / "sessions" / session.session_id / "session.json"
+    before = session_file.read_bytes()
+    source.unlink()
+    source.mkdir()
+
+    with pytest.raises(ValueError, match="^source_changed_since_scan$"):
+        store.replace_chapters(session.session_id, [_chapter(1)])
+
+    assert session_file.read_bytes() == before
+    assert store.get(session.session_id) == session
+
+
+def test_update_rejects_empty_directory_changed_to_empty_file(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    store = _store(tmp_path / "sessions")
+    session = store.create(_scan(source))
+    session_file = tmp_path / "sessions" / session.session_id / "session.json"
+    before = session_file.read_bytes()
+    source.rmdir()
+    source.write_bytes(b"")
+
+    with pytest.raises(ValueError, match="^source_changed_since_scan$"):
+        store.update(session.session_id, lambda current: setattr(current, "status", "ready"))
+
+    assert session_file.read_bytes() == before
+    assert store.get(session.session_id) == session
+
+
 @pytest.mark.parametrize("session_id", ["../escape", "..", ".", "ci/a", "ci\\a", "", "other-id"])
 def test_get_rejects_illegal_session_ids(tmp_path: Path, session_id: str) -> None:
     store = _store(tmp_path / "sessions")

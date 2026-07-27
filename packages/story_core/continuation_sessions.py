@@ -48,6 +48,22 @@ class _SourceFile(BaseModel):
     payload: bytes = Field(exclude=True)
 
 
+class _SourceManifestFile(BaseModel):
+    relative_path: str
+    fingerprint: str
+
+
+class _SourceManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["continuation-source-manifest/v1"]
+    source_path: str
+    source_kind: Literal["file", "directory"]
+    source_fingerprint: str
+    encoding: str
+    files: list[_SourceManifestFile]
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -189,21 +205,24 @@ class ContinuationSessionStore:
                 if _sha256(backup_path.read_bytes()) != snapshot.fingerprint:
                     raise OSError("source_backup_verification_failed")
 
-            manifest = {
-                "schema_version": "continuation-source-manifest/v1",
-                "source_path": str(source),
-                "source_kind": scan.source_kind,
-                "source_fingerprint": source_fingerprint,
-                "encoding": scan.encoding,
-                "files": [
-                    {
-                        "relative_path": snapshot.relative_path,
-                        "fingerprint": snapshot.fingerprint,
-                    }
+            manifest = _SourceManifest(
+                schema_version="continuation-source-manifest/v1",
+                source_path=str(source),
+                source_kind=scan.source_kind,
+                source_fingerprint=source_fingerprint,
+                encoding=scan.encoding,
+                files=[
+                    _SourceManifestFile(
+                        relative_path=snapshot.relative_path,
+                        fingerprint=snapshot.fingerprint,
+                    )
                     for snapshot in snapshots
                 ],
-            }
-            _write_json_atomic(session_root / "source" / "manifest.json", manifest)
+            )
+            _write_json_atomic(
+                session_root / "source" / "manifest.json",
+                manifest.model_dump(mode="json"),
+            )
 
             timestamp = self._clock()
             session = ContinuationImportSession(
@@ -235,10 +254,11 @@ class ContinuationSessionStore:
     ) -> ContinuationImportSession:
         def mutate(session: ContinuationImportSession) -> None:
             validated = _validated_chapters(chapters)
+            source_kind = self._read_source_manifest(session_id).source_kind
             try:
                 current_fingerprint = fingerprint_continuation_source(
                     session.source_path,
-                    "directory" if Path(session.source_path).is_dir() else "file",
+                    source_kind,
                 )
             except OSError:
                 raise ValueError("source_changed_since_scan") from None
@@ -258,6 +278,7 @@ class ContinuationSessionStore:
             current = self.get(session_id)
             if expected_revision is not None and current.revision != expected_revision:
                 raise ValueError("session_revision_conflict")
+            self._validate_current_source_kind(session_id, current)
 
             candidate = current.model_copy(deep=True)
             result = mutate(candidate)
@@ -275,6 +296,29 @@ class ContinuationSessionStore:
     def _session_path(self, session_id: str) -> Path:
         _validate_session_id(session_id)
         return self.root / session_id / "session.json"
+
+    def _read_source_manifest(self, session_id: str) -> _SourceManifest:
+        manifest_path = self.root / session_id / "source" / "manifest.json"
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            return _SourceManifest.model_validate(json.load(handle))
+
+    def _validate_current_source_kind(
+        self,
+        session_id: str,
+        session: ContinuationImportSession,
+    ) -> None:
+        manifest = self._read_source_manifest(session_id)
+        if (
+            manifest.source_path != session.source_path
+            or manifest.source_fingerprint != session.source_fingerprint
+            or manifest.encoding != session.encoding
+        ):
+            raise ValueError("source_changed_since_scan")
+
+        source = Path(session.source_path)
+        current_kind = "file" if source.is_file() else "directory" if source.is_dir() else None
+        if current_kind != manifest.source_kind:
+            raise ValueError("source_changed_since_scan")
 
     def _write_session(self, session: ContinuationImportSession) -> None:
         _write_json_atomic(
