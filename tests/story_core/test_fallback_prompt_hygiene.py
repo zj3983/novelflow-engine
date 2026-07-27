@@ -165,3 +165,17 @@ def test_revision_prompt_uses_only_consolidated_review_actions():
     assert "## 综合审稿修改" in prompt
     assert "原始修改意见7" not in prompt
     assert prompt.count("问题：") <= 3
+
+
+def test_revision_prompt_keeps_each_action_with_its_issue_after_reordering():
+    story = StoryState(story_id="s-review-pairs", outline="查清旧印", genre="xuanhuan", style="白描")
+    review = {
+        "issues": ["对话不够自然。", "设定冲突：规划实体写错。"],
+        "revision_plan": ["修对白。", "修规划词。"],
+    }
+
+    prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文", {}, review)
+
+    assert "1. 问题：设定冲突：规划实体写错。 修改：修规划词。" in prompt
+    assert "2. 问题：对话不够自然。 修改：修对白。" in prompt
+    assert "问题：设定冲突：规划实体写错。 修改：修对白。" not in prompt

@@ -5778,7 +5778,6 @@ class StoryOrchestrator:
         base_prompt = self._render_body_prompt(story, chapter_number, plan)
         consolidated_review = build_simplified_review(review)
         review_issues = consolidated_review.get("issues") if isinstance(consolidated_review.get("issues"), list) else []
-        review_actions = consolidated_review.get("revision_plan") if isinstance(consolidated_review.get("revision_plan"), list) else []
         trope_avoid_guidance = _review_trope_avoid_guidance(review)
         manual_instructions = compact_list(review.get("manual_instructions", []), max_items=3, item_chars=150)
         modification_lines = [
@@ -5793,8 +5792,7 @@ class StoryOrchestrator:
                 if not isinstance(item, dict):
                     continue
                 message = compact_text(str(item.get("message") or ""), 100)
-                fallback = compact_text(str(item.get("suggestion") or ""), 120)
-                action = compact_text(str(review_actions[index - 1]), 120) if index <= len(review_actions) else fallback
+                action = compact_text(str(item.get("suggestion") or ""), 120)
                 modification_lines.append(f"{index}. 问题：{message} 修改：{action}")
         if trope_avoid_guidance:
             modification_lines.append(f"套路避让：{'；'.join(trope_avoid_guidance)}")
@@ -6208,6 +6206,9 @@ class StoryOrchestrator:
         revision_review["manual_instructions"] = manual_instructions
         original_quality_seed = bundle.model_dump()
         original_quality = _merge_writing_review_quality(validate_bundle(original_quality_seed), revision_review)
+        original_quality["has_hard_errors"] = bool(
+            build_simplified_review({"writing_review": revision_review}).get("has_hard_errors")
+        )
         plan = {
             "character_moves": bundle.character_moves,
             "chapter_intent": bundle.chapter_intent,
@@ -6233,6 +6234,9 @@ class StoryOrchestrator:
             )
             patched_review["expression_patch_report"] = patch_report
             patched_quality = _merge_writing_review_quality(validate_bundle(quality_seed), patched_review)
+            patched_quality["has_hard_errors"] = bool(
+                build_simplified_review({"writing_review": patched_review}).get("has_hard_errors")
+            )
             patch_safety = choose_best_revision(
                 original_body=bundle.body,
                 original_quality=original_quality,
@@ -6283,6 +6287,9 @@ class StoryOrchestrator:
             genre_context=_story_review_genre_context(story),
         )
         quality_report = _merge_writing_review_quality(validate_bundle(quality_seed), writing_review)
+        quality_report["has_hard_errors"] = bool(
+            build_simplified_review({"writing_review": writing_review}).get("has_hard_errors")
+        )
         safety = choose_best_revision(
             original_body=bundle.body,
             original_quality=original_quality,
@@ -6906,6 +6913,7 @@ class StoryOrchestrator:
                 "ok": bool(pre_revision_review.get("pass")),
                 "issues": pre_revision_review.get("issues", []),
                 "writing_review": pre_revision_review,
+                "has_hard_errors": bool(review_gate.get("has_hard_errors")),
             }
             revised_body, revision_error = self._timed_chat(
                 working_story,
@@ -6942,10 +6950,12 @@ class StoryOrchestrator:
                     scene_cards,
                     genre_context=_story_review_genre_context(story),
                 )
+                candidate_gate = build_simplified_review({"writing_review": candidate_review})
                 candidate_quality = {
                     "ok": bool(candidate_review.get("pass")),
                     "issues": candidate_review.get("issues", []),
                     "writing_review": candidate_review,
+                    "has_hard_errors": bool(candidate_gate.get("has_hard_errors")),
                 }
                 safety = choose_best_revision(
                     original_body=pre_revision_body,
@@ -6960,7 +6970,6 @@ class StoryOrchestrator:
                 writing_review = selected_review
                 revision_safety_report = safety["report"]
                 if safety.get("accepted"):
-                    candidate_gate = build_simplified_review({"writing_review": candidate_review})
                     unresolved_categories = {
                         category
                         for category in ("hard", "dialogue", "ai_flavor")
@@ -6988,6 +6997,11 @@ class StoryOrchestrator:
                     "rounds_done": revision_rounds_done,
                     "passed": not review_gate["needs_revision"],
                     "issues_remaining": len((writing_review or {}).get("issues", [])),
+                    "reason": revision_safety_report.get("reason") if revision_safety_report else None,
+                    "original_score": revision_safety_report.get("original_score") if revision_safety_report else None,
+                    "candidate_score": revision_safety_report.get("candidate_score") if revision_safety_report else None,
+                    "original_issue_count": revision_safety_report.get("original_issue_count") if revision_safety_report else None,
+                    "candidate_issue_count": revision_safety_report.get("candidate_issue_count") if revision_safety_report else None,
                 },
             )
 

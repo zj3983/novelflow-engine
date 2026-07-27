@@ -267,6 +267,59 @@ def test_choose_best_revision_rejects_failed_candidate_without_fewer_issues():
     assert result["report"]["reason"] == "failed_candidate_did_not_reduce_issues"
 
 
+def test_choose_best_revision_accepts_normal_length_candidate_that_resolves_hard_errors():
+    original = _quality(False, {"genre_rules": 8}, ["设定冲突", "对话问题"])
+    original["has_hard_errors"] = True
+    candidate = _quality(False, {"genre_rules": 5}, ["对话问题", "AI味", "节奏问题"])
+    candidate["has_hard_errors"] = False
+
+    result = choose_best_revision(
+        original_body="原" * 5000,
+        original_quality=original,
+        candidate_body="改" * 5000,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is True
+    assert result["selected"] == "candidate"
+    assert result["report"]["reason"] == "hard_errors_resolved"
+
+
+def test_choose_best_revision_rejects_too_short_candidate_even_when_hard_errors_resolve():
+    original = _quality(False, {"genre_rules": 6}, ["设定冲突"])
+    original["has_hard_errors"] = True
+    candidate = _quality(True, {"genre_rules": 8})
+    candidate["has_hard_errors"] = False
+
+    result = choose_best_revision(
+        original_body="原" * 5000,
+        original_quality=original,
+        candidate_body="改" * 3800,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["selected"] == "original"
+    assert result["report"]["reason"] == "candidate_below_chapter_minimum"
+
+
+def test_choose_best_revision_does_not_prioritize_candidate_with_hard_errors_remaining():
+    original = _quality(False, {"genre_rules": 8}, ["设定冲突"])
+    original["has_hard_errors"] = True
+    candidate = _quality(False, {"genre_rules": 5}, ["另一处设定冲突"])
+    candidate["has_hard_errors"] = True
+
+    result = choose_best_revision(
+        original_body="原" * 5000,
+        original_quality=original,
+        candidate_body="改" * 5000,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["report"]["reason"] != "hard_errors_resolved"
+
+
 def test_choose_best_segment_revision_rejects_worse_local_rewrite():
     original_review = {"pass": False, "issues": ["偏短"], "scores": {"segment_scope": 8, "segment_surface": 5, "segment_style": 8}}
     candidate_review = {

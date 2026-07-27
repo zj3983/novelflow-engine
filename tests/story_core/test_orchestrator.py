@@ -1011,6 +1011,15 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
     )
     orchestrator = StoryOrchestrator()
     events: list[object] = []
+    safety_results: list[dict] = []
+    real_choose_best_revision = orchestrator_module.choose_best_revision
+
+    def capture_safety(**kwargs):
+        result = real_choose_best_revision(**kwargs)
+        safety_results.append({"inputs": kwargs, "result": result})
+        return result
+
+    monkeypatch.setattr(orchestrator_module, "choose_best_revision", capture_safety)
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
         if agent == "planner":
@@ -1083,6 +1092,24 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
     assert "review_snapshot" in inputs
     assert isinstance(inputs.get("character_cards"), dict)
     assert inputs.get("outline")
+    assert safety_results
+    safety_inputs = safety_results[0]["inputs"]
+    assert safety_inputs["original_quality"]["has_hard_errors"] is True
+    assert safety_inputs["candidate_quality"]["has_hard_errors"] is False
+
+    completion_event = next(
+        entry for entry in dict_steps if entry.get("message") == "审稿改稿完成"
+    )
+    outputs = completion_event["artifact"]["outputs"]
+    safety_report = safety_results[0]["result"]["report"]
+    for key in (
+        "reason",
+        "original_score",
+        "candidate_score",
+        "original_issue_count",
+        "candidate_issue_count",
+    ):
+        assert outputs[key] == safety_report[key]
 
     plan_event = next(
         (entry for entry in dict_steps if str(entry.get("message", "")).startswith("剧情计划生成中")),

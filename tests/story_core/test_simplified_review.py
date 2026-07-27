@@ -87,7 +87,44 @@ def test_simplified_review_deduplicates_and_limits_main_issues():
     assert len(report["issues"]) == 3
     assert [item["message"] for item in report["issues"]].count("对话不够自然。") == 1
     assert len(report["revision_plan"]) <= 3
-    assert report["revision_plan"][0].startswith("对话不够自然")
+    assert report["revision_plan"] == [item["suggestion"] for item in report["issues"]]
+
+
+def test_simplified_review_preserves_issue_action_pairs_when_categories_reorder():
+    report = build_simplified_review(
+        {
+            "writing_review": {
+                "issues": ["对话不够自然。", "设定冲突：规划实体写错。"],
+                "revision_plan": ["修对白。", "修规划词。"],
+            }
+        }
+    )
+
+    assert [
+        (item["message"], item["suggestion"])
+        for item in report["issues"]
+    ] == [
+        ("设定冲突：规划实体写错。", "修规划词。"),
+        ("对话不够自然。", "修对白。"),
+    ]
+    assert report["revision_plan"] == ["修规划词。", "修对白。"]
+
+
+def test_simplified_review_prefers_suggestion_embedded_in_issue():
+    report = build_simplified_review(
+        {
+            "issues": [
+                {
+                    "message": "人物状态与上一章冲突。",
+                    "suggestion": "恢复上一章已经确认的人物状态。",
+                }
+            ],
+            "revision_plan": ["不应覆盖 issue 自带建议。"],
+        }
+    )
+
+    assert report["issues"][0]["suggestion"] == "恢复上一章已经确认的人物状态。"
+    assert report["revision_plan"] == ["恢复上一章已经确认的人物状态。"]
 
 
 def test_simplified_review_exposes_one_consolidated_status():

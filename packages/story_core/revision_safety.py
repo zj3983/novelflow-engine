@@ -83,13 +83,10 @@ def choose_best_revision(
     )
     original_issue_count = _review_issue_count(original_quality)
     candidate_issue_count = _review_issue_count(candidate_quality)
-    if original_in_preferred_range and not candidate_passed and not 4200 <= candidate_chars <= 5500:
-        forced_reject_reason = "failed_candidate_left_preferred_length"
-        candidate_score -= 120.0
-    elif not original_passed and not candidate_passed and candidate_issue_count >= original_issue_count:
-        forced_reject_reason = "failed_candidate_did_not_reduce_issues"
-        candidate_score -= 120.0
-    elif original_chars >= 1000 and candidate_chars < original_chars * 0.65:
+    original_has_hard_errors = bool(_as_dict(original_quality).get("has_hard_errors"))
+    candidate_has_hard_errors = bool(_as_dict(candidate_quality).get("has_hard_errors"))
+    hard_errors_resolved = original_has_hard_errors and not candidate_has_hard_errors
+    if original_chars >= 1000 and candidate_chars < original_chars * 0.65:
         forced_reject_reason = "candidate_severely_shorter"
         candidate_score -= 80.0
     elif original_chars >= 3900 and candidate_chars < 3900:
@@ -98,12 +95,21 @@ def choose_best_revision(
     elif original_chars >= 3900 and candidate_chars < original_chars * 0.75:
         forced_reject_reason = "candidate_shrank_too_much"
         candidate_score -= 80.0
-    accepted = not forced_reject_reason and candidate_score >= original_score + min_delta
+    elif original_in_preferred_range and not 4200 <= candidate_chars <= 5500:
+        forced_reject_reason = "failed_candidate_left_preferred_length"
+        candidate_score -= 120.0
+    elif not original_passed and not candidate_passed and candidate_issue_count >= original_issue_count and not hard_errors_resolved:
+        forced_reject_reason = "failed_candidate_did_not_reduce_issues"
+        candidate_score -= 120.0
+    accepted = not forced_reject_reason and (
+        hard_errors_resolved or candidate_score >= original_score + min_delta
+    )
+    accepted_reason = "hard_errors_resolved" if hard_errors_resolved else "candidate_not_worse"
     report = {
         "reviewer": "revision_safety/v1",
         "accepted": accepted,
         "selected": "candidate" if accepted else "original",
-        "reason": "candidate_not_worse" if accepted else (forced_reject_reason or "candidate_worse_than_original"),
+        "reason": accepted_reason if accepted else (forced_reject_reason or "candidate_worse_than_original"),
         "original_score": original_score,
         "candidate_score": round(candidate_score, 2),
         "min_delta": min_delta,
