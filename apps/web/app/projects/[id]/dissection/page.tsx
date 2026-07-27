@@ -7,6 +7,7 @@ import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceP
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import {
   type BookDissectionReport,
+  dissectFileProjectChapter,
   dissectReferenceText,
 } from "../../../../lib/api";
 
@@ -151,7 +152,7 @@ export default function DissectionPage() {
       const nextReport =
         mode === "reference"
           ? await dissectReferenceText({ text: referenceText, genre, focus })
-          : await dissectReferenceText({ text: chapterDetail?.body || "", genre: story?.genre || genre, focus });
+          : await dissectFileProjectChapter(project?.project_id || "", chapterNumber, chapterDetail?.body || "");
       setReport(nextReport);
     } catch (err) {
       if (err instanceof Error && err.message === "book_dissection_only_supports_file_projects") {

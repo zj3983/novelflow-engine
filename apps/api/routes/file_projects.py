@@ -98,6 +98,7 @@ class BookDissectionReferenceRequest(BaseModel):
 
 class BookDissectionChapterRequest(BaseModel):
     chapter_number: int | None = None
+    body: str | None = None
 
 
 class PromptTemplateUpdateRequest(BaseModel):
@@ -1076,7 +1077,9 @@ def init_file_project_routes() -> APIRouter:
     def dissect_file_project_chapter(project_id: str, payload: BookDissectionChapterRequest) -> dict[str, Any]:
         store = _store_for(project_id)
         try:
-            chapter = store.chapter(payload.chapter_number)
+            chapter = dict(store.chapter(payload.chapter_number))
+            if payload.body is not None:
+                chapter["body"] = payload.body
             return diagnose_project_chapter({"project": store.project(), "state": store.state()}, chapter)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

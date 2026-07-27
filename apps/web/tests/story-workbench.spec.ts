@@ -1586,17 +1586,14 @@ test("dissection reference mode does not prefetch project chapter detail", async
 test("dissection project mode analyzes exactly the selected detail body", async ({ page }) => {
   const calls: string[] = [];
   const { encodedId } = await routeCurrentFileProject(page, "dissection-project", { calls });
-  let dissectionPayload: { text?: string; genre?: string; focus?: string } | null = null;
-  await page.route("**/book-dissection/reference", async (route) => {
+  let dissectionPayload: { chapter_number?: number; body?: string } | null = null;
+  await page.route(`**/file-projects/${encodedId}/book-dissection/chapter`, async (route) => {
     dissectionPayload = route.request().postDataJSON() as typeof dissectionPayload;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ summary: "本章推进有效。", sections: {} }),
+      body: JSON.stringify({ schema_version: "book-dissection/v1", mode: "project", summary: "本章推进有效。", sections: {} }),
     });
-  });
-  await page.route(`**/file-projects/${encodedId}/book-dissection/chapter`, async (route) => {
-    throw new Error(`legacy project dissection requested: ${route.request().url()}`);
   });
 
   await page.goto(`/projects/${encodedId}/dissection`);
@@ -1604,9 +1601,8 @@ test("dissection project mode analyzes exactly the selected detail body", async 
   await expect.poll(() => calls.filter((path) => path.includes("/chapters/")).length).toBe(1);
   await page.getByRole("button", { name: "开始分析" }).click();
   await expect.poll(() => dissectionPayload).toMatchObject({
-    text: "林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。",
-    genre: "网游",
-    focus: "爽点和对话",
+    chapter_number: 1,
+    body: "林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。",
   });
 });
 
@@ -1735,7 +1731,7 @@ test("file project outline edits three levels and runs outline generation", asyn
       }),
     });
   });
-  await page.route("**/file-stories/file%3Aoutline-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Aoutline-fixture/overview", async (route) => {
     const runtimeEntry = { source: "idle", provider: "", model: "", fallback_reason: "", last_run_chapter: 0 };
     await route.fulfill({
       status: 200,
@@ -1872,7 +1868,7 @@ test("concrete character card shows and saves factual profile fields", async ({ 
   await page.route("**/file-projects/file%3Acharacter-fixture", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  await page.route("**/file-stories/file%3Acharacter-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Acharacter-fixture/overview", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       story_id: "file:character-fixture", outline: "祖祠旧案", genre: "玄幻", style: "白描", current_chapter: 1,
       agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
@@ -1937,7 +1933,7 @@ test("relationship workspace defaults to protagonist and saves the canonical gra
       chapters: [{ chapter_number: 2, title: "当面对质", goal: "查账", obstacle: "赵衡阻拦", action: "林照拿出证据", turn: "周满改口", payoff: "拿到名册", ending_hook: "幕后人现身", cast: ["林照", "赵衡"] }],
     }) });
   });
-  await page.route("**/file-stories/file%3Arelationship-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Arelationship-fixture/overview", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       story_id: "file:relationship-fixture", current_chapter: 1, characters, history: [], world_facts: [], author_constraints: [], agent_runtime: { recent_events: [] },
     }) });
@@ -2465,7 +2461,7 @@ test("角色卡状态显示和编辑保存遵循网游插件", async ({ page }) 
   await page.route("**/file-projects/file%3Adual-state-fixture", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  await page.route("**/file-stories/file%3Adual-state-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Adual-state-fixture/overview", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       story_id: "file:dual-state-fixture", current_chapter: 3, characters: [character], history: [], world_facts: [], author_constraints: [], agent_runtime: { recent_events: [] },
       agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
@@ -2517,7 +2513,7 @@ test("非法状态 JSON 页面内报错且不发请求，非网游隐藏游戏�
   await page.route("**/file-projects/file%3Areal-state-fixture", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  await page.route("**/file-stories/file%3Areal-state-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Areal-state-fixture/overview", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       story_id: "file:real-state-fixture", current_chapter: 1, characters: [character], history: [], world_facts: [], author_constraints: [], agent_runtime: { recent_events: [] },
       agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
@@ -2556,7 +2552,7 @@ test("网游角色卡兼容仅有旧游戏面板的角色状态", async ({ page 
   await page.route("**/file-projects/file%3Alegacy-panel-fixture", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  await page.route("**/file-stories/file%3Alegacy-panel-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Alegacy-panel-fixture/overview", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       story_id: "file:legacy-panel-fixture", outline: "", genre: "game_webnovel", style: "升级流", current_chapter: 1,
       agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
@@ -2596,7 +2592,7 @@ test("非网游项目概览不读取旧游戏面板等级", async ({ page }) => 
   await page.route("**/file-projects/file%3Aoverview-real-fixture", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  await page.route("**/file-stories/file%3Aoverview-real-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Aoverview-real-fixture/overview", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       story_id: "file:overview-real-fixture", outline: "", genre: "xianxia", style: "白描", current_chapter: 1,
       agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
@@ -2635,7 +2631,7 @@ test("世界观页面显示并编辑怪物图鉴", async ({ page }) => {
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  await page.route("**/file-stories/file%3Amonster-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Amonster-fixture/overview", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       story_id: "file:monster-fixture", outline: "", genre: "网游", style: "白描", current_chapter: 1,
       agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
@@ -2716,7 +2712,7 @@ async function mockWorldPowerPage(
   await page.route(`**/file-projects/${encodedId}`, async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  await page.route(`**/file-stories/${encodedId}`, async (route) => {
+  await page.route(`**/file-stories/${encodedId}/overview`, async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       story_id: `file:${id}`,
       outline: "",
@@ -2848,7 +2844,7 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
     completedProjectGetCount += 1;
   });
-  await page.route("**/file-stories/file%3Aworld-page-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Aworld-page-fixture/overview", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       story_id: "file:world-page-fixture", outline: "", genre: "网游", style: "白描", current_chapter: 1,
       agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
@@ -2988,7 +2984,7 @@ test("世界观并发保存使用局部蓝图且跨编辑器更新互不覆盖",
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  await page.route("**/file-stories/file%3Aworld-concurrent-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Aworld-concurrent-fixture/overview", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       story_id: "file:world-concurrent-fixture", outline: "", genre: "网游", style: "白描", current_chapter: 1,
       agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
@@ -3051,7 +3047,7 @@ test("项目加载成功但故事加载失败时仍显示项目并报告故事�
   await page.route("**/file-projects/file%3Astory-failure-fixture", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  await page.route("**/file-stories/file%3Amissing-story", async (route) => {
+  await page.route("**/file-stories/file%3Amissing-story/overview", async (route) => {
     storyRequestStarted = true;
     await storyGate;
     await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "story_failed" }) });
@@ -3118,7 +3114,7 @@ test("项目文风可以选择也可以清空", async ({ page }) => {
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
-  await page.route("**/file-stories/file%3Astyle-settings-fixture", async (route) => {
+  await page.route("**/file-stories/file%3Astyle-settings-fixture/overview", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",

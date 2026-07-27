@@ -2738,6 +2738,7 @@ export async function dissectReferenceText(payload: {
 export async function dissectFileProjectChapter(
   projectId: string,
   chapterNumber?: number,
+  body?: string,
 ): Promise<BookDissectionReport> {
   if (!isFileProjectId(projectId)) {
     throw new Error("book_dissection_only_supports_file_projects");
@@ -2745,7 +2746,7 @@ export async function dissectFileProjectChapter(
   return (await tryFetchJson(`${fileProjectPath(projectId)}/book-dissection/chapter`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chapter_number: chapterNumber }),
+    body: JSON.stringify({ chapter_number: chapterNumber, ...(body === undefined ? {} : { body }) }),
   })) as BookDissectionReport;
 }
 
