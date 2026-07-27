@@ -7081,6 +7081,7 @@ class StoryOrchestrator:
             )
             outline_anchor = chapter_seed.get("outline_anchor") if isinstance(chapter_seed, dict) else {}
             best_acceptable_body = ""
+            rebalanced_attempted = False
             for compress_round in range(1, 2):
                 if not _should_compress_chapter(body):
                     break
@@ -7125,7 +7126,101 @@ class StoryOrchestrator:
                 quality_preserved = _compression_review_not_worse(writing_review, candidate_review)
                 before_issue_count = len((writing_review or {}).get("issues", []))
                 candidate_issues = list((candidate_review or {}).get("issues", []))
-                if _chapter_body_is_hard_length_acceptable(candidate_body) and quality_preserved:
+                candidate_action = _compression_candidate_action(before_body, candidate_body)
+                if (
+                    not rebalanced_attempted
+                    and candidate_action == "retry"
+                    and CHAPTER_HARD_MIN_CHARS <= candidate_chars < MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE
+                ):
+                    rebalanced_attempted = True
+                    short_candidate_chars = candidate_chars
+                    self._emit_progress_with_artifact(
+                        "章节压缩回补中...",
+                        "chapter_compress",
+                        source="writer",
+                        used_modules=["writer_agent", "writing_taskbook", "prose_quality_review"],
+                        reason="压缩候选达到硬下限但低于正常篇幅，条件式回补已有场景",
+                        inputs={
+                            "chapter_number": chapter_number,
+                            "before_chars": _chapter_char_count(before_body),
+                            "short_candidate_chars": candidate_chars,
+                        },
+                    )
+                    rebalanced_text, rebalanced_error = self._timed_chat(
+                        working_story,
+                        _render_expansion_length_prompt(
+                            source_body=candidate_body,
+                            game_context=game_context,
+                            allow_trade_payoff=allow_trade_payoff,
+                        ),
+                        max_tokens=7000,
+                        json_mode=False,
+                        agent="writer",
+                        stage=f"章节压缩回补 第{chapter_number}章",
+                        timeout_seconds=_expansion_timeout_seconds(),
+                    )
+                    rebalanced_chars = 0
+                    rebalanced_quality_preserved = False
+                    rebalanced_accepted = False
+                    rebalanced_issue_count = None
+                    if not rebalanced_error and rebalanced_text.strip():
+                        rebalanced_body = _sanitize_chapter_output(
+                            rebalanced_text,
+                            chapter_number=chapter_number,
+                            scene_cards=scene_cards,
+                            game_story=game_context,
+                        )
+                        rebalanced_body = _repair_outline_amount_anchors(
+                            rebalanced_body,
+                            chapter_seed.get("outline_anchor"),
+                        )
+                        rebalanced_chars = _chapter_char_count(rebalanced_body)
+                        rebalanced_review = _review_chapter_body(
+                            chapter_number,
+                            rebalanced_body,
+                            event_plan,
+                            _review_context_facts(story),
+                            simulation_plan,
+                            world_events,
+                            scene_cards,
+                            genre_context=_story_review_genre_context(story),
+                        )
+                        rebalanced_issues = list((rebalanced_review or {}).get("issues", []))
+                        rebalanced_issue_count = len(rebalanced_issues)
+                        rebalanced_quality_preserved = _compression_review_not_worse(
+                            writing_review,
+                            rebalanced_review,
+                        )
+                        rebalanced_accepted = (
+                            _rebalanced_body_is_acceptable(candidate_body, rebalanced_body)
+                            and rebalanced_chars < _chapter_char_count(before_body)
+                            and rebalanced_quality_preserved
+                        )
+                        if rebalanced_accepted:
+                            candidate_body = rebalanced_body
+                            candidate_review = rebalanced_review
+                            candidate_chars = rebalanced_chars
+                            candidate_issues = rebalanced_issues
+                            quality_preserved = rebalanced_quality_preserved
+                            candidate_action = _compression_candidate_action(before_body, candidate_body)
+                    self._emit_progress_with_artifact(
+                        "章节压缩回补完成",
+                        "chapter_compress",
+                        source="writer",
+                        used_modules=["writer_agent", "writing_taskbook", "prose_quality_review"],
+                        reason="回补只在恢复正常篇幅且审稿质量不恶化时采用",
+                        inputs={"chapter_number": chapter_number},
+                        outputs={
+                            "before_chars": _chapter_char_count(before_body),
+                            "short_candidate_chars": short_candidate_chars,
+                            "rebalanced_chars": rebalanced_chars,
+                            "quality_preserved": rebalanced_quality_preserved,
+                            "accepted": rebalanced_accepted,
+                            "issue_count": rebalanced_issue_count,
+                            "error": rebalanced_error or "",
+                        },
+                    )
+                if _compressed_body_is_acceptable(before_body, candidate_body) and quality_preserved:
                     target_midpoint = (MIN_CHAPTER_CHARS + MAX_CHAPTER_CHARS) // 2
                     if not best_acceptable_body or abs(candidate_chars - target_midpoint) < abs(
                         _chapter_char_count(best_acceptable_body) - target_midpoint
@@ -7149,7 +7244,6 @@ class StoryOrchestrator:
                 )
                 if not quality_preserved:
                     break
-                candidate_action = _compression_candidate_action(before_body, candidate_body)
                 if candidate_action in {"retry", "reject"}:
                     break
                 body = candidate_body
