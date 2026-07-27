@@ -6752,11 +6752,11 @@ class StoryOrchestrator:
                 outputs={"error": str(exc)},
             )
             return _failed_bundle(working_story, chapter_number, f"outline_plan_parse_failed:{exc}")
-        director_issues = (
-            _director_plan_quality_issues(working_story, plan)
-            if planning_source == "model_fallback"
-            else []
-        )
+        director_issues = _director_plan_quality_issues(working_story, plan)
+        if planning_source == "outline":
+            director_issues = [
+                issue for issue in director_issues if "attribute_allocation_decision" in issue
+            ]
         if director_issues:
             self._emit_progress_with_artifact(
                 "章节规划未通过，定向重做中...",
@@ -6766,6 +6766,8 @@ class StoryOrchestrator:
                 reason="章节规划存在硬性结构或连续性错误，禁止交给写手",
                 inputs={"issues": director_issues, "rejected_plan": plan},
             )
+            if not director_prompt:
+                director_prompt = self._plan_prompt(working_story, chapter_number, director_context)
             retry_text, retry_error = self._timed_chat(
                 working_story,
                 _director_revision_prompt(director_prompt, plan, director_issues),

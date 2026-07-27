@@ -319,6 +319,16 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
     assert "猎人专精" in ranger_text
     assert spec["attribute_allocation"]["base_attributes"] == BASE_ATTRIBUTES
 
+    first_outline_chapter = migrated_outline["chapters"][0]
+    assert first_outline_chapter["chapter_number"] == 1
+    assert first_outline_chapter["level_target"] == "Lv.2"
+    assert first_outline_chapter["attribute_allocation_decision"] == {
+        "mode": "allocate",
+        "allocations": {"智力": 5},
+        "remaining": 0,
+        "reason": "强化基础火球术",
+    }
+
     assert "职业专精节点" in migrated_outline["chapters"][0]["goal"]
     assert "第二次职业进阶" not in json.dumps(migrated_outline, ensure_ascii=False)
     assert migrated_outline["arcs"][0]["goal"] == "夜烬在Lv.10完成元素法师，并进入主城。"

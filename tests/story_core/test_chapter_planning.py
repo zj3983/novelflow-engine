@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.chapter_planning import build_outline_chapter_plan
 
 
@@ -98,3 +100,51 @@ def test_outline_attribute_decision_is_handed_to_event_plan() -> None:
     plan = build_outline_chapter_plan(context, 2)
 
     assert plan["event_plan"]["attribute_allocation_decision"]["allocations"] == {"智力": 5}
+
+
+def test_outline_structured_progression_is_handed_to_event_plan() -> None:
+    progression = {"from": "Lv.1", "to": "Lv.2", "reason": "quest reward"}
+    context = {
+        "project_snapshot": {
+            "outline_context": {
+                "chapter": {
+                    "chapter_number": 1,
+                    "goal": "Complete the starter quest.",
+                    "action": "Turn in the quest and level up.",
+                    "level_target": "Lv.2",
+                    "level_change": {"from": "Lv.1", "to": "Lv.2"},
+                    "progression": progression,
+                }
+            }
+        }
+    }
+
+    plan = build_outline_chapter_plan(context, 1)
+
+    assert plan["event_plan"]["level_target"] == "Lv.2"
+    assert plan["event_plan"]["level_change"] == {"from": "Lv.1", "to": "Lv.2"}
+    assert plan["event_plan"]["progression"] == progression
+    assert plan["event_plan"]["attribute_allocation_level_target"] == 2
+
+
+@pytest.mark.parametrize(
+    "progression_field",
+    [
+        {"level_change": {"from": "Lv.1", "to": "Lv.2"}},
+        {"progression": {"previous_level": "Lv.1", "target_level": "Lv.2"}},
+    ],
+)
+def test_outline_nested_progression_produces_level_target(progression_field: dict) -> None:
+    chapter = {
+        "chapter_number": 1,
+        "goal": "Complete the starter quest.",
+        "action": "Turn in the quest.",
+        **progression_field,
+    }
+
+    plan = build_outline_chapter_plan(
+        {"project_snapshot": {"outline_context": {"chapter": chapter}}},
+        1,
+    )
+
+    assert plan["event_plan"]["attribute_allocation_level_target"] == 2

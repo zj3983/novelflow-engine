@@ -316,6 +316,33 @@ def _migrate_chapter_nine_outline(value: Any) -> tuple[Any, bool]:
     return migrated, changed
 
 
+def _migrate_first_chapter_outline(value: Any, *, points_per_level: int) -> tuple[Any, bool]:
+    if not isinstance(value, dict) or not isinstance(value.get("chapters"), list):
+        return value, False
+    chapters = value["chapters"]
+    first_index = next(
+        (index for index, chapter in enumerate(chapters) if isinstance(chapter, dict) and _chapter_number(chapter.get("chapter_number")) == 1),
+        0,
+    )
+    if first_index >= len(chapters) or not isinstance(chapters[first_index], dict):
+        return value, False
+    migrated = deepcopy(value)
+    chapter = migrated["chapters"][first_index]
+    updates = {
+        "chapter_number": 1,
+        "level_target": "Lv.2",
+        "attribute_allocation_decision": {
+            "mode": "allocate",
+            "allocations": {"智力": points_per_level},
+            "remaining": 0,
+            "reason": _ATTRIBUTE_ALLOCATION_REASON,
+        },
+    }
+    changed = any(chapter.get(key) != item for key, item in updates.items())
+    chapter.update(deepcopy(updates))
+    return migrated, changed
+
+
 def _chapter_nine_detail_block(text: str) -> str:
     lines = text.splitlines(keepends=True)
     in_chapter_nine = False
@@ -958,7 +985,11 @@ def upgrade_project(
         migrated_outline, chapter_nine_changed = _migrate_chapter_nine_outline(
             migrated_outline
         )
-        outline_changed = outline_changed or chapter_nine_changed
+        migrated_outline, first_chapter_changed = _migrate_first_chapter_outline(
+            migrated_outline,
+            points_per_level=spec["attribute_allocation"]["points_per_level"],
+        )
+        outline_changed = outline_changed or chapter_nine_changed or first_chapter_changed
         migrated_state, state_changed = _migrate_state(state, spec)
         expected_chapter_bytes, chapter_changed = _migrate_first_chapter(chapter_bytes)
         workbench_chapter_path: Path | None = None

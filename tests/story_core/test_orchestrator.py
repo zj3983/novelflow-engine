@@ -482,6 +482,148 @@ def test_actionable_chapter_outline_skips_planner_model(monkeypatch):
     assert bundle.event_plan["chapter_satisfaction"]["visible_payoff"] == "提交任务并升到二级"
 
 
+def test_outline_level_up_without_attribute_decision_is_completed_before_writer(monkeypatch):
+    story = StoryState(
+        story_id="s-outline-attribute-gate",
+        outline="Lin completes the starter quest.",
+        outline_context={
+            "chapter": {
+                "chapter_number": 1,
+                "title": "First Level",
+                "goal": "Complete the starter quest.",
+                "obstacle": "The gate is guarded.",
+                "action": "Lin turns in the quest.",
+                "turn": "The reward raises Lin's level.",
+                "payoff": "Lin reaches Lv.2.",
+                "ending_hook": "A new route opens.",
+                "level_target": "Lv.2",
+                "cast": ["Lin"],
+            }
+        },
+        genre="fantasy",
+        style="plain",
+        characters=[CharacterState(name="Lin", role="protagonist")],
+        progression_ledger={"protagonist": {"level": "Lv.1", "unallocated_attribute_points": 0}},
+        world_context={
+            "power_system_spec": {
+                "attribute_allocation": {
+                    "mode": "free",
+                    "points_per_level": 5,
+                    "starting_level": 1,
+                    "base_attributes": {"Intelligence": 5, "Constitution": 5},
+                    "allow_carry": True,
+                    "respec_rule": "Respec in town.",
+                }
+            }
+        },
+    )
+    revised_plan = {
+        "character_moves": [{"name": "Lin", "action": "Allocate the level reward."}],
+        "chapter_intent": {"chapter_title": "First Level"},
+        "event_plan": {
+            "ordered_actions": ["Lin allocates the level reward."],
+            "attribute_allocation_level_target": 2,
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"Intelligence": 5},
+                "remaining": 0,
+            },
+            "chapter_satisfaction": {
+                "core_event": "Lin turns in the starter quest.",
+                "obstacle": "The gate is guarded.",
+                "visible_payoff": "Lin reaches Lv.2.",
+                "cost": "The route is now known to rivals.",
+                "state_change": "Lin allocates five attribute points.",
+                "next_hook": "A new route opens.",
+            },
+            "chapter_end_hook": {"type": "reveal", "strength": "medium", "content": "A new route opens."},
+        },
+        "memory_constraints": {},
+    }
+    orchestrator = StoryOrchestrator()
+    calls: list[str] = []
+
+    def fake_timed_chat(_story, _prompt, *, agent, **_kwargs):
+        calls.append(agent)
+        if agent == "planner":
+            return json.dumps(revised_plan), ""
+        if agent == "writer":
+            return "", "writer stopped after gate observation"
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    orchestrator.generate_next_chapter(story)
+
+    assert calls[:2] == ["planner", "writer"]
+
+
+def test_outline_level_up_with_valid_attribute_decision_reaches_writer_unchanged(monkeypatch):
+    decision = {
+        "mode": "allocate",
+        "allocations": {"Intelligence": 5},
+        "remaining": 0,
+        "reason": "Strengthen the starter spell.",
+    }
+    story = StoryState(
+        story_id="s-outline-valid-attribute-decision",
+        outline="Lin completes the starter quest.",
+        outline_context={
+            "chapter": {
+                "chapter_number": 1,
+                "title": "First Level",
+                "goal": "Complete the starter quest.",
+                "action": "Lin turns in the quest.",
+                "payoff": "Lin reaches Lv.2.",
+                "ending_hook": "A new route opens.",
+                "level_target": "Lv.2",
+                "attribute_allocation_decision": decision,
+                "cast": ["Lin"],
+            }
+        },
+        genre="fantasy",
+        style="plain",
+        characters=[CharacterState(name="Lin", role="protagonist")],
+        progression_ledger={"protagonist": {"level": "Lv.1", "unallocated_attribute_points": 0}},
+        world_context={
+            "power_system_spec": {
+                "attribute_allocation": {
+                    "mode": "free",
+                    "points_per_level": 5,
+                    "starting_level": 1,
+                    "base_attributes": {"Intelligence": 5},
+                    "allow_carry": True,
+                    "respec_rule": "Respec in town.",
+                }
+            }
+        },
+    )
+    orchestrator = StoryOrchestrator()
+    calls: list[str] = []
+    captured: dict = {}
+    original_body_prompt = orchestrator._body_prompt
+
+    def capture_body_prompt(story, chapter_number, plan):
+        captured["decision"] = plan["event_plan"]["attribute_allocation_decision"]
+        return original_body_prompt(story, chapter_number, plan)
+
+    def fake_timed_chat(_story, prompt, *, agent, **_kwargs):
+        calls.append(agent)
+        if agent == "planner":
+            raise AssertionError("a valid outline decision must not be regenerated")
+        if agent == "writer":
+            return "", "writer stopped after plan observation"
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_body_prompt", capture_body_prompt)
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    orchestrator.generate_next_chapter(story)
+
+    assert calls == ["writer"]
+    assert captured["decision"] == decision
+
+
 def test_writer_request_failure_is_preserved_in_failed_bundle(monkeypatch):
     story = StoryState(
         story_id="s-writer-request-failure",

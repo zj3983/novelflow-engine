@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
+
+from packages.story_core.attribute_allocation import parse_level
 
 
 def _text(value: Any) -> str:
@@ -18,6 +21,16 @@ def _chapter_outline(director_context: Any) -> dict[str, Any]:
         return {}
     chapter = outline_context.get("chapter")
     return chapter if isinstance(chapter, dict) else {}
+
+
+def _structured_level_target(chapter: dict[str, Any]) -> int | None:
+    candidates: list[Any] = [chapter.get("level_target"), chapter.get("level")]
+    for field in ("level_change", "progression"):
+        value = chapter.get(field)
+        if isinstance(value, dict):
+            candidates.extend(value.get(key) for key in ("target_level", "level_target", "to", "level"))
+    levels = [level for value in candidates if (level := parse_level(value)) is not None]
+    return max(levels) if levels else None
 
 
 def build_outline_chapter_plan(
@@ -91,7 +104,12 @@ def build_outline_chapter_plan(
     }
     decision = chapter.get("attribute_allocation_decision")
     if isinstance(decision, dict):
-        event_plan["attribute_allocation_decision"] = decision
+        event_plan["attribute_allocation_decision"] = deepcopy(decision)
+    for field in ("level_target", "level_change", "progression", "level", "state_delta"):
+        if field in chapter:
+            event_plan[field] = deepcopy(chapter[field])
+    if (level_target := _structured_level_target(chapter)) is not None:
+        event_plan["attribute_allocation_level_target"] = level_target
     return {
         "planning_source": "outline",
         "character_moves": character_moves,
