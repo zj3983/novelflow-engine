@@ -66,6 +66,9 @@ def test_review_allows_vr_prose_that_reads_a_task_requirement():
         "隐藏职业让他绕过任务前置条件，直接进入副本。",
         "隐藏职业让他跨过任务前置条件，直接进入副本。",
         "隐藏职业让他跨过任务前置条件进入副本。",
+        "跨出前置条件满足。",
+        "跨出前置条件满足后的第一步。",
+        "跨出任务前置条件说明后的第一步。",
         "迈出前置条件满足后的第一步。",
         "迈出前置条件后的第一步。",
         "推开前置条件后面的木门。",
@@ -202,6 +205,28 @@ def test_review_flags_planning_language_materialized_as_an_action_target():
 )
 def test_review_flags_crossing_out_of_planning_meta_as_a_physical_action(phrase):
     review = review_critical_prose_rules(f"周满{phrase}，又回过头。")
+
+    assert review["scores"]["planning_meta_leak"] == 5
+    assert review["severity_summary"]["has_hard_violation"] is True
+    assert any(phrase in issue for issue in review["hard_issues"])
+
+
+@pytest.mark.parametrize(
+    "continued_action",
+    [
+        "进入副本",
+        "走向石门",
+        "来到殿外",
+        "回到原地",
+        "继续前进",
+        "又回过头",
+        "再往前走",
+        "并关上门",
+    ],
+)
+def test_review_flags_crossing_out_of_planning_meta_before_a_continued_action(continued_action):
+    phrase = "跨出任务前置条件"
+    review = review_critical_prose_rules(f"隐藏职业让他{phrase}{continued_action}。")
 
     assert review["scores"]["planning_meta_leak"] == 5
     assert review["severity_summary"]["has_hard_violation"] is True
