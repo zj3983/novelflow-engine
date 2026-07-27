@@ -271,7 +271,13 @@ def normalize_novel_type_ids(value: Any) -> list[str]:
 
 
 def normalize_novel_type_id(value: Any) -> str:
-    return resolve_novel_type_id(value)
+    plugin_id = resolve_novel_type_id(value)
+    if plugin_id:
+        return plugin_id
+    genre = str(value or "").strip()
+    if genre.endswith("文"):
+        return resolve_novel_type_id(genre[:-1])
+    return ""
 
 
 def runtime_novel_type(value: Any) -> Any:

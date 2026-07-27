@@ -35,8 +35,7 @@ from packages.story_core.dual_state import (
     project_character_for_scene,
     scene_kind_for_cards,
 )
-from packages.story_core.genre_plugins import select_genre_plugins
-from packages.story_core.models import CharacterState, NovelProject, StoryState
+from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.novel_type_catalog import (
     normalize_novel_type_ids,
     novel_type_prompt_context,
@@ -2898,19 +2897,11 @@ class FileProjectStore:
             raw_state_types = [raw_state_types]
         if any(is_game_alias(item) for item in (raw_state_types if isinstance(raw_state_types, list) else [])):
             return True
-        if is_game_alias(state.get("genre")):
-            return True
-        try:
-            project_model = NovelProject.model_validate(project)
-        except Exception:
-            project_model = None
-        if project_model is not None and any(
-            plugin.plugin_id == "game_webnovel" for plugin in select_genre_plugins(project_model)
-        ):
-            return True
         state_ids = normalize_novel_type_ids(state.get("genre_plugin_ids"))
         if state_ids:
             return "game_webnovel" in state_ids
+        if is_game_alias(state.get("genre")):
+            return True
         return "game_webnovel" in normalize_novel_type_ids(state.get("genre"))
 
     def project(self) -> dict[str, Any]:

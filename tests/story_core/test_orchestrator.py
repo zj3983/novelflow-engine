@@ -583,6 +583,13 @@ def _reviewable_body(text: str) -> str:
             ("游戏账本", "面板反馈"),
             (),
         ),
+        (
+            "",
+            [],
+            "网游里登录游戏后，主角查看游戏ID、交易行、爆率、掉落、背包、玩家和公会。",
+            ("剧情事实", "世界规则", "核心冲突", "人物反应", "关键线索", "代价", "转折"),
+            ("游戏账本", "面板反馈"),
+        ),
     ],
 )
 def test_runtime_compression_prompt_is_isolated_by_genre(
@@ -601,7 +608,7 @@ def test_runtime_compression_prompt_is_isolated_by_genre(
     )
     initial_unit = (
         "林照登录游戏后看见背包掉落异常。"
-        if genre_plugin_ids == ["xuanhuan"]
+        if genre_plugin_ids != ["game_webnovel"]
         else "林照守住断香炉，逼周执事先开口。"
     )
     initial_body = (initial_unit * 500)[:5836]
@@ -679,10 +686,11 @@ def test_story_game_context_prefers_normalized_plugin_ids_over_text_fallback():
     assert _story_game_context(non_game_story) is False
     assert _story_game_context(game_genre_story) is True
     assert _story_game_context(non_game_genre_story) is False
-    assert _story_game_context(fallback_game_story) is True
+    assert _story_game_context(fallback_game_story) is False
 
 
-def test_runtime_expansion_prompt_uses_non_game_scope_for_explicit_xuanhuan(monkeypatch):
+@pytest.mark.parametrize("genre_plugin_ids", [["xuanhuan"], []])
+def test_runtime_expansion_prompt_uses_non_game_scope_without_game_id(monkeypatch, genre_plugin_ids):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
@@ -693,10 +701,10 @@ def test_runtime_expansion_prompt_uses_non_game_scope_for_explicit_xuanhuan(monk
     initial_body = "林照登录游戏后看见背包掉落异常。" * 30
     expanded_body = _reviewable_body("林照守住断香炉，逼周执事先开口。")
     story = StoryState(
-        story_id="s-expansion-explicit-xuanhuan",
+        story_id=f"s-expansion-non-game-{'explicit' if genre_plugin_ids else 'untyped'}",
         outline="主角登录游戏，查看掉落、背包和任务面板。",
         genre="",
-        genre_plugin_ids=["xuanhuan"],
+        genre_plugin_ids=genre_plugin_ids,
         style="白描",
         current_chapter=1,
         characters=[CharacterState(name="林照", role="主角", location="祖祠")],

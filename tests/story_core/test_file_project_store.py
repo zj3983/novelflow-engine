@@ -3342,6 +3342,47 @@ def test_game_prompt_preview_uses_explicit_plugin_id_when_genre_is_empty(tmp_pat
     assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompts["compression"]
 
 
+def test_untyped_game_text_runtime_and_preview_default_to_generic(tmp_path):
+    game_text = "网游里登录游戏后，主角查看游戏ID、交易行、爆率、掉落、背包、玩家和公会。"
+    root = tmp_path / "untyped-game-text"
+    project = {
+        "project_id": "p-untyped",
+        "title": "Untyped Story",
+        "active_story_id": "s-untyped",
+        "seed_outline": game_text,
+        "world_summary": game_text,
+    }
+    state = {
+        "story_id": "s-untyped",
+        "outline": game_text,
+        "genre": "",
+        "genre_plugin_ids": [],
+        "style": "白描",
+        "current_chapter": 1,
+        "world_facts": [game_text],
+        "characters": [{"name": "林照", "role": "protagonist"}],
+    }
+    store = _make_minimal_file_project(root, project=project, state=state)
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "守炉",
+            "body": _long_test_body(game_text),
+            "event_plan": {"chapter_title": "守炉", "next_focus": "追查来信"},
+        },
+    )
+
+    preview = store.prompt_preview(1)
+
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+    assert store._is_game_story_payload(project, state) is False
+    assert "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。" in prompts["expansion"]
+    assert "核心冲突、人物反应、关键线索、代价、转折和下一步钩子" in prompts["compression"]
+    assert "游戏账本" not in prompts["compression"]
+    assert "面板反馈" not in prompts["compression"]
+
+
 def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module(tmp_path):
     root = tmp_path / "legacy-webgame"
     legacy_trade = "\u62c5\u4fdd\u4ea4\u6613"
