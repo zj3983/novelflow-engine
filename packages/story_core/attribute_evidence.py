@@ -52,6 +52,9 @@ _CLAUSE_START_RUO_PATTERN = re.compile(r"(?:^|[，,；;：:])\s*(?P<ruo>若)")
 _ASYMMETRIC_QUOTES = (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"))
 _POSITION_OWNER_NOUNS = ("面板", "界面", "提示", "窗口")
 _DISCOURSE_PREFIXES = ("此时", "随后", "这时", "只见")
+_SUBJECTLESS_STATUS_CLAUSE = re.compile(
+    r"(?:确认(?:完成)?|提示(?:消失)?|界面(?:消失|关闭)?|面板(?:消失|关闭)?|结算(?:完成)?|操作(?:完成)?)(?:后|之后|以后|时)$"
+)
 
 
 def parse_count(value: str) -> int | None:
@@ -470,7 +473,9 @@ def _owner_is_protagonist(sentence: str, owner_span: tuple[int, int], aliases: t
     if "，" not in prefix and "," not in prefix:
         return True
     preceding_clause = next((part.strip() for part in reversed(re.split(r"[，,]", prefix)) if part.strip()), "")
-    return any(alias in preceding_clause for alias in aliases)
+    return any(alias in preceding_clause for alias in aliases) or bool(
+        _SUBJECTLESS_STATUS_CLAUSE.fullmatch(_strip_discourse_prefix(preceding_clause))
+    )
 
 
 def _remaining_candidate_subject(
