@@ -4,7 +4,7 @@ const chapters = [
   { chapter_id: "chapter-1", number: 1, title: "雨夜入城", body: "沈砚在雨夜进入临川城。", source_name: "novel.txt", source_start: 0, source_end: 12, fingerprint: "fp-1" },
   { chapter_id: "chapter-2", number: 2, title: "旧友来信", body: "旧友来信，提到城北的失踪案。", source_name: "novel.txt", source_start: 13, source_end: 30, fingerprint: "fp-2" },
 ];
-const continuationApi = /^http:\/\/127\.0\.0\.1:8000\/continuation-imports(?:\/.*)?$/;
+const continuationApi = /^http:\/\/127\.0\.0\.1:\d+\/continuation-imports(?:\/.*)?$/;
 
 const scanResult = {
   source_path: "D:\\novels\\novel.txt",
