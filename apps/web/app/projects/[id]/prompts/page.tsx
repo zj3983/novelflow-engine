@@ -8,7 +8,6 @@ import { PromptContextView } from "../../../../components/prompts/PromptContextV
 import { PromptTemplatesView } from "../../../../components/prompts/PromptTemplatesView";
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
-import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 
 type PromptView = "templates" | "context" | "calls";
 
@@ -26,16 +25,10 @@ export default function PromptsPage() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { project, story, chapterIndex, error, encodedProjectId, projectId, refreshVersion } = useProjectWorkspace();
+  const { project, story, chapterIndex, error, encodedProjectId, projectId } = useProjectWorkspace();
   const activeView = promptView(searchParams?.get("view") ?? null);
   const requestedChapter = Number(searchParams?.get("chapter") || story?.current_chapter || chapterIndex.at(-1)?.chapter_number || 1);
   const selectedIndex = chapterIndex.find((entry) => entry.chapter_number === requestedChapter) ?? chapterIndex.at(-1) ?? null;
-  const { chapter: selectedChapter, error: chapterError } = useChapterDetail({
-    projectId,
-    story: story ?? null,
-    chapterNumber: requestedChapter,
-    refreshVersion,
-  });
   const targetChapter = selectedIndex?.chapter_number ?? requestedChapter;
 
   function switchView(view: PromptView) {
@@ -50,11 +43,10 @@ export default function PromptsPage() {
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
         title="提示词"
-        subtitle={selectedChapter?.chapter_title || "分别查看可编辑模板、本章动态上下文和真实模型调用。"}
+        subtitle={selectedIndex?.chapter_title || "分别查看可编辑模板、本章动态上下文和真实模型调用。"}
       />
 
       {error ? <p className="ws-inline-error" role="alert">项目加载失败：{error}</p> : null}
-      {chapterError ? <p className="ws-inline-error" role="alert">章节加载失败：{chapterError}</p> : null}
 
       <div className="ws-prompt-tabs" role="tablist" aria-label="提示词工作台视图">
         {VIEWS.map((view) => (

@@ -809,6 +809,8 @@ type CurrentFileProjectRouteOptions = {
   chapterCount?: number;
   detailDelays?: Record<number, number>;
   failChapters?: number[];
+  totalBodyChars?: number;
+  bodyCharsByChapter?: Record<number, number>;
 };
 
 async function routeCurrentFileProject(
@@ -847,11 +849,11 @@ async function routeCurrentFileProject(
     ...story,
     history: undefined,
     chapter_count: chapters.length,
-    total_body_chars: chapters.reduce((sum, chapter) => sum + chapter.body.replace(/\s+/g, "").length, 0),
+    total_body_chars: options.totalBodyChars ?? chapters.reduce((sum, chapter) => sum + chapter.body.replace(/\s+/g, "").length, 0),
     chapters: chapters.map((chapter) => ({
       chapter_number: chapter.chapter_number,
       chapter_title: chapter.chapter_title,
-      body_chars: chapter.body.replace(/\s+/g, "").length,
+      body_chars: options.bodyCharsByChapter?.[chapter.chapter_number] ?? chapter.body.replace(/\s+/g, "").length,
       summary: chapter.chapter_summary.summary,
       next_focus: chapter.next_outline,
       has_quality_report: true,
@@ -1480,11 +1482,11 @@ test("opening setup immediately replaces the route when GET is already selected"
 
 test("project overview foregrounds writing status and recent chapter history", async ({ page }) => {
   const calls: string[] = [];
-  const { encodedId } = await routeCurrentFileProject(page, "overview-status", { calls });
+  const { encodedId } = await routeCurrentFileProject(page, "overview-status", { calls, totalBodyChars: 4321 });
   await page.goto(`/projects/${encodedId}`, { waitUntil: "domcontentloaded" });
 
   await expect(page.getByRole("heading", { name: "灰狼坡纪事" })).toBeVisible();
-  await expect(page.getByText(/第 1 章 · \d+ 字 · 写作中/)).toBeVisible();
+  await expect(page.getByText("第 1 章 · 4,321 字 · 写作中", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "第 1 章 · 灰狼坡旧痕" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "世界响应" })).toBeVisible();
   await expect(page.getByText("循着铜牌查到临川商会。", { exact: true })).toBeVisible();
@@ -1493,11 +1495,12 @@ test("project overview foregrounds writing status and recent chapter history", a
 });
 
 test("write page shows current progress and core writing actions", async ({ page }) => {
-  const { encodedId } = await routeCurrentFileProject(page, "write-actions");
+  const { encodedId } = await routeCurrentFileProject(page, "write-actions", { bodyCharsByChapter: { 1: 9876 } });
   await page.goto(`/projects/${encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
 
   await expect(page.getByRole("heading", { name: "章节：第 1 章" })).toBeVisible();
   await expect(page.getByLabel("章节目录")).toContainText("1 章");
+  await expect(page.getByLabel("章节目录")).toContainText("9876 字");
   await expect(page.getByRole("button", { name: "生成下一章" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "重新生成本章" })).toBeEnabled();
 });
@@ -1514,20 +1517,20 @@ test("file workspace loads overview and one chapter without requesting the full 
   expect(calls).not.toContain("/file-stories/file%3Alazy-file-story");
 });
 
-test("write directory stays usable and ignores a stale chapter response", async ({ page }) => {
+test("write directory retains the visible body while the next chapter loads", async ({ page }) => {
   const calls: string[] = [];
   const { encodedId } = await routeCurrentFileProject(page, "stale-file-story", {
     calls,
     chapterCount: 2,
-    detailDelays: { 1: 600, 2: 20 },
+    detailDelays: { 2: 600 },
   });
 
   await page.goto(`/projects/${encodedId}/write?chapter=1`);
   await expect(page.getByLabel("章节目录")).toContainText("2 章");
+  await expect(page.getByText("林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: /第 2 章/ }).click();
+  await expect(page.getByText("林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "章节：第 2 章" })).toBeVisible();
-  await expect(page.getByText("第 2 章正文，只属于当前选择。")).toBeVisible();
-  await page.waitForTimeout(700);
   await expect(page.getByText("第 2 章正文，只属于当前选择。")).toBeVisible();
   await expect(page.getByText("林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。", { exact: true })).toHaveCount(0);
   expect(calls.filter((path) => path.endsWith("/chapters/1"))).toHaveLength(1);
@@ -1544,8 +1547,6 @@ test("write directory remains visible when chapter detail fails", async ({ page 
 
 for (const target of [
   { name: "review lazy chapter", path: "review?chapter=1", heading: "审稿：第 1 章" },
-  { name: "prompts lazy chapter", path: "prompts?chapter=1", heading: "提示词" },
-  { name: "dissection lazy chapter", path: "dissection", heading: "拆书" },
 ]) {
   test(`${target.name} loads only the selected detail`, async ({ page }) => {
     const calls: string[] = [];
@@ -1558,6 +1559,56 @@ for (const target of [
     expect(calls.some((path) => /^\/file-stories\/[^/]+$/.test(path))).toBe(false);
   });
 }
+
+test("prompts uses chapter index without requesting chapter detail", async ({ page }) => {
+  const calls: string[] = [];
+  const { encodedId } = await routeCurrentFileProject(page, "prompts-index-only", { calls });
+
+  await page.goto(`/projects/${encodedId}/prompts?chapter=1`);
+  await expect(page.getByRole("heading", { name: "提示词" })).toBeVisible();
+  await expect(page.locator(".ws-page__subtitle")).toHaveText("灰狼坡旧痕");
+  await page.getByRole("tab", { name: "上下文模块" }).click();
+  await expect(page.getByRole("tab", { name: "上下文模块" })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "实际调用" }).click();
+  await expect(page.getByRole("tab", { name: "实际调用" })).toHaveAttribute("aria-selected", "true");
+  expect(calls.filter((path) => path.includes("/chapters/"))).toHaveLength(0);
+});
+
+test("dissection reference mode does not prefetch project chapter detail", async ({ page }) => {
+  const calls: string[] = [];
+  const { encodedId } = await routeCurrentFileProject(page, "dissection-reference", { calls });
+
+  await page.goto(`/projects/${encodedId}/dissection`);
+  await expect(page.getByRole("heading", { name: "拆书" })).toBeVisible();
+  expect(calls.filter((path) => path.includes("/chapters/"))).toHaveLength(0);
+});
+
+test("dissection project mode analyzes exactly the selected detail body", async ({ page }) => {
+  const calls: string[] = [];
+  const { encodedId } = await routeCurrentFileProject(page, "dissection-project", { calls });
+  let dissectionPayload: { text?: string; genre?: string; focus?: string } | null = null;
+  await page.route("**/book-dissection/reference", async (route) => {
+    dissectionPayload = route.request().postDataJSON() as typeof dissectionPayload;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ summary: "本章推进有效。", sections: {} }),
+    });
+  });
+  await page.route(`**/file-projects/${encodedId}/book-dissection/chapter`, async (route) => {
+    throw new Error(`legacy project dissection requested: ${route.request().url()}`);
+  });
+
+  await page.goto(`/projects/${encodedId}/dissection`);
+  await page.getByRole("tab", { name: "本书体检" }).click();
+  await expect.poll(() => calls.filter((path) => path.includes("/chapters/")).length).toBe(1);
+  await page.getByRole("button", { name: "开始分析" }).click();
+  await expect.poll(() => dissectionPayload).toMatchObject({
+    text: "林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。",
+    genre: "网游",
+    focus: "爽点和对话",
+  });
+});
 
 test("simulation lazy chapter fetches only the newest simulated detail", async ({ page }) => {
   const calls: string[] = [];
@@ -1945,26 +1996,92 @@ test("existing novel continuation exposes a browsable source panel", async ({ pa
   await expect(page.getByRole("button", { name: /旧书正文\.txt/ })).toBeVisible({ timeout: 15_000 });
 });
 
-test("generated chapters surface in the current writing workspace", async ({ page }) => {
-  const { encodedId } = await routeCurrentFileProject(page, "generated-chapter");
-  await page.goto(`/projects/${encodedId}/write?chapter=1`);
+for (const generationCase of [
+  { name: "uses completed job chapter", jobChapter: 3, expectedChapter: 3 },
+  { name: "falls back to precomputed next chapter", jobChapter: null, expectedChapter: 2 },
+]) {
+  test(`generated chapter ${generationCase.name} and refreshes lazy data`, async ({ page }) => {
+    const calls: string[] = [];
+    const fixture = await routeCurrentFileProject(page, `generated-chapter-${generationCase.expectedChapter}`, { calls });
+    await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
+      const chapterNumber = generationCase.expectedChapter;
+      const generated = {
+        ...fixture.story.history[0],
+        chapter_number: chapterNumber,
+        chapter_title: `生成后的第 ${chapterNumber} 章`,
+        body: `GENERATED_CHAPTER_${chapterNumber}: 新线索已经出现。`,
+        chapter_summary: {
+          ...fixture.story.history[0].chapter_summary,
+          chapter_number: chapterNumber,
+          summary: `第 ${chapterNumber} 章生成完成。`,
+        },
+      };
+      fixture.story.history.push(generated);
+      fixture.story.current_chapter = chapterNumber;
+      fixture.overview.current_chapter = chapterNumber;
+      fixture.overview.chapter_count = fixture.story.history.length;
+      fixture.overview.total_body_chars += generated.body.replace(/\s+/g, "").length;
+      fixture.overview.chapters.push({
+        chapter_number: chapterNumber,
+        chapter_title: generated.chapter_title,
+        body_chars: generated.body.replace(/\s+/g, "").length,
+        summary: generated.chapter_summary.summary,
+        next_focus: generated.next_outline,
+        has_quality_report: true,
+        has_simulation: false,
+      });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          job_id: `job-generate-${chapterNumber}`,
+          story_id: fixture.projectId,
+          status: "completed",
+          progress: "已完成",
+          steps: [],
+          chapter_number: generationCase.jobChapter,
+          error: "",
+          created_at: "",
+          updated_at: "",
+        }),
+      });
+    });
 
-  await expect(page.locator(".ws-reader")).toContainText("灰狼坡旧痕");
-  await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
-  await expect(page.locator(".ws-reader__notes")).toContainText("章节摘要");
-  await expect(page.locator(".ws-reader__notes")).toContainText("下一章焦点");
-});
+    await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
+    await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
+    await page.getByRole("button", { name: "生成下一章" }).click();
+
+    await expect(page).toHaveURL(new RegExp(`chapter=${generationCase.expectedChapter}$`));
+    await expect(page.locator(".ws-reader__body")).toContainText(`GENERATED_CHAPTER_${generationCase.expectedChapter}`);
+    expect(calls.filter((path) => path.endsWith("/overview")).length).toBeGreaterThan(1);
+    expect(calls.some((path) => /^\/file-stories\/[^/]+$/.test(path))).toBe(false);
+    expect(calls.filter((path) => path.includes("/chapters/")).at(-1)).toContain(`/chapters/${generationCase.expectedChapter}`);
+  });
+}
 
 test("write page can regenerate the current file-project chapter", async ({ page }) => {
-  const fixture = await routeCurrentFileProject(page, "regenerate-chapter");
+  const calls: string[] = [];
+  const detailDelays: Record<number, number> = {};
+  const fixture = await routeCurrentFileProject(page, "regenerate-chapter", { calls, detailDelays });
   let regenerationPayload: Record<string, unknown> | null = null;
   await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
     regenerationPayload = route.request().postDataJSON() as Record<string, unknown>;
     fixture.story.history[0].body = "REGENERATED_CHAPTER: 商会规则和主角动机已经补全。";
+    detailDelays[1] = 600;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ job_id: "job-regenerate", status: "completed", progress: "已完成", steps: [] }),
+      body: JSON.stringify({
+        job_id: "job-regenerate",
+        story_id: fixture.projectId,
+        status: "completed",
+        progress: "已完成",
+        steps: [],
+        chapter_number: 1,
+        error: "",
+        created_at: "",
+        updated_at: "",
+      }),
     });
   });
   await page.route("**/projects/*/agent-revise", async (route) => {
@@ -2151,10 +2268,15 @@ test("write page can regenerate the current file-project chapter", async ({ page
   });
 
   await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
   await page.getByRole("button", { name: "重新生成本章" }).click();
 
   await expect.poll(() => regenerationPayload).toMatchObject({ chapter_number: 1 });
+  await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
   await expect(page.locator(".ws-reader__body")).toContainText("REGENERATED_CHAPTER");
+  expect(calls.filter((path) => path.endsWith("/overview")).length).toBeGreaterThan(1);
+  expect(calls.some((path) => /^\/file-stories\/[^/]+$/.test(path))).toBe(false);
+  expect(calls.filter((path) => path.includes("/chapters/")).at(-1)).toContain("/chapters/1");
 });
 
 test("write page accepts three-stage runtime state", async ({ page }) => {

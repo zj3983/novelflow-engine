@@ -7,7 +7,6 @@ import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceP
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import {
   type BookDissectionReport,
-  dissectFileProjectChapter,
   dissectReferenceText,
 } from "../../../../lib/api";
 
@@ -129,7 +128,7 @@ export default function DissectionPage() {
   } = useChapterDetail({
     projectId,
     story: story ?? null,
-    chapterNumber: chapterNumber ?? 0,
+    chapterNumber: mode === "project" ? chapterNumber ?? 0 : 0,
     refreshVersion,
   });
 
@@ -142,13 +141,17 @@ export default function DissectionPage() {
       setMessage("请先选择一个可用章节。");
       return;
     }
+    if (mode === "project" && chapterDetail?.chapter_number !== chapterNumber) {
+      setMessage("章节正文尚未加载完成。");
+      return;
+    }
     setRunning(true);
     setMessage(null);
     try {
       const nextReport =
         mode === "reference"
           ? await dissectReferenceText({ text: referenceText, genre, focus })
-          : await dissectFileProjectChapter(project?.project_id || "", chapterNumber);
+          : await dissectReferenceText({ text: chapterDetail?.body || "", genre: story?.genre || genre, focus });
       setReport(nextReport);
     } catch (err) {
       if (err instanceof Error && err.message === "book_dissection_only_supports_file_projects") {

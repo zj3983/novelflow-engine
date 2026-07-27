@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { WritingFlowPanel } from "../../../../components/ws/WritingFlow";
@@ -40,6 +40,7 @@ function chapterSearchText(bundle: ChapterIndexEntry): string {
 }
 
 export default function WritePage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const { project, story, chapterIndex, error, encodedProjectId, projectId, refreshVersion, refresh } = useProjectWorkspace();
   const [query, setQuery] = useState("");
@@ -58,7 +59,7 @@ export default function WritePage() {
   }, [query]);
 
   const requestedChapter = Number(searchParams?.get("chapter") || story?.current_chapter || chapterIndex.at(-1)?.chapter_number || 0);
-  const { chapter, loading: chapterLoading, error: chapterError } = useChapterDetail({
+  const { chapter, loading: chapterLoading, error: chapterError, reload } = useChapterDetail({
     projectId,
     story: story ?? null,
     chapterNumber: requestedChapter,
@@ -160,6 +161,7 @@ export default function WritePage() {
       }
       clearTemporaryGuidance();
       refresh();
+      reload();
     } catch (err) {
       setRegenerateError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -187,6 +189,11 @@ export default function WritePage() {
       if (currentJob.status === "failed") {
         throw new Error(currentJob.error || "generate_next_failed");
       }
+      const completedChapterNumber = Number(currentJob.chapter_number);
+      const generatedChapterNumber = Number.isInteger(completedChapterNumber) && completedChapterNumber > 0
+        ? completedChapterNumber
+        : nextChapterNumber;
+      router.replace(`/projects/${encodedProjectId}/write?chapter=${generatedChapterNumber}`);
       refresh();
     } catch (err) {
       setRegenerateError(err instanceof Error ? err.message : String(err));

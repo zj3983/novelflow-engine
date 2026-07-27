@@ -135,6 +135,38 @@ def test_file_story_overview_returns_lightweight_chapter_index_without_hydration
     assert chapter_reads == ["0001.json", "0002.json"]
 
 
+def test_file_story_overview_immediately_reflects_newly_written_chapter(creation_api):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Live lazy overview", "novel_type_id": "urban"},
+    ).json()
+    store = FileProjectStore(Path(created["source_path"]))
+    _write_lazy_story_chapters(store)
+    second_chapter_path = store.story_system_dir / "chapters" / "0002.json"
+    second_chapter = json.loads(second_chapter_path.read_text(encoding="utf-8"))
+    second_chapter_path.unlink()
+
+    initial = client.get(f"/file-stories/{created['active_story_id']}/overview")
+    assert initial.status_code == 200
+    assert initial.json()["chapter_count"] == 1
+    assert initial.json()["total_body_chars"] == len("alphabeta")
+
+    second_chapter_path.write_text(
+        json.dumps(second_chapter, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    refreshed = client.get(f"/file-stories/{created['active_story_id']}/overview")
+
+    assert refreshed.status_code == 200
+    payload = refreshed.json()
+    assert payload["chapter_count"] == 2
+    assert payload["current_chapter"] == 2
+    assert payload["total_body_chars"] == len("alphabeta") + len("gammadeltaepsilon")
+    assert payload["chapters"][-1]["chapter_number"] == 2
+    assert payload["chapters"][-1]["body_chars"] == len("gammadeltaepsilon")
+
+
 def test_file_story_chapter_hydrates_only_requested_chapter_and_adds_simplified_review(
     creation_api,
     monkeypatch,
