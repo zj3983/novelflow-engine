@@ -1590,6 +1590,14 @@ export type CreatedContinuationProject = {
   next_path: string;
 };
 
+export type QuickContinuationResult = {
+  session_id: string;
+  project_id: string;
+  project_route: string;
+  job_id: string;
+  job_status: string;
+};
+
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 }
@@ -2667,6 +2675,21 @@ export async function createContinuationProject(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ expected_revision: expectedRevision, settings }),
   }, 180000)) as CreatedContinuationProject;
+}
+
+export async function quickContinueNovel(
+  sessionId: string,
+  targetChars?: number,
+): Promise<QuickContinuationResult> {
+  return (await tryFetchJson(
+    `${apiBase()}/continuation-imports/${encodeURIComponent(sessionId)}/quick-continue`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(targetChars ? { target_chars: targetChars } : {}),
+    },
+    180000,
+  )) as QuickContinuationResult;
 }
 
 export interface BookFolderListResponse {

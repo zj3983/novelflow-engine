@@ -12,6 +12,7 @@ import {
   LoaderCircle,
   Merge,
   Scissors,
+  Zap,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -23,6 +24,7 @@ import {
   fetchContinuationAnalysis,
   fetchContinuationImport,
   listContinuationSources,
+  quickContinueNovel,
   replaceContinuationChapters,
   scanContinuationSource,
   startContinuationAnalysis,
@@ -67,6 +69,7 @@ const ERROR_TEXT: Record<string, string> = {
   continuation_analysis_needs_confirmation: "仍有需要人工确认的内容。",
   source_changed_since_scan: "原始文件已经变化，请重新扫描。",
   continuation_project_internal_error: "项目创建失败，请稍后重试。",
+  analysis_confirmation_required: "分析仍有待确认内容，处理后才能快速续写。",
 };
 
 function errorText(error: unknown): string {
@@ -122,6 +125,8 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
   const [selectedChapter, setSelectedChapter] = useState(0);
   const [analysis, setAnalysis] = useState<ContinuationAnalysis | null>(null);
   const [analysisTab, setAnalysisTab] = useState<AnalysisTab>("overview");
+  const [quickRequested, setQuickRequested] = useState(false);
+  const [quickConfirm, setQuickConfirm] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [startAfterChapter, setStartAfterChapter] = useState(1);
@@ -156,6 +161,13 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
           setSession(next);
           setAnalysis(result);
           setBusy("");
+          if (quickRequested) {
+            if (result.needs_confirmation.length) {
+              setError("分析仍有待确认内容，处理后才能快速续写。");
+            } else {
+              setQuickConfirm(true);
+            }
+          }
         } else if (next.status === "failed") {
           setSession(next);
           setBusy("");
@@ -174,7 +186,7 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
       active = false;
       window.clearInterval(timer);
     };
-  }, [session?.session_id, session?.status]);
+  }, [quickRequested, session?.session_id, session?.status]);
 
   useEffect(() => {
     if (chapters.length) setStartAfterChapter(chapters[chapters.length - 1].number);
@@ -236,6 +248,41 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
       setError(errorText(caught));
     } finally {
       setBusy("");
+    }
+  }
+
+  async function quickFromSource() {
+    if (!scan) return;
+    setBusy("analysis");
+    setError("");
+    setQuickRequested(true);
+    try {
+      const created = await createContinuationImport(sourcePath.trim(), encoding || undefined);
+      const normalized = await normalizeChapters(created.chapters);
+      const saved = await replaceContinuationChapters(created.session_id, created.revision, normalized);
+      setSession(saved);
+      setChapters(saved.chapters);
+      setSelectedChapter(0);
+      await startContinuationAnalysis(saved.session_id);
+      const next = await fetchContinuationImport(saved.session_id);
+      setSession(next);
+      setStep("analysis");
+      if (next.status === "ready") {
+        const result = await fetchContinuationAnalysis(next.session_id);
+        setAnalysis(result);
+        setBusy("");
+        if (result.needs_confirmation.length) {
+          setError("分析仍有待确认内容，处理后才能快速续写。");
+        } else {
+          setQuickConfirm(true);
+        }
+      } else if (next.status === "failed") {
+        setBusy("");
+        setError(ERROR_TEXT[next.error] ?? next.error ?? "分析失败，请重试。");
+      }
+    } catch (caught) {
+      setBusy("");
+      setError(errorText(caught));
     }
   }
 
@@ -364,6 +411,33 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
     }
   }
 
+  function showQuickConfirmation() {
+    if (!analysis) return;
+    if (analysis.needs_confirmation.length) {
+      setError("分析仍有待确认内容，处理后才能快速续写。");
+      return;
+    }
+    setError("");
+    setQuickConfirm(true);
+  }
+
+  async function runQuickContinuation() {
+    if (!session || !analysis) return;
+    if (analysis.needs_confirmation.length) {
+      setError("分析仍有待确认内容，处理后才能快速续写。");
+      return;
+    }
+    setBusy("quick");
+    setError("");
+    try {
+      const result = await quickContinueNovel(session.session_id);
+      router.push(result.project_route);
+    } catch (caught) {
+      setBusy("");
+      setError(errorText(caught));
+    }
+  }
+
   async function finish() {
     if (!session) return;
     setBusy("create");
@@ -429,6 +503,7 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
           ) : null}
           <div className="ws-continuation__actions">
             <button type="button" className="ws-btn" disabled={!sourcePath.trim() || Boolean(busy) || (showEncoding && !encoding)} onClick={() => void performScan()}>{busy === "scan" ? <LoaderCircle className="is-spinning" size={16} /> : null}{scan ? "重新扫描" : "扫描来源"}</button>
+            {scan ? <button type="button" className="ws-btn" disabled={!scan.can_analyze || Boolean(busy)} onClick={() => void quickFromSource()}><Zap size={16} />快速续写</button> : null}
             {scan ? <button type="button" className="ws-btn ws-btn--primary" disabled={!scan.chapters.length || Boolean(busy)} onClick={() => void createSession()}>进入章节校对</button> : null}
           </div>
         </div>
@@ -475,7 +550,12 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
               {analysisTab === "start" ? <div className="ws-continuation__style-grid"><label className="ws-project-create__field"><span>当前局面</span><textarea rows={5} value={analysis.continuation_start.situation} onChange={(event) => updateAnalysis((draft) => { draft.continuation_start.situation = event.target.value; })} /></label><label className="ws-project-create__field"><span>续写建议</span><textarea rows={5} value={analysis.continuation_start.guidance} onChange={(event) => updateAnalysis((draft) => { draft.continuation_start.guidance = event.target.value; })} /></label></div> : null}
             </div>
             {analysis.needs_confirmation.length ? <div className="ws-continuation__conflicts"><h3>待确认冲突</h3>{analysis.needs_confirmation.map((item, index) => <div key={`${item.source}-${index}`}><label><span>{item.source}</span><input value={item.claim} onChange={(event) => updateAnalysis((draft) => { draft.needs_confirmation[index].claim = event.target.value; })} /></label><button type="button" className="ws-btn ws-btn--sm" onClick={() => updateAnalysis((draft) => { draft.needs_confirmation.splice(index, 1); })}>标记已处理</button></div>)}</div> : null}
-            <div className="ws-continuation__actions"><button type="button" className="ws-btn ws-btn--primary" disabled={Boolean(busy) || analysis.needs_confirmation.length > 0} onClick={() => void confirmAnalysis()}>{busy === "confirm" ? <LoaderCircle className="is-spinning" size={16} /> : null}确认分析结果</button></div>
+            {quickConfirm ? <section className="ws-continuation__quick-confirm" role="dialog" aria-label="快速续写确认">
+              <div><strong>快速续写确认</strong><span>将从第 {Math.max(...chapters.map((chapter) => chapter.number))} 章之后开始</span></div>
+              <dl><div><dt>模式</dt><dd>忠实续写</dd></div><div><dt>目标</dt><dd>4,500 字</dd></div><div><dt>方向</dt><dd>{analysis.continuation_start.guidance || analysis.continuation_start.situation || analysis.story_overview || "延续当前剧情"}</dd></div></dl>
+              <div className="ws-continuation__actions"><button type="button" className="ws-btn" disabled={Boolean(busy)} onClick={() => setQuickConfirm(false)}>返回调整</button><button type="button" className="ws-btn ws-btn--primary" disabled={Boolean(busy)} onClick={() => void runQuickContinuation()}>{busy === "quick" ? <LoaderCircle className="is-spinning" size={16} /> : <Zap size={16} />}确认并生成下一章</button></div>
+            </section> : null}
+            <div className="ws-continuation__actions"><button type="button" className="ws-btn" disabled={Boolean(busy)} onClick={showQuickConfirmation}><Zap size={16} />快速续写</button><button type="button" className="ws-btn ws-btn--primary" disabled={Boolean(busy) || analysis.needs_confirmation.length > 0} onClick={() => void confirmAnalysis()}>{busy === "confirm" ? <LoaderCircle className="is-spinning" size={16} /> : null}确认分析结果</button></div>
           </> : null}
         </div>
       ) : null}

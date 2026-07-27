@@ -874,12 +874,16 @@ def create_continuation_project(
     *,
     source_snapshot: ContinuationSourceSnapshot,
     project_id_factory: Callable[[], str] | None = None,
+    allow_unconfirmed_analysis: bool = False,
 ) -> CreatedFileProject:
     session = ContinuationImportSession.model_validate(session)
     settings = ContinuationSettings.model_validate(settings)
     if session.status != "ready" or not session.analysis:
         raise ValueError("continuation_session_not_ready")
-    if session.analysis_progress.get("analysis_confirmed") is not True:
+    if (
+        not allow_unconfirmed_analysis
+        and session.analysis_progress.get("analysis_confirmed") is not True
+    ):
         raise ValueError("continuation_analysis_not_confirmed")
     analysis = ContinuationAnalysis.model_validate(session.analysis)
     if analysis.needs_confirmation:

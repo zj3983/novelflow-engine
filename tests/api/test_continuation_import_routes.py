@@ -1648,3 +1648,240 @@ def test_unknown_conversion_oserror_returns_stable_500_without_details(
     assert response.status_code == 500
     assert response.json()["detail"] == "continuation_project_internal_error"
     assert "secret" not in response.text
+
+
+def test_quick_continue_stops_on_unresolved_analysis_blocker(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _analyzed_import(client, allowed_root, monkeypatch)
+    analysis = client.get(
+        f"/continuation-imports/{session['session_id']}/analysis"
+    ).json()
+    analysis["needs_confirmation"] = [
+        {"claim": "续写点存在冲突", "source": "continuation_start"}
+    ]
+    updated = client.put(
+        f"/continuation-imports/{session['session_id']}/analysis",
+        json={"expected_revision": session["revision"], "analysis": analysis},
+    )
+    assert updated.status_code == 200
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue",
+        json={},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "analysis_confirmation_required"
+    assert client.get("/file-projects").json() == []
+
+
+def test_quick_continue_uses_defaults_and_starts_existing_job_once(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    session = _analyzed_import(client, allowed_root, monkeypatch)
+    started: list[str] = []
+
+    def fake_start(project_id: str, **_kwargs):
+        started.append(project_id)
+        return {"job_id": _kwargs["reserved_job_id"], "status": "queued"}
+
+    monkeypatch.setattr(
+        continuation_imports, "start_file_generation_job", fake_start, raising=False
+    )
+
+    first = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue",
+        json={},
+    )
+    second = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue",
+        json={},
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json() == second.json()
+    assert first.json()["job_id"].startswith("fgj-")
+    assert first.json()["project_route"].endswith("/write?chapter=3")
+    assert len(started) == 1
+    projects = client.get("/file-projects").json()
+    assert len(projects) == 1
+    project_root = Path(projects[0]["source_path"])
+    project = json.loads(
+        (project_root / ".webnovel/project.json").read_text(encoding="utf-8")
+    )
+    settings = project["continuation"]
+    assert settings["start_after_chapter"] == 2
+    assert settings["fidelity"] == "faithful"
+    assert settings["target_chars"] == 4500
+    assert settings["direction"] == "已分析"
+
+
+def test_quick_continue_only_queues_generation_and_does_not_advance_chapter(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    session = _analyzed_import(client, allowed_root, monkeypatch)
+    monkeypatch.setattr(
+        continuation_imports,
+        "start_file_generation_job",
+        lambda project_id, **kwargs: {
+            "job_id": kwargs["reserved_job_id"],
+            "status": "queued",
+        },
+        raising=False,
+    )
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue",
+        json={"target_chars": 5200},
+    )
+
+    assert response.status_code == 202
+    project = client.get("/file-projects").json()[0]
+    project_root = Path(project["source_path"])
+    assert project["current_chapter"] == 2
+    assert not (project_root / ".story-system/failed-drafts").exists()
+    assert not (project_root / ".story-system/chapters/0003.json").exists()
+
+
+def test_quick_continue_reuses_the_file_project_generation_job(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import file_projects
+
+    session = _analyzed_import(client, allowed_root, monkeypatch)
+    submitted: list[tuple[object, ...]] = []
+
+    with file_projects._file_generation_jobs_lock:
+        file_projects._file_generation_jobs.clear()
+        file_projects._active_file_generation_jobs.clear()
+    monkeypatch.setattr(
+        file_projects._file_generation_executor,
+        "submit",
+        lambda *args, **_kwargs: submitted.append(args),
+    )
+
+    first = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue",
+        json={},
+    )
+    second = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue",
+        json={},
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["job_id"] == second.json()["job_id"]
+    assert len(submitted) == 1
+    job = client.get(
+        f"/file-projects/{first.json()['project_id']}/generation-jobs/{first.json()['job_id']}"
+    )
+    assert job.status_code == 200
+    assert job.json()["status"] == "queued"
+
+
+def test_concurrent_quick_continue_submits_one_reserved_generation_job(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import continuation_imports, file_projects
+
+    session = _analyzed_import(client, allowed_root, monkeypatch)
+    submitted: list[tuple[object, ...]] = []
+    original_start = continuation_imports.start_file_generation_job
+
+    with file_projects._file_generation_jobs_lock:
+        file_projects._file_generation_jobs.clear()
+        file_projects._active_file_generation_jobs.clear()
+    monkeypatch.setattr(
+        file_projects._file_generation_executor,
+        "submit",
+        lambda *args, **_kwargs: submitted.append(args),
+    )
+
+    def delayed_start(*args, **kwargs):
+        threading.Event().wait(0.15)
+        return original_start(*args, **kwargs)
+
+    monkeypatch.setattr(
+        continuation_imports, "start_file_generation_job", delayed_start
+    )
+
+    def post_quick():
+        with TestClient(app, raise_server_exceptions=False) as concurrent_client:
+            return concurrent_client.post(
+                f"/continuation-imports/{session['session_id']}/quick-continue",
+                json={},
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = [future.result(timeout=15) for future in [
+            executor.submit(post_quick),
+            executor.submit(post_quick),
+        ]]
+
+    assert [response.status_code for response in responses] == [202, 202], [
+        response.text for response in responses
+    ]
+    assert responses[0].json() == responses[1].json()
+    assert len(submitted) == 1
+
+
+def test_quick_continue_retry_after_response_save_failure_reuses_reserved_job(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import file_projects
+    from packages.story_core.continuation_sessions import ContinuationSessionStore
+
+    session = _analyzed_import(client, allowed_root, monkeypatch)
+    submitted: list[tuple[object, ...]] = []
+    with file_projects._file_generation_jobs_lock:
+        file_projects._file_generation_jobs.clear()
+        file_projects._active_file_generation_jobs.clear()
+    monkeypatch.setattr(
+        file_projects._file_generation_executor,
+        "submit",
+        lambda *args, **_kwargs: submitted.append(args),
+    )
+    original_complete = ContinuationSessionStore.complete_quick_continuation
+    calls = 0
+
+    def fail_once(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("simulated response persistence failure")
+        return original_complete(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        ContinuationSessionStore, "complete_quick_continuation", fail_once
+    )
+
+    first = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue", json={}
+    )
+    second = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue", json={}
+    )
+
+    assert first.status_code == 500
+    assert second.status_code == 202
+    assert len(submitted) == 1
+    assert submitted[0][1] == second.json()["job_id"]

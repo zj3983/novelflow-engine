@@ -704,6 +704,133 @@ def _summary_payload(store: FileProjectStore) -> dict[str, Any]:
     }
 
 
+def start_file_generation_job(
+    project_id: str,
+    payload: FileProjectGenerationJobRequest | None = None,
+    *,
+    reserved_job_id: str | None = None,
+) -> dict[str, object]:
+    """Queue generation through the shared file-project job runner."""
+    store = _store_for(project_id)
+    story_id = _story_id_for(store)
+    target_chapter = (
+        payload.chapter_number
+        if payload and isinstance(payload.chapter_number, int)
+        else None
+    )
+    variant = payload.variant if payload else None
+    guidance = payload.guidance if payload else None
+    chapter_direction_id = payload.chapter_direction_id if payload else None
+    submit_loaded_job = False
+    with _file_generation_jobs_lock:
+        if reserved_job_id:
+            reserved = _file_generation_jobs.get(reserved_job_id)
+            if reserved is not None:
+                return _file_generation_job_response(reserved)
+            loaded = _load_file_generation_job(store, reserved_job_id)
+            if loaded is not None:
+                _file_generation_jobs[reserved_job_id] = loaded
+                if loaded.get("status") in {"queued", "running"}:
+                    _active_file_generation_jobs[story_id] = reserved_job_id
+                    submit_loaded_job = True
+                response = _file_generation_job_response(loaded)
+                job_id = reserved_job_id
+                job_kwargs = {
+                    "chapter_number": loaded.get("target_chapter"),
+                    "variant": loaded.get("variant") or None,
+                    "guidance": loaded.get("guidance") or None,
+                }
+                loaded_direction = loaded.get("chapter_direction_id")
+                if loaded_direction:
+                    job_kwargs["chapter_direction_id"] = loaded_direction
+                if not submit_loaded_job:
+                    return response
+            else:
+                job_kwargs = {}
+        active_job_id = _active_file_generation_jobs.get(story_id)
+        if not submit_loaded_job and active_job_id:
+            active_job = _file_generation_jobs.get(active_job_id)
+            if active_job:
+                _reconcile_file_generation_job_locked(active_job, store=store)
+            if active_job and active_job.get("status") in {"queued", "running"}:
+                return _file_generation_job_response(active_job)
+
+        if submit_loaded_job:
+            pass
+        else:
+            now = _now_iso()
+            job_id = reserved_job_id or f"fgj-{uuid4().hex[:12]}"
+            job: dict[str, object] = {
+                "job_id": job_id,
+                "story_id": story_id,
+                "project_id": _public_project_id(store),
+                "status": "queued",
+                "progress": "生成已排队",
+                "steps": [
+                    {
+                        "message": "生成已排队",
+                        "status": "queued",
+                        "stage": "orchestrator",
+                        "source": "file-project-route",
+                        "artifact": {
+                            "reason": "job_context",
+                            "used_modules": [
+                                "story_store",
+                                "director",
+                                "writer",
+                                "memory",
+                                "outline",
+                                "character_agent",
+                            ],
+                            "inputs": {
+                                "project_id": _public_project_id(store),
+                                "target_chapter": target_chapter,
+                                "variant": variant or "",
+                                "guidance": guidance or "",
+                                "chapter_direction_id": chapter_direction_id or "",
+                                "starting_chapter": int(
+                                    store.summary().get("current_chapter") or 0
+                                ),
+                            },
+                            "outputs": {
+                                "will_run_generate_next": target_chapter is None,
+                                "will_regen": isinstance(target_chapter, int)
+                                and target_chapter > 0,
+                            },
+                        },
+                        "at": now,
+                    }
+                ],
+                "chapter_number": None,
+                "target_chapter": target_chapter,
+                "variant": variant or "",
+                "guidance": guidance or "",
+                "chapter_direction_id": chapter_direction_id or "",
+                "starting_chapter": int(store.summary().get("current_chapter") or 0),
+                "error": "",
+                "created_at": now,
+                "updated_at": now,
+                "_project_root": str(store.root),
+            }
+            _file_generation_jobs[job_id] = job
+            _active_file_generation_jobs[story_id] = job_id
+            _persist_file_generation_job(job)
+            response = _file_generation_job_response(job)
+
+    if not submit_loaded_job:
+        job_kwargs = {
+            "chapter_number": target_chapter,
+            "variant": variant,
+            "guidance": guidance,
+        }
+        if chapter_direction_id:
+            job_kwargs["chapter_direction_id"] = chapter_direction_id
+    _file_generation_executor.submit(
+        _run_file_generation_job, job_id, project_id, **job_kwargs
+    )
+    return response
+
+
 def init_file_project_routes() -> APIRouter:
     @router.post("/book-dissection/reference")
     def dissect_book_reference(payload: BookDissectionReferenceRequest) -> dict[str, Any]:
@@ -924,87 +1051,11 @@ def init_file_project_routes() -> APIRouter:
         }
 
     @router.post("/file-projects/{project_id}/generation-jobs")
-    def start_file_generation_job(project_id: str, payload: FileProjectGenerationJobRequest | None = None) -> dict[str, object]:
-        store = _store_for(project_id)
-        story_id = _story_id_for(store)
-        target_chapter = payload.chapter_number if payload and isinstance(payload.chapter_number, int) else None
-        variant = payload.variant if payload else None
-        guidance = payload.guidance if payload else None
-        chapter_direction_id = payload.chapter_direction_id if payload else None
-        with _file_generation_jobs_lock:
-            active_job_id = _active_file_generation_jobs.get(story_id)
-            if active_job_id:
-                active_job = _file_generation_jobs.get(active_job_id)
-                if active_job:
-                    _reconcile_file_generation_job_locked(active_job, store=store)
-                if active_job and active_job.get("status") in {"queued", "running"}:
-                    return _file_generation_job_response(active_job)
-
-            now = _now_iso()
-            job_id = f"fgj-{uuid4().hex[:12]}"
-            job: dict[str, object] = {
-                "job_id": job_id,
-                "story_id": story_id,
-                "project_id": _public_project_id(store),
-                "status": "queued",
-                "progress": "生成已排队",
-                "steps": [
-                    {
-                        "message": "生成已排队",
-                        "status": "queued",
-                        "stage": "orchestrator",
-                        "source": "file-project-route",
-                        "artifact": {
-                            "reason": "job_context",
-                            "used_modules": [
-                                "story_store",
-                                "director",
-                                "writer",
-                                "memory",
-                                "outline",
-                                "character_agent",
-                            ],
-                            "inputs": {
-                                "project_id": _public_project_id(store),
-                                "target_chapter": target_chapter,
-                                "variant": variant or "",
-                                "guidance": guidance or "",
-                                "chapter_direction_id": chapter_direction_id or "",
-                                "starting_chapter": int(store.summary().get("current_chapter") or 0),
-                            },
-                            "outputs": {
-                                "will_run_generate_next": target_chapter is None,
-                                "will_regen": isinstance(target_chapter, int) and target_chapter > 0,
-                            },
-                        },
-                        "at": now,
-                    }
-                ],
-                "chapter_number": None,
-                "target_chapter": target_chapter,
-                "variant": variant or "",
-                "guidance": guidance or "",
-                "chapter_direction_id": chapter_direction_id or "",
-                "starting_chapter": int(store.summary().get("current_chapter") or 0),
-                "error": "",
-                "created_at": now,
-                "updated_at": now,
-                "_project_root": str(store.root),
-            }
-            _file_generation_jobs[job_id] = job
-            _active_file_generation_jobs[story_id] = job_id
-            _persist_file_generation_job(job)
-            response = _file_generation_job_response(job)
-
-        job_kwargs: dict[str, object] = {
-            "chapter_number": target_chapter,
-            "variant": variant,
-            "guidance": guidance,
-        }
-        if chapter_direction_id:
-            job_kwargs["chapter_direction_id"] = chapter_direction_id
-        _file_generation_executor.submit(_run_file_generation_job, job_id, project_id, **job_kwargs)
-        return response
+    def start_file_generation_job_route(
+        project_id: str,
+        payload: FileProjectGenerationJobRequest | None = None,
+    ) -> dict[str, object]:
+        return start_file_generation_job(project_id, payload)
 
     @router.get("/file-projects/{project_id}/generation-jobs/current")
     def get_current_file_generation_job(project_id: str) -> dict[str, object]:

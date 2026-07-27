@@ -786,6 +786,7 @@ class ContinuationSessionStore:
         *,
         expected_revision: int,
         project_id: str,
+        allow_unconfirmed_analysis: bool = False,
     ) -> ContinuationImportSession:
         _validate_session_id(session_id)
         if not re.fullmatch(r"p-[A-Za-z0-9-]+", project_id):
@@ -801,7 +802,10 @@ class ContinuationSessionStore:
                 raise ValueError("session_revision_conflict")
             if current.status != "ready" or not current.analysis:
                 raise ValueError("continuation_session_not_ready")
-            if current.analysis_progress.get("analysis_confirmed") is not True:
+            if (
+                not allow_unconfirmed_analysis
+                and current.analysis_progress.get("analysis_confirmed") is not True
+            ):
                 raise ValueError("continuation_analysis_not_confirmed")
             if current.analysis.get("needs_confirmation"):
                 raise ValueError("continuation_analysis_needs_confirmation")
@@ -881,6 +885,82 @@ class ContinuationSessionStore:
             mutate,
             allow_project_conversion=True,
         )
+
+    def reserve_quick_continuation(
+        self,
+        session_id: str,
+        *,
+        project_id: str,
+        project_route: str,
+        job_id: str,
+    ) -> tuple[ContinuationImportSession, bool]:
+        """Atomically reserve the single generation job for quick continuation."""
+        _validate_session_id(session_id)
+        with self._session_lock(session_id):
+            current, _ = self._read_validated_session(session_id)
+            existing = current.analysis_progress.get("quick_continuation")
+            if isinstance(existing, dict) and existing.get("status") in {
+                "starting",
+                "started",
+            }:
+                return current.model_copy(deep=True), False
+            conversion = self._project_conversion(current)
+            if (
+                conversion.get("status") != "succeeded"
+                or conversion.get("project_id") != project_id
+            ):
+                raise ValueError("continuation_conversion_claim_mismatch")
+            candidate = current.model_copy(deep=True)
+            candidate.analysis_progress["quick_continuation"] = {
+                "status": "starting",
+                "project_id": f"file:{project_id}",
+                "project_route": project_route,
+                "job_id": job_id,
+            }
+            candidate.revision = current.revision + 1
+            candidate.created_at = current.created_at
+            candidate.updated_at = self._clock()
+            self._write_session(
+                candidate, self._session_root(session_id, require_exists=True)
+            )
+            return candidate.model_copy(deep=True), True
+
+    def complete_quick_continuation(
+        self,
+        session_id: str,
+        *,
+        project_id: str,
+        project_route: str,
+        job_id: str,
+        job_status: str,
+    ) -> ContinuationImportSession:
+        _validate_session_id(session_id)
+        with self._session_lock(session_id):
+            current, _ = self._read_validated_session(session_id)
+            reserved = current.analysis_progress.get("quick_continuation")
+            reserved = dict(reserved) if isinstance(reserved, dict) else {}
+            if (
+                reserved.get("status") not in {"starting", "started"}
+                or reserved.get("project_id") != f"file:{project_id}"
+                or reserved.get("job_id") != job_id
+            ):
+                raise ValueError("quick_continuation_reservation_mismatch")
+            candidate = current.model_copy(deep=True)
+            candidate.analysis_progress["quick_continuation"] = {
+                "status": "started",
+                "session_id": session_id,
+                "project_id": f"file:{project_id}",
+                "project_route": project_route,
+                "job_id": job_id,
+                "job_status": job_status,
+            }
+            candidate.revision = current.revision + 1
+            candidate.created_at = current.created_at
+            candidate.updated_at = self._clock()
+            self._write_session(
+                candidate, self._session_root(session_id, require_exists=True)
+            )
+            return candidate.model_copy(deep=True)
 
     def update(
         self,

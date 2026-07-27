@@ -12,6 +12,10 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from apps.api.fs_access import allowed_fs_roots, require_allowed_path
+from apps.api.routes.file_projects import (
+    FileProjectGenerationJobRequest,
+    start_file_generation_job,
+)
 from packages.story_core.continuation_analysis import (
     ContinuationAnalysis,
     LLMContinuationAnalyzer,
@@ -85,6 +89,10 @@ class CreateContinuationProjectRequest(_RequestModel):
     settings: ContinuationSettings
 
 
+class QuickContinueRequest(_RequestModel):
+    target_chars: int | None = Field(default=None, ge=1000, le=20_000)
+
+
 class SourceItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -116,6 +124,16 @@ class CreatedContinuationProjectResponse(BaseModel):
     current_chapter: int
     storage_source: str = "file"
     next_path: str
+
+
+class QuickContinueResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    project_id: str
+    project_route: str
+    job_id: str
+    job_status: str
 
 
 def _session_store() -> ContinuationSessionStore:
@@ -152,6 +170,8 @@ def _raise_domain_error(exc: BaseException) -> NoReturn:
         "continuation_session_already_converted",
         "continuation_conversion_in_progress",
         "continuation_conversion_claim_mismatch",
+        "analysis_confirmation_required",
+        "quick_continuation_reservation_mismatch",
         "project_id_conflict",
         "session_lock_timeout",
         "session_revision_conflict",
@@ -719,6 +739,234 @@ def create_project(
                 pass
         _raise_domain_error(exc)
     except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail="continuation_project_internal_error"
+        ) from exc
+
+
+def _saved_quick_response(
+    session: ContinuationImportSession,
+) -> QuickContinueResponse | None:
+    saved = session.analysis_progress.get("quick_continuation")
+    if not isinstance(saved, dict):
+        return None
+    response_fields = {
+        key: saved.get(key)
+        for key in (
+            "session_id",
+            "project_id",
+            "project_route",
+            "job_id",
+            "job_status",
+        )
+    }
+    try:
+        return QuickContinueResponse.model_validate(response_fields)
+    except ValueError:
+        return None
+
+
+def _quick_settings(
+    session: ContinuationImportSession, target_chars: int | None
+) -> ContinuationSettings:
+    if session.status != "ready" or not session.analysis:
+        raise ValueError("continuation_session_not_ready")
+    analysis = ContinuationAnalysis.model_validate(session.analysis)
+    if analysis.needs_confirmation:
+        raise ValueError("analysis_confirmation_required")
+    if not session.chapters:
+        raise ValueError("chapters_empty")
+    latest = max(session.chapters, key=lambda chapter: chapter.number)
+    direction = (
+        analysis.continuation_start.guidance.strip()
+        or analysis.continuation_start.situation.strip()
+        or analysis.story_overview.strip()
+    )
+    values: dict[str, object] = {
+        "start_after_chapter": latest.number,
+        "fidelity": "faithful",
+        "direction": direction,
+    }
+    if target_chars is not None:
+        values["target_chars"] = target_chars
+    return ContinuationSettings.model_validate(values)
+
+
+@router.post(
+    "/{session_id}/quick-continue",
+    response_model=QuickContinueResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def quick_continue(
+    session_id: str,
+    payload: QuickContinueRequest | None = None,
+) -> QuickContinueResponse:
+    store = _session_store()
+    export_root = _file_project_export_root()
+    project_id = f"p-{uuid.uuid4().hex}"
+    claimed_here = False
+    project_published = False
+    try:
+        current = store.get(session_id)
+        saved = _saved_quick_response(current)
+        if saved is not None:
+            return saved
+        settings = _quick_settings(current, payload.target_chars if payload else None)
+
+        conversion = current.analysis_progress.get("project_conversion")
+        conversion = dict(conversion) if isinstance(conversion, dict) else {}
+        conversion_status = conversion.get("status")
+        if conversion_status in {"claimed", "succeeded"}:
+            project_id = str(conversion.get("project_id") or "")
+            if not project_id:
+                raise ValueError("continuation_conversion_claim_mismatch")
+            session = current
+        else:
+            try:
+                session = store.claim_project_conversion(
+                    session_id,
+                    expected_revision=current.revision,
+                    project_id=project_id,
+                    allow_unconfirmed_analysis=True,
+                )
+                claimed_here = True
+            except ValueError as exc:
+                if _error_code(exc) not in {
+                    "continuation_conversion_in_progress",
+                    "continuation_session_already_converted",
+                }:
+                    raise
+                current = store.get(session_id)
+                conversion = current.analysis_progress.get("project_conversion")
+                conversion = dict(conversion) if isinstance(conversion, dict) else {}
+                conversion_status = conversion.get("status")
+                project_id = str(conversion.get("project_id") or "")
+                if not project_id:
+                    raise ValueError("continuation_conversion_claim_mismatch") from exc
+                session = current
+
+        if conversion_status == "claimed" and not claimed_here:
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                current = store.get(session_id)
+                conversion = current.analysis_progress.get("project_conversion")
+                conversion = dict(conversion) if isinstance(conversion, dict) else {}
+                existing = _existing_claimed_project(
+                    export_root, session_id, project_id
+                )
+                if conversion.get("status") == "succeeded" or existing is not None:
+                    session = current
+                    conversion_status = str(conversion.get("status") or "claimed")
+                    break
+                time.sleep(0.02)
+            else:
+                raise ValueError("continuation_conversion_in_progress")
+
+        existing = _existing_claimed_project(export_root, session_id, project_id)
+        if existing is None:
+            if conversion_status == "succeeded":
+                raise ValueError("continuation_conversion_claim_mismatch")
+            snapshot = store.source_snapshot(session_id)
+            created = create_continuation_project(
+                export_root,
+                session,
+                settings,
+                source_snapshot=snapshot,
+                project_id_factory=lambda: project_id,
+                allow_unconfirmed_analysis=True,
+            )
+            existing = created.root
+            project_published = True
+
+        latest_session = store.get(session_id)
+        latest_conversion = latest_session.analysis_progress.get("project_conversion")
+        latest_conversion = (
+            dict(latest_conversion) if isinstance(latest_conversion, dict) else {}
+        )
+        if latest_conversion.get("status") != "succeeded":
+            try:
+                store.finalize_project_conversion(
+                    session_id, project_id=project_id, source_path=str(existing)
+                )
+            except ValueError as exc:
+                if _error_code(exc) != "continuation_conversion_claim_mismatch":
+                    raise
+                finalized = store.get(session_id)
+                finalized_conversion = finalized.analysis_progress.get(
+                    "project_conversion"
+                )
+                finalized_conversion = (
+                    dict(finalized_conversion)
+                    if isinstance(finalized_conversion, dict)
+                    else {}
+                )
+                if (
+                    finalized_conversion.get("status") != "succeeded"
+                    or finalized_conversion.get("project_id") != project_id
+                ):
+                    raise
+
+        public_project_id = f"file:{project_id}"
+        next_chapter = settings.start_after_chapter + 1
+        route_id = quote(public_project_id, safe="")
+        project_route = f"/projects/{route_id}/write?chapter={next_chapter}"
+        reserved_job_id = f"fgj-{uuid.uuid4().hex[:12]}"
+        reserved_session, owns_reservation = store.reserve_quick_continuation(
+            session_id,
+            project_id=project_id,
+            project_route=project_route,
+            job_id=reserved_job_id,
+        )
+        reservation = reserved_session.analysis_progress.get("quick_continuation")
+        reservation = dict(reservation) if isinstance(reservation, dict) else {}
+        reserved_job_id = str(reservation.get("job_id") or "")
+        if not reserved_job_id:
+            raise ValueError("quick_continuation_reservation_mismatch")
+
+        if not owns_reservation:
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                recovered = _saved_quick_response(store.get(session_id))
+                if recovered is not None:
+                    return recovered
+                time.sleep(0.02)
+
+        job = start_file_generation_job(
+            project_id,
+            payload=FileProjectGenerationJobRequest(guidance=settings.direction),
+            reserved_job_id=reserved_job_id,
+        )
+        completed = store.complete_quick_continuation(
+            session_id,
+            project_id=project_id,
+            project_route=project_route,
+            job_id=str(job["job_id"]),
+            job_status=str(job["status"]),
+        )
+        response = _saved_quick_response(completed)
+        if response is None:
+            raise ValueError("quick_continuation_reservation_mismatch")
+        return response
+    except FileExistsError as exc:
+        existing = _existing_claimed_project(export_root, session_id, project_id)
+        if existing is not None:
+            try:
+                store.finalize_project_conversion(
+                    session_id, project_id=project_id, source_path=str(existing)
+                )
+            except (OSError, ValueError):
+                pass
+        _raise_domain_error(exc)
+    except ValueError as exc:
+        if claimed_here and not project_published:
+            try:
+                store.fail_project_conversion(
+                    session_id, project_id=project_id, error=_error_code(exc)
+                )
+            except (OSError, ValueError):
+                pass
+        _raise_domain_error(exc)
+    except (KeyError, OSError) as exc:
         raise HTTPException(
             status_code=500, detail="continuation_project_internal_error"
         ) from exc
