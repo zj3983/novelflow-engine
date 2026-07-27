@@ -207,6 +207,40 @@ def test_simulated_state_deltas_still_migrate_a_legacy_flat_level() -> None:
     assert story.characters[0].game_panel.level == "Lv.1"
 
 
+def test_ledger_updates_fall_back_to_a_valid_flat_level_when_nested_level_is_damaged() -> None:
+    story = StoryState(
+        story_id="s-damaged-nested-level",
+        outline="web game opening",
+        genre="web game",
+        style="plain",
+        progression_ledger={"level": "Lv.900", "protagonist": {"level": "damaged"}},
+        world_context={"power_system_spec": {"attribute_allocation": _attribute_rule()}},
+    )
+
+    orchestrator_module._apply_ledger_updates(story, {"protagonist": {"level": "Lv.901"}}, chapter_number=4)
+
+    protagonist = story.progression_ledger["protagonist"]
+    assert protagonist["unallocated_attribute_points"] == 5
+    assert protagonist["attribute_point_awards"] == [{"level": 901, "points": 5, "chapter": 4}]
+
+
+def test_ledger_updates_prefer_a_valid_nested_level_over_a_flat_level() -> None:
+    story = StoryState(
+        story_id="s-valid-nested-level",
+        outline="web game opening",
+        genre="web game",
+        style="plain",
+        progression_ledger={"level": "Lv.900", "protagonist": {"level": "Lv.800"}},
+        world_context={"power_system_spec": {"attribute_allocation": _attribute_rule()}},
+    )
+
+    orchestrator_module._apply_ledger_updates(story, {"protagonist": {"level": "Lv.801"}}, chapter_number=4)
+
+    protagonist = story.progression_ledger["protagonist"]
+    assert protagonist["unallocated_attribute_points"] == 5
+    assert protagonist["attribute_point_awards"] == [{"level": 801, "points": 5, "chapter": 4}]
+
+
 def test_simulated_state_deltas_preserve_legacy_attribute_directives_without_a_rule() -> None:
     story = StoryState(
         story_id="s-no-rule-public-regression",

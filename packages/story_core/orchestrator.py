@@ -2613,7 +2613,9 @@ def _apply_ledger_updates(
         return
     ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
     previous_protagonist = _clean_mapping(ledger.get("protagonist"))
-    previous_level = parse_level(previous_protagonist.get("level", ledger.get("level")))
+    previous_level = parse_level(previous_protagonist.get("level"))
+    if previous_level is None:
+        previous_level = parse_level(ledger.get("level"))
     rule = attribute_allocation_rule_from_story(story)
     updates = deepcopy(ledger_updates)
     directive = None
