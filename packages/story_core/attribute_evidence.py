@@ -52,9 +52,6 @@ _CLAUSE_START_RUO_PATTERN = re.compile(r"(?:^|[，,；;：:])\s*(?P<ruo>若)")
 _ASYMMETRIC_QUOTES = (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"))
 _POSITION_OWNER_NOUNS = ("面板", "界面", "提示", "窗口")
 _DISCOURSE_PREFIXES = ("此时", "随后", "这时", "只见")
-_SUBJECT_ACTION_PATTERN = re.compile(
-    r"(?:^|[，,；;])\s*(?P<subject>[\u4e00-\u9fffA-Za-z0-9_]{1,12})(?:说|道|表示|提到|确认|加点|看)"
-)
 
 
 def parse_count(value: str) -> int | None:
@@ -463,22 +460,17 @@ def _strip_discourse_prefix(value: str) -> str:
     return value
 
 
-def _nearest_explicit_subject(sentence: str) -> str | None:
-    subjects = [
-        _strip_discourse_prefix(match.group("subject"))
-        for match in _SUBJECT_ACTION_PATTERN.finditer(sentence)
-    ]
-    return next((subject for subject in reversed(subjects) if subject not in {"他", "她", "自己"}), None)
-
-
 def _owner_is_protagonist(sentence: str, owner_span: tuple[int, int], aliases: tuple[str, ...]) -> bool:
     owner = _strip_discourse_prefix(sentence[owner_span[0] : owner_span[1]].strip())
     if any(alias in owner for alias in aliases):
         return True
     if owner not in {"他", "她", "自己"}:
         return False
-    subject = _nearest_explicit_subject(sentence[: owner_span[0]])
-    return subject is None or any(alias in subject for alias in aliases)
+    prefix = sentence[: owner_span[0]]
+    if "，" not in prefix and "," not in prefix:
+        return True
+    preceding_clause = next((part.strip() for part in reversed(re.split(r"[，,]", prefix)) if part.strip()), "")
+    return any(alias in preceding_clause for alias in aliases)
 
 
 def _remaining_candidate_subject(
