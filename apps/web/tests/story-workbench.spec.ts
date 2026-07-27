@@ -51,6 +51,79 @@ test("file story lazy-loading clients are exported", () => {
   expect(typeof fetchFileChapter).toBe("function");
 });
 
+test("file story lazy-loading clients request encoded GET endpoints and pass responses through", async () => {
+  const originalFetch = globalThis.fetch;
+  const storyId = "file:p folder/故事?draft=1";
+  const overview = { story_id: storyId, chapter_count: 1 };
+  const chapter = { chapter_number: 7, body: "chapter body" };
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+
+  try {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, init });
+      const payload = url.endsWith("/overview") ? overview : chapter;
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    await expect(fetchFileStoryOverview(storyId)).resolves.toEqual(overview);
+    await expect(fetchFileChapter(storyId, 7)).resolves.toEqual(chapter);
+
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+    const encodedStoryId = encodeURIComponent(storyId);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      url: `${baseUrl}/file-stories/${encodedStoryId}/overview`,
+      init: { method: "GET" },
+    });
+    expect(calls[1]).toMatchObject({
+      url: `${baseUrl}/file-stories/${encodedStoryId}/chapters/7`,
+      init: { method: "GET" },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("file story lazy-loading clients reject HTTP failures without a mock fallback", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalConsoleError = console.error;
+
+  try {
+    console.error = () => undefined;
+    globalThis.fetch = async () => new Response(JSON.stringify({ detail: "overview_failed" }), {
+      status: 503,
+      headers: { "content-type": "application/json" },
+    });
+
+    await expect(fetchFileStoryOverview("file:missing story")).rejects.toThrow("overview_failed");
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalConsoleError;
+  }
+});
+
+test("file story lazy-loading clients reject network failures without a full-story fallback", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalConsoleError = console.error;
+  const networkError = new Error("network unavailable");
+
+  try {
+    console.error = () => undefined;
+    globalThis.fetch = async () => {
+      throw networkError;
+    };
+
+    await expect(fetchFileChapter("file:offline story", 9)).rejects.toBe(networkError);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalConsoleError;
+  }
+});
+
 test("chapter planning source is shown in plain language", () => {
   expect(writingFlowPlanningSourceText({ planning_source: "outline" })).toBe("已有章节细纲");
   expect(writingFlowPlanningSourceText({ planning_source: "model_fallback" })).toBe("模型补全");
