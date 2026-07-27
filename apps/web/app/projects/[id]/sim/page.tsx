@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
+import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import type { ChapterBundle, StoryCharacter } from "../../../../lib/api";
 import { cleanLines } from "../../../../lib/worldDisplay";
 
@@ -120,18 +122,6 @@ function eventPlanLine(bundle: ChapterBundle): string {
 
 function orderedActions(bundle: ChapterBundle): ActionLike[] {
   return (bundle.event_plan?.ordered_actions?.length ? bundle.event_plan.ordered_actions : bundle.character_moves ?? []) as ActionLike[];
-}
-
-function hasSimulation(bundle: ChapterBundle): boolean {
-  return Boolean(
-    bundle.chapter_intent ||
-      bundle.event_plan ||
-      bundle.simulation_plan ||
-      bundle.world_events?.length ||
-      bundle.scene_cards?.length ||
-      bundle.character_moves?.length ||
-      bundle.next_outline,
-  );
 }
 
 function addReaction(map: Map<string, Reaction>, name: string, role: string, line: string) {
@@ -253,9 +243,28 @@ function plotLineItems(plot: PlotSimulation): Array<{ label: string; value: stri
 }
 
 export default function SimulationPage() {
-  const { project, story, error, encodedProjectId } = useProjectWorkspace();
-  const bundles = story?.history ? [...story.history].filter(hasSimulation).reverse() : [];
-  const latest = story?.history?.at(-1);
+  const { project, story, chapterIndex, error, encodedProjectId, projectId, refreshVersion } = useProjectWorkspace();
+  const simulationIndex = useMemo(() => chapterIndex.filter((entry) => entry.has_simulation).reverse(), [chapterIndex]);
+  const [selectedChapter, setSelectedChapter] = useState(0);
+
+  useEffect(() => {
+    if (!simulationIndex.length) {
+      setSelectedChapter(0);
+      return;
+    }
+    if (!simulationIndex.some((entry) => entry.chapter_number === selectedChapter)) {
+      setSelectedChapter(simulationIndex[0].chapter_number);
+    }
+  }, [selectedChapter, simulationIndex]);
+
+  const { chapter, loading: chapterLoading, error: chapterError } = useChapterDetail({
+    projectId,
+    story: story ?? null,
+    chapterNumber: selectedChapter,
+    refreshVersion,
+  });
+  const bundles = chapter && chapter.chapter_number === selectedChapter ? [chapter] : [];
+  const latest = chapterIndex.at(-1);
   const characters = story?.characters ?? [];
 
   return (
@@ -266,7 +275,7 @@ export default function SimulationPage() {
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
         title="世界响应"
-        subtitle={project?.current_focus || latest?.next_outline || "章节规划确定本章剧情，世界响应只检查人物边界、信息可见性和连续性。"}
+        subtitle={project?.current_focus || latest?.next_focus || "章节规划确定本章剧情，世界响应只检查人物边界、信息可见性和连续性。"}
       />
 
       {error ? (
@@ -274,6 +283,21 @@ export default function SimulationPage() {
           <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{error}</p>
         </div>
       ) : null}
+
+      {simulationIndex.length > 1 ? (
+        <label className="ws-search">
+          <span>响应章节</span>
+          <select className="ws-input" value={selectedChapter} onChange={(event) => setSelectedChapter(Number(event.target.value))}>
+            {simulationIndex.map((entry) => (
+              <option key={entry.chapter_number} value={entry.chapter_number}>
+                第 {entry.chapter_number} 章：{entry.chapter_title || "未命名"}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {chapterError ? <p className="ws-inline-error" role="alert">章节加载失败：{chapterError}</p> : null}
+      {chapterLoading && !chapter ? <p className="ws-card__hint">正在加载章节...</p> : null}
 
       {bundles.length > 0 ? (
         <div className="ws-sim-list">
@@ -475,12 +499,12 @@ export default function SimulationPage() {
             );
           })}
         </div>
-      ) : (
+      ) : !chapterLoading && !chapterError ? (
         <section className="ws-card">
           <p className="ws-card__title">世界响应</p>
           <p className="ws-card__hint">还没有世界响应记录。</p>
         </section>
-      )}
+      ) : null}
     </div>
   );
 }

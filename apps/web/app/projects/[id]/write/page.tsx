@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { WritingFlowPanel } from "../../../../components/ws/WritingFlow";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
+import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
 import { resolveChapterDirectionId } from "../../../../lib/chapterDirections";
 import {
@@ -14,7 +15,7 @@ import {
   fetchProjectWritingPacket,
   startFileProjectRegenerationJob,
   startGenerationJob,
-  type ChapterBundle,
+  type ChapterIndexEntry,
   type ChapterDirectionOption,
   type CodexWritingPacket,
   type GenerationJobStep,
@@ -27,12 +28,12 @@ function chapterCharCount(body: string | undefined): number {
   return body.replace(/\s+/g, "").length;
 }
 
-function chapterSearchText(bundle: ChapterBundle): string {
+function chapterSearchText(bundle: ChapterIndexEntry): string {
   return [
     String(bundle.chapter_number),
     bundle.chapter_title || "",
-    bundle.chapter_summary?.summary || "",
-    bundle.next_outline || "",
+    bundle.summary || "",
+    bundle.next_focus || "",
   ]
     .join(" ")
     .toLowerCase();
@@ -40,7 +41,7 @@ function chapterSearchText(bundle: ChapterBundle): string {
 
 export default function WritePage() {
   const searchParams = useSearchParams();
-  const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
+  const { project, story, chapterIndex, error, encodedProjectId, projectId, refreshVersion, refresh } = useProjectWorkspace();
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [regenerating, setRegenerating] = useState(false);
@@ -56,11 +57,13 @@ export default function WritePage() {
     setPage(1);
   }, [query]);
 
-  const history = story?.history ?? [];
-  const requestedChapter = Number(searchParams?.get("chapter") || story?.current_chapter || 0);
-  const chapter = useMemo(() => {
-    return history.find((bundle) => bundle.chapter_number === requestedChapter) ?? history.at(-1) ?? null;
-  }, [history, requestedChapter]);
+  const requestedChapter = Number(searchParams?.get("chapter") || story?.current_chapter || chapterIndex.at(-1)?.chapter_number || 0);
+  const { chapter, loading: chapterLoading, error: chapterError } = useChapterDetail({
+    projectId,
+    story: story ?? null,
+    chapterNumber: requestedChapter,
+    refreshVersion,
+  });
   const guidanceStorageKey = chapter ? `book-dissection-guidance:${projectId}:${chapter.chapter_number}` : "";
 
   useEffect(() => {
@@ -86,10 +89,10 @@ export default function WritePage() {
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredBundles = useMemo(() => {
-    const sorted = [...history].reverse();
+    const sorted = [...chapterIndex].reverse();
     if (!normalizedQuery) return sorted;
     return sorted.filter((bundle) => chapterSearchText(bundle).includes(normalizedQuery));
-  }, [history, normalizedQuery]);
+  }, [chapterIndex, normalizedQuery]);
   const totalPages = Math.max(1, Math.ceil(filteredBundles.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const visibleBundles = filteredBundles.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
@@ -208,13 +211,13 @@ export default function WritePage() {
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
           <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{error}</p>
         </div>
-      ) : chapter ? (
+      ) : chapterIndex.length > 0 ? (
         <div className="ws-editor-layout ws-editor-layout--chapters">
           <aside className="ws-sidepanel ws-chapter-index" aria-label="章节目录">
             <section className="ws-card">
               <div className="ws-section-head">
                 <p className="ws-card__title">目录</p>
-                <span className="ws-toolbar__meta">{history.length} 章</span>
+                <span className="ws-toolbar__meta">{chapterIndex.length} 章</span>
               </div>
               <label className="ws-search ws-search--compact">
                 <span>搜索</span>
@@ -227,7 +230,7 @@ export default function WritePage() {
               </label>
               <div className="ws-chapter-list">
                 {visibleBundles.map((bundle) => {
-                  const active = bundle.chapter_number === chapter.chapter_number;
+                  const active = bundle.chapter_number === requestedChapter;
                   return (
                     <Link
                       key={bundle.chapter_number}
@@ -237,7 +240,7 @@ export default function WritePage() {
                     >
                       <span>第 {bundle.chapter_number} 章</span>
                       <strong>{bundle.chapter_title || "未命名"}</strong>
-                      <small>{chapterCharCount(bundle.body)} 字</small>
+                      <small>{bundle.body_chars} 字</small>
                     </Link>
                   );
                 })}
@@ -269,6 +272,12 @@ export default function WritePage() {
           </aside>
 
           <article className="ws-reader">
+            {chapterError ? (
+              <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
+                <p style={{ color: "var(--ws-danger)", margin: 0 }}>章节加载失败：{chapterError}</p>
+              </div>
+            ) : chapter ? (
+              <>
             <header className="ws-reader__head">
               <div>
                 <p className="ws-card__title">正文</p>
@@ -397,6 +406,12 @@ export default function WritePage() {
               </div>
               <SimplifiedReview report={chapter.quality_report?.simplified_review} compact />
             </section>
+              </>
+            ) : chapterLoading ? (
+              <div className="ws-empty"><p className="ws-empty__title">正在加载章节...</p></div>
+            ) : (
+              <div className="ws-empty"><p className="ws-empty__title">没有找到该章节</p></div>
+            )}
           </article>
         </div>
       ) : (

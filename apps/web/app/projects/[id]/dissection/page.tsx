@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
+import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import {
   type BookDissectionReport,
   dissectFileProjectChapter,
@@ -90,7 +91,7 @@ function buildRewriteGuidance(report: BookDissectionReport): string {
 }
 
 export default function DissectionPage() {
-  const { project, story, error, encodedProjectId } = useProjectWorkspace();
+  const { project, story, chapterIndex, error, encodedProjectId, projectId, refreshVersion } = useProjectWorkspace();
   const [mode, setMode] = useState<DissectionMode>("reference");
   const [referenceText, setReferenceText] = useState("");
   const [genre, setGenre] = useState("网游");
@@ -100,7 +101,7 @@ export default function DissectionPage() {
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  const chapters = useMemo(() => story?.history ?? [], [story?.history]);
+  const chapters = chapterIndex;
   const isFileProject = project?.project_id?.startsWith("file:") ?? false;
   const defaultChapterNumber = useMemo(() => {
     if (chapters.length === 0) return undefined;
@@ -121,6 +122,16 @@ export default function DissectionPage() {
   }, [chapterNumber, chapters, defaultChapterNumber]);
 
   const hasValidChapter = chapterNumber !== undefined && chapters.some((chapter) => chapter.chapter_number === chapterNumber);
+  const {
+    chapter: chapterDetail,
+    loading: chapterLoading,
+    error: chapterError,
+  } = useChapterDetail({
+    projectId,
+    story: story ?? null,
+    chapterNumber: chapterNumber ?? 0,
+    refreshVersion,
+  });
 
   async function runDissection() {
     if (mode === "project" && !isFileProject) {
@@ -151,7 +162,14 @@ export default function DissectionPage() {
   }
 
   const canRunReference = referenceText.trim().length > 0;
-  const canRunProject = Boolean(project?.project_id && isFileProject && hasValidChapter);
+  const canRunProject = Boolean(
+    project?.project_id &&
+      isFileProject &&
+      hasValidChapter &&
+      !chapterLoading &&
+      !chapterError &&
+      chapterDetail?.chapter_number === chapterNumber,
+  );
   const rewriteGuidance = report && mode === "project" ? buildRewriteGuidance(report) : "";
 
   function useReportForRewrite() {
@@ -258,6 +276,8 @@ export default function DissectionPage() {
                     ))}
                   </select>
                 </label>
+                {chapterError ? <p className="ws-inline-error ws-form-grid__wide" role="alert">章节加载失败：{chapterError}</p> : null}
+                {chapterLoading ? <p className="ws-card__hint ws-form-grid__wide">正在加载章节...</p> : null}
               </div>
             )}
 
