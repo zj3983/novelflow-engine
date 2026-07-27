@@ -26,7 +26,7 @@ def _story() -> StoryState:
     )
 
 
-def _complete_plan(ordered_actions: list[object]) -> dict:
+def _complete_plan(ordered_actions: object) -> dict:
     return {
         "character_moves": {},
         "event_plan": {
@@ -274,10 +274,12 @@ def test_quality_gate_rejects_structured_placeholder_actor_names():
         characters=[CharacterState(name="林照", role="主角")],
     )
     ordered_plan = _complete_plan([{"name": "白河仓库收购方", "action": "上门压价"}])
-    grouped_plan = _complete_plan(["林照核对账册"])
-    grouped_plan["character_moves"] = {"白河仓库收购方": "上门压价"}
+    grouped_character_plan = _complete_plan(["林照核对账册"])
+    grouped_character_plan["character_moves"] = {"白河仓库收购方": "上门压价"}
+    grouped_ordered_plan = _complete_plan({"白河仓库收购方": "上门压价"})
+    grouped_ordered_list_plan = _complete_plan({"白河仓库收购方": ["上门压价"]})
 
-    for plan in (ordered_plan, grouped_plan):
+    for plan in (ordered_plan, grouped_character_plan, grouped_ordered_plan, grouped_ordered_list_plan):
         issues = _director_plan_quality_issues(story, plan)
 
         assert any("白河仓库收购方" in issue and "占位" in issue for issue in issues)

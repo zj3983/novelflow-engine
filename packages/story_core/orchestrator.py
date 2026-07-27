@@ -2395,7 +2395,11 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     generic_suffixes = ("收购方", "管理员", "工作人员", "路人", "玩家甲", "店员", "商人玩家")
     structured_named_moves = [
         *character_moves,
-        *_normalize_moves(event_plan.get("ordered_actions"), require_action=True),
+        *_normalize_moves(
+            event_plan.get("ordered_actions"),
+            require_action=True,
+            allow_text_items=True,
+        ),
     ]
     for move in structured_named_moves:
         name = str(move.get("name") or "").strip()
