@@ -1,0 +1,49 @@
+import pytest
+
+from packages.story_core.attribute_evidence import (
+    has_character_attribute_allocation,
+    has_positive_attribute_allocation_confirmation,
+    parse_count,
+)
+
+
+def test_attribute_allocation_accepts_modifier_between_action_and_points():
+    assert has_character_attribute_allocation("夜烬把刚拿到的五点全部加到智力上", "智力", 5)
+
+
+def test_attribute_allocation_rejects_negated_action_with_modifier_before_points():
+    assert not has_character_attribute_allocation("夜烬没有把刚拿到的五点全部加到智力上", "智力", 5)
+
+
+def test_attribute_allocation_accepts_confirmation_in_adjacent_paragraph():
+    body = "夜烬把五点全部加到智力上。\n\n他点下确认，可用属性点归零。"
+
+    assert has_positive_attribute_allocation_confirmation(body)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("0", 0),
+        ("十", 10),
+        ("十一", 11),
+        ("二十", 20),
+        ("二十五", 25),
+        ("一百", 100),
+        ("100", 100),
+    ],
+)
+def test_parse_count_supports_common_chinese_and_arabic_numbers(text: str, expected: int):
+    assert parse_count(text) == expected
+
+
+def test_attribute_allocation_accepts_character_action_that_mentions_rules():
+    assert has_character_attribute_allocation("夜烬按规则把五点加到智力上", "智力", 5)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("十", 10), ("十一", 11), ("二十", 20), ("二十五", 25), ("一百", 100)],
+)
+def test_attribute_allocation_matches_common_chinese_number_actions(text: str, expected: int):
+    assert has_character_attribute_allocation(f"夜烬把{text}点加到智力上", "智力", expected)

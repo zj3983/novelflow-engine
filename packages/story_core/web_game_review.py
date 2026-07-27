@@ -437,7 +437,7 @@ def _review_attribute_allocation_decision(
                 plan="按当前章节的结构化加点决定统一保留点数；正文明确写出的剩余点必须优先修正。",
             )
             return
-        has_choice, has_reason = has_character_attribute_carry_choice_and_reason(body)
+        has_choice, has_reason = has_character_attribute_carry_choice_and_reason(body, decision["reason"])
         if remaining != decision["remaining"] or not has_choice or not has_reason:
             _append_issue(
                 issues=issues,

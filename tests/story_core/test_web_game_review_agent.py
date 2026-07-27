@@ -787,6 +787,48 @@ def test_web_game_review_accepts_visible_points_and_reason_when_current_decision
     assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
 
 
+def test_web_game_review_accepts_carry_decision_with_modifier_before_points():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬看着可用属性点还剩五点，决定把这五点留着，等转职以后再用。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_requires_carry_reason_to_match_structured_reason():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬看着可用属性点还剩5点。夜烬决定留着，因为下雨。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
+def test_web_game_review_accepts_local_purpose_when_carry_reason_has_no_meaningful_term():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬看着可用属性点还剩5点，决定留着，因为等主城开放后再分配。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "为了"},
+        },
+        world_facts=[],
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
 def test_web_game_review_requires_local_carry_reason_instead_of_unrelated_because():
     review = review_web_game_chapter(
         chapter_number=4,

@@ -17,22 +17,28 @@ _CN_NUMERAL_VALUES = {
     "八": 8,
     "九": 9,
 }
-_COUNT_PATTERN = r"\d+|[一二两三四五六七八九十]{1,3}"
+_COUNT_PATTERN = r"\d+|[一二两三四五六七八九十百]{1,3}"
 _ATTRIBUTE_ACTION_PATTERN = (
     rf"(?:{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
     r"(?:全部)?(?:加到|加给|分配给|投入|点在)"
 )
-_EXPLANATORY_MARKERS = ("系统说明", "系统提示", "系统规则", "规则", "示例", "提示说明", "界面说明")
 _ATTRIBUTE_CONTEXT = ("属性点", "加点", "分配", "力量", "体质", "敏捷", "智力", "精神", "感知")
+_EXPLANATORY_SUBJECT_PATTERNS = (
+    re.compile(r"^\s*(?:《[^》]+》)?\s*系统(?:说明|提示|规则)"),
+    re.compile(r"^\s*规则(?:写明|说明|如下)"),
+    re.compile(r"^\s*示例(?:为|如下)?"),
+    re.compile(r"^\s*(?:提示说明|界面说明)"),
+)
 _CHARACTER_ACTION_PREFIX = re.compile(
-    r"(?:他|她|我|玩家|角色|[\u4e00-\u9fff]{2,4})[^。！？\n]{0,20}"
-    r"(?:打开|抬手|伸手|把|将|决定|选择|分配|投入|加)\s*$"
+    r"(?:他|她|我|玩家|角色|[\u4e00-\u9fff]{2,4})[^。！？\n]{0,28}"
+    r"(?:打开|抬手|伸手|把|将|决定|选择|分配|投入|加)[^。！？\n]{0,18}$"
 )
 _CHARACTER_SUBJECT_PREFIX = re.compile(r"(?:他|她|我|玩家|角色|[\u4e00-\u9fff]{2,4})[^。！？\n]{0,20}$")
 _CARRY_DECISION_PREFIX = re.compile(
-    r"(?:他|她|我|玩家|角色|[\u4e00-\u9fff]{2,4})[^。！？\n]{0,24}"
-    r"(?:决定|打算|选择|准备|想|先|暂时)\s*$"
+    r"(?:他|她|我|玩家|角色|[\u4e00-\u9fff]{2,4})[^。！？\n]{0,28}"
+    r"(?:决定|打算|选择|准备|想|先|暂时)[^。！？\n]{0,18}$"
 )
+_GENERIC_REASON_TERMS = {"先", "为了", "因为", "属性点", "属性", "点", "保留", "留着", "分配", "决定", "原因", "目的", "以后", "再用", "留给"}
 
 
 def parse_count(value: str) -> int | None:
@@ -49,6 +55,8 @@ def parse_count(value: str) -> int | None:
         ones = _CN_NUMERAL_VALUES.get(right, 0 if right == "" else None)
         if tens is not None and ones is not None:
             return tens * 10 + ones
+    if value == "一百":
+        return 100
     return None
 
 
@@ -60,15 +68,17 @@ def sentence_bounds(text: str, position: int) -> tuple[int, int]:
 
 def _is_explanatory_sentence(text: str, position: int) -> bool:
     start, end = sentence_bounds(text, position)
-    return any(marker in text[start:end] for marker in _EXPLANATORY_MARKERS)
+    return any(pattern.search(text[start:end]) for pattern in _EXPLANATORY_SUBJECT_PATTERNS)
 
 
 def _is_negated_before(text: str, position: int, *, carry: bool = False) -> bool:
     start, _ = sentence_bounds(text, position)
     prefix = text[start:position].rstrip()
     if carry:
-        return bool(re.search(r"(?:没有|没|未|并未|不)\s*(?:打算|准备|想|决定|选择|再|先)?\s*$", prefix))
-    return bool(re.search(r"(?:没有|没|未|并未|不)\s*(?:把|将)?\s*$", prefix))
+        return bool(re.search(r"(?:没有|没|未|并未|不)\s*(?:打算|准备|想|决定|选择)[^。！？\n]{0,16}$", prefix))
+    return bool(
+        re.search(r"(?:没有|没|未|并未|不)(?:\s*(?:打算|准备|决定|选择))?\s*(?:把|将)[^。！？\n]{0,16}$", prefix)
+    )
 
 
 def _has_character_action(text: str, action_start: int) -> bool:
@@ -94,7 +104,16 @@ def _action_matches(body: str, attribute: str | None = None, points: int | None 
 
 
 def _chinese_number(value: int) -> str:
-    return next((token for token, number in _CN_NUMERAL_VALUES.items() if number == value), "")
+    digits = ("零", "一", "二", "三", "四", "五", "六", "七", "八", "九")
+    if 0 <= value < 10:
+        return digits[value]
+    if value == 100:
+        return "一百"
+    if 10 <= value < 100:
+        tens, ones = divmod(value, 10)
+        prefix = "十" if tens == 1 else f"{digits[tens]}十"
+        return prefix if ones == 0 else f"{prefix}{digits[ones]}"
+    return ""
 
 
 def has_character_attribute_allocation(body: str, attribute: str | None = None, points: int | None = None) -> bool:
@@ -126,11 +145,11 @@ def _positive_confirmation_positions(body: str) -> list[int]:
         if _is_negated_before(body, action.start()) or not _has_character_action(body, action.start()):
             continue
         action_start, action_end = sentence_bounds(body, action.start())
-        _, nearby_end = sentence_bounds(body, action_end + 1)
+        nearby_start, nearby_end = _next_nonempty_sentence_bounds(body, action_end + 1)
         for match in confirmations:
             confirmation_start, confirmation_end = sentence_bounds(body, match.start())
             suffix = body[match.end() : match.end() + 8]
-            if confirmation_start not in (action_start, action_end + 1) or match.start() > nearby_end:
+            if confirmation_start not in (action_start, nearby_start) or match.start() > nearby_end:
                 continue
             if _is_negated_before(body, match.start()) or re.match(r"\s*(?:不分配|不加点|不加属性)", suffix):
                 continue
@@ -141,6 +160,12 @@ def _positive_confirmation_positions(body: str) -> list[int]:
             if any(token in confirmation_sentence for token in _ATTRIBUTE_CONTEXT):
                 positions.append(match.start())
     return positions
+
+
+def _next_nonempty_sentence_bounds(text: str, position: int) -> tuple[int, int]:
+    while position < len(text) and text[position] in "。！？ \t\r\n":
+        position += 1
+    return sentence_bounds(text, position)
 
 
 def has_positive_attribute_allocation_confirmation(body: str) -> bool:
@@ -179,9 +204,36 @@ def latest_confirmed_attribute_points(body: str) -> int | None:
     return results[-1][1] if results else None
 
 
-def has_character_attribute_carry_choice_and_reason(body: str) -> tuple[bool, bool]:
+def _normalized_reason(text: str) -> str:
+    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", text)
+
+
+def _meaningful_reason_terms(reason: str) -> set[str]:
+    normalized = _normalized_reason(reason)
+    terms: set[str] = set()
+    for group in re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", normalized):
+        for length in (2, 3, 4):
+            for start in range(len(group) - length + 1):
+                term = group[start : start + length]
+                if term not in _GENERIC_REASON_TERMS:
+                    terms.add(term)
+    return terms
+
+
+def _carry_reason_matches(context: str, expected_reason: str) -> bool:
+    purpose_pattern = r"因为|为了|留给|等(?:到)?|以便|好在"
+    if not re.search(purpose_pattern, context):
+        return False
+    normalized_expected = _normalized_reason(expected_reason)
+    normalized_context = _normalized_reason(context)
+    if normalized_expected and normalized_expected in normalized_context:
+        return True
+    terms = _meaningful_reason_terms(expected_reason)
+    return True if not terms else any(term in normalized_context for term in terms)
+
+
+def has_character_attribute_carry_choice_and_reason(body: str, expected_reason: str = "") -> tuple[bool, bool]:
     choice_pattern = r"暂时不加|先不加|留着|保留|攒着|不分配"
-    reason_pattern = r"因为|为了|留给|等到|等转职"
     for choice in re.finditer(choice_pattern, body):
         start, end = sentence_bounds(body, choice.start())
         sentence = body[start:end]
@@ -192,12 +244,10 @@ def has_character_attribute_carry_choice_and_reason(body: str) -> tuple[bool, bo
         has_actor = bool(_CHARACTER_SUBJECT_PREFIX.search(prefix)) if direct_choice else bool(_CARRY_DECISION_PREFIX.search(prefix))
         if not has_actor:
             continue
-        if re.search(reason_pattern, sentence):
-            return True, True
-        next_start = end + 1
-        _, next_end = sentence_bounds(body, next_start)
+        context = sentence
+        next_start, next_end = _next_nonempty_sentence_bounds(body, end + 1)
         next_sentence = body[next_start:next_end].lstrip()
-        if re.match(rf"(?:{reason_pattern})", next_sentence):
-            return True, True
-        return True, False
+        if re.match(r"(?:因为|为了|留给|等(?:到)?|以便|好在)", next_sentence):
+            context = f"{context} {next_sentence}"
+        return True, _carry_reason_matches(context, expected_reason)
     return False, False

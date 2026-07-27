@@ -403,6 +403,28 @@ def test_attribute_allocation_accepts_pronoun_subject_without_known_game_id():
     assert result["ledger_updates"] == payload["ledger_updates"]
 
 
+def test_attribute_allocation_memory_accepts_modified_action_and_adjacent_paragraph_confirmation():
+    body = "夜烬把刚拿到的五点全部加到智力上。\n\n他点下确认，可用属性点归零。"
+    payload = {
+        "ledger_updates": {
+            "protagonist": {
+                "attribute_allocation": {
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                }
+            }
+        },
+        "ledger_evidence": {
+            "protagonist.attribute_allocation.allocations.智力": "把刚拿到的五点全部加到智力上",
+            "protagonist.attribute_allocation.remaining": "可用属性点归零",
+        },
+    }
+
+    result = normalize_post_draft_memory(payload, body=body, existing_character_names={"夜烬"})
+
+    assert result["ledger_updates"] == payload["ledger_updates"]
+
+
 def test_attribute_allocation_rejects_zero_remaining_from_unrelated_durability_text():
     body = "夜烬把五点加到智力上，确认加点。可用属性点还是5点，法杖耐久归零。"
     result = normalize_post_draft_memory(
