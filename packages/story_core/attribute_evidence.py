@@ -55,6 +55,10 @@ _DISCOURSE_PREFIXES = ("此时", "随后", "这时", "只见")
 _SUBJECTLESS_STATUS_CLAUSE = re.compile(
     r"(?:确认(?:完成)?|提示(?:消失)?|界面(?:消失|关闭)?|面板(?:消失|关闭)?|结算(?:完成)?|操作(?:完成)?)(?:后|之后|以后|时)$"
 )
+_OTHER_SUBJECT_PATTERN = re.compile(
+    r"^(?:[\u4e00-\u9fff]{0,4}(?:玩家|队友|NPC|法师|战士|牧师|男人|女人|少年|少女|村民|店员|老板))"
+)
+_ENVIRONMENT_SUBJECTS = ("面板", "提示", "界面", "白光", "系统")
 
 
 def parse_count(value: str) -> int | None:
@@ -463,14 +467,21 @@ def _strip_discourse_prefix(value: str) -> str:
     return value
 
 
-def _has_explicit_named_other(text: str, aliases: tuple[str, ...]) -> bool:
+def _explicit_subject_kind(text: str, aliases: tuple[str, ...]) -> str:
+    """Classify only clause-leading subjects; later mentions are objects or context."""
+
+    latest = "none"
     for clause in re.split(r"[，,]", text):
         clause = _strip_discourse_prefix(clause.strip())
-        if not clause or any(alias in clause for alias in aliases) or clause.startswith(("他", "她", "自己")):
+        if not clause or clause.startswith(("他", "她", "自己")):
             continue
-        if re.match(r"[\u4e00-\u9fff]{2,}", clause):
-            return True
-    return False
+        if any(clause.startswith(alias) for alias in aliases):
+            latest = "protagonist"
+        elif _OTHER_SUBJECT_PATTERN.match(clause):
+            latest = "other"
+        elif clause.startswith(_ENVIRONMENT_SUBJECTS):
+            continue
+    return latest
 
 
 def _owner_is_protagonist(
@@ -497,8 +508,15 @@ def _owner_is_protagonist(
         return True
     if earlier_clause.startswith(("他", "她", "自己")):
         previous_start, previous_end = _previous_nonempty_sentence_bounds(body, sentence_start)
-        related_context = "，".join(clauses[:-1]) + "，" + body[previous_start:previous_end]
-        return not _has_explicit_named_other(related_context, aliases)
+        earlier_start, earlier_end = _previous_nonempty_sentence_bounds(body, previous_start)
+        related_context = (
+            body[earlier_start:earlier_end]
+            + "，"
+            + body[previous_start:previous_end]
+            + "，"
+            + "，".join(clauses[:-1])
+        )
+        return _explicit_subject_kind(related_context, aliases) != "other"
     return not bool(re.match(r"[\u4e00-\u9fff]{2,}", _strip_discourse_prefix(earlier_clause)))
 
 

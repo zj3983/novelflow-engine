@@ -299,6 +299,24 @@ def test_confirmed_allocation_rejects_a_pronoun_confirmation_chain_after_a_bysta
     assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) is None
 
 
+def test_confirmed_allocation_rejects_a_bystander_subject_when_the_protagonist_is_only_the_object():
+    body = "夜烬把五点加到智力上。短发玩家看了夜烬一眼，他确认加点，提示消失后，他的面板上的可用属性点还剩四点。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) is None
+
+
+def test_confirmed_allocation_keeps_a_pronoun_chain_after_an_environment_clause():
+    body = "夜烬把五点加到智力上，面板亮了一下。他确认加点，提示消失后，他的面板上的可用属性点归零。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
+
+
+def test_confirmed_allocation_keeps_a_pronoun_chain_when_the_protagonist_is_the_subject():
+    body = "夜烬把五点加到智力上。夜烬看了短发玩家一眼，他确认加点，提示消失后，他的面板上的可用属性点归零。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
+
+
 def test_confirmed_allocation_rejects_another_characters_owned_panel_result():
     body = "夜烬把五点加到智力上。随后他确认加点。短发玩家的面板上的可用属性点还剩四点。"
 
