@@ -194,7 +194,47 @@ def _normalized_character_aliases_by_name(
 
 
 def _evidence_clauses(evidence: str) -> list[str]:
-    return [clause.strip() for clause in re.split(r"[。！？\n；;]+", evidence) if clause.strip()]
+    return [clause.strip() for clause in re.split(r"[.!?。！？\n；;]+", evidence) if clause.strip()]
+
+
+def _character_evidence_spans(
+    evidence: str,
+    target_name: str,
+    *,
+    aliases_by_name: Mapping[str, set[str]],
+    known_names: set[str],
+) -> list[str]:
+    """Keep each target span only until another known character takes the subject slot."""
+
+    all_names = known_names | set(aliases_by_name)
+    aliases_for_name = {
+        name: {name, *aliases_by_name.get(name, set())}
+        for name in all_names
+    }
+    spans: list[str] = []
+    for clause in _evidence_clauses(evidence):
+        anchors: set[tuple[int, int, str]] = set()
+        for name, aliases in aliases_for_name.items():
+            for alias in aliases:
+                if not alias:
+                    continue
+                anchors.update(
+                    (match.start(), match.end(), name)
+                    for match in re.finditer(re.escape(alias), clause)
+                )
+        ordered = sorted(anchors, key=lambda item: (item[0], -(item[1] - item[0]), item[2]))
+        for index, (start, _end, name) in enumerate(ordered):
+            if name != target_name:
+                continue
+            stop = len(clause)
+            for next_start, _next_end, next_name in ordered[index + 1 :]:
+                if next_name != target_name:
+                    stop = next_start
+                    break
+            span = clause[start:stop].strip()
+            if span:
+                spans.append(span)
+    return spans
 
 
 def _normalize_character_updates(
@@ -244,13 +284,13 @@ def _normalize_character_updates(
                 }
             )
             continue
-        appearance_names = {name, *aliases_by_name.get(name, set())}
-        clauses = _evidence_clauses(evidence)
-        if not any(
-            _literal_value_in_body(candidate, clause)
-            for clause in clauses
-            for candidate in appearance_names
-        ):
+        spans = _character_evidence_spans(
+            evidence,
+            name,
+            aliases_by_name=aliases_by_name,
+            known_names=known_names,
+        )
+        if not spans:
             rejected.append(
                 {
                     "kind": "character_update",
@@ -263,11 +303,7 @@ def _normalize_character_updates(
         update = {"name": name}
         for field in ("emotion", "goal", "location"):
             field_value = _text(item.get(field))
-            if field_value and any(
-                _evidence_matches(clause, field_value)
-                and any(_literal_value_in_body(candidate, clause) for candidate in appearance_names)
-                for clause in clauses
-            ):
+            if field_value and any(_evidence_matches(span, field_value) for span in spans):
                 update[field] = field_value
         if len(update) == 1:
             rejected.append(

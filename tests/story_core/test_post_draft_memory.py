@@ -725,6 +725,30 @@ def test_character_update_field_and_alias_must_share_one_evidence_clause():
     ]
 
 
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "青锋站门口，赤霄脸色凝重。",
+        "青锋站门口.赤霄脸色凝重.",
+    ],
+)
+def test_character_update_evidence_stops_at_the_next_known_character(evidence: str):
+    result = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "林峰", "emotion": "凝重", "evidence": evidence}
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body=evidence,
+        existing_character_names={"林峰", "周远"},
+        character_aliases_by_name={"林峰": {"青锋"}, "周远": {"赤霄"}},
+    )
+
+    assert result["character_updates"] == []
+
+
 def test_memory_prompt_lists_game_id_but_requires_real_character_name_for_updates():
     prompt = build_post_draft_memory_prompt(
         "青锋脸色凝重。",
