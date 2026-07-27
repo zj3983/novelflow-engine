@@ -5507,6 +5507,186 @@ def test_regenerate_uses_complete_runtime_story_payload_for_project_genre(monkey
     assert story.author_constraints == ["PROJECT_RULE"]
 
 
+def test_regenerate_second_chapter_uses_previous_snapshot_for_attribute_reallocation(tmp_path):
+    root = tmp_path / "regenerate-attribute-baseline"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-regenerate-attributes",
+            "title": "Attribute Rewrite",
+            "active_story_id": "s-regenerate-attributes",
+            "genre": "game_webnovel",
+            "world_blueprint": {
+                "genre_plugin_ids": ["game_webnovel"],
+                "power_system_spec": {
+                    "attribute_allocation": {
+                        "mode": "free",
+                        "points_per_level": 5,
+                        "starting_level": 1,
+                        "base_attributes": {"Intelligence": 5, "Constitution": 5},
+                        "allow_carry": True,
+                        "respec_rule": "Respec in town.",
+                    }
+                },
+            },
+        },
+        state={
+            "story_id": "s-regenerate-attributes",
+            "outline": "Ari tests a new build.",
+            "genre": "game_webnovel",
+            "style": "plain",
+            "current_chapter": 2,
+            "author_constraints": ["Use the current author rule."],
+            "progression_ledger": {
+                "protagonist": {
+                    "level": "Lv.2",
+                    "attributes": {"Intelligence": 10, "Constitution": 5},
+                    "unallocated_attribute_points": 0,
+                    "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 1}],
+                    "attribute_allocations": [
+                        {"chapter": 2, "allocations": {"Intelligence": 5}, "remaining": 0}
+                    ],
+                }
+            },
+            "characters": [
+                {"name": "Ari", "role": "protagonist", "current_emotion": "chapter-two-stale"}
+            ],
+        },
+    )
+    chapter_one_state = {
+        "story_id": "s-regenerate-attributes",
+        "outline": "Ari tests a new build.",
+        "genre": "game_webnovel",
+        "style": "plain",
+        "current_chapter": 1,
+        "author_constraints": ["Old author rule."],
+        "progression_ledger": {
+            "protagonist": {
+                "level": "Lv.2",
+                "attributes": {"Intelligence": 5, "Constitution": 5},
+                "unallocated_attribute_points": 5,
+                "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 1}],
+                "attribute_allocations": [],
+            }
+        },
+        "characters": [{"name": "Ari", "role": "protagonist", "current_emotion": "chapter-one-ready"}],
+        "chapter_summaries": [{"chapter_number": 1, "summary": "Ari earns five points."}],
+    }
+    store._write_json(
+        store.story_system_dir / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "First Reward",
+            "body": _long_test_body("The panel shows level: 2 and five available points."),
+            "updated_story": chapter_one_state,
+            "chapter_summary": {"chapter_number": 1, "summary": "Ari earns five points."},
+        },
+    )
+    store._write_json(
+        store.story_system_dir / "chapters" / "0002.json",
+        {
+            "chapter_number": 2,
+            "chapter_title": "Old Allocation",
+            "body": _long_test_body("Ari spends five points on Intelligence."),
+        },
+    )
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            protagonist = story.progression_ledger["protagonist"]
+            assert story.current_chapter == 1
+            assert story.author_constraints == ["Use the current author rule."]
+            assert story.characters[0].current_emotion == "chapter-one-ready"
+            assert protagonist["unallocated_attribute_points"] == 5
+            assert protagonist["attribute_allocations"] == []
+            updated = story.model_dump(mode="json")
+            updated["current_chapter"] = 2
+            updated["progression_ledger"]["protagonist"] = {
+                "level": "Lv.2",
+                "attributes": {"Intelligence": 5, "Constitution": 10},
+                "unallocated_attribute_points": 0,
+                "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 1}],
+                "attribute_allocations": [
+                    {"chapter": 2, "allocations": {"Constitution": 5}, "remaining": 0}
+                ],
+            }
+            return SimpleNamespace(
+                chapter_number=2,
+                chapter_title="New Allocation",
+                body=_long_test_body("The panel shows level: 2. Ari spends five points on Constitution."),
+                cadence="manual",
+                next_outline="Test the Constitution build.",
+                updated_story=StoryState.model_validate(updated),
+                quality_report={"ok": True, "issues": []},
+                chapter_summary={
+                    "chapter_title": "New Allocation",
+                    "cadence": "manual",
+                    "summary": "Ari changes the allocation.",
+                    "facts": ["Constitution receives five points."],
+                    "next_focus": "Test the Constitution build.",
+                    "primary_conflict": "Build choice.",
+                    "secondary_conflict": "Limited points.",
+                    "event_beat": "Reallocate.",
+                },
+            )
+
+    store.regenerate_chapter(2, engine=FakeEngine())
+
+    state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    protagonist = state["progression_ledger"]["protagonist"]
+    assert protagonist["attribute_point_awards"] == [{"level": 2, "points": 5, "chapter": 1}]
+    assert protagonist["attribute_allocations"] == [
+        {"chapter": 2, "allocations": {"Constitution": 5}, "remaining": 0}
+    ]
+    assert protagonist["unallocated_attribute_points"] == 0
+
+
+def test_regenerate_without_previous_snapshot_does_not_reuse_completed_chapter_state(monkeypatch, tmp_path):
+    root = tmp_path / "regenerate-safe-fallback"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-regenerate-fallback",
+            "outline": "Ari tests a build.",
+            "genre": "game_webnovel",
+            "style": "plain",
+            "current_chapter": 2,
+            "progression_ledger": {
+                "protagonist": {
+                    "level": "Lv.2",
+                    "unallocated_attribute_points": 0,
+                    "attribute_allocations": [
+                        {"chapter": 2, "allocations": {"Intelligence": 5}, "remaining": 0}
+                    ],
+                }
+            },
+            "characters": [{"name": "Ari", "role": "protagonist"}],
+        },
+    )
+    store._write_json(
+        store.story_system_dir / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "Legacy First",
+            "body": _long_test_body("The panel shows level: 2."),
+        },
+    )
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            allocations = story.progression_ledger.get("protagonist", {}).get("attribute_allocations", [])
+            assert not any(item.get("chapter") == 2 for item in allocations)
+            return SimpleNamespace(chapter_number=2, chapter_title="Fallback Rewrite", quality_report={}, chapter_summary={})
+
+    monkeypatch.setattr(
+        store,
+        "persist_bundle",
+        lambda bundle, **_kwargs: {"chapter_number": bundle.chapter_number, "chapter_title": bundle.chapter_title},
+    )
+
+    store.regenerate_chapter(2, engine=FakeEngine())
+
+
 def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(

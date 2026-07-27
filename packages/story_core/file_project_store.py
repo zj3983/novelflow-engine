@@ -4377,6 +4377,72 @@ class FileProjectStore:
             reset["characters"] = characters
         return reset
 
+    def _chapter_snapshot_state(
+        self,
+        chapter_number: int,
+        current_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        try:
+            chapter = self.chapter(chapter_number)
+        except FileNotFoundError:
+            return None
+        updated_story = chapter.get("updated_story") if isinstance(chapter, dict) else None
+        if not isinstance(updated_story, dict):
+            return None
+        try:
+            snapshot_chapter = int(updated_story.get("current_chapter") or 0)
+        except (TypeError, ValueError):
+            return None
+        if snapshot_chapter != chapter_number:
+            return None
+        usable = self._usable_bundle_state(updated_story, current_state)
+        return None if usable is current_state else dict(usable)
+
+    @staticmethod
+    def _merge_regeneration_configuration(
+        base_state: dict[str, Any],
+        current_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged = dict(base_state)
+        for field in (
+            "author_constraints",
+            "enabled_skill_ids",
+            "genre",
+            "genre_plugin_ids",
+            "style",
+        ):
+            if field in current_state:
+                merged[field] = deepcopy(current_state[field])
+        return merged
+
+    def _regeneration_base_state(
+        self,
+        chapter_number: int,
+        current_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        snapshot_number = 0
+        base_state: dict[str, Any] | None = None
+        for previous_number in range(chapter_number - 1, 0, -1):
+            base_state = self._chapter_snapshot_state(previous_number, current_state)
+            if base_state is not None:
+                snapshot_number = previous_number
+                break
+        if base_state is None:
+            base_state = self._reset_first_chapter_regeneration_state(deepcopy(current_state))
+
+        replay_numbers = [
+            number
+            for number in self.chapter_numbers()
+            if snapshot_number < number < chapter_number
+        ]
+        for previous_number in replay_numbers:
+            chapter = self.chapter(previous_number)
+            base_state = self._sync_state_after_chapter(base_state, deepcopy(chapter))
+            base_state = self._sync_ledger_from_chapter_body(base_state, deepcopy(chapter))
+
+        base_state["current_chapter"] = chapter_number - 1
+        return self._merge_regeneration_configuration(base_state, current_state)
+
     def regenerate_chapter(
         self,
         chapter_number: int,
@@ -4394,8 +4460,8 @@ class FileProjectStore:
         self._assert_opening_preflight(chapter_number)
 
         if chapter_number > 1:
-            base_chapter = self.chapter(chapter_number - 1)
-            base_state = dict(self.state())
+            current_state = dict(self.state())
+            base_state = self._regeneration_base_state(chapter_number, current_state)
         else:
             base_state = self._reset_first_chapter_regeneration_state(dict(self.state()))
 
