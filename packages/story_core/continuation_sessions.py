@@ -170,6 +170,12 @@ def _validate_open_handle(
     fixed_root: Path,
     expected_path: Path,
 ) -> None:
+    try:
+        link_count = os.fstat(handle.fileno()).st_nlink
+    except (AttributeError, OSError):
+        raise ValueError("invalid_session_path") from None
+    if link_count != 1:
+        raise ValueError("invalid_session_path")
     final_path = _final_path_from_handle(handle, expected_path)
     try:
         final_path.relative_to(fixed_root)

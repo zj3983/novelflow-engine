@@ -632,6 +632,33 @@ def test_conversion_lock_rejects_symlinked_lock_file_without_touching_victim(
     assert not (tmp_path / "p-lock-symlink").exists()
 
 
+def test_conversion_lock_rejects_hard_linked_lock_file_without_touching_victim(
+    tmp_path: Path,
+) -> None:
+    lock_root = tmp_path / ".continuation-conversion-locks"
+    lock_root.mkdir()
+    digest = hashlib.sha256(b"ci-ready-session").hexdigest()
+    victim = tmp_path / "outside-hardlink-victim.txt"
+    victim.write_bytes(b"HARDLINK_VICTIM")
+    lock_path = lock_root / f"{digest}.lock"
+    try:
+        os.link(victim, lock_path)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"hard link creation unavailable: {exc}")
+
+    assert os.stat(lock_path).st_nlink > 1
+    with pytest.raises(ValueError, match="^invalid_conversion_lock_path$"):
+        _create_project(
+            tmp_path,
+            _ready_session(),
+            _settings(3),
+            project_id_factory=lambda: "p-lock-hardlink",
+        )
+
+    assert victim.read_bytes() == b"HARDLINK_VICTIM"
+    assert not (tmp_path / "p-lock-hardlink").exists()
+
+
 def test_conversion_lock_rejects_file_swapped_to_symlink_before_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

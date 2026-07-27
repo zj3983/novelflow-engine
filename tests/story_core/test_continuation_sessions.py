@@ -683,6 +683,28 @@ def test_get_rejects_symlinked_session_directory(tmp_path: Path) -> None:
         store.get(session.session_id)
 
 
+def test_get_rejects_historical_hard_linked_session_lock_without_touching_victim(
+    tmp_path: Path,
+) -> None:
+    store, session, _ = _created_session_paths(tmp_path)
+    lock_path = tmp_path / "sessions" / ".locks" / f"{session.session_id}.lock"
+    assert lock_path.is_file()
+    assert os.stat(lock_path).st_nlink == 1
+    lock_path.unlink()
+    victim = tmp_path / "outside-session-lock-victim.txt"
+    victim.write_bytes(b"SESSION_LOCK_VICTIM")
+    try:
+        os.link(victim, lock_path)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"hard link creation unavailable: {exc}")
+
+    assert os.stat(lock_path).st_nlink > 1
+    with pytest.raises(ValueError, match="^invalid_session_path$"):
+        store.get(session.session_id)
+
+    assert victim.read_bytes() == b"SESSION_LOCK_VICTIM"
+
+
 def test_create_rejects_directory_member_renamed_after_scan(tmp_path: Path) -> None:
     source = tmp_path / "source"
     original_parent = source / "old"
