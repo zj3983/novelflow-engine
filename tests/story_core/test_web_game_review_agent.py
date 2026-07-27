@@ -645,6 +645,24 @@ def test_web_game_review_rejects_negated_allocation_choice_and_confirmation():
     assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
 
 
+def test_web_game_review_rejects_system_description_without_character_choice():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》系统说明：五点属性点加到智力上，确认后分配生效，可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
 def test_web_game_review_accepts_visible_chinese_numeral_allocation_and_confirmation():
     review = review_web_game_chapter(
         chapter_number=4,

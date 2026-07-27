@@ -357,6 +357,52 @@ def test_attribute_allocation_rejects_unrelated_later_confirmation():
     assert result["ledger_updates"] == {}
 
 
+def test_attribute_allocation_rejects_system_description_without_character_choice():
+    body = "《神域》系统说明：五点属性点加到智力上，确认后分配生效，可用属性点归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {
+                        "allocations": {"智力": 5},
+                        "remaining": 0,
+                    }
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "五点属性点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点归零",
+            },
+        },
+        body=body,
+        existing_character_names=set(),
+    )
+
+    assert result["ledger_updates"] == {}
+
+
+def test_attribute_allocation_accepts_pronoun_subject_without_known_game_id():
+    body = "他把五点属性点加到智力上，确认加点后，可用属性点归零。"
+    payload = {
+        "ledger_updates": {
+            "protagonist": {
+                "attribute_allocation": {
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                }
+            }
+        },
+        "ledger_evidence": {
+            "protagonist.attribute_allocation.allocations.智力": "把五点属性点加到智力上",
+            "protagonist.attribute_allocation.remaining": "可用属性点归零",
+        },
+    }
+
+    result = normalize_post_draft_memory(payload, body=body, existing_character_names=set())
+
+    assert result["ledger_updates"] == payload["ledger_updates"]
+
+
 def test_attribute_state_aliases_accept_visible_post_allocation_values():
     body = "夜烬把五点加到智力上，确认后智力从五变成十，可用属性点归零。"
     result = normalize_post_draft_memory(

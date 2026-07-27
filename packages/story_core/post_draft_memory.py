@@ -383,6 +383,11 @@ _ATTRIBUTE_ACTION_PATTERN = (
     r"(?:全部)?(?:加到|加给|分配给|投入|点在)"
 )
 _ATTRIBUTE_CONFIRMATION_CONTEXT = ("属性点", "加点", "分配", "力量", "体质", "敏捷", "智力", "精神", "感知")
+_EXPLANATORY_ALLOCATION_MARKERS = ("系统", "规则", "示例", "提示说明", "界面说明")
+_CHARACTER_ALLOCATION_PREFIX = re.compile(
+    r"(?:他|她|我|玩家|角色|[\u4e00-\u9fff]{2,4})[^。！？\n]{0,20}"
+    r"(?:打开|抬手|伸手|把|将|决定|选择|分配|投入|加)\s*$"
+)
 
 
 def _sentence_bounds(text: str, position: int) -> tuple[int, int]:
@@ -391,10 +396,18 @@ def _sentence_bounds(text: str, position: int) -> tuple[int, int]:
     return start, min(ends) if ends else len(text)
 
 
+def _has_character_allocation_actor(body: str, action_start: int) -> bool:
+    sentence_start, sentence_end = _sentence_bounds(body, action_start)
+    sentence = body[sentence_start:sentence_end]
+    if any(marker in sentence for marker in _EXPLANATORY_ALLOCATION_MARKERS):
+        return False
+    return bool(_CHARACTER_ALLOCATION_PREFIX.search(body[sentence_start:action_start]))
+
+
 def _has_positive_confirmation(body: str) -> bool:
     confirmations = list(re.finditer(r"确认|确定|生效|保存", body))
     for action in re.finditer(_ATTRIBUTE_ACTION_PATTERN, body):
-        if _is_locally_negated(body, action.start()):
+        if _is_locally_negated(body, action.start()) or not _has_character_allocation_actor(body, action.start()):
             continue
         action_start, action_end = _sentence_bounds(body, action.start())
         _, nearby_end = _sentence_bounds(body, action_end + 1)
@@ -426,7 +439,7 @@ def _attribute_allocation_action_supported(body: str, attribute: str, points: in
             rf"(?:全部)?(?:加到|加给|分配给|投入|点在)\s*{re.escape(attribute)}(?:上|里)?"
         )
         match = re.search(pattern, body)
-        if match and not _is_locally_negated(body, match.start()):
+        if match and not _is_locally_negated(body, match.start()) and _has_character_allocation_actor(body, match.start()):
             return True
     return False
 
@@ -440,7 +453,10 @@ def _attribute_remaining_supported(value: Any, body: str, evidence: str) -> bool
 
 
 def _has_attribute_allocation_action(body: str) -> bool:
-    return any(not _is_locally_negated(body, match.start()) for match in re.finditer(_ATTRIBUTE_ACTION_PATTERN, body))
+    return any(
+        not _is_locally_negated(body, match.start()) and _has_character_allocation_actor(body, match.start())
+        for match in re.finditer(_ATTRIBUTE_ACTION_PATTERN, body)
+    )
 
 
 def _attribute_state_value_supported(
