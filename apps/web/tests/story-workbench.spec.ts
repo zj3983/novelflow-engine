@@ -914,12 +914,15 @@ test("projects page creates tabs with complete keyboard navigation", async ({ pa
 
   const inspirationTab = page.getByRole("tab", { name: "从灵感开书" });
   const blankTab = page.getByRole("tab", { name: "建立空白小说" });
+  const continuationTab = page.getByRole("tab", { name: "续写已有小说" });
   const tabpanel = page.getByRole("tabpanel");
 
   await expect(inspirationTab).toHaveAttribute("tabindex", "0");
   await expect(blankTab).toHaveAttribute("tabindex", "-1");
+  await expect(continuationTab).toHaveAttribute("tabindex", "-1");
   await expect(inspirationTab).toHaveAttribute("aria-controls", "creation-form");
   await expect(blankTab).toHaveAttribute("aria-controls", "creation-form");
+  await expect(continuationTab).toHaveAttribute("aria-controls", "continuation-import");
   await expect(tabpanel).toHaveAttribute("aria-labelledby", "creation-mode-inspiration");
 
   await inspirationTab.focus();
@@ -931,13 +934,18 @@ test("projects page creates tabs with complete keyboard navigation", async ({ pa
   await expect(tabpanel).toHaveAttribute("aria-labelledby", "creation-mode-blank");
 
   await blankTab.press("ArrowRight");
+  await expect(continuationTab).toBeFocused();
+  await expect(continuationTab).toHaveAttribute("aria-selected", "true");
+  await continuationTab.press("ArrowRight");
   await expect(inspirationTab).toBeFocused();
   await inspirationTab.press("ArrowLeft");
+  await expect(continuationTab).toBeFocused();
+  await continuationTab.press("ArrowLeft");
   await expect(blankTab).toBeFocused();
   await blankTab.press("Home");
   await expect(inspirationTab).toBeFocused();
   await inspirationTab.press("End");
-  await expect(blankTab).toBeFocused();
+  await expect(continuationTab).toBeFocused();
 });
 
 test("projects page creates a single-column form without mobile overflow", async ({ page }) => {
