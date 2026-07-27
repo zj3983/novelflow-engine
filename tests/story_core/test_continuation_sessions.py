@@ -267,6 +267,118 @@ def test_update_changes_status_and_analysis_progress(tmp_path: Path) -> None:
     assert store.get(session.session_id) == updated
 
 
+def _mark_ready_and_confirmed(store, session_id: str, revision: int):
+    def mutate(current):
+        current.status = "ready"
+        current.analysis = {"story_overview": "已确认"}
+        current.analysis_progress = {"analysis_confirmed": True}
+
+    return store.update(session_id, mutate, expected_revision=revision)
+
+
+def test_conversion_claim_is_atomic_for_same_expected_revision(tmp_path: Path) -> None:
+    source = tmp_path / "novel.txt"
+    source.write_text("第一章 开始\n正文", encoding="utf-8")
+    store = _store(tmp_path / "sessions")
+    session = store.create(_scan(source))
+    ready = _mark_ready_and_confirmed(store, session.session_id, session.revision)
+    barrier = threading.Barrier(2)
+
+    def claim(project_id: str):
+        barrier.wait(timeout=5)
+        return store.claim_project_conversion(
+            session.session_id,
+            expected_revision=ready.revision,
+            project_id=project_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(claim, "p-concurrent-a"),
+            executor.submit(claim, "p-concurrent-b"),
+        ]
+        results = []
+        errors = []
+        for future in futures:
+            try:
+                results.append(future.result(timeout=5))
+            except ValueError as exc:
+                errors.append(str(exc))
+
+    assert len(results) == 1
+    assert errors == ["continuation_conversion_in_progress"]
+    conversion = store.get(session.session_id).analysis_progress["project_conversion"]
+    assert conversion["status"] == "claimed"
+    assert conversion["project_id"] in {"p-concurrent-a", "p-concurrent-b"}
+
+
+def test_conversion_claim_blocks_edits_and_analysis_updates(tmp_path: Path) -> None:
+    source = tmp_path / "novel.txt"
+    source.write_text("第一章 开始\n正文", encoding="utf-8")
+    store = _store(tmp_path / "sessions")
+    session = store.create(_scan(source))
+    ready = _mark_ready_and_confirmed(store, session.session_id, session.revision)
+    claimed = store.claim_project_conversion(
+        session.session_id,
+        expected_revision=ready.revision,
+        project_id="p-claimed",
+    )
+
+    with pytest.raises(ValueError, match="^continuation_conversion_in_progress$"):
+        store.replace_chapters(
+            session.session_id,
+            claimed.chapters,
+            expected_revision=claimed.revision,
+        )
+    with pytest.raises(ValueError, match="^continuation_conversion_in_progress$"):
+        store.update(
+            session.session_id,
+            lambda current: setattr(current, "analysis", {}),
+            expected_revision=claimed.revision,
+        )
+
+
+def test_conversion_claim_atomically_rejects_changed_live_source(tmp_path: Path) -> None:
+    source = tmp_path / "novel.txt"
+    source.write_text("第一章 开始\n原正文", encoding="utf-8")
+    store = _store(tmp_path / "sessions")
+    session = store.create(_scan(source))
+    ready = _mark_ready_and_confirmed(store, session.session_id, session.revision)
+    source.write_text("第一章 开始\n已被修改", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="^source_changed_since_scan$"):
+        store.claim_project_conversion(
+            session.session_id,
+            expected_revision=ready.revision,
+            project_id="p-changed",
+        )
+
+    assert "project_conversion" not in store.get(session.session_id).analysis_progress
+
+
+def test_source_snapshot_returns_verified_original_bytes_and_boundaries(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "book"
+    (source / "卷一").mkdir(parents=True)
+    first = "第一章 开始\n正文一".encode("utf-8")
+    second = b"# chapter two\r\nraw bytes"
+    (source / "卷一" / "01.txt").write_bytes(first)
+    (source / "02.md").write_bytes(second)
+    store = _store(tmp_path / "sessions")
+    session = store.create(_scan(source))
+
+    snapshot = store.source_snapshot(session.session_id)
+
+    assert snapshot.source_kind == "directory"
+    assert snapshot.source_fingerprint == session.source_fingerprint
+    assert [item.relative_path for item in snapshot.files] == ["02.md", "卷一/01.txt"]
+    assert {item.relative_path: item.payload for item in snapshot.files} == {
+        "02.md": second,
+        "卷一/01.txt": first,
+    }
+
+
 def test_atomic_replace_failure_preserves_original_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import packages.story_core.continuation_sessions as sessions_module
 

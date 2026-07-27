@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -149,10 +150,17 @@ def _raise_domain_error(exc: BaseException) -> NoReturn:
         "continuation_analysis_not_confirmed",
         "continuation_analysis_needs_confirmation",
         "continuation_session_already_converted",
+        "continuation_conversion_in_progress",
+        "continuation_conversion_claim_mismatch",
         "project_id_conflict",
         "session_lock_timeout",
         "session_revision_conflict",
         "source_changed_since_scan",
+        "source_backup_invalid",
+        "source_manifest_invalid",
+        "source_snapshot_invalid",
+        "invalid_source_backup",
+        "invalid_source_manifest",
     }:
         raise HTTPException(status_code=409, detail=code) from exc
     if code in {
@@ -198,6 +206,36 @@ def _file_project_export_root() -> Path:
         if configured
         else (Path.cwd() / "data" / "exported-projects").resolve()
     )
+
+
+def _created_project_response(
+    project_id: str, root: Path, next_path: str
+) -> CreatedContinuationProjectResponse:
+    project = FileProjectStore(root).project()
+    return CreatedContinuationProjectResponse(
+        project_id=f"file:{project_id}",
+        title=str(project.get("title") or project_id),
+        source_path=str(root),
+        current_chapter=int(project.get("current_chapter") or 0),
+        next_path=next_path,
+    )
+
+
+def _existing_claimed_project(
+    export_root: Path,
+    session_id: str,
+    project_id: str,
+) -> Path | None:
+    root = export_root / project_id
+    if not root.is_dir():
+        return None
+    store = FileProjectStore(root)
+    if not store.exists():
+        return None
+    continuation = store.project().get("continuation")
+    if not isinstance(continuation, dict) or continuation.get("session_id") != session_id:
+        raise ValueError("continuation_conversion_claim_mismatch")
+    return root
 
 
 def _is_link_or_junction(path: Path) -> bool:
@@ -598,23 +636,85 @@ def create_project(
     session_id: str,
     payload: CreateContinuationProjectRequest,
 ) -> CreatedContinuationProjectResponse:
+    store = _session_store()
+    export_root = _file_project_export_root()
+    project_id = f"p-{uuid.uuid4().hex}"
+    claimed_here = False
     try:
-        session = _session_store().get(session_id)
-        if session.revision != payload.expected_revision:
-            raise ValueError("session_revision_conflict")
+        current = store.get(session_id)
+        conversion = current.analysis_progress.get("project_conversion")
+        conversion = dict(conversion) if isinstance(conversion, dict) else {}
+        if conversion.get("status") == "claimed":
+            if current.revision != payload.expected_revision:
+                raise ValueError("continuation_conversion_in_progress")
+            project_id = str(conversion.get("project_id") or "")
+            if not project_id:
+                raise ValueError("continuation_conversion_claim_mismatch")
+            session = current
+        else:
+            session = store.claim_project_conversion(
+                session_id,
+                expected_revision=payload.expected_revision,
+                project_id=project_id,
+            )
+            claimed_here = True
+
+        route_id = quote(f"file:{project_id}", safe="")
+        next_path = f"/projects/{route_id}/outline"
+        existing = _existing_claimed_project(export_root, session_id, project_id)
+        if existing is not None:
+            store.finalize_project_conversion(
+                session_id, project_id=project_id, source_path=str(existing)
+            )
+            return _created_project_response(project_id, existing, next_path)
+
+        snapshot = store.source_snapshot(session_id)
         created = create_continuation_project(
-            _file_project_export_root(), session, payload.settings
+            export_root,
+            session,
+            payload.settings,
+            source_snapshot=snapshot,
+            project_id_factory=lambda: project_id,
         )
-        project = FileProjectStore(created.root).project()
-        return CreatedContinuationProjectResponse(
-            project_id=f"file:{created.project_id}",
-            title=str(project.get("title") or created.project_id),
+        store.finalize_project_conversion(
+            session_id,
+            project_id=created.project_id,
             source_path=str(created.root),
-            current_chapter=payload.settings.start_after_chapter,
-            next_path=created.next_path,
         )
-    except (FileExistsError, OSError, ValueError) as exc:
+        return _created_project_response(
+            created.project_id, created.root, created.next_path
+        )
+    except FileExistsError as exc:
+        existing = _existing_claimed_project(export_root, session_id, project_id)
+        if existing is not None and not claimed_here:
+            route_id = quote(f"file:{project_id}", safe="")
+            store.finalize_project_conversion(
+                session_id, project_id=project_id, source_path=str(existing)
+            )
+            return _created_project_response(
+                project_id, existing, f"/projects/{route_id}/outline"
+            )
+        if claimed_here:
+            try:
+                store.fail_project_conversion(
+                    session_id, project_id=project_id, error=_error_code(exc)
+                )
+            except (OSError, ValueError):
+                pass
         _raise_domain_error(exc)
+    except ValueError as exc:
+        if claimed_here:
+            try:
+                store.fail_project_conversion(
+                    session_id, project_id=project_id, error=_error_code(exc)
+                )
+            except (OSError, ValueError):
+                pass
+        _raise_domain_error(exc)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail="continuation_project_internal_error"
+        ) from exc
 
 
 def init_continuation_import_routes() -> APIRouter:

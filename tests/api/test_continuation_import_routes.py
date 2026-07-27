@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -1468,3 +1469,142 @@ def test_create_project_rejects_duplicate_session_with_stable_conflict(
     assert first.status_code == 201
     assert second.status_code == 409
     assert second.json()["detail"] == "continuation_session_already_converted"
+
+
+def test_create_project_rejects_live_source_change_before_claim(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    Path(session["source_path"]).write_text("第一章 已变化\n新的正文", encoding="utf-8")
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project", json=payload
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "source_changed_since_scan"
+
+
+def test_create_project_uses_session_original_backup_bytes(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    original = Path(session["source_path"]).read_bytes()
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project", json=payload
+    )
+
+    assert response.status_code == 201
+    project_root = Path(response.json()["source_path"])
+    manifest = json.loads((project_root / "source/manifest.json").read_text("utf-8"))
+    original_file = project_root / "source/original" / manifest["files"][0]["relative_path"]
+    assert original_file.read_bytes() == original
+
+
+def test_same_session_concurrent_api_conversion_has_one_success(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+    barrier = threading.Barrier(2)
+
+    def post_create():
+        with TestClient(app, raise_server_exceptions=False) as thread_client:
+            barrier.wait(timeout=5)
+            return thread_client.post(
+                f"/continuation-imports/{session['session_id']}/create-project",
+                json=payload,
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = [future.result(timeout=15) for future in [
+            executor.submit(post_create),
+            executor.submit(post_create),
+        ]]
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    assert len(client.get("/file-projects").json()) == 1
+
+
+def test_finalize_failure_recovers_existing_project_without_copying(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.story_core.continuation_sessions import ContinuationSessionStore
+
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    original_finalize = ContinuationSessionStore.finalize_project_conversion
+    calls = 0
+
+    def fail_once(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("finalize disk secret")
+        return original_finalize(self, *args, **kwargs)
+
+    monkeypatch.setattr(ContinuationSessionStore, "finalize_project_conversion", fail_once)
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+    first = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project", json=payload
+    )
+    claimed = client.get(f"/continuation-imports/{session['session_id']}").json()
+    retry = _create_project_payload()
+    retry["expected_revision"] = claimed["revision"]
+    second = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project", json=retry
+    )
+
+    assert first.status_code == 500
+    assert "secret" not in first.text
+    assert second.status_code == 201
+    assert len(client.get("/file-projects").json()) == 1
+
+
+def test_unknown_conversion_oserror_returns_stable_500_without_details(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.story_core.continuation_sessions import ContinuationSessionStore
+
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    monkeypatch.setattr(
+        ContinuationSessionStore,
+        "claim_project_conversion",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk path secret")),
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project", json=payload
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "continuation_project_internal_error"
+    assert "secret" not in response.text

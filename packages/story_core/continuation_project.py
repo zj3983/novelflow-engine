@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import hashlib
+import threading
+from contextlib import contextmanager
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Callable, Literal
 from urllib.parse import quote
 from uuid import uuid4
@@ -12,7 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from packages.story_core.continuation_analysis import ContinuationAnalysis
 from packages.story_core.continuation_import import ContinuationChapter
-from packages.story_core.continuation_sessions import ContinuationImportSession
+from packages.story_core.continuation_sessions import (
+    ContinuationImportSession,
+    ContinuationSourceSnapshot,
+)
 from packages.story_core.file_project_creation import (
     CreatedFileProject,
     write_file_project_atomically,
@@ -21,6 +28,7 @@ from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import StoryState
 from packages.story_core.novel_type_catalog import runtime_novel_type
 from packages.story_core.project_outline import normalize_project_outline
+from packages.story_core.relationship_graph import relationship_edge_id
 
 
 _WINDOWS_RESERVED_NAMES = {
@@ -31,6 +39,8 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"COM{number}" for number in range(1, 10)),
     *(f"LPT{number}" for number in range(1, 10)),
 }
+_CONVERSION_LOCKS_GUARD = threading.Lock()
+_CONVERSION_LOCKS: dict[str, threading.Lock] = {}
 
 
 class ContinuationSettings(BaseModel):
@@ -88,6 +98,104 @@ def _write_text(path: Path, text: str) -> None:
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _snapshot_relative_path(value: str) -> PurePosixPath:
+    relative = PurePosixPath(value)
+    windows = Path(value)
+    if (
+        not value
+        or "\\" in value
+        or relative.is_absolute()
+        or windows.is_absolute()
+        or windows.drive
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or relative.as_posix() != value
+    ):
+        raise ValueError("source_snapshot_invalid")
+    return relative
+
+
+def _validated_source_snapshot(
+    session: ContinuationImportSession,
+    source_snapshot: ContinuationSourceSnapshot,
+) -> ContinuationSourceSnapshot:
+    snapshot = ContinuationSourceSnapshot.model_validate(
+        source_snapshot.model_dump(mode="python")
+        if isinstance(source_snapshot, ContinuationSourceSnapshot)
+        else source_snapshot
+    )
+    if (
+        snapshot.source_fingerprint != session.source_fingerprint
+        or snapshot.encoding != session.encoding
+        or not snapshot.files
+    ):
+        raise ValueError("source_snapshot_invalid")
+    seen: set[str] = set()
+    for item in snapshot.files:
+        _snapshot_relative_path(item.relative_path)
+        if item.relative_path in seen:
+            raise ValueError("source_snapshot_invalid")
+        seen.add(item.relative_path)
+        if hashlib.sha256(item.payload).hexdigest() != item.fingerprint:
+            raise ValueError("source_snapshot_invalid")
+    if snapshot.source_kind == "file":
+        calculated = snapshot.files[0].fingerprint if len(snapshot.files) == 1 else ""
+    else:
+        combined = hashlib.sha256()
+        for item in sorted(snapshot.files, key=lambda value: value.relative_path):
+            combined.update(item.relative_path.encode("utf-8"))
+            combined.update(b"\0")
+            combined.update(item.fingerprint.encode("ascii"))
+            combined.update(b"\n")
+        calculated = combined.hexdigest()
+    if calculated != snapshot.source_fingerprint:
+        raise ValueError("source_snapshot_invalid")
+    return snapshot
+
+
+def _thread_conversion_lock(path: Path) -> threading.Lock:
+    key = os.path.normcase(str(path.resolve(strict=False)))
+    with _CONVERSION_LOCKS_GUARD:
+        return _CONVERSION_LOCKS.setdefault(key, threading.Lock())
+
+
+@contextmanager
+def _conversion_lease(export_root: Path, session_id: str):
+    lock_root = export_root / ".continuation-conversion-locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    if lock_root.is_symlink() or getattr(os.path, "isjunction", lambda _: False)(lock_root):
+        raise ValueError("invalid_conversion_lock_path")
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    lock_path = lock_root / f"{digest}.lock"
+    process_lock = _thread_conversion_lock(lock_path)
+    with process_lock:
+        with lock_path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _safe_chapter_filename(chapter: ContinuationChapter) -> str:
@@ -186,6 +294,62 @@ def _chapter_summary(chapter: ContinuationChapter) -> dict[str, Any]:
     }
 
 
+def _evidence_chapter_number(
+    item: Any, chapter_numbers_by_id: dict[str, int], fallback: int
+) -> int:
+    for evidence in getattr(item, "evidence", []) or []:
+        number = chapter_numbers_by_id.get(evidence.chapter_id)
+        if number is not None:
+            return number
+    return fallback
+
+
+def _relationship_graph(
+    analysis: ContinuationAnalysis,
+    chapter_numbers_by_id: dict[str, int],
+    fallback_chapter: int,
+) -> list[dict[str, Any]]:
+    names = [character.name for character in analysis.characters]
+    edges: list[dict[str, Any]] = []
+    for character in analysis.characters:
+        for relation in character.relationships:
+            target = next(
+                (
+                    name
+                    for name in names
+                    if name != character.name and name in relation.claim
+                ),
+                "",
+            )
+            if not target:
+                match = re.search(r"(?:与|和)([^，。；;、]{1,24})", relation.claim)
+                target = match.group(1).strip() if match else ""
+            if not target or target == character.name:
+                continue
+            chapter_number = _evidence_chapter_number(
+                relation, chapter_numbers_by_id, fallback_chapter
+            )
+            edges.append(
+                {
+                    "id": relationship_edge_id(character.name, target),
+                    "source": character.name,
+                    "target": target,
+                    "relation_type": relation.claim,
+                    "bond": relation.claim,
+                    "current_state": relation.claim,
+                    "first_chapter": chapter_number,
+                    "last_changed_chapter": chapter_number,
+                    "private_notes": [
+                        json.dumps(
+                            evidence.model_dump(mode="json"), ensure_ascii=False
+                        )
+                        for evidence in relation.evidence
+                    ],
+                }
+            )
+    return edges
+
+
 def _branch_overview(
     analysis: ContinuationAnalysis,
     accepted: list[ContinuationChapter],
@@ -216,6 +380,9 @@ def _state_payload(
         *(f"禁止：{item}" for item in settings.forbidden_content),
     ]
     accepted_ids = {chapter.chapter_id for chapter in accepted}
+    chapter_numbers_by_id = {
+        chapter.chapter_id: chapter.number for chapter in accepted
+    }
     state = StoryState(
         story_id=f"file:{project_id}",
         outline=_branch_overview(
@@ -283,7 +450,9 @@ def _state_payload(
         },
         timeline=[
             {
-                "chapter_number": settings.start_after_chapter,
+                "chapter_number": _evidence_chapter_number(
+                    item, chapter_numbers_by_id, settings.start_after_chapter
+                ),
                 "summary": item.text,
                 "impact": item.sequence or item.text,
             }
@@ -355,6 +524,9 @@ def _project_payload(
         accepted,
         branch_excludes_source=branch_excludes_source,
     )
+    chapter_numbers_by_id = {
+        chapter.chapter_id: chapter.number for chapter in accepted
+    }
     continuation = {
         **settings.model_dump(mode="json"),
         "schema_version": "continuation-project/v1",
@@ -389,7 +561,9 @@ def _project_payload(
                 branch_excludes_source=branch_excludes_source,
             )
         ],
-        "relationship_graph": [],
+        "relationship_graph": _relationship_graph(
+            analysis, chapter_numbers_by_id, settings.start_after_chapter
+        ),
         "enabled_skill_ids": [],
         "world_blueprint": {
             "genre_plugin_ids": [settings.novel_type_id],
@@ -505,6 +679,12 @@ def _active_analysis_payload(
             "guidance": settings.direction,
             "constraints": [],
         }
+    else:
+        payload["continuation_start"]["constraints"] = [
+            constraint.model_dump(mode="json")
+            for constraint in analysis.continuation_start.constraints
+            if included(constraint)
+        ]
     payload["evidence_index"] = {
         key: [
             ref.model_dump(mode="json")
@@ -525,6 +705,7 @@ def _write_continuation_project(
     accepted: list[ContinuationChapter],
     excluded: list[ContinuationChapter],
     settings: ContinuationSettings,
+    source_snapshot: ContinuationSourceSnapshot,
 ) -> None:
     for relative in (
         ".story-system/chapters",
@@ -535,15 +716,19 @@ def _write_continuation_project(
         "reviews",
         "source",
         "source/chapters",
+        "source/original",
     ):
         (root / relative).mkdir(parents=True, exist_ok=True)
 
+    active_analysis = ContinuationAnalysis.model_validate(
+        _active_analysis_payload(analysis, accepted, excluded, settings)
+    )
     project = _project_payload(
-        project_id, session, analysis, accepted, excluded, settings
+        project_id, session, active_analysis, accepted, excluded, settings
     )
     state = _state_payload(
         project_id,
-        analysis,
+        active_analysis,
         accepted,
         settings,
         branch_excludes_source=bool(excluded),
@@ -561,7 +746,7 @@ def _write_continuation_project(
     )
     _write_json(
         root / ".story-system/continuation-analysis.json",
-        _active_analysis_payload(analysis, accepted, excluded, settings),
+        active_analysis.model_dump(mode="json"),
     )
     _write_json(root / "source/analysis.json", analysis.model_dump(mode="json"))
     source_index = _source_index(session, settings)
@@ -575,8 +760,26 @@ def _write_continuation_project(
             "source_fingerprint": session.source_fingerprint,
             "encoding": session.encoding,
             "chapter_count": len(session.chapters),
+            "source_kind": source_snapshot.source_kind,
+            "files": [
+                {
+                    "relative_path": item.relative_path,
+                    "fingerprint": item.fingerprint,
+                    "bytes": len(item.payload),
+                }
+                for item in source_snapshot.files
+            ],
         },
     )
+
+    for item in source_snapshot.files:
+        relative = _snapshot_relative_path(item.relative_path)
+        target = (root / "source" / "original").joinpath(*relative.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as handle:
+            handle.write(item.payload)
+            handle.flush()
+            os.fsync(handle.fileno())
 
     for chapter in session.chapters:
         _write_text(
@@ -613,6 +816,7 @@ def _validate_continuation_project(
     root: Path,
     project_id: str,
     expected_chapter_numbers: list[int],
+    source_snapshot: ContinuationSourceSnapshot,
 ) -> None:
     for path in root.rglob("*.json"):
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -634,6 +838,35 @@ def _validate_continuation_project(
     if int(store.state().get("current_chapter") or 0) != expected_chapter_numbers[-1]:
         raise ValueError("invalid_current_chapter")
 
+    manifest = json.loads((root / "source/manifest.json").read_text(encoding="utf-8"))
+    expected_files = [
+        {
+            "relative_path": item.relative_path,
+            "fingerprint": item.fingerprint,
+            "bytes": len(item.payload),
+        }
+        for item in source_snapshot.files
+    ]
+    if (
+        manifest.get("source_fingerprint") != source_snapshot.source_fingerprint
+        or manifest.get("source_kind") != source_snapshot.source_kind
+        or manifest.get("files") != expected_files
+    ):
+        raise ValueError("invalid_source_manifest")
+    original_root = (root / "source/original").resolve(strict=True)
+    for item in source_snapshot.files:
+        relative = _snapshot_relative_path(item.relative_path)
+        path = original_root.joinpath(*relative.parts)
+        if path.is_symlink() or getattr(os.path, "isjunction", lambda _: False)(path):
+            raise ValueError("invalid_source_backup")
+        resolved = path.resolve(strict=True)
+        try:
+            resolved.relative_to(original_root)
+        except ValueError:
+            raise ValueError("invalid_source_backup") from None
+        if hashlib.sha256(resolved.read_bytes()).hexdigest() != item.fingerprint:
+            raise ValueError("invalid_source_backup")
+
 
 def _assert_session_not_converted(export_root: Path, session_id: str) -> None:
     if not export_root.is_dir():
@@ -653,6 +886,7 @@ def create_continuation_project(
     session: ContinuationImportSession,
     settings: ContinuationSettings,
     *,
+    source_snapshot: ContinuationSourceSnapshot,
     project_id_factory: Callable[[], str] | None = None,
 ) -> CreatedFileProject:
     session = ContinuationImportSession.model_validate(session)
@@ -664,6 +898,7 @@ def create_continuation_project(
     analysis = ContinuationAnalysis.model_validate(session.analysis)
     if analysis.needs_confirmation:
         raise ValueError("continuation_analysis_needs_confirmation")
+    snapshot = _validated_source_snapshot(session, source_snapshot)
 
     chapter_numbers = [chapter.number for chapter in session.chapters]
     if settings.start_after_chapter not in chapter_numbers:
@@ -682,7 +917,7 @@ def create_continuation_project(
         raise ValueError("invalid_continuation_point")
 
     export_path = Path(export_root)
-    _assert_session_not_converted(export_path, session.session_id)
+    export_path.mkdir(parents=True, exist_ok=True)
     project_id = (project_id_factory or (lambda: f"p-{uuid4().hex}"))()
 
     def writer(root: Path) -> None:
@@ -694,12 +929,18 @@ def create_continuation_project(
             accepted,
             excluded,
             settings,
+            snapshot,
         )
         _validate_continuation_project(
-            root, project_id, [chapter.number for chapter in accepted]
+            root,
+            project_id,
+            [chapter.number for chapter in accepted],
+            snapshot,
         )
 
-    final_root = write_file_project_atomically(export_path, project_id, writer)
+    with _conversion_lease(export_path, session.session_id):
+        _assert_session_not_converted(export_path, session.session_id)
+        final_root = write_file_project_atomically(export_path, project_id, writer)
     route_id = quote(f"file:{project_id}", safe="")
     return CreatedFileProject(
         project_id=project_id,

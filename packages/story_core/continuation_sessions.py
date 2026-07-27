@@ -75,6 +75,23 @@ class _SourceManifest(BaseModel):
     files: list[_SourceManifestFile]
 
 
+class ContinuationSourceSnapshotFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relative_path: str
+    fingerprint: str
+    payload: bytes
+
+
+class ContinuationSourceSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_kind: Literal["file", "directory"]
+    source_fingerprint: str
+    encoding: str
+    files: list[ContinuationSourceSnapshotFile]
+
+
 def _is_link_or_junction(path: Path) -> bool:
     is_junction = getattr(os.path, "isjunction", lambda candidate: False)
     if path.is_symlink() or bool(is_junction(path)):
@@ -626,7 +643,7 @@ class ContinuationSessionStore:
                     session.source_path,
                     source_kind,
                 )
-            except OSError:
+            except (OSError, ValueError):
                 raise ValueError("source_changed_since_scan") from None
             if current_fingerprint != session.source_fingerprint:
                 raise ValueError("source_changed_since_scan")
@@ -639,15 +656,155 @@ class ContinuationSessionStore:
 
         return self.update(session_id, mutate, expected_revision=expected_revision)
 
+    @staticmethod
+    def _project_conversion(session: ContinuationImportSession) -> dict[str, Any]:
+        value = session.analysis_progress.get("project_conversion")
+        return dict(value) if isinstance(value, dict) else {}
+
+    def source_snapshot(self, session_id: str) -> ContinuationSourceSnapshot:
+        _validate_session_id(session_id)
+        with self._session_lock(session_id):
+            session, manifest = self._read_validated_session(session_id)
+            session_root = self._session_root(session_id, require_exists=True)
+            original_root = _resolve_contained_path(
+                session_root, session_root / "source" / "original"
+            )
+            files: list[ContinuationSourceSnapshotFile] = []
+            for item in manifest.files:
+                relative = _manifest_relative_path(item.relative_path)
+                path = _resolve_contained_path(
+                    original_root, original_root.joinpath(*relative.parts)
+                )
+                payload = _secure_read_bytes(path, fixed_root=original_root)
+                if _sha256(payload) != item.fingerprint:
+                    raise ValueError("source_backup_invalid")
+                files.append(
+                    ContinuationSourceSnapshotFile(
+                        relative_path=item.relative_path,
+                        fingerprint=item.fingerprint,
+                        payload=payload,
+                    )
+                )
+            return ContinuationSourceSnapshot(
+                source_kind=manifest.source_kind,
+                source_fingerprint=session.source_fingerprint,
+                encoding=session.encoding,
+                files=files,
+            )
+
+    def claim_project_conversion(
+        self,
+        session_id: str,
+        *,
+        expected_revision: int,
+        project_id: str,
+    ) -> ContinuationImportSession:
+        _validate_session_id(session_id)
+        if not re.fullmatch(r"p-[A-Za-z0-9-]+", project_id):
+            raise ValueError("invalid_generated_project_id")
+        with self._session_lock(session_id):
+            current, manifest = self._read_validated_session(session_id)
+            conversion = self._project_conversion(current)
+            if conversion.get("status") == "claimed":
+                raise ValueError("continuation_conversion_in_progress")
+            if conversion.get("status") == "succeeded":
+                raise ValueError("continuation_session_already_converted")
+            if current.revision != expected_revision:
+                raise ValueError("session_revision_conflict")
+            if current.status != "ready" or not current.analysis:
+                raise ValueError("continuation_session_not_ready")
+            if current.analysis_progress.get("analysis_confirmed") is not True:
+                raise ValueError("continuation_analysis_not_confirmed")
+            if current.analysis.get("needs_confirmation"):
+                raise ValueError("continuation_analysis_needs_confirmation")
+            try:
+                live_fingerprint = fingerprint_continuation_source(
+                    current.source_path, manifest.source_kind
+                )
+            except (OSError, ValueError):
+                raise ValueError("source_changed_since_scan") from None
+            if live_fingerprint != current.source_fingerprint:
+                raise ValueError("source_changed_since_scan")
+
+            candidate = current.model_copy(deep=True)
+            candidate.analysis_progress["project_conversion"] = {
+                "status": "claimed",
+                "project_id": project_id,
+                "source_fingerprint": current.source_fingerprint,
+            }
+            candidate.revision = current.revision + 1
+            candidate.created_at = current.created_at
+            candidate.updated_at = self._clock()
+            session_root = self._session_root(session_id, require_exists=True)
+            self._write_session(candidate, session_root)
+            return candidate.model_copy(deep=True)
+
+    def finalize_project_conversion(
+        self,
+        session_id: str,
+        *,
+        project_id: str,
+        source_path: str,
+    ) -> ContinuationImportSession:
+        def mutate(current: ContinuationImportSession) -> None:
+            conversion = self._project_conversion(current)
+            if (
+                conversion.get("status") != "claimed"
+                or conversion.get("project_id") != project_id
+            ):
+                raise ValueError("continuation_conversion_claim_mismatch")
+            current.analysis_progress["project_conversion"] = {
+                **conversion,
+                "status": "succeeded",
+                "source_path": source_path,
+            }
+
+        return self.update(
+            session_id,
+            mutate,
+            allow_project_conversion=True,
+        )
+
+    def fail_project_conversion(
+        self,
+        session_id: str,
+        *,
+        project_id: str,
+        error: str,
+    ) -> ContinuationImportSession:
+        def mutate(current: ContinuationImportSession) -> None:
+            conversion = self._project_conversion(current)
+            if (
+                conversion.get("status") != "claimed"
+                or conversion.get("project_id") != project_id
+            ):
+                raise ValueError("continuation_conversion_claim_mismatch")
+            current.analysis_progress["project_conversion"] = {
+                **conversion,
+                "status": "failed",
+                "error": error,
+            }
+
+        return self.update(
+            session_id,
+            mutate,
+            allow_project_conversion=True,
+        )
+
     def update(
         self,
         session_id: str,
         mutate: Callable[[ContinuationImportSession], ContinuationImportSession | None],
         expected_revision: int | None = None,
+        *,
+        allow_project_conversion: bool = False,
     ) -> ContinuationImportSession:
         _validate_session_id(session_id)
         with self._session_lock(session_id):
             current, manifest = self._read_validated_session(session_id)
+            conversion = self._project_conversion(current)
+            if conversion.get("status") == "claimed" and not allow_project_conversion:
+                raise ValueError("continuation_conversion_in_progress")
             if expected_revision is not None and current.revision != expected_revision:
                 raise ValueError("session_revision_conflict")
             self._validate_current_source_kind(current, manifest)
