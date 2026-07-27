@@ -1,6 +1,6 @@
 "use client";
 
-import type { StoryResponse, StorySummary } from "../lib/api";
+import type { ChapterIndexEntry, FileStoryOverview, StoryResponse, StorySummary } from "../lib/api";
 
 export type StoryCharacterDraft = {
   name: string;
@@ -20,7 +20,8 @@ export type StoryDraft = {
 };
 
 type StorySidebarProps = {
-  story: StoryResponse | null;
+  story: StoryResponse | FileStoryOverview | null;
+  chapterIndex: ChapterIndexEntry[];
   storySummaries: StorySummary[];
   selectedChapter: number | null;
   onSelectHistoryChapter: (chapterNumber: number) => void;
@@ -43,6 +44,7 @@ function runtimeSourceLabel(source?: string): string {
 
 export function StorySidebar({
   story,
+  chapterIndex,
   storySummaries,
   selectedChapter,
   onSelectHistoryChapter,
@@ -116,9 +118,9 @@ export function StorySidebar({
       <section className="panel story-sidebar__section">
         <header className="panel__header">章节历史</header>
         <div className="panel__body">
-          {story?.history.length ? (
+          {chapterIndex.length ? (
             <div className="story-sidebar__history">
-              {story.history.map((entry) => (
+              {chapterIndex.map((entry) => (
                 <div key={entry.chapter_number} className="story-sidebar__history-row">
                   <button
                     className={`btn btn--ghost story-sidebar__history-btn${

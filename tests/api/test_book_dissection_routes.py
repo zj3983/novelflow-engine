@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
+from apps.api.routes import file_projects as file_project_routes
 from packages.story_core.file_project_store import FileProjectStore
 
 
@@ -146,6 +147,98 @@ def test_file_project_book_dissection_chapter_uses_store(tmp_path: Path, monkeyp
     assert payload["mode"] == "project"
     assert "下一版改法" in payload["sections"]
     assert any("转职" in item for item in payload["sections"]["设定冲突"])
+
+
+def test_file_project_book_dissection_preserves_context_and_uses_supplied_body(
+    tmp_path: Path,
+    monkeypatch,
+):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "body-override-fixture"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(
+        project_root / ".story-system" / "MASTER_SETTING.json",
+        {"project": {"project_id": "body-override-fixture", "title": "Body Override"}},
+    )
+    _write_json(
+        project_root / ".webnovel" / "state.json",
+        {"current_chapter": 1, "genre": "网游", "progression_ledger": {"level": 1}},
+    )
+    _write_json(
+        project_root / ".webnovel" / "project.json",
+        {"project_id": "body-override-fixture", "title": "Body Override"},
+    )
+    _write_json(
+        project_root / ".story-system" / "chapters" / "0001.json",
+        {"chapter_number": 1, "chapter_title": "Persisted title", "body": "PERSISTED_BODY"},
+    )
+    captured: dict = {}
+
+    def fake_diagnose(context, chapter):
+        captured["context"] = context
+        captured["chapter"] = chapter
+        return {
+            "schema_version": "book-dissection/v1",
+            "mode": "project",
+            "summary": "project diagnosis",
+            "sections": {"下一版改法": ["保留项目诊断语义"]},
+        }
+
+    monkeypatch.setattr(file_project_routes, "diagnose_project_chapter", fake_diagnose)
+
+    response = client.post(
+        "/file-projects/file:body-override-fixture/book-dissection/chapter",
+        json={"chapter_number": 1, "body": "LAZY_SELECTED_BODY"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "project"
+    assert captured["context"]["project"]["project_id"] == "body-override-fixture"
+    assert captured["context"]["state"]["current_chapter"] == 1
+    assert captured["chapter"]["chapter_number"] == 1
+    assert captured["chapter"]["chapter_title"] == "Persisted title"
+    assert captured["chapter"]["body"] == "LAZY_SELECTED_BODY"
+
+
+@pytest.mark.parametrize(
+    ("payload", "invalid_field"),
+    [
+        ({"chapter_number": 1, "body": "x" * 200_001}, "body"),
+        ({"chapter_number": 1, "unexpected": "field"}, "unexpected"),
+    ],
+)
+def test_file_project_book_dissection_rejects_oversized_body_and_extra_fields(
+    tmp_path: Path,
+    monkeypatch,
+    payload,
+    invalid_field,
+):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "validated-dissection-fixture"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(
+        project_root / ".story-system" / "MASTER_SETTING.json",
+        {"project": {"project_id": "validated-dissection-fixture"}},
+    )
+    _write_json(
+        project_root / ".webnovel" / "project.json",
+        {"project_id": "validated-dissection-fixture"},
+    )
+    _write_json(project_root / ".webnovel" / "state.json", {"current_chapter": 1})
+    _write_json(
+        project_root / ".story-system" / "chapters" / "0001.json",
+        {"chapter_number": 1, "body": "persisted"},
+    )
+
+    response = client.post(
+        "/file-projects/file:validated-dissection-fixture/book-dissection/chapter",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert isinstance(detail, list)
+    assert detail[0]["loc"][-1] == invalid_field
 
 
 def test_file_project_list_ignores_backup_directories(tmp_path: Path, monkeypatch):

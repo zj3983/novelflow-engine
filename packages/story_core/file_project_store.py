@@ -3907,11 +3907,33 @@ class FileProjectStore:
         completed = self._completed_character_card(current, genre=str(visible_state.get("genre") or ""))
         return self.update_character(str(completed.get("name") or identifier), completed)
 
-    def state(self) -> dict[str, Any]:
-        state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
+    def _read_chapter_records(
+        self,
+        *,
+        ignore_errors: bool = False,
+    ) -> list[tuple[int, dict[str, Any]]]:
+        records: list[tuple[int, dict[str, Any]]] = []
+        for number in self.chapter_numbers():
+            try:
+                chapter = self._read_json(
+                    self.story_system_dir / "chapters" / f"{number:04d}.json",
+                    {},
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                if not ignore_errors:
+                    raise
+                chapter = {}
+            records.append((number, chapter if isinstance(chapter, dict) else {}))
+        return records
+
+    def _visible_state_from_chapters(
+        self,
+        state: dict[str, Any],
+        project: dict[str, Any],
+        chapters: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         sanitized = self._sanitize_story_state(state)
         additions: list[dict[str, Any]] = []
-        project = self.project()
         saved_characters = sanitized.get("characters") if isinstance(sanitized.get("characters"), list) else []
         protagonist_indexes = [
             index
@@ -3948,13 +3970,8 @@ class FileProjectStore:
             if protagonist_card:
                 additions.append(protagonist_card)
         additions.extend(self._proposed_character_cards_from_outline(sanitized, project))
-        for number in self.chapter_numbers():
-            try:
-                chapter = self._read_json(self.story_system_dir / "chapters" / f"{number:04d}.json", {}) or {}
-            except (OSError, ValueError, json.JSONDecodeError):
-                chapter = {}
-            if isinstance(chapter, dict):
-                additions.extend(self._chapter_entity_cards(chapter))
+        for chapter in chapters:
+            additions.extend(self._chapter_entity_cards(chapter))
         if additions:
             sanitized["characters"] = self._merge_character_cards(list(sanitized.get("characters") or []), additions)
         characters = sanitized.get("characters") if isinstance(sanitized.get("characters"), list) else []
@@ -3965,6 +3982,16 @@ class FileProjectStore:
             if isinstance(item, dict) and self._is_character_card(item)
         ]
         return sanitized
+
+    def state(self) -> dict[str, Any]:
+        state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
+        project = self.project()
+        records = self._read_chapter_records(ignore_errors=True)
+        return self._visible_state_from_chapters(
+            state if isinstance(state, dict) else {},
+            project,
+            [chapter for _, chapter in records],
+        )
 
     def chapter_numbers(self) -> list[int]:
         numbers: list[int] = []
@@ -3977,7 +4004,34 @@ class FileProjectStore:
                     continue
         return sorted(set(numbers))
 
+    def _has_chapter_files(self) -> bool:
+        chapters_path = self.story_system_dir / "chapters"
+        if not chapters_path.exists():
+            return False
+        for path in chapters_path.glob("*.json"):
+            try:
+                int(path.stem)
+            except ValueError:
+                continue
+            return True
+        return False
+
     def chapter(self, chapter_number: int | None = None) -> dict[str, Any]:
+        if chapter_number is not None and chapter_number > 0:
+            path = self.story_system_dir / "chapters" / f"{chapter_number:04d}.json"
+            chapter = self._read_json(path)
+            if not isinstance(chapter, dict):
+                if not self._has_chapter_files():
+                    raise FileNotFoundError("no_chapters")
+                raise FileNotFoundError(f"chapter_not_found:{chapter_number}")
+            raw_state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
+            visible_state = self._visible_state_from_chapters(
+                raw_state if isinstance(raw_state, dict) else {},
+                self.project(),
+                [chapter],
+            )
+            return self._hydrate_chapter_display_fields(chapter, state=visible_state)
+
         numbers = self.chapter_numbers()
         if not numbers:
             raise FileNotFoundError("no_chapters")
@@ -3987,6 +4041,52 @@ class FileProjectStore:
         if not isinstance(chapter, dict):
             raise FileNotFoundError(f"chapter_not_found:{target}")
         return self._hydrate_chapter_display_fields(chapter)
+
+    def _chapter_index_from_records(
+        self,
+        records: list[tuple[int, dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for number, chapter in records:
+            chapter_summary = chapter.get("chapter_summary")
+            summary = chapter_summary if isinstance(chapter_summary, dict) else {}
+            body = str(chapter.get("body") or "")
+            summary_text = self._compact_text(summary.get("summary") or "", 320)
+            next_focus = self._compact_text(
+                chapter.get("next_outline") or summary.get("next_focus") or "",
+                220,
+            )
+            quality_report = chapter.get("quality_report")
+            simulation_status = chapter.get("simulation_status")
+            entries.append(
+                {
+                    "chapter_number": int(chapter.get("chapter_number") or number),
+                    "chapter_title": str(chapter.get("chapter_title") or f"第{number}章"),
+                    "body_chars": len("".join(body.split())),
+                    "summary": summary_text,
+                    "next_focus": next_focus,
+                    "has_quality_report": isinstance(quality_report, dict) and bool(quality_report),
+                    "has_simulation": isinstance(simulation_status, dict) and bool(simulation_status),
+                }
+            )
+        return entries
+
+    def chapter_index(self) -> list[dict[str, Any]]:
+        return self._chapter_index_from_records(self._read_chapter_records())
+
+    def story_overview_data(self) -> dict[str, Any]:
+        state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
+        project = self.project()
+        records = self._read_chapter_records()
+        return {
+            "project": project,
+            "state": self._visible_state_from_chapters(
+                state if isinstance(state, dict) else {},
+                project,
+                [chapter for _, chapter in records],
+            ),
+            "chapters": self._chapter_index_from_records(records),
+        }
 
     def review(self, chapter_number: int | None = None) -> dict[str, Any]:
         chapter = self.chapter(chapter_number)
@@ -4762,13 +4862,13 @@ class FileProjectStore:
 
     def summary(self) -> dict[str, Any]:
         project = self.project()
-        state = self.state()
+        state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
         chapters = [
             {
-                "chapter_number": int(self.chapter(number).get("chapter_number") or number),
-                "chapter_title": str(self.chapter(number).get("chapter_title") or f"第{number}章"),
+                "chapter_number": entry["chapter_number"],
+                "chapter_title": entry["chapter_title"],
             }
-            for number in self.chapter_numbers()
+            for entry in self.chapter_index()
         ]
         return {
             "schema_version": "file-project-summary/v1",

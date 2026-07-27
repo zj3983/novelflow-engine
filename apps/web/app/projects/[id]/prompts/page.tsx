@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useMemo } from "react";
 
 import { PromptCallsView } from "../../../../components/prompts/PromptCallsView";
 import { PromptContextView } from "../../../../components/prompts/PromptContextView";
@@ -26,15 +25,11 @@ export default function PromptsPage() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { project, story, error, encodedProjectId, projectId } = useProjectWorkspace();
+  const { project, story, chapterIndex, error, encodedProjectId, projectId } = useProjectWorkspace();
   const activeView = promptView(searchParams?.get("view") ?? null);
-  const history = story?.history ?? [];
-  const requestedChapter = Number(searchParams?.get("chapter") || story?.current_chapter || history.at(-1)?.chapter_number || 1);
-  const selectedChapter = useMemo(
-    () => history.find((bundle) => bundle.chapter_number === requestedChapter) ?? history.at(-1) ?? null,
-    [history, requestedChapter],
-  );
-  const targetChapter = selectedChapter?.chapter_number ?? requestedChapter;
+  const requestedChapter = Number(searchParams?.get("chapter") || story?.current_chapter || chapterIndex.at(-1)?.chapter_number || 1);
+  const selectedIndex = chapterIndex.find((entry) => entry.chapter_number === requestedChapter) ?? chapterIndex.at(-1) ?? null;
+  const targetChapter = selectedIndex?.chapter_number ?? requestedChapter;
 
   function switchView(view: PromptView) {
     router.replace(`${pathname}?view=${view}&chapter=${targetChapter}`);
@@ -48,7 +43,7 @@ export default function PromptsPage() {
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
         title="提示词"
-        subtitle="分别查看可编辑模板、本章动态上下文和真实模型调用。"
+        subtitle={selectedIndex?.chapter_title || "分别查看可编辑模板、本章动态上下文和真实模型调用。"}
       />
 
       {error ? <p className="ws-inline-error" role="alert">项目加载失败：{error}</p> : null}
@@ -72,10 +67,10 @@ export default function PromptsPage() {
           <section className="ws-card">
             <div className="ws-section-head">
               <p className="ws-card__title">章节</p>
-              <span className="ws-toolbar__meta">{history.length} 章</span>
+              <span className="ws-toolbar__meta">{chapterIndex.length} 章</span>
             </div>
             <div className="ws-chapter-list">
-              {history.length ? [...history].reverse().map((bundle) => (
+              {chapterIndex.length ? [...chapterIndex].reverse().map((bundle) => (
                 <Link
                   key={bundle.chapter_number}
                   href={`/projects/${encodedProjectId}/prompts?view=${activeView}&chapter=${bundle.chapter_number}`}

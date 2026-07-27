@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
 
 import { PageHeader } from "../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../components/ws/ProjectWorkspaceProvider";
@@ -23,27 +22,20 @@ function statusLabel(status: ProjectStatus | undefined): string {
   return STATUS_LABEL[key] ?? key;
 }
 
-function chapterCharCount(body: string | undefined): number {
-  if (!body) return 0;
-  return body.replace(/\s+/g, "").length;
-}
-
 function formatNumber(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
 
 export default function ProjectOverviewPage() {
-  const { project, story, error, encodedProjectId } = useProjectWorkspace();
+  const { project, story, chapterIndex, error, encodedProjectId } = useProjectWorkspace();
   const currentChapter = story?.current_chapter ?? 0;
-  const recentBundles = story?.history ? [...story.history].slice(-5).reverse() : [];
-  const latest = story?.history?.at(-1) ?? null;
+  const recentBundles = [...chapterIndex].slice(-5).reverse();
+  const latest = chapterIndex.at(-1) ?? null;
   const characters = mergeCharacters(project?.character_profiles, story?.characters);
-  const sceneCards = latest?.scene_cards ?? [];
   const worldFacts = cleanLines(story?.world_facts, 5);
-  const totalWords = useMemo(
-    () => (story?.history ?? []).reduce((sum, bundle) => sum + chapterCharCount(bundle.body), 0),
-    [story?.history],
-  );
+  const totalWords = story && "total_body_chars" in story
+    ? story.total_body_chars
+    : chapterIndex.reduce((sum, bundle) => sum + bundle.body_chars, 0);
 
   return (
     <div className="ws-page">
@@ -78,7 +70,7 @@ export default function ProjectOverviewPage() {
             {recentBundles.length > 0 ? (
               <ul className="ws-list">
                 {recentBundles.map((bundle) => {
-                  const summary = bundle.chapter_summary?.summary || "";
+                  const summary = bundle.summary || "";
                   return (
                     <li className="ws-list__item" key={bundle.chapter_number}>
                       <Link
@@ -108,15 +100,8 @@ export default function ProjectOverviewPage() {
               </Link>
             </div>
             <p className="ws-card__hint">
-              {latest?.next_outline || project.current_focus || latest?.chapter_summary?.summary || "暂无剧情焦点。"}
+              {latest?.next_focus || project.current_focus || latest?.summary || "暂无剧情焦点。"}
             </p>
-            {sceneCards.length > 0 ? (
-              <ul className="ws-plain-list">
-                {sceneCards.slice(0, 3).map((card, index) => (
-                  <li key={card.scene_id || index}>{card.purpose || card.conflict || card.location || "未命名场景"}</li>
-                ))}
-              </ul>
-            ) : null}
           </section>
 
           <section className="ws-card">
@@ -126,7 +111,7 @@ export default function ProjectOverviewPage() {
                 查看
               </Link>
             </div>
-            <p className="ws-card__hint">{project.current_focus || latest?.next_outline || "暂无当前大纲焦点。"}</p>
+            <p className="ws-card__hint">{project.current_focus || latest?.next_focus || "暂无当前大纲焦点。"}</p>
           </section>
 
           <section className="ws-card">

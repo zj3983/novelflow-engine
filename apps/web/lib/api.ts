@@ -572,6 +572,23 @@ export type StoryResponse = {
   history: ChapterBundle[];
 };
 
+export type ChapterIndexEntry = {
+  chapter_number: number;
+  chapter_title: string;
+  body_chars: number;
+  summary: string;
+  next_focus: string;
+  has_quality_report: boolean;
+  has_simulation: boolean;
+};
+
+export type FileStoryOverview = Omit<StoryResponse, "history"> & {
+  chapter_count: number;
+  total_body_chars: number;
+  chapters: ChapterIndexEntry[];
+  storage_source: "file";
+};
+
 export type StorySummary = {
   story_id: string;
   current_chapter: number;
@@ -2731,6 +2748,7 @@ export async function dissectReferenceText(payload: {
 export async function dissectFileProjectChapter(
   projectId: string,
   chapterNumber?: number,
+  body?: string,
 ): Promise<BookDissectionReport> {
   if (!isFileProjectId(projectId)) {
     throw new Error("book_dissection_only_supports_file_projects");
@@ -2738,7 +2756,7 @@ export async function dissectFileProjectChapter(
   return (await tryFetchJson(`${fileProjectPath(projectId)}/book-dissection/chapter`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chapter_number: chapterNumber }),
+    body: JSON.stringify({ chapter_number: chapterNumber, ...(body === undefined ? {} : { body }) }),
   })) as BookDissectionReport;
 }
 
@@ -3072,16 +3090,29 @@ export async function uploadSkillPackZip(file: File): Promise<SkillPackSummary> 
 
 export async function fetchStory(storyId: string): Promise<StoryResponse> {
   try {
-    const path = isFileProjectId(storyId)
+    const fileStory = isFileProjectId(storyId);
+    const path = fileStory
       ? fileStoryPath(storyId)
       : `${apiBase()}/stories/${encodeURIComponent(storyId)}`;
     const response = (await tryFetchJson(path, {
       method: "GET",
-    })) as StoryResponse;
+    }, fileStory ? 120000 : 30000)) as StoryResponse;
     return persistStoryIntoMockStore(response);
   } catch {
     return mockFetchStory(storyId);
   }
+}
+
+export async function fetchFileStoryOverview(storyId: string): Promise<FileStoryOverview> {
+  return (await tryFetchJson(`${fileStoryPath(storyId)}/overview`, {
+    method: "GET",
+  }, 30000)) as FileStoryOverview;
+}
+
+export async function fetchFileChapter(storyId: string, chapterNumber: number): Promise<ChapterBundle> {
+  return (await tryFetchJson(`${fileStoryPath(storyId)}/chapters/${chapterNumber}`, {
+    method: "GET",
+  }, 30000)) as ChapterBundle;
 }
 
 export async function createProject(payload: CreateProjectRequest): Promise<ProjectResponse> {
@@ -3327,12 +3358,13 @@ export async function listProjects(): Promise<ProjectSummary[]> {
 
 export async function fetchProject(projectId: string): Promise<ProjectResponse> {
   try {
-    const path = isFileProjectId(projectId)
+    const fileProject = isFileProjectId(projectId);
+    const path = fileProject
       ? fileProjectPath(projectId)
       : `${apiBase()}/projects/${encodeURIComponent(projectId)}`;
     const response = (await tryFetchJson(path, {
       method: "GET",
-    })) as ProjectResponse;
+    }, fileProject ? 90000 : 30000)) as ProjectResponse;
     return persistProjectIntoMockStore(response);
   } catch {
     return mockFetchProject(projectId);

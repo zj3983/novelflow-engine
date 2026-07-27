@@ -213,6 +213,338 @@ def _make_minimal_file_project(root, *, state=None, project=None):
     return FileProjectStore(root)
 
 
+def test_summary_reads_chapter_metadata_without_hydrating_full_chapters(tmp_path, monkeypatch):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    chapters_dir = store.story_system_dir / "chapters"
+    for number in range(1, 4):
+        (chapters_dir / f"{number:04d}.json").write_text(
+            json.dumps(
+                {
+                    "chapter_number": number,
+                    "chapter_title": f"Chapter {number}",
+                    "body": "body",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    read_counts: dict[str, int] = {}
+    original_read_json = store._read_json
+
+    def counting_read_json(path, default=None):
+        if path.parent == chapters_dir and path.suffix == ".json":
+            read_counts[path.name] = read_counts.get(path.name, 0) + 1
+        return original_read_json(path, default)
+
+    def fail_if_hydrated(_chapter_number=None):
+        raise AssertionError("summary must not hydrate full chapter payloads")
+
+    monkeypatch.setattr(store, "chapter", fail_if_hydrated)
+    monkeypatch.setattr(store, "_read_json", counting_read_json)
+
+    summary = store.summary()
+
+    assert summary["current_chapter"] == 3
+    assert summary["chapter_count"] == 3
+    assert summary["chapters"][-1] == {"chapter_number": 3, "chapter_title": "Chapter 3"}
+    assert read_counts == {"0001.json": 1, "0002.json": 1, "0003.json": 1}
+
+
+def test_summary_uses_master_setting_project_metadata_without_project_json(tmp_path, monkeypatch):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    project_json = store.webnovel_dir / "project.json"
+    project_json.unlink()
+    (store.story_system_dir / "MASTER_SETTING.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "story-system-master-setting/v1",
+                "project": {
+                    "project_id": "p-master",
+                    "title": "Master Title",
+                    "active_story_id": "s-master",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    chapters_dir = store.story_system_dir / "chapters"
+    (chapters_dir / "0001.json").write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "body": "body",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    read_counts: dict[str, int] = {}
+    original_read_json = store._read_json
+
+    def counting_read_json(path, default=None):
+        if path.parent == chapters_dir and path.suffix == ".json":
+            read_counts[path.name] = read_counts.get(path.name, 0) + 1
+        return original_read_json(path, default)
+
+    monkeypatch.setattr(store, "_read_json", counting_read_json)
+
+    summary = store.summary()
+
+    assert summary["project_id"] == "p-master"
+    assert summary["title"] == "Master Title"
+    assert summary["active_story_id"] == "s-master"
+    assert summary["chapter_count"] == 1
+    assert read_counts == {"0001.json": 1}
+
+
+def test_chapter_index_and_summary_use_chinese_fallback_for_untitled_chapters(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    chapters_dir = store.story_system_dir / "chapters"
+    (chapters_dir / "0001.json").write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "body": "body",
+                "chapter_summary": {"summary": "Untitled summary.", "next_focus": "continue"},
+                "next_outline": "continue",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    index = store.chapter_index()
+    summary = store.summary()
+
+    assert index == [
+        {
+            "chapter_number": 1,
+            "chapter_title": "第1章",
+            "body_chars": len("body"),
+            "summary": "Untitled summary.",
+            "next_focus": "continue",
+            "has_quality_report": False,
+            "has_simulation": False,
+        }
+    ]
+    assert summary["chapters"] == [{"chapter_number": 1, "chapter_title": "第1章"}]
+
+
+def test_chapter_index_reads_each_file_once_without_display_hydration(tmp_path, monkeypatch):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    chapters_dir = store.story_system_dir / "chapters"
+    long_summary = "Summary one " + ("A" * 500)
+    long_next_focus = "Next focus one " + ("B" * 500)
+    chapter_payloads = [
+        (
+            1,
+            {
+                "chapter_number": 1,
+                "chapter_title": "Chapter 1",
+                "body": "First draft body.\nWith whitespace.",
+                "chapter_summary": {"summary": long_summary, "next_focus": "Carry on."},
+                "next_outline": long_next_focus,
+                "simulation_status": {"status": "simulated"},
+                "quality_report": {"writing_review": {"pass": True, "issues": []}},
+            },
+        ),
+        (
+            2,
+            {
+                "chapter_number": 2,
+                "chapter_title": "Chapter 2",
+                "body": "Second draft body.",
+                "chapter_summary": {"summary": "Second summary.", "next_focus": "Keep moving."},
+                "next_outline": "Keep moving.",
+                "simulation_status": "legacy truthy",
+                "quality_report": {"writing_review": {"pass": True, "issues": []}},
+            },
+        ),
+    ]
+    for number, payload in chapter_payloads:
+        (chapters_dir / f"{number:04d}.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    read_counts: dict[str, int] = {}
+    original_read_json = store._read_json
+
+    def counting_read_json(path, default=None):
+        if path.parent == chapters_dir and path.suffix == ".json":
+            read_counts[path.name] = read_counts.get(path.name, 0) + 1
+        return original_read_json(path, default)
+
+    monkeypatch.setattr(
+        store,
+        "chapter",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("chapter_index must not hydrate full chapters")),
+    )
+    monkeypatch.setattr(store, "_read_json", counting_read_json)
+
+    index = store.chapter_index()
+
+    assert index == [
+        {
+            "chapter_number": 1,
+            "chapter_title": "Chapter 1",
+            "body_chars": len("Firstdraftbody.Withwhitespace."),
+            "summary": long_summary[:320] + "...",
+            "next_focus": long_next_focus[:220] + "...",
+            "has_quality_report": True,
+            "has_simulation": True,
+        },
+        {
+            "chapter_number": 2,
+            "chapter_title": "Chapter 2",
+            "body_chars": len("Seconddraftbody."),
+            "summary": "Second summary.",
+            "next_focus": "Keep moving.",
+            "has_quality_report": True,
+            "has_simulation": False,
+        },
+    ]
+    assert read_counts == {"0001.json": 1, "0002.json": 1}
+
+
+def test_story_overview_data_matches_state_character_synthesis_in_one_chapter_pass(
+    tmp_path,
+    monkeypatch,
+):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "genre": "网游",
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+        state={
+            "story_id": "s-file",
+            "current_chapter": 1,
+            "genre": "网游",
+            "genre_plugin_ids": ["game_webnovel"],
+            "world_facts": [],
+            "characters": [],
+            "progression_ledger": {
+                "protagonist": {
+                    "real_name": "苏叶",
+                    "game_id": "夜烬",
+                    "level": "Lv.3",
+                    "exp": "196/300",
+                },
+                "economy": {"game_currency": "39铜币", "inventory": {"灰狼毒腺": 11}},
+            },
+        },
+    )
+    chapters_dir = store.story_system_dir / "chapters"
+    (chapters_dir / "0001.json").write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "chapter_title": "药剂铺窗口",
+                "body": "夜烬走进药剂铺。灰头巾老妇人抬头，药剂师只按十份一批收货。",
+                "chapter_summary": {
+                    "summary": "夜烬向药剂师提交材料。",
+                    "next_focus": "返回灰狼坡。",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (store.webnovel_dir / "project.json").unlink()
+    expected_state = store.state()
+    read_counts: dict[str, int] = {}
+    original_read_json = store._read_json
+
+    def counting_read_json(path, default=None):
+        if path.parent == chapters_dir and path.suffix == ".json":
+            read_counts[path.name] = read_counts.get(path.name, 0) + 1
+        return original_read_json(path, default)
+
+    monkeypatch.setattr(store, "_read_json", counting_read_json)
+    monkeypatch.setattr(
+        store,
+        "chapter",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("story overview must not hydrate chapters")
+        ),
+    )
+
+    overview = store.story_overview_data()
+
+    assert overview["project"]["project_id"] == "p-file"
+    assert overview["state"]["characters"] == expected_state["characters"]
+    assert {card["name"] for card in overview["state"]["characters"]} >= {
+        "苏叶",
+        "药剂师洛婶",
+    }
+    assert overview["chapters"][0]["chapter_title"] == "药剂铺窗口"
+    assert read_counts == {"0001.json": 1}
+
+
+def test_explicit_chapter_access_does_not_enumerate_chapter_numbers(tmp_path, monkeypatch):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    (store.story_system_dir / "chapters" / "0002.json").write_text(
+        json.dumps(
+            {
+                "chapter_number": 2,
+                "chapter_title": "Direct chapter",
+                "body": "Loaded directly.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        store,
+        "chapter_numbers",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("explicit chapter access must not enumerate chapters")
+        ),
+    )
+
+    chapter = store.chapter(2)
+
+    assert chapter["chapter_number"] == 2
+    assert chapter["body"] == "Loaded directly."
+
+
+def test_chapter_without_number_preserves_latest_and_no_chapters_semantics(
+    tmp_path,
+    monkeypatch,
+):
+    empty_store = _make_minimal_file_project(tmp_path / "empty")
+    with pytest.raises(FileNotFoundError, match="no_chapters"):
+        empty_store.chapter()
+    monkeypatch.setattr(
+        empty_store,
+        "chapter_numbers",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("explicit missing chapter must not enumerate chapter numbers")
+        ),
+    )
+    with pytest.raises(FileNotFoundError, match="no_chapters"):
+        empty_store.chapter(1)
+
+    store = _make_minimal_file_project(tmp_path / "novel")
+    chapters_dir = store.story_system_dir / "chapters"
+    for number in (1, 2):
+        (chapters_dir / f"{number:04d}.json").write_text(
+            json.dumps(
+                {
+                    "chapter_number": number,
+                    "chapter_title": f"Chapter {number}",
+                    "body": f"Body {number}",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    assert store.chapter()["chapter_number"] == 2
+    with pytest.raises(FileNotFoundError, match="chapter_not_found:999"):
+        store.chapter(999)
+
+
 def _file_snapshot(root) -> dict:
     return {
         path.relative_to(root): path.read_bytes()

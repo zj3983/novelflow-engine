@@ -10,7 +10,7 @@ from threading import Lock
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path as ApiPath
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from packages.story_core.book_dissection import diagnose_project_chapter, dissect_reference_text
@@ -97,7 +97,10 @@ class BookDissectionReferenceRequest(BaseModel):
 
 
 class BookDissectionChapterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     chapter_number: int | None = None
+    body: str | None = Field(default=None, max_length=200_000)
 
 
 class PromptTemplateUpdateRequest(BaseModel):
@@ -690,6 +693,64 @@ def _story_payload(store: FileProjectStore) -> dict[str, Any]:
     }
 
 
+def _story_overview_payload(store: FileProjectStore) -> dict[str, Any]:
+    overview = store.story_overview_data()
+    state = overview["state"]
+    project = overview["project"]
+    chapters = overview["chapters"]
+    current_chapter = int(
+        state.get("current_chapter")
+        or (chapters[-1].get("chapter_number") if chapters else 0)
+        or 0
+    )
+    return {
+        "story_id": _story_id_for(store),
+        "outline": str(state.get("outline") or project.get("seed_outline") or ""),
+        "genre": str(state.get("genre") or ""),
+        "style": str(state.get("style") or ""),
+        "current_chapter": current_chapter,
+        "agent_settings": state.get("agent_settings") or AgentSettings().model_dump(),
+        "agent_runtime": state.get("agent_runtime") or AgentRuntimeState().model_dump(),
+        "author_constraints": state.get("author_constraints") or [],
+        "writing_lessons": state.get("writing_lessons") or [],
+        "world_facts": state.get("world_facts") or [],
+        "characters": state.get("characters") or [],
+        "chapter_count": len(chapters),
+        "total_body_chars": sum(int(chapter.get("body_chars") or 0) for chapter in chapters),
+        "chapters": chapters,
+        "parent_story_id": None,
+        "branched_from_chapter": None,
+        "storage_source": "file",
+    }
+
+
+def _file_story_store(story_id: str) -> FileProjectStore:
+    wanted = _strip_file_prefix(story_id)
+    try:
+        store = _store_for(story_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail="file_story_not_found") from exc
+        raise
+    if not wanted or _strip_file_prefix(_story_id_for(store)) != wanted:
+        raise HTTPException(status_code=404, detail="file_story_not_found")
+    return store
+
+
+def _file_chapter_payload(store: FileProjectStore, chapter_number: int) -> dict[str, Any]:
+    try:
+        chapter = dict(store.chapter(chapter_number))
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"chapter_not_found:{chapter_number}",
+        ) from exc
+    quality = dict(chapter.get("quality_report") or {})
+    quality["simplified_review"] = build_simplified_review(quality)
+    chapter["quality_report"] = quality
+    return chapter
+
+
 def _summary_payload(store: FileProjectStore) -> dict[str, Any]:
     project = _project_payload(store)
     return {
@@ -1018,7 +1079,10 @@ def init_file_project_routes() -> APIRouter:
     def dissect_file_project_chapter(project_id: str, payload: BookDissectionChapterRequest) -> dict[str, Any]:
         store = _store_for(project_id)
         try:
-            chapter = store.chapter(payload.chapter_number)
+            chapter = dict(store.chapter(payload.chapter_number))
+            body_snapshot_override = payload.body
+            if body_snapshot_override is not None:
+                chapter["body"] = body_snapshot_override
             return diagnose_project_chapter({"project": store.project(), "state": store.state()}, chapter)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1112,5 +1176,16 @@ def init_file_project_routes() -> APIRouter:
             if _strip_file_prefix(_story_id_for(store)) == wanted:
                 return _story_payload(store)
         raise HTTPException(status_code=404, detail="file_story_not_found")
+
+    @router.get("/file-stories/{story_id}/overview")
+    def get_file_story_overview(story_id: str) -> dict[str, Any]:
+        return _story_overview_payload(_file_story_store(story_id))
+
+    @router.get("/file-stories/{story_id}/chapters/{chapter_number}")
+    def get_file_story_chapter(
+        story_id: str,
+        chapter_number: int = ApiPath(ge=1),
+    ) -> dict[str, Any]:
+        return _file_chapter_payload(_file_story_store(story_id), chapter_number)
 
     return router
