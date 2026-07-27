@@ -145,6 +145,22 @@ def test_normalized_level_target_preserves_decision_through_writing_packet() -> 
     assert any("attribute points" in line for line in packet["prose_renderer"]["body_contract"])
 
 
+def test_direct_event_plan_level_preserves_decision_through_writing_packet() -> None:
+    story = _attribute_packet_story()
+    raw_event_plan = {
+        "level": "Lv.2",
+        "attribute_allocation_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+    }
+    event_plan = _normalize_event_plan(raw_event_plan, chapter_number=2, story=story)
+    bundle = ChapterBundle(chapter_number=2, body="", next_outline="继续升级", updated_story=story, event_plan=event_plan)
+
+    packet = build_codex_writing_packet(story, bundle)
+
+    assert event_plan["attribute_allocation_level_target"] == 2
+    assert packet["attribute_allocation"]["chapter_decision"]["allocations"] == {"智力": 5}
+    assert any("attribute points" in line for line in packet["prose_renderer"]["body_contract"])
+
+
 def test_packet_uses_character_world_state_aliases_and_respects_stage_boundaries():
     protagonist = CharacterState(
         name="苏叶",

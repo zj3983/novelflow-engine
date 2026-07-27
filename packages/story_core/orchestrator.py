@@ -2618,7 +2618,7 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
         "chapter_satisfaction": _normalize_chapter_satisfaction(raw_event_plan.get("chapter_satisfaction")),
         "author_constraints": list(story.author_constraints),
     }
-    if (level_target := planned_level_target(raw_event_plan)) is not None:
+    if (level_target := planned_level_target({"event_plan": raw_event_plan})) is not None:
         result["attribute_allocation_level_target"] = level_target
     decision = attribute_allocation_context(story, {"event_plan": raw_event_plan}).get("chapter_decision")
     if decision:
