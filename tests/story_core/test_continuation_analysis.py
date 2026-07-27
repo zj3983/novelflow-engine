@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -58,6 +59,21 @@ def _chapter_result(chapter: ContinuationChapter, *, text: str | None = None) ->
         chapter_id=chapter.chapter_id,
         summary=f"摘要-{chapter.number}",
         facts=[_claim(chapter, text)],
+    )
+
+
+def _replace_bodies(store, session, bodies: list[str]):
+    chapters = [
+        chapter.model_copy(
+            update={
+                "body": body,
+                "fingerprint": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            }
+        )
+        for chapter, body in zip(session.chapters, bodies, strict=True)
+    ]
+    return store.replace_chapters(
+        session.session_id, chapters, expected_revision=session.revision
     )
 
 
@@ -264,7 +280,7 @@ def test_removed_completed_id_is_cleaned_not_reused(tmp_path: Path) -> None:
     assert [chapter.number for chapter in analyzer.batch_calls[0]] == [1, 2]
 
 
-@pytest.mark.parametrize("mode", ["missing", "duplicate", "wrong"])
+@pytest.mark.parametrize("mode", ["missing", "duplicate", "wrong_id"])
 def test_invalid_batch_result_ids_fail_stably_and_keep_prior_progress(
     tmp_path: Path, mode: str
 ) -> None:
@@ -291,6 +307,123 @@ def test_invalid_batch_result_ids_fail_stably_and_keep_prior_progress(
     assert loaded.analysis_progress["completed_chapter_ids"] == [session.chapters[0].chapter_id]
 
 
+def test_reversed_batch_results_are_restored_to_chapter_order(tmp_path: Path) -> None:
+    store, session = _store_with_chapters(tmp_path, count=2)
+
+    class ReversedAnalyzer(FakeAnalyzer):
+        def analyze_chapters(self, chapters):
+            self.batch_calls.append(chapters)
+            return [_chapter_result(chapter) for chapter in reversed(chapters)]
+
+    analyzer = ReversedAnalyzer()
+    run_continuation_analysis(store, session.session_id, analyzer, batch_size=2)
+
+    assert [result.chapter_id for result in analyzer.merge_calls[0][0]] == [
+        chapter.chapter_id for chapter in session.chapters
+    ]
+
+
+def test_extra_unique_batch_result_is_rejected(tmp_path: Path) -> None:
+    store, session = _store_with_chapters(tmp_path, count=2)
+
+    class ExtraResultAnalyzer(FakeAnalyzer):
+        def analyze_chapters(self, chapters):
+            results = [_chapter_result(chapter) for chapter in chapters]
+            return [
+                *results,
+                results[0].model_copy(update={"chapter_id": "unexpected-extra"}),
+            ]
+
+    with pytest.raises(ValueError, match="^invalid_chapter_analysis$"):
+        run_continuation_analysis(
+            store, session.session_id, ExtraResultAnalyzer(), batch_size=2
+        )
+
+    loaded = store.get(session.session_id)
+    assert loaded.status == "failed"
+    assert loaded.analysis_progress["completed_chapter_ids"] == []
+
+
+def test_batching_honors_count_and_body_character_budget(tmp_path: Path) -> None:
+    store, session = _store_with_chapters(tmp_path, count=3)
+    session = _replace_bodies(store, session, ["甲" * 4, "乙" * 4, "丙" * 4])
+    analyzer = FakeAnalyzer()
+
+    run_continuation_analysis(
+        store,
+        session.session_id,
+        analyzer,
+        batch_size=3,
+        batch_body_char_budget=8,
+        chapter_max_chars=10,
+    )
+
+    assert [[chapter.number for chapter in batch] for batch in analyzer.batch_calls] == [
+        [1, 2],
+        [3],
+    ]
+
+
+def test_oversized_chapter_fails_and_preserves_valid_progress(tmp_path: Path) -> None:
+    store, session = _store_with_chapters(tmp_path, count=2)
+    session = _replace_bodies(store, session, ["可" * 4, "超" * 11])
+    first = _chapter_result(session.chapters[0])
+    store.update(
+        session.session_id,
+        lambda current: current.analysis_progress.update(
+            completed_chapter_ids=[session.chapters[0].chapter_id],
+            chapter_results=[first.model_dump(mode="json")],
+            chapter_fingerprints={
+                session.chapters[0].chapter_id: session.chapters[0].fingerprint
+            },
+        ),
+    )
+    analyzer = FakeAnalyzer()
+
+    with pytest.raises(ValueError, match="^continuation_chapter_too_large$"):
+        run_continuation_analysis(
+            store,
+            session.session_id,
+            analyzer,
+            batch_body_char_budget=10,
+            chapter_max_chars=10,
+        )
+
+    loaded = store.get(session.session_id)
+    assert loaded.status == "failed"
+    assert loaded.error == "continuation_chapter_too_large"
+    assert loaded.analysis_progress["completed_chapter_ids"] == [
+        session.chapters[0].chapter_id
+    ]
+    assert analyzer.batch_calls == []
+
+
+def test_oversized_chapter_fails_after_checkpointing_earlier_pending_batch(
+    tmp_path: Path,
+) -> None:
+    store, session = _store_with_chapters(tmp_path, count=2)
+    session = _replace_bodies(store, session, ["可" * 4, "超" * 11])
+    analyzer = FakeAnalyzer()
+
+    with pytest.raises(ValueError, match="^continuation_chapter_too_large$"):
+        run_continuation_analysis(
+            store,
+            session.session_id,
+            analyzer,
+            batch_size=1,
+            batch_body_char_budget=10,
+            chapter_max_chars=10,
+        )
+
+    assert [[chapter.number for chapter in batch] for batch in analyzer.batch_calls] == [
+        [1]
+    ]
+    loaded = store.get(session.session_id)
+    assert loaded.analysis_progress["completed_chapter_ids"] == [
+        session.chapters[0].chapter_id
+    ]
+
+
 def test_merge_once_and_receives_at_most_last_ten_chapters(tmp_path: Path) -> None:
     store, session = _store_with_chapters(tmp_path, count=12)
     analyzer = FakeAnalyzer()
@@ -309,6 +442,37 @@ def test_confirmed_claim_with_valid_evidence_is_indexed(tmp_path: Path) -> None:
     assert result.timeline[0].confidence == "confirmed"
     assert result.evidence_index["timeline.0"][0].chapter_id == session.chapters[0].chapter_id
     assert result.needs_confirmation == []
+
+
+def test_evidence_offsets_count_non_bmp_text_as_python_code_points(tmp_path: Path) -> None:
+    store, session = _store_with_chapters(tmp_path, count=1)
+    session = _replace_bodies(store, session, ["甲😀乙"])
+
+    class EmojiEvidenceAnalyzer(FakeAnalyzer):
+        def merge(self, results, recent):
+            return ContinuationAnalysis(
+                story_overview="总览",
+                world=[
+                    ClaimItem(
+                        claim="出现表情",
+                        confidence="confirmed",
+                        evidence=[
+                            EvidenceRef(
+                                chapter_id=session.chapters[0].chapter_id,
+                                excerpt_start=1,
+                                excerpt_end=2,
+                                quote="😀",
+                            )
+                        ],
+                    )
+                ],
+            )
+
+    result = run_continuation_analysis(store, session.session_id, EmojiEvidenceAnalyzer())
+
+    assert len(session.chapters[0].body) == 3
+    assert result.world[0].confidence == "confirmed"
+    assert result.world[0].evidence[0].quote == "😀"
 
 
 def test_chapter_claim_without_evidence_survives_checkpoint_as_confirmation(
@@ -413,15 +577,54 @@ def test_ready_is_idempotent_and_cancelled_is_rejected(tmp_path: Path) -> None:
     expected = run_continuation_analysis(store, session.session_id, first_analyzer)
     revision = store.get(session.session_id).revision
 
-    second = run_continuation_analysis(store, session.session_id, FakeAnalyzer())
+    ready_analyzer = FakeAnalyzer()
+    second = run_continuation_analysis(store, session.session_id, ready_analyzer)
 
     assert second == expected
     assert store.get(session.session_id).revision == revision
+    assert ready_analyzer.batch_calls == []
+    assert ready_analyzer.merge_calls == []
 
     store2, session2 = _store_with_chapters(tmp_path / "cancelled")
     store2.update(session2.session_id, lambda current: setattr(current, "status", "cancelled"))
     with pytest.raises(ValueError, match="^continuation_analysis_cancelled$"):
         run_continuation_analysis(store2, session2.session_id, FakeAnalyzer())
+
+
+def test_ready_with_changed_fingerprint_reanalyzes_only_changed_chapter(
+    tmp_path: Path,
+) -> None:
+    store, session = _store_with_chapters(tmp_path, count=3)
+    run_continuation_analysis(store, session.session_id, FakeAnalyzer())
+    ready = store.get(session.session_id)
+    changed_body = "第二章已经修改"
+    changed_chapters = list(ready.chapters)
+    changed_chapters[1] = changed_chapters[1].model_copy(
+        update={
+            "body": changed_body,
+            "fingerprint": hashlib.sha256(changed_body.encode("utf-8")).hexdigest(),
+        }
+    )
+    store.replace_chapters(
+        ready.session_id, changed_chapters, expected_revision=ready.revision
+    )
+
+    class UpdatedMergeAnalyzer(FakeAnalyzer):
+        def merge(self, chapter_results, recent_chapters):
+            self.merge_calls.append((chapter_results, recent_chapters))
+            return ContinuationAnalysis(story_overview=recent_chapters[1].body)
+
+    analyzer = UpdatedMergeAnalyzer()
+    result = run_continuation_analysis(store, session.session_id, analyzer)
+
+    assert [[chapter.number for chapter in batch] for batch in analyzer.batch_calls] == [[2]]
+    assert len(analyzer.merge_calls) == 1
+    assert result.story_overview == changed_body
+    loaded = store.get(session.session_id)
+    assert loaded.status == "ready"
+    assert loaded.analysis_progress["chapter_fingerprints"] == {
+        chapter.chapter_id: chapter.fingerprint for chapter in loaded.chapters
+    }
 
 
 @pytest.mark.parametrize("batch_size", [0, -1])
@@ -539,3 +742,57 @@ def test_llm_batch_prompt_contains_only_requested_chapters() -> None:
     assert "仅第二章正文" in prompt
     assert "无关旧章正文" not in prompt
     assert "JSON" in payloads[0]["messages"][0]["content"]
+    context = json.loads(prompt)
+    assert context["body_char_count"] == len(chapter.body)
+    assert context["body_char_budget"] >= context["body_char_count"]
+    assert "Unicode code point" in " ".join(context["rules"])
+
+
+def test_llm_merge_prompt_is_bounded_omits_old_body_and_keeps_latest_tail() -> None:
+    payloads = []
+
+    def post_json(*args, **kwargs):
+        payloads.append(args[2])
+        content = ContinuationAnalysis(story_overview="合并完成").model_dump(mode="json")
+        return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
+
+    analyzer = LLMContinuationAnalyzer(
+        post_json=post_json,
+        runtime_resolver=lambda stage: _runtime(),
+        merge_char_budget=3000,
+        recent_body_char_budget=400,
+    )
+    chapters = [
+        ContinuationChapter(
+            chapter_id=f"c{number}",
+            number=number,
+            title=f"第{number}章",
+            body=(
+                "UNRELATED_OLD_BODY"
+                if number == 1
+                else ("最新章节前文" * 100 + "LATEST_END" if number == 12 else f"正文-{number}")
+            ),
+            source_name=f"{number}.txt",
+            fingerprint=f"fp-{number}",
+        )
+        for number in range(1, 13)
+    ]
+    results = [
+        ChapterAnalysis(
+            chapter_id=chapter.chapter_id,
+            summary=f"摘要-{chapter.number}-" + "详" * 1000,
+        )
+        for chapter in chapters
+    ]
+
+    merged = analyzer.merge(results, chapters)
+
+    assert merged.story_overview == "合并完成"
+    messages = payloads[0]["messages"]
+    assert sum(len(message["content"]) for message in messages) <= 3000
+    prompt = messages[1]["content"]
+    assert "UNRELATED_OLD_BODY" not in prompt
+    assert "LATEST_END" in prompt
+    assert "[TRUNCATED_TO_RECENT_TAIL]" in prompt
+    context = json.loads(prompt)
+    assert sum(len(item["body_excerpt"]) for item in context["recent_chapters"]) <= 400

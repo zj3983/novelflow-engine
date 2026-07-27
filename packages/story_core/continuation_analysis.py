@@ -15,6 +15,13 @@ from packages.story_core.runtime_config import StageRuntimeSettings, resolve_sta
 
 Confidence = Literal["confirmed", "inferred"]
 
+CONTINUATION_BATCH_BODY_CHAR_BUDGET = 60_000
+CONTINUATION_CHAPTER_MAX_CHARS = 50_000
+CONTINUATION_MERGE_CHAR_BUDGET = 80_000
+CONTINUATION_RECENT_BODY_CHAR_BUDGET = 30_000
+_RECENT_TAIL_MARKER = "[TRUNCATED_TO_RECENT_TAIL]"
+_COMPACT_VALUE_MARKER = "[TRUNCATED]"
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -261,6 +268,7 @@ def _safe_error(exc: BaseException) -> str:
     if isinstance(exc, ValueError) and str(exc) in {
         "invalid_chapter_analysis",
         "continuation_analysis_invalid_response",
+        "continuation_chapter_too_large",
         "session_revision_conflict",
     }:
         return str(exc)
@@ -299,24 +307,67 @@ def _load_progress(
     return [valid_by_id[chapter.chapter_id] for chapter in chapters if chapter.chapter_id in valid_by_id]
 
 
+def _progress_matches_chapters(
+    progress: dict[str, Any], chapters: list[ContinuationChapter]
+) -> bool:
+    saved = progress.get("chapter_fingerprints")
+    if not isinstance(saved, dict):
+        return False
+    current = {chapter.chapter_id: chapter.fingerprint for chapter in chapters}
+    return saved == current
+
+
+def _analysis_batches(
+    chapters: list[ContinuationChapter],
+    *,
+    batch_size: int,
+    body_char_budget: int,
+    chapter_max_chars: int,
+) -> Iterable[list[ContinuationChapter]]:
+    batch: list[ContinuationChapter] = []
+    batch_chars = 0
+    for chapter in chapters:
+        body_chars = len(chapter.body)
+        if body_chars > chapter_max_chars or body_chars > body_char_budget:
+            if batch:
+                yield batch
+            raise ValueError("continuation_chapter_too_large")
+        if batch and (
+            len(batch) >= batch_size or batch_chars + body_chars > body_char_budget
+        ):
+            yield batch
+            batch = []
+            batch_chars = 0
+        batch.append(chapter)
+        batch_chars += body_chars
+    if batch:
+        yield batch
+
+
 def run_continuation_analysis(
     store: ContinuationSessionStore,
     session_id: str,
     analyzer: ContinuationAnalyzer,
     batch_size: int = 10,
+    batch_body_char_budget: int = CONTINUATION_BATCH_BODY_CHAR_BUDGET,
+    chapter_max_chars: int = CONTINUATION_CHAPTER_MAX_CHARS,
 ) -> ContinuationAnalysis:
     if batch_size <= 0:
         raise ValueError("invalid_batch_size")
+    if batch_body_char_budget <= 0 or chapter_max_chars <= 0:
+        raise ValueError("invalid_analysis_budget")
 
     session = store.get(session_id)
-    if session.status == "ready":
+    chapters = list(session.chapters)
+    if session.status == "ready" and _progress_matches_chapters(
+        session.analysis_progress, chapters
+    ):
         return ContinuationAnalysis.model_validate(session.analysis)
     if session.status == "cancelled":
         raise ValueError("continuation_analysis_cancelled")
-    if session.status not in {"parsed", "failed", "analyzing"}:
+    if session.status not in {"parsed", "failed", "analyzing", "ready"}:
         raise ValueError("continuation_analysis_invalid_status")
 
-    chapters = list(session.chapters)
     chapters_by_id = {chapter.chapter_id: chapter for chapter in chapters}
     completed = _load_progress(session.analysis_progress, chapters)
 
@@ -341,8 +392,12 @@ def run_continuation_analysis(
 
     try:
         pending = [chapter for chapter in chapters if chapter.chapter_id not in completed_by_id]
-        for offset in range(0, len(pending), batch_size):
-            batch = pending[offset : offset + batch_size]
+        for batch in _analysis_batches(
+            pending,
+            batch_size=batch_size,
+            body_char_budget=batch_body_char_budget,
+            chapter_max_chars=chapter_max_chars,
+        ):
             raw_results = analyzer.analyze_chapters(batch)
             try:
                 results = [ChapterAnalysis.model_validate(item) for item in raw_results]
@@ -414,28 +469,230 @@ def run_continuation_analysis(
         raise
 
 
+def _clipped(value: str, limit: int) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    keep = max(0, limit - len(_COMPACT_VALUE_MARKER))
+    return f"{text[:keep]}{_COMPACT_VALUE_MARKER}"
+
+
+def _compact_evidence(evidence: list[EvidenceRef]) -> list[dict[str, Any]]:
+    return [item.model_dump(mode="json") for item in evidence[:3]]
+
+
+def _compact_claim(item: ClaimItem | TimelineEvent | HookAnalysis) -> dict[str, Any]:
+    text = item.claim if isinstance(item, ClaimItem) else item.text
+    return {
+        "text": _clipped(text, 240),
+        "confidence": item.confidence,
+        "evidence": _compact_evidence(item.evidence),
+    }
+
+
+def _compact_chapter_result(result: ChapterAnalysis) -> dict[str, Any]:
+    return {
+        "chapter_id": result.chapter_id,
+        "summary": _clipped(result.summary, 500),
+        "characters": [
+            {
+                "name": _clipped(item.name, 80),
+                "role": _clipped(item.role, 120),
+                "summary": _clipped(item.summary, 240),
+                "confidence": item.confidence,
+                "evidence": _compact_evidence(item.evidence),
+            }
+            for item in result.characters[:8]
+        ],
+        "facts": [_compact_claim(item) for item in result.facts[:8]],
+        "locations": [_compact_claim(item) for item in result.locations[:6]],
+        "timeline_events": [
+            _compact_claim(item) for item in result.timeline_events[:8]
+        ],
+        "power_changes": [
+            _compact_claim(item) for item in result.power_changes[:8]
+        ],
+        "hooks": [_compact_claim(item) for item in result.hooks[:8]],
+        "needs_confirmation": [
+            {
+                "claim": _clipped(item.claim, 240),
+                "source": item.source,
+                "reason": item.reason,
+            }
+            for item in result.needs_confirmation[:8]
+        ],
+        "compacted": True,
+    }
+
+
+def _summary_only_result(result: ChapterAnalysis) -> dict[str, Any]:
+    return {
+        "chapter_id": result.chapter_id,
+        "summary": _clipped(result.summary, 240),
+        "compacted": True,
+        "omitted_fields": _COMPACT_VALUE_MARKER,
+    }
+
+
+def _recent_chapter_context(
+    chapters: list[ContinuationChapter], body_char_budget: int
+) -> list[dict[str, Any]]:
+    remaining = body_char_budget
+    selected: list[tuple[int, dict[str, Any]]] = []
+    recent = chapters[-10:]
+    for index in range(len(recent) - 1, -1, -1):
+        if remaining <= 0:
+            break
+        chapter = recent[index]
+        if len(chapter.body) <= remaining:
+            excerpt = chapter.body
+        else:
+            tail_chars = max(0, remaining - len(_RECENT_TAIL_MARKER))
+            tail = chapter.body[-tail_chars:] if tail_chars else ""
+            excerpt = f"{_RECENT_TAIL_MARKER}{tail}"
+            excerpt = excerpt[:remaining]
+        selected.append(
+            (
+                index,
+                {
+                    "chapter_id": chapter.chapter_id,
+                    "number": chapter.number,
+                    "title": _clipped(chapter.title, 160),
+                    "body_excerpt": excerpt,
+                    "excerpt_kind": (
+                        "full" if excerpt == chapter.body else "recent_tail"
+                    ),
+                },
+            )
+        )
+        remaining -= len(excerpt)
+    return [item for _, item in sorted(selected)]
+
+
+def _merge_context(
+    chapter_results: list[ChapterAnalysis],
+    recent_chapters: list[ContinuationChapter],
+    *,
+    total_char_budget: int,
+    recent_body_char_budget: int,
+    system_prompt: str,
+) -> dict[str, Any]:
+    user_budget = total_char_budget - len(system_prompt)
+    if user_budget <= 0:
+        raise ValueError("continuation_analysis_invalid_response")
+
+    output_schema = {
+        "type": "ContinuationAnalysis",
+        "required": [
+            "story_overview",
+            "characters",
+            "world",
+            "power_system",
+            "timeline",
+            "open_hooks",
+            "style_profile",
+            "continuation_start",
+            "evidence_index",
+            "needs_confirmation",
+        ],
+    }
+
+    def build(
+        included: list[tuple[int, dict[str, Any]]],
+        recent: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "chapter_results": [item for _, item in sorted(included)],
+            "recent_chapters": recent,
+            "output_schema": output_schema,
+            "rules": [
+                "Synthesize analysis only; do not write continuation prose.",
+                "Do not invent facts without valid evidence.",
+                "Recent chapter excerpts retain the newest available text first.",
+            ],
+            "truncation": {
+                "markers": [_COMPACT_VALUE_MARKER, _RECENT_TAIL_MARKER],
+                "omitted_chapter_result_count": len(chapter_results) - len(included),
+            },
+        }
+
+    recent_limit = min(recent_body_char_budget, max(0, user_budget // 2))
+    recent = _recent_chapter_context(recent_chapters, recent_limit)
+    context = build([], recent)
+    while len(json.dumps(context, ensure_ascii=False, separators=(",", ":"))) > user_budget:
+        if recent_limit == 0:
+            raise ValueError("continuation_analysis_invalid_response")
+        excess = len(json.dumps(context, ensure_ascii=False, separators=(",", ":"))) - user_budget
+        recent_limit = max(0, recent_limit - excess - 32)
+        recent = _recent_chapter_context(recent_chapters, recent_limit)
+        context = build([], recent)
+
+    included: list[tuple[int, dict[str, Any]]] = []
+    for index in range(len(chapter_results) - 1, -1, -1):
+        result = chapter_results[index]
+        for compact in (_compact_chapter_result(result), _summary_only_result(result)):
+            candidate = build([*included, (index, compact)], recent)
+            serialized = json.dumps(
+                candidate, ensure_ascii=False, separators=(",", ":")
+            )
+            if len(serialized) <= user_budget:
+                included.append((index, compact))
+                context = candidate
+                break
+    return context
+
+
 class LLMContinuationAnalyzer:
     def __init__(
         self,
         *,
         post_json: Callable[..., dict[str, Any]] = post_json_with_retry,
         runtime_resolver: Callable[[str], StageRuntimeSettings] = resolve_stage_runtime,
+        batch_body_char_budget: int = CONTINUATION_BATCH_BODY_CHAR_BUDGET,
+        chapter_max_chars: int = CONTINUATION_CHAPTER_MAX_CHARS,
+        merge_char_budget: int = CONTINUATION_MERGE_CHAR_BUDGET,
+        recent_body_char_budget: int = CONTINUATION_RECENT_BODY_CHAR_BUDGET,
     ) -> None:
+        if min(
+            batch_body_char_budget,
+            chapter_max_chars,
+            merge_char_budget,
+            recent_body_char_budget,
+        ) <= 0:
+            raise ValueError("invalid_analysis_budget")
         self._post_json = post_json
         self._runtime_resolver = runtime_resolver
+        self._batch_body_char_budget = batch_body_char_budget
+        self._chapter_max_chars = chapter_max_chars
+        self._merge_char_budget = merge_char_budget
+        self._recent_body_char_budget = recent_body_char_budget
 
-    def _call(self, prompt_context: dict[str, Any], system_prompt: str) -> dict[str, Any]:
+    def _call(
+        self,
+        prompt_context: dict[str, Any],
+        system_prompt: str,
+        *,
+        total_char_budget: int | None = None,
+    ) -> dict[str, Any]:
         try:
             runtime = self._runtime_resolver("planner")
             if runtime.provider != "codexcli" and not runtime.api_key:
                 raise ValueError("runtime_unavailable")
+            user_content = json.dumps(
+                prompt_context, ensure_ascii=False, separators=(",", ":")
+            )
+            if (
+                total_char_budget is not None
+                and len(system_prompt) + len(user_content) > total_char_budget
+            ):
+                raise ValueError("prompt_budget_exceeded")
             payload = {
                 "model": runtime.model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {
                         "role": "user",
-                        "content": json.dumps(prompt_context, ensure_ascii=False),
+                        "content": user_content,
                     },
                 ],
                 "response_format": {"type": "json_object"},
@@ -461,6 +718,12 @@ class LLMContinuationAnalyzer:
     def analyze_chapters(
         self, chapters: list[ContinuationChapter]
     ) -> list[ChapterAnalysis]:
+        body_char_count = sum(len(chapter.body) for chapter in chapters)
+        if (
+            any(len(chapter.body) > self._chapter_max_chars for chapter in chapters)
+            or body_char_count > self._batch_body_char_budget
+        ):
+            raise ValueError("continuation_chapter_too_large")
         context = {
             "chapters": [
                 {
@@ -471,10 +734,12 @@ class LLMContinuationAnalyzer:
                 }
                 for chapter in chapters
             ],
+            "body_char_count": body_char_count,
+            "body_char_budget": self._batch_body_char_budget,
             "output_schema": _ChapterBatchResponse.model_json_schema(),
             "rules": [
                 "Return exactly one analysis for each supplied chapter_id.",
-                "Use offsets into that chapter body for evidence.",
+                "Evidence offsets are zero-based Python Unicode code point offsets into that chapter body; a non-BMP character counts as one code point.",
                 "Mark confirmed only when valid evidence is present.",
             ],
         }
@@ -492,27 +757,21 @@ class LLMContinuationAnalyzer:
         chapter_results: list[ChapterAnalysis],
         recent_chapters: list[ContinuationChapter],
     ) -> ContinuationAnalysis:
-        context = {
-            "chapter_results": [item.model_dump(mode="json") for item in chapter_results],
-            "recent_chapters": [
-                {
-                    "chapter_id": chapter.chapter_id,
-                    "number": chapter.number,
-                    "title": chapter.title,
-                    "body": chapter.body,
-                }
-                for chapter in recent_chapters
-            ],
-            "output_schema": ContinuationAnalysis.model_json_schema(),
-            "rules": [
-                "Synthesize analysis only; do not write continuation prose.",
-                "Do not invent facts without valid evidence.",
-                "Use recent_chapters only to locate the continuation point.",
-            ],
-        }
+        system_prompt = (
+            "Merge the supplied chapter analyses into a continuation brief. "
+            "Return JSON only. Do not continue the novel and do not invent unsupported facts."
+        )
+        context = _merge_context(
+            chapter_results,
+            recent_chapters,
+            total_char_budget=self._merge_char_budget,
+            recent_body_char_budget=self._recent_body_char_budget,
+            system_prompt=system_prompt,
+        )
         parsed = self._call(
             context,
-            "Merge the supplied chapter analyses into a continuation brief. Return JSON only. Do not continue the novel and do not invent unsupported facts.",
+            system_prompt,
+            total_char_budget=self._merge_char_budget,
         )
         try:
             return ContinuationAnalysis.model_validate(parsed)
