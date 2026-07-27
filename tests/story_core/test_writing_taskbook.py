@@ -183,7 +183,25 @@ def test_taskbook_does_not_attach_later_chapter_decision_without_upgrade_scene()
     )
 
     assert all("新增5点" not in scene["required_surface"] for scene in taskbook["scenes"])
-    assert any("发生升级的场景落地" in item for item in taskbook["global_required"])
+    assert any("人物实际处理属性点的场景落地" in item for item in taskbook["global_required"])
+    assert not any("发生升级的场景落地" in item for item in taskbook["global_required"])
+
+
+def test_taskbook_carry_without_upgrade_uses_attribute_handling_scene_wording() -> None:
+    taskbook = build_writing_taskbook(
+        chapter_number=2,
+        genre="网游",
+        plan={
+            "event_plan": {
+                "turn": "打开面板处理已有属性点",
+                "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+            },
+            "scene_cards": [{"id": "rest", "location": "营地", "purpose": "整理背包"}],
+        },
+    )
+
+    assert any("人物实际处理属性点的场景落地" in item for item in taskbook["global_required"])
+    assert not any("发生升级的场景落地" in item for item in taskbook["global_required"])
 
 
 def test_taskbook_compiles_scene_cards_for_later_chapters():

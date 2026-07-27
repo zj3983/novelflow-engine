@@ -9,6 +9,7 @@ from packages.story_core.attribute_allocation import (
     award_attribute_points,
     normalize_attribute_allocation_rule,
     parse_level,
+    plan_handles_attribute_points,
     planned_level_target,
     validate_attribute_allocation_decision,
 )
@@ -338,6 +339,28 @@ def test_planned_level_target_checks_at_most_six_scene_cards() -> None:
     assert planned_level_target(plan) is None
 
 
+def test_attribute_point_handling_ignores_future_forbidden_and_cyclic_plan_data() -> None:
+    plan = {
+        "event_plan": {
+            "chapter_end_hook": {"content": "下一章分配属性点"},
+            "next_focus": "未来加点路线",
+            "must_not_write": "禁止分配属性点",
+            "avoid": "避免加点",
+            "future": {"turn": "打开面板分配属性点"},
+        },
+        "scene_cards": [
+            {"purpose": "不要分配属性点", "must_show": ["禁止加点"]},
+        ],
+    }
+    plan["event_plan"]["cycle"] = plan
+
+    assert plan_handles_attribute_points(plan) is False
+
+
+def test_attribute_point_handling_detects_current_action_only() -> None:
+    assert plan_handles_attribute_points({"event_plan": {"turn": "打开面板分配属性点"}}) is True
+
+
 def test_attribute_context_uses_flat_legacy_ledger_level_for_planned_allocation() -> None:
     story = type(
         "Story",
@@ -363,6 +386,25 @@ def test_attribute_context_uses_flat_legacy_ledger_level_for_planned_allocation(
         "allocations": {"智力": 5},
         "remaining": 0,
     }
+
+
+def test_attribute_context_uses_flat_legacy_available_points_for_carry() -> None:
+    story = type(
+        "Story",
+        (),
+        {
+            "world_context": {"power_system_spec": {"attribute_allocation": free_attribute_rule()}},
+            "progression_ledger": {"level": "Lv.2", "unallocated_attribute_points": 5},
+        },
+    )()
+
+    context = attribute_allocation_context(
+        story,
+        {"event_plan": {"attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"}}},
+    )
+
+    assert context["available_points"] == 5
+    assert context["chapter_decision"] == {"mode": "carry", "remaining": 5, "reason": "留给转职"}
 
 
 def test_attribute_context_keeps_three_latest_valid_allocation_records() -> None:

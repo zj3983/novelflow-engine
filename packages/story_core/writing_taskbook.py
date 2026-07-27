@@ -4,7 +4,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from packages.story_core.attribute_allocation import parse_level
+from packages.story_core.attribute_allocation import parse_level, planned_level_target
 from packages.story_core.book_style import book_style_prompt
 from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
 
@@ -691,7 +691,8 @@ def build_writing_taskbook(
     if decision.get("mode") == "carry":
         global_required.append(f"属性点保留原因必须在场：{decision.get('reason') or '为后续路线保留'}")
     if decision and not decision_attached_to_scene:
-        global_required.append(f"属性点决策必须在发生升级的场景落地：{_attribute_decision_requirement(decision)}")
+        placement = "发生升级的场景" if planned_level_target(plan) is not None else "人物实际处理属性点的场景"
+        global_required.append(f"属性点决策必须在{placement}落地：{_attribute_decision_requirement(decision)}")
     world_required, world_forbidden = _world_context_requirements(simulation_plan)
     global_required.extend(world_required)
     global_forbidden.extend(world_forbidden)

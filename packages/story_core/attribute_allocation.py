@@ -16,6 +16,17 @@ _MAX_LEVEL_DIGITS = len(str(_MAX_STARTING_LEVEL))
 _MAX_LEVEL_UP_SPAN = 1_000
 _LEVEL_PATTERN = re.compile(r"^(?:lv\.\s*)?(\d+)(?:\s*\u7ea7)?$", re.IGNORECASE)
 _ATTRIBUTE_POINT_HANDLING_TOKENS = ("属性点", "加点", "配点", "保留点数", "分配属性")
+_ATTRIBUTE_POINT_NEGATIONS = ("不要", "禁止", "不得", "避免", "无需")
+_ATTRIBUTE_ACTION_FIELDS = ("turn", "pivot", "ordered_actions", "chapter_satisfaction", "state_delta")
+_ATTRIBUTE_SCENE_FIELDS = ("purpose", "must_show", "state_delta")
+_ATTRIBUTE_IGNORED_FIELDS = {
+    "attribute_allocation_decision",
+    "chapter_end_hook",
+    "next_focus",
+    "next_hook",
+    "must_not_write",
+    "avoid",
+}
 
 
 def _compact_text(value: Any, limit: int) -> str:
@@ -144,8 +155,12 @@ def attribute_allocation_rule_from_story(story: Any) -> dict[str, Any]:
     return normalize_attribute_allocation_rule(power_system_spec.get("attribute_allocation"))
 
 
+def _valid_unallocated_points(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def _unallocated_points(value: Any) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+    return _valid_unallocated_points(value) or 0
 
 
 def current_protagonist_level(ledger: Any, starting_level: int) -> int:
@@ -155,6 +170,18 @@ def current_protagonist_level(ledger: Any, starting_level: int) -> int:
         return starting_level
     protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), Mapping) else {}
     return parse_level(protagonist.get("level")) or parse_level(ledger.get("level")) or starting_level
+
+
+def current_unallocated_attribute_points(ledger: Any) -> int:
+    """Read unallocated points from nested or legacy flat ledgers."""
+
+    if not isinstance(ledger, Mapping):
+        return 0
+    protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), Mapping) else {}
+    protagonist_points = _valid_unallocated_points(protagonist.get("unallocated_attribute_points"))
+    if protagonist_points is not None:
+        return protagonist_points
+    return _unallocated_points(ledger.get("unallocated_attribute_points"))
 
 
 def planned_level_target(plan: Any) -> int | None:
@@ -200,20 +227,53 @@ def plan_handles_attribute_points(plan: Any) -> bool:
         return False
 
     def has_handling_signal(value: Any) -> bool:
-        if isinstance(value, str):
-            return any(token in value for token in _ATTRIBUTE_POINT_HANDLING_TOKENS)
-        if isinstance(value, Mapping):
-            for key, nested in value.items():
-                if key == "attribute_allocation_decision":
-                    continue
-                if any(token in str(key) for token in _ATTRIBUTE_POINT_HANDLING_TOKENS) or has_handling_signal(nested):
-                    return True
+        def text_handles_points(text: str) -> bool:
+            for token in _ATTRIBUTE_POINT_HANDLING_TOKENS:
+                start = text.find(token)
+                while start >= 0:
+                    prefix = text[max(0, start - 8) : start]
+                    if not any(negation in prefix for negation in _ATTRIBUTE_POINT_NEGATIONS):
+                        return True
+                    start = text.find(token, start + len(token))
             return False
-        if isinstance(value, list):
-            return any(has_handling_signal(item) for item in value)
+
+        pending = [value]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if isinstance(current, str):
+                if text_handles_points(current):
+                    return True
+                continue
+            if isinstance(current, Mapping):
+                identity = id(current)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                for key, nested in current.items():
+                    field_name = key.casefold() if isinstance(key, str) else ""
+                    if field_name in _ATTRIBUTE_IGNORED_FIELDS or "future" in field_name:
+                        continue
+                    if isinstance(key, str) and text_handles_points(key):
+                        return True
+                    pending.append(nested)
+                continue
+            if isinstance(current, list):
+                identity = id(current)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                pending.extend(current)
         return False
 
-    return any(has_handling_signal(plan.get(key)) for key in ("event_plan", "scene_cards", "state_delta"))
+    event_plan = plan.get("event_plan") if isinstance(plan.get("event_plan"), Mapping) else {}
+    sources = [event_plan.get(field) for field in _ATTRIBUTE_ACTION_FIELDS]
+    scene_cards = plan.get("scene_cards")
+    if isinstance(scene_cards, list):
+        for card in scene_cards[:6]:
+            if isinstance(card, Mapping):
+                sources.extend(card.get(field) for field in _ATTRIBUTE_SCENE_FIELDS)
+    return any(has_handling_signal(value) for value in sources)
 
 
 def validate_attribute_allocation_decision(
@@ -276,7 +336,7 @@ def attribute_allocation_context(story: Any, plan: Any | None = None) -> dict[st
     protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), Mapping) else {}
     raw_attributes = protagonist.get("attributes")
     attributes = deepcopy(dict(raw_attributes)) if isinstance(raw_attributes, Mapping) else deepcopy(rule["base_attributes"])
-    available = _unallocated_points(protagonist.get("unallocated_attribute_points"))
+    available = current_unallocated_attribute_points(ledger)
     allocations = protagonist.get("attribute_allocations")
     latest_allocations = (
         [deepcopy(item) for item in allocations if isinstance(item, Mapping)][-3:]

@@ -21,6 +21,7 @@ from packages.story_core.attribute_allocation import (
     attribute_allocation_rule_from_story,
     award_attribute_points,
     current_protagonist_level,
+    current_unallocated_attribute_points,
     parse_level,
     plan_handles_attribute_points,
     planned_level_target,
@@ -2383,20 +2384,9 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
 
     attribute_rule = attribute_allocation_rule_from_story(story)
     if attribute_rule:
-        protagonist = (
-            story.progression_ledger.get("protagonist")
-            if isinstance(story.progression_ledger, dict)
-            and isinstance(story.progression_ledger.get("protagonist"), dict)
-            else {}
-        )
         current_level = current_protagonist_level(story.progression_ledger, attribute_rule["starting_level"])
         target_level = planned_level_target(plan)
-        current_points = protagonist.get("unallocated_attribute_points")
-        current_points = (
-            current_points
-            if isinstance(current_points, int) and not isinstance(current_points, bool) and current_points >= 0
-            else 0
-        )
+        current_points = current_unallocated_attribute_points(story.progression_ledger)
         expected_points = current_points + max(0, (target_level or current_level) - current_level) * attribute_rule["points_per_level"]
         raw_decision = event_plan.get("attribute_allocation_decision")
         requires_decision = (

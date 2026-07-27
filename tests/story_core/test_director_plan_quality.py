@@ -155,6 +155,18 @@ def test_director_quality_gate_uses_flat_legacy_ledger_level_for_allocation() ->
     assert not any("attribute_allocation_decision" in issue for issue in _director_plan_quality_issues(story, plan))
 
 
+def test_director_quality_gate_uses_flat_legacy_available_points_for_carry() -> None:
+    story = _attribute_story()
+    story.progression_ledger = {"level": "Lv.2", "unallocated_attribute_points": 5}
+    plan = _complete_plan(["夜烬打开面板分配属性点"])
+    plan["event_plan"].update(
+        turn="打开面板分配属性点",
+        attribute_allocation_decision={"mode": "carry", "remaining": 5, "reason": "留给转职"},
+    )
+
+    assert not any("attribute_allocation_decision" in issue for issue in _director_plan_quality_issues(story, plan))
+
+
 def test_director_quality_gate_classifies_malformed_allocation_items() -> None:
     malformed_allocations = [None, "智力+5", {}, {"智力": "5"}, {"智力": True}, {"智力": 0}, {"未知": 1}]
 
