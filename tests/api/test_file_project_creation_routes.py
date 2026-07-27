@@ -104,10 +104,18 @@ def test_file_story_overview_returns_lightweight_chapter_index_without_hydration
     project["seed_outline"] = "A buried transmitter wakes beneath the city."
     project_path.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
     _write_lazy_story_chapters(store)
+    chapter_reads = []
+    original_read_json = FileProjectStore._read_json
+
+    def record_chapter_reads(current_store, path, default=None):
+        if Path(path).parent == current_store.story_system_dir / "chapters":
+            chapter_reads.append(Path(path).name)
+        return original_read_json(current_store, path, default)
 
     def fail_if_hydrated(*args, **kwargs):
         raise AssertionError("overview must not hydrate chapters")
 
+    monkeypatch.setattr(FileProjectStore, "_read_json", record_chapter_reads)
     monkeypatch.setattr(FileProjectStore, "chapter", fail_if_hydrated)
 
     response = client.get(f"/file-stories/{created['active_story_id']}/overview")
@@ -124,6 +132,7 @@ def test_file_story_overview_returns_lightweight_chapter_index_without_hydration
     assert story["chapters"][1]["has_quality_report"] is True
     assert all("body" not in chapter for chapter in story["chapters"])
     assert all("quality_report" not in chapter for chapter in story["chapters"])
+    assert chapter_reads == ["0001.json", "0002.json"]
 
 
 def test_file_story_chapter_hydrates_only_requested_chapter_and_adds_simplified_review(
@@ -155,6 +164,30 @@ def test_file_story_chapter_hydrates_only_requested_chapter_and_adds_simplified_
     assert chapter["quality_report"]["issues"] == ["The ending lacks a hook."]
     assert chapter["quality_report"]["simplified_review"]
     assert calls == [2]
+
+
+@pytest.mark.parametrize("chapter_number", [0, -1])
+def test_file_story_chapter_rejects_non_positive_chapter_numbers(
+    creation_api,
+    monkeypatch,
+    chapter_number,
+):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Invalid chapter", "novel_type_id": "urban"},
+    ).json()
+
+    def fail_if_hydrated(*args, **kwargs):
+        raise AssertionError("invalid chapter number must not hydrate a chapter")
+
+    monkeypatch.setattr(FileProjectStore, "chapter", fail_if_hydrated)
+
+    response = client.get(
+        f"/file-stories/{created['active_story_id']}/chapters/{chapter_number}"
+    )
+
+    assert response.status_code == 422
 
 
 def test_lazy_file_story_routes_return_canonical_not_found_details(creation_api):

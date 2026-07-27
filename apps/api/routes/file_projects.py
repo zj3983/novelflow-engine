@@ -10,7 +10,7 @@ from threading import Lock
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path as ApiPath
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from packages.story_core.book_dissection import diagnose_project_chapter, dissect_reference_text
@@ -691,7 +691,8 @@ def _story_payload(store: FileProjectStore) -> dict[str, Any]:
 
 
 def _story_overview_payload(store: FileProjectStore) -> dict[str, Any]:
-    state = store.state()
+    raw_state = store._read_json(store.webnovel_dir / "state.json", {}) or {}
+    state = store._sanitize_story_state(raw_state if isinstance(raw_state, dict) else {})
     project = store.project()
     chapters = store.chapter_index()
     current_chapter = int(
@@ -1175,7 +1176,10 @@ def init_file_project_routes() -> APIRouter:
         return _story_overview_payload(_file_story_store(story_id))
 
     @router.get("/file-stories/{story_id}/chapters/{chapter_number}")
-    def get_file_story_chapter(story_id: str, chapter_number: int) -> dict[str, Any]:
+    def get_file_story_chapter(
+        story_id: str,
+        chapter_number: int = ApiPath(ge=1),
+    ) -> dict[str, Any]:
         return _file_chapter_payload(_file_story_store(story_id), chapter_number)
 
     return router
