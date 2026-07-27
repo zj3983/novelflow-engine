@@ -10,6 +10,7 @@ from packages.story_core.agent_base import (
 )
 from packages.story_core.attribute_evidence import (
     character_evidence_names,
+    character_aliases_by_name,
     character_update_names,
     protagonist_aliases_from_characters,
 )
@@ -111,6 +112,7 @@ class OpenAIMemorySummaryProvider(BaseOpenAIProvider):
             body,
             previous_summary=(story.chapter_summaries[-1].summary if story.chapter_summaries else ""),
             existing_character_names=character_update_names(story.characters),
+            character_aliases_by_name=character_aliases_by_name(story.characters),
             genre=story.genre,
             fact_locks={
                 "chapter_number": chapter_number,
@@ -156,6 +158,7 @@ class MemoryAgent:
                     body=body,
                     existing_character_names=character_update_names(story.characters),
                     evidence_character_names=character_evidence_names(story.characters),
+                    character_aliases_by_name=character_aliases_by_name(story.characters),
                     protagonist_aliases=protagonist_aliases_from_characters(story.characters),
                 )
 

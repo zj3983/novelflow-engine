@@ -170,10 +170,12 @@ def test_memory_agent_passes_real_name_and_game_id_as_protagonist_aliases(monkey
         body,
         existing_character_names,
         evidence_character_names=None,
+        character_aliases_by_name=None,
         protagonist_aliases=None,
     ):
         captured["existing_character_names"] = existing_character_names
         captured["evidence_character_names"] = evidence_character_names
+        captured["character_aliases_by_name"] = character_aliases_by_name
         captured["protagonist_aliases"] = protagonist_aliases
         return {
             "summary": "",
@@ -213,3 +215,4 @@ def test_memory_agent_passes_real_name_and_game_id_as_protagonist_aliases(monkey
     assert captured["protagonist_aliases"] == {"苏叶", "夜烬"}
     assert captured["existing_character_names"] == {"苏叶", "林峰"}
     assert captured["evidence_character_names"] == {"苏叶", "夜烬", "林峰", "青锋"}
+    assert captured["character_aliases_by_name"] == {"苏叶": {"夜烬"}, "林峰": {"青锋"}}

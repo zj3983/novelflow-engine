@@ -29,6 +29,7 @@ from packages.story_core.attribute_allocation import (
 )
 from packages.story_core.attribute_evidence import (
     character_evidence_names,
+    character_aliases_by_name,
     character_update_names,
     protagonist_aliases_from_characters,
 )
@@ -6262,6 +6263,7 @@ class StoryOrchestrator:
             body,
             previous_summary=previous_summary.summary if previous_summary else "",
             existing_character_names=character_update_names(story.characters),
+            character_aliases_by_name=character_aliases_by_name(story.characters),
             genre=story.genre,
             fact_locks=fact_locks or {},
         )
@@ -6335,6 +6337,7 @@ class StoryOrchestrator:
             body=body,
             existing_character_names=character_update_names(story.characters),
             evidence_character_names=character_evidence_names(story.characters),
+            character_aliases_by_name=character_aliases_by_name(story.characters),
             protagonist_aliases=protagonist_aliases_from_characters(story.characters),
         )
         has_grounded_memory = any(

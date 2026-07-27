@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator, Mapping
 
 from packages.story_core.attribute_evidence import (
     has_character_attribute_allocation,
@@ -86,16 +86,24 @@ def build_post_draft_memory_prompt(
     *,
     previous_summary: str = "",
     existing_character_names: set[str] | None = None,
+    character_aliases_by_name: Mapping[str, Iterable[str]] | None = None,
     genre: str = "",
     fact_locks: Any = None,
 ) -> str:
     """Build a compact extraction prompt whose sole factual source is final prose."""
 
-    names = sorted(
+    known_names = sorted(
         name.strip()
         for name in (existing_character_names or set())
         if isinstance(name, str) and name.strip()
     )
+    aliases = _normalized_character_aliases_by_name(character_aliases_by_name)
+    names = [
+        f"{name}（游戏ID：{'、'.join(sorted(aliases.get(name, set())))}）"
+        if aliases.get(name)
+        else name
+        for name in known_names
+    ]
     return "\n".join(
         [
             "你是小说项目的后置记忆提取器。JSON only，不要解释。",
@@ -103,7 +111,7 @@ def build_post_draft_memory_prompt(
             "计划、大纲、模拟只是上下文，不能直接当事实。写前事实锁只用于识别冲突。",
             "summary只能概括最终正文实际写出的内容。",
             "facts与unresolved_threads的每一项必须是{text, evidence}，evidence必须逐字来自最终正文。",
-            "每个character_update必须包含已知人物name与evidence；不得创建未知人物。",
+            "每个character_update必须包含已知人物name与evidence；character_updates.name必须返回真实人物名，不能填游戏ID；不得创建未知人物。",
             "ledger_updates只写正文已落地的叶子；ledger_evidence用protagonist.location这类扁平路径逐项给证据。",
             "自由属性加点必须同时写成：ledger_updates.protagonist.attribute_allocation={allocations:{智力:5}, remaining:0, reason?:...}；"
             "并给出protagonist.attribute_allocation.allocations.智力和protagonist.attribute_allocation.remaining两条ledger_evidence。"
@@ -169,17 +177,35 @@ def _known_names(value: Any) -> set[str]:
         return set()
 
 
+def _normalized_character_aliases_by_name(
+    value: Mapping[str, Iterable[str]] | None,
+) -> dict[str, set[str]]:
+    if not isinstance(value, Mapping):
+        return {}
+    normalized: dict[str, set[str]] = {}
+    for raw_name, raw_aliases in value.items():
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        if not name:
+            continue
+        aliases = _known_names(raw_aliases)
+        aliases.discard(name)
+        normalized[name] = aliases
+    return normalized
+
+
 def _normalize_character_updates(
     value: Any,
     *,
     body: str,
     existing_character_names: Any,
+    character_aliases_by_name: Mapping[str, Iterable[str]] | None,
     rejected: list[dict[str, str]],
 ) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
 
     known_names = _known_names(existing_character_names)
+    aliases_by_name = _normalized_character_aliases_by_name(character_aliases_by_name)
     accepted: list[dict[str, str]] = []
     for item in value:
         if not isinstance(item, dict):
@@ -195,7 +221,8 @@ def _normalize_character_updates(
                 }
             )
             continue
-        if not _literal_value_in_body(name, body):
+        appearance_names = {name, *aliases_by_name.get(name, set())}
+        if not any(_literal_value_in_body(candidate, body) for candidate in appearance_names):
             rejected.append(
                 {
                     "kind": "character_update",
@@ -570,6 +597,7 @@ def normalize_post_draft_memory(
     body: str,
     existing_character_names: set[str],
     evidence_character_names: set[str] | None = None,
+    character_aliases_by_name: Mapping[str, Iterable[str]] | None = None,
     protagonist_aliases: set[str] | None = None,
 ) -> dict[str, Any]:
     """Drop every proposed state change that lacks literal final-prose evidence."""
@@ -604,10 +632,14 @@ def normalize_post_draft_memory(
         payload.get("character_updates"),
         body=body_text,
         existing_character_names=existing_character_names,
+        character_aliases_by_name=character_aliases_by_name,
         rejected=rejected,
     )
+    alias_map = _normalized_character_aliases_by_name(character_aliases_by_name)
+    flattened_aliases = set(alias_map).union(*alias_map.values()) if alias_map else set()
     other_character_names = (
-        set(evidence_character_names or existing_character_names) - set(protagonist_aliases)
+        (set(evidence_character_names or existing_character_names) | flattened_aliases)
+        - set(protagonist_aliases)
         if protagonist_aliases
         else set()
     )

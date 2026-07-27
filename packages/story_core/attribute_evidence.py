@@ -257,35 +257,42 @@ def protagonist_aliases_from_characters(characters: Iterable[object]) -> set[str
     return aliases
 
 
+def character_aliases_by_name(characters: Iterable[object]) -> dict[str, set[str]]:
+    """Map each real card name to its non-empty game and panel aliases."""
+
+    aliases_by_name: dict[str, set[str]] = {}
+    for character in characters:
+        if isinstance(character, dict):
+            name_value = character.get("name")
+            values = (character.get("game_id"),)
+            panel = character.get("game_panel")
+        else:
+            name_value = getattr(character, "name", "")
+            values = (getattr(character, "game_id", ""),)
+            panel = getattr(character, "game_panel", None)
+        panel_game_id = panel.get("game_id") if isinstance(panel, dict) else getattr(panel, "game_id", "")
+        name = str(name_value or "").strip()
+        if not name:
+            continue
+        aliases = aliases_by_name.setdefault(name, set())
+        for value in (*values, panel_game_id):
+            alias = str(value or "").strip()
+            if alias and alias != name:
+                aliases.add(alias)
+    return aliases_by_name
+
+
 def character_evidence_names(characters: Iterable[object]) -> set[str]:
     """Return non-empty card names and game IDs for local subject evidence."""
 
-    names: set[str] = set()
-    for character in characters:
-        if isinstance(character, dict):
-            values = (character.get("name"), character.get("game_id"))
-            panel = character.get("game_panel")
-        else:
-            values = (getattr(character, "name", ""), getattr(character, "game_id", ""))
-            panel = getattr(character, "game_panel", None)
-        panel_game_id = panel.get("game_id") if isinstance(panel, dict) else getattr(panel, "game_id", "")
-        for value in (*values, panel_game_id):
-            name = str(value or "").strip()
-            if name:
-                names.add(name)
-    return names
+    aliases_by_name = character_aliases_by_name(characters)
+    return set(aliases_by_name).union(*aliases_by_name.values()) if aliases_by_name else set()
 
 
 def character_update_names(characters: Iterable[object]) -> set[str]:
     """Return non-empty real names that may be used as character-update keys."""
 
-    names: set[str] = set()
-    for character in characters:
-        value = character.get("name") if isinstance(character, dict) else getattr(character, "name", "")
-        name = str(value or "").strip()
-        if name:
-            names.add(name)
-    return names
+    return set(character_aliases_by_name(characters))
 
 
 def _normalized_aliases(protagonist_aliases: Iterable[str] | None) -> tuple[str, ...]:

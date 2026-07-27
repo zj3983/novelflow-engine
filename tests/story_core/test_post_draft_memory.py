@@ -607,6 +607,60 @@ def test_attribute_allocation_memory_rejects_a_known_named_bystander_panel_chain
     )
 
 
+def test_character_update_uses_only_its_own_game_id_as_body_evidence():
+    accepted = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "林峰", "emotion": "凝重", "evidence": "青锋脸色凝重"},
+                {"name": "青锋", "emotion": "凝重", "evidence": "青锋脸色凝重"},
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body="青锋脸色凝重。",
+        existing_character_names={"林峰", "周远"},
+        character_aliases_by_name={"林峰": {"青锋"}, "周远": {"赤霄"}},
+    )
+
+    assert accepted["character_updates"] == [
+        {"name": "林峰", "emotion": "凝重", "evidence": "青锋脸色凝重"}
+    ]
+    assert any(
+        item.get("name") == "青锋" and item.get("reason") == "unknown_character"
+        for item in accepted["rejected_updates"]
+    )
+
+    wrong_alias = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "林峰", "emotion": "凝重", "evidence": "赤霄脸色凝重"}
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body="赤霄脸色凝重。",
+        existing_character_names={"林峰", "周远"},
+        character_aliases_by_name={"林峰": {"青锋"}, "周远": {"赤霄"}},
+    )
+
+    assert wrong_alias["character_updates"] == []
+    assert any(
+        item.get("name") == "林峰" and item.get("reason") == "character_not_in_body"
+        for item in wrong_alias["rejected_updates"]
+    )
+
+
+def test_memory_prompt_lists_game_id_but_requires_real_character_name_for_updates():
+    prompt = build_post_draft_memory_prompt(
+        "青锋脸色凝重。",
+        existing_character_names={"林峰"},
+        character_aliases_by_name={"林峰": {"青锋"}},
+    )
+
+    assert "林峰（游戏ID：青锋）" in prompt
+    assert "character_updates.name必须返回真实人物名" in prompt
+
+
 def test_attribute_allocation_requires_local_remaining_evidence_even_when_body_has_zero_points():
     body = "夜烬把五点加到智力上，确认加点后，可用属性点归零。法杖耐久也归零。"
     result = normalize_post_draft_memory(

@@ -100,10 +100,12 @@ def test_orchestrator_memory_normalization_receives_protagonist_real_and_game_al
         body,
         existing_character_names,
         evidence_character_names=None,
+        character_aliases_by_name=None,
         protagonist_aliases=None,
     ):
         captured["existing_character_names"] = existing_character_names
         captured["evidence_character_names"] = evidence_character_names
+        captured["character_aliases_by_name"] = character_aliases_by_name
         captured["protagonist_aliases"] = protagonist_aliases
         return {
             "summary": "记忆完成",
@@ -142,6 +144,7 @@ def test_orchestrator_memory_normalization_receives_protagonist_real_and_game_al
     assert captured["protagonist_aliases"] == {"苏叶", "夜烬"}
     assert captured["existing_character_names"] == {"苏叶", "林峰"}
     assert captured["evidence_character_names"] == {"苏叶", "夜烬", "林峰", "青锋"}
+    assert captured["character_aliases_by_name"] == {"苏叶": {"夜烬"}, "林峰": {"青锋"}}
 
 
 def _attribute_rule() -> dict:
