@@ -225,13 +225,11 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def create_file_project(
+def write_file_project_atomically(
     export_root: str | Path,
-    spec: FileProjectCreateSpec,
-    *,
-    project_id_factory: Callable[[], str] | None = None,
-) -> CreatedFileProject:
-    project_id = (project_id_factory or (lambda: f"p-{uuid4().hex}"))()
+    project_id: str,
+    writer: Callable[[Path], None],
+) -> Path:
     if not isinstance(project_id, str) or PROJECT_ID_PATTERN.fullmatch(project_id) is None:
         raise ValueError("invalid_generated_project_id")
 
@@ -243,8 +241,7 @@ def create_file_project(
 
     temp_root = Path(tempfile.mkdtemp(prefix=f".{project_id}.tmp-", dir=export_path))
     try:
-        _write_project_files(temp_root, project_id, spec)
-        _validate_created_project(temp_root, project_id, spec)
+        writer(temp_root)
         _fsync_directory(temp_root)
         if final_root.exists():
             raise FileExistsError("project_id_conflict")
@@ -254,6 +251,22 @@ def create_file_project(
         raise
 
     _fsync_directory(export_path)
+    return final_root
+
+
+def create_file_project(
+    export_root: str | Path,
+    spec: FileProjectCreateSpec,
+    *,
+    project_id_factory: Callable[[], str] | None = None,
+) -> CreatedFileProject:
+    project_id = (project_id_factory or (lambda: f"p-{uuid4().hex}"))()
+
+    def write(root: Path) -> None:
+        _write_project_files(root, project_id, spec)
+        _validate_created_project(root, project_id, spec)
+
+    final_root = write_file_project_atomically(export_root, project_id, write)
     route_id = quote(f"file:{project_id}", safe="")
     next_page = "setup" if spec.mode == "inspiration" else "outline"
     return CreatedFileProject(

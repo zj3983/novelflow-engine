@@ -22,6 +22,10 @@ from packages.story_core.continuation_import import (
     ContinuationScanResult,
     scan_continuation_source,
 )
+from packages.story_core.continuation_project import (
+    ContinuationSettings,
+    create_continuation_project,
+)
 from packages.story_core.continuation_sessions import (
     ContinuationAnalysisLease,
     ContinuationImportSession,
@@ -29,6 +33,7 @@ from packages.story_core.continuation_sessions import (
     secure_read_bytes,
     try_acquire_analysis_lease,
 )
+from packages.story_core.file_project_store import FileProjectStore
 
 
 router = APIRouter(prefix="/continuation-imports", tags=["continuation-imports"])
@@ -74,6 +79,11 @@ class UpdateAnalysisRequest(_RequestModel):
     analysis: ContinuationAnalysis
 
 
+class CreateContinuationProjectRequest(_RequestModel):
+    expected_revision: int = Field(ge=1)
+    settings: ContinuationSettings
+
+
 class SourceItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -94,6 +104,17 @@ class AnalysisJobResponse(BaseModel):
 
     session_id: str
     status: str
+
+
+class CreatedContinuationProjectResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    title: str
+    source_path: str
+    current_chapter: int
+    storage_source: str = "file"
+    next_path: str
 
 
 def _session_store() -> ContinuationSessionStore:
@@ -124,6 +145,11 @@ def _raise_domain_error(exc: BaseException) -> NoReturn:
     if code in {
         "analysis_not_ready",
         "continuation_analysis_invalid_status",
+        "continuation_session_not_ready",
+        "continuation_analysis_not_confirmed",
+        "continuation_analysis_needs_confirmation",
+        "continuation_session_already_converted",
+        "project_id_conflict",
         "session_lock_timeout",
         "session_revision_conflict",
         "source_changed_since_scan",
@@ -139,6 +165,10 @@ def _raise_domain_error(exc: BaseException) -> NoReturn:
         "chapter_id_duplicate",
         "chapter_title_empty",
         "chapter_body_empty",
+        "invalid_continuation_point",
+        "invalid_novel_type",
+        "invalid_outline_chapter_count",
+        "unexpected_outline_chapter_count",
     }:
         raise HTTPException(status_code=422, detail=code) from exc
     raise HTTPException(status_code=400, detail=code) from exc
@@ -159,6 +189,15 @@ def _resolve_source(source_path: str) -> Path:
     if not source.is_file() and not source.is_dir():
         raise HTTPException(status_code=422, detail="unsupported_source_type")
     return source
+
+
+def _file_project_export_root() -> Path:
+    configured = os.getenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", "").strip()
+    return (
+        Path(configured).resolve()
+        if configured
+        else (Path.cwd() / "data" / "exported-projects").resolve()
+    )
 
 
 def _is_link_or_junction(path: Path) -> bool:
@@ -540,12 +579,41 @@ def update_analysis(
             if current.status != "ready" or not current.analysis:
                 raise ValueError("analysis_not_ready")
             current.analysis = payload.analysis.model_dump(mode="json")
+            current.analysis_progress["analysis_confirmed"] = True
             current.error = ""
 
         return store.update(
             session_id, replace, expected_revision=payload.expected_revision
         )
     except (OSError, ValueError) as exc:
+        _raise_domain_error(exc)
+
+
+@router.post(
+    "/{session_id}/create-project",
+    response_model=CreatedContinuationProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_project(
+    session_id: str,
+    payload: CreateContinuationProjectRequest,
+) -> CreatedContinuationProjectResponse:
+    try:
+        session = _session_store().get(session_id)
+        if session.revision != payload.expected_revision:
+            raise ValueError("session_revision_conflict")
+        created = create_continuation_project(
+            _file_project_export_root(), session, payload.settings
+        )
+        project = FileProjectStore(created.root).project()
+        return CreatedContinuationProjectResponse(
+            project_id=f"file:{created.project_id}",
+            title=str(project.get("title") or created.project_id),
+            source_path=str(created.root),
+            current_chapter=payload.settings.start_after_chapter,
+            next_path=created.next_path,
+        )
+    except (FileExistsError, OSError, ValueError) as exc:
         _raise_domain_error(exc)
 
 

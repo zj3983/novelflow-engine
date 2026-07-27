@@ -19,6 +19,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv(
         "NOVEL_AUTOGROWTH_CONTINUATION_IMPORTS_DIR", str(tmp_path / "sessions")
     )
+    monkeypatch.setenv(
+        "NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path / "projects")
+    )
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -1295,3 +1298,173 @@ def test_chapter_edit_request_forbids_nested_extra_fields(
     )
 
     assert response.status_code == 422
+
+
+def _analyzed_import(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict:
+    from apps.api.routes import continuation_imports
+
+    monkeypatch.setattr(
+        continuation_imports, "build_continuation_analyzer", _SuccessfulAnalyzer
+    )
+    source = allowed_root / "续写原著.txt"
+    _write_book(source)
+    session = client.post(
+        "/continuation-imports", json={"source_path": str(source)}
+    ).json()
+    analyzed = client.post(f"/continuation-imports/{session['session_id']}/analyze")
+    assert analyzed.status_code == 202
+    return client.get(f"/continuation-imports/{session['session_id']}").json()
+
+
+def _confirm_analysis(client: TestClient, session: dict) -> dict:
+    analysis = client.get(
+        f"/continuation-imports/{session['session_id']}/analysis"
+    ).json()
+    response = client.put(
+        f"/continuation-imports/{session['session_id']}/analysis",
+        json={"expected_revision": session["revision"], "analysis": analysis},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _create_project_payload(chapter_number: int = 2) -> dict:
+    return {
+        "expected_revision": 4,
+        "settings": {
+            "start_after_chapter": chapter_number,
+            "fidelity": "faithful",
+            "target_chars": 4500,
+            "direction": "沿原有冲突继续",
+            "planned_chapters": 20,
+            "must_preserve": [],
+            "forbidden_content": [],
+            "generate_outline": False,
+            "outline_chapters": 0,
+            "novel_type_id": "generic_webnovel",
+        },
+    }
+
+
+def test_create_project_requires_confirmed_analysis(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _analyzed_import(client, allowed_root, monkeypatch)
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project",
+        json=payload,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "continuation_analysis_not_confirmed"
+
+
+def test_confirmed_import_creates_listed_file_project_and_outline_path(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project",
+        json=payload,
+    )
+
+    assert response.status_code == 201
+    created = response.json()
+    assert created["project_id"].startswith("file:p-")
+    assert created["next_path"].endswith("/outline")
+    assert Path(created["source_path"]).is_dir()
+    listed = client.get("/file-projects").json()
+    assert any(item["project_id"] == created["project_id"] for item in listed)
+
+
+def test_create_project_rejects_invalid_branch_conflicts_and_extra_fields(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    invalid = _create_project_payload(99)
+    invalid["expected_revision"] = session["revision"]
+    extra = _create_project_payload()
+    extra["expected_revision"] = session["revision"]
+    extra["settings"]["unexpected"] = True
+
+    invalid_response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project",
+        json=invalid,
+    )
+    extra_response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project",
+        json=extra,
+    )
+
+    assert invalid_response.status_code == 422
+    assert invalid_response.json()["detail"] == "invalid_continuation_point"
+    assert extra_response.status_code == 422
+
+
+def test_create_project_rejects_confirmed_payload_with_blocking_conflicts(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _analyzed_import(client, allowed_root, monkeypatch)
+    analysis = client.get(
+        f"/continuation-imports/{session['session_id']}/analysis"
+    ).json()
+    analysis["needs_confirmation"] = [
+        {"claim": "人物身份冲突", "source": "characters.0"}
+    ]
+    confirmed = client.put(
+        f"/continuation-imports/{session['session_id']}/analysis",
+        json={"expected_revision": session["revision"], "analysis": analysis},
+    ).json()
+    payload = _create_project_payload()
+    payload["expected_revision"] = confirmed["revision"]
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project", json=payload
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "continuation_analysis_needs_confirmation"
+
+
+def test_create_project_rejects_duplicate_session_with_stable_conflict(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+    first = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project", json=payload
+    )
+    second = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project", json=payload
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert second.json()["detail"] == "continuation_session_already_converted"
