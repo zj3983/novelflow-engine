@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import multiprocessing
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -276,6 +277,7 @@ def test_branch_project_and_writing_packet_never_include_future_source_text(
         }
     ]
     character = session.analysis["characters"][0]
+    character["summary"] = "FUTURE_SECRET_CHARACTER_SUMMARY"
     character["evidence"] = accepted_evidence
     character["states"].append(
         {
@@ -331,7 +333,7 @@ def test_branch_project_and_writing_packet_never_include_future_source_text(
     session.analysis["style_profile"]["narrative_voice"] = "FUTURE_SECRET_STYLE"
     session.analysis["style_profile"]["evidence"] = future_evidence
     session.analysis["continuation_start"] = {
-        "chapter_id": "chapter-3",
+        "chapter_id": "chapter-1",
         "situation": "FUTURE_SECRET_SITUATION",
         "guidance": "FUTURE_SECRET_GUIDANCE",
         "constraints": [
@@ -513,6 +515,12 @@ def test_original_source_snapshot_preserves_bytes_paths_and_file_hashes(
         ("卷一/01.txt", hashlib.sha256(first).hexdigest()),
         ("02.md", hashlib.sha256(second).hexdigest()),
     ]
+    for relative_path, _ in files:
+        original_path = created.root / "source/original" / relative_path
+        assert original_path.stat().st_mode & 0o222 == 0
+        if os.name == "nt" or getattr(os, "geteuid", lambda: 1)() != 0:
+            with pytest.raises(PermissionError):
+                original_path.write_bytes(b"must not mutate")
 
 
 def test_same_session_concurrent_direct_conversion_only_publishes_one_project(
@@ -598,6 +606,73 @@ def test_same_session_cross_process_conversion_only_publishes_one_project(
     assert len([path for path in tmp_path.iterdir() if path.name.startswith("p-")]) == 1
 
 
+def test_conversion_lock_rejects_symlinked_lock_file_without_touching_victim(
+    tmp_path: Path,
+) -> None:
+    lock_root = tmp_path / ".continuation-conversion-locks"
+    lock_root.mkdir()
+    digest = hashlib.sha256(b"ci-ready-session").hexdigest()
+    victim = tmp_path / "outside-victim.txt"
+    victim.write_bytes(b"VICTIM")
+    lock_path = lock_root / f"{digest}.lock"
+    try:
+        lock_path.symlink_to(victim)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="^invalid_conversion_lock_path$"):
+        _create_project(
+            tmp_path,
+            _ready_session(),
+            _settings(3),
+            project_id_factory=lambda: "p-lock-symlink",
+        )
+
+    assert victim.read_bytes() == b"VICTIM"
+    assert not (tmp_path / "p-lock-symlink").exists()
+
+
+def test_conversion_lock_rejects_file_swapped_to_symlink_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from packages.story_core import continuation_project
+
+    lock_root = tmp_path / ".continuation-conversion-locks"
+    lock_root.mkdir()
+    digest = hashlib.sha256(b"ci-ready-session").hexdigest()
+    lock_path = lock_root / f"{digest}.lock"
+    lock_path.write_bytes(b"\0")
+    victim = tmp_path / "swap-victim.txt"
+    victim.write_bytes(b"SWAP_VICTIM")
+    swapped = False
+
+    def swap(path: Path) -> None:
+        nonlocal swapped
+        if swapped or path != lock_path:
+            return
+        path.unlink()
+        path.symlink_to(victim)
+        swapped = True
+
+    monkeypatch.setattr(
+        continuation_project,
+        "_before_conversion_lock_open",
+        swap,
+        raising=False,
+    )
+    with pytest.raises(ValueError, match="^invalid_conversion_lock_path$"):
+        _create_project(
+            tmp_path,
+            _ready_session(),
+            _settings(3),
+            project_id_factory=lambda: "p-lock-swap",
+        )
+
+    assert swapped is True
+    assert victim.read_bytes() == b"SWAP_VICTIM"
+    assert not (tmp_path / "p-lock-swap").exists()
+
+
 def test_relationship_graph_and_timeline_keep_evidence_chapter_and_sequence(
     tmp_path: Path,
 ) -> None:
@@ -654,6 +729,69 @@ def test_relationship_graph_and_timeline_keep_evidence_chapter_and_sequence(
             "impact": "第二章夜里",
         }
     ]
+
+
+def test_relationship_graph_excludes_inferred_or_future_evidence_edges(
+    tmp_path: Path,
+) -> None:
+    session = _ready_session()
+    accepted_evidence = [
+        {
+            "chapter_id": "chapter-1",
+            "excerpt_start": 0,
+            "excerpt_end": 2,
+            "quote": "雨落",
+        }
+    ]
+    future_evidence = [
+        {
+            "chapter_id": "chapter-3",
+            "excerpt_start": 0,
+            "excerpt_end": 2,
+            "quote": "钟声",
+        }
+    ]
+    session.analysis["characters"][0]["evidence"] = accepted_evidence
+    session.analysis["characters"][0]["relationships"] = [
+        {
+            "claim": "沈砚与甲是INFERRED_RELATION",
+            "confidence": "inferred",
+            "evidence": accepted_evidence,
+        },
+        {
+            "claim": "沈砚与乙是FUTURE_RELATION",
+            "confidence": "confirmed",
+            "evidence": future_evidence,
+        },
+    ]
+    session.analysis["characters"].append(
+        {
+            "name": "未来人物",
+            "role": "supporting",
+            "summary": "未来才出现",
+            "confidence": "inferred",
+            "evidence": accepted_evidence,
+            "relationships": [
+                {
+                    "claim": "未来人物与沈砚是INFERRED_CHARACTER_RELATION",
+                    "confidence": "confirmed",
+                    "evidence": accepted_evidence,
+                }
+            ],
+        }
+    )
+
+    created = _create_project(
+        tmp_path,
+        session,
+        _settings(1),
+        project_id_factory=lambda: "p-filtered-relations",
+    )
+
+    graph_text = json.dumps(FileProjectStore(created.root).project()["relationship_graph"])
+    assert "INFERRED_RELATION" not in graph_text
+    assert "FUTURE_RELATION" not in graph_text
+    assert "INFERRED_CHARACTER_RELATION" not in graph_text
 
 
 def test_inferred_analysis_is_preserved_but_not_promoted_to_formal_state(

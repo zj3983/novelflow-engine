@@ -4,7 +4,7 @@ import json
 import os
 import re
 import hashlib
-import threading
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -19,6 +19,7 @@ from packages.story_core.continuation_import import ContinuationChapter
 from packages.story_core.continuation_sessions import (
     ContinuationImportSession,
     ContinuationSourceSnapshot,
+    secure_named_file_lock,
 )
 from packages.story_core.file_project_creation import (
     CreatedFileProject,
@@ -39,8 +40,6 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"COM{number}" for number in range(1, 10)),
     *(f"LPT{number}" for number in range(1, 10)),
 }
-_CONVERSION_LOCKS_GUARD = threading.Lock()
-_CONVERSION_LOCKS: dict[str, threading.Lock] = {}
 
 
 class ContinuationSettings(BaseModel):
@@ -154,48 +153,21 @@ def _validated_source_snapshot(
     return snapshot
 
 
-def _thread_conversion_lock(path: Path) -> threading.Lock:
-    key = os.path.normcase(str(path.resolve(strict=False)))
-    with _CONVERSION_LOCKS_GUARD:
-        return _CONVERSION_LOCKS.setdefault(key, threading.Lock())
+def _before_conversion_lock_open(path: Path) -> None:
+    return None
 
 
 @contextmanager
 def _conversion_lease(export_root: Path, session_id: str):
-    lock_root = export_root / ".continuation-conversion-locks"
-    lock_root.mkdir(parents=True, exist_ok=True)
-    if lock_root.is_symlink() or getattr(os.path, "isjunction", lambda _: False)(lock_root):
-        raise ValueError("invalid_conversion_lock_path")
     digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-    lock_path = lock_root / f"{digest}.lock"
-    process_lock = _thread_conversion_lock(lock_path)
-    with process_lock:
-        with lock_path.open("a+b") as handle:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-            handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                handle.seek(0)
-                if os.name == "nt":
-                    import msvcrt
-
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with secure_named_file_lock(
+        export_root,
+        directory_name=".continuation-conversion-locks",
+        lock_name=f"{digest}.lock",
+        error_code="invalid_conversion_lock_path",
+        before_open=_before_conversion_lock_open,
+    ):
+        yield
 
 
 def _safe_chapter_filename(chapter: ContinuationChapter) -> str:
@@ -312,7 +284,11 @@ def _relationship_graph(
     names = [character.name for character in analysis.characters]
     edges: list[dict[str, Any]] = []
     for character in analysis.characters:
+        if character.confidence != "confirmed":
+            continue
         for relation in character.relationships:
+            if relation.confidence != "confirmed":
+                continue
             target = next(
                 (
                     name
@@ -644,6 +620,7 @@ def _active_analysis_payload(
         if not included(character):
             continue
         item = character.model_dump(mode="json")
+        item["summary"] = ""
         item["states"] = [
             state.model_dump(mode="json") for state in character.states if included(state)
         ]
@@ -672,19 +649,12 @@ def _active_analysis_payload(
                 "evidence": [],
             }
         ).model_dump(mode="json")
-    if analysis.continuation_start.chapter_id not in accepted_ids:
-        payload["continuation_start"] = {
-            "chapter_id": accepted[-1].chapter_id,
-            "situation": f"从第{accepted[-1].number}章《{accepted[-1].title}》之后续写",
-            "guidance": settings.direction,
-            "constraints": [],
-        }
-    else:
-        payload["continuation_start"]["constraints"] = [
-            constraint.model_dump(mode="json")
-            for constraint in analysis.continuation_start.constraints
-            if included(constraint)
-        ]
+    payload["continuation_start"] = {
+        "chapter_id": accepted[-1].chapter_id,
+        "situation": f"从第{accepted[-1].number}章《{accepted[-1].title}》之后续写",
+        "guidance": settings.direction,
+        "constraints": [],
+    }
     payload["evidence_index"] = {
         key: [
             ref.model_dump(mode="json")
@@ -868,6 +838,22 @@ def _validate_continuation_project(
             raise ValueError("invalid_source_backup")
 
 
+def _seal_source_originals(
+    root: Path, source_snapshot: ContinuationSourceSnapshot
+) -> None:
+    original_root = (root / "source/original").resolve(strict=True)
+    for item in source_snapshot.files:
+        relative = _snapshot_relative_path(item.relative_path)
+        path = original_root.joinpath(*relative.parts).resolve(strict=True)
+        try:
+            path.relative_to(original_root)
+        except ValueError:
+            raise ValueError("invalid_source_backup") from None
+        os.chmod(path, stat.S_IREAD)
+        if path.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH):
+            raise ValueError("source_backup_not_readonly")
+
+
 def _assert_session_not_converted(export_root: Path, session_id: str) -> None:
     if not export_root.is_dir():
         return
@@ -937,6 +923,7 @@ def create_continuation_project(
             [chapter.number for chapter in accepted],
             snapshot,
         )
+        _seal_source_originals(root, snapshot)
 
     with _conversion_lease(export_path, session.session_id):
         _assert_session_not_converted(export_path, session.session_id)

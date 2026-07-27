@@ -1544,10 +1544,16 @@ def test_same_session_concurrent_api_conversion_has_one_success(
     assert len(client.get("/file-projects").json()) == 1
 
 
+@pytest.mark.parametrize(
+    "finalize_error",
+    [OSError("finalize disk secret"), ValueError("finalize value secret")],
+    ids=["oserror", "valueerror"],
+)
 def test_finalize_failure_recovers_existing_project_without_copying(
     client: TestClient,
     allowed_root: Path,
     monkeypatch: pytest.MonkeyPatch,
+    finalize_error: Exception,
 ) -> None:
     from packages.story_core.continuation_sessions import ContinuationSessionStore
 
@@ -1561,7 +1567,7 @@ def test_finalize_failure_recovers_existing_project_without_copying(
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise OSError("finalize disk secret")
+            raise finalize_error
         return original_finalize(self, *args, **kwargs)
 
     monkeypatch.setattr(ContinuationSessionStore, "finalize_project_conversion", fail_once)
@@ -1571,6 +1577,8 @@ def test_finalize_failure_recovers_existing_project_without_copying(
         f"/continuation-imports/{session['session_id']}/create-project", json=payload
     )
     claimed = client.get(f"/continuation-imports/{session['session_id']}").json()
+    assert claimed["analysis_progress"]["project_conversion"]["status"] == "claimed"
+    claimed_project_id = claimed["analysis_progress"]["project_conversion"]["project_id"]
     retry = _create_project_payload()
     retry["expected_revision"] = claimed["revision"]
     second = client.post(
@@ -1581,6 +1589,38 @@ def test_finalize_failure_recovers_existing_project_without_copying(
     assert "secret" not in first.text
     assert second.status_code == 201
     assert len(client.get("/file-projects").json()) == 1
+    assert second.json()["project_id"] == f"file:{claimed_project_id}"
+
+
+def test_finalize_succeeds_after_live_source_is_deleted_post_publish(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.story_core.continuation_sessions import ContinuationSessionStore
+
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    original_finalize = ContinuationSessionStore.finalize_project_conversion
+
+    def delete_then_finalize(self, session_id, **kwargs):
+        Path(session["source_path"]).unlink(missing_ok=True)
+        return original_finalize(self, session_id, **kwargs)
+
+    monkeypatch.setattr(
+        ContinuationSessionStore, "finalize_project_conversion", delete_then_finalize
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project", json=payload
+    )
+
+    assert response.status_code == 201
+    saved = client.get(f"/continuation-imports/{session['session_id']}").json()
+    assert saved["analysis_progress"]["project_conversion"]["status"] == "succeeded"
 
 
 def test_unknown_conversion_oserror_returns_stable_500_without_details(

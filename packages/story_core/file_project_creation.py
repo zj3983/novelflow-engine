@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -225,6 +226,14 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _remove_project_tree(path: Path) -> None:
+    def remove_readonly(function, value, _error) -> None:
+        os.chmod(value, stat.S_IWRITE)
+        function(value)
+
+    shutil.rmtree(path, ignore_errors=False, onerror=remove_readonly)
+
+
 def write_file_project_atomically(
     export_root: str | Path,
     project_id: str,
@@ -247,7 +256,10 @@ def write_file_project_atomically(
             raise FileExistsError("project_id_conflict")
         os.replace(temp_root, final_root)
     except Exception:
-        shutil.rmtree(temp_root, ignore_errors=True)
+        try:
+            _remove_project_tree(temp_root)
+        except OSError:
+            pass
         raise
 
     _fsync_directory(export_path)

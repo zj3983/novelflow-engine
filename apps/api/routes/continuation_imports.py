@@ -640,6 +640,7 @@ def create_project(
     export_root = _file_project_export_root()
     project_id = f"p-{uuid.uuid4().hex}"
     claimed_here = False
+    project_published = False
     try:
         current = store.get(session_id)
         conversion = current.analysis_progress.get("project_conversion")
@@ -663,6 +664,7 @@ def create_project(
         next_path = f"/projects/{route_id}/outline"
         existing = _existing_claimed_project(export_root, session_id, project_id)
         if existing is not None:
+            project_published = True
             store.finalize_project_conversion(
                 session_id, project_id=project_id, source_path=str(existing)
             )
@@ -676,6 +678,7 @@ def create_project(
             source_snapshot=snapshot,
             project_id_factory=lambda: project_id,
         )
+        project_published = True
         store.finalize_project_conversion(
             session_id,
             project_id=created.project_id,
@@ -703,6 +706,10 @@ def create_project(
                 pass
         _raise_domain_error(exc)
     except ValueError as exc:
+        if project_published:
+            raise HTTPException(
+                status_code=500, detail="continuation_project_internal_error"
+            ) from exc
         if claimed_here:
             try:
                 store.fail_project_conversion(

@@ -338,6 +338,88 @@ def try_acquire_analysis_lease(
 
 
 @contextmanager
+def secure_named_file_lock(
+    root: Path | str,
+    *,
+    directory_name: str,
+    lock_name: str,
+    error_code: str,
+    before_open: Callable[[Path], None] | None = None,
+) -> Iterator[None]:
+    if (
+        not re.fullmatch(r"\.[A-Za-z0-9-]+", directory_name)
+        or not re.fullmatch(r"[A-Za-z0-9-]+\.lock", lock_name)
+    ):
+        raise ValueError(error_code)
+    requested_root = Path(root)
+    requested_root.mkdir(parents=True, exist_ok=True)
+    lease_entered = False
+    try:
+        resolved_root = requested_root.resolve(strict=True)
+        if _is_link_or_junction(requested_root) or not resolved_root.is_dir():
+            raise ValueError(error_code)
+        lock_root = resolved_root / directory_name
+        lock_root.mkdir(mode=0o700, exist_ok=True)
+        if _is_link_or_junction(lock_root):
+            raise ValueError(error_code)
+        resolved_lock_root = lock_root.resolve(strict=True)
+        if resolved_lock_root.parent != resolved_root:
+            raise ValueError(error_code)
+        root_identity = _directory_identity(resolved_lock_root)
+        lock_path = resolved_lock_root / lock_name
+        process_lock = _registered_lock(lock_path)
+        with process_lock:
+            if _is_link_or_junction(lock_path):
+                raise ValueError(error_code)
+            if before_open is not None:
+                before_open(lock_path)
+            _validate_directory_identity(resolved_lock_root, root_identity)
+            if _is_link_or_junction(lock_path):
+                raise ValueError(error_code)
+            flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
+            flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                descriptor = os.open(lock_path, flags, 0o600)
+            except OSError:
+                raise ValueError(error_code) from None
+            handle = os.fdopen(descriptor, "r+b")
+            try:
+                _validate_directory_identity(resolved_lock_root, root_identity)
+                _validate_open_handle(
+                    handle,
+                    fixed_root=resolved_lock_root,
+                    expected_path=Path(os.path.abspath(lock_path)),
+                )
+                if handle.seek(0, os.SEEK_END) == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                while True:
+                    try:
+                        _try_lock_file(handle)
+                        break
+                    except (BlockingIOError, PermissionError):
+                        time.sleep(0.05)
+                try:
+                    lease_entered = True
+                    yield
+                finally:
+                    _unlock_file(handle)
+            finally:
+                handle.close()
+    except ValueError as exc:
+        if lease_entered:
+            raise
+        if str(exc) == error_code:
+            raise
+        raise ValueError(error_code) from None
+    except OSError:
+        if lease_entered:
+            raise
+        raise ValueError(error_code) from None
+
+
+@contextmanager
 def _interprocess_lock(
     lock_path: Path,
     *,
@@ -746,24 +828,27 @@ class ContinuationSessionStore:
         project_id: str,
         source_path: str,
     ) -> ContinuationImportSession:
-        def mutate(current: ContinuationImportSession) -> None:
+        _validate_session_id(session_id)
+        with self._session_lock(session_id):
+            current, _ = self._read_validated_session(session_id)
             conversion = self._project_conversion(current)
             if (
                 conversion.get("status") != "claimed"
                 or conversion.get("project_id") != project_id
             ):
                 raise ValueError("continuation_conversion_claim_mismatch")
-            current.analysis_progress["project_conversion"] = {
+            candidate = current.model_copy(deep=True)
+            candidate.analysis_progress["project_conversion"] = {
                 **conversion,
                 "status": "succeeded",
                 "source_path": source_path,
             }
-
-        return self.update(
-            session_id,
-            mutate,
-            allow_project_conversion=True,
-        )
+            candidate.revision = current.revision + 1
+            candidate.created_at = current.created_at
+            candidate.updated_at = self._clock()
+            session_root = self._session_root(session_id, require_exists=True)
+            self._write_session(candidate, session_root)
+            return candidate.model_copy(deep=True)
 
     def fail_project_conversion(
         self,
