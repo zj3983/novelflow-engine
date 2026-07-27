@@ -572,6 +572,23 @@ export type StoryResponse = {
   history: ChapterBundle[];
 };
 
+export type ChapterIndexEntry = {
+  chapter_number: number;
+  chapter_title: string;
+  body_chars: number;
+  summary: string;
+  next_focus: string;
+  has_quality_report: boolean;
+  has_simulation: boolean;
+};
+
+export type FileStoryOverview = Omit<StoryResponse, "history"> & {
+  chapter_count: number;
+  total_body_chars: number;
+  chapters: ChapterIndexEntry[];
+  storage_source: "file";
+};
+
 export type StorySummary = {
   story_id: string;
   current_chapter: number;
@@ -3073,6 +3090,18 @@ export async function fetchStory(storyId: string): Promise<StoryResponse> {
   } catch {
     return mockFetchStory(storyId);
   }
+}
+
+export async function fetchFileStoryOverview(storyId: string): Promise<FileStoryOverview> {
+  return (await tryFetchJson(`${fileStoryPath(storyId)}/overview`, {
+    method: "GET",
+  }, 30000)) as FileStoryOverview;
+}
+
+export async function fetchFileChapter(storyId: string, chapterNumber: number): Promise<ChapterBundle> {
+  return (await tryFetchJson(`${fileStoryPath(storyId)}/chapters/${chapterNumber}`, {
+    method: "GET",
+  }, 30000)) as ChapterBundle;
 }
 
 export async function createProject(payload: CreateProjectRequest): Promise<ProjectResponse> {

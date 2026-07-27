@@ -36,10 +36,20 @@ import {
   saveWorldRules,
   syncWorldBlueprintStore,
 } from "../components/ws/WorldRulesEditor";
-import { type ImportedWorldBlueprint, type updateProject } from "../lib/api";
+import {
+  fetchFileChapter,
+  fetchFileStoryOverview,
+  type ImportedWorldBlueprint,
+  type updateProject,
+} from "../lib/api";
 import { groupWorldFacts } from "../lib/worldDisplay";
 import { buildWritingFlow, writingFlowPlanningSourceText } from "../components/ws/WritingFlow";
 import { resolveChapterDirectionId } from "../lib/chapterDirections";
+
+test("file story lazy-loading clients are exported", () => {
+  expect(typeof fetchFileStoryOverview).toBe("function");
+  expect(typeof fetchFileChapter).toBe("function");
+});
 
 test("chapter planning source is shown in plain language", () => {
   expect(writingFlowPlanningSourceText({ planning_source: "outline" })).toBe("已有章节细纲");
