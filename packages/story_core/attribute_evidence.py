@@ -46,7 +46,6 @@ _ACTION_CONTINUATIONS = {"随后", "然后", "接着", "再", "便", "就", "先
 _ACTION_MODIFIERS = ("直接", "果断", "又", "重新", "干脆", "索性", "还是")
 _GENERIC_REASON_TERMS = {"先", "为了", "因为", "属性点", "属性", "点", "保留", "留着", "分配", "决定", "原因", "目的", "以后", "再用", "留给"}
 _CONDITIONAL_MARKERS = ("如果", "假如", "要是", "若", "倘若")
-_ACTUAL_TURN_MARKERS = ("还是", "却", "仍然", "最终", "实际", "最后", "直接决定")
 _ASYMMETRIC_QUOTES = (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"))
 
 
@@ -89,17 +88,45 @@ def _is_inside_quote(text: str, position: int) -> bool:
     return any(prefix.rfind(opening) > prefix.rfind(closing) for opening, closing in _ASYMMETRIC_QUOTES)
 
 
+def _unquoted_prefix(text: str, start: int, end: int) -> str:
+    """Keep only text outside quote spans that close before the current action."""
+
+    spans: list[tuple[int, int]] = []
+    for opening, closing in _ASYMMETRIC_QUOTES:
+        cursor = start
+        while cursor < end:
+            opening_at = text.find(opening, cursor, end)
+            if opening_at < 0:
+                break
+            closing_at = text.find(closing, opening_at + len(opening), end)
+            if closing_at < 0:
+                break
+            spans.append((opening_at, closing_at + len(closing)))
+            cursor = closing_at + len(closing)
+    cursor = start
+    while cursor < end:
+        opening_at = text.find('"', cursor, end)
+        if opening_at < 0:
+            break
+        closing_at = text.find('"', opening_at + 1, end)
+        if closing_at < 0:
+            break
+        spans.append((opening_at, closing_at + 1))
+        cursor = closing_at + 1
+
+    return "".join(
+        character
+        for index, character in enumerate(text[start:end], start)
+        if not any(span_start <= index < span_end for span_start, span_end in spans)
+    )
+
+
 def _is_conditional_sentence(text: str, position: int) -> bool:
-    """Reject a conditional action, without swallowing a later real turn."""
+    """Reject all unquoted conditions in the sentence before the action."""
 
     start, _ = sentence_bounds(text, position)
-    clauses = re.split(r"[，,；;]", text[start:position])
-    current_clause = clauses[-1]
-    if any(marker in current_clause for marker in _CONDITIONAL_MARKERS):
-        return True
-    if len(clauses) < 2 or not any(marker in clauses[-2] for marker in _CONDITIONAL_MARKERS):
-        return False
-    return not any(marker in current_clause for marker in _ACTUAL_TURN_MARKERS)
+    prefix = _unquoted_prefix(text, start, position)
+    return any(marker in prefix for marker in _CONDITIONAL_MARKERS)
 
 
 def _is_negated_before(text: str, position: int, *, carry: bool = False) -> bool:
