@@ -866,6 +866,28 @@ def test_custom_webgame_type_loads_without_invalidating_novel_type_library(monke
     assert novel_type_catalog.normalize_novel_type_id("webgame") == "webgame"
 
 
+@pytest.mark.parametrize("genre", ("游戏", "虚拟现实", "vrmmo", "web_game"))
+def test_game_story_type_supports_explicit_compatibility_labels(genre):
+    story = SimpleNamespace(
+        genre=genre,
+        genre_plugin_ids=[],
+        outline="正文没有用于题材猜测的职责。",
+    )
+
+    assert novel_type_catalog.normalize_novel_type_id(genre) == "game_webnovel"
+    assert novel_type_catalog.is_game_story_type(story) is True
+
+
+def test_game_story_type_explicit_non_game_id_overrides_compatibility_genre():
+    story = SimpleNamespace(
+        genre="游戏",
+        genre_plugin_ids=["xuanhuan"],
+        outline="主角登录游戏后查看掉落和背包。",
+    )
+
+    assert novel_type_catalog.is_game_story_type(story) is False
+
+
 def test_explicit_non_game_type_recognizes_supported_metadata_shapes():
     samples = (
         "  xuanhuan  ",
