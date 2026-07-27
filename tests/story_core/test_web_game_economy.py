@@ -519,15 +519,9 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     if chapter_path is None:
         pytest.skip("real chapter one fixture is unavailable")
     body = chapter_path.read_text(encoding="utf-8")
-    start = body.index("第三条求购单发布于三分钟前")
+    start = body.index("他退回交易行，选择拍卖模式。")
     end_marker = "手机的到账震动透过头盔提醒传来。"
     segment = body[start : body.index(end_marker, start) + len(end_marker)]
-    if not any(marker in segment for marker in ("匿名提交", "订单状态变成鉴定中", "担保净到账")):
-        pytest.skip("real chapter fixture already uses the current market/exchange flow")
-
-    ancient_sword_inside = "古剑交给鉴定师，等待鉴定结果。【样本符合求购要求】\n\n"
-    insert_at = segment.index("夜烬盯着订单页面")
-    segment = segment[:insert_at] + ancient_sword_inside + segment[insert_at:]
     normalized = normalize_legacy_economy_prompt_value(
         segment,
         game_context=True,
@@ -535,66 +529,40 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     )
 
     ordered_fragments = (
-        "夜烬点下立即出售",
-        "求购单显示已成交",
-        "【成交价：按求购单标价。】",
-        "【游戏币已进入钱包。】",
-        "他随后打开独立的官方兑换页面。",
-        "【兑换价：当前官方报价。】",
-        "【可用额度：足够完成本次兑换。】",
-        "【手续费：已计入预计到账。】",
-        "【预计到账：1764.00元。】",
-        "他确认兑换",
-        "【现实账户到账1764.00元。】",
+        "他退回交易行，选择拍卖模式。",
+        "【起拍价：1金币20银币。】",
+        "【最低加价：10银币。】",
+        "【一口价：2金币。】",
+        "【拍卖时限：30分钟。是否匿名上架？】",
+        "夜烬勾选匿名。",
+        "交易行生成了第一条同名拍卖记录。",
+        "【买家已按一口价购入。】",
+        "【成交价：2金币。】",
+        "【成交款已转入游戏钱包。】",
+        "从侧栏进入官方兑换页面。",
+        "两枚金币、当前报价、可用额度和三十六元手续费",
+        "【预计到账：1764.00元】",
+        "点下确认兑换。",
+        "【兑换完成。】【游戏币已扣除。】",
+        end_marker,
     )
     assert all(fragment in normalized for fragment in ordered_fragments)
     assert [normalized.index(fragment) for fragment in ordered_fragments] == sorted(
         normalized.index(fragment) for fragment in ordered_fragments
     )
-    assert normalized.count("求购单显示已成交") == 1
-    assert "交易完成以后，村口不断有玩家跑进跑出" in normalized
-    assert "一个法杖玩家坐在喷泉边回蓝" in normalized
-    assert "手机的到账震动透过头盔提醒传来" in normalized
-    sale_index = normalized.index("夜烬点下立即出售")
-    market_index = normalized.index("求购单显示已成交", sale_index)
-    price_index = normalized.index("【成交价：按求购单标价。】", market_index)
-    wallet_index = normalized.index("【游戏币已进入钱包。】", market_index)
-    exchange_index = normalized.index("他随后打开独立的官方兑换页面。", wallet_index)
-    actual_index = normalized.index("【现实账户到账1764.00元。】", exchange_index)
-    assert price_index < wallet_index
-    assert "【成交价：按求购单标价。】【游戏币已进入钱包。】" in normalized
-    assert "等待" not in normalized[market_index:wallet_index]
-    assert "村口" not in normalized[market_index:wallet_index]
-    assert "官方兑换" not in normalized[:sale_index]
-    assert "预计到账" not in normalized[:sale_index]
-    assert "1764.00元" not in normalized[:exchange_index]
-    assert "【担保净到账1764.00元。】" not in normalized
-    assert normalized.count(ancient_sword_inside.strip()) == 1
-    assert wallet_index < normalized.index(ancient_sword_inside.strip()) < exchange_index
-    exchange_sentence = (
-        "他随后打开独立的官方兑换页面。"
-        "【兑换价：当前官方报价。】"
-        "【可用额度：足够完成本次兑换。】"
-        "【手续费：已计入预计到账。】"
-        "【预计到账：1764.00元。】"
-        "他确认兑换。"
-    )
-    assert exchange_sentence in normalized
-    assert exchange_index == normalized.index(exchange_sentence)
-    assert normalized.index("他确认兑换。", exchange_index) < actual_index
-    assert "成交价：1764.00元" not in normalized
-    assert "游戏币已进入钱包1764.00元" not in normalized
-    assert "汇率" not in normalized
+    assert normalized == segment
+    assert normalize_legacy_economy_prompt_value(
+        normalized,
+        game_context=True,
+        chapter_number=1,
+    ) == normalized
     assert all(
         term not in normalized
         for term in (
-            "等待的半分钟里",
-            "买家确认收购",
-            "匿名担保交易已完成",
-            "夜烬盯着订单页面",
-            "屏幕终于一跳",
             "担保",
-            "求购单已成交，官方兑换完成",
+            "求购单",
+            "提交鉴定",
+            "匿名提交",
         )
     )
 
