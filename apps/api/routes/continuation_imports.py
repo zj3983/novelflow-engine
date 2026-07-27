@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import NoReturn
 
@@ -41,9 +42,20 @@ class ScanRequest(_RequestModel):
     forced_encoding: str | None = None
 
 
+class ContinuationChapterRequest(_RequestModel):
+    chapter_id: str
+    number: int
+    title: str
+    body: str
+    source_name: str
+    source_start: int = 0
+    source_end: int = 0
+    fingerprint: str
+
+
 class ReplaceChaptersRequest(_RequestModel):
     expected_revision: int = Field(ge=1)
-    chapters: list[ContinuationChapter]
+    chapters: list[ContinuationChapterRequest]
 
 
 class UpdateAnalysisRequest(_RequestModel):
@@ -73,6 +85,10 @@ class AnalysisJobResponse(BaseModel):
     status: str
 
 
+_ACTIVE_ANALYSIS_TASKS: set[str] = set()
+_ACTIVE_ANALYSIS_TASKS_LOCK = threading.Lock()
+
+
 def _session_store() -> ContinuationSessionStore:
     configured = os.getenv("NOVEL_AUTOGROWTH_CONTINUATION_IMPORTS_DIR", "").strip()
     root = Path(configured) if configured else Path("data") / "continuation-imports"
@@ -97,7 +113,7 @@ def _raise_domain_error(exc: BaseException) -> NoReturn:
         detail = "session_not_found" if isinstance(exc, FileNotFoundError) else code
         raise HTTPException(status_code=404, detail=detail) from exc
     if code == "path_outside_allowed_roots":
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+        raise HTTPException(status_code=403, detail=code) from exc
     if code in {
         "analysis_not_ready",
         "continuation_analysis_invalid_status",
@@ -123,6 +139,8 @@ def _raise_domain_error(exc: BaseException) -> NoReturn:
 
 def _resolve_source(source_path: str) -> Path:
     candidate = Path(source_path).expanduser()
+    if _is_link_or_junction(candidate):
+        raise HTTPException(status_code=403, detail="path_outside_allowed_roots")
     try:
         source = require_allowed_path(candidate)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -136,10 +154,50 @@ def _resolve_source(source_path: str) -> Path:
     return source
 
 
+def _is_link_or_junction(path: Path) -> bool:
+    is_junction = getattr(os.path, "isjunction", lambda candidate: False)
+    try:
+        return path.is_symlink() or bool(is_junction(path))
+    except OSError:
+        return True
+
+
+def _validate_source_tree(source: Path) -> None:
+    if _is_link_or_junction(source):
+        raise ValueError("path_outside_allowed_roots")
+    if source.is_file():
+        require_allowed_path(source)
+        return
+
+    for current_root, directory_names, file_names in os.walk(source, topdown=True):
+        current = Path(current_root)
+        require_allowed_path(current)
+        safe_directories: list[str] = []
+        for name in directory_names:
+            child = current / name
+            if _is_link_or_junction(child):
+                raise ValueError("path_outside_allowed_roots")
+            require_allowed_path(child)
+            safe_directories.append(name)
+        directory_names[:] = safe_directories
+        for name in file_names:
+            child = current / name
+            if child.suffix.casefold() not in SUPPORTED_SUFFIXES:
+                continue
+            if _is_link_or_junction(child):
+                raise ValueError("path_outside_allowed_roots")
+            require_allowed_path(child)
+
+
 def _scan(payload: ScanRequest) -> ContinuationScanResult:
     source = _resolve_source(payload.source_path)
     try:
-        return scan_continuation_source(source, forced_encoding=payload.forced_encoding)
+        _validate_source_tree(source)
+        result = scan_continuation_source(
+            source, forced_encoding=payload.forced_encoding
+        )
+        _validate_source_tree(source)
+        return result
     except (OSError, UnicodeError, ValueError) as exc:
         _raise_domain_error(exc)
 
@@ -223,8 +281,12 @@ def replace_chapters(
     try:
         return _session_store().replace_chapters(
             session_id,
-            payload.chapters,
+            [
+                ContinuationChapter.model_validate(chapter.model_dump())
+                for chapter in payload.chapters
+            ],
             expected_revision=payload.expected_revision,
+            invalidate_analysis=True,
         )
     except (OSError, ValueError) as exc:
         _raise_domain_error(exc)
@@ -244,8 +306,13 @@ def _mark_analysis_failed(store: ContinuationSessionStore, session_id: str) -> N
         return
 
 
-def _run_analysis_job(session_id: str) -> None:
+def _analysis_task_key(store: ContinuationSessionStore, session_id: str) -> str:
+    return f"{os.path.normcase(str(store.root))}:{session_id}"
+
+
+def _run_analysis_job(session_id: str, task_key: str | None = None) -> None:
     store = _session_store()
+    key = task_key or _analysis_task_key(store, session_id)
     try:
         run_continuation_analysis(store, session_id, build_continuation_analyzer())
     except Exception:
@@ -256,6 +323,9 @@ def _run_analysis_job(session_id: str) -> None:
             pass
         if current is not None and current.status != "failed":
             _mark_analysis_failed(store, session_id)
+    finally:
+        with _ACTIVE_ANALYSIS_TASKS_LOCK:
+            _ACTIVE_ANALYSIS_TASKS.discard(key)
 
 
 @router.post(
@@ -265,19 +335,42 @@ def _run_analysis_job(session_id: str) -> None:
 )
 def analyze(session_id: str, background_tasks: BackgroundTasks) -> AnalysisJobResponse:
     store = _session_store()
+    task_key = _analysis_task_key(store, session_id)
     try:
         session = store.get(session_id)
-        if session.status in {"analyzing", "ready"}:
-            return AnalysisJobResponse(session_id=session_id, status=session.status)
-
-        def mark(current: ContinuationImportSession) -> None:
-            current.status = "analyzing"
-            current.error = ""
-
-        store.update(session_id, mark, expected_revision=session.revision)
     except (OSError, ValueError) as exc:
         _raise_domain_error(exc)
-    background_tasks.add_task(_run_analysis_job, session_id)
+    with _ACTIVE_ANALYSIS_TASKS_LOCK:
+        try:
+            if session.status == "ready":
+                return AnalysisJobResponse(session_id=session_id, status="ready")
+            if task_key in _ACTIVE_ANALYSIS_TASKS:
+                return AnalysisJobResponse(session_id=session_id, status="analyzing")
+
+            if session.status != "analyzing":
+                def mark(current: ContinuationImportSession) -> None:
+                    current.status = "analyzing"
+                    current.error = ""
+
+                try:
+                    store.update(session_id, mark, expected_revision=session.revision)
+                except ValueError as exc:
+                    if _error_code(exc) != "session_revision_conflict":
+                        raise
+                    current = store.get(session_id)
+                    if current.status == "ready":
+                        return AnalysisJobResponse(session_id=session_id, status="ready")
+                    if current.status != "analyzing":
+                        raise
+            _ACTIVE_ANALYSIS_TASKS.add(task_key)
+        except (OSError, ValueError) as exc:
+            _raise_domain_error(exc)
+    try:
+        background_tasks.add_task(_run_analysis_job, session_id, task_key)
+    except BaseException:
+        with _ACTIVE_ANALYSIS_TASKS_LOCK:
+            _ACTIVE_ANALYSIS_TASKS.discard(task_key)
+        raise
     return AnalysisJobResponse(session_id=session_id, status="analyzing")
 
 

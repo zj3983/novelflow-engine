@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -54,6 +56,24 @@ class _FailingAnalyzer:
         raise AssertionError("unreachable")
 
 
+class _TitleAnalyzer:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def analyze_chapters(self, chapters):
+        self.calls += 1
+        return [
+            ChapterAnalysis(chapter_id=chapter.chapter_id, summary=chapter.title)
+            for chapter in chapters
+        ]
+
+    def merge(self, chapter_results, recent_chapters):
+        return ContinuationAnalysis(
+            story_overview="|".join(result.summary for result in chapter_results),
+            continuation_start={"chapter_id": recent_chapters[-1].chapter_id},
+        )
+
+
 def test_source_browser_lists_roots_supported_files_and_directories(
     client: TestClient, allowed_root: Path
 ) -> None:
@@ -91,9 +111,133 @@ def test_scan_rejects_traversal_and_unsupported_file(
     )
 
     assert traversal.status_code == 403
-    assert traversal.json()["detail"].startswith("path_outside_allowed_roots")
+    assert traversal.json()["detail"] == "path_outside_allowed_roots"
+    assert str(outside.resolve()) not in traversal.text
     assert invalid_type.status_code == 422
     assert invalid_type.json()["detail"] == "unsupported_source_type"
+
+
+def test_scan_and_create_reject_nested_supported_symlink_outside_allowed_root(
+    client: TestClient, allowed_root: Path, tmp_path: Path
+) -> None:
+    source_dir = allowed_root / "chapters"
+    source_dir.mkdir()
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("第一章 外部秘密\n绝不能读取", encoding="utf-8")
+    linked = source_dir / "linked.txt"
+    try:
+        linked.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    scanned = client.post(
+        "/continuation-imports/scan", json={"source_path": str(source_dir)}
+    )
+    created = client.post(
+        "/continuation-imports", json={"source_path": str(source_dir)}
+    )
+
+    assert scanned.status_code == 403
+    assert scanned.json()["detail"] == "path_outside_allowed_roots"
+    assert "绝不能读取" not in scanned.text
+    assert created.status_code == 403
+    assert created.json()["detail"] == "path_outside_allowed_roots"
+    assert "绝不能读取" not in created.text
+
+
+def test_scan_rejects_nested_windows_junction_before_descending(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    source_dir = allowed_root / "chapters"
+    junction = source_dir / "junction"
+    junction.mkdir(parents=True)
+    (junction / "chapter.txt").write_text("第一章 不应读取\n正文", encoding="utf-8")
+    original = continuation_imports._is_link_or_junction
+    monkeypatch.setattr(
+        continuation_imports,
+        "_is_link_or_junction",
+        lambda path: path == junction or original(path),
+    )
+
+    response = client.post(
+        "/continuation-imports/scan", json={"source_path": str(source_dir)}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "path_outside_allowed_roots"
+    assert "不应读取" not in response.text
+
+
+def test_scan_rechecks_source_tree_after_parser_to_detect_link_swap(
+    client: TestClient,
+    allowed_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    source_dir = allowed_root / "chapters"
+    source_dir.mkdir()
+    chapter = source_dir / "chapter.txt"
+    chapter.write_text("第一章 原正文\n正文", encoding="utf-8")
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("第一章 外部秘密\n绝不能返回", encoding="utf-8")
+    original_scan = continuation_imports.scan_continuation_source
+
+    def swap_after_scan(*args, **kwargs):
+        result = original_scan(*args, **kwargs)
+        chapter.unlink()
+        chapter.symlink_to(outside)
+        return result
+
+    monkeypatch.setattr(
+        continuation_imports, "scan_continuation_source", swap_after_scan
+    )
+
+    response = client.post(
+        "/continuation-imports/scan", json={"source_path": str(source_dir)}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "path_outside_allowed_roots"
+    assert "绝不能返回" not in response.text
+
+
+def test_create_rejects_link_swap_between_scan_and_session_backup(
+    client: TestClient,
+    allowed_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.story_core.continuation_sessions import ContinuationSessionStore
+
+    source_dir = allowed_root / "chapters"
+    source_dir.mkdir()
+    chapter = source_dir / "chapter.txt"
+    content = "第一章 相同正文\n不能因内容相同而放行"
+    chapter.write_text(content, encoding="utf-8")
+    outside = tmp_path / "outside-same-content.txt"
+    outside.write_text(content, encoding="utf-8")
+    original_create = ContinuationSessionStore.create
+
+    def swap_before_backup(store, scan):
+        chapter.unlink()
+        chapter.symlink_to(outside)
+        return original_create(store, scan)
+
+    monkeypatch.setattr(ContinuationSessionStore, "create", swap_before_backup)
+
+    response = client.post(
+        "/continuation-imports", json={"source_path": str(source_dir)}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "path_outside_allowed_roots"
+    assert "outside-same-content" not in response.text
 
 
 def test_scan_reports_missing_path(client: TestClient, allowed_root: Path) -> None:
@@ -170,6 +314,149 @@ def test_analyze_is_idempotent_and_persists_success(
     assert _SuccessfulAnalyzer.calls == 1
 
 
+def test_editing_ready_chapters_invalidates_analysis_and_reanalyzes(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    analyzer = _TitleAnalyzer()
+    monkeypatch.setattr(
+        continuation_imports, "build_continuation_analyzer", lambda: analyzer
+    )
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    client.post(f"/continuation-imports/{session['session_id']}/analyze")
+    ready = client.get(f"/continuation-imports/{session['session_id']}").json()
+    chapters = ready["chapters"]
+    chapters[0]["title"] = "重写后的开端"
+
+    edited = client.put(
+        f"/continuation-imports/{session['session_id']}/chapters",
+        json={"expected_revision": ready["revision"], "chapters": chapters},
+    )
+
+    assert edited.status_code == 200
+    assert edited.json()["status"] == "parsed"
+    assert edited.json()["analysis"] == {}
+    assert edited.json()["analysis_progress"] == {}
+    client.post(f"/continuation-imports/{session['session_id']}/analyze")
+    rerun = client.get(f"/continuation-imports/{session['session_id']}").json()
+    assert rerun["status"] == "ready"
+    assert rerun["analysis"]["story_overview"].startswith("重写后的开端|")
+    assert analyzer.calls == 2
+
+
+def test_concurrent_analyze_requests_are_both_idempotently_accepted(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import continuation_imports
+    from packages.story_core.continuation_sessions import ContinuationSessionStore
+
+    monkeypatch.setattr(continuation_imports, "build_continuation_analyzer", _SuccessfulAnalyzer)
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    original_get = ContinuationSessionStore.get
+    barrier = threading.Barrier(2)
+    counter_lock = threading.Lock()
+    blocked_calls = 0
+
+    def synchronized_get(store, session_id):
+        nonlocal blocked_calls
+        result = original_get(store, session_id)
+        should_wait = False
+        with counter_lock:
+            if session_id == session["session_id"] and blocked_calls < 2:
+                blocked_calls += 1
+                should_wait = True
+        if should_wait:
+            barrier.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(ContinuationSessionStore, "get", synchronized_get)
+
+    def start_analysis() -> int:
+        with TestClient(app, raise_server_exceptions=False) as thread_client:
+            return thread_client.post(
+                f"/continuation-imports/{session['session_id']}/analyze"
+            ).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        statuses = list(executor.map(lambda _: start_analysis(), range(2)))
+
+    assert statuses == [202, 202]
+
+
+def test_persisted_analyzing_without_local_task_is_reenqueued_after_restart(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    analyzer = _TitleAnalyzer()
+    monkeypatch.setattr(
+        continuation_imports, "build_continuation_analyzer", lambda: analyzer
+    )
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    store = continuation_imports._session_store()
+    store.update(
+        session["session_id"],
+        lambda current: setattr(current, "status", "analyzing"),
+        expected_revision=session["revision"],
+    )
+
+    response = client.post(f"/continuation-imports/{session['session_id']}/analyze")
+    recovered = client.get(f"/continuation-imports/{session['session_id']}").json()
+
+    assert response.status_code == 202
+    assert recovered["status"] == "ready"
+    assert analyzer.calls == 1
+
+
+def test_active_analysis_is_not_duplicated_and_registry_is_cleaned(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingAnalyzer(_TitleAnalyzer):
+        def analyze_chapters(self, chapters):
+            started.set()
+            assert release.wait(timeout=5)
+            return super().analyze_chapters(chapters)
+
+    analyzer = BlockingAnalyzer()
+    monkeypatch.setattr(
+        continuation_imports, "build_continuation_analyzer", lambda: analyzer
+    )
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(
+            client.post, f"/continuation-imports/{session['session_id']}/analyze"
+        )
+        assert started.wait(timeout=5)
+        second = client.post(f"/continuation-imports/{session['session_id']}/analyze")
+        release.set()
+        first_response = first.result(timeout=5)
+
+    assert first_response.status_code == 202
+    assert second.status_code == 202
+    assert analyzer.calls == 1
+    key = continuation_imports._analysis_task_key(
+        continuation_imports._session_store(), session["session_id"]
+    )
+    assert key not in continuation_imports._ACTIVE_ANALYSIS_TASKS
+
+
 def test_background_failure_preserves_session_and_safe_error(
     client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -220,4 +507,21 @@ def test_requests_forbid_extra_fields(client: TestClient) -> None:
     response = client.post(
         "/continuation-imports/scan", json={"source_path": "x", "surprise": True}
     )
+    assert response.status_code == 422
+
+
+def test_chapter_edit_request_forbids_nested_extra_fields(
+    client: TestClient, allowed_root: Path
+) -> None:
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    chapters = session["chapters"]
+    chapters[0]["unexpected"] = True
+
+    response = client.put(
+        f"/continuation-imports/{session['session_id']}/chapters",
+        json={"expected_revision": session["revision"], "chapters": chapters},
+    )
+
     assert response.status_code == 422

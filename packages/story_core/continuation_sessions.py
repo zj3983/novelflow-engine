@@ -309,19 +309,20 @@ def _sha256(payload: bytes) -> str:
 
 def _source_files(source: Path, source_kind: Literal["file", "directory"]) -> list[Path]:
     if source_kind == "file":
+        if _is_link_or_junction(source):
+            raise ValueError("path_outside_allowed_roots")
         if not source.is_file():
             raise FileNotFoundError(source)
         return [source]
     if not source.is_dir():
         raise FileNotFoundError(source)
-    return sorted(
-        (
-            path
-            for path in source.rglob("*")
-            if path.is_file() and path.suffix.casefold() in SUPPORTED_SUFFIXES
-        ),
-        key=lambda path: path.relative_to(source).as_posix(),
-    )
+    files: list[Path] = []
+    for path in source.rglob("*"):
+        if _is_link_or_junction(path):
+            raise ValueError("path_outside_allowed_roots")
+        if path.is_file() and path.suffix.casefold() in SUPPORTED_SUFFIXES:
+            files.append(path)
+    return sorted(files, key=lambda path: path.relative_to(source).as_posix())
 
 
 def _snapshot_source(
@@ -330,7 +331,13 @@ def _snapshot_source(
     files = _source_files(source, source_kind)
     snapshots: list[_SourceFile] = []
     for path in files:
-        payload = path.read_bytes()
+        fixed_root = source.parent if source_kind == "file" else source
+        try:
+            payload = _secure_read_bytes(path, fixed_root=fixed_root)
+        except ValueError as exc:
+            if str(exc) == "invalid_session_path":
+                raise ValueError("path_outside_allowed_roots") from None
+            raise
         relative_path = path.name if source_kind == "file" else path.relative_to(source).as_posix()
         snapshots.append(
             _SourceFile(
@@ -531,6 +538,8 @@ class ContinuationSessionStore:
         session_id: str,
         chapters: list[ContinuationChapter],
         expected_revision: int | None = None,
+        *,
+        invalidate_analysis: bool = False,
     ) -> ContinuationImportSession:
         def mutate(session: ContinuationImportSession) -> None:
             validated = _validated_chapters(chapters)
@@ -546,6 +555,11 @@ class ContinuationSessionStore:
             if current_fingerprint != session.source_fingerprint:
                 raise ValueError("source_changed_since_scan")
             session.chapters = validated
+            if invalidate_analysis:
+                session.status = "parsed"
+                session.analysis = {}
+                session.analysis_progress = {}
+                session.error = ""
 
         return self.update(session_id, mutate, expected_revision=expected_revision)
 
