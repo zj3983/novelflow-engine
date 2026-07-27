@@ -34,6 +34,25 @@ def test_attribute_allocation_rejects_unapproved_completed_forms(verb: str):
     assert not has_character_attribute_allocation(f"夜烬把五点{verb}智力上", "智力", 5)
 
 
+@pytest.mark.parametrize("verb", ("投入到", "投入了"))
+def test_attribute_allocation_generic_detection_rejects_unapproved_invest_forms(verb: str):
+    assert not has_character_attribute_allocation(f"夜烬把五点{verb}智力上")
+
+
+@pytest.mark.parametrize("verb", ("投入到", "投入了"))
+def test_attribute_allocation_confirmation_rejects_unapproved_invest_forms(verb: str):
+    body = f"夜烬把五点{verb}智力上。随后他点下确认，可用属性点归零。"
+
+    assert not has_positive_attribute_allocation_confirmation(body)
+
+
+def test_attribute_allocation_confirmation_keeps_completed_invest_form_supported():
+    body = "夜烬把五点投入到了智力上。随后他点下确认，可用属性点归零。"
+
+    assert has_character_attribute_allocation(body)
+    assert has_positive_attribute_allocation_confirmation(body)
+
+
 def test_attribute_allocation_rejects_negated_action_with_modifier_before_points():
     assert not has_character_attribute_allocation("夜烬没有把刚拿到的五点全部加到智力上", "智力", 5)
 

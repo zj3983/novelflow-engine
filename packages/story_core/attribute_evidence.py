@@ -18,7 +18,7 @@ _CN_NUMERAL_VALUES = {
     "九": 9,
 }
 _COUNT_PATTERN = r"\d+|[一二两三四五六七八九十百]{1,3}"
-_ATTRIBUTE_ALLOCATION_ACTIONS = r"(?:加到|加到了|加给|分配给|分配到了|投入|投入到了|点在)"
+_ATTRIBUTE_ALLOCATION_ACTIONS = r"(?:加到|加到了|加给|分配给|分配到了|投入(?!到|了)|投入到了|点在)"
 _ATTRIBUTE_ACTION_PATTERN = (
     rf"(?:{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
     rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}"
