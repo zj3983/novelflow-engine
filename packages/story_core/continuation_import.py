@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 
 SUPPORTED_SUFFIXES = {".md", ".txt"}
-DEFAULT_ENCODINGS = ("utf-8", "gb18030", "gbk")
+_LEGACY_CANDIDATE_ENCODINGS = ("gb18030", "gbk", "big5", "utf-16-le", "utf-16-be")
 _BOM_ENCODINGS = (
     (b"\xff\xfe\x00\x00", "utf-32", "utf-32-le"),
     (b"\x00\x00\xfe\xff", "utf-32", "utf-32-be"),
@@ -73,14 +73,44 @@ def decode_novel_bytes(payload: bytes, forced_encoding: str | None = None) -> tu
                     raise ValueError("source_encoding_unknown")
                 return text, label
 
-    encodings = (forced_encoding,) if forced_encoding else DEFAULT_ENCODINGS
-    for encoding in encodings:
+    if forced_encoding:
+        try:
+            text = payload.decode(forced_encoding, errors="strict")
+        except (LookupError, UnicodeDecodeError):
+            raise ValueError("source_encoding_unknown") from None
+        if not _is_low_quality_text(text):
+            return text, forced_encoding
+        raise ValueError("source_encoding_unknown")
+
+    try:
+        utf8_text = payload.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        pass
+    else:
+        if not _is_low_quality_text(utf8_text):
+            return utf8_text, "utf-8"
+
+    candidates: dict[str, str] = {}
+    seen_texts: set[str] = set()
+    for encoding in _LEGACY_CANDIDATE_ENCODINGS:
         try:
             text = payload.decode(encoding, errors="strict")
-        except (LookupError, UnicodeDecodeError):
+        except UnicodeDecodeError:
             continue
-        if not _is_low_quality_text(text):
-            return text, encoding
+        if _is_low_quality_text(text) or text in seen_texts:
+            continue
+        candidates[encoding] = text
+        seen_texts.add(text)
+
+    gb_encoding = next((encoding for encoding in ("gb18030", "gbk") if encoding in candidates), None)
+    if gb_encoding:
+        alternatives = [
+            text for encoding, text in candidates.items() if encoding not in {"gb18030", "gbk"}
+        ]
+        gb_score = _legacy_text_quality_score(candidates[gb_encoding])
+        alternative_scores = [_legacy_text_quality_score(text) for text in alternatives]
+        if not alternatives or gb_score >= max(alternative_scores) + 10:
+            return candidates[gb_encoding], gb_encoding
     raise ValueError("source_encoding_unknown")
 
 
@@ -92,6 +122,23 @@ def _is_low_quality_text(text: str) -> bool:
         if category.startswith("C"):
             return True
     return False
+
+
+def _legacy_text_quality_score(text: str) -> int:
+    score = min(text.count("\n"), 5)
+    score += sum(text.count(mark) for mark in "。！？") * 2
+    for line in text.splitlines():
+        title = line.strip().lstrip("#").strip()
+        title = re.sub(r"[ \t]+#+[ \t]*$", "", title)
+        match = _CHAPTER_TITLE_RE.match(title)
+        if not match:
+            continue
+        try:
+            _chinese_number(match.group("number"))
+        except ValueError:
+            continue
+        score += 20
+    return score
 
 
 def _chinese_number(value: str) -> int:
@@ -336,7 +383,7 @@ def scan_continuation_source(
         source_name = file_path.name if source_kind == "file" else file_path.relative_to(source).as_posix()
         parsed, confirmed = _chapters_from_text(text, source_name, file_index, file_path.stem)
         chapters.extend(parsed)
-        if text and not confirmed:
+        if source_kind == "file" and text and not confirmed:
             unconfirmed = True
 
     _assign_chapter_ids(chapters)

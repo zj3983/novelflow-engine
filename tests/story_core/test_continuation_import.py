@@ -39,6 +39,21 @@ def test_directory_uses_natural_numeric_order(tmp_path: Path) -> None:
     assert [chapter.source_name for chapter in result.chapters] == ["第2章.txt", "第10章.txt"]
 
 
+def test_directory_filenames_define_chapters_for_plain_body_files(tmp_path: Path) -> None:
+    from packages.story_core.continuation_import import scan_continuation_source
+
+    _write(tmp_path / "第10章.txt", "这是第十章的正文。\n")
+    _write(tmp_path / "第2章.txt", "这是第二章的正文。\n")
+
+    result = scan_continuation_source(tmp_path)
+
+    assert [chapter.number for chapter in result.chapters] == [2, 10]
+    assert [chapter.title for chapter in result.chapters] == ["第2章", "第10章"]
+    assert [chapter.body for chapter in result.chapters] == ["这是第二章的正文。", "这是第十章的正文。"]
+    assert "chapter_boundaries_unconfirmed" not in result.warnings
+    assert result.can_analyze is True
+
+
 def test_natural_sort_ties_are_stable_for_recursive_creation_orders(tmp_path: Path) -> None:
     from packages.story_core.continuation_import import _natural_key, scan_continuation_source
 
@@ -267,6 +282,23 @@ def test_ambiguous_legacy_and_bomless_utf16_encodings_are_rejected() -> None:
         decode_novel_bytes("第一章 UTF16\n正文。\n".encode("utf-16-le"))
 
 
+@pytest.mark.parametrize(
+    ("text", "encoding"),
+    [
+        ("繁體中文", "big5"),
+        ("章节正文", "utf-16-le"),
+    ],
+)
+def test_ambiguous_short_legacy_text_requires_forced_encoding(text: str, encoding: str) -> None:
+    from packages.story_core.continuation_import import decode_novel_bytes
+
+    payload = text.encode(encoding)
+
+    with pytest.raises(ValueError, match="^source_encoding_unknown$"):
+        decode_novel_bytes(payload)
+    assert decode_novel_bytes(payload, forced_encoding=encoding) == (text, encoding)
+
+
 def test_binary_controls_are_rejected_even_with_forced_encoding(tmp_path: Path) -> None:
     from packages.story_core.continuation_import import decode_novel_bytes, scan_continuation_source
 
@@ -288,15 +320,15 @@ def test_dangerous_unicode_format_controls_are_rejected() -> None:
         decode_novel_bytes(payload, forced_encoding="utf-8")
 
 
-def test_unheaded_directory_file_blocks_analysis(tmp_path: Path) -> None:
+def test_unheaded_directory_file_uses_the_file_as_a_chapter_boundary(tmp_path: Path) -> None:
     from packages.story_core.continuation_import import scan_continuation_source
 
     _write(tmp_path / "chapter-1.txt", "没有可靠标题的正文。\n")
 
     result = scan_continuation_source(tmp_path)
 
-    assert "chapter_boundaries_unconfirmed" in result.warnings
-    assert result.can_analyze is False
+    assert "chapter_boundaries_unconfirmed" not in result.warnings
+    assert result.can_analyze is True
 
 
 def test_empty_file_cannot_be_analyzed(tmp_path: Path) -> None:
