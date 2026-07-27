@@ -4,24 +4,31 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import stat
 import tempfile
 import threading
+import unicodedata
 import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Literal
+from pathlib import Path, PurePosixPath
+from typing import Any, BinaryIO, Iterator, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .continuation_import import (
     SUPPORTED_SUFFIXES,
     ContinuationChapter,
     ContinuationScanResult,
+    scan_continuation_source,
 )
 
 
 _SESSION_ID_RE = re.compile(r"^ci-[A-Za-z0-9][A-Za-z0-9_-]*$")
+_LOCK_REGISTRY_GUARD = threading.Lock()
+_LOCK_REGISTRY: dict[str, threading.RLock] = {}
 
 
 class ContinuationImportSession(BaseModel):
@@ -62,6 +69,75 @@ class _SourceManifest(BaseModel):
     source_fingerprint: str
     encoding: str
     files: list[_SourceManifestFile]
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    is_junction = getattr(os.path, "isjunction", lambda candidate: False)
+    if path.is_symlink() or bool(is_junction(path)):
+        return True
+    if os.name != "nt":
+        return False
+    try:
+        attributes = os.lstat(path).st_file_attributes
+    except (AttributeError, FileNotFoundError, OSError):
+        return False
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _resolve_contained_path(root: Path, candidate: Path) -> Path:
+    resolved_root = root.resolve(strict=False)
+    resolved_candidate = candidate.resolve(strict=False)
+    try:
+        resolved_candidate.relative_to(resolved_root)
+    except ValueError:
+        raise ValueError("invalid_session_path") from None
+    return resolved_candidate
+
+
+def _registered_lock(lock_path: Path) -> threading.RLock:
+    key = os.path.normcase(str(lock_path.resolve(strict=False)))
+    with _LOCK_REGISTRY_GUARD:
+        return _LOCK_REGISTRY.setdefault(key, threading.RLock())
+
+
+def _lock_file(handle: BinaryIO) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(handle: BinaryIO) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _interprocess_lock(lock_path: Path) -> Iterator[None]:
+    process_lock = _registered_lock(lock_path)
+    with process_lock:
+        with lock_path.open("a+b") as handle:
+            if handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b"\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+            _lock_file(handle)
+            try:
+                yield
+            finally:
+                _unlock_file(handle)
 
 
 def _utc_now() -> str:
@@ -127,6 +203,46 @@ def fingerprint_continuation_source(
     return fingerprint
 
 
+def _normalized_text(value: str, *, collapse_whitespace: bool) -> str:
+    normalized = unicodedata.normalize("NFKC", value).replace("\r\n", "\n").replace("\r", "\n")
+    if collapse_whitespace:
+        return " ".join(normalized.split())
+    return normalized.strip()
+
+
+def _scan_signature(scan: ContinuationScanResult) -> tuple[object, ...]:
+    chapters = tuple(
+        (
+            chapter.number,
+            _normalized_text(chapter.title, collapse_whitespace=True),
+            _normalized_text(chapter.body, collapse_whitespace=False),
+            chapter.fingerprint,
+        )
+        for chapter in scan.chapters
+    )
+    return scan.source_kind, scan.encoding, len(chapters), chapters
+
+
+def _forced_encoding(encoding: str) -> str | None:
+    return None if not encoding or encoding == "mixed" else encoding
+
+
+def _manifest_relative_path(value: str) -> PurePosixPath:
+    relative = PurePosixPath(value)
+    windows_path = Path(value)
+    if (
+        not value
+        or "\\" in value
+        or relative.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or relative.as_posix() != value
+    ):
+        raise ValueError("source_manifest_invalid")
+    return relative
+
+
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -180,71 +296,45 @@ class ContinuationSessionStore:
         session_id_factory: Callable[[], str] | None = None,
         clock: Callable[[], str] | None = None,
     ) -> None:
-        self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        requested_root = Path(root).expanduser()
+        requested_root.mkdir(parents=True, exist_ok=True)
+        self.root = requested_root.resolve(strict=True)
+        if not self.root.is_dir() or _is_link_or_junction(self.root):
+            raise ValueError("invalid_session_path")
+        self._locks_root = self.root / ".locks"
+        self._locks_root.mkdir(parents=True, exist_ok=True)
+        self._validate_locks_root()
         self._session_id_factory = session_id_factory or (lambda: f"ci-{uuid.uuid4().hex}")
         self._clock = clock or _utc_now
-        self._lock = threading.RLock()
 
     def create(self, scan: ContinuationScanResult) -> ContinuationImportSession:
-        with self._lock:
-            session_id = self._session_id_factory()
-            _validate_session_id(session_id)
-            session_root = self.root / session_id
-            if session_root.exists():
-                raise FileExistsError(session_root)
+        session_id = self._session_id_factory()
+        _validate_session_id(session_id)
+        with self._session_lock(session_id):
+            final_root = self._session_root(session_id, require_exists=False)
+            if final_root.exists():
+                raise FileExistsError(final_root)
 
-            source = Path(scan.source_path).expanduser().resolve(strict=False)
-            source_fingerprint, snapshots = _snapshot_source(source, scan.source_kind)
-            original_root = session_root / "source" / "original"
-            original_root.mkdir(parents=True)
-            for snapshot in snapshots:
-                backup_path = original_root / Path(snapshot.relative_path)
-                backup_path.parent.mkdir(parents=True, exist_ok=True)
-                backup_path.write_bytes(snapshot.payload)
-                if _sha256(backup_path.read_bytes()) != snapshot.fingerprint:
-                    raise OSError("source_backup_verification_failed")
-
-            manifest = _SourceManifest(
-                schema_version="continuation-source-manifest/v1",
-                source_path=str(source),
-                source_kind=scan.source_kind,
-                source_fingerprint=source_fingerprint,
-                encoding=scan.encoding,
-                files=[
-                    _SourceManifestFile(
-                        relative_path=snapshot.relative_path,
-                        fingerprint=snapshot.fingerprint,
-                    )
-                    for snapshot in snapshots
-                ],
-            )
-            _write_json_atomic(
-                session_root / "source" / "manifest.json",
-                manifest.model_dump(mode="json"),
-            )
-
-            timestamp = self._clock()
-            session = ContinuationImportSession(
-                session_id=session_id,
-                source_path=str(source),
-                source_fingerprint=source_fingerprint,
-                encoding=scan.encoding,
-                chapters=[chapter.model_copy(deep=True) for chapter in scan.chapters],
-                created_at=timestamp,
-                updated_at=timestamp,
-            )
-            self._write_session(session)
-            return session.model_copy(deep=True)
+            staging_root = Path(tempfile.mkdtemp(dir=self.root, prefix=f".{session_id}."))
+            _resolve_contained_path(self.root, staging_root)
+            try:
+                session = self._build_staged_session(staging_root, session_id, scan)
+                self._read_validated_session_root(staging_root, session_id)
+                final_root = self._session_root(session_id, require_exists=False)
+                if final_root.exists():
+                    raise FileExistsError(final_root)
+                os.rename(staging_root, final_root)
+                staging_root = None
+                return session.model_copy(deep=True)
+            finally:
+                if staging_root is not None:
+                    self._cleanup_staging(staging_root)
 
     def get(self, session_id: str) -> ContinuationImportSession:
         _validate_session_id(session_id)
-        session_path = self._session_path(session_id)
-        if not session_path.is_file():
-            raise FileNotFoundError(f"continuation import session not found: {session_id}")
-        with session_path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        return ContinuationImportSession.model_validate(payload)
+        with self._session_lock(session_id):
+            session, _ = self._read_validated_session(session_id)
+            return session
 
     def replace_chapters(
         self,
@@ -254,7 +344,8 @@ class ContinuationSessionStore:
     ) -> ContinuationImportSession:
         def mutate(session: ContinuationImportSession) -> None:
             validated = _validated_chapters(chapters)
-            source_kind = self._read_source_manifest(session_id).source_kind
+            session_root = self._session_root(session_id, require_exists=True)
+            source_kind = self._read_source_manifest(session_root).source_kind
             try:
                 current_fingerprint = fingerprint_continuation_source(
                     session.source_path,
@@ -274,11 +365,12 @@ class ContinuationSessionStore:
         mutate: Callable[[ContinuationImportSession], ContinuationImportSession | None],
         expected_revision: int | None = None,
     ) -> ContinuationImportSession:
-        with self._lock:
-            current = self.get(session_id)
+        _validate_session_id(session_id)
+        with self._session_lock(session_id):
+            current, manifest = self._read_validated_session(session_id)
             if expected_revision is not None and current.revision != expected_revision:
                 raise ValueError("session_revision_conflict")
-            self._validate_current_source_kind(session_id, current)
+            self._validate_current_source_kind(current, manifest)
 
             candidate = current.model_copy(deep=True)
             result = mutate(candidate)
@@ -290,38 +382,263 @@ class ContinuationSessionStore:
             candidate.revision = current.revision + 1
             candidate.created_at = current.created_at
             candidate.updated_at = self._clock()
-            self._write_session(candidate)
+            session_root = self._session_root(session_id, require_exists=True)
+            self._write_session(candidate, session_root)
             return candidate.model_copy(deep=True)
-
-    def _session_path(self, session_id: str) -> Path:
-        _validate_session_id(session_id)
-        return self.root / session_id / "session.json"
-
-    def _read_source_manifest(self, session_id: str) -> _SourceManifest:
-        manifest_path = self.root / session_id / "source" / "manifest.json"
-        with manifest_path.open("r", encoding="utf-8") as handle:
-            return _SourceManifest.model_validate(json.load(handle))
 
     def _validate_current_source_kind(
         self,
-        session_id: str,
         session: ContinuationImportSession,
+        manifest: _SourceManifest,
     ) -> None:
-        manifest = self._read_source_manifest(session_id)
-        if (
-            manifest.source_path != session.source_path
-            or manifest.source_fingerprint != session.source_fingerprint
-            or manifest.encoding != session.encoding
-        ):
-            raise ValueError("source_changed_since_scan")
-
         source = Path(session.source_path)
         current_kind = "file" if source.is_file() else "directory" if source.is_dir() else None
         if current_kind != manifest.source_kind:
             raise ValueError("source_changed_since_scan")
 
-    def _write_session(self, session: ContinuationImportSession) -> None:
+    def _assert_root(self) -> None:
+        if not self.root.is_dir() or _is_link_or_junction(self.root):
+            raise ValueError("invalid_session_path")
+        if self.root.resolve(strict=True) != self.root:
+            raise ValueError("invalid_session_path")
+
+    def _validate_locks_root(self) -> Path:
+        self._assert_root()
+        if _is_link_or_junction(self._locks_root):
+            raise ValueError("invalid_session_path")
+        resolved = _resolve_contained_path(self.root, self._locks_root)
+        if not resolved.is_dir():
+            raise ValueError("invalid_session_path")
+        return resolved
+
+    def _lock_path(self, session_id: str) -> Path:
+        _validate_session_id(session_id)
+        locks_root = self._validate_locks_root()
+        return _resolve_contained_path(locks_root, locks_root / f"{session_id}.lock")
+
+    @contextmanager
+    def _session_lock(self, session_id: str) -> Iterator[None]:
+        lock_path = self._lock_path(session_id)
+        with _interprocess_lock(lock_path):
+            self._assert_root()
+            if self._lock_path(session_id) != lock_path:
+                raise ValueError("invalid_session_path")
+            yield
+
+    def _session_root(self, session_id: str, *, require_exists: bool) -> Path:
+        _validate_session_id(session_id)
+        self._assert_root()
+        candidate = self.root / session_id
+        if _is_link_or_junction(candidate):
+            raise ValueError("invalid_session_path")
+        resolved = _resolve_contained_path(self.root, candidate)
+        if require_exists:
+            if not resolved.exists():
+                raise FileNotFoundError(f"continuation import session not found: {session_id}")
+            if not resolved.is_dir():
+                raise ValueError("invalid_session_path")
+        return resolved
+
+    def _build_staged_session(
+        self,
+        staging_root: Path,
+        session_id: str,
+        scan: ContinuationScanResult,
+    ) -> ContinuationImportSession:
+        staging_root = _resolve_contained_path(self.root, staging_root)
+        if _is_link_or_junction(staging_root):
+            raise ValueError("invalid_session_path")
+        source = Path(scan.source_path).expanduser().resolve(strict=False)
+        forced_encoding = _forced_encoding(scan.encoding)
+        fresh_scan = scan_continuation_source(source, forced_encoding=forced_encoding)
+        if _scan_signature(fresh_scan) != _scan_signature(scan):
+            raise ValueError("source_changed_since_scan")
+
+        source_fingerprint, snapshots = _snapshot_source(source, scan.source_kind)
+        source_root = _resolve_contained_path(staging_root, staging_root / "source")
+        original_root = _resolve_contained_path(source_root, source_root / "original")
+        original_root.mkdir(parents=True)
+        for snapshot in snapshots:
+            relative = _manifest_relative_path(snapshot.relative_path)
+            backup_path = original_root.joinpath(*relative.parts)
+            _resolve_contained_path(original_root, backup_path)
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            backup_path.write_bytes(snapshot.payload)
+            if _sha256(backup_path.read_bytes()) != snapshot.fingerprint:
+                raise OSError("source_backup_verification_failed")
+
+        backup_source = (
+            original_root / snapshots[0].relative_path
+            if scan.source_kind == "file"
+            else original_root
+        )
+        backup_scan = scan_continuation_source(backup_source, forced_encoding=forced_encoding)
+        if _scan_signature(backup_scan) != _scan_signature(fresh_scan):
+            raise ValueError("source_changed_since_scan")
+
+        manifest = _SourceManifest(
+            schema_version="continuation-source-manifest/v1",
+            source_path=str(source),
+            source_kind=scan.source_kind,
+            source_fingerprint=source_fingerprint,
+            encoding=scan.encoding,
+            files=[
+                _SourceManifestFile(
+                    relative_path=snapshot.relative_path,
+                    fingerprint=snapshot.fingerprint,
+                )
+                for snapshot in snapshots
+            ],
+        )
+        manifest_path = _resolve_contained_path(source_root, source_root / "manifest.json")
+        _write_json_atomic(manifest_path, manifest.model_dump(mode="json"))
+
+        timestamp = self._clock()
+        session = ContinuationImportSession(
+            session_id=session_id,
+            source_path=str(source),
+            source_fingerprint=source_fingerprint,
+            encoding=scan.encoding,
+            chapters=[chapter.model_copy(deep=True) for chapter in scan.chapters],
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        self._write_session(session, staging_root)
+        return session
+
+    def _read_validated_session(
+        self,
+        session_id: str,
+    ) -> tuple[ContinuationImportSession, _SourceManifest]:
+        session_root = self._session_root(session_id, require_exists=True)
+        return self._read_validated_session_root(session_root, session_id)
+
+    def _read_validated_session_root(
+        self,
+        session_root: Path,
+        expected_session_id: str,
+    ) -> tuple[ContinuationImportSession, _SourceManifest]:
+        resolved_root = _resolve_contained_path(self.root, session_root)
+        if _is_link_or_junction(session_root) or not resolved_root.is_dir():
+            raise ValueError("invalid_session_path")
+        session_path = _resolve_contained_path(resolved_root, resolved_root / "session.json")
+        if _is_link_or_junction(session_path) or not session_path.is_file():
+            raise FileNotFoundError(
+                f"continuation import session not found: {expected_session_id}"
+            )
+        with session_path.open("r", encoding="utf-8") as handle:
+            session = ContinuationImportSession.model_validate(json.load(handle))
+        if session.session_id != expected_session_id:
+            raise ValueError("source_manifest_invalid")
+        manifest = self._read_source_manifest(resolved_root)
+        self._validate_source_backup(resolved_root, session, manifest)
+        return session, manifest
+
+    def _read_source_manifest(self, session_root: Path) -> _SourceManifest:
+        try:
+            manifest_path = _resolve_contained_path(
+                session_root,
+                session_root / "source" / "manifest.json",
+            )
+            if _is_link_or_junction(manifest_path) or not manifest_path.is_file():
+                raise ValueError("source_manifest_invalid")
+            with manifest_path.open("r", encoding="utf-8") as handle:
+                manifest = _SourceManifest.model_validate(json.load(handle))
+            relative_paths = [
+                _manifest_relative_path(item.relative_path) for item in manifest.files
+            ]
+            if len(relative_paths) != len(set(relative_paths)):
+                raise ValueError("source_manifest_invalid")
+            return manifest
+        except ValueError as exc:
+            if str(exc) == "source_manifest_invalid":
+                raise
+            raise ValueError("source_manifest_invalid") from None
+        except (OSError, json.JSONDecodeError, ValidationError):
+            raise ValueError("source_manifest_invalid") from None
+
+    def _validate_source_backup(
+        self,
+        session_root: Path,
+        session: ContinuationImportSession,
+        manifest: _SourceManifest,
+    ) -> None:
+        if (
+            manifest.source_path != session.source_path
+            or manifest.source_fingerprint != session.source_fingerprint
+            or manifest.encoding != session.encoding
+        ):
+            raise ValueError("source_manifest_invalid")
+
+        backup_root = session_root / "source" / "original"
+        try:
+            resolved_backup_root = _resolve_contained_path(session_root, backup_root)
+        except ValueError:
+            raise ValueError("source_backup_invalid") from None
+        if _is_link_or_junction(backup_root) or not resolved_backup_root.is_dir():
+            raise ValueError("source_backup_invalid")
+
+        expected = {item.relative_path: item.fingerprint for item in manifest.files}
+        actual: set[str] = set()
+        for path in resolved_backup_root.rglob("*"):
+            if _is_link_or_junction(path):
+                raise ValueError("source_backup_invalid")
+            if path.is_file():
+                try:
+                    resolved_path = _resolve_contained_path(resolved_backup_root, path)
+                except ValueError:
+                    raise ValueError("source_backup_invalid") from None
+                actual.add(resolved_path.relative_to(resolved_backup_root).as_posix())
+        if actual != set(expected):
+            raise ValueError("source_backup_invalid")
+
+        for relative_path, fingerprint in expected.items():
+            relative = _manifest_relative_path(relative_path)
+            backup_path = resolved_backup_root.joinpath(*relative.parts)
+            try:
+                resolved_backup = _resolve_contained_path(resolved_backup_root, backup_path)
+            except ValueError:
+                raise ValueError("source_backup_invalid") from None
+            if (
+                _is_link_or_junction(backup_path)
+                or not resolved_backup.is_file()
+                or _sha256(resolved_backup.read_bytes()) != fingerprint
+            ):
+                raise ValueError("source_backup_invalid")
+
+        if manifest.source_kind == "file":
+            if len(expected) != 1:
+                raise ValueError("source_manifest_invalid")
+            calculated_fingerprint = next(iter(expected.values()))
+        else:
+            combined = hashlib.sha256()
+            for relative_path in sorted(expected):
+                combined.update(relative_path.encode("utf-8"))
+                combined.update(b"\0")
+                combined.update(expected[relative_path].encode("ascii"))
+                combined.update(b"\n")
+            calculated_fingerprint = combined.hexdigest()
+        if calculated_fingerprint != manifest.source_fingerprint:
+            raise ValueError("source_manifest_invalid")
+
+    def _cleanup_staging(self, staging_root: Path) -> None:
+        try:
+            resolved = _resolve_contained_path(self.root, staging_root)
+        except ValueError:
+            return
+        if resolved.exists() and not _is_link_or_junction(staging_root):
+            shutil.rmtree(resolved, ignore_errors=True)
+
+    def _write_session(
+        self,
+        session: ContinuationImportSession,
+        session_root: Path,
+    ) -> None:
+        resolved_root = _resolve_contained_path(self.root, session_root)
+        if _is_link_or_junction(session_root):
+            raise ValueError("invalid_session_path")
+        session_path = _resolve_contained_path(resolved_root, resolved_root / "session.json")
         _write_json_atomic(
-            self._session_path(session.session_id),
+            session_path,
             session.model_dump(mode="json"),
         )
