@@ -5175,18 +5175,12 @@ class FileProjectStore:
             chapter = {}
 
         state_before_chapter = self._state_before_chapter(target)
-        story_payload = dict(state_before_chapter)
         direction_payload = self._story_state_payload_for_direction(
             state_before_chapter,
             project,
             target,
         )
-        story_payload["outline_context"] = direction_payload["outline_context"]
-        story_payload["monster_profiles"] = direction_payload["monster_profiles"]
-        story_payload["world_context"] = direction_payload["world_context"]
-        story_payload["genre"] = direction_payload["genre"]
-        story_payload["genre_plugin_ids"] = direction_payload["genre_plugin_ids"]
-        story = StoryState.model_validate(story_payload)
+        story = StoryState.model_validate(direction_payload)
         orchestrator = StoryOrchestrator()
         writing_packet, _, _ = self._build_writing_packet(target)
         plan = self._prompt_plan_from_chapter(chapter)

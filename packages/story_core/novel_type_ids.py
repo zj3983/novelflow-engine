@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -40,10 +41,9 @@ EXPLICIT_NON_GAME_TYPE_ALIASES = (
 )
 NOVEL_TYPE_ID_ALIASES = {
     "webgame": "game_webnovel",
-    "web game": "game_webnovel",
-    "game web": "game_webnovel",
-    "game webnovel": "game_webnovel",
-    "game fantasy": "game_webnovel",
+    "web_game": "game_webnovel",
+    "game_web": "game_webnovel",
+    "game_fantasy": "game_webnovel",
     "通用网文": "generic_webnovel",
     "网游": "game_webnovel",
     "网游升级": "game_webnovel",
@@ -64,4 +64,6 @@ NOVEL_TYPE_ID_ALIASES = {
 
 def canonical_novel_type_id(value: Any) -> str:
     type_id = str(value or "").strip().casefold()
+    if re.fullmatch(r"[a-z0-9_\-\s]+", type_id):
+        type_id = re.sub(r"[_\-\s]+", "_", type_id)
     return NOVEL_TYPE_ID_ALIASES.get(type_id, type_id)

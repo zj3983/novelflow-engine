@@ -60,6 +60,7 @@ from packages.story_core.novel_type_catalog import (
     novel_type_options,
     runtime_novel_type,
 )
+from packages.story_core.novel_type_ids import canonical_novel_type_id
 from packages.story_core.power_system_templates import (
     compact_power_system_template,
     copy_power_system_template,
@@ -810,6 +811,32 @@ def test_normalize_novel_type_ids_reuses_alias_case_and_deduplication_rules():
     assert novel_type_catalog.normalize_novel_type_ids(
         [" 东方玄幻 ", "XUANHUAN", "修仙", "XIANXIA", "网游升级", "GAME_WEBNOVEL"]
     ) == ["xuanhuan", "xianxia", "game_webnovel"]
+
+
+@pytest.mark.parametrize(
+    "legacy_type",
+    (
+        "web_game",
+        "web-game",
+        "web game",
+        "game_web",
+        "game-web",
+        "game web",
+        "game_webnovel",
+        "game-webnovel",
+        "game webnovel",
+        "game_fantasy",
+        "game-fantasy",
+        "game fantasy",
+    ),
+)
+def test_canonical_novel_type_id_normalizes_legacy_game_token_separators(legacy_type):
+    assert canonical_novel_type_id(legacy_type) == "game_webnovel"
+
+
+def test_canonical_novel_type_id_preserves_builtin_ids():
+    assert canonical_novel_type_id("game_webnovel") == "game_webnovel"
+    assert canonical_novel_type_id("xuanhuan") == "xuanhuan"
 
 
 def test_explicit_non_game_type_recognizes_supported_metadata_shapes():

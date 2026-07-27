@@ -3493,6 +3493,47 @@ def test_prompt_preview_uses_project_expansion_and_compression_template_override
     assert "PROJECT COMPRESSION" in prompts["compression"]
 
 
+def test_prompt_preview_uses_complete_runtime_story_payload_for_author_constraints(tmp_path):
+    root = tmp_path / "prompt-preview-effective-story"
+    project = {
+        "project_id": "p-effective-story",
+        "title": "Effective Story",
+        "active_story_id": "s-effective-story",
+        "author_constraints": ["PROJECT_RULE"],
+        "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+    }
+    state = {
+        "story_id": "s-effective-story",
+        "outline": "林照守住断香炉。",
+        "genre": "",
+        "genre_plugin_ids": ["xuanhuan"],
+        "style": "白描",
+        "current_chapter": 1,
+        "author_constraints": ["STATE_RULE"],
+        "world_facts": [],
+        "characters": [{"name": "林照", "role": "protagonist"}],
+    }
+    store = _make_minimal_file_project(root, project=project, state=state)
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "守炉",
+            "body": _long_test_body(),
+            "event_plan": {"chapter_title": "守炉", "next_focus": "追查来信"},
+        },
+    )
+
+    effective_payload = store._story_state_payload_for_direction(store.state(), store.project(), 1)
+    preview = store.prompt_preview(1)
+
+    modules = {item["key"]: item["content"] for item in preview["modules"]}
+    core_context = json.loads(modules["core_context"])
+    assert effective_payload["author_constraints"] == ["PROJECT_RULE"]
+    assert core_context["author_constraints"] == ["PROJECT_RULE"]
+    assert "STATE_RULE" not in modules["core_context"]
+
+
 def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module(tmp_path):
     root = tmp_path / "legacy-webgame"
     legacy_trade = "\u62c5\u4fdd\u4ea4\u6613"
