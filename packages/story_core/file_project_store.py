@@ -3962,7 +3962,7 @@ class FileProjectStore:
             entries.append(
                 {
                     "chapter_number": int(chapter.get("chapter_number") or number),
-                    "chapter_title": str(chapter.get("chapter_title") or f"Chapter {number}"),
+                    "chapter_title": str(chapter.get("chapter_title") or f"第{number}章"),
                     "body_chars": len("".join(body.split())),
                     "summary": summary_text,
                     "next_focus": next_focus,
@@ -4597,7 +4597,7 @@ class FileProjectStore:
         }
 
     def summary(self) -> dict[str, Any]:
-        project = self._read_json(self.webnovel_dir / "project.json", {}) or {}
+        project = self.project()
         state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
         chapters = [
             {
