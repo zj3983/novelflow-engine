@@ -12,6 +12,7 @@ _MAX_ATTRIBUTE_NAME = 120
 _MAX_RESPEC_RULE = 240
 _MAX_RAW_TEXT_SCAN = 4_096
 _MAX_STARTING_LEVEL = 1_000_000
+_MAX_LEVEL_DIGITS = len(str(_MAX_STARTING_LEVEL))
 _LEVEL_PATTERN = re.compile(r"^(?:lv\.\s*)?(\d+)(?:\s*\u7ea7)?$", re.IGNORECASE)
 
 
@@ -119,7 +120,13 @@ def parse_level(value: Any) -> int | None:
     match = _LEVEL_PATTERN.fullmatch(value.strip())
     if not match:
         return None
-    level = int(match.group(1))
+    digits = match.group(1)
+    if len(digits) > _MAX_LEVEL_DIGITS:
+        return None
+    try:
+        level = int(digits)
+    except (ValueError, OverflowError):
+        return None
     return level if level > 0 else None
 
 
@@ -216,11 +223,15 @@ def apply_attribute_allocation(
     for name, points in allocations.items():
         if (
             not isinstance(name, str)
-            or name not in attributes
+            or name not in normalized_rule["base_attributes"]
             or isinstance(points, bool)
             or not isinstance(points, int)
             or points <= 0
         ):
+            return False
+        if name not in attributes:
+            attributes[name] = normalized_rule["base_attributes"][name]
+        if isinstance(attributes[name], bool) or not isinstance(attributes[name], int):
             return False
         normalized_allocations[name] = points
 
@@ -260,8 +271,8 @@ def apply_attribute_allocation(
         return False
 
     updated_protagonist = deepcopy(source_protagonist)
+    updated_protagonist["attributes"] = attributes
     for name, points in normalized_allocations.items():
-        updated_protagonist["attributes"] = attributes
         updated_protagonist["attributes"][name] += points
     updated_protagonist["unallocated_attribute_points"] = calculated_remaining
     updated_protagonist["attribute_allocations"] = [

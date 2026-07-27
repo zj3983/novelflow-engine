@@ -95,6 +95,10 @@ def test_parse_level_accepts_existing_level_formats(value, expected) -> None:
     assert parse_level(value) == expected
 
 
+def test_parse_level_rejects_an_overlong_numeric_string_without_raising() -> None:
+    assert parse_level("9" * 5_000) is None
+
+
 def test_rule_is_read_only_from_the_structured_story_power_spec() -> None:
     rule = free_attribute_rule()
     story = type(
@@ -137,6 +141,22 @@ def test_award_attribute_points_uses_starting_level_when_old_level_is_missing() 
     assert ledger["protagonist"]["attribute_point_awards"] == [
         {"level": 2, "points": 5, "chapter": 3}
     ]
+
+
+def test_award_attribute_points_ignores_level_downgrades_without_mutation() -> None:
+    ledger = {
+        "protagonist": {
+            "level": "Lv.2",
+            "attributes": {"\u667a\u529b": 5},
+            "unallocated_attribute_points": 5,
+            "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 3}],
+        }
+    }
+    before = deepcopy(ledger)
+
+    award_attribute_points(ledger, free_attribute_rule(), previous_level="Lv.3", current_level="Lv.2", chapter_number=4)
+
+    assert ledger == before
 
 
 def test_apply_attribute_allocation_updates_ledger_atomically_and_is_idempotent() -> None:
@@ -183,4 +203,24 @@ def test_apply_attribute_allocation_rejects_invalid_directives_without_mutation(
     before = deepcopy(ledger)
 
     assert apply_attribute_allocation(ledger, directive, free_attribute_rule(), chapter_number=8) is False
+    assert ledger == before
+
+
+def test_apply_attribute_allocation_rejects_ledger_only_attributes_without_mutation() -> None:
+    rule = free_attribute_rule()
+    rule["base_attributes"].pop("\u5e78\u8fd0")
+    ledger = {
+        "protagonist": {
+            "attributes": {"\u667a\u529b": 5, "\u5e78\u8fd0": 99},
+            "unallocated_attribute_points": 5,
+        }
+    }
+    before = deepcopy(ledger)
+
+    assert apply_attribute_allocation(
+        ledger,
+        {"allocations": {"\u5e78\u8fd0": 1}},
+        rule,
+        chapter_number=8,
+    ) is False
     assert ledger == before
