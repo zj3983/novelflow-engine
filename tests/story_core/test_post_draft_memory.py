@@ -558,6 +558,23 @@ def test_attribute_allocation_rejects_zero_remaining_from_unrelated_durability_t
     assert result["ledger_updates"] == {}
 
 
+def test_attribute_allocation_memory_rejects_bystander_remaining_after_protagonist_confirmation():
+    body = "夜烬把五点加到智力上。随后他确认加点。短发玩家的可用属性点还剩四点。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {"protagonist": {"attribute_allocation": {"allocations": {"智力": 5}, "remaining": 4}}},
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点还剩四点",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
 def test_attribute_allocation_requires_local_remaining_evidence_even_when_body_has_zero_points():
     body = "夜烬把五点加到智力上，确认加点后，可用属性点归零。法杖耐久也归零。"
     result = normalize_post_draft_memory(

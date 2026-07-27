@@ -7,6 +7,7 @@ from packages.story_core.attribute_evidence import (
     has_character_attribute_carry_choice_and_reason,
     has_character_attribute_allocation,
     has_positive_attribute_allocation_confirmation,
+    latest_confirmed_attribute_points,
     parse_count,
     real_character_attribute_allocation_point_values,
 )
@@ -189,6 +190,28 @@ def test_attribute_carry_binds_remaining_to_the_real_protagonist_choice():
     assert character_attribute_carry_choice_evidence(
         body, "留给转职", protagonist_aliases={"夜烬"}
     ) == (True, True, 5)
+
+
+def test_attribute_carry_keeps_the_protagonist_remaining_when_the_next_sentence_names_another_owner():
+    body = "夜烬看着可用属性点还剩五点，决定留着，因为等转职以后再分配。短发玩家的可用属性点还剩四点。"
+
+    assert character_attribute_carry_choice_evidence(
+        body, "留给转职", protagonist_aliases={"夜烬"}
+    ) == (True, True, 5)
+
+
+def test_attribute_carry_ignores_another_speaker_describing_their_own_remaining_points():
+    body = "夜烬看着可用属性点还剩五点，决定留着，因为等转职以后再分配。短发玩家说自己的可用属性点还剩四点。"
+
+    assert character_attribute_carry_choice_evidence(
+        body, "留给转职", protagonist_aliases={"夜烬"}
+    ) == (True, True, 5)
+
+
+def test_confirmed_allocation_keeps_the_protagonist_panel_result_when_the_next_sentence_names_another_owner():
+    body = "夜烬把五点加到智力上。随后他点下确认，可用属性点归零。短发玩家的可用属性点还剩四点。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
 
 
 def test_attribute_carry_reads_remaining_from_the_previous_adjacent_sentence():

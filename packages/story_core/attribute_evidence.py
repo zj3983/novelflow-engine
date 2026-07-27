@@ -451,6 +451,54 @@ def _attribute_point_results(body: str) -> list[tuple[int, int]]:
     return sorted(results)
 
 
+def _remaining_candidate_subject(
+    body: str, position: int, protagonist_aliases: Iterable[str] | None
+) -> bool | None:
+    """Classify a result sentence as protagonist-owned, other-owned, or a plain panel line."""
+
+    start, _ = sentence_bounds(body, position)
+    sentence = body[start:position]
+    aliases = _normalized_aliases(protagonist_aliases)
+    speaker = re.search(r"(?:^|[，,；;])\s*(?P<subject>[\u4e00-\u9fffA-Za-z0-9_]{1,12})(?:说|道|表示|提到)", sentence)
+    if speaker and speaker.group("subject") not in aliases:
+        return False
+    owner = re.search(r"(?P<owner>[\u4e00-\u9fffA-Za-z0-9_]{1,12})的\s*$", sentence)
+    if owner:
+        name = owner.group("owner")
+        if name in aliases:
+            return True
+        if name in {"他", "她", "自己"}:
+            return True if any(alias in sentence for alias in aliases) else None
+        return False
+    if any(alias in sentence for alias in aliases):
+        return True
+    if re.search(r"(?:他|她|自己)", sentence):
+        return True
+    return None
+
+
+def _remaining_point_candidate_near_anchor(
+    body: str, anchor: int, *, protagonist_aliases: Iterable[str] | None = None
+) -> int | None:
+    """Choose a nearby protagonist result, never the document's last numeric panel value."""
+
+    start, end = sentence_bounds(body, anchor)
+    previous_start, previous_end = _previous_nonempty_sentence_bounds(body, start)
+    next_start, next_end = _next_nonempty_sentence_bounds(body, end + 1)
+    ranges = ((previous_start, previous_end), (start, end), (next_start, next_end))
+    candidates: list[tuple[tuple[int, int, int], int]] = []
+    for position, points in _attribute_point_results(body):
+        if not any(range_start <= position < range_end for range_start, range_end in ranges):
+            continue
+        if _is_inside_quote(body, position) or _is_conditional_sentence(body, position, protagonist_aliases):
+            continue
+        subject = _remaining_candidate_subject(body, position, protagonist_aliases)
+        if subject is False:
+            continue
+        candidates.append(((abs(position - anchor), 0 if position >= anchor else 1, -position), points))
+    return min(candidates, default=(None, None))[1]
+
+
 def latest_attribute_points(body: str) -> int | None:
     results = _attribute_point_results(body)
     return results[-1][1] if results else None
@@ -460,9 +508,13 @@ def latest_confirmed_attribute_points(body: str, *, protagonist_aliases: Iterabl
     confirmations = _positive_confirmation_positions(body, protagonist_aliases)
     if not confirmations:
         return None
-    confirmed_at = confirmations[-1]
-    results = [result for result in _attribute_point_results(body) if result[0] >= confirmed_at]
-    return results[-1][1] if results else None
+    for confirmed_at in reversed(confirmations):
+        result = _remaining_point_candidate_near_anchor(
+            body, confirmed_at, protagonist_aliases=protagonist_aliases
+        )
+        if result is not None:
+            return result
+    return None
 
 
 def _normalized_reason(text: str) -> str:
@@ -520,19 +572,12 @@ def character_attribute_carry_choice_evidence(
         next_sentence = body[next_start:next_end].lstrip()
         if re.match(r"(?:因为|为了|留给|等(?:到)?|以便|好在)", next_sentence):
             context = f"{context} {next_sentence}"
-        previous_start, previous_end = _previous_nonempty_sentence_bounds(body, start)
-        local_ranges = [(previous_start, previous_end), (start, end), (next_start, next_end)]
-        local_points = [
-            (position, points)
-            for position, points in _attribute_point_results(body)
-            if any(range_start <= position < range_end for range_start, range_end in local_ranges)
-            and not _is_inside_quote(body, position)
-            and not _is_conditional_sentence(body, position, protagonist_aliases)
-        ]
         return (
             True,
             _carry_reason_matches(context, expected_reason),
-            local_points[-1][1] if local_points else None,
+            _remaining_point_candidate_near_anchor(
+                body, choice.start(), protagonist_aliases=protagonist_aliases
+            ),
         )
     return False, False, None
 
