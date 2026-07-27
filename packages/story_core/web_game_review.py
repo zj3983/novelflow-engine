@@ -4,12 +4,12 @@ import re
 from typing import Any, Iterable
 
 from packages.story_core.attribute_evidence import (
-    character_attribute_allocation_actions,
-    has_character_attribute_carry_choice_and_reason,
+    character_attribute_allocation_points,
+    character_attribute_carry_choice_evidence,
     has_positive_attribute_allocation_confirmation,
-    latest_attribute_points,
     latest_confirmed_attribute_points,
     parse_count as _parse_count,
+    real_character_attribute_allocation_point_values,
 )
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.chapter_scope import first_chapter_trade_authorized
@@ -397,12 +397,14 @@ def _current_attribute_allocation_decision(event_plan: dict[str, Any]) -> dict[s
     return {"mode": mode, "allocations": allocations, "remaining": remaining}
 
 
-def _attribute_action_values(
-    body: str, protagonist_aliases: Iterable[str] | None = None
+def _expected_attribute_action_values(
+    body: str, attributes: Iterable[str], protagonist_aliases: Iterable[str] | None = None
 ) -> dict[str, int]:
     values: dict[str, int] = {}
-    for attribute, points in character_attribute_allocation_actions(body, protagonist_aliases=protagonist_aliases):
-        values[attribute] = values.get(attribute, 0) + points
+    for attribute in attributes:
+        points = character_attribute_allocation_points(body, attribute, protagonist_aliases=protagonist_aliases)
+        if points is not None:
+            values[attribute] = points
     return values
 
 
@@ -449,7 +451,9 @@ def _review_attribute_allocation_decision(
             )
         return
     if decision["mode"] == "carry":
-        remaining = latest_attribute_points(body)
+        has_choice, has_reason, remaining = character_attribute_carry_choice_evidence(
+            body, decision["reason"], protagonist_aliases=protagonist_aliases
+        )
         if remaining is not None and remaining != decision["remaining"]:
             _append_issue(
                 issues=issues,
@@ -460,9 +464,6 @@ def _review_attribute_allocation_decision(
                 plan="按当前章节的结构化加点决定统一保留点数；正文明确写出的剩余点必须优先修正。",
             )
             return
-        has_choice, has_reason = has_character_attribute_carry_choice_and_reason(
-            body, decision["reason"], protagonist_aliases=protagonist_aliases
-        )
         if remaining != decision["remaining"] or not has_choice or not has_reason:
             _append_issue(
                 issues=issues,
@@ -475,10 +476,16 @@ def _review_attribute_allocation_decision(
         return
 
     expected = decision["allocations"]
-    actual = _attribute_action_values(body, protagonist_aliases)
+    actual = _expected_attribute_action_values(body, expected, protagonist_aliases)
+    actual_points = real_character_attribute_allocation_point_values(body, protagonist_aliases=protagonist_aliases)
     actual_remaining = latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases)
     if (
-        actual and actual != expected
+        actual_points
+        and (
+            len(actual_points) != len(expected)
+            or sum(actual_points) != sum(expected.values())
+            or actual != expected
+        )
     ) or actual_remaining is not None and actual_remaining != decision["remaining"]:
         _append_issue(
             issues=issues,

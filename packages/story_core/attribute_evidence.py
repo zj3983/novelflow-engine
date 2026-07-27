@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from bisect import bisect_right
+from functools import lru_cache
 import re
 from typing import Iterable, Iterator
 
@@ -20,9 +22,8 @@ _CN_NUMERAL_VALUES = {
 _COUNT_PATTERN = r"\d+|[一二两三四五六七八九十百]{1,3}"
 _ATTRIBUTE_ALLOCATION_ACTIONS = r"(?:加到了|分配到了|投入到了|加到|加给|分配给|投入(?!到|了)|点在)"
 _ATTRIBUTE_ACTION_GAP = r"[^。！？\n，,；;“”‘’\"]{0,16}"
-_ATTRIBUTE_NAME_PATTERN = r"(?P<attribute>[\u4e00-\u9fff]{1,12}?)"
 _ATTRIBUTE_ACTION_PATTERN = (
-    rf"(?:{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
+    rf"(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
     rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}"
 )
 _ATTRIBUTE_CONTEXT = ("属性点", "加点", "分配", "力量", "体质", "敏捷", "智力", "精神", "感知")
@@ -47,7 +48,9 @@ _ACTION_CONTINUATIONS = {"随后", "然后", "接着", "再", "便", "就", "先
 _ACTION_MODIFIERS = ("直接", "果断", "又", "重新", "干脆", "索性", "还是")
 _GENERIC_REASON_TERMS = {"先", "为了", "因为", "属性点", "属性", "点", "保留", "留着", "分配", "决定", "原因", "目的", "以后", "再用", "留给"}
 _CONDITIONAL_MARKERS = ("如果", "假如", "要是", "倘若")
-_RUO_CONDITION_PATTERN = re.compile(r"若(?:是|要|能|拿到|获得)")
+_RUO_CONDITION_PATTERN = re.compile(
+    r"若(?:是|要|能|拿到|获得|有(?=\s*(?:\d+|[零一二两三四五六七八九十百]+)\s*点)|他|她|我|你|主角|玩家)"
+)
 _ASYMMETRIC_QUOTES = (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"))
 
 
@@ -87,15 +90,12 @@ def _is_single_quote_delimiter(text: str, position: int) -> bool:
     return not (before.isalnum() and after.isalnum())
 
 
-def _is_inside_quote(text: str, position: int) -> bool:
-    """Return whether a position belongs to a quoted statement, not narration."""
-
-    prefix = text[:position]
-    if prefix.count('"') % 2:
+def _is_single_quote_opening(text: str, position: int) -> bool:
+    if not _is_single_quote_delimiter(text, position):
+        return False
+    if position == 0:
         return True
-    if sum(1 for index, character in enumerate(prefix) if character == "'" and _is_single_quote_delimiter(text, index)) % 2:
-        return True
-    return any(prefix.rfind(opening) > prefix.rfind(closing) for opening, closing in _ASYMMETRIC_QUOTES)
+    return text[position - 1].isspace() or text[position - 1] in ":：，。！？；;([{"
 
 
 def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -108,28 +108,62 @@ def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
-def _closed_quote_spans(text: str, start: int, end: int) -> list[tuple[int, int]]:
+@lru_cache(maxsize=32)
+def _quote_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Return sorted quote spans, extending unclosed quotes to the text end."""
+
     spans: list[tuple[int, int]] = []
     for opening, closing in _ASYMMETRIC_QUOTES:
-        cursor = start
-        while cursor < end:
-            opening_at = text.find(opening, cursor, end)
+        cursor = 0
+        while cursor < len(text):
+            opening_at = text.find(opening, cursor)
             if opening_at < 0:
                 break
-            closing_at = text.find(closing, opening_at + len(opening), end)
+            closing_at = text.find(closing, opening_at + len(opening))
             if closing_at < 0:
+                spans.append((opening_at, len(text)))
                 break
             spans.append((opening_at, closing_at + len(closing)))
             cursor = closing_at + len(closing)
-    for quote, predicate in (("\"", None), ("'", _is_single_quote_delimiter)):
-        positions = [
-            index
-            for index in range(start, end)
-            if text[index] == quote and (predicate is None or predicate(text, index))
-        ]
-        for opening_at, closing_at in zip(positions[::2], positions[1::2]):
-            spans.append((opening_at, closing_at + 1))
-    return _merge_spans(spans)
+    positions = [index for index, character in enumerate(text) if character == "\""]
+    for opening_at, closing_at in zip(positions[::2], positions[1::2]):
+        spans.append((opening_at, closing_at + 1))
+    if len(positions) % 2:
+        spans.append((positions[-1], len(text)))
+    single_quote_opening: int | None = None
+    for index, character in enumerate(text):
+        if character != "'":
+            continue
+        if single_quote_opening is None:
+            if _is_single_quote_opening(text, index):
+                single_quote_opening = index
+        elif _is_single_quote_delimiter(text, index):
+            spans.append((single_quote_opening, index + 1))
+            single_quote_opening = None
+    if single_quote_opening is not None:
+        spans.append((single_quote_opening, len(text)))
+    return tuple(_merge_spans(spans))
+
+
+def _is_inside_quote(text: str, position: int) -> bool:
+    """Return whether a position belongs to a quoted statement, not narration."""
+
+    spans = _quote_spans(text)
+    index = bisect_right(spans, (position, len(text) + 1)) - 1
+    return index >= 0 and position < spans[index][1]
+
+
+def _closed_quote_spans(text: str, start: int, end: int) -> list[tuple[int, int]]:
+    spans = _quote_spans(text)
+    index = bisect_right(spans, (start, len(text) + 1)) - 1
+    if index < 0 or spans[index][1] <= start:
+        index += 1
+    relevant: list[tuple[int, int]] = []
+    while index < len(spans) and spans[index][0] < end:
+        span_start, span_end = spans[index]
+        relevant.append((max(start, span_start), min(end, span_end)))
+        index += 1
+    return relevant
 
 
 def _unquoted_prefix(text: str, start: int, end: int) -> str:
@@ -301,36 +335,35 @@ def has_character_attribute_allocation(
     return False
 
 
-def character_attribute_allocation_actions(
+def real_character_attribute_allocation_point_values(
     body: str, *, protagonist_aliases: Iterable[str] | None = None
-) -> list[tuple[str, int]]:
-    """List bounded, visible protagonist allocation actions in final prose order."""
+) -> list[int]:
+    """List point values from bounded, visible protagonist allocation actions."""
 
-    pattern = (
-        rf"(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
-        rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}\s*{_ATTRIBUTE_NAME_PATTERN}(?:上|里)?(?=[，,。！？\n]|$)"
-    )
-    actions: list[tuple[str, int]] = []
-    for match in re.finditer(pattern, body):
+    values: list[int] = []
+    for match in _action_matches(body):
         if not _has_character_action(body, match.start(), protagonist_aliases):
             continue
         points = parse_count(match.group("count"))
-        attribute = match.group("attribute")
-        if points is not None and attribute:
-            actions.append((attribute, points))
-    return actions
+        if points is not None:
+            values.append(points)
+    return values
 
 
 def character_attribute_allocation_points(
     body: str, attribute: str, *, protagonist_aliases: Iterable[str] | None = None
 ) -> int | None:
-    values = [
-        points
-        for action_attribute, points in character_attribute_allocation_actions(
-            body, protagonist_aliases=protagonist_aliases
-        )
-        if action_attribute == attribute
-    ]
+    pattern = (
+        rf"(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
+        rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}\s*{re.escape(attribute)}(?:上|里)?"
+    )
+    values: list[int] = []
+    for match in re.finditer(pattern, body):
+        if not _has_character_action(body, match.start(), protagonist_aliases):
+            continue
+        points = parse_count(match.group("count"))
+        if points is not None:
+            values.append(points)
     return values[-1] if values else None
 
 
@@ -432,12 +465,14 @@ def _carry_reason_matches(context: str, expected_reason: str) -> bool:
     return True if not terms else any(term in normalized_context for term in terms)
 
 
-def has_character_attribute_carry_choice_and_reason(
+def character_attribute_carry_choice_evidence(
     body: str,
     expected_reason: str = "",
     *,
     protagonist_aliases: Iterable[str] | None = None,
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, int | None]:
+    """Return one real carry choice, its reason match, and its local point result."""
+
     choice_pattern = r"暂时不加|先不加|留着|保留|攒着|不分配"
     for choice in re.finditer(choice_pattern, body):
         start, end = sentence_bounds(body, choice.start())
@@ -455,5 +490,29 @@ def has_character_attribute_carry_choice_and_reason(
         next_sentence = body[next_start:next_end].lstrip()
         if re.match(r"(?:因为|为了|留给|等(?:到)?|以便|好在)", next_sentence):
             context = f"{context} {next_sentence}"
-        return True, _carry_reason_matches(context, expected_reason)
-    return False, False
+        local_ranges = [(start, end), (next_start, next_end)]
+        local_points = [
+            (position, points)
+            for position, points in _attribute_point_results(body)
+            if any(range_start <= position < range_end for range_start, range_end in local_ranges)
+            and not _is_inside_quote(body, position)
+            and not _is_conditional_sentence(body, position)
+        ]
+        return (
+            True,
+            _carry_reason_matches(context, expected_reason),
+            local_points[-1][1] if local_points else None,
+        )
+    return False, False, None
+
+
+def has_character_attribute_carry_choice_and_reason(
+    body: str,
+    expected_reason: str = "",
+    *,
+    protagonist_aliases: Iterable[str] | None = None,
+) -> tuple[bool, bool]:
+    has_choice, has_reason, _ = character_attribute_carry_choice_evidence(
+        body, expected_reason, protagonist_aliases=protagonist_aliases
+    )
+    return has_choice, has_reason

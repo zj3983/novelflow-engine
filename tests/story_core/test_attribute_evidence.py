@@ -3,11 +3,12 @@ import time
 import pytest
 
 from packages.story_core.attribute_evidence import (
-    character_attribute_allocation_actions,
+    character_attribute_carry_choice_evidence,
     has_character_attribute_carry_choice_and_reason,
     has_character_attribute_allocation,
     has_positive_attribute_allocation_confirmation,
     parse_count,
+    real_character_attribute_allocation_point_values,
 )
 
 
@@ -104,6 +105,9 @@ def test_attribute_allocation_rejects_conditional_clause_or_conditional_continua
     [
         "若是拿到五点，夜烬把五点加到智力上。",
         "若要拿到五点，夜烬把五点加到智力上。",
+        "若有五点，夜烬把五点加到智力上。",
+        "若他拿到五点，夜烬把五点加到智力上。",
+        "若玩家拿到五点，夜烬把五点加到智力上。",
     ],
 )
 def test_attribute_allocation_rejects_explicit_ruo_conditions(body: str):
@@ -130,19 +134,19 @@ def test_attribute_allocation_rejects_english_single_quoted_and_unclosed_actions
 
 
 def test_attribute_allocation_does_not_treat_apostrophes_as_quotes():
-    body = "玩家's记录写完后，夜烬把五点加到智力上。"
+    body = "Players' choice并不重要，I don't care，夜烬把五点加到智力上。"
 
     assert has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
 
 
-def test_attribute_allocation_lists_all_real_actions_without_hardcoded_attribute_names():
+def test_attribute_allocation_lists_real_action_point_values_without_parsing_attribute_names():
     body = "夜烬把五点加到幸运上。接着他把一点加到敏捷上。"
 
-    assert character_attribute_allocation_actions(body, protagonist_aliases={"夜烬"}) == [("幸运", 5), ("敏捷", 1)]
+    assert real_character_attribute_allocation_point_values(body, protagonist_aliases={"夜烬"}) == [5, 1]
 
 
 def test_attribute_allocation_quote_scan_handles_long_text_promptly():
-    body = ("'如果拿到五点，夜烬把五点加到智力上。'" * 600) + "夜烬把五点加到智力上。"
+    body = ("'如果拿到五点，夜烬把五点加到智力上。'\n" * 600) + "夜烬把五点加到智力上。"
     started = time.perf_counter()
 
     assert has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
@@ -168,6 +172,14 @@ def test_attribute_carry_accepts_real_protagonist_choice_and_reason():
     assert has_character_attribute_carry_choice_and_reason(
         body, "留给转职", protagonist_aliases={"夜烬"}
     ) == (True, True)
+
+
+def test_attribute_carry_binds_remaining_to_the_real_protagonist_choice():
+    body = "夜烬看着可用属性点还剩五点，决定留着，因为等转职以后再分配。短发玩家说：‘我还剩四点。’"
+
+    assert character_attribute_carry_choice_evidence(
+        body, "留给转职", protagonist_aliases={"夜烬"}
+    ) == (True, True, 5)
 
 
 def test_attribute_allocation_default_rejects_explicit_bystander_subject():

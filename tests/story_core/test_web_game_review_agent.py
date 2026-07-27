@@ -1038,6 +1038,21 @@ def test_web_game_review_uses_custom_attribute_keys_from_allocation_decision():
     assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
 
 
+def test_web_game_review_accepts_ascii_attribute_key_with_exact_allocation():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="夜烬把五点加到LUK上。随后他点下确认，可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "allocate", "allocations": {"LUK": 5}, "remaining": 0},
+        },
+        world_facts=[],
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
 def test_web_game_review_rejects_extra_real_custom_attribute_allocation():
     review = review_web_game_chapter(
         chapter_number=4,
@@ -1051,6 +1066,21 @@ def test_web_game_review_rejects_extra_real_custom_attribute_allocation():
     )
 
     assert any(issue.startswith("attribute_allocation_mismatch:") for issue in review["issues"]), review
+
+
+def test_web_game_review_binds_carry_remaining_to_the_protagonist_choice():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="夜烬看着可用属性点还剩5点，决定留着，因为等转职以后再分配。短发玩家说：‘我还剩4点。’",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
 
 
 def test_web_game_review_reports_mismatch_when_body_allocates_to_different_attribute():
