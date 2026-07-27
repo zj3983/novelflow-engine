@@ -4567,13 +4567,20 @@ class FileProjectStore:
     def summary(self) -> dict[str, Any]:
         project = self.project()
         state = self.state()
-        chapters = [
-            {
-                "chapter_number": int(self.chapter(number).get("chapter_number") or number),
-                "chapter_title": str(self.chapter(number).get("chapter_title") or f"第{number}章"),
-            }
-            for number in self.chapter_numbers()
-        ]
+        chapters = []
+        for number in self.chapter_numbers():
+            chapter = self._read_json(
+                self.story_system_dir / "chapters" / f"{number:04d}.json",
+                {},
+            )
+            if not isinstance(chapter, dict):
+                chapter = {}
+            chapters.append(
+                {
+                    "chapter_number": int(chapter.get("chapter_number") or number),
+                    "chapter_title": str(chapter.get("chapter_title") or f"第{number}章"),
+                }
+            )
         return {
             "schema_version": "file-project-summary/v1",
             "root": str(self.root),

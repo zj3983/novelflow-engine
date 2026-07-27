@@ -213,6 +213,33 @@ def _make_minimal_file_project(root, *, state=None, project=None):
     return FileProjectStore(root)
 
 
+def test_summary_reads_chapter_metadata_without_hydrating_full_chapters(tmp_path, monkeypatch):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    chapters_dir = store.story_system_dir / "chapters"
+    for number in range(1, 4):
+        (chapters_dir / f"{number:04d}.json").write_text(
+            json.dumps(
+                {
+                    "chapter_number": number,
+                    "chapter_title": f"Chapter {number}",
+                    "body": "body",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def fail_if_hydrated(_chapter_number=None):
+        raise AssertionError("summary must not hydrate full chapter payloads")
+
+    monkeypatch.setattr(store, "chapter", fail_if_hydrated)
+
+    summary = store.summary()
+
+    assert summary["current_chapter"] == 3
+    assert summary["chapter_count"] == 3
+    assert summary["chapters"][-1] == {"chapter_number": 3, "chapter_title": "Chapter 3"}
+
+
 def _file_snapshot(root) -> dict:
     return {
         path.relative_to(root): path.read_bytes()

@@ -3062,12 +3062,13 @@ export async function uploadSkillPackZip(file: File): Promise<SkillPackSummary> 
 
 export async function fetchStory(storyId: string): Promise<StoryResponse> {
   try {
-    const path = isFileProjectId(storyId)
+    const fileStory = isFileProjectId(storyId);
+    const path = fileStory
       ? fileStoryPath(storyId)
       : `${apiBase()}/stories/${encodeURIComponent(storyId)}`;
     const response = (await tryFetchJson(path, {
       method: "GET",
-    })) as StoryResponse;
+    }, fileStory ? 120000 : 30000)) as StoryResponse;
     return persistStoryIntoMockStore(response);
   } catch {
     return mockFetchStory(storyId);
@@ -3317,12 +3318,13 @@ export async function listProjects(): Promise<ProjectSummary[]> {
 
 export async function fetchProject(projectId: string): Promise<ProjectResponse> {
   try {
-    const path = isFileProjectId(projectId)
+    const fileProject = isFileProjectId(projectId);
+    const path = fileProject
       ? fileProjectPath(projectId)
       : `${apiBase()}/projects/${encodeURIComponent(projectId)}`;
     const response = (await tryFetchJson(path, {
       method: "GET",
-    })) as ProjectResponse;
+    }, fileProject ? 90000 : 30000)) as ProjectResponse;
     return persistProjectIntoMockStore(response);
   } catch {
     return mockFetchProject(projectId);
