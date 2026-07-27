@@ -790,6 +790,54 @@ def test_rejects_noncanonical_attribute_scene_without_writing(
     } == before
 
 
+@pytest.mark.parametrize("target", ["markdown", "workbench"])
+@pytest.mark.parametrize("variant", ["before_level", "separated", "duplicate_level"])
+def test_rejects_attribute_scene_not_tightly_bound_to_unique_level_up(
+    project_dir: Path, target: str, variant: str
+) -> None:
+    if target == "markdown":
+        path = project_dir / "chapters" / "0001.md"
+        raw = path.read_bytes()
+        body = raw.decode("utf-8-sig")
+        chapter = None
+    else:
+        path = project_dir / ".story-system" / "chapters" / "0001.json"
+        raw = path.read_bytes()
+        chapter = _load(path)
+        assert isinstance(chapter, dict)
+        body = chapter["body"]
+        assert isinstance(body, str)
+    marker = migration._FIRST_CHAPTER_LEVEL_UP
+    scene = migration._FIRST_CHAPTER_ATTRIBUTE_SCENE
+    if variant == "before_level":
+        body = body.replace(marker, scene + marker, 1)
+    elif variant == "separated":
+        body = body.replace(marker, marker + "\n\n夜烬先收起法杖。" + scene, 1)
+    else:
+        body = body.replace(marker, marker + scene + "\n\n" + marker, 1)
+    if chapter is None:
+        path.write_bytes(migration._encode_text(body, raw))
+    else:
+        chapter["body"] = body
+        path.write_bytes(migration._encode_json(chapter, raw))
+    before = {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    }
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "invalid first chapter attribute scene" in result["changes"][0]
+    assert {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    } == before
+
+
 def test_rejects_missing_workbench_chapters_directory_without_writing(
     project_dir: Path,
 ) -> None:
@@ -805,6 +853,46 @@ def test_rejects_missing_workbench_chapters_directory_without_writing(
     assert result["valid"] is False
     assert result["changed"] is False
     assert "workbench chapters directory is required" in result["changes"][0]
+    assert {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    } == before
+
+
+@pytest.mark.parametrize("broken_path", ["story_system", "chapters"])
+def test_rejects_broken_workbench_symlink_without_treating_it_as_legacy(
+    project_dir: Path, monkeypatch: pytest.MonkeyPatch, broken_path: str
+) -> None:
+    story_system = project_dir / ".story-system"
+    chapters = story_system / "chapters"
+    target = story_system if broken_path == "story_system" else chapters
+    if broken_path == "story_system":
+        shutil.rmtree(story_system)
+    else:
+        shutil.rmtree(chapters)
+    real_lexists = migration.os.path.lexists
+    real_is_symlink = Path.is_symlink
+
+    def fake_lexists(path: str | Path) -> bool:
+        return Path(path) == target or real_lexists(path)
+
+    def fake_is_symlink(self: Path) -> bool:
+        return self == target or real_is_symlink(self)
+
+    monkeypatch.setattr(migration.os.path, "lexists", fake_lexists)
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+    before = {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    }
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "broken symbolic link" in result["changes"][0]
     assert {
         candidate.relative_to(project_dir): candidate.read_bytes()
         for candidate in project_dir.rglob("*")

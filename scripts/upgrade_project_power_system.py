@@ -439,12 +439,18 @@ def _find_first_chapter(root: Path) -> tuple[Path, bytes]:
 
 def _find_workbench_first_chapter(root: Path) -> tuple[Path, bytes] | None:
     story_system = root / ".story-system"
-    _require_contained_path(root, story_system, "workbench_directory")
-    if not story_system.exists():
+    if not os.path.lexists(story_system):
         return None
+    if story_system.is_symlink() and not story_system.exists():
+        raise ValueError("workbench path is a broken symbolic link")
+    _require_contained_path(root, story_system, "workbench_directory")
     if not story_system.is_dir():
         raise ValueError("workbench path must be a directory")
     chapters = root / ".story-system" / "chapters"
+    if not os.path.lexists(chapters):
+        raise FileNotFoundError("workbench chapters directory is required")
+    if chapters.is_symlink() and not chapters.exists():
+        raise ValueError("workbench chapters path is a broken symbolic link")
     _require_contained_path(root, chapters, "workbench_chapters_directory")
     if not chapters.is_dir():
         raise FileNotFoundError("workbench chapters directory is required")
@@ -476,13 +482,22 @@ def _find_workbench_first_chapter(root: Path) -> tuple[Path, bytes] | None:
 
 def _migrate_first_chapter_body(text: str) -> tuple[str, bool]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    level_up_count = normalized.count(_FIRST_CHAPTER_LEVEL_UP)
     canonical_scene_count = normalized.count(_FIRST_CHAPTER_ATTRIBUTE_SCENE)
+    canonical_fragment_count = normalized.count(
+        _FIRST_CHAPTER_LEVEL_UP + _FIRST_CHAPTER_ATTRIBUTE_SCENE
+    )
     marker_counts = [normalized.count(marker) for marker in _FIRST_CHAPTER_ATTRIBUTE_MARKERS]
-    if canonical_scene_count == 1 and all(count == 1 for count in marker_counts):
+    if (
+        level_up_count == 1
+        and canonical_scene_count == 1
+        and canonical_fragment_count == 1
+        and all(count == 1 for count in marker_counts)
+    ):
         return text, False
-    if canonical_scene_count or any(marker_counts):
+    if level_up_count != 1 or canonical_scene_count or any(marker_counts):
         raise ValueError(
-            "invalid first chapter attribute scene: expected exactly one canonical scene"
+            "invalid first chapter attribute scene: expected one level-up marker followed by one canonical scene"
         )
     marker_index = text.find(_FIRST_CHAPTER_LEVEL_UP)
     if marker_index < 0:
