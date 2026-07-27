@@ -87,6 +87,7 @@ def test_attribute_allocation_accepts_actual_turn_after_same_sentence_condition(
         "如果夜烬把五点加到智力上，确认后智力就会从五变成十。",
         "如果拿到五点，夜烬就把五点加到智力上。",
         "如果拿到五点，夜烬会把五点加到智力上。",
+        "如果拿到五点，夜烬把五点加到智力上。",
     ],
 )
 def test_attribute_allocation_rejects_conditional_clause_or_conditional_continuation(body: str):

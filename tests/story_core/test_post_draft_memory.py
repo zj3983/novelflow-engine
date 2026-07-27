@@ -650,6 +650,28 @@ def test_attribute_allocation_memory_accepts_actual_turn_after_same_sentence_con
     assert result["ledger_updates"] == payload["ledger_updates"]
 
 
+def test_attribute_allocation_memory_rejects_conditional_action_without_explicit_turn():
+    body = "如果拿到五点，夜烬把五点加到智力上。确认后，智力会从五变成十，可用属性点归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {"allocations": {"智力": 5}, "remaining": 0}
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点归零",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
 def test_attribute_allocation_memory_prefers_directive_over_final_attribute_mirrors():
     body = "夜烬打开面板，把五点加到智力上。确认后，智力从五变成十，可用属性点归零。夜烬站在灰狼坡。"
     result = normalize_post_draft_memory(

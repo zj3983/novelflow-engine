@@ -46,6 +46,7 @@ _ACTION_CONTINUATIONS = {"随后", "然后", "接着", "再", "便", "就", "先
 _ACTION_MODIFIERS = ("直接", "果断", "又", "重新", "干脆", "索性", "还是")
 _GENERIC_REASON_TERMS = {"先", "为了", "因为", "属性点", "属性", "点", "保留", "留着", "分配", "决定", "原因", "目的", "以后", "再用", "留给"}
 _CONDITIONAL_MARKERS = ("如果", "假如", "要是", "若", "倘若")
+_ACTUAL_TURN_MARKERS = ("还是", "却", "仍然", "最终", "实际", "最后", "直接决定")
 _ASYMMETRIC_QUOTES = (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"))
 
 
@@ -98,7 +99,7 @@ def _is_conditional_sentence(text: str, position: int) -> bool:
         return True
     if len(clauses) < 2 or not any(marker in clauses[-2] for marker in _CONDITIONAL_MARKERS):
         return False
-    return bool(re.search(r"(?:就|会|才|便)\s*(?:把|将)\s*$", current_clause))
+    return not any(marker in current_clause for marker in _ACTUAL_TURN_MARKERS)
 
 
 def _is_negated_before(text: str, position: int, *, carry: bool = False) -> bool:
