@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 
@@ -64,6 +63,7 @@ NOVEL_TYPE_ID_ALIASES = {
 
 def canonical_novel_type_id(value: Any) -> str:
     type_id = str(value or "").strip().casefold()
-    if re.fullmatch(r"[a-z0-9_\-\s]+", type_id):
-        type_id = re.sub(r"[_\-\s]+", "_", type_id)
+    legacy_game_id = "_".join(type_id.replace("_", " ").replace("-", " ").split())
+    if legacy_game_id in {"webgame", "web_game", "game_web", "game_webnovel", "game_fantasy"}:
+        return "game_webnovel"
     return NOVEL_TYPE_ID_ALIASES.get(type_id, type_id)

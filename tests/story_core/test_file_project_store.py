@@ -5235,6 +5235,59 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
     assert (root / "chapters" / "0001-背包快满了.md").exists()
 
 
+def test_regenerate_uses_complete_runtime_story_payload_for_project_genre(monkeypatch, tmp_path):
+    root = tmp_path / "regenerate-effective-story"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-regenerate-effective",
+            "title": "Regenerate Effective",
+            "active_story_id": "s-regenerate-effective",
+            "genre": "game_webnovel",
+            "author_constraints": ["PROJECT_RULE"],
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+        state={
+            "story_id": "s-regenerate-effective",
+            "outline": "夜烬准备进入新手村。",
+            "genre": "",
+            "genre_plugin_ids": [],
+            "style": "白描",
+            "current_chapter": 1,
+            "author_constraints": ["STATE_RULE"],
+            "world_facts": [],
+            "characters": [{"name": "苏叶", "role": "protagonist", "game_id": "夜烬"}],
+        },
+    )
+    captured = {}
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            captured["story"] = story
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="重新开服",
+                chapter_summary={},
+                quality_report={"ok": True},
+            )
+
+    monkeypatch.setattr(
+        store,
+        "persist_bundle",
+        lambda bundle, **_kwargs: {
+            "chapter_number": bundle.chapter_number,
+            "chapter_title": bundle.chapter_title,
+        },
+    )
+
+    store.regenerate_chapter(1, engine=FakeEngine())
+
+    story = captured["story"]
+    assert story.genre == "game_webnovel"
+    assert story.genre_plugin_ids == ["game_webnovel"]
+    assert story.author_constraints == ["PROJECT_RULE"]
+
+
 def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(

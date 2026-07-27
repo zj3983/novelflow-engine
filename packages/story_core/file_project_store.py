@@ -4410,31 +4410,12 @@ class FileProjectStore:
         base_state["progression_ledger"] = ledger
 
         project = self.project()
-        story_payload = dict(base_state)
         direction_payload = self._story_state_payload_for_direction(
             base_state,
             project,
             chapter_number,
         )
-        story_payload["author_constraints"] = direction_payload["author_constraints"]
-        if chapter_number == 1 and first_chapter_market_exchange_authorized(
-            world_facts=direction_payload["author_constraints"],
-        ):
-            stale_trade_lesson_terms = (
-                "删除第一章实际交易",
-                "第一章不得交易",
-                "第一章不要交易",
-                "第一章提前展开交易",
-            )
-            story_payload["writing_lessons"] = [
-                lesson
-                for lesson in list(story_payload.get("writing_lessons") or [])
-                if not any(term in str(lesson) for term in stale_trade_lesson_terms)
-            ]
-        story_payload["outline_context"] = direction_payload["outline_context"]
-        story_payload["monster_profiles"] = direction_payload["monster_profiles"]
-        story_payload["world_context"] = direction_payload["world_context"]
-        story = StoryState.model_validate(story_payload)
+        story = StoryState.model_validate(direction_payload)
         generator = engine or StoryEngine()
         with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
             self.prompt_call_log()

@@ -839,6 +839,10 @@ def test_canonical_novel_type_id_preserves_builtin_ids():
     assert canonical_novel_type_id("xuanhuan") == "xuanhuan"
 
 
+def test_canonical_novel_type_id_preserves_custom_ascii_ids():
+    assert canonical_novel_type_id("sports-fiction") == "sports-fiction"
+
+
 def test_explicit_non_game_type_recognizes_supported_metadata_shapes():
     samples = (
         "  xuanhuan  ",
