@@ -267,6 +267,126 @@ def test_choose_best_revision_rejects_failed_candidate_without_fewer_issues():
     assert result["report"]["reason"] == "failed_candidate_did_not_reduce_issues"
 
 
+def test_choose_best_revision_prefers_in_range_candidate_that_repairs_structural_length_error():
+    original_issues = [f"原问题{i}" for i in range(6)]
+    candidate_issues = [f"候选软问题{i}" for i in range(9)]
+    original = _quality(False, {"genre_rules": 6}, original_issues)
+    original["issues"] = ["body_too_short", *original_issues]
+    original["has_hard_errors"] = True
+    candidate = _quality(False, {"genre_rules": 6}, candidate_issues)
+    candidate["has_hard_errors"] = False
+
+    result = choose_best_revision(
+        original_body="原" * 46,
+        original_quality=original,
+        candidate_body="改" * 4309,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is True
+    assert result["selected"] == "candidate"
+    assert result["report"]["reason"] == "structural_length_error_resolved"
+    assert result["report"]["original_issue_count"] == 6
+    assert result["report"]["candidate_issue_count"] == 9
+
+
+def test_choose_best_revision_structural_length_preference_handles_overlong_original():
+    original = _quality(False, {"genre_rules": 6}, ["原问题"])
+    original["issues"] = ["body_too_long", "原问题"]
+    original["has_hard_errors"] = True
+    candidate = _quality(False, {"genre_rules": 6}, ["软问题一", "软问题二", "软问题三", "软问题四"])
+    candidate["has_hard_errors"] = False
+
+    result = choose_best_revision(
+        original_body="原" * 6000,
+        original_quality=original,
+        candidate_body="改" * 5200,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is True
+    assert result["report"]["reason"] == "structural_length_error_resolved"
+
+
+def test_choose_best_revision_rejects_structural_repair_candidate_with_hard_errors():
+    original = _quality(False, {"genre_rules": 6}, ["原问题"])
+    original["issues"] = ["body_too_short", "原问题"]
+    original["has_hard_errors"] = True
+    candidate = _quality(False, {"genre_rules": 8}, ["设定冲突"])
+    candidate["has_hard_errors"] = True
+
+    result = choose_best_revision(
+        original_body="原" * 46,
+        original_quality=original,
+        candidate_body="改" * 4309,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["report"]["reason"] != "structural_length_error_resolved"
+
+
+def test_choose_best_revision_rejects_structural_repair_candidate_outside_preferred_range():
+    original = _quality(False, {"genre_rules": 6}, ["原问题"])
+    original["issues"] = ["body_too_short", "原问题"]
+    original["has_hard_errors"] = True
+    candidate = _quality(False, {"genre_rules": 8}, [])
+    candidate["has_hard_errors"] = False
+
+    below = choose_best_revision(
+        original_body="原" * 46,
+        original_quality=original,
+        candidate_body="改" * 4199,
+        candidate_quality=candidate,
+    )
+    above = choose_best_revision(
+        original_body="原" * 5600,
+        original_quality=original,
+        candidate_body="改" * 5501,
+        candidate_quality=candidate,
+    )
+
+    assert below["accepted"] is False
+    assert above["accepted"] is False
+
+
+def test_choose_best_revision_rejects_structural_repair_when_soft_issues_increase_by_four():
+    original_issues = [f"原问题{i}" for i in range(6)]
+    candidate_issues = [f"候选软问题{i}" for i in range(10)]
+    original = _quality(False, {"genre_rules": 6}, original_issues)
+    original["issues"] = ["body_too_short", *original_issues]
+    original["has_hard_errors"] = True
+    candidate = _quality(False, {"genre_rules": 8}, candidate_issues)
+    candidate["has_hard_errors"] = False
+
+    result = choose_best_revision(
+        original_body="原" * 46,
+        original_quality=original,
+        candidate_body="改" * 4309,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["report"]["reason"] == "failed_candidate_did_not_reduce_issues"
+
+
+def test_choose_best_revision_does_not_apply_structural_preference_to_in_range_original():
+    original = _quality(False, {"genre_rules": 8}, ["原问题"])
+    original["has_hard_errors"] = False
+    candidate = _quality(False, {"genre_rules": 2}, ["软问题一", "软问题二", "软问题三", "软问题四"])
+    candidate["has_hard_errors"] = False
+
+    result = choose_best_revision(
+        original_body="原" * 5000,
+        original_quality=original,
+        candidate_body="改" * 5000,
+        candidate_quality=candidate,
+    )
+
+    assert result["accepted"] is False
+    assert result["report"]["reason"] != "structural_length_error_resolved"
+
+
 def test_choose_best_revision_rejects_severe_quality_regression_even_when_hard_errors_resolve():
     original = _quality(False, {"genre_rules": 10}, ["设定冲突"])
     original["has_hard_errors"] = True

@@ -86,6 +86,21 @@ def choose_best_revision(
     original_has_hard_errors = bool(_as_dict(original_quality).get("has_hard_errors"))
     candidate_has_hard_errors = bool(_as_dict(candidate_quality).get("has_hard_errors"))
     hard_errors_resolved = original_has_hard_errors and not candidate_has_hard_errors
+    original_structural_issues = {
+        str(issue).strip() for issue in _as_list(_as_dict(original_quality).get("issues"))
+    }
+    original_has_structural_length_error = (
+        original_has_hard_errors
+        and bool(original_structural_issues.intersection({"body_too_short", "body_too_long"}))
+        and not original_in_preferred_range
+    )
+    candidate_in_preferred_range = 4200 <= candidate_chars <= 5500
+    structural_length_preference_allowed = (
+        original_has_structural_length_error
+        and candidate_in_preferred_range
+        and not candidate_has_hard_errors
+        and candidate_issue_count <= original_issue_count + 3
+    )
     hard_error_preference_allowed = (
         hard_errors_resolved
         and candidate_issue_count <= original_issue_count + 2
@@ -93,6 +108,18 @@ def choose_best_revision(
     )
     if candidate_chars > 5500:
         forced_reject_reason = "candidate_above_chapter_maximum"
+        candidate_score -= 120.0
+    elif original_has_structural_length_error and candidate_has_hard_errors:
+        forced_reject_reason = "candidate_hard_errors_remaining"
+        candidate_score -= 120.0
+    elif original_has_structural_length_error and not candidate_in_preferred_range:
+        forced_reject_reason = "failed_candidate_left_preferred_length"
+        candidate_score -= 120.0
+    elif (
+        original_has_structural_length_error
+        and candidate_issue_count > original_issue_count + 3
+    ):
+        forced_reject_reason = "failed_candidate_did_not_reduce_issues"
         candidate_score -= 120.0
     elif original_chars >= 1000 and candidate_chars < original_chars * 0.65:
         forced_reject_reason = "candidate_severely_shorter"
@@ -106,13 +133,26 @@ def choose_best_revision(
     elif original_in_preferred_range and not 4200 <= candidate_chars <= 5500:
         forced_reject_reason = "failed_candidate_left_preferred_length"
         candidate_score -= 120.0
-    elif not original_passed and not candidate_passed and candidate_issue_count >= original_issue_count and not hard_error_preference_allowed:
+    elif (
+        not original_passed
+        and not candidate_passed
+        and candidate_issue_count >= original_issue_count
+        and not hard_error_preference_allowed
+        and not structural_length_preference_allowed
+    ):
         forced_reject_reason = "failed_candidate_did_not_reduce_issues"
         candidate_score -= 120.0
     accepted = not forced_reject_reason and (
-        hard_error_preference_allowed or candidate_score >= original_score + min_delta
+        structural_length_preference_allowed
+        or hard_error_preference_allowed
+        or candidate_score >= original_score + min_delta
     )
-    accepted_reason = "hard_errors_resolved" if hard_error_preference_allowed else "candidate_not_worse"
+    if structural_length_preference_allowed:
+        accepted_reason = "structural_length_error_resolved"
+    elif hard_error_preference_allowed:
+        accepted_reason = "hard_errors_resolved"
+    else:
+        accepted_reason = "candidate_not_worse"
     report = {
         "reviewer": "revision_safety/v1",
         "accepted": accepted,

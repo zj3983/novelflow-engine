@@ -6295,9 +6295,10 @@ class StoryOrchestrator:
         manual_instructions = [str(instruction).strip() for instruction in (instructions or []) if str(instruction).strip()]
         revision_review["manual_instructions"] = manual_instructions
         original_quality_seed = bundle.model_dump()
+        original_quality_seed["manual_instructions"] = manual_instructions
         original_quality = _merge_writing_review_quality(validate_bundle(original_quality_seed), revision_review)
         original_quality["has_hard_errors"] = bool(
-            build_simplified_review({"writing_review": revision_review}).get("has_hard_errors")
+            build_simplified_review(original_quality).get("has_hard_errors")
         )
         plan = {
             "character_moves": bundle.character_moves,
@@ -6312,6 +6313,7 @@ class StoryOrchestrator:
             patched_body = _sanitize_generated_body(patched_body)
             quality_seed = bundle.model_dump()
             quality_seed["body"] = patched_body
+            quality_seed["manual_instructions"] = manual_instructions
             patched_review = _review_chapter_body(
                 bundle.chapter_number,
                 patched_body,
@@ -6325,7 +6327,7 @@ class StoryOrchestrator:
             patched_review["expression_patch_report"] = patch_report
             patched_quality = _merge_writing_review_quality(validate_bundle(quality_seed), patched_review)
             patched_quality["has_hard_errors"] = bool(
-                build_simplified_review({"writing_review": patched_review}).get("has_hard_errors")
+                build_simplified_review(patched_quality).get("has_hard_errors")
             )
             patch_safety = choose_best_revision(
                 original_body=bundle.body,
@@ -6366,6 +6368,7 @@ class StoryOrchestrator:
         revised_body = _sanitize_generated_body(revised_body)
         quality_seed = bundle.model_dump()
         quality_seed["body"] = revised_body
+        quality_seed["manual_instructions"] = manual_instructions
         writing_review = _review_chapter_body(
             bundle.chapter_number,
             revised_body,
@@ -6378,7 +6381,7 @@ class StoryOrchestrator:
         )
         quality_report = _merge_writing_review_quality(validate_bundle(quality_seed), writing_review)
         quality_report["has_hard_errors"] = bool(
-            build_simplified_review({"writing_review": writing_review}).get("has_hard_errors")
+            build_simplified_review(quality_report).get("has_hard_errors")
         )
         safety = choose_best_revision(
             original_body=bundle.body,
