@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import threading
 from pathlib import Path
 from typing import NoReturn
 
@@ -21,7 +20,6 @@ from packages.story_core.continuation_import import (
     scan_continuation_source,
 )
 from packages.story_core.continuation_sessions import (
-    ContinuationAnalysisLease,
     ContinuationImportSession,
     ContinuationSessionStore,
     secure_read_bytes,
@@ -86,10 +84,6 @@ class AnalysisJobResponse(BaseModel):
 
     session_id: str
     status: str
-
-
-_ACTIVE_ANALYSIS_TASKS: set[str] = set()
-_ACTIVE_ANALYSIS_TASKS_LOCK = threading.Lock()
 
 
 def _session_store() -> ContinuationSessionStore:
@@ -321,20 +315,16 @@ def _mark_analysis_failed(store: ContinuationSessionStore, session_id: str) -> N
         return
 
 
-def _analysis_task_key(store: ContinuationSessionStore, session_id: str) -> str:
-    return f"{os.path.normcase(str(store.root))}:{session_id}"
-
-
-def _run_analysis_job(
-    session_id: str,
-    task_key: str | None = None,
-    lease: ContinuationAnalysisLease | None = None,
-) -> None:
+def _run_analysis_job(session_id: str) -> None:
     store: ContinuationSessionStore | None = None
-    key = task_key or session_id
+    lease = None
     try:
         store = _session_store()
-        key = task_key or _analysis_task_key(store, session_id)
+        lease = try_acquire_analysis_lease(store.root, session_id)
+        if lease is None:
+            return
+        if store.get(session_id).status == "ready":
+            return
         run_continuation_analysis(store, session_id, build_continuation_analyzer())
     except Exception:
         current = None
@@ -346,8 +336,6 @@ def _run_analysis_job(
         if current is not None and current.status == "analyzing":
             _mark_analysis_failed(store, session_id)
     finally:
-        with _ACTIVE_ANALYSIS_TASKS_LOCK:
-            _ACTIVE_ANALYSIS_TASKS.discard(key)
         if lease is not None:
             lease.release()
 
@@ -359,22 +347,12 @@ def _run_analysis_job(
 )
 def analyze(session_id: str, background_tasks: BackgroundTasks) -> AnalysisJobResponse:
     store = _session_store()
-    task_key = _analysis_task_key(store, session_id)
     try:
         session = store.get(session_id)
     except (OSError, ValueError) as exc:
         _raise_domain_error(exc)
     if session.status == "ready":
         return AnalysisJobResponse(session_id=session_id, status="ready")
-    try:
-        lease = try_acquire_analysis_lease(store.root, session_id)
-    except (OSError, ValueError) as exc:
-        _raise_domain_error(exc)
-    if lease is None:
-        return AnalysisJobResponse(session_id=session_id, status="analyzing")
-
-    with _ACTIVE_ANALYSIS_TASKS_LOCK:
-        _ACTIVE_ANALYSIS_TASKS.add(task_key)
     try:
         if session.status != "analyzing":
             def mark(current: ContinuationImportSession) -> None:
@@ -388,23 +366,12 @@ def analyze(session_id: str, background_tasks: BackgroundTasks) -> AnalysisJobRe
                     raise
                 current = store.get(session_id)
                 if current.status == "ready":
-                    with _ACTIVE_ANALYSIS_TASKS_LOCK:
-                        _ACTIVE_ANALYSIS_TASKS.discard(task_key)
-                    lease.release()
                     return AnalysisJobResponse(session_id=session_id, status="ready")
                 if current.status != "analyzing":
                     raise
-        background_tasks.add_task(_run_analysis_job, session_id, task_key, lease)
+        background_tasks.add_task(_run_analysis_job, session_id)
     except (OSError, ValueError) as exc:
-        with _ACTIVE_ANALYSIS_TASKS_LOCK:
-            _ACTIVE_ANALYSIS_TASKS.discard(task_key)
-        lease.release()
         _raise_domain_error(exc)
-    except BaseException:
-        with _ACTIVE_ANALYSIS_TASKS_LOCK:
-            _ACTIVE_ANALYSIS_TASKS.discard(task_key)
-        lease.release()
-        raise
     return AnalysisJobResponse(session_id=session_id, status="analyzing")
 
 

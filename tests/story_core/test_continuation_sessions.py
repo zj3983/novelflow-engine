@@ -724,12 +724,45 @@ def test_secure_open_rejects_session_directory_swapped_after_check(
     with pytest.raises(ValueError, match="^invalid_session_path$"):
         store.get(session.session_id)
     assert swapped is True
+
+
 def _try_analysis_lease_in_child(root: str, session_id: str, queue) -> None:
     from packages.story_core.continuation_sessions import try_acquire_analysis_lease
 
     lease = try_acquire_analysis_lease(Path(root), session_id)
     queue.put(lease is not None)
     if lease is not None:
+        lease.release()
+
+
+def _run_leased_provider_in_child(
+    root: str,
+    marker: str,
+    acquired,
+    release,
+    result,
+) -> None:
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    lease = try_acquire_analysis_lease(Path(root), "ci-provider")
+    result.put(lease is not None)
+    if lease is None:
+        return
+    Path(marker).write_text("provider-called\n", encoding="utf-8")
+    acquired.set()
+    release.wait(timeout=10)
+    lease.release()
+
+
+def _try_duplicate_provider_in_child(root: str, marker: str, acquired, result) -> None:
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    acquired.wait(timeout=10)
+    lease = try_acquire_analysis_lease(Path(root), "ci-provider")
+    result.put(lease is not None)
+    if lease is not None:
+        with Path(marker).open("a", encoding="utf-8") as handle:
+            handle.write("provider-called\n")
         lease.release()
 
 
@@ -757,6 +790,36 @@ def test_analysis_lease_is_nonblocking_across_processes(tmp_path: Path) -> None:
     reacquired = try_acquire_analysis_lease(root, "ci-cross-process")
     assert reacquired is not None
     reacquired.release()
+
+
+def test_analysis_lease_allows_only_one_cross_process_provider_call(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    marker = tmp_path / "provider-calls.txt"
+    context = multiprocessing.get_context("spawn")
+    acquired = context.Event()
+    release = context.Event()
+    result = context.Queue()
+    holder = context.Process(
+        target=_run_leased_provider_in_child,
+        args=(str(root), str(marker), acquired, release, result),
+    )
+    duplicate = context.Process(
+        target=_try_duplicate_provider_in_child,
+        args=(str(root), str(marker), acquired, result),
+    )
+    holder.start()
+    duplicate.start()
+    duplicate.join(timeout=10)
+    release.set()
+    holder.join(timeout=10)
+
+    assert holder.exitcode == 0
+    assert duplicate.exitcode == 0
+    assert sorted([result.get(timeout=2), result.get(timeout=2)]) == [False, True]
+    assert marker.read_text(encoding="utf-8").splitlines() == ["provider-called"]
 
 
 def test_analysis_lease_is_nonblocking_in_same_process(tmp_path: Path) -> None:

@@ -463,7 +463,7 @@ def test_persisted_analyzing_without_local_task_is_reenqueued_after_restart(
     assert analyzer.calls == 1
 
 
-def test_active_analysis_is_not_duplicated_and_registry_is_cleaned(
+def test_active_analysis_is_not_duplicated(
     client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from apps.api.routes import continuation_imports
@@ -497,10 +497,6 @@ def test_active_analysis_is_not_duplicated_and_registry_is_cleaned(
     assert first_response.status_code == 202
     assert second.status_code == 202
     assert analyzer.calls == 1
-    key = continuation_imports._analysis_task_key(
-        continuation_imports._session_store(), session["session_id"]
-    )
-    assert key not in continuation_imports._ACTIVE_ANALYSIS_TASKS
 
 
 def test_background_failure_preserves_session_and_safe_error(
@@ -524,30 +520,7 @@ def test_background_failure_preserves_session_and_safe_error(
     assert "token=abc" not in fetched.text
 
 
-def test_analysis_job_releases_claim_when_store_initialization_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from apps.api.routes import continuation_imports
-
-    class Lease:
-        released = False
-
-        def release(self) -> None:
-            self.released = True
-
-    lease = Lease()
-    monkeypatch.setattr(
-        continuation_imports,
-        "_session_store",
-        lambda: (_ for _ in ()).throw(OSError("temporarily unavailable")),
-    )
-
-    continuation_imports._run_analysis_job("ci-test", "key", lease)
-
-    assert lease.released
-
-
-def test_analyze_releases_lease_when_background_registration_fails(
+def test_analyze_does_not_hold_lease_when_background_registration_fails(
     client: TestClient, allowed_root: Path
 ) -> None:
     from apps.api.routes import continuation_imports
@@ -567,6 +540,83 @@ def test_analyze_releases_lease_when_background_registration_fails(
     lease = try_acquire_analysis_lease(store.root, session["session_id"])
     assert lease is not None
     lease.release()
+
+
+def test_dropped_background_callback_can_be_scheduled_again_and_complete(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    class DroppingBackgroundTasks:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def add_task(self, *args, **kwargs) -> None:
+            self.calls += 1
+
+    class RunningBackgroundTasks:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.calls += 1
+            function(*args, **kwargs)
+
+    analyzer = _TitleAnalyzer()
+    monkeypatch.setattr(
+        continuation_imports, "build_continuation_analyzer", lambda: analyzer
+    )
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    dropped = DroppingBackgroundTasks()
+    running = RunningBackgroundTasks()
+
+    first = continuation_imports.analyze(session["session_id"], dropped)
+    second = continuation_imports.analyze(session["session_id"], running)
+
+    assert first.status == "analyzing"
+    assert dropped.calls == 1
+    assert second.status == "analyzing"
+    assert running.calls == 1
+    assert analyzer.calls == 1
+    assert continuation_imports._session_store().get(session["session_id"]).status == "ready"
+
+
+def test_late_duplicate_background_callback_does_not_rerun_provider(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    class CapturingBackgroundTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    analyzer = _TitleAnalyzer()
+    monkeypatch.setattr(
+        continuation_imports, "build_continuation_analyzer", lambda: analyzer
+    )
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    queued = CapturingBackgroundTasks()
+
+    continuation_imports.analyze(session["session_id"], queued)
+    continuation_imports.analyze(session["session_id"], queued)
+    assert len(queued.tasks) == 2
+
+    for function, args, kwargs in queued.tasks:
+        function(*args, **kwargs)
+
+    assert analyzer.calls == 1
+    assert continuation_imports._session_store().get(session["session_id"]).status == "ready"
 
 
 def test_failed_job_does_not_overwrite_a_newer_ready_state(
