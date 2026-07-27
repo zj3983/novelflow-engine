@@ -110,6 +110,24 @@ def project_dir(tmp_path: Path) -> Path:
                 "level": "Lv.2",
                 "exp": "0/240",
                 "keep": {"inventory": ["裂纹狼心"]},
+                "attribute_point_awards": [
+                    {"level": 2, "points": 3, "chapter": 1, "legacy": True},
+                    {"level": 3, "points": 5, "chapter": 2},
+                ],
+                "attribute_allocations": [
+                    {
+                        "chapter": 1,
+                        "allocations": {"智力": 4},
+                        "remaining": 1,
+                        "legacy": True,
+                    },
+                    {
+                        "chapter": 2,
+                        "allocations": {"精神": 5},
+                        "remaining": 0,
+                        "reason": "后续保留",
+                    },
+                ],
             },
             "unrelated_ledger": {"preserve": True},
         },
@@ -151,12 +169,14 @@ def project_dir(tmp_path: Path) -> Path:
         "灰狼尸体上方亮起白光。【击杀Lv.1灰狼，获得经验100。】【等级提升至Lv.2。】\r\n\r\n"
         "【底层协议校验通过。】\r\n".encode("utf-8")
     )
-    (outlines / "第1卷-详细大纲.md").write_text(
-        "## 第9章 首次智力加点\n"
-        "- 爽点: 智力加点比速度加点在现阶段收益高2.3倍\n"
-        "- 本章变化: 技能点全投智力，MP+12，法术伤害+5%\n",
-        encoding="utf-8",
-        newline="",
+    (outlines / "第1卷-详细大纲.md").write_bytes(
+        (
+            "### 第 9 章：技能点精算，学徒的极限\r\n"
+            "- 爽点: 智力加点比速度加点在现阶段收益高2.3倍\r\n"
+            "- 本章变化: 技能点全投智力，MP+12，法术伤害+5%\r\n"
+            "### 第 10 章：下一段\r\n"
+            "- 爽点: 这一段必须保持原样。\r\n"
+        ).encode("utf-8")
     )
     return root
 
@@ -299,15 +319,22 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
     assert protagonist["attributes"] == {**BASE_ATTRIBUTES, "智力": 10}
     assert protagonist["unallocated_attribute_points"] == 0
     assert protagonist["attribute_point_awards"] == [
-        {"level": 2, "points": 5, "chapter": 1}
+        {"level": 3, "points": 5, "chapter": 2},
+        {"level": 2, "points": 5, "chapter": 1},
     ]
     assert protagonist["attribute_allocations"] == [
+        {
+            "chapter": 2,
+            "allocations": {"精神": 5},
+            "remaining": 0,
+            "reason": "后续保留",
+        },
         {
             "chapter": 1,
             "allocations": {"智力": 5},
             "remaining": 0,
             "reason": "强化基础火球术",
-        }
+        },
     ]
     assert protagonist["keep"] == original_state["progression_ledger"]["protagonist"]["keep"]
     assert migrated_state["unrelated_state"] == original_state["unrelated_state"]
@@ -350,6 +377,9 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
     assert "技能点全投智力" not in detailed_outline
     assert "智力加点比速度加点" not in detailed_outline
     assert "首次智力加点" not in detailed_outline
+    assert "### 第 10 章：下一段\n- 爽点: 这一段必须保持原样。\n" in detailed_outline
+    assert detail_path.read_bytes().count(b"\n") == detail_path.read_bytes().count(b"\r\n")
+    assert chapter_path.read_bytes().count(b"\n") == chapter_path.read_bytes().count(b"\r\n")
 
     backup = Path(result["backup_path"])
     assert (backup / "project.json").read_bytes() == original_project_bytes
@@ -361,9 +391,13 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
         "【底层协议校验通过。】\r\n".encode("utf-8")
     )
     assert (backup / "大纲" / "第1卷-详细大纲.md").read_bytes() == (
-        "## 第9章 首次智力加点\n"
-        "- 爽点: 智力加点比速度加点在现阶段收益高2.3倍\n"
-        "- 本章变化: 技能点全投智力，MP+12，法术伤害+5%\n".encode("utf-8")
+        (
+            "### 第 9 章：技能点精算，学徒的极限\r\n"
+            "- 爽点: 智力加点比速度加点在现阶段收益高2.3倍\r\n"
+            "- 本章变化: 技能点全投智力，MP+12，法术伤害+5%\r\n"
+            "### 第 10 章：下一段\r\n"
+            "- 爽点: 这一段必须保持原样。\r\n"
+        ).encode("utf-8")
     )
 
 

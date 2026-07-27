@@ -259,6 +259,12 @@ def _replace_chapter_nine_terms(value: str) -> str:
     )
 
 
+def _dominant_newline(text: str) -> str:
+    crlf_count = text.count("\r\n")
+    lf_count = text.count("\n") - crlf_count
+    return "\r\n" if crlf_count and crlf_count >= lf_count else "\n"
+
+
 def _migrate_chapter_nine_outline(value: Any) -> tuple[Any, bool]:
     if not isinstance(value, dict):
         return value, False
@@ -292,25 +298,36 @@ def _migrate_chapter_nine_outline(value: Any) -> tuple[Any, bool]:
 
 
 def _migrate_detailed_outline(text: str) -> tuple[str, bool]:
-    heading = re.compile(r"^##\s*第\s*9\s*章(?:\s|$)")
-    any_heading = re.compile(r"^##\s*第\s*\d+\s*章(?:\s|$)")
+    chapter_heading = re.compile(
+        r"^(?P<level>#{2,4})\s*第\s*(?P<number>\d+)\s*章(?:\s*[：:].*)?(?:\r?\n)?$"
+    )
+    markdown_heading = re.compile(r"^(?P<level>#{1,4})(?:\s|$)")
     lines = text.splitlines(keepends=True)
     in_chapter_nine = False
+    chapter_level = 0
     changed = False
     result: list[str] = []
     saw_resource_boundary = False
+    newline = _dominant_newline(text)
     for line in lines:
-        if heading.match(line):
+        match = chapter_heading.match(line)
+        if match and int(match.group("number")) == 9:
             in_chapter_nine = True
+            chapter_level = len(match.group("level"))
             updated_heading = _replace_chapter_nine_terms(line)
             changed = changed or updated_heading != line
             line = updated_heading
-        elif in_chapter_nine and any_heading.match(line):
-            if not saw_resource_boundary:
-                result.append(f"- 资源边界: {_CHAPTER_NINE_RESOURCE_BOUNDARY}\n")
-                saw_resource_boundary = True
-                changed = True
-            in_chapter_nine = False
+        elif in_chapter_nine:
+            next_chapter = chapter_heading.match(line)
+            next_heading = markdown_heading.match(line)
+            next_level = len(next_heading.group("level")) if next_heading else None
+            if next_chapter or (next_level is not None and next_level <= chapter_level):
+                if not saw_resource_boundary:
+                    result.append(f"- 资源边界: {_CHAPTER_NINE_RESOURCE_BOUNDARY}{newline}")
+                    saw_resource_boundary = True
+                    changed = True
+                in_chapter_nine = False
+                chapter_level = 0
         if not in_chapter_nine:
             result.append(line)
             continue
@@ -335,7 +352,6 @@ def _migrate_detailed_outline(text: str) -> tuple[str, bool]:
         result.append(updated)
         changed = changed or updated != line
     if in_chapter_nine and not saw_resource_boundary:
-        newline = "\r\n" if "\r\n" in text else "\n"
         result.append(f"- 资源边界: {_CHAPTER_NINE_RESOURCE_BOUNDARY}{newline}")
         changed = True
     return "".join(result), changed
@@ -365,13 +381,14 @@ def _find_first_chapter(root: Path) -> tuple[Path, bytes]:
 
 def _migrate_first_chapter(raw: bytes) -> tuple[bytes, bool]:
     text = _decode_text(raw)
-    if _FIRST_CHAPTER_ATTRIBUTE_SCENE.strip() in text:
+    if "【获得5点自由属性。】" in text:
         return raw, False
     marker_index = text.find(_FIRST_CHAPTER_LEVEL_UP)
     if marker_index < 0:
         raise ValueError("first chapter level-up marker is missing")
     insert_at = marker_index + len(_FIRST_CHAPTER_LEVEL_UP)
-    migrated = text[:insert_at] + _FIRST_CHAPTER_ATTRIBUTE_SCENE + text[insert_at:]
+    scene = _FIRST_CHAPTER_ATTRIBUTE_SCENE.replace("\n", _dominant_newline(text))
+    migrated = text[:insert_at] + scene + text[insert_at:]
     return _encode_text(migrated, raw), True
 
 
@@ -413,7 +430,15 @@ def _migrate_state(state: Any, spec: dict[str, Any]) -> tuple[dict[str, Any], bo
     award = {"level": 2, "points": rule["points_per_level"], "chapter": 1}
     awards = protagonist.get("attribute_point_awards")
     award_history = deepcopy(awards) if isinstance(awards, list) else []
-    award_history = [item for item in award_history if item != award]
+    award_history = [
+        item
+        for item in award_history
+        if not (
+            isinstance(item, dict)
+            and _chapter_number(item.get("chapter")) == 1
+            and _chapter_number(item.get("level")) == 2
+        )
+    ]
     protagonist["attribute_point_awards"] = [*award_history, award]
 
     allocation = {
@@ -424,7 +449,13 @@ def _migrate_state(state: Any, spec: dict[str, Any]) -> tuple[dict[str, Any], bo
     }
     allocations = protagonist.get("attribute_allocations")
     allocation_history = deepcopy(allocations) if isinstance(allocations, list) else []
-    allocation_history = [item for item in allocation_history if item != allocation]
+    allocation_history = [
+        item
+        for item in allocation_history
+        if not (
+            isinstance(item, dict) and _chapter_number(item.get("chapter")) == 1
+        )
+    ]
     protagonist["attribute_allocations"] = [*allocation_history, allocation]
 
     synchronized = {
