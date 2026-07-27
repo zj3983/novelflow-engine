@@ -2,7 +2,7 @@ import json
 
 from packages.story_core import orchestrator as orchestrator_module
 from packages.story_core.models import CharacterState, StoryState
-from packages.story_core.orchestrator import StoryOrchestrator, _chapter_char_count
+from packages.story_core.orchestrator import StoryOrchestrator, _chapter_char_count, _review_chapter_body
 
 
 def _plan() -> dict:
@@ -74,7 +74,7 @@ def _run_compression(
     *,
     story_id: str,
     compressed_body: str,
-    rebalanced_body: str | None = None,
+    retry_body: str | None = None,
 ):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
@@ -82,19 +82,19 @@ def _run_compression(
         "_review_chapter_body",
         lambda *_args, **_kwargs: {"pass": True, "issues": [], "revision_plan": []},
     )
-    initial_body = _body("原", 5983)
-    calls: list[tuple[str, str]] = []
+    initial_body = _body("原", 7801)
+    calls: list[tuple[str, str, str]] = []
     orchestrator = StoryOrchestrator()
 
-    def fake_timed_chat(_story_state, _prompt, *, agent, stage, **_kwargs):
-        calls.append((agent, stage))
+    def fake_timed_chat(_story_state, prompt, *, agent, stage, **_kwargs):
+        calls.append((agent, stage, prompt))
         if agent == "planner":
             return json.dumps(_plan(), ensure_ascii=False), ""
         if agent == "writer" and stage.startswith("整章写作"):
             return initial_body, ""
-        if agent == "writer" and stage.startswith("章节压缩回补"):
-            assert rebalanced_body is not None
-            return rebalanced_body, ""
+        if agent == "writer" and stage.startswith("章节压缩重试"):
+            assert retry_body is not None
+            return retry_body, ""
         if agent == "writer" and stage.startswith("章节压缩"):
             return compressed_body, ""
         if agent == "memory":
@@ -103,54 +103,99 @@ def _run_compression(
 
     monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
     bundle = orchestrator.generate_next_chapter(_story(story_id))
-    return bundle, calls
+    return bundle, calls, initial_body
 
 
-def test_short_compression_candidate_is_rebalanced_once_into_normal_range(monkeypatch):
-    rebalanced_body = _body("补", 4300)
+def test_short_compression_candidate_retries_from_original_into_normal_range(monkeypatch):
+    compressed_body = _body("短", 3991)
+    retry_body = _body("保", 5300)
 
-    bundle, calls = _run_compression(
+    bundle, calls, initial_body = _run_compression(
         monkeypatch,
-        story_id="s-compression-rebalance-success",
-        compressed_body=_body("短", 4059),
-        rebalanced_body=rebalanced_body,
+        story_id="s-compression-retry-success",
+        compressed_body=compressed_body,
+        retry_body=retry_body,
     )
 
     compression_stages = [
-        stage for agent, stage in calls if agent == "writer" and stage.startswith("章节压缩")
+        stage for agent, stage, _prompt in calls if agent == "writer" and stage.startswith("章节压缩")
     ]
-    assert compression_stages == ["章节压缩 第2章 第1轮", "章节压缩回补 第2章"]
-    assert bundle.body == rebalanced_body
-    assert 4180 <= _chapter_char_count(bundle.body) <= 5700
+    retry_prompt = next(prompt for agent, stage, prompt in calls if agent == "writer" and stage.startswith("章节压缩重试"))
+    assert compression_stages == ["章节压缩 第2章 第1轮", "章节压缩重试 第2章"]
+    assert initial_body in retry_prompt
+    assert compressed_body not in retry_prompt
+    assert "上次压缩到3991字" in retry_prompt
+    assert "保留更多" in retry_prompt
+    assert "正常范围4200到5500字" in retry_prompt
+    assert "建议5200到5500字" in retry_prompt
+    assert bundle.body == retry_body
+    assert 4200 <= _chapter_char_count(bundle.body) <= 5500
 
 
-def test_failed_rebalance_keeps_original_for_final_length_gate(monkeypatch):
-    bundle, calls = _run_compression(
+def test_failed_compression_retry_keeps_original_for_final_length_gate(monkeypatch):
+    bundle, calls, initial_body = _run_compression(
         monkeypatch,
-        story_id="s-compression-rebalance-failure",
-        compressed_body=_body("短", 4059),
-        rebalanced_body=_body("仍", 4100),
+        story_id="s-compression-retry-failure",
+        compressed_body=_body("短", 3991),
+        retry_body=_body("涨", 8212),
     )
 
     compression_stages = [
-        stage for agent, stage in calls if agent == "writer" and stage.startswith("章节压缩")
+        stage for agent, stage, _prompt in calls if agent == "writer" and stage.startswith("章节压缩")
     ]
-    assert compression_stages == ["章节压缩 第2章 第1轮", "章节压缩回补 第2章"]
-    assert _chapter_char_count(bundle.body) == 5983
+    assert compression_stages == ["章节压缩 第2章 第1轮", "章节压缩重试 第2章"]
+    assert bundle.body == initial_body
+    assert _chapter_char_count(bundle.body) == 7801
     assert "body_too_long" in bundle.quality_report["issues"]
 
 
 def test_normal_compression_does_not_add_rebalance_call(monkeypatch):
     compressed_body = _body("正", 5000)
 
-    bundle, calls = _run_compression(
+    bundle, calls, _initial_body = _run_compression(
         monkeypatch,
         story_id="s-compression-normal-call-count",
         compressed_body=compressed_body,
     )
 
     compression_stages = [
-        stage for agent, stage in calls if agent == "writer" and stage.startswith("章节压缩")
+        stage for agent, stage, _prompt in calls if agent == "writer" and stage.startswith("章节压缩")
     ]
     assert compression_stages == ["章节压缩 第2章 第1轮"]
     assert bundle.body == compressed_body
+
+
+def test_explicit_xuanhuan_context_skips_web_game_review_for_generic_terms(monkeypatch):
+    calls = {"web_game": 0}
+
+    def fake_web_game_review(**_kwargs):
+        calls["web_game"] += 1
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(orchestrator_module, "review_web_game_chapter", fake_web_game_review)
+    body = "宗门任务已列入执事堂系统，弟子等级决定领取顺序。"
+
+    review = _review_chapter_body(
+        2,
+        body,
+        {"next_focus": "完成宗门任务"},
+        genre_context={"genre": "xuanhuan", "genre_plugin_ids": ["xuanhuan"]},
+    )
+
+    assert calls["web_game"] == 0
+    assert review["web_game_review"]["pass"] is True
+
+
+def test_legacy_review_without_genre_context_keeps_text_heuristic(monkeypatch):
+    calls = {"web_game": 0}
+
+    def fake_web_game_review(**_kwargs):
+        calls["web_game"] += 1
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(orchestrator_module, "review_web_game_chapter", fake_web_game_review)
+    body = "宗门任务已列入执事堂系统，弟子等级决定领取顺序。"
+
+    _review_chapter_body(2, body, {"next_focus": "完成宗门任务"})
+
+    assert calls["web_game"] == 1

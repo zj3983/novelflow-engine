@@ -3337,6 +3337,20 @@ def _story_review_genre_context(story: StoryState) -> dict[str, Any]:
     }
 
 
+def _has_explicit_review_genre_context(genre_context: Any) -> bool:
+    if isinstance(genre_context, dict):
+        if str(genre_context.get("genre") or "").strip():
+            return True
+        genre_ids = genre_context.get("genre_plugin_ids")
+        if isinstance(genre_ids, (list, tuple, set)):
+            return any(str(item or "").strip() for item in genre_ids)
+        return bool(str(genre_ids or "").strip())
+    return bool(
+        str(getattr(genre_context, "genre", "") or "").strip()
+        or any(str(item or "").strip() for item in (getattr(genre_context, "genre_plugin_ids", []) or []))
+    )
+
+
 def _review_chapter_body(
     chapter_number: int,
     body: str,
@@ -3350,7 +3364,11 @@ def _review_chapter_body(
     compact_body = "".join(body.split())
     facts_text = "\n".join(world_facts or [])
     plan_text = json.dumps(event_plan, ensure_ascii=False)
-    game_context = is_game_genre("\n".join([body, facts_text, plan_text]))
+    game_context = (
+        is_game_story_type(genre_context)
+        if _has_explicit_review_genre_context(genre_context)
+        else is_game_genre("\n".join([body, facts_text, plan_text]))
+    )
     chapter_one_trade_payoff = first_chapter_market_exchange_authorized(event_plan, world_facts)
     simulation_plan = simulation_plan or {}
     min_chapter_chars = _chapter_review_min_chars(simulation_plan)
@@ -4179,6 +4197,8 @@ def _render_compression_length_prompt(
     game_context: bool,
     allow_trade_payoff: bool,
     outline_anchor: dict[str, Any] | None = None,
+    target_chars: str | None = None,
+    feedback: str = "",
 ) -> str:
     outline_anchor = outline_anchor if isinstance(outline_anchor, dict) else {}
     locked_amounts = "、".join(
@@ -4201,11 +4221,14 @@ def _render_compression_length_prompt(
         opening_line = "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、世界规则、结尾钩子的前提下压缩。"
         compression_method = "压缩方法：删重复解释、删绕圈心理、合并相似动作；保留核心冲突、人物反应、关键线索、代价、转折和下一步钩子。"
         chapter_scope = "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。"
+    if feedback.strip():
+        compression_method = f"压缩反馈：{feedback.strip()}\n{compression_method}"
     return render_prompt_template(
         get_effective_prompt_template("compression"),
         {
             "opening_line": opening_line,
-            "target_chars": f"保留完整网文章节感，调整到5000到5400字，绝对不要超过{MAX_CHAPTER_CHARS}字",
+            "target_chars": target_chars
+            or f"保留完整网文章节感，调整到5000到5400字，绝对不要超过{MAX_CHAPTER_CHARS}字",
             "compression_method": compression_method,
             "chapter_scope": chapter_scope,
             "source_body": source_body,
@@ -7081,7 +7104,7 @@ class StoryOrchestrator:
             )
             outline_anchor = chapter_seed.get("outline_anchor") if isinstance(chapter_seed, dict) else {}
             best_acceptable_body = ""
-            rebalanced_attempted = False
+            compression_retry_attempted = False
             for compress_round in range(1, 2):
                 if not _should_compress_chapter(body):
                     break
@@ -7128,56 +7151,62 @@ class StoryOrchestrator:
                 candidate_issues = list((candidate_review or {}).get("issues", []))
                 candidate_action = _compression_candidate_action(before_body, candidate_body)
                 if (
-                    not rebalanced_attempted
+                    not compression_retry_attempted
                     and candidate_action == "retry"
                     and CHAPTER_HARD_MIN_CHARS <= candidate_chars < MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE
                 ):
-                    rebalanced_attempted = True
+                    compression_retry_attempted = True
                     short_candidate_chars = candidate_chars
                     self._emit_progress_with_artifact(
-                        "章节压缩回补中...",
+                        "章节压缩重试中...",
                         "chapter_compress",
                         source="writer",
-                        used_modules=["writer_agent", "writing_taskbook", "prose_quality_review"],
-                        reason="压缩候选达到硬下限但低于正常篇幅，条件式回补已有场景",
+                        used_modules=["writer_agent", "prose_quality_review"],
+                        reason="压缩候选达到硬下限但低于正常篇幅，从原文保留更多内容后重试",
                         inputs={
                             "chapter_number": chapter_number,
                             "before_chars": _chapter_char_count(before_body),
                             "short_candidate_chars": candidate_chars,
                         },
                     )
-                    rebalanced_text, rebalanced_error = self._timed_chat(
+                    retry_text, retry_error = self._timed_chat(
                         working_story,
-                        _render_expansion_length_prompt(
-                            source_body=candidate_body,
+                        _render_compression_length_prompt(
+                            source_body=before_body,
                             game_context=game_context,
                             allow_trade_payoff=allow_trade_payoff,
+                            outline_anchor=outline_anchor,
+                            target_chars=(
+                                "保留完整网文章节感，调整到正常范围4200到5500字，"
+                                "建议5200到5500字，绝对不要低于4200字或超过5500字"
+                            ),
+                            feedback=f"上次压缩到{candidate_chars}字，结果过短；本轮必须保留更多关键场景和有效细节。",
                         ),
                         max_tokens=7000,
                         json_mode=False,
                         agent="writer",
-                        stage=f"章节压缩回补 第{chapter_number}章",
+                        stage=f"章节压缩重试 第{chapter_number}章",
                         timeout_seconds=_expansion_timeout_seconds(),
                     )
-                    rebalanced_chars = 0
-                    rebalanced_quality_preserved = False
-                    rebalanced_accepted = False
-                    rebalanced_issue_count = None
-                    if not rebalanced_error and rebalanced_text.strip():
-                        rebalanced_body = _sanitize_chapter_output(
-                            rebalanced_text,
+                    retry_chars = 0
+                    retry_quality_preserved = False
+                    retry_accepted = False
+                    retry_issue_count = None
+                    if not retry_error and retry_text.strip():
+                        retry_body = _sanitize_chapter_output(
+                            retry_text,
                             chapter_number=chapter_number,
                             scene_cards=scene_cards,
                             game_story=game_context,
                         )
-                        rebalanced_body = _repair_outline_amount_anchors(
-                            rebalanced_body,
+                        retry_body = _repair_outline_amount_anchors(
+                            retry_body,
                             chapter_seed.get("outline_anchor"),
                         )
-                        rebalanced_chars = _chapter_char_count(rebalanced_body)
-                        rebalanced_review = _review_chapter_body(
+                        retry_chars = _chapter_char_count(retry_body)
+                        retry_review = _review_chapter_body(
                             chapter_number,
-                            rebalanced_body,
+                            retry_body,
                             event_plan,
                             _review_context_facts(story),
                             simulation_plan,
@@ -7185,39 +7214,39 @@ class StoryOrchestrator:
                             scene_cards,
                             genre_context=_story_review_genre_context(story),
                         )
-                        rebalanced_issues = list((rebalanced_review or {}).get("issues", []))
-                        rebalanced_issue_count = len(rebalanced_issues)
-                        rebalanced_quality_preserved = _compression_review_not_worse(
+                        retry_issues = list((retry_review or {}).get("issues", []))
+                        retry_issue_count = len(retry_issues)
+                        retry_quality_preserved = _compression_review_not_worse(
                             writing_review,
-                            rebalanced_review,
+                            retry_review,
                         )
-                        rebalanced_accepted = (
-                            _rebalanced_body_is_acceptable(candidate_body, rebalanced_body)
-                            and rebalanced_chars < _chapter_char_count(before_body)
-                            and rebalanced_quality_preserved
+                        retry_accepted = (
+                            MIN_CHAPTER_CHARS <= retry_chars <= MAX_CHAPTER_CHARS
+                            and retry_chars < _chapter_char_count(before_body)
+                            and retry_quality_preserved
                         )
-                        if rebalanced_accepted:
-                            candidate_body = rebalanced_body
-                            candidate_review = rebalanced_review
-                            candidate_chars = rebalanced_chars
-                            candidate_issues = rebalanced_issues
-                            quality_preserved = rebalanced_quality_preserved
+                        if retry_accepted:
+                            candidate_body = retry_body
+                            candidate_review = retry_review
+                            candidate_chars = retry_chars
+                            candidate_issues = retry_issues
+                            quality_preserved = retry_quality_preserved
                             candidate_action = _compression_candidate_action(before_body, candidate_body)
                     self._emit_progress_with_artifact(
-                        "章节压缩回补完成",
+                        "章节压缩重试完成",
                         "chapter_compress",
                         source="writer",
-                        used_modules=["writer_agent", "writing_taskbook", "prose_quality_review"],
-                        reason="回补只在恢复正常篇幅且审稿质量不恶化时采用",
+                        used_modules=["writer_agent", "prose_quality_review"],
+                        reason="重试只在正常篇幅、短于原文且审稿质量不恶化时采用",
                         inputs={"chapter_number": chapter_number},
                         outputs={
                             "before_chars": _chapter_char_count(before_body),
                             "short_candidate_chars": short_candidate_chars,
-                            "rebalanced_chars": rebalanced_chars,
-                            "quality_preserved": rebalanced_quality_preserved,
-                            "accepted": rebalanced_accepted,
-                            "issue_count": rebalanced_issue_count,
-                            "error": rebalanced_error or "",
+                            "retry_chars": retry_chars,
+                            "quality_preserved": retry_quality_preserved,
+                            "accepted": retry_accepted,
+                            "issue_count": retry_issue_count,
+                            "error": retry_error or "",
                         },
                     )
                 if _compressed_body_is_acceptable(before_body, candidate_body) and quality_preserved:
