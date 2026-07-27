@@ -50,6 +50,7 @@ _GENERIC_REASON_TERMS = {"先", "为了", "因为", "属性点", "属性", "点"
 _CONDITIONAL_MARKERS = ("如果", "假如", "要是", "倘若")
 _CLAUSE_START_RUO_PATTERN = re.compile(r"(?:^|[，,；;：:])\s*(?P<ruo>若)")
 _ASYMMETRIC_QUOTES = (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"))
+_POSITION_OWNER_NOUNS = ("面板", "界面", "提示", "窗口")
 
 
 def parse_count(value: str) -> int | None:
@@ -465,6 +466,8 @@ def _remaining_candidate_subject(
     owner = re.search(r"(?P<owner>[\u4e00-\u9fffA-Za-z0-9_]{1,12})的\s*$", sentence)
     if owner:
         name = owner.group("owner")
+        if name.endswith(("上", "中", "里", "内")) or any(noun in name for noun in _POSITION_OWNER_NOUNS):
+            return None
         if name in aliases:
             return True
         if name in {"他", "她", "自己"}:

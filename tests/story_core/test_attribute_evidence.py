@@ -214,6 +214,12 @@ def test_confirmed_allocation_keeps_the_protagonist_panel_result_when_the_next_s
     assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
 
 
+def test_confirmed_allocation_accepts_a_plain_panel_result_with_a_location_possessive():
+    body = "夜烬把五点加到智力上。随后他确认加点。面板上的可用属性点归零。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
+
+
 def test_attribute_carry_reads_remaining_from_the_previous_adjacent_sentence():
     body = "可用属性点还剩五点。夜烬决定留着，因为等转职以后再分配。"
 

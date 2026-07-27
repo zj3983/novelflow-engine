@@ -1099,6 +1099,21 @@ def test_web_game_review_marks_only_bystander_remaining_after_allocation_as_miss
     assert not any(issue.startswith("attribute_allocation_mismatch:") for issue in review["issues"]), review
 
 
+def test_web_game_review_accepts_a_panel_location_result_after_protagonist_allocation():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="夜烬把五点加到智力上。随后他确认加点。面板上的可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+        },
+        world_facts=[],
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
 def test_web_game_review_binds_carry_remaining_from_the_previous_adjacent_sentence():
     review = review_web_game_chapter(
         chapter_number=4,
