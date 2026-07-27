@@ -398,22 +398,34 @@ def _current_attribute_allocation_decision(event_plan: dict[str, Any]) -> dict[s
 
 
 def _expected_attribute_action_values(
-    body: str, attributes: Iterable[str], protagonist_aliases: Iterable[str] | None = None
+    body: str,
+    attributes: Iterable[str],
+    protagonist_aliases: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
 ) -> dict[str, int]:
     values: dict[str, int] = {}
     for attribute in attributes:
-        points = character_attribute_allocation_points(body, attribute, protagonist_aliases=protagonist_aliases)
+        points = character_attribute_allocation_points(
+            body,
+            attribute,
+            protagonist_aliases=protagonist_aliases,
+            other_character_names=other_character_names,
+        )
         if points is not None:
             values[attribute] = points
     return values
 
 
 def _has_allocation_result(
-    body: str, expected: dict[str, int], remaining: int, protagonist_aliases: Iterable[str] | None = None
+    body: str, expected: dict[str, int], remaining: int, protagonist_aliases: Iterable[str] | None = None, other_character_names: Iterable[str] | None = None
 ) -> bool:
-    if not has_positive_attribute_allocation_confirmation(body, protagonist_aliases=protagonist_aliases):
+    if not has_positive_attribute_allocation_confirmation(
+        body,
+        protagonist_aliases=protagonist_aliases,
+        other_character_names=other_character_names,
+    ):
         return False
-    if latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases) == remaining:
+    if latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases, other_character_names=other_character_names) == remaining:
         return True
     return any(
         re.search(rf"{re.escape(attribute)}[^。！？\n]{{0,16}}(?:变成|提升到|增加到)\s*(?:\d+|[一二两三四五六七八九十]+)", body)
@@ -429,6 +441,7 @@ def _review_attribute_allocation_decision(
     revision_plan: list[str],
     scores: dict[str, int],
     protagonist_aliases: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
 ) -> None:
     raw_decision = event_plan.get("attribute_allocation_decision")
     decision = _current_attribute_allocation_decision(event_plan)
@@ -452,7 +465,7 @@ def _review_attribute_allocation_decision(
         return
     if decision["mode"] == "carry":
         has_choice, has_reason, remaining = character_attribute_carry_choice_evidence(
-            body, decision["reason"], protagonist_aliases=protagonist_aliases
+            body, decision["reason"], protagonist_aliases=protagonist_aliases, other_character_names=other_character_names
         )
         if remaining is not None and remaining != decision["remaining"]:
             _append_issue(
@@ -476,9 +489,18 @@ def _review_attribute_allocation_decision(
         return
 
     expected = decision["allocations"]
-    actual = _expected_attribute_action_values(body, expected, protagonist_aliases)
-    actual_points = real_character_attribute_allocation_point_values(body, protagonist_aliases=protagonist_aliases)
-    actual_remaining = latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases)
+    actual = _expected_attribute_action_values(
+        body,
+        expected,
+        protagonist_aliases,
+        other_character_names,
+    )
+    actual_points = real_character_attribute_allocation_point_values(
+        body,
+        protagonist_aliases=protagonist_aliases,
+        other_character_names=other_character_names,
+    )
+    actual_remaining = latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases, other_character_names=other_character_names)
     if (
         actual_points
         and (
@@ -497,7 +519,7 @@ def _review_attribute_allocation_decision(
         )
         return
     if actual != expected or not _has_allocation_result(
-        body, expected, decision["remaining"], protagonist_aliases
+        body, expected, decision["remaining"], protagonist_aliases, other_character_names
     ):
         _append_issue(
             issues=issues,
@@ -771,6 +793,8 @@ def review_web_game_chapter(
     event_plan: dict[str, Any] | None = None,
     world_facts: list[str] | None = None,
     protagonist_aliases: Iterable[str] | None = None,
+    character_names: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Review web-game fiction rules that are independent from general prose quality."""
     event_plan = event_plan or {}
@@ -797,6 +821,12 @@ def review_web_game_chapter(
     plan_text = str(event_plan)
     chapter_one_trade_payoff = first_chapter_trade_authorized(event_plan, world_facts)
     combined = "\n".join([body, plan_text, facts_text])
+    if other_character_names is None:
+        other_character_names = (
+            set(character_names or ()) - set(protagonist_aliases)
+            if protagonist_aliases
+            else set()
+        )
     _review_attribute_allocation_decision(
         body=body,
         event_plan=event_plan,
@@ -804,6 +834,7 @@ def review_web_game_chapter(
         revision_plan=revision_plan,
         scores=scores,
         protagonist_aliases=protagonist_aliases,
+        other_character_names=other_character_names,
     )
     level_gap_case = extract_level_gap_case(body, context_text="\n".join([plan_text, facts_text]))
     if level_gap_case:

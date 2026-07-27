@@ -49,6 +49,7 @@ def review_reviewer_agent(
     event_plan: dict[str, Any] | None = None,
     world_facts: list[Any] | None = None,
     protagonist_names: list[str] | None = None,
+    character_names: list[str] | None = None,
     critical_review: dict[str, Any] | None = None,
     web_game_review: dict[str, Any] | None = None,
     progression_lead_review: dict[str, Any] | None = None,
@@ -63,6 +64,7 @@ def review_reviewer_agent(
         event_plan=event_plan,
         world_facts=world_facts or [],
         protagonist_aliases=protagonist_names or [],
+        character_names=character_names or [],
     )
     progression = progression_lead_review or review_progression_lead(
         chapter_number=chapter_number,

@@ -3478,6 +3478,29 @@ def _story_review_genre_context(story: StoryState) -> dict[str, Any]:
     }
 
 
+def _review_character_names(story: StoryState) -> tuple[str, ...]:
+    """Names and game IDs available to evidence-based chapter review."""
+
+    names: set[str] = set()
+    for character in story.characters:
+        if character.lifecycle_state not in {"active", "approved"} or character.frozen:
+            continue
+        for value in (character.name, character.game_id):
+            name = str(value or "").strip()
+            if name:
+                names.add(name)
+        panel = getattr(character, "game_panel", None)
+        panel_game_id = (
+            panel.get("game_id")
+            if isinstance(panel, dict)
+            else getattr(panel, "game_id", "")
+        )
+        panel_name = str(panel_game_id or "").strip()
+        if panel_name:
+            names.add(panel_name)
+    return tuple(sorted(names, key=lambda value: (-len(value), value)))
+
+
 def _has_explicit_review_genre_context(genre_context: Any) -> bool:
     if isinstance(genre_context, dict):
         if str(genre_context.get("genre") or "").strip():
@@ -3502,6 +3525,7 @@ def _review_chapter_body(
     scene_cards: list[dict] | None = None,
     genre_context: Any = None,
     protagonist_aliases: tuple[str, ...] | None = None,
+    character_names: tuple[str, ...] | None = None,
 ) -> dict:
     compact_body = "".join(body.split())
     facts_text = "\n".join(world_facts or [])
@@ -4031,6 +4055,7 @@ def _review_chapter_body(
                 event_plan=event_plan,
                 world_facts=world_facts,
                 protagonist_aliases=_protagonist_names,
+                character_names=character_names or (),
             )
             _futures["progression_lead"] = _pool.submit(
                 review_progression_lead,
@@ -6495,6 +6520,7 @@ class StoryOrchestrator:
                 getattr(bundle, "scene_cards", []),
                 genre_context=_story_review_genre_context(story),
                 protagonist_aliases=tuple(protagonist_aliases_from_characters(story.characters)),
+                character_names=_review_character_names(story),
             )
             patched_review["expression_patch_report"] = patch_report
             patched_quality = _merge_writing_review_quality(validate_bundle(quality_seed), patched_review)
@@ -6551,6 +6577,7 @@ class StoryOrchestrator:
             getattr(bundle, "scene_cards", []),
             genre_context=_story_review_genre_context(story),
             protagonist_aliases=tuple(protagonist_aliases_from_characters(story.characters)),
+            character_names=_review_character_names(story),
         )
         quality_report = _merge_writing_review_quality(validate_bundle(quality_seed), writing_review)
         quality_report["has_hard_errors"] = bool(
@@ -7141,6 +7168,7 @@ class StoryOrchestrator:
             scene_cards,
             genre_context=_story_review_genre_context(story),
             protagonist_aliases=tuple(protagonist_aliases_from_characters(story.characters)),
+            character_names=_review_character_names(story),
         )
         revision_safety_report = None
         accepted_revision_actions: list[str] = []
@@ -7211,6 +7239,7 @@ class StoryOrchestrator:
                     scene_cards,
                     genre_context=_story_review_genre_context(story),
                     protagonist_aliases=tuple(protagonist_aliases_from_characters(story.characters)),
+                    character_names=_review_character_names(story),
                 )
                 candidate_gate = build_simplified_review({"writing_review": candidate_review})
                 candidate_quality = {
@@ -7326,6 +7355,7 @@ class StoryOrchestrator:
                     scene_cards,
                     genre_context=_story_review_genre_context(story),
                     protagonist_aliases=tuple(protagonist_aliases_from_characters(story.characters)),
+                    character_names=_review_character_names(story),
                 )
                 quality_preserved = _compression_review_not_worse(writing_review, candidate_review)
                 before_issue_count = len((writing_review or {}).get("issues", []))
@@ -7396,6 +7426,7 @@ class StoryOrchestrator:
                             scene_cards,
                             genre_context=_story_review_genre_context(story),
                             protagonist_aliases=tuple(protagonist_aliases_from_characters(story.characters)),
+                            character_names=_review_character_names(story),
                         )
                         retry_issues = list((retry_review or {}).get("issues", []))
                         retry_issue_count = len(retry_issues)
@@ -7476,6 +7507,7 @@ class StoryOrchestrator:
                 scene_cards,
                 genre_context=_story_review_genre_context(story),
                 protagonist_aliases=tuple(protagonist_aliases_from_characters(story.characters)),
+                character_names=_review_character_names(story),
             )
 
         review_gate = build_simplified_review({"writing_review": writing_review})

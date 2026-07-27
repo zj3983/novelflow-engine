@@ -575,6 +575,24 @@ def test_attribute_allocation_memory_rejects_bystander_remaining_after_protagoni
     assert result["ledger_updates"] == {}
 
 
+def test_attribute_allocation_memory_rejects_a_known_named_bystander_panel_chain():
+    body = "夜烬把五点加到智力上。林峰看了夜烬一眼，他确认加点，提示消失后，他的面板上的可用属性点还剩四点。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {"protagonist": {"attribute_allocation": {"allocations": {"智力": 5}, "remaining": 4}}},
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点还剩四点",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬", "林峰"},
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
 def test_attribute_allocation_requires_local_remaining_evidence_even_when_body_has_zero_points():
     body = "夜烬把五点加到智力上，确认加点后，可用属性点归零。法杖耐久也归零。"
     result = normalize_post_draft_memory(

@@ -80,6 +80,19 @@ def test_attribute_allocation_accepts_real_action_after_quoted_hypothesis():
     assert has_positive_attribute_allocation_confirmation(body, protagonist_aliases={"夜烬"})
 
 
+def test_confirmed_points_keep_a_known_protagonist_chain_when_other_names_are_available():
+    body = "夜烬把五点加到智力上。他确认后，夜烬的面板上的可用属性点归零。"
+
+    assert (
+        latest_confirmed_attribute_points(
+            body,
+            protagonist_aliases={"夜烬"},
+            other_character_names={"林峰"},
+        )
+        == 0
+    )
+
+
 def test_attribute_allocation_accepts_actual_turn_after_same_sentence_condition():
     body = "“如果保留五点会更灵活”，夜烬还是把五点加到智力上。随后他点下确认，可用属性点归零。"
 
@@ -303,6 +316,26 @@ def test_confirmed_allocation_rejects_a_bystander_subject_when_the_protagonist_i
     body = "夜烬把五点加到智力上。短发玩家看了夜烬一眼，他确认加点，提示消失后，他的面板上的可用属性点还剩四点。"
 
     assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) is None
+
+
+def test_confirmed_allocation_rejects_a_known_named_bystander_without_a_name_regex():
+    body = "夜烬把五点加到智力上。林峰看了夜烬一眼，他确认加点，提示消失后，他的面板上的可用属性点还剩四点。"
+
+    assert latest_confirmed_attribute_points(
+        body, protagonist_aliases={"夜烬"}, other_character_names={"林峰"}
+    ) is None
+
+
+def test_known_named_bystander_cannot_supply_the_protagonists_allocation_action():
+    body = "林峰看了夜烬一眼，林峰把五点加到智力上。"
+
+    assert not has_character_attribute_allocation(
+        body,
+        "智力",
+        5,
+        protagonist_aliases={"夜烬"},
+        other_character_names={"林峰"},
+    )
 
 
 def test_confirmed_allocation_keeps_a_pronoun_chain_after_an_environment_clause():

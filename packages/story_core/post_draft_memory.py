@@ -379,12 +379,16 @@ def _ledger_value_supported(value: Any, body: str, evidence: str) -> bool:
 
 
 def _attribute_state_value_supported(
-    path_parts: tuple[str, ...], value: Any, body: str, evidence: str, protagonist_aliases: set[str] | None
+    path_parts: tuple[str, ...], value: Any, body: str, evidence: str, protagonist_aliases: set[str] | None, other_character_names: set[str] | None
 ) -> bool:
-    if not has_character_attribute_allocation(body, protagonist_aliases=protagonist_aliases):
+    if not has_character_attribute_allocation(
+        body,
+        protagonist_aliases=protagonist_aliases,
+        other_character_names=other_character_names,
+    ):
         return False
     if path_parts[-1] == "unallocated_attribute_points":
-        return latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases) == value
+        return latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases, other_character_names=other_character_names) == value
     if "attributes" not in path_parts or not isinstance(value, int) or isinstance(value, bool):
         return False
     attribute = path_parts[-1]
@@ -409,7 +413,7 @@ def _is_protagonist_attribute_state_path(path_parts: tuple[str, ...]) -> bool:
 
 
 def _attribute_allocation_group_supported(
-    value: Any, body: str, protagonist_aliases: set[str] | None
+    value: Any, body: str, protagonist_aliases: set[str] | None, other_character_names: set[str] | None
 ) -> bool:
     if not isinstance(value, dict):
         return False
@@ -419,17 +423,25 @@ def _attribute_allocation_group_supported(
         return False
     if not all(
         has_character_attribute_allocation(
-            body, attribute, points, protagonist_aliases=protagonist_aliases
+            body,
+            attribute,
+            points,
+            protagonist_aliases=protagonist_aliases,
+            other_character_names=other_character_names,
         )
         for attribute, points in allocations.items()
     ):
         return False
-    has_confirmation = has_positive_attribute_allocation_confirmation(body, protagonist_aliases=protagonist_aliases)
+    has_confirmation = has_positive_attribute_allocation_confirmation(
+        body,
+        protagonist_aliases=protagonist_aliases,
+        other_character_names=other_character_names,
+    )
     has_result = any(
         re.search(rf"{re.escape(attribute)}[^。！？\n]{{0,16}}(?:变成|提升到|增加到)\s*(?:{points}|{_NUMBER_WORDS.get(points, '')})", body)
         for attribute, points in allocations.items()
     )
-    has_remaining = latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases) == remaining
+    has_remaining = latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases, other_character_names=other_character_names) == remaining
     return has_confirmation and (has_result or has_remaining)
 
 
@@ -483,6 +495,7 @@ def _normalize_ledger_updates(
     body: str,
     rejected: list[dict[str, str]],
     protagonist_aliases: set[str] | None,
+    other_character_names: set[str] | None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     if not isinstance(updates, dict) or not isinstance(evidence_by_path, dict):
         return {}, {}
@@ -509,12 +522,12 @@ def _normalize_ledger_updates(
         supports_value = _ledger_value_supported(value, body, evidence)
         if path_parts[-1] == "remaining" and _is_protagonist_attribute_allocation_path(path_parts):
             supports_value = (
-                latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases) == value
+                latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases, other_character_names=other_character_names) == value
                 and latest_attribute_points(evidence) == value
             )
         if _is_protagonist_attribute_state_path(path_parts):
             supports_value = _attribute_state_value_supported(
-                path_parts, value, body, evidence, protagonist_aliases
+                path_parts, value, body, evidence, protagonist_aliases, other_character_names
             )
         supports_path = _ledger_path_supported(path_parts, body, evidence)
         if path_parts[-1] in {"remaining", "reason"} and _is_protagonist_attribute_allocation_path(path_parts):
@@ -542,7 +555,7 @@ def _normalize_ledger_updates(
         if (
             accepted_allocation != proposed_allocation
             or not _attribute_allocation_group_supported(
-                proposed_allocation, body, protagonist_aliases
+                proposed_allocation, body, protagonist_aliases, other_character_names
             )
         ):
             _drop_attribute_allocation_update(accepted, accepted_evidence, rejected)
@@ -592,12 +605,18 @@ def normalize_post_draft_memory(
         existing_character_names=existing_character_names,
         rejected=rejected,
     )
+    other_character_names = (
+        set(existing_character_names) - set(protagonist_aliases)
+        if protagonist_aliases
+        else set()
+    )
     ledger_updates, ledger_evidence = _normalize_ledger_updates(
         payload.get("ledger_updates"),
         payload.get("ledger_evidence"),
         body=body_text,
         rejected=rejected,
         protagonist_aliases=protagonist_aliases,
+        other_character_names=other_character_names,
     )
     result["ledger_updates"] = ledger_updates
     result["ledger_evidence"] = ledger_evidence

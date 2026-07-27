@@ -312,12 +312,21 @@ def _is_real_action_context(
     )
 
 
-def _has_character_action(text: str, action_start: int, protagonist_aliases: Iterable[str] | None = None) -> bool:
+def _has_character_action(
+    text: str,
+    action_start: int,
+    protagonist_aliases: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
+) -> bool:
     start, _ = sentence_bounds(text, action_start)
     if not _is_real_action_context(text, action_start, protagonist_aliases=protagonist_aliases):
         return False
     prefix = text[start:action_start]
-    bound_subject = _protagonist_subject_before_bridge(prefix, _normalized_aliases(protagonist_aliases))
+    aliases = _normalized_aliases(protagonist_aliases)
+    other_names = _normalized_names(other_character_names)
+    if _explicit_subject_kind(prefix, aliases, other_names) == "other":
+        return False
+    bound_subject = _protagonist_subject_before_bridge(prefix, aliases)
     if bound_subject is not None:
         return bound_subject
     return _has_protagonist_actor(prefix, _CHARACTER_ACTION_PREFIX, protagonist_aliases)
@@ -357,23 +366,27 @@ def has_character_attribute_allocation(
     points: int | None = None,
     *,
     protagonist_aliases: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
 ) -> bool:
     for match in _action_matches(body, attribute, points):
         if not _is_negated_before(body, match.start()) and _has_character_action(
-            body, match.start(), protagonist_aliases
+            body, match.start(), protagonist_aliases, other_character_names
         ):
             return True
     return False
 
 
 def real_character_attribute_allocation_point_values(
-    body: str, *, protagonist_aliases: Iterable[str] | None = None
+    body: str,
+    *,
+    protagonist_aliases: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
 ) -> list[int]:
     """List point values from bounded, visible protagonist allocation actions."""
 
     values: list[int] = []
     for match in _action_matches(body):
-        if not _has_character_action(body, match.start(), protagonist_aliases):
+        if not _has_character_action(body, match.start(), protagonist_aliases, other_character_names):
             continue
         points = parse_count(match.group("count"))
         if points is not None:
@@ -382,7 +395,11 @@ def real_character_attribute_allocation_point_values(
 
 
 def character_attribute_allocation_points(
-    body: str, attribute: str, *, protagonist_aliases: Iterable[str] | None = None
+    body: str,
+    attribute: str,
+    *,
+    protagonist_aliases: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
 ) -> int | None:
     pattern = (
         rf"(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
@@ -390,7 +407,7 @@ def character_attribute_allocation_points(
     )
     values: list[int] = []
     for match in re.finditer(pattern, body):
-        if not _has_character_action(body, match.start(), protagonist_aliases):
+        if not _has_character_action(body, match.start(), protagonist_aliases, other_character_names):
             continue
         points = parse_count(match.group("count"))
         if points is not None:
@@ -398,12 +415,16 @@ def character_attribute_allocation_points(
     return values[-1] if values else None
 
 
-def _positive_confirmation_positions(body: str, protagonist_aliases: Iterable[str] | None = None) -> list[int]:
+def _positive_confirmation_positions(
+    body: str,
+    protagonist_aliases: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
+) -> list[int]:
     confirmations = list(re.finditer(r"确认|确定|生效|保存", body))
     positions: list[int] = []
     for action in _action_matches(body):
         if _is_negated_before(body, action.start()) or not _has_character_action(
-            body, action.start(), protagonist_aliases
+            body, action.start(), protagonist_aliases, other_character_names
         ):
             continue
         action_start, action_end = sentence_bounds(body, action.start())
@@ -437,9 +458,12 @@ def _previous_nonempty_sentence_bounds(text: str, position: int) -> tuple[int, i
 
 
 def has_positive_attribute_allocation_confirmation(
-    body: str, *, protagonist_aliases: Iterable[str] | None = None
+    body: str,
+    *,
+    protagonist_aliases: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
 ) -> bool:
-    return bool(_positive_confirmation_positions(body, protagonist_aliases))
+    return bool(_positive_confirmation_positions(body, protagonist_aliases, other_character_names))
 
 
 def _attribute_point_results(body: str) -> list[tuple[int, int]]:
@@ -467,7 +491,11 @@ def _strip_discourse_prefix(value: str) -> str:
     return value
 
 
-def _explicit_subject_kind(text: str, aliases: tuple[str, ...]) -> str:
+def _normalized_names(names: Iterable[str] | None) -> tuple[str, ...]:
+    return tuple(sorted({name.strip() for name in names or () if isinstance(name, str) and name.strip()}, key=len, reverse=True))
+
+
+def _explicit_subject_kind(text: str, aliases: tuple[str, ...], other_names: tuple[str, ...] = ()) -> str:
     """Classify only clause-leading subjects; later mentions are objects or context."""
 
     latest = "none"
@@ -477,6 +505,8 @@ def _explicit_subject_kind(text: str, aliases: tuple[str, ...]) -> str:
             continue
         if any(clause.startswith(alias) for alias in aliases):
             latest = "protagonist"
+        elif any(clause.startswith(name) for name in other_names):
+            latest = "other"
         elif _OTHER_SUBJECT_PATTERN.match(clause):
             latest = "other"
         elif clause.startswith(_ENVIRONMENT_SUBJECTS):
@@ -485,11 +515,13 @@ def _explicit_subject_kind(text: str, aliases: tuple[str, ...]) -> str:
 
 
 def _owner_is_protagonist(
-    body: str, sentence_start: int, sentence: str, owner_span: tuple[int, int], aliases: tuple[str, ...]
+    body: str, sentence_start: int, sentence: str, owner_span: tuple[int, int], aliases: tuple[str, ...], other_names: tuple[str, ...] = ()
 ) -> bool:
     owner = _strip_discourse_prefix(sentence[owner_span[0] : owner_span[1]].strip())
     if any(alias in owner for alias in aliases):
         return True
+    if any(name in owner for name in other_names):
+        return False
     if owner not in {"他", "她", "自己"}:
         return False
     prefix = sentence[: owner_span[0]]
@@ -516,30 +548,31 @@ def _owner_is_protagonist(
             + "，"
             + "，".join(clauses[:-1])
         )
-        return _explicit_subject_kind(related_context, aliases) != "other"
+        return _explicit_subject_kind(related_context, aliases, other_names) != "other"
     return not bool(re.match(r"[\u4e00-\u9fff]{2,}", _strip_discourse_prefix(earlier_clause)))
 
 
 def _remaining_candidate_subject(
-    body: str, position: int, protagonist_aliases: Iterable[str] | None
+    body: str, position: int, protagonist_aliases: Iterable[str] | None, other_character_names: Iterable[str] | None = None
 ) -> bool | None:
     """Classify a result sentence as protagonist-owned, other-owned, or a plain panel line."""
 
     start, _ = sentence_bounds(body, position)
     sentence = body[start:position]
     aliases = _normalized_aliases(protagonist_aliases)
+    other_names = _normalized_names(other_character_names)
     panel_owner = re.search(
         r"(?P<owner>[\u4e00-\u9fffA-Za-z0-9_]{1,12})的(?:角色)?(?:面板|界面|提示|窗口)(?:上|中|里|内)?的?\s*$",
         sentence,
     )
     if panel_owner:
-        return _owner_is_protagonist(body, start, sentence, panel_owner.span("owner"), aliases)
+        return _owner_is_protagonist(body, start, sentence, panel_owner.span("owner"), aliases, other_names)
     owner = re.search(r"(?P<owner>[\u4e00-\u9fffA-Za-z0-9_]{1,12})的\s*$", sentence)
     if owner:
         name = owner.group("owner")
         if name.endswith(("上", "中", "里", "内")) or any(noun in name for noun in _POSITION_OWNER_NOUNS):
             return None
-        return _owner_is_protagonist(body, start, sentence, owner.span("owner"), aliases)
+        return _owner_is_protagonist(body, start, sentence, owner.span("owner"), aliases, other_names)
     if any(alias in sentence for alias in aliases):
         return True
     if re.search(r"(?:他|她|自己)", sentence):
@@ -548,7 +581,7 @@ def _remaining_candidate_subject(
 
 
 def _remaining_point_candidate_near_anchor(
-    body: str, anchor: int, *, protagonist_aliases: Iterable[str] | None = None
+    body: str, anchor: int, *, protagonist_aliases: Iterable[str] | None = None, other_character_names: Iterable[str] | None = None
 ) -> int | None:
     """Choose a nearby protagonist result, never the document's last numeric panel value."""
 
@@ -562,7 +595,7 @@ def _remaining_point_candidate_near_anchor(
             continue
         if _is_inside_quote(body, position) or _is_conditional_sentence(body, position, protagonist_aliases):
             continue
-        subject = _remaining_candidate_subject(body, position, protagonist_aliases)
+        subject = _remaining_candidate_subject(body, position, protagonist_aliases, other_character_names)
         if subject is False:
             continue
         candidates.append(((abs(position - anchor), 0 if position >= anchor else 1, -position), points))
@@ -574,13 +607,17 @@ def latest_attribute_points(body: str) -> int | None:
     return results[-1][1] if results else None
 
 
-def latest_confirmed_attribute_points(body: str, *, protagonist_aliases: Iterable[str] | None = None) -> int | None:
-    confirmations = _positive_confirmation_positions(body, protagonist_aliases)
+def latest_confirmed_attribute_points(body: str, *, protagonist_aliases: Iterable[str] | None = None, other_character_names: Iterable[str] | None = None) -> int | None:
+    confirmations = _positive_confirmation_positions(
+        body,
+        protagonist_aliases,
+        other_character_names,
+    )
     if not confirmations:
         return None
     for confirmed_at in reversed(confirmations):
         result = _remaining_point_candidate_near_anchor(
-            body, confirmed_at, protagonist_aliases=protagonist_aliases
+            body, confirmed_at, protagonist_aliases=protagonist_aliases, other_character_names=other_character_names
         )
         if result is not None:
             return result
@@ -620,6 +657,7 @@ def character_attribute_carry_choice_evidence(
     expected_reason: str = "",
     *,
     protagonist_aliases: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
 ) -> tuple[bool, bool, int | None]:
     """Return one real carry choice, its reason match, and its local point result."""
 
@@ -646,7 +684,7 @@ def character_attribute_carry_choice_evidence(
             True,
             _carry_reason_matches(context, expected_reason),
             _remaining_point_candidate_near_anchor(
-                body, choice.start(), protagonist_aliases=protagonist_aliases
+                body, choice.start(), protagonist_aliases=protagonist_aliases, other_character_names=other_character_names
             ),
         )
     return False, False, None
@@ -657,8 +695,12 @@ def has_character_attribute_carry_choice_and_reason(
     expected_reason: str = "",
     *,
     protagonist_aliases: Iterable[str] | None = None,
+    other_character_names: Iterable[str] | None = None,
 ) -> tuple[bool, bool]:
     has_choice, has_reason, _ = character_attribute_carry_choice_evidence(
-        body, expected_reason, protagonist_aliases=protagonist_aliases
+        body,
+        expected_reason,
+        protagonist_aliases=protagonist_aliases,
+        other_character_names=other_character_names,
     )
     return has_choice, has_reason

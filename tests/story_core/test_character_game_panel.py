@@ -1,5 +1,26 @@
 from packages.story_core.models import CharacterState, StoryState
-from packages.story_core.orchestrator import _apply_ledger_updates, _extract_equipment_ledger_updates, _sync_character_game_panels
+from packages.story_core.orchestrator import (
+    _apply_ledger_updates,
+    _extract_equipment_ledger_updates,
+    _review_character_names,
+    _sync_character_game_panels,
+)
+
+
+def test_review_character_names_uses_active_character_name_and_game_id():
+    story = StoryState(
+        story_id="s-review-character-names",
+        outline="测试",
+        genre="网游",
+        style="轻松",
+        characters=[
+            CharacterState(name="苏叶", role="主角", game_id="夜烬"),
+            CharacterState(name="林峰", role="队友", game_id="青锋"),
+            CharacterState(name="旧角色", role="路人", game_id="旧ID", frozen=True),
+        ],
+    )
+
+    assert set(_review_character_names(story)) == {"苏叶", "夜烬", "林峰", "青锋"}
 
 
 def test_protagonist_game_panel_syncs_from_progression_ledger():
