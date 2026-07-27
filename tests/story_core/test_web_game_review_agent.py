@@ -646,6 +646,25 @@ def test_web_game_review_rejects_named_bystander_allocation_when_protagonist_ali
     assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
 
 
+def test_web_game_review_rejects_bystander_allocation_after_protagonist_mention():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="夜烬看着短发玩家把五点加到智力上，确认后可用属性点归零。他自己没有加点。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+        protagonist_aliases={"苏叶", "夜烬"},
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
 def test_web_game_review_rejects_negated_allocation_choice_and_confirmation():
     review = review_web_game_chapter(
         chapter_number=4,

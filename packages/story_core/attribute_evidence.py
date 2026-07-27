@@ -40,6 +40,10 @@ _CARRY_DECISION_PREFIX = re.compile(
 )
 _PRONOUN_SUBJECT_PREFIX = re.compile(r"(?:^|[，,])\s*(?:他|她|我)[^。！？\n]{0,32}$")
 _BYSTANDER_SUBJECT_PREFIX = re.compile(r"(?:^|[，,])\s*(?:(?:短发|长发|高个|矮个|陌生|路过的)?(?:玩家|路人|NPC))")
+_ACTION_SUBJECT_BEFORE_BRIDGE = re.compile(
+    r"(?P<subject>他|她|我|玩家|队友|NPC|[\u4e00-\u9fff]{2,4})\s*(?:把|将)\s*$"
+)
+_ACTION_CONTINUATIONS = {"随后", "然后", "接着", "再", "便", "就", "先", "又"}
 _GENERIC_REASON_TERMS = {"先", "为了", "因为", "属性点", "属性", "点", "保留", "留着", "分配", "决定", "原因", "目的", "以后", "再用", "留给"}
 
 
@@ -133,11 +137,29 @@ def _has_protagonist_actor(prefix: str, pattern: re.Pattern[str], protagonist_al
     return not _BYSTANDER_SUBJECT_PREFIX.search(prefix)
 
 
+def _nearest_attribute_action_subject(prefix: str) -> str | None:
+    """Read only the current comma clause's explicit subject before 把/将."""
+
+    clause = re.split(r"[，,；;]", prefix)[-1]
+    match = _ACTION_SUBJECT_BEFORE_BRIDGE.search(clause)
+    if not match:
+        return None
+    subject = match.group("subject")
+    return None if subject in _ACTION_CONTINUATIONS else subject
+
+
 def _has_character_action(text: str, action_start: int, protagonist_aliases: Iterable[str] | None = None) -> bool:
     start, _ = sentence_bounds(text, action_start)
     if _is_explanatory_sentence(text, action_start):
         return False
-    return _has_protagonist_actor(text[start:action_start], _CHARACTER_ACTION_PREFIX, protagonist_aliases)
+    prefix = text[start:action_start]
+    subject = _nearest_attribute_action_subject(prefix)
+    if subject is not None:
+        aliases = _normalized_aliases(protagonist_aliases)
+        if aliases:
+            return subject in aliases or subject in {"他", "她", "我"}
+        return not _BYSTANDER_SUBJECT_PREFIX.search(subject)
+    return _has_protagonist_actor(prefix, _CHARACTER_ACTION_PREFIX, protagonist_aliases)
 
 
 def _action_matches(body: str, attribute: str | None = None, points: int | None = None) -> Iterator[re.Match[str]]:

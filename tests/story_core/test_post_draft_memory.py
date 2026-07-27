@@ -452,6 +452,33 @@ def test_attribute_allocation_memory_rejects_named_bystander_when_protagonist_al
     assert result["ledger_updates"] == {}
 
 
+def test_attribute_allocation_memory_rejects_bystander_action_after_protagonist_mention():
+    body = "夜烬看着短发玩家把五点加到智力上，确认后可用属性点归零。他自己没有加点。"
+    payload = {
+        "ledger_updates": {
+            "protagonist": {
+                "attribute_allocation": {
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                }
+            }
+        },
+        "ledger_evidence": {
+            "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+            "protagonist.attribute_allocation.remaining": "可用属性点归零",
+        },
+    }
+
+    result = normalize_post_draft_memory(
+        payload,
+        body=body,
+        existing_character_names={"苏叶", "夜烬", "短发玩家"},
+        protagonist_aliases={"苏叶", "夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
 def test_attribute_allocation_rejects_zero_remaining_from_unrelated_durability_text():
     body = "夜烬把五点加到智力上，确认加点。可用属性点还是5点，法杖耐久归零。"
     result = normalize_post_draft_memory(

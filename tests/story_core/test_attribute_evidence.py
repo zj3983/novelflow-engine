@@ -19,6 +19,18 @@ def test_attribute_allocation_default_rejects_explicit_bystander_subject():
     assert not has_character_attribute_allocation("《神域》里，短发玩家把五点加到智力上", "智力", 5)
 
 
+def test_attribute_allocation_rejects_bystander_subject_after_protagonist_mention():
+    assert not has_character_attribute_allocation(
+        "夜烬看着短发玩家把五点加到智力上", "智力", 5, protagonist_aliases={"苏叶", "夜烬"}
+    )
+
+
+def test_attribute_allocation_keeps_protagonist_as_actor_after_bounded_scene_transition():
+    assert has_character_attribute_allocation(
+        "夜烬看了短发玩家一眼，随后把五点加到智力上", "智力", 5, protagonist_aliases={"苏叶", "夜烬"}
+    )
+
+
 def test_attribute_allocation_accepts_confirmation_in_adjacent_paragraph():
     body = "夜烬把五点全部加到智力上。\n\n他点下确认，可用属性点归零。"
 
