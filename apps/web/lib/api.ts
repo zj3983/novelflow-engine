@@ -1457,6 +1457,147 @@ export type BookDissectionReport = {
   meta?: Record<string, unknown>;
 };
 
+export type ContinuationConfidence = "confirmed" | "inferred";
+
+export type ContinuationEvidenceRef = {
+  chapter_id: string;
+  excerpt_start: number;
+  excerpt_end: number;
+  quote: string;
+};
+
+export type ContinuationClaim = {
+  claim: string;
+  confidence: ContinuationConfidence;
+  evidence: ContinuationEvidenceRef[];
+};
+
+export type ContinuationCharacterAnalysis = {
+  name: string;
+  role: string;
+  summary: string;
+  confidence: ContinuationConfidence;
+  evidence: ContinuationEvidenceRef[];
+  states: ContinuationClaim[];
+  relationships: ContinuationClaim[];
+};
+
+export type ContinuationTimelineEvent = {
+  text: string;
+  sequence: string;
+  confidence: ContinuationConfidence;
+  evidence: ContinuationEvidenceRef[];
+};
+
+export type ContinuationHook = {
+  text: string;
+  status: "open" | "resolved" | "uncertain";
+  confidence: ContinuationConfidence;
+  evidence: ContinuationEvidenceRef[];
+};
+
+export type ContinuationAnalysis = {
+  story_overview: string;
+  characters: ContinuationCharacterAnalysis[];
+  world: ContinuationClaim[];
+  power_system: ContinuationClaim[];
+  timeline: ContinuationTimelineEvent[];
+  open_hooks: ContinuationHook[];
+  style_profile: {
+    narrative_voice: string;
+    point_of_view: string;
+    tense: string;
+    pacing: string;
+    dialogue_style: string;
+    prose_features: string[];
+    confidence: ContinuationConfidence;
+    evidence: ContinuationEvidenceRef[];
+  };
+  continuation_start: {
+    chapter_id: string;
+    situation: string;
+    guidance: string;
+    constraints: ContinuationClaim[];
+  };
+  evidence_index: Record<string, ContinuationEvidenceRef[]>;
+  needs_confirmation: Array<{ claim: string; source: string; reason: string }>;
+};
+
+export type ContinuationChapter = {
+  chapter_id: string;
+  number: number;
+  title: string;
+  body: string;
+  source_name: string;
+  source_start: number;
+  source_end: number;
+  fingerprint: string;
+};
+
+export type ContinuationScanResult = {
+  source_path: string;
+  source_kind: "file" | "directory";
+  encoding: string;
+  chapters: ContinuationChapter[];
+  total_chars: number;
+  warnings: string[];
+  duplicate_groups: string[][];
+  numbering_gaps: number[];
+  can_analyze: boolean;
+};
+
+export type ContinuationImportSession = {
+  schema_version: "continuation-import-session/v1";
+  session_id: string;
+  revision: number;
+  status: "parsed" | "analyzing" | "ready" | "failed" | "cancelled";
+  source_path: string;
+  source_fingerprint: string;
+  encoding: string;
+  chapters: ContinuationChapter[];
+  analysis: ContinuationAnalysis | Record<string, never>;
+  analysis_progress: Record<string, unknown>;
+  error: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ContinuationSourceList = {
+  current_path: string;
+  directories: Array<{ name: string; path: string }>;
+  files: Array<{ name: string; path: string }>;
+};
+
+export type ContinuationSettings = {
+  start_after_chapter: number;
+  fidelity: "faithful" | "adaptive";
+  target_chars: number;
+  direction: string;
+  planned_chapters: number;
+  must_preserve: string[];
+  forbidden_content: string[];
+  generate_outline: boolean;
+  outline_chapters: number;
+  novel_type_id: string;
+};
+
+export type CreatedContinuationProject = {
+  project_id: string;
+  title: string;
+  source_path: string;
+  current_chapter: number;
+  storage_source: string;
+  next_path: string;
+};
+
+export type QuickContinuationResult = {
+  session_id: string;
+  project_id: string;
+  project_route: string;
+  job_id: string;
+  job_status: string;
+};
+
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 }
@@ -2450,6 +2591,105 @@ export async function fetchBookLibraryCatalog(sourcePath: string): Promise<BookL
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ source_path: sourcePath }),
   })) as BookLibraryCatalogResponse;
+}
+
+export async function listContinuationSources(sourcePath = ""): Promise<ContinuationSourceList> {
+  return (await tryFetchJson(`${apiBase()}/continuation-imports/list-sources`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source_path: sourcePath }),
+  })) as ContinuationSourceList;
+}
+
+export async function scanContinuationSource(
+  sourcePath: string,
+  forcedEncoding?: string,
+): Promise<ContinuationScanResult> {
+  return (await tryFetchJson(`${apiBase()}/continuation-imports/scan`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source_path: sourcePath, forced_encoding: forcedEncoding || null }),
+  })) as ContinuationScanResult;
+}
+
+export async function createContinuationImport(
+  sourcePath: string,
+  forcedEncoding?: string,
+): Promise<ContinuationImportSession> {
+  return (await tryFetchJson(`${apiBase()}/continuation-imports`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source_path: sourcePath, forced_encoding: forcedEncoding || null }),
+  })) as ContinuationImportSession;
+}
+
+export async function fetchContinuationImport(sessionId: string): Promise<ContinuationImportSession> {
+  return (await tryFetchJson(`${apiBase()}/continuation-imports/${encodeURIComponent(sessionId)}`, {
+    method: "GET",
+  })) as ContinuationImportSession;
+}
+
+export async function replaceContinuationChapters(
+  sessionId: string,
+  expectedRevision: number,
+  chapters: ContinuationChapter[],
+): Promise<ContinuationImportSession> {
+  return (await tryFetchJson(`${apiBase()}/continuation-imports/${encodeURIComponent(sessionId)}/chapters`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expected_revision: expectedRevision, chapters }),
+  })) as ContinuationImportSession;
+}
+
+export async function startContinuationAnalysis(sessionId: string): Promise<{ session_id: string; status: string }> {
+  return (await tryFetchJson(`${apiBase()}/continuation-imports/${encodeURIComponent(sessionId)}/analyze`, {
+    method: "POST",
+  }, 180000)) as { session_id: string; status: string };
+}
+
+export async function fetchContinuationAnalysis(sessionId: string): Promise<ContinuationAnalysis> {
+  return (await tryFetchJson(`${apiBase()}/continuation-imports/${encodeURIComponent(sessionId)}/analysis`, {
+    method: "GET",
+  })) as ContinuationAnalysis;
+}
+
+export async function confirmContinuationAnalysis(
+  sessionId: string,
+  expectedRevision: number,
+  analysis: ContinuationAnalysis,
+): Promise<ContinuationImportSession> {
+  return (await tryFetchJson(`${apiBase()}/continuation-imports/${encodeURIComponent(sessionId)}/analysis`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expected_revision: expectedRevision, analysis }),
+  })) as ContinuationImportSession;
+}
+
+export async function createContinuationProject(
+  sessionId: string,
+  expectedRevision: number,
+  settings: ContinuationSettings,
+): Promise<CreatedContinuationProject> {
+  return (await tryFetchJson(`${apiBase()}/continuation-imports/${encodeURIComponent(sessionId)}/create-project`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expected_revision: expectedRevision, settings }),
+  }, 180000)) as CreatedContinuationProject;
+}
+
+export async function quickContinueNovel(
+  sessionId: string,
+  targetChars?: number,
+): Promise<QuickContinuationResult> {
+  return (await tryFetchJson(
+    `${apiBase()}/continuation-imports/${encodeURIComponent(sessionId)}/quick-continue`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(targetChars ? { target_chars: targetChars } : {}),
+    },
+    180000,
+  )) as QuickContinuationResult;
 }
 
 export interface BookFolderListResponse {

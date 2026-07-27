@@ -19,6 +19,16 @@ def _economy_violation_codes(body: str) -> set[str]:
     return {violation.code for violation in detect_economy_boundary_violations(body)}
 
 
+def _assert_fragments_in_order(body: str, fragments: tuple[str, ...]) -> None:
+    cursor = 0
+    for step, fragment in enumerate(fragments, start=1):
+        position = body.find(fragment, cursor)
+        assert position >= 0, (
+            f"step {step} is missing or out of order after offset {cursor}: {fragment!r}"
+        )
+        cursor = position + len(fragment)
+
+
 @pytest.mark.parametrize(
     ("body", "expected_code"),
     (
@@ -506,7 +516,51 @@ def test_anonymous_feedback_action_stays_unchanged_before_trade_sentence(action:
     assert action in normalized
 
 
-def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_steps() -> None:
+def test_inline_legacy_auction_flow_migrates_in_order_and_reaches_fixed_point() -> None:
+    source = (
+        "第一章，裂纹狼心进入拍卖：起拍价1金币20银币，最低加价10银币，"
+        "一口价2金币，匿名上架。"
+        "买家按一口价购入，成交款转入游戏钱包。"
+        "夜烬从侧栏进入担保平台，核对当前报价、可用额度、手续费和预计到账，"
+        "随后确认兑换。担保到账1764.00元。"
+    )
+
+    once = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+    twice = normalize_legacy_economy_prompt_value(
+        once,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert once != source
+    assert twice == once
+    _assert_fragments_in_order(
+        once,
+        (
+            "进入拍卖",
+            "起拍价1金币20银币",
+            "最低加价10银币",
+            "一口价2金币",
+            "匿名上架",
+            "买家按一口价购入",
+            "成交款转入游戏钱包",
+            "进入官方兑换渠道",
+            "当前报价",
+            "可用额度",
+            "手续费",
+            "预计到账",
+            "确认兑换",
+            "官方兑换到账1764.00元",
+        ),
+    )
+    assert "担保" not in once
+
+
+def test_real_chapter_one_auction_exchange_flow_smoke_test() -> None:
     worktree_root = Path(__file__).resolve().parents[2]
     candidates = (
         worktree_root / "data" / "exported-projects" / "p-gou-webgame-restored",
@@ -519,20 +573,12 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     if chapter_path is None:
         pytest.skip("real chapter one fixture is unavailable")
     body = chapter_path.read_text(encoding="utf-8")
-    start_marker = "第三条求购单发布于三分钟前"
-    end_marker = "手机的到账震动透过头盔提醒传来。"
+    start_marker = "选择拍卖模式"
+    end_marker = "手机的到账震动透过头盔提醒传来"
     if start_marker not in body or end_marker not in body:
-        pytest.skip("real chapter fixture no longer contains the legacy trade sequence")
+        pytest.skip("real chapter fixture no longer contains the current auction sequence")
     start = body.index(start_marker)
     segment = body[start : body.index(end_marker, start) + len(end_marker)]
-    if not any(marker in segment for marker in ("匿名提交", "订单状态变成鉴定中", "担保净到账")):
-        pytest.skip("real chapter fixture already uses the current market/exchange flow")
-
-    ancient_sword_inside = "古剑交给鉴定师，等待鉴定结果。【样本符合求购要求】\n\n"
-    if "夜烬盯着订单页面" not in segment:
-        pytest.skip("real chapter fixture no longer has the legacy insertion anchor")
-    insert_at = segment.index("夜烬盯着订单页面")
-    segment = segment[:insert_at] + ancient_sword_inside + segment[insert_at:]
     normalized = normalize_legacy_economy_prompt_value(
         segment,
         game_context=True,
@@ -540,66 +586,39 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     )
 
     ordered_fragments = (
-        "夜烬点下立即出售",
-        "求购单显示已成交",
-        "【成交价：按求购单标价。】",
-        "【游戏币已进入钱包。】",
-        "他随后打开独立的官方兑换页面。",
-        "【兑换价：当前官方报价。】",
-        "【可用额度：足够完成本次兑换。】",
-        "【手续费：已计入预计到账。】",
-        "【预计到账：1764.00元。】",
-        "他确认兑换",
-        "【现实账户到账1764.00元。】",
+        start_marker,
+        "起拍价：1金币20银币",
+        "最低加价：10银币",
+        "一口价：2金币",
+        "拍卖时限：30分钟",
+        "是否匿名上架",
+        "夜烬勾选匿名",
+        "第一条同名拍卖记录",
+        "买家已按一口价购入",
+        "成交价：2金币",
+        "成交款已转入游戏钱包",
+        "从侧栏进入官方兑换页面",
+        "两枚金币、当前报价、可用额度和三十六元手续费",
+        "预计到账：1764.00元",
+        "点下确认兑换",
+        "兑换完成",
+        "游戏币已扣除",
+        end_marker,
     )
-    assert all(fragment in normalized for fragment in ordered_fragments)
-    assert [normalized.index(fragment) for fragment in ordered_fragments] == sorted(
-        normalized.index(fragment) for fragment in ordered_fragments
-    )
-    assert normalized.count("求购单显示已成交") == 1
-    assert "交易完成以后，村口不断有玩家跑进跑出" in normalized
-    assert "一个法杖玩家坐在喷泉边回蓝" in normalized
-    assert "手机的到账震动透过头盔提醒传来" in normalized
-    sale_index = normalized.index("夜烬点下立即出售")
-    market_index = normalized.index("求购单显示已成交", sale_index)
-    price_index = normalized.index("【成交价：按求购单标价。】", market_index)
-    wallet_index = normalized.index("【游戏币已进入钱包。】", market_index)
-    exchange_index = normalized.index("他随后打开独立的官方兑换页面。", wallet_index)
-    actual_index = normalized.index("【现实账户到账1764.00元。】", exchange_index)
-    assert price_index < wallet_index
-    assert "【成交价：按求购单标价。】【游戏币已进入钱包。】" in normalized
-    assert "等待" not in normalized[market_index:wallet_index]
-    assert "村口" not in normalized[market_index:wallet_index]
-    assert "官方兑换" not in normalized[:sale_index]
-    assert "预计到账" not in normalized[:sale_index]
-    assert "1764.00元" not in normalized[:exchange_index]
-    assert "【担保净到账1764.00元。】" not in normalized
-    assert normalized.count(ancient_sword_inside.strip()) == 1
-    assert wallet_index < normalized.index(ancient_sword_inside.strip()) < exchange_index
-    exchange_sentence = (
-        "他随后打开独立的官方兑换页面。"
-        "【兑换价：当前官方报价。】"
-        "【可用额度：足够完成本次兑换。】"
-        "【手续费：已计入预计到账。】"
-        "【预计到账：1764.00元。】"
-        "他确认兑换。"
-    )
-    assert exchange_sentence in normalized
-    assert exchange_index == normalized.index(exchange_sentence)
-    assert normalized.index("他确认兑换。", exchange_index) < actual_index
-    assert "成交价：1764.00元" not in normalized
-    assert "游戏币已进入钱包1764.00元" not in normalized
-    assert "汇率" not in normalized
+    _assert_fragments_in_order(normalized, ordered_fragments)
+    assert normalized == segment
+    assert normalize_legacy_economy_prompt_value(
+        normalized,
+        game_context=True,
+        chapter_number=1,
+    ) == normalized
     assert all(
         term not in normalized
         for term in (
-            "等待的半分钟里",
-            "买家确认收购",
-            "匿名担保交易已完成",
-            "夜烬盯着订单页面",
-            "屏幕终于一跳",
             "担保",
-            "求购单已成交，官方兑换完成",
+            "求购单",
+            "提交鉴定",
+            "匿名提交",
         )
     )
 

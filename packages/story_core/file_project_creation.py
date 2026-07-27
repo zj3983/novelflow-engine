@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -225,13 +226,19 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def create_file_project(
+def _remove_project_tree(path: Path) -> None:
+    def remove_readonly(function, value, _error) -> None:
+        os.chmod(value, stat.S_IWRITE)
+        function(value)
+
+    shutil.rmtree(path, ignore_errors=False, onerror=remove_readonly)
+
+
+def write_file_project_atomically(
     export_root: str | Path,
-    spec: FileProjectCreateSpec,
-    *,
-    project_id_factory: Callable[[], str] | None = None,
-) -> CreatedFileProject:
-    project_id = (project_id_factory or (lambda: f"p-{uuid4().hex}"))()
+    project_id: str,
+    writer: Callable[[Path], None],
+) -> Path:
     if not isinstance(project_id, str) or PROJECT_ID_PATTERN.fullmatch(project_id) is None:
         raise ValueError("invalid_generated_project_id")
 
@@ -243,17 +250,35 @@ def create_file_project(
 
     temp_root = Path(tempfile.mkdtemp(prefix=f".{project_id}.tmp-", dir=export_path))
     try:
-        _write_project_files(temp_root, project_id, spec)
-        _validate_created_project(temp_root, project_id, spec)
+        writer(temp_root)
         _fsync_directory(temp_root)
         if final_root.exists():
             raise FileExistsError("project_id_conflict")
         os.replace(temp_root, final_root)
     except Exception:
-        shutil.rmtree(temp_root, ignore_errors=True)
+        try:
+            _remove_project_tree(temp_root)
+        except OSError:
+            pass
         raise
 
     _fsync_directory(export_path)
+    return final_root
+
+
+def create_file_project(
+    export_root: str | Path,
+    spec: FileProjectCreateSpec,
+    *,
+    project_id_factory: Callable[[], str] | None = None,
+) -> CreatedFileProject:
+    project_id = (project_id_factory or (lambda: f"p-{uuid4().hex}"))()
+
+    def write(root: Path) -> None:
+        _write_project_files(root, project_id, spec)
+        _validate_created_project(root, project_id, spec)
+
+    final_root = write_file_project_atomically(export_root, project_id, write)
     route_id = quote(f"file:{project_id}", safe="")
     next_page = "setup" if spec.mode == "inspiration" else "outline"
     return CreatedFileProject(

@@ -932,6 +932,40 @@ def test_file_project_generation_log_survives_in_memory_job_reset(tmp_path, monk
     assert payload["steps"] == started_payload["steps"]
 
 
+def test_reserved_generation_job_reuses_completed_persisted_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "reserved-job-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-reserved-job-file",
+        state={"story_id": "s-reserved-job", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
+    )
+    submitted: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        file_projects._file_generation_executor,
+        "submit",
+        lambda *args, **_kwargs: submitted.append(args),
+    )
+
+    first = file_projects.start_file_generation_job(
+        "p-reserved-job-file", reserved_job_id="fgj-reserved"
+    )
+    with file_projects._file_generation_jobs_lock:
+        job = file_projects._file_generation_jobs["fgj-reserved"]
+        job["status"] = "completed"
+        file_projects._persist_file_generation_job(job)
+        file_projects._file_generation_jobs.clear()
+        file_projects._active_file_generation_jobs.clear()
+
+    recovered = file_projects.start_file_generation_job(
+        "p-reserved-job-file", reserved_job_id="fgj-reserved"
+    )
+
+    assert first["job_id"] == recovered["job_id"] == "fgj-reserved"
+    assert recovered["status"] == "completed"
+    assert len(submitted) == 1
+
+
 def test_story_current_generation_job_returns_active_job(monkeypatch):
     import apps.api.routes.stories as story_routes
 

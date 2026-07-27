@@ -4,15 +4,17 @@ import { useRouter } from "next/navigation";
 import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { PageHeader } from "../../../components/ws/PageHeader";
+import { ContinuationImportWizard } from "../../../components/ContinuationImportWizard";
 import { createFileProject, fetchNovelTypes as listNovelTypes, type NovelType } from "../../../lib/api";
 import { DEFAULT_NOVEL_TYPE_ID } from "../../../lib/novelTypes";
 
-type CreationMode = "inspiration" | "blank";
+type CreationMode = "inspiration" | "blank" | "continuation";
 
 export default function NewProjectPage() {
   const router = useRouter();
   const inspirationTabRef = useRef<HTMLButtonElement>(null);
   const blankTabRef = useRef<HTMLButtonElement>(null);
+  const continuationTabRef = useRef<HTMLButtonElement>(null);
   const mountedRef = useRef(true);
   const submitRequestIdRef = useRef(0);
   const typeSelectionTouchedRef = useRef(false);
@@ -70,6 +72,7 @@ export default function NewProjectPage() {
 
   const canSubmit = useMemo(() => {
     if (typesLoading || typesError || !selectedNovelType) return false;
+    if (mode === "continuation") return false;
     return mode === "blank" ? Boolean(title.trim()) : Boolean(idea.trim());
   }, [idea, mode, selectedNovelType, title, typesError, typesLoading]);
 
@@ -80,16 +83,16 @@ export default function NewProjectPage() {
 
   function focusMode(nextMode: CreationMode) {
     selectMode(nextMode);
-    const nextTab = nextMode === "inspiration" ? inspirationTabRef : blankTabRef;
+    const nextTab = nextMode === "inspiration" ? inspirationTabRef : nextMode === "blank" ? blankTabRef : continuationTabRef;
     nextTab.current?.focus();
   }
 
   function handleModeKeyDown(event: KeyboardEvent<HTMLButtonElement>, currentMode: CreationMode) {
     let nextMode: CreationMode | null = null;
     if (event.key === "Home") nextMode = "inspiration";
-    if (event.key === "End") nextMode = "blank";
-    if (event.key === "ArrowRight") nextMode = currentMode === "inspiration" ? "blank" : "inspiration";
-    if (event.key === "ArrowLeft") nextMode = currentMode === "inspiration" ? "blank" : "inspiration";
+    if (event.key === "End") nextMode = "continuation";
+    if (event.key === "ArrowRight") nextMode = currentMode === "inspiration" ? "blank" : currentMode === "blank" ? "continuation" : "inspiration";
+    if (event.key === "ArrowLeft") nextMode = currentMode === "inspiration" ? "continuation" : currentMode === "blank" ? "inspiration" : "blank";
     if (!nextMode) return;
 
     event.preventDefault();
@@ -98,7 +101,7 @@ export default function NewProjectPage() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canSubmit || submitting) return;
+    if (!canSubmit || submitting || mode === "continuation") return;
 
     const requestId = ++submitRequestIdRef.current;
     setSubmitting(true);
@@ -159,9 +162,27 @@ export default function NewProjectPage() {
           >
             建立空白小说
           </button>
+          <button
+            ref={continuationTabRef}
+            id="creation-mode-continuation"
+            type="button"
+            role="tab"
+            aria-selected={mode === "continuation"}
+            aria-controls="continuation-import"
+            tabIndex={mode === "continuation" ? 0 : -1}
+            className={`ws-project-create__tab${mode === "continuation" ? " is-active" : ""}`}
+            onClick={() => selectMode("continuation")}
+            onKeyDown={(event) => handleModeKeyDown(event, "continuation")}
+          >
+            续写已有小说
+          </button>
         </div>
 
-        <form
+        {mode === "continuation" ? (
+          <div id="continuation-import">
+            <ContinuationImportWizard novelTypes={novelTypes} />
+          </div>
+        ) : <form
           id="creation-form"
           className="ws-project-create__form"
           role="tabpanel"
@@ -245,7 +266,7 @@ export default function NewProjectPage() {
               {submitting ? "创建中..." : "创建小说"}
             </button>
           </div>
-        </form>
+        </form>}
       </section>
     </div>
   );
