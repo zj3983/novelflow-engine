@@ -789,6 +789,48 @@ def test_character_update_switches_subject_only_when_alias_starts_a_subclause():
     ]
 
 
+def test_character_update_moves_a_trailing_description_to_the_later_alias():
+    evidence = "青锋发现赤霄脸色凝重。"
+
+    result = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "林峰", "emotion": "凝重", "evidence": evidence},
+                {"name": "周远", "emotion": "凝重", "evidence": evidence},
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body=evidence,
+        existing_character_names={"林峰", "周远"},
+        character_aliases_by_name={"林峰": {"青锋"}, "周远": {"赤霄"}},
+    )
+
+    assert result["character_updates"] == [
+        {"name": "周远", "emotion": "凝重", "evidence": evidence}
+    ]
+
+
+def test_character_update_keeps_english_alias_with_following_goal_text():
+    evidence = "Su Wan asks Lin Yue to return at dawn."
+
+    result = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "Lin Yue", "goal": "return at dawn", "evidence": evidence}
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body=evidence,
+        existing_character_names={"Su Wan", "Lin Yue"},
+    )
+
+    assert result["character_updates"] == [
+        {"name": "Lin Yue", "goal": "return at dawn", "evidence": evidence}
+    ]
+
+
 def test_memory_prompt_lists_game_id_but_requires_real_character_name_for_updates():
     prompt = build_post_draft_memory_prompt(
         "青锋脸色凝重。",

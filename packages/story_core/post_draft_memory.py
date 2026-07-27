@@ -198,49 +198,34 @@ def _evidence_clauses(evidence: str) -> list[str]:
 
 
 _SUBCLAUSE_SEPARATOR = re.compile(r"[，,]+")
-_SUBJECT_LEADING_QUOTES = " \t\r\n\"'“”‘’「」『』"
-_SUBJECT_TIME_PREFIXES = (
-    "此时",
-    "随后",
-    "这时",
-    "这会儿",
-    "片刻后",
-    "过了一会儿",
-    "不久后",
-)
+_TRAILING_NON_CONTENT = " \t\r\n\"'“”‘’「」『』"
 
 
-def _subject_start(clause: str) -> int:
-    """Return the conservative position where a local subject may begin."""
-
-    start = 0
-    while start < len(clause) and clause[start] in _SUBJECT_LEADING_QUOTES:
-        start += 1
-    for prefix in _SUBJECT_TIME_PREFIXES:
-        if clause.startswith(prefix, start):
-            start += len(prefix)
-            while start < len(clause) and clause[start] in _SUBJECT_LEADING_QUOTES:
-                start += 1
-            break
-    return start
-
-
-def _subclause_subject(
-    clause: str,
+def _character_alias_matches(
+    text: str,
     *,
     aliases_for_name: Mapping[str, set[str]],
-) -> str | None:
-    start = _subject_start(clause)
+) -> list[tuple[int, int, str]]:
     candidates = [
-        (alias, name)
+        (match.start(), match.end(), name)
         for name, aliases in aliases_for_name.items()
         for alias in aliases
-        if alias and clause.startswith(alias, start)
+        if alias
+        for match in re.finditer(re.escape(alias), text)
     ]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: (-len(item[0]), item[1]))
-    return candidates[0][1]
+    candidates.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2]))
+    matches: list[tuple[int, int, str]] = []
+    occupied_until = 0
+    for start, end, name in candidates:
+        if start < occupied_until:
+            continue
+        matches.append((start, end, name))
+        occupied_until = end
+    return matches
+
+
+def _has_trailing_content(text: str) -> bool:
+    return bool(text.strip(_TRAILING_NON_CONTENT))
 
 
 def _character_evidence_spans(
@@ -250,7 +235,7 @@ def _character_evidence_spans(
     aliases_by_name: Mapping[str, set[str]],
     known_names: set[str],
 ) -> list[str]:
-    """Keep a target's local text until another subject starts a subclause."""
+    """Track local character spans without treating a trailing object as a subject."""
 
     all_names = known_names | set(aliases_by_name)
     aliases_for_name = {
@@ -265,17 +250,27 @@ def _character_evidence_spans(
             subclause = subclause.strip()
             if not subclause:
                 continue
-            subject = _subclause_subject(
+            cursor = 0
+            for start, end, name in _character_alias_matches(
                 subclause,
                 aliases_for_name=aliases_for_name,
-            )
-            if subject is not None and subject != current_subject:
-                if current_subject == target_name and current_span:
-                    spans.append("，".join(current_span))
-                current_span = []
-                current_subject = subject
+            ):
+                if current_subject is not None:
+                    preceding_text = subclause[cursor:start].strip()
+                    if preceding_text:
+                        current_span.append(preceding_text)
+                if _has_trailing_content(subclause[end:]):
+                    if current_subject == target_name and current_span:
+                        spans.append("，".join(current_span))
+                    current_subject = name
+                    current_span = []
+                    cursor = start
+                else:
+                    cursor = end
             if current_subject == target_name:
-                current_span.append(subclause)
+                trailing_text = subclause[cursor:].strip()
+                if trailing_text:
+                    current_span.append(trailing_text)
         if current_subject == target_name and current_span:
             spans.append("，".join(current_span))
     return spans
