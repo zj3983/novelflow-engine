@@ -41,8 +41,6 @@ import { groupWorldFacts } from "../lib/worldDisplay";
 import { buildWritingFlow, writingFlowPlanningSourceText } from "../components/ws/WritingFlow";
 import { resolveChapterDirectionId } from "../lib/chapterDirections";
 
-const FIXTURE_PATH = path.resolve(__dirname, "../../../tests/fixtures/book-import-sample");
-
 test("chapter planning source is shown in plain language", () => {
   expect(writingFlowPlanningSourceText({ planning_source: "outline" })).toBe("已有章节细纲");
   expect(writingFlowPlanningSourceText({ planning_source: "model_fallback" })).toBe("模型补全");
@@ -647,116 +645,68 @@ test("世界背景与分类规则编辑器保留蓝图其他字段并独立保�
   expect(savedCount).toBe(2);
 });
 
-async function proxyBookImportRoutes(page: Page) {
-  await page.route("**/book-import/**", async (route) => {
-    const request = route.request();
-    const sourcePath = FIXTURE_PATH;
-    const read = (relativePath: string) => fs.readFileSync(path.join(sourcePath, relativePath), "utf-8");
-
-    const scanPayload = {
-      source_path: sourcePath,
-      exists: true,
-      missing_required_files: [],
-      missing_optional_files: [],
-      unusable_required_files: [],
-      empty_files: [],
-      present_files: [
-        "author_intent.md",
-        "book_rules.md",
-        "character_matrix.md",
-        "current_focus.md",
-        "story_bible.md",
-        "volume_outline.md",
-      ],
-      warnings: [],
-      can_bootstrap: true,
-    };
-
-    const catalogPayload = {
-      source_path: sourcePath,
-      exists: true,
-      can_bootstrap: true,
-      sections: [
-        {
-          section_id: "source_docs",
-          title: "源书目录",
-          items: [
-            {
-              item_id: "source:author_intent.md",
-              title: "author_intent.md",
-              kind: "source_document",
-              filename: "author_intent.md",
-              path: `${sourcePath}/author_intent.md`,
-              preview: "INTENT: Keep the opening grounded.",
-              content: read("author_intent.md"),
-              parsed_characters: [],
-            },
-          ],
-        },
-      ],
-    };
-
-    const bootstrapPayload = {
-      report: scanPayload,
-      draft: {
-        source_path: sourcePath,
-        outline: "VOLUME: A hidden ledger drives the plot.\n\nFOCUS: Start with the first clue.",
-        summary: "导演预读：这本书会先从账本和匿名线索开始，逐步把宫廷压力抬起来。",
-        characters: [
-          { name: "Lin Yue", goal: "find the hidden ledger" },
-          { name: "Su Wan", goal: "protect the witness" },
-        ],
-      },
-    };
-
-    if (request.method() === "OPTIONS") {
-      await route.fulfill({
-        status: 204,
-        headers: {
-          "access-control-allow-origin": "*",
-          "access-control-allow-methods": "POST, OPTIONS",
-          "access-control-allow-headers": "content-type",
-        },
-        body: "",
-      });
-      return;
-    }
-
-    if (request.url().includes("/book-import/catalog")) {
-      await route.fulfill({
-        status: 200,
-        headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
-        body: JSON.stringify(catalogPayload),
-      });
-      return;
-    }
-
-    if (request.url().includes("/book-import/scan")) {
-      await route.fulfill({
-        status: 200,
-        headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
-        body: JSON.stringify(scanPayload),
-      });
-      return;
-    }
-
-    if (request.method() === "POST" && request.url().includes("/book-import/bootstrap")) {
-      await route.fulfill({
-        status: 200,
-        headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
-        body: JSON.stringify(bootstrapPayload),
-      });
-      return;
-    }
-
-    await route.fallback();
-  });
+function currentProjectFixture(projectId: string) {
+  return {
+    project_id: projectId,
+    title: "灰狼坡纪事",
+    source_path: "D:/novels/gray-wolf",
+    seed_outline: "主角沿灰狼坡的线索追查失踪案。",
+    world_summary: "现实与游戏线并行推进。",
+    current_focus: "追查灰狼坡留下的交易线索。",
+    author_constraints: [],
+    world_blueprint: { premise: "游戏事件会留下现实痕迹", constraints: ["交易必须遵守市场规则"] },
+    character_profiles: [],
+    relationship_graph: [],
+    enabled_skill_ids: [],
+    status: "writing",
+    pipeline_stage: "writing",
+    active_story_id: projectId,
+    branches: [],
+    storage_source: "file",
+  };
 }
 
-async function seedMinimalDraft(page: Page) {
-  await page.getByLabel("Outline Input").fill("A court ledger hides the first clue.");
-  await page.getByLabel("Character Name 1").fill("Lin Yue");
-  await page.getByLabel("Character Goal 1").fill("find the hidden ledger");
+function currentStoryFixture(projectId: string, body = "林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。") {
+  return {
+    story_id: projectId,
+    outline: "沿交易线索查清失踪案。",
+    genre: "网游",
+    style: "白描",
+    current_chapter: 1,
+    agent_settings: { mode: "LLM-assisted", global_model: "", character_model: "", director_model: "", writer_model: "", memory_model: "", temperature: 0.7, new_character_policy: "Director review" },
+    agent_runtime: { recent_events: [] },
+    author_constraints: [],
+    world_facts: ["灰狼坡与临川商会存在旧交易"],
+    characters: [],
+    history: [{
+      chapter_number: 1,
+      chapter_title: "灰狼坡旧痕",
+      body,
+      chapter_summary: { chapter_number: 1, summary: "林照找到商会留下的线索。", facts: [], unresolved_threads: ["铜牌主人是谁"] },
+      next_outline: "循着铜牌查到临川商会。",
+      quality_report: { ok: true, issues: [] },
+    }],
+    parent_story_id: null,
+    branched_from_chapter: null,
+  };
+}
+
+async function routeCurrentFileProject(page: Page, fixtureName: string) {
+  const projectId = `file:${fixtureName}`;
+  const project = currentProjectFixture(projectId);
+  const story = currentStoryFixture(projectId);
+  const encodedId = encodeURIComponent(projectId);
+  await page.route(`**/file-projects/${encodedId}`, async (route) => {
+    if (route.request().method() === "PUT") {
+      const payload = route.request().postDataJSON() as Record<string, unknown>;
+      Object.assign(project, payload);
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route(`**/file-stories/${encodedId}`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(story) });
+  });
+  return { projectId, encodedId, project, story };
 }
 
 async function routeProjectLists(page: Page, projects: unknown[]) {
@@ -1345,22 +1295,25 @@ test("opening setup immediately replaces the route when GET is already selected"
   expect(openingMethods.every((method) => method === "GET")).toBe(true);
 });
 
-test("homepage foregrounds story status and history before import", async ({ page }) => {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+test("project overview foregrounds writing status and recent chapter history", async ({ page }) => {
+  const { encodedId } = await routeCurrentFileProject(page, "overview-status");
+  await page.goto(`/projects/${encodedId}`, { waitUntil: "domcontentloaded" });
 
-  await expect(page.getByRole("banner")).toBeVisible();
-  await expect(page.locator(".simulation-board")).toBeVisible();
-  await expect(page.locator('[aria-label="项目资料面板"]')).toBeVisible();
-  await expect(page.locator(".creative-workbench__side")).toBeVisible();
-  await expect(page.getByRole("banner").getByRole("button")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "灰狼坡纪事" })).toBeVisible();
+  await expect(page.getByText(/第 1 章 · \d+ 字 · 写作中/)).toBeVisible();
+  await expect(page.getByRole("link", { name: "第 1 章 · 灰狼坡旧痕" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "世界响应" })).toBeVisible();
+  await expect(page.getByText("循着铜牌查到临川商会。", { exact: true })).toBeVisible();
 });
 
-test("homepage top bar shows writing progress and core actions", async ({ page }) => {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+test("write page shows current progress and core writing actions", async ({ page }) => {
+  const { encodedId } = await routeCurrentFileProject(page, "write-actions");
+  await page.goto(`/projects/${encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator(".workbench-topbar__eyebrow")).toBeVisible();
-  await expect(page.locator(".workbench-topbar__summary")).toBeVisible();
-  await expect(page.getByRole("banner").getByRole("link", { name: /查看配置/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "章节：第 1 章" })).toBeVisible();
+  await expect(page.getByLabel("章节目录")).toContainText("1 章");
+  await expect(page.getByRole("button", { name: "生成下一章" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "重新生成本章" })).toBeEnabled();
 });
 
 test("file project outline edits three levels and runs outline generation", async ({ page }) => {
@@ -1690,30 +1643,58 @@ test("relationship workspace defaults to protagonist and saves the canonical gra
   expect(savedGraph[0]).toMatchObject({ source: "林照", target: "赵衡", current_state: "公开对立" });
 });
 
-test("imported book still exposes a browsable source panel", async ({ page }) => {
-  await proxyBookImportRoutes(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.waitForLoadState("networkidle");
+test("existing novel continuation exposes a browsable source panel", async ({ page }) => {
+  await page.route("**/novel-types", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{ id: "generic_webnovel", name: "通用网文", description: "通用规则", keywords: [], core_promises: [], ledger_fields: [], rulebook: {}, quality_checks: [], trope_templates: [], builtin: true }]),
+    });
+  });
+  await page.route(/^http:\/\/127\.0\.0\.1:\d+\/continuation-imports\/list-sources$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        current_path: "D:/novels",
+        directories: [{ name: "旧书目录", path: "D:/novels/旧书目录" }],
+        files: [{ name: "旧书正文.txt", path: "D:/novels/旧书正文.txt" }],
+      }),
+    });
+  });
+  await page.goto("/projects/new", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("option", { name: "通用网文" })).toBeAttached({ timeout: 15_000 });
+  const continuationTab = page.getByRole("tab", { name: "续写已有小说" });
+  await continuationTab.click();
+  await expect(continuationTab).toHaveAttribute("aria-selected", "true", { timeout: 15_000 });
 
-  const sourcePathInput = page.getByPlaceholder("例如：D:/novels/demo/story");
-  await sourcePathInput.fill(FIXTURE_PATH);
-  await page.getByRole("button", { name: "校验目录", exact: true }).click();
-
-  await expect(page.locator('[aria-label="书籍导入报告"]')).toContainText("可载入");
-  await expect(page.locator('[aria-label="导入内容浏览面板"]')).toBeVisible();
+  await expect(page.getByRole("heading", { name: "选择小说来源" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: /旧书目录/ })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: /旧书正文\.txt/ })).toBeVisible({ timeout: 15_000 });
 });
 
-test("generated chapters surface in the homepage chapter workspace", async ({ page }) => {
-  await page.goto("/");
-  await seedMinimalDraft(page);
-  await page.getByRole("banner").getByRole("button", { name: /开始生成第一章|继续生成下一章/ }).click();
+test("generated chapters surface in the current writing workspace", async ({ page }) => {
+  const { encodedId } = await routeCurrentFileProject(page, "generated-chapter");
+  await page.goto(`/projects/${encodedId}/write?chapter=1`);
 
-  await expect(page.locator(".chapter-panel")).toContainText(/第\s*\d+\s*章/);
-  await expect(page.locator(".chapter-panel")).toContainText("本章意图");
-  await expect(page.locator(".chapter-panel")).toContainText("事件推进");
+  await expect(page.locator(".ws-reader")).toContainText("灰狼坡旧痕");
+  await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
+  await expect(page.locator(".ws-reader__notes")).toContainText("章节摘要");
+  await expect(page.locator(".ws-reader__notes")).toContainText("下一章焦点");
 });
 
-test("chapter review panel can trigger an automatic revision", async ({ page }) => {
+test("write page can regenerate the current file-project chapter", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "regenerate-chapter");
+  let regenerationPayload: Record<string, unknown> | null = null;
+  await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
+    regenerationPayload = route.request().postDataJSON() as Record<string, unknown>;
+    fixture.story.history[0].body = "REGENERATED_CHAPTER: 商会规则和主角动机已经补全。";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ job_id: "job-regenerate", status: "completed", progress: "已完成", steps: [] }),
+    });
+  });
   await page.route("**/projects/*/agent-revise", async (route) => {
     const request = route.request();
     expect(request.method()).toBe("POST");
@@ -1897,15 +1878,11 @@ test("chapter review panel can trigger an automatic revision", async ({ page }) 
     window.sessionStorage.setItem("novel-autogrowth-engine.story-id", "s-test");
   });
 
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "重新生成本章" }).click();
 
-  await expect(page.locator(".chapter-panel")).toContainText("改稿安全报告");
-  await expect(page.locator(".chapter-panel")).toContainText("整章快照：保留原稿");
-  await expect(page.locator(".chapter-panel")).toContainText("现实入口：保留原稿");
-
-  await page.getByRole("button", { name: "按审稿意见自动改稿" }).click();
-
-  await expect(page.locator(".chapter-panel__prose")).toContainText("REVISED_BY_AGENT");
+  await expect.poll(() => regenerationPayload).toMatchObject({ chapter_number: 1 });
+  await expect(page.locator(".ws-reader__body")).toContainText("REGENERATED_CHAPTER");
 });
 
 test("write page accepts three-stage runtime state", async ({ page }) => {
@@ -2063,18 +2040,17 @@ test("write page accepts three-stage runtime state", async ({ page }) => {
   await expect(page.locator(".ws-reader")).toContainText("ORIGINAL_BY_AGENT");
 });
 
-test("project author constraints persist after refresh", async ({ page }) => {
-  await page.goto("/");
-  await seedMinimalDraft(page);
-  await page.getByRole("banner").getByRole("button", { name: /开始生成第一章|继续生成下一章/ }).click();
+test("project world constraints persist after refresh", async ({ page }) => {
+  const { encodedId } = await routeCurrentFileProject(page, "constraint-persistence");
+  await page.goto(`/projects/${encodedId}/world`);
 
-  await page.locator(".project-editor textarea").nth(2).fill("rule one\nrule two");
-  await page.locator(".project-editor button.btn--primary").click();
-
-  await expect(page.getByText("项目资料已保存到后端。")).toBeVisible();
+  const constraints = page.locator('section[aria-labelledby="constraints-world-rules-title"] textarea').first();
+  await constraints.fill("规则一\n规则二");
+  await page.getByRole("button", { name: "保存世界硬约束", exact: true }).click();
+  await expect(constraints).toHaveValue("规则一\n规则二");
   await page.reload();
 
-  await expect(page.locator(".project-editor textarea").nth(2)).toHaveValue(/rule one/);
+  await expect(page.locator('section[aria-labelledby="constraints-world-rules-title"] textarea').first()).toHaveValue("规则一\n规则二");
 });
 
 test("角色卡状态显示和编辑保存遵循网游插件", async ({ page }) => {
