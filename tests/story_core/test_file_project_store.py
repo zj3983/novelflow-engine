@@ -5687,6 +5687,85 @@ def test_regenerate_without_previous_snapshot_does_not_reuse_completed_chapter_s
     store.regenerate_chapter(2, engine=FakeEngine())
 
 
+def test_regenerate_without_snapshot_whitelists_stable_state_only(monkeypatch, tmp_path):
+    root = tmp_path / "regenerate-conservative-fallback"
+    chapter_two_markers = {
+        "world": "CHAPTER2_WORLD_FACT",
+        "foreshadowing": "CHAPTER2_FORESHADOWING",
+        "arc": "CHAPTER2_ARC_RECAP",
+        "monster": "CHAPTER2_MONSTER",
+        "emotion": "CHAPTER2_EMOTION",
+        "goal": "CHAPTER2_GOAL",
+    }
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-regenerate-conservative",
+            "outline": "A stable book outline.",
+            "genre": "fantasy",
+            "genre_plugin_ids": ["xuanhuan"],
+            "style": "plain",
+            "current_chapter": 2,
+            "author_constraints": ["Keep the book-level rule."],
+            "world_facts": [chapter_two_markers["world"]],
+            "foreshadowing": [
+                {"text": chapter_two_markers["foreshadowing"], "first_chapter": 2, "status": "open"}
+            ],
+            "arc_recaps": [
+                {"start_chapter": 2, "end_chapter": 2, "recap": chapter_two_markers["arc"]}
+            ],
+            "monster_profiles": [{"name": chapter_two_markers["monster"]}],
+            "progression_ledger": {"chapter_two_complete": True},
+            "characters": [
+                {
+                    "name": "Ari",
+                    "role": "protagonist",
+                    "current_emotion": chapter_two_markers["emotion"],
+                    "goals": [chapter_two_markers["goal"]],
+                }
+            ],
+        },
+    )
+    store._write_json(
+        store.story_system_dir / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "Legacy First",
+            "body": _long_test_body("The first chapter establishes a clean baseline."),
+        },
+    )
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            dumped = json.dumps(story.model_dump(mode="json"), ensure_ascii=False)
+            assert story.story_id == "s-regenerate-conservative"
+            assert story.outline == "A stable book outline."
+            assert story.genre == "fantasy"
+            assert story.genre_plugin_ids == ["xuanhuan"]
+            assert story.style == "plain"
+            assert story.author_constraints == ["Keep the book-level rule."]
+            assert "Ari" not in [character.name for character in story.characters]
+            for marker in chapter_two_markers.values():
+                assert marker not in dumped
+            return SimpleNamespace(
+                chapter_number=2,
+                chapter_title="Conservative Rewrite",
+                quality_report={},
+                chapter_summary={},
+            )
+
+    monkeypatch.setattr(
+        store,
+        "persist_bundle",
+        lambda bundle, **_kwargs: {
+            "chapter_number": bundle.chapter_number,
+            "chapter_title": bundle.chapter_title,
+        },
+    )
+
+    store.regenerate_chapter(2, engine=FakeEngine())
+
+
 def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(

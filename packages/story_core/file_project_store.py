@@ -4377,6 +4377,81 @@ class FileProjectStore:
             reset["characters"] = characters
         return reset
 
+    def _conservative_regeneration_state(
+        self,
+        current_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        project = self.project()
+        world_blueprint = (
+            project.get("world_blueprint")
+            if isinstance(project.get("world_blueprint"), dict)
+            else {}
+        )
+        project_characters = (
+            project.get("characters")
+            if isinstance(project.get("characters"), list)
+            else []
+        )
+        static_characters: list[dict[str, Any]] = []
+        for raw_character in project_characters:
+            if not isinstance(raw_character, dict):
+                continue
+            name = str(raw_character.get("name") or "").strip()
+            role = str(raw_character.get("role") or "").strip()
+            if not name or not role:
+                continue
+            character = {"name": name, "role": role}
+            for field in ("character_tier", "first_appearance", "game_id"):
+                if field in raw_character:
+                    character[field] = deepcopy(raw_character[field])
+            static_characters.append(character)
+
+        baseline = {
+            "story_id": str(
+                current_state.get("story_id")
+                or project.get("active_story_id")
+                or project.get("project_id")
+                or "file-project"
+            ),
+            "outline": str(
+                current_state.get("outline")
+                or project.get("seed_outline")
+                or project.get("title")
+                or ""
+            ),
+            "genre": str(current_state.get("genre") or project.get("genre") or ""),
+            "genre_plugin_ids": deepcopy(
+                current_state.get("genre_plugin_ids")
+                or world_blueprint.get("genre_plugin_ids")
+                or []
+            ),
+            "style": str(current_state.get("style") or project.get("style") or ""),
+            "current_chapter": 0,
+            "author_constraints": deepcopy(
+                project.get("author_constraints")
+                or current_state.get("author_constraints")
+                or []
+            ),
+            "enabled_skill_ids": deepcopy(
+                project.get("enabled_skill_ids")
+                or current_state.get("enabled_skill_ids")
+                or []
+            ),
+            "characters": static_characters,
+            "monster_profiles": [],
+            "world_facts": [],
+            "progression_ledger": {},
+            "timeline": [],
+            "foreshadowing": [],
+            "chapter_summaries": [],
+            "memory_index": [],
+            "arc_recaps": [],
+        }
+        for field in ("novel_type", "novel_type_id", "novel_type_ids"):
+            if field in current_state:
+                baseline[field] = deepcopy(current_state[field])
+        return baseline
+
     def _chapter_snapshot_state(
         self,
         chapter_number: int,
@@ -4428,7 +4503,7 @@ class FileProjectStore:
                 snapshot_number = previous_number
                 break
         if base_state is None:
-            base_state = self._reset_first_chapter_regeneration_state(deepcopy(current_state))
+            base_state = self._conservative_regeneration_state(current_state)
 
         replay_numbers = [
             number
