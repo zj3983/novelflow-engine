@@ -118,6 +118,21 @@ def build_power_system_spec() -> dict[str, Any]:
             {"name": "精神", "effect": "影响法力、治疗、召唤维持与意志抗性"},
             {"name": "感知", "effect": "影响命中、侦察、追踪与弱点发现"},
         ],
+        "attribute_allocation": {
+            "mode": "free",
+            "points_per_level": 5,
+            "starting_level": 1,
+            "base_attributes": {
+                "力量": 5,
+                "体质": 5,
+                "敏捷": 5,
+                "智力": 5,
+                "精神": 5,
+                "感知": 5,
+            },
+            "allow_carry": True,
+            "respec_rule": "仅在游戏明确提供洗点机会时重置",
+        },
         "paths": deepcopy(list(_PATH_DETAILS)),
         "stages": [
             {"name": "见习者", "level": 1, "entry": "创建角色并完成新手引导", "change": "获得基础属性、通用武器和初始技能选择，尚无正式职业", "failure": "引导未完成则不能离开新手区或接取职业任务"},

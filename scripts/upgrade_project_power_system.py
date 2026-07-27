@@ -143,6 +143,19 @@ _OUTLINE_EXCLUDED_KEY_PARTS = (
     "raw",
     "source",
 )
+_FIRST_CHAPTER_LEVEL_UP = "【等级提升至Lv.2。】"
+_FIRST_CHAPTER_ATTRIBUTE_SCENE = (
+    "\n\n等级提示刚落，角色面板又弹出一行：【获得5点自由属性。】"
+    "夜烬现在靠火球术刷怪，没必要把点数分散到别处，便把五点全加到了智力上。"
+    "\n\n他点下确认，两行新的提示随即跳了出来：【智力：5→10。】【可用属性点：0。】"
+)
+_ATTRIBUTE_ALLOCATION_REASON = "强化基础火球术"
+_CHAPTER_NINE_GOAL = "验证后续构筑效率，比较技能学习与强化后的火球术循环。"
+_CHAPTER_NINE_RESOURCE_BOUNDARY = (
+    "属性点已在升级时获得，可保留或分配；技能点用于技能学习或强化，不直接投进智力。"
+)
+_CHAPTER_NINE_TURN = "后续构筑效率验证：在有限资源下比较火球术学习与强化的实际收益。"
+_CHAPTER_NINE_PAYOFF = "用技能点强化基础火球术，建立可复用的构筑效率记录。"
 
 
 def _clean_outline_text(value: str) -> tuple[str, bool]:
@@ -215,6 +228,227 @@ def _clean_outline_value(value: Any) -> tuple[Any, bool]:
             changed = changed or item_changed
         return result, changed
     return value, False
+
+
+def _chapter_number(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        match = re.fullmatch(r"\s*(?:第\s*)?(\d+)\s*(?:章)?\s*", value)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _is_chapter_nine(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return any(
+        _chapter_number(value.get(key)) == 9
+        for key in ("chapter_number", "chapter", "number", "序号")
+    )
+
+
+def _replace_chapter_nine_terms(value: str) -> str:
+    return (
+        value.replace("首次智力加点", "后续构筑效率验证")
+        .replace("技能点全投智力", "技能点用于技能学习或强化")
+        .replace("智力加点比速度加点", "后续构筑效率验证")
+    )
+
+
+def _migrate_chapter_nine_outline(value: Any) -> tuple[Any, bool]:
+    if not isinstance(value, dict):
+        return value, False
+    chapters = value.get("chapters")
+    if not isinstance(chapters, list):
+        return value, False
+    migrated = deepcopy(value)
+    changed = False
+    for index, chapter in enumerate(chapters):
+        if not _is_chapter_nine(chapter):
+            continue
+        updated = deepcopy(chapter)
+        for key, item in tuple(updated.items()):
+            if isinstance(item, str):
+                replacement = _replace_chapter_nine_terms(item)
+                if replacement != item:
+                    updated[key] = replacement
+                    changed = True
+        updates = {
+            "goal": _CHAPTER_NINE_GOAL,
+            "obstacle": _CHAPTER_NINE_RESOURCE_BOUNDARY,
+            "turn": _CHAPTER_NINE_TURN,
+            "payoff": _CHAPTER_NINE_PAYOFF,
+        }
+        for key, replacement in updates.items():
+            if updated.get(key) != replacement:
+                updated[key] = replacement
+                changed = True
+        migrated["chapters"][index] = updated
+    return migrated, changed
+
+
+def _migrate_detailed_outline(text: str) -> tuple[str, bool]:
+    heading = re.compile(r"^##\s*第\s*9\s*章(?:\s|$)")
+    any_heading = re.compile(r"^##\s*第\s*\d+\s*章(?:\s|$)")
+    lines = text.splitlines(keepends=True)
+    in_chapter_nine = False
+    changed = False
+    result: list[str] = []
+    saw_resource_boundary = False
+    for line in lines:
+        if heading.match(line):
+            in_chapter_nine = True
+            updated_heading = _replace_chapter_nine_terms(line)
+            changed = changed or updated_heading != line
+            line = updated_heading
+        elif in_chapter_nine and any_heading.match(line):
+            if not saw_resource_boundary:
+                result.append(f"- 资源边界: {_CHAPTER_NINE_RESOURCE_BOUNDARY}\n")
+                saw_resource_boundary = True
+                changed = True
+            in_chapter_nine = False
+        if not in_chapter_nine:
+            result.append(line)
+            continue
+
+        prefix, separator, current = line.partition(":")
+        replacement: str | None = None
+        if separator and prefix.strip() in {"- 目标", "- 章节目标"}:
+            replacement = _CHAPTER_NINE_GOAL
+        elif separator and prefix.strip() in {"- 障碍", "- 资源边界"}:
+            replacement = _CHAPTER_NINE_RESOURCE_BOUNDARY
+            saw_resource_boundary = True
+        elif separator and prefix.strip() in {"- 爽点", "- 转折"}:
+            replacement = _CHAPTER_NINE_TURN
+        elif separator and prefix.strip() in {"- 本章变化", "- 收益"}:
+            replacement = _CHAPTER_NINE_PAYOFF
+        if replacement is None:
+            result.append(line)
+            continue
+        ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+        leading_space = current[: len(current) - len(current.lstrip(" \t"))]
+        updated = f"{prefix}:{leading_space}{replacement}{ending}"
+        result.append(updated)
+        changed = changed or updated != line
+    if in_chapter_nine and not saw_resource_boundary:
+        newline = "\r\n" if "\r\n" in text else "\n"
+        result.append(f"- 资源边界: {_CHAPTER_NINE_RESOURCE_BOUNDARY}{newline}")
+        changed = True
+    return "".join(result), changed
+
+
+def _decode_text(raw: bytes) -> str:
+    return raw.decode("utf-8-sig")
+
+
+def _encode_text(text: str, source: bytes) -> bytes:
+    encoded = text.encode("utf-8")
+    return b"\xef\xbb\xbf" + encoded if source.startswith(b"\xef\xbb\xbf") else encoded
+
+
+def _find_first_chapter(root: Path) -> tuple[Path, bytes]:
+    chapters = root / "chapters"
+    _require_contained_path(root, chapters, "chapters_directory")
+    if not chapters.is_dir():
+        raise FileNotFoundError("chapters directory is required for this migration")
+    for path in sorted(chapters.glob("*.md")):
+        _require_contained_path(root, path, "chapter_markdown")
+        raw = path.read_bytes()
+        if _FIRST_CHAPTER_LEVEL_UP in _decode_text(raw):
+            return path, raw
+    raise ValueError("could not find first chapter level-up marker")
+
+
+def _migrate_first_chapter(raw: bytes) -> tuple[bytes, bool]:
+    text = _decode_text(raw)
+    if _FIRST_CHAPTER_ATTRIBUTE_SCENE.strip() in text:
+        return raw, False
+    marker_index = text.find(_FIRST_CHAPTER_LEVEL_UP)
+    if marker_index < 0:
+        raise ValueError("first chapter level-up marker is missing")
+    insert_at = marker_index + len(_FIRST_CHAPTER_LEVEL_UP)
+    migrated = text[:insert_at] + _FIRST_CHAPTER_ATTRIBUTE_SCENE + text[insert_at:]
+    return _encode_text(migrated, raw), True
+
+
+def _protagonist_cards(state: dict[str, Any]) -> list[dict[str, Any]]:
+    cards = state.get("characters")
+    if not isinstance(cards, list):
+        return []
+    return [
+        card
+        for card in cards
+        if isinstance(card, dict) and card.get("role") in {"protagonist", "主角"}
+    ]
+
+
+def _migrate_state(state: Any, spec: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    if not isinstance(state, dict):
+        raise ValueError("state.json must contain a JSON object")
+    rule = spec.get("attribute_allocation")
+    if not isinstance(rule, dict) or not isinstance(rule.get("base_attributes"), dict):
+        raise ValueError("power system must define attribute allocation")
+    migrated = deepcopy(state)
+    ledger = migrated.get("progression_ledger")
+    if not isinstance(ledger, dict):
+        ledger = {}
+        migrated["progression_ledger"] = ledger
+    protagonist = ledger.get("protagonist")
+    if not isinstance(protagonist, dict):
+        protagonist = {}
+        ledger["protagonist"] = protagonist
+
+    base_attributes = deepcopy(rule["base_attributes"])
+    attributes = protagonist.get("attributes")
+    attributes = deepcopy(attributes) if isinstance(attributes, dict) else {}
+    attributes.update(base_attributes)
+    attributes["智力"] = base_attributes["智力"] + rule["points_per_level"]
+    protagonist["attributes"] = attributes
+    protagonist["unallocated_attribute_points"] = 0
+
+    award = {"level": 2, "points": rule["points_per_level"], "chapter": 1}
+    awards = protagonist.get("attribute_point_awards")
+    award_history = deepcopy(awards) if isinstance(awards, list) else []
+    award_history = [item for item in award_history if item != award]
+    protagonist["attribute_point_awards"] = [*award_history, award]
+
+    allocation = {
+        "chapter": 1,
+        "allocations": {"智力": rule["points_per_level"]},
+        "remaining": 0,
+        "reason": _ATTRIBUTE_ALLOCATION_REASON,
+    }
+    allocations = protagonist.get("attribute_allocations")
+    allocation_history = deepcopy(allocations) if isinstance(allocations, list) else []
+    allocation_history = [item for item in allocation_history if item != allocation]
+    protagonist["attribute_allocations"] = [*allocation_history, allocation]
+
+    synchronized = {
+        "attributes": deepcopy(attributes),
+        "unallocated_attribute_points": 0,
+        "attribute_point_awards": deepcopy(protagonist["attribute_point_awards"]),
+        "attribute_allocations": deepcopy(protagonist["attribute_allocations"]),
+    }
+    for card in _protagonist_cards(migrated):
+        panel = card.get("game_panel")
+        if not isinstance(panel, dict):
+            panel = {}
+            card["game_panel"] = panel
+        panel.update(deepcopy(synchronized))
+        game_state = card.get("game_state")
+        if not isinstance(game_state, dict):
+            game_state = {}
+            card["game_state"] = game_state
+        current = game_state.get("current")
+        if not isinstance(current, dict):
+            current = {}
+            game_state["current"] = current
+        current.update(deepcopy(synchronized))
+    return migrated, migrated != state
 
 
 def _read_json(path: Path) -> tuple[Any, bytes]:
@@ -400,8 +634,16 @@ def _write_fsynced_file(path: Path, content: bytes) -> None:
         os.fsync(handle.fileno())
 
 
+def _backup_relative_path(root: Path, metadata_dir: Path, path: Path) -> Path:
+    if path.parent == metadata_dir:
+        return Path(path.name)
+    return path.relative_to(root)
+
+
 def _backup(
-    root: Path, metadata_dir: Path, project_bytes: bytes, outline_bytes: bytes
+    root: Path,
+    metadata_dir: Path,
+    originals: dict[Path, tuple[bool, bytes]],
 ) -> Path:
     backups_parent = metadata_dir / "backups"
     _require_contained_path(root, backups_parent, "backups_parent")
@@ -416,11 +658,15 @@ def _backup(
     destination = backups_parent / f"power-system-{stamp}"
     try:
         _require_contained_path(root, staging, "backup_staging")
-        _require_contained_path(root, staging / "project.json", "backup_project")
-        _require_contained_path(root, staging / "outline.json", "backup_outline")
         _require_contained_path(root, destination, "backup_destination")
-        _write_fsynced_file(staging / "project.json", project_bytes)
-        _write_fsynced_file(staging / "outline.json", outline_bytes)
+        for path, (existed, content) in originals.items():
+            if not existed:
+                continue
+            relative = _backup_relative_path(root, metadata_dir, path)
+            target = staging / relative
+            _require_contained_path(root, target, "backup_target")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _write_fsynced_file(target, content)
         os.replace(staging, destination)
         return destination
     except Exception:
@@ -447,9 +693,12 @@ def upgrade_project(
         metadata = root / ".webnovel"
         project_path = metadata / "project.json"
         outline_path = metadata / "outline.json"
+        state_path = metadata / "state.json"
         power_path = root / "设定集" / "力量体系.md"
+        detail_path = root / "大纲" / "第1卷-详细大纲.md"
         _require_contained_path(root, project_path, "project_json")
         _require_contained_path(root, outline_path, "outline_json")
+        _require_contained_path(root, state_path, "state_json")
         _require_contained_path(root, power_path, "power_markdown")
         if backup:
             _require_contained_path(root, metadata / "backups", "backups_parent")
@@ -460,6 +709,14 @@ def upgrade_project(
         outline, outline_bytes = _read_json(outline_path)
         if not isinstance(outline, (dict, list)):
             raise ValueError("project.json and outline.json must contain JSON objects or arrays")
+        state, state_bytes = _read_json(state_path)
+        if not isinstance(state, dict):
+            raise ValueError("state.json must contain a JSON object")
+        chapter_path, chapter_bytes = _find_first_chapter(root)
+        detail_bytes: bytes | None = None
+        if detail_path.exists():
+            _require_contained_path(root, detail_path, "detailed_outline")
+            detail_bytes = detail_path.read_bytes()
 
         migrated_project = deepcopy(project)
         blueprint = migrated_project.setdefault("world_blueprint", {})
@@ -471,12 +728,30 @@ def upgrade_project(
         validate_power_system_spec(blueprint["power_system_spec"], novel_type_id="game_webnovel")
 
         migrated_outline, outline_changed = _clean_outline_value(outline)
+        migrated_outline, chapter_nine_changed = _migrate_chapter_nine_outline(
+            migrated_outline
+        )
+        outline_changed = outline_changed or chapter_nine_changed
+        migrated_state, state_changed = _migrate_state(state, spec)
+        expected_chapter_bytes, chapter_changed = _migrate_first_chapter(chapter_bytes)
+        expected_detail_bytes = detail_bytes
+        detail_changed = False
+        if detail_bytes is not None:
+            migrated_detail, detail_changed = _migrate_detailed_outline(
+                _decode_text(detail_bytes)
+            )
+            if detail_changed:
+                expected_detail_bytes = _encode_text(migrated_detail, detail_bytes)
         expected_project_bytes = _encode_json(migrated_project, project_bytes)
         expected_outline_bytes = (
             _encode_json(migrated_outline, outline_bytes) if outline_changed else outline_bytes
         )
+        expected_state_bytes = (
+            _encode_json(migrated_state, state_bytes) if state_changed else state_bytes
+        )
         project_changed = expected_project_bytes != project_bytes
         outline_file_changed = expected_outline_bytes != outline_bytes
+        state_file_changed = expected_state_bytes != state_bytes
 
         expected_power = render_power_markdown(project.get("title"), blueprint).encode("utf-8")
         power_exists = power_path.exists()
@@ -489,6 +764,12 @@ def upgrade_project(
             changes.append("project.json: power system upgraded")
         if outline_file_changed:
             changes.append("outline.json: contradictory progression wording updated")
+        if state_file_changed:
+            changes.append("state.json: protagonist attribute allocation synchronized")
+        if chapter_changed:
+            changes.append("chapters: first level-up attribute allocation inserted")
+        if detail_changed:
+            changes.append("大纲/第1卷-详细大纲.md: chapter 9 build wording updated")
         if power_changed:
             changes.append(
                 "设定集/力量体系.md: refreshed" if power_exists else "设定集/力量体系.md: created"
@@ -496,7 +777,14 @@ def upgrade_project(
         elif power_exists and not power_managed:
             changes.append("设定集/力量体系.md: skipped unmanaged")
 
-        will_write = project_changed or outline_file_changed or power_changed
+        will_write = (
+            project_changed
+            or outline_file_changed
+            or state_file_changed
+            or power_changed
+            or chapter_changed
+            or detail_changed
+        )
         result.update(changed=will_write, valid=True, changes=changes)
         if check or not will_write:
             return result
@@ -506,11 +794,17 @@ def upgrade_project(
             writes.append((project_path, expected_project_bytes))
         if outline_file_changed:
             writes.append((outline_path, expected_outline_bytes))
+        if state_file_changed:
+            writes.append((state_path, expected_state_bytes))
         if power_changed:
             writes.append((power_path, expected_power))
+        if chapter_changed:
+            writes.append((chapter_path, expected_chapter_bytes))
+        if detail_changed and expected_detail_bytes is not None:
+            writes.append((detail_path, expected_detail_bytes))
         transaction_originals = _capture_targets(writes)
         if backup:
-            backup_path = _backup(root, metadata, project_bytes, outline_bytes)
+            backup_path = _backup(root, metadata, transaction_originals)
             result["backup_path"] = str(backup_path)
         _transactional_write(root, writes, transaction_originals)
         return result

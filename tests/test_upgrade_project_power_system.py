@@ -29,6 +29,14 @@ BRANCHES = {
     "牧师": ("圣愈者", "戒律祭司"),
     "召唤师": ("契约领主", "兽群主宰"),
 }
+BASE_ATTRIBUTES = {
+    "力量": 5,
+    "体质": 5,
+    "敏捷": 5,
+    "智力": 5,
+    "精神": 5,
+    "感知": 5,
+}
 
 
 def _json_bytes(value: object) -> bytes:
@@ -43,9 +51,11 @@ def project_dir(tmp_path: Path) -> Path:
     metadata = root / ".webnovel"
     settings = root / "设定集"
     chapters = root / "chapters"
+    outlines = root / "大纲"
     metadata.mkdir(parents=True)
     settings.mkdir()
     chapters.mkdir()
+    outlines.mkdir()
 
     project = {
         "title": "苟在网游里成神",
@@ -84,17 +94,70 @@ def project_dir(tmp_path: Path) -> Path:
             {
                 "goal": "流霜保持远程弓手路线，并推进猎人专精线索。",
             },
+            {
+                "chapter_number": 9,
+                "title": "技能树试算",
+                "description": "首次智力加点决定后续路线。",
+                "goal": "Lv.5新增技能点的最优分配；计算当前学徒职业的能力极限",
+                "turn": "智力加点比速度加点在现阶段收益高2.3倍",
+                "payoff": "技能点全投智力，MP+12，法术伤害+5%",
+            },
         ],
+    }
+    state = {
+        "progression_ledger": {
+            "protagonist": {
+                "level": "Lv.2",
+                "exp": "0/240",
+                "keep": {"inventory": ["裂纹狼心"]},
+            },
+            "unrelated_ledger": {"preserve": True},
+        },
+        "characters": [
+            {
+                "name": "苏叶",
+                "role": "protagonist",
+                "game_id": "夜烬",
+                "game_panel": {
+                    "level": "Lv.2",
+                    "hp": "66/100",
+                    "legacy_panel": "keep",
+                },
+                "game_state": {
+                    "current": {
+                        "level": "Lv.2",
+                        "mp": "28/60",
+                        "legacy_current": "keep",
+                    },
+                    "recent_changes": [{"chapter": 1, "fact": "原有记录"}],
+                },
+                "profile": {"keep": True},
+            },
+            {"name": "流霜", "role": "supporting", "game_panel": {"level": "Lv.2"}},
+        ],
+        "unrelated_state": {"preserve": [1, 2, 3]},
     }
     (metadata / "project.json").write_bytes(_json_bytes(project))
     (metadata / "outline.json").write_bytes(_json_bytes(outline))
+    (metadata / "state.json").write_bytes(_json_bytes(state))
     (settings / "力量体系.md").write_text(
         f"{MANAGED_MARKER}\n\n# 旧力量体系\n", encoding="utf-8"
     )
     (settings / "世界观.md").write_text(
         "# 手写世界观\n\n绝不能覆盖。\n", encoding="utf-8"
     )
-    (chapters / "0001.md").write_bytes(b"\xef\xbb\xbfchapter\r\n\x00exact-bytes\r\n")
+    (chapters / "0001.md").write_bytes(
+        "\ufeff# 第一章 裂纹狼心\r\n\r\n"
+        "灰狼尸体上方亮起白光。【击杀Lv.1灰狼，获得经验100。】【等级提升至Lv.2。】\r\n\r\n"
+        "【底层协议校验通过。】\r\n".encode("utf-8")
+    )
+    (outlines / "第1卷-详细大纲.md").write_text(
+        "## 第9章 首次智力加点\n"
+        "- 爽点: 智力加点比速度加点在现阶段收益高2.3倍\n"
+        "- 本章变化: 技能点全投智力，MP+12，法术伤害+5%\n",
+        encoding="utf-8",
+        newline="",
+    )
     return root
 
 
@@ -120,10 +183,23 @@ def test_power_system_builder_locks_complete_payload_content_and_insertion_order
         allow_nan=False,
     ).encode("utf-8")
 
-    assert len(serialized) == 9799
+    assert len(serialized) == 10045
     assert hashlib.sha256(serialized).hexdigest() == (
-        "55b258a5be2fbfcbefe0fce7500c19c94295bcbada925cbb836af4d1ffb10603"
+        "ab71139269d0fb2ff285fdf41b9ddeecf1d893b1863dadf4d5e80a7f3408c03f"
     )
+
+
+def test_power_system_builder_configures_free_attribute_allocation() -> None:
+    spec = build_power_system_spec()
+
+    assert spec["attribute_allocation"] == {
+        "mode": "free",
+        "points_per_level": 5,
+        "starting_level": 1,
+        "base_attributes": BASE_ATTRIBUTES,
+        "allow_carry": True,
+        "respec_rule": "仅在游戏明确提供洗点机会时重置",
+    }
 
 
 def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
@@ -131,13 +207,15 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
 ) -> None:
     project_path = project_dir / ".webnovel" / "project.json"
     outline_path = project_dir / ".webnovel" / "outline.json"
+    state_path = project_dir / ".webnovel" / "state.json"
     chapter_path = project_dir / "chapters" / "0001.md"
+    detail_path = project_dir / "大纲" / "第1卷-详细大纲.md"
     world_path = project_dir / "设定集" / "世界观.md"
     original_project = _load(project_path)
     original_outline = _load(outline_path)
     original_project_bytes = project_path.read_bytes()
     original_outline_bytes = outline_path.read_bytes()
-    original_chapter = chapter_path.read_bytes()
+    original_state = _load(state_path)
     original_world = world_path.read_bytes()
 
     result = upgrade_project(project_dir)
@@ -197,6 +275,7 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
     ranger_text = json.dumps(ranger, ensure_ascii=False)
     assert "远程弓手" in ranger_text
     assert "猎人专精" in ranger_text
+    assert spec["attribute_allocation"]["base_attributes"] == BASE_ATTRIBUTES
 
     assert "职业专精节点" in migrated_outline["chapters"][0]["goal"]
     assert "第二次职业进阶" not in json.dumps(migrated_outline, ensure_ascii=False)
@@ -213,11 +292,79 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
     assert power_markdown.startswith(MANAGED_MARKER)
     assert "元素宗师" in power_markdown
     assert world_path.read_bytes() == original_world
-    assert chapter_path.read_bytes() == original_chapter
+
+    migrated_state = _load(state_path)
+    protagonist = migrated_state["progression_ledger"]["protagonist"]
+    assert protagonist["level"] == "Lv.2"
+    assert protagonist["attributes"] == {**BASE_ATTRIBUTES, "智力": 10}
+    assert protagonist["unallocated_attribute_points"] == 0
+    assert protagonist["attribute_point_awards"] == [
+        {"level": 2, "points": 5, "chapter": 1}
+    ]
+    assert protagonist["attribute_allocations"] == [
+        {
+            "chapter": 1,
+            "allocations": {"智力": 5},
+            "remaining": 0,
+            "reason": "强化基础火球术",
+        }
+    ]
+    assert protagonist["keep"] == original_state["progression_ledger"]["protagonist"]["keep"]
+    assert migrated_state["unrelated_state"] == original_state["unrelated_state"]
+    assert migrated_state["progression_ledger"]["unrelated_ledger"] == original_state["progression_ledger"]["unrelated_ledger"]
+
+    protagonist_card = migrated_state["characters"][0]
+    for state_slice in (
+        protagonist_card["game_panel"],
+        protagonist_card["game_state"]["current"],
+    ):
+        assert state_slice["attributes"] == {**BASE_ATTRIBUTES, "智力": 10}
+        assert state_slice["unallocated_attribute_points"] == 0
+        assert state_slice["attribute_point_awards"] == protagonist["attribute_point_awards"]
+        assert state_slice["attribute_allocations"] == protagonist["attribute_allocations"]
+    assert protagonist_card["game_panel"]["legacy_panel"] == "keep"
+    assert protagonist_card["game_state"]["current"]["legacy_current"] == "keep"
+    assert migrated_state["characters"][1] == original_state["characters"][1]
+
+    chapter = chapter_path.read_text(encoding="utf-8-sig")
+    assert chapter.count("【获得5点自由属性。】") == 1
+    assert "夜烬现在靠火球术刷怪" in chapter
+    assert "把五点全加到了智力上" in chapter
+    assert "他点下确认" in chapter
+    assert "【智力：5→10。】" in chapter
+    assert "【可用属性点：0。】" in chapter
+    assert "光标" not in chapter
+
+    chapter_nine = migrated_outline["chapters"][3]
+    chapter_nine_text = json.dumps(chapter_nine, ensure_ascii=False)
+    assert "后续构筑效率验证" in chapter_nine_text
+    assert "属性点已在升级时获得" in chapter_nine_text
+    assert "技能点用于技能学习或强化" in chapter_nine_text
+    assert "技能点全投智力" not in chapter_nine_text
+    assert "智力加点比速度加点" not in chapter_nine_text
+    assert "首次智力加点" not in chapter_nine_text
+    detailed_outline = detail_path.read_text(encoding="utf-8")
+    assert "后续构筑效率验证" in detailed_outline
+    assert "属性点已在升级时获得" in detailed_outline
+    assert "技能点用于技能学习或强化" in detailed_outline
+    assert "技能点全投智力" not in detailed_outline
+    assert "智力加点比速度加点" not in detailed_outline
+    assert "首次智力加点" not in detailed_outline
 
     backup = Path(result["backup_path"])
     assert (backup / "project.json").read_bytes() == original_project_bytes
     assert (backup / "outline.json").read_bytes() == original_outline_bytes
+    assert (backup / "state.json").read_bytes() == _json_bytes(original_state)
+    assert (backup / "chapters" / "0001.md").read_bytes() == (
+        "\ufeff# 第一章 裂纹狼心\r\n\r\n"
+        "灰狼尸体上方亮起白光。【击杀Lv.1灰狼，获得经验100。】【等级提升至Lv.2。】\r\n\r\n"
+        "【底层协议校验通过。】\r\n".encode("utf-8")
+    )
+    assert (backup / "大纲" / "第1卷-详细大纲.md").read_bytes() == (
+        "## 第9章 首次智力加点\n"
+        "- 爽点: 智力加点比速度加点在现阶段收益高2.3倍\n"
+        "- 本章变化: 技能点全投智力，MP+12，法术伤害+5%\n".encode("utf-8")
+    )
 
 
 def test_upgrade_skips_unmanaged_power_markdown(project_dir: Path) -> None:
@@ -238,7 +385,10 @@ def test_upgrade_is_idempotent_and_does_not_create_second_backup(project_dir: Pa
         for path in (
             project_dir / ".webnovel" / "project.json",
             project_dir / ".webnovel" / "outline.json",
+            project_dir / ".webnovel" / "state.json",
             project_dir / "设定集" / "力量体系.md",
+            project_dir / "chapters" / "0001.md",
+            project_dir / "大纲" / "第1卷-详细大纲.md",
         )
     }
 
@@ -256,7 +406,10 @@ def test_check_reports_expected_changes_without_writes_or_backup(project_dir: Pa
         for path in (
             project_dir / ".webnovel" / "project.json",
             project_dir / ".webnovel" / "outline.json",
+            project_dir / ".webnovel" / "state.json",
             project_dir / "设定集" / "力量体系.md",
+            project_dir / "chapters" / "0001.md",
+            project_dir / "大纲" / "第1卷-详细大纲.md",
         )
     }
 
@@ -268,6 +421,45 @@ def test_check_reports_expected_changes_without_writes_or_backup(project_dir: Pa
     assert result["changes"]
     assert {path: path.read_bytes() for path in before} == before
     assert not (project_dir / ".webnovel" / "backups").exists()
+
+
+def test_replacement_failure_rolls_back_new_state_chapter_and_detail_targets(
+    project_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    targets = (
+        project_dir / ".webnovel" / "project.json",
+        project_dir / ".webnovel" / "outline.json",
+        project_dir / ".webnovel" / "state.json",
+        project_dir / "设定集" / "力量体系.md",
+        project_dir / "chapters" / "0001.md",
+        project_dir / "大纲" / "第1卷-详细大纲.md",
+    )
+    before = {path: (path.exists(), path.read_bytes()) for path in targets}
+    real_replace = migration.os.replace
+    writes = 0
+
+    def fail_after_state_write(source: str | Path, destination: str | Path) -> None:
+        nonlocal writes
+        destination_path = Path(destination)
+        if destination_path in targets:
+            writes += 1
+            if destination_path.name == "0001.md":
+                raise OSError("injected chapter replacement failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(migration.os, "replace", fail_after_state_write)
+
+    result = upgrade_project(project_dir, backup=False)
+
+    assert writes >= 5
+    assert result["changed"] is False
+    assert result["valid"] is False
+    assert "injected chapter replacement failure" in result["changes"][0]
+    assert {
+        path: (path.exists(), path.read_bytes() if path.exists() else b"")
+        for path in targets
+    } == before
+    assert not list(project_dir.rglob(".*.tmp"))
 
 
 def test_rejects_wrong_project_directory_before_writes_or_backup(
@@ -413,7 +605,10 @@ def test_replacement_failure_rolls_back_every_target_and_cleans_temps(
     targets = (
         project_dir / ".webnovel" / "project.json",
         project_dir / ".webnovel" / "outline.json",
+        project_dir / ".webnovel" / "state.json",
         project_dir / "设定集" / "力量体系.md",
+        project_dir / "chapters" / "0001.md",
+        project_dir / "大纲" / "第1卷-详细大纲.md",
     )
     before = {path: (path.exists(), path.read_bytes()) for path in targets}
     real_replace = migration.os.replace
