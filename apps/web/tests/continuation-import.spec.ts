@@ -317,21 +317,36 @@ test("quick continuation from source confirms defaults and follows project route
   expect(quickPayload).toEqual({});
 });
 
-test("quick continuation reports analysis blockers without creating a project", async ({ page }) => {
+test("quick continuation blocks unresolved analysis then saves the resolution before creating", async ({ page }) => {
   const blocked = {
     ...analysis,
     needs_confirmation: [{ claim: "旧友身份不一致", source: "characters", reason: "conflicting_evidence" }],
   };
   let quickCalls = 0;
+  let confirmedAnalysis: unknown = null;
   await page.route(continuationApi, async (route) => {
     const url = new URL(route.request().url());
+    const method = route.request().method();
     if (url.pathname.endsWith("/list-sources")) return fulfill(route, { current_path: "", directories: [], files: [] });
     if (url.pathname.endsWith("/scan")) return fulfill(route, scanResult);
     if (url.pathname === "/continuation-imports") return fulfill(route, session("parsed", 1), 201);
     if (url.pathname.endsWith("/chapters")) return fulfill(route, session("parsed", 2));
     if (url.pathname.endsWith("/analyze")) return fulfill(route, { session_id: "ci-ui-test", status: "analyzing" }, 202);
+    if (url.pathname.endsWith("/analysis") && method === "PUT") {
+      confirmedAnalysis = route.request().postDataJSON();
+      return fulfill(route, session("ready", 4, { analysis: { ...blocked, needs_confirmation: [] } }));
+    }
     if (url.pathname.endsWith("/analysis")) return fulfill(route, blocked);
-    if (url.pathname.endsWith("/quick-continue")) { quickCalls += 1; return fulfill(route, { detail: "analysis_confirmation_required" }, 409); }
+    if (url.pathname.endsWith("/quick-continue")) {
+      quickCalls += 1;
+      return fulfill(route, {
+        session_id: "ci-ui-test",
+        project_id: "file:p-resolved",
+        project_route: "/projects/file%3Ap-resolved/write?chapter=3",
+        job_id: "fgj-resolved",
+        job_status: "queued",
+      }, 202);
+    }
     if (url.pathname.endsWith("/ci-ui-test")) return fulfill(route, session("ready", 3, { analysis: blocked }));
     return route.abort();
   });
@@ -343,4 +358,15 @@ test("quick continuation reports analysis blockers without creating a project", 
 
   await expect(page.getByRole("alert").filter({ hasText: "待确认内容" })).toBeVisible();
   expect(quickCalls).toBe(0);
+
+  await page.getByRole("button", { name: "标记已处理" }).click();
+  await page.getByRole("button", { name: "快速续写" }).click();
+  await page.getByRole("dialog", { name: "快速续写确认" }).getByRole("button", { name: "确认并生成下一章" }).click();
+
+  await expect(page).toHaveURL(/file%3Ap-resolved\/write\?chapter=3$/);
+  expect(quickCalls).toBe(1);
+  expect(confirmedAnalysis).toMatchObject({
+    expected_revision: 3,
+    analysis: { needs_confirmation: [] },
+  });
 });

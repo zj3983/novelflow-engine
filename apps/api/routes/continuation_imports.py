@@ -781,6 +781,7 @@ def _quick_settings(
         analysis.continuation_start.guidance.strip()
         or analysis.continuation_start.situation.strip()
         or analysis.story_overview.strip()
+        or "延续当前剧情"
     )
     values: dict[str, object] = {
         "start_after_chapter": latest.number,
@@ -846,14 +847,25 @@ def quick_continue(
                 session = current
 
         if conversion_status == "claimed" and not claimed_here:
-            deadline = time.monotonic() + 3.0
+            deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
                 current = store.get(session_id)
                 conversion = current.analysis_progress.get("project_conversion")
                 conversion = dict(conversion) if isinstance(conversion, dict) else {}
-                existing = _existing_claimed_project(
-                    export_root, session_id, project_id
-                )
+                try:
+                    existing = _existing_claimed_project(
+                        export_root, session_id, project_id
+                    )
+                except ValueError as exc:
+                    # The project directory can become visible before its
+                    # continuation metadata is fully published. While the
+                    # owning conversion is still running, keep waiting.
+                    if (
+                        _error_code(exc) != "continuation_conversion_claim_mismatch"
+                        or conversion.get("status") != "claimed"
+                    ):
+                        raise
+                    existing = None
                 if conversion.get("status") == "succeeded" or existing is not None:
                     session = current
                     conversion_status = str(conversion.get("status") or "claimed")
@@ -911,7 +923,7 @@ def quick_continue(
         route_id = quote(public_project_id, safe="")
         project_route = f"/projects/{route_id}/write?chapter={next_chapter}"
         reserved_job_id = f"fgj-{uuid.uuid4().hex[:12]}"
-        reserved_session, owns_reservation = store.reserve_quick_continuation(
+        reserved_session, _ = store.reserve_quick_continuation(
             session_id,
             project_id=project_id,
             project_route=project_route,
@@ -922,14 +934,6 @@ def quick_continue(
         reserved_job_id = str(reservation.get("job_id") or "")
         if not reserved_job_id:
             raise ValueError("quick_continuation_reservation_mismatch")
-
-        if not owns_reservation:
-            deadline = time.monotonic() + 3.0
-            while time.monotonic() < deadline:
-                recovered = _saved_quick_response(store.get(session_id))
-                if recovered is not None:
-                    return recovered
-                time.sleep(0.02)
 
         job = start_file_generation_job(
             project_id,

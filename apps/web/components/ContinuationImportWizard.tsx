@@ -430,7 +430,9 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
     setBusy("quick");
     setError("");
     try {
-      const result = await quickContinueNovel(session.session_id);
+      const saved = await confirmContinuationAnalysis(session.session_id, session.revision, analysis);
+      setSession(saved);
+      const result = await quickContinueNovel(saved.session_id);
       router.push(result.project_route);
     } catch (caught) {
       setBusy("");

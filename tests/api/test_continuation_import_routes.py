@@ -1804,6 +1804,9 @@ def test_concurrent_quick_continue_submits_one_reserved_generation_job(
     session = _analyzed_import(client, allowed_root, monkeypatch)
     submitted: list[tuple[object, ...]] = []
     original_start = continuation_imports.start_file_generation_job
+    original_create = continuation_imports.create_continuation_project
+    original_existing = continuation_imports._existing_claimed_project
+    partial_project_seen = threading.Event()
 
     with file_projects._file_generation_jobs_lock:
         file_projects._file_generation_jobs.clear()
@@ -1820,6 +1823,33 @@ def test_concurrent_quick_continue_submits_one_reserved_generation_job(
 
     monkeypatch.setattr(
         continuation_imports, "start_file_generation_job", delayed_start
+    )
+
+    def delayed_create(*args, **kwargs):
+        created = original_create(*args, **kwargs)
+        threading.Event().wait(0.15)
+        return created
+
+    monkeypatch.setattr(
+        continuation_imports, "create_continuation_project", delayed_create
+    )
+
+    def partially_visible_project(*args, **kwargs):
+        existing = original_existing(*args, **kwargs)
+        current = continuation_imports._session_store().get(session["session_id"])
+        conversion = current.analysis_progress.get("project_conversion")
+        if (
+            existing is not None
+            and isinstance(conversion, dict)
+            and conversion.get("status") == "claimed"
+            and not partial_project_seen.is_set()
+        ):
+            partial_project_seen.set()
+            raise ValueError("continuation_conversion_claim_mismatch")
+        return existing
+
+    monkeypatch.setattr(
+        continuation_imports, "_existing_claimed_project", partially_visible_project
     )
 
     def post_quick():
@@ -1840,6 +1870,7 @@ def test_concurrent_quick_continue_submits_one_reserved_generation_job(
     ]
     assert responses[0].json() == responses[1].json()
     assert len(submitted) == 1
+    assert partial_project_seen.is_set()
 
 
 def test_quick_continue_retry_after_response_save_failure_reuses_reserved_job(
