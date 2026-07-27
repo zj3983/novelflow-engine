@@ -463,7 +463,19 @@ def _strip_discourse_prefix(value: str) -> str:
     return value
 
 
-def _owner_is_protagonist(sentence: str, owner_span: tuple[int, int], aliases: tuple[str, ...]) -> bool:
+def _has_explicit_named_other(text: str, aliases: tuple[str, ...]) -> bool:
+    for clause in re.split(r"[，,]", text):
+        clause = _strip_discourse_prefix(clause.strip())
+        if not clause or any(alias in clause for alias in aliases) or clause.startswith(("他", "她", "自己")):
+            continue
+        if re.match(r"[\u4e00-\u9fff]{2,}", clause):
+            return True
+    return False
+
+
+def _owner_is_protagonist(
+    body: str, sentence_start: int, sentence: str, owner_span: tuple[int, int], aliases: tuple[str, ...]
+) -> bool:
     owner = _strip_discourse_prefix(sentence[owner_span[0] : owner_span[1]].strip())
     if any(alias in owner for alias in aliases):
         return True
@@ -483,6 +495,10 @@ def _owner_is_protagonist(sentence: str, owner_span: tuple[int, int], aliases: t
         return True
     if any(alias in earlier_clause for alias in aliases):
         return True
+    if earlier_clause.startswith(("他", "她", "自己")):
+        previous_start, previous_end = _previous_nonempty_sentence_bounds(body, sentence_start)
+        related_context = "，".join(clauses[:-1]) + "，" + body[previous_start:previous_end]
+        return not _has_explicit_named_other(related_context, aliases)
     return not bool(re.match(r"[\u4e00-\u9fff]{2,}", _strip_discourse_prefix(earlier_clause)))
 
 
@@ -499,13 +515,13 @@ def _remaining_candidate_subject(
         sentence,
     )
     if panel_owner:
-        return _owner_is_protagonist(sentence, panel_owner.span("owner"), aliases)
+        return _owner_is_protagonist(body, start, sentence, panel_owner.span("owner"), aliases)
     owner = re.search(r"(?P<owner>[\u4e00-\u9fffA-Za-z0-9_]{1,12})的\s*$", sentence)
     if owner:
         name = owner.group("owner")
         if name.endswith(("上", "中", "里", "内")) or any(noun in name for noun in _POSITION_OWNER_NOUNS):
             return None
-        return _owner_is_protagonist(sentence, owner.span("owner"), aliases)
+        return _owner_is_protagonist(body, start, sentence, owner.span("owner"), aliases)
     if any(alias in sentence for alias in aliases):
         return True
     if re.search(r"(?:他|她|自己)", sentence):
