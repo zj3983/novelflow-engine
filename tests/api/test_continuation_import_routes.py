@@ -983,6 +983,187 @@ def test_same_generation_duplicate_callback_exits_after_running_claim(
     assert analyzer.calls == 1
 
 
+def test_lease_handoff_timeout_leaves_generation_queued(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    analyzer = _TitleAnalyzer()
+    monkeypatch.setattr(continuation_imports, "build_continuation_analyzer", lambda: analyzer)
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    tasks = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], tasks)
+    store = continuation_imports._session_store()
+    lease = try_acquire_analysis_lease(store.root, session["session_id"])
+    assert lease is not None
+    _, args, _ = tasks.tasks[0]
+    try:
+        continuation_imports._run_analysis_job(
+            args[0],
+            args[1],
+            lease_poll_interval=0.01,
+            lease_max_wait=0.03,
+        )
+    finally:
+        lease.release()
+
+    current = store.get(session["session_id"])
+    assert current.status == "analyzing"
+    assert current.analysis_progress["_analysis_job_state"] == "queued"
+    assert analyzer.calls == 0
+
+
+def test_zero_poll_interval_is_clamped_and_does_not_busy_wait(
+    client: TestClient, allowed_root: Path
+) -> None:
+    from apps.api.routes import continuation_imports
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    tasks = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], tasks)
+    store = continuation_imports._session_store()
+    lease = try_acquire_analysis_lease(store.root, session["session_id"])
+    assert lease is not None
+    now = 0.0
+    sleeps: list[float] = []
+
+    def monotonic() -> float:
+        return now
+
+    def wait(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    _, args, _ = tasks.tasks[0]
+    try:
+        continuation_imports._run_analysis_job(
+            args[0],
+            args[1],
+            lease_poll_interval=0,
+            wait=wait,
+            lease_max_wait=0.025,
+            monotonic=monotonic,
+        )
+    finally:
+        lease.release()
+
+    assert sleeps
+    assert all(seconds > 0 for seconds in sleeps)
+    assert min(sleeps) >= 0.004999
+    assert len(sleeps) <= 3
+
+
+def test_zero_lease_max_wait_returns_without_polling(
+    client: TestClient, allowed_root: Path
+) -> None:
+    from apps.api.routes import continuation_imports
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    tasks = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], tasks)
+    store = continuation_imports._session_store()
+    lease = try_acquire_analysis_lease(store.root, session["session_id"])
+    assert lease is not None
+    sleeps: list[float] = []
+    _, args, _ = tasks.tasks[0]
+    try:
+        continuation_imports._run_analysis_job(
+            args[0],
+            args[1],
+            lease_poll_interval=0,
+            wait=sleeps.append,
+            lease_max_wait=0,
+        )
+    finally:
+        lease.release()
+
+    assert sleeps == []
+    assert store.get(session["session_id"]).analysis_progress[
+        "_analysis_job_state"
+    ] == "queued"
+
+
+def test_lease_wait_exits_early_when_generation_state_changes(
+    client: TestClient, allowed_root: Path
+) -> None:
+    from apps.api.routes import continuation_imports
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    tasks = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], tasks)
+    store = continuation_imports._session_store()
+    lease = try_acquire_analysis_lease(store.root, session["session_id"])
+    assert lease is not None
+    waits = 0
+
+    def invalidate(_seconds: float) -> None:
+        nonlocal waits
+        waits += 1
+        current = store.get(session["session_id"])
+
+        def reset(value) -> None:
+            value.status = "parsed"
+            value.analysis_progress = {}
+
+        store.update(session["session_id"], reset, expected_revision=current.revision)
+
+    _, args, _ = tasks.tasks[0]
+    try:
+        continuation_imports._run_analysis_job(
+            args[0],
+            args[1],
+            lease_poll_interval=0.01,
+            wait=invalidate,
+            lease_max_wait=10,
+        )
+    finally:
+        lease.release()
+
+    assert waits == 1
+    assert store.get(session["session_id"]).status == "parsed"
+
+
 def test_failed_job_does_not_overwrite_a_newer_ready_state(
     client: TestClient,
     allowed_root: Path,

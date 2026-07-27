@@ -35,6 +35,9 @@ router = APIRouter(prefix="/continuation-imports", tags=["continuation-imports"]
 
 _ANALYSIS_JOB_GENERATION = "_analysis_job_generation"
 _ANALYSIS_JOB_STATE = "_analysis_job_state"
+_ANALYSIS_LEASE_MIN_POLL_INTERVAL = 0.01
+_ANALYSIS_LEASE_POLL_INTERVAL = 0.05
+_ANALYSIS_LEASE_MAX_WAIT = 300.0
 
 
 class _RequestModel(BaseModel):
@@ -376,8 +379,13 @@ def _wait_for_analysis_lease(
     session_id: str,
     generation: str,
     poll_interval: float,
+    max_wait: float,
     wait: Callable[[float], None],
+    monotonic: Callable[[], float],
 ) -> ContinuationAnalysisLease | None:
+    interval = max(_ANALYSIS_LEASE_MIN_POLL_INTERVAL, poll_interval)
+    timeout = max(0.0, max_wait)
+    deadline = monotonic() + timeout
     while True:
         current = store.get(session_id)
         if (
@@ -386,17 +394,24 @@ def _wait_for_analysis_lease(
             or _job_state(current) != "queued"
         ):
             return None
+        if timeout == 0.0 or monotonic() >= deadline:
+            return None
         lease = try_acquire_analysis_lease(store.root, session_id)
         if lease is not None:
             return lease
-        wait(poll_interval)
+        remaining = deadline - monotonic()
+        if remaining <= 0.0:
+            return None
+        wait(min(interval, remaining))
 
 
 def _run_analysis_job(
     session_id: str,
     generation: str,
-    lease_poll_interval: float = 0.05,
+    lease_poll_interval: float = _ANALYSIS_LEASE_POLL_INTERVAL,
     wait: Callable[[float], None] = time.sleep,
+    lease_max_wait: float = _ANALYSIS_LEASE_MAX_WAIT,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> None:
     store: ContinuationSessionStore | None = None
     lease = None
@@ -407,8 +422,10 @@ def _run_analysis_job(
             store,
             session_id,
             generation,
-            max(0.0, lease_poll_interval),
+            lease_poll_interval,
+            lease_max_wait,
             wait,
+            monotonic,
         )
         if lease is None:
             return
