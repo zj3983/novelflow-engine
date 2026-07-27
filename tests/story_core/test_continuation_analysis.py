@@ -478,6 +478,27 @@ def test_analysis_prompt_budget_error_is_persisted_stably(tmp_path: Path) -> Non
     assert loaded.error == "continuation_analysis_prompt_budget_too_small"
 
 
+def test_empty_merge_response_fails_stably_and_does_not_write_analysis(
+    tmp_path: Path,
+) -> None:
+    store, session = _store_with_chapters(tmp_path, count=1)
+
+    class EmptyMergeAnalyzer(FakeAnalyzer):
+        def merge(self, results, recent):
+            self.merge_calls.append((results, recent))
+            return {}
+
+    with pytest.raises(
+        ValueError, match="^continuation_analysis_invalid_response$"
+    ):
+        run_continuation_analysis(store, session.session_id, EmptyMergeAnalyzer())
+
+    loaded = store.get(session.session_id)
+    assert loaded.status == "failed"
+    assert loaded.error == "continuation_analysis_invalid_response"
+    assert loaded.analysis == {}
+
+
 def test_merge_once_and_receives_at_most_last_ten_chapters(tmp_path: Path) -> None:
     store, session = _store_with_chapters(tmp_path, count=12)
     analyzer = FakeAnalyzer()
@@ -527,6 +548,56 @@ def test_evidence_offsets_count_non_bmp_text_as_python_code_points(tmp_path: Pat
     assert len(session.chapters[0].body) == 3
     assert result.world[0].confidence == "confirmed"
     assert result.world[0].evidence[0].quote == "😀"
+
+
+def test_style_profile_confirmed_conclusion_requires_and_indexes_evidence(
+    tmp_path: Path,
+) -> None:
+    store, session = _store_with_chapters(tmp_path, count=1)
+    evidence = EvidenceRef(
+        chapter_id=session.chapters[0].chapter_id,
+        excerpt_start=0,
+        excerpt_end=2,
+    )
+
+    class StyleAnalyzer(FakeAnalyzer):
+        def merge(self, results, recent):
+            return ContinuationAnalysis(
+                story_overview="总览",
+                style_profile=StyleProfile(
+                    narrative_voice="近距离第三人称",
+                    confidence="confirmed",
+                    evidence=[evidence],
+                ),
+            )
+
+    result = run_continuation_analysis(store, session.session_id, StyleAnalyzer())
+
+    assert result.style_profile.confidence == "confirmed"
+    assert result.evidence_index["style_profile"] == [evidence]
+
+
+def test_style_profile_without_evidence_is_downgraded_and_flagged(
+    tmp_path: Path,
+) -> None:
+    store, session = _store_with_chapters(tmp_path, count=1)
+
+    class UnsupportedStyleAnalyzer(FakeAnalyzer):
+        def merge(self, results, recent):
+            return ContinuationAnalysis(
+                story_overview="总览",
+                style_profile=StyleProfile(
+                    narrative_voice="推测的叙事视角",
+                    confidence="confirmed",
+                ),
+            )
+
+    result = run_continuation_analysis(
+        store, session.session_id, UnsupportedStyleAnalyzer()
+    )
+
+    assert result.style_profile.confidence == "inferred"
+    assert result.needs_confirmation[0].source == "style_profile"
 
 
 def test_chapter_claim_without_evidence_survives_checkpoint_as_confirmation(
@@ -986,8 +1057,26 @@ def test_llm_merge_prompt_is_bounded_omits_old_body_and_keeps_latest_tail() -> N
     payloads = []
 
     def post_json(*args, **kwargs):
-        payloads.append(args[2])
-        content = ContinuationAnalysis(story_overview="合并完成").model_dump(mode="json")
+        payload = args[2]
+        payloads.append(payload)
+        context = json.loads(payload["messages"][1]["content"])
+        if context.get("task") == "continuation_analysis_digest":
+            content = {
+                "digest_id": context["digest_id"],
+                "source_ids": context["source_ids"],
+                "story_summary": "分层摘要:" + ",".join(context["source_ids"]),
+                "characters": [],
+                "world": [],
+                "power_system": [],
+                "timeline": [],
+                "open_hooks": [],
+                "style_observations": [],
+                "evidence": [],
+            }
+        else:
+            content = ContinuationAnalysis(story_overview="合并完成").model_dump(
+                mode="json"
+            )
         return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
 
     analyzer = LLMContinuationAnalyzer(
@@ -1022,11 +1111,33 @@ def test_llm_merge_prompt_is_bounded_omits_old_body_and_keeps_latest_tail() -> N
     merged = analyzer.merge(results, chapters)
 
     assert merged.story_overview == "合并完成"
-    messages = payloads[0]["messages"]
-    assert sum(len(message["content"]) for message in messages) <= 3000
+    assert all(
+        sum(len(message["content"]) for message in payload["messages"]) <= 3000
+        for payload in payloads
+    )
+    contexts = [json.loads(payload["messages"][1]["content"]) for payload in payloads]
+    leaf_contexts = [
+        context
+        for context in contexts
+        if context.get("task") == "continuation_analysis_digest"
+        and context.get("source_kind") == "chapter_results"
+    ]
+    assert [
+        chapter_id
+        for context in leaf_contexts
+        for chapter_id in context["source_ids"]
+    ] == [chapter.chapter_id for chapter in chapters]
+    final_context = contexts[-1]
+    assert final_context["task"] == "continuation_analysis_final"
+    assert sum(
+        item["coverage"]["chapter_count"]
+        for item in final_context["analysis_digests"]
+    ) == len(chapters)
+    messages = payloads[-1]["messages"]
     prompt = messages[1]["content"]
     assert "UNRELATED_OLD_BODY" not in prompt
     assert "LATEST_END" in prompt
     assert "[TRUNCATED_TO_RECENT_TAIL]" in prompt
-    context = json.loads(prompt)
-    assert sum(len(item["body_excerpt"]) for item in context["recent_chapters"]) <= 400
+    assert sum(
+        len(item["body_excerpt"]) for item in final_context["recent_chapters"]
+    ) <= 400

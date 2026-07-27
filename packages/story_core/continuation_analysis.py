@@ -80,6 +80,8 @@ class StyleProfile(_StrictModel):
     pacing: str = ""
     dialogue_style: str = ""
     prose_features: list[str] = Field(default_factory=list)
+    confidence: Confidence = "inferred"
+    evidence: list[EvidenceRef] = Field(default_factory=list)
 
 
 class ContinuationStart(_StrictModel):
@@ -121,6 +123,36 @@ class ContinuationAnalysis(_StrictModel):
     needs_confirmation: list[NeedsConfirmation] = Field(default_factory=list)
 
 
+class _MergeResponse(_StrictModel):
+    story_overview: str
+    characters: list[CharacterAnalysis]
+    world: list[ClaimItem]
+    power_system: list[ClaimItem]
+    timeline: list[TimelineEvent]
+    open_hooks: list[HookAnalysis]
+    style_profile: StyleProfile
+    continuation_start: ContinuationStart
+    evidence_index: dict[str, list[EvidenceRef]]
+    needs_confirmation: list[NeedsConfirmation]
+
+
+class _DigestResponse(_StrictModel):
+    digest_id: str
+    source_ids: list[str]
+    story_summary: str
+    characters: list[str]
+    world: list[str]
+    power_system: list[str]
+    timeline: list[str]
+    open_hooks: list[str]
+    style_observations: list[str]
+    evidence: list[EvidenceRef]
+
+
+class _DigestNode(_DigestResponse):
+    chapter_ids: list[str]
+
+
 class ContinuationAnalyzer(Protocol):
     def analyze_chapters(
         self, chapters: list[ContinuationChapter]
@@ -151,11 +183,15 @@ def _valid_evidence(
     return valid
 
 
-def _claim_text(item: CharacterAnalysis | ClaimItem | TimelineEvent | HookAnalysis) -> str:
+def _claim_text(
+    item: CharacterAnalysis | ClaimItem | TimelineEvent | HookAnalysis | StyleProfile,
+) -> str:
     if isinstance(item, ClaimItem):
         return item.claim
     if isinstance(item, TimelineEvent | HookAnalysis):
         return item.text
+    if isinstance(item, StyleProfile):
+        return item.narrative_voice or item.point_of_view or "style_profile"
     return item.summary or item.name
 
 
@@ -184,6 +220,7 @@ def _analysis_claims(analysis: ContinuationAnalysis) -> Iterable[tuple[str, Any]
                 yield f"characters.{index}.{field_name}.{sub_index}", item
     for index, item in enumerate(analysis.continuation_start.constraints):
         yield f"continuation_start.constraints.{index}", item
+    yield "style_profile", analysis.style_profile
 
 
 def _normalize_claims(
@@ -380,6 +417,16 @@ def _analysis_batches(
         yield batch
 
 
+def _validated_merge_response(value: Any) -> ContinuationAnalysis:
+    if isinstance(value, ContinuationAnalysis):
+        return value.model_copy(deep=True)
+    try:
+        strict = _MergeResponse.model_validate(value)
+    except (TypeError, ValidationError):
+        raise ValueError("continuation_analysis_invalid_response") from None
+    return ContinuationAnalysis.model_validate(strict.model_dump(mode="json"))
+
+
 def run_continuation_analysis(
     store: ContinuationSessionStore,
     session_id: str,
@@ -466,12 +513,7 @@ def run_continuation_analysis(
 
         ordered = [completed_by_id[chapter.chapter_id] for chapter in chapters]
         recent_chapters = chapters[-min(10, len(chapters)) :]
-        try:
-            merged = ContinuationAnalysis.model_validate(
-                analyzer.merge(ordered, recent_chapters)
-            )
-        except ValidationError:
-            raise ValueError("continuation_analysis_invalid_response") from None
+        merged = _validated_merge_response(analyzer.merge(ordered, recent_chapters))
         merged = _normalize_analysis(merged, chapters, ordered)
 
         def finish(current) -> None:
@@ -599,77 +641,131 @@ def _recent_chapter_context(
     return [item for _, item in sorted(selected)]
 
 
-def _merge_context(
-    chapter_results: list[ChapterAnalysis],
-    recent_chapters: list[ContinuationChapter],
-    *,
-    total_char_budget: int,
-    recent_body_char_budget: int,
-    system_prompt: str,
-) -> dict[str, Any]:
-    user_budget = total_char_budget - len(system_prompt)
-    if user_budget <= 0:
-        raise ValueError("continuation_analysis_invalid_response")
+_DIGEST_SYSTEM_PROMPT = (
+    "Summarize every supplied continuation-analysis source into one structured "
+    "digest. Preserve chronology, evidence-backed facts, unresolved hooks, and style. Return JSON only."
+)
+_FINAL_MERGE_SYSTEM_PROMPT = (
+    "Merge the complete hierarchy of continuation-analysis digests into a continuation brief. "
+    "Return JSON only. Do not continue the novel and do not invent unsupported facts."
+)
 
-    output_schema = {
-        "type": "ContinuationAnalysis",
-        "required": [
-            "story_overview",
-            "characters",
-            "world",
-            "power_system",
-            "timeline",
-            "open_hooks",
-            "style_profile",
-            "continuation_start",
-            "evidence_index",
-            "needs_confirmation",
+
+def _digest_item(node: _DigestNode, *, summary_only: bool) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "digest_id": node.digest_id,
+        "coverage": {
+            "chapter_count": len(node.chapter_ids),
+            "first_chapter_id": node.chapter_ids[0],
+            "last_chapter_id": node.chapter_ids[-1],
+        },
+        "story_summary": _clipped(node.story_summary, 500 if not summary_only else 220),
+    }
+    if summary_only:
+        item["compacted"] = _COMPACT_VALUE_MARKER
+        item["layer_signals"] = {
+            field_name: [
+                _clipped(value, 80) for value in getattr(node, field_name)[:2]
+            ]
+            for field_name in (
+                "characters",
+                "world",
+                "power_system",
+                "timeline",
+                "open_hooks",
+                "style_observations",
+            )
+        }
+        return item
+    for field_name in (
+        "characters",
+        "world",
+        "power_system",
+        "timeline",
+        "open_hooks",
+        "style_observations",
+    ):
+        item[field_name] = [
+            _clipped(value, 180) for value in getattr(node, field_name)[:6]
+        ]
+    item["evidence"] = _compact_evidence(node.evidence)
+    return item
+
+
+def _digest_prompt_context(
+    *,
+    digest_id: str,
+    source_kind: str,
+    source_ids: list[str],
+    source_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "task": "continuation_analysis_digest",
+        "digest_id": digest_id,
+        "source_kind": source_kind,
+        "source_ids": source_ids,
+        "source_items": source_items,
+        "output_schema": {
+            "required": [
+                "digest_id",
+                "source_ids",
+                "story_summary",
+                "characters",
+                "world",
+                "power_system",
+                "timeline",
+                "open_hooks",
+                "style_observations",
+                "evidence",
+            ]
+        },
+        "rules": [
+            "Cover every source_id exactly once and return source_ids unchanged.",
+            "Do not omit older sources or invent unsupported facts.",
+            "Keep evidence references tied to their original chapter IDs and offsets.",
         ],
     }
 
-    def build(
-        included: list[tuple[int, dict[str, Any]]],
-        recent: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        return {
-            "chapter_results": [item for _, item in sorted(included)],
-            "recent_chapters": recent,
-            "output_schema": output_schema,
-            "rules": [
-                "Synthesize analysis only; do not write continuation prose.",
-                "Do not invent facts without valid evidence.",
-                "Recent chapter excerpts retain the newest available text first.",
-            ],
-            "truncation": {
-                "markers": [_COMPACT_VALUE_MARKER, _RECENT_TAIL_MARKER],
-                "omitted_chapter_result_count": len(chapter_results) - len(included),
-            },
-        }
 
-    recent_limit = min(recent_body_char_budget, max(0, user_budget // 2))
-    recent = _recent_chapter_context(recent_chapters, recent_limit)
-    context = build([], recent)
-    while len(json.dumps(context, ensure_ascii=False, separators=(",", ":"))) > user_budget:
-        if recent_limit == 0:
-            raise ValueError("continuation_analysis_invalid_response")
-        excess = len(json.dumps(context, ensure_ascii=False, separators=(",", ":"))) - user_budget
-        recent_limit = max(0, recent_limit - excess - 32)
-        recent = _recent_chapter_context(recent_chapters, recent_limit)
-        context = build([], recent)
-
-    included: list[tuple[int, dict[str, Any]]] = []
-    for index in range(len(chapter_results) - 1, -1, -1):
-        result = chapter_results[index]
-        for compact in (_compact_chapter_result(result), _summary_only_result(result)):
-            candidate = build([*included, (index, compact)], recent)
-            serialized = json.dumps(
-                candidate, ensure_ascii=False, separators=(",", ":")
-            )
-            if len(serialized) <= user_budget:
-                included.append((index, compact))
-                context = candidate
-                break
-    return context
+def _final_merge_context(
+    nodes: list[_DigestNode],
+    recent_chapters: list[ContinuationChapter],
+    *,
+    recent_body_char_budget: int,
+    summary_only: bool,
+) -> dict[str, Any]:
+    return {
+        "task": "continuation_analysis_final",
+        "analysis_digests": [
+            _digest_item(node, summary_only=summary_only) for node in nodes
+        ],
+        "recent_chapters": _recent_chapter_context(
+            recent_chapters, recent_body_char_budget
+        ),
+        "output_schema": {
+            "required": [
+                "story_overview",
+                "characters",
+                "world",
+                "power_system",
+                "timeline",
+                "open_hooks",
+                "style_profile",
+                "continuation_start",
+                "evidence_index",
+                "needs_confirmation",
+            ]
+        },
+        "rules": [
+            "Every analysis_digest is required input; synthesize all coverage into the result.",
+            "Use recent chapter excerpts only to locate the continuation point.",
+            "Do not write continuation prose or invent unsupported facts.",
+        ],
+        "truncation": {
+            "markers": [_COMPACT_VALUE_MARKER, _RECENT_TAIL_MARKER],
+            "omitted_digest_count": 0,
+        },
+    }
 
 
 _ANALYSIS_SYSTEM_PROMPT = (
@@ -898,28 +994,165 @@ class LLMContinuationAnalyzer:
         except ValidationError as exc:
             raise ValueError("continuation_analysis_invalid_response") from exc
 
+    def _request_digest(
+        self,
+        context: dict[str, Any],
+        chapter_ids: list[str],
+    ) -> _DigestNode:
+        parsed = self._call(
+            context,
+            _DIGEST_SYSTEM_PROMPT,
+            total_char_budget=self._merge_char_budget,
+        )
+        try:
+            response = _DigestResponse.model_validate(parsed)
+        except ValidationError:
+            raise ValueError("continuation_analysis_invalid_response") from None
+        if (
+            response.digest_id != context["digest_id"]
+            or response.source_ids != context["source_ids"]
+        ):
+            raise ValueError("continuation_analysis_invalid_response")
+        return _DigestNode(
+            **response.model_dump(mode="json"),
+            chapter_ids=chapter_ids,
+        )
+
+    def _digest_level(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        level: int,
+        source_kind: str,
+        compact_groups: bool,
+    ) -> list[_DigestNode]:
+        nodes: list[_DigestNode] = []
+        group: list[dict[str, Any]] = []
+
+        def context_for(items: list[dict[str, Any]], group_index: int) -> dict[str, Any]:
+            return _digest_prompt_context(
+                digest_id=f"digest-{level}-{group_index:04d}",
+                source_kind=source_kind,
+                source_ids=[item["source_id"] for item in items],
+                source_items=[
+                    item["minimum" if compact_groups else "full"] for item in items
+                ],
+            )
+
+        def fits(items: list[dict[str, Any]], group_index: int) -> bool:
+            return (
+                _prompt_chars(_DIGEST_SYSTEM_PROMPT, context_for(items, group_index))
+                <= self._merge_char_budget
+            )
+
+        def finish(items: list[dict[str, Any]]) -> None:
+            group_index = len(nodes)
+            context = context_for(items, group_index)
+            if _prompt_chars(_DIGEST_SYSTEM_PROMPT, context) > self._merge_char_budget:
+                if len(items) != 1 or compact_groups:
+                    raise ValueError("continuation_analysis_prompt_budget_too_small")
+                context = _digest_prompt_context(
+                    digest_id=f"digest-{level}-{group_index:04d}",
+                    source_kind=source_kind,
+                    source_ids=[items[0]["source_id"]],
+                    source_items=[items[0]["minimum"]],
+                )
+                if _prompt_chars(_DIGEST_SYSTEM_PROMPT, context) > self._merge_char_budget:
+                    raise ValueError("continuation_analysis_prompt_budget_too_small")
+            chapter_ids = [
+                chapter_id for item in items for chapter_id in item["chapter_ids"]
+            ]
+            nodes.append(self._request_digest(context, chapter_ids))
+
+        for entry in entries:
+            candidate = [*group, entry]
+            if group and not fits(candidate, len(nodes)):
+                finish(group)
+                group = []
+            group.append(entry)
+            if not fits(group, len(nodes)):
+                finish(group)
+                group = []
+        if group:
+            finish(group)
+        return nodes
+
+    def _bounded_final_context(
+        self,
+        nodes: list[_DigestNode],
+        recent_chapters: list[ContinuationChapter],
+    ) -> dict[str, Any] | None:
+        for summary_only in (False, True):
+            recent_limit = min(
+                self._recent_body_char_budget,
+                max(0, self._merge_char_budget // 3),
+            )
+            while True:
+                context = _final_merge_context(
+                    nodes,
+                    recent_chapters,
+                    recent_body_char_budget=recent_limit,
+                    summary_only=summary_only,
+                )
+                size = _prompt_chars(_FINAL_MERGE_SYSTEM_PROMPT, context)
+                if size <= self._merge_char_budget:
+                    return context
+                if recent_limit == 0:
+                    break
+                recent_limit = max(
+                    0, recent_limit - (size - self._merge_char_budget) - 32
+                )
+        return None
+
     def merge(
         self,
         chapter_results: list[ChapterAnalysis],
         recent_chapters: list[ContinuationChapter],
     ) -> ContinuationAnalysis:
-        system_prompt = (
-            "Merge the supplied chapter analyses into a continuation brief. "
-            "Return JSON only. Do not continue the novel and do not invent unsupported facts."
+        entries = [
+            {
+                "source_id": result.chapter_id,
+                "chapter_ids": [result.chapter_id],
+                "full": _compact_chapter_result(result),
+                "minimum": _summary_only_result(result),
+            }
+            for result in chapter_results
+        ]
+        nodes = self._digest_level(
+            entries,
+            level=0,
+            source_kind="chapter_results",
+            compact_groups=False,
         )
-        context = _merge_context(
-            chapter_results,
-            recent_chapters,
-            total_char_budget=self._merge_char_budget,
-            recent_body_char_budget=self._recent_body_char_budget,
-            system_prompt=system_prompt,
-        )
+        level = 1
+        while True:
+            context = self._bounded_final_context(nodes, recent_chapters)
+            if context is not None:
+                break
+            if len(nodes) <= 1:
+                raise ValueError("continuation_analysis_prompt_budget_too_small")
+            parent_entries = [
+                {
+                    "source_id": node.digest_id,
+                    "chapter_ids": node.chapter_ids,
+                    "full": _digest_item(node, summary_only=False),
+                    "minimum": _digest_item(node, summary_only=True),
+                }
+                for node in nodes
+            ]
+            parent_nodes = self._digest_level(
+                parent_entries,
+                level=level,
+                source_kind="analysis_digests",
+                compact_groups=True,
+            )
+            if len(parent_nodes) >= len(nodes):
+                raise ValueError("continuation_analysis_prompt_budget_too_small")
+            nodes = parent_nodes
+            level += 1
         parsed = self._call(
             context,
-            system_prompt,
+            _FINAL_MERGE_SYSTEM_PROMPT,
             total_char_budget=self._merge_char_budget,
         )
-        try:
-            return ContinuationAnalysis.model_validate(parsed)
-        except ValidationError as exc:
-            raise ValueError("continuation_analysis_invalid_response") from exc
+        return _validated_merge_response(parsed)
