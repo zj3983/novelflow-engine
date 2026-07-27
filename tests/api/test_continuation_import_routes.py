@@ -823,6 +823,166 @@ def test_concurrent_posts_create_one_effective_generation(
     assert current.analysis_progress["_analysis_job_generation"] == generations[0]
 
 
+def test_new_generation_waits_for_old_generation_lease_handoff(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    analyzer = _TitleAnalyzer()
+    monkeypatch.setattr(continuation_imports, "build_continuation_analyzer", lambda: analyzer)
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    old_tasks = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], old_tasks)
+    store = continuation_imports._session_store()
+    old_lease = try_acquire_analysis_lease(store.root, session["session_id"])
+    assert old_lease is not None
+    current = store.get(session["session_id"])
+    chapters = [chapter.model_copy(deep=True) for chapter in current.chapters]
+    chapters[0].title = "new generation chapter"
+    store.replace_chapters(
+        session["session_id"],
+        chapters,
+        expected_revision=current.revision,
+        invalidate_analysis=True,
+    )
+    new_tasks = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], new_tasks)
+    _, args, _ = new_tasks.tasks[0]
+    waiting = threading.Event()
+    continue_waiting = threading.Event()
+
+    def wait_for_handoff(_seconds: float) -> None:
+        waiting.set()
+        assert continue_waiting.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            continuation_imports._run_analysis_job,
+            args[0],
+            args[1],
+            0.001,
+            wait_for_handoff,
+        )
+        assert waiting.wait(timeout=5)
+        assert not future.done()
+        old_lease.release()
+        continue_waiting.set()
+        future.result(timeout=5)
+
+    assert analyzer.calls == 1
+    assert store.get(session["session_id"]).status == "ready"
+
+
+def test_failed_retry_waits_until_old_worker_releases_lease(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+    from packages.story_core.continuation_sessions import try_acquire_analysis_lease
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    analyzer = _TitleAnalyzer()
+    monkeypatch.setattr(continuation_imports, "build_continuation_analyzer", lambda: analyzer)
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    first = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], first)
+    store = continuation_imports._session_store()
+    old_lease = try_acquire_analysis_lease(store.root, session["session_id"])
+    assert old_lease is not None
+    current = store.get(session["session_id"])
+
+    def expose_failure(value) -> None:
+        value.status = "failed"
+        value.analysis_progress["_analysis_job_state"] = "running"
+
+    store.update(
+        session["session_id"], expose_failure, expected_revision=current.revision
+    )
+    retry = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], retry)
+    _, args, _ = retry.tasks[0]
+    waiting = threading.Event()
+    continue_waiting = threading.Event()
+
+    def wait_for_handoff(_seconds: float) -> None:
+        waiting.set()
+        assert continue_waiting.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            continuation_imports._run_analysis_job,
+            args[0],
+            args[1],
+            0.001,
+            wait_for_handoff,
+        )
+        assert waiting.wait(timeout=5)
+        old_lease.release()
+        continue_waiting.set()
+        future.result(timeout=5)
+
+    assert analyzer.calls == 1
+    assert store.get(session["session_id"]).status == "ready"
+
+
+def test_same_generation_duplicate_callback_exits_after_running_claim(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingAnalyzer(_TitleAnalyzer):
+        def analyze_chapters(self, chapters):
+            started.set()
+            assert release.wait(timeout=5)
+            return super().analyze_chapters(chapters)
+
+    analyzer = BlockingAnalyzer()
+    monkeypatch.setattr(continuation_imports, "build_continuation_analyzer", lambda: analyzer)
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    tasks = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], tasks)
+    continuation_imports.analyze(session["session_id"], tasks)
+    assert len(tasks.tasks) == 2
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(tasks.tasks[0][0], *tasks.tasks[0][1], **tasks.tasks[0][2])
+        assert started.wait(timeout=5)
+        tasks.tasks[1][0](*tasks.tasks[1][1], **tasks.tasks[1][2])
+        release.set()
+        first.result(timeout=5)
+
+    assert analyzer.calls == 1
+
+
 def test_failed_job_does_not_overwrite_a_newer_ready_state(
     client: TestClient,
     allowed_root: Path,

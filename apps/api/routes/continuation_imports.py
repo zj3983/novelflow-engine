@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
 
@@ -21,6 +23,7 @@ from packages.story_core.continuation_import import (
     scan_continuation_source,
 )
 from packages.story_core.continuation_sessions import (
+    ContinuationAnalysisLease,
     ContinuationImportSession,
     ContinuationSessionStore,
     secure_read_bytes,
@@ -368,13 +371,45 @@ def _claim_analysis_job(
         return False
 
 
-def _run_analysis_job(session_id: str, generation: str) -> None:
+def _wait_for_analysis_lease(
+    store: ContinuationSessionStore,
+    session_id: str,
+    generation: str,
+    poll_interval: float,
+    wait: Callable[[float], None],
+) -> ContinuationAnalysisLease | None:
+    while True:
+        current = store.get(session_id)
+        if (
+            current.status != "analyzing"
+            or _job_generation(current) != generation
+            or _job_state(current) != "queued"
+        ):
+            return None
+        lease = try_acquire_analysis_lease(store.root, session_id)
+        if lease is not None:
+            return lease
+        wait(poll_interval)
+
+
+def _run_analysis_job(
+    session_id: str,
+    generation: str,
+    lease_poll_interval: float = 0.05,
+    wait: Callable[[float], None] = time.sleep,
+) -> None:
     store: ContinuationSessionStore | None = None
     lease = None
     claimed = False
     try:
         store = _session_store()
-        lease = try_acquire_analysis_lease(store.root, session_id)
+        lease = _wait_for_analysis_lease(
+            store,
+            session_id,
+            generation,
+            max(0.0, lease_poll_interval),
+            wait,
+        )
         if lease is None:
             return
         claimed = _claim_analysis_job(store, session_id, generation)
