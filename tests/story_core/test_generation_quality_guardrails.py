@@ -71,6 +71,98 @@ def test_chapter_review_passes_explicit_genre_context_to_shared_reviewers(monkey
     }
 
 
+def test_chapter_review_preserves_nested_reports_to_repair_aggregate_plan_shift(monkeypatch):
+    body = "网游正文"
+    local_issue_a = (
+        f"章节字数偏少：当前约{len(body)}字，"
+        f"番茄长篇建议至少{orchestrator_module._chapter_review_min_chars({})}字。"
+    )
+    issue_b = "设定冲突：issue B"
+    calls = {"web_game": 0, "consistency": 0, "style": 0}
+
+    def empty_review(*_args, **_kwargs):
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    def web_game_review(*_args, **_kwargs):
+        calls["web_game"] += 1
+        return {
+            "pass": False,
+            "scores": {},
+            "issues": [local_issue_a],
+            "revision_plan": ["web-extra-plan-for-A"],
+        }
+
+    def consistency_review(*_args, **_kwargs):
+        calls["consistency"] += 1
+        return {
+            "pass": False,
+            "scores": {},
+            "issues": [issue_b],
+            "revision_plan": ["fix-B"],
+            "scene_contract_failures": [],
+        }
+
+    def style_review(*_args, **_kwargs):
+        calls["style"] += 1
+        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
+
+    monkeypatch.setattr(orchestrator_module, "review_web_game_chapter", web_game_review)
+    monkeypatch.setattr(orchestrator_module, "review_world_event_consistency", consistency_review)
+    monkeypatch.setattr(orchestrator_module, "review_prose_style", style_review)
+    for name in (
+        "review_prose_quality",
+        "review_adversarial_cuts",
+        "review_ai_flavor",
+        "review_reader_feel",
+        "review_cold_reader_experience",
+        "review_plot_spine_completion",
+        "review_progression_lead",
+        "review_critical_prose_rules",
+        "review_reader_agent",
+        "review_editor_agent",
+        "review_reviewer_agent",
+    ):
+        monkeypatch.setattr(orchestrator_module, name, empty_review)
+
+    writing_review = _review_chapter_body(
+        4,
+        body,
+        {"world_reactions": ["玩家继续练级。"], "next_focus": "继续推进。"},
+        [],
+    )
+    simplified = build_simplified_review({"writing_review": writing_review})
+    issue = next(item for item in simplified["issues"] if item["message"] == issue_b)
+
+    assert issue["suggestion"] == "fix-B"
+    assert simplified["revision_plan"][simplified["issues"].index(issue)] == "fix-B"
+    assert writing_review["web_game_review"]["revision_plan"] == ["web-extra-plan-for-A"]
+    assert writing_review["consistency_review"]["revision_plan"] == ["fix-B"]
+    assert writing_review["prose_style_review"] == {
+        "pass": True,
+        "scores": {},
+        "issues": [],
+        "revision_plan": [],
+    }
+    assert calls == {"web_game": 1, "consistency": 1, "style": 1}
+
+
+def test_quality_merge_propagates_nested_revision_reports():
+    writing_review = {
+        "pass": False,
+        "scores": {},
+        "issues": ["设定冲突：issue B"],
+        "revision_plan": ["fix-B"],
+        "web_game_review": {"issues": ["issue A"], "revision_plan": ["fix-A"]},
+        "consistency_review": {"issues": ["设定冲突：issue B"], "revision_plan": ["fix-B"]},
+        "prose_style_review": {"issues": [], "revision_plan": []},
+    }
+
+    merged = _merge_writing_review_quality({"ok": True, "issues": []}, writing_review)
+
+    for key in ("web_game_review", "consistency_review", "prose_style_review"):
+        assert merged[key] is writing_review[key]
+
+
 def test_chapter_review_enables_economy_checks_for_mixed_game_plugin_context():
     body = "拍卖物成交后，这笔成交款直接进入现实账户。"
 

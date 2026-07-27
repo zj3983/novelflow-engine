@@ -4070,6 +4070,9 @@ def _review_chapter_body(
         "scores": scores,
         "issues": issues,
         "revision_plan": revision_plan,
+        "web_game_review": web_game_review,
+        "consistency_review": consistency_review,
+        "prose_style_review": style_review,
         "prose_quality_review": prose_quality_review,
         "adversarial_cut_review": adversarial_cut_review,
         "reader_agent_review": reader_agent_review,
@@ -4103,6 +4106,9 @@ def _merge_writing_review_quality(quality: dict, writing_review: dict) -> dict:
     merged["writing_review"] = writing_review
     for key in (
         "critical_review",
+        "web_game_review",
+        "consistency_review",
+        "prose_style_review",
         "hook_review",
         "pacing_review",
         "beats_review",
