@@ -11,6 +11,19 @@ def test_attribute_allocation_accepts_modifier_between_action_and_points():
     assert has_character_attribute_allocation("夜烬把刚拿到的五点全部加到智力上", "智力", 5)
 
 
+def test_attribute_allocation_accepts_completed_real_chapter_action():
+    body = (
+        "夜烬现在靠火球术刷怪，没必要把点数分散到别处，便把五点全加到了智力上。\n\n"
+        "他点下确认，两行新的提示随即跳了出来：【智力：5→10。】【可用属性点：0。】"
+    )
+
+    assert has_character_attribute_allocation(body, "智力", 5)
+
+
+def test_attribute_allocation_keeps_plain_all_to_form_supported():
+    assert has_character_attribute_allocation("夜烬把五点全加到智力上", "智力", 5)
+
+
 def test_attribute_allocation_rejects_negated_action_with_modifier_before_points():
     assert not has_character_attribute_allocation("夜烬没有把刚拿到的五点全部加到智力上", "智力", 5)
 

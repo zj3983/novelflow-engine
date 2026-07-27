@@ -20,7 +20,7 @@ _CN_NUMERAL_VALUES = {
 _COUNT_PATTERN = r"\d+|[一二两三四五六七八九十百]{1,3}"
 _ATTRIBUTE_ACTION_PATTERN = (
     rf"(?:{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
-    r"(?:全部)?(?:加到|加给|分配给|投入|点在)"
+    r"(?:全部)?(?:加到(?:了)?|加给|分配给|分配到(?:了)?|投入(?:到)?(?:了)?|点在)"
 )
 _ATTRIBUTE_CONTEXT = ("属性点", "加点", "分配", "力量", "体质", "敏捷", "智力", "精神", "感知")
 _EXPLANATORY_SUBJECT_PATTERNS = (
@@ -173,7 +173,7 @@ def _action_matches(body: str, attribute: str | None = None, points: int | None 
                 continue
             pattern = (
                 rf"{re.escape(form)}\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
-                rf"(?:全部)?(?:加到|加给|分配给|投入|点在)\s*{re.escape(attribute)}(?:上|里)?"
+                rf"(?:全部)?(?:加到(?:了)?|加给|分配给|分配到(?:了)?|投入(?:到)?(?:了)?|点在)\s*{re.escape(attribute)}(?:上|里)?"
             )
             yield from re.finditer(pattern, body)
         return
@@ -213,7 +213,7 @@ def character_attribute_allocation_points(
 ) -> int | None:
     pattern = (
         rf"(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
-        rf"(?:全部)?(?:加到|加给|分配给|投入|点在)\s*{re.escape(attribute)}(?:上|里)?"
+        rf"(?:全部)?(?:加到(?:了)?|加给|分配给|分配到(?:了)?|投入(?:到)?(?:了)?|点在)\s*{re.escape(attribute)}(?:上|里)?"
     )
     values: list[int] = []
     for match in re.finditer(pattern, body):

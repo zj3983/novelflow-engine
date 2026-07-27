@@ -799,6 +799,28 @@ def test_web_game_review_accepts_character_action_through_system_panel():
     assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
 
 
+def test_web_game_review_accepts_completed_real_chapter_allocation_action():
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=(
+            "《神域》里，夜烬现在靠火球术刷怪，没必要把点数分散到别处，便把五点全加到了智力上。\n\n"
+            "他点下确认，两行新的提示随即跳了出来：【智力：5→10。】【可用属性点：0。】"
+        ),
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+        protagonist_aliases={"苏叶", "夜烬"},
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
 def test_web_game_review_reports_allocation_amount_and_remaining_mismatches():
     review = review_web_game_chapter(
         chapter_number=4,

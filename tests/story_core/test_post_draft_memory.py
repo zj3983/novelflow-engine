@@ -213,6 +213,31 @@ def test_attribute_allocation_requires_visible_choice_and_confirmed_remaining_po
     assert result["ledger_updates"] == payload["ledger_updates"]
 
 
+def test_attribute_allocation_accepts_completed_real_chapter_action():
+    body = (
+        "夜烬现在靠火球术刷怪，没必要把点数分散到别处，便把五点全加到了智力上。\n\n"
+        "他点下确认，两行新的提示随即跳了出来：【智力：5→10。】【可用属性点：0。】"
+    )
+    payload = {
+        "ledger_updates": {
+            "protagonist": {
+                "attribute_allocation": {
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                }
+            }
+        },
+        "ledger_evidence": {
+            "protagonist.attribute_allocation.allocations.智力": "把五点全加到了智力上",
+            "protagonist.attribute_allocation.remaining": "可用属性点：0",
+        },
+    }
+
+    result = normalize_post_draft_memory(payload, body=body, existing_character_names={"夜烬"})
+
+    assert result["ledger_updates"] == payload["ledger_updates"]
+
+
 def test_attribute_allocation_accepts_evidence_backed_optional_reason():
     body = "夜烬打开角色面板，把五点加到智力上。为了法师路线，他确认加点，可用属性点归零。"
     result = normalize_post_draft_memory(
