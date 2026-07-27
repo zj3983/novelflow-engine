@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import os
 import re
 import shutil
-import stat
 import tempfile
 import threading
+import time
 import unicodedata
 import uuid
 from collections.abc import Callable
@@ -29,6 +30,7 @@ from .continuation_import import (
 _SESSION_ID_RE = re.compile(r"^ci-[A-Za-z0-9][A-Za-z0-9_-]*$")
 _LOCK_REGISTRY_GUARD = threading.Lock()
 _LOCK_REGISTRY: dict[str, threading.RLock] = {}
+_LOCK_STATE = threading.local()
 
 
 class ContinuationImportSession(BaseModel):
@@ -78,10 +80,15 @@ def _is_link_or_junction(path: Path) -> bool:
     if os.name != "nt":
         return False
     try:
-        attributes = os.lstat(path).st_file_attributes
+        import ctypes
+
+        get_attributes = ctypes.WinDLL("kernel32", use_last_error=True).GetFileAttributesW
+        get_attributes.argtypes = [ctypes.c_wchar_p]
+        get_attributes.restype = ctypes.c_uint32
+        attributes = get_attributes(str(path))
     except (AttributeError, FileNotFoundError, OSError):
         return False
-    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    return attributes != 0xFFFFFFFF and bool(attributes & 0x400)
 
 
 def _resolve_contained_path(root: Path, candidate: Path) -> Path:
@@ -94,22 +101,135 @@ def _resolve_contained_path(root: Path, candidate: Path) -> Path:
     return resolved_candidate
 
 
+def _before_secure_open(path: Path) -> None:
+    return None
+
+
+def _path_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _final_path_from_handle(handle: BinaryIO, fallback: Path) -> Path:
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_final_path = kernel32.GetFinalPathNameByHandleW
+        get_final_path.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        ]
+        get_final_path.restype = ctypes.c_uint32
+        os_handle = msvcrt.get_osfhandle(handle.fileno())
+        required = get_final_path(os_handle, None, 0, 0)
+        if required == 0:
+            raise OSError(ctypes.get_last_error(), "GetFinalPathNameByHandleW failed")
+        buffer = ctypes.create_unicode_buffer(required + 1)
+        written = get_final_path(os_handle, buffer, len(buffer), 0)
+        if written == 0 or written >= len(buffer):
+            raise OSError(ctypes.get_last_error(), "GetFinalPathNameByHandleW failed")
+        value = buffer.value
+        if value.startswith("\\\\?\\UNC\\"):
+            value = "\\\\" + value[8:]
+        elif value.startswith("\\\\?\\"):
+            value = value[4:]
+        return Path(value)
+
+    descriptor_path = Path("/proc/self/fd") / str(handle.fileno())
+    try:
+        return Path(os.readlink(descriptor_path))
+    except OSError:
+        return fallback.resolve(strict=False)
+
+
+def _validate_open_handle(
+    handle: BinaryIO,
+    *,
+    fixed_root: Path,
+    expected_path: Path,
+) -> None:
+    final_path = _final_path_from_handle(handle, expected_path)
+    try:
+        final_path.relative_to(fixed_root)
+    except ValueError:
+        raise ValueError("invalid_session_path") from None
+    if _path_key(final_path) != _path_key(expected_path):
+        raise ValueError("invalid_session_path")
+
+
+@contextmanager
+def _secure_open_binary(
+    path: Path,
+    *,
+    fixed_root: Path,
+    invoke_hook: bool = True,
+) -> Iterator[BinaryIO]:
+    expected_path = path.resolve(strict=False)
+    if _is_link_or_junction(path):
+        raise ValueError("invalid_session_path")
+    if invoke_hook:
+        _before_secure_open(path)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP or _is_link_or_junction(path):
+            raise ValueError("invalid_session_path") from None
+        raise
+    handle = os.fdopen(descriptor, "rb")
+    try:
+        _validate_open_handle(
+            handle,
+            fixed_root=fixed_root,
+            expected_path=expected_path,
+        )
+        yield handle
+    finally:
+        handle.close()
+
+
+def _secure_read_json(path: Path, *, fixed_root: Path) -> Any:
+    with _secure_open_binary(path, fixed_root=fixed_root) as handle:
+        return json.loads(handle.read().decode("utf-8"))
+
+
+def _secure_read_bytes(path: Path, *, fixed_root: Path) -> bytes:
+    with _secure_open_binary(path, fixed_root=fixed_root) as handle:
+        return handle.read()
+
+
+def _directory_identity(path: Path) -> tuple[int, int]:
+    if _is_link_or_junction(path):
+        raise ValueError("invalid_session_path")
+    details = path.stat(follow_symlinks=False)
+    return details.st_dev, details.st_ino
+
+
+def _validate_directory_identity(path: Path, identity: tuple[int, int]) -> None:
+    if _directory_identity(path) != identity:
+        raise ValueError("invalid_session_path")
+
+
 def _registered_lock(lock_path: Path) -> threading.RLock:
     key = os.path.normcase(str(lock_path.resolve(strict=False)))
     with _LOCK_REGISTRY_GUARD:
         return _LOCK_REGISTRY.setdefault(key, threading.RLock())
 
 
-def _lock_file(handle: BinaryIO) -> None:
+def _try_lock_file(handle: BinaryIO) -> None:
     handle.seek(0)
     if os.name == "nt":
         import msvcrt
 
-        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
     else:
         import fcntl
 
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def _unlock_file(handle: BinaryIO) -> None:
@@ -125,19 +245,58 @@ def _unlock_file(handle: BinaryIO) -> None:
 
 
 @contextmanager
-def _interprocess_lock(lock_path: Path) -> Iterator[None]:
+def _interprocess_lock(
+    lock_path: Path,
+    *,
+    timeout: float,
+    poll_interval: float,
+) -> Iterator[None]:
+    key = os.path.normcase(str(lock_path.resolve(strict=False)))
+    held_locks = getattr(_LOCK_STATE, "held_locks", None)
+    if held_locks is None:
+        held_locks = {}
+        _LOCK_STATE.held_locks = held_locks
+    if key in held_locks:
+        held_locks[key] += 1
+        try:
+            yield
+        finally:
+            held_locks[key] -= 1
+        return
+
+    deadline = time.monotonic() + timeout
     process_lock = _registered_lock(lock_path)
-    with process_lock:
+    remaining = max(0.0, deadline - time.monotonic())
+    if not process_lock.acquire(timeout=remaining):
+        raise ValueError("session_lock_timeout")
+    try:
         with lock_path.open("a+b") as handle:
+            _validate_open_handle(
+                handle,
+                fixed_root=lock_path.parent,
+                expected_path=lock_path.resolve(strict=False),
+            )
             if handle.seek(0, os.SEEK_END) == 0:
                 handle.write(b"\0")
                 handle.flush()
                 os.fsync(handle.fileno())
-            _lock_file(handle)
+            while True:
+                try:
+                    _try_lock_file(handle)
+                    break
+                except (BlockingIOError, OSError):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ValueError("session_lock_timeout") from None
+                    time.sleep(min(poll_interval, remaining))
+            held_locks[key] = 1
             try:
                 yield
             finally:
+                del held_locks[key]
                 _unlock_file(handle)
+    finally:
+        process_lock.release()
 
 
 def _utc_now() -> str:
@@ -217,6 +376,9 @@ def _scan_signature(scan: ContinuationScanResult) -> tuple[object, ...]:
             _normalized_text(chapter.title, collapse_whitespace=True),
             _normalized_text(chapter.body, collapse_whitespace=False),
             chapter.fingerprint,
+            chapter.source_name,
+            chapter.source_start,
+            chapter.source_end,
         )
         for chapter in scan.chapters
     )
@@ -245,6 +407,7 @@ def _manifest_relative_path(value: str) -> PurePosixPath:
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    parent_identity = _directory_identity(path.parent)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
         prefix=f".{path.name}.",
@@ -253,13 +416,34 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     temporary_path = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            _validate_open_handle(
+                handle.buffer,
+                fixed_root=path.parent,
+                expected_path=temporary_path.resolve(strict=False),
+            )
             json.dump(payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        _before_secure_open(path)
+        _validate_directory_identity(path.parent, parent_identity)
+        if _is_link_or_junction(path):
+            raise ValueError("invalid_session_path")
         os.replace(temporary_path, path)
+        _validate_directory_identity(path.parent, parent_identity)
+        with _secure_open_binary(
+            path,
+            fixed_root=path.parent,
+            invoke_hook=False,
+        ):
+            pass
     except BaseException:
-        temporary_path.unlink(missing_ok=True)
+        try:
+            _validate_directory_identity(path.parent, parent_identity)
+        except (OSError, ValueError):
+            pass
+        else:
+            temporary_path.unlink(missing_ok=True)
         raise
 
 
@@ -295,7 +479,11 @@ class ContinuationSessionStore:
         *,
         session_id_factory: Callable[[], str] | None = None,
         clock: Callable[[], str] | None = None,
+        lock_timeout: float = 60.0,
+        lock_poll_interval: float = 0.05,
     ) -> None:
+        if lock_timeout <= 0 or lock_poll_interval <= 0:
+            raise ValueError("session_lock_configuration_invalid")
         requested_root = Path(root).expanduser()
         requested_root.mkdir(parents=True, exist_ok=True)
         self.root = requested_root.resolve(strict=True)
@@ -306,6 +494,8 @@ class ContinuationSessionStore:
         self._validate_locks_root()
         self._session_id_factory = session_id_factory or (lambda: f"ci-{uuid.uuid4().hex}")
         self._clock = clock or _utc_now
+        self._lock_timeout = lock_timeout
+        self._lock_poll_interval = lock_poll_interval
 
     def create(self, scan: ContinuationScanResult) -> ContinuationImportSession:
         session_id = self._session_id_factory()
@@ -419,7 +609,11 @@ class ContinuationSessionStore:
     @contextmanager
     def _session_lock(self, session_id: str) -> Iterator[None]:
         lock_path = self._lock_path(session_id)
-        with _interprocess_lock(lock_path):
+        with _interprocess_lock(
+            lock_path,
+            timeout=self._lock_timeout,
+            poll_interval=self._lock_poll_interval,
+        ):
             self._assert_root()
             if self._lock_path(session_id) != lock_path:
                 raise ValueError("invalid_session_path")
@@ -464,7 +658,10 @@ class ContinuationSessionStore:
             _resolve_contained_path(original_root, backup_path)
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             backup_path.write_bytes(snapshot.payload)
-            if _sha256(backup_path.read_bytes()) != snapshot.fingerprint:
+            if (
+                _sha256(_secure_read_bytes(backup_path, fixed_root=original_root))
+                != snapshot.fingerprint
+            ):
                 raise OSError("source_backup_verification_failed")
 
         backup_source = (
@@ -526,8 +723,9 @@ class ContinuationSessionStore:
             raise FileNotFoundError(
                 f"continuation import session not found: {expected_session_id}"
             )
-        with session_path.open("r", encoding="utf-8") as handle:
-            session = ContinuationImportSession.model_validate(json.load(handle))
+        session = ContinuationImportSession.model_validate(
+            _secure_read_json(session_path, fixed_root=resolved_root)
+        )
         if session.session_id != expected_session_id:
             raise ValueError("source_manifest_invalid")
         manifest = self._read_source_manifest(resolved_root)
@@ -542,8 +740,9 @@ class ContinuationSessionStore:
             )
             if _is_link_or_junction(manifest_path) or not manifest_path.is_file():
                 raise ValueError("source_manifest_invalid")
-            with manifest_path.open("r", encoding="utf-8") as handle:
-                manifest = _SourceManifest.model_validate(json.load(handle))
+            manifest = _SourceManifest.model_validate(
+                _secure_read_json(manifest_path, fixed_root=session_root)
+            )
             relative_paths = [
                 _manifest_relative_path(item.relative_path) for item in manifest.files
             ]
@@ -602,7 +801,13 @@ class ContinuationSessionStore:
             if (
                 _is_link_or_junction(backup_path)
                 or not resolved_backup.is_file()
-                or _sha256(resolved_backup.read_bytes()) != fingerprint
+                or _sha256(
+                    _secure_read_bytes(
+                        resolved_backup,
+                        fixed_root=resolved_backup_root,
+                    )
+                )
+                != fingerprint
             ):
                 raise ValueError("source_backup_invalid")
 

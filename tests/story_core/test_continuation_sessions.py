@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -33,7 +35,7 @@ def _scan(source: Path) -> ContinuationScanResult:
     return scan_continuation_source(source)
 
 
-def _store(root: Path, *session_ids: str):
+def _store(root: Path, *session_ids: str, **store_options):
     from packages.story_core.continuation_sessions import ContinuationSessionStore
 
     ids = iter(session_ids or ["ci-test-session"])
@@ -49,6 +51,7 @@ def _store(root: Path, *session_ids: str):
         root,
         session_id_factory=lambda: next(ids),
         clock=lambda: next(timestamps),
+        **store_options,
     )
 
 
@@ -565,3 +568,158 @@ def test_get_rejects_symlinked_session_directory(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="^invalid_session_path$"):
         store.get(session.session_id)
+
+
+def test_create_rejects_directory_member_renamed_after_scan(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    original_parent = source / "old"
+    renamed_parent = source / "new"
+    original_parent.mkdir(parents=True)
+    original = original_parent / "chapter.txt"
+    original.write_text("正文", encoding="utf-8")
+    scan = _scan(source)
+    renamed_parent.mkdir()
+    original.rename(renamed_parent / "chapter.txt")
+    store = _store(tmp_path / "sessions")
+
+    with pytest.raises(ValueError, match="^source_changed_since_scan$"):
+        store.create(scan)
+
+
+def test_create_rejects_single_file_offset_shift_after_scan(tmp_path: Path) -> None:
+    source = tmp_path / "novel.md"
+    source.write_text("# Chapter\nBody", encoding="utf-8")
+    scan = _scan(source)
+    assert scan.chapters
+    source.write_text("\n# Chapter\nBody", encoding="utf-8")
+    store = _store(tmp_path / "sessions")
+
+    with pytest.raises(ValueError, match="^source_changed_since_scan$"):
+        store.create(scan)
+
+
+def test_update_mutation_can_get_same_session_reentrantly(tmp_path: Path) -> None:
+    source = tmp_path / "novel.txt"
+    source.write_text("原稿", encoding="utf-8")
+    store = _store(
+        tmp_path / "sessions",
+        lock_timeout=0.5,
+        lock_poll_interval=0.01,
+    )
+    session = store.create(_scan(source))
+
+    def mutate(current):
+        nested = store.get(session.session_id)
+        current.analysis["nested_revision"] = nested.revision
+
+    updated = store.update(session.session_id, mutate)
+
+    assert updated.revision == 2
+    assert updated.analysis == {"nested_revision": 1}
+
+
+def test_waiting_store_retries_until_longer_lock_is_released(tmp_path: Path) -> None:
+    source = tmp_path / "novel.txt"
+    source.write_text("原稿", encoding="utf-8")
+    root = tmp_path / "sessions"
+    first_store = _store(root, lock_timeout=1, lock_poll_interval=0.01)
+    second_store = _store(root, lock_timeout=1, lock_poll_interval=0.01)
+    session = first_store.create(_scan(source))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold_lock(current):
+        entered.set()
+        assert release.wait(timeout=1)
+        current.analysis["first"] = True
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(first_store.update, session.session_id, hold_lock)
+        assert entered.wait(timeout=1)
+        second = executor.submit(
+            second_store.update,
+            session.session_id,
+            lambda current: current.analysis.update({"second": True}),
+        )
+        time.sleep(0.05)
+        assert not second.done()
+        release.set()
+        first.result(timeout=2)
+        second.result(timeout=2)
+
+    loaded = first_store.get(session.session_id)
+    assert loaded.revision == 3
+    assert loaded.analysis == {"first": True, "second": True}
+
+
+def test_lock_timeout_is_stable_and_lock_recovers(tmp_path: Path) -> None:
+    source = tmp_path / "novel.txt"
+    source.write_text("原稿", encoding="utf-8")
+    root = tmp_path / "sessions"
+    holder_store = _store(root, lock_timeout=1, lock_poll_interval=0.01)
+    waiting_store = _store(root, lock_timeout=0.05, lock_poll_interval=0.005)
+    session = holder_store.create(_scan(source))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold_lock(current):
+        entered.set()
+        assert release.wait(timeout=1)
+        current.analysis["holder"] = True
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        held = executor.submit(holder_store.update, session.session_id, hold_lock)
+        assert entered.wait(timeout=1)
+        with pytest.raises(ValueError, match="^session_lock_timeout$"):
+            waiting_store.update(
+                session.session_id,
+                lambda current: current.analysis.update({"timed_out": True}),
+            )
+        release.set()
+        held.result(timeout=2)
+
+    recovered = waiting_store.update(
+        session.session_id,
+        lambda current: current.analysis.update({"recovered": True}),
+    )
+    assert recovered.revision == 3
+    assert recovered.analysis == {"holder": True, "recovered": True}
+
+
+def test_secure_open_rejects_session_directory_swapped_after_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import packages.story_core.continuation_sessions as sessions_module
+
+    store, session, session_root = _created_session_paths(tmp_path)
+    outside = tmp_path / "outside-session"
+    shutil.copytree(session_root, outside)
+    probe = tmp_path / "symlink-probe"
+    try:
+        os.symlink(outside, probe, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    else:
+        probe.unlink()
+
+    parked = tmp_path / "parked-session"
+    swapped = False
+
+    def swap_after_check(path: Path) -> None:
+        nonlocal swapped
+        if swapped or path.name != "session.json":
+            return
+        session_root.rename(parked)
+        os.symlink(outside, session_root, target_is_directory=True)
+        swapped = True
+
+    monkeypatch.setattr(
+        sessions_module,
+        "_before_secure_open",
+        swap_after_check,
+        raising=False,
+    )
+
+    with pytest.raises(ValueError, match="^invalid_session_path$"):
+        store.get(session.session_id)
+    assert swapped is True
