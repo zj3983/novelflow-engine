@@ -2618,12 +2618,17 @@ def _apply_ledger_updates(
     updates = deepcopy(ledger_updates)
     directive = None
     updates_protagonist = updates.get("protagonist")
-    if isinstance(updates_protagonist, dict):
+    nested_level_update = None
+    if isinstance(updates_protagonist, dict) and updates_protagonist.get("level") not in (None, "", [], {}):
+        nested_level_update = updates_protagonist["level"]
+    if rule and isinstance(updates_protagonist, dict):
         directive = updates_protagonist.pop("attribute_allocation", None)
         if not updates_protagonist:
             updates.pop("protagonist", None)
 
     story.progression_ledger = _merge_ledger_dict(ledger, updates)
+    if nested_level_update is not None:
+        story.progression_ledger.pop("level", None)
     _normalize_progression_ledger(story.progression_ledger)
     sync_chapter = chapter_number if chapter_number is not None else int(story.current_chapter or 0) or None
     if rule:
@@ -2858,16 +2863,13 @@ def _sync_character_game_panels(
             source_skill_values = [str(item) for item in source_skills if str(item).strip()]
         else:
             source_skill_values = []
-        return {
+        values = {
             "level": source_protagonist.get("level", source.get("level")),
             "class_path": source_protagonist.get("class_path", source.get("class_path")),
             "exp": source_protagonist.get("exp", source.get("exp")),
             "hp": source_protagonist.get("hp", source.get("hp")),
             "mp": source_protagonist.get("mp", source.get("mp")),
             "attributes": source_protagonist.get("attributes", source.get("attributes")),
-            "unallocated_attribute_points": source_protagonist.get("unallocated_attribute_points"),
-            "attribute_point_awards": source_protagonist.get("attribute_point_awards"),
-            "attribute_allocations": source_protagonist.get("attribute_allocations"),
             "skills": source_skill_values or source.get("skills"),
             "equipment": source_equipment or source.get("equipment"),
             "inventory": source_economy.get("inventory", source.get("inventory")),
@@ -2875,6 +2877,15 @@ def _sync_character_game_panels(
             "quests": source_quests if isinstance(source_quests, (dict, list)) else None,
             "risk": source_pressure or source.get("risk"),
         }
+        if attribute_rule:
+            values.update(
+                {
+                    "unallocated_attribute_points": source_protagonist.get("unallocated_attribute_points"),
+                    "attribute_point_awards": source_protagonist.get("attribute_point_awards"),
+                    "attribute_allocations": source_protagonist.get("attribute_allocations"),
+                }
+            )
+        return values
 
     ledger_values = ledger_values_from(ledger)
     for field, value in ledger_values.items():

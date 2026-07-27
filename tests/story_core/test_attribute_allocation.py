@@ -99,6 +99,11 @@ def test_parse_level_rejects_an_overlong_numeric_string_without_raising() -> Non
     assert parse_level("9" * 5_000) is None
 
 
+@pytest.mark.parametrize("value", [1_000_001, "9999999"])
+def test_parse_level_rejects_values_above_the_supported_level_bound(value) -> None:
+    assert parse_level(value) is None
+
+
 def test_rule_is_read_only_from_the_structured_story_power_spec() -> None:
     rule = free_attribute_rule()
     story = type(
@@ -155,6 +160,24 @@ def test_award_attribute_points_ignores_level_downgrades_without_mutation() -> N
     before = deepcopy(ledger)
 
     award_attribute_points(ledger, free_attribute_rule(), previous_level="Lv.3", current_level="Lv.2", chapter_number=4)
+
+    assert ledger == before
+
+
+def test_award_attribute_points_rejects_an_excessive_level_jump_without_mutation() -> None:
+    ledger = {"protagonist": {"level": "Lv.1"}}
+    before = deepcopy(ledger)
+
+    award_attribute_points(ledger, free_attribute_rule(), previous_level=1, current_level=1_000_000, chapter_number=4)
+
+    assert ledger == before
+
+
+def test_award_attribute_points_does_not_initialize_damaged_attributes_without_a_new_award() -> None:
+    ledger = {"protagonist": {"level": "Lv.1", "attributes": "damaged"}}
+    before = deepcopy(ledger)
+
+    award_attribute_points(ledger, free_attribute_rule(), previous_level=1, current_level=1, chapter_number=4)
 
     assert ledger == before
 
@@ -221,6 +244,24 @@ def test_apply_attribute_allocation_rejects_ledger_only_attributes_without_mutat
         ledger,
         {"allocations": {"\u5e78\u8fd0": 1}},
         rule,
+        chapter_number=8,
+    ) is False
+    assert ledger == before
+
+
+def test_apply_attribute_allocation_rejects_damaged_existing_attributes_without_mutation() -> None:
+    ledger = {
+        "protagonist": {
+            "attributes": "damaged",
+            "unallocated_attribute_points": 5,
+        }
+    }
+    before = deepcopy(ledger)
+
+    assert apply_attribute_allocation(
+        ledger,
+        {"allocations": {"\u667a\u529b": 1}, "remaining": 4},
+        free_attribute_rule(),
         chapter_number=8,
     ) is False
     assert ledger == before

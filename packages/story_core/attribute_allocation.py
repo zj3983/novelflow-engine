@@ -13,6 +13,7 @@ _MAX_RESPEC_RULE = 240
 _MAX_RAW_TEXT_SCAN = 4_096
 _MAX_STARTING_LEVEL = 1_000_000
 _MAX_LEVEL_DIGITS = len(str(_MAX_STARTING_LEVEL))
+_MAX_LEVEL_UP_SPAN = 1_000
 _LEVEL_PATTERN = re.compile(r"^(?:lv\.\s*)?(\d+)(?:\s*\u7ea7)?$", re.IGNORECASE)
 
 
@@ -114,7 +115,7 @@ def parse_level(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value if value > 0 else None
+        return value if 0 < value <= _MAX_STARTING_LEVEL else None
     if not isinstance(value, str):
         return None
     match = _LEVEL_PATTERN.fullmatch(value.strip())
@@ -127,7 +128,7 @@ def parse_level(value: Any) -> int | None:
         level = int(digits)
     except (ValueError, OverflowError):
         return None
-    return level if level > 0 else None
+    return level if 0 < level <= _MAX_STARTING_LEVEL else None
 
 
 def attribute_allocation_rule_from_story(story: Any) -> dict[str, Any]:
@@ -161,27 +162,21 @@ def award_attribute_points(
     current = parse_level(current_level)
     if current is None:
         return
+    starting_level = normalized_rule["starting_level"]
+    previous = parse_level(previous_level)
+    from_level = max(previous if previous is not None else starting_level, starting_level)
+    if current <= from_level or current - from_level > _MAX_LEVEL_UP_SPAN:
+        return
 
     protagonist = ledger.get("protagonist")
-    if not isinstance(protagonist, dict):
-        protagonist = {}
-        ledger["protagonist"] = protagonist
-    if not isinstance(protagonist.get("attributes"), Mapping):
-        protagonist["attributes"] = deepcopy(normalized_rule["base_attributes"])
-
-    awards = protagonist.get("attribute_point_awards")
+    source_protagonist = protagonist if isinstance(protagonist, dict) else {}
+    awards = source_protagonist.get("attribute_point_awards")
     awards = deepcopy(awards) if isinstance(awards, list) else []
     awarded_levels = {
         parse_level(award.get("level"))
         for award in awards
         if isinstance(award, Mapping) and parse_level(award.get("level")) is not None
     }
-    starting_level = normalized_rule["starting_level"]
-    previous = parse_level(previous_level)
-    from_level = max(previous if previous is not None else starting_level, starting_level)
-    if current <= from_level:
-        return
-
     points = normalized_rule["points_per_level"]
     new_awards = [
         {"level": level, "points": points, "chapter": chapter_number}
@@ -190,6 +185,11 @@ def award_attribute_points(
     ]
     if not new_awards:
         return
+    if not isinstance(protagonist, dict):
+        protagonist = {}
+        ledger["protagonist"] = protagonist
+    if "attributes" not in protagonist:
+        protagonist["attributes"] = deepcopy(normalized_rule["base_attributes"])
     protagonist["attribute_point_awards"] = [*awards, *new_awards]
     protagonist["unallocated_attribute_points"] = _unallocated_points(
         protagonist.get("unallocated_attribute_points")
@@ -214,6 +214,8 @@ def apply_attribute_allocation(
     protagonist = ledger.get("protagonist")
     source_protagonist = protagonist if isinstance(protagonist, dict) else {}
     source_attributes = source_protagonist.get("attributes")
+    if "attributes" in source_protagonist and not isinstance(source_attributes, Mapping):
+        return False
     attributes = (
         deepcopy(dict(source_attributes))
         if isinstance(source_attributes, Mapping)

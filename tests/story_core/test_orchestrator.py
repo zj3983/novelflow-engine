@@ -1,3 +1,4 @@
+from copy import deepcopy
 import json
 import subprocess
 
@@ -148,6 +149,93 @@ def test_apply_ledger_updates_leaves_projects_without_rules_unchanged() -> None:
 
     protagonist = story.progression_ledger["protagonist"]
     assert not {"attributes", "unallocated_attribute_points", "attribute_point_awards", "attribute_allocations"} & set(protagonist)
+
+
+def test_simulated_state_deltas_prefer_nested_level_updates_over_legacy_flat_levels() -> None:
+    story = StoryState(
+        story_id="s-flat-level-conflict",
+        outline="web game opening",
+        genre="web game",
+        style="plain",
+        characters=[CharacterState(name="Su Ye", role="protagonist")],
+        progression_ledger={"level": "Lv.1", "protagonist": {"level": "Lv.1"}},
+        world_context={"power_system_spec": {"attribute_allocation": _attribute_rule()}},
+    )
+
+    orchestrator_module.apply_simulated_state_deltas(
+        story,
+        world_events=[
+            {
+                "state_delta": {
+                    "protagonist": {
+                        "level": "Lv.2",
+                        "attribute_allocation": {"allocations": {"\u667a\u529b": 5}, "remaining": 0},
+                    }
+                }
+            }
+        ],
+        chapter_number=4,
+    )
+
+    character = story.characters[0]
+    assert story.progression_ledger["protagonist"]["level"] == "Lv.2"
+    assert "level" not in story.progression_ledger
+    assert story.progression_ledger["protagonist"]["unallocated_attribute_points"] == 0
+    assert character.game_panel.level == "Lv.2"
+    assert character.game_panel.attributes == {"\u667a\u529b": 10, "\u529b\u91cf": 5}
+    assert character.game_state["current"]["level"] == "Lv.2"
+    assert character.game_state["current"]["attributes"] == {"\u667a\u529b": 10, "\u529b\u91cf": 5}
+
+
+def test_simulated_state_deltas_still_migrate_a_legacy_flat_level() -> None:
+    story = StoryState(
+        story_id="s-flat-level-migration",
+        outline="web game opening",
+        genre="web game",
+        style="plain",
+        characters=[CharacterState(name="Su Ye", role="protagonist")],
+        progression_ledger={"level": "Lv.1"},
+    )
+
+    orchestrator_module.apply_simulated_state_deltas(
+        story,
+        world_events=[{"state_delta": {"pressure": {"market_anomaly": 1}}}],
+        chapter_number=4,
+    )
+
+    assert story.progression_ledger["protagonist"]["level"] == "Lv.1"
+    assert story.characters[0].game_panel.level == "Lv.1"
+
+
+def test_simulated_state_deltas_preserve_legacy_attribute_directives_without_a_rule() -> None:
+    story = StoryState(
+        story_id="s-no-rule-public-regression",
+        outline="web game opening",
+        genre="web game",
+        style="plain",
+        characters=[CharacterState(name="Su Ye", role="protagonist", game_state={"current": {"level": "Lv.1"}})],
+        progression_ledger={"protagonist": {"level": "Lv.1"}, "economy": {}, "equipment": {}, "pressure": {}},
+    )
+    expected_ledger = {
+        "protagonist": {
+            "level": "Lv.1",
+            "attribute_allocation": {"allocations": {"\u667a\u529b": 1}},
+        },
+        "economy": {},
+        "equipment": {},
+        "pressure": {},
+    }
+
+    orchestrator_module.apply_simulated_state_deltas(
+        story,
+        world_events=[{"state_delta": deepcopy(expected_ledger)}],
+        chapter_number=4,
+    )
+
+    assert story.progression_ledger == expected_ledger
+    assert "unallocated_attribute_points" not in story.characters[0].game_state["current"]
+    assert "attribute_point_awards" not in story.characters[0].game_state["current"]
+    assert "attribute_allocations" not in story.characters[0].game_state["current"]
 
 
 def test_structured_attribute_rule_syncs_ledger_values_without_legacy_suye_fallback() -> None:
