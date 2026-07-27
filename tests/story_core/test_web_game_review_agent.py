@@ -665,6 +665,26 @@ def test_web_game_review_rejects_bystander_allocation_after_protagonist_mention(
     assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
 
 
+@pytest.mark.parametrize("action", ("夜烬直接把五点加到智力上", "他果断把五点加到智力上", "夜烬又把五点加到智力上"))
+def test_web_game_review_accepts_protagonist_allocation_with_modifier(action: str):
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=f"《神域》里，{action}，确认后可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+        protagonist_aliases={"苏叶", "夜烬"},
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
 def test_web_game_review_rejects_negated_allocation_choice_and_confirmation():
     review = review_web_game_chapter(
         chapter_number=4,

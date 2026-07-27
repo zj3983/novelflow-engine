@@ -1,3 +1,5 @@
+import pytest
+
 from packages.story_core.post_draft_memory import (
     build_post_draft_memory_prompt,
     fallback_post_draft_memory,
@@ -477,6 +479,34 @@ def test_attribute_allocation_memory_rejects_bystander_action_after_protagonist_
     )
 
     assert result["ledger_updates"] == {}
+
+
+@pytest.mark.parametrize("action", ("夜烬直接把五点加到智力上", "他果断把五点加到智力上", "夜烬又把五点加到智力上"))
+def test_attribute_allocation_memory_accepts_protagonist_actions_with_modifiers(action: str):
+    body = f"{action}，确认后可用属性点归零。"
+    payload = {
+        "ledger_updates": {
+            "protagonist": {
+                "attribute_allocation": {
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                }
+            }
+        },
+        "ledger_evidence": {
+            "protagonist.attribute_allocation.allocations.智力": action,
+            "protagonist.attribute_allocation.remaining": "可用属性点归零",
+        },
+    }
+
+    result = normalize_post_draft_memory(
+        payload,
+        body=body,
+        existing_character_names={"苏叶", "夜烬"},
+        protagonist_aliases={"苏叶", "夜烬"},
+    )
+
+    assert result["ledger_updates"] == payload["ledger_updates"]
 
 
 def test_attribute_allocation_rejects_zero_remaining_from_unrelated_durability_text():

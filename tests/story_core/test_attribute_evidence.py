@@ -31,6 +31,17 @@ def test_attribute_allocation_keeps_protagonist_as_actor_after_bounded_scene_tra
     )
 
 
+@pytest.mark.parametrize("modifier", ("直接", "果断", "又", "重新", "干脆", "索性", "还是"))
+def test_attribute_allocation_accepts_protagonist_subject_with_common_modifier(modifier: str):
+    subject = "他" if modifier == "果断" else "夜烬"
+    assert has_character_attribute_allocation(
+        f"{subject}{modifier}把五点加到智力上",
+        "智力",
+        5,
+        protagonist_aliases={"苏叶", "夜烬"},
+    )
+
+
 def test_attribute_allocation_accepts_confirmation_in_adjacent_paragraph():
     body = "夜烬把五点全部加到智力上。\n\n他点下确认，可用属性点归零。"
 
