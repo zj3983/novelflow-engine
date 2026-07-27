@@ -98,6 +98,9 @@ def build_post_draft_memory_prompt(
             "facts与unresolved_threads的每一项必须是{text, evidence}，evidence必须逐字来自最终正文。",
             "每个character_update必须包含已知人物name与evidence；不得创建未知人物。",
             "ledger_updates只写正文已落地的叶子；ledger_evidence用protagonist.location这类扁平路径逐项给证据。",
+            "自由属性加点必须同时写成：ledger_updates.protagonist.attribute_allocation={allocations:{智力:5}, remaining:0, reason?:...}；"
+            "并给出protagonist.attribute_allocation.allocations.智力和protagonist.attribute_allocation.remaining两条ledger_evidence。"
+            "只有正文明确写出人物把几点加到哪项、并确认结果或剩余点数时才可落账；只列最终面板不算。",
             "证据可以忽略空白和常见中英文标点差异，但禁止同义改写、模糊匹配或语义猜测。",
             "返回字段：summary, facts, unresolved_threads, next_focus, chapter_title, character_updates, ledger_updates, ledger_evidence。",
             f"题材：{_text(genre)}",
@@ -284,6 +287,11 @@ _LEDGER_PATH_ALIASES = {
     "durability": ("耐久",),
     "inventory": ("背包", "持有", "获得", "捡到"),
     "backpack": ("背包", "持有", "获得", "捡到"),
+    "attributes": ("属性", "基础属性", "力量", "体质", "敏捷", "智力", "精神", "感知"),
+    "unallocated_attribute_points": ("可用属性点", "剩余属性点", "自由属性点"),
+    "attribute_allocation": ("属性点", "加点", "分配属性"),
+    "remaining": ("可用属性点", "剩余属性点", "自由属性点", "归零"),
+    "reason": (),
 }
 
 _COUNT_UNITS = (
@@ -364,6 +372,93 @@ def _ledger_value_supported(value: Any, body: str, evidence: str) -> bool:
     return False
 
 
+def _attribute_allocation_action_supported(body: str, attribute: str, points: int) -> bool:
+    if not isinstance(attribute, str) or not attribute or isinstance(points, bool) or not isinstance(points, int) or points <= 0:
+        return False
+    point_forms = (str(points), _NUMBER_WORDS.get(points, ""))
+    for point_form in point_forms:
+        if not point_form:
+            continue
+        pattern = (
+            rf"{re.escape(point_form)}\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
+            rf"(?:全部)?(?:加到|加给|分配给|投入|点在)\s*{re.escape(attribute)}(?:上|里)?"
+        )
+        if re.search(pattern, body):
+            return True
+    return False
+
+
+def _attribute_remaining_supported(value: Any, body: str, evidence: str) -> bool:
+    if _ledger_value_supported(value, body, evidence):
+        return True
+    return value == 0 and "归零" in body and any(
+        token in body for token in ("可用属性点", "剩余属性点", "自由属性点")
+    )
+
+
+def _has_attribute_allocation_action(body: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:\d+|[零一二两三四五六七八九十])\s*点(?:(?:自由)?属性点?)?[^。！？\n]{0,16}"
+            r"(?:全部)?(?:加到|加给|分配给|投入|点在)",
+            body,
+        )
+    )
+
+
+def _attribute_state_value_supported(
+    path_parts: tuple[str, ...], value: Any, body: str, evidence: str
+) -> bool:
+    if not _has_attribute_allocation_action(body):
+        return False
+    if path_parts[-1] == "unallocated_attribute_points":
+        return _attribute_remaining_supported(value, body, evidence)
+    if "attributes" not in path_parts or not isinstance(value, int) or isinstance(value, bool):
+        return False
+    attribute = path_parts[-1]
+    return any(
+        re.search(
+            rf"{re.escape(attribute)}[^。！？\n]{{0,16}}(?:变成|提升到|增加到)\s*{re.escape(point_form)}",
+            body,
+        )
+        for point_form in (str(value), _NUMBER_WORDS.get(value, ""))
+        if point_form
+    )
+
+
+def _attribute_allocation_group_supported(value: Any, body: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    allocations = value.get("allocations")
+    remaining = value.get("remaining")
+    if not isinstance(allocations, dict) or not allocations or isinstance(remaining, bool) or not isinstance(remaining, int):
+        return False
+    if not all(_attribute_allocation_action_supported(body, attribute, points) for attribute, points in allocations.items()):
+        return False
+    has_confirmation = any(token in body for token in ("确认", "确定", "生效", "保存"))
+    has_result = any(
+        re.search(rf"{re.escape(attribute)}[^。！？\n]{{0,16}}(?:变成|提升到|增加到)\s*(?:{points}|{_NUMBER_WORDS.get(points, '')})", body)
+        for attribute, points in allocations.items()
+    )
+    has_remaining = _attribute_remaining_supported(remaining, body, body)
+    return has_confirmation and (has_result or has_remaining)
+
+
+def _drop_attribute_allocation_update(
+    accepted: dict[str, Any], accepted_evidence: dict[str, str], rejected: list[dict[str, str]]
+) -> None:
+    protagonist = accepted.get("protagonist")
+    if not isinstance(protagonist, dict) or "attribute_allocation" not in protagonist:
+        return
+    protagonist.pop("attribute_allocation", None)
+    if not protagonist:
+        accepted.pop("protagonist", None)
+    for path in list(accepted_evidence):
+        if path.startswith("protagonist.attribute_allocation."):
+            accepted_evidence.pop(path, None)
+    rejected.append({"kind": "ledger_update", "path": "protagonist.attribute_allocation", "reason": "attribute_allocation_not_visible_in_body"})
+
+
 def _normalize_ledger_updates(
     updates: Any,
     evidence_by_path: Any,
@@ -393,9 +488,15 @@ def _normalize_ledger_updates(
                 }
             )
             continue
-        if not _ledger_path_supported(path_parts, body, evidence) or not _ledger_value_supported(
-            value, body, evidence
-        ):
+        supports_value = _ledger_value_supported(value, body, evidence)
+        if path_parts[-1] == "remaining" and "attribute_allocation" in path_parts:
+            supports_value = _attribute_remaining_supported(value, body, evidence)
+        if path_parts[-1] == "unallocated_attribute_points" or "attributes" in path_parts:
+            supports_value = _attribute_state_value_supported(path_parts, value, body, evidence)
+        supports_path = _ledger_path_supported(path_parts, body, evidence)
+        if path_parts[-1] == "reason" and "attribute_allocation" in path_parts:
+            supports_path = True
+        if not supports_path or not supports_value:
             rejected.append(
                 {
                     "kind": "ledger_update",
@@ -406,6 +507,10 @@ def _normalize_ledger_updates(
             continue
         _set_nested(accepted, path_parts, value)
         accepted_evidence[path] = evidence
+    proposed_protagonist = updates.get("protagonist") if isinstance(updates.get("protagonist"), dict) else {}
+    proposed_allocation = proposed_protagonist.get("attribute_allocation")
+    if proposed_allocation is not None and not _attribute_allocation_group_supported(proposed_allocation, body):
+        _drop_attribute_allocation_update(accepted, accepted_evidence, rejected)
     return accepted, accepted_evidence
 
 

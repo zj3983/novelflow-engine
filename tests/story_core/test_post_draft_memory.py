@@ -189,6 +189,126 @@ def test_ledger_number_accepts_exact_arabic_and_chinese_values():
         assert result["ledger_updates"] == {"protagonist": {"spirit_stones": 3}}
 
 
+def test_attribute_allocation_requires_visible_choice_and_confirmed_remaining_points():
+    body = "夜烬打开角色面板，把五点全部加到智力上。确认后，智力从五变成十，可用属性点归零。"
+    payload = {
+        "ledger_updates": {
+            "protagonist": {
+                "attribute_allocation": {
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                }
+            }
+        },
+        "ledger_evidence": {
+            "protagonist.attribute_allocation.allocations.智力": "把五点全部加到智力上",
+            "protagonist.attribute_allocation.remaining": "可用属性点归零",
+        },
+    }
+
+    result = normalize_post_draft_memory(payload, body=body, existing_character_names={"夜烬"})
+
+    assert result["ledger_updates"] == payload["ledger_updates"]
+
+
+def test_attribute_allocation_accepts_evidence_backed_optional_reason():
+    body = "夜烬打开角色面板，把五点加到智力上。为了法师路线，他确认加点，可用属性点归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {
+                        "allocations": {"智力": 5},
+                        "remaining": 0,
+                        "reason": "法师路线",
+                    }
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点归零",
+                "protagonist.attribute_allocation.reason": "法师路线",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"]["protagonist"]["attribute_allocation"]["reason"] == "法师路线"
+
+
+def test_attribute_allocation_rejects_payload_number_that_conflicts_with_prose_evidence():
+    body = "夜烬打开角色面板，把5点全部加到智力上。确认后，可用属性点归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {
+                        "allocations": {"智力": 6},
+                        "remaining": 0,
+                    }
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把5点全部加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点归零",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
+def test_attribute_allocation_rejects_final_panel_without_visible_choice_action():
+    body = "夜烬的角色面板显示：智力：10，可用属性点：0。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {
+                        "allocations": {"智力": 5},
+                        "remaining": 0,
+                    }
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "智力：10",
+                "protagonist.attribute_allocation.remaining": "可用属性点：0",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
+def test_attribute_state_aliases_accept_visible_post_allocation_values():
+    body = "夜烬把五点加到智力上，确认后智力从五变成十，可用属性点归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attributes": {"智力": 10},
+                    "unallocated_attribute_points": 0,
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attributes.智力": "智力从五变成十",
+                "protagonist.unallocated_attribute_points": "可用属性点归零",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {
+        "protagonist": {"attributes": {"智力": 10}, "unallocated_attribute_points": 0}
+    }
+
+
 def test_invalid_payload_and_fields_return_normalized_empty_result():
     for payload in (None, [], "bad payload", {"facts": "not-a-list"}):
         result = normalize_post_draft_memory(
@@ -248,3 +368,15 @@ def test_prompt_declares_final_body_as_the_only_factual_source():
     assert "计划、大纲、模拟只是上下文，不能直接当事实" in prompt
     assert "JSON only" in prompt
     assert "林照把断香炉搬回偏殿。" in prompt
+
+
+def test_prompt_documents_attribute_allocation_evidence_leaf_paths():
+    prompt = build_post_draft_memory_prompt(
+        "夜烬把五点加到智力上。",
+        existing_character_names={"夜烬"},
+        genre="网游",
+    )
+
+    assert "attribute_allocation" in prompt
+    assert "allocations.智力" in prompt
+    assert "remaining" in prompt

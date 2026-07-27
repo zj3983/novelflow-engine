@@ -609,6 +609,124 @@ def test_web_game_review_rules_are_prompt_ready():
     assert any("信息可见" in rule for rule in rules)
 
 
+def test_web_game_review_requires_visible_allocation_action_for_current_chapter_decision():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬升级后打开面板：智力：10，可用属性点：0。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
+def test_web_game_review_accepts_visible_chinese_numeral_allocation_and_confirmation():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=(
+            "《神域》里，夜烬升级后打开角色面板，把五点全部加到智力上。"
+            "他确认加点，智力从五变成十，可用属性点归零。"
+        ),
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_accepts_confirmed_attribute_result_without_explicit_remaining_panel():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬把5点加到智力上，确认后智力从5变成10。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_reports_allocation_amount_and_remaining_mismatches():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬打开角色面板，把6点加到敏捷上。确认后，可用属性点还剩1点。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_mismatch:") for issue in review["issues"]), review
+
+
+def test_web_game_review_requires_points_and_reason_when_current_decision_carries():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬看完升级面板，暂时没有加点。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
+def test_web_game_review_accepts_visible_points_and_reason_when_current_decision_carries():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬看着可用属性点还剩五点，决定先留着，等转职以后再按新技能调整。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_ignores_future_or_negated_allocation_text_without_current_decision():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬这一章不加点。下一章再决定把五点属性点加到智力上。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "chapter_end_hook": {"content": "下一章分配属性点"},
+            "must_not_write": "禁止分配属性点",
+        },
+        world_facts=[],
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
 def test_web_game_review_rejects_transaction_visibility_overreach():
     body = (
         "《天启之门》开服后，夜烬在灰烬村交易行匿名寄售低级狼皮。"

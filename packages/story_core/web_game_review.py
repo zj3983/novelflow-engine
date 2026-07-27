@@ -397,6 +397,114 @@ def _parse_count(value: str) -> int | None:
     return None
 
 
+_ATTRIBUTE_NAMES = ("力量", "体质", "敏捷", "智力", "精神", "感知")
+_ATTRIBUTE_DECISION_MODES = {"allocate", "carry"}
+
+
+def _current_attribute_allocation_decision(event_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """Read only the current chapter's direct structured allocation decision."""
+
+    decision = event_plan.get("attribute_allocation_decision")
+    if not isinstance(decision, dict):
+        return None
+    mode = decision.get("mode")
+    remaining = decision.get("remaining")
+    if mode not in _ATTRIBUTE_DECISION_MODES or isinstance(remaining, bool) or not isinstance(remaining, int) or remaining < 0:
+        return None
+    if mode == "carry":
+        reason = decision.get("reason")
+        return {"mode": mode, "remaining": remaining, "reason": reason} if isinstance(reason, str) and reason.strip() else None
+    allocations = decision.get("allocations")
+    if not isinstance(allocations, dict) or not allocations:
+        return None
+    if any(not isinstance(name, str) or isinstance(points, bool) or not isinstance(points, int) or points <= 0 for name, points in allocations.items()):
+        return None
+    return {"mode": mode, "allocations": allocations, "remaining": remaining}
+
+
+def _attribute_action_values(body: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    count_pattern = r"(?P<count>\d+|[一二两三四五六七八九十]{1,3})"
+    for attribute in _ATTRIBUTE_NAMES:
+        pattern = (
+            rf"{count_pattern}\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
+            rf"(?:全部)?(?:加到|加给|分配给|投入|点在)\s*{re.escape(attribute)}(?:上|里)?"
+        )
+        match = re.search(pattern, body)
+        if match:
+            count = _parse_count(match.group("count"))
+            if count is not None:
+                values[attribute] = count
+    return values
+
+
+def _visible_remaining_points(body: str) -> int | None:
+    if re.search(r"(?:可用属性点|剩余属性点|自由属性点)[^。！？\n]{0,8}归零", body):
+        return 0
+    match = re.search(
+        r"(?:可用属性点|剩余属性点|自由属性点|属性点还剩)[^。！？\n]{0,8}"
+        r"(?P<count>\d+|[一二两三四五六七八九十]{1,3})\s*点?",
+        body,
+    )
+    return _parse_count(match.group("count")) if match else None
+
+
+def _has_allocation_result(body: str, expected: dict[str, int], remaining: int) -> bool:
+    if _visible_remaining_points(body) == remaining:
+        return True
+    if not any(token in body for token in ("确认", "确定", "生效", "保存")):
+        return False
+    return any(
+        re.search(rf"{re.escape(attribute)}[^。！？\n]{{0,16}}(?:变成|提升到|增加到)\s*(?:\d+|[一二两三四五六七八九十]+)", body)
+        for attribute in expected
+    )
+
+
+def _review_attribute_allocation_decision(
+    *, body: str, event_plan: dict[str, Any], issues: list[str], revision_plan: list[str], scores: dict[str, int]
+) -> None:
+    decision = _current_attribute_allocation_decision(event_plan)
+    if not decision:
+        return
+    if decision["mode"] == "carry":
+        remaining = _visible_remaining_points(body)
+        has_choice = any(token in body for token in ("暂时不加", "先不加", "留着", "保留", "攒着", "不分配"))
+        has_reason = any(token in body for token in ("因为", "留给", "等到", "等转职", "为了"))
+        if remaining != decision["remaining"] or not has_choice or not has_reason:
+            _append_issue(
+                issues=issues,
+                revision_plan=revision_plan,
+                scores=scores,
+                score_key="class_equipment",
+                issue="attribute_allocation_missing: 当前章节计划保留属性点，但正文没有写清剩余点数和保留理由。",
+                plan="补出角色看到可用属性点、主动暂不分配，并用当前目标解释为何保留；不要只列面板。",
+            )
+        return
+
+    expected = decision["allocations"]
+    actual = _attribute_action_values(body)
+    actual_remaining = _visible_remaining_points(body)
+    if actual and actual != expected or actual_remaining is not None and actual_remaining != decision["remaining"]:
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="class_equipment",
+            issue="attribute_allocation_mismatch: 正文的属性、点数或剩余点与本章加点决定不一致。",
+            plan="按当前章节的结构化加点决定改正文：属性、投入点数和剩余点必须一致。",
+        )
+        return
+    if actual != expected or not _has_allocation_result(body, expected, decision["remaining"]):
+        _append_issue(
+            issues=issues,
+            revision_plan=revision_plan,
+            scores=scores,
+            score_key="class_equipment",
+            issue="attribute_allocation_missing: 当前章节计划加点，但正文缺少点数、角色操作或确认后的结果。",
+            plan="写出人物打开面板、把明确点数加到指定属性、确认后属性变化或可用点归零；不能只列最终面板。",
+        )
+
+
 def _material_inventory_issues(body: str) -> list[str]:
     """Catch deterministic inventory contradictions that LLM review often misses."""
     events: list[tuple[int, str, int, str]] = []
@@ -684,6 +792,13 @@ def review_web_game_chapter(
     plan_text = str(event_plan)
     chapter_one_trade_payoff = first_chapter_trade_authorized(event_plan, world_facts)
     combined = "\n".join([body, plan_text, facts_text])
+    _review_attribute_allocation_decision(
+        body=body,
+        event_plan=event_plan,
+        issues=issues,
+        revision_plan=revision_plan,
+        scores=scores,
+    )
     level_gap_case = extract_level_gap_case(body, context_text="\n".join([plan_text, facts_text]))
     if level_gap_case:
         level_gap = assess_level_gap(
