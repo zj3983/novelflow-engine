@@ -37,7 +37,7 @@ from packages.story_core.memory import (
     retrieve_relevant_memories,
 )
 from packages.story_core.models import DirectorDecision, StageRuntimeEntry, StoryState
-from packages.story_core.novel_type_catalog import normalize_novel_type_id
+from packages.story_core.novel_type_catalog import normalize_novel_type_id, normalize_novel_type_ids
 from packages.story_core.planner import build_chapter_title, build_conflict_summary, build_event_beat, compute_chapter_cadence, plan_next_outline
 from packages.story_core.post_draft_memory import (
     build_post_draft_memory_prompt,
@@ -4141,14 +4141,88 @@ def apply_expression_patches_from_review(body: str, writing_review: dict) -> tup
 
 def _story_game_context(story: StoryState, plan: dict[str, Any] | None = None) -> bool:
     plan = plan if isinstance(plan, dict) else {}
-    if is_game_genre(str(getattr(story, "genre", "") or "")):
-        return True
+    explicit_ids = normalize_novel_type_ids(getattr(story, "genre_plugin_ids", []))
+    if explicit_ids:
+        return "game_webnovel" in explicit_ids
+    explicit_genre = normalize_novel_type_id(getattr(story, "genre", ""))
+    if explicit_genre:
+        return explicit_genre == "game_webnovel"
     return is_game_story(
         story,
         plan.get("event_plan", {}),
         plan.get("simulation_plan", {}),
         plan.get("scene_cards", []),
         plan.get("craft_pack", {}),
+    )
+
+
+def _render_expansion_length_prompt(
+    *,
+    source_body: str,
+    game_context: bool,
+    allow_trade_payoff: bool,
+) -> str:
+    if game_context:
+        expansion_scope = (
+            "第一章按大纲补足以下顺序："
+            + " ".join(opening_market_exchange_flow_lines())
+            + " 不新增公会追查或论坛扩散。"
+            if allow_trade_payoff
+            else "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。"
+        )
+    else:
+        expansion_scope = "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。"
+    return render_prompt_template(
+        get_effective_prompt_template("expansion"),
+        {
+            "target_chars": TARGET_CHAPTER_CHARS,
+            "expansion_focus": (
+                "扩写已有场景中的行动、对话、阻力和结果，不新增独立的补丁段。"
+                "同一事实、判断和旁人误解只写一次；新增内容必须改变行动、关系或资源。"
+                f"{expansion_scope}"
+            ),
+            "source_body": source_body,
+        },
+    )
+
+
+def _render_compression_length_prompt(
+    *,
+    source_body: str,
+    game_context: bool,
+    allow_trade_payoff: bool,
+    outline_anchor: dict[str, Any] | None = None,
+) -> str:
+    outline_anchor = outline_anchor if isinstance(outline_anchor, dict) else {}
+    locked_amounts = "、".join(
+        str(outline_anchor.get(key) or "").strip()
+        for key in ("opening_balance", "trade_arrival", "ending_balance")
+        if str(outline_anchor.get(key) or "").strip()
+    )
+    if game_context:
+        opening_line = "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。"
+        compression_method = "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。"
+        chapter_scope = (
+            "第一章必须原样保留角色面板、怪物面板、千倍爆率、现实职业/技能来源、见习冒险者（未转职），并按以下顺序完成："
+            + " ".join(opening_market_exchange_flow_lines())
+            + " 不要新增游戏内任务提交、修理或买药。"
+            + (f" 以下金额必须原样保留，不得改写、换算或删除：{locked_amounts}。" if locked_amounts else "")
+            if allow_trade_payoff
+            else "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。"
+        )
+    else:
+        opening_line = "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、世界规则、结尾钩子的前提下压缩。"
+        compression_method = "压缩方法：删重复解释、删绕圈心理、合并相似动作；保留核心冲突、人物反应、关键线索、代价、转折和下一步钩子。"
+        chapter_scope = "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。"
+    return render_prompt_template(
+        get_effective_prompt_template("compression"),
+        {
+            "opening_line": opening_line,
+            "target_chars": f"保留完整网文章节感，调整到5000到5400字，绝对不要超过{MAX_CHAPTER_CHARS}字",
+            "compression_method": compression_method,
+            "chapter_scope": chapter_scope,
+            "source_body": source_body,
+        },
     )
 
 
@@ -6795,14 +6869,10 @@ class StoryOrchestrator:
         body = _repair_outline_amount_anchors(body, chapter_seed.get("outline_anchor"))
 
         if _should_expand_chapter(body, writer_plan):
-            allow_trade_payoff = chapter_number == 1 and first_chapter_market_exchange_authorized(
+            game_context = _story_game_context(working_story, writer_plan)
+            allow_trade_payoff = game_context and chapter_number == 1 and first_chapter_market_exchange_authorized(
                 event_plan,
                 _review_context_facts(story),
-            )
-            expansion_scope = (
-                "第一章按大纲补足以下顺序：" + " ".join(opening_market_exchange_flow_lines()) + " 不新增公会追查或论坛扩散。"
-                if allow_trade_payoff
-                else "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。"
             )
             self._emit_progress_with_artifact(
                 "章节扩写中...",
@@ -6818,13 +6888,10 @@ class StoryOrchestrator:
             )
             expanded_body, expand_error = self._timed_chat(
                 working_story,
-                render_prompt_template(
-                    get_effective_prompt_template("expansion"),
-                    {
-                        "target_chars": TARGET_CHAPTER_CHARS,
-                        "expansion_focus": f"扩写已有场景中的行动、对话、阻力和结果，不新增独立的补丁段。同一事实、判断和旁人误解只写一次；新增内容必须改变行动、关系或资源。{expansion_scope}",
-                        "source_body": body,
-                    },
+                _render_expansion_length_prompt(
+                    source_body=body,
+                    game_context=game_context,
+                    allow_trade_payoff=allow_trade_payoff,
                 ),
                 max_tokens=7000,
                 json_mode=False,
@@ -6839,7 +6906,7 @@ class StoryOrchestrator:
                 expanded_body,
                 chapter_number=chapter_number,
                 scene_cards=scene_cards,
-                game_story=is_game_story(working_story),
+                game_story=game_context,
             )
             candidate_body = _repair_outline_amount_anchors(
                 candidate_body,
@@ -7020,53 +7087,24 @@ class StoryOrchestrator:
                 reason="超字数时压缩无损细节，保留主线和关键钩子",
                 inputs={"chapter_number": chapter_number, "current_chars": _chapter_char_count(body)},
             )
-            game_context = is_game_story(working_story)
+            game_context = _story_game_context(working_story, writer_plan)
             allow_trade_payoff = game_context and chapter_number == 1 and first_chapter_market_exchange_authorized(
                 event_plan,
                 _review_context_facts(story),
             )
             outline_anchor = chapter_seed.get("outline_anchor") if isinstance(chapter_seed, dict) else {}
-            locked_amounts = (
-                "、".join(
-                    str(outline_anchor.get(key) or "").strip()
-                    for key in ("opening_balance", "trade_arrival", "ending_balance")
-                    if str(outline_anchor.get(key) or "").strip()
-                )
-                if isinstance(outline_anchor, dict)
-                else ""
-            )
-            if game_context:
-                opening_line = "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。"
-                compression_method = "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。"
-                chapter_scope = (
-                    "第一章必须原样保留角色面板、怪物面板、千倍爆率、现实职业/技能来源、见习冒险者（未转职），并按以下顺序完成："
-                    + " ".join(opening_market_exchange_flow_lines())
-                    + " 不要新增游戏内任务提交、修理或买药。"
-                    + (f" 以下金额必须原样保留，不得改写、换算或删除：{locked_amounts}。" if locked_amounts else "")
-                    if allow_trade_payoff
-                    else "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。"
-                )
-            else:
-                opening_line = "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、世界规则、结尾钩子的前提下压缩。"
-                compression_method = "压缩方法：删重复解释、删绕圈心理、合并相似动作；保留核心冲突、人物反应、关键线索、代价、转折和下一步钩子。"
-                chapter_scope = "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。"
             best_acceptable_body = ""
             for compress_round in range(1, 2):
                 if not _should_compress_chapter(body):
                     break
                 before_body = body
-                target_range = "5000到5400字"
                 compressed_body, compress_error = self._timed_chat(
                     working_story,
-                    render_prompt_template(
-                        get_effective_prompt_template("compression"),
-                        {
-                            "opening_line": opening_line,
-                            "target_chars": f"保留完整网文章节感，调整到{target_range}，绝对不要超过{MAX_CHAPTER_CHARS}字",
-                            "compression_method": compression_method,
-                            "chapter_scope": chapter_scope,
-                            "source_body": before_body,
-                        },
+                    _render_compression_length_prompt(
+                        source_body=before_body,
+                        game_context=game_context,
+                        allow_trade_payoff=allow_trade_payoff,
+                        outline_anchor=outline_anchor,
                     ),
                     max_tokens=5000 if compress_round == 1 else 4500,
                     json_mode=False,
@@ -7080,7 +7118,7 @@ class StoryOrchestrator:
                     compressed_body,
                     chapter_number=chapter_number,
                     scene_cards=scene_cards,
-                    game_story=is_game_story(working_story),
+                    game_story=game_context,
                 )
                 candidate_body = _repair_outline_amount_anchors(
                     candidate_body,

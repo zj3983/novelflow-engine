@@ -5180,11 +5180,12 @@ class FileProjectStore:
 
     def prompt_preview(self, chapter_number: int | None = None) -> dict[str, Any]:
         from packages.story_core.orchestrator import (
-            MAX_CHAPTER_CHARS,
-            TARGET_CHAPTER_CHARS,
             StoryOrchestrator,
             _character_context_for_prompt,
             _genre_context_for_prompt,
+            _render_compression_length_prompt,
+            _render_expansion_length_prompt,
+            _review_context_facts,
             _story_snapshot,
         )
         from packages.story_core.prompt_modules import modules_for_stage, prompt_module_catalog
@@ -5373,39 +5374,22 @@ class FileProjectStore:
 
         if body.strip():
             source_body_placeholder = f"[原正文由 source_body 注入；面板不展示正文全文；当前正文 {len(body)} 字。]"
-            if game_context:
-                expansion_lines = [
-                    "下面这章正文太短，请在不改变剧情事实和结尾钩子的前提下扩写成完整网文章节。",
-                    f"目标篇幅：{TARGET_CHAPTER_CHARS}。",
-                    "扩写重点：补足场景调度、战斗过程、任务/装备/技能/路线前置任务、人物对话、心理活动、系统面板反馈、背景节拍和章末压力；第一章是否完成交易必须服从项目大纲。",
-                    "只输出扩写后的小说正文，不要解释，不要列大纲。",
-                    f"原正文：\n{source_body_placeholder}",
-                ]
-                compression_lines = [
-                    "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。",
-                    f"目标篇幅：保留完整网文章节感，但压到4300到5000字之间，绝对不要超过{MAX_CHAPTER_CHARS}字。",
-                    "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。",
-                    "第一章不得新增项目大纲没有授权的交易、任务提交、修理或买药；已授权的到账和现实急账处理必须保留。",
-                    "只输出压缩后的小说正文，不要解释，不要列大纲。",
-                    f"原正文：\n{source_body_placeholder}",
-                ]
-            else:
-                expansion_lines = [
-                    "下面这章正文太短，请在不改变剧情事实、人物选择、世界规则和结尾钩子的前提下扩写成完整网文章节。",
-                    f"目标篇幅：{TARGET_CHAPTER_CHARS}。",
-                    "扩写重点：补足核心冲突推进、人物行动与反应、关键线索、必要对话、世界规则的现场呈现、代价、转折和下一步钩子。",
-                    "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。",
-                    "只输出扩写后的小说正文，不要解释，不要列大纲。",
-                    f"原正文：\n{source_body_placeholder}",
-                ]
-                compression_lines = [
-                    "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、世界规则、结尾钩子的前提下压缩。",
-                    f"目标篇幅：保留完整网文章节感，但压到4300到5000字之间，绝对不要超过{MAX_CHAPTER_CHARS}字。",
-                    "压缩方法：删重复解释、删绕圈心理、合并相似动作；保留核心冲突、人物反应、关键线索、代价、转折和下一步钩子。",
-                    "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。",
-                    "只输出压缩后的小说正文，不要解释，不要列大纲。",
-                    f"原正文：\n{source_body_placeholder}",
-                ]
+            allow_trade_payoff = game_context and target == 1 and first_chapter_market_exchange_authorized(
+                plan.get("event_plan") if isinstance(plan.get("event_plan"), dict) else {},
+                _review_context_facts(story),
+            )
+            chapter_seed = plan.get("chapter_seed") if isinstance(plan.get("chapter_seed"), dict) else {}
+            expansion_prompt = _render_expansion_length_prompt(
+                source_body=source_body_placeholder,
+                game_context=game_context,
+                allow_trade_payoff=allow_trade_payoff,
+            )
+            compression_prompt = _render_compression_length_prompt(
+                source_body=source_body_placeholder,
+                game_context=game_context,
+                allow_trade_payoff=allow_trade_payoff,
+                outline_anchor=chapter_seed.get("outline_anchor"),
+            )
             prompts.extend(
                 [
                     self._prompt_entry(
@@ -5429,7 +5413,7 @@ class FileProjectStore:
                         title="章节扩写 Prompt",
                         agent="writer",
                         stage="章节扩写",
-                        content="\n".join(expansion_lines),
+                        content=expansion_prompt,
                         source="rebuilt_conditional_prompt",
                         description="正文低于目标篇幅时触发。",
                         module_keys=["source_body"],
@@ -5439,7 +5423,7 @@ class FileProjectStore:
                         title="章节压缩 Prompt",
                         agent="writer",
                         stage="章节压缩",
-                        content="\n".join(compression_lines),
+                        content=compression_prompt,
                         source="rebuilt_conditional_prompt",
                         description="正文超过目标篇幅时触发。",
                         module_keys=["source_body"],

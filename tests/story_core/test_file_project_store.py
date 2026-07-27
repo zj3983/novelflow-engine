@@ -3259,9 +3259,11 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert "game_world_simulation" not in by_key["writer_body"]["content"]
     assert by_key["writer_body"]["chars"] < 18000
     assert modules["packet_context"]["chars"] < 12000
-    assert "系统面板反馈" in by_key["expansion"]["content"]
+    assert "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。" in by_key["expansion"]["content"]
     assert "游戏账本" in by_key["compression"]["content"]
     assert "面板反馈" in by_key["compression"]["content"]
+    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in by_key["compression"]["content"]
+    assert "4300到5000字" not in by_key["compression"]["content"]
 
 
 def test_non_game_prompt_preview_uses_generic_expansion_and_compression(tmp_path):
@@ -3276,8 +3278,8 @@ def test_non_game_prompt_preview_uses_generic_expansion_and_compression(tmp_path
         },
         state={
             "story_id": "s-xuanhuan",
-            "outline": "林照守住断香炉，查清宗门旧案。",
-            "genre": "玄幻",
+            "outline": "林照登录游戏后查看背包、掉落和任务面板。",
+            "genre": "",
             "genre_plugin_ids": ["xuanhuan"],
             "style": "白描",
             "current_chapter": 1,
@@ -3299,10 +3301,45 @@ def test_non_game_prompt_preview_uses_generic_expansion_and_compression(tmp_path
     forbidden_terms = ("登录", "掉落", "背包", "血蓝", "耐久", "寄售", "到账", "任务提交", "系统面板")
     assert all(term not in prompts["expansion"] for term in forbidden_terms)
     assert all(term not in prompts["compression"] for term in forbidden_terms)
-    assert "世界规则" in prompts["expansion"]
+    assert "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。" in prompts["expansion"]
     assert "核心冲突" in prompts["compression"]
     assert "人物反应" in prompts["compression"]
     assert "关键线索" in prompts["compression"]
+    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompts["compression"]
+    assert "4300到5000字" not in prompts["compression"]
+
+
+def test_game_prompt_preview_uses_explicit_plugin_id_when_genre_is_empty(tmp_path):
+    root = tmp_path / "game-id-only"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-game-id", "title": "ID Game", "active_story_id": "s-game-id"},
+        state={
+            "story_id": "s-game-id",
+            "outline": "林照守住断香炉。",
+            "genre": "",
+            "genre_plugin_ids": ["game_webnovel"],
+            "style": "白描",
+            "current_chapter": 1,
+            "characters": [{"name": "林照", "role": "protagonist"}],
+        },
+    )
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "守炉",
+            "body": _long_test_body(),
+            "event_plan": {"chapter_title": "守炉", "next_focus": "追查来信"},
+        },
+    )
+
+    preview = store.prompt_preview(1)
+
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+    assert "游戏账本" in prompts["compression"]
+    assert "面板反馈" in prompts["compression"]
+    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompts["compression"]
 
 
 def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module(tmp_path):

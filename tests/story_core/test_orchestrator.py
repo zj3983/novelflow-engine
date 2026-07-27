@@ -7,7 +7,7 @@ from packages.story_core.generation_progress import generation_progress
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.genre_types.base import GenrePlugin
 from packages.story_core import orchestrator as orchestrator_module
-from packages.story_core.orchestrator import StoryOrchestrator
+from packages.story_core.orchestrator import StoryOrchestrator, _story_game_context
 
 _REAL_CHAT = StoryOrchestrator._chat
 
@@ -567,15 +567,19 @@ def _reviewable_body(text: str) -> str:
 
 
 @pytest.mark.parametrize(
-    ("genre", "required_terms", "forbidden_terms"),
+    ("genre", "genre_plugin_ids", "outline", "required_terms", "forbidden_terms"),
     [
         (
-            "玄幻",
+            "",
+            ["xuanhuan"],
+            "林照登录游戏后查看背包与掉落记录。",
             ("剧情事实", "世界规则", "核心冲突", "人物反应", "关键线索", "代价", "转折"),
-            ("登录", "掉落", "背包", "血蓝", "耐久", "寄售", "到账", "任务提交"),
+            ("游戏账本", "面板反馈"),
         ),
         (
-            "网游",
+            "",
+            ["game_webnovel"],
+            "林照守住断香炉，逼周执事先开口。",
             ("游戏账本", "面板反馈"),
             (),
         ),
@@ -584,6 +588,8 @@ def _reviewable_body(text: str) -> str:
 def test_runtime_compression_prompt_is_isolated_by_genre(
     monkeypatch,
     genre,
+    genre_plugin_ids,
+    outline,
     required_terms,
     forbidden_terms,
 ):
@@ -593,12 +599,18 @@ def test_runtime_compression_prompt_is_isolated_by_genre(
         "_review_chapter_body",
         lambda *_args, **_kwargs: {"pass": True, "issues": [], "revision_plan": []},
     )
-    initial_body = ("林照守住断香炉，逼周执事先开口。" * 500)[:5836]
+    initial_unit = (
+        "林照登录游戏后看见背包掉落异常。"
+        if genre_plugin_ids == ["xuanhuan"]
+        else "林照守住断香炉，逼周执事先开口。"
+    )
+    initial_body = (initial_unit * 500)[:5836]
     compressed_body = ("林照守住断香炉，逼周执事先开口。" * 500)[:5200]
     story = StoryState(
         story_id=f"s-compression-prompt-{genre}",
-        outline="林照在宗门压力下守住断香炉。",
+        outline=outline,
         genre=genre,
+        genre_plugin_ids=genre_plugin_ids,
         style="白描",
         current_chapter=1,
         characters=[CharacterState(name="林照", role="主角", location="祖祠")],
@@ -626,6 +638,92 @@ def test_runtime_compression_prompt_is_isolated_by_genre(
     prompt = compression_prompts[0]
     assert all(term in prompt for term in required_terms)
     assert all(term not in prompt for term in forbidden_terms)
+    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompt
+
+
+def test_story_game_context_prefers_normalized_plugin_ids_over_text_fallback():
+    game_story = StoryState(
+        story_id="s-explicit-game",
+        outline="林照守住祖祠。",
+        genre="",
+        genre_plugin_ids=["game_webnovel"],
+        style="白描",
+    )
+    non_game_story = StoryState(
+        story_id="s-explicit-xuanhuan",
+        outline="主角登录游戏，查看掉落、背包和任务面板。",
+        genre="",
+        genre_plugin_ids=["xuanhuan"],
+        style="白描",
+    )
+    game_genre_story = StoryState(
+        story_id="s-explicit-game-genre",
+        outline="林照守住祖祠。",
+        genre="网游",
+        style="白描",
+    )
+    non_game_genre_story = StoryState(
+        story_id="s-explicit-xuanhuan-genre",
+        outline="主角登录游戏，查看掉落、背包和任务面板。",
+        genre="玄幻",
+        style="白描",
+    )
+    fallback_game_story = StoryState(
+        story_id="s-fallback-game-text",
+        outline="主角登录游戏，查看掉落、背包和任务面板。",
+        genre="",
+        style="白描",
+    )
+
+    assert _story_game_context(game_story) is True
+    assert _story_game_context(non_game_story) is False
+    assert _story_game_context(game_genre_story) is True
+    assert _story_game_context(non_game_genre_story) is False
+    assert _story_game_context(fallback_game_story) is True
+
+
+def test_runtime_expansion_prompt_uses_non_game_scope_for_explicit_xuanhuan(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "_review_chapter_body",
+        lambda *_args, **_kwargs: {"pass": True, "issues": [], "revision_plan": []},
+    )
+    initial_body = "林照登录游戏后看见背包掉落异常。" * 30
+    expanded_body = _reviewable_body("林照守住断香炉，逼周执事先开口。")
+    story = StoryState(
+        story_id="s-expansion-explicit-xuanhuan",
+        outline="主角登录游戏，查看掉落、背包和任务面板。",
+        genre="",
+        genre_plugin_ids=["xuanhuan"],
+        style="白描",
+        current_chapter=1,
+        characters=[CharacterState(name="林照", role="主角", location="祖祠")],
+    )
+    orchestrator = StoryOrchestrator()
+    expansion_prompts = []
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        if agent == "planner":
+            return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
+        if agent == "writer" and stage.startswith("整章写作"):
+            return initial_body, ""
+        if agent == "writer" and stage.startswith("章节扩写"):
+            expansion_prompts.append(prompt)
+            return expanded_body, ""
+        if agent == "memory":
+            return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
+        raise AssertionError((agent, stage))
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    orchestrator.generate_next_chapter(story)
+
+    assert len(expansion_prompts) == 1
+    instructions = expansion_prompts[0].split("原正文：", 1)[0]
+    assert "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。" in instructions
+    assert all(term not in instructions for term in ("交易", "委托", "修理", "药水"))
 
 
 def test_orchestrator_persists_only_memory_extracted_after_final_body(monkeypatch):
