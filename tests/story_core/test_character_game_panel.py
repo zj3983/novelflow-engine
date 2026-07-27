@@ -7,6 +7,14 @@ from packages.story_core.orchestrator import (
 )
 
 
+def test_default_game_panel_does_not_serialize_attribute_history_fields():
+    dumped = CharacterState(name="Lin", role="protagonist").game_panel.model_dump(mode="json")
+
+    assert "unallocated_attribute_points" not in dumped
+    assert "attribute_point_awards" not in dumped
+    assert "attribute_allocations" not in dumped
+
+
 def test_review_character_names_uses_active_character_name_and_game_id():
     story = StoryState(
         story_id="s-review-character-names",

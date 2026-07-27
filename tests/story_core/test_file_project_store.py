@@ -899,6 +899,35 @@ def test_body_ledger_sync_uses_final_panel_and_real_balance(tmp_path):
     assert "苏叶现实余额27.60元未变" not in facts
 
 
+def test_game_character_sync_mirrors_complete_attribute_ledger(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    awards = [
+        {"level": 2, "points": 5, "chapter": 1},
+        {"level": 3, "points": 5, "chapter": 4},
+    ]
+    allocations = [
+        {"chapter": 1, "allocations": {"Intelligence": 5}, "remaining": 0},
+        {"chapter": 4, "allocations": {"Constitution": 2}, "remaining": 3},
+    ]
+    character = {"name": "Ari", "role": "protagonist"}
+    ledger = {
+        "protagonist": {
+            "attributes": {"Intelligence": 10, "Constitution": 7},
+            "unallocated_attribute_points": 3,
+            "attribute_point_awards": awards,
+            "attribute_allocations": allocations,
+        }
+    }
+
+    store._sync_game_character_from_ledger(character, ledger, chapter_number=4)
+
+    for state_slice in (character["game_state"]["current"], character["game_panel"]):
+        assert state_slice["attributes"] == {"Intelligence": 10, "Constitution": 7}
+        assert state_slice["unallocated_attribute_points"] == 3
+        assert state_slice["attribute_point_awards"] == awards
+        assert state_slice["attribute_allocations"] == allocations
+
+
 def test_opening_ledger_derives_latest_project_balance_instead_of_fixed_amount(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     chapters = [
@@ -4975,6 +5004,96 @@ def test_persist_bundle_uses_runtime_updated_story(tmp_path):
     state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
     assert state["progression_ledger"]["economy"]["game_currency"] == "5铜"
     assert state["current_chapter"] == 2
+
+
+def test_usable_bundle_state_keeps_valid_runtime_character_updates(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    current_state = {
+        "story_id": "s-file",
+        "current_chapter": 1,
+        "characters": [{"name": "Ari", "role": "protagonist", "current_emotion": "stale"}],
+    }
+    updated_story = {
+        "story_id": "s-file",
+        "current_chapter": 2,
+        "progression_ledger": {"protagonist": {"level": "Lv.2"}},
+        "characters": [{"name": "Ari", "role": "protagonist", "current_emotion": "focused"}],
+    }
+
+    usable = store._usable_bundle_state(updated_story, current_state)
+
+    assert usable["characters"][0]["current_emotion"] == "focused"
+
+
+def test_persist_bundle_keeps_runtime_character_and_syncs_attribute_history(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-file",
+            "title": "Attribute Story",
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+        state={
+            "story_id": "s-file",
+            "current_chapter": 1,
+            "genre": "game_webnovel",
+            "characters": [{"name": "Ari", "role": "protagonist", "current_emotion": "stale"}],
+        },
+    )
+    awards = [
+        {"level": 2, "points": 5, "chapter": 1},
+        {"level": 3, "points": 5, "chapter": 2},
+    ]
+    allocations = [
+        {"chapter": 1, "allocations": {"Intelligence": 5}, "remaining": 0},
+        {"chapter": 2, "allocations": {"Constitution": 2}, "remaining": 3},
+    ]
+    bundle = SimpleNamespace(
+        chapter_number=2,
+        chapter_title="A New Build",
+        body=_long_test_body("The panel shows level: 3. Ari changes the build after the quest reward."),
+        cadence="manual",
+        next_outline="Test the new build.",
+        updated_story={
+            "story_id": "s-file",
+            "current_chapter": 2,
+            "genre": "game_webnovel",
+            "progression_ledger": {
+                "protagonist": {
+                    "level": "Lv.3",
+                    "attributes": {"Intelligence": 10, "Constitution": 7},
+                    "unallocated_attribute_points": 3,
+                    "attribute_point_awards": awards,
+                    "attribute_allocations": allocations,
+                }
+            },
+            "characters": [{"name": "Ari", "role": "protagonist", "current_emotion": "focused"}],
+            "chapter_summaries": [],
+        },
+        quality_report={"ok": True, "issues": []},
+        chapter_summary={
+            "chapter_title": "A New Build",
+            "cadence": "manual",
+            "summary": "Ari changes the build.",
+            "facts": ["Ari keeps three points."],
+            "next_focus": "Test the new build.",
+            "primary_conflict": "Build choice.",
+            "secondary_conflict": "Limited points.",
+            "event_beat": "Allocate.",
+        },
+    )
+
+    store.persist_bundle(bundle)
+
+    state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    character = state["characters"][0]
+    assert character["current_emotion"] == "focused"
+    for state_slice in (character["game_state"]["current"], character["game_panel"]):
+        assert state_slice["attributes"] == {"Intelligence": 10, "Constitution": 7}
+        assert state_slice["unallocated_attribute_points"] == 3
+        assert state_slice["attribute_point_awards"] == awards
+        assert state_slice["attribute_allocations"] == allocations
 
 
 def test_rewrite_chapter_uses_canonical_state_not_embedded_snapshot(tmp_path):

@@ -1168,10 +1168,7 @@ class FileProjectStore:
         )
         if not has_runtime_state:
             return current_state
-        usable = self._strip_temporary_generation_fields(dict(updated_story))
-        if isinstance(current_state.get("characters"), list):
-            usable["characters"] = list(current_state.get("characters") or [])
-        return usable
+        return self._strip_temporary_generation_fields(dict(updated_story))
 
     def _chapter_summary_payload(self, chapter: dict[str, Any]) -> dict[str, Any]:
         chapter_number = int(chapter.get("chapter_number") or 0)
@@ -2252,6 +2249,9 @@ class FileProjectStore:
             "hp": protagonist.get("hp"),
             "mp": protagonist.get("mp"),
             "attributes": protagonist.get("attributes"),
+            "unallocated_attribute_points": protagonist.get("unallocated_attribute_points"),
+            "attribute_point_awards": protagonist.get("attribute_point_awards"),
+            "attribute_allocations": protagonist.get("attribute_allocations"),
             "equipment": equipment,
             "inventory": economy.get("inventory"),
             "backpack": economy.get("backpack"),
@@ -2270,8 +2270,17 @@ class FileProjectStore:
                 if str(item).strip()
             ]
 
+        attribute_fields = {
+            "attributes",
+            "unallocated_attribute_points",
+            "attribute_point_awards",
+            "attribute_allocations",
+        }
         for field, value in values.items():
-            if value in (None, "", [], {}):
+            if field in attribute_fields:
+                if field not in protagonist:
+                    continue
+            elif value in (None, "", [], {}):
                 continue
             current[field] = deepcopy(value)
             panel[field] = deepcopy(value)

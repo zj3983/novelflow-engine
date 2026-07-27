@@ -225,9 +225,9 @@ class GamePanel(BaseModel):
     hp: str = ""
     mp: str = ""
     attributes: dict = Field(default_factory=dict)
-    unallocated_attribute_points: int = 0
-    attribute_point_awards: list[dict] = Field(default_factory=list)
-    attribute_allocations: list[dict] = Field(default_factory=list)
+    unallocated_attribute_points: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    attribute_point_awards: list[dict] | None = Field(default=None, exclude_if=lambda value: value is None)
+    attribute_allocations: list[dict] | None = Field(default=None, exclude_if=lambda value: value is None)
     skills: list[str] = Field(default_factory=list)
     equipment: dict = Field(default_factory=dict)
     inventory: dict = Field(default_factory=dict)
