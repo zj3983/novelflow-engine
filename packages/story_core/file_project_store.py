@@ -3952,15 +3952,22 @@ class FileProjectStore:
             chapter_summary = chapter.get("chapter_summary")
             summary = chapter_summary if isinstance(chapter_summary, dict) else {}
             body = str(chapter.get("body") or "")
+            summary_text = self._compact_text(summary.get("summary") or "", 320)
+            next_focus = self._compact_text(
+                chapter.get("next_outline") or summary.get("next_focus") or "",
+                220,
+            )
+            quality_report = chapter.get("quality_report")
+            simulation_status = chapter.get("simulation_status")
             entries.append(
                 {
                     "chapter_number": int(chapter.get("chapter_number") or number),
-                    "chapter_title": str(chapter.get("chapter_title") or f"第{number}章"),
+                    "chapter_title": str(chapter.get("chapter_title") or f"Chapter {number}"),
                     "body_chars": len("".join(body.split())),
-                    "summary": str(summary.get("summary") or ""),
-                    "next_focus": str(chapter.get("next_outline") or summary.get("next_focus") or ""),
-                    "has_quality_report": isinstance(chapter.get("quality_report"), dict) and bool(chapter.get("quality_report")),
-                    "has_simulation": bool(chapter.get("simulation_status")),
+                    "summary": summary_text,
+                    "next_focus": next_focus,
+                    "has_quality_report": isinstance(quality_report, dict) and bool(quality_report),
+                    "has_simulation": isinstance(simulation_status, dict) and bool(simulation_status),
                 }
             )
         return entries
@@ -4590,8 +4597,8 @@ class FileProjectStore:
         }
 
     def summary(self) -> dict[str, Any]:
-        project = self.project()
-        state = self.state()
+        project = self._read_json(self.webnovel_dir / "project.json", {}) or {}
+        state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
         chapters = [
             {
                 "chapter_number": entry["chapter_number"],

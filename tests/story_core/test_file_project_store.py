@@ -228,21 +228,33 @@ def test_summary_reads_chapter_metadata_without_hydrating_full_chapters(tmp_path
             encoding="utf-8",
         )
 
+    read_counts: dict[str, int] = {}
+    original_read_json = store._read_json
+
+    def counting_read_json(path, default=None):
+        if path.parent == chapters_dir and path.suffix == ".json":
+            read_counts[path.name] = read_counts.get(path.name, 0) + 1
+        return original_read_json(path, default)
+
     def fail_if_hydrated(_chapter_number=None):
         raise AssertionError("summary must not hydrate full chapter payloads")
 
     monkeypatch.setattr(store, "chapter", fail_if_hydrated)
+    monkeypatch.setattr(store, "_read_json", counting_read_json)
 
     summary = store.summary()
 
     assert summary["current_chapter"] == 3
     assert summary["chapter_count"] == 3
     assert summary["chapters"][-1] == {"chapter_number": 3, "chapter_title": "Chapter 3"}
+    assert read_counts == {"0001.json": 1, "0002.json": 1, "0003.json": 1}
 
 
 def test_chapter_index_reads_each_file_once_without_display_hydration(tmp_path, monkeypatch):
     store = _make_minimal_file_project(tmp_path / "novel")
     chapters_dir = store.story_system_dir / "chapters"
+    long_summary = "Summary one " + ("A" * 500)
+    long_next_focus = "Next focus one " + ("B" * 500)
     chapter_payloads = [
         (
             1,
@@ -250,8 +262,8 @@ def test_chapter_index_reads_each_file_once_without_display_hydration(tmp_path, 
                 "chapter_number": 1,
                 "chapter_title": "Chapter 1",
                 "body": "First draft body.\nWith whitespace.",
-                "chapter_summary": {"summary": "First summary.", "next_focus": "Carry on."},
-                "next_outline": "Open the sealed door.",
+                "chapter_summary": {"summary": long_summary, "next_focus": "Carry on."},
+                "next_outline": long_next_focus,
                 "simulation_status": {"status": "simulated"},
                 "quality_report": {"writing_review": {"pass": True, "issues": []}},
             },
@@ -264,7 +276,7 @@ def test_chapter_index_reads_each_file_once_without_display_hydration(tmp_path, 
                 "body": "Second draft body.",
                 "chapter_summary": {"summary": "Second summary.", "next_focus": "Keep moving."},
                 "next_outline": "Keep moving.",
-                "simulation_status": {"status": "simulated"},
+                "simulation_status": "legacy truthy",
                 "quality_report": {"writing_review": {"pass": True, "issues": []}},
             },
         ),
@@ -294,8 +306,8 @@ def test_chapter_index_reads_each_file_once_without_display_hydration(tmp_path, 
             "chapter_number": 1,
             "chapter_title": "Chapter 1",
             "body_chars": len("Firstdraftbody.Withwhitespace."),
-            "summary": "First summary.",
-            "next_focus": "Open the sealed door.",
+            "summary": long_summary[:320] + "...",
+            "next_focus": long_next_focus[:220] + "...",
             "has_quality_report": True,
             "has_simulation": True,
         },
@@ -306,7 +318,7 @@ def test_chapter_index_reads_each_file_once_without_display_hydration(tmp_path, 
             "summary": "Second summary.",
             "next_focus": "Keep moving.",
             "has_quality_report": True,
-            "has_simulation": True,
+            "has_simulation": False,
         },
     ]
     assert read_counts == {"0001.json": 1, "0002.json": 1}
