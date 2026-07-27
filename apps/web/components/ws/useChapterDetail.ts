@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   fetchFileChapter,
@@ -27,14 +27,17 @@ export function useChapterDetail({
   const [chapter, setChapter] = useState<ChapterBundle | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reloadVersion, setReloadVersion] = useState(0);
   const requestSequence = useRef(0);
+  const fileStory = isFileStory(story);
+  const fileStoryId = fileStory ? story.story_id || projectId : "";
+  const nonFileHistory = !fileStory && story ? story.history : null;
+  const hasStory = story !== null;
 
   useEffect(() => {
     const sequence = ++requestSequence.current;
     let cancelled = false;
 
-    if (!story || chapterNumber <= 0) {
+    if (!hasStory || chapterNumber <= 0) {
       setChapter(null);
       setLoading(false);
       setError(null);
@@ -43,8 +46,8 @@ export function useChapterDetail({
       };
     }
 
-    if (!isFileStory(story)) {
-      const history = story.history ?? [];
+    if (!fileStory) {
+      const history = nonFileHistory ?? [];
       setChapter(history.find((item) => item.chapter_number === chapterNumber) ?? history.at(-1) ?? null);
       setLoading(false);
       setError(null);
@@ -55,7 +58,7 @@ export function useChapterDetail({
 
     setLoading(true);
     setError(null);
-    fetchFileChapter(story.story_id || projectId, chapterNumber)
+    fetchFileChapter(fileStoryId, chapterNumber)
       .then((nextChapter) => {
         if (!cancelled && sequence === requestSequence.current) setChapter(nextChapter);
       })
@@ -71,8 +74,7 @@ export function useChapterDetail({
     return () => {
       cancelled = true;
     };
-  }, [chapterNumber, projectId, refreshVersion, reloadVersion, story]);
+  }, [chapterNumber, fileStory, fileStoryId, hasStory, nonFileHistory, refreshVersion]);
 
-  const reload = useCallback(() => setReloadVersion((current) => current + 1), []);
-  return { chapter, loading, error, reload };
+  return { chapter, loading, error };
 }

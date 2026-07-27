@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
@@ -53,13 +53,23 @@ export default function WritePage() {
   const [temporaryGuidance, setTemporaryGuidance] = useState("");
   const [nextWritingPacket, setNextWritingPacket] = useState<CodexWritingPacket | null>(null);
   const [selectedDirectionId, setSelectedDirectionId] = useState("");
+  const mountedRef = useRef(false);
+  const operationTokenRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      operationTokenRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     setPage(1);
   }, [query]);
 
   const requestedChapter = Number(searchParams?.get("chapter") || story?.current_chapter || chapterIndex.at(-1)?.chapter_number || 0);
-  const { chapter, loading: chapterLoading, error: chapterError, reload } = useChapterDetail({
+  const { chapter, loading: chapterLoading, error: chapterError } = useChapterDetail({
     projectId,
     story: story ?? null,
     chapterNumber: requestedChapter,
@@ -98,7 +108,12 @@ export default function WritePage() {
   const safePage = Math.min(page, totalPages);
   const visibleBundles = filteredBundles.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const isFileProject = projectId.startsWith("file:") || project?.storage_source === "file";
-  const canRegenerate = Boolean(chapter && isFileProject);
+  const canRegenerate = Boolean(
+    chapter &&
+      isFileProject &&
+      !chapterLoading &&
+      chapter.chapter_number === requestedChapter,
+  );
   const generationTargetId = isFileProject ? projectId : story?.story_id;
   const canGenerateNext = Boolean(generationTargetId);
   const nextChapterNumber = (story?.current_chapter ?? 0) + 1;
@@ -141,65 +156,80 @@ export default function WritePage() {
   const writingLessons = story?.writing_lessons ?? [];
 
   async function handleRegenerateChapter() {
-    if (!chapter || !canRegenerate) return;
+    if (!chapter || !canRegenerate || chapterLoading || chapter.chapter_number !== requestedChapter) return;
+    const operationToken = ++operationTokenRef.current;
+    const operationIsActive = () => mountedRef.current && operationTokenRef.current === operationToken;
     setRegenerating(true);
     setRegenerateStatus("排队中");
     setRegenerateError(null);
     try {
       const job = await startFileProjectRegenerationJob(projectId, chapter.chapter_number, undefined, temporaryGuidance || undefined);
+      if (!operationIsActive()) return;
       let currentJob = job;
       setGenerationSteps(Array.isArray(job.steps) ? job.steps : []);
       setRegenerateStatus(currentJob.progress || currentJob.status);
       while (currentJob.status === "queued" || currentJob.status === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        if (!operationIsActive()) return;
         currentJob = await fetchGenerationJob(projectId, currentJob.job_id);
+        if (!operationIsActive()) return;
         setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
         setRegenerateStatus(currentJob.progress || currentJob.status);
       }
       if (currentJob.status === "failed") {
         throw new Error(currentJob.error || "regenerate_failed");
       }
+      if (!operationIsActive()) return;
       clearTemporaryGuidance();
       refresh();
-      reload();
     } catch (err) {
-      setRegenerateError(err instanceof Error ? err.message : String(err));
+      if (operationIsActive()) setRegenerateError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRegenerating(false);
-      setRegenerateStatus(null);
+      if (operationIsActive()) {
+        setRegenerating(false);
+        setRegenerateStatus(null);
+      }
     }
   }
 
   async function handleGenerateNextChapter() {
     if (!generationTargetId || !canGenerateNext) return;
+    const operationToken = ++operationTokenRef.current;
+    const operationIsActive = () => mountedRef.current && operationTokenRef.current === operationToken;
     setGeneratingNext(true);
     setRegenerateStatus("排队中");
     setRegenerateError(null);
     try {
       const job = await startGenerationJob(generationTargetId, isFileProject ? selectedDirection?.id : undefined);
+      if (!operationIsActive()) return;
       let currentJob = job;
       setGenerationSteps(Array.isArray(job.steps) ? job.steps : []);
       setRegenerateStatus(currentJob.progress || currentJob.status);
       while (currentJob.status === "queued" || currentJob.status === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        if (!operationIsActive()) return;
         currentJob = await fetchGenerationJob(generationTargetId, currentJob.job_id);
+        if (!operationIsActive()) return;
         setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
         setRegenerateStatus(currentJob.progress || currentJob.status);
       }
       if (currentJob.status === "failed") {
         throw new Error(currentJob.error || "generate_next_failed");
       }
+      if (!operationIsActive()) return;
       const completedChapterNumber = Number(currentJob.chapter_number);
       const generatedChapterNumber = Number.isInteger(completedChapterNumber) && completedChapterNumber > 0
         ? completedChapterNumber
         : nextChapterNumber;
       router.replace(`/projects/${encodedProjectId}/write?chapter=${generatedChapterNumber}`);
-      refresh();
+      refresh({ invalidateChapter: false });
     } catch (err) {
-      setRegenerateError(err instanceof Error ? err.message : String(err));
+      if (operationIsActive()) setRegenerateError(err instanceof Error ? err.message : String(err));
     } finally {
-      setGeneratingNext(false);
-      setRegenerateStatus(null);
+      if (operationIsActive()) {
+        setGeneratingNext(false);
+        setRegenerateStatus(null);
+      }
     }
   }
 

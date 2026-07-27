@@ -1537,6 +1537,25 @@ test("write directory retains the visible body while the next chapter loads", as
   expect(calls.filter((path) => path.endsWith("/chapters/2"))).toHaveLength(1);
 });
 
+test("retained prior chapter cannot be regenerated while selected detail loads", async ({ page }) => {
+  let regenerationRequests = 0;
+  const { encodedId } = await routeCurrentFileProject(page, "retained-regeneration-guard", {
+    chapterCount: 2,
+    detailDelays: { 2: 600 },
+  });
+  await page.route(`**/file-projects/${encodedId}/generation-jobs`, async (route) => {
+    regenerationRequests += 1;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "must_not_run" }) });
+  });
+
+  await page.goto(`/projects/${encodedId}/write?chapter=1`);
+  await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
+  await page.getByRole("link", { name: /第 2 章/ }).click();
+  await expect(page.getByRole("button", { name: "重新生成本章" })).toBeDisabled();
+  await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
+  expect(regenerationRequests).toBe(0);
+});
+
 test("write directory remains visible when chapter detail fails", async ({ page }) => {
   const { encodedId } = await routeCurrentFileProject(page, "failed-file-detail", { failChapters: [1] });
 
@@ -1559,6 +1578,41 @@ for (const target of [
     expect(calls.some((path) => /^\/file-stories\/[^/]+$/.test(path))).toBe(false);
   });
 }
+
+test("review hides retained prior report while selected chapter loads", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "review-retained-detail", {
+    chapterCount: 2,
+    detailDelays: { 1: 600 },
+  });
+  const simplifiedReview = (summary: string) => ({
+    schema_version: "simplified-review/v1",
+    status: "needs_revision",
+    pass: false,
+    has_hard_errors: false,
+    summary,
+    categories: {
+      hard: { label: "硬伤", count: 0 },
+      dialogue: { label: "对话", count: 1 },
+      prose: { label: "正文", count: 0 },
+      ai_flavor: { label: "AI味", count: 0 },
+    },
+    issues: [],
+    total_issues: 0,
+  });
+  Object.assign(fixture.story.history[0], {
+    quality_report: { ...fixture.story.history[0].quality_report, simplified_review: simplifiedReview("FIRST_REVIEW") },
+  });
+  Object.assign(fixture.story.history[1], {
+    quality_report: { ...fixture.story.history[1].quality_report, simplified_review: simplifiedReview("SECOND_REVIEW") },
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/review?chapter=2`);
+  await expect(page.getByText("SECOND_REVIEW", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: /第 1 章/ }).click();
+  await expect(page.getByText("正在加载章节...", { exact: true })).toBeVisible();
+  await expect(page.getByText("SECOND_REVIEW", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("FIRST_REVIEW", { exact: true })).toBeVisible();
+});
 
 test("prompts uses chapter index without requesting chapter detail", async ({ page }) => {
   const calls: string[] = [];
@@ -1633,6 +1687,21 @@ test("simulation switching chapters requests only the newly selected detail", as
   expect(calls.filter((path) => path.endsWith("/chapters/2"))).toHaveLength(1);
   expect(calls.filter((path) => path.endsWith("/chapters/1"))).toHaveLength(1);
   expect(calls.filter((path) => path.includes("/chapters/"))).toHaveLength(2);
+});
+
+test("simulation shows loading instead of retained prior chapter content", async ({ page }) => {
+  const { encodedId } = await routeCurrentFileProject(page, "simulation-retained-detail", {
+    chapterCount: 2,
+    simulationChapters: [1, 2],
+    detailDelays: { 1: 600 },
+  });
+
+  await page.goto(`/projects/${encodedId}/sim`);
+  await expect(page.getByText("第 2 章响应记录")).toBeVisible();
+  await page.getByLabel("响应章节").selectOption("1");
+  await expect(page.getByText("正在加载章节...", { exact: true })).toBeVisible();
+  await expect(page.getByText("第 2 章响应记录")).toHaveCount(0);
+  await expect(page.getByText("第 1 章响应记录")).toBeVisible();
 });
 
 test("file project outline edits three levels and runs outline generation", async ({ page }) => {
@@ -2049,9 +2118,10 @@ for (const generationCase of [
 
     await expect(page).toHaveURL(new RegExp(`chapter=${generationCase.expectedChapter}$`));
     await expect(page.locator(".ws-reader__body")).toContainText(`GENERATED_CHAPTER_${generationCase.expectedChapter}`);
-    expect(calls.filter((path) => path.endsWith("/overview")).length).toBeGreaterThan(1);
+    expect(calls.filter((path) => path.endsWith("/overview"))).toHaveLength(2);
     expect(calls.some((path) => /^\/file-stories\/[^/]+$/.test(path))).toBe(false);
-    expect(calls.filter((path) => path.includes("/chapters/")).at(-1)).toContain(`/chapters/${generationCase.expectedChapter}`);
+    expect(calls.filter((path) => path.endsWith(`/chapters/${generationCase.expectedChapter}`))).toHaveLength(1);
+    expect(calls.filter((path) => path.includes("/chapters/"))).toHaveLength(2);
   });
 }
 
@@ -2270,10 +2340,68 @@ test("write page can regenerate the current file-project chapter", async ({ page
   await expect.poll(() => regenerationPayload).toMatchObject({ chapter_number: 1 });
   await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
   await expect(page.locator(".ws-reader__body")).toContainText("REGENERATED_CHAPTER");
-  expect(calls.filter((path) => path.endsWith("/overview")).length).toBeGreaterThan(1);
+  expect(calls.filter((path) => path.endsWith("/overview"))).toHaveLength(2);
   expect(calls.some((path) => /^\/file-stories\/[^/]+$/.test(path))).toBe(false);
-  expect(calls.filter((path) => path.includes("/chapters/")).at(-1)).toContain("/chapters/1");
+  expect(calls.filter((path) => path.endsWith("/chapters/1"))).toHaveLength(2);
 });
+
+for (const operation of ["生成下一章", "重新生成本章"] as const) {
+  test(`${operation}完成前离开写作页不会刷新或跳回`, async ({ page }) => {
+    const calls: string[] = [];
+    const fixture = await routeCurrentFileProject(page, `leave-during-${operation}`, { calls });
+    let pollStarted = false;
+    let releasePoll!: () => void;
+    const pollGate = new Promise<void>((resolve) => { releasePoll = resolve; });
+    await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          job_id: "job-leave-write",
+          story_id: fixture.projectId,
+          status: "queued",
+          progress: "排队中",
+          steps: [],
+          chapter_number: operation === "重新生成本章" ? 1 : 2,
+          error: "",
+          created_at: "",
+          updated_at: "",
+        }),
+      });
+    });
+    await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs/job-leave-write`, async (route) => {
+      pollStarted = true;
+      await pollGate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          job_id: "job-leave-write",
+          story_id: fixture.projectId,
+          status: "completed",
+          progress: "已完成",
+          steps: [],
+          chapter_number: operation === "重新生成本章" ? 1 : 2,
+          error: "",
+          created_at: "",
+          updated_at: "",
+        }),
+      });
+    });
+
+    await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
+    await page.getByRole("button", { name: operation }).click();
+    await expect.poll(() => pollStarted, { timeout: 5_000 }).toBe(true);
+    const overviewBaseline = calls.filter((path) => path.endsWith("/overview")).length;
+    await page.getByRole("link", { name: "世界观", exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/world$`));
+    releasePoll();
+    await page.waitForTimeout(300);
+
+    await expect(page).toHaveURL(new RegExp(`/world$`));
+    expect(calls.filter((path) => path.endsWith("/overview"))).toHaveLength(overviewBaseline);
+  });
+}
 
 test("write page accepts three-stage runtime state", async ({ page }) => {
   await page.route("**/projects", async (route) => {

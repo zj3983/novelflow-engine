@@ -18,6 +18,8 @@ export default function ReviewPage() {
     chapterNumber: requestedChapter,
     refreshVersion,
   });
+  const selectedIndex = chapterIndex.find((entry) => entry.chapter_number === requestedChapter) ?? null;
+  const selectedChapter = chapter?.chapter_number === requestedChapter ? chapter : null;
 
   return (
     <div className="ws-page">
@@ -26,8 +28,8 @@ export default function ReviewPage() {
           { label: "我的作品", href: "/projects" },
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
-        title={chapter ? `审稿：第 ${chapter.chapter_number} 章` : "审稿"}
-        subtitle={chapter?.chapter_title || "查看必须修复的问题和局部修改建议。"}
+        title={requestedChapter > 0 ? `审稿：第 ${requestedChapter} 章` : "审稿"}
+        subtitle={selectedIndex?.chapter_title || "查看必须修复的问题和局部修改建议。"}
       />
 
       {error ? (
@@ -55,8 +57,8 @@ export default function ReviewPage() {
           </aside>
           <main>
             {chapterError ? <p className="ws-inline-error" role="alert">章节加载失败：{chapterError}</p> : null}
-            {chapter ? <SimplifiedReview report={chapter.quality_report?.simplified_review} /> : null}
-            {chapterLoading && !chapter ? <p className="ws-card__hint">正在加载章节...</p> : null}
+            {selectedChapter ? <SimplifiedReview report={selectedChapter.quality_report?.simplified_review} /> : null}
+            {chapterLoading && !selectedChapter ? <p className="ws-card__hint">正在加载章节...</p> : null}
           </main>
         </div>
       ) : (

@@ -97,8 +97,10 @@ class BookDissectionReferenceRequest(BaseModel):
 
 
 class BookDissectionChapterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     chapter_number: int | None = None
-    body: str | None = None
+    body: str | None = Field(default=None, max_length=200_000)
 
 
 class PromptTemplateUpdateRequest(BaseModel):
@@ -1078,8 +1080,9 @@ def init_file_project_routes() -> APIRouter:
         store = _store_for(project_id)
         try:
             chapter = dict(store.chapter(payload.chapter_number))
-            if payload.body is not None:
-                chapter["body"] = payload.body
+            body_snapshot_override = payload.body
+            if body_snapshot_override is not None:
+                chapter["body"] = body_snapshot_override
             return diagnose_project_chapter({"project": store.project(), "state": store.state()}, chapter)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

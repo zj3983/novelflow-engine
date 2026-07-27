@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
   fetchFileStoryOverview,
@@ -25,7 +25,7 @@ type ProjectWorkspaceContextValue = {
   loading: boolean;
   error: string | null;
   refreshVersion: number;
-  refresh: () => void;
+  refresh: (options?: { invalidateChapter?: boolean }) => void;
 };
 
 const ProjectWorkspaceContext = createContext<ProjectWorkspaceContextValue | null>(null);
@@ -81,7 +81,8 @@ export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspa
   const [story, setStory] = useState<WorkspaceStory | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [version, setVersion] = useState(0);
+  const [overviewVersion, setOverviewVersion] = useState(0);
+  const [chapterRefreshVersion, setChapterRefreshVersion] = useState(0);
   const activeProjectId = useRef(projectId);
 
   useEffect(() => {
@@ -133,7 +134,14 @@ export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspa
     return () => {
       cancelled = true;
     };
-  }, [projectId, version]);
+  }, [overviewVersion, projectId]);
+
+  const refresh = useCallback((options?: { invalidateChapter?: boolean }) => {
+    setOverviewVersion((current) => current + 1);
+    if (options?.invalidateChapter !== false) {
+      setChapterRefreshVersion((current) => current + 1);
+    }
+  }, []);
 
   const hasCurrentProject = activeProjectId.current === projectId;
   const currentView = selectProjectWorkspaceView({ hasCurrentProject, project, story, loading, error });
@@ -152,10 +160,10 @@ export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspa
       chapterIndex,
       loading: currentView.loading,
       error: currentView.error,
-      refreshVersion: version,
-      refresh: () => setVersion((current) => current + 1),
+      refreshVersion: chapterRefreshVersion,
+      refresh,
     }),
-    [chapterIndex, currentView.error, currentView.loading, currentView.project, currentView.story, projectId, version],
+    [chapterIndex, chapterRefreshVersion, currentView.error, currentView.loading, currentView.project, currentView.story, projectId, refresh],
   );
 
   return <ProjectWorkspaceContext.Provider value={value}>{children}</ProjectWorkspaceContext.Provider>;

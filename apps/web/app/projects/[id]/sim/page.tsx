@@ -297,7 +297,7 @@ export default function SimulationPage() {
         </label>
       ) : null}
       {chapterError ? <p className="ws-inline-error" role="alert">章节加载失败：{chapterError}</p> : null}
-      {chapterLoading && !chapter ? <p className="ws-card__hint">正在加载章节...</p> : null}
+      {chapterLoading && chapter?.chapter_number !== selectedChapter ? <p className="ws-card__hint">正在加载章节...</p> : null}
 
       {bundles.length > 0 ? (
         <div className="ws-sim-list">

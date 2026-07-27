@@ -200,6 +200,47 @@ def test_file_project_book_dissection_preserves_context_and_uses_supplied_body(
     assert captured["chapter"]["body"] == "LAZY_SELECTED_BODY"
 
 
+@pytest.mark.parametrize(
+    ("payload", "invalid_field"),
+    [
+        ({"chapter_number": 1, "body": "x" * 200_001}, "body"),
+        ({"chapter_number": 1, "unexpected": "field"}, "unexpected"),
+    ],
+)
+def test_file_project_book_dissection_rejects_oversized_body_and_extra_fields(
+    tmp_path: Path,
+    monkeypatch,
+    payload,
+    invalid_field,
+):
+    export_root = tmp_path / "exported-projects"
+    project_root = export_root / "validated-dissection-fixture"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    _write_json(
+        project_root / ".story-system" / "MASTER_SETTING.json",
+        {"project": {"project_id": "validated-dissection-fixture"}},
+    )
+    _write_json(
+        project_root / ".webnovel" / "project.json",
+        {"project_id": "validated-dissection-fixture"},
+    )
+    _write_json(project_root / ".webnovel" / "state.json", {"current_chapter": 1})
+    _write_json(
+        project_root / ".story-system" / "chapters" / "0001.json",
+        {"chapter_number": 1, "body": "persisted"},
+    )
+
+    response = client.post(
+        "/file-projects/file:validated-dissection-fixture/book-dissection/chapter",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert isinstance(detail, list)
+    assert detail[0]["loc"][-1] == invalid_field
+
+
 def test_file_project_list_ignores_backup_directories(tmp_path: Path, monkeypatch):
     export_root = tmp_path / "exported-projects"
     monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
