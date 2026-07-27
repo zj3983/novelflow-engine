@@ -5,6 +5,7 @@ from copy import deepcopy
 from packages.story_core.engine import ChapterBundle
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.orchestrator import _normalize_event_plan
 from packages.story_core.writing_packet import build_codex_writing_packet, power_system_context_for_state
 
 
@@ -122,6 +123,26 @@ def test_packet_omits_attribute_context_without_free_rule() -> None:
     packet = build_codex_writing_packet(_power_story(), chapter_number=1)
 
     assert "attribute_allocation" not in packet
+
+
+def test_normalized_level_target_preserves_decision_through_writing_packet() -> None:
+    story = _attribute_packet_story()
+    raw_event_plan = {
+        "state_delta": {"protagonist": {"level": "Lv.2"}},
+        "attribute_allocation_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+    }
+    event_plan = _normalize_event_plan(raw_event_plan, chapter_number=2, story=story)
+    bundle = ChapterBundle(chapter_number=2, body="", next_outline="继续升级", updated_story=story, event_plan=event_plan)
+
+    packet = build_codex_writing_packet(story, bundle)
+
+    assert event_plan["attribute_allocation_level_target"] == 2
+    assert packet["attribute_allocation"]["chapter_decision"] == {
+        "mode": "allocate",
+        "allocations": {"智力": 5},
+        "remaining": 0,
+    }
+    assert any("attribute points" in line for line in packet["prose_renderer"]["body_contract"])
 
 
 def test_packet_uses_character_world_state_aliases_and_respects_stage_boundaries():

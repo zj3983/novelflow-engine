@@ -21,6 +21,7 @@ from packages.story_core.attribute_allocation import (
     attribute_allocation_rule_from_story,
     award_attribute_points,
     parse_level,
+    plan_handles_attribute_points,
     planned_level_target,
     validate_attribute_allocation_decision,
 )
@@ -2397,7 +2398,11 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
         )
         expected_points = current_points + max(0, (target_level or current_level) - current_level) * attribute_rule["points_per_level"]
         raw_decision = event_plan.get("attribute_allocation_decision")
-        requires_decision = (target_level is not None and target_level > current_level) or raw_decision is not None
+        requires_decision = (
+            (target_level is not None and target_level > current_level)
+            or (current_points > 0 and plan_handles_attribute_points(plan))
+            or raw_decision is not None
+        )
         if requires_decision and not validate_attribute_allocation_decision(raw_decision, attribute_rule, expected_points):
             if not isinstance(raw_decision, dict):
                 issues.append("event_plan.attribute_allocation_decision 缺失：本章明确升级时必须 allocate 或 carry。")
@@ -2613,6 +2618,8 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
         "chapter_satisfaction": _normalize_chapter_satisfaction(raw_event_plan.get("chapter_satisfaction")),
         "author_constraints": list(story.author_constraints),
     }
+    if (level_target := planned_level_target(raw_event_plan)) is not None:
+        result["attribute_allocation_level_target"] = level_target
     decision = attribute_allocation_context(story, {"event_plan": raw_event_plan}).get("chapter_decision")
     if decision:
         result["attribute_allocation_decision"] = decision
@@ -5914,6 +5921,7 @@ class StoryOrchestrator:
             rendered += (
                 "\n本章明确升级或处理已有属性点时，event_plan.attribute_allocation_decision 必须为 "
                 "allocate 或 carry；allocate 给出 allocations 和 remaining，carry 给出保留理由和 remaining。"
+                "升级必须提供机器可读的 state_delta.protagonist.level 或等价当前章 level 字段，不能只在自然语言里写等级。"
             )
         return rendered
 

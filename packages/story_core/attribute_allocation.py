@@ -15,6 +15,7 @@ _MAX_STARTING_LEVEL = 1_000_000
 _MAX_LEVEL_DIGITS = len(str(_MAX_STARTING_LEVEL))
 _MAX_LEVEL_UP_SPAN = 1_000
 _LEVEL_PATTERN = re.compile(r"^(?:lv\.\s*)?(\d+)(?:\s*\u7ea7)?$", re.IGNORECASE)
+_ATTRIBUTE_POINT_HANDLING_TOKENS = ("属性点", "加点", "配点", "保留点数", "分配属性")
 
 
 def _compact_text(value: Any, limit: int) -> str:
@@ -155,9 +156,13 @@ def planned_level_target(plan: Any) -> int | None:
 
     def collect_levels(value: Any) -> list[int]:
         if isinstance(value, Mapping):
-            levels = [parsed] if (parsed := parse_level(value.get("level"))) is not None else []
+            levels = [
+                parsed
+                for key in ("level", "attribute_allocation_level_target")
+                if (parsed := parse_level(value.get(key))) is not None
+            ]
             for key, nested in value.items():
-                if key != "level":
+                if key not in {"level", "attribute_allocation_level_target"}:
                     levels.extend(collect_levels(nested))
             return levels
         if isinstance(value, list):
@@ -171,6 +176,29 @@ def planned_level_target(plan: Any) -> int | None:
     ]
     levels = [level for source in sources for level in collect_levels(source)]
     return max(levels) if levels else None
+
+
+def plan_handles_attribute_points(plan: Any) -> bool:
+    """Return whether the current chapter explicitly handles existing attribute points."""
+
+    if not isinstance(plan, Mapping):
+        return False
+
+    def has_handling_signal(value: Any) -> bool:
+        if isinstance(value, str):
+            return any(token in value for token in _ATTRIBUTE_POINT_HANDLING_TOKENS)
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                if key == "attribute_allocation_decision":
+                    continue
+                if any(token in str(key) for token in _ATTRIBUTE_POINT_HANDLING_TOKENS) or has_handling_signal(nested):
+                    return True
+            return False
+        if isinstance(value, list):
+            return any(has_handling_signal(item) for item in value)
+        return False
+
+    return any(has_handling_signal(plan.get(key)) for key in ("event_plan", "scene_cards", "state_delta"))
 
 
 def validate_attribute_allocation_decision(

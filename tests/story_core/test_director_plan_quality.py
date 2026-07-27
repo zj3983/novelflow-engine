@@ -46,14 +46,14 @@ def _complete_plan(ordered_actions: object) -> dict:
     }
 
 
-def _attribute_story(*, allow_carry: bool = True) -> StoryState:
+def _attribute_story(*, allow_carry: bool = True, available_points: int = 0) -> StoryState:
     return StoryState(
         story_id="attribute-director-gate",
         outline="本章升级，远期Lv.60。",
         genre="网游",
         style="白描",
         characters=[CharacterState(name="苏叶", role="主角", game_id="夜烬")],
-        progression_ledger={"protagonist": {"level": "Lv.1", "unallocated_attribute_points": 0}},
+        progression_ledger={"protagonist": {"level": "Lv.1", "unallocated_attribute_points": available_points}},
         world_context={
             "power_system_spec": {
                 "attribute_allocation": {
@@ -147,7 +147,16 @@ def test_director_quality_gate_does_not_require_decision_without_current_level_u
     plan = _complete_plan(["夜烬查看任务牌"])
     plan["outline"] = "未来Lv.60"
 
-    assert _director_plan_quality_issues(_attribute_story(), plan) == []
+    assert _director_plan_quality_issues(_attribute_story(available_points=5), plan) == []
+
+
+def test_director_quality_gate_requires_decision_for_explicit_attribute_point_handling() -> None:
+    plan = _complete_plan(["夜烬打开面板处理属性点"])
+    plan["event_plan"]["turn"] = "本章加点后继续刷怪"
+
+    issues = _director_plan_quality_issues(_attribute_story(available_points=5), plan)
+
+    assert any("attribute_allocation_decision" in issue for issue in issues)
 
 
 def test_normalized_and_compact_event_plan_keep_valid_attribute_decision() -> None:
@@ -183,6 +192,7 @@ def test_generic_director_prompt_keeps_attribute_decision_contract() -> None:
     prompt = StoryOrchestrator()._plan_prompt(story, 2)
 
     assert "attribute_allocation_decision" in prompt
+    assert "state_delta.protagonist.level" in prompt
 
 
 def test_director_quality_gate_rejects_plan_without_executable_actions():
