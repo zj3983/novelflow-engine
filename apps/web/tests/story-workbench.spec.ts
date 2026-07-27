@@ -1519,17 +1519,32 @@ test("file workspace loads overview and one chapter without requesting the full 
 
 test("write directory retains the visible body while the next chapter loads", async ({ page }) => {
   const calls: string[] = [];
-  const { encodedId } = await routeCurrentFileProject(page, "stale-file-story", {
+  let markChapterRequested!: () => void;
+  let releaseChapterDetail!: () => void;
+  const chapterRequested = new Promise<void>((resolve) => { markChapterRequested = resolve; });
+  const chapterDetailGate = new Promise<void>((resolve) => { releaseChapterDetail = resolve; });
+  const fixture = await routeCurrentFileProject(page, "stale-file-story", {
     calls,
     chapterCount: 2,
-    detailDelays: { 2: 600 },
+  });
+  await page.route(`**/file-stories/${fixture.encodedId}/chapters/2`, async (route) => {
+    calls.push(new URL(route.request().url()).pathname);
+    markChapterRequested();
+    await chapterDetailGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(fixture.story.history[1]),
+    });
   });
 
-  await page.goto(`/projects/${encodedId}/write?chapter=1`);
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
   await expect(page.getByLabel("章节目录")).toContainText("2 章");
   await expect(page.getByText("林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: /第 2 章/ }).click();
+  await chapterRequested;
   await expect(page.getByText("林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。", { exact: true })).toBeVisible();
+  releaseChapterDetail();
   await expect(page.getByRole("heading", { name: "章节：第 2 章" })).toBeVisible();
   await expect(page.getByText("第 2 章正文，只属于当前选择。")).toBeVisible();
   await expect(page.getByText("林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。", { exact: true })).toHaveCount(0);
@@ -1539,21 +1554,36 @@ test("write directory retains the visible body while the next chapter loads", as
 
 test("retained prior chapter cannot be regenerated while selected detail loads", async ({ page }) => {
   let regenerationRequests = 0;
-  const { encodedId } = await routeCurrentFileProject(page, "retained-regeneration-guard", {
+  let markChapterRequested!: () => void;
+  let releaseChapterDetail!: () => void;
+  const chapterRequested = new Promise<void>((resolve) => { markChapterRequested = resolve; });
+  const chapterDetailGate = new Promise<void>((resolve) => { releaseChapterDetail = resolve; });
+  const fixture = await routeCurrentFileProject(page, "retained-regeneration-guard", {
     chapterCount: 2,
-    detailDelays: { 2: 600 },
   });
-  await page.route(`**/file-projects/${encodedId}/generation-jobs`, async (route) => {
+  await page.route(`**/file-stories/${fixture.encodedId}/chapters/2`, async (route) => {
+    markChapterRequested();
+    await chapterDetailGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(fixture.story.history[1]),
+    });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
     regenerationRequests += 1;
     await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "must_not_run" }) });
   });
 
-  await page.goto(`/projects/${encodedId}/write?chapter=1`);
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
   await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
   await page.getByRole("link", { name: /第 2 章/ }).click();
+  await chapterRequested;
   await expect(page.getByRole("button", { name: "重新生成本章" })).toBeDisabled();
   await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
   expect(regenerationRequests).toBe(0);
+  releaseChapterDetail();
+  await expect(page.locator(".ws-reader__body")).toContainText("第 2 章正文，只属于当前选择。");
 });
 
 test("write directory remains visible when chapter detail fails", async ({ page }) => {
@@ -1580,9 +1610,12 @@ for (const target of [
 }
 
 test("review hides retained prior report while selected chapter loads", async ({ page }) => {
+  let markChapterRequested!: () => void;
+  let releaseChapterDetail!: () => void;
+  const chapterRequested = new Promise<void>((resolve) => { markChapterRequested = resolve; });
+  const chapterDetailGate = new Promise<void>((resolve) => { releaseChapterDetail = resolve; });
   const fixture = await routeCurrentFileProject(page, "review-retained-detail", {
     chapterCount: 2,
-    detailDelays: { 1: 600 },
   });
   const simplifiedReview = (summary: string) => ({
     schema_version: "simplified-review/v1",
@@ -1605,12 +1638,23 @@ test("review hides retained prior report while selected chapter loads", async ({
   Object.assign(fixture.story.history[1], {
     quality_report: { ...fixture.story.history[1].quality_report, simplified_review: simplifiedReview("SECOND_REVIEW") },
   });
+  await page.route(`**/file-stories/${fixture.encodedId}/chapters/1`, async (route) => {
+    markChapterRequested();
+    await chapterDetailGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(fixture.story.history[0]),
+    });
+  });
 
   await page.goto(`/projects/${fixture.encodedId}/review?chapter=2`);
   await expect(page.getByText("SECOND_REVIEW", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: /第 1 章/ }).click();
+  await chapterRequested;
   await expect(page.getByText("正在加载章节...", { exact: true })).toBeVisible();
   await expect(page.getByText("SECOND_REVIEW", { exact: true })).toHaveCount(0);
+  releaseChapterDetail();
   await expect(page.getByText("FIRST_REVIEW", { exact: true })).toBeVisible();
 });
 
@@ -1690,17 +1734,31 @@ test("simulation switching chapters requests only the newly selected detail", as
 });
 
 test("simulation shows loading instead of retained prior chapter content", async ({ page }) => {
-  const { encodedId } = await routeCurrentFileProject(page, "simulation-retained-detail", {
+  let markChapterRequested!: () => void;
+  let releaseChapterDetail!: () => void;
+  const chapterRequested = new Promise<void>((resolve) => { markChapterRequested = resolve; });
+  const chapterDetailGate = new Promise<void>((resolve) => { releaseChapterDetail = resolve; });
+  const fixture = await routeCurrentFileProject(page, "simulation-retained-detail", {
     chapterCount: 2,
     simulationChapters: [1, 2],
-    detailDelays: { 1: 600 },
+  });
+  await page.route(`**/file-stories/${fixture.encodedId}/chapters/1`, async (route) => {
+    markChapterRequested();
+    await chapterDetailGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(fixture.story.history[0]),
+    });
   });
 
-  await page.goto(`/projects/${encodedId}/sim`);
+  await page.goto(`/projects/${fixture.encodedId}/sim`);
   await expect(page.getByText("第 2 章响应记录")).toBeVisible();
   await page.getByLabel("响应章节").selectOption("1");
+  await chapterRequested;
   await expect(page.getByText("正在加载章节...", { exact: true })).toBeVisible();
   await expect(page.getByText("第 2 章响应记录")).toHaveCount(0);
+  releaseChapterDetail();
   await expect(page.getByText("第 1 章响应记录")).toBeVisible();
 });
 
@@ -2395,8 +2453,15 @@ for (const operation of ["生成下一章", "重新生成本章"] as const) {
     const overviewBaseline = calls.filter((path) => path.endsWith("/overview")).length;
     await page.getByRole("link", { name: "世界观", exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/world$`));
+    const completedPollResponse = page.waitForResponse((response) => (
+      response.url().endsWith(`/file-projects/${fixture.encodedId}/generation-jobs/job-leave-write`) &&
+      response.status() === 200
+    ));
     releasePoll();
-    await page.waitForTimeout(300);
+    await completedPollResponse;
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+    }));
 
     await expect(page).toHaveURL(new RegExp(`/world$`));
     expect(calls.filter((path) => path.endsWith("/overview"))).toHaveLength(overviewBaseline);
