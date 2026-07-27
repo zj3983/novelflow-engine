@@ -406,6 +406,145 @@ def test_chapter_index_reads_each_file_once_without_display_hydration(tmp_path, 
     assert read_counts == {"0001.json": 1, "0002.json": 1}
 
 
+def test_story_overview_data_matches_state_character_synthesis_in_one_chapter_pass(
+    tmp_path,
+    monkeypatch,
+):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "genre": "网游",
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+        state={
+            "story_id": "s-file",
+            "current_chapter": 1,
+            "genre": "网游",
+            "genre_plugin_ids": ["game_webnovel"],
+            "world_facts": [],
+            "characters": [],
+            "progression_ledger": {
+                "protagonist": {
+                    "real_name": "苏叶",
+                    "game_id": "夜烬",
+                    "level": "Lv.3",
+                    "exp": "196/300",
+                },
+                "economy": {"game_currency": "39铜币", "inventory": {"灰狼毒腺": 11}},
+            },
+        },
+    )
+    chapters_dir = store.story_system_dir / "chapters"
+    (chapters_dir / "0001.json").write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "chapter_title": "药剂铺窗口",
+                "body": "夜烬走进药剂铺。灰头巾老妇人抬头，药剂师只按十份一批收货。",
+                "chapter_summary": {
+                    "summary": "夜烬向药剂师提交材料。",
+                    "next_focus": "返回灰狼坡。",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (store.webnovel_dir / "project.json").unlink()
+    expected_state = store.state()
+    read_counts: dict[str, int] = {}
+    original_read_json = store._read_json
+
+    def counting_read_json(path, default=None):
+        if path.parent == chapters_dir and path.suffix == ".json":
+            read_counts[path.name] = read_counts.get(path.name, 0) + 1
+        return original_read_json(path, default)
+
+    monkeypatch.setattr(store, "_read_json", counting_read_json)
+    monkeypatch.setattr(
+        store,
+        "chapter",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("story overview must not hydrate chapters")
+        ),
+    )
+
+    overview = store.story_overview_data()
+
+    assert overview["project"]["project_id"] == "p-file"
+    assert overview["state"]["characters"] == expected_state["characters"]
+    assert {card["name"] for card in overview["state"]["characters"]} >= {
+        "苏叶",
+        "药剂师洛婶",
+    }
+    assert overview["chapters"][0]["chapter_title"] == "药剂铺窗口"
+    assert read_counts == {"0001.json": 1}
+
+
+def test_explicit_chapter_access_does_not_enumerate_chapter_numbers(tmp_path, monkeypatch):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    (store.story_system_dir / "chapters" / "0002.json").write_text(
+        json.dumps(
+            {
+                "chapter_number": 2,
+                "chapter_title": "Direct chapter",
+                "body": "Loaded directly.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        store,
+        "chapter_numbers",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("explicit chapter access must not enumerate chapters")
+        ),
+    )
+
+    chapter = store.chapter(2)
+
+    assert chapter["chapter_number"] == 2
+    assert chapter["body"] == "Loaded directly."
+
+
+def test_chapter_without_number_preserves_latest_and_no_chapters_semantics(
+    tmp_path,
+    monkeypatch,
+):
+    empty_store = _make_minimal_file_project(tmp_path / "empty")
+    with pytest.raises(FileNotFoundError, match="no_chapters"):
+        empty_store.chapter()
+    monkeypatch.setattr(
+        empty_store,
+        "chapter_numbers",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("explicit missing chapter must not enumerate chapter numbers")
+        ),
+    )
+    with pytest.raises(FileNotFoundError, match="no_chapters"):
+        empty_store.chapter(1)
+
+    store = _make_minimal_file_project(tmp_path / "novel")
+    chapters_dir = store.story_system_dir / "chapters"
+    for number in (1, 2):
+        (chapters_dir / f"{number:04d}.json").write_text(
+            json.dumps(
+                {
+                    "chapter_number": number,
+                    "chapter_title": f"Chapter {number}",
+                    "body": f"Body {number}",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    assert store.chapter()["chapter_number"] == 2
+    with pytest.raises(FileNotFoundError, match="chapter_not_found:999"):
+        store.chapter(999)
+
+
 def _file_snapshot(root) -> dict:
     return {
         path.relative_to(root): path.read_bytes()

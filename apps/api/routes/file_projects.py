@@ -691,10 +691,10 @@ def _story_payload(store: FileProjectStore) -> dict[str, Any]:
 
 
 def _story_overview_payload(store: FileProjectStore) -> dict[str, Any]:
-    raw_state = store._read_json(store.webnovel_dir / "state.json", {}) or {}
-    state = store._sanitize_story_state(raw_state if isinstance(raw_state, dict) else {})
-    project = store.project()
-    chapters = store.chapter_index()
+    overview = store.story_overview_data()
+    state = overview["state"]
+    project = overview["project"]
+    chapters = overview["chapters"]
     current_chapter = int(
         state.get("current_chapter")
         or (chapters[-1].get("chapter_number") if chapters else 0)
