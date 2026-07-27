@@ -566,6 +566,68 @@ def _reviewable_body(text: str) -> str:
     return text * (4300 // compact_chars + 1)
 
 
+@pytest.mark.parametrize(
+    ("genre", "required_terms", "forbidden_terms"),
+    [
+        (
+            "玄幻",
+            ("剧情事实", "世界规则", "核心冲突", "人物反应", "关键线索", "代价", "转折"),
+            ("登录", "掉落", "背包", "血蓝", "耐久", "寄售", "到账", "任务提交"),
+        ),
+        (
+            "网游",
+            ("游戏账本", "面板反馈"),
+            (),
+        ),
+    ],
+)
+def test_runtime_compression_prompt_is_isolated_by_genre(
+    monkeypatch,
+    genre,
+    required_terms,
+    forbidden_terms,
+):
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "_review_chapter_body",
+        lambda *_args, **_kwargs: {"pass": True, "issues": [], "revision_plan": []},
+    )
+    initial_body = ("林照守住断香炉，逼周执事先开口。" * 500)[:5836]
+    compressed_body = ("林照守住断香炉，逼周执事先开口。" * 500)[:5200]
+    story = StoryState(
+        story_id=f"s-compression-prompt-{genre}",
+        outline="林照在宗门压力下守住断香炉。",
+        genre=genre,
+        style="白描",
+        current_chapter=1,
+        characters=[CharacterState(name="林照", role="主角", location="祖祠")],
+    )
+    orchestrator = StoryOrchestrator()
+    compression_prompts = []
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        if agent == "planner":
+            return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
+        if agent == "writer" and stage.startswith("整章写作"):
+            return initial_body, ""
+        if agent == "writer" and stage.startswith("章节压缩"):
+            compression_prompts.append(prompt)
+            return compressed_body, ""
+        if agent == "memory":
+            return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
+        raise AssertionError((agent, stage))
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    orchestrator.generate_next_chapter(story)
+
+    assert len(compression_prompts) == 1
+    prompt = compression_prompts[0]
+    assert all(term in prompt for term in required_terms)
+    assert all(term not in prompt for term in forbidden_terms)
+
+
 def test_orchestrator_persists_only_memory_extracted_after_final_body(monkeypatch):
     _disable_optional_writing_passes(monkeypatch)
     monkeypatch.setattr(

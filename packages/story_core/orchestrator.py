@@ -7020,7 +7020,8 @@ class StoryOrchestrator:
                 reason="超字数时压缩无损细节，保留主线和关键钩子",
                 inputs={"chapter_number": chapter_number, "current_chars": _chapter_char_count(body)},
             )
-            allow_trade_payoff = chapter_number == 1 and first_chapter_market_exchange_authorized(
+            game_context = is_game_story(working_story)
+            allow_trade_payoff = game_context and chapter_number == 1 and first_chapter_market_exchange_authorized(
                 event_plan,
                 _review_context_facts(story),
             )
@@ -7034,14 +7035,21 @@ class StoryOrchestrator:
                 if isinstance(outline_anchor, dict)
                 else ""
             )
-            chapter_one_scope = (
-                "第一章必须原样保留角色面板、怪物面板、千倍爆率、现实职业/技能来源、见习冒险者（未转职），并按以下顺序完成："
-                + " ".join(opening_market_exchange_flow_lines())
-                + " 不要新增游戏内任务提交、修理或买药。"
-                + (f" 以下金额必须原样保留，不得改写、换算或删除：{locked_amounts}。" if locked_amounts else "")
-                if allow_trade_payoff
-                else "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。"
-            )
+            if game_context:
+                opening_line = "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。"
+                compression_method = "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。"
+                chapter_scope = (
+                    "第一章必须原样保留角色面板、怪物面板、千倍爆率、现实职业/技能来源、见习冒险者（未转职），并按以下顺序完成："
+                    + " ".join(opening_market_exchange_flow_lines())
+                    + " 不要新增游戏内任务提交、修理或买药。"
+                    + (f" 以下金额必须原样保留，不得改写、换算或删除：{locked_amounts}。" if locked_amounts else "")
+                    if allow_trade_payoff
+                    else "第一章不要新增寄售、上架、成交、到账、手续费扣款、提现、任务提交、修理或买药。"
+                )
+            else:
+                opening_line = "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、世界规则、结尾钩子的前提下压缩。"
+                compression_method = "压缩方法：删重复解释、删绕圈心理、合并相似动作；保留核心冲突、人物反应、关键线索、代价、转折和下一步钩子。"
+                chapter_scope = "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。"
             best_acceptable_body = ""
             for compress_round in range(1, 2):
                 if not _should_compress_chapter(body):
@@ -7053,10 +7061,10 @@ class StoryOrchestrator:
                     render_prompt_template(
                         get_effective_prompt_template("compression"),
                         {
-                            "opening_line": "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。",
+                            "opening_line": opening_line,
                             "target_chars": f"保留完整网文章节感，调整到{target_range}，绝对不要超过{MAX_CHAPTER_CHARS}字",
-                            "compression_method": "压缩方法：删重复解释、删绕圈心理、合并相似动作和面板反馈；保留现实压力、登录建号、首次击杀、异常掉落、背包/血蓝/耐久代价、外人误判和下一步钩子。",
-                            "chapter_scope": chapter_one_scope,
+                            "compression_method": compression_method,
+                            "chapter_scope": chapter_scope,
                             "source_body": before_body,
                         },
                     ),

@@ -101,13 +101,13 @@ _PLANNING_META_ENTITY_PATTERNS = (
         rf"{_PLANNING_META_LOCATION_END_PATTERN}"
     ),
     re.compile(
-        rf"(?:迈出|推开|关上)(?:了)?\s*"
+        rf"(?:迈出|跨出|推开|关上)(?:了)?\s*"
         rf"{_PLANNING_META_TERM_PATTERN}"
         rf"{_PLANNING_META_ACTION_END_PATTERN}"
     ),
     re.compile(
         rf"(?:把|将)\s*{_PLANNING_META_TERM_PATTERN}"
-        rf"(?:迈出|推开|关上)(?:了)?"
+        rf"(?:迈出|跨出|推开|关上)(?:了)?"
         rf"{_PLANNING_META_ACTION_END_PATTERN}"
     ),
 )

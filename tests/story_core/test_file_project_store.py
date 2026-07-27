@@ -3211,7 +3211,15 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert {"core_context", "character_context", "genre_context", "writing_taskbook", "packet_context"}.issubset(modules)
     assert "source_body" not in modules
     keys = {item["key"] for item in preview["prompts"]}
-    assert {"director_plan", "writer_body", "revision", "writing_taskbook", "review_agents"}.issubset(keys)
+    assert {
+        "director_plan",
+        "writer_body",
+        "revision",
+        "writing_taskbook",
+        "expansion",
+        "compression",
+        "review_agents",
+    }.issubset(keys)
     assert "style_adapt" not in keys
     by_key = {item["key"]: item for item in preview["prompts"]}
     assert "## 输出要求" in by_key["writer_body"]["content"]
@@ -3251,6 +3259,50 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert "game_world_simulation" not in by_key["writer_body"]["content"]
     assert by_key["writer_body"]["chars"] < 18000
     assert modules["packet_context"]["chars"] < 12000
+    assert "系统面板反馈" in by_key["expansion"]["content"]
+    assert "游戏账本" in by_key["compression"]["content"]
+    assert "面板反馈" in by_key["compression"]["content"]
+
+
+def test_non_game_prompt_preview_uses_generic_expansion_and_compression(tmp_path):
+    root = tmp_path / "xuanhuan-novel"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-xuanhuan",
+            "title": "玄门旧案",
+            "active_story_id": "s-xuanhuan",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={
+            "story_id": "s-xuanhuan",
+            "outline": "林照守住断香炉，查清宗门旧案。",
+            "genre": "玄幻",
+            "genre_plugin_ids": ["xuanhuan"],
+            "style": "白描",
+            "current_chapter": 1,
+            "world_facts": ["断香炉牵动祖祠旧规。"],
+            "characters": [{"name": "林照", "role": "protagonist", "goal": "查清旧案"}],
+        },
+    )
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "守炉",
+        "body": _long_test_body("Lin guards the censer and follows the clue."),
+        "event_plan": {"chapter_title": "守炉", "next_focus": "追查账房来信"},
+    }
+    store._write_json(root / ".story-system" / "chapters" / "0001.json", chapter)
+
+    preview = store.prompt_preview(1)
+
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+    forbidden_terms = ("登录", "掉落", "背包", "血蓝", "耐久", "寄售", "到账", "任务提交", "系统面板")
+    assert all(term not in prompts["expansion"] for term in forbidden_terms)
+    assert all(term not in prompts["compression"] for term in forbidden_terms)
+    assert "世界规则" in prompts["expansion"]
+    assert "核心冲突" in prompts["compression"]
+    assert "人物反应" in prompts["compression"]
+    assert "关键线索" in prompts["compression"]
 
 
 def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module(tmp_path):
