@@ -809,6 +809,15 @@ export type PowerSystemPath = {
   advancement?: string[];
 };
 
+export type AttributeAllocationRule = {
+  mode?: "free";
+  points_per_level?: number;
+  starting_level?: number;
+  base_attributes?: Record<string, number>;
+  allow_carry?: boolean;
+  respec_rule?: string;
+};
+
 export type PowerSystemSpec = {
   name?: string;
   origin?: string[];
@@ -825,6 +834,7 @@ export type PowerSystemSpec = {
   social_impact?: string[];
   visibility?: string[];
   continuity_ledger?: string[];
+  attribute_allocation?: AttributeAllocationRule;
 };
 
 export type ImportedMonsterProfile = {

@@ -2356,6 +2356,7 @@ test("世界观展示结构化力量体系的完整章节、六职业与分支",
   ]) {
     await expect(structured.getByRole("heading", { name: heading, exact: true })).toBeVisible();
   }
+  await expect(structured.getByRole("heading", { name: "属性分配", exact: true })).toHaveCount(0);
   for (const name of ["战士", "法师", "游侠", "盗贼", "牧师", "召唤师", "烈焰法师", "冰霜法师", "兽群使", "元素契约师"]) {
     await expect(structured.getByText(name, { exact: true })).toBeVisible();
   }
@@ -2365,6 +2366,30 @@ test("世界观展示结构化力量体系的完整章节、六职业与分支",
   await expect(structured.locator(".ws-card")).toHaveCount(0);
   await expect(structured.getByText("<script>不可执行</script>", { exact: true })).toBeVisible();
   await expect(page.locator("script").filter({ hasText: "不可执行" })).toHaveCount(0);
+});
+
+test("世界观展示启用的自由属性分配规则", async ({ page }) => {
+  await mockWorldPowerPage(page, "attribute-allocation", {
+    power_system_spec: {
+      ...structuredPowerSystemSpec,
+      attribute_allocation: {
+        mode: "free",
+        points_per_level: 5,
+        starting_level: 1,
+        base_attributes: { 力量: 5, 敏捷: 5, 体质: 5, 智力: 5, 精神: 5, 幸运: 5 },
+        allow_carry: true,
+        respec_rule: "每周可在主城重置一次，消耗洗点券。",
+      },
+    },
+  });
+  await page.goto("/projects/file%3Aattribute-allocation/world");
+
+  const section = page.getByLabel("结构化力量体系").getByRole("heading", { name: "属性分配", exact: true }).locator("..");
+  await expect(section).toBeVisible();
+  await expect(section.getByText("自由分配", { exact: true })).toBeVisible();
+  await expect(section.getByText("5", { exact: true })).toHaveCount(7);
+  await expect(section.getByText("是", { exact: true })).toBeVisible();
+  await expect(section.getByText("每周可在主城重置一次，消耗洗点券。", { exact: true })).toBeVisible();
 });
 
 test("世界观仅在旧力量摘要存在时提示需要补全", async ({ page }) => {

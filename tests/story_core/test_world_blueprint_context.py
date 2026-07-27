@@ -764,6 +764,14 @@ def test_power_markdown_prefers_structured_spec_with_exact_order_and_nested_deta
             "name": "神域职业体系",
             "origin": ["觉醒石连接神域权限"],
             "attributes": [{"name": "智力", "effect": "提高法术强度"}],
+            "attribute_allocation": {
+                "mode": "free",
+                "points_per_level": 5,
+                "starting_level": 1,
+                "base_attributes": {"力量": 5, "敏捷": 5, "体质": 5, "智力": 5, "精神": 5, "幸运": 5},
+                "allow_carry": True,
+                "respec_rule": "每周可在主城重置一次，消耗洗点券。",
+            },
             "stages": [
                 {
                     "name": "正式职业",
@@ -810,6 +818,7 @@ def test_power_markdown_prefers_structured_spec_with_exact_order_and_nested_deta
         "## 体系总览",
         "## 力量来源",
         "## 属性",
+        "## 属性分配",
         "## 阶段与晋升",
         "## 职业与路线",
         "## 技能与装备",
@@ -829,6 +838,11 @@ def test_power_markdown_prefers_structured_spec_with_exact_order_and_nested_deta
         assert concrete_text in rendered
     assert "旧版力量段落不得显示" not in rendered
     assert "## 力量与职业" not in rendered
+    assert "## 属性\n\n## 属性分配" not in rendered
+    assert "### 每级点数\n\n- 5" in rendered
+    assert "### 初始值" in rendered
+    assert "**力量**：5" in rendered
+    assert "### 洗点规则\n\n- 每周可在主城重置一次，消耗洗点券。" in rendered
     assert "\n".join(
         (
             "- **正式职业**",

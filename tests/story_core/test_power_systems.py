@@ -498,7 +498,7 @@ def test_normalization_is_canonical_json_safe_bounded_and_deep_independent() -> 
     assert set(result) <= {
         "name", "origin", "attributes", "paths", "stages", "skills", "equipment",
         "resources", "advancement", "costs", "counters", "boundaries", "social_impact",
-        "visibility", "continuity_ledger",
+        "visibility", "continuity_ledger", "attribute_allocation",
     }
     assert result["name"].startswith("神域 职业 体系")
     assert len(result["name"]) <= 240
@@ -508,6 +508,30 @@ def test_normalization_is_canonical_json_safe_bounded_and_deep_independent() -> 
     assert json.loads(json.dumps(result, ensure_ascii=False, allow_nan=False)) == result
     result["origin"].append("修改")
     assert "修改" not in source["origin"]
+
+
+def test_normalization_and_prompt_slice_preserve_enabled_attribute_allocation() -> None:
+    source = complete_spec()
+    source["attribute_allocation"] = {
+        "mode": "free",
+        "points_per_level": 5,
+        "starting_level": 1,
+        "base_attributes": {"力量": 5, "敏捷": 5, "体质": 5, "智力": 5, "精神": 5, "幸运": 5},
+        "allow_carry": True,
+        "respec_rule": "每周可在主城重置一次，消耗洗点券。",
+    }
+
+    normalized = normalize_power_system_spec(source)
+    prompt = power_system_prompt_slice(source)
+
+    assert normalized["attribute_allocation"] == source["attribute_allocation"]
+    assert prompt["attribute_allocation"] == source["attribute_allocation"]
+    normalized["attribute_allocation"]["base_attributes"]["力量"] = 99
+    assert source["attribute_allocation"]["base_attributes"]["力量"] == 5
+
+
+def test_normalization_does_not_add_attribute_allocation_without_an_enabled_rule() -> None:
+    assert "attribute_allocation" not in normalize_power_system_spec(complete_spec())
 
 
 def test_normalization_preserves_bounded_extended_path_schema() -> None:

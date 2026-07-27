@@ -350,6 +350,10 @@ def power_system_prompt_slice(
         for field in ("name", "origin", "boundaries", "costs", "counters", "continuity_ledger"):
             if field in normalized:
                 result[field] = deepcopy(normalized[field])
+        if "attribute_allocation" in normalized:
+            result["attribute_allocation"] = _compact_prompt_value(
+                normalized["attribute_allocation"], chars=96, items=16
+            )
         if "stages" in normalized:
             result["stages"] = deepcopy(_stage_slice(normalized["stages"], stage_hint))
         if "paths" in normalized:

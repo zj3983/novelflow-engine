@@ -20,6 +20,20 @@ function recordList(value: unknown): UnknownRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
 
+function attributeAllocation(value: unknown): UnknownRecord | null {
+  if (!isRecord(value) || text(value.mode) !== "free") return null;
+  return value;
+}
+
+function baseAttributes(value: unknown): Array<[string, number]> {
+  if (!isRecord(value)) return [];
+  const result: Array<[string, number]> = [];
+  for (const [name, points] of Object.entries(value)) {
+    if (text(name) && typeof points === "number") result.push([name, points]);
+  }
+  return result;
+}
+
 export function hasStructuredPowerSystem(value: unknown): value is PowerSystemSpec {
   if (!hasPowerSystemDraft(value) || !text(value.name)) return false;
 
@@ -87,6 +101,8 @@ export function StructuredPowerSystem({ spec }: { spec: unknown }) {
   const stages = recordList(spec.stages);
   const paths = recordList(spec.paths);
   const attributes = recordList(spec.attributes);
+  const allocation = attributeAllocation(spec.attribute_allocation);
+  const baseAttributeValues = allocation ? baseAttributes(allocation.base_attributes) : [];
 
   return (
     <div className={styles.root} aria-label="结构化力量体系">
@@ -108,6 +124,31 @@ export function StructuredPowerSystem({ spec }: { spec: unknown }) {
           </dl>
         ) : <p className={styles.empty}>暂无</p>}
       </Section>
+
+      {allocation ? (
+        <Section title="属性分配">
+          <dl className={styles.details}>
+            <Detail label="模式" value="自由分配" />
+            <Detail label="每级点数" value={typeof allocation.points_per_level === "number" ? String(allocation.points_per_level) : ""} />
+            <Detail label="起始等级" value={typeof allocation.starting_level === "number" ? String(allocation.starting_level) : ""} />
+            <Detail label="允许保留" value={typeof allocation.allow_carry === "boolean" ? (allocation.allow_carry ? "是" : "否") : ""} />
+            <Detail label="洗点规则" value={allocation.respec_rule} />
+          </dl>
+          {baseAttributeValues.length ? (
+            <div className={styles.subsection}>
+              <h4>初始值</h4>
+              <dl className={styles.attributeGrid}>
+                {baseAttributeValues.map(([name, points]) => (
+                  <div className={styles.attribute} key={name}>
+                    <dt>{name}</dt>
+                    <dd>{points}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          ) : null}
+        </Section>
+      ) : null}
 
       <Section title="阶段与晋升">
         {stages.length ? (

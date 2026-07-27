@@ -7,6 +7,7 @@ import math
 import re
 from typing import Any
 
+from packages.story_core.attribute_allocation import normalize_attribute_allocation_rule
 from packages.story_core.novel_type_ids import canonical_novel_type_id
 from packages.story_core.power_system_templates import POWER_SYSTEM_TEMPLATES
 
@@ -26,6 +27,7 @@ CANONICAL_FIELDS = (
     "social_impact",
     "visibility",
     "continuity_ledger",
+    "attribute_allocation",
 )
 PATH_FIELDS = (
     "name",
@@ -273,6 +275,10 @@ def normalize_power_system_spec(value: Any) -> dict[str, Any]:
                     for item in _items(raw)
                     if isinstance(item, Mapping)
                 ][:_MAX_LIST]
+            elif field == "attribute_allocation":
+                rule = normalize_attribute_allocation_rule(raw)
+                if rule:
+                    result[field] = rule
         return deepcopy(result)
     except Exception:
         return {}

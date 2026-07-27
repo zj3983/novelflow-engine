@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from packages.story_core.attribute_allocation import normalize_attribute_allocation_rule
 from packages.story_core.power_systems import normalize_power_system_spec, power_system_prompt_slice
 
 
@@ -157,6 +158,9 @@ def render_power_markdown(title: Any, blueprint: Any) -> str:
     structured = world.get("power_system_spec")
 
     if isinstance(structured, dict) and structured:
+        attribute_allocation = normalize_attribute_allocation_rule(
+            structured.get("attribute_allocation")
+        )
         sections = (
             ("体系总览", (("体系名称", structured.get("name")),)),
             ("力量来源", (("来源", structured.get("origin")),)),
@@ -184,6 +188,19 @@ def render_power_markdown(title: Any, blueprint: Any) -> str:
         )
         for heading, groups in sections:
             _append_structured_power_section(lines, heading, groups)
+            if heading == "属性" and attribute_allocation:
+                _append_structured_power_section(
+                    lines,
+                    "属性分配",
+                    (
+                        ("模式", attribute_allocation["mode"]),
+                        ("每级点数", attribute_allocation["points_per_level"]),
+                        ("起始等级", attribute_allocation["starting_level"]),
+                        ("允许保留", "是" if attribute_allocation["allow_carry"] else "否"),
+                        ("初始值", attribute_allocation["base_attributes"]),
+                        ("洗点规则", attribute_allocation["respec_rule"]),
+                    ),
+                )
         return "\n".join(lines).rstrip() + "\n"
 
     _append_section(lines, "力量与职业", world.get("power_system"))
