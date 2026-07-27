@@ -472,10 +472,18 @@ def _owner_is_protagonist(sentence: str, owner_span: tuple[int, int], aliases: t
     prefix = sentence[: owner_span[0]]
     if "，" not in prefix and "," not in prefix:
         return True
-    preceding_clause = next((part.strip() for part in reversed(re.split(r"[，,]", prefix)) if part.strip()), "")
-    return any(alias in preceding_clause for alias in aliases) or bool(
-        _SUBJECTLESS_STATUS_CLAUSE.fullmatch(_strip_discourse_prefix(preceding_clause))
-    )
+    clauses = [part.strip() for part in re.split(r"[，,]", prefix) if part.strip()]
+    preceding_clause = clauses[-1]
+    if any(alias in preceding_clause for alias in aliases):
+        return True
+    if not _SUBJECTLESS_STATUS_CLAUSE.fullmatch(_strip_discourse_prefix(preceding_clause)):
+        return False
+    earlier_clause = next((part for part in reversed(clauses[:-1]) if part), "")
+    if not earlier_clause:
+        return True
+    if any(alias in earlier_clause for alias in aliases):
+        return True
+    return not bool(re.match(r"[\u4e00-\u9fff]{2,}", _strip_discourse_prefix(earlier_clause)))
 
 
 def _remaining_candidate_subject(
