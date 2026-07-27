@@ -77,6 +77,34 @@ def _replace_bodies(store, session, bodies: list[str]):
     )
 
 
+def _chapter_signatures(chapters: list[ContinuationChapter]) -> dict[str, dict]:
+    return {
+        chapter.chapter_id: {
+            "chapter_id": chapter.chapter_id,
+            "number": chapter.number,
+            "title": chapter.title,
+            "fingerprint": chapter.fingerprint,
+        }
+        for chapter in chapters
+    }
+
+
+def _progress_identity(
+    chapters: list[ContinuationChapter],
+    *,
+    order_chapters: list[ContinuationChapter] | None = None,
+) -> dict:
+    return {
+        "chapter_fingerprints": {
+            chapter.chapter_id: chapter.fingerprint for chapter in chapters
+        },
+        "chapter_signatures": _chapter_signatures(chapters),
+        "chapter_order": [
+            chapter.chapter_id for chapter in (order_chapters or chapters)
+        ],
+    }
+
+
 def _merged(results: list[ChapterAnalysis]) -> ContinuationAnalysis:
     return ContinuationAnalysis(
         story_overview="故事总览",
@@ -171,6 +199,12 @@ def test_three_chapters_batch_size_one_persists_each_batch(tmp_path: Path) -> No
     assert loaded.analysis_progress["chapter_fingerprints"] == {
         chapter.chapter_id: chapter.fingerprint for chapter in loaded.chapters
     }
+    assert loaded.analysis_progress["chapter_signatures"] == _chapter_signatures(
+        loaded.chapters
+    )
+    assert loaded.analysis_progress["chapter_order"] == [
+        chapter.chapter_id for chapter in loaded.chapters
+    ]
     assert len(analyzer.batch_calls) == 3
 
 
@@ -182,9 +216,9 @@ def test_resume_skips_completed_chapter(tmp_path: Path) -> None:
         lambda current: current.analysis_progress.update(
             completed_chapter_ids=[session.chapters[0].chapter_id],
             chapter_results=[first.model_dump(mode="json")],
-            chapter_fingerprints={
-                session.chapters[0].chapter_id: session.chapters[0].fingerprint
-            },
+            **_progress_identity(
+                [session.chapters[0]], order_chapters=session.chapters
+            ),
         ),
     )
     analyzer = FakeAnalyzer()
@@ -203,9 +237,7 @@ def test_same_id_changed_fingerprint_reanalyzes_only_stale_chapter(tmp_path: Pat
         current.analysis_progress = {
             "completed_chapter_ids": [chapter.chapter_id for chapter in current.chapters],
             "chapter_results": [result.model_dump(mode="json") for result in results],
-            "chapter_fingerprints": {
-                chapter.chapter_id: chapter.fingerprint for chapter in current.chapters
-            },
+            **_progress_identity(current.chapters),
         }
 
     store.update(session.session_id, seed_progress)
@@ -228,7 +260,7 @@ def test_same_id_changed_fingerprint_reanalyzes_only_stale_chapter(tmp_path: Pat
     }
 
 
-def test_legacy_progress_without_fingerprint_is_reanalyzed(tmp_path: Path) -> None:
+def test_legacy_progress_with_only_fingerprints_is_reanalyzed(tmp_path: Path) -> None:
     store, session = _store_with_chapters(tmp_path, count=2)
     first = _chapter_result(session.chapters[0])
     store.update(
@@ -236,6 +268,9 @@ def test_legacy_progress_without_fingerprint_is_reanalyzed(tmp_path: Path) -> No
         lambda current: current.analysis_progress.update(
             completed_chapter_ids=[session.chapters[0].chapter_id],
             chapter_results=[first.model_dump(mode="json")],
+            chapter_fingerprints={
+                session.chapters[0].chapter_id: session.chapters[0].fingerprint
+            },
         ),
     )
     analyzer = FakeAnalyzer()
@@ -373,9 +408,9 @@ def test_oversized_chapter_fails_and_preserves_valid_progress(tmp_path: Path) ->
         lambda current: current.analysis_progress.update(
             completed_chapter_ids=[session.chapters[0].chapter_id],
             chapter_results=[first.model_dump(mode="json")],
-            chapter_fingerprints={
-                session.chapters[0].chapter_id: session.chapters[0].fingerprint
-            },
+            **_progress_identity(
+                [session.chapters[0]], order_chapters=session.chapters
+            ),
         ),
     )
     analyzer = FakeAnalyzer()
@@ -422,6 +457,25 @@ def test_oversized_chapter_fails_after_checkpointing_earlier_pending_batch(
     assert loaded.analysis_progress["completed_chapter_ids"] == [
         session.chapters[0].chapter_id
     ]
+
+
+def test_analysis_prompt_budget_error_is_persisted_stably(tmp_path: Path) -> None:
+    store, session = _store_with_chapters(tmp_path, count=1)
+
+    class PromptBudgetAnalyzer(FakeAnalyzer):
+        def analyze_chapters(self, chapters):
+            raise ValueError("continuation_analysis_prompt_budget_too_small")
+
+    with pytest.raises(
+        ValueError, match="^continuation_analysis_prompt_budget_too_small$"
+    ):
+        run_continuation_analysis(
+            store, session.session_id, PromptBudgetAnalyzer()
+        )
+
+    loaded = store.get(session.session_id)
+    assert loaded.status == "failed"
+    assert loaded.error == "continuation_analysis_prompt_budget_too_small"
 
 
 def test_merge_once_and_receives_at_most_last_ten_chapters(tmp_path: Path) -> None:
@@ -627,6 +681,72 @@ def test_ready_with_changed_fingerprint_reanalyzes_only_changed_chapter(
     }
 
 
+def test_ready_with_changed_title_reanalyzes_only_changed_chapter(
+    tmp_path: Path,
+) -> None:
+    store, session = _store_with_chapters(tmp_path, count=3)
+    run_continuation_analysis(store, session.session_id, FakeAnalyzer())
+    ready = store.get(session.session_id)
+    chapters = list(ready.chapters)
+    chapters[1] = chapters[1].model_copy(update={"title": "第二章 新标题"})
+    store.replace_chapters(
+        ready.session_id, chapters, expected_revision=ready.revision
+    )
+    analyzer = FakeAnalyzer()
+
+    run_continuation_analysis(store, session.session_id, analyzer)
+
+    assert [[chapter.number for chapter in batch] for batch in analyzer.batch_calls] == [
+        [2]
+    ]
+    assert len(analyzer.merge_calls) == 1
+
+
+def test_ready_with_changed_number_reanalyzes_only_changed_chapter(
+    tmp_path: Path,
+) -> None:
+    store, session = _store_with_chapters(tmp_path, count=2)
+    run_continuation_analysis(store, session.session_id, FakeAnalyzer())
+    ready = store.get(session.session_id)
+    chapters = list(ready.chapters)
+    chapters[1] = chapters[1].model_copy(update={"number": 20})
+    store.replace_chapters(
+        ready.session_id, chapters, expected_revision=ready.revision
+    )
+    analyzer = FakeAnalyzer()
+
+    run_continuation_analysis(store, session.session_id, analyzer)
+
+    assert [[chapter.number for chapter in batch] for batch in analyzer.batch_calls] == [
+        [20]
+    ]
+    assert len(analyzer.merge_calls) == 1
+
+
+def test_ready_with_only_order_changed_reuses_results_and_remerges(
+    tmp_path: Path,
+) -> None:
+    store, session = _store_with_chapters(tmp_path, count=3)
+    run_continuation_analysis(store, session.session_id, FakeAnalyzer())
+    ready = store.get(session.session_id)
+    reversed_ids = [chapter.chapter_id for chapter in reversed(ready.chapters)]
+    store.update(
+        ready.session_id,
+        lambda current: setattr(current, "chapters", list(reversed(current.chapters))),
+        expected_revision=ready.revision,
+    )
+    analyzer = FakeAnalyzer()
+
+    run_continuation_analysis(store, session.session_id, analyzer)
+
+    assert analyzer.batch_calls == []
+    assert len(analyzer.merge_calls) == 1
+    assert [chapter.chapter_id for chapter in analyzer.merge_calls[0][1]] == reversed_ids
+    assert [result.chapter_id for result in analyzer.merge_calls[0][0]] == reversed_ids
+    loaded = store.get(session.session_id)
+    assert loaded.analysis_progress["chapter_order"] == reversed_ids
+
+
 @pytest.mark.parametrize("batch_size", [0, -1])
 def test_invalid_batch_size_is_rejected(tmp_path: Path, batch_size: int) -> None:
     store, session = _store_with_chapters(tmp_path)
@@ -746,6 +866,120 @@ def test_llm_batch_prompt_contains_only_requested_chapters() -> None:
     assert context["body_char_count"] == len(chapter.body)
     assert context["body_char_budget"] >= context["body_char_count"]
     assert "Unicode code point" in " ".join(context["rules"])
+
+
+def test_llm_analysis_final_messages_fit_budget_with_long_title_and_body() -> None:
+    payloads = []
+
+    def post_json(*args, **kwargs):
+        payload = args[2]
+        payloads.append(payload)
+        context = json.loads(payload["messages"][1]["content"])
+        content = {
+            "chapters": [
+                {"chapter_id": chapter["chapter_id"]}
+                for chapter in context["chapters"]
+            ]
+        }
+        return {"choices": [{"message": {"content": json.dumps(content)}}]}
+
+    analyzer = LLMContinuationAnalyzer(
+        post_json=post_json,
+        runtime_resolver=lambda stage: _runtime(),
+        batch_body_char_budget=100_000,
+        chapter_max_chars=100_000,
+        analysis_prompt_char_budget=14_000,
+    )
+    chapter = ContinuationChapter(
+        chapter_id="long",
+        number=1,
+        title="超长标题" * 1000,
+        body="BODY_HEAD" + "中" * 50_000 + "BODY_TAIL",
+        source_name="long.txt",
+        fingerprint="long-fp",
+    )
+
+    result = analyzer.analyze_chapters([chapter])
+
+    assert [item.chapter_id for item in result] == ["long"]
+    messages = payloads[0]["messages"]
+    assert sum(len(message["content"]) for message in messages) <= 14_000
+    context = json.loads(messages[1]["content"])
+    sent = context["chapters"][0]
+    assert sent["title"].endswith("[TRUNCATED]")
+    assert sent["body"].startswith("BODY_HEAD")
+    assert sent["body"].endswith("BODY_TAIL")
+    assert "[TRUNCATED_MIDDLE]" in sent["body"]
+
+
+def test_llm_analysis_tiny_prompt_budget_fails_without_provider_call() -> None:
+    calls = []
+    analyzer = LLMContinuationAnalyzer(
+        post_json=lambda *args, **kwargs: calls.append(args),
+        runtime_resolver=lambda stage: _runtime(),
+        analysis_prompt_char_budget=10,
+    )
+    chapter = ContinuationChapter(
+        chapter_id="tiny",
+        number=1,
+        title="标题",
+        body="正文",
+        source_name="tiny.txt",
+        fingerprint="tiny-fp",
+    )
+
+    with pytest.raises(
+        ValueError, match="^continuation_analysis_prompt_budget_too_small$"
+    ):
+        analyzer.analyze_chapters([chapter])
+
+    assert calls == []
+
+
+def test_llm_analysis_splits_batch_when_fixed_prompt_overhead_does_not_fit() -> None:
+    payloads = []
+
+    def post_json(*args, **kwargs):
+        payload = args[2]
+        payloads.append(payload)
+        context = json.loads(payload["messages"][1]["content"])
+        content = {
+            "chapters": [
+                {"chapter_id": chapter["chapter_id"]}
+                for chapter in context["chapters"]
+            ]
+        }
+        return {"choices": [{"message": {"content": json.dumps(content)}}]}
+
+    analyzer = LLMContinuationAnalyzer(
+        post_json=post_json,
+        runtime_resolver=lambda stage: _runtime(),
+        batch_body_char_budget=100_000,
+        chapter_max_chars=10_000,
+        analysis_prompt_char_budget=14_000,
+    )
+    chapters = [
+        ContinuationChapter(
+            chapter_id=f"split-{number}",
+            number=number,
+            title=f"第{number}章",
+            body="开" + "中" * 200 + "尾",
+            source_name=f"{number}.txt",
+            fingerprint=f"split-fp-{number}",
+        )
+        for number in range(1, 101)
+    ]
+
+    results = analyzer.analyze_chapters(chapters)
+
+    assert [item.chapter_id for item in results] == [
+        chapter.chapter_id for chapter in chapters
+    ]
+    assert len(payloads) > 1
+    assert all(
+        sum(len(message["content"]) for message in payload["messages"]) <= 14_000
+        for payload in payloads
+    )
 
 
 def test_llm_merge_prompt_is_bounded_omits_old_body_and_keeps_latest_tail() -> None:
