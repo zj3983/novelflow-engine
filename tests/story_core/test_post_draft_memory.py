@@ -285,6 +285,78 @@ def test_attribute_allocation_rejects_final_panel_without_visible_choice_action(
     assert result["ledger_updates"] == {}
 
 
+def test_attribute_allocation_rejects_negated_choice_and_confirmation():
+    body = "夜烬没有把五点加到智力上。他确认不分配，可用属性点归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {
+                        "allocations": {"智力": 5},
+                        "remaining": 0,
+                    }
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点归零",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
+def test_attribute_allocation_rejects_confirmation_of_not_allocating():
+    body = "夜烬把五点加到智力上。他确认不分配，可用属性点归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {
+                        "allocations": {"智力": 5},
+                        "remaining": 0,
+                    }
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点归零",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
+def test_attribute_allocation_rejects_unrelated_later_confirmation():
+    body = "夜烬把五点加到智力上。走到修理铺后，他确认了修理订单，可用属性点归零。"
+    result = normalize_post_draft_memory(
+        {
+            "ledger_updates": {
+                "protagonist": {
+                    "attribute_allocation": {
+                        "allocations": {"智力": 5},
+                        "remaining": 0,
+                    }
+                }
+            },
+            "ledger_evidence": {
+                "protagonist.attribute_allocation.allocations.智力": "把五点加到智力上",
+                "protagonist.attribute_allocation.remaining": "可用属性点归零",
+            },
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+    )
+
+    assert result["ledger_updates"] == {}
+
+
 def test_attribute_state_aliases_accept_visible_post_allocation_values():
     body = "夜烬把五点加到智力上，确认后智力从五变成十，可用属性点归零。"
     result = normalize_post_draft_memory(

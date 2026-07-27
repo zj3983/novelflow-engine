@@ -372,6 +372,48 @@ def _ledger_value_supported(value: Any, body: str, evidence: str) -> bool:
     return False
 
 
+def _is_locally_negated(text: str, start: int) -> bool:
+    sentence_start = max(text.rfind(marker, 0, start) for marker in "。！？\n") + 1
+    prefix = text[sentence_start:start].rstrip()
+    return bool(re.search(r"(?:没有|没|未|并未|不)\s*(?:把|将)?\s*$", prefix))
+
+
+_ATTRIBUTE_ACTION_PATTERN = (
+    r"(?:\d+|[零一二两三四五六七八九十])\s*点(?:(?:自由)?属性点?)?[^。！？\n]{0,16}"
+    r"(?:全部)?(?:加到|加给|分配给|投入|点在)"
+)
+_ATTRIBUTE_CONFIRMATION_CONTEXT = ("属性点", "加点", "分配", "力量", "体质", "敏捷", "智力", "精神", "感知")
+
+
+def _sentence_bounds(text: str, position: int) -> tuple[int, int]:
+    start = max(text.rfind(marker, 0, position) for marker in "。！？\n") + 1
+    ends = [index for marker in "。！？\n" if (index := text.find(marker, position)) >= 0]
+    return start, min(ends) if ends else len(text)
+
+
+def _has_positive_confirmation(body: str) -> bool:
+    confirmations = list(re.finditer(r"确认|确定|生效|保存", body))
+    for action in re.finditer(_ATTRIBUTE_ACTION_PATTERN, body):
+        if _is_locally_negated(body, action.start()):
+            continue
+        action_start, action_end = _sentence_bounds(body, action.start())
+        _, nearby_end = _sentence_bounds(body, action_end + 1)
+        for match in confirmations:
+            confirmation_start, confirmation_end = _sentence_bounds(body, match.start())
+            suffix = body[match.end() : match.end() + 8]
+            if confirmation_start not in (action_start, action_end + 1) or match.start() > nearby_end:
+                continue
+            if _is_locally_negated(body, match.start()) or re.match(r"\s*(?:不分配|不加点|不加属性)", suffix):
+                continue
+            confirmation_sentence = body[confirmation_start:confirmation_end]
+            confirmation_window = body[max(confirmation_start, match.start() - 8) : match.end() + 12]
+            if any(token in confirmation_window for token in ("修理", "订单", "交易", "任务")):
+                continue
+            if any(token in confirmation_sentence for token in _ATTRIBUTE_CONFIRMATION_CONTEXT):
+                return True
+    return False
+
+
 def _attribute_allocation_action_supported(body: str, attribute: str, points: int) -> bool:
     if not isinstance(attribute, str) or not attribute or isinstance(points, bool) or not isinstance(points, int) or points <= 0:
         return False
@@ -383,7 +425,8 @@ def _attribute_allocation_action_supported(body: str, attribute: str, points: in
             rf"{re.escape(point_form)}\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
             rf"(?:全部)?(?:加到|加给|分配给|投入|点在)\s*{re.escape(attribute)}(?:上|里)?"
         )
-        if re.search(pattern, body):
+        match = re.search(pattern, body)
+        if match and not _is_locally_negated(body, match.start()):
             return True
     return False
 
@@ -397,13 +440,7 @@ def _attribute_remaining_supported(value: Any, body: str, evidence: str) -> bool
 
 
 def _has_attribute_allocation_action(body: str) -> bool:
-    return bool(
-        re.search(
-            r"(?:\d+|[零一二两三四五六七八九十])\s*点(?:(?:自由)?属性点?)?[^。！？\n]{0,16}"
-            r"(?:全部)?(?:加到|加给|分配给|投入|点在)",
-            body,
-        )
-    )
+    return any(not _is_locally_negated(body, match.start()) for match in re.finditer(_ATTRIBUTE_ACTION_PATTERN, body))
 
 
 def _attribute_state_value_supported(
@@ -435,7 +472,7 @@ def _attribute_allocation_group_supported(value: Any, body: str) -> bool:
         return False
     if not all(_attribute_allocation_action_supported(body, attribute, points) for attribute, points in allocations.items()):
         return False
-    has_confirmation = any(token in body for token in ("确认", "确定", "生效", "保存"))
+    has_confirmation = _has_positive_confirmation(body)
     has_result = any(
         re.search(rf"{re.escape(attribute)}[^。！？\n]{{0,16}}(?:变成|提升到|增加到)\s*(?:{points}|{_NUMBER_WORDS.get(points, '')})", body)
         for attribute, points in allocations.items()

@@ -627,6 +627,24 @@ def test_web_game_review_requires_visible_allocation_action_for_current_chapter_
     assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
 
 
+def test_web_game_review_rejects_negated_allocation_choice_and_confirmation():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬没有把五点加到智力上。他确认不分配，可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
 def test_web_game_review_accepts_visible_chinese_numeral_allocation_and_confirmation():
     review = review_web_game_chapter(
         chapter_number=4,
@@ -710,6 +728,34 @@ def test_web_game_review_accepts_visible_points_and_reason_when_current_decision
     )
 
     assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_requires_local_carry_reason_instead_of_unrelated_because():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，因为下雨，夜烬进了旅店。随后他看着可用属性点还剩五点，决定先留着。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
+def test_web_game_review_reports_explicit_carry_remaining_mismatch():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="《神域》里，夜烬看着可用属性点还剩4点，决定先留着，等转职以后再按新技能调整。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_mismatch:") for issue in review["issues"]), review
 
 
 def test_web_game_review_ignores_future_or_negated_allocation_text_without_current_decision():
