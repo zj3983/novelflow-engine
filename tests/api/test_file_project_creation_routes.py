@@ -48,6 +48,151 @@ def test_blank_file_project_creation_returns_201_and_is_readable(creation_api):
     legacy_create.assert_not_called()
 
 
+def _write_lazy_story_chapters(store: FileProjectStore) -> None:
+    chapters_dir = store.story_system_dir / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    chapters = [
+        {
+            "chapter_number": 1,
+            "chapter_title": "First signal",
+            "body": "alpha beta",
+            "chapter_summary": {
+                "summary": "The signal arrives.",
+                "next_focus": "Trace its source.",
+            },
+            "quality_report": {"ok": True, "issues": []},
+            "simulation_status": {"status": "complete"},
+        },
+        {
+            "chapter_number": 2,
+            "chapter_title": "Hidden relay",
+            "body": "gamma delta epsilon",
+            "chapter_summary": {
+                "summary": "The relay is exposed.",
+                "next_focus": "Confront its operator.",
+            },
+            "quality_report": {
+                "ok": False,
+                "issues": ["The ending lacks a hook."],
+                "writing_review": {
+                    "pass": False,
+                    "summary": "Strengthen the final beat.",
+                },
+            },
+        },
+    ]
+    for chapter in chapters:
+        number = int(chapter["chapter_number"])
+        (chapters_dir / f"{number:04d}.json").write_text(
+            json.dumps(chapter, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+def test_file_story_overview_returns_lightweight_chapter_index_without_hydration(
+    creation_api,
+    monkeypatch,
+):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Lazy overview", "novel_type_id": "urban"},
+    ).json()
+    store = FileProjectStore(Path(created["source_path"]))
+    project_path = store.webnovel_dir / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["seed_outline"] = "A buried transmitter wakes beneath the city."
+    project_path.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    _write_lazy_story_chapters(store)
+
+    def fail_if_hydrated(*args, **kwargs):
+        raise AssertionError("overview must not hydrate chapters")
+
+    monkeypatch.setattr(FileProjectStore, "chapter", fail_if_hydrated)
+
+    response = client.get(f"/file-stories/{created['active_story_id']}/overview")
+
+    assert response.status_code == 200
+    story = response.json()
+    assert story["story_id"] == created["active_story_id"]
+    assert story["outline"] == "A buried transmitter wakes beneath the city."
+    assert story["storage_source"] == "file"
+    assert story["chapter_count"] == 2
+    assert story["total_body_chars"] == len("alphabeta") + len("gammadeltaepsilon")
+    assert story["current_chapter"] == 2
+    assert [chapter["chapter_number"] for chapter in story["chapters"]] == [1, 2]
+    assert story["chapters"][1]["has_quality_report"] is True
+    assert all("body" not in chapter for chapter in story["chapters"])
+    assert all("quality_report" not in chapter for chapter in story["chapters"])
+
+
+def test_file_story_chapter_hydrates_only_requested_chapter_and_adds_simplified_review(
+    creation_api,
+    monkeypatch,
+):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Lazy detail", "novel_type_id": "urban"},
+    ).json()
+    store = FileProjectStore(Path(created["source_path"]))
+    _write_lazy_story_chapters(store)
+    calls = []
+    original_chapter = FileProjectStore.chapter
+
+    def record_chapter(current_store, chapter_number=None):
+        calls.append(chapter_number)
+        return original_chapter(current_store, chapter_number)
+
+    monkeypatch.setattr(FileProjectStore, "chapter", record_chapter)
+
+    response = client.get(f"/file-stories/{created['active_story_id']}/chapters/2")
+
+    assert response.status_code == 200
+    chapter = response.json()
+    assert chapter["chapter_number"] == 2
+    assert chapter["body"] == "gamma delta epsilon"
+    assert chapter["quality_report"]["issues"] == ["The ending lacks a hook."]
+    assert chapter["quality_report"]["simplified_review"]
+    assert calls == [2]
+
+
+def test_lazy_file_story_routes_return_canonical_not_found_details(creation_api):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Missing chapter", "novel_type_id": "urban"},
+    ).json()
+
+    missing_story = client.get("/file-stories/file:p-does-not-exist/overview")
+    missing_chapter = client.get(
+        f"/file-stories/{created['active_story_id']}/chapters/999"
+    )
+
+    assert missing_story.status_code == 404
+    assert missing_story.json()["detail"] == "file_story_not_found"
+    assert missing_chapter.status_code == 404
+    assert missing_chapter.json()["detail"] == "chapter_not_found:999"
+
+
+def test_file_story_overview_rejects_store_with_mismatched_story_id(creation_api):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Mismatched story", "novel_type_id": "urban"},
+    ).json()
+    store = FileProjectStore(Path(created["source_path"]))
+    project_path = store.webnovel_dir / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["project_id"] = "p-a-different-story"
+    project_path.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+
+    response = client.get(f"/file-stories/{created['active_story_id']}/overview")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "file_story_not_found"
+
+
 def test_file_project_character_put_persists_normalized_dual_state_to_both_cards(
     creation_api, monkeypatch
 ):
