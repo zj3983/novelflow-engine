@@ -305,6 +305,66 @@ def test_attribute_context_ignores_future_outline_levels_and_uses_current_plan_l
     assert attribute_allocation_context(story)["available_points"] == 0
 
 
+@pytest.mark.parametrize(
+    ("plan", "expected"),
+    [
+        ({"event_plan": {"attribute_allocation_level_target": 2}}, 2),
+        ({"event_plan": {"level": "Lv.2"}}, 2),
+        ({"event_plan": {"state_delta": {"protagonist": {"level": "Lv.2"}}}}, 2),
+        ({"state_delta": {"protagonist": {"level": "Lv.2"}}}, 2),
+        ({"scene_cards": [{"state_delta": {"protagonist": {"level": "Lv.2"}}}]}, 2),
+    ],
+)
+def test_planned_level_target_reads_only_explicit_current_protagonist_paths(plan, expected) -> None:
+    assert planned_level_target(plan) == expected
+
+
+def test_planned_level_target_ignores_enemy_future_and_cyclic_nodes() -> None:
+    plan = {
+        "event_plan": {
+            "enemy": {"level": "Lv.60"},
+            "future_hook": {"level": "Lv.60"},
+        },
+        "scene_cards": [{"monster": {"level": "Lv.60"}}],
+    }
+    plan["event_plan"]["cycle"] = plan
+
+    assert planned_level_target(plan) is None
+
+
+def test_planned_level_target_checks_at_most_six_scene_cards() -> None:
+    plan = {"scene_cards": [{} for _ in range(6)] + [{"state_delta": {"protagonist": {"level": "Lv.2"}}}]}
+
+    assert planned_level_target(plan) is None
+
+
+def test_attribute_context_uses_flat_legacy_ledger_level_for_planned_allocation() -> None:
+    story = type(
+        "Story",
+        (),
+        {
+            "world_context": {"power_system_spec": {"attribute_allocation": free_attribute_rule()}},
+            "progression_ledger": {"level": "Lv.2", "unallocated_attribute_points": 0},
+        },
+    )()
+
+    context = attribute_allocation_context(
+        story,
+        {
+            "event_plan": {
+                "level": "Lv.3",
+                "attribute_allocation_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+            }
+        },
+    )
+
+    assert context["chapter_decision"] == {
+        "mode": "allocate",
+        "allocations": {"智力": 5},
+        "remaining": 0,
+    }
+
+
 def test_attribute_context_keeps_three_latest_valid_allocation_records() -> None:
     story = type(
         "Story",

@@ -4,6 +4,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from packages.story_core.attribute_allocation import parse_level
 from packages.story_core.book_style import book_style_prompt
 from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
 
@@ -491,13 +492,14 @@ def _first_chapter_scenes(plan: dict[str, Any], *, trade_authorized: bool = Fals
             source_ids=["ch1-decision-hook"],
         ),
     ]
-    entry = scenes[0]
-    scenes[0] = WritingTaskScene(
-        **{
-            **asdict(entry),
-            "required_surface": entry.required_surface.replace("；不要展开力量/敏捷/体质/智力等扩展属性", ""),
-        }
-    )
+    if _attribute_decision(plan):
+        entry = scenes[0]
+        scenes[0] = WritingTaskScene(
+            **{
+                **asdict(entry),
+                "required_surface": entry.required_surface.replace("；不要展开力量/敏捷/体质/智力等扩展属性", ""),
+            }
+        )
     return scenes
 
 
@@ -522,31 +524,46 @@ def _attribute_decision(plan: dict[str, Any]) -> dict[str, Any]:
     return {"mode": mode, "allocations": normalized, "remaining": remaining} if normalized else {}
 
 
-def _apply_attribute_decision_to_scenes(
-    scenes: list[WritingTaskScene],
-    decision: dict[str, Any],
-) -> list[WritingTaskScene]:
-    if not scenes or not decision:
-        return scenes
-    target_index = next(
-        (index for index, scene in enumerate(scenes) if scene.key in {"small_verification", "choice"}),
-        len(scenes) - 1,
-    )
-    scene = scenes[target_index]
+def _attribute_decision_requirement(decision: dict[str, Any]) -> str:
     if decision["mode"] == "allocate":
         allocations = decision["allocations"]
         spent = sum(allocations.values())
         chosen = "、".join(f"{name}+{points}" for name, points in allocations.items())
-        requirement = f"看到新增{spent}点、按路线选择{chosen}、确认属性和剩余{decision['remaining']}点；只展示本次涉及属性，不完整重复面板"
-    else:
-        reason = decision.get("reason") or "为后续路线保留"
-        requirement = f"看到剩余{decision['remaining']}点，并给出保留原因：{reason}"
+        return f"看到新增{spent}点、按路线选择{chosen}、确认属性和剩余{decision['remaining']}点；只展示本次涉及属性，不完整重复面板"
+    reason = decision.get("reason") or "为后续路线保留"
+    return f"看到剩余{decision['remaining']}点，并给出保留原因：{reason}"
+
+
+def _protagonist_level_scene_index(plan: dict[str, Any], scenes: list[WritingTaskScene], chapter_number: int) -> int | None:
+    for index, card in enumerate(_scene_cards(plan)[: len(scenes)]):
+        state_delta = card.get("state_delta") if isinstance(card.get("state_delta"), dict) else {}
+        protagonist = state_delta.get("protagonist") if isinstance(state_delta.get("protagonist"), dict) else {}
+        if parse_level(protagonist.get("level")) is not None:
+            return index
+    if chapter_number == 1:
+        return next((index for index, scene in enumerate(scenes) if scene.key == "small_verification"), None)
+    return None
+
+
+def _apply_attribute_decision_to_scenes(
+    scenes: list[WritingTaskScene],
+    decision: dict[str, Any],
+    *,
+    plan: dict[str, Any],
+    chapter_number: int,
+) -> tuple[list[WritingTaskScene], bool]:
+    if not scenes or not decision:
+        return scenes, False
+    target_index = _protagonist_level_scene_index(plan, scenes, chapter_number)
+    if target_index is None:
+        return scenes, False
+    requirement = _attribute_decision_requirement(decision)
     return [
         WritingTaskScene(**{**asdict(item), "required_surface": _join([item.required_surface, requirement], item.required_surface)})
         if index == target_index
         else item
         for index, item in enumerate(scenes)
-    ]
+    ], True
 
 
 def _generic_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
@@ -651,7 +668,12 @@ def build_writing_taskbook(
     simulation_plan = _simulation_plan(plan)
     event_plan = _event_plan(plan)
     decision = _attribute_decision(plan)
-    scenes = _apply_attribute_decision_to_scenes(scenes, decision)
+    scenes, decision_attached_to_scene = _apply_attribute_decision_to_scenes(
+        scenes,
+        decision,
+        plan=plan,
+        chapter_number=chapter_number,
+    )
     global_required = [
         *_plot_required_lines(_plot_simulation(simulation_plan)),
         *_longform_contract_required_lines(
@@ -668,6 +690,8 @@ def build_writing_taskbook(
     ]
     if decision.get("mode") == "carry":
         global_required.append(f"属性点保留原因必须在场：{decision.get('reason') or '为后续路线保留'}")
+    if decision and not decision_attached_to_scene:
+        global_required.append(f"属性点决策必须在发生升级的场景落地：{_attribute_decision_requirement(decision)}")
     world_required, world_forbidden = _world_context_requirements(simulation_plan)
     global_required.extend(world_required)
     global_forbidden.extend(world_forbidden)

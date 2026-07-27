@@ -9,7 +9,10 @@ from fastapi.testclient import TestClient
 
 from apps.api.main import app
 from apps.api.routes import file_projects
+from apps.api.routes import stories as story_routes
 from apps.api.routes.stories import _quality_context
+from packages.story_core.engine import ChapterBundle
+from packages.story_core.models import NovelProject, StoryState
 
 
 client = TestClient(app)
@@ -434,6 +437,51 @@ def test_project_writing_packet_returns_packet():
     assert any("灰鼠" in " ".join(card.get("must_show", []) + card.get("fact_locks", [])) for card in packet["scene_cards"]) or any(
         "首杀" in str(card) or "验证" in str(card) for card in packet["scene_cards"]
     )
+
+
+def test_project_writing_packet_ignores_previous_bundle_attribute_decision(monkeypatch):
+    story_id = "s-attribute-packet-scope"
+    project_id = "p-attribute-packet-scope"
+    allocation_rule = {
+        "mode": "free",
+        "points_per_level": 5,
+        "starting_level": 1,
+        "base_attributes": {"智力": 5},
+        "allow_carry": True,
+        "respec_rule": "主城洗点",
+    }
+    story = StoryState(
+        story_id=story_id,
+        outline="夜烬继续探索。",
+        genre="网游",
+        style="白描",
+        current_chapter=1,
+        progression_ledger={"protagonist": {"level": "Lv.2", "unallocated_attribute_points": 5}},
+    )
+    story_routes.store.create(story)
+    story_routes.store.create_project(NovelProject(project_id=project_id, title="属性点范围", active_story_id=story_id))
+    story_routes.store.append_chapter_bundle(
+        story_id,
+        ChapterBundle(
+            chapter_number=1,
+            body="",
+            next_outline="继续探索",
+            updated_story=story,
+            event_plan={"attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"}},
+        ),
+    )
+
+    def inject_attribute_rule(project, packet_story, *, has_history):
+        packet_story.world_context = {"power_system_spec": {"attribute_allocation": allocation_rule}}
+
+    monkeypatch.setattr(story_routes, "_sync_project_context_for_story", inject_attribute_rule)
+
+    response = client.get(f"/projects/{project_id}/writing-packet?chapter_number=2")
+
+    assert response.status_code == 200
+    allocation = response.json()["attribute_allocation"]
+    assert allocation["available_points"] == 5
+    assert "chapter_decision" not in allocation
 
 
 def test_project_writing_packet_uses_explicit_non_game_project_type():

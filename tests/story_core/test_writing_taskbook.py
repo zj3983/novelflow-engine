@@ -57,7 +57,7 @@ def test_first_chapter_taskbook_keeps_only_three_useful_scenes():
     scenes = taskbook["scenes"]
     assert [scene["key"] for scene in scenes] == ["entry_login", "small_verification", "decision_hook"]
     assert "NPC" not in scenes[2]["goal"]
-    assert "不要展开力量/敏捷/体质/智力" not in scenes[0]["required_surface"]
+    assert "不要展开力量/敏捷/体质/智力" in scenes[0]["required_surface"]
     assert "底层协议校验通过" in scenes[1]["required_surface"]
     assert "至少兑现一项" in scenes[2]["required_surface"]
     assert "交易、论坛、公会追查后移" in " ".join(taskbook["global_required"])
@@ -115,7 +115,7 @@ def test_first_chapter_without_attribute_decision_keeps_initial_panel_short() ->
     taskbook = build_writing_taskbook(chapter_number=1, genre="网游", plan={})
 
     assert "Lv.1短面板" in taskbook["scenes"][0]["required_surface"]
-    assert "力量/敏捷/体质/智力等扩展属性" not in taskbook["scenes"][0]["required_surface"]
+    assert "力量/敏捷/体质/智力等扩展属性" in taskbook["scenes"][0]["required_surface"]
 
 
 def test_taskbook_carry_requires_visible_reason() -> None:
@@ -126,6 +126,64 @@ def test_taskbook_carry_requires_visible_reason() -> None:
     )
 
     assert "保留原因" in "\n".join(taskbook["global_required"])
+
+
+def test_taskbook_allocate_uses_only_the_protagonist_level_scene() -> None:
+    taskbook = build_writing_taskbook(
+        chapter_number=2,
+        genre="网游",
+        plan={
+            "event_plan": {
+                "attribute_allocation_decision": {
+                    "mode": "allocate",
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                }
+            },
+            "scene_cards": [
+                {
+                    "id": "protagonist-level",
+                    "location": "灰狼坡",
+                    "purpose": "夜烬升级",
+                    "state_delta": {"protagonist": {"level": "Lv.2"}},
+                },
+                {
+                    "id": "monster-level",
+                    "location": "灰狼坡",
+                    "purpose": "击败灰狼",
+                    "state_delta": {"monster": {"level": "Lv.60"}},
+                },
+            ],
+        },
+    )
+
+    scenes = {scene["key"]: scene["required_surface"] for scene in taskbook["scenes"]}
+
+    assert "新增5点" not in scenes["monster-level"]
+    assert "新增5点" in scenes["protagonist-level"]
+
+
+def test_taskbook_does_not_attach_later_chapter_decision_without_upgrade_scene() -> None:
+    taskbook = build_writing_taskbook(
+        chapter_number=2,
+        genre="网游",
+        plan={
+            "event_plan": {
+                "attribute_allocation_decision": {
+                    "mode": "allocate",
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                }
+            },
+            "scene_cards": [
+                {"id": "search", "location": "仓库", "purpose": "核对清单"},
+                {"id": "hook", "location": "巷口", "purpose": "躲开盯梢"},
+            ],
+        },
+    )
+
+    assert all("新增5点" not in scene["required_surface"] for scene in taskbook["scenes"])
+    assert any("发生升级的场景落地" in item for item in taskbook["global_required"])
 
 
 def test_taskbook_compiles_scene_cards_for_later_chapters():

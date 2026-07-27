@@ -143,6 +143,53 @@ def test_director_quality_gate_accepts_exact_attribute_allocation() -> None:
     assert _director_plan_quality_issues(_attribute_story(), plan) == []
 
 
+def test_director_quality_gate_uses_flat_legacy_ledger_level_for_allocation() -> None:
+    story = _attribute_story()
+    story.progression_ledger = {"level": "Lv.2", "unallocated_attribute_points": 0}
+    plan = _complete_plan(["夜烬升级"])
+    plan["event_plan"].update(
+        level="Lv.3",
+        attribute_allocation_decision={"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+    )
+
+    assert not any("attribute_allocation_decision" in issue for issue in _director_plan_quality_issues(story, plan))
+
+
+def test_director_quality_gate_classifies_malformed_allocation_items() -> None:
+    malformed_allocations = [None, "智力+5", {}, {"智力": "5"}, {"智力": True}, {"智力": 0}, {"未知": 1}]
+
+    for allocations in malformed_allocations:
+        plan = _complete_plan(["夜烬升级"])
+        plan["event_plan"].update(
+            level="Lv.2",
+            attribute_allocation_decision={"mode": "allocate", "allocations": allocations, "remaining": 0},
+        )
+
+        issues = _director_plan_quality_issues(_attribute_story(), plan)
+
+        assert any("分配项/属性非法" in issue for issue in issues)
+
+
+def test_director_quality_gate_keeps_overbudget_and_remaining_errors_distinct() -> None:
+    overbudget = _complete_plan(["夜烬升级"])
+    overbudget["event_plan"].update(
+        level="Lv.2",
+        attribute_allocation_decision={"mode": "allocate", "allocations": {"智力": 6}, "remaining": 0},
+    )
+    wrong_remaining = _complete_plan(["夜烬升级"])
+    wrong_remaining["event_plan"].update(
+        level="Lv.2",
+        attribute_allocation_decision={"mode": "allocate", "allocations": {"智力": 5}, "remaining": 1},
+    )
+
+    overbudget_issues = _director_plan_quality_issues(_attribute_story(), overbudget)
+    remaining_issues = _director_plan_quality_issues(_attribute_story(), wrong_remaining)
+
+    assert any("分配点数超过" in issue for issue in overbudget_issues)
+    assert not any("remaining 必须" in issue for issue in overbudget_issues)
+    assert any("remaining 必须" in issue for issue in remaining_issues)
+
+
 def test_director_quality_gate_does_not_require_decision_without_current_level_up() -> None:
     plan = _complete_plan(["夜烬查看任务牌"])
     plan["outline"] = "未来Lv.60"

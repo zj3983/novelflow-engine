@@ -148,33 +148,48 @@ def _unallocated_points(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
+def current_protagonist_level(ledger: Any, starting_level: int) -> int:
+    """Read the current protagonist level from nested or legacy flat ledgers."""
+
+    if not isinstance(ledger, Mapping):
+        return starting_level
+    protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), Mapping) else {}
+    return parse_level(protagonist.get("level")) or parse_level(ledger.get("level")) or starting_level
+
+
 def planned_level_target(plan: Any) -> int | None:
     """Read an explicit level target from the current chapter plan only."""
 
     if not isinstance(plan, Mapping):
         return None
 
-    def collect_levels(value: Any) -> list[int]:
-        if isinstance(value, Mapping):
-            levels = [
-                parsed
-                for key in ("level", "attribute_allocation_level_target")
-                if (parsed := parse_level(value.get(key))) is not None
-            ]
-            for key, nested in value.items():
-                if key not in {"level", "attribute_allocation_level_target"}:
-                    levels.extend(collect_levels(nested))
-            return levels
-        if isinstance(value, list):
-            return [level for item in value for level in collect_levels(item)]
-        return []
+    def protagonist_level(state_delta: Any) -> int | None:
+        if not isinstance(state_delta, Mapping):
+            return None
+        protagonist = state_delta.get("protagonist")
+        if not isinstance(protagonist, Mapping):
+            return None
+        return parse_level(protagonist.get("level")) or (
+            parse_level(protagonist.get("panel", {}).get("level"))
+            if isinstance(protagonist.get("panel"), Mapping)
+            else None
+        )
 
-    sources = [
-        plan.get("event_plan"),
-        plan.get("scene_cards"),
-        plan.get("state_delta"),
+    event_plan = plan.get("event_plan") if isinstance(plan.get("event_plan"), Mapping) else {}
+    levels = [
+        parse_level(event_plan.get("attribute_allocation_level_target")),
+        parse_level(event_plan.get("level")),
+        protagonist_level(event_plan.get("state_delta")),
+        protagonist_level(plan.get("state_delta")),
     ]
-    levels = [level for source in sources for level in collect_levels(source)]
+    scene_cards = plan.get("scene_cards")
+    if isinstance(scene_cards, list):
+        levels.extend(
+            protagonist_level(card.get("state_delta"))
+            for card in scene_cards[:6]
+            if isinstance(card, Mapping)
+        )
+    levels = [level for level in levels if level is not None]
     return max(levels) if levels else None
 
 
@@ -277,7 +292,7 @@ def attribute_allocation_context(story: Any, plan: Any | None = None) -> dict[st
         "latest_allocations": latest_allocations,
     }
     event_plan = plan.get("event_plan") if isinstance(plan, Mapping) and isinstance(plan.get("event_plan"), Mapping) else {}
-    current_level = parse_level(protagonist.get("level")) or rule["starting_level"]
+    current_level = current_protagonist_level(ledger, rule["starting_level"])
     target_level = planned_level_target(plan)
     expected_points = available + max(0, (target_level or current_level) - current_level) * rule["points_per_level"]
     decision = validate_attribute_allocation_decision(

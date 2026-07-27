@@ -646,9 +646,14 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
     governance_gate = governance_quality_gate(governance)
     power_system = writing_power_system_context(story)
     event_plan = getattr(bundle, "event_plan", None) if bundle is not None else {}
+    allocation_event_plan = (
+        event_plan
+        if bundle is not None and getattr(bundle, "chapter_number", None) == target_chapter and isinstance(event_plan, Mapping)
+        else {}
+    )
     allocation_context = attribute_allocation_context(
         story,
-        {"event_plan": event_plan} if isinstance(event_plan, Mapping) else None,
+        {"event_plan": allocation_event_plan},
     )
     chapter_decision = allocation_context.get("chapter_decision") if allocation_context else {}
 

@@ -161,6 +161,24 @@ def test_direct_event_plan_level_preserves_decision_through_writing_packet() -> 
     assert any("attribute points" in line for line in packet["prose_renderer"]["body_contract"])
 
 
+def test_writing_packet_does_not_apply_previous_bundle_decision_to_next_chapter() -> None:
+    story = _attribute_packet_story()
+    story.current_chapter = 1
+    story.progression_ledger["protagonist"]["unallocated_attribute_points"] = 5
+    bundle = ChapterBundle(
+        chapter_number=1,
+        body="",
+        next_outline="继续探索",
+        updated_story=story,
+        event_plan={"attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"}},
+    )
+
+    packet = build_codex_writing_packet(story, bundle, chapter_number=2)
+
+    assert packet["attribute_allocation"]["available_points"] == 5
+    assert "chapter_decision" not in packet["attribute_allocation"]
+
+
 def test_packet_uses_character_world_state_aliases_and_respects_stage_boundaries():
     protagonist = CharacterState(
         name="苏叶",

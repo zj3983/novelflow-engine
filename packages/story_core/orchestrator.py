@@ -20,6 +20,7 @@ from packages.story_core.attribute_allocation import (
     attribute_allocation_context,
     attribute_allocation_rule_from_story,
     award_attribute_points,
+    current_protagonist_level,
     parse_level,
     plan_handles_attribute_points,
     planned_level_target,
@@ -2388,7 +2389,7 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
             and isinstance(story.progression_ledger.get("protagonist"), dict)
             else {}
         )
-        current_level = parse_level(protagonist.get("level")) or attribute_rule["starting_level"]
+        current_level = current_protagonist_level(story.progression_ledger, attribute_rule["starting_level"])
         target_level = planned_level_target(plan)
         current_points = protagonist.get("unallocated_attribute_points")
         current_points = (
@@ -2410,11 +2411,21 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
                 issues.append("event_plan.attribute_allocation_decision 使用 carry，但当前规则禁止保留属性点。")
             elif str(raw_decision.get("mode") or "").strip().lower() == "allocate":
                 allocations = raw_decision.get("allocations")
-                if isinstance(allocations, dict) and any(name not in attribute_rule["base_attributes"] for name in allocations):
-                    issues.append("event_plan.attribute_allocation_decision 含有规则外属性。")
-                elif isinstance(allocations, dict) and sum(
-                    points for points in allocations.values() if isinstance(points, int) and not isinstance(points, bool)
-                ) > expected_points:
+                allocation_items_invalid = (
+                    not isinstance(allocations, dict)
+                    or not allocations
+                    or any(
+                        not isinstance(name, str)
+                        or name not in attribute_rule["base_attributes"]
+                        or isinstance(points, bool)
+                        or not isinstance(points, int)
+                        or points <= 0
+                        for name, points in allocations.items()
+                    )
+                )
+                if allocation_items_invalid:
+                    issues.append("event_plan.attribute_allocation_decision 分配项/属性非法。")
+                elif sum(allocations.values()) > expected_points:
                     issues.append("event_plan.attribute_allocation_decision 分配点数超过本章预计可用点数。")
                 else:
                     issues.append("event_plan.attribute_allocation_decision 的 remaining 必须等于预计剩余点数。")
