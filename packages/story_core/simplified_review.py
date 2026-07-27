@@ -102,8 +102,8 @@ def _issue_suggestion(issue: Any) -> str:
     return str(issue.get("suggestion") or "").strip()
 
 
-def _collect_issue_records(report: dict[str, Any]) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
+def _collect_issue_records(report: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
     for source in _review_sources(report):
         plans = source.get("revision_plan") if isinstance(source.get("revision_plan"), list) else []
         for index, issue in enumerate(source.get("issues") or []):
@@ -111,9 +111,17 @@ def _collect_issue_records(report: dict[str, Any]) -> list[dict[str, str]]:
             if not message or message in INTERNAL_ISSUES:
                 continue
             suggestion = _issue_suggestion(issue)
+            suggestion_priority = 2 if suggestion else 0
             if not suggestion and index < len(plans):
                 suggestion = str(plans[index] or "").strip()
-            records.append({"message": message, "suggestion": suggestion})
+                suggestion_priority = 1 if suggestion else 0
+            records.append(
+                {
+                    "message": message,
+                    "suggestion": suggestion,
+                    "suggestion_priority": suggestion_priority,
+                }
+            )
     return records
 
 
@@ -189,8 +197,8 @@ def user_facing_generation_error(exc: Exception) -> str:
 
 def build_simplified_review(quality_report: Any, *, limit: int = 3) -> dict[str, Any]:
     report = _as_dict(quality_report)
-    unique_records: list[dict[str, str]] = []
-    records_by_key: dict[str, dict[str, str]] = {}
+    unique_records: list[dict[str, Any]] = []
+    records_by_key: dict[str, dict[str, Any]] = {}
     grouped: dict[str, list[dict[str, str]]] = {
         "hard": [],
         "dialogue": [],
@@ -205,8 +213,9 @@ def build_simplified_review(quality_report: Any, *, limit: int = 3) -> dict[str,
             continue
         existing = records_by_key.get(key)
         if existing:
-            if not existing["suggestion"] and record["suggestion"]:
+            if int(record["suggestion_priority"]) > int(existing["suggestion_priority"]):
                 existing["suggestion"] = record["suggestion"]
+                existing["suggestion_priority"] = record["suggestion_priority"]
             continue
         records_by_key[key] = record
         unique_records.append(record)

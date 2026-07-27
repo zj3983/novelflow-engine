@@ -127,6 +127,29 @@ def test_simplified_review_prefers_suggestion_embedded_in_issue():
     assert report["revision_plan"] == ["恢复上一章已经确认的人物状态。"]
 
 
+def test_simplified_review_replaces_aggregate_plan_with_later_embedded_suggestion():
+    message = "设定冲突：规划实体写错。"
+    report = build_simplified_review(
+        {
+            "writing_review": {
+                "issues": [message],
+                "revision_plan": ["aggregate-wrong"],
+                "reviewer_agent_review": {
+                    "issues": [
+                        {
+                            "message": message,
+                            "suggestion": "embedded-correct",
+                        }
+                    ]
+                },
+            }
+        }
+    )
+
+    assert report["issues"][0]["suggestion"] == "embedded-correct"
+    assert report["revision_plan"] == ["embedded-correct"]
+
+
 def test_simplified_review_exposes_one_consolidated_status():
     report = build_simplified_review(
         {
