@@ -19,6 +19,16 @@ def _economy_violation_codes(body: str) -> set[str]:
     return {violation.code for violation in detect_economy_boundary_violations(body)}
 
 
+def _assert_fragments_in_order(body: str, fragments: tuple[str, ...]) -> None:
+    cursor = 0
+    for step, fragment in enumerate(fragments, start=1):
+        position = body.find(fragment, cursor)
+        assert position >= 0, (
+            f"step {step} is missing or out of order after offset {cursor}: {fragment!r}"
+        )
+        cursor = position + len(fragment)
+
+
 @pytest.mark.parametrize(
     ("body", "expected_code"),
     (
@@ -506,7 +516,51 @@ def test_anonymous_feedback_action_stays_unchanged_before_trade_sentence(action:
     assert action in normalized
 
 
-def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_steps() -> None:
+def test_inline_legacy_auction_flow_migrates_in_order_and_reaches_fixed_point() -> None:
+    source = (
+        "第一章，裂纹狼心进入拍卖：起拍价1金币20银币，最低加价10银币，"
+        "一口价2金币，匿名上架。"
+        "买家按一口价购入，成交款转入游戏钱包。"
+        "夜烬从侧栏进入担保平台，核对当前报价、可用额度、手续费和预计到账，"
+        "随后确认兑换。担保到账1764.00元。"
+    )
+
+    once = normalize_legacy_economy_prompt_value(
+        source,
+        game_context=True,
+        chapter_number=1,
+    )
+    twice = normalize_legacy_economy_prompt_value(
+        once,
+        game_context=True,
+        chapter_number=1,
+    )
+
+    assert once != source
+    assert twice == once
+    _assert_fragments_in_order(
+        once,
+        (
+            "进入拍卖",
+            "起拍价1金币20银币",
+            "最低加价10银币",
+            "一口价2金币",
+            "匿名上架",
+            "买家按一口价购入",
+            "成交款转入游戏钱包",
+            "进入官方兑换渠道",
+            "当前报价",
+            "可用额度",
+            "手续费",
+            "预计到账",
+            "确认兑换",
+            "官方兑换到账1764.00元",
+        ),
+    )
+    assert "担保" not in once
+
+
+def test_real_chapter_one_auction_exchange_flow_smoke_test() -> None:
     worktree_root = Path(__file__).resolve().parents[2]
     candidates = (
         worktree_root / "data" / "exported-projects" / "p-gou-webgame-restored",
@@ -519,8 +573,9 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     if chapter_path is None:
         pytest.skip("real chapter one fixture is unavailable")
     body = chapter_path.read_text(encoding="utf-8")
-    start = body.index("他退回交易行，选择拍卖模式。")
-    end_marker = "手机的到账震动透过头盔提醒传来。"
+    start_marker = "选择拍卖模式"
+    end_marker = "手机的到账震动透过头盔提醒传来"
+    start = body.index(start_marker)
     segment = body[start : body.index(end_marker, start) + len(end_marker)]
     normalized = normalize_legacy_economy_prompt_value(
         segment,
@@ -529,27 +584,26 @@ def test_real_chapter_one_trade_sequence_migrates_to_readable_market_exchange_st
     )
 
     ordered_fragments = (
-        "他退回交易行，选择拍卖模式。",
-        "【起拍价：1金币20银币。】",
-        "【最低加价：10银币。】",
-        "【一口价：2金币。】",
-        "【拍卖时限：30分钟。是否匿名上架？】",
-        "夜烬勾选匿名。",
-        "交易行生成了第一条同名拍卖记录。",
-        "【买家已按一口价购入。】",
-        "【成交价：2金币。】",
-        "【成交款已转入游戏钱包。】",
-        "从侧栏进入官方兑换页面。",
+        start_marker,
+        "起拍价：1金币20银币",
+        "最低加价：10银币",
+        "一口价：2金币",
+        "拍卖时限：30分钟",
+        "是否匿名上架",
+        "夜烬勾选匿名",
+        "第一条同名拍卖记录",
+        "买家已按一口价购入",
+        "成交价：2金币",
+        "成交款已转入游戏钱包",
+        "从侧栏进入官方兑换页面",
         "两枚金币、当前报价、可用额度和三十六元手续费",
-        "【预计到账：1764.00元】",
-        "点下确认兑换。",
-        "【兑换完成。】【游戏币已扣除。】",
+        "预计到账：1764.00元",
+        "点下确认兑换",
+        "兑换完成",
+        "游戏币已扣除",
         end_marker,
     )
-    assert all(fragment in normalized for fragment in ordered_fragments)
-    assert [normalized.index(fragment) for fragment in ordered_fragments] == sorted(
-        normalized.index(fragment) for fragment in ordered_fragments
-    )
+    _assert_fragments_in_order(normalized, ordered_fragments)
     assert normalized == segment
     assert normalize_legacy_economy_prompt_value(
         normalized,
