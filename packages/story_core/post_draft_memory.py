@@ -221,16 +221,6 @@ def _normalize_character_updates(
                 }
             )
             continue
-        appearance_names = {name, *aliases_by_name.get(name, set())}
-        if not any(_literal_value_in_body(candidate, body) for candidate in appearance_names):
-            rejected.append(
-                {
-                    "kind": "character_update",
-                    "name": name,
-                    "reason": "character_not_in_body",
-                }
-            )
-            continue
         evidence = _text(item.get("evidence"))
         if not evidence:
             rejected.append(
@@ -247,6 +237,16 @@ def _normalize_character_updates(
                     "kind": "character_update",
                     "name": name,
                     "reason": "evidence_not_in_body",
+                }
+            )
+            continue
+        appearance_names = {name, *aliases_by_name.get(name, set())}
+        if not any(_literal_value_in_body(candidate, evidence) for candidate in appearance_names):
+            rejected.append(
+                {
+                    "kind": "character_update",
+                    "name": name,
+                    "reason": "evidence_character_mismatch",
                 }
             )
             continue

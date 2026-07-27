@@ -26,7 +26,7 @@ def test_post_draft_memory_keeps_only_body_grounded_updates():
                 "emotion": "警惕",
                 "goal": "明早去账房",
                 "location": "偏殿",
-                "evidence": "明早去账房回话",
+                    "evidence": "林照把断香炉搬回偏殿",
             },
             {"name": "陌生人", "emotion": "愤怒", "evidence": "陌生人"},
         ],
@@ -55,7 +55,7 @@ def test_post_draft_memory_keeps_only_body_grounded_updates():
         "name": "林照",
         "goal": "明早去账房",
         "location": "偏殿",
-        "evidence": "明早去账房回话",
+        "evidence": "林照把断香炉搬回偏殿",
     }
     assert result["ledger_updates"] == {"protagonist": {"location": "偏殿"}}
     assert any(
@@ -638,14 +638,14 @@ def test_character_update_uses_only_its_own_game_id_as_body_evidence():
             "ledger_updates": {},
             "ledger_evidence": {},
         },
-        body="赤霄脸色凝重。",
+        body="青锋站在门口，赤霄脸色凝重。",
         existing_character_names={"林峰", "周远"},
         character_aliases_by_name={"林峰": {"青锋"}, "周远": {"赤霄"}},
     )
 
     assert wrong_alias["character_updates"] == []
     assert any(
-        item.get("name") == "林峰" and item.get("reason") == "character_not_in_body"
+        item.get("name") == "林峰" and item.get("reason") == "evidence_character_mismatch"
         for item in wrong_alias["rejected_updates"]
     )
 
