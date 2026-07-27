@@ -1,3 +1,4 @@
+import packages.story_core.memory_agent as memory_agent_module
 from packages.story_core.memory_agent import MemoryAgent
 from packages.story_core.models import CharacterState, DirectorDecision, StoryState
 
@@ -154,3 +155,52 @@ def test_memory_agent_uses_injected_llm_provider_when_assisted_mode_is_enabled()
     assert updated.characters[0].location == "west hall"
     assert updated.characters[0].goals[0] == "return at dawn"
     assert updated.characters[0].memory[-1] == "第2章：Lin Yue secures the witness in the west hall"
+
+
+def test_memory_agent_passes_real_name_and_game_id_as_protagonist_aliases(monkeypatch):
+    captured = {}
+
+    class Provider:
+        def summarize(self, *_args, **_kwargs):
+            return {"ledger_updates": {"protagonist": {"attribute_allocation": {}}}}
+
+    def fake_normalize(payload, *, body, existing_character_names, protagonist_aliases=None):
+        captured["existing_character_names"] = existing_character_names
+        captured["protagonist_aliases"] = protagonist_aliases
+        return {
+            "summary": "",
+            "facts": [],
+            "unresolved_threads": [],
+            "next_focus": "",
+            "chapter_title": "",
+            "character_updates": [],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        }
+
+    monkeypatch.setattr(memory_agent_module, "normalize_post_draft_memory", fake_normalize)
+    story = StoryState(
+        story_id="s-memory-agent-aliases",
+        outline="网游开局。",
+        genre="game_webnovel",
+        style="紧凑",
+        current_chapter=1,
+        agent_settings={"mode": "LLM-assisted"},
+        characters=[
+            CharacterState(name="苏叶", game_id="夜烬", role="主角"),
+            CharacterState(name="短发玩家", role="supporting"),
+        ],
+    )
+
+    MemoryAgent(llm_provider=Provider()).remember(
+        story,
+        body="短发玩家把五点加到智力上。",
+        chapter_number=2,
+        decision=DirectorDecision(),
+        conflict_summary={},
+        event_beat={},
+        cadence="measured",
+    )
+
+    assert captured["protagonist_aliases"] == {"苏叶", "夜烬"}
+    assert captured["existing_character_names"] == {"苏叶", "短发玩家"}

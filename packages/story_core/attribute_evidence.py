@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterator
+from typing import Iterable, Iterator
 
 
 _CN_NUMERAL_VALUES = {
@@ -38,6 +38,8 @@ _CARRY_DECISION_PREFIX = re.compile(
     r"(?:他|她|我|玩家|角色|[\u4e00-\u9fff]{2,4})[^。！？\n]{0,28}"
     r"(?:决定|打算|选择|准备|想|先|暂时)[^。！？\n]{0,18}$"
 )
+_PRONOUN_SUBJECT_PREFIX = re.compile(r"(?:^|[，,])\s*(?:他|她|我)[^。！？\n]{0,32}$")
+_BYSTANDER_SUBJECT_PREFIX = re.compile(r"(?:^|[，,])\s*(?:(?:短发|长发|高个|矮个|陌生|路过的)?(?:玩家|路人|NPC))")
 _GENERIC_REASON_TERMS = {"先", "为了", "因为", "属性点", "属性", "点", "保留", "留着", "分配", "决定", "原因", "目的", "以后", "再用", "留给"}
 
 
@@ -75,17 +77,67 @@ def _is_negated_before(text: str, position: int, *, carry: bool = False) -> bool
     start, _ = sentence_bounds(text, position)
     prefix = text[start:position].rstrip()
     if carry:
-        return bool(re.search(r"(?:没有|没|未|并未|不)\s*(?:打算|准备|想|决定|选择)[^。！？\n]{0,16}$", prefix))
+        return bool(
+            re.search(r"(?:没有|没|未|并未|不)\s*(?:打算|准备|想|决定|选择)[^。！？\n]{0,16}$", prefix)
+            or re.search(r"(?:打算|准备|想|决定|选择)\s*不\s*(?:把|将)[^。！？\n]{0,16}$", prefix)
+        )
     return bool(
         re.search(r"(?:没有|没|未|并未|不)(?:\s*(?:打算|准备|决定|选择))?\s*(?:把|将)[^。！？\n]{0,16}$", prefix)
     )
 
 
-def _has_character_action(text: str, action_start: int) -> bool:
+def protagonist_aliases_from_characters(characters: Iterable[object]) -> set[str]:
+    """Return the real-name and game-ID aliases for explicit protagonist cards."""
+
+    aliases: set[str] = set()
+    for character in characters:
+        if isinstance(character, dict):
+            role = str(character.get("role") or "").strip().casefold()
+            values = (character.get("name"), character.get("game_id"))
+            panel = character.get("game_panel")
+        else:
+            role = str(getattr(character, "role", "") or "").strip().casefold()
+            values = (getattr(character, "name", ""), getattr(character, "game_id", ""))
+            panel = getattr(character, "game_panel", None)
+        if role not in {"protagonist", "主角"}:
+            continue
+        for value in values:
+            alias = str(value or "").strip()
+            if alias:
+                aliases.add(alias)
+        panel_game_id = panel.get("game_id") if isinstance(panel, dict) else getattr(panel, "game_id", "")
+        panel_alias = str(panel_game_id or "").strip()
+        if panel_alias:
+            aliases.add(panel_alias)
+    return aliases
+
+
+def _normalized_aliases(protagonist_aliases: Iterable[str] | None) -> tuple[str, ...]:
+    if protagonist_aliases is None:
+        return ()
+    return tuple(
+        sorted(
+            {alias.strip() for alias in protagonist_aliases if isinstance(alias, str) and alias.strip()},
+            key=len,
+            reverse=True,
+        )
+    )
+
+
+def _has_protagonist_actor(prefix: str, pattern: re.Pattern[str], protagonist_aliases: Iterable[str] | None) -> bool:
+    if not pattern.search(prefix):
+        return False
+    aliases = _normalized_aliases(protagonist_aliases)
+    if aliases:
+        return any(alias in prefix for alias in aliases) or bool(_PRONOUN_SUBJECT_PREFIX.search(prefix))
+    return not _BYSTANDER_SUBJECT_PREFIX.search(prefix)
+
+
+def _has_character_action(text: str, action_start: int, protagonist_aliases: Iterable[str] | None = None) -> bool:
     start, _ = sentence_bounds(text, action_start)
     if _is_explanatory_sentence(text, action_start):
         return False
-    return bool(_CHARACTER_ACTION_PREFIX.search(text[start:action_start]))
+    return _has_protagonist_actor(text[start:action_start], _CHARACTER_ACTION_PREFIX, protagonist_aliases)
 
 
 def _action_matches(body: str, attribute: str | None = None, points: int | None = None) -> Iterator[re.Match[str]]:
@@ -116,21 +168,33 @@ def _chinese_number(value: int) -> str:
     return ""
 
 
-def has_character_attribute_allocation(body: str, attribute: str | None = None, points: int | None = None) -> bool:
+def has_character_attribute_allocation(
+    body: str,
+    attribute: str | None = None,
+    points: int | None = None,
+    *,
+    protagonist_aliases: Iterable[str] | None = None,
+) -> bool:
     for match in _action_matches(body, attribute, points):
-        if not _is_negated_before(body, match.start()) and _has_character_action(body, match.start()):
+        if not _is_negated_before(body, match.start()) and _has_character_action(
+            body, match.start(), protagonist_aliases
+        ):
             return True
     return False
 
 
-def character_attribute_allocation_points(body: str, attribute: str) -> int | None:
+def character_attribute_allocation_points(
+    body: str, attribute: str, *, protagonist_aliases: Iterable[str] | None = None
+) -> int | None:
     pattern = (
         rf"(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?[^。！？\n]{{0,16}}"
         rf"(?:全部)?(?:加到|加给|分配给|投入|点在)\s*{re.escape(attribute)}(?:上|里)?"
     )
     values: list[int] = []
     for match in re.finditer(pattern, body):
-        if _is_negated_before(body, match.start()) or not _has_character_action(body, match.start()):
+        if _is_negated_before(body, match.start()) or not _has_character_action(
+            body, match.start(), protagonist_aliases
+        ):
             continue
         count = parse_count(match.group("count"))
         if count is not None:
@@ -138,11 +202,13 @@ def character_attribute_allocation_points(body: str, attribute: str) -> int | No
     return values[-1] if values else None
 
 
-def _positive_confirmation_positions(body: str) -> list[int]:
+def _positive_confirmation_positions(body: str, protagonist_aliases: Iterable[str] | None = None) -> list[int]:
     confirmations = list(re.finditer(r"确认|确定|生效|保存", body))
     positions: list[int] = []
     for action in _action_matches(body):
-        if _is_negated_before(body, action.start()) or not _has_character_action(body, action.start()):
+        if _is_negated_before(body, action.start()) or not _has_character_action(
+            body, action.start(), protagonist_aliases
+        ):
             continue
         action_start, action_end = sentence_bounds(body, action.start())
         nearby_start, nearby_end = _next_nonempty_sentence_bounds(body, action_end + 1)
@@ -168,8 +234,10 @@ def _next_nonempty_sentence_bounds(text: str, position: int) -> tuple[int, int]:
     return sentence_bounds(text, position)
 
 
-def has_positive_attribute_allocation_confirmation(body: str) -> bool:
-    return bool(_positive_confirmation_positions(body))
+def has_positive_attribute_allocation_confirmation(
+    body: str, *, protagonist_aliases: Iterable[str] | None = None
+) -> bool:
+    return bool(_positive_confirmation_positions(body, protagonist_aliases))
 
 
 def _attribute_point_results(body: str) -> list[tuple[int, int]]:
@@ -195,8 +263,8 @@ def latest_attribute_points(body: str) -> int | None:
     return results[-1][1] if results else None
 
 
-def latest_confirmed_attribute_points(body: str) -> int | None:
-    confirmations = _positive_confirmation_positions(body)
+def latest_confirmed_attribute_points(body: str, *, protagonist_aliases: Iterable[str] | None = None) -> int | None:
+    confirmations = _positive_confirmation_positions(body, protagonist_aliases)
     if not confirmations:
         return None
     confirmed_at = confirmations[-1]
@@ -232,7 +300,12 @@ def _carry_reason_matches(context: str, expected_reason: str) -> bool:
     return True if not terms else any(term in normalized_context for term in terms)
 
 
-def has_character_attribute_carry_choice_and_reason(body: str, expected_reason: str = "") -> tuple[bool, bool]:
+def has_character_attribute_carry_choice_and_reason(
+    body: str,
+    expected_reason: str = "",
+    *,
+    protagonist_aliases: Iterable[str] | None = None,
+) -> tuple[bool, bool]:
     choice_pattern = r"暂时不加|先不加|留着|保留|攒着|不分配"
     for choice in re.finditer(choice_pattern, body):
         start, end = sentence_bounds(body, choice.start())
@@ -241,7 +314,8 @@ def has_character_attribute_carry_choice_and_reason(body: str, expected_reason: 
         if _is_explanatory_sentence(body, choice.start()) or _is_negated_before(body, choice.start(), carry=True):
             continue
         direct_choice = choice.group(0) in ("暂时不加", "先不加")
-        has_actor = bool(_CHARACTER_SUBJECT_PREFIX.search(prefix)) if direct_choice else bool(_CARRY_DECISION_PREFIX.search(prefix))
+        actor_pattern = _CHARACTER_SUBJECT_PREFIX if direct_choice else _CARRY_DECISION_PREFIX
+        has_actor = _has_protagonist_actor(prefix, actor_pattern, protagonist_aliases)
         if not has_actor:
             continue
         context = sentence

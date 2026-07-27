@@ -627,6 +627,25 @@ def test_web_game_review_requires_visible_allocation_action_for_current_chapter_
     assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
 
 
+def test_web_game_review_rejects_named_bystander_allocation_when_protagonist_aliases_are_known():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="短发玩家把五点加到智力上，确认后可用属性点归零。夜烬只是看着，没有加点。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+        protagonist_aliases={"苏叶", "夜烬"},
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
 def test_web_game_review_rejects_negated_allocation_choice_and_confirmation():
     review = review_web_game_chapter(
         chapter_number=4,
@@ -810,6 +829,21 @@ def test_web_game_review_requires_carry_reason_to_match_structured_reason():
             "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
         },
         world_facts=[],
+    )
+
+    assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review
+
+
+def test_web_game_review_rejects_carry_choice_negated_with_ba_construction():
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body="夜烬看着可用属性点还剩五点，决定不把这五点留着，等转职以后再用。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"},
+        },
+        world_facts=[],
+        protagonist_aliases={"苏叶", "夜烬"},
     )
 
     assert any(issue.startswith("attribute_allocation_missing:") for issue in review["issues"]), review

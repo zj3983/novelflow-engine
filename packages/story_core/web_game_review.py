@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Iterable
 
 from packages.story_core.attribute_evidence import (
     character_attribute_allocation_points,
@@ -399,19 +399,25 @@ def _current_attribute_allocation_decision(event_plan: dict[str, Any]) -> dict[s
     return {"mode": mode, "allocations": allocations, "remaining": remaining}
 
 
-def _attribute_action_values(body: str) -> dict[str, int]:
+def _attribute_action_values(
+    body: str, protagonist_aliases: Iterable[str] | None = None
+) -> dict[str, int]:
     values: dict[str, int] = {}
     for attribute in _ATTRIBUTE_NAMES:
-        points = character_attribute_allocation_points(body, attribute)
+        points = character_attribute_allocation_points(
+            body, attribute, protagonist_aliases=protagonist_aliases
+        )
         if points is not None:
             values[attribute] = points
     return values
 
 
-def _has_allocation_result(body: str, expected: dict[str, int], remaining: int) -> bool:
-    if not has_positive_attribute_allocation_confirmation(body):
+def _has_allocation_result(
+    body: str, expected: dict[str, int], remaining: int, protagonist_aliases: Iterable[str] | None = None
+) -> bool:
+    if not has_positive_attribute_allocation_confirmation(body, protagonist_aliases=protagonist_aliases):
         return False
-    if latest_confirmed_attribute_points(body) == remaining:
+    if latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases) == remaining:
         return True
     return any(
         re.search(rf"{re.escape(attribute)}[^。！？\n]{{0,16}}(?:变成|提升到|增加到)\s*(?:\d+|[一二两三四五六七八九十]+)", body)
@@ -420,7 +426,13 @@ def _has_allocation_result(body: str, expected: dict[str, int], remaining: int) 
 
 
 def _review_attribute_allocation_decision(
-    *, body: str, event_plan: dict[str, Any], issues: list[str], revision_plan: list[str], scores: dict[str, int]
+    *,
+    body: str,
+    event_plan: dict[str, Any],
+    issues: list[str],
+    revision_plan: list[str],
+    scores: dict[str, int],
+    protagonist_aliases: Iterable[str] | None = None,
 ) -> None:
     decision = _current_attribute_allocation_decision(event_plan)
     if not decision:
@@ -437,7 +449,9 @@ def _review_attribute_allocation_decision(
                 plan="按当前章节的结构化加点决定统一保留点数；正文明确写出的剩余点必须优先修正。",
             )
             return
-        has_choice, has_reason = has_character_attribute_carry_choice_and_reason(body, decision["reason"])
+        has_choice, has_reason = has_character_attribute_carry_choice_and_reason(
+            body, decision["reason"], protagonist_aliases=protagonist_aliases
+        )
         if remaining != decision["remaining"] or not has_choice or not has_reason:
             _append_issue(
                 issues=issues,
@@ -450,8 +464,8 @@ def _review_attribute_allocation_decision(
         return
 
     expected = decision["allocations"]
-    actual = _attribute_action_values(body)
-    actual_remaining = latest_confirmed_attribute_points(body)
+    actual = _attribute_action_values(body, protagonist_aliases)
+    actual_remaining = latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases)
     if actual and actual != expected or actual_remaining is not None and actual_remaining != decision["remaining"]:
         _append_issue(
             issues=issues,
@@ -462,7 +476,9 @@ def _review_attribute_allocation_decision(
             plan="按当前章节的结构化加点决定改正文：属性、投入点数和剩余点必须一致。",
         )
         return
-    if actual != expected or not _has_allocation_result(body, expected, decision["remaining"]):
+    if actual != expected or not _has_allocation_result(
+        body, expected, decision["remaining"], protagonist_aliases
+    ):
         _append_issue(
             issues=issues,
             revision_plan=revision_plan,
@@ -734,6 +750,7 @@ def review_web_game_chapter(
     body: str,
     event_plan: dict[str, Any] | None = None,
     world_facts: list[str] | None = None,
+    protagonist_aliases: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Review web-game fiction rules that are independent from general prose quality."""
     event_plan = event_plan or {}
@@ -766,6 +783,7 @@ def review_web_game_chapter(
         issues=issues,
         revision_plan=revision_plan,
         scores=scores,
+        protagonist_aliases=protagonist_aliases,
     )
     level_gap_case = extract_level_gap_case(body, context_text="\n".join([plan_text, facts_text]))
     if level_gap_case:

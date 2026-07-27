@@ -91,6 +91,48 @@ def test_workflow_character_names_come_from_card_identities():
     assert orchestrator_module._planning_character_names(payload) == ["苏叶", "顾明"]
 
 
+def test_orchestrator_memory_normalization_receives_protagonist_real_and_game_aliases(monkeypatch):
+    captured = {}
+
+    def fake_normalize(payload, *, body, existing_character_names, protagonist_aliases=None):
+        captured["protagonist_aliases"] = protagonist_aliases
+        return {
+            "summary": "记忆完成",
+            "facts": [],
+            "unresolved_threads": [],
+            "next_focus": "",
+            "chapter_title": "",
+            "character_updates": [],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+            "rejected_updates": [],
+        }
+
+    orchestrator = StoryOrchestrator()
+    monkeypatch.setattr(orchestrator, "_timed_chat", lambda *_args, **_kwargs: ("{}", ""))
+    monkeypatch.setattr(orchestrator_module, "normalize_post_draft_memory", fake_normalize)
+    story = StoryState(
+        story_id="s-orchestrator-memory-aliases",
+        outline="网游开局。",
+        genre="game_webnovel",
+        style="紧凑",
+        characters=[
+            CharacterState(name="苏叶", game_id="夜烬", role="protagonist"),
+            CharacterState(name="短发玩家", role="supporting"),
+        ],
+    )
+
+    memory, status = orchestrator._extract_final_body_memory(
+        story,
+        "短发玩家把五点加到智力上。",
+        1,
+    )
+
+    assert status["status"] == "ok"
+    assert memory["summary"] == "记忆完成"
+    assert captured["protagonist_aliases"] == {"苏叶", "夜烬"}
+
+
 def _attribute_rule() -> dict:
     return {
         "mode": "free",

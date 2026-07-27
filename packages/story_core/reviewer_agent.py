@@ -62,6 +62,7 @@ def review_reviewer_agent(
         body=body,
         event_plan=event_plan,
         world_facts=world_facts or [],
+        protagonist_aliases=protagonist_names or [],
     )
     progression = progression_lead_review or review_progression_lead(
         chapter_number=chapter_number,

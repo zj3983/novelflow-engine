@@ -8,6 +8,7 @@ from packages.story_core.agent_base import (
     compact_text,
     parse_json_message_content,
 )
+from packages.story_core.attribute_evidence import protagonist_aliases_from_characters
 from packages.story_core.memory import apply_post_chapter_updates
 from packages.story_core.models import DirectorDecision, StoryState, default_model_name
 from packages.story_core.post_draft_memory import (
@@ -150,6 +151,7 @@ class MemoryAgent:
                     analysis,
                     body=body,
                     existing_character_names={character.name for character in story.characters},
+                    protagonist_aliases=protagonist_aliases_from_characters(story.characters),
                 )
 
         if memory is None:

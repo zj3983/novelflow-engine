@@ -65,3 +65,24 @@ def test_reviewer_agent_exposes_hard_rule_reviews():
     assert "critical_review" in review
     assert "web_game_review" in review
     assert "progression_lead_review" in review
+
+
+def test_reviewer_agent_passes_protagonist_aliases_to_web_game_review():
+    review = review_reviewer_agent(
+        chapter_number=4,
+        body="《神域》里，短发玩家把五点加到智力上，确认后可用属性点归零。夜烬只是看着，没有加点。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        protagonist_names=["苏叶", "夜烬"],
+    )
+
+    assert any(
+        issue.startswith("attribute_allocation_missing:")
+        for issue in review["web_game_review"]["issues"]
+    ), review

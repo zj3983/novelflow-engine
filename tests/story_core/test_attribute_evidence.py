@@ -15,6 +15,10 @@ def test_attribute_allocation_rejects_negated_action_with_modifier_before_points
     assert not has_character_attribute_allocation("夜烬没有把刚拿到的五点全部加到智力上", "智力", 5)
 
 
+def test_attribute_allocation_default_rejects_explicit_bystander_subject():
+    assert not has_character_attribute_allocation("《神域》里，短发玩家把五点加到智力上", "智力", 5)
+
+
 def test_attribute_allocation_accepts_confirmation_in_adjacent_paragraph():
     body = "夜烬把五点全部加到智力上。\n\n他点下确认，可用属性点归零。"
 
