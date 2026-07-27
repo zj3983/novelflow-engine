@@ -39,10 +39,6 @@ EXPLICIT_NON_GAME_TYPE_ALIASES = (
     "规则怪谈",
 )
 NOVEL_TYPE_ID_ALIASES = {
-    "webgame": "game_webnovel",
-    "web_game": "game_webnovel",
-    "game_web": "game_webnovel",
-    "game_fantasy": "game_webnovel",
     "通用网文": "generic_webnovel",
     "网游": "game_webnovel",
     "网游升级": "game_webnovel",
@@ -61,9 +57,18 @@ NOVEL_TYPE_ID_ALIASES = {
 }
 
 
-def canonical_novel_type_id(value: Any) -> str:
+def is_legacy_game_type_alias(value: Any) -> bool:
     type_id = str(value or "").strip().casefold()
     legacy_game_id = "_".join(type_id.replace("_", " ").replace("-", " ").split())
-    if legacy_game_id in {"webgame", "web_game", "game_web", "game_webnovel", "game_fantasy"}:
-        return "game_webnovel"
+    return legacy_game_id in {
+        "webgame",
+        "web_game",
+        "game_web",
+        "game_webnovel",
+        "game_fantasy",
+    }
+
+
+def canonical_novel_type_id(value: Any) -> str:
+    type_id = str(value or "").strip().casefold()
     return NOVEL_TYPE_ID_ALIASES.get(type_id, type_id)

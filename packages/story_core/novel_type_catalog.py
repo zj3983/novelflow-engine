@@ -14,6 +14,7 @@ from packages.story_core.novel_type_ids import (
     EXPLICIT_NON_GAME_TYPE_IDS,
     NOVEL_TYPE_ID_ALIASES,
     canonical_novel_type_id,
+    is_legacy_game_type_alias,
 )
 from packages.story_core.power_system_templates import compact_power_system_template
 from packages.story_core.trope_runtime import (
@@ -274,6 +275,8 @@ def normalize_novel_type_id(value: Any) -> str:
     plugin_id = resolve_novel_type_id(value)
     if plugin_id:
         return plugin_id
+    if is_legacy_game_type_alias(value):
+        return "game_webnovel"
     genre = str(value or "").strip()
     if genre.endswith("文"):
         return resolve_novel_type_id(genre[:-1])

@@ -830,8 +830,8 @@ def test_normalize_novel_type_ids_reuses_alias_case_and_deduplication_rules():
         "game fantasy",
     ),
 )
-def test_canonical_novel_type_id_normalizes_legacy_game_token_separators(legacy_type):
-    assert canonical_novel_type_id(legacy_type) == "game_webnovel"
+def test_normalize_novel_type_id_supports_legacy_game_token_separators(legacy_type):
+    assert novel_type_catalog.normalize_novel_type_id(legacy_type) == "game_webnovel"
 
 
 def test_canonical_novel_type_id_preserves_builtin_ids():
@@ -841,6 +841,29 @@ def test_canonical_novel_type_id_preserves_builtin_ids():
 
 def test_canonical_novel_type_id_preserves_custom_ascii_ids():
     assert canonical_novel_type_id("sports-fiction") == "sports-fiction"
+    assert canonical_novel_type_id("webgame") == "webgame"
+    assert canonical_novel_type_id("web-game") == "web-game"
+
+
+def test_custom_webgame_type_loads_without_invalidating_novel_type_library(monkeypatch, tmp_path):
+    from packages.story_core.novel_type_library import NovelTypeLibrary
+
+    storage_path = tmp_path / "novel-types.json"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_NOVEL_TYPES_PATH", str(storage_path))
+    library = NovelTypeLibrary()
+
+    created = library.create(
+        {
+            "id": "webgame",
+            "name": "Custom Webgame",
+            "description": "A custom type that owns this exact ID.",
+        }
+    )
+    reloaded_ids = {record.id for record in NovelTypeLibrary().list()}
+
+    assert created.id == "webgame"
+    assert {"webgame", "game_webnovel", "xuanhuan"}.issubset(reloaded_ids)
+    assert novel_type_catalog.normalize_novel_type_id("webgame") == "webgame"
 
 
 def test_explicit_non_game_type_recognizes_supported_metadata_shapes():
