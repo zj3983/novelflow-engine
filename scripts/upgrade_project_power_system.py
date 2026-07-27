@@ -156,6 +156,25 @@ _CHAPTER_NINE_RESOURCE_BOUNDARY = (
 )
 _CHAPTER_NINE_TURN = "后续构筑效率验证：在有限资源下比较火球术学习与强化的实际收益。"
 _CHAPTER_NINE_PAYOFF = "用技能点强化基础火球术，建立可复用的构筑效率记录。"
+_FIRST_CHAPTER_ATTRIBUTE_MARKERS = (
+    "【获得5点自由属性。】",
+    "把五点全加到了智力上",
+    "他点下确认",
+    "【智力：5→10。】",
+    "【可用属性点：0。】",
+)
+_LEGACY_CHAPTER_NINE_TERMS = (
+    "首次智力加点",
+    "技能点全投智力",
+    "智力加点比速度加点",
+)
+_DETAIL_CHAPTER_HEADING = re.compile(
+    r"^(?P<level>#{2,4})\s*第\s*(?P<number>\d+)\s*章(?:\s*[：:].*)?(?:\r?\n)?$"
+)
+_DETAIL_MARKDOWN_HEADING = re.compile(r"^(?P<level>#{1,4})(?:\s|$)")
+_FIRST_CHAPTER_FILENAME = re.compile(
+    r"^(?:0*1(?:$|[-_\s.].*)|第\s*0*1\s*章(?:$|[-_\s.].*))$"
+)
 
 
 def _clean_outline_text(value: str) -> tuple[str, bool]:
@@ -297,11 +316,34 @@ def _migrate_chapter_nine_outline(value: Any) -> tuple[Any, bool]:
     return migrated, changed
 
 
+def _chapter_nine_detail_block(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    in_chapter_nine = False
+    chapter_level = 0
+    result: list[str] = []
+    for line in lines:
+        match = _DETAIL_CHAPTER_HEADING.match(line)
+        if match and int(match.group("number")) == 9:
+            in_chapter_nine = True
+            chapter_level = len(match.group("level"))
+        elif in_chapter_nine:
+            next_chapter = _DETAIL_CHAPTER_HEADING.match(line)
+            next_heading = _DETAIL_MARKDOWN_HEADING.match(line)
+            next_level = len(next_heading.group("level")) if next_heading else None
+            if next_chapter or (next_level is not None and next_level <= chapter_level):
+                break
+        if in_chapter_nine:
+            result.append(line)
+    return "".join(result)
+
+
+def _append_resource_boundary(result: list[str], newline: str) -> None:
+    if result and not result[-1].endswith(("\n", "\r")):
+        result.append(newline)
+    result.append(f"- 资源边界: {_CHAPTER_NINE_RESOURCE_BOUNDARY}{newline}")
+
+
 def _migrate_detailed_outline(text: str) -> tuple[str, bool]:
-    chapter_heading = re.compile(
-        r"^(?P<level>#{2,4})\s*第\s*(?P<number>\d+)\s*章(?:\s*[：:].*)?(?:\r?\n)?$"
-    )
-    markdown_heading = re.compile(r"^(?P<level>#{1,4})(?:\s|$)")
     lines = text.splitlines(keepends=True)
     in_chapter_nine = False
     chapter_level = 0
@@ -310,7 +352,7 @@ def _migrate_detailed_outline(text: str) -> tuple[str, bool]:
     saw_resource_boundary = False
     newline = _dominant_newline(text)
     for line in lines:
-        match = chapter_heading.match(line)
+        match = _DETAIL_CHAPTER_HEADING.match(line)
         if match and int(match.group("number")) == 9:
             in_chapter_nine = True
             chapter_level = len(match.group("level"))
@@ -318,12 +360,12 @@ def _migrate_detailed_outline(text: str) -> tuple[str, bool]:
             changed = changed or updated_heading != line
             line = updated_heading
         elif in_chapter_nine:
-            next_chapter = chapter_heading.match(line)
-            next_heading = markdown_heading.match(line)
+            next_chapter = _DETAIL_CHAPTER_HEADING.match(line)
+            next_heading = _DETAIL_MARKDOWN_HEADING.match(line)
             next_level = len(next_heading.group("level")) if next_heading else None
             if next_chapter or (next_level is not None and next_level <= chapter_level):
                 if not saw_resource_boundary:
-                    result.append(f"- 资源边界: {_CHAPTER_NINE_RESOURCE_BOUNDARY}{newline}")
+                    _append_resource_boundary(result, newline)
                     saw_resource_boundary = True
                     changed = True
                 in_chapter_nine = False
@@ -332,7 +374,10 @@ def _migrate_detailed_outline(text: str) -> tuple[str, bool]:
             result.append(line)
             continue
 
-        prefix, separator, current = line.partition(":")
+        field = re.match(r"^(?P<prefix>\s*-\s*[^:：]+)(?P<separator>[:：])(?P<current>.*)$", line)
+        prefix = field.group("prefix") if field else ""
+        separator = field.group("separator") if field else ""
+        current = field.group("current") if field else ""
         replacement: str | None = None
         if separator and prefix.strip() in {"- 目标", "- 章节目标"}:
             replacement = _CHAPTER_NINE_GOAL
@@ -348,13 +393,19 @@ def _migrate_detailed_outline(text: str) -> tuple[str, bool]:
             continue
         ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
         leading_space = current[: len(current) - len(current.lstrip(" \t"))]
-        updated = f"{prefix}:{leading_space}{replacement}{ending}"
+        updated = f"{prefix}{separator}{leading_space}{replacement}{ending}"
         result.append(updated)
         changed = changed or updated != line
     if in_chapter_nine and not saw_resource_boundary:
-        result.append(f"- 资源边界: {_CHAPTER_NINE_RESOURCE_BOUNDARY}{newline}")
+        _append_resource_boundary(result, newline)
         changed = True
-    return "".join(result), changed
+    migrated = "".join(result)
+    unresolved = [
+        term for term in _LEGACY_CHAPTER_NINE_TERMS if term in _chapter_nine_detail_block(migrated)
+    ]
+    if unresolved:
+        raise ValueError("unmigratable chapter 9 wording: " + ", ".join(unresolved))
+    return migrated, changed
 
 
 def _decode_text(raw: bytes) -> str:
@@ -371,18 +422,28 @@ def _find_first_chapter(root: Path) -> tuple[Path, bytes]:
     _require_contained_path(root, chapters, "chapters_directory")
     if not chapters.is_dir():
         raise FileNotFoundError("chapters directory is required for this migration")
-    for path in sorted(chapters.glob("*.md")):
-        _require_contained_path(root, path, "chapter_markdown")
-        raw = path.read_bytes()
-        if _FIRST_CHAPTER_LEVEL_UP in _decode_text(raw):
-            return path, raw
-    raise ValueError("could not find first chapter level-up marker")
+    candidates = [
+        path
+        for path in sorted(chapters.glob("*.md"))
+        if _FIRST_CHAPTER_FILENAME.fullmatch(path.stem)
+    ]
+    if len(candidates) != 1:
+        raise ValueError("could not identify a unique first chapter file")
+    path = candidates[0]
+    _require_contained_path(root, path, "first_chapter_markdown")
+    raw = path.read_bytes()
+    if _FIRST_CHAPTER_LEVEL_UP in _decode_text(raw):
+        return path, raw
+    raise ValueError("first chapter level-up marker is missing")
 
 
 def _migrate_first_chapter(raw: bytes) -> tuple[bytes, bool]:
     text = _decode_text(raw)
-    if "【获得5点自由属性。】" in text:
+    present_markers = [marker for marker in _FIRST_CHAPTER_ATTRIBUTE_MARKERS if marker in text]
+    if len(present_markers) == len(_FIRST_CHAPTER_ATTRIBUTE_MARKERS):
         return raw, False
+    if present_markers:
+        raise ValueError("partial first chapter attribute scene")
     marker_index = text.find(_FIRST_CHAPTER_LEVEL_UP)
     if marker_index < 0:
         raise ValueError("first chapter level-up marker is missing")
@@ -403,6 +464,38 @@ def _protagonist_cards(state: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _level_number(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        match = re.fullmatch(r"\s*(?:lv\.?\s*)?(\d+)(?:\s*级)?\s*", value, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _is_initial_attribute_snapshot(state: dict[str, Any], protagonist: dict[str, Any]) -> bool:
+    chapter = _chapter_number(state.get("current_chapter"))
+    level = _level_number(protagonist.get("level"))
+    return (chapter if chapter is not None else 1) <= 1 and (level if level is not None else 1) <= 2
+
+
+def _stable_history(items: list[Any]) -> list[Any]:
+    indexed = list(enumerate(items))
+    indexed.sort(
+        key=lambda entry: (
+            _chapter_number(entry[1].get("chapter"))
+            if isinstance(entry[1], dict) and _chapter_number(entry[1].get("chapter")) is not None
+            else 1_000_000,
+            _level_number(entry[1].get("level"))
+            if isinstance(entry[1], dict) and _level_number(entry[1].get("level")) is not None
+            else 1_000_000,
+            entry[0],
+        )
+    )
+    return [item for _, item in indexed]
+
+
 def _migrate_state(state: Any, spec: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     if not isinstance(state, dict):
         raise ValueError("state.json must contain a JSON object")
@@ -419,14 +512,6 @@ def _migrate_state(state: Any, spec: dict[str, Any]) -> tuple[dict[str, Any], bo
         protagonist = {}
         ledger["protagonist"] = protagonist
 
-    base_attributes = deepcopy(rule["base_attributes"])
-    attributes = protagonist.get("attributes")
-    attributes = deepcopy(attributes) if isinstance(attributes, dict) else {}
-    attributes.update(base_attributes)
-    attributes["智力"] = base_attributes["智力"] + rule["points_per_level"]
-    protagonist["attributes"] = attributes
-    protagonist["unallocated_attribute_points"] = 0
-
     award = {"level": 2, "points": rule["points_per_level"], "chapter": 1}
     awards = protagonist.get("attribute_point_awards")
     award_history = deepcopy(awards) if isinstance(awards, list) else []
@@ -439,7 +524,7 @@ def _migrate_state(state: Any, spec: dict[str, Any]) -> tuple[dict[str, Any], bo
             and _chapter_number(item.get("level")) == 2
         )
     ]
-    protagonist["attribute_point_awards"] = [*award_history, award]
+    protagonist["attribute_point_awards"] = _stable_history([*award_history, award])
 
     allocation = {
         "chapter": 1,
@@ -456,7 +541,18 @@ def _migrate_state(state: Any, spec: dict[str, Any]) -> tuple[dict[str, Any], bo
             isinstance(item, dict) and _chapter_number(item.get("chapter")) == 1
         )
     ]
-    protagonist["attribute_allocations"] = [*allocation_history, allocation]
+    protagonist["attribute_allocations"] = _stable_history([*allocation_history, allocation])
+
+    if not _is_initial_attribute_snapshot(migrated, protagonist):
+        return migrated, migrated != state
+
+    base_attributes = deepcopy(rule["base_attributes"])
+    attributes = protagonist.get("attributes")
+    attributes = deepcopy(attributes) if isinstance(attributes, dict) else {}
+    attributes.update(base_attributes)
+    attributes["智力"] = base_attributes["智力"] + rule["points_per_level"]
+    protagonist["attributes"] = attributes
+    protagonist["unallocated_attribute_points"] = 0
 
     synchronized = {
         "attributes": deepcopy(attributes),

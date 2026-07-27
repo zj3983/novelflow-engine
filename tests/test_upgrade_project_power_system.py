@@ -319,21 +319,21 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
     assert protagonist["attributes"] == {**BASE_ATTRIBUTES, "智力": 10}
     assert protagonist["unallocated_attribute_points"] == 0
     assert protagonist["attribute_point_awards"] == [
-        {"level": 3, "points": 5, "chapter": 2},
         {"level": 2, "points": 5, "chapter": 1},
+        {"level": 3, "points": 5, "chapter": 2},
     ]
     assert protagonist["attribute_allocations"] == [
-        {
-            "chapter": 2,
-            "allocations": {"精神": 5},
-            "remaining": 0,
-            "reason": "后续保留",
-        },
         {
             "chapter": 1,
             "allocations": {"智力": 5},
             "remaining": 0,
             "reason": "强化基础火球术",
+        },
+        {
+            "chapter": 2,
+            "allocations": {"精神": 5},
+            "remaining": 0,
+            "reason": "后续保留",
         },
     ]
     assert protagonist["keep"] == original_state["progression_ledger"]["protagonist"]["keep"]
@@ -455,6 +455,143 @@ def test_check_reports_expected_changes_without_writes_or_backup(project_dir: Pa
     assert result["changes"]
     assert {path: path.read_bytes() for path in before} == before
     assert not (project_dir / ".webnovel" / "backups").exists()
+
+
+def test_advanced_project_preserves_current_attribute_state_and_card_mirrors(
+    project_dir: Path,
+) -> None:
+    state_path = project_dir / ".webnovel" / "state.json"
+    state = _load(state_path)
+    assert isinstance(state, dict)
+    state["current_chapter"] = 5
+    protagonist = state["progression_ledger"]["protagonist"]
+    protagonist.update(
+        {
+            "level": "Lv.5",
+            "attributes": {"力量": 8, "体质": 7, "敏捷": 9, "智力": 24, "精神": 11, "感知": 6},
+            "unallocated_attribute_points": 7,
+            "attribute_point_awards": [
+                {"level": 2, "points": 1, "chapter": 1, "legacy": True},
+                {"level": 5, "points": 5, "chapter": 5},
+                {"level": 3, "points": 5, "chapter": 3},
+            ],
+            "attribute_allocations": [
+                {"chapter": 5, "allocations": {"智力": 5}, "remaining": 7},
+                {"chapter": 1, "allocations": {"智力": 1}, "remaining": 4},
+                {"chapter": 3, "allocations": {"敏捷": 5}, "remaining": 2},
+            ],
+        }
+    )
+    card = state["characters"][0]
+    card["game_panel"].update({"level": "Lv.5", "attributes": {"智力": 24}, "unallocated_attribute_points": 7})
+    card["game_state"]["current"].update({"level": "Lv.5", "attributes": {"智力": 24}, "unallocated_attribute_points": 7})
+    original_panel = deepcopy(card["game_panel"])
+    original_current = deepcopy(card["game_state"]["current"])
+    state_path.write_bytes(_json_bytes(state))
+
+    result = upgrade_project(project_dir)
+    migrated = _load(state_path)
+    migrated_protagonist = migrated["progression_ledger"]["protagonist"]
+
+    assert result["valid"] is True
+    assert migrated_protagonist["level"] == "Lv.5"
+    assert migrated_protagonist["attributes"] == protagonist["attributes"]
+    assert migrated_protagonist["unallocated_attribute_points"] == 7
+    assert migrated_protagonist["attribute_point_awards"] == [
+        {"level": 2, "points": 5, "chapter": 1},
+        {"level": 3, "points": 5, "chapter": 3},
+        {"level": 5, "points": 5, "chapter": 5},
+    ]
+    assert migrated_protagonist["attribute_allocations"] == [
+        {"chapter": 1, "allocations": {"智力": 5}, "remaining": 0, "reason": "强化基础火球术"},
+        {"chapter": 3, "allocations": {"敏捷": 5}, "remaining": 2},
+        {"chapter": 5, "allocations": {"智力": 5}, "remaining": 7},
+    ]
+    assert migrated["characters"][0]["game_panel"] == original_panel
+    assert migrated["characters"][0]["game_state"]["current"] == original_current
+
+
+def test_rejects_marker_in_later_chapter_without_writing(project_dir: Path) -> None:
+    first = project_dir / "chapters" / "0001.md"
+    later = project_dir / "chapters" / "0002-后续.md"
+    first.write_text("# 第一章\n\n本章没有升级。\n", encoding="utf-8")
+    later.write_text(
+        "# 第二章\n\n【等级提升至Lv.2。】\n", encoding="utf-8"
+    )
+    before = {path.relative_to(project_dir): path.read_bytes() for path in project_dir.rglob("*") if path.is_file()}
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "first chapter level-up marker" in result["changes"][0]
+    assert {path.relative_to(project_dir): path.read_bytes() for path in project_dir.rglob("*") if path.is_file()} == before
+
+
+def test_rejects_ambiguous_first_chapter_files_without_writing(project_dir: Path) -> None:
+    duplicate = project_dir / "chapters" / "第0001章.md"
+    duplicate.write_bytes((project_dir / "chapters" / "0001.md").read_bytes())
+    before = {path.relative_to(project_dir): path.read_bytes() for path in project_dir.rglob("*") if path.is_file()}
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "unique first chapter" in result["changes"][0]
+    assert {path.relative_to(project_dir): path.read_bytes() for path in project_dir.rglob("*") if path.is_file()} == before
+
+
+def test_rejects_partial_first_chapter_attribute_scene_without_writing(project_dir: Path) -> None:
+    chapter = project_dir / "chapters" / "0001.md"
+    chapter.write_bytes(chapter.read_bytes().replace("【底层协议校验通过。】".encode("utf-8"), "【获得5点自由属性。】".encode("utf-8")))
+    before = {path.relative_to(project_dir): path.read_bytes() for path in project_dir.rglob("*") if path.is_file()}
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "partial first chapter attribute scene" in result["changes"][0]
+    assert {path.relative_to(project_dir): path.read_bytes() for path in project_dir.rglob("*") if path.is_file()} == before
+
+
+def test_detailed_outline_uses_english_colon_and_appends_boundary_on_new_line(
+    project_dir: Path,
+) -> None:
+    detail_path = project_dir / "大纲" / "第1卷-详细大纲.md"
+    detail_path.write_bytes(
+        (
+            "### 第 9 章: 技能点精算\r\n"
+            "- 目标: 首次智力加点\r\n"
+            "- 爽点: 智力加点比速度加点\r\n"
+            "- 本章变化: 技能点全投智力"
+        ).encode("utf-8")
+    )
+
+    result = upgrade_project(project_dir)
+    migrated = detail_path.read_bytes()
+
+    assert result["valid"] is True
+    assert b"\r\n- \xe8\xb5\x84\xe6\xba\x90\xe8\xbe\xb9\xe7\x95\x8c:" in migrated
+    assert migrated.count(b"\n") == migrated.count(b"\r\n")
+    text = migrated.decode("utf-8")
+    assert "首次智力加点" not in text
+    assert "技能点全投智力" not in text
+
+
+def test_rejects_unmigratable_chapter_nine_terms_without_writing(project_dir: Path) -> None:
+    detail_path = project_dir / "大纲" / "第1卷-详细大纲.md"
+    detail_path.write_text(
+        "### 第 9 章：技能点精算\n- 旁白: 技能点全投智力\n",
+        encoding="utf-8",
+    )
+    before = {path.relative_to(project_dir): path.read_bytes() for path in project_dir.rglob("*") if path.is_file()}
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "unmigratable chapter 9 wording" in result["changes"][0]
+    assert {path.relative_to(project_dir): path.read_bytes() for path in project_dir.rglob("*") if path.is_file()} == before
 
 
 def test_replacement_failure_rolls_back_new_state_chapter_and_detail_targets(
