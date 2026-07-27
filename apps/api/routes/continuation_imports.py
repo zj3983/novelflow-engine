@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 from typing import NoReturn
 
@@ -28,6 +29,9 @@ from packages.story_core.continuation_sessions import (
 
 
 router = APIRouter(prefix="/continuation-imports", tags=["continuation-imports"])
+
+_ANALYSIS_JOB_GENERATION = "_analysis_job_generation"
+_ANALYSIS_JOB_STATE = "_analysis_job_state"
 
 
 class _RequestModel(BaseModel):
@@ -301,11 +305,33 @@ def replace_chapters(
         _raise_domain_error(exc)
 
 
-def _mark_analysis_failed(store: ContinuationSessionStore, session_id: str) -> None:
+def _job_generation(session: ContinuationImportSession) -> str:
+    return str(session.analysis_progress.get(_ANALYSIS_JOB_GENERATION, ""))
+
+
+def _job_state(session: ContinuationImportSession) -> str:
+    return str(session.analysis_progress.get(_ANALYSIS_JOB_STATE, ""))
+
+
+def _mark_analysis_failed(
+    store: ContinuationSessionStore, session_id: str, generation: str
+) -> None:
     try:
         current = store.get(session_id)
+        if (
+            current.status != "analyzing"
+            or _job_generation(current) != generation
+            or _job_state(current) != "running"
+        ):
+            return
 
         def fail(session: ContinuationImportSession) -> None:
+            if (
+                session.status != "analyzing"
+                or _job_generation(session) != generation
+                or _job_state(session) != "running"
+            ):
+                raise ValueError("stale_analysis_job")
             session.status = "failed"
             session.error = "continuation_analysis_failed"
             session.analysis = {}
@@ -315,29 +341,111 @@ def _mark_analysis_failed(store: ContinuationSessionStore, session_id: str) -> N
         return
 
 
-def _run_analysis_job(session_id: str) -> None:
+def _claim_analysis_job(
+    store: ContinuationSessionStore, session_id: str, generation: str
+) -> bool:
+    try:
+        current = store.get(session_id)
+        if (
+            current.status != "analyzing"
+            or _job_generation(current) != generation
+            or _job_state(current) != "queued"
+        ):
+            return False
+
+        def claim(session: ContinuationImportSession) -> None:
+            if (
+                session.status != "analyzing"
+                or _job_generation(session) != generation
+                or _job_state(session) != "queued"
+            ):
+                raise ValueError("stale_analysis_job")
+            session.analysis_progress[_ANALYSIS_JOB_STATE] = "running"
+
+        store.update(session_id, claim, expected_revision=current.revision)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _run_analysis_job(session_id: str, generation: str) -> None:
     store: ContinuationSessionStore | None = None
     lease = None
+    claimed = False
     try:
         store = _session_store()
         lease = try_acquire_analysis_lease(store.root, session_id)
         if lease is None:
             return
-        if store.get(session_id).status == "ready":
+        claimed = _claim_analysis_job(store, session_id, generation)
+        if not claimed:
             return
         run_continuation_analysis(store, session_id, build_continuation_analyzer())
     except Exception:
-        current = None
-        if store is not None:
-            try:
-                current = store.get(session_id)
-            except (OSError, ValueError):
-                pass
-        if current is not None and current.status == "analyzing":
-            _mark_analysis_failed(store, session_id)
+        if store is not None and claimed:
+            _mark_analysis_failed(store, session_id, generation)
     finally:
         if lease is not None:
             lease.release()
+
+
+def _queue_new_generation(
+    store: ContinuationSessionStore,
+    session: ContinuationImportSession,
+) -> tuple[ContinuationImportSession, str]:
+    generation = f"caj-{uuid.uuid4().hex}"
+
+    def queue(current: ContinuationImportSession) -> None:
+        current.status = "analyzing"
+        current.error = ""
+        current.analysis = {}
+        current.analysis_progress[_ANALYSIS_JOB_GENERATION] = generation
+        current.analysis_progress[_ANALYSIS_JOB_STATE] = "queued"
+
+    updated = store.update(
+        session.session_id,
+        queue,
+        expected_revision=session.revision,
+    )
+    return updated, generation
+
+
+def _prepare_analysis_job(
+    store: ContinuationSessionStore, session_id: str
+) -> tuple[str, str, bool]:
+    for _ in range(8):
+        session = store.get(session_id)
+        if session.status == "ready":
+            return "ready", "", False
+        if session.status == "analyzing":
+            lease = try_acquire_analysis_lease(store.root, session_id)
+            if lease is None:
+                return "analyzing", _job_generation(session), False
+            try:
+                session = store.get(session_id)
+                if session.status == "ready":
+                    return "ready", "", False
+                if session.status != "analyzing":
+                    continue
+                generation = _job_generation(session)
+                if generation and _job_state(session) == "queued":
+                    return "analyzing", generation, True
+                try:
+                    _, generation = _queue_new_generation(store, session)
+                    return "analyzing", generation, True
+                except ValueError as exc:
+                    if _error_code(exc) != "session_revision_conflict":
+                        raise
+                    continue
+            finally:
+                lease.release()
+        try:
+            _, generation = _queue_new_generation(store, session)
+            return "analyzing", generation, True
+        except ValueError as exc:
+            if _error_code(exc) != "session_revision_conflict":
+                raise
+    raise ValueError("session_revision_conflict")
 
 
 @router.post(
@@ -348,30 +456,13 @@ def _run_analysis_job(session_id: str) -> None:
 def analyze(session_id: str, background_tasks: BackgroundTasks) -> AnalysisJobResponse:
     store = _session_store()
     try:
-        session = store.get(session_id)
+        job_status, generation, should_queue = _prepare_analysis_job(store, session_id)
     except (OSError, ValueError) as exc:
         _raise_domain_error(exc)
-    if session.status == "ready":
+    if job_status == "ready":
         return AnalysisJobResponse(session_id=session_id, status="ready")
-    try:
-        if session.status != "analyzing":
-            def mark(current: ContinuationImportSession) -> None:
-                current.status = "analyzing"
-                current.error = ""
-
-            try:
-                store.update(session_id, mark, expected_revision=session.revision)
-            except ValueError as exc:
-                if _error_code(exc) != "session_revision_conflict":
-                    raise
-                current = store.get(session_id)
-                if current.status == "ready":
-                    return AnalysisJobResponse(session_id=session_id, status="ready")
-                if current.status != "analyzing":
-                    raise
-        background_tasks.add_task(_run_analysis_job, session_id)
-    except (OSError, ValueError) as exc:
-        _raise_domain_error(exc)
+    if should_queue:
+        background_tasks.add_task(_run_analysis_job, session_id, generation)
     return AnalysisJobResponse(session_id=session_id, status="analyzing")
 
 

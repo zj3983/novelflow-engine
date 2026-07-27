@@ -490,13 +490,18 @@ def test_active_analysis_is_not_duplicated(
             client.post, f"/continuation-imports/{session['session_id']}/analyze"
         )
         assert started.wait(timeout=5)
+        running = continuation_imports._session_store().get(session["session_id"])
         second = client.post(f"/continuation-imports/{session['session_id']}/analyze")
+        after_second = continuation_imports._session_store().get(session["session_id"])
         release.set()
         first_response = first.result(timeout=5)
 
     assert first_response.status_code == 202
     assert second.status_code == 202
     assert analyzer.calls == 1
+    assert after_second.analysis_progress["_analysis_job_generation"] == (
+        running.analysis_progress["_analysis_job_generation"]
+    )
 
 
 def test_background_failure_preserves_session_and_safe_error(
@@ -619,12 +624,218 @@ def test_late_duplicate_background_callback_does_not_rerun_provider(
     assert continuation_imports._session_store().get(session["session_id"]).status == "ready"
 
 
+def test_old_callback_after_chapter_edit_does_not_call_provider(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    analyzer = _TitleAnalyzer()
+    monkeypatch.setattr(continuation_imports, "build_continuation_analyzer", lambda: analyzer)
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    queued = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], queued)
+    current = continuation_imports._session_store().get(session["session_id"])
+    chapters = [chapter.model_copy(deep=True) for chapter in current.chapters]
+    chapters[0].title = "edited after queue"
+    continuation_imports._session_store().replace_chapters(
+        session["session_id"],
+        chapters,
+        expected_revision=current.revision,
+        invalidate_analysis=True,
+    )
+
+    function, args, kwargs = queued.tasks[0]
+    function(*args, **kwargs)
+
+    assert analyzer.calls == 0
+
+
+def test_duplicate_callbacks_for_failed_generation_call_provider_once(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    class CountingFailure(_FailingAnalyzer):
+        calls = 0
+
+        def analyze_chapters(self, chapters):
+            type(self).calls += 1
+            return super().analyze_chapters(chapters)
+
+    CountingFailure.calls = 0
+    monkeypatch.setattr(continuation_imports, "build_continuation_analyzer", CountingFailure)
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    queued = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], queued)
+    continuation_imports.analyze(session["session_id"], queued)
+    assert len(queued.tasks) == 2
+
+    for function, args, kwargs in queued.tasks:
+        function(*args, **kwargs)
+
+    assert CountingFailure.calls == 1
+    assert continuation_imports._session_store().get(session["session_id"]).status == "failed"
+
+
+def test_failed_generation_requires_new_post_before_provider_retry(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    class FailThenSucceed(_TitleAnalyzer):
+        def analyze_chapters(self, chapters):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("first generation fails")
+            return [
+                ChapterAnalysis(chapter_id=chapter.chapter_id, summary=chapter.title)
+                for chapter in chapters
+            ]
+
+    analyzer = FailThenSucceed()
+    monkeypatch.setattr(continuation_imports, "build_continuation_analyzer", lambda: analyzer)
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    first = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], first)
+    first.tasks[0][0](*first.tasks[0][1], **first.tasks[0][2])
+    failed = continuation_imports._session_store().get(session["session_id"])
+    first_generation = failed.analysis_progress["_analysis_job_generation"]
+
+    second = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], second)
+    queued = continuation_imports._session_store().get(session["session_id"])
+    assert queued.analysis_progress["_analysis_job_generation"] != first_generation
+    second.tasks[0][0](*second.tasks[0][1], **second.tasks[0][2])
+
+    assert analyzer.calls == 2
+    assert continuation_imports._session_store().get(session["session_id"]).status == "ready"
+
+
+def test_running_generation_without_lease_is_replaced_and_requeued(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    analyzer = _TitleAnalyzer()
+    monkeypatch.setattr(continuation_imports, "build_continuation_analyzer", lambda: analyzer)
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    store = continuation_imports._session_store()
+
+    def crashed(current) -> None:
+        current.status = "analyzing"
+        current.analysis_progress["_analysis_job_generation"] = "old-generation"
+        current.analysis_progress["_analysis_job_state"] = "running"
+
+    store.update(session["session_id"], crashed, expected_revision=session["revision"])
+    tasks = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], tasks)
+    recovered = store.get(session["session_id"])
+
+    assert recovered.analysis_progress["_analysis_job_generation"] != "old-generation"
+    assert recovered.analysis_progress["_analysis_job_state"] == "queued"
+    assert len(tasks.tasks) == 1
+    tasks.tasks[0][0](*tasks.tasks[0][1], **tasks.tasks[0][2])
+    assert analyzer.calls == 1
+
+
+def test_concurrent_posts_create_one_effective_generation(
+    client: TestClient, allowed_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.routes import continuation_imports
+    from packages.story_core.continuation_sessions import ContinuationSessionStore
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
+
+    source = allowed_root / "book.txt"
+    _write_book(source)
+    session = client.post("/continuation-imports", json={"source_path": str(source)}).json()
+    original_get = ContinuationSessionStore.get
+    barrier = threading.Barrier(2)
+    calls = 0
+    guard = threading.Lock()
+
+    def synchronized_get(store, session_id):
+        nonlocal calls
+        value = original_get(store, session_id)
+        with guard:
+            should_wait = session_id == session["session_id"] and calls < 2
+            if should_wait:
+                calls += 1
+        if should_wait:
+            barrier.wait(timeout=5)
+        return value
+
+    monkeypatch.setattr(ContinuationSessionStore, "get", synchronized_get)
+    tasks = [CapturingTasks(), CapturingTasks()]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(
+            executor.map(
+                lambda item: continuation_imports.analyze(session["session_id"], item),
+                tasks,
+            )
+        )
+
+    generations = [item.tasks[0][1][1] for item in tasks]
+    current = original_get(continuation_imports._session_store(), session["session_id"])
+    assert [response.status for response in responses] == ["analyzing", "analyzing"]
+    assert generations[0] == generations[1]
+    assert current.analysis_progress["_analysis_job_generation"] == generations[0]
+
+
 def test_failed_job_does_not_overwrite_a_newer_ready_state(
     client: TestClient,
     allowed_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from apps.api.routes import continuation_imports
+
+    class CapturingTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs) -> None:
+            self.tasks.append((function, args, kwargs))
 
     source = allowed_root / "book.txt"
     _write_book(source)
@@ -646,7 +857,9 @@ def test_failed_job_does_not_overwrite_a_newer_ready_state(
         continuation_imports, "run_continuation_analysis", become_ready_then_fail
     )
 
-    continuation_imports._run_analysis_job(session["session_id"])
+    tasks = CapturingTasks()
+    continuation_imports.analyze(session["session_id"], tasks)
+    tasks.tasks[0][0](*tasks.tasks[0][1], **tasks.tasks[0][2])
 
     current = store.get(session["session_id"])
     assert current.status == "ready"
