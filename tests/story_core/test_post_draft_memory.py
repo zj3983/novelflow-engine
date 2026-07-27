@@ -53,7 +53,6 @@ def test_post_draft_memory_keeps_only_body_grounded_updates():
     assert [item["name"] for item in result["character_updates"]] == ["林照"]
     assert result["character_updates"][0] == {
         "name": "林照",
-        "goal": "明早去账房",
         "location": "偏殿",
         "evidence": "林照把断香炉搬回偏殿。周执事让他明早去账房回话",
     }
@@ -689,6 +688,40 @@ def test_character_update_fields_must_be_supported_by_the_same_evidence():
 
     assert emotion_evidence["character_updates"] == [
         {"name": "林峰", "emotion": "凝重", "evidence": "青锋脸色凝重"}
+    ]
+
+
+def test_character_update_field_and_alias_must_share_one_evidence_clause():
+    split_evidence = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "林峰", "emotion": "凝重", "evidence": "青锋站门口。赤霄脸色凝重。"}
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body="青锋站门口。赤霄脸色凝重。",
+        existing_character_names={"林峰", "周远"},
+        character_aliases_by_name={"林峰": {"青锋"}, "周远": {"赤霄"}},
+    )
+
+    assert split_evidence["character_updates"] == []
+
+    same_clause = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "林峰", "emotion": "凝重", "evidence": "青锋站门口，脸色凝重。"}
+            ],
+            "ledger_updates": {},
+            "ledger_evidence": {},
+        },
+        body="青锋站门口，脸色凝重。",
+        existing_character_names={"林峰"},
+        character_aliases_by_name={"林峰": {"青锋"}},
+    )
+
+    assert same_clause["character_updates"] == [
+        {"name": "林峰", "emotion": "凝重", "evidence": "青锋站门口，脸色凝重。"}
     ]
 
 

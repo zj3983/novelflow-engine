@@ -193,6 +193,10 @@ def _normalized_character_aliases_by_name(
     return normalized
 
 
+def _evidence_clauses(evidence: str) -> list[str]:
+    return [clause.strip() for clause in re.split(r"[。！？\n；;]+", evidence) if clause.strip()]
+
+
 def _normalize_character_updates(
     value: Any,
     *,
@@ -241,7 +245,12 @@ def _normalize_character_updates(
             )
             continue
         appearance_names = {name, *aliases_by_name.get(name, set())}
-        if not any(_literal_value_in_body(candidate, evidence) for candidate in appearance_names):
+        clauses = _evidence_clauses(evidence)
+        if not any(
+            _literal_value_in_body(candidate, clause)
+            for clause in clauses
+            for candidate in appearance_names
+        ):
             rejected.append(
                 {
                     "kind": "character_update",
@@ -254,7 +263,11 @@ def _normalize_character_updates(
         update = {"name": name}
         for field in ("emotion", "goal", "location"):
             field_value = _text(item.get(field))
-            if field_value and _evidence_matches(evidence, field_value):
+            if field_value and any(
+                _evidence_matches(clause, field_value)
+                and any(_literal_value_in_body(candidate, clause) for candidate in appearance_names)
+                for clause in clauses
+            ):
                 update[field] = field_value
         if len(update) == 1:
             rejected.append(
