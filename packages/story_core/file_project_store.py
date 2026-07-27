@@ -37,6 +37,7 @@ from packages.story_core.dual_state import (
 )
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.novel_type_catalog import (
+    is_game_story_type,
     normalize_novel_type_ids,
     novel_type_prompt_context,
     novel_type_id_from_metadata_fact,
@@ -2869,40 +2870,16 @@ class FileProjectStore:
 
     @staticmethod
     def _is_game_story_payload(project: dict[str, Any], state: dict[str, Any] | None = None) -> bool:
-        def is_game_alias(value: Any) -> bool:
-            normalized = " ".join(
-                str(value or "")
-                .strip()
-                .casefold()
-                .replace("_", " ")
-                .replace("-", " ")
-                .split()
-            )
-            return normalized in {"网游", "web game", "game web", "game webnovel"}
-
         world_blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
-        raw_explicit_ids = world_blueprint.get("genre_plugin_ids")
-        if isinstance(raw_explicit_ids, str):
-            raw_explicit_ids = [raw_explicit_ids]
-        if any(is_game_alias(item) for item in (raw_explicit_ids if isinstance(raw_explicit_ids, list) else [])):
-            return True
-        explicit_ids = normalize_novel_type_ids(world_blueprint.get("genre_plugin_ids"))
-        if "game_webnovel" in explicit_ids:
-            return True
-        if explicit_ids:
-            return False
         state = state if isinstance(state, dict) else {}
-        raw_state_types = state.get("genre_plugin_ids")
-        if isinstance(raw_state_types, str):
-            raw_state_types = [raw_state_types]
-        if any(is_game_alias(item) for item in (raw_state_types if isinstance(raw_state_types, list) else [])):
-            return True
         state_ids = normalize_novel_type_ids(state.get("genre_plugin_ids"))
-        if state_ids:
-            return "game_webnovel" in state_ids
-        if is_game_alias(state.get("genre")):
-            return True
-        return "game_webnovel" in normalize_novel_type_ids(state.get("genre"))
+        genre_plugin_ids = state_ids or normalize_novel_type_ids(world_blueprint.get("genre_plugin_ids"))
+        return is_game_story_type(
+            {
+                "genre_plugin_ids": genre_plugin_ids,
+                "genre": state.get("genre") or project.get("genre"),
+            }
+        )
 
     def project(self) -> dict[str, Any]:
         project = self._read_json(self.webnovel_dir / "project.json", {}) or self.master_setting().get("project", {}) or {}
@@ -5170,6 +5147,10 @@ class FileProjectStore:
         return preview
 
     def prompt_preview(self, chapter_number: int | None = None) -> dict[str, Any]:
+        with prompt_template_scope(self.prompt_template_object, self.prompt_template_source):
+            return self._prompt_preview(chapter_number)
+
+    def _prompt_preview(self, chapter_number: int | None = None) -> dict[str, Any]:
         from packages.story_core.orchestrator import (
             StoryOrchestrator,
             _character_context_for_prompt,
@@ -5177,6 +5158,7 @@ class FileProjectStore:
             _render_compression_length_prompt,
             _render_expansion_length_prompt,
             _review_context_facts,
+            _story_game_context,
             _story_snapshot,
         )
         from packages.story_core.prompt_modules import modules_for_stage, prompt_module_catalog
@@ -5202,6 +5184,8 @@ class FileProjectStore:
         story_payload["outline_context"] = direction_payload["outline_context"]
         story_payload["monster_profiles"] = direction_payload["monster_profiles"]
         story_payload["world_context"] = direction_payload["world_context"]
+        story_payload["genre"] = direction_payload["genre"]
+        story_payload["genre_plugin_ids"] = direction_payload["genre_plugin_ids"]
         story = StoryState.model_validate(story_payload)
         orchestrator = StoryOrchestrator()
         writing_packet, _, _ = self._build_writing_packet(target)
@@ -5217,7 +5201,7 @@ class FileProjectStore:
             except FileNotFoundError:
                 review = {}
         review = self._prompt_review_payload(review)
-        game_context = self._is_game_story_payload(project, state)
+        game_context = _story_game_context(story)
 
         core_context = _story_snapshot(story)
         character_context = _character_context_for_prompt(story, plan)

@@ -39,6 +39,11 @@ EXPLICIT_NON_GAME_TYPE_ALIASES = (
     "规则怪谈",
 )
 NOVEL_TYPE_ID_ALIASES = {
+    "webgame": "game_webnovel",
+    "web game": "game_webnovel",
+    "game web": "game_webnovel",
+    "game webnovel": "game_webnovel",
+    "game fantasy": "game_webnovel",
     "通用网文": "generic_webnovel",
     "网游": "game_webnovel",
     "网游升级": "game_webnovel",

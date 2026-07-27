@@ -37,7 +37,7 @@ from packages.story_core.memory import (
     retrieve_relevant_memories,
 )
 from packages.story_core.models import DirectorDecision, StageRuntimeEntry, StoryState
-from packages.story_core.novel_type_catalog import normalize_novel_type_id, normalize_novel_type_ids
+from packages.story_core.novel_type_catalog import is_game_story_type, normalize_novel_type_id, normalize_novel_type_ids
 from packages.story_core.planner import build_chapter_title, build_conflict_summary, build_event_beat, compute_chapter_cadence, plan_next_outline
 from packages.story_core.post_draft_memory import (
     build_post_draft_memory_prompt,
@@ -4140,13 +4140,7 @@ def apply_expression_patches_from_review(body: str, writing_review: dict) -> tup
 
 
 def _story_game_context(story: StoryState, plan: dict[str, Any] | None = None) -> bool:
-    explicit_ids = normalize_novel_type_ids(getattr(story, "genre_plugin_ids", []))
-    if explicit_ids:
-        return "game_webnovel" in explicit_ids
-    explicit_genre = normalize_novel_type_id(getattr(story, "genre", ""))
-    if explicit_genre:
-        return explicit_genre == "game_webnovel"
-    return False
+    return is_game_story_type(story)
 
 
 def _render_expansion_length_prompt(

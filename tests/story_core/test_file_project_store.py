@@ -3383,6 +3383,116 @@ def test_untyped_game_text_runtime_and_preview_default_to_generic(tmp_path):
     assert "面板反馈" not in prompts["compression"]
 
 
+@pytest.mark.parametrize(
+    ("project_genre", "blueprint_ids", "state_genre", "state_ids", "expected_game"),
+    [
+        ("game_webnovel", [], "", [], True),
+        ("", ["game_webnovel"], "", ["xuanhuan"], False),
+        ("", ["xuanhuan"], "", ["game_webnovel"], True),
+        ("", [], "web game", [], True),
+        ("", [], "webgame", [], True),
+    ],
+)
+def test_prompt_preview_genre_contract_matches_runtime_effective_story(
+    tmp_path,
+    project_genre,
+    blueprint_ids,
+    state_genre,
+    state_ids,
+    expected_game,
+):
+    from packages.story_core.orchestrator import _story_game_context
+
+    root = tmp_path / f"genre-contract-{len(blueprint_ids)}-{len(state_ids)}-{state_genre or project_genre}"
+    project = {
+        "project_id": "p-genre-contract",
+        "title": "Genre Contract",
+        "active_story_id": "s-genre-contract",
+        "genre": project_genre,
+        "world_blueprint": {"genre_plugin_ids": blueprint_ids},
+    }
+    state = {
+        "story_id": "s-genre-contract",
+        "outline": "林照守住断香炉。",
+        "genre": state_genre,
+        "genre_plugin_ids": state_ids,
+        "style": "白描",
+        "current_chapter": 1,
+        "world_facts": [],
+        "characters": [{"name": "林照", "role": "protagonist"}],
+    }
+    store = _make_minimal_file_project(root, project=project, state=state)
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "守炉",
+            "body": _long_test_body(),
+            "event_plan": {"chapter_title": "守炉", "next_focus": "追查来信"},
+        },
+    )
+
+    effective_story = StoryState.model_validate(
+        store._story_state_payload_for_direction(store.state(), store.project(), 1)
+    )
+    preview = store.prompt_preview(1)
+
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+    assert _story_game_context(effective_story) is expected_game
+    assert store._is_game_story_payload(store.project(), store.state()) is expected_game
+    if expected_game:
+        assert "游戏账本" in prompts["compression"]
+    else:
+        assert "核心冲突" in prompts["compression"]
+        assert "游戏账本" not in prompts["compression"]
+
+
+def test_prompt_preview_uses_project_expansion_and_compression_template_overrides(tmp_path):
+    root = tmp_path / "prompt-preview-project-overrides"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-template-preview",
+            "title": "Template Preview",
+            "active_story_id": "s-template-preview",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={
+            "story_id": "s-template-preview",
+            "outline": "林照守住断香炉。",
+            "genre": "",
+            "genre_plugin_ids": ["xuanhuan"],
+            "style": "白描",
+            "current_chapter": 1,
+            "world_facts": [],
+            "characters": [{"name": "林照", "role": "protagonist"}],
+        },
+    )
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "守炉",
+            "body": _long_test_body(),
+            "event_plan": {"chapter_title": "守炉", "next_focus": "追查来信"},
+        },
+    )
+    store.set_prompt_template_override(
+        "expansion",
+        "PROJECT EXPANSION {{target_chars}}\n{{expansion_focus}}\n{{source_body}}",
+    )
+    store.set_prompt_template_override(
+        "compression",
+        "PROJECT COMPRESSION {{opening_line}}\n{{target_chars}}\n{{compression_method}}\n{{chapter_scope}}\n{{source_body}}",
+    )
+
+    preview = store.prompt_preview(1)
+
+    prompts = {item["key"]: item["content"] for item in preview["prompts"]}
+    assert "PROJECT EXPANSION" in prompts["expansion"]
+    assert "PROJECT COMPRESSION" in prompts["compression"]
+
+
 def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module(tmp_path):
     root = tmp_path / "legacy-webgame"
     legacy_trade = "\u62c5\u4fdd\u4ea4\u6613"
