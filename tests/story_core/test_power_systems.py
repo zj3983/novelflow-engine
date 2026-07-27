@@ -534,6 +534,24 @@ def test_normalization_does_not_add_attribute_allocation_without_an_enabled_rule
     assert "attribute_allocation" not in normalize_power_system_spec(complete_spec())
 
 
+def test_prompt_slice_ignores_extreme_attribute_starting_level_within_budget() -> None:
+    source = complete_spec()
+    source["attribute_allocation"] = {
+        "mode": "free",
+        "points_per_level": 5,
+        "starting_level": 10**100_000,
+        "base_attributes": {"力量": 5},
+        "allow_carry": True,
+        "respec_rule": "每周可在主城重置一次，消耗洗点券。",
+    }
+
+    result = power_system_prompt_slice(source)
+    encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+    assert "attribute_allocation" not in result
+    assert len(encoded) <= 5_000
+
+
 def test_normalization_preserves_bounded_extended_path_schema() -> None:
     spec = complete_spec()
     path = spec["paths"][0]

@@ -10,6 +10,7 @@ _MAX_BASE_ATTRIBUTES = 16
 _MAX_ATTRIBUTE_NAME = 120
 _MAX_RESPEC_RULE = 240
 _MAX_RAW_TEXT_SCAN = 4_096
+_MAX_STARTING_LEVEL = 1_000_000
 
 
 def _compact_text(value: Any, limit: int) -> str:
@@ -74,7 +75,9 @@ def normalize_attribute_allocation_rule(value: Any) -> dict[str, Any]:
     try:
         mode = _compact_text(value.get("mode"), 16).casefold()
         points_per_level = _positive_integer(value.get("points_per_level"), maximum=100)
-        starting_level = _positive_integer(value.get("starting_level"))
+        starting_level = _positive_integer(
+            value.get("starting_level"), maximum=_MAX_STARTING_LEVEL
+        )
         base_attributes = _base_attributes(value.get("base_attributes"))
         allow_carry = value.get("allow_carry")
         respec_rule = _compact_text(value.get("respec_rule"), _MAX_RESPEC_RULE)

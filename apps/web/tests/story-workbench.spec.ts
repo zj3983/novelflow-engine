@@ -2392,6 +2392,35 @@ test("世界观展示启用的自由属性分配规则", async ({ page }) => {
   await expect(section.getByText("每周可在主城重置一次，消耗洗点券。", { exact: true })).toBeVisible();
 });
 
+test("世界观忽略残缺或越界的自由属性分配规则", async ({ page }) => {
+  const invalidRules = [
+    { id: "points", rule: { points_per_level: 101 } },
+    { id: "starting", rule: { starting_level: 1_000_001 } },
+    { id: "base", rule: { base_attributes: { 力量: 10_001 } } },
+    { id: "carry", rule: { allow_carry: "true" } },
+    { id: "respec", rule: { respec_rule: " " } },
+  ];
+
+  for (const { id, rule } of invalidRules) {
+    await mockWorldPowerPage(page, `invalid-attribute-${id}`, {
+      power_system_spec: {
+        ...structuredPowerSystemSpec,
+        attribute_allocation: {
+          mode: "free",
+          points_per_level: 5,
+          starting_level: 1,
+          base_attributes: { 力量: 5 },
+          allow_carry: true,
+          respec_rule: "每周可在主城重置一次，消耗洗点券。",
+          ...rule,
+        },
+      },
+    });
+    await page.goto(`/projects/file%3Ainvalid-attribute-${id}/world`);
+    await expect(page.getByLabel("结构化力量体系").getByRole("heading", { name: "属性分配", exact: true })).toHaveCount(0);
+  }
+});
+
 test("世界观仅在旧力量摘要存在时提示需要补全", async ({ page }) => {
   await mockWorldPowerPage(page, "legacy-power", { power_system: ["旧版力量规则"] });
   await page.goto("/projects/file%3Alegacy-power/world");

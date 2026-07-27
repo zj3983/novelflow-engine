@@ -49,6 +49,13 @@ def test_normalizes_enabled_free_attribute_rule_to_a_safe_copy() -> None:
     assert source == before
 
 
+def test_returns_empty_mapping_when_starting_level_exceeds_supported_range() -> None:
+    rule = free_attribute_rule()
+    rule["starting_level"] = 1_000_001
+
+    assert normalize_attribute_allocation_rule(rule) == {}
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

@@ -20,18 +20,35 @@ function recordList(value: unknown): UnknownRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
 
-function attributeAllocation(value: unknown): UnknownRecord | null {
-  if (!isRecord(value) || text(value.mode) !== "free") return null;
-  return value;
+function isIntegerInRange(value: unknown, minimum: number, maximum: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= minimum && value <= maximum;
 }
 
-function baseAttributes(value: unknown): Array<[string, number]> {
-  if (!isRecord(value)) return [];
+function baseAttributes(value: unknown): Array<[string, number]> | null {
+  if (!isRecord(value)) return null;
+  const entries = Object.entries(value);
+  if (entries.length < 1 || entries.length > 16) return null;
   const result: Array<[string, number]> = [];
-  for (const [name, points] of Object.entries(value)) {
-    if (text(name) && typeof points === "number") result.push([name, points]);
+  for (const [name, points] of entries) {
+    if (!text(name) || !isIntegerInRange(points, 0, 10_000)) {
+      return null;
+    }
+    result.push([name, points]);
   }
   return result;
+}
+
+function attributeAllocation(value: unknown): UnknownRecord | null {
+  if (!isRecord(value) || text(value.mode).toLowerCase() !== "free") return null;
+  if (!isIntegerInRange(value.points_per_level, 1, 100)) {
+    return null;
+  }
+  if (!isIntegerInRange(value.starting_level, 1, 1_000_000)) {
+    return null;
+  }
+  if (baseAttributes(value.base_attributes) === null) return null;
+  if (typeof value.allow_carry !== "boolean" || !text(value.respec_rule)) return null;
+  return value;
 }
 
 export function hasStructuredPowerSystem(value: unknown): value is PowerSystemSpec {
@@ -102,7 +119,7 @@ export function StructuredPowerSystem({ spec }: { spec: unknown }) {
   const paths = recordList(spec.paths);
   const attributes = recordList(spec.attributes);
   const allocation = attributeAllocation(spec.attribute_allocation);
-  const baseAttributeValues = allocation ? baseAttributes(allocation.base_attributes) : [];
+  const baseAttributeValues = allocation ? baseAttributes(allocation.base_attributes) ?? [] : [];
 
   return (
     <div className={styles.root} aria-label="结构化力量体系">
