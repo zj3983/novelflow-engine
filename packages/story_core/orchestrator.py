@@ -15,6 +15,12 @@ from time import perf_counter
 from types import SimpleNamespace
 
 from packages.story_core.agent_base import compact_list, compact_text, parse_json_message_content
+from packages.story_core.attribute_allocation import (
+    apply_attribute_allocation,
+    attribute_allocation_rule_from_story,
+    award_attribute_points,
+    parse_level,
+)
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate, review_chapter_governance
 from packages.story_core.chapter_planning import build_outline_chapter_plan
 from packages.story_core.chapter_seed import build_chapter_seed
@@ -2605,13 +2611,36 @@ def _apply_ledger_updates(
 ) -> None:
     if not isinstance(ledger_updates, dict) or not ledger_updates:
         return
-    story.progression_ledger = _merge_ledger_dict(story.progression_ledger or {}, ledger_updates)
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
+    previous_protagonist = _clean_mapping(ledger.get("protagonist"))
+    previous_level = parse_level(previous_protagonist.get("level", ledger.get("level")))
+    rule = attribute_allocation_rule_from_story(story)
+    updates = deepcopy(ledger_updates)
+    directive = None
+    updates_protagonist = updates.get("protagonist")
+    if isinstance(updates_protagonist, dict):
+        directive = updates_protagonist.pop("attribute_allocation", None)
+        if not updates_protagonist:
+            updates.pop("protagonist", None)
+
+    story.progression_ledger = _merge_ledger_dict(ledger, updates)
     _normalize_progression_ledger(story.progression_ledger)
     sync_chapter = chapter_number if chapter_number is not None else int(story.current_chapter or 0) or None
+    if rule:
+        current_protagonist = _clean_mapping(story.progression_ledger.get("protagonist"))
+        award_attribute_points(
+            story.progression_ledger,
+            rule,
+            previous_level,
+            current_protagonist.get("level"),
+            sync_chapter,
+        )
+        if directive is not None:
+            apply_attribute_allocation(story.progression_ledger, directive, rule, sync_chapter)
     _sync_character_game_panels(
         story,
         sync_chapter,
-        authoritative_updates=ledger_updates,
+        authoritative_updates=updates,
     )
 
 
@@ -2778,6 +2807,7 @@ def _sync_character_game_panels(
         return
 
     ledger = story.progression_ledger
+    attribute_rule = attribute_allocation_rule_from_story(story)
     protagonist = _clean_mapping(ledger.get("protagonist"))
     economy = _clean_mapping(ledger.get("economy"))
     equipment = _clean_mapping(ledger.get("equipment"))
@@ -2835,6 +2865,9 @@ def _sync_character_game_panels(
             "hp": source_protagonist.get("hp", source.get("hp")),
             "mp": source_protagonist.get("mp", source.get("mp")),
             "attributes": source_protagonist.get("attributes", source.get("attributes")),
+            "unallocated_attribute_points": source_protagonist.get("unallocated_attribute_points"),
+            "attribute_point_awards": source_protagonist.get("attribute_point_awards"),
+            "attribute_allocations": source_protagonist.get("attribute_allocations"),
             "skills": source_skill_values or source.get("skills"),
             "equipment": source_equipment or source.get("equipment"),
             "inventory": source_economy.get("inventory", source.get("inventory")),
@@ -2850,6 +2883,10 @@ def _sync_character_game_panels(
         for field, value in ledger_values_from(authoritative_updates).items():
             if present(value):
                 current[field] = deepcopy(value)
+    if attribute_rule:
+        for field in ("attributes", "unallocated_attribute_points", "attribute_point_awards", "attribute_allocations"):
+            if field in protagonist:
+                current[field] = deepcopy(protagonist[field])
 
     game_id = _clean_game_id(current.get("game_id"), character.name)
     if not game_id:
@@ -2865,7 +2902,8 @@ def _sync_character_game_panels(
     if character.name == "苏叶" and (present(current.get("class_path")) or game_sync_enabled):
         fill("hp", "92/100" if str(current.get("exp") or "") not in {"", "0/100"} else "100/100")
         fill("mp", "61/80" if str(current.get("exp") or "") not in {"", "0/100"} else "80/80")
-        fill("attributes", {"力量": 3, "敏捷": 4, "智力": 9, "体质": 5})
+        if not attribute_rule:
+            fill("attributes", {"力量": 3, "敏捷": 4, "智力": 9, "体质": 5})
     if character.name == "苏叶" and not present(current.get("inventory")) and str(current.get("exp") or "") not in {"", "0/100"}:
         fill("inventory", {"灰鼠毒腺": "18份", "灰鼠皮": "3张"})
     if character.name == "苏叶" and isinstance(current.get("equipment"), dict):
@@ -2881,6 +2919,22 @@ def _sync_character_game_panels(
     panel.hp = str(current.get("hp") or "")
     panel.mp = str(current.get("mp") or "")
     panel.attributes = deepcopy(current.get("attributes")) if isinstance(current.get("attributes"), dict) else {}
+    panel.unallocated_attribute_points = (
+        current.get("unallocated_attribute_points")
+        if isinstance(current.get("unallocated_attribute_points"), int)
+        and not isinstance(current.get("unallocated_attribute_points"), bool)
+        else 0
+    )
+    panel.attribute_point_awards = (
+        deepcopy(current.get("attribute_point_awards"))
+        if isinstance(current.get("attribute_point_awards"), list)
+        else []
+    )
+    panel.attribute_allocations = (
+        deepcopy(current.get("attribute_allocations"))
+        if isinstance(current.get("attribute_allocations"), list)
+        else []
+    )
     panel.skills = list(current.get("skills") or []) if isinstance(current.get("skills"), list) else []
     panel.equipment = deepcopy(current.get("equipment")) if isinstance(current.get("equipment"), dict) else {}
     panel.inventory = deepcopy(current.get("inventory")) if isinstance(current.get("inventory"), dict) else {}

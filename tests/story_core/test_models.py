@@ -1,4 +1,4 @@
-from packages.story_core.models import AgentRuntimeState, AgentSettings, CharacterState, StoryState
+from packages.story_core.models import AgentRuntimeState, AgentSettings, CharacterState, GamePanel, StoryState
 
 
 def test_agent_settings_defaults_follow_environment_models(monkeypatch):
@@ -128,3 +128,11 @@ def test_character_state_normalizes_frozen_lifecycle():
 
     assert character.frozen is True
     assert character.lifecycle_state == "frozen"
+
+
+def test_game_panel_exposes_structured_attribute_allocation_mirrors() -> None:
+    panel = GamePanel()
+
+    assert panel.unallocated_attribute_points == 0
+    assert panel.attribute_point_awards == []
+    assert panel.attribute_allocations == []

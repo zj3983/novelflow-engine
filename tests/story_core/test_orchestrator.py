@@ -90,6 +90,96 @@ def test_workflow_character_names_come_from_card_identities():
     assert orchestrator_module._planning_character_names(payload) == ["苏叶", "顾明"]
 
 
+def _attribute_rule() -> dict:
+    return {
+        "mode": "free",
+        "points_per_level": 5,
+        "starting_level": 1,
+        "base_attributes": {"\u667a\u529b": 5, "\u529b\u91cf": 5},
+        "allow_carry": True,
+        "respec_rule": "one reset per week",
+    }
+
+
+def test_apply_ledger_updates_awards_and_allocates_level_up_points() -> None:
+    story = StoryState(
+        story_id="s-attribute-update",
+        outline="web game opening",
+        genre="web game",
+        style="plain",
+        characters=[CharacterState(name="Su Ye", role="protagonist")],
+        progression_ledger={"protagonist": {"level": "Lv.1"}},
+        world_context={"power_system_spec": {"attribute_allocation": _attribute_rule()}},
+    )
+
+    orchestrator_module._apply_ledger_updates(
+        story,
+        {
+            "protagonist": {
+                "level": "Lv.2",
+                "attribute_allocation": {
+                    "allocations": {"\u667a\u529b": 5},
+                    "remaining": 0,
+                    "reason": "mage route",
+                },
+            }
+        },
+        chapter_number=4,
+    )
+
+    protagonist = story.progression_ledger["protagonist"]
+    assert protagonist["attributes"] == {"\u667a\u529b": 10, "\u529b\u91cf": 5}
+    assert protagonist["unallocated_attribute_points"] == 0
+    assert protagonist["attribute_point_awards"] == [{"level": 2, "points": 5, "chapter": 4}]
+    assert protagonist["attribute_allocations"][0]["allocations"] == {"\u667a\u529b": 5}
+    assert "attribute_allocation" not in protagonist
+
+
+def test_apply_ledger_updates_leaves_projects_without_rules_unchanged() -> None:
+    story = StoryState(
+        story_id="s-no-attribute-rule",
+        outline="web game opening",
+        genre="web game",
+        style="plain",
+        progression_ledger={"protagonist": {"level": "Lv.1"}},
+    )
+
+    orchestrator_module._apply_ledger_updates(story, {"protagonist": {"level": "Lv.2"}}, chapter_number=4)
+
+    protagonist = story.progression_ledger["protagonist"]
+    assert not {"attributes", "unallocated_attribute_points", "attribute_point_awards", "attribute_allocations"} & set(protagonist)
+
+
+def test_structured_attribute_rule_syncs_ledger_values_without_legacy_suye_fallback() -> None:
+    story = StoryState(
+        story_id="s-attribute-sync",
+        outline="web game opening",
+        genre="web game",
+        style="plain",
+        characters=[CharacterState(name="\u82cf\u53f6", role="\u4e3b\u89d2", game_id="Night")],
+        progression_ledger={
+            "protagonist": {
+                "level": "Lv.2",
+                "attributes": {"\u667a\u529b": 10, "\u529b\u91cf": 5},
+                "unallocated_attribute_points": 2,
+                "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 4}],
+                "attribute_allocations": [{"chapter": 4, "allocations": {"\u667a\u529b": 3}, "remaining": 2, "reason": "mage"}],
+            }
+        },
+        world_context={"power_system_spec": {"attribute_allocation": _attribute_rule()}},
+    )
+
+    orchestrator_module._sync_character_game_panels(story, 4)
+
+    character = story.characters[0]
+    assert character.game_panel.attributes == {"\u667a\u529b": 10, "\u529b\u91cf": 5}
+    assert character.game_panel.unallocated_attribute_points == 2
+    assert character.game_panel.attribute_point_awards == [{"level": 2, "points": 5, "chapter": 4}]
+    assert character.game_panel.attribute_allocations[0]["remaining"] == 2
+    assert character.game_state["current"]["attributes"] == {"\u667a\u529b": 10, "\u529b\u91cf": 5}
+    assert character.game_state["current"]["unallocated_attribute_points"] == 2
+
+
 @pytest.mark.parametrize(
     "failure",
     [
