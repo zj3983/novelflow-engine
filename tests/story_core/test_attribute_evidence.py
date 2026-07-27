@@ -220,6 +220,25 @@ def test_confirmed_allocation_accepts_a_plain_panel_result_with_a_location_posse
     assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
 
 
+@pytest.mark.parametrize("panel_owner", ("夜烬的角色面板中", "他的面板上"))
+def test_confirmed_allocation_accepts_a_protagonist_owned_panel_result(panel_owner: str):
+    body = f"夜烬把五点加到智力上。随后他确认加点。{panel_owner}的可用属性点归零。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
+
+
+def test_confirmed_allocation_rejects_another_characters_owned_panel_result():
+    body = "夜烬把五点加到智力上。随后他确认加点。短发玩家的面板上的可用属性点还剩四点。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) is None
+
+
+def test_confirmed_allocation_does_not_let_another_owned_panel_override_the_protagonist_result():
+    body = "夜烬把五点加到智力上。可用属性点归零，夜烬确认加点。短发玩家的面板上的可用属性点还剩四点。"
+
+    assert latest_confirmed_attribute_points(body, protagonist_aliases={"夜烬"}) == 0
+
+
 def test_attribute_carry_reads_remaining_from_the_previous_adjacent_sentence():
     body = "可用属性点还剩五点。夜烬决定留着，因为等转职以后再分配。"
 

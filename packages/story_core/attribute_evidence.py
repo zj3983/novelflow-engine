@@ -463,6 +463,13 @@ def _remaining_candidate_subject(
     speaker = re.search(r"(?:^|[，,；;])\s*(?P<subject>[\u4e00-\u9fffA-Za-z0-9_]{1,12})(?:说|道|表示|提到)", sentence)
     if speaker and speaker.group("subject") not in aliases:
         return False
+    panel_owner = re.search(
+        r"(?P<owner>[\u4e00-\u9fffA-Za-z0-9_]{1,12})的(?:角色)?(?:面板|界面|提示|窗口)(?:上|中|里|内)?的?\s*$",
+        sentence,
+    )
+    if panel_owner:
+        name = panel_owner.group("owner")
+        return True if name in aliases or name in {"他", "她", "自己"} else False
     owner = re.search(r"(?P<owner>[\u4e00-\u9fffA-Za-z0-9_]{1,12})的\s*$", sentence)
     if owner:
         name = owner.group("owner")
