@@ -3,7 +3,9 @@ import json
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.orchestrator import (
     StoryOrchestrator,
+    _compact_writer_plan_for_prompt,
     _director_plan_quality_issues,
+    _director_prompt_snapshot,
     _normalize_event_plan,
     _normalize_intent,
 )
@@ -42,6 +44,29 @@ def _complete_plan(ordered_actions: object) -> dict:
             "chapter_end_hook": {"type": "悬念钩", "strength": "medium", "content": "缺失名单指向内院"},
         },
     }
+
+
+def _attribute_story(*, allow_carry: bool = True) -> StoryState:
+    return StoryState(
+        story_id="attribute-director-gate",
+        outline="本章升级，远期Lv.60。",
+        genre="网游",
+        style="白描",
+        characters=[CharacterState(name="苏叶", role="主角", game_id="夜烬")],
+        progression_ledger={"protagonist": {"level": "Lv.1", "unallocated_attribute_points": 0}},
+        world_context={
+            "power_system_spec": {
+                "attribute_allocation": {
+                    "mode": "free",
+                    "points_per_level": 5,
+                    "starting_level": 1,
+                    "base_attributes": {"智力": 5, "力量": 5},
+                    "allow_carry": allow_carry,
+                    "respec_rule": "主城洗点",
+                }
+            }
+        },
+    )
 
 
 def test_director_quality_gate_rejects_missing_contract_and_continuity_errors():
@@ -97,6 +122,67 @@ def test_director_quality_gate_accepts_complete_continuous_plan():
     }
 
     assert _director_plan_quality_issues(_story(), plan) == []
+
+
+def test_director_quality_gate_requires_decision_for_explicit_level_up() -> None:
+    plan = _complete_plan(["夜烬击败灰狼并升级"])
+    plan["event_plan"]["level"] = "Lv.2"
+
+    issues = _director_plan_quality_issues(_attribute_story(), plan)
+
+    assert any("attribute_allocation_decision" in issue for issue in issues)
+
+
+def test_director_quality_gate_accepts_exact_attribute_allocation() -> None:
+    plan = _complete_plan(["夜烬击败灰狼并升级"])
+    plan["event_plan"].update(
+        level="Lv.2",
+        attribute_allocation_decision={"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+    )
+
+    assert _director_plan_quality_issues(_attribute_story(), plan) == []
+
+
+def test_director_quality_gate_does_not_require_decision_without_current_level_up() -> None:
+    plan = _complete_plan(["夜烬查看任务牌"])
+    plan["outline"] = "未来Lv.60"
+
+    assert _director_plan_quality_issues(_attribute_story(), plan) == []
+
+
+def test_normalized_and_compact_event_plan_keep_valid_attribute_decision() -> None:
+    story = _attribute_story()
+    raw = {
+        "level": "Lv.2",
+        "attribute_allocation_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+    }
+
+    normalized = _normalize_event_plan(raw, chapter_number=2, story=story)
+    compacted = _compact_writer_plan_for_prompt({"event_plan": normalized})
+
+    assert compacted["event_plan"]["attribute_allocation_decision"] == {
+        "mode": "allocate",
+        "allocations": {"智力": 5},
+        "remaining": 0,
+    }
+
+
+def test_director_snapshot_exposes_attribute_ledger_fields_only_when_present() -> None:
+    snapshot = _director_prompt_snapshot(
+        {"progression_ledger": {"protagonist": {"level": "Lv.2", "attributes": {"智力": 10}, "unallocated_attribute_points": 0}}}
+    )
+
+    assert snapshot["ledger"]["protagonist"]["attributes"] == {"智力": 10}
+    assert snapshot["ledger"]["protagonist"]["unallocated_attribute_points"] == 0
+
+
+def test_generic_director_prompt_keeps_attribute_decision_contract() -> None:
+    story = _attribute_story()
+    story.genre = "悬疑"
+
+    prompt = StoryOrchestrator()._plan_prompt(story, 2)
+
+    assert "attribute_allocation_decision" in prompt
 
 
 def test_director_quality_gate_rejects_plan_without_executable_actions():

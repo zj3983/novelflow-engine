@@ -437,7 +437,7 @@ def _first_chapter_scenes(plan: dict[str, Any], *, trade_authorized: bool = Fals
         if opening_balance
         else "项目写作包中的现实可用余额"
     )
-    return [
+    scenes = [
         WritingTaskScene(
             key="entry_login",
             title="现实压力与登录建号",
@@ -490,6 +490,62 @@ def _first_chapter_scenes(plan: dict[str, Any], *, trade_authorized: bool = Fals
             target_chars=third,
             source_ids=["ch1-decision-hook"],
         ),
+    ]
+    entry = scenes[0]
+    scenes[0] = WritingTaskScene(
+        **{
+            **asdict(entry),
+            "required_surface": entry.required_surface.replace("；不要展开力量/敏捷/体质/智力等扩展属性", ""),
+        }
+    )
+    return scenes
+
+
+def _attribute_decision(plan: dict[str, Any]) -> dict[str, Any]:
+    decision = _event_plan(plan).get("attribute_allocation_decision")
+    if not isinstance(decision, dict):
+        return {}
+    mode = str(decision.get("mode") or "").strip().lower()
+    remaining = decision.get("remaining")
+    if isinstance(remaining, bool) or not isinstance(remaining, int) or remaining < 0:
+        return {}
+    if mode == "carry":
+        return {"mode": mode, "remaining": remaining, "reason": _text(decision.get("reason"), 80)}
+    allocations = decision.get("allocations")
+    if mode != "allocate" or not isinstance(allocations, dict) or not allocations:
+        return {}
+    normalized = {
+        str(name): points
+        for name, points in allocations.items()
+        if str(name).strip() and isinstance(points, int) and not isinstance(points, bool) and points > 0
+    }
+    return {"mode": mode, "allocations": normalized, "remaining": remaining} if normalized else {}
+
+
+def _apply_attribute_decision_to_scenes(
+    scenes: list[WritingTaskScene],
+    decision: dict[str, Any],
+) -> list[WritingTaskScene]:
+    if not scenes or not decision:
+        return scenes
+    target_index = next(
+        (index for index, scene in enumerate(scenes) if scene.key in {"small_verification", "choice"}),
+        len(scenes) - 1,
+    )
+    scene = scenes[target_index]
+    if decision["mode"] == "allocate":
+        allocations = decision["allocations"]
+        spent = sum(allocations.values())
+        chosen = "、".join(f"{name}+{points}" for name, points in allocations.items())
+        requirement = f"看到新增{spent}点、按路线选择{chosen}、确认属性和剩余{decision['remaining']}点；只展示本次涉及属性，不完整重复面板"
+    else:
+        reason = decision.get("reason") or "为后续路线保留"
+        requirement = f"看到剩余{decision['remaining']}点，并给出保留原因：{reason}"
+    return [
+        WritingTaskScene(**{**asdict(item), "required_surface": _join([item.required_surface, requirement], item.required_surface)})
+        if index == target_index
+        else item
+        for index, item in enumerate(scenes)
     ]
 
 
@@ -594,6 +650,8 @@ def build_writing_taskbook(
     )
     simulation_plan = _simulation_plan(plan)
     event_plan = _event_plan(plan)
+    decision = _attribute_decision(plan)
+    scenes = _apply_attribute_decision_to_scenes(scenes, decision)
     global_required = [
         *_plot_required_lines(_plot_simulation(simulation_plan)),
         *_longform_contract_required_lines(
@@ -608,6 +666,8 @@ def build_writing_taskbook(
         *_as_list(simulation_plan.get("forbidden_moves"), max_items=8, item_chars=56),
         *_as_list(chapter_intent.get("must_avoid"), max_items=6, item_chars=56),
     ]
+    if decision.get("mode") == "carry":
+        global_required.append(f"属性点保留原因必须在场：{decision.get('reason') or '为后续路线保留'}")
     world_required, world_forbidden = _world_context_requirements(simulation_plan)
     global_required.extend(world_required)
     global_forbidden.extend(world_forbidden)

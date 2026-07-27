@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES, compact_list, compact_text
+from packages.story_core.attribute_allocation import attribute_allocation_context
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate
 from packages.story_core.dual_state import project_character_for_scene, scene_kind_for_cards
 from packages.story_core.memory import build_character_cards
@@ -523,7 +524,7 @@ def _latest_panel_locks(story: Any, *, game_genre: bool) -> dict[str, Any]:
     return locks
 
 
-def prose_renderer_contract() -> dict[str, Any]:
+def prose_renderer_contract(chapter_decision: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Declare how a prose skill may consume the writing packet.
 
     The renderer is deliberately downstream of simulation and review. It should
@@ -531,6 +532,19 @@ def prose_renderer_contract() -> dict[str, Any]:
     echo internal planning language into the body.
     """
 
+    body_contract = [
+        "write chapter body only",
+        "do not output analysis, plans, rule explanations, or reviewer language",
+        "do not replace scenes with abstract conclusions",
+        "keep numbers, names, objects, places, and visible state traceable to the packet",
+        "consume every scene_contract.visible_consequences item on page; if it is not visible to a reader, the scene is unfinished",
+        "keep sentences complete and make each action, reason, and consequence easy to follow",
+        "make dialogue fit the speaker, relationship, and situation instead of compressing it into command fragments",
+    ]
+    if chapter_decision:
+        body_contract.append(
+            "when chapter_decision exists, show the attribute points, the character's choice, and the confirmed attributes and remaining points instead of changing only an end-of-chapter number"
+        )
     return {
         "skill": "chinese-novelist",
         "role": "prose_renderer_only",
@@ -566,15 +580,7 @@ def prose_renderer_contract() -> dict[str, Any]:
                 "backend-only explanation fields",
             ],
         },
-        "body_contract": [
-            "write chapter body only",
-            "do not output analysis, plans, rule explanations, or reviewer language",
-            "do not replace scenes with abstract conclusions",
-            "keep numbers, names, objects, places, and visible state traceable to the packet",
-            "consume every scene_contract.visible_consequences item on page; if it is not visible to a reader, the scene is unfinished",
-            "keep sentences complete and make each action, reason, and consequence easy to follow",
-            "make dialogue fit the speaker, relationship, and situation instead of compressing it into command fragments",
-        ],
+        "body_contract": body_contract,
     }
 
 
@@ -639,6 +645,12 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
     style_rules = _style_rules(game_genre)
     governance_gate = governance_quality_gate(governance)
     power_system = writing_power_system_context(story)
+    event_plan = getattr(bundle, "event_plan", None) if bundle is not None else {}
+    allocation_context = attribute_allocation_context(
+        story,
+        {"event_plan": event_plan} if isinstance(event_plan, Mapping) else None,
+    )
+    chapter_decision = allocation_context.get("chapter_decision") if allocation_context else {}
 
     packet = {
         "schema_version": "codex-writing-packet/v1",
@@ -676,7 +688,7 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
             ),
             {},
         ),
-        "prose_renderer": prose_renderer_contract(),
+        "prose_renderer": prose_renderer_contract(chapter_decision),
         "whole_chapter_contract": first_chapter_whole_body_contract(game_genre=game_genre) if target_chapter == 1 else {},
         "governance": governance,
         "governance_gate": governance_gate,
@@ -702,6 +714,12 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
     }
     if power_system:
         packet["power_system"] = power_system
+    if allocation_context:
+        packet["attribute_allocation"] = {
+            key: allocation_context[key]
+            for key in ("mode", "points_per_level", "attributes", "available_points", "latest_allocations", "chapter_decision")
+            if key in allocation_context
+        }
     return normalize_legacy_economy_prompt_value(
         packet,
         game_context=game_genre,

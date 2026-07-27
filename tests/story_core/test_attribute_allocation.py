@@ -4,10 +4,13 @@ import pytest
 
 from packages.story_core.attribute_allocation import (
     apply_attribute_allocation,
+    attribute_allocation_context,
     attribute_allocation_rule_from_story,
     award_attribute_points,
     normalize_attribute_allocation_rule,
     parse_level,
+    planned_level_target,
+    validate_attribute_allocation_decision,
 )
 
 
@@ -264,4 +267,93 @@ def test_apply_attribute_allocation_rejects_damaged_existing_attributes_without_
         free_attribute_rule(),
         chapter_number=8,
     ) is False
+
+
     assert ledger == before
+
+
+def test_attribute_context_uses_base_attributes_without_mutating_ledger() -> None:
+    story = type(
+        "Story",
+        (),
+        {
+            "world_context": {"power_system_spec": {"attribute_allocation": free_attribute_rule()}},
+            "progression_ledger": {"protagonist": {"level": "Lv.1", "unallocated_attribute_points": 2}},
+        },
+    )()
+    before = deepcopy(story.progression_ledger)
+
+    context = attribute_allocation_context(story)
+
+    assert context["attributes"] == free_attribute_rule()["base_attributes"]
+    assert context["available_points"] == 2
+    assert story.progression_ledger == before
+
+
+def test_attribute_context_ignores_future_outline_levels_and_uses_current_plan_level() -> None:
+    story = type(
+        "Story",
+        (),
+        {
+            "world_context": {"power_system_spec": {"attribute_allocation": free_attribute_rule()}},
+            "progression_ledger": {"protagonist": {"level": "Lv.1"}},
+            "outline": "终章升到Lv.60",
+        },
+    )()
+
+    assert planned_level_target({"event_plan": {"level": "Lv.2"}, "outline": "Lv.60"}) == 2
+    assert attribute_allocation_context(story)["available_points"] == 0
+
+
+def test_attribute_context_keeps_three_latest_valid_allocation_records() -> None:
+    story = type(
+        "Story",
+        (),
+        {
+            "world_context": {"power_system_spec": {"attribute_allocation": free_attribute_rule()}},
+            "progression_ledger": {
+                "protagonist": {
+                    "attribute_allocations": [
+                        {"chapter": 1},
+                        {"chapter": 2},
+                        "damaged",
+                        {"chapter": 3},
+                    ]
+                }
+            },
+        },
+    )()
+
+    assert [item["chapter"] for item in attribute_allocation_context(story)["latest_allocations"]] == [1, 2, 3]
+
+
+def test_validate_allocation_decision_accepts_exact_spend_and_carry_rules() -> None:
+    rule = free_attribute_rule()
+
+    assert validate_attribute_allocation_decision(
+        {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0}, rule, 5
+    ) == {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0}
+    assert validate_attribute_allocation_decision(
+        {"mode": "carry", "remaining": 5, "reason": "留给转职"}, rule, 5
+    ) == {"mode": "carry", "remaining": 5, "reason": "留给转职"}
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        {"mode": "allocate", "allocations": {"智力": 6}, "remaining": 0},
+        {"mode": "allocate", "allocations": {"未知": 1}, "remaining": 4},
+        {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 1},
+    ],
+)
+def test_validate_allocation_decision_rejects_invalid_spend(decision) -> None:
+    assert validate_attribute_allocation_decision(decision, free_attribute_rule(), 5) == {}
+
+
+def test_validate_allocation_decision_rejects_carry_when_rule_disallows_it() -> None:
+    rule = free_attribute_rule()
+    rule["allow_carry"] = False
+
+    assert validate_attribute_allocation_decision(
+        {"mode": "carry", "remaining": 5, "reason": "留给转职"}, rule, 5
+    ) == {}

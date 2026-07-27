@@ -147,6 +147,119 @@ def _unallocated_points(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
+def planned_level_target(plan: Any) -> int | None:
+    """Read an explicit level target from the current chapter plan only."""
+
+    if not isinstance(plan, Mapping):
+        return None
+
+    def collect_levels(value: Any) -> list[int]:
+        if isinstance(value, Mapping):
+            levels = [parsed] if (parsed := parse_level(value.get("level"))) is not None else []
+            for key, nested in value.items():
+                if key != "level":
+                    levels.extend(collect_levels(nested))
+            return levels
+        if isinstance(value, list):
+            return [level for item in value for level in collect_levels(item)]
+        return []
+
+    sources = [
+        plan.get("event_plan"),
+        plan.get("scene_cards"),
+        plan.get("state_delta"),
+    ]
+    levels = [level for source in sources for level in collect_levels(source)]
+    return max(levels) if levels else None
+
+
+def validate_attribute_allocation_decision(
+    decision: Any,
+    rule: Mapping[str, Any],
+    available_points: Any,
+) -> dict[str, Any]:
+    """Return one canonical chapter allocation decision, or an empty mapping."""
+
+    normalized_rule = normalize_attribute_allocation_rule(rule)
+    available = _unallocated_points(available_points)
+    if not normalized_rule or not isinstance(decision, Mapping):
+        return {}
+    mode = _compact_text(decision.get("mode"), 16).casefold()
+    remaining = decision.get("remaining")
+    if isinstance(remaining, bool) or not isinstance(remaining, int) or remaining < 0:
+        return {}
+    if mode == "carry":
+        if "allocations" in decision or not normalized_rule["allow_carry"] or remaining != available:
+            return {}
+        result: dict[str, Any] = {"mode": "carry", "remaining": remaining}
+        reason = _compact_text(decision.get("reason"), _MAX_RESPEC_RULE)
+        if reason:
+            result["reason"] = reason
+        return result
+    if mode != "allocate":
+        return {}
+    allocations = decision.get("allocations")
+    if not isinstance(allocations, Mapping) or not allocations:
+        return {}
+    normalized_allocations: dict[str, int] = {}
+    for name, points in allocations.items():
+        if (
+            not isinstance(name, str)
+            or name not in normalized_rule["base_attributes"]
+            or isinstance(points, bool)
+            or not isinstance(points, int)
+            or points <= 0
+        ):
+            return {}
+        normalized_allocations[name] = points
+    spent = sum(normalized_allocations.values())
+    if spent > available or remaining != available - spent:
+        return {}
+    result = {"mode": "allocate", "allocations": normalized_allocations, "remaining": remaining}
+    reason = _compact_text(decision.get("reason"), _MAX_RESPEC_RULE)
+    if reason:
+        result["reason"] = reason
+    return result
+
+
+def attribute_allocation_context(story: Any, plan: Any | None = None) -> dict[str, Any]:
+    """Build a read-only, writer-safe view of free attribute allocation state."""
+
+    rule = attribute_allocation_rule_from_story(story)
+    if not rule:
+        return {}
+    ledger = story.get("progression_ledger") if isinstance(story, Mapping) else getattr(story, "progression_ledger", None)
+    ledger = ledger if isinstance(ledger, Mapping) else {}
+    protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), Mapping) else {}
+    raw_attributes = protagonist.get("attributes")
+    attributes = deepcopy(dict(raw_attributes)) if isinstance(raw_attributes, Mapping) else deepcopy(rule["base_attributes"])
+    available = _unallocated_points(protagonist.get("unallocated_attribute_points"))
+    allocations = protagonist.get("attribute_allocations")
+    latest_allocations = (
+        [deepcopy(item) for item in allocations if isinstance(item, Mapping)][-3:]
+        if isinstance(allocations, list)
+        else []
+    )
+    context: dict[str, Any] = {
+        "mode": rule["mode"],
+        "points_per_level": rule["points_per_level"],
+        "starting_level": rule["starting_level"],
+        "attributes": attributes,
+        "available_points": available,
+        "latest_allocations": latest_allocations,
+    }
+    event_plan = plan.get("event_plan") if isinstance(plan, Mapping) and isinstance(plan.get("event_plan"), Mapping) else {}
+    current_level = parse_level(protagonist.get("level")) or rule["starting_level"]
+    target_level = planned_level_target(plan)
+    expected_points = available + max(0, (target_level or current_level) - current_level) * rule["points_per_level"]
+    decision = validate_attribute_allocation_decision(
+        event_plan.get("attribute_allocation_decision"), rule, expected_points
+    )
+    if decision:
+        context["chapter_decision"] = decision
+    return context
+
+
 def award_attribute_points(
     ledger: dict[str, Any],
     rule: Mapping[str, Any],

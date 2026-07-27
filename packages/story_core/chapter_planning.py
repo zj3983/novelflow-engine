@@ -89,6 +89,9 @@ def build_outline_chapter_plan(
         "stakes": obstacle,
         "next_focus": ending_hook,
     }
+    decision = chapter.get("attribute_allocation_decision")
+    if isinstance(decision, dict):
+        event_plan["attribute_allocation_decision"] = decision
     return {
         "planning_source": "outline",
         "character_moves": character_moves,

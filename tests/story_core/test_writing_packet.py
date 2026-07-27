@@ -46,6 +46,26 @@ def _power_story(*, ledger: dict | None = None, characters: list[CharacterState]
     )
 
 
+def _attribute_packet_story(*, ledger: dict | None = None) -> StoryState:
+    spec = _packet_power_spec()
+    spec["attribute_allocation"] = {
+        "mode": "free",
+        "points_per_level": 5,
+        "starting_level": 1,
+        "base_attributes": {"智力": 5, "力量": 5},
+        "allow_carry": True,
+        "respec_rule": "主城洗点",
+    }
+    return StoryState(
+        story_id="attribute-packet",
+        outline="属性点测试",
+        genre="网游",
+        style="白描",
+        progression_ledger=ledger or {"protagonist": {"level": "Lv.1", "unallocated_attribute_points": 0}},
+        world_context={"power_system_spec": spec},
+    )
+
+
 def test_packet_uses_ledger_level_and_branch_to_select_current_next_stage_and_path():
     story = _power_story(ledger={"protagonist": {"level": "Lv.12", "class_path": "元素法师"}})
     source = deepcopy(story.world_context["power_system_spec"])
@@ -60,6 +80,48 @@ def test_packet_uses_ledger_level_and_branch_to_select_current_next_stage_and_pa
     assert len(json.dumps(power, ensure_ascii=False, separators=(",", ":"))) <= 5000
     power["stages"][0]["name"] = "外部修改"
     assert story.world_context["power_system_spec"] == source
+
+
+def test_packet_includes_only_compact_free_attribute_context_and_chapter_decision() -> None:
+    story = _attribute_packet_story(
+        ledger={
+            "protagonist": {
+                "level": "Lv.1",
+                "attributes": {"智力": 5, "力量": 5},
+                "unallocated_attribute_points": 0,
+                "attribute_allocations": [{"chapter": 1, "allocations": {"智力": 2}, "remaining": 3}],
+            }
+        }
+    )
+    bundle = ChapterBundle(
+        chapter_number=2,
+        body="",
+        next_outline="继续升级",
+        updated_story=story,
+        event_plan={
+            "level": "Lv.2",
+            "attribute_allocation_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+        },
+    )
+
+    packet = build_codex_writing_packet(story, bundle)
+
+    assert packet["attribute_allocation"] == {
+        "mode": "free",
+        "points_per_level": 5,
+        "attributes": {"智力": 5, "力量": 5},
+        "available_points": 0,
+        "latest_allocations": [{"chapter": 1, "allocations": {"智力": 2}, "remaining": 3}],
+        "chapter_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+    }
+    assert "allow_carry" not in str(packet["attribute_allocation"])
+    assert any("attribute points" in line for line in packet["prose_renderer"]["body_contract"])
+
+
+def test_packet_omits_attribute_context_without_free_rule() -> None:
+    packet = build_codex_writing_packet(_power_story(), chapter_number=1)
+
+    assert "attribute_allocation" not in packet
 
 
 def test_packet_uses_character_world_state_aliases_and_respects_stage_boundaries():

@@ -57,7 +57,7 @@ def test_first_chapter_taskbook_keeps_only_three_useful_scenes():
     scenes = taskbook["scenes"]
     assert [scene["key"] for scene in scenes] == ["entry_login", "small_verification", "decision_hook"]
     assert "NPC" not in scenes[2]["goal"]
-    assert "不要展开力量/敏捷/体质/智力" in scenes[0]["required_surface"]
+    assert "不要展开力量/敏捷/体质/智力" not in scenes[0]["required_surface"]
     assert "底层协议校验通过" in scenes[1]["required_surface"]
     assert "至少兑现一项" in scenes[2]["required_surface"]
     assert "交易、论坛、公会追查后移" in " ".join(taskbook["global_required"])
@@ -87,6 +87,45 @@ def test_first_chapter_taskbook_uses_project_balance_and_requires_plausible_netw
     assert "43.18元" in entry["required_surface"]
     assert "27.60" not in entry["required_surface"]
     assert "有效联网方式" in entry["forbidden_surface"]
+
+
+def test_first_chapter_allocate_requires_visible_choice_without_full_attribute_panel() -> None:
+    taskbook = build_writing_taskbook(
+        chapter_number=1,
+        genre="网游",
+        plan={
+            "event_plan": {
+                "attribute_allocation_decision": {
+                    "mode": "allocate",
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                }
+            }
+        },
+    )
+
+    required = "\n".join(scene["required_surface"] for scene in taskbook["scenes"])
+
+    assert "新增5点" in required
+    assert "智力" in required and "剩余0点" in required
+    assert "力量/敏捷/体质/智力等扩展属性" not in required
+
+
+def test_first_chapter_without_attribute_decision_keeps_initial_panel_short() -> None:
+    taskbook = build_writing_taskbook(chapter_number=1, genre="网游", plan={})
+
+    assert "Lv.1短面板" in taskbook["scenes"][0]["required_surface"]
+    assert "力量/敏捷/体质/智力等扩展属性" not in taskbook["scenes"][0]["required_surface"]
+
+
+def test_taskbook_carry_requires_visible_reason() -> None:
+    taskbook = build_writing_taskbook(
+        chapter_number=2,
+        genre="网游",
+        plan={"event_plan": {"attribute_allocation_decision": {"mode": "carry", "remaining": 5, "reason": "留给转职"}}},
+    )
+
+    assert "保留原因" in "\n".join(taskbook["global_required"])
 
 
 def test_taskbook_compiles_scene_cards_for_later_chapters():

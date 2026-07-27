@@ -17,9 +17,12 @@ from types import SimpleNamespace
 from packages.story_core.agent_base import compact_list, compact_text, parse_json_message_content
 from packages.story_core.attribute_allocation import (
     apply_attribute_allocation,
+    attribute_allocation_context,
     attribute_allocation_rule_from_story,
     award_attribute_points,
     parse_level,
+    planned_level_target,
+    validate_attribute_allocation_decision,
 )
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate, review_chapter_governance
 from packages.story_core.chapter_planning import build_outline_chapter_plan
@@ -1722,6 +1725,7 @@ def _compact_writer_plan_for_prompt(plan: Any) -> dict[str, Any]:
                 "chapter_satisfaction",
                 "ordered_actions",
                 "chapter_end_hook",
+                "attribute_allocation_decision",
             )
             if event_plan.get(key) not in (None, "", [], {})
         }
@@ -2003,7 +2007,7 @@ def _director_context_payload(story: StoryState, chapter_number: int) -> dict[st
     selector_plan = {
         "character_moves": [{"name": character.name} for character in relevant_characters]
     }
-    return {
+    payload = {
         "project_snapshot": _director_snapshot_summary(_story_snapshot(story)),
         "chapter_seed": _writer_seed_summary(
             _compact_chapter_seed_for_prompt(build_chapter_seed(story, chapter_number))
@@ -2014,6 +2018,10 @@ def _director_context_payload(story: StoryState, chapter_number: int) -> dict[st
             max_items=4,
         ),
     }
+    allocation = attribute_allocation_context(story)
+    if allocation:
+        payload["attribute_allocation"] = _slim_prompt_value(allocation)
+    return payload
 
 
 def _planning_character_names(payload: Any) -> list[str]:
@@ -2089,7 +2097,10 @@ def _director_prompt_snapshot(snapshot: Any) -> dict[str, Any]:
         "ledger": {
             "protagonist": {
                 key: protagonist.get(key)
-                for key in ("game_id", "level", "class_path", "exp", "hp", "mp", "weapon_durability")
+                for key in (
+                    "game_id", "level", "class_path", "exp", "hp", "mp", "weapon_durability",
+                    "attributes", "unallocated_attribute_points",
+                )
                 if protagonist.get(key) not in (None, "", [], {})
             },
             "economy": {
@@ -2367,6 +2378,43 @@ def _director_plan_quality_issues(story: StoryState, plan: object) -> list[str]:
     hook = event_plan.get("chapter_end_hook") if isinstance(event_plan.get("chapter_end_hook"), dict) else {}
     if not str(hook.get("content") or "").strip():
         issues.append("event_plan.chapter_end_hook 缺少具体 content。")
+
+    attribute_rule = attribute_allocation_rule_from_story(story)
+    if attribute_rule:
+        protagonist = (
+            story.progression_ledger.get("protagonist")
+            if isinstance(story.progression_ledger, dict)
+            and isinstance(story.progression_ledger.get("protagonist"), dict)
+            else {}
+        )
+        current_level = parse_level(protagonist.get("level")) or attribute_rule["starting_level"]
+        target_level = planned_level_target(plan)
+        current_points = protagonist.get("unallocated_attribute_points")
+        current_points = (
+            current_points
+            if isinstance(current_points, int) and not isinstance(current_points, bool) and current_points >= 0
+            else 0
+        )
+        expected_points = current_points + max(0, (target_level or current_level) - current_level) * attribute_rule["points_per_level"]
+        raw_decision = event_plan.get("attribute_allocation_decision")
+        requires_decision = (target_level is not None and target_level > current_level) or raw_decision is not None
+        if requires_decision and not validate_attribute_allocation_decision(raw_decision, attribute_rule, expected_points):
+            if not isinstance(raw_decision, dict):
+                issues.append("event_plan.attribute_allocation_decision 缺失：本章明确升级时必须 allocate 或 carry。")
+            elif str(raw_decision.get("mode") or "").strip().lower() == "carry" and not attribute_rule["allow_carry"]:
+                issues.append("event_plan.attribute_allocation_decision 使用 carry，但当前规则禁止保留属性点。")
+            elif str(raw_decision.get("mode") or "").strip().lower() == "allocate":
+                allocations = raw_decision.get("allocations")
+                if isinstance(allocations, dict) and any(name not in attribute_rule["base_attributes"] for name in allocations):
+                    issues.append("event_plan.attribute_allocation_decision 含有规则外属性。")
+                elif isinstance(allocations, dict) and sum(
+                    points for points in allocations.values() if isinstance(points, int) and not isinstance(points, bool)
+                ) > expected_points:
+                    issues.append("event_plan.attribute_allocation_decision 分配点数超过本章预计可用点数。")
+                else:
+                    issues.append("event_plan.attribute_allocation_decision 的 remaining 必须等于预计剩余点数。")
+            else:
+                issues.append("event_plan.attribute_allocation_decision 必须是合法的 allocate 或 carry。")
     placeholder_phrases = {
         "完成本章推进",
         "推进当前目标",
@@ -2542,7 +2590,7 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
             "chapter_satisfaction": {},
             "author_constraints": list(story.author_constraints),
         }
-    return {
+    result = {
         "chapter_number": chapter_number,
         "chapter_title": compact_text(str(raw_event_plan.get("chapter_title", "")).strip(), 60),
         "turn": compact_text(str(raw_event_plan.get("turn", "")).strip(), 120),
@@ -2565,6 +2613,10 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
         "chapter_satisfaction": _normalize_chapter_satisfaction(raw_event_plan.get("chapter_satisfaction")),
         "author_constraints": list(story.author_constraints),
     }
+    decision = attribute_allocation_context(story, {"event_plan": raw_event_plan}).get("chapter_decision")
+    if decision:
+        result["attribute_allocation_decision"] = decision
+    return result
 
 
 def _normalize_memory_constraints(raw_memory: object, story: StoryState) -> dict:
@@ -5840,6 +5892,9 @@ class StoryOrchestrator:
     ) -> str:
         director_context = director_context or _director_context_payload(story, chapter_number)
         snapshot = _director_prompt_snapshot(director_context.get("project_snapshot", {}))
+        allocation = director_context.get("attribute_allocation")
+        if isinstance(allocation, dict) and allocation:
+            snapshot["attribute_allocation"] = _slim_prompt_value(allocation)
         chapter_seed = _director_prompt_chapter_seed(director_context.get("chapter_seed", {}))
         character_cards = _director_prompt_character_cards(director_context.get("character_cards", {}))
         char_names = [c.name for c in story.characters if c.lifecycle_state == "active" and not c.frozen]
@@ -5851,9 +5906,16 @@ class StoryOrchestrator:
             "character_cards": _plain_prompt_json(character_cards),
         }
         if not _story_game_context(story, {}):
-            return render_prompt_template(get_effective_prompt_template("director_generic"), values)
-        values["active_characters"] = ", ".join(char_names)
-        return render_prompt_template(get_effective_prompt_template("director"), values)
+            rendered = render_prompt_template(get_effective_prompt_template("director_generic"), values)
+        else:
+            values["active_characters"] = ", ".join(char_names)
+            rendered = render_prompt_template(get_effective_prompt_template("director"), values)
+        if attribute_allocation_rule_from_story(story):
+            rendered += (
+                "\n本章明确升级或处理已有属性点时，event_plan.attribute_allocation_decision 必须为 "
+                "allocate 或 carry；allocate 给出 allocations 和 remaining，carry 给出保留理由和 remaining。"
+            )
+        return rendered
 
     def _body_prompt(self, story: StoryState, chapter_number: int, plan: dict) -> str:
         rendered = self._render_body_prompt(story, chapter_number, plan)

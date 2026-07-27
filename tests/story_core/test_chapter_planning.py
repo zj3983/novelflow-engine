@@ -79,3 +79,22 @@ def test_outline_for_another_chapter_is_not_used():
     }
 
     assert build_outline_chapter_plan(context, 2) is None
+
+
+def test_outline_attribute_decision_is_handed_to_event_plan() -> None:
+    context = {
+        "project_snapshot": {
+            "outline_context": {
+                "chapter": {
+                    "chapter_number": 2,
+                    "goal": "升级",
+                    "action": "击败灰狼",
+                    "attribute_allocation_decision": {"mode": "allocate", "allocations": {"智力": 5}, "remaining": 0},
+                }
+            }
+        }
+    }
+
+    plan = build_outline_chapter_plan(context, 2)
+
+    assert plan["event_plan"]["attribute_allocation_decision"]["allocations"] == {"智力": 5}
