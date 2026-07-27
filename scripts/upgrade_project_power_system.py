@@ -437,11 +437,36 @@ def _find_first_chapter(root: Path) -> tuple[Path, bytes]:
     raise ValueError("first chapter level-up marker is missing")
 
 
-def _migrate_first_chapter(raw: bytes) -> tuple[bytes, bool]:
-    text = _decode_text(raw)
+def _find_workbench_first_chapter(root: Path) -> tuple[Path, bytes] | None:
+    chapters = root / ".story-system" / "chapters"
+    _require_contained_path(root, chapters, "workbench_chapters_directory")
+    if not chapters.exists():
+        return None
+    if not chapters.is_dir():
+        raise ValueError("workbench chapters path must be a directory")
+    path = chapters / "0001.json"
+    _require_contained_path(root, path, "workbench_first_chapter_json")
+    if not path.is_file():
+        raise FileNotFoundError("workbench first chapter JSON is required")
+    raw = path.read_bytes()
+    try:
+        chapter = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("workbench first chapter JSON is invalid") from exc
+    if not isinstance(chapter, dict):
+        raise ValueError("workbench first chapter JSON must contain a JSON object")
+    body = chapter.get("body")
+    if not isinstance(body, str):
+        raise ValueError("workbench first chapter body must be a string")
+    if _FIRST_CHAPTER_LEVEL_UP not in body:
+        raise ValueError("first chapter level-up marker is missing")
+    return path, raw
+
+
+def _migrate_first_chapter_body(text: str) -> tuple[str, bool]:
     present_markers = [marker for marker in _FIRST_CHAPTER_ATTRIBUTE_MARKERS if marker in text]
     if len(present_markers) == len(_FIRST_CHAPTER_ATTRIBUTE_MARKERS):
-        return raw, False
+        return text, False
     if present_markers:
         raise ValueError("partial first chapter attribute scene")
     marker_index = text.find(_FIRST_CHAPTER_LEVEL_UP)
@@ -449,8 +474,33 @@ def _migrate_first_chapter(raw: bytes) -> tuple[bytes, bool]:
         raise ValueError("first chapter level-up marker is missing")
     insert_at = marker_index + len(_FIRST_CHAPTER_LEVEL_UP)
     scene = _FIRST_CHAPTER_ATTRIBUTE_SCENE.replace("\n", _dominant_newline(text))
-    migrated = text[:insert_at] + scene + text[insert_at:]
+    return text[:insert_at] + scene + text[insert_at:], True
+
+
+def _migrate_first_chapter(raw: bytes) -> tuple[bytes, bool]:
+    text = _decode_text(raw)
+    migrated, changed = _migrate_first_chapter_body(text)
+    if not changed:
+        return raw, False
     return _encode_text(migrated, raw), True
+
+
+def _migrate_workbench_first_chapter(raw: bytes) -> tuple[bytes, bool]:
+    try:
+        chapter = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("workbench first chapter JSON is invalid") from exc
+    if not isinstance(chapter, dict):
+        raise ValueError("workbench first chapter JSON must contain a JSON object")
+    body = chapter.get("body")
+    if not isinstance(body, str):
+        raise ValueError("workbench first chapter body must be a string")
+    migrated_body, changed = _migrate_first_chapter_body(body)
+    if not changed:
+        return raw, False
+    migrated = deepcopy(chapter)
+    migrated["body"] = migrated_body
+    return _encode_json(migrated, raw), True
 
 
 def _protagonist_cards(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -859,6 +909,7 @@ def upgrade_project(
         if not isinstance(state, dict):
             raise ValueError("state.json must contain a JSON object")
         chapter_path, chapter_bytes = _find_first_chapter(root)
+        workbench_chapter = _find_workbench_first_chapter(root)
         detail_bytes: bytes | None = None
         if detail_path.exists():
             _require_contained_path(root, detail_path, "detailed_outline")
@@ -880,6 +931,15 @@ def upgrade_project(
         outline_changed = outline_changed or chapter_nine_changed
         migrated_state, state_changed = _migrate_state(state, spec)
         expected_chapter_bytes, chapter_changed = _migrate_first_chapter(chapter_bytes)
+        workbench_chapter_path: Path | None = None
+        expected_workbench_chapter_bytes: bytes | None = None
+        workbench_chapter_changed = False
+        if workbench_chapter is not None:
+            workbench_chapter_path, workbench_chapter_bytes = workbench_chapter
+            (
+                expected_workbench_chapter_bytes,
+                workbench_chapter_changed,
+            ) = _migrate_workbench_first_chapter(workbench_chapter_bytes)
         expected_detail_bytes = detail_bytes
         detail_changed = False
         if detail_bytes is not None:
@@ -914,6 +974,10 @@ def upgrade_project(
             changes.append("state.json: protagonist attribute allocation synchronized")
         if chapter_changed:
             changes.append("chapters: first level-up attribute allocation inserted")
+        if workbench_chapter_changed:
+            changes.append(
+                ".story-system/chapters/0001.json: first level-up attribute allocation inserted"
+            )
         if detail_changed:
             changes.append("大纲/第1卷-详细大纲.md: chapter 9 build wording updated")
         if power_changed:
@@ -929,6 +993,7 @@ def upgrade_project(
             or state_file_changed
             or power_changed
             or chapter_changed
+            or workbench_chapter_changed
             or detail_changed
         )
         result.update(changed=will_write, valid=True, changes=changes)
@@ -946,6 +1011,12 @@ def upgrade_project(
             writes.append((power_path, expected_power))
         if chapter_changed:
             writes.append((chapter_path, expected_chapter_bytes))
+        if (
+            workbench_chapter_changed
+            and workbench_chapter_path is not None
+            and expected_workbench_chapter_bytes is not None
+        ):
+            writes.append((workbench_chapter_path, expected_workbench_chapter_bytes))
         if detail_changed and expected_detail_bytes is not None:
             writes.append((detail_path, expected_detail_bytes))
         transaction_originals = _capture_targets(writes)

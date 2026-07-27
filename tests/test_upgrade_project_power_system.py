@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -15,6 +16,7 @@ from packages.story_core.power_systems import (
     legacy_power_summary,
     validate_power_system_spec,
 )
+from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.world_blueprint_context import MANAGED_MARKER
 from scripts.p_gou_power_system_data import build_power_system_spec
 from scripts.upgrade_project_power_system import upgrade_project
@@ -51,10 +53,12 @@ def project_dir(tmp_path: Path) -> Path:
     metadata = root / ".webnovel"
     settings = root / "设定集"
     chapters = root / "chapters"
+    story_chapters = root / ".story-system" / "chapters"
     outlines = root / "大纲"
     metadata.mkdir(parents=True)
     settings.mkdir()
     chapters.mkdir()
+    story_chapters.mkdir(parents=True)
     outlines.mkdir()
 
     project = {
@@ -169,6 +173,22 @@ def project_dir(tmp_path: Path) -> Path:
         "灰狼尸体上方亮起白光。【击杀Lv.1灰狼，获得经验100。】【等级提升至Lv.2。】\r\n\r\n"
         "【底层协议校验通过。】\r\n".encode("utf-8")
     )
+    (story_chapters / "0001.json").write_bytes(
+        b"\xef\xbb\xbf"
+        + _json_bytes(
+            {
+                "chapter_number": 1,
+                "body": (
+                    "\u5de5\u4f5c\u53f0\u955c\u50cf\u6b63\u6587\u3002\r\n\r\n"
+                    "\u3010\u7b49\u7ea7\u63d0\u5347\u81f3Lv.2\u3002\u3011\r\n\r\n"
+                    "\u3010\u5e95\u5c42\u534f\u8bae\u6821\u9a8c\u901a\u8fc7\u3002\u3011\r\n"
+                ),
+                "updated_story": {"keep": "unchanged"},
+                "summary": {"keep": "unchanged"},
+                "review": {"keep": "unchanged"},
+            }
+        )
+    )
     (outlines / "第1卷-详细大纲.md").write_bytes(
         (
             "### 第 9 章：技能点精算，学徒的极限\r\n"
@@ -229,6 +249,7 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
     outline_path = project_dir / ".webnovel" / "outline.json"
     state_path = project_dir / ".webnovel" / "state.json"
     chapter_path = project_dir / "chapters" / "0001.md"
+    workbench_chapter_path = project_dir / ".story-system" / "chapters" / "0001.json"
     detail_path = project_dir / "大纲" / "第1卷-详细大纲.md"
     world_path = project_dir / "设定集" / "世界观.md"
     original_project = _load(project_path)
@@ -236,6 +257,7 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
     original_project_bytes = project_path.read_bytes()
     original_outline_bytes = outline_path.read_bytes()
     original_state = _load(state_path)
+    original_workbench_chapter_bytes = workbench_chapter_path.read_bytes()
     original_world = world_path.read_bytes()
 
     result = upgrade_project(project_dir)
@@ -390,6 +412,9 @@ def test_upgrade_migrates_complete_system_and_preserves_unrelated_data(
         "灰狼尸体上方亮起白光。【击杀Lv.1灰狼，获得经验100。】【等级提升至Lv.2。】\r\n\r\n"
         "【底层协议校验通过。】\r\n".encode("utf-8")
     )
+    assert (backup / ".story-system" / "chapters" / "0001.json").read_bytes() == (
+        original_workbench_chapter_bytes
+    )
     assert (backup / "大纲" / "第1卷-详细大纲.md").read_bytes() == (
         (
             "### 第 9 章：技能点精算，学徒的极限\r\n"
@@ -422,6 +447,7 @@ def test_upgrade_is_idempotent_and_does_not_create_second_backup(project_dir: Pa
             project_dir / ".webnovel" / "state.json",
             project_dir / "设定集" / "力量体系.md",
             project_dir / "chapters" / "0001.md",
+            project_dir / ".story-system" / "chapters" / "0001.json",
             project_dir / "大纲" / "第1卷-详细大纲.md",
         )
     }
@@ -585,6 +611,132 @@ def test_rejects_partial_first_chapter_attribute_scene_without_writing(project_d
     assert {path.relative_to(project_dir): path.read_bytes() for path in project_dir.rglob("*") if path.is_file()} == before
 
 
+def test_migrates_workbench_first_chapter_body_without_overwriting_markdown(
+    project_dir: Path,
+) -> None:
+    markdown_path = project_dir / "chapters" / "0001.md"
+    workbench_path = project_dir / ".story-system" / "chapters" / "0001.json"
+    original_markdown = markdown_path.read_bytes()
+    original_workbench = _load(workbench_path)
+    assert isinstance(original_workbench, dict)
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is True
+    assert "chapters: first level-up attribute allocation inserted" in result["changes"]
+    assert ".story-system/chapters/0001.json: first level-up attribute allocation inserted" in result["changes"]
+    assert markdown_path.read_bytes() != original_markdown
+    migrated_workbench = _load(workbench_path)
+    assert isinstance(migrated_workbench, dict)
+    assert migrated_workbench["updated_story"] == original_workbench["updated_story"]
+    assert migrated_workbench["summary"] == original_workbench["summary"]
+    assert migrated_workbench["review"] == original_workbench["review"]
+    assert migrated_workbench["body"].count("【获得5点自由属性。】") == 1
+    assert "工作台镜像正文。" in migrated_workbench["body"]
+    assert "灰狼尸体上方亮起白光" not in migrated_workbench["body"]
+    migrated_bytes = workbench_path.read_bytes()
+    assert migrated_bytes.startswith(b"\xef\xbb\xbf")
+    assert migrated_bytes.count(b"\n") == migrated_bytes.count(b"\r\n")
+    assert FileProjectStore(project_dir).chapter(1)["body"] == migrated_workbench["body"]
+
+
+def test_migrates_only_the_missing_chapter_mirror(project_dir: Path) -> None:
+    markdown_path = project_dir / "chapters" / "0001.md"
+    migrated_markdown, changed = migration._migrate_first_chapter(markdown_path.read_bytes())
+    assert changed is True
+    markdown_path.write_bytes(migrated_markdown)
+    before_markdown = markdown_path.read_bytes()
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is True
+    assert markdown_path.read_bytes() == before_markdown
+    workbench = _load(project_dir / ".story-system" / "chapters" / "0001.json")
+    assert isinstance(workbench, dict)
+    assert workbench["body"].count("【获得5点自由属性。】") == 1
+    assert upgrade_project(project_dir, check=True) == {
+        "changed": False,
+        "valid": True,
+        "backup_path": None,
+        "changes": [],
+    }
+
+
+@pytest.mark.parametrize("mutation, error", [
+    ("missing", "workbench first chapter JSON is required"),
+    ("invalid", "workbench first chapter JSON is invalid"),
+    ("missing_body", "workbench first chapter body must be a string"),
+    ("missing_marker", "first chapter level-up marker is missing"),
+])
+def test_rejects_invalid_workbench_chapter_mirror_without_writing(
+    project_dir: Path, mutation: str, error: str
+) -> None:
+    path = project_dir / ".story-system" / "chapters" / "0001.json"
+    if mutation == "missing":
+        path.unlink()
+    elif mutation == "invalid":
+        path.write_bytes(b"{not json")
+    else:
+        chapter = _load(path)
+        assert isinstance(chapter, dict)
+        if mutation == "missing_body":
+            chapter.pop("body")
+        else:
+            chapter["body"] = "工作台镜像没有升级。"
+        path.write_bytes(_json_bytes(chapter))
+    before = {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    }
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert error in result["changes"][0]
+    assert {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    } == before
+
+
+def test_rejects_partial_workbench_attribute_scene_without_writing(project_dir: Path) -> None:
+    path = project_dir / ".story-system" / "chapters" / "0001.json"
+    chapter = _load(path)
+    assert isinstance(chapter, dict)
+    chapter["body"] += "\n\n【获得5点自由属性。】"
+    path.write_bytes(_json_bytes(chapter))
+    before = {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    }
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is False
+    assert result["changed"] is False
+    assert "partial first chapter attribute scene" in result["changes"][0]
+    assert {
+        candidate.relative_to(project_dir): candidate.read_bytes()
+        for candidate in project_dir.rglob("*")
+        if candidate.is_file()
+    } == before
+
+
+def test_legacy_project_without_story_system_only_migrates_markdown(project_dir: Path) -> None:
+    shutil.rmtree(project_dir / ".story-system")
+
+    result = upgrade_project(project_dir)
+
+    assert result["valid"] is True
+    assert (project_dir / "chapters" / "0001.md").read_text(encoding="utf-8-sig").count(
+        "【获得5点自由属性。】"
+    ) == 1
+
+
 def test_detailed_outline_uses_english_colon_and_appends_boundary_on_new_line(
     project_dir: Path,
 ) -> None:
@@ -634,29 +786,30 @@ def test_replacement_failure_rolls_back_new_state_chapter_and_detail_targets(
         project_dir / ".webnovel" / "state.json",
         project_dir / "设定集" / "力量体系.md",
         project_dir / "chapters" / "0001.md",
+        project_dir / ".story-system" / "chapters" / "0001.json",
         project_dir / "大纲" / "第1卷-详细大纲.md",
     )
     before = {path: (path.exists(), path.read_bytes()) for path in targets}
     real_replace = migration.os.replace
     writes = 0
 
-    def fail_after_state_write(source: str | Path, destination: str | Path) -> None:
+    def fail_after_workbench_chapter_write(source: str | Path, destination: str | Path) -> None:
         nonlocal writes
         destination_path = Path(destination)
         if destination_path in targets:
             writes += 1
-            if destination_path.name == "0001.md":
-                raise OSError("injected chapter replacement failure")
+            if destination_path.name == "第1卷-详细大纲.md":
+                raise OSError("injected detailed outline replacement failure")
         real_replace(source, destination)
 
-    monkeypatch.setattr(migration.os, "replace", fail_after_state_write)
+    monkeypatch.setattr(migration.os, "replace", fail_after_workbench_chapter_write)
 
     result = upgrade_project(project_dir, backup=False)
 
-    assert writes >= 5
+    assert writes >= 7
     assert result["changed"] is False
     assert result["valid"] is False
-    assert "injected chapter replacement failure" in result["changes"][0]
+    assert "injected detailed outline replacement failure" in result["changes"][0]
     assert {
         path: (path.exists(), path.read_bytes() if path.exists() else b"")
         for path in targets
@@ -810,6 +963,7 @@ def test_replacement_failure_rolls_back_every_target_and_cleans_temps(
         project_dir / ".webnovel" / "state.json",
         project_dir / "设定集" / "力量体系.md",
         project_dir / "chapters" / "0001.md",
+        project_dir / ".story-system" / "chapters" / "0001.json",
         project_dir / "大纲" / "第1卷-详细大纲.md",
     )
     before = {path: (path.exists(), path.read_bytes()) for path in targets}
