@@ -1379,6 +1379,7 @@ body {
 
 .ws-reader {
   min-width: 0;
+  scroll-margin-top: 16px;
   border: 1px solid var(--ws-line);
   border-radius: 8px;
   background: rgba(255, 250, 240, 0.94);
@@ -2131,6 +2132,13 @@ body {
   .ws-outline-generation,
   .ws-character-concrete__grid {
     grid-template-columns: 1fr;
+  }
+
+  .ws-editor-layout--chapters .ws-chapter-list {
+    max-height: min(50vh, 420px);
+    overflow-y: auto;
+    padding-right: 4px;
+    scrollbar-gutter: stable;
   }
 
   .ws-prompt-tabs {
