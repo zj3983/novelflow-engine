@@ -96,6 +96,13 @@ class ChapterPlan(_OutlineModel):
             raise ValueError("invalid_chapter_number")
         return value
 
+    @field_validator("level_target", mode="before")
+    @classmethod
+    def normalize_numeric_level_target(cls, value: Any) -> Any:
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return value
+
 
 class ProjectOutline(_OutlineModel):
     schema_version: Literal["project-outline/v1"] = "project-outline/v1"

@@ -373,6 +373,57 @@ def test_import_rejects_malformed_attribute_allocation_plan(tmp_path: Path) -> N
     assert import_markdown_outline(root) is None
 
 
+def test_attribute_allocation_reason_preserves_full_width_semicolons(
+    tmp_path: Path,
+) -> None:
+    root = _make_project(tmp_path)
+    outline = import_markdown_outline(root)
+    assert outline is not None
+    outline["chapters"][0]["attribute_allocation_decision"] = {
+        "mode": "carry",
+        "allocations": {},
+        "remaining": 5,
+        "reason": "等转职后再决定；现在不急着分配",
+    }
+
+    assert export_outline_to_markdown(root, outline) == "ok"
+    imported = import_markdown_outline(root)
+    assert imported is not None
+    assert imported["chapters"][0]["attribute_allocation_decision"]["reason"] == (
+        "等转职后再决定；现在不急着分配"
+    )
+
+
+def test_integer_level_target_round_trips_as_integer(tmp_path: Path) -> None:
+    root = _make_project(tmp_path)
+    outline = import_markdown_outline(root)
+    assert outline is not None
+    outline["chapters"][0]["level_target"] = 2
+
+    assert export_outline_to_markdown(root, outline) == "ok"
+    imported = import_markdown_outline(root)
+    assert imported is not None
+    assert imported["chapters"][0]["level_target"] == 2
+
+
+def test_json_export_removes_malformed_markdown_attribute_allocation(
+    tmp_path: Path,
+) -> None:
+    root = _make_project(tmp_path)
+    outline = import_markdown_outline(root)
+    assert outline is not None
+    volume_path = root / "大纲" / "第1卷-详细大纲.md"
+    volume_text = volume_path.read_text(encoding="utf-8")
+    volume_path.write_text(
+        volume_text.replace("- 目标:", "- 属性点安排: 智力随便加\n- 目标:", 1),
+        encoding="utf-8",
+    )
+
+    assert export_outline_to_markdown(root, outline) == "ok"
+    assert "属性点安排: 智力随便加" not in volume_path.read_text(encoding="utf-8")
+    assert import_markdown_outline(root) == outline
+
+
 def test_sync_exports_when_json_newer(tmp_path: Path) -> None:
     root = _make_project(tmp_path)
     outline = import_markdown_outline(root)

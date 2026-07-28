@@ -179,10 +179,11 @@ def _format_attribute_allocation_decision(value: Any) -> str:
 
 
 def _parse_attribute_allocation_decision(value: str) -> dict[str, Any] | None:
-    parts = [part.strip() for part in value.split("；") if part.strip()]
+    plan_text, separator, reason = value.partition("；原因：")
+    parts = [part.strip() for part in plan_text.split("；") if part.strip()]
     if not parts:
         return None
-    reason = next((part[3:].strip() for part in parts if part.startswith("原因：")), "")
+    reason = reason.strip() if separator else ""
     if parts[0].startswith("分配："):
         allocations: dict[str, int] = {}
         for item in parts[0][3:].split("、"):
@@ -258,6 +259,8 @@ def _block_to_chapter(block: dict[str, Any]) -> dict[str, Any]:
         value = entry[1] if entry else ""
         if json_key == "cast":
             chapter["cast"] = _split_cast(value)
+        elif json_key == "level_target" and value.isdigit():
+            chapter[json_key] = int(value)
         elif json_key == "attribute_allocation_decision" and value:
             decision = _parse_attribute_allocation_decision(value)
             if decision is None:
@@ -568,7 +571,8 @@ def _chapter_block_unchanged(block: dict[str, Any], chapter: dict[str, Any]) -> 
             if _split_cast(existing_value) != [str(item) for item in (raw or [])]:
                 return False
         elif json_key == "attribute_allocation_decision":
-            if _parse_attribute_allocation_decision(existing_value) != raw:
+            parsed = _parse_attribute_allocation_decision(existing_value)
+            if (existing_value and parsed is None) or parsed != raw:
                 return False
         elif existing_value != str(raw or "").strip():
             return False
