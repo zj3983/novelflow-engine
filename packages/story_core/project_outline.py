@@ -74,6 +74,24 @@ class AttributeAllocationDecision(_OutlineModel):
     remaining: int = Field(default=0, ge=0, strict=True)
     reason: str = ""
 
+    @field_validator("allocations", mode="before")
+    @classmethod
+    def validate_positive_integer_allocations(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or any(
+            not isinstance(points, int) or isinstance(points, bool) or points <= 0
+            for points in value.values()
+        ):
+            raise ValueError("invalid_attribute_allocation_decision")
+        return value
+
+    @model_validator(mode="after")
+    def validate_mode_shape(self) -> "AttributeAllocationDecision":
+        if self.mode == "allocate" and not self.allocations:
+            raise ValueError("invalid_attribute_allocation_decision")
+        if self.mode == "carry" and self.allocations:
+            raise ValueError("invalid_attribute_allocation_decision")
+        return self
+
 
 class ChapterPlan(_OutlineModel):
     chapter_number: int = Field(ge=1, strict=True)

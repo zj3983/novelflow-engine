@@ -132,6 +132,30 @@ def test_elastic_outline_fields_round_trip() -> None:
     assert normalized["arcs"][0]["extension_gate"]["continue_route"]
 
 
+@pytest.mark.parametrize(
+    "decision",
+    [
+        {"mode": "carry", "allocations": {"智力": 5}, "remaining": 5},
+        {"mode": "allocate", "allocations": {}, "remaining": 5},
+        {"mode": "allocate", "allocations": {"智力": -1}, "remaining": 6},
+    ],
+)
+def test_attribute_allocation_decision_rejects_non_round_trip_shapes(
+    decision: dict,
+) -> None:
+    with pytest.raises(ValidationError, match="invalid_attribute_allocation_decision"):
+        normalize_project_outline(
+            {
+                "chapters": [
+                    {
+                        "chapter_number": 1,
+                        "attribute_allocation_decision": decision,
+                    }
+                ]
+            }
+        )
+
+
 def test_old_outline_defaults_to_non_expanding_observe_mode() -> None:
     normalized = normalize_project_outline(
         {
