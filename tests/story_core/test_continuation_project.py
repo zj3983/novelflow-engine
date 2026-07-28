@@ -208,6 +208,33 @@ def test_confirmed_session_creates_readable_file_project(tmp_path: Path) -> None
     assert created.next_path == "/projects/file%3Ap-continuation-test/outline"
 
 
+def test_conversion_extracts_profile_and_realm_from_confirmed_character_analysis(
+    tmp_path: Path,
+) -> None:
+    session = _ready_session()
+    character = session.analysis["characters"][0]
+    character["summary"] = (
+        "## 基本信息；- **姓名**：沈砚；- **身份**：旧书店学徒；"
+        "- **年龄**：19岁"
+    )
+    character["states"] = [
+        {"claim": "当前修为：筑基初期", "confidence": "confirmed"}
+    ]
+
+    created = _create_project(
+        export_root=tmp_path / "projects",
+        session=session,
+        settings=_settings(3),
+        project_id_factory=lambda: "p-character-state-test",
+    )
+
+    character_state = FileProjectStore(created.root).state()["characters"][0]
+    assert character_state["identity_profile"]["current_identity"] == "旧书店学徒"
+    assert character_state["identity_profile"]["age"] == 19
+    assert character_state["real_state"]["current"]["realm"] == "筑基初期"
+    assert "##" not in character_state["memory"][0]
+
+
 def test_conversion_excludes_source_chapters_after_branch_point(tmp_path: Path) -> None:
     from packages.story_core.continuation_project import create_continuation_project
 

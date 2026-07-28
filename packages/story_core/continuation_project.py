@@ -222,7 +222,14 @@ def _character_state(
     *,
     branch_excludes_source: bool,
 ) -> dict[str, Any]:
-    memories = [item.summary] if item.summary else []
+    summary = str(item.summary or "").strip()
+    identity_match = re.search(r"\*\*身份\*\*[：:]\s*([^；\n]+)", summary)
+    age_match = re.search(r"\*\*年龄\*\*[：:]\s*(\d+)\s*岁?", summary)
+    cleaned_summary = re.sub(r"^#+\s*[^；\n]*[；\n]?\s*", "", summary)
+    cleaned_summary = re.sub(r"(?:^|[；\n])\s*-\s*", "；", cleaned_summary)
+    cleaned_summary = cleaned_summary.replace("**", "").strip("； \n")
+    memories = [cleaned_summary] if cleaned_summary else []
+    current_state: dict[str, Any] = {}
     memories.extend(
         state.claim
         for state in item.states
@@ -234,6 +241,22 @@ def _character_state(
             branch_excludes_source=branch_excludes_source,
         )
     )
+    for state in item.states:
+        if (
+            state.confidence != "confirmed"
+            or not _included_at_branch(
+                state,
+                accepted_ids,
+                branch_excludes_source=branch_excludes_source,
+            )
+        ):
+            continue
+        realm_match = re.search(
+            r"(?:当前)?(?:修为|境界)\s*[：:]\s*([^；，。\n]+)",
+            state.claim,
+        )
+        if realm_match:
+            current_state["realm"] = realm_match.group(1).strip()
     memories.extend(
         relation.claim
         for relation in item.relationships
@@ -245,12 +268,20 @@ def _character_state(
             branch_excludes_source=branch_excludes_source,
         )
     )
-    return {
+    character = {
         "name": item.name,
         "role": item.role or "supporting",
         "character_tier": "protagonist" if item.role == "protagonist" else "supporting",
         "memory": memories,
     }
+    if identity_match or age_match:
+        character["identity_profile"] = {
+            "current_identity": identity_match.group(1).strip() if identity_match else "",
+            "age": int(age_match.group(1)) if age_match else None,
+        }
+    if current_state:
+        character["real_state"] = {"current": current_state, "recent_changes": []}
+    return character
 
 
 def _chapter_summary(chapter: ContinuationChapter) -> dict[str, Any]:

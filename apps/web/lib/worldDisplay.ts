@@ -172,7 +172,7 @@ export function mergeCharacters(
 }
 
 export function shortStatus(character: DisplayCharacter): string {
-  return (
+  const status = (
     character.current_state ||
     character.motivation ||
     character.location ||
@@ -180,6 +180,14 @@ export function shortStatus(character: DisplayCharacter): string {
     character.memory?.[0] ||
     "暂无状态。"
   );
+  const identity = status.match(/\*\*(?:身份|角色定位)\*\*[：:]\s*([^；\n]+)/)?.[1];
+  if (identity?.trim()) return identity.trim();
+  return status
+    .replace(/^#+\s*[^；\n]*[；\n]?\s*/, "")
+    .replace(/(?:^|[；\n])\s*-\s*/g, "；")
+    .replace(/\*\*/g, "")
+    .replace(/^；+|；+$/g, "")
+    .trim() || "暂无状态。";
 }
 
 export function panelRows(panel: GamePanel | undefined): Array<[string, string]> {
@@ -205,13 +213,15 @@ export function compactRecord(value: Record<string, unknown> | undefined): strin
 }
 
 export function formatDisplayValue(value: unknown): string {
-  if (Array.isArray(value)) return value.map(formatDisplayValue).join("、");
+  if (Array.isArray(value)) return value.map(formatDisplayValue).filter(Boolean).join("、");
   if (value && typeof value === "object") {
     return Object.entries(value as Record<string, unknown>)
-      .map(([key, nestedValue]) => `${key}：${formatDisplayValue(nestedValue)}`)
+      .map(([key, nestedValue]) => [key, formatDisplayValue(nestedValue)] as const)
+      .filter(([, nestedValue]) => Boolean(nestedValue))
+      .map(([key, nestedValue]) => `${key}：${nestedValue}`)
       .join("；");
   }
-  return String(value ?? "");
+  return String(value ?? "").trim();
 }
 
 function formatStateValue(value: unknown): string {
@@ -226,6 +236,9 @@ const STATE_LABELS: Record<string, string> = {
   residence: "住处",
   livelihood: "生计",
   class_pressure: "现实压力",
+  realm: "修为境界",
+  cultivation: "修为境界",
+  cultivation_realm: "修为境界",
   game_id: "游戏ID",
   level: "等级",
   class_path: "职业",
@@ -242,8 +255,10 @@ const STATE_LABELS: Record<string, string> = {
 };
 
 function stateLabel(key: string): string {
-  return STATE_LABELS[key] ?? "状态补充";
+  return STATE_LABELS[key] ?? (/[^\x00-\x7F]/.test(key) ? key : "其他状态");
 }
+
+const PROFILE_STATE_KEYS = new Set(["identity_profile", "background_profile", "current_life_profile", "story_drive"]);
 
 export function isGameWebnovel(project: ProjectResponse | null | undefined): boolean {
   return (project?.world_blueprint?.genre_plugin_ids ?? []).some((id) => String(id).trim().toLowerCase() === "game_webnovel");
@@ -253,6 +268,7 @@ export function stateRows(layer: CharacterStateLayer | undefined): Array<[string
   if (!layer?.current) return [];
   return Object.entries(layer.current)
     .map(([key, value]): [string, string] | null => {
+      if (PROFILE_STATE_KEYS.has(key)) return null;
       return [stateLabel(key), formatStateValue(value)];
     })
     .filter((entry): entry is [string, string] => Boolean(entry && isReadableLine(entry[1])));

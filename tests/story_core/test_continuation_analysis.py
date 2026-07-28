@@ -1129,6 +1129,10 @@ def test_llm_merge_prompt_is_bounded_omits_old_body_and_keeps_latest_tail() -> N
     ] == [chapter.chapter_id for chapter in chapters]
     final_context = contexts[-1]
     assert final_context["task"] == "continuation_analysis_final"
+    assert any(
+        "latest evidence-backed cultivation realm" in rule
+        for rule in final_context["rules"]
+    )
     assert sum(
         item["coverage"]["chapter_count"]
         for item in final_context["analysis_digests"]

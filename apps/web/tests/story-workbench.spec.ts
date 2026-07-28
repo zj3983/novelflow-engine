@@ -2717,7 +2717,15 @@ test("非法状态 JSON 页面内报错且不发请求，非网游隐藏游戏�
     name: "林照", role: "protagonist", goals: [], frozen: false, lifecycle_state: "active",
     last_proposed_chapter: 0, last_approved_chapter: 1, introduced_by: "outline", relationships: {},
     game_id: "不应显示的ID",
-    real_state: { current: { occupation: "守祠人" }, recent_changes: [] },
+    memory: ["## 基本信息；- **姓名**：林照；- **身份**：守祠人之子"],
+    real_state: {
+      current: {
+        realm: "筑基初期",
+        occupation: "守祠人",
+        identity_profile: { aliases: [], gender: "", occupation: "" },
+      },
+      recent_changes: [],
+    },
     game_state: { current: { game_id: "不应显示", level: 9 }, recent_changes: [] },
   };
   const project = {
@@ -2741,6 +2749,12 @@ test("非法状态 JSON 页面内报错且不发请求，非网游隐藏游戏�
 
   await page.goto("/projects/file%3Areal-state-fixture/characters");
   await expect(page.getByRole("heading", { name: "现实状态" })).toBeVisible();
+  await expect(page.getByText("修为境界", { exact: true })).toBeVisible();
+  await expect(page.getByText("筑基初期", { exact: true })).toBeVisible();
+  await expect(page.getByText("守祠人之子", { exact: true })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("##");
+  await expect(page.locator("body")).not.toContainText("aliases");
+  await expect(page.getByText("状态补充", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "游戏状态" })).toHaveCount(0);
   await expect(page.getByText("不应显示", { exact: true })).toHaveCount(0);
   await expect(page.getByText("不应显示的ID", { exact: true })).toHaveCount(0);

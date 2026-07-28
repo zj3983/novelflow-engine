@@ -723,6 +723,7 @@ def _digest_prompt_context(
             "Cover every source_id exactly once and return source_ids unchanged.",
             "Do not omit older sources or invent unsupported facts.",
             "Keep evidence references tied to their original chapter IDs and offsets.",
+            "Preserve every important character's latest evidence-backed cultivation realm in character signals.",
         ],
     }
 
@@ -760,6 +761,7 @@ def _final_merge_context(
             "Every analysis_digest is required input; synthesize all coverage into the result.",
             "Use recent chapter excerpts only to locate the continuation point.",
             "Do not write continuation prose or invent unsupported facts.",
+            "For every important character, put the latest evidence-backed cultivation realm in states as '当前修为：境界'; do not guess when the text only says power increased.",
         ],
         "truncation": {
             "markers": [_COMPACT_VALUE_MARKER, _RECENT_TAIL_MARKER],
