@@ -138,6 +138,15 @@ def test_elastic_outline_fields_round_trip() -> None:
         {"mode": "carry", "allocations": {"智力": 5}, "remaining": 5},
         {"mode": "allocate", "allocations": {}, "remaining": 5},
         {"mode": "allocate", "allocations": {"智力": -1}, "remaining": 6},
+        {"mode": "allocate", "allocations": {"": 5}, "remaining": 0},
+        {"mode": "allocate", "allocations": {"智力、精神": 5}, "remaining": 0},
+        {"mode": "allocate", "allocations": {"智力+精神": 5}, "remaining": 0},
+        {
+            "mode": "carry",
+            "allocations": {},
+            "remaining": 5,
+            "reason": "等转职\n再分配",
+        },
     ],
 )
 def test_attribute_allocation_decision_rejects_non_round_trip_shapes(

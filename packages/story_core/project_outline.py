@@ -78,11 +78,24 @@ class AttributeAllocationDecision(_OutlineModel):
     @classmethod
     def validate_positive_integer_allocations(cls, value: Any) -> Any:
         if not isinstance(value, dict) or any(
-            not isinstance(points, int) or isinstance(points, bool) or points <= 0
-            for points in value.values()
+            not isinstance(name, str)
+            or not name.strip()
+            or name != name.strip()
+            or any(char in name for char in "、+；\r\n")
+            or not isinstance(points, int)
+            or isinstance(points, bool)
+            or points <= 0
+            for name, points in value.items()
         ):
             raise ValueError("invalid_attribute_allocation_decision")
         return value
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_single_line_reason(cls, value: str) -> str:
+        if "\r" in value or "\n" in value:
+            raise ValueError("invalid_attribute_allocation_decision")
+        return value.strip()
 
     @model_validator(mode="after")
     def validate_mode_shape(self) -> "AttributeAllocationDecision":
@@ -117,8 +130,11 @@ class ChapterPlan(_OutlineModel):
     @field_validator("level_target", mode="before")
     @classmethod
     def normalize_numeric_level_target(cls, value: Any) -> Any:
-        if isinstance(value, str) and value.strip().isdigit():
-            return int(value.strip())
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized.isdigit():
+                return int(normalized)
+            return normalized
         return value
 
 
