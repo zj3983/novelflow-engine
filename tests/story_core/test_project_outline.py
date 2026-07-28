@@ -95,6 +95,8 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "ending_hook",
         "trope_beat",
         "cast",
+        "level_target",
+        "attribute_allocation_decision",
     }
 
 

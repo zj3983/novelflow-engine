@@ -68,6 +68,13 @@ class ArcOutline(_OutlineModel):
         return self
 
 
+class AttributeAllocationDecision(_OutlineModel):
+    mode: Literal["allocate", "carry"]
+    allocations: dict[str, int] = Field(default_factory=dict)
+    remaining: int = Field(default=0, ge=0, strict=True)
+    reason: str = ""
+
+
 class ChapterPlan(_OutlineModel):
     chapter_number: int = Field(ge=1, strict=True)
     title: str = ""
@@ -79,6 +86,8 @@ class ChapterPlan(_OutlineModel):
     ending_hook: str = ""
     trope_beat: str | None = None
     cast: list[str] = Field(default_factory=list)
+    level_target: str | int | None = None
+    attribute_allocation_decision: AttributeAllocationDecision | None = None
 
     @field_validator("chapter_number", mode="before")
     @classmethod
@@ -160,6 +169,11 @@ def normalize_project_outline(payload: Any) -> dict[str, Any]:
         key=lambda arc: (arc["start_chapter"], arc["end_chapter"], arc["id"])
     )
     normalized["chapters"].sort(key=lambda chapter: chapter["chapter_number"])
+    for chapter in normalized["chapters"]:
+        if chapter.get("level_target") is None:
+            chapter.pop("level_target", None)
+        if chapter.get("attribute_allocation_decision") is None:
+            chapter.pop("attribute_allocation_decision", None)
     return normalized
 
 

@@ -323,6 +323,56 @@ def test_sync_imports_when_markdown_newer(tmp_path: Path) -> None:
     assert (root / "大纲" / "第1卷-节拍表.md").read_text(encoding="utf-8") == "# 节拍表\n人类专属\n"
 
 
+def test_sync_preserves_visible_attribute_allocation_plan_when_markdown_is_newer(
+    tmp_path: Path,
+) -> None:
+    root = _make_project(tmp_path)
+    outline = import_markdown_outline(root)
+    assert outline is not None
+    outline["chapters"][0]["level_target"] = "Lv.2"
+    outline["chapters"][0]["attribute_allocation_decision"] = {
+        "mode": "allocate",
+        "allocations": {"智力": 5},
+        "remaining": 0,
+        "reason": "强化基础火球术",
+    }
+    json_path = _write_json(root, outline)
+
+    assert export_outline_to_markdown(root, outline) == "ok"
+    volume_path = root / "大纲" / "第1卷-详细大纲.md"
+    volume_text = volume_path.read_text(encoding="utf-8")
+    assert "- 等级目标: Lv.2" in volume_text
+    assert "- 属性点安排: 分配：智力+5；剩余：0；原因：强化基础火球术" in volume_text
+
+    past = time.time() - 100
+    os.utime(json_path, (past, past))
+    now = time.time()
+    for md in (root / "大纲").glob("*.md"):
+        os.utime(md, (now, now))
+
+    assert sync_outline_if_stale(root).startswith("imported:")
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert saved["chapters"][0]["level_target"] == "Lv.2"
+    assert saved["chapters"][0]["attribute_allocation_decision"] == {
+        "mode": "allocate",
+        "allocations": {"智力": 5},
+        "remaining": 0,
+        "reason": "强化基础火球术",
+    }
+
+
+def test_import_rejects_malformed_attribute_allocation_plan(tmp_path: Path) -> None:
+    root = _make_project(tmp_path)
+    volume_path = root / "大纲" / "第1卷-详细大纲.md"
+    volume_text = volume_path.read_text(encoding="utf-8")
+    volume_path.write_text(
+        volume_text.replace("- 目标:", "- 属性点安排: 智力随便加\n- 目标:", 1),
+        encoding="utf-8",
+    )
+
+    assert import_markdown_outline(root) is None
+
+
 def test_sync_exports_when_json_newer(tmp_path: Path) -> None:
     root = _make_project(tmp_path)
     outline = import_markdown_outline(root)

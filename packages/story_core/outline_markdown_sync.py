@@ -5,7 +5,7 @@
 - 参与同步的 md 文件：``大纲/总纲.md``（overall + arcs）与
   ``大纲/第*卷-详细大纲.md``（chapters）。节拍表/时间线/爽点规划等纯人类
   规划文档不参与同步，绝不改动。
-- json 的 ChapterPlan 只有 9 个字段，md 章块有 15 个字段。导出时做字段级
+- json 的 ChapterPlan 包含正文规划与升级规划字段，md 章块保留额外的人工字段。导出时做字段级
   合并：json 拥有的字段以 json 为准更新，md 独有的字段（代价/时间锚点/
   Strand/钩子等）原样保留；未被 touch 的章节块保持字节不变。
 - round-trip 稳定性：export 渲染的格式可以被 import 原样解析回同样的
@@ -34,6 +34,8 @@ DETAIL_GLOB = "第*卷-详细大纲.md"
 # 章节块字段的规范顺序（json 拥有的 9 个字段 + md 独有字段）。
 CHAPTER_FIELD_ORDER = [
     "目标",
+    "等级目标",
+    "属性点安排",
     "阻力",
     "代价",
     "时间锚点",
@@ -59,6 +61,8 @@ CHAPTER_JSON_TO_MD = {
     "cast": "视角/主角",
     "payoff": "本章变化",
     "ending_hook": "章末未闭合问题",
+    "level_target": "等级目标",
+    "attribute_allocation_decision": "属性点安排",
 }
 CHAPTER_MD_TO_JSON = {value: key for key, value in CHAPTER_JSON_TO_MD.items()}
 
@@ -153,6 +157,58 @@ def _split_traces(value: str) -> list[str]:
     return [part.strip() for part in value.split("、") if part.strip()]
 
 
+def _format_attribute_allocation_decision(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    mode = str(value.get("mode") or "").strip()
+    remaining = value.get("remaining", 0)
+    reason = str(value.get("reason") or "").strip()
+    if mode == "allocate":
+        allocations = value.get("allocations")
+        if not isinstance(allocations, dict) or not allocations:
+            return ""
+        assignment = "、".join(f"{name}+{points}" for name, points in allocations.items())
+        parts = [f"分配：{assignment}", f"剩余：{remaining}"]
+    elif mode == "carry":
+        parts = [f"保留：{remaining}"]
+    else:
+        return ""
+    if reason:
+        parts.append(f"原因：{reason}")
+    return "；".join(parts)
+
+
+def _parse_attribute_allocation_decision(value: str) -> dict[str, Any] | None:
+    parts = [part.strip() for part in value.split("；") if part.strip()]
+    if not parts:
+        return None
+    reason = next((part[3:].strip() for part in parts if part.startswith("原因：")), "")
+    if parts[0].startswith("分配："):
+        allocations: dict[str, int] = {}
+        for item in parts[0][3:].split("、"):
+            match = re.fullmatch(r"(.+?)\+(\d+)", item.strip())
+            if not match:
+                return None
+            allocations[match.group(1).strip()] = int(match.group(2))
+        remaining_part = next((part for part in parts if part.startswith("剩余：")), "")
+        if not remaining_part[3:].isdigit():
+            return None
+        return {
+            "mode": "allocate",
+            "allocations": allocations,
+            "remaining": int(remaining_part[3:]),
+            "reason": reason,
+        }
+    if parts[0].startswith("保留：") and parts[0][3:].isdigit():
+        return {
+            "mode": "carry",
+            "allocations": {},
+            "remaining": int(parts[0][3:]),
+            "reason": reason,
+        }
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 详细大纲（章节块）解析
 # ---------------------------------------------------------------------------
@@ -202,6 +258,11 @@ def _block_to_chapter(block: dict[str, Any]) -> dict[str, Any]:
         value = entry[1] if entry else ""
         if json_key == "cast":
             chapter["cast"] = _split_cast(value)
+        elif json_key == "attribute_allocation_decision" and value:
+            decision = _parse_attribute_allocation_decision(value)
+            if decision is None:
+                raise ValueError("invalid_attribute_allocation_decision")
+            chapter[json_key] = decision
         elif value:
             chapter[json_key] = value
     return chapter
@@ -488,6 +549,8 @@ def _chapter_field_values(chapter: dict[str, Any], existing: dict[str, tuple[int
         raw = chapter.get(json_key)
         if json_key == "cast":
             values[md_key] = "、".join(str(item) for item in (raw or []))
+        elif json_key == "attribute_allocation_decision":
+            values[md_key] = _format_attribute_allocation_decision(raw)
         else:
             values[md_key] = str(raw or "")
     return values
@@ -503,6 +566,9 @@ def _chapter_block_unchanged(block: dict[str, Any], chapter: dict[str, Any]) -> 
         raw = chapter.get(json_key)
         if json_key == "cast":
             if _split_cast(existing_value) != [str(item) for item in (raw or [])]:
+                return False
+        elif json_key == "attribute_allocation_decision":
+            if _parse_attribute_allocation_decision(existing_value) != raw:
                 return False
         elif existing_value != str(raw or "").strip():
             return False
