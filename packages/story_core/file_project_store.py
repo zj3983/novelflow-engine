@@ -1271,7 +1271,7 @@ class FileProjectStore:
                 continue
             role = str(raw_character.get("role") or "").strip().casefold()
             tier = str(raw_character.get("character_tier") or "").strip().casefold()
-            if role not in {"protagonist", "涓昏"} and tier != "protagonist":
+            if role not in {"protagonist", "主角"} and tier != "protagonist":
                 continue
             game_state = dict(raw_character.get("game_state") or {})
             current = dict(game_state.get("current") or {})

@@ -5903,6 +5903,40 @@ def _historical_rebase_transaction_case(root):
     return store, target_bundle, bundle(3, "Concurrent Three", concurrent_story)
 
 
+def test_historical_rebase_syncs_attribute_mirrors_for_chinese_protagonist_role(tmp_path):
+    root = tmp_path / "historical-rebase-chinese-protagonist"
+    store, target_bundle, _ = _historical_rebase_transaction_case(root)
+    state_path = store.webnovel_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    old_slice = {
+        field: deepcopy(state["progression_ledger"]["protagonist"][field])
+        for field in (
+            "attributes",
+            "unallocated_attribute_points",
+            "attribute_point_awards",
+            "attribute_allocations",
+        )
+    }
+    state["characters"] = [
+        {
+            "name": "Ari",
+            "role": "主角",
+            "game_state": {"current": deepcopy(old_slice), "recent_changes": []},
+            "game_panel": deepcopy(old_slice),
+        }
+    ]
+    store._write_json(state_path, state)
+
+    store.persist_bundle(target_bundle, operation="regenerate")
+
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    protagonist = persisted["progression_ledger"]["protagonist"]
+    character = persisted["characters"][0]
+    for mirror in (character["game_state"]["current"], character["game_panel"]):
+        for field in old_slice:
+            assert mirror[field] == protagonist[field]
+
+
 @pytest.mark.parametrize("failure_point", ["markdown", "commit"])
 def test_historical_rebase_rolls_back_all_project_files_after_late_failure(
     tmp_path,
