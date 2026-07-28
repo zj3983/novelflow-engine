@@ -1505,6 +1505,28 @@ test("write page shows current progress and core writing actions", async ({ page
   await expect(page.getByRole("button", { name: "重新生成本章" })).toBeEnabled();
 });
 
+test("narrow write page keeps the reader reachable below a long directory", async ({ page }) => {
+  await page.setViewportSize({ width: 667, height: 882 });
+  const fixture = await routeCurrentFileProject(page, "narrow-reader", { chapterCount: 80 });
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
+
+  const chapterList = page.locator(".ws-chapter-index .ws-chapter-list");
+  await expect(chapterList).toBeVisible();
+  const listDimensions = await chapterList.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }));
+  expect(listDimensions.clientHeight).toBeLessThanOrEqual(440);
+  expect(listDimensions.scrollHeight).toBeGreaterThan(listDimensions.clientHeight);
+
+  await page.locator(`a[href="/projects/${fixture.encodedId}/write?chapter=2#chapter-reader"]`).click();
+  await expect(page).toHaveURL(`/projects/${fixture.encodedId}/write?chapter=2#chapter-reader`);
+  await expect(page.getByRole("heading", { name: "章节：第 2 章" })).toBeVisible();
+  const readerTop = await page.locator("#chapter-reader").evaluate((element) => element.getBoundingClientRect().top);
+  expect(readerTop).toBeGreaterThanOrEqual(0);
+  expect(readerTop).toBeLessThan(882);
+});
+
 test("file workspace loads overview and one chapter without requesting the full story", async ({ page }) => {
   const calls: string[] = [];
   const { encodedId } = await routeCurrentFileProject(page, "lazy-file-story", { calls });

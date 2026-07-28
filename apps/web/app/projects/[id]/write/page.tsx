@@ -271,7 +271,7 @@ export default function WritePage() {
                   return (
                     <Link
                       key={bundle.chapter_number}
-                      href={`/projects/${encodedProjectId}/write?chapter=${bundle.chapter_number}`}
+                      href={`/projects/${encodedProjectId}/write?chapter=${bundle.chapter_number}#chapter-reader`}
                       className={`ws-chapter-list__item${active ? " ws-chapter-list__item--active" : ""}`}
                       aria-current={active ? "page" : undefined}
                     >
@@ -308,7 +308,7 @@ export default function WritePage() {
             </section>
           </aside>
 
-          <article className="ws-reader">
+          <article className="ws-reader" id="chapter-reader">
             {chapterError ? (
               <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
                 <p style={{ color: "var(--ws-danger)", margin: 0 }}>章节加载失败：{chapterError}</p>
