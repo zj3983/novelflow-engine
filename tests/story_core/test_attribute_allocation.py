@@ -11,6 +11,7 @@ from packages.story_core.attribute_allocation import (
     parse_level,
     plan_handles_attribute_points,
     planned_level_target,
+    rebuild_attribute_progression,
     validate_attribute_allocation_decision,
 )
 
@@ -271,6 +272,93 @@ def test_apply_attribute_allocation_rejects_damaged_existing_attributes_without_
 
 
     assert ledger == before
+
+
+def test_rebuild_attribute_progression_replays_each_chapter_award_before_allocations() -> None:
+    rule = free_attribute_rule()
+    strength, intelligence, luck = (
+        list(rule["base_attributes"])[index] for index in (0, 3, 5)
+    )
+    baseline = {
+        "level": "Lv.2",
+        "attributes": {**rule["base_attributes"], strength: 5, intelligence: 10},
+        "unallocated_attribute_points": 0,
+        "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 2}],
+        "attribute_allocations": [
+            {"chapter": 2, "allocations": {intelligence: 5}, "remaining": 0, "reason": "new build"}
+        ],
+    }
+    future = [
+        (
+            3,
+            {
+                "attribute_point_awards": [
+                    {"level": 2, "points": 5, "chapter": 2},
+                    {"level": 3, "points": 5, "chapter": 3},
+                ],
+                "attribute_allocations": [
+                    {"chapter": 2, "allocations": {strength: 5}, "remaining": 0, "reason": "old build"},
+                    {"chapter": 3, "allocations": {intelligence: 2}, "remaining": 3, "reason": "spell"},
+                ],
+            },
+        ),
+        (
+            4,
+            {
+                "attribute_point_awards": [
+                    {"level": 2, "points": 5, "chapter": 2},
+                    {"level": 3, "points": 5, "chapter": 3},
+                ],
+                "attribute_allocations": [
+                    {"chapter": 3, "allocations": {intelligence: 2}, "remaining": 3, "reason": "spell"},
+                    {"chapter": 4, "allocations": {luck: 3}, "remaining": 0, "reason": "drop"},
+                ],
+            },
+        ),
+    ]
+    before = deepcopy((baseline, future))
+
+    rebuilt = rebuild_attribute_progression(rule, 2, baseline, future)
+
+    assert (baseline, future) == before
+    assert rebuilt[2]["attributes"][strength] == 5
+    assert rebuilt[2]["attributes"][intelligence] == 10
+    assert rebuilt[3]["attributes"][intelligence] == 12
+    assert rebuilt[3]["unallocated_attribute_points"] == 3
+    assert rebuilt[4]["attributes"][luck] == 8
+    assert rebuilt[4]["unallocated_attribute_points"] == 0
+    assert [item["chapter"] for item in rebuilt[4]["attribute_point_awards"]] == [2, 3]
+    assert [item["chapter"] for item in rebuilt[4]["attribute_allocations"]] == [2, 3, 4]
+
+
+def test_rebuild_attribute_progression_rejects_future_overspend_without_mutating_inputs() -> None:
+    rule = free_attribute_rule()
+    intelligence, luck = (list(rule["base_attributes"])[index] for index in (3, 5))
+    baseline = {
+        "attributes": {**rule["base_attributes"], intelligence: 10},
+        "unallocated_attribute_points": 0,
+        "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 2}],
+        "attribute_allocations": [
+            {"chapter": 2, "allocations": {intelligence: 5}, "remaining": 0, "reason": "new build"}
+        ],
+    }
+    future = [
+        (
+            3,
+            {
+                "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 2}],
+                "attribute_allocations": [
+                    {"chapter": 3, "allocations": {luck: 1}, "remaining": 0, "reason": "illegal"}
+                ],
+            },
+        )
+    ]
+    before = deepcopy((baseline, future))
+
+    with pytest.raises(ValueError, match="^attribute_rebase_invalid_allocation:3$"):
+        rebuild_attribute_progression(rule, 2, baseline, future)
+
+    assert (baseline, future) == before
 
 
 def test_attribute_context_uses_base_attributes_without_mutating_ledger() -> None:

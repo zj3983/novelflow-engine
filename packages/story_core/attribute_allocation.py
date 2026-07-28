@@ -503,3 +503,125 @@ def apply_attribute_allocation(
     ]
     ledger["protagonist"] = updated_protagonist
     return True
+
+
+def rebuild_attribute_progression(
+    rule: Mapping[str, Any],
+    baseline_chapter: int,
+    baseline_protagonist: Mapping[str, Any],
+    future_protagonists: list[tuple[int, Mapping[str, Any]]],
+) -> dict[int, dict[str, Any]]:
+    """Rebuild cumulative free-attribute slices from structured chapter records."""
+
+    normalized_rule = normalize_attribute_allocation_rule(rule)
+    if not normalized_rule:
+        raise ValueError("attribute_rebase_invalid_rule")
+    if (
+        isinstance(baseline_chapter, bool)
+        or not isinstance(baseline_chapter, int)
+        or baseline_chapter < 1
+        or not isinstance(baseline_protagonist, Mapping)
+    ):
+        raise ValueError("attribute_rebase_invalid_baseline")
+
+    def records(value: Any, field: str, chapter: int) -> list[Mapping[str, Any]]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError(f"attribute_rebase_invalid_{field}:{chapter}")
+        result: list[Mapping[str, Any]] = []
+        for item in value:
+            if not isinstance(item, Mapping):
+                raise ValueError(f"attribute_rebase_invalid_{field}:{chapter}")
+            event_chapter = item.get("chapter")
+            if (
+                isinstance(event_chapter, bool)
+                or not isinstance(event_chapter, int)
+                or event_chapter < 1
+            ):
+                raise ValueError(f"attribute_rebase_invalid_{field}:{chapter}")
+            result.append(item)
+        return result
+
+    def apply_award(ledger: dict[str, Any], award: Mapping[str, Any], chapter: int) -> None:
+        level = parse_level(award.get("level"))
+        points = award.get("points")
+        if (
+            level is None
+            or level <= normalized_rule["starting_level"]
+            or isinstance(points, bool)
+            or not isinstance(points, int)
+            or points != normalized_rule["points_per_level"]
+        ):
+            raise ValueError(f"attribute_rebase_invalid_award:{chapter}")
+        protagonist = ledger["protagonist"]
+        awards = protagonist["attribute_point_awards"]
+        if any(parse_level(item.get("level")) == level for item in awards):
+            raise ValueError(f"attribute_rebase_invalid_award:{chapter}")
+        awards.append({"level": level, "points": points, "chapter": chapter})
+        protagonist["unallocated_attribute_points"] += points
+
+    def apply_chapter_events(
+        ledger: dict[str, Any],
+        chapter: int,
+        protagonist: Mapping[str, Any],
+    ) -> None:
+        awards = records(protagonist.get("attribute_point_awards"), "award", chapter)
+        allocations = records(protagonist.get("attribute_allocations"), "allocation", chapter)
+        for award in awards:
+            if award.get("chapter") == chapter:
+                apply_award(ledger, award, chapter)
+        for allocation in allocations:
+            if allocation.get("chapter") != chapter:
+                continue
+            if not apply_attribute_allocation(ledger, allocation, normalized_rule, chapter):
+                raise ValueError(f"attribute_rebase_invalid_allocation:{chapter}")
+
+    ledger = {
+        "protagonist": {
+            "attributes": deepcopy(normalized_rule["base_attributes"]),
+            "unallocated_attribute_points": 0,
+            "attribute_point_awards": [],
+            "attribute_allocations": [],
+        }
+    }
+    baseline_awards = records(
+        baseline_protagonist.get("attribute_point_awards"), "award", baseline_chapter
+    )
+    baseline_allocations = records(
+        baseline_protagonist.get("attribute_allocations"), "allocation", baseline_chapter
+    )
+    if any(item["chapter"] > baseline_chapter for item in [*baseline_awards, *baseline_allocations]):
+        raise ValueError(f"attribute_rebase_invalid_baseline:{baseline_chapter}")
+    baseline_events = {
+        item["chapter"] for item in [*baseline_awards, *baseline_allocations]
+    }
+    for chapter in sorted(baseline_events):
+        apply_chapter_events(ledger, chapter, baseline_protagonist)
+
+    rebuilt_baseline = ledger["protagonist"]
+    source_attributes = baseline_protagonist.get("attributes")
+    source_remaining = baseline_protagonist.get("unallocated_attribute_points")
+    if (
+        not isinstance(source_attributes, Mapping)
+        or dict(source_attributes) != rebuilt_baseline["attributes"]
+        or isinstance(source_remaining, bool)
+        or not isinstance(source_remaining, int)
+        or source_remaining != rebuilt_baseline["unallocated_attribute_points"]
+    ):
+        raise ValueError(f"attribute_rebase_snapshot_mismatch:{baseline_chapter}")
+
+    result = {baseline_chapter: deepcopy(rebuilt_baseline)}
+    previous_chapter = baseline_chapter
+    for chapter, protagonist in future_protagonists:
+        if (
+            isinstance(chapter, bool)
+            or not isinstance(chapter, int)
+            or chapter <= previous_chapter
+            or not isinstance(protagonist, Mapping)
+        ):
+            raise ValueError(f"attribute_rebase_invalid_future:{chapter}")
+        apply_chapter_events(ledger, chapter, protagonist)
+        result[chapter] = deepcopy(ledger["protagonist"])
+        previous_chapter = chapter
+    return result
