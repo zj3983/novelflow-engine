@@ -797,6 +797,44 @@ class FileProjectStore:
             for temp_path in prepared.values():
                 temp_path.unlink(missing_ok=True)
 
+    @staticmethod
+    def _snapshot_managed_files(
+        paths: list[Path],
+        directories: list[Path],
+    ) -> tuple[dict[Path, bytes | None], tuple[Path, ...]]:
+        managed_paths = {Path(path).resolve() for path in paths}
+        managed_directories = tuple(Path(path).resolve() for path in directories)
+        for directory in managed_directories:
+            if directory.exists():
+                managed_paths.update(path.resolve() for path in directory.rglob("*") if path.is_file())
+        return (
+            {
+                path: path.read_bytes() if path.exists() else None
+                for path in managed_paths
+            },
+            managed_directories,
+        )
+
+    @staticmethod
+    def _restore_managed_files(
+        snapshot: dict[Path, bytes | None],
+        directories: tuple[Path, ...],
+    ) -> None:
+        snapshotted_paths = set(snapshot)
+        for directory in directories:
+            if not directory.exists():
+                continue
+            for path in directory.rglob("*"):
+                resolved = path.resolve()
+                if path.is_file() and resolved not in snapshotted_paths:
+                    path.unlink()
+        for path, content in snapshot.items():
+            if content is None:
+                path.unlink(missing_ok=True)
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+
     def _write_text(self, path: Path, text: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -4347,6 +4385,7 @@ class FileProjectStore:
             "commit": commit,
         }
 
+    @_with_project_update_lock
     def persist_bundle(self, bundle: Any, *, operation: str = "generate", commit_message: str | None = None) -> dict[str, Any]:
         chapter = self._bundle_to_dict(bundle)
         chapter_number = int(chapter.get("chapter_number") or 0)
@@ -4435,25 +4474,43 @@ class FileProjectStore:
             if operation == "regenerate"
             else None
         )
-        self._append_workflow_log(
-            chapter_number=chapter_number,
-            chapter_title=title,
-            review=review,
-            operation=operation,
-        )
 
         if historical_rebase is not None:
             chapter, payloads = historical_rebase
             paths = self._chapter_paths(chapter_number, title)
-            payloads[paths["json"]] = chapter
-            payloads[paths["review"]] = review
-            self._replace_json_transaction(payloads)
-            self._remove_chapter_markdowns(chapter_number)
-            self._write_text(paths["markdown"], body)
-            commit = self.commit(
-                message=commit_message or f"{operation} chapter {chapter_number}",
-                operation=operation,
+            existing_markdowns = list(self.chapters_dir.glob(f"{chapter_number:04d}*.md"))
+            managed_snapshot = self._snapshot_managed_files(
+                [
+                    *payloads,
+                    paths["json"],
+                    paths["review"],
+                    paths["markdown"],
+                    *existing_markdowns,
+                ],
+                [self.story_system_dir / "commits"],
+            )
+            try:
+                payloads[paths["json"]] = chapter
+                payloads[paths["review"]] = review
+                self._replace_json_transaction(payloads)
+                self._remove_chapter_markdowns(chapter_number)
+                self._write_text(paths["markdown"], body)
+                commit = self.commit(
+                    message=commit_message or f"{operation} chapter {chapter_number}",
+                    operation=operation,
+                    chapter_number=chapter_number,
+                )
+            except Exception:
+                try:
+                    self._restore_managed_files(*managed_snapshot)
+                except Exception as rollback_exc:
+                    raise RuntimeError("historical_persistence_rollback_failed") from rollback_exc
+                raise
+            self._append_workflow_log(
                 chapter_number=chapter_number,
+                chapter_title=title,
+                review=review,
+                operation=operation,
             )
             return {
                 "schema_version": "file-project-persist-bundle/v1",
@@ -4465,6 +4522,12 @@ class FileProjectStore:
                 "commit": commit,
             }
 
+        self._append_workflow_log(
+            chapter_number=chapter_number,
+            chapter_title=title,
+            review=review,
+            operation=operation,
+        )
         base_state = self._usable_bundle_state(
             updated_story,
             self.state(),

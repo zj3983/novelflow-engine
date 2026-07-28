@@ -5767,6 +5767,253 @@ def test_historical_attribute_rebase_rejects_future_overspend_without_writes(tmp
     assert _file_snapshot(root) == before
 
 
+def _historical_rebase_transaction_case(root):
+    rule = {
+        "mode": "free",
+        "points_per_level": 5,
+        "starting_level": 1,
+        "base_attributes": {"Strength": 5, "Intelligence": 5},
+        "allow_carry": True,
+        "respec_rule": "Respec in town.",
+    }
+    project = {
+        "project_id": "p-rebase-transaction",
+        "title": "Rebase Transaction",
+        "active_story_id": "s-rebase-transaction",
+        "genre": "game_webnovel",
+        "world_blueprint": {"power_system_spec": {"attribute_allocation": rule}},
+    }
+    award_two = {"level": 2, "points": 5, "chapter": 2}
+    award_three = {"level": 3, "points": 5, "chapter": 3}
+    old_two = {"chapter": 2, "allocations": {"Strength": 5}, "remaining": 0, "reason": "old"}
+    new_two = {"chapter": 2, "allocations": {"Intelligence": 5}, "remaining": 0, "reason": "rewrite"}
+    alloc_three = {"chapter": 3, "allocations": {"Strength": 2}, "remaining": 3, "reason": "later"}
+    state = {
+        "story_id": "s-rebase-transaction",
+        "outline": "A transactional historical rewrite.",
+        "genre": "game_webnovel",
+        "style": "plain",
+        "current_chapter": 3,
+        "progression_ledger": {
+            "protagonist": {
+                "level": "Lv.3",
+                "attributes": {"Strength": 12, "Intelligence": 5},
+                "unallocated_attribute_points": 3,
+                "attribute_point_awards": [award_two, award_three],
+                "attribute_allocations": [old_two, alloc_three],
+            },
+            "economy": {"game_currency": "30 copper"},
+        },
+        "world_facts": ["chapter three remains current"],
+        "characters": [{"name": "Ari", "role": "protagonist"}],
+    }
+    store = _make_minimal_file_project(root, project=project, state=state)
+
+    def story(chapter, protagonist):
+        return {
+            "story_id": state["story_id"],
+            "outline": state["outline"],
+            "genre": state["genre"],
+            "style": state["style"],
+            "current_chapter": chapter,
+            "progression_ledger": {
+                "protagonist": protagonist,
+                "economy": {"game_currency": f"{chapter * 10} copper"},
+            },
+            "world_facts": [f"chapter {chapter} fact"],
+            "characters": [{"name": "Ari", "role": "protagonist"}],
+        }
+
+    old_target_story = story(
+        2,
+        {
+            "level": "Lv.2",
+            "attributes": {"Strength": 10, "Intelligence": 5},
+            "unallocated_attribute_points": 0,
+            "attribute_point_awards": [award_two],
+            "attribute_allocations": [old_two],
+        },
+    )
+    target_story = story(
+        2,
+        {
+            "level": "Lv.2",
+            "attributes": {"Strength": 5, "Intelligence": 10},
+            "unallocated_attribute_points": 0,
+            "attribute_point_awards": [award_two],
+            "attribute_allocations": [new_two],
+        },
+    )
+    future_story = story(
+        3,
+        {
+            "level": "Lv.3",
+            "attributes": {"Strength": 12, "Intelligence": 5},
+            "unallocated_attribute_points": 3,
+            "attribute_point_awards": [award_two, award_three],
+            "attribute_allocations": [old_two, alloc_three],
+        },
+    )
+    for number, updated_story in ((2, old_target_story), (3, future_story)):
+        store._write_json(
+            store.story_system_dir / "chapters" / f"{number:04d}.json",
+            {
+                "chapter_number": number,
+                "chapter_title": f"Old Chapter {number}",
+                "body": _long_test_body(f"Old chapter {number}."),
+                "updated_story": updated_story,
+            },
+        )
+    store._write_json(store.story_system_dir / "reviews" / "0002.json", {"old_review": True})
+    store._write_text(store.chapters_dir / "0002-Old Chapter 2.md", "old markdown")
+
+    def bundle(number, title, updated_story):
+        return SimpleNamespace(
+            chapter_number=number,
+            chapter_title=title,
+            body=_long_test_body(f"{title} body."),
+            cadence="measured",
+            next_outline="Continue.",
+            updated_story=StoryState.model_validate(updated_story),
+            quality_report={"ok": True, "issues": []},
+            chapter_summary={
+                "chapter_title": title,
+                "cadence": "measured",
+                "summary": f"{title} summary.",
+                "facts": [f"{title} fact."],
+                "next_focus": "Continue.",
+                "primary_conflict": "State.",
+                "secondary_conflict": "Order.",
+                "event_beat": "Persist.",
+            },
+        )
+
+    target_bundle = bundle(2, "Rewritten Two", target_story)
+    concurrent_story = story(
+        3,
+        {
+            "level": "Lv.3",
+            "attributes": {"Strength": 7, "Intelligence": 10},
+            "unallocated_attribute_points": 3,
+            "attribute_point_awards": [award_two, award_three],
+            "attribute_allocations": [new_two, alloc_three],
+        },
+    )
+    concurrent_story["progression_ledger"]["concurrent_update"] = {"owner": "B"}
+    return store, target_bundle, bundle(3, "Concurrent Three", concurrent_story)
+
+
+@pytest.mark.parametrize("failure_point", ["markdown", "commit"])
+def test_historical_rebase_rolls_back_all_project_files_after_late_failure(
+    tmp_path,
+    monkeypatch,
+    failure_point,
+):
+    root = tmp_path / f"historical-rebase-{failure_point}-failure"
+    store, target_bundle, _ = _historical_rebase_transaction_case(root)
+    workflow_path = root / ".story-system" / "workflow" / "workflow_log.jsonl"
+    workflow_path.parent.mkdir(parents=True, exist_ok=True)
+    workflow_path.write_text("old workflow\n", encoding="utf-8")
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_WORKFLOW_LOG_PATH", str(workflow_path))
+    commits_dir = store.story_system_dir / "commits"
+    commits_dir.mkdir(parents=True, exist_ok=True)
+    (commits_dir / "old.json").write_text('{"old": true}', encoding="utf-8")
+    before = _file_snapshot(root)
+
+    if failure_point == "markdown":
+        original_write_text = store._write_text
+
+        def fail_markdown(path, text):
+            if path.parent == store.chapters_dir:
+                raise OSError("injected_markdown_failure")
+            return original_write_text(path, text)
+
+        monkeypatch.setattr(store, "_write_text", fail_markdown)
+        expected = "injected_markdown_failure"
+    else:
+        original_commit = store.commit
+
+        def fail_after_commit(**kwargs):
+            original_commit(**kwargs)
+            raise RuntimeError("injected_commit_failure")
+
+        monkeypatch.setattr(store, "commit", fail_after_commit)
+        expected = "injected_commit_failure"
+
+    with pytest.raises((OSError, RuntimeError), match=expected):
+        store.persist_bundle(target_bundle, operation="regenerate")
+
+    assert _file_snapshot(root) == before
+
+
+def test_historical_rebase_reports_compensation_failure(tmp_path, monkeypatch):
+    root = tmp_path / "historical-rebase-rollback-failure"
+    store, target_bundle, _ = _historical_rebase_transaction_case(root)
+
+    def fail_markdown(_path, _text):
+        raise OSError("injected_markdown_failure")
+
+    def fail_rollback(_snapshot, _directories):
+        raise OSError("injected_rollback_failure")
+
+    monkeypatch.setattr(store, "_write_text", fail_markdown)
+    monkeypatch.setattr(store, "_restore_managed_files", fail_rollback)
+
+    with pytest.raises(RuntimeError, match="^historical_persistence_rollback_failed$"):
+        store.persist_bundle(target_bundle, operation="regenerate")
+
+
+def test_persist_bundle_serializes_historical_prepare_with_concurrent_chapter_write(tmp_path, monkeypatch):
+    root = tmp_path / "historical-rebase-concurrent"
+    store_a, target_bundle, concurrent_bundle = _historical_rebase_transaction_case(root)
+    store_b = FileProjectStore(root)
+    prepared = threading.Event()
+    release_a = threading.Event()
+    b_done = threading.Event()
+    errors = []
+    original_prepare = store_a._prepare_historical_attribute_rebase
+
+    def pause_after_prepare(chapter, updated_story):
+        result = original_prepare(chapter, updated_story)
+        prepared.set()
+        assert release_a.wait(5)
+        return result
+
+    monkeypatch.setattr(store_a, "_prepare_historical_attribute_rebase", pause_after_prepare)
+
+    def run_a():
+        try:
+            store_a.persist_bundle(target_bundle, operation="regenerate")
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    def run_b():
+        try:
+            store_b.persist_bundle(concurrent_bundle, operation="regenerate")
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            b_done.set()
+
+    thread_a = threading.Thread(target=run_a, name="historical-rebase-a")
+    thread_b = threading.Thread(target=run_b, name="chapter-three-b")
+    thread_a.start()
+    assert prepared.wait(5)
+    thread_b.start()
+    assert not b_done.wait(0.2)
+    release_a.set()
+    thread_a.join(5)
+    thread_b.join(5)
+
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+    assert errors == []
+    chapter_three = json.loads(
+        (store_a.story_system_dir / "chapters" / "0003.json").read_text(encoding="utf-8")
+    )
+    assert chapter_three["updated_story"]["progression_ledger"]["concurrent_update"] == {"owner": "B"}
+
+
 def test_usable_bundle_state_keeps_valid_runtime_character_updates(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     current_state = {
