@@ -4874,6 +4874,7 @@ class FileProjectStore:
         base_state["current_chapter"] = chapter_number - 1
         return self._merge_regeneration_configuration(base_state, current_state)
 
+    @_with_project_update_lock
     def regenerate_chapter(
         self,
         chapter_number: int,
@@ -4883,6 +4884,9 @@ class FileProjectStore:
         guidance: str | None = None,
         commit_message: str | None = None,
     ) -> dict[str, Any]:
+        # Model generation stays inside the per-project lock so a later rewrite
+        # cannot be generated from state that another same-project rewrite replaces.
+        # This intentionally blocks same-project edits; locks for other roots are independent.
         from packages.story_core.engine import StoryEngine
 
         if chapter_number < 1:

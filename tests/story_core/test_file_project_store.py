@@ -6014,6 +6014,115 @@ def test_persist_bundle_serializes_historical_prepare_with_concurrent_chapter_wr
     assert chapter_three["updated_story"]["progression_ledger"]["concurrent_update"] == {"owner": "B"}
 
 
+def test_regenerate_serializes_state_read_and_generation_per_project(tmp_path):
+    root = tmp_path / "regenerate-whole-operation-lock"
+    store_a, target_bundle, concurrent_template = _historical_rebase_transaction_case(root)
+    store_b = FileProjectStore(root)
+    a_generating = threading.Event()
+    release_a = threading.Event()
+    a_done = threading.Event()
+    b_generated = threading.Event()
+    allow_b_return = threading.Event()
+    observed_b_attributes = {}
+    errors = []
+
+    class HistoricalEngine:
+        def generate_next_chapter(self, _story):
+            a_generating.set()
+            assert release_a.wait(5)
+            return target_bundle
+
+    class NextChapterEngine:
+        def generate_next_chapter(self, story):
+            observed_b_attributes.update(story.progression_ledger["protagonist"]["attributes"])
+            updated = story.model_dump(mode="json")
+            updated["current_chapter"] = 3
+            updated["progression_ledger"]["concurrent_update"] = {"owner": "B"}
+            b_generated.set()
+            assert allow_b_return.wait(5)
+            return SimpleNamespace(
+                **{
+                    **vars(concurrent_template),
+                    "updated_story": StoryState.model_validate(updated),
+                }
+            )
+
+    def run_a():
+        try:
+            store_a.regenerate_chapter(2, engine=HistoricalEngine())
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            a_done.set()
+
+    def run_b():
+        try:
+            store_b.regenerate_chapter(3, engine=NextChapterEngine())
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread_a = threading.Thread(target=run_a, name="historical-regenerate-a")
+    thread_b = threading.Thread(target=run_b, name="next-regenerate-b")
+    thread_a.start()
+    assert a_generating.wait(5)
+    thread_b.start()
+    b_was_blocked = not b_generated.wait(0.2)
+    release_a.set()
+    assert a_done.wait(5)
+    allow_b_return.set()
+    thread_a.join(5)
+    thread_b.join(5)
+
+    assert b_was_blocked
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+    assert errors == []
+    assert observed_b_attributes == {"Strength": 5, "Intelligence": 10}
+    final_state = json.loads((store_a.webnovel_dir / "state.json").read_text(encoding="utf-8"))
+    assert final_state["progression_ledger"]["protagonist"]["attributes"]["Intelligence"] == 10
+
+
+def test_regenerate_generation_lock_is_independent_between_projects(tmp_path):
+    store_a, target_a, _ = _historical_rebase_transaction_case(tmp_path / "project-a")
+    store_b, target_b, _ = _historical_rebase_transaction_case(tmp_path / "project-b")
+    a_generating = threading.Event()
+    release_a = threading.Event()
+    b_generated = threading.Event()
+    errors = []
+
+    class BlockingEngine:
+        def generate_next_chapter(self, _story):
+            a_generating.set()
+            assert release_a.wait(5)
+            return target_a
+
+    class IndependentEngine:
+        def generate_next_chapter(self, _story):
+            b_generated.set()
+            return target_b
+
+    def regenerate(store, engine):
+        try:
+            store.regenerate_chapter(2, engine=engine)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread_a = threading.Thread(target=regenerate, args=(store_a, BlockingEngine()))
+    thread_b = threading.Thread(target=regenerate, args=(store_b, IndependentEngine()))
+    thread_a.start()
+    assert a_generating.wait(5)
+    thread_b.start()
+    b_ran_independently = b_generated.wait(1)
+    release_a.set()
+    thread_a.join(5)
+    thread_b.join(5)
+
+    assert b_ran_independently
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+    assert errors == []
+
+
 def test_usable_bundle_state_keeps_valid_runtime_character_updates(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     current_state = {
