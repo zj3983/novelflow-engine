@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from packages.story_core.attribute_allocation import (
+    normalize_attribute_allocation_rule,
+    rebuild_attribute_progression,
+)
 from packages.story_core.chapter_direction import build_chapter_direction_options
 from packages.story_core.web_game_economy import (
     first_chapter_market_exchange_authorized,
@@ -1200,6 +1204,121 @@ class FileProjectStore:
         }:
             return current_state
         return usable
+
+    @staticmethod
+    def _protagonist_ledger(state: dict[str, Any], *, chapter_number: int) -> dict[str, Any]:
+        ledger = state.get("progression_ledger")
+        protagonist = ledger.get("protagonist") if isinstance(ledger, dict) else None
+        if not isinstance(protagonist, dict):
+            raise ValueError(f"attribute_rebase_missing_protagonist:{chapter_number}")
+        return protagonist
+
+    @staticmethod
+    def _replace_attribute_slice(state: dict[str, Any], attribute_slice: dict[str, Any]) -> None:
+        fields = (
+            "attributes",
+            "unallocated_attribute_points",
+            "attribute_point_awards",
+            "attribute_allocations",
+        )
+        ledger = dict(state.get("progression_ledger") or {})
+        protagonist = dict(ledger.get("protagonist") or {})
+        for field in fields:
+            protagonist[field] = deepcopy(attribute_slice[field])
+        ledger["protagonist"] = protagonist
+        state["progression_ledger"] = ledger
+
+        for raw_character in state.get("characters", []) if isinstance(state.get("characters"), list) else []:
+            if not isinstance(raw_character, dict):
+                continue
+            role = str(raw_character.get("role") or "").strip().casefold()
+            tier = str(raw_character.get("character_tier") or "").strip().casefold()
+            if role not in {"protagonist", "涓昏"} and tier != "protagonist":
+                continue
+            game_state = dict(raw_character.get("game_state") or {})
+            current = dict(game_state.get("current") or {})
+            panel = dict(raw_character.get("game_panel") or {})
+            for field in fields:
+                current[field] = deepcopy(attribute_slice[field])
+                panel[field] = deepcopy(attribute_slice[field])
+            game_state["current"] = current
+            game_state.setdefault("recent_changes", [])
+            raw_character["game_state"] = game_state
+            raw_character["game_panel"] = panel
+
+    def _prepare_historical_attribute_rebase(
+        self,
+        chapter: dict[str, Any],
+        updated_story: Any,
+    ) -> tuple[dict[str, Any], dict[Path, Any]] | None:
+        target_chapter = int(chapter.get("chapter_number") or 0)
+        raw_global = self._read_json(self.webnovel_dir / "state.json", {}) or {}
+        if not isinstance(raw_global, dict):
+            return None
+        current_chapter = int(raw_global.get("current_chapter") or 0)
+        if target_chapter >= current_chapter:
+            return None
+
+        project = self.project()
+        blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
+        power_system = blueprint.get("power_system_spec") if isinstance(blueprint.get("power_system_spec"), dict) else {}
+        rule = normalize_attribute_allocation_rule(power_system.get("attribute_allocation"))
+        if not rule:
+            return None
+
+        target_state = self._validated_runtime_state(updated_story, raw_global)
+        if target_state is None or int(target_state.get("current_chapter") or 0) != target_chapter:
+            raise ValueError(f"attribute_rebase_invalid_target_snapshot:{target_chapter}")
+        prepared_chapter = self._hydrate_chapter_display_fields(deepcopy(chapter), target_state)
+        target_state = self._sync_state_after_chapter(deepcopy(target_state), prepared_chapter)
+        target_state = self._sync_ledger_from_chapter_body(target_state, prepared_chapter)
+        target_state["current_chapter"] = target_chapter
+        target_protagonist = self._protagonist_ledger(target_state, chapter_number=target_chapter)
+
+        future_chapters: list[tuple[int, Path, dict[str, Any]]] = []
+        future_protagonists: list[tuple[int, dict[str, Any]]] = []
+        for chapter_number in range(target_chapter + 1, current_chapter + 1):
+            path = self.story_system_dir / "chapters" / f"{chapter_number:04d}.json"
+            raw_chapter = self._read_json(path)
+            if not isinstance(raw_chapter, dict):
+                raise ValueError(f"attribute_rebase_missing_future_chapter:{chapter_number}")
+            snapshot = raw_chapter.get("updated_story")
+            snapshot_chapter = snapshot.get("current_chapter") if isinstance(snapshot, dict) else None
+            if (
+                not isinstance(snapshot, dict)
+                or isinstance(snapshot_chapter, bool)
+                or not isinstance(snapshot_chapter, int)
+                or snapshot_chapter != chapter_number
+            ):
+                raise ValueError(f"attribute_rebase_invalid_future_snapshot:{chapter_number}")
+            protagonist = self._protagonist_ledger(snapshot, chapter_number=chapter_number)
+            future_chapters.append((chapter_number, path, deepcopy(raw_chapter)))
+            future_protagonists.append((chapter_number, protagonist))
+
+        rebuilt = rebuild_attribute_progression(
+            rule,
+            target_chapter,
+            target_protagonist,
+            future_protagonists,
+        )
+        self._replace_attribute_slice(target_state, rebuilt[target_chapter])
+        prepared_chapter["updated_story"] = target_state
+        prepared_chapter["chapter_summary"] = self._chapter_summary_payload(prepared_chapter)
+
+        payloads: dict[Path, Any] = {}
+        for chapter_number, path, future_chapter in future_chapters:
+            snapshot = deepcopy(future_chapter["updated_story"])
+            self._replace_attribute_slice(snapshot, rebuilt[chapter_number])
+            StoryState.model_validate(snapshot)
+            future_chapter["updated_story"] = snapshot
+            payloads[path] = future_chapter
+
+        rebuilt_global = deepcopy(raw_global)
+        self._replace_attribute_slice(rebuilt_global, rebuilt[current_chapter])
+        StoryState.model_validate(target_state)
+        StoryState.model_validate(rebuilt_global)
+        payloads[self.webnovel_dir / "state.json"] = rebuilt_global
+        return prepared_chapter, payloads
 
     def _chapter_summary_payload(self, chapter: dict[str, Any]) -> dict[str, Any]:
         chapter_number = int(chapter.get("chapter_number") or 0)
@@ -4311,12 +4430,40 @@ class FileProjectStore:
             )
             raise
 
+        historical_rebase = (
+            self._prepare_historical_attribute_rebase(chapter, updated_story)
+            if operation == "regenerate"
+            else None
+        )
         self._append_workflow_log(
             chapter_number=chapter_number,
             chapter_title=title,
             review=review,
             operation=operation,
         )
+
+        if historical_rebase is not None:
+            chapter, payloads = historical_rebase
+            paths = self._chapter_paths(chapter_number, title)
+            payloads[paths["json"]] = chapter
+            payloads[paths["review"]] = review
+            self._replace_json_transaction(payloads)
+            self._remove_chapter_markdowns(chapter_number)
+            self._write_text(paths["markdown"], body)
+            commit = self.commit(
+                message=commit_message or f"{operation} chapter {chapter_number}",
+                operation=operation,
+                chapter_number=chapter_number,
+            )
+            return {
+                "schema_version": "file-project-persist-bundle/v1",
+                "root": str(self.root),
+                "chapter_number": chapter_number,
+                "chapter_title": title,
+                "files": {key: path.relative_to(self.root).as_posix() for key, path in paths.items() if path.exists()},
+                "review": review,
+                "commit": commit,
+            }
 
         base_state = self._usable_bundle_state(
             updated_story,

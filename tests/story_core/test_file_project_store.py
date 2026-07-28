@@ -5424,6 +5424,349 @@ def test_persist_old_chapter_rewrite_does_not_roll_back_global_state(tmp_path):
     assert "stale chapter two state" not in state["world_facts"]
 
 
+def test_regenerate_historical_chapter_rebases_structured_attribute_ledger_through_future_snapshots(tmp_path):
+    root = tmp_path / "historical-attribute-rebase"
+    rule = {
+        "mode": "free",
+        "points_per_level": 5,
+        "starting_level": 1,
+        "base_attributes": {"Strength": 5, "Intelligence": 5, "Agility": 5},
+        "allow_carry": True,
+        "respec_rule": "Respec in town.",
+    }
+    project = {
+        "project_id": "p-historical-attribute-rebase",
+        "title": "Historical Attribute Rebase",
+        "active_story_id": "s-historical-attribute-rebase",
+        "genre": "game_webnovel",
+        "world_blueprint": {
+            "genre_plugin_ids": ["game_webnovel"],
+            "power_system_spec": {"attribute_allocation": rule},
+        },
+    }
+
+    def attribute_slice(
+        *,
+        attributes,
+        remaining,
+        awards,
+        allocations,
+        level,
+    ):
+        return {
+            "level": level,
+            "attributes": attributes,
+            "unallocated_attribute_points": remaining,
+            "attribute_point_awards": awards,
+            "attribute_allocations": allocations,
+        }
+
+    award_two = {"level": 2, "points": 5, "chapter": 2}
+    award_three = {"level": 3, "points": 5, "chapter": 3}
+    award_five = {"level": 4, "points": 5, "chapter": 5}
+    old_two = {"chapter": 2, "allocations": {"Strength": 5}, "remaining": 0, "reason": "old build"}
+    alloc_three = {"chapter": 3, "allocations": {"Intelligence": 2}, "remaining": 3, "reason": "spell check"}
+    alloc_four = {"chapter": 4, "allocations": {"Agility": 3}, "remaining": 0, "reason": "movement check"}
+    alloc_five = {"chapter": 5, "allocations": {"Strength": 1}, "remaining": 4, "reason": "gear check"}
+    global_protagonist = attribute_slice(
+        attributes={"Strength": 11, "Intelligence": 7, "Agility": 8},
+        remaining=4,
+        awards=[award_two, award_three, award_five],
+        allocations=[old_two, alloc_three, alloc_four, alloc_five],
+        level="Lv.4",
+    )
+    global_protagonist["hp"] = "87/100"
+    state = {
+        "story_id": "s-historical-attribute-rebase",
+        "outline": "Ari changes an early build without erasing later continuity.",
+        "genre": "game_webnovel",
+        "style": "plain",
+        "current_chapter": 5,
+        "progression_ledger": {
+            "protagonist": global_protagonist,
+            "economy": {"game_currency": "91 copper", "inventory": {"ore": 7}},
+            "quests": {"active": "chapter-five-quest"},
+        },
+        "time_state": {"current_scene_time": "chapter five end", "elapsed_minutes_since_launch": 250},
+        "chapter_summaries": [{"chapter_number": 5, "summary": "The fifth chapter remains canonical."}],
+        "world_facts": ["chapter five economy and quest remain canonical"],
+        "characters": [
+            {
+                "name": "Ari",
+                "role": "protagonist",
+                "game_state": {"current": deepcopy(global_protagonist), "recent_changes": []},
+                "game_panel": deepcopy(global_protagonist),
+            }
+        ],
+    }
+    store = _make_minimal_file_project(root, project=project, state=state)
+
+    def snapshot(number, protagonist, *, currency, quest, scene_time):
+        return {
+            "story_id": "s-historical-attribute-rebase",
+            "outline": state["outline"],
+            "genre": "game_webnovel",
+            "style": "plain",
+            "current_chapter": number,
+            "progression_ledger": {
+                "protagonist": protagonist,
+                "economy": {"game_currency": currency},
+                "quests": {"active": quest},
+            },
+            "time_state": {"current_scene_time": scene_time},
+            "chapter_summaries": [{"chapter_number": number, "summary": f"chapter {number} summary"}],
+            "world_facts": [f"chapter {number} world fact"],
+            "characters": [{"name": "Ari", "role": "protagonist"}],
+        }
+
+    chapter_protagonists = {
+        1: attribute_slice(attributes=rule["base_attributes"], remaining=0, awards=[], allocations=[], level="Lv.1"),
+        2: attribute_slice(
+            attributes={"Strength": 10, "Intelligence": 5, "Agility": 5},
+            remaining=0,
+            awards=[award_two],
+            allocations=[old_two],
+            level="Lv.2",
+        ),
+        3: attribute_slice(
+            attributes={"Strength": 10, "Intelligence": 7, "Agility": 5},
+            remaining=3,
+            awards=[award_two, award_three],
+            allocations=[old_two, alloc_three],
+            level="Lv.3",
+        ),
+        4: attribute_slice(
+            attributes={"Strength": 10, "Intelligence": 7, "Agility": 8},
+            remaining=0,
+            awards=[award_two, award_three],
+            allocations=[old_two, alloc_three, alloc_four],
+            level="Lv.3",
+        ),
+        5: deepcopy(global_protagonist),
+    }
+    future_non_attribute = {}
+    for number in range(1, 6):
+        updated_story = snapshot(
+            number,
+            chapter_protagonists[number],
+            currency=f"{number * 10} copper",
+            quest=f"quest-{number}",
+            scene_time=f"chapter {number} end",
+        )
+        chapter = {
+            "chapter_number": number,
+            "chapter_title": f"Chapter {number}",
+            "body": _long_test_body(f"Chapter {number} keeps its structured state."),
+            "updated_story": updated_story,
+            "chapter_summary": {"chapter_number": number, "summary": f"chapter {number} summary"},
+        }
+        store._write_json(store.story_system_dir / "chapters" / f"{number:04d}.json", chapter)
+        if number >= 3:
+            future_non_attribute[number] = {
+                "economy": deepcopy(updated_story["progression_ledger"]["economy"]),
+                "quests": deepcopy(updated_story["progression_ledger"]["quests"]),
+                "time_state": deepcopy(updated_story["time_state"]),
+                "chapter_summaries": deepcopy(updated_story["chapter_summaries"]),
+                "world_facts": deepcopy(updated_story["world_facts"]),
+            }
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            assert story.current_chapter == 1
+            updated = story.model_dump(mode="json")
+            updated["current_chapter"] = 2
+            updated["progression_ledger"]["protagonist"] = attribute_slice(
+                attributes={"Strength": 5, "Intelligence": 10, "Agility": 5},
+                remaining=0,
+                awards=[award_two],
+                allocations=[
+                    {
+                        "chapter": 2,
+                        "allocations": {"Intelligence": 5},
+                        "remaining": 0,
+                        "reason": "rewritten build",
+                    }
+                ],
+                level="Lv.2",
+            )
+            return SimpleNamespace(
+                chapter_number=2,
+                chapter_title="Rewritten Intelligence Build",
+                body=_long_test_body("Ari confirms the rewritten structured build."),
+                cadence="measured",
+                next_outline="Continue into chapter three.",
+                updated_story=StoryState.model_validate(updated),
+                quality_report={"ok": True, "issues": []},
+                chapter_summary={
+                    "chapter_title": "Rewritten Intelligence Build",
+                    "cadence": "measured",
+                    "summary": "Ari commits to Intelligence.",
+                    "facts": ["The structured ledger records Intelligence plus five."],
+                    "next_focus": "Continue into chapter three.",
+                    "primary_conflict": "Build choice.",
+                    "secondary_conflict": "Later continuity.",
+                    "event_beat": "Reallocate.",
+                },
+            )
+
+    store.regenerate_chapter(2, engine=FakeEngine())
+
+    chapters = {
+        number: json.loads(
+            (root / ".story-system" / "chapters" / f"{number:04d}.json").read_text(encoding="utf-8")
+        )
+        for number in range(2, 6)
+    }
+    assert chapters[2]["updated_story"]["current_chapter"] == 2
+    final_allocations = [
+        {"chapter": 2, "allocations": {"Intelligence": 5}, "remaining": 0, "reason": "rewritten build"},
+        alloc_three,
+        alloc_four,
+        alloc_five,
+    ]
+    expected_attributes = {
+        2: {"Strength": 5, "Intelligence": 10, "Agility": 5},
+        3: {"Strength": 5, "Intelligence": 12, "Agility": 5},
+        4: {"Strength": 5, "Intelligence": 12, "Agility": 8},
+        5: {"Strength": 6, "Intelligence": 12, "Agility": 8},
+    }
+    for number, chapter in chapters.items():
+        protagonist = chapter["updated_story"]["progression_ledger"]["protagonist"]
+        assert protagonist["attributes"] == expected_attributes[number]
+        assert protagonist["attribute_allocations"] == final_allocations[: number - 1]
+        assert len(protagonist["attribute_allocations"]) == len(
+            {(item["chapter"], tuple(item["allocations"].items())) for item in protagonist["attribute_allocations"]}
+        )
+        if number >= 3:
+            updated_story = chapter["updated_story"]
+            assert updated_story["progression_ledger"]["economy"] == future_non_attribute[number]["economy"]
+            assert updated_story["progression_ledger"]["quests"] == future_non_attribute[number]["quests"]
+            for field in ("time_state", "chapter_summaries", "world_facts"):
+                assert updated_story[field] == future_non_attribute[number][field]
+
+    global_state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    assert global_state["current_chapter"] == 5
+    assert global_state["progression_ledger"]["economy"] == state["progression_ledger"]["economy"]
+    assert global_state["progression_ledger"]["quests"] == state["progression_ledger"]["quests"]
+    assert global_state["time_state"] == state["time_state"]
+    assert global_state["chapter_summaries"] == state["chapter_summaries"]
+    assert global_state["world_facts"] == state["world_facts"]
+    protagonist = global_state["progression_ledger"]["protagonist"]
+    assert protagonist["hp"] == "87/100"
+    assert protagonist["attributes"] == expected_attributes[5]
+    assert protagonist["unallocated_attribute_points"] == 4
+    assert protagonist["attribute_point_awards"] == [award_two, award_three, award_five]
+    assert protagonist["attribute_allocations"] == final_allocations
+    character = global_state["characters"][0]
+    for mirror in (character["game_state"]["current"], character["game_panel"]):
+        for field in (
+            "attributes",
+            "unallocated_attribute_points",
+            "attribute_point_awards",
+            "attribute_allocations",
+        ):
+            assert mirror[field] == protagonist[field]
+
+
+def test_historical_attribute_rebase_rejects_future_overspend_without_writes(tmp_path):
+    root = tmp_path / "historical-attribute-rebase-invalid"
+    rule = {
+        "mode": "free",
+        "points_per_level": 5,
+        "starting_level": 1,
+        "base_attributes": {"Strength": 5, "Intelligence": 5},
+        "allow_carry": True,
+        "respec_rule": "Respec in town.",
+    }
+    project = {
+        "project_id": "p-rebase-invalid",
+        "title": "Invalid Future Allocation",
+        "active_story_id": "s-rebase-invalid",
+        "genre": "game_webnovel",
+        "world_blueprint": {"power_system_spec": {"attribute_allocation": rule}},
+    }
+    state = {
+        "story_id": "s-rebase-invalid",
+        "outline": "Structured history only.",
+        "genre": "game_webnovel",
+        "style": "plain",
+        "current_chapter": 3,
+        "progression_ledger": {
+            "protagonist": {
+                "level": "Lv.2",
+                "attributes": {"Strength": 10, "Intelligence": 5},
+                "unallocated_attribute_points": 0,
+                "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 2}],
+                "attribute_allocations": [
+                    {"chapter": 2, "allocations": {"Strength": 5}, "remaining": 0, "reason": "old"}
+                ],
+            },
+            "economy": {"game_currency": "30 copper"},
+        },
+        "world_facts": ["global state must remain byte-for-byte unchanged"],
+    }
+    store = _make_minimal_file_project(root, project=project, state=state)
+    target_story = {
+        **state,
+        "current_chapter": 2,
+        "progression_ledger": {
+            "protagonist": {
+                "level": "Lv.2",
+                "attributes": {"Strength": 5, "Intelligence": 10},
+                "unallocated_attribute_points": 0,
+                "attribute_point_awards": [{"level": 2, "points": 5, "chapter": 2}],
+                "attribute_allocations": [
+                    {
+                        "chapter": 2,
+                        "allocations": {"Intelligence": 5},
+                        "remaining": 0,
+                        "reason": "rewrite",
+                    }
+                ],
+            }
+        },
+    }
+    future_story = deepcopy(state)
+    future_story["progression_ledger"]["protagonist"]["attribute_allocations"].append(
+        {"chapter": 3, "allocations": {"Strength": 1}, "remaining": 0, "reason": "overspend"}
+    )
+    for number, updated_story in ((2, target_story), (3, future_story)):
+        store._write_json(
+            store.story_system_dir / "chapters" / f"{number:04d}.json",
+            {
+                "chapter_number": number,
+                "chapter_title": f"Chapter {number}",
+                "body": _long_test_body(f"Chapter {number} existing body."),
+                "updated_story": updated_story,
+            },
+        )
+    before = _file_snapshot(root)
+    bundle = SimpleNamespace(
+        chapter_number=2,
+        chapter_title="Rejected Rewrite",
+        body=_long_test_body("The prose contains no attribute parsing contract."),
+        cadence="measured",
+        next_outline="Do not persist this rewrite.",
+        updated_story=StoryState.model_validate(target_story),
+        quality_report={"ok": True, "issues": []},
+        chapter_summary={
+            "chapter_title": "Rejected Rewrite",
+            "cadence": "measured",
+            "summary": "This rewrite must fail before persistence.",
+            "facts": ["The future allocation overspends."],
+            "next_focus": "Keep the old files.",
+            "primary_conflict": "Invalid ledger.",
+            "secondary_conflict": "Atomic persistence.",
+            "event_beat": "Reject.",
+        },
+    )
+
+    with pytest.raises(ValueError, match="^attribute_rebase_invalid_allocation:3$"):
+        store.persist_bundle(bundle, operation="regenerate")
+
+    assert _file_snapshot(root) == before
+
+
 def test_usable_bundle_state_keeps_valid_runtime_character_updates(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     current_state = {
