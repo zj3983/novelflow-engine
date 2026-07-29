@@ -18,10 +18,30 @@ def test_legacy_entry_defaults_last_touched_to_first_chapter():
 
 
 def test_last_touched_chapter_is_optional_in_json_schema():
-    required = ForeshadowingState.model_json_schema().get("required", [])
+    schema = ForeshadowingState.model_json_schema()
+    required = schema.get("required", [])
 
     assert "last_touched_chapter" not in required
+    assert schema["properties"]["last_touched_chapter"].get("default") is None
     assert isinstance(ForeshadowingState(text="thread", first_chapter=2).last_touched_chapter, int)
+
+
+def test_explicit_none_defaults_last_touched_without_replacing_zero():
+    defaulted = ForeshadowingState(
+        text="defaulted thread",
+        first_chapter=4,
+        last_touched_chapter=None,
+    )
+    explicit_zero = ForeshadowingState(
+        text="zero thread",
+        first_chapter=4,
+        last_touched_chapter=0,
+    )
+
+    assert defaulted.last_touched_chapter == 4
+    assert defaulted.model_dump()["last_touched_chapter"] == 4
+    assert isinstance(defaulted.model_dump()["last_touched_chapter"], int)
+    assert explicit_zero.last_touched_chapter == 0
 
 
 def test_normalization_is_deterministic_without_fuzzy_matching():
