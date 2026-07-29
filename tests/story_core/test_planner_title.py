@@ -35,3 +35,23 @@ def test_xianxia_chapter_title_uses_the_concrete_chapter_object():
     assert title == "断香炉开口"
     assert "真相" not in title
     assert "道韵" not in title
+
+
+def test_xianxia_chapter_title_uses_artifact_conflict_in_chinese_body():
+    title = build_chapter_title(
+        142,
+        next_focus="玄渊真人强闯雪山神殿，林修与沈墨璃保护小乐，与天机阁争夺雪魄神印。",
+        genre="xianxia",
+    )
+
+    assert title == "神印争夺"
+
+
+def test_xianxia_chapter_title_distinguishes_followup_mirror_crisis():
+    title = build_chapter_title(
+        143,
+        next_focus="雪魄神印旁的残镜吞取阵心灵气，林修中了寒毒，天机阁正在合围雪山神殿。",
+        genre="xianxia",
+    )
+
+    assert title == "残镜夺灵"

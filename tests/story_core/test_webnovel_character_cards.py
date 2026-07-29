@@ -96,3 +96,21 @@ def test_character_context_exposes_scene_portrait_slice_without_full_portrait():
 
     summary = _character_context_for_prompt(story, {"character_moves": [{"name": "苏叶"}]})
     assert summary["cards"][0]["scene_portrait"]["pressure_behavior"]
+
+
+def test_xianxia_character_cards_ignore_stale_game_keywords() -> None:
+    story = StoryState(
+        story_id="s-xianxia-character-card",
+        outline="林修在雪山神殿修复残镜。",
+        genre="修仙仙侠",
+        genre_plugin_ids=["xianxia"],
+        style="白描",
+        world_facts=["旧数据曾提到交易行和游戏任务。"],
+        characters=[CharacterState(name="林修", role="protagonist")],
+    )
+
+    card = build_character_cards(story)[0]
+
+    assert "game_id" not in card["identity"]
+    assert "game_panel" not in card["continuity_locks"]
+    assert not card["webnovel_profile"]["character_type"].startswith("gap-driven")

@@ -1476,6 +1476,16 @@ def _merge_progression_ledger(project: NovelProject, incoming_world: dict[str, A
     return _deep_merge_dicts(_deep_merge_dicts(defaults, current), incoming)
 
 
+def _relationship_score(value: Any) -> float:
+    try:
+        score = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(score):
+        return 0.0
+    return max(0.0, min(100.0, score))
+
+
 def _as_relationships(value: Any, limit: int) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -1492,8 +1502,8 @@ def _as_relationships(value: Any, limit: int) -> list[dict[str, Any]]:
                 "source": source,
                 "target": target,
                 "bond": compact_text(str(item.get("bond", "")), 180),
-                "tension": float(item.get("tension", 0.0) or 0.0),
-                "trust": float(item.get("trust", 0.0) or 0.0),
+                "tension": _relationship_score(item.get("tension")),
+                "trust": _relationship_score(item.get("trust")),
             }
         )
         if len(result) >= limit:
@@ -1601,9 +1611,11 @@ def _default_character_profiles(project: NovelProject, genre_plugins: list[dict[
 
 def _derive_author_constraints(world_blueprint: dict[str, Any]) -> list[str]:
     constraints: list[str] = []
-    constraints.append(
-        "网游角色必须区分现实姓名和游戏ID：游戏内行动、交易行、论坛和公会追踪优先使用游戏ID，现实身份只能在现实场景或旁白中出现。"
-    )
+    plugin_ids = {str(item).strip() for item in world_blueprint.get("genre_plugin_ids", []) if str(item).strip()}
+    if "game_webnovel" in plugin_ids:
+        constraints.append(
+            "网游角色必须区分现实姓名和游戏ID：游戏内行动、交易行、论坛和公会追踪优先使用游戏ID，现实身份只能在现实场景或旁白中出现。"
+        )
     for field in RULEBOOK_FIELDS:
         constraints.extend(_as_string_list(world_blueprint.get(field), 2, item_limit=180))
     constraints.extend(_as_string_list(world_blueprint.get("constraints"), 6, item_limit=180))
@@ -1839,6 +1851,7 @@ def _call_world_enrichment_model(project: NovelProject, *, rules_only: bool) -> 
             {"role": "user", "content": _build_prompt(project, rules_only=rules_only)},
         ],
         "response_format": {"type": "json_object"},
+        "reasoning_effort": "low",
         "temperature": float(settings.temperature),
         "max_tokens": 6000,
         "parameters": {"enable_thinking": False},

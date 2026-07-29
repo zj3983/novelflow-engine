@@ -206,12 +206,16 @@ def test_explicit_non_game_genre_overrides_game_words_in_outline():
         outline="林照追查古族留下的游戏系统图样，确认它为何会记录族人名字。",
         genre="xuanhuan",
         style="白描",
+        characters=[CharacterState(name="林照", role="protagonist")],
     )
 
     plan = build_chapter_simulation_plan(story, 1).model_dump()
 
     assert plan["longform_plot_contract"]["genre_mode"] == "xuanhuan"
     assert plan["web_game_author_craft"] == {}
+    assert plan["panel_expectations"] == []
+    assert "known_panel" not in plan["protagonist_strategy"]
+    assert "game_id" not in plan["protagonist_strategy"]
     assert "千倍爆率" not in str(plan["longform_plot_contract"])
 
 

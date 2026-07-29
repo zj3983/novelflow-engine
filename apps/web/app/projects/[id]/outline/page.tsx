@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
@@ -13,6 +14,7 @@ import {
   type ProjectOutline,
   type ProjectOutlineArc,
 } from "../../../../lib/api";
+import { isGameWebnovel } from "../../../../lib/worldDisplay";
 
 type OutlineTab = "overall" | "arcs" | "chapters";
 
@@ -108,6 +110,7 @@ export default function OutlinePage() {
   }, [projectId]);
 
   const nextChapter = (story?.current_chapter ?? 0) + 1;
+  const isGameProject = isGameWebnovel(project);
   const activeArc = draft?.arcs.find(
     (arc) => arc.start_chapter <= nextChapter && nextChapter <= arc.end_chapter,
   );
@@ -294,6 +297,11 @@ export default function OutlinePage() {
                   </button>
                 </>
               )}
+              {draft.chapters.length > 0 ? (
+                <Link className="ws-btn ws-btn--primary" href={`/projects/${encodedProjectId}/world`}>
+                  下一步：完善世界观
+                </Link>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -492,8 +500,8 @@ export default function OutlinePage() {
                       </label>
                     ))}
                     {([
-                      ["game_line_payoff", "游戏线阶段结果"],
-                      ["reality_line_payoff", "现实线阶段结果"],
+                      ["game_line_payoff", isGameProject ? "游戏线阶段结果" : "修行线阶段结果"],
+                      ["reality_line_payoff", isGameProject ? "现实线阶段结果" : "联盟线阶段结果"],
                     ] as const).map(([field, label]) => (
                       <label className="ws-outline-field" key={field}>
                         <span>{label}</span>

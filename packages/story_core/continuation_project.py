@@ -27,7 +27,10 @@ from packages.story_core.file_project_creation import (
 )
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import StoryState
-from packages.story_core.novel_type_catalog import runtime_novel_type
+from packages.story_core.novel_type_catalog import (
+    novel_type_prompt_context,
+    runtime_novel_type,
+)
 from packages.story_core.project_outline import normalize_project_outline
 from packages.story_core.relationship_graph import relationship_edge_id
 
@@ -52,8 +55,8 @@ class ContinuationSettings(BaseModel):
     planned_chapters: int = Field(default=0, ge=0, le=10_000)
     must_preserve: list[str] = Field(default_factory=list, max_length=100)
     forbidden_content: list[str] = Field(default_factory=list, max_length=100)
-    generate_outline: bool = False
-    outline_chapters: int = Field(default=0, ge=0, le=30)
+    generate_outline: bool = True
+    outline_chapters: int = Field(default=10, ge=0, le=30)
     novel_type_id: str = "generic_webnovel"
 
     @field_validator("direction", "novel_type_id", mode="before")
@@ -498,6 +501,63 @@ def _state_payload(
     return state.model_dump(mode="json")
 
 
+_FACTION_SUFFIXES = (
+    "\u5b97",
+    "\u9601",
+    "\u6559",
+    "\u8054\u76df",
+    "\u5546\u4f1a",
+    "\u4e16\u5bb6",
+    "\u5bb6",
+    "\u65cf",
+    "\u95e8",
+    "\u5bab",
+    "\u5bfa",
+    "\u5e2e",
+    "\u4f1a",
+)
+_LOCATION_SUFFIXES = (
+    "\u8c37",
+    "\u57ce",
+    "\u5c71",
+    "\u5cf0",
+    "\u6d77",
+    "\u5dde",
+    "\u57df",
+    "\u754c",
+    "\u6d32",
+    "\u6751",
+    "\u9547",
+    "\u5e9c",
+    "\u9662",
+    "\u5893",
+    "\u603b\u90e8",
+)
+
+
+def _world_entities(
+    claims: list[str],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    locations: list[dict[str, str]] = []
+    factions: list[dict[str, str]] = []
+    seen_locations: set[str] = set()
+    seen_factions: set[str] = set()
+    for claim in claims:
+        parts = re.split(r"[:\uff1a]", claim, maxsplit=1)
+        if len(parts) != 2:
+            continue
+        name, description = (part.strip() for part in parts)
+        if not name or not description or len(name) > 40:
+            continue
+        if name.endswith(_FACTION_SUFFIXES) and name not in seen_factions:
+            factions.append({"name": name, "description": description})
+            seen_factions.add(name)
+        if name.endswith(_LOCATION_SUFFIXES) and name not in seen_locations:
+            locations.append({"name": name, "description": description})
+            seen_locations.add(name)
+    return locations, factions
+
+
 def _project_payload(
     project_id: str,
     session: ContinuationImportSession,
@@ -513,6 +573,29 @@ def _project_payload(
         not branch_excludes_source
         or analysis.continuation_start.chapter_id in accepted_ids
     )
+    confirmed_world = [
+        item.claim.strip()
+        for item in analysis.world
+        if item.confidence == "confirmed"
+        and item.claim.strip()
+        and _included_at_branch(
+            item,
+            accepted_ids,
+            branch_excludes_source=branch_excludes_source,
+        )
+    ]
+    confirmed_power = [
+        item.claim.strip()
+        for item in analysis.power_system
+        if item.confidence == "confirmed"
+        and item.claim.strip()
+        and _included_at_branch(
+            item,
+            accepted_ids,
+            branch_excludes_source=branch_excludes_source,
+        )
+    ]
+    locations, factions = _world_entities(confirmed_world)
     direction = (
         settings.direction
         or (
@@ -552,7 +635,7 @@ def _project_payload(
         "title": title,
         "source_path": session.source_path,
         "seed_outline": overview,
-        "world_summary": overview,
+        "world_summary": "\n".join(confirmed_world) or overview,
         "current_focus": direction,
         "author_constraints": [
             *settings.must_preserve,
@@ -574,16 +657,12 @@ def _project_payload(
         "enabled_skill_ids": [],
         "world_blueprint": {
             "genre_plugin_ids": [settings.novel_type_id],
-            "power_system": [
-                item.model_dump(mode="json")
-                for item in analysis.power_system
-                if item.confidence == "confirmed"
-                and _included_at_branch(
-                    item,
-                    accepted_ids,
-                    branch_excludes_source=branch_excludes_source,
-                )
-            ],
+            "premise": confirmed_world[0] if confirmed_world else overview,
+            "current_arc": analysis.continuation_start.situation or direction,
+            "world_rules": confirmed_world,
+            "power_system": confirmed_power,
+            "locations": locations,
+            "factions": factions,
         },
         "current_chapter": settings.start_after_chapter,
         "status": "draft",
@@ -591,6 +670,144 @@ def _project_payload(
         "active_story_id": f"file:{project_id}",
         "continuation": continuation,
     }
+
+
+_CONTINUATION_STAGES = (
+    "接住余波",
+    "追索线索",
+    "试探阻力",
+    "逼近真相",
+    "遭遇反制",
+    "调整布局",
+    "撬开缺口",
+    "兑现成长",
+    "正面碰撞",
+    "留下新局",
+)
+
+
+def _continuation_outline(
+    analysis: ContinuationAnalysis,
+    settings: ContinuationSettings,
+) -> dict[str, Any]:
+    if not settings.generate_outline:
+        return normalize_project_outline({})
+
+    start = settings.start_after_chapter + 1
+    end = settings.start_after_chapter + settings.outline_chapters
+    genre = runtime_novel_type(settings.novel_type_id)
+    trope_ids = [
+        str(item.get("id") or "").strip()
+        for item in novel_type_prompt_context(genre).get("genre_trope_templates", [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ] if genre is not None else []
+    primary_trope_id = (
+        "chapter_hook_escalation"
+        if "chapter_hook_escalation" in trope_ids
+        else (trope_ids[0] if trope_ids else None)
+    )
+    direction = (
+        settings.direction.strip()
+        or analysis.continuation_start.guidance.strip()
+        or analysis.continuation_start.situation.strip()
+        or "延续当前主线"
+    )
+    situation = analysis.continuation_start.situation.strip() or direction
+    hooks = [
+        item.text.strip()
+        for item in analysis.open_hooks
+        if item.confidence == "confirmed"
+        and item.status != "resolved"
+        and item.text.strip()
+    ]
+    protagonist = next(
+        (
+            item.name.strip()
+            for item in analysis.characters
+            if item.confidence == "confirmed"
+            and item.role.strip().lower() in {"protagonist", "主角"}
+            and item.name.strip()
+        ),
+        next(
+            (
+                item.name.strip()
+                for item in analysis.characters
+                if item.confidence == "confirmed" and item.name.strip()
+            ),
+            "主角",
+        ),
+    )
+    growth_items: list[str] = []
+    growth_chars = 0
+    for item in analysis.power_system:
+        claim = item.claim.strip()
+        if item.confidence != "confirmed" or not claim:
+            continue
+        separator_chars = 1 if growth_items else 0
+        if growth_chars + separator_chars + len(claim) > 500:
+            break
+        growth_items.append(claim)
+        growth_chars += separator_chars + len(claim)
+    growth = "；".join(growth_items)
+    focuses = hooks or [direction]
+    chapters: list[dict[str, Any]] = []
+    for offset in range(settings.outline_chapters):
+        number = start + offset
+        focus = focuses[offset % len(focuses)]
+        stage = _CONTINUATION_STAGES[offset % len(_CONTINUATION_STAGES)]
+        cycle = offset // len(_CONTINUATION_STAGES) + 1
+        title = f"{stage}：{focus[:12]}"
+        if cycle > 1:
+            title = f"{title}（{cycle}）"
+        next_focus = focuses[(offset + 1) % len(focuses)]
+        chapters.append(
+            {
+                "chapter_number": number,
+                "title": title,
+                "goal": focus,
+                "obstacle": situation,
+                "action": f"{protagonist}围绕“{focus}”采取具体行动并验证判断。",
+                "turn": f"行动暴露新的限制，使“{direction}”进入下一阶段。",
+                "payoff": f"推进“{focus}”，并形成可见的关系、信息或实力变化。",
+                "ending_hook": (
+                    f"将矛盾转向“{next_focus}”。"
+                    if offset + 1 < settings.outline_chapters
+                    else "本段目标暂时兑现，同时留下下一阶段的新问题。"
+                ),
+                "cast": [protagonist],
+            }
+        )
+
+    return normalize_project_outline(
+        {
+            "overall": {
+                "story": analysis.story_overview.strip() or situation,
+                "protagonist_goal": direction,
+                "main_conflict": situation,
+                "growth_path": growth,
+                "ending_direction": direction,
+                "primary_trope_id": primary_trope_id,
+                "core_ending_chapter": end,
+                "extension_ceiling_chapter": end,
+                "current_strategy": "observe",
+                "ending_contract": direction,
+            },
+            "arcs": [
+                {
+                    "id": f"continuation-{start}-{end}",
+                    "title": f"续写阶段：{direction[:18]}",
+                    "start_chapter": start,
+                    "end_chapter": end,
+                    "goal": direction,
+                    "obstacle": situation,
+                    "payoff": f"完成从第{settings.start_after_chapter}章遗留局势到下一阶段的推进。",
+                    "trope_id": primary_trope_id,
+                    "end_state": "当前冲突获得阶段性结果，并建立新的明确目标。",
+                }
+            ],
+            "chapters": chapters,
+        }
+    )
 
 
 def _source_index(
@@ -736,7 +953,10 @@ def _write_continuation_project(
     )
     _write_json(root / ".webnovel/project.json", project)
     _write_json(root / ".webnovel/state.json", state)
-    _write_json(root / ".webnovel/outline.json", normalize_project_outline({}))
+    _write_json(
+        root / ".webnovel/outline.json",
+        _continuation_outline(active_analysis, settings),
+    )
     _write_json(
         root / ".story-system/MASTER_SETTING.json",
         {

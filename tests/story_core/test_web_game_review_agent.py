@@ -1,7 +1,7 @@
 import pytest
 
 from packages.story_core.web_game_review import review_web_game_chapter, web_game_review_rules
-from packages.story_core.orchestrator import _merge_writing_review_quality, _opening_writer_rules
+from packages.story_core.orchestrator import _merge_writing_review_quality
 from packages.story_core.reviewer_agent import review_reviewer_agent
 
 
@@ -277,15 +277,6 @@ def test_web_game_review_rejects_login_after_disconnected_broadband_without_netw
     )
 
     assert any("有效联网方式" in issue for issue in review["issues"])
-
-
-def test_opening_writer_rules_do_not_embed_one_projects_balance():
-    rules = "\n".join(_opening_writer_rules(1))
-
-    assert "27.60" not in rules
-    assert "项目写作包" in rules
-    assert "禁止寄售成功" not in rules
-    assert "交易、到账和现实付款是否发生，必须服从本书大纲" in rules
 
 
 def test_web_game_review_requires_skills_and_traits_for_elite_panel():
@@ -671,6 +662,50 @@ def test_web_game_review_accepts_protagonist_allocation_with_modifier(action: st
     review = review_web_game_chapter(
         chapter_number=4,
         body=f"《神域》里，{action}，确认后可用属性点归零。",
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        },
+        world_facts=[],
+        protagonist_aliases={"苏叶", "夜烬"},
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_accepts_natural_jiazai_attribute_wording():
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=(
+            "夜烬升级后打开属性界面，把五点自由属性全部加在智力上。"
+            "【智力：5→10】【可用属性点：0】"
+        ),
+        event_plan={
+            "novel_type": "game_webnovel",
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            }
+        },
+        world_facts=[],
+        protagonist_aliases={"苏叶", "夜烬"},
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_accepts_clicking_attribute_five_times_with_visible_result():
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=(
+            "夜烬升级后打开属性面板，抬手在智力后连续点了五次。"
+            "【智力：5→10】【可用属性点：0】确认加点后，他收起面板。"
+        ),
         event_plan={
             "novel_type": "game_webnovel",
             "attribute_allocation_decision": {
@@ -1539,11 +1574,3 @@ def test_quality_report_fails_when_writing_review_fails():
     assert merged["ok"] is False
     assert "writing_review" in merged["issues"]
     assert merged["writing_review"] == writing_review
-
-
-def test_opening_writer_rules_keep_first_chapter_narrow():
-    rules = "\n".join(_opening_writer_rules(1))
-
-    assert "NPC、柜台、价牌和队伍只作为环境入口" in rules
-    assert "赵胖子" in rules
-    assert "白袍据点" in rules

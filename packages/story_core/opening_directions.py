@@ -20,7 +20,7 @@ class _StrictOpeningModel(BaseModel):
 
 class OpeningBrief(_StrictOpeningModel):
     schema_version: Literal["opening-brief/v1"] = "opening-brief/v1"
-    mode: Literal["inspiration"] = "inspiration"
+    mode: Literal["blank", "inspiration"] = "inspiration"
     novel_type_id: str = Field(min_length=1, max_length=100)
     idea: str = Field(min_length=1, max_length=1000)
     working_title: str = Field(default="", max_length=120)

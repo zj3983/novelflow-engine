@@ -11,6 +11,7 @@ from packages.story_core.models import (
 )
 from packages.story_core.character_portraits import complete_character_portrait
 from packages.story_core.genre_plugins import is_game_genre
+from packages.story_core.novel_type_catalog import normalize_novel_type_id
 from packages.story_core.planner import build_chapter_title
 from packages.story_core.post_draft_memory import fallback_post_draft_memory
 
@@ -409,6 +410,16 @@ def _is_protagonist(character: Any) -> bool:
 
 
 def _is_game_story_for_cards(story: StoryState) -> bool:
+    explicit_ids = [
+        normalize_novel_type_id(item)
+        for item in (getattr(story, "genre_plugin_ids", []) or [])
+        if normalize_novel_type_id(item)
+    ]
+    if explicit_ids:
+        return any(is_game_genre(item) for item in explicit_ids)
+    explicit_genre = normalize_novel_type_id(getattr(story, "genre", ""))
+    if explicit_genre:
+        return is_game_genre(explicit_genre)
     text = " ".join(
         [
             str(getattr(story, "genre", "") or ""),
@@ -484,6 +495,14 @@ def _character_card(character: Any, story: StoryState) -> dict[str, Any]:
     panel = getattr(character, "game_panel", None)
     panel_data = panel.model_dump() if hasattr(panel, "model_dump") else {}
     game_id = getattr(character, "game_id", "") or panel_data.get("game_id", "")
+    game_story = _is_game_story_for_cards(story)
+    identity = {
+        "name": getattr(character, "name", ""),
+        "role": getattr(character, "role", ""),
+        "location": getattr(character, "location", ""),
+    }
+    if game_story:
+        identity["game_id"] = game_id
     webnovel_profile = {
         "character_type": getattr(character, "character_type", "") or defaults.get("character_type", ""),
         "core_motivation": getattr(character, "core_motivation", "") or defaults.get("core_motivation", ""),
@@ -509,12 +528,7 @@ def _character_card(character: Any, story: StoryState) -> dict[str, Any]:
     return {
         "name": getattr(character, "name", ""),
         "role": getattr(character, "role", ""),
-        "identity": {
-            "name": getattr(character, "name", ""),
-            "role": getattr(character, "role", ""),
-            "game_id": game_id,
-            "location": getattr(character, "location", ""),
-        },
+        "identity": identity,
         "webnovel_profile": _clean_dict(webnovel_profile),
         "three_dimensions": _clean_dict(dimensions),
         "story_usage": _clean_dict(
@@ -540,7 +554,7 @@ def _character_card(character: Any, story: StoryState) -> dict[str, Any]:
                 "relationships": {
                     key: value.model_dump() for key, value in getattr(character, "relationships", {}).items()
                 },
-                "game_panel": _clean_dict(panel_data),
+                **({"game_panel": _clean_dict(panel_data)} if game_story else {}),
                 "npc_boundary": _clean_dict(npc_boundary),
             }
         ),

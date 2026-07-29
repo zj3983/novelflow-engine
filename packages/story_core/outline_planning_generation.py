@@ -11,7 +11,11 @@ from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.novel_type_ids import canonical_novel_type_id
 from packages.story_core.outline_planning import (
+    CharacterTier,
     GeneratedOutlinePlan,
+    INITIAL_OUTLINE_CHAPTER_COUNT,
+    PlanningCharacterCard,
+    sanitize_generated_outline_amounts,
     validate_generated_continuation_plan,
     validate_generated_opening_plan,
 )
@@ -19,6 +23,7 @@ from packages.story_core.runtime_config import (
     StageRuntimeSettings,
     resolve_stage_runtime,
 )
+from packages.story_core.project_outline import ChapterPlan, ProjectOutline
 from packages.story_core.world_blueprint_context import outline_power_system_context
 
 
@@ -50,6 +55,80 @@ class OutlinePlanningBrief(_PlanningInput):
     current_chapter: int = Field(default=0, ge=0)
     recent_chapter_summaries: list[dict[str, Any]] = Field(default_factory=list)
     power_system_spec: dict[str, Any] = Field(default_factory=dict)
+
+
+class GeneratedChapterWindow(_PlanningInput):
+    chapters: list[ChapterPlan]
+
+
+class GeneratedOutlineFoundation(_PlanningInput):
+    outline: ProjectOutline
+
+
+class GeneratedCharacterRoster(_PlanningInput):
+    characters: list["PlanningCharacterSeed"]
+
+
+class PlanningCharacterSeed(_PlanningInput):
+    name: str = Field(min_length=1, max_length=80)
+    role: str = Field(min_length=1, max_length=80)
+    character_tier: CharacterTier
+    first_appearance: int = Field(default=0, ge=0)
+    age: int | None = Field(default=None, ge=0)
+    origin: str = Field(min_length=1, max_length=300)
+    current_identity: str = Field(min_length=1, max_length=200)
+    occupation: str = Field(min_length=1, max_length=120)
+    authority_scope: str = Field(default="", max_length=300)
+    immediate_problem: str = Field(min_length=1, max_length=300)
+    immediate_goal: str = Field(min_length=1, max_length=300)
+    long_term_goal: str = Field(default="", max_length=300)
+    failure_stakes: str = Field(min_length=1, max_length=300)
+    personality: str = Field(min_length=1, max_length=300)
+    speech_style: str = Field(min_length=1, max_length=200)
+    action_style: str = Field(min_length=1, max_length=200)
+    emotional_trigger: str = Field(default="", max_length=200)
+    decision_rule: str = Field(min_length=1, max_length=200)
+    hidden_matter: str = Field(default="", max_length=300)
+    dialogue_examples: list[str] = Field(min_length=2, max_length=2)
+
+
+def _expand_character_seed(seed: PlanningCharacterSeed) -> PlanningCharacterCard:
+    return PlanningCharacterCard.model_validate(
+        {
+            "name": seed.name,
+            "role": seed.role,
+            "character_tier": seed.character_tier,
+            "first_appearance": seed.first_appearance,
+            "identity_profile": {
+                "age": seed.age,
+                "origin": seed.origin,
+                "current_identity": seed.current_identity,
+                "occupation": seed.occupation,
+            },
+            "background_profile": {
+                "formative_events": [seed.personality],
+            },
+            "current_life_profile": {
+                "authority_scope": seed.authority_scope,
+                "immediate_problem": seed.immediate_problem,
+            },
+            "story_drive": {
+                "long_term_goal": seed.long_term_goal,
+                "immediate_goal": seed.immediate_goal,
+                "motivation": seed.personality,
+                "failure_stakes": seed.failure_stakes,
+                "hidden_matters": [seed.hidden_matter] if seed.hidden_matter else [],
+            },
+            "performance_profile": {
+                "speech_style": seed.speech_style,
+                "action_style": seed.action_style,
+                "emotional_triggers": [seed.emotional_trigger] if seed.emotional_trigger else [],
+                "decision_rules": [seed.decision_rule],
+            },
+            "dialogue_examples": seed.dialogue_examples,
+            "relationship_notes": [],
+        }
+    )
 
 
 class LLMOutlinePlanningGenerator:
@@ -94,12 +173,15 @@ class LLMOutlinePlanningGenerator:
             if mode == "initial":
                 if validated.current_chapter != 0:
                     raise ValueError("initial_outline_requires_unstarted_project")
-                target_chapter_numbers = list(range(1, 31))
+                target_chapter_numbers = list(range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1))
             elif mode == "regenerate":
                 target_chapter_numbers = list(
                     range(
                         validated.current_chapter + 1,
-                        min(validated.current_chapter + 30, window["target_last_chapter"])
+                        min(
+                            validated.current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT,
+                            window["target_last_chapter"],
+                        )
                         + 1,
                     )
                 )
@@ -251,17 +333,190 @@ class LLMOutlinePlanningGenerator:
                 "response_format": {"type": "json_object"},
                 "temperature": float(runtime.temperature),
             }
-            response = self._post_json(
-                runtime.base_url,
-                "/chat/completions",
-                payload,
-                runtime.api_key,
-                provider=runtime.provider,
-                codex_command=runtime.codex_command,
-            )
-            parsed = parse_json_message_content(response)
-            if parsed is None:
-                raise ValueError("invalid_json")
+            if runtime.provider == "codexcli" and mode == "initial":
+                outline_context = {
+                    **prompt_context,
+                    "generation_phase": "outline",
+                    "target_chapter_numbers": [],
+                    "output_schema": GeneratedOutlineFoundation.model_json_schema(),
+                }
+                outline_payload = {
+                    **payload,
+                    "reasoning_effort": "low",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Generate only the story structure as JSON with the single root field outline. "
+                                "Provide the complete overall plan and all core arcs. "
+                                "Set outline.chapters to an empty array. Follow prompt_context.output_schema exactly."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": json.dumps(outline_context, ensure_ascii=False),
+                        },
+                    ],
+                }
+                try:
+                    outline_response = self._post_json(
+                        runtime.base_url,
+                        "/chat/completions",
+                        outline_payload,
+                        runtime.api_key,
+                        provider=runtime.provider,
+                        codex_command=runtime.codex_command,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"outline_generation_failed:{type(exc).__name__}"
+                    ) from exc
+                outline_data = parse_json_message_content(outline_response)
+                if outline_data is None:
+                    raise ValueError("invalid_outline_json")
+                outline_foundation = GeneratedOutlineFoundation.model_validate(
+                    outline_data
+                ).model_dump(mode="json")
+                outline_foundation["outline"]["chapters"] = []
+
+                character_context = {
+                    "generation_phase": "characters",
+                    "title": validated.title,
+                    "novel_type_id": effective_novel_type_id,
+                    "opening_direction": validated.opening_direction.model_dump(mode="json"),
+                    "author_constraints": validated.author_constraints,
+                    "outline_foundation": outline_foundation["outline"],
+                    "target_chapter_numbers": [],
+                    "output_schema": GeneratedCharacterRoster.model_json_schema(),
+                    "validation_rules": [
+                        "Return 4 to 6 unique complete character cards.",
+                        "Include protagonist, stage_antagonist, long_term_antagonist, and supporting tiers.",
+                        "The stage_antagonist name must match the opening arc stage_antagonist.",
+                    ],
+                }
+                character_payload = {
+                    **payload,
+                    "reasoning_effort": "low",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Generate only the opening character roster. Return JSON with the single root field characters. "
+                                "Create 4 to 6 complete Chinese webnovel character cards that fit outline_foundation. "
+                                "Follow prompt_context.output_schema exactly."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": json.dumps(character_context, ensure_ascii=False),
+                        },
+                    ],
+                }
+                try:
+                    character_response = self._post_json(
+                        runtime.base_url,
+                        "/chat/completions",
+                        character_payload,
+                        runtime.api_key,
+                        provider=runtime.provider,
+                        codex_command=runtime.codex_command,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"character_generation_failed:{type(exc).__name__}"
+                    ) from exc
+                character_data = parse_json_message_content(character_response)
+                if character_data is None:
+                    raise ValueError("invalid_character_json")
+                character_roster = GeneratedCharacterRoster.model_validate(
+                    character_data
+                )
+                foundation_data = {
+                    "outline": outline_foundation["outline"],
+                    "characters": [
+                        _expand_character_seed(seed).model_dump(mode="json")
+                        for seed in character_roster.characters
+                    ],
+                }
+
+                chapter_context = {
+                    "generation_phase": "chapters",
+                    "title": validated.title,
+                    "novel_type_id": effective_novel_type_id,
+                    "opening_direction": validated.opening_direction.model_dump(mode="json"),
+                    "author_constraints": validated.author_constraints,
+                    "outline_foundation": foundation_data["outline"],
+                    "characters": [
+                        {
+                            "name": card["name"],
+                            "role": card["role"],
+                            "character_tier": card["character_tier"],
+                        }
+                        for card in foundation_data["characters"]
+                    ],
+                    "genre_trope_templates": trope_candidates,
+                    "target_chapter_numbers": target_chapter_numbers,
+                    "output_schema": GeneratedChapterWindow.model_json_schema(),
+                    "validation_rules": [
+                        "Return exactly one chapter for every target_chapter_numbers value, in order.",
+                        "Every cast name must exactly match one name in characters.",
+                        "Use trope_beat only on a milestone and only from the active arc trope template.",
+                        financial_outline_rule,
+                    ],
+                }
+                chapter_payload = {
+                    **payload,
+                    "reasoning_effort": "low",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Generate only the requested Chinese webnovel chapter outline window. "
+                                "Return JSON with the single root field chapters. Do not repeat overall, arcs, or character cards. "
+                                "Follow prompt_context.output_schema and target_chapter_numbers exactly."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": json.dumps(chapter_context, ensure_ascii=False),
+                        },
+                    ],
+                }
+                try:
+                    chapter_response = self._post_json(
+                        runtime.base_url,
+                        "/chat/completions",
+                        chapter_payload,
+                        runtime.api_key,
+                        provider=runtime.provider,
+                        codex_command=runtime.codex_command,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"chapter_window_generation_failed:{type(exc).__name__}"
+                    ) from exc
+                chapter_data = parse_json_message_content(chapter_response)
+                if chapter_data is None:
+                    raise ValueError("invalid_chapter_window_json")
+                chapter_window = GeneratedChapterWindow.model_validate(chapter_data)
+                foundation_data["outline"]["chapters"] = [
+                    chapter.model_dump(mode="json")
+                    for chapter in chapter_window.chapters
+                ]
+                parsed = foundation_data
+            else:
+                response = self._post_json(
+                    runtime.base_url,
+                    "/chat/completions",
+                    payload,
+                    runtime.api_key,
+                    provider=runtime.provider,
+                    codex_command=runtime.codex_command,
+                )
+                parsed = parse_json_message_content(response)
+                if parsed is None:
+                    raise ValueError("invalid_json")
+            parsed = sanitize_generated_outline_amounts(parsed)
             if mode == "extend":
                 return validate_generated_continuation_plan(
                     parsed,

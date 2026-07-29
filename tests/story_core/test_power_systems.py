@@ -41,6 +41,23 @@ def test_public_facade_declares_exact_exports() -> None:
     )
 
 
+def test_non_game_power_system_uses_genre_ledger_without_game_inventory_fields() -> None:
+    spec = complete_spec()
+    spec["paths"] = spec["paths"][:2]
+    spec["continuity_ledger"] = [
+        "awakening_rank",
+        "ability",
+        "real_identity",
+        "organization_relation",
+        "exposure",
+        "physical_burden",
+    ]
+
+    validated = validate_power_system_spec(spec, novel_type_id="urban")
+
+    assert validated["continuity_ledger"] == spec["continuity_ledger"]
+
+
 def complete_spec() -> dict[str, object]:
     return {
         "name": "神域职业体系",

@@ -13,6 +13,7 @@ from packages.story_core.character_profiles import (
     RelationshipNote,
     StoryDriveProfile,
 )
+from packages.story_core.elastic_outline import DETAIL_WINDOW
 from packages.story_core.models import CharacterPerformanceProfile
 from packages.story_core.project_outline import ProjectOutline, normalize_project_outline, select_outline_context
 from packages.story_core.trope_runtime import compact_trope_candidates
@@ -24,6 +25,8 @@ CharacterTier = Literal[
     "long_term_antagonist",
     "supporting",
 ]
+
+INITIAL_OUTLINE_CHAPTER_COUNT = DETAIL_WINDOW
 
 
 class _PlanningModel(BaseModel):
@@ -193,6 +196,68 @@ def _contains_financial_percentage(value: str) -> bool:
                 continue
             return True
     return False
+
+
+def _sanitize_generated_narrative_value(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    if not (
+        _contains_monetary_amount(normalized)
+        or _contains_financial_percentage(normalized)
+    ):
+        return value
+
+    cleaned = _EXPLICIT_CURRENCY_PATTERN.sub("一笔待定款项", normalized)
+    cleaned = _FINANCIAL_KEYWORD_AMOUNT_PATTERN.sub("一笔待定款项", cleaned)
+    cleaned = _INCOME_AMOUNT_PATTERN.sub("获得一笔待定收入", cleaned)
+    clauses = re.split(r"([，。；！？\n])", cleaned)
+    for index in range(0, len(clauses), 2):
+        if _contains_financial_percentage(clauses[index]):
+            clauses[index] = re.sub(_PERCENTAGE_TOKEN, "按平台规则", clauses[index])
+    cleaned = "".join(clauses)
+    if _contains_monetary_amount(cleaned) or _contains_financial_percentage(cleaned):
+        return "涉及款项按既定规则结算，不在大纲中写明具体数额。"
+    return cleaned
+
+
+def sanitize_generated_outline_amounts(payload: Any) -> dict[str, Any]:
+    """Remove accidental financial hard anchors before strict validation."""
+
+    plan = GeneratedOutlinePlan.model_validate(payload)
+    for field_name in _GENERATED_OVERALL_NARRATIVE_FIELDS:
+        setattr(
+            plan.outline.overall,
+            field_name,
+            _sanitize_generated_narrative_value(
+                getattr(plan.outline.overall, field_name)
+            ),
+        )
+    for arc in plan.outline.arcs:
+        for field_name in _GENERATED_ARC_NARRATIVE_FIELDS:
+            setattr(
+                arc,
+                field_name,
+                _sanitize_generated_narrative_value(getattr(arc, field_name)),
+            )
+        arc.long_term_antagonist_traces = [
+            _sanitize_generated_narrative_value(item)
+            for item in arc.long_term_antagonist_traces
+        ]
+        for field_name in ("continue_route", "close_route"):
+            setattr(
+                arc.extension_gate,
+                field_name,
+                _sanitize_generated_narrative_value(
+                    getattr(arc.extension_gate, field_name)
+                ),
+            )
+    for chapter in plan.outline.chapters:
+        for field_name in _GENERATED_CHAPTER_NARRATIVE_FIELDS:
+            setattr(
+                chapter,
+                field_name,
+                _sanitize_generated_narrative_value(getattr(chapter, field_name)),
+            )
+    return plan.model_dump(mode="json")
 
 
 def _validate_generated_narrative_value(value: str, location: str) -> None:

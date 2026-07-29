@@ -56,6 +56,34 @@ def test_codex_cli_rejects_empty_payload_model(monkeypatch):
         )
 
 
+def test_codex_cli_applies_payload_reasoning_effort(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        output_path = Path(args[args.index("--output-last-message") + 1])
+        output_path.write_text("ok", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    source_codex_home = tmp_path / "source-codex-home"
+    source_codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(source_codex_home))
+    monkeypatch.setattr(codex_cli_provider.shutil, "which", lambda command: command)
+    monkeypatch.setattr(codex_cli_provider.subprocess, "run", fake_run)
+
+    codex_cli_provider.post_json_via_codex_cli(
+        {
+            "model": "payload-model",
+            "reasoning_effort": "low",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    )
+
+    args = captured["args"]
+    config_index = args.index("--config")
+    assert args[config_index + 1] == 'model_reasoning_effort="low"'
+
+
 def test_codex_cli_version_reports_command_output(monkeypatch):
     captured = {}
 

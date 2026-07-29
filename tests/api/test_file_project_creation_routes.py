@@ -11,7 +11,7 @@ from apps.api.routes import file_projects as file_project_routes
 from apps.api.routes import stories as story_routes
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.file_project_store import FileProjectStore
-from packages.story_core.models import StoryState
+from packages.story_core.models import NovelProject, StoryState
 from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
@@ -40,12 +40,62 @@ def test_blank_file_project_creation_returns_201_and_is_readable(creation_api):
     project = response.json()
     assert project["project_id"].startswith("file:p-")
     assert project["storage_source"] == "file"
-    assert project["next_path"] == f"/projects/{quote(project['project_id'], safe='')}/outline"
+    assert project["next_path"] == f"/projects/{quote(project['project_id'], safe='')}/setup"
     assert Path(project["source_path"]).parent == export_root
     assert client.get(f"/file-projects/{project['project_id']}").json() == {
         key: value for key, value in project.items() if key != "next_path"
     }
     legacy_create.assert_not_called()
+
+
+def test_file_project_world_enrichment_completes_opening_environment(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "开书流程测试", "novel_type_id": "urban"},
+    ).json()
+
+    def fake_enrich(project: NovelProject) -> NovelProject:
+        assert project.title == "开书流程测试"
+        return project.model_copy(
+            update={
+                "world_summary": "一座所有承诺都会留下公开记录的现代城市。",
+                "world_blueprint": {
+                    **project.world_blueprint,
+                    "premise": "承诺记录可以被追查，但不能被删除。",
+                    "current_arc": "主角收到一条迟到了三年的回复。",
+                },
+            }
+        )
+
+    monkeypatch.setattr(file_project_routes, "enrich_project_world", fake_enrich)
+
+    response = client.post(f"/file-projects/{created['project_id']}/enrich-world")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["pipeline_stage"] == "environment_ready"
+    assert response.json()["world_summary"].startswith("一座")
+    assert response.json()["world_blueprint"]["premise"].startswith("承诺记录")
+    persisted = FileProjectStore(Path(created["source_path"])).project()
+    assert persisted["pipeline_stage"] == "environment_ready"
+
+
+def test_file_project_world_enrichment_reports_runtime_failure(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "World failure", "novel_type_id": "urban"},
+    ).json()
+
+    def fail_enrich(_project: NovelProject) -> NovelProject:
+        raise TimeoutError("planner timed out")
+
+    monkeypatch.setattr(file_project_routes, "enrich_project_world", fail_enrich)
+
+    response = client.post(f"/file-projects/{created['project_id']}/enrich-world")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "world_enrichment_failed:TimeoutError:planner timed out"
 
 
 def _write_lazy_story_chapters(store: FileProjectStore) -> None:
@@ -756,7 +806,7 @@ def _outline_plan_with_trope(trope_id: str, trope_beat: str) -> dict:
                 "ending_hook": "A witness requests a meeting.",
                 "trope_beat": trope_beat if number == 1 else None,
                 "cast": ["Lead", "Rival"],
-            } for number in range(1, 31)],
+            } for number in range(1, 11)],
         },
         "characters": [{
             "name": name,
@@ -858,7 +908,6 @@ def test_generate_and_select_direction_only_updates_allowed_fields(creation_api,
     assert len(generated.json()["directions"]) == 3
     generated_project = json.loads(project_path.read_text(encoding="utf-8"))
     assert generated_project == {**original_project, "pipeline_stage": "direction_ready"}
-
     selected = client.post(
         f"/file-projects/{project_response['project_id']}/opening-directions/direction-2/select"
     )
@@ -901,6 +950,33 @@ def test_generate_and_select_direction_only_updates_allowed_fields(creation_api,
     persisted_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert persisted_state["characters"] == []
     assert persisted_state["world_facts"] == []
+
+
+def test_legacy_blank_project_persists_recovered_brief_before_direction_generation(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "novel_type_id": "urban", "title": "迟到的响应"},
+    ).json()
+    root = Path(created["source_path"])
+    brief_path = root / ".webnovel" / "opening_brief.json"
+    brief_path.unlink()
+    project_path = root / ".webnovel" / "project.json"
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    project_payload["pipeline_stage"] = "draft"
+    project_path.write_text(json.dumps(project_payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(
+        file_project_routes,
+        "opening_direction_generator",
+        _FakeOpeningDirectionGenerator(),
+    )
+
+    response = client.post(f"/file-projects/{created['project_id']}/opening-directions")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["pipeline_stage"] == "direction_ready"
+    assert response.json()["brief"]["mode"] == "blank"
+    assert json.loads(brief_path.read_text(encoding="utf-8"))["working_title"] == "迟到的响应"
 
 
 def test_generate_opening_directions_accepts_trimmed_one_time_guidance(

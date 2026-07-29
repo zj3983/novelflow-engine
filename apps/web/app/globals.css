@@ -1254,6 +1254,18 @@ body {
   background: var(--ws-accent-soft);
 }
 
+.ws-generation-history {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.ws-generation-history .ws-chapter-list__item {
+  min-width: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
 .ws-prompt-card {
   padding: 0;
   overflow: hidden;

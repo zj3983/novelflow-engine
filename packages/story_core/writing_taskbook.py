@@ -49,13 +49,13 @@ GENERIC_CRAFT_TEMPLATES = (
 )
 
 GAME_CRAFT_TEMPLATES = (
-    "选择场面：先写夜烬看见一个具体东西（价牌、角色面板、背包格、任务牌、队伍、怪物位置），再写麻烦（钱不够、蓝不够、法杖快坏、背包快满、别人会抢），最后做一个小决定；不要直接写“控制成本/规划路线”。",
-    "对话场面：别人问、催或提醒；夜烬用完整句子给表面理由，比如钱、蓝、耐久、材料、排队或前置任务；对方再有一句像普通玩家的反应。夜烬不能只说两个字装高手，也不能说出隐藏机制。",
-    "现代中文对话：不要把后台事实直译成台词；“先试，不深入”要改成“我就在坡口打两只看看，不往里走”，“柜台不认/背包里没有毒腺”要改成“你手里没毒腺，接了也交不了”。",
+    "选择场面：先写主角看见一个具体东西，例如价牌、角色面板、任务提示、队伍或敌人位置，再写眼前麻烦，最后让主角做一个会影响后续的小决定。",
+    "对话场面：别人询问、催促或提醒时，主角用完整句子说明表面理由，对方再按双方关系作出自然反应；不要用两三个字装冷静，也不要说出应当隐藏的机制。",
+    "现代中文对话：不要把后台事实直译成台词。玩家会说自己看见了什么、缺什么、准备怎么做，不会替系统解释整套流程。",
     "章末压句：如果本章有误判、卡任务或资源压力，结尾允许一句白话反打承诺；必须来自当章具体矛盾，不套成语、不喊口号。例：先让他们抢。等他们卡在任务牌前，就该轮到他往前走了。",
-    "战斗场面：怪怎么来，夜烬先被逼一下或犯一个小错，消耗落到血蓝和法杖耐久，掉落异常出现后先写他的动作反应；不要只写火球命中、怪倒地、掉落入包。",
+    "战斗场面：敌人怎么逼近，主角如何应对，技能、生命或装备产生什么消耗，战斗结果怎样改变下一步；不要只写命中、倒地和掉落。",
     "怪物面板：同类普通怪第一次正式交战前显示一次名称、等级、生命和攻击方式，后面不重复刷；精英怪和首领首次出现时再加技能和特性，掉落必须等击杀后结算。",
-    "爽点场面：先写普通玩家还卡在哪里，再写夜烬因为异常掉落提前够到什么前置，接着写他为什么不能公开用，章末让读者知道下一章能抢什么。",
+    "爽点场面：先写其他玩家面对的正常困难，再写主角凭本书已有优势取得什么具体领先；优势是否隐藏、怎样使用以及下一步目标都服从本章计划。",
 )
 
 
@@ -71,10 +71,10 @@ def first_chapter_whole_body_contract(*, game_genre: bool, trade_authorized: boo
         "mode": "whole_body_only",
         "beat_map": beat_map,
         "beats": [
-            "现实压力：用余额、房租、旧设备、身体反应或生活细节说明为什么现在必须登录。",
-            "登录建号：必须出现“角色面板”四个字，写清游戏ID、统一初始身份见习冒险者（未转职）、Lv.1短面板、初始武器或技能，以及开服现场质感。",
-            "低级验证：用一场小规模战斗或测试写出血蓝、耐久、可堆叠背包、掉落、任务进度和普通玩家更慢的对比；不要写施法前摇、验证逻辑或抽象收益词。",
-            "下一步钩子：材料分开处理，章末优先落到职业导师木牌、任务牌、装备、技能或地图入口的前置任务；可以有柜台/窗口，也可以暗中办理一项小服务，但外人只看见普通排队。",
+            "开篇处境：用本书章纲要求的现实处境或游戏入口说明主角为什么现在开始行动。",
+            "进入游戏：按本书设定写清游戏ID、初始身份、当前状态和第一项可执行目标，不擅自指定职业、武器或技能。",
+            "首次行动：用小规模任务、探索或战斗让主角亲眼看见游戏规则和本书核心优势，并写清实际消耗与结果。",
+            "下一步钩子：把本章结果落到任务、装备、技能、关系或地图进度上，留下下一章可以立即执行的目标。",
         ],
         "style": [
             "句子要完整，动作、原因和结果要接得上。",
@@ -83,7 +83,7 @@ def first_chapter_whole_body_contract(*, game_genre: bool, trade_authorized: boo
         ],
         "dialogue": [
             "自然对话：人物说话要顺、接地气，可以有半句抱怨、解释和接话，不要全是口令式回答。",
-            "主角必须至少主动开口一次，格式要能被识别，例如“夜烬问/说/低声道：……”；但不要只补一句装冷静，要让他说清一个理由或选择。",
+            "主角需要主动表达时，要用完整句子说清理由或选择，不要只补一句装冷静。",
             "每章至少有一轮连续问答：别人问/催/提醒，主角回答并给原因，对方再有一句反应；这轮对话要改变价钱、任务、误会或下一步行动。",
             "台词不能替作者讲规则、讲设定或讲审稿结论。",
             "对话要推进价格、任务、信任、误会、信息或行动。",
@@ -93,9 +93,9 @@ def first_chapter_whole_body_contract(*, game_genre: bool, trade_authorized: boo
         "avoid": [
             "不用分段生成；按整章连续正文自然写出四拍。",
             "变现、成交、到账和手续费扣款必须服从本章计划；公共频道扩散、论坛爆帖、公会追查或市场玩家盯盘不得擅自提前。",
-            "第一章不要让药剂师或药铺承担职业任务、职业试炼、全局市场分析或玩家生态判断；药剂师若出现，只能讲药材、库存、价格和她不知道的边界。",
-            "第一章可以写NPC窗口、任务牌或职业导师木牌；是否提交材料、领取铜币、修装备或买药水必须跟随项目账本/章节计划，未允许时只露出前置条件和下一步目标。",
-            "不要把开局身份写成独有职业；第一章所有玩家都是见习冒险者，夜烬只是选了法杖和基础火球术。背包同类材料堆叠，灰狼毒腺×8、粗糙狼皮×7应写成占用两个材料格或2/20。",
+            "NPC只能处理本书设定中属于其岗位和权限的事务，不能为了讲设定突然全知全能。",
+            "提交任务、交易、修理、购买或转职必须跟随项目账本和章节计划，未安排的流程不要擅自提前完成。",
+            "开局身份、职业、技能、装备和背包规则必须来自本书设定；同类物品是否堆叠也以项目规则为准。",
             "不要写边界、推演、审稿、场景卡、模型、算法、变量、规则被撬开、这意味着、这说明。",
             "不要写施法前摇、验证路线、验证逻辑、收益路径或抽象收益词。",
             "不要写谜语式省略回答或故意绕弯的悬疑腔。",
@@ -418,91 +418,6 @@ def _apply_plot_to_scenes(scenes: list[WritingTaskScene], plot: dict[str, Any]) 
     return result
 
 
-def _first_chapter_scenes(plan: dict[str, Any], *, trade_authorized: bool = False) -> list[WritingTaskScene]:
-    target = max(4200, _target_chars_int(plan, fallback=4200))
-    first = max(950, int(target * 0.34))
-    second = max(1100, int(target * 0.42))
-    third = max(800, target - first - second)
-    noise_bans = FIRST_CHAPTER_NOISE_BANS
-    if trade_authorized:
-        noise_bans = tuple(
-            item
-            for item in noise_bans
-            if item not in {"材料公开处理成大钱", "交易行寄售已经完成", "公开扣费或大额收款反馈"}
-        )
-    forbidden = "、".join(noise_bans)
-    outline_anchor = plan.get("outline_anchor") if isinstance(plan.get("outline_anchor"), dict) else {}
-    opening_balance = str(outline_anchor.get("opening_balance") or "").strip()
-    balance_surface = (
-        f"银行卡或支付账户可用余额{opening_balance}"
-        if opening_balance
-        else "项目写作包中的现实可用余额"
-    )
-    scenes = [
-        WritingTaskScene(
-            key="entry_login",
-            title="现实压力与登录建号",
-            goal="用一个具体生活瞬间交代夜烬的处境，再让他戴上旧设备进入本书设定的游戏，完成建号、初始身份确认和武器/基础技能选择。",
-            required_surface=f"{balance_surface}、催缴压力、现实职业/技能来源、旧头盔或登录入口、本书设定的游戏名、全沉浸/开服倒计时/玩家涌入/登录公告至少一个可见背景入口、游戏ID夜烬、初始身份见习冒险者（未转职）、正文明确写出‘角色面板’四个字，Lv.1短面板固定为经验0/100、生命100/100、法力60/60、钱袋为空或背包为空、新手法杖10/10、基础火球术、章首一个具体情绪动作如手指停顿/喉咙发紧/苦笑半秒；不要展开力量/敏捷/体质/智力等扩展属性",
-            forbidden_surface=f"首次打怪、掉落、NPC长谈、交易操作、家庭网络已断却不交代移动数据/设备eSIM等有效联网方式就直接登录、{forbidden}",
-            entry_state="现实出租屋，夜烬还没进游戏。",
-            exit_state="夜烬建号完成，职业、等级、经验、血蓝、货币和初始装备可见。",
-            handoff="下一场从夜烬走向低级怪区开始，不重写现实入口和建号流程。",
-            target_chars=first,
-            source_ids=["ch1-entry-login"],
-        ),
-        WritingTaskScene(
-            key="small_verification",
-            title="低级怪小验证",
-            goal="只打一小轮低级怪，让夜烬亲眼看到千倍爆率会把普通流程压短，让他比别人更快凑齐任务或装备前置条件。",
-            required_surface="第一次低级怪战斗前正文明确写出‘怪物面板’四个字，并显示名称、等级、生命、攻击方式；写出基础火球术或明确的近身应急、击杀后才露出掉落异常、底层协议校验通过、千倍爆率、掉落判定×1000、混沌之种未解析、血蓝/法力/耐久消耗、经验或任务材料进度变化、旁人正常低掉落形成对比、没有铜币收益、战斗中一次疼痛/后怕/侥幸的身体反应",
-            forbidden_surface=f"大量刷怪、材料换钱、市场波动、玩家势力追查、论坛扩散、{forbidden}",
-            entry_state="夜烬Lv.1，装备和背包刚可见，尚未验证掉落。",
-            exit_state="小规模验证结束：异常可信但没解释清楚，夜烬看见自己能比普通玩家更快完成下一步。",
-            handoff="下一场只能整理状态和决定下一步，不扩大成交易、追查或世界风暴。",
-            target_chars=second,
-            source_ids=["ch1-small-verification"],
-        ),
-        WritingTaskScene(
-            key="decision_hook",
-            title="暗中吃下第一笔",
-            goal=(
-                "按本章计划先在交易行卖出裂纹狼心获得游戏币，再走官方兑换让现实账户到账并处理急账；不扩大成市场风波。"
-                if trade_authorized
-                else "材料分开处理，至少兑现一个小收益闭环；让夜烬把多余材料和来源藏住，只把普通玩家也会做的一项服务办掉，留下下一章抢先完成任务或摸到新路线的钩子。"
-            ),
-            required_surface=(
-                "；".join([*opening_market_exchange_flow_lines(), "金额只沿用既有连续性事实", "现实余额随付款结果更新", "来源没有暴露", "下一章具体行动目标"])
-                if trade_authorized
-                else "面板或背包更新、职业/等级/经验/生命/法力/耐久沿用前文不重开一套属性、交掉一小份材料或任务、保留多余材料、少量铜币/修理/药水至少兑现一项、清道夫或柜台只按普通流程办理、现实压力仍在、下一章具体任务/装备/技能/地图前置任务、章末一个不华丽的情绪动作如松一口气/没忍住看余额/把背包关了又打开"
-            ),
-            forbidden_surface=(
-                f"一次性交空全部材料、公会/论坛/公共频道反应、市场玩家盯盘、{forbidden}"
-                if trade_authorized
-                else f"材料公开换成大钱、一次性交空全部材料、完整公开服务戏、公会/论坛/公共频道反应、市场玩家盯盘、官方兑换或现实账户到账、{forbidden}"
-            ),
-            entry_state="夜烬刚完成小验证，手里有异常材料，但还没处理。",
-            exit_state=(
-                "交易行游戏币成交、官方兑换和现实急账处理完成，来源没有暴露，下一章承接游戏内升级和任务进度。"
-                if trade_authorized
-                else "本章确认千倍爆率能带来领先；至少一个小收益已经兑现，来源没有暴露，下一章从任务进度、装备修理、技能或新路线前置任务继续。"
-            ),
-            handoff="下一章承接这个具体麻烦，不把第一章改成公开赚钱或被人追踪。",
-            target_chars=third,
-            source_ids=["ch1-decision-hook"],
-        ),
-    ]
-    if _attribute_decision(plan):
-        entry = scenes[0]
-        scenes[0] = WritingTaskScene(
-            **{
-                **asdict(entry),
-                "required_surface": entry.required_surface.replace("；不要展开力量/敏捷/体质/智力等扩展属性", ""),
-            }
-        )
-    return scenes
-
-
 def _attribute_decision(plan: dict[str, Any]) -> dict[str, Any]:
     decision = _event_plan(plan).get("attribute_allocation_decision")
     if not isinstance(decision, dict):
@@ -541,7 +456,7 @@ def _protagonist_level_scene_index(plan: dict[str, Any], scenes: list[WritingTas
         if parse_level(protagonist.get("level")) is not None:
             return index
     if chapter_number == 1:
-        return next((index for index, scene in enumerate(scenes) if scene.key == "small_verification"), None)
+        return 1 if len(scenes) > 1 else 0
     return None
 
 
@@ -616,7 +531,8 @@ def _generic_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
         return _apply_plot_to_scenes(scenes, plot)
 
     total = _target_chars_int(plan)
-    per_scene = max(750, total // max(1, min(len(cards), 5)))
+    planned_scene_count = min(5, max(3, len(cards)))
+    per_scene = max(750, total // planned_scene_count)
     scenes: list[WritingTaskScene] = []
     for index, card in enumerate(cards[:5], start=1):
         source_id = _scene_source_id(card, index)
@@ -645,7 +561,35 @@ def _generic_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
                 source_ids=[source_id],
             )
         )
-    return scenes
+    if len(scenes) < 3:
+        scenes.append(
+            WritingTaskScene(
+                key="choice",
+                title="选择与变化",
+                goal="人物根据前面的发现做出选择，让局面发生具体变化。",
+                required_surface="选择过程、实际行动、可见结果，以及为此付出的代价",
+                entry_state="人物已经看见阻力，不能再按原计划轻松推进。",
+                exit_state="选择已经产生结果，人物的资源、关系或处境发生变化。",
+                handoff="下一场承接这个结果收束本章。",
+                target_chars=per_scene,
+                source_ids=["compiled-choice"],
+            )
+        )
+    if len(scenes) < 3:
+        scenes.append(
+            WritingTaskScene(
+                key="hook",
+                title="结果与下一步",
+                goal="收住本章事件，让结果落地，并留下下一章可以立即行动的问题。",
+                required_surface="本章结果、人物反应、尚未解决的问题和明确的下一步",
+                entry_state="本章主要选择已经完成。",
+                exit_state="本章结果已经落地，下一步清楚但还没有执行。",
+                handoff="下一章直接承接这个行动，不重复本章结论。",
+                target_chars=per_scene,
+                source_ids=["compiled-hook"],
+            )
+        )
+    return _apply_plot_to_scenes(scenes, plot)
 
 
 def build_writing_taskbook(
@@ -660,11 +604,7 @@ def build_writing_taskbook(
     governance = plan.get("governance") if isinstance(plan.get("governance"), dict) else {}
     chapter_intent = governance.get("chapter_intent") if isinstance(governance.get("chapter_intent"), dict) else {}
     trade_authorized = bool(chapter_intent.get("first_chapter_trade_authorized"))
-    scenes = (
-        _first_chapter_scenes(plan, trade_authorized=trade_authorized)
-        if chapter_number == 1 and game_context
-        else _generic_scenes(plan)
-    )
+    scenes = _generic_scenes(plan)
     simulation_plan = _simulation_plan(plan)
     event_plan = _event_plan(plan)
     decision = _attribute_decision(plan)
@@ -684,6 +624,10 @@ def build_writing_taskbook(
         *_as_list(simulation_plan.get("required_beats"), max_items=6, item_chars=50),
         *_as_list(event_plan.get("exposition_beats"), max_items=4, item_chars=50),
     ]
+    outline_anchor = plan.get("outline_anchor") if isinstance(plan.get("outline_anchor"), dict) else {}
+    opening_balance = str(outline_anchor.get("opening_balance") or "").strip()
+    if opening_balance:
+        global_required.append(f"章首现实可用余额：{opening_balance}；只能按正文中的收支结果变化。")
     global_forbidden = [
         *_as_list(simulation_plan.get("forbidden_moves"), max_items=8, item_chars=56),
         *_as_list(chapter_intent.get("must_avoid"), max_items=6, item_chars=56),
@@ -706,11 +650,9 @@ def build_writing_taskbook(
             )
         global_forbidden.extend(item for item in noise_bans if item not in global_forbidden)
         global_required.append(
-            "第一章完成登录、低级验证，并按以下顺序收束：" + " ".join(opening_market_exchange_flow_lines()) + " 论坛、公会追查后移。"
-            if trade_authorized
-            else "第一章只完成登录、低级验证和领先预期；材料只是通行券，交易、论坛、公会追查后移，提交委托、修理和买药水也后移。"
+            "第一章按本书章纲完成进入游戏、第一次有效行动和下一步目标；交易、兑换、论坛或公会反应只有在章纲明确安排时才能出现。"
         )
-        global_required.append("三段各至少一个情绪锚点：章首现实压力、战斗受伤/后怕、章末决定都要落到身体动作，不写空泛感慨。")
+        global_required.append("重要情绪落到人物当场的动作、停顿、回答或选择里，不写空泛感慨。")
     taskbook = WritingTaskBook(
         chapter_number=chapter_number,
         chapter_title=_chapter_title(plan),

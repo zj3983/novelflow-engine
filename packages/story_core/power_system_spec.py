@@ -482,16 +482,16 @@ def validate_power_system_spec(
     ledger = normalized.get("continuity_ledger", [])
     if len(ledger) < 4:
         violations.add("continuity_ledger.minimum_count")
-    ledger_keys = {_ledger_key(item) for item in ledger}
-    for concept, aliases in _LEDGER_ALIASES.items():
-        if not _ledger_covers(ledger_keys, aliases):
-            violations.add(f"continuity_ledger.missing_{concept}")
 
     try:
         canonical_id = canonical_novel_type_id(novel_type_id)
     except Exception:
         canonical_id = "generic_webnovel"
     if canonical_id == "game_webnovel":
+        ledger_keys = {_ledger_key(item) for item in ledger}
+        for concept, aliases in _LEDGER_ALIASES.items():
+            if not _ledger_covers(ledger_keys, aliases):
+                violations.add(f"continuity_ledger.missing_{concept}")
         game_path_names = {path.get("name") for path in paths}
         if len(paths) < _GAME_CLASS_COUNT:
             violations.add("game.missing_classes")

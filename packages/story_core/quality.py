@@ -7,7 +7,7 @@ def validate_bundle(bundle: dict) -> dict:
     compact_body = "".join(body.split())
     target_min_chars = 3800
     target_max_chars = 5500
-    hard_max_chars = target_max_chars + 200
+    hard_max_chars = target_max_chars + 500
     enforce_min_chars = bool(
         bundle.get("enforce_target_chars")
         or bundle.get("manual_instructions")

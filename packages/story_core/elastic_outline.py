@@ -5,8 +5,8 @@ from typing import Any
 from packages.story_core.project_outline import normalize_project_outline
 
 
-DETAIL_WINDOW = 30
-EXTENSION_WARNING = 10
+DETAIL_WINDOW = 10
+EXTENSION_WARNING = 3
 
 
 def _normalize_for_current_chapter(

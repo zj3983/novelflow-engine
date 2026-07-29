@@ -460,7 +460,6 @@ def build_chapter_simulation_plan(
     if lead:
         protagonist_strategy = {
             "name": lead.name,
-            "game_id": lead.game_id or lead.game_panel.game_id,
             "goal": _character_goal(lead),
             "risk_posture": lead.performance_profile.risk_posture or (
                 "低调验证、拆分收益、避免暴露坐标和现实身份。"
@@ -469,14 +468,20 @@ def build_chapter_simulation_plan(
                 if game_story
                 else "按当前目标谨慎推进。"
             ),
-            "known_panel": lead.game_panel.model_dump(),
         }
+        if game_story:
+            protagonist_strategy["game_id"] = lead.game_id or lead.game_panel.game_id
+            protagonist_strategy["known_panel"] = lead.game_panel.model_dump()
 
-    panel_expectations = [
-        "每章结束必须同步等级、职业、经验、生命/法力、基础属性、货币、装备、背包、任务和风险状态。",
-        "正文中的面板变化必须能被 ledger_updates 回写到角色卡。",
-    ]
-    if memory_constraints.get("ledger_updates"):
+    panel_expectations = (
+        [
+            "每章结束必须同步等级、职业、经验、生命/法力、基础属性、货币、装备、背包、任务和风险状态。",
+            "正文中的面板变化必须能被 ledger_updates 回写到角色卡。",
+        ]
+        if game_story
+        else []
+    )
+    if game_story and memory_constraints.get("ledger_updates"):
         panel_expectations.append("优先继承 memory_constraints.ledger_updates 中已规划的状态变化。")
 
     review_focus = [

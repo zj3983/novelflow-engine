@@ -21,7 +21,7 @@ def test_taskbook_uses_one_selected_style_prompt():
     ]
 
 
-def test_trade_authorized_first_chapter_taskbook_uses_market_then_exchange():
+def test_trade_authorized_first_chapter_taskbook_does_not_invent_item_specific_exchange_steps():
     taskbook = build_writing_taskbook(
         chapter_number=1,
         genre="网游",
@@ -34,13 +34,12 @@ def test_trade_authorized_first_chapter_taskbook_uses_market_then_exchange():
     rendered = str(taskbook)
     assert "天启之门" not in rendered
     assert "第一章只完成登录、低级验证和领先预期" not in rendered
-    assert "已冻结游戏币的现有求购单" in rendered
-    assert "独立官方兑换页面" in rendered
-    assert "现实账户到账后处理急账" in rendered
+    assert "裂纹狼心" not in rendered
+    assert "章纲明确安排" in rendered
     assert "担保交易" not in rendered
 
 
-def test_first_chapter_taskbook_keeps_only_three_useful_scenes():
+def test_first_chapter_taskbook_builds_three_useful_scenes_from_one_seed():
     taskbook = build_writing_taskbook(
         chapter_number=1,
         plan={
@@ -55,12 +54,11 @@ def test_first_chapter_taskbook_keeps_only_three_useful_scenes():
     )
 
     scenes = taskbook["scenes"]
-    assert [scene["key"] for scene in scenes] == ["entry_login", "small_verification", "decision_hook"]
-    assert "NPC" not in scenes[2]["goal"]
-    assert "不要展开力量/敏捷/体质/智力" in scenes[0]["required_surface"]
-    assert "底层协议校验通过" in scenes[1]["required_surface"]
-    assert "至少兑现一项" in scenes[2]["required_surface"]
-    assert "交易、论坛、公会追查后移" in " ".join(taskbook["global_required"])
+    assert [scene["key"] for scene in scenes] == ["single_npc_service", "choice", "hook"]
+    assert "洛婶报价" in scenes[0]["required_surface"]
+    assert "人物根据前面的发现做出选择" in scenes[1]["goal"]
+    assert "下一章可以立即行动" in scenes[2]["goal"]
+    assert "章纲明确安排" in " ".join(taskbook["global_required"])
     assert "材料公开处理成大钱" in taskbook["global_forbidden"]
     assert "公开扣费或大额收款反馈" in taskbook["global_forbidden"]
     templates = "\n".join(taskbook["craft_templates"])
@@ -72,8 +70,8 @@ def test_first_chapter_taskbook_keeps_only_three_useful_scenes():
     assert "同类普通怪" in templates
     assert "精英怪和首领" in templates
     assert "爽点场面" in templates
-    assert "夜烬不能只说两个字装高手" in templates
-    assert "不要只写火球命中、怪倒地、掉落入包" in templates
+    assert "不要用两三个字装冷静" in templates
+    assert "不要只写命中、倒地和掉落" in templates
 
 
 def test_first_chapter_taskbook_uses_project_balance_and_requires_plausible_network_access():
@@ -84,9 +82,9 @@ def test_first_chapter_taskbook_uses_project_balance_and_requires_plausible_netw
     )
 
     entry = taskbook["scenes"][0]
-    assert "43.18元" in entry["required_surface"]
-    assert "27.60" not in entry["required_surface"]
-    assert "有效联网方式" in entry["forbidden_surface"]
+    required = "\n".join(taskbook["global_required"])
+    assert "43.18元" in required
+    assert "27.60" not in required
 
 
 def test_first_chapter_allocate_requires_visible_choice_without_full_attribute_panel() -> None:
@@ -111,11 +109,12 @@ def test_first_chapter_allocate_requires_visible_choice_without_full_attribute_p
     assert "力量/敏捷/体质/智力等扩展属性" not in required
 
 
-def test_first_chapter_without_attribute_decision_keeps_initial_panel_short() -> None:
+def test_first_chapter_without_attribute_decision_does_not_invent_a_fixed_panel() -> None:
     taskbook = build_writing_taskbook(chapter_number=1, genre="网游", plan={})
 
-    assert "Lv.1短面板" in taskbook["scenes"][0]["required_surface"]
-    assert "力量/敏捷/体质/智力等扩展属性" in taskbook["scenes"][0]["required_surface"]
+    rendered = str(taskbook)
+    assert "夜烬" not in rendered
+    assert "新手法杖" not in rendered
 
 
 def test_taskbook_carry_requires_visible_reason() -> None:
@@ -222,12 +221,36 @@ def test_taskbook_compiles_scene_cards_for_later_chapters():
 
     specs = taskbook_segment_specs(2, plan)
 
-    assert len(specs) == 1
+    assert len(specs) == 3
     assert specs[0]["key"] == "npc-counter"
     assert "药剂铺" in specs[0]["title"]
     assert "库存" in specs[0]["required_surface"]
     assert "公会内部频道" in specs[0]["forbidden_surface"]
     assert "苏叶必须决定卖不卖" in specs[0]["exit_state"]
+
+
+def test_generic_taskbook_expands_a_single_seed_into_a_complete_chapter_chain():
+    taskbook = build_writing_taskbook(
+        chapter_number=2,
+        genre="都市",
+        plan={
+            "target_chars": 4200,
+            "scene_cards": [
+                {
+                    "id": "inventory-check",
+                    "location": "便利店仓库",
+                    "purpose": "核对缺货记录",
+                    "conflict": "系统记录和现场库存对不上",
+                    "must_show": ["封箱胶带被重新贴过"],
+                }
+            ],
+        },
+    )
+
+    scenes = taskbook["scenes"]
+    assert 3 <= len(scenes) <= 5
+    assert any("便利店仓库" in scene["title"] for scene in scenes)
+    assert sum(scene["target_chars"] for scene in scenes) >= 3600
 
 
 def test_taskbook_prompt_section_is_writer_facing_not_json_dump():
@@ -242,14 +265,14 @@ def test_taskbook_prompt_section_is_writer_facing_not_json_dump():
         style="白话爽文",
     )
 
-    section = format_taskbook_prompt_section(taskbook, segment_key="small_verification")
+    section = format_taskbook_prompt_section(taskbook, segment_key="single_npc_service")
 
     assert "## 本章写法材料" in section
     assert "下面是给作者的场面材料" in section
-    assert "低级怪小验证" in section
+    assert "洛婶报价" in section
     assert "场面参考" in section
-    assert "别人问、催或提醒" in section
-    assert "不要只写火球命中、怪倒地、掉落入包" in section
+    assert "别人询问、催促或提醒时" in section
+    assert "不要只写命中、倒地和掉落" in section
     assert "写作任务书" not in section
     assert "必写：" not in section
     assert "禁写：" not in section

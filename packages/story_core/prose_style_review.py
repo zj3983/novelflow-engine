@@ -284,11 +284,12 @@ def _repeated_terms(body: str, terms: tuple[str, ...]) -> list[str]:
 
 
 def _modern_chinese_dialogue_problems(body: str) -> list[str]:
-    problems = _repeated_terms(body, MODERN_CHINESE_DIALOGUE_PROBLEMS)
+    dialogue_source = re.sub(r"【[^】]*】", "", body)
+    problems = _repeated_terms(dialogue_source, MODERN_CHINESE_DIALOGUE_PROBLEMS)
     quoted_lines: list[str] = []
     for pattern in _DIALOGUE_SNIPPET_RE:
-        quoted_lines.extend(re.findall(pattern, body, flags=re.DOTALL))
-    quoted_lines.extend(match.group(1).strip() for match in _DIALOGUE_COLON_LINE_RE.finditer(body))
+        quoted_lines.extend(re.findall(pattern, dialogue_source, flags=re.DOTALL))
+    quoted_lines.extend(match.group(1).strip() for match in _DIALOGUE_COLON_LINE_RE.finditer(dialogue_source))
     dialogue_lines = [line.strip() for line in quoted_lines if line.strip()]
 
     def _looks_like_command_snippet(sentence: str) -> bool:

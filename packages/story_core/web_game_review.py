@@ -419,12 +419,28 @@ def _expected_attribute_action_values(
 def _has_allocation_result(
     body: str, expected: dict[str, int], remaining: int, protagonist_aliases: Iterable[str] | None = None, other_character_names: Iterable[str] | None = None
 ) -> bool:
-    if not has_positive_attribute_allocation_confirmation(
+    has_confirmation = has_positive_attribute_allocation_confirmation(
         body,
         protagonist_aliases=protagonist_aliases,
         other_character_names=other_character_names,
-    ):
+    )
+    visible_remaining = bool(
+        re.search(
+            rf"(?:可用属性点|剩余属性点|自由属性点)\s*(?:还是|还剩|为|：|:)?\s*{remaining}\s*点?",
+            body,
+        )
+    )
+    visible_attribute_result = all(
+        re.search(
+            rf"{re.escape(attribute)}\s*(?:为|：|:)?\s*\d+\s*(?:→|->|变成|提升到|增加到)\s*\d+",
+            body,
+        )
+        for attribute in expected
+    )
+    if not has_confirmation and not (visible_remaining and visible_attribute_result):
         return False
+    if visible_remaining and visible_attribute_result:
+        return True
     if latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases, other_character_names=other_character_names) == remaining:
         return True
     return any(

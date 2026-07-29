@@ -135,7 +135,7 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
   const [direction, setDirection] = useState("");
   const [mustPreserve, setMustPreserve] = useState("");
   const [forbiddenContent, setForbiddenContent] = useState("");
-  const [generateOutline, setGenerateOutline] = useState(false);
+  const [generateOutline, setGenerateOutline] = useState(true);
   const [outlineChapters, setOutlineChapters] = useState(10);
   const [novelTypeId, setNovelTypeId] = useState("generic_webnovel");
 

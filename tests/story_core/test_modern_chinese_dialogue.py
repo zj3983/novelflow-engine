@@ -75,6 +75,18 @@ def test_prose_style_review_flags_command_style_dialogue_without_standard_quotes
     assert any("完整口语" in item or "先试，不深入" in item for item in review["revision_plan"])
 
 
+def test_prose_style_review_does_not_treat_system_panel_inventory_as_dialogue():
+    body = (
+        "夜烬关掉属性面板，沿着村墙往回走。\n\n"
+        "【背包：灰狼毒腺×8、粗糙狼皮×7、裂纹狼心×1】\n\n"
+        "弓手问：“你还去灰狼坡吗？”夜烬答：“我先回村交任务，法力恢复以后再过去。”"
+    )
+
+    review = review_prose_style(body)
+
+    assert not any("灰狼毒腺×8" in issue for issue in review["issues"])
+
+
 def test_taskbook_exposes_modern_chinese_dialogue_method():
     taskbook = build_writing_taskbook(chapter_number=1, plan={}, genre="网游", style="白描")
 
@@ -82,10 +94,8 @@ def test_taskbook_exposes_modern_chinese_dialogue_method():
 
     assert "现代中文对话" in section
     assert "不要把后台事实直译成台词" in section
-    assert "先试，不深入" in section
-    assert "我就在坡口打两只看看" in section
-    assert "柜台不认" in section
-    assert "你手里没毒腺" in section
+    assert "自己看见了什么、缺什么、准备怎么做" in section
+    assert "不会替系统解释整套流程" in section
     assert "对话场面" in section
 
 

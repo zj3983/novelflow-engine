@@ -582,6 +582,36 @@ def _outline_anchor(story: StoryState, chapter_number: int) -> dict[str, str]:
     opening_match = re.search(r"最后\s*(\d+(?:\.\d{1,2})?)\s*元", opening_text)
     arrival_match = re.search(r"到账\s*(\d+(?:\.\d{1,2})?)\s*元", chapter_text)
     ending_match = re.search(r"余额(?:变为|变成|为)?\s*(\d+(?:\.\d{1,2})?)\s*元", chapter_text)
+    fact_text = "\n".join(
+        str(item)
+        for item in [*story.world_facts, *story.author_constraints]
+        if str(item).strip()
+    )
+    if chapter_number == 1 and not opening_match:
+        opening_match = re.search(
+            r"(?:登录游戏前|进入游戏前|开局前)[^。\n]{0,40}?余额(?:为|只有|剩下)?\s*(\d+(?:\.\d{1,2})?)\s*元",
+            fact_text,
+        )
+    if chapter_number == 1 and not opening_match:
+        opening_match = re.search(
+            r"(?:现实|章首|开篇)?[^。\n]{0,12}?余额(?:从|为|只有|剩下)?\s*(\d+(?:\.\d{1,2})?)\s*元(?:开始)?",
+            fact_text,
+        )
+    if chapter_number == 1 and not arrival_match:
+        arrival_match = re.search(
+            r"(?:实际|净)?到账\s*(\d+(?:\.\d{1,2})?)\s*元",
+            fact_text,
+        )
+    if chapter_number == 1 and not ending_match:
+        ending_matches = re.findall(
+            r"余额(?:变为|变成|为)?\s*(\d+(?:\.\d{1,2})?)\s*元",
+            fact_text,
+        )
+        if ending_matches:
+            ending_match = re.search(
+                rf"({re.escape(ending_matches[-1])})",
+                ending_matches[-1],
+            )
     if opening_match:
         anchor["opening_balance"] = f"{opening_match.group(1)}元"
     if arrival_match:

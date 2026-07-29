@@ -17,7 +17,7 @@ def _as_list(value: Any, *, max_items: int = 8, item_chars: int = 120) -> list[s
     return compact_list([str(item) for item in value if str(item).strip()], max_items=max_items, item_chars=item_chars)
 
 
-def _protagonist_context(story: Any) -> dict[str, Any]:
+def _protagonist_context(story: Any, *, include_game_panel: bool) -> dict[str, Any]:
     characters = getattr(story, "characters", []) or []
     protagonist = next(
         (
@@ -31,14 +31,18 @@ def _protagonist_context(story: Any) -> dict[str, Any]:
         return {}
     panel = getattr(protagonist, "game_panel", None)
     panel_data = panel.model_dump() if hasattr(panel, "model_dump") else {}
-    return {
+    context = {
         "real_name": getattr(protagonist, "name", ""),
         "game_id": getattr(protagonist, "game_id", "") or panel_data.get("game_id", ""),
         "role": getattr(protagonist, "role", ""),
         "goals": _as_list(getattr(protagonist, "goals", []), max_items=6, item_chars=80),
         "location": compact_text(str(getattr(protagonist, "location", "")), 120),
-        "game_panel": {key: value for key, value in panel_data.items() if value not in (None, "", [], {})},
     }
+    if include_game_panel:
+        context["game_panel"] = {
+            key: value for key, value in panel_data.items() if value not in (None, "", [], {})
+        }
+    return context
 
 
 def _event_plan(bundle: Any) -> dict[str, Any]:
@@ -59,10 +63,17 @@ def _story_text(story: Any) -> str:
 
 
 def _is_game_context(story: Any) -> bool:
+    explicit_type = _explicit_story_type(story)
+    if explicit_type:
+        return is_game_genre(explicit_type)
     return is_game_genre(_story_text(story))
 
 
 def _explicit_story_type(story: Any) -> str:
+    for genre_id in getattr(story, "genre_plugin_ids", []) or []:
+        normalized = normalize_novel_type_id(genre_id)
+        if normalized:
+            return normalized
     genre_id = normalize_novel_type_id(getattr(story, "genre", ""))
     if genre_id:
         return genre_id
@@ -172,7 +183,7 @@ def _chapter_intent(
             "把后台规则写成正文说明",
         ]
         ending_change = compact_text(str(event_plan.get("next_focus") or getattr(bundle, "next_outline", "")), 180)
-    else:
+    elif game_context:
         must_include = [
             "承接上一章状态",
             "明确本章目标",
@@ -181,6 +192,36 @@ def _chapter_intent(
             "留下下一章门槛",
         ]
         must_avoid = [
+            "无铺垫跳过结算",
+            "让角色知道不该知道的信息",
+            "把审稿词或规则词写进正文",
+        ]
+        ending_change = compact_text(str(event_plan.get("next_focus") or getattr(bundle, "next_outline", "")), 180)
+    elif xuanhuan_context or xianxia_context:
+        must_include = [
+            "承接上一章状态",
+            "明确本章目标",
+            "展示世界对主角行动的反应",
+            "更新境界、资源、伤势或人物关系",
+            "留下下一章门槛",
+        ]
+        must_avoid = [
+            "套用网游面板、背包、掉落或交易规则",
+            "无铺垫跳过结算",
+            "让角色知道不该知道的信息",
+            "把审稿词或规则词写进正文",
+        ]
+        ending_change = compact_text(str(event_plan.get("next_focus") or getattr(bundle, "next_outline", "")), 180)
+    else:
+        must_include = [
+            "承接上一章状态",
+            "明确本章目标",
+            "展示世界对主角行动的反应",
+            "更新资源、伤势、线索或人物关系",
+            "留下下一章门槛",
+        ]
+        must_avoid = [
+            "套用其他题材的面板、背包、掉落或交易规则",
             "无铺垫跳过结算",
             "让角色知道不该知道的信息",
             "把审稿词或规则词写进正文",
@@ -200,7 +241,13 @@ def _chapter_intent(
     }
 
 
-def _runtime_context(story: Any, bundle: Any, chapter_number: int) -> dict[str, Any]:
+def _runtime_context(
+    story: Any,
+    bundle: Any,
+    chapter_number: int,
+    *,
+    game_context: bool,
+) -> dict[str, Any]:
     event_plan = _event_plan(bundle)
     previous = [
         summary
@@ -210,7 +257,7 @@ def _runtime_context(story: Any, bundle: Any, chapter_number: int) -> dict[str, 
     latest = max(previous, key=lambda summary: int(getattr(summary, "chapter_number", 0) or 0), default=None)
     return {
         "chapter_number": chapter_number,
-        "protagonist": _protagonist_context(story),
+        "protagonist": _protagonist_context(story, include_game_panel=game_context),
         "world_facts": _as_list(getattr(story, "world_facts", []), max_items=24, item_chars=130),
         "author_constraints": _as_list(getattr(story, "author_constraints", []), max_items=12, item_chars=150),
         "previous_summary": compact_text(str(getattr(latest, "summary", "")), 220) if latest else "",
@@ -267,14 +314,31 @@ def _rule_stack(
             "章末钩子必须来自当章具体矛盾，不套旧式口号。",
         ]
 
-    return {
-        "hard_facts": hard_facts,
-        "soft_guidance": [
+    if game_context:
+        soft_guidance = [
             "句子按场面自然长短；人物对话要像正常说话，不能把理由压成几个词。少成语套话，少华丽辞藻。",
             "用动作、对话、界面、环境细节表现设定，不要停下来写说明书。",
             "NPC有服务边界和口吻，但不要全知。",
             "数值变化必须可追踪：等级、经验、货币、背包、装备、任务奖励前后一致。",
-        ],
+        ]
+    elif xuanhuan_context or xianxia_context:
+        soft_guidance = [
+            "句子按场面自然长短；人物对话要像正常说话，不能把理由压成几个词。少成语套话，少华丽辞藻。",
+            "用动作、对话、器物和环境变化表现设定，不要停下来写说明书。",
+            "人物受身份、立场和认知边界约束，不能无故全知。",
+            "连续性变化必须可追踪：术法、法宝、境界、伤势、资源和因果前后一致。",
+        ]
+    else:
+        soft_guidance = [
+            "句子按场面自然长短；人物对话要像正常说话，不能把理由压成几个词。少成语套话，少华丽辞藻。",
+            "用动作、对话、物件和环境变化表现设定，不要停下来写说明书。",
+            "人物受身份、立场和认知边界约束，不能无故全知。",
+            "资源、伤势、线索和人物关系变化必须前后一致。",
+        ]
+
+    return {
+        "hard_facts": hard_facts,
+        "soft_guidance": soft_guidance,
         "diagnostic_only": [
             "爽点、节奏、读者期待、AI味、审稿、生成、规则要求都只用于诊断，禁止进入正文。",
             "规则未明、信息边界、NPC门槛、材料暂不外露属于后台标签，必须翻译成动作/对话/界面反馈。",
@@ -417,7 +481,12 @@ def build_chapter_governance(story: Any, bundle: Any | None = None, *, chapter_n
             xianxia_context=xianxia_context,
             chapter_one_trade=chapter_one_trade,
         ),
-        "runtime_context": _runtime_context(story, bundle, target_chapter),
+        "runtime_context": _runtime_context(
+            story,
+            bundle,
+            target_chapter,
+            game_context=game_context,
+        ),
         "rule_stack": _rule_stack(
             target_chapter,
             game_context=game_context,

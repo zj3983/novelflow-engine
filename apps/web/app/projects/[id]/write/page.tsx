@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import Link from "next/link";
+import { Check, Copy } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -22,6 +23,35 @@ import {
 } from "../../../../lib/api";
 
 const PAGE_SIZE = 80;
+
+type CopyStatus = "idle" | "copied" | "failed";
+
+function chapterCopyText(chapterNumber: number, chapterTitle: string | undefined, body: string): string {
+  const heading = [`第 ${chapterNumber} 章`, chapterTitle?.trim()].filter(Boolean).join(" ");
+  return `${heading}\n\n${body.trim()}`;
+}
+
+async function writeTextToClipboard(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // Some browsers expose Clipboard API but reject it outside a secure context.
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("copy_failed");
+}
 
 function chapterCharCount(body: string | undefined): number {
   if (!body) return 0;
@@ -53,6 +83,7 @@ export default function WritePage() {
   const [temporaryGuidance, setTemporaryGuidance] = useState("");
   const [nextWritingPacket, setNextWritingPacket] = useState<CodexWritingPacket | null>(null);
   const [selectedDirectionId, setSelectedDirectionId] = useState("");
+  const [copyStatus, setCopyStatus] = useState<CopyStatus>("idle");
   const mountedRef = useRef(false);
   const operationTokenRef = useRef(0);
 
@@ -76,6 +107,16 @@ export default function WritePage() {
     refreshVersion,
   });
   const guidanceStorageKey = chapter ? `book-dissection-guidance:${projectId}:${chapter.chapter_number}` : "";
+
+  useEffect(() => {
+    setCopyStatus("idle");
+  }, [chapter?.chapter_number]);
+
+  useEffect(() => {
+    if (copyStatus !== "copied") return;
+    const timeout = window.setTimeout(() => setCopyStatus("idle"), 1800);
+    return () => window.clearTimeout(timeout);
+  }, [copyStatus]);
 
   useEffect(() => {
     if (!chapter || searchParams?.get("guidance") !== "dissection") {
@@ -233,6 +274,16 @@ export default function WritePage() {
     }
   }
 
+  async function handleCopyChapter() {
+    if (!chapter) return;
+    try {
+      await writeTextToClipboard(chapterCopyText(chapter.chapter_number, chapter.chapter_title, chapter.body));
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+  }
+
   return (
     <div className="ws-page">
       <PageHeader
@@ -322,6 +373,15 @@ export default function WritePage() {
               </div>
               <div className="ws-toolbar">
                 <button
+                  className="ws-btn ws-btn--sm"
+                  type="button"
+                  title="复制章节标题和正文"
+                  onClick={() => void handleCopyChapter()}
+                >
+                  {copyStatus === "copied" ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+                  {copyStatus === "copied" ? "已复制" : "复制章节"}
+                </button>
+                <button
                   className="ws-btn ws-btn--sm ws-btn--primary"
                   type="button"
                   disabled={!canGenerateNext || regenerating || generatingNext}
@@ -340,6 +400,7 @@ export default function WritePage() {
                 <span className="ws-badge">{chapterCharCount(chapter.body)} 字</span>
               </div>
             </header>
+            {copyStatus === "failed" ? <p className="ws-error" role="alert">复制失败，请允许浏览器访问剪贴板后重试。</p> : null}
 
             {(regenerating || generatingNext || generationSteps.length > 0) ? (
               <section className="ws-card">
@@ -455,6 +516,21 @@ export default function WritePage() {
         <div className="ws-empty">
           <p className="ws-empty__title">还没有可阅读章节</p>
           <p className="ws-empty__hint">生成第一章后会在这里显示目录和正文。</p>
+          <button
+            className="ws-btn ws-btn--primary"
+            type="button"
+            disabled={!canGenerateNext || generatingNext}
+            onClick={() => void handleGenerateNextChapter()}
+          >
+            {generatingNext ? "生成中..." : "生成第一章"}
+          </button>
+          {(generatingNext || generationSteps.length > 0) ? (
+            <section className="ws-card">
+              <p className="ws-card__title">生成任务</p>
+              <WritingFlowPanel steps={generationSteps} />
+            </section>
+          ) : null}
+          {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
         </div>
       )}
     </div>

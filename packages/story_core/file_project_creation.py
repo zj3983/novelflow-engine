@@ -79,7 +79,7 @@ def _project_payload(project_id: str, spec: FileProjectCreateSpec) -> dict[str, 
         "world_blueprint": {"genre_plugin_ids": [spec.novel_type_id]},
         "current_chapter": 0,
         "status": "draft",
-        "pipeline_stage": "draft" if spec.mode == "blank" else "idea_pending",
+        "pipeline_stage": "idea_pending",
     }
 
 
@@ -96,6 +96,17 @@ def _state_payload(project_id: str, novel_type_id: str) -> dict[str, Any]:
         current_chapter=0,
     )
     return state.model_dump(mode="json")
+
+
+def _opening_brief_payload(spec: FileProjectCreateSpec) -> dict[str, Any]:
+    idea = spec.idea if spec.mode == "inspiration" else f"请根据书名《{spec.title}》和所选小说类型构思故事。"
+    return {
+        "schema_version": "opening-brief/v1",
+        "mode": spec.mode,
+        "novel_type_id": spec.novel_type_id,
+        "idea": idea,
+        "working_title": spec.title,
+    }
 
 
 def _write_project_files(
@@ -125,17 +136,7 @@ def _write_project_files(
     _write_json(root / ".webnovel/project.json", project)
     _write_json(root / ".webnovel/state.json", state)
     _write_json(root / ".webnovel/outline.json", outline)
-    if spec.mode == "inspiration":
-        _write_json(
-            root / ".webnovel/opening_brief.json",
-            {
-                "schema_version": "opening-brief/v1",
-                "mode": "inspiration",
-                "novel_type_id": spec.novel_type_id,
-                "idea": spec.idea,
-                "working_title": spec.title,
-            },
-        )
+    _write_json(root / ".webnovel/opening_brief.json", _opening_brief_payload(spec))
     _write_json(root / ".story-system/MASTER_SETTING.json", master_setting)
 
 
@@ -189,18 +190,8 @@ def _validate_created_project(
         raise ValueError("invalid_project_outline")
 
     opening_brief_path = root / ".webnovel/opening_brief.json"
-    if spec.mode == "inspiration":
-        expected_brief = {
-            "schema_version": "opening-brief/v1",
-            "mode": "inspiration",
-            "novel_type_id": spec.novel_type_id,
-            "idea": spec.idea,
-            "working_title": spec.title,
-        }
-        if not opening_brief_path.is_file() or _read_json(opening_brief_path) != expected_brief:
-            raise ValueError("invalid_opening_brief")
-    elif opening_brief_path.exists():
-        raise ValueError("unexpected_opening_brief")
+    if not opening_brief_path.is_file() or _read_json(opening_brief_path) != _opening_brief_payload(spec):
+        raise ValueError("invalid_opening_brief")
 
     store = FileProjectStore(root)
     readable_state = store.state()
@@ -280,7 +271,7 @@ def create_file_project(
 
     final_root = write_file_project_atomically(export_root, project_id, write)
     route_id = quote(f"file:{project_id}", safe="")
-    next_page = "setup" if spec.mode == "inspiration" else "outline"
+    next_page = "setup"
     return CreatedFileProject(
         project_id=project_id,
         root=final_root,

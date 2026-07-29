@@ -17,10 +17,11 @@ from packages.story_core.book_dissection import diagnose_project_chapter, dissec
 from packages.story_core.file_project_creation import FileProjectCreateSpec, create_file_project
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
-from packages.story_core.models import AgentRuntimeState, AgentSettings
+from packages.story_core.models import AgentRuntimeState, AgentSettings, NovelProject
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
 from packages.story_core.simplified_review import build_simplified_review, user_facing_generation_error
+from packages.story_core.world_enrichment import WorldEnrichmentError, enrich_project_world
 
 
 router = APIRouter()
@@ -162,6 +163,25 @@ def _load_file_generation_job(store: FileProjectStore, job_id: str | None = None
         return None
     payload["_project_root"] = str(store.root)
     return payload
+
+
+def _list_file_generation_jobs(store: FileProjectStore, *, limit: int = 30) -> list[dict[str, object]]:
+    jobs: list[dict[str, object]] = []
+    log_dir = _file_generation_job_log_dir(store)
+    try:
+        paths = list(log_dir.glob("fgj-*.json"))
+    except OSError:
+        return jobs
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or not str(payload.get("job_id", "")).strip():
+            continue
+        jobs.append(payload)
+    jobs.sort(key=lambda item: str(item.get("updated_at", "")), reverse=True)
+    return jobs[: max(1, min(limit, 100))]
 
 
 def _sanitize_file_generation_step_item(value: object) -> dict[str, object]:
@@ -966,8 +986,57 @@ def init_file_project_routes() -> APIRouter:
                 guidance=payload.guidance,
             )
         except ValueError as exc:
-            status_code = 502 if str(exc) == "outline_planning_generation_failed" else 422
-            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+            detail = str(exc)
+            if detail == "outline_planning_generation_failed" and exc.__cause__ is not None:
+                cause = exc.__cause__
+                cause_text = re.sub(r"\s+", " ", str(cause)).strip()[:500]
+                detail = f"{detail}:{type(cause).__name__}:{cause_text or 'no_detail'}"
+            status_code = 502 if detail.startswith("outline_planning_generation_failed") else 422
+            raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    @router.post("/file-projects/{project_id}/enrich-world")
+    def enrich_file_project_world(project_id: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        project_payload = {
+            **store.project(),
+            "project_id": _public_project_id(store),
+            "source_path": str(store.root),
+            "active_story_id": _story_id_for(store),
+        }
+        try:
+            enriched = enrich_project_world(NovelProject.model_validate(project_payload))
+        except WorldEnrichmentError as exc:
+            detail = str(exc) or "world_enrichment_failed"
+            status_code = 400 if detail == "missing_api_key" else 502
+            raise HTTPException(status_code=status_code, detail=detail) from exc
+        except Exception as exc:
+            cause_text = re.sub(r"\s+", " ", str(exc)).strip()[:500]
+            detail = (
+                f"world_enrichment_failed:{type(exc).__name__}:"
+                f"{cause_text or 'no_detail'}"
+            )
+            raise HTTPException(status_code=502, detail=detail) from exc
+        enriched_payload = enriched.model_dump(mode="json")
+        store.update_project(
+            {
+                key: value
+                for key, value in enriched_payload.items()
+                if key
+                in {
+                    "title",
+                    "world_summary",
+                    "current_focus",
+                    "author_constraints",
+                    "world_blueprint",
+                    "character_profiles",
+                    "relationship_graph",
+                    "enabled_skill_ids",
+                    "status",
+                }
+            }
+            | {"pipeline_stage": "environment_ready"}
+        )
+        return _project_payload(store)
 
     @router.put("/file-projects/{project_id}/outline")
     def update_file_project_outline(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1120,6 +1189,25 @@ def init_file_project_routes() -> APIRouter:
         payload: FileProjectGenerationJobRequest | None = None,
     ) -> dict[str, object]:
         return start_file_generation_job(project_id, payload)
+
+    @router.get("/file-projects/{project_id}/generation-jobs")
+    def list_file_generation_jobs(project_id: str, limit: int = 30) -> dict[str, object]:
+        store = _store_for(project_id)
+        items = []
+        for job in _list_file_generation_jobs(store, limit=limit):
+            items.append(
+                {
+                    "job_id": str(job.get("job_id", "")),
+                    "story_id": str(job.get("story_id", "")),
+                    "chapter_number": job.get("chapter_number") if isinstance(job.get("chapter_number"), int) else None,
+                    "status": str(job.get("status", "")),
+                    "progress": str(job.get("progress", "")),
+                    "error": job.get("error"),
+                    "created_at": str(job.get("created_at", "")),
+                    "updated_at": str(job.get("updated_at", "")),
+                }
+            )
+        return {"schema_version": "file-generation-job-history/v1", "items": items}
 
     @router.get("/file-projects/{project_id}/generation-jobs/current")
     def get_current_file_generation_job(project_id: str) -> dict[str, object]:

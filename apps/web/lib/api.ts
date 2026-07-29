@@ -153,6 +153,13 @@ export type GenerationJobResponse = {
   updated_at: string;
 };
 
+export type GenerationJobSummary = Omit<GenerationJobResponse, "steps">;
+
+export type GenerationJobHistoryResponse = {
+  schema_version: "file-generation-job-history/v1" | string;
+  items: GenerationJobSummary[];
+};
+
 export type ProjectAutomationJobStatus = "queued" | "running" | "completed" | "paused" | "failed";
 
 export type ProjectAutomationJobPhase =
@@ -972,7 +979,7 @@ export type OpeningDirection = {
 export type OpeningSetup = {
   brief: {
     schema_version: "opening-brief/v1";
-    mode: "inspiration";
+    mode: "blank" | "inspiration";
     novel_type_id: string;
     idea: string;
     working_title: string;
@@ -2500,6 +2507,8 @@ async function tryFetchJson(url: string, init: RequestInit, timeoutMs = 30000): 
   );
 }
 
+const LONG_RUNNING_REQUEST_TIMEOUT_MS = 1_800_000;
+
 async function fetchOptionalJson(url: string, init: RequestInit, timeoutMs = 30000): Promise<any | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -2816,6 +2825,30 @@ export async function fetchCurrentGenerationJob(storyId: string): Promise<Genera
   } catch {
     return null;
   }
+}
+
+export async function fetchGenerationJobHistory(storyId: string, limit = 30): Promise<GenerationJobHistoryResponse> {
+  if (!isFileProjectId(storyId)) {
+    const current = await fetchCurrentGenerationJob(storyId);
+    return {
+      schema_version: "file-generation-job-history/v1",
+      items: current ? [{
+        job_id: current.job_id,
+        story_id: current.story_id,
+        status: current.status,
+        progress: current.progress,
+        chapter_number: current.chapter_number,
+        error: current.error,
+        created_at: current.created_at,
+        updated_at: current.updated_at,
+      }] : [],
+    };
+  }
+  return (await tryFetchJson(
+    `${fileProjectPath(storyId)}/generation-jobs?limit=${Math.max(1, Math.min(limit, 100))}`,
+    { method: "GET" },
+    90000,
+  )) as GenerationJobHistoryResponse;
 }
 
 export async function fetchGenerationJob(storyId: string, jobId: string): Promise<GenerationJobResponse> {
@@ -3434,9 +3467,12 @@ export async function generateProjectOutline(
 }
 
 export async function enrichProjectWorld(projectId: string): Promise<ProjectResponse> {
-  const response = (await tryFetchJson(`${apiBase()}/projects/${encodeURIComponent(projectId)}/enrich-world`, {
+  const path = isFileProjectId(projectId)
+    ? `${fileProjectPath(projectId)}/enrich-world`
+    : `${apiBase()}/projects/${encodeURIComponent(projectId)}/enrich-world`;
+  const response = (await tryFetchJson(path, {
     method: "POST",
-  }, 180000)) as ProjectResponse;
+  }, LONG_RUNNING_REQUEST_TIMEOUT_MS)) as ProjectResponse;
   return persistProjectIntoMockStore(response);
 }
 

@@ -62,6 +62,25 @@ def test_world_pulse_exposes_only_recorded_public_material_flow():
     assert "batch of 14" not in " ".join(item["text"] for item in pulse["visibility_inbox"])
 
 
+def test_world_pulse_does_not_invent_zero_batch_or_zero_price_activity():
+    story = _pulse_story()
+    story.progression_ledger["market"]["newbie_materials"] = {
+        "visible_batch_count": 0,
+        "supply": 0,
+        "price_copper": 0,
+    }
+    story.progression_ledger["systems"]["chaos_seed"]["anomaly_score"] = 20
+    story.progression_ledger["reality"] = {}
+
+    pulse = advance_world_pulse(story, chapter_number=1)
+
+    assert pulse["visibility_inbox"] == []
+    assert pulse["background_events"] == []
+    assert pulse["market_order_book"]["buy_orders"] == []
+    assert "npc_memory" not in story.progression_ledger["persistent_world"]
+    assert "guild_intel" not in story.progression_ledger["persistent_world"]
+
+
 def test_world_pulse_accumulates_without_erasing_prior_inbox():
     story = _pulse_story()
     story.progression_ledger["visibility_inbox"] = [

@@ -18,6 +18,14 @@ from packages.story_core.models import StoryState
 from packages.story_core.orchestrator import StoryOrchestrator
 
 
+def test_game_director_prompt_reads_current_ledger_without_requesting_ledger_updates():
+    template = get_default_prompt_template("director")
+
+    assert "不生成章节摘要、既成事实或账本更新" in template.content
+    assert "ledger_updates" not in template.content
+    assert "以当前连续性账本为准" in template.content
+
+
 def test_template_variable_occurrences_preserves_duplicates_and_order():
     assert template_variable_occurrences("{{chapter}} {{chapter}} {{output}}") == (
         "chapter",

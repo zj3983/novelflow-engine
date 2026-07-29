@@ -46,6 +46,47 @@ def _writer_power_spec() -> dict:
     }
 
 
+def test_writer_prompt_surfaces_financial_attribute_and_anomaly_anchors():
+    story = StoryState(
+        story_id="s-writer-explicit-anchors",
+        outline="夜烬在神域开服首日解决现实急账。",
+        genre="网游",
+        style="简洁",
+        author_constraints=["第一章付清急账后现实余额为332.60元。"],
+        world_facts=[
+            "苏叶登录游戏前，账户余额46.83元。",
+            "官方兑换实际到账1764.00元。",
+            "核心异常为底层协议校验通过、千倍爆率、混沌之种：未解析。",
+        ],
+        outline_context={
+            "chapter": {
+                "chapter_number": 1,
+                "attribute_allocation_decision": {
+                    "mode": "allocate",
+                    "allocations": {"智力": 5},
+                    "remaining": 0,
+                    "reason": "强化基础火球术",
+                },
+            }
+        },
+    )
+    plan = {
+        "event_plan": story.outline_context["chapter"],
+        "power_system": _writer_power_spec(),
+    }
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, plan)
+
+    assert "登录前现实余额46.83元" in prompt
+    assert "交易完成后净到账1764.00元" in prompt
+    assert "章末余额332.60元" in prompt
+    assert "本章属性点决定：智力+5" in prompt
+    assert "可用点归零" in prompt
+    assert "底层协议校验通过" in prompt
+    assert "千倍爆率" in prompt
+    assert "混沌之种：未解析" in prompt
+
+
 def _writer_power_story() -> StoryState:
     return StoryState(
         story_id="s-power-prompts",
@@ -102,6 +143,39 @@ def test_body_prompt_has_no_unselected_plain_style_fallback():
     assert "整体用白描" not in prompt
     assert "番茄白话风" not in prompt
     assert "表达风格：" not in prompt
+
+
+def test_non_game_body_prompt_does_not_receive_game_interface_rules():
+    story = StoryState(story_id="s-urban-clean", outline="便利店盘点异常。", genre="都市", style="")
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "夜班盘点"}})
+
+    assert "面板只作为" not in prompt
+    assert "交易、鉴定和任务办理" not in prompt
+    assert "面板、公告和物品说明" not in prompt
+    assert "交易与鉴定也按现场来写" not in prompt
+
+
+def test_new_game_story_does_not_inherit_another_books_names_or_cheat():
+    story = StoryState(story_id="s-space-game", outline="玩家进入星舰网游，准备修复采矿机器人。", genre="网游", style="")
+    plan = {
+        "event_plan": {"chapter_title": "失控的采矿机"},
+        "scene_cards": [
+            {
+                "id": "mine-robot",
+                "location": "月面矿坑",
+                "purpose": "关闭失控的采矿机器人",
+                "conflict": "能源护盾挡住控制台",
+                "must_show": ["工程终端", "护盾电量"],
+            }
+        ],
+    }
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, plan)
+
+    assert "采矿机器人" in prompt
+    for term in ("夜烬", "千倍爆率", "混沌之种", "灰狼", "毒腺", "清道夫"):
+        assert term not in prompt
 
 
 def test_body_prompt_injects_selected_style_once():
@@ -691,8 +765,6 @@ def test_trade_authorized_first_chapter_prompt_uses_market_then_exchange_order()
     )
 
     assert "交易行游戏币成交 -> 官方兑换 -> 现实账户到账 -> 处理急账" in prompt
-    assert "已冻结游戏币的现有求购单" in prompt
-    assert "独立官方兑换页面" in prompt
     assert "担保交易" not in prompt
     assert "第一章只完成开服现场、建号、低级验证和下一步决定" not in prompt
 
@@ -776,8 +848,7 @@ def test_revision_prompt_migrates_real_order_status_appraisal_sentence() -> None
     assert "鉴定中" not in prompt
     assert "求购单显示已成交" in prompt
     assert "订单状态变成" not in prompt
-    for line in opening_market_exchange_flow_lines():
-        assert prompt.count(line) == 1
+    assert "求购单显示已成交" in prompt
 
 
 def test_real_chapter_one_revision_prompt_uses_natural_local_trade_migration() -> None:

@@ -33,7 +33,7 @@ def test_create_blank_project_writes_clean_complete_project(tmp_path):
 
     assert created.project_id == "p-test-blank"
     assert created.root == tmp_path / "p-test-blank"
-    assert created.next_path == "/projects/file%3Ap-test-blank/outline"
+    assert created.next_path == "/projects/file%3Ap-test-blank/setup"
     expected_directories = {
         ".story-system",
         ".story-system/chapters",
@@ -57,6 +57,7 @@ def test_create_blank_project_writes_clean_complete_project(tmp_path):
         ".webnovel/project.json",
         ".webnovel/state.json",
         ".webnovel/outline.json",
+        ".webnovel/opening_brief.json",
     }
 
     project = read_json(created.root / ".webnovel/project.json")
@@ -76,10 +77,10 @@ def test_create_blank_project_writes_clean_complete_project(tmp_path):
         "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
         "current_chapter": 0,
         "status": "draft",
-        "pipeline_stage": "draft",
+        "pipeline_stage": "idea_pending",
     }
-    assert NovelProject.model_validate(project).pipeline_stage == "draft"
-    assert NovelProjectSummary.model_validate(project).pipeline_stage == "draft"
+    assert NovelProject.model_validate(project).pipeline_stage == "idea_pending"
+    assert NovelProjectSummary.model_validate(project).pipeline_stage == "idea_pending"
     assert state["story_id"] == "file:p-test-blank"
     assert state["outline"] == ""
     assert state["genre"] == NOVEL_TYPE_CATALOG["xuanhuan"].label
@@ -93,6 +94,13 @@ def test_create_blank_project_writes_clean_complete_project(tmp_path):
     assert state["chapter_summaries"] == []
     assert state["memory_index"] == []
     assert outline == normalize_project_outline({})
+    assert read_json(created.root / ".webnovel/opening_brief.json") == {
+        "schema_version": "opening-brief/v1",
+        "mode": "blank",
+        "novel_type_id": "xuanhuan",
+        "idea": "请根据书名《照夜行》和所选小说类型构思故事。",
+        "working_title": "照夜行",
+    }
     assert master == {
         "schema_version": "story-system-master-setting/v1",
         "project": project,

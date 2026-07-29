@@ -977,6 +977,36 @@ def _reviewable_body(text: str) -> str:
 
 
 @pytest.mark.parametrize(
+    ("body_chars", "expected_ceiling", "expected_tokens"),
+    [(3000, 4200, 4700), (5000, 5000, 5500), (6000, 5500, 6000)],
+)
+def test_revision_char_ceiling_tracks_original_without_exceeding_chapter_limits(
+    body_chars, expected_ceiling, expected_tokens
+):
+    body = "字" * body_chars
+
+    assert orchestrator_module._revision_char_ceiling(body) == expected_ceiling
+    assert orchestrator_module._revision_max_tokens(body) == expected_tokens
+
+
+def test_revision_prompt_requires_local_replacement_with_a_concrete_hard_ceiling():
+    story = StoryState(
+        story_id="s-revision-ceiling",
+        outline="林照处理断香炉。",
+        genre="xuanhuan",
+        style="幽默",
+        characters=[CharacterState(name="林照", role="主角")],
+    )
+    body = "林照把断香炉搬进偏殿。" * 400
+
+    prompt = StoryOrchestrator()._render_revision_prompt(story, 1, body, _post_draft_plan(), {"issues": []})
+
+    assert f"硬上限：{orchestrator_module._revision_char_ceiling(body)}字" in prompt
+    assert "只能通过替换、合并、删除和必要的局部补写完成" in prompt
+    assert "不要因为补问题而扩写整章" in prompt
+
+
+@pytest.mark.parametrize(
     ("genre", "genre_plugin_ids", "outline", "required_terms", "forbidden_terms"),
     [
         (
@@ -1021,7 +1051,7 @@ def test_runtime_compression_prompt_is_isolated_by_genre(
         if genre_plugin_ids != ["game_webnovel"]
         else "林照守住断香炉，逼周执事先开口。"
     )
-    initial_body = (initial_unit * 500)[:5836]
+    initial_body = (initial_unit * 500)[:6036]
     compressed_body = ("林照守住断香炉，逼周执事先开口。" * 500)[:5200]
     story = StoryState(
         story_id=f"s-compression-prompt-{genre}",
@@ -1590,6 +1620,7 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
     orchestrator = StoryOrchestrator()
     events: list[object] = []
     safety_results: list[dict] = []
+    revision_max_tokens: list[int] = []
     real_choose_best_revision = orchestrator_module.choose_best_revision
 
     def capture_safety(**kwargs):
@@ -1635,6 +1666,7 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
         if agent == "writer" and stage.startswith("整章写作"):
             return "first draft", ""
         if agent == "writer" and "审稿改稿" in stage:
+            revision_max_tokens.append(int(_kwargs["max_tokens"]))
             return "revised draft", ""
         if agent == "memory":
             memory = {
@@ -1674,6 +1706,7 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
     safety_inputs = safety_results[0]["inputs"]
     assert safety_inputs["original_quality"]["has_hard_errors"] is True
     assert safety_inputs["candidate_quality"]["has_hard_errors"] is False
+    assert revision_max_tokens == [orchestrator_module._revision_max_tokens("first draft")]
 
     completion_event = next(
         entry for entry in dict_steps if entry.get("message") == "审稿改稿完成"
@@ -1686,6 +1719,8 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
         "candidate_score",
         "original_issue_count",
         "candidate_issue_count",
+        "original_chars",
+        "candidate_chars",
     ):
         assert outputs[key] == safety_report[key]
 

@@ -243,3 +243,21 @@ def test_simplified_review_blocks_missing_required_game_surfaces_but_not_repetit
     assert report["has_hard_errors"] is True
     assert report["categories"]["hard"]["count"] == 3
     assert report["categories"]["ai_flavor"]["count"] == 1
+
+
+def test_simplified_review_blocks_required_progression_and_project_anchors():
+    report = build_simplified_review(
+        {
+            "writing_review": {
+                "issues": [
+                    "章节写死了游戏币与现实货币的汇率，但世界档案没有明确官方兑换行情。",
+                    "attribute_allocation_missing: 当前章节计划加点，但正文缺少确认结果。",
+                    "第一章缺少“混沌之种：未解析”钩子。",
+                    "第一章缺少“底层协议校验通过”触发锚点。",
+                ]
+            }
+        }
+    )
+
+    assert report["has_hard_errors"] is True
+    assert report["categories"]["hard"]["count"] == 4

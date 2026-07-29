@@ -36,6 +36,15 @@ export default function ProjectOverviewPage() {
   const totalWords = story && "total_body_chars" in story
     ? story.total_body_chars
     : chapterIndex.reduce((sum, bundle) => sum + bundle.body_chars, 0);
+  const openingNextPath = project?.pipeline_stage === "outlining"
+    ? `/projects/${encodedProjectId}/outline`
+    : project?.pipeline_stage === "world_ready"
+      ? `/projects/${encodedProjectId}/world`
+      : project?.pipeline_stage === "environment_ready"
+        ? `/projects/${encodedProjectId}/write`
+        : project?.pipeline_stage && ["draft", "idea_pending", "direction_ready"].includes(project.pipeline_stage)
+          ? `/projects/${encodedProjectId}/setup`
+          : null;
 
   return (
     <div className="ws-page">
@@ -58,6 +67,11 @@ export default function ProjectOverviewPage() {
             <p className="ws-card__hint">
               第 {currentChapter} 章 · {formatNumber(totalWords)} 字 · {statusLabel(project.status)}
             </p>
+            {openingNextPath && currentChapter === 0 ? (
+              <Link href={openingNextPath} className="ws-btn ws-btn--primary">
+                继续开书
+              </Link>
+            ) : null}
           </section>
 
           <section className="ws-card">

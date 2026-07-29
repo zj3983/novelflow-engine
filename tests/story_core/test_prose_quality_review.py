@@ -121,3 +121,17 @@ def test_chapter_review_includes_adversarial_cut_review():
     cut_review = review["adversarial_cut_review"]
     assert not cut_review["pass"]
     assert any(cut["action"] == "replace_with_scene_detail" for cut in cut_review["cuts"])
+
+
+def test_chapter_review_uses_one_consolidated_gate_instead_of_three_duplicate_agent_passes():
+    review = _review_chapter_body(
+        2,
+        "林照核对完账册，发现最后一页被人撕掉了。他问值夜弟子是谁，对方报出名字后又补了一句，昨晚库房换过锁。",
+        {"next_focus": "找到被撕掉的账页。"},
+        ["玄幻宗门正在清查库房。"],
+        genre_context={"genre_plugin_ids": ["xuanhuan"]},
+    )
+
+    for key in ("reader_agent_review", "editor_agent_review", "reviewer_agent_review"):
+        assert review[key]["mode"] == "consolidated"
+        assert review[key]["issues"] == []

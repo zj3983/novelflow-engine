@@ -65,7 +65,6 @@ from packages.story_core.post_draft_memory import (
 from packages.story_core.adversarial_cut_review import build_expression_patch_suggestions, review_adversarial_cuts
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
-from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.prose_quality_review import review_prose_quality
 from packages.story_core.prose_rule_review import CRITICAL_PROMPT_RULES, PROMPT_CRAFT_GUARDS, review_critical_prose_rules
 from packages.story_core.prose_style_review import review_prose_style, sanitize_prose_style
@@ -74,8 +73,6 @@ from packages.story_core.reader_feel_review import review_reader_feel
 from packages.story_core.progression_lead_review import review_progression_lead
 from packages.story_core.plot_spine_review import review_plot_spine_completion
 from packages.story_core.quality import validate_bundle
-from packages.story_core.reader_agent import review_reader_agent
-from packages.story_core.reviewer_agent import review_reviewer_agent
 from packages.story_core.runtime import record_stage_runtime
 from packages.story_core.runtime_config import resolve_stage_runtime
 from packages.story_core.revision_safety import choose_best_revision, choose_best_segment_revision
@@ -128,7 +125,7 @@ VALID_CADENCES = {"urgent", "measured", "breathing"}
 MIN_CHAPTER_CHARS = 4200
 MAX_CHAPTER_CHARS = 5500
 CHAPTER_CHAR_TOLERANCE = 20
-CHAPTER_MAX_CHAR_TOLERANCE = 200
+CHAPTER_MAX_CHAR_TOLERANCE = 500
 CHAPTER_HARD_MIN_CHARS = 3800
 REGENERATION_MIN_CHARS = 3500
 REGENERATION_FAST_MIN_CHARS = 3200
@@ -151,12 +148,20 @@ def _expansion_timeout_seconds() -> int:
 
 
 def _should_compress_chapter(body: str) -> bool:
-    return _chapter_char_count(body) > MAX_CHAPTER_CHARS
+    return _chapter_char_count(body) > MAX_CHAPTER_CHARS + CHAPTER_MAX_CHAR_TOLERANCE
 
 
 def _chapter_body_is_hard_length_acceptable(body: str) -> bool:
     chars = _chapter_char_count(body)
     return CHAPTER_HARD_MIN_CHARS <= chars <= MAX_CHAPTER_CHARS + CHAPTER_MAX_CHAR_TOLERANCE
+
+
+def _revision_char_ceiling(body: str) -> int:
+    return min(MAX_CHAPTER_CHARS, max(MIN_CHAPTER_CHARS, _chapter_char_count(body)))
+
+
+def _revision_max_tokens(body: str) -> int:
+    return min(6200, _revision_char_ceiling(body) + 500)
 
 
 def _expanded_body_is_acceptable(original_body: str, candidate_body: str) -> bool:
@@ -221,6 +226,7 @@ def _repair_outline_amount_anchors(body: str, anchor: Any) -> str:
             repaired = f"苏叶登录游戏前，账户余额{opening}。\n\n{repaired.lstrip()}"
     arrival_pattern = re.compile(
         r"(?P<label>预计到账(?:金额)?|实际到账(?:金额)?|现实账户(?:收到|到账)|"
+        r"(?:现实)?账户(?:收到|到账|收入)|"
         r"手机(?:银行)?(?:提示|弹出提示|收到提示)?(?:进账|到账)|到账金额|实收|到账)"
         r"(?P<separator>\s*(?:[：:]\s*)?)"
         r"(?P<amount>\d+(?:\.\d{1,2})?\s*元)"
@@ -293,6 +299,17 @@ def _repair_outline_amount_anchors(body: str, anchor: Any) -> str:
             for match in arrival_matches
             if not match.group("label").startswith("预计")
         ]
+        synthetic_exchange = (
+            "他离开交易行，打开独立官方兑换页面。"
+            f"页面显示兑换价、额度、手续费和预计到账；确认兑换后，现实账户收到{arrival}。"
+        )
+        if len(receipt_matches) >= 2 and synthetic_exchange in repaired:
+            repaired = repaired.replace(f"\n\n{synthetic_exchange}", "", 1)
+            receipt_matches = [
+                match
+                for match in arrival_pattern.finditer(repaired)
+                if not match.group("label").startswith("预计")
+            ]
         urgency_match = urgency_pattern.search(repaired)
         late_receipts = (
             [match for match in receipt_matches if match.start() > urgency_match.start()]
@@ -326,11 +343,29 @@ def _repair_outline_amount_anchors(body: str, anchor: Any) -> str:
                 repaired = insert_exchange_before(repaired, insert_at, exchange_paragraph)
     if ending:
         balance_matches = list(balance_pattern.finditer(repaired))
-        if len(balance_matches) >= 2:
+        actual_receipts = [
+            match
+            for match in arrival_pattern.finditer(repaired)
+            if not match.group("label").startswith("预计")
+        ]
+        first_receipt_start = actual_receipts[0].start() if actual_receipts else -1
+        repeated_opening = [
+            match
+            for match in balance_matches
+            if opening
+            and match.start() > first_receipt_start >= 0
+            and opening in re.sub(r"\s+", "", match.group(0))
+        ]
+        if repeated_opening:
+            match = repeated_opening[-1]
+            repaired = repaired[: match.start()] + f"{match.group(1)}{ending}" + repaired[match.end() :]
+        elif len(balance_matches) >= 2:
             match = balance_matches[-1]
             repaired = repaired[: match.start()] + f"{match.group(1)}{ending}" + repaired[match.end() :]
         elif ending not in repaired[-1600:]:
             repaired = f"{repaired.rstrip()}\n\n付清现实急账后，账户余额{ending}。"
+        if repaired.count(ending) > 1:
+            repaired = repaired.replace(f"\n\n付清现实急账后，账户余额{ending}。", "")
     return repaired
 
 
@@ -699,6 +734,16 @@ def _sanitize_generated_body(body: str) -> str:
         return match.group(0)
 
     cleaned = re.sub(r"背包：(\d+)/20", repair_stack_slots, cleaned)
+
+    def compact_system_panel_group(match: re.Match[str]) -> str:
+        entries = [item.strip() for item in re.findall(r"【([^】\n]+)】", match.group(0)) if item.strip()]
+        return f"【{'；'.join(entries)}】" if entries else match.group(0)
+
+    cleaned = re.sub(
+        r"(?:【[^】\n]{1,100}】\s*){2,}",
+        compact_system_panel_group,
+        cleaned,
+    )
     # Some model/API combinations occasionally turn UI quotes or line breaks into
     # lone ASCII question marks. Remove only question marks embedded in CJK prose.
     cleaned = re.sub(r"(?<=[\u4e00-\u9fff。！？】》])\?(?=[\u4e00-\u9fff【《])", "", cleaned)
@@ -3384,54 +3429,10 @@ def _opening_phase_name(chapter_number: int, *, is_game: bool = True) -> str:
     if chapter_number == 1:
         return "黄金三章第1章：立世界、立主角、立核心能力、完成第一次有效验证"
     if chapter_number == 2:
-        return "黄金三章第2章：把千倍爆率转成任务、装备或路线领先"
+        return "黄金三章第2章：把本书核心优势转成任务、装备、关系或路线上的具体领先"
     if chapter_number == 3:
         return "黄金三章第3章：第一个小高潮、明确敌对压力、确立长期成长路线"
     return "常规连载章节：目标、行动、收益、压力、钩子循环"
-
-
-def _opening_writer_rules(chapter_number: int) -> list[str]:
-    if chapter_number == 1:
-        return [
-            "第一章承担读者入门职责：必须自然交代现实压力、游戏入口、主角技能来源、金手指首次露头和下一步领先目标。",
-            "500字内要出现强钩子；1000字内要让读者知道主角缺什么、怕什么、想要什么。",
-            "番茄长篇节奏：第一章目标篇幅按4200到5500字写，不要压缩成3000字以内的信息摘要。",
-            "游戏背景要通过登录界面、系统公告、玩家闲聊、路牌或柜台观察写出来，不要用百科段落硬讲。",
-            "主角背景要通过现实账单、出租屋细节、职业/工作状态、短暂记忆、行为习惯或心理压迫露出，不能只贴标签。",
-            "必须说明主角现实职业、失业/兼职/外包状态或现实技能来源，并让这解释他为什么会谨慎、会算账、会拆单或熟悉网游经济。",
-            "第一章必须写出网游开篇仪式：登录或角色创建、游戏ID“夜烬”、初始身份、武器/基础技能选择、角色面板。开局所有玩家都是见习冒险者（未转职），夜烬只是选新手法杖和基础火球术，不要写成独有职业。",
-            "第一章初始短面板固定锚点：游戏ID夜烬，Lv.1，身份见习冒险者（未转职），经验0/100，生命100/100，法力60/60，新手法杖10/10，基础火球术，背包空或钱袋空。",
-            "角色面板必须在正文中写出“角色面板”四个字，并有职业栏，至少包含：游戏ID、等级、职业/路线、经验、生命/法力、基础火球术、背包或钱袋关键项；不要写“货币：0铜”；面板要短，不要刷屏。",
-            "初始钱袋锁死为空。第一章如果没有正文写出铜币掉落或任务奖励，章末就仍是一枚铜都没有，不能凭空变成15铜。",
-            "初始身份和技能锁死：开局不要写任何正式职业；统一写见习冒险者（未转职），夜烬只是在新手武器里选法杖，并拿到基础火球术，不要改名成元素弹。",
-            "现实金额必须读取项目写作包和本章硬锚点；写清它是银行卡或支付账户的可用余额，不得沿用其他作品的数字，也不要把余额误写成最低还款额。",
-            "金手指不能凭空弹出：必须先有旧头盔/底层日志/接驳异常等触发，再出现“底层协议校验通过”和“混沌之种：未解析”。",
-            "统一术语：本项目隐藏优势必须出现“千倍爆率”四个字；可以同时写掉落判定×1000，但不能只写异常或不正常。",
-            "第一章冲突是现实缺钱、旧设备、首次验证成本和主角意识到自己能比普通玩家快一步；不要把焦点写成几颗材料怎么处理。",
-            "第一章禁止越级冲突：公会不能精准锁定坐标/现实身份，不能围杀主角，不能直接抢世界BOSS或高阶副本。",
-            "交易、到账和现实付款是否发生，必须服从本书大纲、本章计划和项目账本；大纲要求第一章完成结算时就写清金额与用途，大纲没有安排时不得凭空补收益。",
-            "下一步钩子要落在进度领先上：主角意识到这些掉落能更快交任务、换装备、学技能或摸到下一条路线，而不是纠结几颗材料值多少钱。",
-            "金手指首次验证必须同时带来收益和代价：掉落变多的爽点要指向任务/装备/技能领先，血量、法力、耐久和背包只作为节奏摩擦。",
-            "第一章必须收敛：NPC、柜台、价牌和队伍只作为环境入口或下一章目标，不强制完整服务出场；如果出现命名NPC，只能一笔带过。",
-            "第一章NPC信息边界：药剂师/药铺只能讲药材、库存、价格和她不知道的边界；不得由药剂师发布职业任务、讲职业试炼、解释全局市场或玩家生态。职业路线和技能前置优先交给角色面板、职业导师木牌或任务牌。",
-            "第一章NPC窗口要求：可以写任务牌、柜台窗口或职业导师木牌来满足服务入口；是否办理业务由本书账本决定。若账本未允许，就只看见前置条件、价格或队伍，不提交、不到账。",
-            "第一章禁止赵胖子正面登场、禁止白袍据点视角、禁止公会完整追查戏；商人和公会不要出场，最多留一个交易行价牌弱钩子。",
-            "第一章不要连续写药剂铺、职业大厅、修理铺、公会据点等多视角场景；优先完成现实压力、登录、首次验证和下一步领先钩子。",
-        ]
-    if chapter_number in (2, 3):
-        return [
-            f"{_opening_phase_name(chapter_number)}。",
-            "继续补足世界运行规则，但只通过行动、界面、对话、论坛、公告、交易记录和冲突自然露出。",
-            "冲突必须按阶段升级：第2章偏任务领先、装备前置和新路线入口；第3章再写更具体的资源点竞争或职业试炼前置。",
-            "第2章必须承接第一章账本：夜烬仍是Lv.1见习冒险者（未转职）；本章留在新手村任务、灰狼坡/后坡、补给和基础火球术记录里推进。禁止Lv.1接取或开始转职任务、职业试炼、元素回廊试炼、法师塔试炼；10级之前只能看见远期线索或前置任务，不能正式办理。",
-            "第2章账本要按上一章章末状态继承，等级、经验、钱袋、背包、生命/法力、装备耐久和任务状态都从项目账本读取；清道夫、买技能、修法杖、买药等动作必须在正文里逐项落账。不要写经验100/100却未升级，也不要同章反复刷怪、回村、交同一个任务来凑进度。",
-            "禁止越级：不要让敌人单次交易就知道隐藏天赋，不要让公会会长亲自围杀新手散人，不要提前写成服务器级大战。",
-            "每个背景信息都必须服务当前目标、压力或爽点，不要停下来写设定说明书。",
-        ]
-    return [
-        "优先保持连载节奏：目标明确、行动具体、收益有代价、章末有新压力。",
-        "必要背景只在影响本章选择、冲突或收益时补充。",
-    ]
 
 
 def _review_protagonist_names(event_plan: dict[str, Any], simulation_plan: dict[str, Any] | None = None) -> tuple[str, ...]:
@@ -3528,7 +3529,11 @@ def _review_chapter_body(
         if _has_explicit_review_genre_context(genre_context)
         else is_game_genre("\n".join([body, facts_text, plan_text]))
     )
-    chapter_one_trade_payoff = first_chapter_market_exchange_authorized(event_plan, world_facts)
+    project_specific_game_context = any(
+        token in f"{facts_text}\n{plan_text}\n{body}"
+        for token in ("千倍爆率", "混沌之种", "清道夫委托", "夜烬", "元素回廊")
+    )
+    chapter_one_trade_payoff = chapter_number == 1 and first_chapter_market_exchange_authorized(event_plan, world_facts)
     simulation_plan = simulation_plan or {}
     min_chapter_chars = _chapter_review_min_chars(simulation_plan)
     issues: list[str] = []
@@ -3538,7 +3543,7 @@ def _review_chapter_body(
         "background_integration": 8,
         "protagonist_motivation": 8,
         "genre_rules": 8,
-        "world_reaction": 8 if event_plan.get("world_reactions") else 4,
+        "world_reaction": 8,
         "chapter_ending_hook": 8 if event_plan.get("next_focus") or event_plan.get("stakes") else 5,
         "continuity": 8,
     }
@@ -3658,7 +3663,7 @@ def _review_chapter_body(
             scores["genre_rules"] = min(scores["genre_rules"], 5)
             scores["background_integration"] = min(scores["background_integration"], 5)
             issues.append("第一章缺少游戏ID/网名身份层；网游文需要区分现实姓名和游戏内ID。")
-            revision_plan.append("在角色创建或登录界面补入苏叶的游戏ID“夜烬”，游戏内交易、论坛、公会观察优先称呼夜烬，现实场景才用苏叶。")
+            revision_plan.append("在角色创建或登录界面补入角色卡中的游戏ID；游戏内称呼使用游戏ID，现实场景才使用现实姓名。")
 
     if "1000倍爆率" in body or "1000 倍爆率" in body or "1000倍" in body and "千倍" in body:
         scores["genre_rules"] = min(scores["genre_rules"], 5)
@@ -3734,7 +3739,7 @@ def _review_chapter_body(
         issues.append("低级材料交易被写成单次上架就暴露坐标/身份，追踪强度不符合常规网游交易行逻辑。")
         revision_plan.append("改成分层可见：低级材料只造成价格波动、时间戳和商人脚本弱线索；公会需要重复模式、稀有物、玩家目击、NPC任务异常或多处线索汇总后才能缩小范围。")
 
-    if chapter_number == 1 and game_context:
+    if chapter_number == 1 and game_context and project_specific_game_context:
         pacing_groups = (
             ("登录", "上线", "进入游戏"),
             ("混沌之种", "千倍爆率", "隐藏天赋"),
@@ -3841,13 +3846,13 @@ def _review_chapter_body(
             issues.append("第一章冲突越级：开篇应以现实压力、登录建号、初始身份、规则验证和背包材料暂时不能处理为主，不能写成公会/商人正面对抗或高阶资源争夺。")
             revision_plan.append("把冲突降级为网游新手阶段：现实资金压力、武器/基础技能选择成本、第一次打怪验证、血蓝耐久消耗和背包材料如何处理。")
 
-    if "数量×1000" in body and re.search(r"获得：[^。\n】]*[×x]\s*100(?:[。】\n]|$)", body):
+    if project_specific_game_context and "数量×1000" in body and re.search(r"获得：[^。\n】]*[×x]\s*100(?:[。】\n]|$)", body):
         scores["genre_rules"] = min(scores["genre_rules"], 5)
         issues.append("天赋说明为基础掉落物数量×1000，但正文首次掉落只写×100。")
         revision_plan.append("要么把天赋说明改为爆率/判定权重×1000，要么把首次掉落数量改为×1000，并同步后续背包、交易和市场反应。")
 
     if (
-        game_context
+        project_specific_game_context
         and
         chapter_number in (2, 3)
         and ("NPC：" in facts_text or event_plan.get("npc_beats"))
@@ -3857,7 +3862,7 @@ def _review_chapter_body(
         issues.append("网游开篇缺少已建档命名 NPC 的服务、任务发布或职业导师互动，世界像只有玩家和系统。")
         revision_plan.append("补入至少一场已建档命名 NPC 互动，例如灰烬村村长、药剂师洛婶、职业导师艾伦、仓库管理员铁栓或修理匠老葛，并让其服务/任务/信息边界推动本章选择。")
 
-    if chapter_number == 1 and game_context:
+    if chapter_number == 1 and game_context and project_specific_game_context:
         require(
             "background_integration",
             ("游戏名", "《神域》", "全沉浸", "VRMMO", "开服"),
@@ -3933,7 +3938,7 @@ def _review_chapter_body(
             issues.append("第一章冲突被计划成直接对抗或争夺核心资源，和低调开局不匹配。")
             revision_plan.append("把第一章主冲突改成现实资金压力与低调变现之间的矛盾；赵胖子/白袍只能通过价格、时间戳、交易记录形成间接压力。")
 
-    if game_context:
+    if game_context and project_specific_game_context:
         level_matches = re.findall(
             r"(?:当前等级|等级)[：:]?\s*(?:Lv\.?)?\s*(\d{1,3})|Lv\.?\s*(\d{1,3})",
             "\n".join([body, facts_text]),
@@ -3964,7 +3969,7 @@ def _review_chapter_body(
             )
             revision_plan.append("把本章改回新手村任务、低级地图、补给、耐久、材料和基础技能记录；高阶任务只能作为远期前置或被拒绝的登记。")
 
-    if chapter_number == 2 and game_context:
+    if chapter_number == 2 and game_context and project_specific_game_context:
         corridor_complete = "元素回廊前置" in body and any(
             marker in body for marker in ("任务完成", "进度：10/10", "进度:10/10", "前置材料已提交", "已完成")
         )
@@ -4092,24 +4097,35 @@ def _review_chapter_body(
         extra_subreviews=[plot_spine_review],
     )
 
-    # --- Round 3: agent reviews (depend on earlier reviews, parallel) ---
-    _agent_reviews: dict[str, Any] = {}
-    with ThreadPoolExecutor(max_workers=3) as _pool:
-        _agent_futs = {
-            "reader_agent": _pool.submit(review_reader_agent, body, previous_summary=_previous_summary, cold_reader_review=cold_reader_review),
-            "editor_agent": _pool.submit(review_editor_agent, body, genre_context=genre_context, prose_quality_review=prose_quality_review, prose_style_review=style_review, ai_flavor_review=ai_flavor_review),
-            "reviewer_agent": _pool.submit(review_reviewer_agent, chapter_number=chapter_number, body=body, event_plan=event_plan, world_facts=world_facts or [], protagonist_names=_protagonist_names, critical_review=critical_review, web_game_review=web_game_review, progression_lead_review=progression_lead_review),
-        }
-        for _name, _fut in _agent_futs.items():
-            try:
-                _agent_reviews[_name] = _fut.result()
-            except Exception as _exc:
-                report_generation_progress(f"review[{_name}] exception: {_exc}")
-                _agent_reviews[_name] = _review_exception_result(_name, _exc)
-
-    reader_agent_review = _agent_reviews.get("reader_agent", {})
-    editor_agent_review = _agent_reviews.get("editor_agent", {})
-    reviewer_agent_review = _agent_reviews.get("reviewer_agent", {})
+    # Keep the historical report keys for API compatibility, but do not run
+    # three wrapper reviewers that only repeat findings already produced above.
+    reader_agent_review = {
+        "reviewer": "reader_agent/consolidated-v1",
+        "mode": "consolidated",
+        "pass": bool(cold_reader_review.get("pass", True)),
+        "scores": {},
+        "issues": [],
+        "revision_plan": [],
+        "source_reviews": ["cold_reader_review", "reader_feel_review"],
+    }
+    editor_agent_review = {
+        "reviewer": "editor_agent/consolidated-v1",
+        "mode": "consolidated",
+        "pass": bool(prose_quality_review.get("pass", True)) and bool(style_review.get("pass", True)),
+        "scores": {},
+        "issues": [],
+        "revision_plan": [],
+        "source_reviews": ["prose_quality_review", "prose_style_review", "ai_flavor_review"],
+    }
+    reviewer_agent_review = {
+        "reviewer": "reviewer_agent/consolidated-v1",
+        "mode": "consolidated",
+        "pass": bool(critical_review.get("pass", True)) and bool(web_game_review.get("pass", True)),
+        "scores": {},
+        "issues": [],
+        "revision_plan": [],
+        "source_reviews": ["critical_review", "world_consistency_review", "plot_spine_review"],
+    }
     if simulation_plan:
         scores["simulation_plan_alignment"] = 8
         missing_review_focus = not simulation_plan.get("review_focus")
@@ -5031,15 +5047,21 @@ def _writer_monster_card_line(profile: dict[str, Any]) -> str:
     return f"{profile.get('name') or '未命名怪物'}（{'；'.join(parts)}）"
 
 
-def _writer_output_section(chapter_number: int, plan: dict[str, Any]) -> list[str]:
-    return [
+def _writer_output_section(chapter_number: int, plan: dict[str, Any], *, is_game: bool) -> list[str]:
+    lines = [
         "## 输出要求",
         f"只输出第{chapter_number}章连续小说正文，不输出标题、提纲、规则、检查过程或说明。",
         f"目标篇幅：{_plan_target_chars(plan)}。写成一章顺着人物行动自然展开的连续正文。",
         "采用第三人称有限视角，一场戏只跟随一个观察人物。",
-        "面板只作为角色当场看见的一次界面反馈；写完面板马上接动作、选择或对话，不再解释面板数字和后台规则。",
-        "交易、鉴定和任务办理写成角色操作、界面反馈与物品变化，不解释平台怎样处理、谁能看见哪些后台字段。",
     ]
+    if is_game:
+        lines.extend(
+            [
+                "面板只作为角色当场看见的一次界面反馈；写完面板马上接动作、选择或对话，不再解释面板数字和后台规则。",
+                "交易、鉴定和任务办理写成角色操作、界面反馈与物品变化，不解释平台怎样处理、谁能看见哪些后台字段。",
+            ]
+        )
+    return lines
 
 
 def _writer_direction_section(
@@ -5156,6 +5178,53 @@ def _writer_fact_section(
     world_facts = _priority_world_facts(story.world_facts, max_items=6, item_chars=100)
     if world_facts:
         lines.append(f"既有事实：{'；'.join(world_facts)}")
+    fact_corpus = "\n".join(
+        [
+            *[str(item) for item in story.world_facts],
+            *[str(item) for item in story.author_constraints],
+            str(story.outline or ""),
+            json.dumps(story.outline_context or {}, ensure_ascii=False),
+        ]
+    )
+    anomaly_anchors: list[str] = []
+    if "底层协议校验" in fact_corpus:
+        anomaly_anchors.append("底层协议校验通过")
+    if "千倍爆率" in fact_corpus or "掉落判定×1000" in fact_corpus:
+        anomaly_anchors.append("千倍爆率")
+    if "混沌之种" in fact_corpus and "未解析" in fact_corpus:
+        anomaly_anchors.append("混沌之种：未解析")
+    if anomaly_anchors:
+        lines.append(f"本章异常锚点（按项目原文露出）：{'、'.join(anomaly_anchors)}。")
+
+    event_plan = plan.get("event_plan") if isinstance(plan.get("event_plan"), dict) else {}
+    allocation = (
+        event_plan.get("attribute_allocation_decision")
+        if isinstance(event_plan.get("attribute_allocation_decision"), dict)
+        else {}
+    )
+    allocation_mode = str(allocation.get("mode") or "").strip().lower()
+    if allocation_mode == "allocate":
+        allocations = allocation.get("allocations") if isinstance(allocation.get("allocations"), dict) else {}
+        allocation_text = "、".join(
+            f"{name}+{value}"
+            for name, value in allocations.items()
+            if str(name).strip() and str(value).strip()
+        )
+        if allocation_text:
+            remaining = allocation.get("remaining")
+            ending = "，可用点归零" if remaining in (0, "0") else ""
+            reason = compact_text(str(allocation.get("reason") or ""), 60)
+            lines.append(
+                f"本章属性点决定：{allocation_text}{ending}。"
+                f"正文写出角色打开属性面板并确认加点{'，目的为' + reason if reason else ''}。"
+            )
+    elif allocation_mode == "carry":
+        remaining = allocation.get("remaining")
+        reason = compact_text(str(allocation.get("reason") or ""), 60)
+        lines.append(
+            f"本章属性点决定：暂不分配，保留{remaining}点。"
+            f"正文写出角色主动保留的决定{'，原因是' + reason if reason else ''}。"
+        )
     world_context = _compact_world_context_for_prompt(
         story.world_context,
         "\n".join(
@@ -5356,9 +5425,15 @@ def _writer_craft_section(
         "人物情绪放在动作、停顿和回答里，让读者从现场变化里感受到。",
         "心理和环境只在影响选择、关系或现场状态时出现，不单独堆气氛。",
         "段落写法：长短段交替；句子随动作和对话自然变化，保持现代中文语序。",
-        "规则从动作和反馈里露出来；面板、公告和物品说明只给事实，不在后面接作者解释。",
-        "交易与鉴定也按现场来写：点下按钮、弹出价格、物品消失或钱到账；不要替平台讲验货、权限和流转流程。",
+        "规则从动作和反馈里露出来，不让旁白替人物总结后台流程。",
     ]
+    if is_game:
+        lines.extend(
+            [
+                "规则从动作和反馈里露出来；面板、公告和物品说明只给事实，不在后面接作者解释。",
+                "交易与鉴定也按现场来写：点下按钮、弹出价格、物品消失或钱到账；不要替平台讲验货、权限和流转流程。",
+            ]
+        )
     if include_genre_method and not is_game:
         methods = genre_context.get("genre_method") if isinstance(genre_context, dict) else []
         for method in methods[:3] if isinstance(methods, list) else []:
@@ -6000,7 +6075,7 @@ class StoryOrchestrator:
         else:
             chapter_seed_for_prompt = _writer_seed_summary(_plain_prompt_payload(chapter_seed))
         sections = [
-            _writer_output_section(chapter_number, plan),
+            _writer_output_section(chapter_number, plan, is_game=is_game),
             _writer_direction_section(chapter_number, plan, is_game=is_game),
             _writer_fact_section(
                 story,
@@ -6083,7 +6158,9 @@ class StoryOrchestrator:
             modification_lines.append(f"需要删掉的词：{'、'.join(forbidden_terms)}")
         modification_lines.extend(
             [
-                f"篇幅要求：扩写到{target_chars}。",
+                f"篇幅要求：修订后控制在{target_chars}，当前原文约{_chapter_char_count(body)}字，"
+                f"本轮修订硬上限：{_revision_char_ceiling(body)}字。",
+                "只能通过替换、合并、删除和必要的局部补写完成；不要因为补问题而扩写整章。",
                 "事实锁硬规则：职业、余额、库存、任务、装备和NPC能知道什么/不知道什么保持不变；不确定时保留原文事实。",
                 "改完后检查：修改目标逐项完成，删词清零，缺失场面已经正面写出；不要输出检查说明。",
             ]
@@ -7211,7 +7288,7 @@ class StoryOrchestrator:
                     writer_plan,
                     writing_review,
                 ),
-                max_tokens=7000,
+                max_tokens=_revision_max_tokens(body),
                 json_mode=False,
                 agent="writer",
                 stage=f"审稿改稿 第{chapter_number}章（第{revision_rounds_done}轮）",
@@ -7291,6 +7368,8 @@ class StoryOrchestrator:
                     "candidate_score": revision_safety_report.get("candidate_score") if revision_safety_report else None,
                     "original_issue_count": revision_safety_report.get("original_issue_count") if revision_safety_report else None,
                     "candidate_issue_count": revision_safety_report.get("candidate_issue_count") if revision_safety_report else None,
+                    "original_chars": revision_safety_report.get("original_chars") if revision_safety_report else None,
+                    "candidate_chars": revision_safety_report.get("candidate_chars") if revision_safety_report else None,
                 },
             )
 

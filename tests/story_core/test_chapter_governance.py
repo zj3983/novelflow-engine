@@ -162,3 +162,36 @@ def test_xianxia_first_chapter_governance_uses_genre_specific_opening_rules():
     assert "修仙题材" in hard_text
     assert "残缺机缘" in hard_text
     assert "见习冒险者" not in hard_text
+
+
+def test_xianxia_later_chapter_ignores_stale_game_keywords() -> None:
+    story = StoryState(
+        story_id="s-xianxia-contaminated",
+        outline="林修在雪山神殿修复残镜。",
+        genre="修仙仙侠",
+        genre_plugin_ids=["xianxia"],
+        style="白描",
+        current_chapter=141,
+        characters=[CharacterState(name="林修", role="protagonist")],
+        world_facts=["旧数据曾提到交易行、任务和NPC服务。"],
+    )
+    bundle = ChapterBundle(
+        chapter_number=142,
+        body="",
+        next_outline="林修承受寒毒，继续重校残镜器纹。",
+        updated_story=story,
+    )
+
+    governance = build_chapter_governance(story, bundle, chapter_number=142)
+
+    include_text = "、".join(governance["chapter_intent"]["must_include"])
+    hard_text = "、".join(governance["rule_stack"]["hard_facts"])
+    soft_text = "、".join(governance["rule_stack"]["soft_guidance"])
+    assert "境界、资源、伤势或人物关系" in include_text
+    assert "面板/背包/任务" not in include_text
+    assert "修仙题材" in hard_text
+    assert "苏叶" not in hard_text
+    assert "夜烬" not in hard_text
+    assert "game_panel" not in governance["runtime_context"]["protagonist"]
+    assert "等级、经验、货币、背包" not in soft_text
+    assert "术法、法宝、境界、伤势" in soft_text

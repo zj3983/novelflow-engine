@@ -133,37 +133,47 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
     price_copper = _as_int(market.get("price_copper"), 0)
     supply = _as_int(market.get("supply"), 0)
     anomaly_score = _as_int(chaos_seed.get("anomaly_score"), 0)
+    has_public_market_signal = any((visible_batch_count > 0, price_copper > 0, supply > 0))
     prior_pulse = _as_dict(ledger.get("world_pulse")).get("latest")
     pulse_index = _as_int(_as_dict(prior_pulse).get("pulse_index"), 0) + 1
     visible_at_chapter = int(chapter_number) + 1
 
-    npc_memory = persistent.setdefault("npc_memory", {}).setdefault("service_counter", {})
-    _npc_memory_update(
-        npc_memory=npc_memory,
-        inventory_total=visible_batch_count,
-        pulse_index=pulse_index,
-        chapter_number=chapter_number,
-    )
+    background_events: list[dict[str, Any]] = []
+    visibility_inbox: list[dict[str, Any]] = []
+    order_book: dict[str, Any] = {
+        "buy_orders": [],
+        "sell_orders": [],
+        "spread_copper": {},
+        "sell_pressure": "no_public_signal",
+    }
+    guild_knowledge_state = "none"
 
-    guild_intel = persistent.setdefault("guild_intel", {}).setdefault("white_robe_guild", {})
-    _guild_intel_update(
-        guild_intel=guild_intel,
-        inventory_total=visible_batch_count,
-        anomaly_score=anomaly_score,
-    )
-
-    market_state = persistent.setdefault("market_state", {}).setdefault("newbie_materials", {})
-    market_state["supply"] = supply
-    market_state["price_copper"] = price_copper
-    market_state["signal"] = "small_price_wobble" if price_copper else "unchanged"
-    order_book = _market_order_book(
-        inventory_total=visible_batch_count,
-        price_copper=price_copper,
-        supply=supply,
-    )
-    market_state["order_book"] = order_book
-
-    background_events = [
+    if has_public_market_signal:
+        npc_memory = persistent.setdefault("npc_memory", {}).setdefault("service_counter", {})
+        _npc_memory_update(
+            npc_memory=npc_memory,
+            inventory_total=visible_batch_count,
+            pulse_index=pulse_index,
+            chapter_number=chapter_number,
+        )
+        guild_intel = persistent.setdefault("guild_intel", {}).setdefault("white_robe_guild", {})
+        _guild_intel_update(
+            guild_intel=guild_intel,
+            inventory_total=visible_batch_count,
+            anomaly_score=anomaly_score,
+        )
+        guild_knowledge_state = guild_intel["knowledge_state"]
+        market_state = persistent.setdefault("market_state", {}).setdefault("newbie_materials", {})
+        market_state["supply"] = supply
+        market_state["price_copper"] = price_copper
+        market_state["signal"] = "small_price_wobble" if price_copper else "unchanged"
+        order_book = _market_order_book(
+            inventory_total=visible_batch_count,
+            price_copper=price_copper,
+            supply=supply,
+        )
+        market_state["order_book"] = order_book
+        background_events = [
         {
             "id": f"pulse-{pulse_index}-npc-counter",
             "actor": "service_npc",
@@ -182,9 +192,8 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
             "action": f"keeps {guild_intel['confidence']} route and batch suspicion",
             "visible_to": ["background_only"],
         },
-    ]
-
-    visibility_inbox = [
+        ]
+        visibility_inbox = [
         {
             "id": f"pulse-{pulse_index}-npc-counter",
             "visible_at_chapter": visible_at_chapter,
@@ -199,8 +208,8 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
             "text": f"Newbie material price board shows a small local wobble near {price_copper} copper with supply {supply}.",
             "source_event": "local_market",
         },
-    ]
-    if visible_batch_count >= 10:
+        ]
+    if has_public_market_signal and visible_batch_count >= 10:
         visibility_inbox.append(
             {
                 "id": f"pulse-{pulse_index}-player-chatter",
@@ -241,7 +250,7 @@ def advance_world_pulse(story: StoryState, *, chapter_number: int) -> dict[str, 
         "visibility_inbox": visibility_inbox,
         "hidden_state": {
             "chaos_seed_anomaly_score": anomaly_score,
-            "guild_knowledge_state": guild_intel["knowledge_state"],
+            "guild_knowledge_state": guild_knowledge_state,
         },
         "market_order_book": order_book,
     }

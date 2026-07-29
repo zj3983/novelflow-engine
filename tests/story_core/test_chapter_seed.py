@@ -358,6 +358,58 @@ def test_chapter_seed_allows_authorized_first_chapter_market_exchange_payoff():
     assert _writer_seed_summary(seed)["本章硬锚点"] == seed["outline_anchor"]
 
 
+def test_chapter_seed_recovers_amount_anchors_from_project_facts_when_outline_context_is_compact():
+    story = StoryState(
+        story_id="s-seed-amount-fallback",
+        outline="第一章处理现实急账。",
+        genre="网游",
+        style="简洁",
+        author_constraints=["第一章付清房租和最低还款，余额变为332.60元。"],
+        world_facts=[
+            "现实余额从46.83元开始。",
+            "苏叶经官方兑换实际到账1764.00元。",
+        ],
+        outline_context={
+            "overall": {"story": "苏叶进入游戏解决现实急账。"},
+            "chapter": {"chapter_number": 1, "payoff": "现实急账得到解决。"},
+        },
+    )
+
+    anchor = build_chapter_seed(story, 1)["outline_anchor"]
+
+    assert anchor["opening_balance"] == "46.83元"
+    assert anchor["trade_arrival"] == "1764.00元"
+    assert anchor["ending_balance"] == "332.60元"
+
+
+def test_later_chapter_does_not_replay_first_chapter_reality_amount_anchors():
+    story = StoryState(
+        story_id="s-seed-no-replayed-balance",
+        outline="第一章处理现实急账，第二章回到游戏任务。",
+        genre="网游",
+        style="简洁",
+        author_constraints=["第一章付清房租和最低还款，余额变为332.60元。"],
+        world_facts=[
+            "现实余额从46.83元开始。",
+            "苏叶经官方兑换实际到账1764.00元。",
+        ],
+        outline_context={
+            "overall": {"story": "苏叶进入游戏解决现实急账。"},
+            "chapter": {
+                "chapter_number": 2,
+                "goal": "补齐8份灰狼毒腺并提交清道夫委托。",
+                "payoff": "任务完成，升到Lv.3。",
+            },
+        },
+    )
+
+    anchor = build_chapter_seed(story, 2)["outline_anchor"]
+
+    assert "opening_balance" not in anchor
+    assert "trade_arrival" not in anchor
+    assert "ending_balance" not in anchor
+
+
 def test_chapter_seed_carries_recent_continuity_and_ledger():
     story = StoryState(
         story_id="s-seed-continuity",
@@ -667,7 +719,7 @@ def test_revision_prompt_contains_hard_fix_checklist_and_scene_protocol():
 
     assert "必须改到" in prompt
     assert "## 本章方向" in prompt
-    assert "现实压力与登录建号" in prompt
+    assert "角色创建界面" in prompt
     assert "角色面板" in prompt
     assert "需要删掉的词" in prompt
     assert "节奏" in prompt and "生成" in prompt

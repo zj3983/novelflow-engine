@@ -7,6 +7,7 @@ import inspect
 import pytest
 
 from packages.story_core.outline_planning import (
+    INITIAL_OUTLINE_CHAPTER_COUNT,
     validate_generated_continuation_plan,
     validate_generated_opening_plan,
     validate_generated_trope_selection,
@@ -75,7 +76,7 @@ def _valid_plan() -> dict:
                     "trope_beat": "低位压力" if number == 1 else None,
                     "cast": ["林照", "赵衡"],
                 }
-                for number in range(1, 31)
+                for number in range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)
             ],
         },
         "characters": [
@@ -346,7 +347,7 @@ def test_opening_and_continuation_validators_call_shared_trope_validator() -> No
     with pytest.raises(ValueError, match="^unexpected_primary_trope_id$"):
         validate_generated_opening_plan(
             plan,
-            expected_chapter_numbers=list(range(1, 31)),
+            expected_chapter_numbers=list(range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)),
             trope_templates=_trope_templates(),
             expected_primary_trope_id="trope-a",
         )
@@ -377,7 +378,10 @@ class RecordingRuntime:
         self.calls.append({"base_url": base_url, "path": path, "payload": payload, "api_key": api_key, "kwargs": kwargs})
         self.prompt_context = json.loads(payload["messages"][1]["content"])
         plan = _valid_plan()
-        targets = self.prompt_context.get("target_chapter_numbers", list(range(1, 31)))
+        targets = self.prompt_context.get(
+            "target_chapter_numbers",
+            list(range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)),
+        )
         template = plan["outline"]["chapters"][0]
         plan["outline"]["chapters"] = [
             {
@@ -392,9 +396,10 @@ class RecordingRuntime:
     def resolve(self, stage):
         self.runtime_calls.append(stage)
         return StageRuntimeSettings(
-            provider="codexcli",
+            provider="openai",
             model="planning-test-model",
             base_url="http://runtime.test",
+            api_key="test-key",
             codex_command="codex-test",
             temperature=0.29,
         )
@@ -518,16 +523,94 @@ def test_generator_requests_one_compact_structured_plan() -> None:
     assert "五章" not in request["payload"]["messages"][0]["content"]
 
 
+def test_codexcli_initial_plan_is_generated_in_three_bounded_phases() -> None:
+    calls: list[dict] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        calls.append(prompt)
+        plan = _valid_plan()
+        if prompt["generation_phase"] == "outline":
+            plan["outline"]["chapters"] = []
+            content = {"outline": plan["outline"]}
+        elif prompt["generation_phase"] == "characters":
+            content = {
+                "characters": [
+                    {
+                        "name": card["name"],
+                        "role": card["role"],
+                        "character_tier": card["character_tier"],
+                        "first_appearance": card["first_appearance"],
+                        "age": card["identity_profile"].get("age"),
+                        "origin": card["identity_profile"]["origin"],
+                        "current_identity": card["identity_profile"]["current_identity"],
+                        "occupation": card["identity_profile"]["occupation"],
+                        "authority_scope": "只处理职责范围内的事",
+                        "immediate_problem": "眼前的冲突正在逼近",
+                        "immediate_goal": card["story_drive"]["immediate_goal"],
+                        "long_term_goal": "完成自己的长期目标",
+                        "failure_stakes": card["story_drive"]["failure_stakes"],
+                        "personality": "做事有明确取舍",
+                        "speech_style": "按关系和场合说完整的话",
+                        "action_style": "先观察再行动",
+                        "emotional_trigger": "利益受损",
+                        "decision_rule": "先保住最重要的目标",
+                        "hidden_matter": "",
+                        "dialogue_examples": card["dialogue_examples"],
+                    }
+                    for card in plan["characters"]
+                ]
+            }
+        else:
+            template = plan["outline"]["chapters"][0]
+            content = {
+                "chapters": [
+                    {
+                        **template,
+                        "chapter_number": number,
+                        "trope_beat": template["trope_beat"] if number == 1 else None,
+                    }
+                    for number in prompt["target_chapter_numbers"]
+                ]
+            }
+        return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _stage: StageRuntimeSettings(
+            provider="codexcli",
+            model="planning-test-model",
+            codex_command="codex-test",
+        ),
+    )
+
+    plan = generator.generate(_brief(), mode="initial")
+
+    assert [call["generation_phase"] for call in calls] == [
+        "outline",
+        "characters",
+        "chapters",
+    ]
+    assert calls[0]["target_chapter_numbers"] == []
+    assert calls[2]["target_chapter_numbers"] == list(
+        range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)
+    )
+    assert len(plan.outline.chapters) == INITIAL_OUTLINE_CHAPTER_COUNT
+
+
 @pytest.mark.parametrize("mode", ["initial", "regenerate", "extend"])
 def test_generator_forbids_exact_financial_hard_anchors_in_every_mode(
     mode: str,
 ) -> None:
     recording = RecordingRuntime()
-    brief = (
-        _brief()
-        if mode == "initial"
-        else recording.brief(current_chapter=20, existing_chapters=list(range(1, 31)))
-    )
+    if mode == "initial":
+        brief = _brief()
+    else:
+        existing_end = 10 if mode == "extend" else 20
+        brief = recording.brief(
+            current_chapter=10,
+            existing_chapters=list(range(1, existing_end + 1)),
+        )
 
     recording.generator().generate(brief, mode=mode)
 
@@ -539,6 +622,32 @@ def test_generator_forbids_exact_financial_hard_anchors_in_every_mode(
     )
     assert required_rule in rules_text
     assert required_rule in request["messages"][0]["content"]
+
+
+def test_generator_sanitizes_financial_anchors_before_validation() -> None:
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        plan = _valid_plan()
+        plan["outline"]["chapters"][0]["turn"] = (
+            "平台扣除5%手续费后，到账1764.00元。"
+        )
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(plan, ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    )
+
+    plan = generator.generate(_brief(), mode="initial")
+
+    turn = plan.outline.chapters[0].turn
+    assert "1764" not in turn
+    assert "5%" not in turn
+    assert "具体数额" in turn or "平台规则" in turn
 
 
 def test_generator_rejects_selected_primary_trope_drift() -> None:
@@ -596,7 +705,7 @@ def test_extend_rejects_existing_primary_trope_drift() -> None:
         return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
-    brief = fixture.brief(current_chapter=20, existing_chapters=list(range(1, 31)))
+    brief = fixture.brief(current_chapter=10, existing_chapters=list(range(1, 11)))
     payload = brief.model_dump(mode="json")
     payload["existing_character_names"] = ["林照"]
     generator = LLMOutlinePlanningGenerator(
@@ -626,7 +735,7 @@ def test_generator_uses_existing_locked_arc_context_for_omitted_arc_beats(mode: 
             {
                 **template,
                 "chapter_number": number,
-                "trope_beat": "异常出现" if number == 31 else None,
+                "trope_beat": "异常出现" if number == 11 else None,
                 "cast": ["林照", "New"] if mode == "extend" else template["cast"],
             }
             for number in prompt["target_chapter_numbers"]
@@ -636,15 +745,15 @@ def test_generator_uses_existing_locked_arc_context_for_omitted_arc_beats(mode: 
         return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
-    existing_chapters = list(range(1, 31)) if mode == "extend" else list(range(1, 51))
-    brief = fixture.brief(current_chapter=20, existing_chapters=existing_chapters)
+    existing_chapters = list(range(1, 11)) if mode == "extend" else list(range(1, 21))
+    brief = fixture.brief(current_chapter=10, existing_chapters=existing_chapters)
     payload = brief.model_dump(mode="json")
     payload["existing_outline"]["arcs"].append(
         {
             **payload["existing_outline"]["arcs"][0],
             "id": "locked-inner",
-            "start_chapter": 31,
-            "end_chapter": 50,
+            "start_chapter": 11,
+            "end_chapter": 20,
             "trope_id": "golden_finger_first_test",
         }
     )
@@ -661,36 +770,36 @@ def test_generator_uses_existing_locked_arc_context_for_omitted_arc_beats(mode: 
 
 def test_extend_prompt_requests_only_missing_window_chapters(generator_fixture) -> None:
     brief = generator_fixture.brief(
-        current_chapter=20,
-        existing_chapters=list(range(1, 31)),
+        current_chapter=10,
+        existing_chapters=list(range(1, 11)),
     )
 
     generator_fixture.generator().generate(brief, mode="extend")
 
-    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(31, 51))
+    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(11, 21))
     assert generator_fixture.prompt_context["current_strategy"] == "expand"
 
 
-def test_regenerate_requests_thirty_future_chapters(generator_fixture) -> None:
+def test_regenerate_requests_next_detail_window(generator_fixture) -> None:
     brief = generator_fixture.brief(
-        current_chapter=20,
-        existing_chapters=list(range(1, 51)),
+        current_chapter=10,
+        existing_chapters=list(range(1, 21)),
     )
 
     generator_fixture.generator().generate(brief, mode="regenerate")
 
-    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(21, 51))
+    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(11, 21))
 
 
 def test_initial_requires_unstarted_project(generator_fixture) -> None:
-    brief = generator_fixture.brief(current_chapter=1, existing_chapters=list(range(1, 31)))
+    brief = generator_fixture.brief(current_chapter=1, existing_chapters=list(range(1, 11)))
 
     with pytest.raises(ValueError, match="^initial_outline_requires_unstarted_project$"):
         generator_fixture.generator().generate(brief, mode="initial")
 
 
 def test_extend_rejects_full_window(generator_fixture) -> None:
-    brief = generator_fixture.brief(current_chapter=20, existing_chapters=list(range(1, 51)))
+    brief = generator_fixture.brief(current_chapter=10, existing_chapters=list(range(1, 21)))
 
     with pytest.raises(ValueError, match="^outline_window_already_full$"):
         generator_fixture.generator().generate(brief, mode="extend")
@@ -698,15 +807,15 @@ def test_extend_rejects_full_window(generator_fixture) -> None:
 
 def test_extend_prompt_includes_sparse_window_holes(generator_fixture) -> None:
     brief = generator_fixture.brief(
-        current_chapter=20,
-        existing_chapters=[*range(1, 21), 30],
+        current_chapter=10,
+        existing_chapters=[*range(1, 11), 15],
     )
 
     generator_fixture.generator().generate(brief, mode="extend")
 
     assert generator_fixture.prompt_context["target_chapter_numbers"] == [
-        *range(21, 30),
-        *range(31, 51),
+        *range(11, 15),
+        *range(16, 21),
     ]
 
 
@@ -755,7 +864,7 @@ def test_extend_accepts_only_new_character_cards_and_existing_cast() -> None:
         return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
-    brief = fixture.brief(current_chapter=20, existing_chapters=list(range(1, 31)))
+    brief = fixture.brief(current_chapter=10, existing_chapters=list(range(1, 11)))
     payload = brief.model_dump(mode="json")
     payload["existing_characters"] = [{"name": "林照"}]
     generator = LLMOutlinePlanningGenerator(
@@ -794,7 +903,7 @@ def test_extend_accepts_seventh_existing_character_in_cast() -> None:
         return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
-    brief = fixture.brief(current_chapter=20, existing_chapters=list(range(1, 31)))
+    brief = fixture.brief(current_chapter=10, existing_chapters=list(range(1, 11)))
     payload = brief.model_dump(mode="json")
     payload["existing_characters"] = [{"name": name} for name in detailed_names]
     payload["existing_character_names"] = all_names
@@ -844,7 +953,7 @@ def test_extend_wraps_model_contract_errors_uniformly(
         return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
-    brief = fixture.brief(current_chapter=20, existing_chapters=list(range(1, 31)))
+    brief = fixture.brief(current_chapter=10, existing_chapters=list(range(1, 11)))
     payload = brief.model_dump(mode="json")
     payload["existing_character_names"] = [existing_name]
     generator = LLMOutlinePlanningGenerator(

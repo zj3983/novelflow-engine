@@ -181,6 +181,14 @@ def build_chapter_title(
         if any(token in source_probe for token in ("补给", "耐久", "成本", "铜币", "寄售", "材料")):
             return "回村补给"
     if any(token in genre_lower for token in ("xianxia", "cultivation", "仙侠", "修仙", "修真")):
+        if "残镜" in source_probe and any(token in source_probe for token in ("夺", "吞", "阵心", "灵气")):
+            return "残镜夺灵"
+        if "雪魄神印" in source_probe and any(token in source_probe for token in ("争夺", "玄渊", "天机阁")):
+            return "神印争夺"
+        if "窥天钉" in source_probe:
+            return "窥天钉现"
+        if "寒毒" in source_probe and any(token in source_probe for token in ("入体", "心脉", "逼出", "封住")):
+            return "寒毒入脉"
         if any(token in source_probe for token in ("残香", "断香炉")) and any(
             token in source_probe for token in ("反馈", "开口", "提醒", "回应")
         ):

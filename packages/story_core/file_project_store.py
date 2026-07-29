@@ -55,6 +55,7 @@ from packages.story_core.opening_directions import (
 )
 from packages.story_core.outline_planning import (
     GeneratedOutlinePlan,
+    INITIAL_OUTLINE_CHAPTER_COUNT,
     validate_generated_continuation_plan,
     validate_generated_opening_plan,
     validate_generated_trope_selection,
@@ -1241,6 +1242,14 @@ class FileProjectStore:
             current_chapter + 1,
         }:
             return current_state
+        for field in ("timeline", "chapter_summaries", "memory_index"):
+            current_records = current_state.get(field)
+            usable_records = usable.get(field)
+            if not isinstance(current_records, list):
+                continue
+            usable[field] = self._dedupe_numbered_records(
+                [*current_records, *(usable_records if isinstance(usable_records, list) else [])]
+            )
         return usable
 
     @staticmethod
@@ -1489,6 +1498,13 @@ class FileProjectStore:
             progression_text,
             flags=re.IGNORECASE,
         )
+        compact_panel_levels = re.findall(
+            r"【[^】]{1,24}；\s*Lv\.?\s*(\d+)(?=[^】]{0,24}(?:经验|生命|法力|可用属性点))",
+            progression_text,
+            flags=re.IGNORECASE,
+        )
+        if compact_panel_levels:
+            level_matches = compact_panel_levels
         if not level_matches and "Lv.2" in progression_text and any(
             token in progression_text for token in ("升到", "升级", "等级", "提升")
         ):
@@ -1919,12 +1935,14 @@ class FileProjectStore:
     def _protagonist_character_card(self, state: dict[str, Any], project: dict[str, Any] | None = None) -> dict[str, Any] | None:
         ledger = state.get("progression_ledger") if isinstance(state.get("progression_ledger"), dict) else {}
         protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), dict) else {}
+        if not protagonist:
+            return None
         economy = ledger.get("economy") if isinstance(ledger.get("economy"), dict) else {}
         real = ledger.get("real") if isinstance(ledger.get("real"), dict) else {}
         equipment = ledger.get("equipment") if isinstance(ledger.get("equipment"), dict) else {}
         quests = ledger.get("quests") if isinstance(ledger.get("quests"), dict) else {}
-        name = str(protagonist.get("real_name") or "苏叶").strip()
-        game_id = str(protagonist.get("game_id") or "夜烬").strip()
+        name = str(protagonist.get("real_name") or "").strip()
+        game_id = str(protagonist.get("game_id") or "").strip()
         if not name and not game_id:
             return None
         current_chapter = int(state.get("current_chapter") or 0)
@@ -2121,20 +2139,27 @@ class FileProjectStore:
             "facts": summary["facts"],
             "unresolved_threads": summary["unresolved_threads"],
         }
-        protagonist_card = self._protagonist_character_card(synced, self.project())
+        current_project = self.project()
+        is_game_story = self._is_game_story_payload(current_project, synced)
+        protagonist_card = (
+            self._protagonist_character_card(synced, current_project)
+            if is_game_story
+            else None
+        )
         protagonist_cards = [protagonist_card] if protagonist_card else []
+        entity_cards = self._chapter_entity_cards(chapter) if is_game_story else []
         synced["characters"] = self._merge_character_cards(
             list(synced.get("characters") or []),
-            [*protagonist_cards, *self._chapter_entity_cards(chapter)],
+            [*protagonist_cards, *entity_cards],
         )
         character_entity_names = [
             self._canonical_character_name(str(card.get("name") or ""))
-            for card in self._chapter_entity_cards(chapter)
+            for card in entity_cards
             if self._is_character_card(card)
         ]
         memory_entry["characters"] = self._merge_unique(
             list(memory_entry["characters"]),
-            [*(["苏叶"] if protagonist_card else []), *character_entity_names],
+            [*([str(protagonist_card["name"])] if protagonist_card else []), *character_entity_names],
             limit=24,
         )
         synced["memory_index"] = self._replace_by_chapter_number(
@@ -2142,7 +2167,10 @@ class FileProjectStore:
             memory_entry,
             limit=240,
         )
-        self._sync_time_state_after_chapter(synced, self.project(), chapter)
+        if is_game_story:
+            self._sync_time_state_after_chapter(synced, current_project, chapter)
+        else:
+            synced.pop("time_state", None)
         return synced
 
     def _sync_project_after_chapter(self, project: dict[str, Any], state: dict[str, Any], chapter: dict[str, Any]) -> dict[str, Any]:
@@ -2187,8 +2215,10 @@ class FileProjectStore:
             limit=160,
         )
         blueprint["continuity_state"] = continuity
-        if isinstance(state.get("time_state"), dict):
+        if is_game_story and isinstance(state.get("time_state"), dict):
             blueprint["time_state"] = state["time_state"]
+        elif not is_game_story:
+            blueprint.pop("time_state", None)
         synced["world_blueprint"] = blueprint
         if summary["next_focus"] and summary["next_focus"] != "continue":
             synced["current_focus"] = summary["next_focus"]
@@ -2323,7 +2353,7 @@ class FileProjectStore:
     def _state_before_chapter(self, chapter_number: int) -> dict[str, Any]:
         current_state = dict(self.state())
         current_chapter = int(current_state.get("current_chapter") or 0)
-        if chapter_number >= current_chapter:
+        if chapter_number > current_chapter:
             return current_state
         if chapter_number > 1:
             previous = self.chapter(chapter_number - 1)
@@ -2640,6 +2670,7 @@ class FileProjectStore:
             "法力",
             "钱袋：",
             "钱袋:",
+            "背包",
             "背包：",
             "背包:",
             "新手法杖",
@@ -2685,9 +2716,14 @@ class FileProjectStore:
             return str(matches[-1]).strip() if matches else ""
 
         level = last(
-            r"(?:等级提升至|升级到|升级至|升到|当前等级\s*[：:]?|等级\s*[：:]?|level\s*[:=]?)\s*(?:lv\.?\s*)?(\d+)",
+            r"【[^】]{1,24}；\s*lv\.?\s*(\d+)(?=[^】]{0,24}(?:经验|生命|法力|可用属性点))",
             protagonist_body,
         )
+        if not level:
+            level = last(
+            r"(?:等级提升至|升级到|升级至|升到|当前等级\s*[：:]?|等级\s*[：:]?|level\s*[:=]?)\s*(?:lv\.?\s*)?(\d+)",
+            protagonist_body,
+            )
         exp = last(r"(?:经验|experience|exp)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)", protagonist_body)
         hp = last(r"(?:生命|hp|health)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)", protagonist_body)
         mp = last(r"(?:法力|mp|mana)\s*(?:[：:]\s*)?(\d+\s*/\s*\d+)", protagonist_body)
@@ -2705,7 +2741,11 @@ class FileProjectStore:
             money = str(amount_matches[-1]).strip() if amount_matches else ""
         patrol = last(r"后坡巡查[：:]\s*(\d+\s*/\s*\d+)")
         quest_line = last(r"(?<!完成)(?:任务\s*[：:]|quest(?:\s+status)?\s*[:=])\s*([^\n。】]+)")
-        real_balance = last(r"(?:银行卡可用余额|现实余额|可用余额)\s*[：:]\s*(\d+(?:\.\d+)?\s*元)")
+        real_balance = last(
+            r"(?:银行卡可用余额|现实账户余额|现实余额|可用余额)"
+            r"\s*(?:(?:停在|变为|变成|还有|只剩|为)\s*)?[：:]?\s*"
+            r"(\d+(?:\.\d+)?\s*元)"
+        )
 
         if level:
             protagonist["level"] = f"Lv.{level}"
@@ -2748,7 +2788,8 @@ class FileProjectStore:
                 inventory_line,
             ):
                 item = re.sub(r"\s+", " ", raw_item).strip(" \t:：;；,，、")
-                item = re.sub(r"^(?:里|中)?(?:还剩|剩下|有|装着)\s*", "", item)
+                item = re.sub(r"^(?:里|中)?(?:还剩|只剩|剩下|有|装着)\s*", "", item)
+                item = re.sub(r"^(?:和|及|以及)\s*", "", item)
                 if item:
                     inventory[item] = int(count)
             if inventory:
@@ -3119,7 +3160,29 @@ class FileProjectStore:
         }
 
     def opening_brief(self) -> dict[str, Any]:
-        payload = self._read_json(self.webnovel_dir / "opening_brief.json", {})
+        path = self.webnovel_dir / "opening_brief.json"
+        payload = self._read_json(path, {})
+        project = self.project()
+        pipeline_stage = str(project.get("pipeline_stage") or "")
+        recoverable_legacy_blank = pipeline_stage == "draft" or (
+            pipeline_stage in {"direction_ready", "outlining"}
+            and (self.webnovel_dir / "opening_directions.json").is_file()
+        )
+        if not payload and recoverable_legacy_blank:
+            blueprint = project.get("world_blueprint") if isinstance(project.get("world_blueprint"), dict) else {}
+            novel_type_ids = normalize_novel_type_ids(blueprint.get("genre_plugin_ids"))
+            if not novel_type_ids:
+                state = self._read_json(self.webnovel_dir / "state.json", {})
+                novel_type_ids = normalize_novel_type_ids(state.get("genre_plugin_ids"))
+            title = str(project.get("title") or "未命名作品").strip() or "未命名作品"
+            payload = {
+                "schema_version": "opening-brief/v1",
+                "mode": "blank",
+                "novel_type_id": novel_type_ids[0] if novel_type_ids else "generic_webnovel",
+                "idea": f"请根据书名《{title}》和所选小说类型构思故事。",
+                "working_title": title,
+            }
+            self._write_json_atomic(path, payload)
         return OpeningBrief.model_validate(payload).model_dump(mode="json")
 
     def opening_directions(self) -> dict[str, Any] | None:
@@ -3504,9 +3567,23 @@ class FileProjectStore:
             if not name:
                 continue
             generated_names.append(name)
-            existing[name] = merge_character_profile(existing.get(name, {"name": name}), card)
+            current = existing.get(name, {"name": name})
+            merged = merge_character_profile(current, card)
+            generated_role = str(card.get("role") or "").strip().casefold()
+            generated_tier = str(card.get("character_tier") or "").strip().casefold()
+            current_role = str(current.get("role") or "").strip().casefold()
+            current_tier = str(current.get("character_tier") or "").strip().casefold()
+            if generated_role == "protagonist" and current_role in {"", "supporting"}:
+                merged["role"] = card["role"]
+            if generated_tier == "protagonist" and current_tier in {"", "supporting"}:
+                merged["character_tier"] = card["character_tier"]
+            existing[name] = merged
         order = [*generated_names, *(name for name in existing_order if name not in generated_names)]
-        return [normalize_character_profile(existing[name]) for name in order]
+        cards = [normalize_character_profile(existing[name]) for name in order]
+        for card in cards:
+            if not isinstance(card.get("relationships"), dict):
+                card["relationships"] = {}
+        return cards
 
     def _extend_outline(
         self,
@@ -3571,7 +3648,8 @@ class FileProjectStore:
         arcs = {str(item["id"]): dict(item) for item in generated["arcs"]}
         for arc_id, current_arc in current_arcs.items():
             if arc_id not in arcs:
-                arcs[arc_id] = current_arc
+                if int(current_arc["start_chapter"]) <= current_chapter:
+                    arcs[arc_id] = current_arc
                 continue
             if current_arc.get("trope_id") is not None:
                 arcs[arc_id]["trope_id"] = current_arc["trope_id"]
@@ -3604,18 +3682,34 @@ class FileProjectStore:
         current_chapter = int(state.get("current_chapter") or 0)
         current_outline = dict(self.project_outline())
         current_outline.pop("source", None)
+        validation_fallback_outline = current_outline
+        if mode == "regenerate":
+            validation_fallback_outline = deepcopy(current_outline)
+            validation_fallback_outline["arcs"] = [
+                arc
+                for arc in validation_fallback_outline.get("arcs", [])
+                if int(arc["start_chapter"]) <= current_chapter
+            ]
+            validation_fallback_outline["chapters"] = [
+                chapter
+                for chapter in validation_fallback_outline.get("chapters", [])
+                if int(chapter["chapter_number"]) <= current_chapter
+            ]
         trope_candidates = self._current_project_trope_candidates(project, state)
         expected_primary_trope_id = self._outline_primary_trope_id(current_outline)
         if mode == "initial":
             if current_chapter != 0:
                 raise ValueError("initial_outline_requires_unstarted_project")
-            expected_chapter_numbers = list(range(1, 31))
+            expected_chapter_numbers = list(range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1))
         elif mode == "regenerate":
             ceiling = normalize_project_outline(current_outline)["overall"][
                 "extension_ceiling_chapter"
             ]
             expected_chapter_numbers = list(
-                range(current_chapter + 1, min(current_chapter + 30, ceiling) + 1)
+                range(
+                    current_chapter + 1,
+                    min(current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT, ceiling) + 1,
+                )
             )
             if not expected_chapter_numbers:
                 raise ValueError("outline_window_already_full")
@@ -3632,7 +3726,7 @@ class FileProjectStore:
                 expected_chapter_numbers=expected_chapter_numbers,
                 trope_templates=trope_candidates,
                 expected_primary_trope_id=expected_primary_trope_id,
-                fallback_outline=current_outline if mode == "regenerate" else None,
+                fallback_outline=validation_fallback_outline if mode == "regenerate" else None,
                 committed_through_chapter=(
                     current_chapter if mode == "regenerate" else None
                 ),
@@ -3694,7 +3788,11 @@ class FileProjectStore:
             final_validation_payload,
             trope_candidates,
             expected_primary_trope_id=expected_primary_trope_id,
-            fallback_outline=current_outline if mode in {"extend", "regenerate"} else None,
+            fallback_outline=(
+                validation_fallback_outline
+                if mode == "regenerate"
+                else current_outline if mode == "extend" else None
+            ),
             committed_through_chapter=(
                 current_chapter if mode in {"extend", "regenerate"} else None
             ),
@@ -4122,13 +4220,14 @@ class FileProjectStore:
                     card["real_state"] = real_state
                 saved_characters[index] = card
             sanitized["characters"] = saved_characters
-        elif not protagonist_indexes:
+        elif not protagonist_indexes and is_game_story:
             protagonist_card = self._protagonist_character_card(sanitized, project)
             if protagonist_card:
                 additions.append(protagonist_card)
-        additions.extend(self._proposed_character_cards_from_outline(sanitized, project))
-        for chapter in chapters:
-            additions.extend(self._chapter_entity_cards(chapter))
+        if is_game_story:
+            additions.extend(self._proposed_character_cards_from_outline(sanitized, project))
+            for chapter in chapters:
+                additions.extend(self._chapter_entity_cards(chapter))
         if additions:
             sanitized["characters"] = self._merge_character_cards(list(sanitized.get("characters") or []), additions)
         characters = sanitized.get("characters") if isinstance(sanitized.get("characters"), list) else []
@@ -4607,19 +4706,19 @@ class FileProjectStore:
     def _regeneration_variant(self, chapter_number: int) -> dict[str, Any]:
         variants = [
             {
-                "id": "boundary-combat-cost",
-                "axes": ["战斗消耗", "药剂铺委托边界"],
+                "id": "focus-conflict-cost",
+                "axes": ["核心冲突", "人物付出的代价"],
                 "avoid": [],
             },
             {
-                "id": "boundary-inventory-route",
-                "axes": ["背包容量", "仓库窗口边界"],
-                "avoid": ["上一版完整灰狼坡消耗顺序", "药剂铺作为唯一服务节点"],
+                "id": "focus-character-choice",
+                "axes": ["人物选择", "关系变化"],
+                "avoid": ["照搬上一版的行动顺序", "只替换措辞而不改变场面推进"],
             },
             {
-                "id": "boundary-durability-route",
-                "axes": ["装备耐久", "修理铺前置条件"],
-                "avoid": ["上一版完整灰狼坡消耗顺序", "药剂铺作为唯一服务节点"],
+                "id": "focus-payoff-hook",
+                "axes": ["可见结果", "章末下一步"],
+                "avoid": ["照搬上一版的行动顺序", "用说明代替人物行动"],
             },
         ]
         count = 0
@@ -4642,93 +4741,7 @@ class FileProjectStore:
         return variants[count % len(variants)]
 
     def _regeneration_title_override(self, chapter_number: int, variant_id: str) -> str | None:
-        if chapter_number != 1:
-            return None
-        return {
-            "boundary-combat-cost": "灰狼坡试水",
-            "boundary-inventory-route": "背包快满了",
-            "boundary-durability-route": "法杖快断了",
-            "progression-lead": "灰狼坡先一步",
-        }.get(variant_id)
-
-    def _reset_first_chapter_regeneration_state(self, state: dict[str, Any]) -> dict[str, Any]:
-        """Strip generated chapter residue before replaying chapter one.
-
-        Re-running chapter 1 must start from the story bible, not from the
-        latest saved game panel. Otherwise old materials like 灰鼠毒腺 leak back
-        into a new 灰狼 simulation through current_state.
-        """
-
-        reset = dict(state)
-        reset["chapter_summaries"] = []
-        reset["timeline"] = []
-        reset["memory_index"] = []
-        reset["current_chapter"] = 0
-        reset["progression_ledger"] = {}
-        reset.pop("time_state", None)
-        chapter_residue_tokens = (
-            "第一章",
-            "第1章",
-            "第2章",
-            "第3章",
-            "第4章",
-            "章末",
-            "Lv.",
-            "Lv",
-            "经验",
-            "生命",
-            "法力",
-            "钱袋",
-            "背包",
-            "灰鼠",
-            "灰狼毒腺",
-            "粗糙狼皮",
-            "灰石裂缝",
-            "二段通行",
-            "寄售功能",
-            "提现规则",
-            "清道夫",
-            "后坡",
-            "巡夜",
-            "废井",
-            "驱狼粉",
-            "污染源",
-        )
-        reset["world_facts"] = [
-            fact
-            for fact in list(reset.get("world_facts") or [])
-            if not str(fact).startswith("第") and not any(token in str(fact) for token in chapter_residue_tokens)
-        ]
-        characters = []
-        for character in list(reset.get("characters") or []):
-            if not isinstance(character, dict):
-                continue
-            role = str(character.get("role") or "")
-            if role not in {"主角", "protagonist"} and str(character.get("name") or "") != "苏叶":
-                continue
-            cleaned = dict(character)
-            # Rebuild the target chapter from the story bible, not a game_state
-            # materialized from the stale legacy panel during normal loading.
-            cleaned.pop("game_state", None)
-            cleaned.pop("real_state", None)
-            cleaned["game_panel"] = {"game_id": cleaned.get("game_id") or "夜烬"}
-            cleaned["memory"] = [
-                item
-                for item in list(cleaned.get("memory") or [])
-                if not any(token in str(item) for token in chapter_residue_tokens)
-            ]
-            if not cleaned["memory"]:
-                cleaned["memory"] = [
-                    "现实段落用苏叶，游戏内行动、交易、任务和玩家称呼优先用夜烬。",
-                    "现实账单压力未解决；现实余额只有发生到账、提现、卖币或支付剧情时才更新。",
-                ]
-            cleaned["goals"] = ["进入本书设定的游戏，低调验证千倍爆率能不能带来成长领先。"]
-            cleaned["location"] = "现实出租屋，等待游戏开服"
-            cleaned["current_emotion"] = "tense"
-            characters.append(cleaned)
-        if characters:
-            reset["characters"] = characters
-        return reset
+        return None
 
     def _conservative_regeneration_state(
         self,
@@ -4755,6 +4768,9 @@ class FileProjectStore:
                 for field in ("character_tier", "first_appearance", "game_id"):
                     if field in raw_character:
                         character[field] = deepcopy(raw_character[field])
+                game_id = str(character.get("game_id") or "").strip()
+                if game_id:
+                    character["game_panel"] = {"game_id": game_id}
                 cards.append(character)
             return cards
 
@@ -4898,7 +4914,7 @@ class FileProjectStore:
             current_state = dict(self.state())
             base_state = self._regeneration_base_state(chapter_number, current_state)
         else:
-            base_state = self._reset_first_chapter_regeneration_state(dict(self.state()))
+            base_state = self._conservative_regeneration_state(dict(self.state()))
 
         base_state["current_chapter"] = chapter_number - 1
         ledger = dict(base_state.get("progression_ledger") or {})
@@ -4906,10 +4922,10 @@ class FileProjectStore:
         if variant:
             variant_payload = {**variant_payload, "id": variant}
             if variant == "progression-lead":
-                variant_payload.setdefault("axes", ["千倍爆率转化为任务/装备/技能/路线领先"])
+                variant_payload.setdefault("axes", ["把本书已有优势转化为可见成长和下一步机会"])
                 variant_payload.setdefault(
                     "avoid",
-                    ["公开炫耀清道夫委托", "市场玩家盯盘", "擅自走官方兑换", "公会追查", "把材料账本写成第一章公开高潮"],
+                    ["公开解释隐藏优势", "擅自提前后续势力反应", "把账本说明写成正文高潮"],
                 )
                 variant_payload["skip_expansion"] = False
         variant_payload.setdefault("skip_expansion", False)
@@ -5036,7 +5052,13 @@ class FileProjectStore:
             "chapter_number": chapter_number,
             "chapter_goal": chapter["next_outline"],
         }
-        updated_story = self._state_before_chapter(chapter_number)
+        current_state = self.state()
+        current_chapter = int(current_state.get("current_chapter") or 0)
+        updated_story = (
+            dict(current_state)
+            if chapter_number >= current_chapter
+            else self._state_before_chapter(chapter_number)
+        )
         updated_story.setdefault("timeline", [f"chapter {chapter_number}: {next_title}"])
         updated_story.setdefault("chapter_summaries", [summary])
         chapter["updated_story"] = updated_story
@@ -5220,6 +5242,31 @@ class FileProjectStore:
             characters.append(character)
             if len(characters) >= 4:
                 break
+        opening_arc = (
+            world_blueprint.get("opening_arc")
+            if isinstance(world_blueprint.get("opening_arc"), dict)
+            else {}
+        )
+        golden_chapters = (
+            opening_arc.get("golden_three_chapters")
+            if isinstance(opening_arc.get("golden_three_chapters"), dict)
+            else {}
+        )
+        opening_chapter = golden_chapters.get(str(target_chapter))
+        if not isinstance(opening_chapter, dict):
+            opening_chapter = golden_chapters.get(target_chapter)
+        stable_chapter_facts = (
+            opening_chapter.get("must_include")
+            if isinstance(opening_chapter, dict) and isinstance(opening_chapter.get("must_include"), list)
+            else []
+        )
+        merged_world_facts = list(
+            dict.fromkeys(
+                str(item).strip()
+                for item in [*stable_chapter_facts, *(state.get("world_facts") or [])]
+                if str(item).strip()
+            )
+        )
         return {
             "story_id": str(state.get("story_id") or project.get("active_story_id") or project.get("project_id") or "file-project"),
             "outline": str(state.get("outline") or project.get("seed_outline") or project.get("title") or ""),
@@ -5229,10 +5276,30 @@ class FileProjectStore:
             "current_chapter": int(state.get("current_chapter") or 0),
             "enabled_skill_ids": list(project.get("enabled_skill_ids") or state.get("enabled_skill_ids") or []),
             "author_constraints": list(project.get("author_constraints") or state.get("author_constraints") or []),
-            "world_facts": list(state.get("world_facts") or []),
+            "world_facts": merged_world_facts,
             "progression_ledger": dict(state.get("progression_ledger") or {}),
             "world_context": scoped_world,
             "characters": characters,
+            "timeline": [
+                deepcopy(item)
+                for item in (state.get("timeline") or [])
+                if isinstance(item, dict)
+                and 0 < int(item.get("chapter_number") or 0) < target_chapter
+            ][-8:],
+            "chapter_summaries": [
+                {
+                    **deepcopy(item),
+                    "cadence": (
+                        item.get("cadence")
+                        if item.get("cadence") in {"urgent", "measured", "breathing"}
+                        else "measured"
+                    ),
+                }
+                for item in (state.get("chapter_summaries") or [])
+                if isinstance(item, dict)
+                and 0 < int(item.get("chapter_number") or 0) < target_chapter
+                and str(item.get("summary") or "").strip()
+            ][-3:],
             "monster_profiles": [
                 deepcopy(item)
                 for item in world_blueprint.get("monster_profiles", [])[:20]

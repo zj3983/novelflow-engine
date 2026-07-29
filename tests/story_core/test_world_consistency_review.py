@@ -408,6 +408,42 @@ def test_world_consistency_review_accepts_scene_card_must_show_beats_when_surfac
     assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
 
 
+def test_world_consistency_review_treats_generic_identity_state_and_goal_as_semantic_beats():
+    scene_cards = [
+        {
+            "scene_id": "character-create",
+            "must_show": ["本书设定的初始身份", "当前状态", "第一项目标"],
+        }
+    ]
+    body = (
+        "角色创建完成后，夜烬的职业栏仍是未转职见习者。"
+        "他打开角色面板看了一眼，等级还是Lv.1，生命和法力都是满值。"
+        "新手村外有一群一级灰狼，他决定先打一只试试伤害。"
+    )
+
+    review = review_world_event_consistency(body, scene_cards=scene_cards, chapter_number=1)
+
+    assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
+
+
+def test_world_consistency_review_accepts_frontend_development_as_real_job_and_skill_source():
+    scene_cards = [{"scene_id": "reality", "must_show": ["现实职业/技能来源"]}]
+    body = "苏叶做了三年前端开发，失业前每天都在和代码、接口与线上故障打交道。"
+
+    review = review_world_event_consistency(body, scene_cards=scene_cards, chapter_number=1)
+
+    assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
+
+
+def test_world_consistency_review_accepts_test_engineer_risk_validation_as_skill_source():
+    scene_cards = [{"scene_id": "reality", "must_show": ["现实职业/技能来源"]}]
+    body = "苏叶是软件外包公司的测试工程师，平时负责风险验证和异常排查。"
+
+    review = review_world_event_consistency(body, scene_cards=scene_cards, chapter_number=1)
+
+    assert not any("场景卡必写内容缺失" in issue for issue in review["issues"])
+
+
 def test_world_consistency_review_accepts_npc_location_or_window_alias():
     scene_cards = [
         {

@@ -20,7 +20,7 @@ _CN_NUMERAL_VALUES = {
     "九": 9,
 }
 _COUNT_PATTERN = r"\d+|[一二两三四五六七八九十百]{1,3}"
-_ATTRIBUTE_ALLOCATION_ACTIONS = r"(?:加到了|分配到了|投入到了|加到|加给|分配给|投入(?!到|了)|点在)"
+_ATTRIBUTE_ALLOCATION_ACTIONS = r"(?:加到了|分配到了|投入到了|加到|加在|加给|分配给|投入(?!到|了)|点在)"
 _ATTRIBUTE_ACTION_GAP = r"[^。！？\n，,；;“”‘’\"]{0,16}"
 _ATTRIBUTE_ACTION_PATTERN = (
     rf"(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
@@ -445,6 +445,16 @@ def character_attribute_allocation_points(
     )
     values: list[int] = []
     for match in re.finditer(pattern, body):
+        if not _has_character_action(body, match.start(), protagonist_aliases, other_character_names):
+            continue
+        points = parse_count(match.group("count"))
+        if points is not None:
+            values.append(points)
+    click_pattern = (
+        rf"(?:在|对)?\s*{re.escape(attribute)}(?:属性)?(?:后|栏|一项|选项)?"
+        rf"[^。！？\n]{{0,16}}?(?:连续)?(?:点了|点击|按了)\s*(?P<count>{_COUNT_PATTERN})\s*次"
+    )
+    for match in re.finditer(click_pattern, body):
         if not _has_character_action(body, match.start(), protagonist_aliases, other_character_names):
             continue
         points = parse_count(match.group("count"))

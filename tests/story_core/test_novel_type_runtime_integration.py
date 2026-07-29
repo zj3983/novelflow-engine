@@ -28,6 +28,7 @@ from packages.story_core.novel_type_catalog import (
 from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator, OpeningBrief
 from packages.story_core.orchestrator import _writer_seed_summary
+from packages.story_core.outline_planning import INITIAL_OUTLINE_CHAPTER_COUNT
 from packages.story_core.outline_planning_generation import (
     LLMOutlinePlanningGenerator,
     OutlinePlanningBrief,
@@ -85,9 +86,10 @@ def _read_json(path):
 
 def _runtime_settings(_: str) -> StageRuntimeSettings:
     return StageRuntimeSettings(
-        provider="codexcli",
+        provider="openai",
         model="runtime-integration-model",
         base_url="http://runtime.test",
+        api_key="test-key",
         codex_command="codex-test",
     )
 
@@ -176,7 +178,7 @@ def _trope_plan(primary_trope_id: str | None, trope_beat: str | None) -> dict:
                 "ending_hook": "A witness asks for protection.",
                 "trope_beat": trope_beat if number == 1 else None,
                 "cast": ["Lead", "Rival"],
-            } for number in range(1, 31)],
+            } for number in range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)],
         },
         "characters": [{
             "name": name,

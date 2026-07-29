@@ -140,7 +140,8 @@ def test_revision_prompt_uses_compact_review_and_packet_target_chars():
 
     prompt = StoryOrchestrator()._revision_prompt(story, 1, "原正文", plan, review)
 
-    assert "扩写到1800到2400字" in prompt
+    assert "修订后控制在1800到2400字" in prompt
+    assert "不要因为补问题而扩写整章" in prompt
     assert "修改意见" in prompt
     assert "webnovel_hook" not in prompt
     assert "background_integration" not in prompt

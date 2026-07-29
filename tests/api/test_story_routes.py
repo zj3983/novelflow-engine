@@ -954,6 +954,71 @@ def test_file_project_current_generation_job_returns_active_job(tmp_path, monkey
     assert isinstance(payload["steps"], list) and payload["steps"]
 
 
+def test_file_project_generation_job_history_is_sorted_and_skips_invalid_logs(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "history-job-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-history-job-file",
+        state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 2, "world_facts": []},
+    )
+    log_dir = project_root / ".story-system" / "generation-jobs"
+    log_dir.mkdir(parents=True)
+    older = {
+        "job_id": "fgj-older",
+        "story_id": "file:p-history-job-file",
+        "chapter_number": 1,
+        "status": "completed",
+        "progress": "已完成",
+        "error": None,
+        "created_at": "2026-07-29T01:00:00+00:00",
+        "updated_at": "2026-07-29T01:10:00+00:00",
+        "steps": [{"message": "旧任务", "status": "done"}],
+    }
+    newer = {
+        **older,
+        "job_id": "fgj-newer",
+        "chapter_number": 2,
+        "status": "failed",
+        "progress": "审稿改稿失败",
+        "error": "candidate_above_chapter_maximum",
+        "created_at": "2026-07-29T02:00:00+00:00",
+        "updated_at": "2026-07-29T02:10:00+00:00",
+    }
+    (log_dir / "fgj-older.json").write_text(json.dumps(older, ensure_ascii=False), encoding="utf-8")
+    (log_dir / "fgj-newer.json").write_text(json.dumps(newer, ensure_ascii=False), encoding="utf-8")
+    (log_dir / "latest.json").write_text(json.dumps(newer, ensure_ascii=False), encoding="utf-8")
+    (log_dir / "fgj-broken.json").write_text("{not-json", encoding="utf-8")
+
+    response = client.get("/file-projects/p-history-job-file/generation-jobs?limit=30")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "file-generation-job-history/v1"
+    assert [item["job_id"] for item in payload["items"]] == ["fgj-newer", "fgj-older"]
+    assert payload["items"][0] == {
+        "job_id": "fgj-newer",
+        "story_id": "file:p-history-job-file",
+        "chapter_number": 2,
+        "status": "failed",
+        "progress": "审稿改稿失败",
+        "error": "candidate_above_chapter_maximum",
+        "created_at": "2026-07-29T02:00:00+00:00",
+        "updated_at": "2026-07-29T02:10:00+00:00",
+    }
+
+
+def test_file_project_generation_job_history_returns_empty_list(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "empty-history-file-project"
+    _make_file_project(project_root, project_id="p-empty-history-file")
+
+    response = client.get("/file-projects/p-empty-history-file/generation-jobs")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+
 def test_file_project_generation_log_survives_in_memory_job_reset(tmp_path, monkeypatch):
     monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
     project_root = tmp_path / "persistent-log-file-project"

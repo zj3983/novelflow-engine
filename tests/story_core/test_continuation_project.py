@@ -208,6 +208,141 @@ def test_confirmed_session_creates_readable_file_project(tmp_path: Path) -> None
     assert created.next_path == "/projects/file%3Ap-continuation-test/outline"
 
 
+def test_conversion_generates_requested_continuation_outline(tmp_path: Path) -> None:
+    session = _ready_session()
+    settings = _settings(3)
+
+    created = _create_project(
+        tmp_path,
+        session,
+        settings,
+        project_id_factory=lambda: "p-generated-outline",
+    )
+
+    outline = FileProjectStore(created.root).project_outline()
+    assert outline["overall"]["story"] == session.analysis["story_overview"]
+    assert outline["arcs"][0]["start_chapter"] == 4
+    assert outline["arcs"][0]["end_chapter"] == 13
+    assert outline["overall"]["primary_trope_id"] == "chapter_hook_escalation"
+    assert outline["arcs"][0]["trope_id"] == "chapter_hook_escalation"
+    assert [chapter["chapter_number"] for chapter in outline["chapters"]] == list(
+        range(4, 14)
+    )
+    assert all(chapter["goal"] for chapter in outline["chapters"])
+    assert len({chapter["title"] for chapter in outline["chapters"]}) == 10
+
+
+def test_conversion_outline_recognizes_chinese_protagonist_role(tmp_path: Path) -> None:
+    session = _ready_session()
+    session.analysis["characters"][0]["role"] = "主角"
+
+    created = _create_project(
+        tmp_path,
+        session,
+        _settings(3),
+        project_id_factory=lambda: "p-chinese-protagonist",
+    )
+
+    outline = FileProjectStore(created.root).project_outline()
+    assert outline["chapters"][0]["cast"] == ["沈砚"]
+
+
+def test_conversion_outline_uses_first_confirmed_character_when_roles_are_blank(
+    tmp_path: Path,
+) -> None:
+    session = _ready_session()
+    session.analysis["characters"][0]["role"] = ""
+
+    created = _create_project(
+        tmp_path,
+        session,
+        _settings(3),
+        project_id_factory=lambda: "p-blank-character-role",
+    )
+
+    outline = FileProjectStore(created.root).project_outline()
+    assert outline["chapters"][0]["cast"] == ["沈砚"]
+
+
+def test_conversion_outline_caps_growth_summary_for_planning_brief(
+    tmp_path: Path,
+) -> None:
+    session = _ready_session()
+    session.analysis["power_system"] = [
+        {
+            "claim": f"第{index}阶段需要积累灵力、完成试炼并承担突破代价",
+            "confidence": "confirmed",
+        }
+        for index in range(40)
+    ]
+
+    created = _create_project(
+        tmp_path,
+        session,
+        _settings(3),
+        project_id_factory=lambda: "p-growth-summary",
+    )
+
+    outline = FileProjectStore(created.root).project_outline()
+    assert len(outline["overall"]["growth_path"]) <= 500
+
+
+def test_conversion_leaves_outline_empty_when_generation_is_disabled(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(3).model_copy(
+        update={"generate_outline": False, "outline_chapters": 0}
+    )
+
+    created = _create_project(
+        tmp_path,
+        _ready_session(),
+        settings,
+        project_id_factory=lambda: "p-empty-outline",
+    )
+
+    outline = FileProjectStore(created.root).project_outline()
+    assert outline["arcs"] == []
+    assert outline["chapters"] == []
+
+
+def test_conversion_promotes_confirmed_world_analysis_into_editable_blueprint(
+    tmp_path: Path,
+) -> None:
+    session = _ready_session()
+    session.analysis["world"].extend(
+        [
+            {
+                "claim": "\u65ad\u9b42\u8c37: \u4e07\u4fee\u4e4b\u5893\u6240\u5728\u5730",
+                "confidence": "confirmed",
+            },
+            {
+                "claim": "\u9752\u4e91\u5b97: \u6797\u4fee\u7684\u5e08\u95e8",
+                "confidence": "confirmed",
+            },
+        ]
+    )
+
+    created = _create_project(
+        tmp_path,
+        session,
+        _settings(3),
+        project_id_factory=lambda: "p-world-blueprint",
+    )
+
+    project = FileProjectStore(created.root).project()
+    blueprint = project["world_blueprint"]
+    confirmed_world = [item["claim"] for item in session.analysis["world"]]
+    confirmed_power = [item["claim"] for item in session.analysis["power_system"]]
+    assert blueprint["world_rules"] == confirmed_world
+    assert blueprint["power_system"] == confirmed_power
+    assert blueprint["premise"] == confirmed_world[0]
+    assert blueprint["current_arc"] == session.analysis["continuation_start"]["situation"]
+    assert {item["name"] for item in blueprint["locations"]} == {"\u65ad\u9b42\u8c37"}
+    assert {item["name"] for item in blueprint["factions"]} == {"\u9752\u4e91\u5b97"}
+    assert project["world_summary"] == "\n".join(confirmed_world)
+
+
 def test_conversion_extracts_profile_and_realm_from_confirmed_character_analysis(
     tmp_path: Path,
 ) -> None:

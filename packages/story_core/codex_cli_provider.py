@@ -182,6 +182,9 @@ def post_json_via_codex_cli(
         ]
         if model:
             args.extend(["--model", model])
+        reasoning_effort = str(payload.get("reasoning_effort") or "").strip().lower()
+        if reasoning_effort in {"minimal", "low", "medium", "high", "xhigh"}:
+            args.extend(["--config", f'model_reasoning_effort="{reasoning_effort}"'])
         args.append("-")
 
         completed = subprocess.run(

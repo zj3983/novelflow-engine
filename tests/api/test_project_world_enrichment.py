@@ -23,6 +23,14 @@ from packages.story_core import world_enrichment
 GAME_CLASSES = ("战士", "法师", "游侠", "盗贼", "牧师", "召唤师")
 
 
+def test_derived_author_constraints_only_add_game_identity_rule_for_game_projects():
+    urban = world_enrichment._derive_author_constraints({"genre_plugin_ids": ["urban"]})
+    game = world_enrichment._derive_author_constraints({"genre_plugin_ids": ["game_webnovel"]})
+
+    assert not any("游戏ID" in item for item in urban)
+    assert any("游戏ID" in item for item in game)
+
+
 def complete_game_power_spec() -> dict[str, object]:
     return {
         "name": "神域职业体系",
@@ -461,6 +469,31 @@ def test_rules_only_enrichment_keeps_legacy_only_power_system_without_inventing_
 
     assert enriched.world_blueprint["power_system"] == ["旧版规则原文"]
     assert "power_system_spec" not in enriched.world_blueprint
+
+
+def test_world_enrichment_tolerates_text_in_relationship_score_fields():
+    relationships = world_enrichment._as_relationships(
+        [
+            {
+                "source": "林越",
+                "target": "调查局",
+                "bond": "互相试探",
+                "trust": "是否备案、是否隐瞒能力、是否接受任务",
+                "tension": "120",
+            }
+        ],
+        48,
+    )
+
+    assert relationships == [
+        {
+            "source": "林越",
+            "target": "调查局",
+            "bond": "互相试探",
+            "trust": 0.0,
+            "tension": 100.0,
+        }
+    ]
 
 
 def test_project_world_enrichment_updates_project(monkeypatch, tmp_path):

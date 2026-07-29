@@ -115,13 +115,10 @@ def test_chapter_review_preserves_nested_reports_to_repair_aggregate_plan_shift(
         "review_ai_flavor",
         "review_reader_feel",
         "review_cold_reader_experience",
-        "review_plot_spine_completion",
-        "review_progression_lead",
-        "review_critical_prose_rules",
-        "review_reader_agent",
-        "review_editor_agent",
-        "review_reviewer_agent",
-    ):
+            "review_plot_spine_completion",
+            "review_progression_lead",
+            "review_critical_prose_rules",
+        ):
         monkeypatch.setattr(orchestrator_module, name, empty_review)
 
     writing_review = _review_chapter_body(
@@ -200,8 +197,9 @@ def test_rebalanced_draft_allows_small_upper_length_tolerance():
 def test_hard_length_fallback_accepts_publishable_draft_outside_preferred_range():
     assert _chapter_body_is_hard_length_acceptable("字" * 3849) is True
     assert _chapter_body_is_hard_length_acceptable("字" * 5640) is True
+    assert _chapter_body_is_hard_length_acceptable("字" * 5844) is True
     assert _chapter_body_is_hard_length_acceptable("字" * 2993) is False
-    assert _chapter_body_is_hard_length_acceptable("字" * 5844) is False
+    assert _chapter_body_is_hard_length_acceptable("字" * 6001) is False
 
 
 def test_compression_accepts_small_lower_boundary_tolerance():
@@ -465,7 +463,7 @@ def test_compression_retries_when_model_overcompresses():
 
 def test_final_memory_runs_only_for_a_reviewable_in_range_body():
     assert _should_extract_final_memory("正文" * 2300, {"needs_revision": False}) is True
-    assert _should_extract_final_memory("正文" * 3000, {"needs_revision": False}) is False
+    assert _should_extract_final_memory("正文" * 3001, {"needs_revision": False}) is False
     assert _should_extract_final_memory("正文" * 2751 + "字", {"needs_revision": False}) is True
     assert _should_extract_final_memory("正文" * 2300, {"needs_revision": True}) is False
 
@@ -624,6 +622,23 @@ def test_review_chapter_body_handles_soft_low_scores_without_name_error(monkeypa
     assert review["review_summary"]["soft_passed"] is False
 
 
+def test_review_without_planned_world_reactions_is_not_failed_for_absence_alone():
+    body = "苏叶走进车站，和工作人员问清时间以后买了票。" * 300
+
+    review = _review_chapter_body(
+        2,
+        body,
+        {"next_focus": "到达下一座城市。", "world_reactions": []},
+        [],
+        {},
+        [],
+        [],
+        genre_context={"genre": "现实题材"},
+    )
+
+    assert review["scores"]["world_reaction"] == 8
+
+
 def test_review_chapter_body_blocks_patchwork_reader_feel(monkeypatch):
     def patchwork_review(body):
         return {
@@ -742,7 +757,7 @@ def test_first_chapter_review_blocks_premature_rewards_and_services():
         "窗口NPC盖章，钱袋里多了5枚铜币。夜烬又把法杖修好，想着下一步换技能书。"
     )
 
-    review = _review_chapter_body(1, body, {}, ["网游"], {}, [], [])
+    review = _review_chapter_body(1, body, {}, ["本书设定：夜烬拥有千倍爆率。"], {}, [], [])
 
     assert review["pass"] is False
     assert any("第一章账本越界" in issue for issue in review["issues"])
@@ -925,6 +940,31 @@ def test_review_rejects_opening_and_ending_balances_that_differ_from_outline():
     assert any("章末余额不一致" in issue and "312.60元" in issue for issue in review["issues"])
 
 
+def test_second_chapter_does_not_require_first_chapter_reality_amounts_again():
+    review = _review_chapter_body(
+        2,
+        "夜烬回到灰狼坡补齐任务材料，提交清道夫委托后升到Lv.3。" * 200,
+        {
+            "chapter_number": 2,
+            "goal": "补齐灰狼毒腺并完成任务。",
+            "payoff": "升到Lv.3。",
+            "next_focus": "接取后坡巡查。",
+        },
+        [
+            (
+                "第一章必须解决现实急账：裂纹狼心以2金币一口价匿名拍卖成交取得游戏币，"
+                "再经官方兑换实际到账1764.00元，房租和信用卡最低还款已付，余额变为332.60元。"
+            ),
+        ],
+        {},
+        [],
+        [],
+        genre_context={"genre": "网游"},
+    )
+
+    assert not any("到账金额" in issue or "章末余额不一致" in issue for issue in review["issues"])
+
+
 def test_amount_anchor_repair_keeps_distinct_opening_and_ending_when_draft_has_one_balance():
     repaired = _repair_outline_amount_anchors(
         "苏叶看着余额7.40元登录游戏。担保交易到账305.20元。",
@@ -994,6 +1034,34 @@ def test_amount_anchor_repair_replaces_chinese_ending_balance_with_stop_wording(
     assert "付清现实急账后" not in repaired
 
 
+def test_amount_anchor_repair_replaces_repeated_opening_balance_after_bank_income():
+    body = (
+        "手机屏幕上，银行余额那一栏只有四个数字。46.83元。\n\n"
+        "手机银行通知写着：您尾号账户收入1764.00元。\n\n"
+        "他转给房东1200元，又支付信用卡最低还款额278.23元。\n\n"
+        "现实账户余额停在46.83元。\n\n"
+        "他重新登录游戏。\n\n"
+        "他离开交易行，打开独立官方兑换页面。页面显示兑换价、额度、手续费和预计到账；"
+        "确认兑换后，现实账户收到1764.00元。\n\n"
+        "付清现实急账后，账户余额332.60元。"
+    )
+
+    repaired = _repair_outline_amount_anchors(
+        body,
+        {
+            "opening_balance": "46.83元",
+            "trade_arrival": "1764.00元",
+            "ending_balance": "332.60元",
+        },
+    )
+
+    assert repaired.count("独立官方兑换页面") == 0
+    assert repaired.count("1764.00元") == 1
+    assert repaired.count("332.60元") == 1
+    assert "现实账户余额停在332.60元" in repaired
+    assert "付清现实急账后" not in repaired
+
+
 def test_review_rejects_ending_balance_shown_before_real_world_payments():
     body = (
         "苏叶登录前看见账户余额46.83元。"
@@ -1052,6 +1120,19 @@ def test_first_chapter_sanitizer_merges_overfragmented_paragraphs():
     cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
 
     assert len([part for part in cleaned.split("\n\n") if part.strip()]) < 90
+
+
+def test_chapter_sanitizer_compacts_adjacent_system_panels_into_one_block():
+    body = (
+        "火光散去。\n\n"
+        "【击杀灰狼，获得经验22】【等级提升至Lv.2】【获得自由属性点×5】\n\n"
+        "夜烬关掉面板。"
+    )
+
+    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+
+    assert cleaned.count("【") == 1
+    assert "击杀灰狼，获得经验22；等级提升至Lv.2；获得自由属性点×5" in cleaned
 
 
 def test_first_chapter_sanitizer_merges_sentence_shards_until_paragraph_form_passes():
@@ -1206,6 +1287,7 @@ def test_opening_review_rejects_short_fanqie_style_chapter():
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "继续低调变现。"},
+        ["本书设定：夜烬拥有千倍爆率。"],
     )
 
     assert review["pass"] is False
@@ -1423,6 +1505,7 @@ def test_opening_review_rejects_1000_times_wording_mixed_with_qianbei():
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "继续低调变现。"},
+        ["本书设定：夜烬拥有千倍爆率。"],
     )
 
     assert review["pass"] is False
@@ -1472,6 +1555,7 @@ def test_opening_review_rejects_overpacked_first_chapter_pacing():
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "继续低调变现。"},
+        ["本书设定：夜烬拥有千倍爆率。"],
     )
 
     assert review["pass"] is False

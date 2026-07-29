@@ -36,36 +36,36 @@ def _outline(*, strategy: str = "observe", last_chapter: int = 30) -> dict:
     }
 
 
-def test_window_status_warns_with_ten_or_fewer_planned_chapters() -> None:
-    status = outline_window_status(_outline(last_chapter=30), current_chapter=20)
+def test_window_status_warns_with_three_or_fewer_planned_chapters() -> None:
+    status = outline_window_status(_outline(last_chapter=20), current_chapter=17)
     assert status == {
-        "last_planned_chapter": 30,
-        "remaining_detailed_chapters": 10,
-        "target_last_chapter": 50,
+        "last_planned_chapter": 20,
+        "remaining_detailed_chapters": 3,
+        "target_last_chapter": 27,
         "needs_extension": True,
-        "next_chapter_numbers": list(range(31, 51)),
+        "next_chapter_numbers": list(range(21, 28)),
     }
 
 
 def test_full_window_does_not_request_more_chapters() -> None:
-    status = outline_window_status(_outline(last_chapter=40), current_chapter=10)
-    assert status["remaining_detailed_chapters"] == 30
+    status = outline_window_status(_outline(last_chapter=20), current_chapter=10)
+    assert status["remaining_detailed_chapters"] == 10
     assert status["needs_extension"] is False
     assert status["next_chapter_numbers"] == []
 
 
 def test_window_does_not_expose_missing_numbers_before_warning_threshold() -> None:
-    status = outline_window_status(_outline(last_chapter=40), current_chapter=20)
-    assert status["remaining_detailed_chapters"] == 20
+    status = outline_window_status(_outline(last_chapter=18), current_chapter=10)
+    assert status["remaining_detailed_chapters"] == 8
     assert status["needs_extension"] is False
     assert status["next_chapter_numbers"] == []
 
 
 def test_window_exposes_missing_numbers_after_progress_reaches_threshold() -> None:
-    status = outline_window_status(_outline(last_chapter=40), current_chapter=30)
-    assert status["remaining_detailed_chapters"] == 10
+    status = outline_window_status(_outline(last_chapter=20), current_chapter=18)
+    assert status["remaining_detailed_chapters"] == 2
     assert status["needs_extension"] is True
-    assert status["next_chapter_numbers"] == list(range(41, 61))
+    assert status["next_chapter_numbers"] == list(range(21, 29))
 
 
 def test_window_target_stops_at_extension_ceiling() -> None:
@@ -82,7 +82,7 @@ def test_window_at_ceiling_does_not_request_committed_chapters() -> None:
 
 def test_window_extension_starts_after_current_when_outline_is_behind() -> None:
     status = outline_window_status(_outline(last_chapter=20), current_chapter=25)
-    assert status["next_chapter_numbers"] == list(range(26, 56))
+    assert status["next_chapter_numbers"] == list(range(26, 36))
     assert all(number > 25 for number in status["next_chapter_numbers"])
 
 
@@ -94,12 +94,9 @@ def test_sparse_window_requests_every_missing_chapter_in_target_window() -> None
 
     assert status["last_planned_chapter"] == 30
     assert status["remaining_detailed_chapters"] == 0
-    assert status["target_last_chapter"] == 50
+    assert status["target_last_chapter"] == 30
     assert status["needs_extension"] is True
-    assert status["next_chapter_numbers"] == [
-        *range(21, 30),
-        *range(31, 51),
-    ]
+    assert status["next_chapter_numbers"] == list(range(21, 30))
 
 
 @pytest.mark.parametrize(

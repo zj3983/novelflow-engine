@@ -907,6 +907,71 @@ async function routeProjectLists(page: Page, projects: unknown[]) {
   });
 }
 
+test("生成日志历史默认显示最新任务并可切换旧任务", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "generation-log-history");
+  let latestReads = 0;
+  const summary = (jobId: string, chapter: number, status: "running" | "failed", updatedAt: string) => ({
+    job_id: jobId,
+    story_id: fixture.projectId,
+    chapter_number: chapter,
+    status,
+    progress: status === "running" ? "正文生成中" : "审稿改稿失败",
+    error: status === "failed" ? "candidate_above_chapter_maximum" : "",
+    created_at: updatedAt,
+    updated_at: updatedAt,
+  });
+  const latest = summary("fgj-latest", 2, "running", "2026-07-29T02:00:00+00:00");
+  const older = summary("fgj-older", 1, "failed", "2026-07-29T01:00:00+00:00");
+
+  await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs?*`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ schema_version: "file-generation-job-history/v1", items: [latest, older] }),
+    });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs/fgj-latest`, async (route) => {
+    latestReads += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...latest,
+        steps: [{
+          message: "最新任务读取大纲",
+          status: "running",
+          stage: "read_outline",
+          artifact: { workflow_step: { id: "read_outline", label: "最新任务读取大纲", reads: ["总纲"] } },
+        }],
+      }),
+    });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs/fgj-older`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...older,
+        steps: [{
+          message: "旧任务审稿失败",
+          status: "error",
+          stage: "revision",
+          artifact: { workflow_step: { id: "revision", label: "旧任务审稿失败", reads: ["审稿报告"] } },
+        }],
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/log`);
+  await expect(page.getByText("最新任务读取大纲", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /第 1 章.*失败/ }).click();
+  await expect(page.getByText("旧任务审稿失败", { exact: true })).toBeVisible();
+  await expect(page.getByText("任务失败：candidate_above_chapter_maximum")).toBeVisible();
+  const readsAfterSwitch = latestReads;
+  await page.waitForTimeout(2200);
+  expect(latestReads).toBe(readsAfterSwitch);
+});
+
 const OPENING_PROJECT_ID = "file:opening-setup";
 const OPENING_PROJECT_PATH = `/projects/${encodeURIComponent(OPENING_PROJECT_ID)}`;
 
@@ -1122,9 +1187,9 @@ test("projects page creates a blank file novel", async ({ page }) => {
         title: "照夜行",
         storage_source: "file",
         status: "draft",
-        pipeline_stage: "draft",
+        pipeline_stage: "idea_pending",
         current_chapter: 0,
-        next_path: "/projects/file%3Ap-blank/outline",
+        next_path: "/projects/file%3Ap-blank/setup",
       }),
     });
   });
@@ -1138,8 +1203,108 @@ test("projects page creates a blank file novel", async ({ page }) => {
   await page.getByLabel("小说类型").selectOption("xuanhuan");
   await page.getByRole("button", { name: "创建小说" }).click();
 
-  await expect(page).toHaveURL(/file%3Ap-blank\/outline$/);
+  await expect(page).toHaveURL(/file%3Ap-blank\/setup$/);
   expect(requests).toEqual([{ mode: "blank", title: "照夜行", novel_type_id: "xuanhuan", idea: "" }]);
+});
+
+test("empty file novel can generate its first chapter", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "empty-first-chapter", { chapterCount: 0 });
+  let generationStarted = false;
+  await page.route(`**/file-projects/${fixture.encodedId}/writing-packet**`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ chapter_direction_options: { options: [], recommended_id: "" } }) });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
+    generationStarted = true;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "job-first-chapter", story_id: fixture.projectId, status: "completed", progress: "已完成",
+        steps: [], chapter_number: 1, error: "", created_at: "", updated_at: "",
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/write`);
+  const generateButton = page.getByRole("button", { name: "生成第一章", exact: true });
+  await expect(generateButton).toBeVisible();
+  await generateButton.click();
+
+  await expect.poll(() => generationStarted).toBe(true);
+  await expect(page).toHaveURL(new RegExp(`/write\\?chapter=1$`));
+});
+
+test("file novel world page completes setup and links to first chapter", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "opening-world", { chapterCount: 0 });
+  let enrichCalls = 0;
+  await page.route(`**/file-projects/${fixture.encodedId}/enrich-world`, async (route) => {
+    enrichCalls += 1;
+    fixture.project.world_summary = "补全后的世界摘要";
+    fixture.project.pipeline_stage = "environment_ready";
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture.project) });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/world`);
+  const enrichButton = page.getByRole("button", { name: "AI 补全世界观", exact: true });
+  await expect(enrichButton).toBeVisible();
+  await enrichButton.click();
+
+  await expect.poll(() => enrichCalls).toBe(1);
+  await expect(page.getByText("世界观已补全，可以继续检查或直接开始写作。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "开始写第一章", exact: true })).toHaveAttribute(
+    "href",
+    `/projects/${fixture.encodedId}/write`,
+  );
+});
+
+test("world enrichment waits for the backend long-running request", async ({ page }) => {
+  await page.addInitScript(() => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    const observed: number[] = [];
+    (window as unknown as { __worldRequestTimeouts: number[] }).__worldRequestTimeouts = observed;
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      const delay = Number(timeout ?? 0);
+      if (delay >= 100_000) {
+        observed.push(delay);
+      }
+      return nativeSetTimeout(handler, delay === 180_000 ? 5 : delay, ...args);
+    }) as typeof window.setTimeout;
+  });
+
+  const fixture = await routeCurrentFileProject(page, "slow-opening-world", { chapterCount: 0 });
+  await page.route(`**/file-projects/${fixture.encodedId}/enrich-world`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    fixture.project.world_summary = "补全后的世界摘要";
+    fixture.project.pipeline_stage = "environment_ready";
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture.project) });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/world`);
+  await page.getByRole("button", { name: "AI 补全世界观", exact: true }).click();
+
+  await expect(page.getByText("世界观已补全，可以继续检查或直接开始写作。", { exact: true })).toBeVisible();
+  const requestTimeouts = await page.evaluate(
+    () => (window as unknown as { __worldRequestTimeouts: number[] }).__worldRequestTimeouts,
+  );
+  expect(requestTimeouts).toContain(1_800_000);
+});
+
+test("file novel overview continues every opening stage", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "opening-overview", { chapterCount: 0 });
+
+  fixture.project.pipeline_stage = "world_ready";
+  await page.goto(`/projects/${fixture.encodedId}`);
+  await expect(page.locator("a.ws-btn--primary")).toHaveAttribute(
+    "href",
+    `/projects/${fixture.encodedId}/world`,
+  );
+
+  fixture.project.pipeline_stage = "environment_ready";
+  await page.reload();
+  await expect(page.locator("a.ws-btn--primary")).toHaveAttribute(
+    "href",
+    `/projects/${fixture.encodedId}/write`,
+  );
 });
 
 test("projects page creates an inspiration novel and preserves input after failure", async ({ page }) => {
@@ -1505,6 +1670,30 @@ test("write page shows current progress and core writing actions", async ({ page
   await expect(page.getByRole("button", { name: "重新生成本章" })).toBeEnabled();
 });
 
+test("write page copies the current chapter title and body", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "clipboard", {
+      configurable: true,
+      get: () => ({
+        writeText: async (text: string) => {
+          (globalThis as typeof globalThis & { __copiedChapterText?: string }).__copiedChapterText = text;
+        },
+      }),
+    });
+  });
+  const fixture = await routeCurrentFileProject(page, "copy-chapter");
+  const currentChapter = fixture.story.history[0];
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
+
+  await page.getByRole("button", { name: "复制章节" }).click();
+
+  await expect(page.getByRole("button", { name: "已复制" })).toBeVisible();
+  const copiedText = await page.evaluate(
+    () => (globalThis as typeof globalThis & { __copiedChapterText?: string }).__copiedChapterText,
+  );
+  expect(copiedText).toBe(`第 1 章 ${currentChapter.chapter_title}\n\n${currentChapter.body}`);
+});
+
 test("narrow write page keeps the reader reachable below a long directory", async ({ page }) => {
   await page.setViewportSize({ width: 667, height: 882 });
   const fixture = await routeCurrentFileProject(page, "narrow-reader", { chapterCount: 80 });
@@ -1844,7 +2033,7 @@ test("file project outline edits three levels and runs outline generation", asyn
     world_summary: "",
     current_focus: "",
     author_constraints: [],
-    world_blueprint: {},
+    world_blueprint: { genre_plugin_ids: ["xianxia"] },
     character_profiles: [],
     relationship_graph: [],
     enabled_skill_ids: [],
@@ -1935,8 +2124,8 @@ test("file project outline edits three levels and runs outline generation", asyn
   await page.getByLabel("主角长期目标").fill("洗清父亲旧案");
   await page.getByRole("tab", { name: "阶段大纲", exact: true }).click();
   await expect(page.getByLabel("阶段名称")).toHaveValue("祖祠阶段");
-  await expect(page.getByLabel("游戏线阶段结果")).toHaveValue("进入内门并获得新功法。");
-  await expect(page.getByLabel("现实线阶段结果")).toHaveValue("解决住处和眼前收入问题。");
+  await expect(page.getByLabel("修行线阶段结果")).toHaveValue("进入内门并获得新功法。");
+  await expect(page.getByLabel("联盟线阶段结果")).toHaveValue("解决住处和眼前收入问题。");
   await expect(page.getByLabel("继续路线")).toHaveValue("进入内门并扩大旧案。");
   await expect(page.getByLabel("收束路线")).toHaveValue("回收旧名册并转入最终审判。");
   await page.getByLabel("收束路线").fill("");
