@@ -153,7 +153,7 @@ class TimelineEvent(BaseModel):
 class ForeshadowingState(BaseModel):
     text: str
     first_chapter: int
-    last_touched_chapter: int
+    last_touched_chapter: int = 0
     status: ForeshadowingStatus = "open"
     payoff_plan: str = ""
     resolved_chapter: int | None = None
