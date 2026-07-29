@@ -417,13 +417,25 @@ def _has_completed_term(text: str, term: str) -> bool:
         start = index + len(term)
 
 
-def _compression_review_not_worse(before_review: dict[str, Any], candidate_review: dict[str, Any]) -> bool:
+def _compression_review_not_worse(
+    before_review: dict[str, Any],
+    candidate_review: dict[str, Any],
+    *,
+    before_body: str = "",
+    candidate_body: str = "",
+) -> bool:
     before_gate = build_simplified_review({"writing_review": before_review})
     candidate_gate = build_simplified_review({"writing_review": candidate_review})
     before_hard = int(before_gate.get("categories", {}).get("hard", {}).get("count") or 0)
     candidate_hard = int(candidate_gate.get("categories", {}).get("hard", {}).get("count") or 0)
     before_total = int(before_gate.get("total_issues") or 0)
     candidate_total = int(candidate_gate.get("total_issues") or 0)
+    if before_body and _chapter_char_count(before_body) > MAX_CHAPTER_CHARS:
+        before_hard += 1
+        before_total += 1
+    if candidate_body and _chapter_char_count(candidate_body) > MAX_CHAPTER_CHARS:
+        candidate_hard += 1
+        candidate_total += 1
     return candidate_hard <= before_hard and candidate_total <= before_total
 
 
@@ -7434,7 +7446,12 @@ class StoryOrchestrator:
                     protagonist_aliases=tuple(protagonist_aliases_from_characters(story.characters)),
                     character_names=_review_character_names(story),
                 )
-                quality_preserved = _compression_review_not_worse(writing_review, candidate_review)
+                quality_preserved = _compression_review_not_worse(
+                    writing_review,
+                    candidate_review,
+                    before_body=before_body,
+                    candidate_body=candidate_body,
+                )
                 before_issue_count = len((writing_review or {}).get("issues", []))
                 candidate_issues = list((candidate_review or {}).get("issues", []))
                 candidate_action = _compression_candidate_action(before_body, candidate_body)
@@ -7510,6 +7527,8 @@ class StoryOrchestrator:
                         retry_quality_preserved = _compression_review_not_worse(
                             writing_review,
                             retry_review,
+                            before_body=before_body,
+                            candidate_body=retry_body,
                         )
                         retry_accepted = (
                             MIN_CHAPTER_CHARS <= retry_chars <= MAX_CHAPTER_CHARS

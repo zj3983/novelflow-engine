@@ -512,6 +512,33 @@ def test_compression_review_must_not_add_hard_or_total_issues():
     assert _compression_review_not_worse(before, worsened) is False
 
 
+def test_compression_review_counts_resolved_overlength_as_an_improvement():
+    before = {
+        "issues": [
+            "段首主语重复。",
+            "情绪锚点不足。",
+            "对话不够自然。",
+            "章末钩子偏弱。",
+        ],
+    }
+    candidate = {
+        "issues": [
+            "段首主语重复。",
+            "情绪锚点不足。",
+            "对话不够自然。",
+            "章末钩子偏弱。",
+            "局部衔接略显突然。",
+        ],
+    }
+
+    assert _compression_review_not_worse(
+        before,
+        candidate,
+        before_body="原" * 6060,
+        candidate_body="改" * 4665,
+    ) is True
+
+
 def test_first_chapter_scene_cards_keep_four_core_scenes_and_drop_variant_numbers():
     cards = [
         {"scene_id": "s0-plot-simulation", "purpose": "后台计划"},
