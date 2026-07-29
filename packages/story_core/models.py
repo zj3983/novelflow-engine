@@ -153,7 +153,19 @@ class TimelineEvent(BaseModel):
 class ForeshadowingState(BaseModel):
     text: str
     first_chapter: int
+    last_touched_chapter: int
     status: ForeshadowingStatus = "open"
+    payoff_plan: str = ""
+    resolved_chapter: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_last_touched_chapter(cls, value):
+        if isinstance(value, dict) and value.get("last_touched_chapter") is None:
+            migrated = dict(value)
+            migrated["last_touched_chapter"] = migrated.get("first_chapter", 0)
+            return migrated
+        return value
 
 
 class ChapterSummary(BaseModel):
