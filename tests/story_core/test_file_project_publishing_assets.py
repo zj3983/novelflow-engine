@@ -79,11 +79,10 @@ def test_save_synopsis_mirrors_metadata_and_preserves_cover(tmp_path):
 
     saved = store.save_synopsis(synopsis)
 
-    assert saved == {
-        "schema_version": "publishing-assets/v1",
-        "synopsis": synopsis,
-        "cover": {"prompt": "bright fantasy cover"},
-    }
+    assert saved["schema_version"] == "publishing-assets/v1"
+    assert saved["synopsis"] == synopsis
+    assert saved["cover"]["prompt"] == "bright fantasy cover"
+    assert saved["updated_at"]
     assert store.publishing_assets() == saved
     assert _mirror_payloads(store.root) == (saved, saved)
 
@@ -92,7 +91,8 @@ def test_prompt_only_state_survives_cover_save_and_uses_project_title(tmp_path):
     store = _make_store(tmp_path / "novel", project={"project_id": "p-file", "title": "Rendered Title"})
     prompt_state = store.save_cover_prompt("  cinematic city at night  ")
 
-    assert prompt_state["cover"] == {"prompt": "cinematic city at night"}
+    assert prompt_state["cover"]["prompt"] == "cinematic city at night"
+    assert prompt_state["cover"]["updated_at"]
     saved = store.save_cover(
         prompt="cinematic city at night",
         base_image=b"base-png",
@@ -102,7 +102,7 @@ def test_prompt_only_state_survives_cover_save_and_uses_project_title(tmp_path):
 
     assert store.cover_base_path.read_bytes() == b"base-png"
     assert store.rendered_cover_path.read_bytes() == b"rendered-png"
-    assert saved["cover"] == {
+    assert {key: value for key, value in saved["cover"].items() if key not in {"image_version", "mime_type", "updated_at"}} == {
         "prompt": "cinematic city at night",
         "model": "cover-model/v1",
         "base_path": "assets/cover-base.png",
@@ -110,6 +110,9 @@ def test_prompt_only_state_survives_cover_save_and_uses_project_title(tmp_path):
         "schema_version": "cover/v1",
         "rendered_title": "Rendered Title",
     }
+    assert saved["cover"]["image_version"]
+    assert saved["cover"]["mime_type"] == "image/png"
+    assert saved["cover"]["updated_at"]
     assert _mirror_payloads(store.root) == (saved, saved)
     assert str(store.root) not in json.dumps(saved)
 
@@ -313,7 +316,12 @@ def test_synopsis_and_prompt_writes_preserve_forward_compatible_cover_fields(tmp
     after_prompt = store.save_cover_prompt("new prompt")
 
     assert after_synopsis["cover"] == {**initial["cover"], **extras}
-    assert after_prompt["cover"] == {**initial["cover"], **extras, "prompt": "new prompt"}
+    assert {key: value for key, value in after_prompt["cover"].items() if key != "updated_at"} == {
+        **{key: value for key, value in initial["cover"].items() if key != "updated_at"},
+        **{key: value for key, value in extras.items() if key != "updated_at"},
+        "prompt": "new prompt",
+    }
+    assert after_prompt["cover"]["updated_at"]
     mirrored_project, mirrored_master = _mirror_payloads(store.root)
     assert mirrored_project == mirrored_master == after_prompt
 
@@ -339,6 +347,136 @@ def test_malicious_fixed_cover_paths_are_discarded_without_read_mutation(tmp_pat
 
     assert visible["cover"] == {"prompt": "valid prompt", "image_version": "future/v2"}
     assert project_path.read_bytes() == before
+
+
+def test_metadata_failure_with_failed_asset_recovery_retains_backups_and_diagnostics(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    store.save_cover(prompt="old", base_image=b"old-base", rendered_image=b"old-rendered", model="old")
+    monkeypatch.setattr(store, "_replace_metadata", lambda *_args: (_ for _ in ()).throw(OSError("metadata failed")))
+    monkeypatch.setattr(
+        store,
+        "_restore_publishing_backup",
+        lambda *_args: (_ for _ in ()).throw(OSError("asset recovery failed")),
+    )
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$") as error:
+        store.save_cover(prompt="new", base_image=b"new-base", rendered_image=b"new-rendered", model="new")
+
+    assert error.value.__cause__ is not None
+    assert "metadata failed" in repr(error.value.__cause__)
+    assert "asset recovery failed" in repr(error.value.__cause__)
+    assert list(store.root.rglob("*.rollback"))
+
+
+@pytest.mark.parametrize("broken", ["project", "master"])
+def test_mutation_rejects_corrupt_metadata_without_rewriting_it(tmp_path, broken):
+    store = _make_store(tmp_path / "novel")
+    path = store.webnovel_dir / "project.json" if broken == "project" else store.story_system_dir / "MASTER_SETTING.json"
+    path.write_text("{not-json", encoding="utf-8")
+    before = path.read_bytes()
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+        store.save_synopsis({"summary": "new"})
+
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("missing", ["project", "master"])
+def test_mutation_reconstructs_one_missing_metadata_mirror_from_the_valid_one(tmp_path, missing):
+    store = _make_store(tmp_path / "novel")
+    path = store.webnovel_dir / "project.json" if missing == "project" else store.story_system_dir / "MASTER_SETTING.json"
+    path.unlink()
+
+    saved = store.save_synopsis({"summary": "new"})
+
+    assert _mirror_payloads(store.root) == (saved, saved)
+
+
+def test_metadata_only_write_rejects_redirected_webnovel_directory(tmp_path):
+    store = _make_store(tmp_path / "novel")
+    outside = tmp_path / "outside"
+    store.webnovel_dir.rename(outside)
+    try:
+        os.symlink(outside, store.webnovel_dir, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    before = (outside / "project.json").read_bytes()
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+        store.save_synopsis({"summary": "new"})
+
+    assert (outside / "project.json").read_bytes() == before
+
+
+def test_mutations_add_versions_timestamps_and_preserve_safe_future_top_level_fields(tmp_path):
+    store = _make_store(tmp_path / "novel")
+    first = store.save_cover(prompt="one", base_image=b"base-one", rendered_image=b"cover-one", model="m")
+    second = store.save_cover(prompt="two", base_image=b"base-two", rendered_image=b"cover-two", model="m")
+    project = _read(store.webnovel_dir / "project.json")
+    project["publishing_assets"]["audiobook"] = {"narrator": "Future Voice"}
+    project["publishing_assets"]["cover"]["thumbnail_path"] = "../../escape.png"
+    (store.webnovel_dir / "project.json").write_text(json.dumps(project), encoding="utf-8")
+
+    prompt_saved = store.save_cover_prompt("three")
+
+    assert first["cover"]["image_version"] != second["cover"]["image_version"]
+    assert second["updated_at"] and second["cover"]["updated_at"]
+    assert prompt_saved["cover"]["image_version"] == second["cover"]["image_version"]
+    assert prompt_saved["cover"]["updated_at"]
+    assert prompt_saved["audiobook"] == {"narrator": "Future Voice"}
+    assert "thumbnail_path" not in prompt_saved["cover"]
+
+
+def test_success_cleanup_unlink_failure_does_not_fail_committed_write(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    original_unlink = Path.unlink
+
+    def fail_rollback_unlink(path, *args, **kwargs):
+        if path.suffix == ".rollback":
+            raise OSError("cleanup blocked")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_rollback_unlink)
+
+    saved = store.save_cover(prompt="one", base_image=b"base", rendered_image=b"rendered", model="m")
+
+    assert saved["cover"]["prompt"] == "one"
+
+
+def test_failure_cleanup_unlink_failure_does_not_mask_write_failure(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    store.save_cover(prompt="old", base_image=b"old-base", rendered_image=b"old-rendered", model="m")
+    original_unlink = Path.unlink
+    monkeypatch.setattr(store, "_replace_metadata", lambda *_args: (_ for _ in ()).throw(OSError("write failed")))
+
+    def fail_rollback_unlink(path, *args, **kwargs):
+        if path.suffix == ".rollback":
+            raise OSError("cleanup blocked")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_rollback_unlink)
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$") as error:
+        store.save_cover(prompt="new", base_image=b"new-base", rendered_image=b"new-rendered", model="m")
+
+    assert "write failed" in repr(error.value.__cause__)
+
+
+@pytest.mark.parametrize(
+    "synopsis",
+    [
+        {"deep": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": {"x": "too-deep"}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}},
+        {"oversized": "x" * 16_001},
+        {"nan": float("nan")},
+    ],
+)
+def test_publishing_input_limits_fail_before_writes(tmp_path, synopsis):
+    store = _make_store(tmp_path / "novel")
+    before = (store.webnovel_dir / "project.json").read_bytes()
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+        store.save_synopsis(synopsis)
+
+    assert (store.webnovel_dir / "project.json").read_bytes() == before
 
 
 @pytest.mark.parametrize(

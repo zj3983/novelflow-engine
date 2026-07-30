@@ -825,21 +825,76 @@ class FileProjectStore:
             raise ValueError("publishing_asset_write_failed") from exc
         if not isinstance(restored, dict):  # pragma: no cover - guarded above
             raise ValueError("publishing_asset_write_failed")
+        FileProjectStore._validate_publishing_value(restored)
         return restored
+
+    @staticmethod
+    def _validate_publishing_value(value: Any) -> None:
+        containers = 0
+
+        def visit(item: Any, depth: int = 0) -> None:
+            nonlocal containers
+            if depth > 32:
+                raise ValueError("publishing_asset_write_failed")
+            if isinstance(item, str):
+                if len(item) > 16_000:
+                    raise ValueError("publishing_asset_write_failed")
+                return
+            if item is None or isinstance(item, (bool, int, float)):
+                return
+            if isinstance(item, dict):
+                containers += 1
+                if containers > 1_024 or any(not isinstance(key, str) for key in item):
+                    raise ValueError("publishing_asset_write_failed")
+                for nested in item.values():
+                    visit(nested, depth + 1)
+                return
+            if isinstance(item, list):
+                containers += 1
+                if containers > 1_024:
+                    raise ValueError("publishing_asset_write_failed")
+                for nested in item:
+                    visit(nested, depth + 1)
+                return
+            raise ValueError("publishing_asset_write_failed")
+
+        visit(value)
+        if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")) > 65_536:
+            raise ValueError("publishing_asset_write_failed")
 
     @staticmethod
     def _json_safe_value(value: Any) -> tuple[bool, Any]:
         try:
             serialized = json.dumps(value, ensure_ascii=False, allow_nan=False)
-            return True, json.loads(serialized)
+            restored = json.loads(serialized)
+            FileProjectStore._validate_publishing_value(restored)
+            return True, restored
         except (TypeError, ValueError, OverflowError, RecursionError):
             return False, None
+
+    @staticmethod
+    def _publishing_path_like_key(key: str) -> bool:
+        folded = key.casefold()
+        return folded in {"path", "file", "filename", "url"} or folded.endswith(
+            ("_path", "_file", "_filename", "_url")
+        )
 
     @classmethod
     def _normalize_publishing_assets(cls, value: Any) -> dict[str, Any]:
         normalized = cls._publishing_assets_default()
         if not isinstance(value, dict):
             return normalized
+        for key, item in value.items():
+            if key in {"schema_version", "synopsis", "cover", "updated_at"} or not isinstance(key, str):
+                continue
+            if cls._publishing_path_like_key(key):
+                continue
+            is_safe, safe_item = cls._json_safe_value(item)
+            if is_safe:
+                normalized[key] = safe_item
+        updated_at = value.get("updated_at")
+        if isinstance(updated_at, str) and updated_at.strip():
+            normalized["updated_at"] = updated_at.strip()
         synopsis = value.get("synopsis")
         if isinstance(synopsis, dict):
             try:
@@ -852,6 +907,8 @@ class FileProjectStore:
         cover: dict[str, Any] = {}
         for key, item in raw_cover.items():
             if not isinstance(key, str):
+                continue
+            if cls._publishing_path_like_key(key) and key not in {"base_path", "rendered_path"}:
                 continue
             is_safe, safe_item = cls._json_safe_value(item)
             if is_safe:
@@ -894,6 +951,45 @@ class FileProjectStore:
             return {}
         return dict(payload) if isinstance(payload, dict) else {}
 
+    @staticmethod
+    def _is_reparse_point(path: Path) -> bool:
+        try:
+            details = os.lstat(path)
+        except FileNotFoundError:
+            return False
+        return path.is_symlink() or bool(getattr(details, "st_file_attributes", 0) & 0x400)
+
+    def _assert_publishing_target_safe(self, target: Path) -> None:
+        target = Path(target)
+        try:
+            relative = target.absolute().relative_to(self.root)
+        except ValueError as exc:
+            raise ValueError("publishing_asset_write_failed") from exc
+        current = self.root
+        if self._is_reparse_point(current):
+            raise ValueError("publishing_asset_write_failed")
+        for part in relative.parts[:-1]:
+            current = current / part
+            if self._is_reparse_point(current):
+                raise ValueError("publishing_asset_write_failed")
+        if target.exists() and self._is_reparse_point(target):
+            raise ValueError("publishing_asset_write_failed")
+        if not target.parent.resolve().is_relative_to(self.root):
+            raise ValueError("publishing_asset_write_failed")
+
+    @staticmethod
+    def _complete_project_payload(project: Any) -> bool:
+        return isinstance(project, dict) and isinstance(project.get("project_id"), str) and isinstance(project.get("title"), str)
+
+    def _mutation_metadata_document(self, path: Path) -> dict[str, Any] | None:
+        self._assert_publishing_target_safe(path)
+        if not path.exists():
+            return None
+        payload = self._read_json(path, None)
+        if not isinstance(payload, dict):
+            raise ValueError("publishing_asset_write_failed")
+        return dict(payload)
+
     def _publishing_assets_from_metadata(self) -> dict[str, Any]:
         project = self._safe_metadata_document(self.webnovel_dir / "project.json")
         if "publishing_assets" in project:
@@ -905,7 +1001,9 @@ class FileProjectStore:
         return self._publishing_assets_default()
 
     def _prepare_publishing_temp(self, path: Path, content: bytes, *, suffix: str = ".tmp") -> Path:
+        self._assert_publishing_target_safe(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._assert_publishing_target_safe(path)
         fd, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=suffix)
         temp_path = Path(temp_name)
         try:
@@ -913,6 +1011,8 @@ class FileProjectStore:
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if os.name != "nt" and path.exists():
+                os.chmod(temp_path, os.stat(path).st_mode & 0o777)
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise
@@ -924,15 +1024,30 @@ class FileProjectStore:
     def _replace_metadata(self, source: Path, target: Path) -> None:
         os.replace(source, target)
 
-    def _restore_publishing_target(self, target: Path, content: bytes | None) -> None:
-        if content is None:
-            target.unlink(missing_ok=True)
-            return
-        replacement = self._prepare_publishing_temp(target, content)
+    def _restore_publishing_backup(self, backup: Path, target: Path) -> None:
+        self._assert_publishing_target_safe(target)
+        os.replace(backup, target)
+
+    @staticmethod
+    def _best_effort_unlink(path: Path) -> None:
         try:
-            os.replace(replacement, target)
+            path.unlink(missing_ok=True)
+        except OSError:
+            logging.getLogger(__name__).warning("publishing transaction cleanup deferred: %s", path)
+
+    def _best_effort_fsync_parent(self, path: Path) -> None:
+        if os.name == "nt":
+            return
+        try:
+            descriptor = os.open(path.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            pass
         finally:
-            replacement.unlink(missing_ok=True)
+            os.close(descriptor)
 
     def _publishing_metadata_payloads(
         self,
@@ -940,10 +1055,25 @@ class FileProjectStore:
     ) -> dict[Path, dict[str, Any]]:
         project_path = self.webnovel_dir / "project.json"
         master_path = self.story_system_dir / "MASTER_SETTING.json"
-        project = self._safe_metadata_document(project_path)
-        master = self._safe_metadata_document(master_path)
+        project = self._mutation_metadata_document(project_path)
+        master = self._mutation_metadata_document(master_path)
+        if project is None and master is None:
+            raise ValueError("publishing_asset_write_failed")
+        if project is None:
+            master_project = master.get("project") if isinstance(master, dict) else None
+            if not self._complete_project_payload(master_project):
+                raise ValueError("publishing_asset_write_failed")
+            project = dict(master_project)
+        if master is None:
+            if not self._complete_project_payload(project):
+                raise ValueError("publishing_asset_write_failed")
+            master = {"schema_version": "story-system-master-setting/v1", "project": deepcopy(project)}
         master_project = master.get("project")
-        master_project = dict(master_project) if isinstance(master_project, dict) else dict(project)
+        if not isinstance(master_project, dict):
+            raise ValueError("publishing_asset_write_failed")
+        if not self._complete_project_payload(project) or not self._complete_project_payload(master_project):
+            raise ValueError("publishing_asset_write_failed")
+        master_project = dict(master_project)
         project["publishing_assets"] = deepcopy(publishing_assets)
         master_project["publishing_assets"] = deepcopy(publishing_assets)
         master["project"] = master_project
@@ -955,32 +1085,30 @@ class FileProjectStore:
         *,
         asset_contents: tuple[bytes, bytes] | None = None,
     ) -> None:
+        """Best-effort cross-file transaction; retained .rollback files signal incomplete recovery after a fault."""
+        self._validate_publishing_value(publishing_assets)
         metadata_payloads = self._publishing_metadata_payloads(publishing_assets)
         metadata_targets = list(metadata_payloads)
         asset_targets = [self.cover_base_path, self.rendered_cover_path] if asset_contents is not None else []
-        if asset_contents is not None:
-            assets_dir = self.cover_base_path.parent
-            if not assets_dir.resolve().is_relative_to(self.root):
-                raise ValueError("publishing_asset_write_failed")
-            assets_dir.mkdir(parents=True, exist_ok=True)
-            if not assets_dir.resolve().is_relative_to(self.root):
-                raise ValueError("publishing_asset_write_failed")
         all_targets = asset_targets + metadata_targets
-        snapshots = {path: path.read_bytes() if path.exists() else None for path in all_targets}
         prepared: list[Path] = []
-        rollback_files: list[Path] = []
+        rollback_files: dict[Path, Path | None] = {}
+        committed: list[Path] = []
         try:
+            for target in all_targets:
+                self._assert_publishing_target_safe(target)
+                if target.exists():
+                    rollback_files[target] = self._prepare_publishing_temp(
+                        target, target.read_bytes(), suffix=".rollback"
+                    )
+                else:
+                    rollback_files[target] = None
             if asset_contents is not None:
                 asset_temps: list[Path] = []
                 for target, content in zip(asset_targets, asset_contents, strict=True):
                     prepared_temp = self._prepare_publishing_temp(target, content)
                     prepared.append(prepared_temp)
                     asset_temps.append(prepared_temp)
-                for target in asset_targets:
-                    snapshot = snapshots[target]
-                    if snapshot is not None:
-                        rollback = self._prepare_publishing_temp(target, snapshot, suffix=".rollback")
-                        rollback_files.append(rollback)
             else:
                 asset_temps = []
 
@@ -991,24 +1119,44 @@ class FileProjectStore:
                 prepared.append(metadata_temps[target])
 
             for source, target in zip(asset_temps, asset_targets, strict=True):
+                self._assert_publishing_target_safe(target)
                 self._replace_asset(source, target)
+                committed.append(target)
+                self._best_effort_fsync_parent(target)
             for target in metadata_targets:
+                self._assert_publishing_target_safe(target)
                 self._replace_metadata(metadata_temps[target], target)
+                committed.append(target)
+                self._best_effort_fsync_parent(target)
         except Exception as exc:
-            for target in asset_targets:
+            rollback_errors: list[Exception] = []
+            for target in reversed(committed):
                 try:
-                    self._restore_publishing_target(target, snapshots[target])
-                except Exception:  # pragma: no cover - catastrophic rollback failure
-                    logging.getLogger(__name__).exception("publishing asset rollback failed")
-            for target in metadata_targets:
-                try:
-                    self._restore_publishing_target(target, snapshots[target])
-                except Exception:  # pragma: no cover - catastrophic rollback failure
-                    logging.getLogger(__name__).exception("publishing metadata rollback failed")
+                    backup = rollback_files[target]
+                    if backup is None:
+                        self._assert_publishing_target_safe(target)
+                        target.unlink(missing_ok=True)
+                    else:
+                        self._restore_publishing_backup(backup, target)
+                    self._best_effort_fsync_parent(target)
+                except Exception as rollback_exc:  # pragma: no cover - exercised by fault seams
+                    rollback_errors.append(rollback_exc)
+            for path in prepared:
+                self._best_effort_unlink(path)
+            if rollback_errors:
+                raise ValueError("publishing_asset_write_failed") from ExceptionGroup(
+                    "publishing transaction and recovery failures", [exc, *rollback_errors]
+                )
+            for backup in rollback_files.values():
+                if backup is not None:
+                    self._best_effort_unlink(backup)
             raise ValueError("publishing_asset_write_failed") from exc
         finally:
-            for path in prepared + rollback_files:
-                path.unlink(missing_ok=True)
+            for path in prepared:
+                self._best_effort_unlink(path)
+        for backup in rollback_files.values():
+            if backup is not None:
+                self._best_effort_unlink(backup)
 
     @_with_project_update_lock
     def publishing_assets(self) -> dict[str, Any]:
@@ -1019,6 +1167,7 @@ class FileProjectStore:
         try:
             saved = self._publishing_assets_from_metadata()
             saved["synopsis"] = self._json_safe_dict(synopsis)
+            saved["updated_at"] = self._publishing_updated_at()
             self._publishing_transaction(saved)
             return saved
         except ValueError as exc:
@@ -1037,13 +1186,19 @@ class FileProjectStore:
             raise ValueError("publishing_asset_write_failed")
         return normalized
 
+    @staticmethod
+    def _publishing_updated_at() -> str:
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
     @_with_project_update_lock
     def save_cover_prompt(self, prompt: str) -> dict[str, Any]:
         try:
             saved = self._publishing_assets_from_metadata()
             cover = dict(saved["cover"] or {})
             cover["prompt"] = self._publishing_prompt(prompt)
+            cover["updated_at"] = self._publishing_updated_at()
             saved["cover"] = cover
+            saved["updated_at"] = cover["updated_at"]
             self._publishing_transaction(saved)
             return saved
         except ValueError as exc:
@@ -1065,11 +1220,14 @@ class FileProjectStore:
         try:
             if not isinstance(base_image, bytes) or not isinstance(rendered_image, bytes):
                 raise ValueError("publishing_asset_write_failed")
-            if not base_image or not rendered_image or not isinstance(model, str) or not model.strip():
+            if not base_image or not rendered_image or not isinstance(model, str) or not model.strip() or len(model.strip()) > 256:
                 raise ValueError("publishing_asset_write_failed")
             project = self.project()
             title = str(project.get("title") or "").strip()
+            if not title or len(title) > 120:
+                raise ValueError("publishing_asset_write_failed")
             saved = self._publishing_assets_from_metadata()
+            updated_at = self._publishing_updated_at()
             saved["cover"] = {
                 "prompt": self._publishing_prompt(prompt),
                 "model": model.strip(),
@@ -1077,7 +1235,11 @@ class FileProjectStore:
                 "rendered_path": "assets/cover.png",
                 "schema_version": "cover/v1",
                 "rendered_title": title,
+                "image_version": sha256(rendered_image).hexdigest(),
+                "mime_type": "image/png",
+                "updated_at": updated_at,
             }
+            saved["updated_at"] = updated_at
             self._publishing_transaction(saved, asset_contents=(base_image, rendered_image))
             return saved
         except ValueError as exc:
