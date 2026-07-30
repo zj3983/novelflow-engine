@@ -66,7 +66,7 @@ class FanqieSynopsis(BaseModel):
     @classmethod
     def normalize_tags(cls, value: Any) -> list[str]:
         if not isinstance(value, list):
-            return value
+            raise ValueError("tags_must_be_list")
         normalized: list[str] = []
         seen: set[str] = set()
         for tag in value:
@@ -154,14 +154,14 @@ class PublishingContext(BaseModel):
     @classmethod
     def validate_protagonists(cls, value: Any) -> Any:
         if not isinstance(value, list):
-            return value
+            raise ValueError("protagonists_must_be_list")
         return [_PublishingCharacterSummary.model_validate(item).model_dump() for item in value]
 
     @field_validator("outline_summary", mode="before")
     @classmethod
     def validate_outline_summary(cls, value: Any) -> Any:
         if not isinstance(value, dict):
-            return value
+            raise ValueError("outline_summary_must_be_dict")
         summary = _PublishingOutlineSummary.model_validate(value)
         return summary.model_dump(exclude_none=True, exclude_defaults=True)
 
@@ -245,9 +245,9 @@ def _bounded_outline_summary(outline: dict) -> dict[str, object]:
             if not isinstance(raw_arc, dict):
                 continue
             arc: dict[str, str] = {}
-            name = _bounded_text(raw_arc.get("name") or raw_arc.get("title"), 80)
-            summary = _bounded_text(
-                raw_arc.get("summary") or raw_arc.get("description") or raw_arc.get("story"), 260
+            name = _first_bounded_text(80, raw_arc.get("name"), raw_arc.get("title"))
+            summary = _first_bounded_text(
+                260, raw_arc.get("summary"), raw_arc.get("description"), raw_arc.get("story")
             )
             conflict = _bounded_text(raw_arc.get("main_conflict"), 160)
             if name:
@@ -283,13 +283,15 @@ def _bounded_characters(project: dict, state: dict) -> list[dict[str, str]]:
         name = _bounded_text(raw_profile.get("name"), _MAX_CHARACTER_NAME_CHARS)
         if not name or name in seen_names:
             continue
-        role = _bounded_text(raw_profile.get("role") or raw_profile.get("story_role"), _MAX_CHARACTER_ROLE_CHARS)
-        goal = _bounded_text(
-            raw_profile.get("goal")
-            or raw_profile.get("motivation")
-            or raw_profile.get("core_motivation")
-            or raw_profile.get("story_goal"),
+        role = _first_bounded_text(
+            _MAX_CHARACTER_ROLE_CHARS, raw_profile.get("role"), raw_profile.get("story_role")
+        )
+        goal = _first_bounded_text(
             _MAX_CHARACTER_GOAL_CHARS,
+            raw_profile.get("goal"),
+            raw_profile.get("motivation"),
+            raw_profile.get("core_motivation"),
+            raw_profile.get("story_goal"),
         )
         if not goal and isinstance(raw_profile.get("goals"), list):
             goal = _bounded_text(next(iter(raw_profile["goals"]), ""), _MAX_CHARACTER_GOAL_CHARS)

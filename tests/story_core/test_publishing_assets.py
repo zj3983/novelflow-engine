@@ -76,6 +76,21 @@ def test_fanqie_synopsis_strips_and_bounds_tags_and_visual_hook() -> None:
         )
 
 
+def test_fanqie_synopsis_rejects_tuple_tags() -> None:
+    with pytest.raises(ValidationError):
+        FanqieSynopsis(
+            tags=(" 穿越 ", "成长", "穿越", "无系统", "克系"),
+            body="文" * 200,
+            pattern="conflict",
+        )
+
+
+@pytest.mark.parametrize("tags", [{"穿越", "成长", "无系统", "克系"}, iter(["穿越", "成长", "无系统", "克系"])])
+def test_fanqie_synopsis_rejects_non_list_tag_iterables(tags: object) -> None:
+    with pytest.raises(ValidationError):
+        FanqieSynopsis(tags=tags, body="文" * 200, pattern="conflict")
+
+
 @pytest.mark.parametrize(
     ("kwargs", "error_field"),
     [
@@ -249,6 +264,38 @@ def test_revalidating_an_unchecked_context_enforces_public_invariants() -> None:
         PublishingContext.model_validate(unchecked)
 
 
+def test_context_rejects_tuple_protagonists_in_construction_and_revalidation() -> None:
+    tuple_protagonists = ({"name": "陆沉" * 1_000, "role": "主角", "goal": "靠岸", "body": "章节正文"},)
+
+    with pytest.raises(ValidationError):
+        PublishingContext(title="归墟行舟", protagonists=tuple_protagonists)
+    with pytest.raises(ValidationError):
+        PublishingContext.model_validate({"title": "归墟行舟", "protagonists": tuple_protagonists})
+    unchecked = PublishingContext.model_construct(title="归墟行舟", protagonists=tuple_protagonists, outline_summary={})
+    with pytest.raises(ValidationError):
+        PublishingContext.model_validate(unchecked)
+
+
+def test_context_rejects_tuple_outline_summary_before_dict_coercion() -> None:
+    tuple_outline = (("overall", {"main_conflict": "靠岸", "chapter_body": "章节正文"}),)
+
+    with pytest.raises(ValidationError):
+        PublishingContext(title="归墟行舟", outline_summary=tuple_outline)
+
+
+def test_context_rejects_set_and_custom_iterable_containers() -> None:
+    class ProfilesIterable:
+        def __iter__(self):
+            yield {"name": "陆沉", "role": "主角", "goal": "靠岸"}
+
+    with pytest.raises(ValidationError):
+        PublishingContext(title="归墟行舟", protagonists={"not-a-profile"})
+    with pytest.raises(ValidationError):
+        PublishingContext(title="归墟行舟", protagonists=ProfilesIterable())
+    with pytest.raises(ValidationError):
+        PublishingContext(title="归墟行舟", outline_summary={"not-a-summary"})
+
+
 def test_direct_context_accepts_exact_nested_character_and_arc_caps() -> None:
     context = PublishingContext(
         title="归墟行舟",
@@ -305,6 +352,38 @@ def test_publishing_context_stops_reading_profiles_after_eighth_valid_item() -> 
     )
 
     assert len(context.protagonists) == 8
+
+
+def test_publishing_context_builder_accepts_a_lazy_profile_iterable() -> None:
+    class ProfilesIterable:
+        def __iter__(self):
+            yield {"name": "陆沉", "role": "主角", "goal": "靠岸"}
+
+    context = build_publishing_context(
+        project={"character_profiles": ProfilesIterable()}, state={}, opening_brief={}, outline={}
+    )
+
+    assert context.protagonists == [{"name": "陆沉", "role": "主角", "goal": "靠岸"}]
+
+
+def test_publishing_context_uses_later_valid_character_and_outline_fallbacks() -> None:
+    context = build_publishing_context(
+        project={
+            "character_profiles": [
+                {"name": "陆沉", "role": "  ", "story_role": "主角", "goal": {"bad": True}, "motivation": "活着靠岸"}
+            ]
+        },
+        state={},
+        opening_brief={},
+        outline={
+            "arcs": [
+                {"name": "  ", "title": "第一卷", "summary": {"bad": True}, "description": "争夺船票"}
+            ]
+        },
+    )
+
+    assert context.protagonists == [{"name": "陆沉", "role": "主角", "goal": "活着靠岸"}]
+    assert context.outline_summary["arcs"] == [{"name": "第一卷", "summary": "争夺船票"}]
 
 
 def test_publishing_context_uses_fallback_title() -> None:
