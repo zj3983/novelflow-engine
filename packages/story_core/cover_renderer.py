@@ -8,10 +8,14 @@ import re
 import struct
 from pathlib import Path
 
+import regex
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
 
 
 CANVAS_SIZE = (768, 1024)
+MAX_IMAGE_PIXELS = 40_000_000
+MAX_FONT_BYTES = 64 * 1024 * 1024
+_SUPPORTED_FORMATS = {"PNG", "JPEG", "WEBP"}
 DEFAULT_FONT_CANDIDATES = (
     Path("C:/Windows/Fonts/msyh.ttc"),
     Path("C:/Windows/Fonts/msyhbd.ttc"),
@@ -92,10 +96,21 @@ def _load_base_image(base_bytes: bytes) -> Image.Image:
         raise CoverRenderError("invalid_cover_image")
     try:
         with Image.open(io.BytesIO(base_bytes)) as source:
+            if source.format not in _SUPPORTED_FORMATS:
+                raise ValueError("unsupported_format")
+            width, height = source.size
+            if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+                raise ValueError("image_too_large")
+            _validate_image_container(base_bytes, source.format)
             source.verify()
         with Image.open(io.BytesIO(base_bytes)) as source:
             source.load()
-            return source.convert("RGB")
+            oriented = ImageOps.exif_transpose(source)
+            try:
+                return oriented.convert("RGB")
+            finally:
+                if oriented is not source:
+                    oriented.close()
     except (
         Image.DecompressionBombError,
         Image.DecompressionBombWarning,
@@ -105,6 +120,40 @@ def _load_base_image(base_bytes: bytes) -> Image.Image:
         UnidentifiedImageError,
     ) as exc:
         raise CoverRenderError("invalid_cover_image") from exc
+
+
+def _validate_image_container(data: bytes, image_format: str) -> None:
+    if image_format == "PNG":
+        _validate_png_container(data)
+    elif image_format == "JPEG":
+        if len(data) < 4 or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
+            raise ValueError("incomplete_jpeg")
+    elif image_format == "WEBP":
+        if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+            raise ValueError("incomplete_webp")
+        if struct.unpack_from("<I", data, 4)[0] + 8 != len(data):
+            raise ValueError("incomplete_webp")
+    else:
+        raise ValueError("unsupported_format")
+
+
+def _validate_png_container(data: bytes) -> None:
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("invalid_png")
+    position = 8
+    while position < len(data):
+        if position + 12 > len(data):
+            raise ValueError("truncated_png")
+        length = _u32(data, position)
+        end = position + 12 + length
+        if end > len(data):
+            raise ValueError("truncated_png")
+        if data[position + 4 : position + 8] == b"IEND":
+            if length != 0 or end != len(data):
+                raise ValueError("invalid_png_end")
+            return
+        position = end
+    raise ValueError("missing_png_end")
 
 
 def _resolve_font(title: str, explicit_path: str | Path | None) -> Path:
@@ -124,11 +173,11 @@ def _resolve_font(title: str, explicit_path: str | Path | None) -> Path:
 
 
 def _font_supports(path: Path, title: str) -> bool:
-    if not path.is_file():
-        return False
     try:
+        if not path.is_file() or path.stat().st_size > MAX_FONT_BYTES:
+            return False
         ImageFont.truetype(str(path), size=32)
-        codepoints = {ord(char) for char in title if not char.isspace()}
+        codepoints = _required_glyph_codepoints(title)
         return _cmap_supports_all(path, codepoints)
     except (OSError, ValueError, struct.error):
         return False
@@ -140,9 +189,17 @@ def _cmap_supports_all(path: Path, codepoints: set[int]) -> bool:
     if not codepoints:
         return True
     try:
+        if path.stat().st_size > MAX_FONT_BYTES:
+            return False
         data = path.read_bytes()
         face_offset = _sfnt_face_offset(data)
         cmap_offset, cmap_length = _table_location(data, face_offset, b"cmap")
+        maxp_offset, maxp_length = _table_location(data, face_offset, b"maxp")
+        if maxp_length < 6 or maxp_offset + 6 > len(data):
+            return False
+        glyph_count = _u16(data, maxp_offset + 4)
+        if glyph_count < 1:
+            return False
         cmap_end = cmap_offset + cmap_length
         if cmap_end > len(data) or cmap_length < 4:
             return False
@@ -153,15 +210,24 @@ def _cmap_supports_all(path: Path, codepoints: set[int]) -> bool:
         subtables: list[int] = []
         for index in range(table_count):
             record = cmap_offset + 4 + (index * 8)
+            platform = _u16(data, record)
+            encoding = _u16(data, record + 2)
             subtable = cmap_offset + _u32(data, record + 4)
-            if cmap_offset <= subtable < cmap_end:
+            if _unicode_cmap_record(platform, encoding) and cmap_offset <= subtable < cmap_end:
                 subtables.append(subtable)
         for codepoint in codepoints:
-            if not any(_subtable_has_glyph(data, offset, cmap_end, codepoint) for offset in subtables):
+            glyphs = (_subtable_glyph(data, offset, cmap_end, codepoint) for offset in subtables)
+            if not any(glyph is not None and 0 < glyph < glyph_count for glyph in glyphs):
                 return False
         return True
     except (IndexError, OSError, ValueError, struct.error):
         return False
+
+
+def _unicode_cmap_record(platform: int, encoding: int) -> bool:
+    """Return whether a cmap record uses a Unicode encoding FreeType selects."""
+
+    return platform == 0 or (platform == 3 and encoding in {1, 10})
 
 
 def _sfnt_face_offset(data: bytes) -> int:
@@ -192,49 +258,49 @@ def _table_location(data: bytes, face_offset: int, tag: bytes) -> tuple[int, int
     raise ValueError("table_missing")
 
 
-def _subtable_has_glyph(data: bytes, offset: int, limit: int, codepoint: int) -> bool:
+def _subtable_glyph(data: bytes, offset: int, limit: int, codepoint: int) -> int | None:
     if offset + 2 > limit:
-        return False
+        return None
     format_number = _u16(data, offset)
     if format_number == 4:
-        return _format4_has_glyph(data, offset, limit, codepoint)
+        return _format4_glyph(data, offset, limit, codepoint)
     if format_number == 12:
-        return _format12_has_glyph(data, offset, limit, codepoint)
-    return False
+        return _format12_glyph(data, offset, limit, codepoint)
+    return None
 
 
-def _format12_has_glyph(data: bytes, offset: int, limit: int, codepoint: int) -> bool:
+def _format12_glyph(data: bytes, offset: int, limit: int, codepoint: int) -> int | None:
     if offset + 16 > limit:
-        return False
+        return None
     length = _u32(data, offset + 4)
     group_count = _u32(data, offset + 12)
     end = offset + length
     if length < 16 or end > limit or offset + 16 + (group_count * 12) > end:
-        return False
+        return None
     for index in range(group_count):
         group = offset + 16 + (index * 12)
         start, finish, glyph = _u32(data, group), _u32(data, group + 4), _u32(data, group + 8)
         if start <= codepoint <= finish:
-            return glyph + codepoint - start != 0
+            return glyph + codepoint - start
         if codepoint < start:
-            return False
-    return False
+            return None
+    return None
 
 
-def _format4_has_glyph(data: bytes, offset: int, limit: int, codepoint: int) -> bool:
+def _format4_glyph(data: bytes, offset: int, limit: int, codepoint: int) -> int | None:
     if codepoint > 0xFFFF or offset + 14 > limit:
-        return False
+        return None
     length = _u16(data, offset + 2)
     end = offset + length
     seg_count = _u16(data, offset + 6) // 2
     if length < 16 or end > limit or seg_count == 0:
-        return False
+        return None
     end_codes = offset + 14
     start_codes = end_codes + (seg_count * 2) + 2
     deltas = start_codes + (seg_count * 2)
     ranges = deltas + (seg_count * 2)
     if ranges + (seg_count * 2) > end:
-        return False
+        return None
     for index in range(seg_count):
         start = _u16(data, start_codes + (index * 2))
         finish = _u16(data, end_codes + (index * 2))
@@ -243,15 +309,15 @@ def _format4_has_glyph(data: bytes, offset: int, limit: int, codepoint: int) -> 
             range_offset_address = ranges + (index * 2)
             range_offset = _u16(data, range_offset_address)
             if range_offset == 0:
-                return (codepoint + delta) & 0xFFFF != 0
+                return (codepoint + delta) & 0xFFFF
             glyph_address = range_offset_address + range_offset + ((codepoint - start) * 2)
             if glyph_address + 2 > end:
-                return False
+                return None
             glyph = _u16(data, glyph_address)
-            return glyph != 0 and ((glyph + delta) & 0xFFFF) != 0
+            return (glyph + delta) & 0xFFFF if glyph else 0
         if codepoint < start:
-            return False
-    return False
+            return None
+    return None
 
 
 def _u16(data: bytes, offset: int) -> int:
@@ -262,11 +328,37 @@ def _u32(data: bytes, offset: int) -> int:
     return struct.unpack_from(">I", data, offset)[0]
 
 
+def _grapheme_clusters(text: str) -> list[str]:
+    return regex.findall(r"\X", text)
+
+
+def _is_short_han_title(title: str) -> bool:
+    clusters = _grapheme_clusters(title)
+    return 2 <= len(clusters) <= 6 and all(
+        regex.fullmatch(r"\p{Script=Han}+", cluster) is not None for cluster in clusters
+    )
+
+
+def _required_glyph_codepoints(title: str) -> set[int]:
+    return {
+        ord(character)
+        for character in title
+        if not character.isspace()
+        and character not in {"\u200c", "\u200d"}
+        and not _is_variation_selector(character)
+    }
+
+
+def _is_variation_selector(character: str) -> bool:
+    codepoint = ord(character)
+    return 0xFE00 <= codepoint <= 0xFE0F or 0xE0100 <= codepoint <= 0xE01EF
+
+
 def _draw_title(canvas: Image.Image, title: str, font_file: Path) -> None:
     shadow = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
     try:
         shadow_draw = ImageDraw.Draw(shadow)
-        if _is_short_chinese_title(title):
+        if _is_short_han_title(title):
             _draw_vertical_title(shadow_draw, title, font_file, shadow=True)
         else:
             _draw_wrapped_title(shadow_draw, title, font_file, shadow=True)
@@ -279,26 +371,23 @@ def _draw_title(canvas: Image.Image, title: str, font_file: Path) -> None:
         shadow.close()
 
     draw = ImageDraw.Draw(canvas)
-    if _is_short_chinese_title(title):
+    if _is_short_han_title(title):
         _draw_vertical_title(draw, title, font_file)
     else:
         _draw_wrapped_title(draw, title, font_file)
-
-
-def _is_short_chinese_title(title: str) -> bool:
-    return 2 <= len(title) <= 6 and all("\u4e00" <= char <= "\u9fff" for char in title)
 
 
 def _draw_vertical_title(
     draw: ImageDraw.ImageDraw, title: str, font_file: Path, *, shadow: bool = False
 ) -> None:
     font = ImageFont.truetype(str(font_file), size=100)
-    sample_box = draw.textbbox((0, 0), title[0], font=font, stroke_width=_STROKE_WIDTH)
+    clusters = _grapheme_clusters(title)
+    sample_box = draw.textbbox((0, 0), clusters[0], font=font, stroke_width=_STROKE_WIDTH)
     glyph_height = sample_box[3] - sample_box[1]
     gap = 14
-    total_height = len(title) * glyph_height + (len(title) - 1) * gap
+    total_height = len(clusters) * glyph_height + (len(clusters) - 1) * gap
     y = (CANVAS_SIZE[1] - total_height) // 2
-    for character in title:
+    for character in clusters:
         box = draw.textbbox((0, 0), character, font=font, stroke_width=_STROKE_WIDTH)
         x = (CANVAS_SIZE[0] - (box[2] - box[0])) // 2 - box[0]
         _draw_text(draw, (x, y - box[1]), character, font, shadow=shadow)
@@ -336,7 +425,7 @@ def _draw_wrapped_title(
 def _wrap_lines(draw: ImageDraw.ImageDraw, title: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
     lines: list[str] = []
     current = ""
-    for character in title:
+    for character in _grapheme_clusters(title):
         candidate = current + character
         width = draw.textbbox((0, 0), candidate, font=font, stroke_width=_STROKE_WIDTH)[2]
         if current and width > max_width:

@@ -2,23 +2,33 @@ from __future__ import annotations
 
 import io
 import inspect
+import struct
+import warnings
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageChops, ImageFont, PngImagePlugin
+from PIL import Image, ImageChops, ImageFile, ImageFont, PngImagePlugin
 
+from packages.story_core import cover_renderer
 from packages.story_core.cover_renderer import CoverRenderError, render_cover
 
 
 CANVAS = (768, 1024)
 BASE = (19, 45, 79)
-WINDOWS_CJK_FONT = Path("C:/Windows/Fonts/msyh.ttc")
+REAL_RESOLVE_FONT = cover_renderer._resolve_font
 
 
 def _font_path() -> Path:
-    if WINDOWS_CJK_FONT.is_file():
-        return WINDOWS_CJK_FONT
-    pytest.skip("a Windows CJK font is required for deterministic renderer tests")
+    return Path("pillow-default.ttf")
+
+
+@pytest.fixture(autouse=True)
+def portable_renderer_font(monkeypatch):
+    """Keep visual renderer tests independent of host-installed CJK fonts."""
+
+    default_font = ImageFont.load_default()
+    monkeypatch.setattr(cover_renderer, "_resolve_font", lambda *_args, **_kwargs: _font_path())
+    monkeypatch.setattr(cover_renderer.ImageFont, "truetype", lambda *_args, **_kwargs: default_font)
 
 
 def _image_bytes(
@@ -102,7 +112,7 @@ def test_short_chinese_title_uses_tall_vertical_layout_inside_safe_margins() -> 
     left, top, right, bottom = _title_bbox(rendered)
 
     assert right - left < 300
-    assert bottom - top > 350
+    assert bottom - top > (right - left) * 3
     assert 32 <= left < right <= 736
     assert 48 <= top < bottom <= 976
 
@@ -112,7 +122,7 @@ def test_six_character_chinese_title_still_uses_vertical_layout() -> None:
     left, top, right, bottom = _title_bbox(rendered)
 
     assert right - left < 300
-    assert bottom - top > 500
+    assert bottom - top > (right - left) * 3
 
 
 def test_seven_character_title_switches_to_wrapped_horizontal_layout() -> None:
@@ -120,7 +130,6 @@ def test_seven_character_title_switches_to_wrapped_horizontal_layout() -> None:
     left, top, right, bottom = _title_bbox(rendered)
 
     assert right - left > bottom - top
-    assert right - left > 350
 
 
 def test_mixed_ascii_and_chinese_title_wraps_without_clipping() -> None:
@@ -129,7 +138,7 @@ def test_mixed_ascii_and_chinese_title_wraps_without_clipping() -> None:
 
     assert 32 <= left < right <= 736
     assert 48 <= top < bottom <= 976
-    assert right - left > 350
+    assert right - left > bottom - top
 
 
 def test_title_has_light_fill_dark_stroke_and_offset_shadow() -> None:
@@ -168,10 +177,12 @@ def test_render_cover_always_encodes_png_from_supported_source_formats(image_for
 
 
 def test_explicit_font_path_takes_precedence_over_environment(monkeypatch, tmp_path) -> None:
+    explicit_font = tmp_path / "explicit.ttf"
     environment_font = tmp_path / "missing.ttf"
     monkeypatch.setenv("NOVEL_COVER_FONT_PATH", str(environment_font))
+    monkeypatch.setattr(cover_renderer, "_font_supports", lambda path, _title: path == explicit_font)
 
-    assert render_cover(_image_bytes(), "星河", font_path=_font_path()).startswith(b"\x89PNG")
+    assert REAL_RESOLVE_FONT("星河", explicit_font) == explicit_font
 
 
 def test_explicit_missing_or_broken_font_is_a_terminal_stable_error(tmp_path) -> None:
@@ -179,16 +190,18 @@ def test_explicit_missing_or_broken_font_is_a_terminal_stable_error(tmp_path) ->
     broken.write_bytes(b"not a font")
 
     with pytest.raises(CoverRenderError, match="^cover_font_unavailable$"):
-        render_cover(_image_bytes(), "星河", font_path=broken)
+        REAL_RESOLVE_FONT("星河", broken)
 
 
 def test_environment_font_is_used_before_default_candidates(monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_COVER_FONT_PATH", str(_font_path()))
+    environment_font = Path("environment.ttf")
+    monkeypatch.setenv("NOVEL_COVER_FONT_PATH", str(environment_font))
     monkeypatch.setattr(
         "packages.story_core.cover_renderer.DEFAULT_FONT_CANDIDATES", (Path("missing.ttf"),)
     )
+    monkeypatch.setattr(cover_renderer, "_font_supports", lambda path, _title: path == environment_font)
 
-    assert render_cover(_image_bytes(), "星河").startswith(b"\x89PNG")
+    assert REAL_RESOLVE_FONT("星河", None) == environment_font
 
 
 def test_missing_environment_and_default_fonts_raise_stable_error(monkeypatch) -> None:
@@ -198,7 +211,7 @@ def test_missing_environment_and_default_fonts_raise_stable_error(monkeypatch) -
     )
 
     with pytest.raises(CoverRenderError, match="^cover_font_unavailable$"):
-        render_cover(_image_bytes(), "星河")
+        REAL_RESOLVE_FONT("星河", None)
 
 
 def test_glyph_incomplete_candidate_is_skipped_for_glyph_complete_font(monkeypatch) -> None:
@@ -207,15 +220,18 @@ def test_glyph_incomplete_candidate_is_skipped_for_glyph_complete_font(monkeypat
         "packages.story_core.cover_renderer.DEFAULT_FONT_CANDIDATES",
         (Path("C:/Windows/Fonts/arial.ttf"),),
     )
+    monkeypatch.setattr(cover_renderer, "_font_supports", lambda _path, _title: False)
     with pytest.raises(CoverRenderError, match="^cover_font_unavailable$"):
-        render_cover(_image_bytes(), "星河")
+        REAL_RESOLVE_FONT("星河", None)
 
+    complete = Path("complete-cjk.ttf")
     monkeypatch.setattr(
         "packages.story_core.cover_renderer.DEFAULT_FONT_CANDIDATES",
-        (Path("C:/Windows/Fonts/arial.ttf"), _font_path()),
+        (Path("C:/Windows/Fonts/arial.ttf"), complete),
     )
+    monkeypatch.setattr(cover_renderer, "_font_supports", lambda path, _title: path == complete)
 
-    assert render_cover(_image_bytes(), "星河").startswith(b"\x89PNG")
+    assert REAL_RESOLVE_FONT("星河", None) == complete
 
 
 def test_whitespace_title_and_invalid_image_use_stable_errors() -> None:
@@ -229,3 +245,128 @@ def test_whitespace_title_and_invalid_image_use_stable_errors() -> None:
 
 def test_renderer_accepts_only_base_art_title_and_font_configuration() -> None:
     assert tuple(inspect.signature(render_cover).parameters) == ("base_bytes", "title", "font_path")
+
+
+def test_renderer_enforces_its_own_pixel_limit_before_loading(monkeypatch) -> None:
+    monkeypatch.setattr(cover_renderer, "MAX_IMAGE_PIXELS", 1)
+    with pytest.raises(CoverRenderError, match="^invalid_cover_image$"):
+        render_cover(_image_bytes(size=(2, 2)), "星河", font_path=_font_path())
+
+
+def test_renderer_maps_an_externally_lowered_pillow_bomb_threshold_stably(monkeypatch) -> None:
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        with pytest.raises(CoverRenderError, match="^invalid_cover_image$"):
+            render_cover(_image_bytes(size=(3, 2)), "星河", font_path=_font_path())
+
+
+def test_renderer_rejects_png_missing_iend_even_when_pillow_allows_truncation(monkeypatch) -> None:
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", True)
+    source = _image_bytes()
+    with pytest.raises(CoverRenderError, match="^invalid_cover_image$"):
+        render_cover(source[:-12], "星河", font_path=_font_path())
+
+
+def test_strict_load_applies_exif_orientation_before_cropping() -> None:
+    source = Image.new("RGB", (20, 40), color=(0, 0, 0))
+    source.paste((255, 0, 0), (0, 0, 10, 20))
+    exif = Image.Exif()
+    exif[274] = 6
+    encoded = io.BytesIO()
+    source.save(encoded, format="JPEG", exif=exif)
+
+    loaded = cover_renderer._load_base_image(encoded.getvalue())
+    try:
+        assert loaded.size == (40, 20)
+        assert loaded.getpixel((39, 0))[0] > 240
+        assert loaded.getpixel((0, 0))[0] < 20
+    finally:
+        loaded.close()
+
+
+@pytest.mark.parametrize("title", ["㐀㐁", "豈更", "𠀀𠀁"])
+def test_all_han_extensions_and_compatibility_ideographs_select_vertical_layout(title: str) -> None:
+    assert cover_renderer._is_short_han_title(title)
+
+
+def test_grapheme_clusters_keep_zwj_combining_and_variation_sequences_whole() -> None:
+    assert cover_renderer._grapheme_clusters("A👩‍💻e\u0301✈️B") == ["A", "👩‍💻", "e\u0301", "✈️", "B"]
+
+
+def test_font_coverage_ignores_joiners_and_variation_selectors_but_keeps_combining_marks() -> None:
+    required = cover_renderer._required_glyph_codepoints("👩‍💻e\u0301✈️")
+
+    assert ord("\u200d") not in required
+    assert ord("\ufe0f") not in required
+    assert {ord("👩"), ord("💻"), ord("e"), ord("\u0301"), ord("✈")} <= required
+
+
+def test_wrapping_never_splits_extended_grapheme_clusters() -> None:
+    class FixedMeasure:
+        def textbbox(self, _position, text, **_kwargs):
+            return (0, 0, len(cover_renderer._grapheme_clusters(text)) * 10, 10)
+
+    assert cover_renderer._wrap_lines(FixedMeasure(), "A👩‍💻e\u0301✈️B", ImageFont.load_default(), 20) == ["A👩‍💻", "e\u0301✈️", "B"]
+
+
+def _synthetic_sfnt(*, platform: int, encoding: int, glyph: int, glyph_count: int = 8, malformed=False) -> bytes:
+    cmap = struct.pack(">HHHHI", 0, 1, platform, encoding, 12)
+    cmap += struct.pack(">HHLLL", 12, 0, 28, 0, 1)
+    cmap += struct.pack(">LLL", 0x4E00, 0x4E00, glyph)
+    if malformed:
+        cmap = cmap[:8] + struct.pack(">I", 0xFFFF_FFF0) + cmap[12:]
+    maxp = struct.pack(">LH", 0x00010000, glyph_count)
+    cmap_offset = 64
+    maxp_offset = cmap_offset + len(cmap)
+    header = struct.pack(">LHHHH", 0x00010000, 2, 0, 0, 0)
+    directory = b"cmap" + struct.pack(">LLL", 0, cmap_offset, len(cmap))
+    directory += b"maxp" + struct.pack(">LLL", 0, maxp_offset, len(maxp))
+    return header + directory + b"\0" * (cmap_offset - len(header) - len(directory)) + cmap + maxp
+
+
+def test_cmap_accepts_only_unicode_records_and_valid_glyph_ids(tmp_path) -> None:
+    unicode_font = tmp_path / "unicode.ttf"
+    unicode_font.write_bytes(_synthetic_sfnt(platform=3, encoding=10, glyph=1))
+    symbol_font = tmp_path / "symbol.ttf"
+    symbol_font.write_bytes(_synthetic_sfnt(platform=3, encoding=0, glyph=1))
+    bad_gid_font = tmp_path / "bad-gid.ttf"
+    bad_gid_font.write_bytes(_synthetic_sfnt(platform=3, encoding=10, glyph=8))
+    malformed_font = tmp_path / "malformed.ttf"
+    malformed_font.write_bytes(_synthetic_sfnt(platform=3, encoding=10, glyph=1, malformed=True))
+
+    assert cover_renderer._cmap_supports_all(unicode_font, {0x4E00})
+    assert not cover_renderer._cmap_supports_all(symbol_font, {0x4E00})
+    assert not cover_renderer._cmap_supports_all(bad_gid_font, {0x4E00})
+    assert not cover_renderer._cmap_supports_all(malformed_font, {0x4E00})
+
+
+def test_font_cmap_read_is_bounded_by_file_size_before_reading(monkeypatch, tmp_path) -> None:
+    font = tmp_path / "font.ttf"
+    font.write_bytes(b"small")
+    monkeypatch.setattr(cover_renderer, "MAX_FONT_BYTES", 4)
+    assert not cover_renderer._cmap_supports_all(font, {ord("A")})
+
+
+def test_cmap_parser_accepts_format4_and_ttc_unicode_faces(tmp_path) -> None:
+    cmap = struct.pack(">HHHHI", 0, 1, 3, 1, 12)
+    cmap += struct.pack(">HHHHHHH", 4, 24, 0, 2, 2, 0, 0)
+    cmap += struct.pack(">HHHHH", 0x41, 0, 0x41, (1 - 0x41) & 0xFFFF, 0)
+    maxp = struct.pack(">LH", 0x00010000, 2)
+    cmap_offset = 64
+    maxp_offset = cmap_offset + len(cmap)
+    header = struct.pack(">LHHHH", 0x00010000, 2, 0, 0, 0)
+    directory = b"cmap" + struct.pack(">LLL", 0, cmap_offset, len(cmap))
+    directory += b"maxp" + struct.pack(">LLL", 0, maxp_offset, len(maxp))
+    sfnt = bytearray(header + directory + b"\0" * (cmap_offset - len(header) - len(directory)) + cmap + maxp)
+    assert cover_renderer._cmap_supports_all(_write_font(tmp_path / "format4.ttf", sfnt), {0x41})
+
+    for offset in (20, 36):
+        struct.pack_into(">L", sfnt, offset, struct.unpack_from(">L", sfnt, offset)[0] + 16)
+    ttc = b"ttcf" + struct.pack(">LLL", 0x00010000, 1, 16) + bytes(sfnt)
+    assert cover_renderer._cmap_supports_all(_write_font(tmp_path / "font.ttc", ttc), {0x41})
+
+
+def _write_font(path: Path, data: bytes | bytearray) -> Path:
+    path.write_bytes(data)
+    return path
