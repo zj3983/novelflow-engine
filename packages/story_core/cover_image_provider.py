@@ -79,6 +79,7 @@ def _decode_and_validate_image(encoded: str) -> bytes:
         raise
     except (
         Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
         OSError,
         SyntaxError,
         ValueError,
@@ -141,9 +142,10 @@ class OpenAICoverImageProvider:
         url = first.get("url")
         encoded = first.get("b64_json")
         has_usable_url = isinstance(url, str) and bool(url.strip())
-        has_usable_base64 = _base64_preflight(encoded)
-        if has_usable_url and not has_usable_base64:
-            raise CoverImageError("unsupported_image_response")
+        if not _base64_preflight(encoded):
+            if has_usable_url:
+                raise CoverImageError("unsupported_image_response")
+            raise _invalid_image_payload()
         return _decode_and_validate_image(encoded)
 
 

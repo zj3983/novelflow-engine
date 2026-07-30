@@ -6,6 +6,7 @@ import io
 import json
 import socket
 import struct
+import warnings
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -200,6 +201,23 @@ def test_generate_accepts_image_at_encoded_and_decoded_size_boundaries(monkeypat
     assert _provider(_b64_response(source)).generate("cover") == source
 
 
+def test_generate_rejects_failed_base64_preflight_without_decoding(monkeypatch) -> None:
+    source = _image_bytes()
+    response = _b64_response(source)
+    decode_calls = []
+
+    def forbidden_decode(*args, **kwargs):
+        decode_calls.append((args, kwargs))
+        raise AssertionError("base64 decoder should not run after failed preflight")
+
+    monkeypatch.setattr("packages.story_core.cover_image_provider.MAX_DECODED_IMAGE_BYTES", len(source) - 1)
+    monkeypatch.setattr("packages.story_core.cover_image_provider.base64.b64decode", forbidden_decode)
+
+    with pytest.raises(CoverImageError, match="^invalid_image_payload$"):
+        _provider(response).generate("cover")
+    assert decode_calls == []
+
+
 def test_generate_rejects_image_over_40_megapixels_without_loading_pixels() -> None:
     width, height = 7_500, 6_000
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
@@ -215,3 +233,16 @@ def test_generate_rejects_pillow_decompression_bomb_error_without_warning_filter
 
     with pytest.raises(CoverImageError, match="^invalid_image_payload$"):
         _provider(_b64_response(_image_bytes(size=(3, 2)))).generate("cover")
+
+
+def test_generate_maps_externally_escalated_pillow_bomb_warning_without_changing_filter(monkeypatch) -> None:
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 4)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        ambient_filters = list(warnings.filters)
+
+        with pytest.raises(CoverImageError, match="^invalid_image_payload$") as error:
+            _provider(_b64_response(_image_bytes(size=(3, 2)))).generate("cover")
+
+        assert isinstance(error.value.__cause__, Image.DecompressionBombWarning)
+        assert warnings.filters == ambient_filters

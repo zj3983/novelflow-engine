@@ -18,7 +18,12 @@ _COMPAT_FALLBACK_STRIP_FIELDS = ("parameters", "response_format", "temperature")
 
 @dataclass
 class RetryConfig:
-    """Configuration for retry behavior."""
+    """Configuration for retry behavior.
+
+    ``allow_compatibility_fallback`` defaults to ``True``. When enabled, an HTTP
+    400 retries once after stripping optional compatibility fields; set it to
+    ``False`` when every request field is required by the target endpoint.
+    """
     max_retries: int = 2
     initial_delay: float = 0.5  # seconds
     backoff_factor: float = 2.0
@@ -44,7 +49,8 @@ def post_json_with_retry(
         path: API path (e.g. "/chat/completions")
         payload: Request body dict
         api_key: Bearer token
-        config: Optional retry configuration
+        config: Optional retry configuration. Its ``allow_compatibility_fallback``
+            option defaults to enabling the HTTP 400 compatibility fallback.
     
     Returns:
         Parsed JSON response as dict
@@ -54,7 +60,8 @@ def post_json_with_retry(
         json.JSONDecodeError: If response is not valid JSON
 
     Note:
-        On HTTP 400, retries once with provider-specific compatibility fields
+        When ``config.allow_compatibility_fallback`` is enabled (the default), an
+        HTTP 400 retries once with provider-specific compatibility fields
         (parameters, response_format, temperature) stripped, since some
         OpenAI-compatible endpoints reject them.
     """
