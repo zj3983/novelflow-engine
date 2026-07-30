@@ -4,8 +4,11 @@ import json
 import logging
 import os
 import re
+import stat
 import tempfile
 import threading
+import uuid
+import ctypes
 from copy import deepcopy
 from datetime import datetime, timezone
 from functools import wraps
@@ -626,14 +629,281 @@ def _merge_revision_plans(*plans: Any) -> list[str]:
     return merged
 
 
+class _PinnedPublishingFilesystem:
+    """Pin publishing directories for one transaction.
+
+    POSIX operations use the pinned directory descriptors directly (openat /
+    renameat semantics).  Windows keeps every ancestor open without
+    ``FILE_SHARE_DELETE``; the resulting directory handles make an ancestor
+    rename/delete fail until the transaction has cleaned up.
+    """
+
+    _REPARSE_POINT = 0x400
+
+    def __init__(self, root: Path):
+        self.root = Path(root).absolute()
+        self._root_fd: int | None = None
+        self._dir_fds: dict[tuple[str, ...], int] = {}
+        self._posix_root_path: str | None = None
+        self._windows_handles: list[int] = []
+        self._windows_final_root: str | None = None
+
+    def __enter__(self) -> "_PinnedPublishingFilesystem":
+        if os.name == "nt":
+            self._pin_windows_directory(self.root)
+        else:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            self._root_fd = os.open(self.root, flags)
+            if not stat.S_ISDIR(os.fstat(self._root_fd).st_mode):
+                raise ValueError("publishing_asset_write_failed")
+            self._posix_root_path = os.path.realpath(os.readlink(f"/proc/self/fd/{self._root_fd}")) if os.path.exists("/proc/self/fd") else None
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        logger = logging.getLogger(__name__)
+        for descriptor in reversed(list(self._dir_fds.values())):
+            try:
+                os.close(descriptor)
+            except OSError:
+                logger.warning("publishing directory descriptor cleanup deferred")
+        self._dir_fds.clear()
+        if self._root_fd is not None:
+            try:
+                os.close(self._root_fd)
+            except OSError:
+                logger.warning("publishing root descriptor cleanup deferred")
+            self._root_fd = None
+        if os.name == "nt":
+            for handle in reversed(self._windows_handles):
+                if not ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle)):
+                    logger.warning("publishing directory handle cleanup deferred")
+            self._windows_handles.clear()
+
+    def _relative(self, path: Path) -> tuple[str, ...]:
+        try:
+            return Path(path).absolute().relative_to(self.root).parts
+        except ValueError as exc:
+            raise ValueError("publishing_asset_write_failed") from exc
+
+    @staticmethod
+    def _is_asset_target(parts: tuple[str, ...]) -> bool:
+        return len(parts) >= 3 and parts[0] == ".webnovel" and parts[1] == "assets"
+
+    def _parent_fd(self, path: Path, *, create: bool) -> tuple[int, str]:
+        parts = self._relative(path)
+        if not parts:
+            raise ValueError("publishing_asset_write_failed")
+        parent_parts = parts[:-1]
+        current_fd = self._root_fd
+        if current_fd is None:  # pragma: no cover - callers are always in the transaction context
+            raise ValueError("publishing_asset_write_failed")
+        for index, part in enumerate(parent_parts):
+            key = parent_parts[: index + 1]
+            pinned = self._dir_fds.get(key)
+            if pinned is not None:
+                current_fd = pinned
+                continue
+            try:
+                details = os.lstat(part, dir_fd=current_fd)
+            except FileNotFoundError:
+                if not create:
+                    raise ValueError("publishing_asset_write_failed")
+                os.mkdir(part, dir_fd=current_fd)
+                details = os.lstat(part, dir_fd=current_fd)
+            if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
+                raise ValueError("publishing_asset_write_failed")
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(part, flags, dir_fd=current_fd)
+            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                os.close(descriptor)
+                raise ValueError("publishing_asset_write_failed")
+            self._dir_fds[key] = descriptor
+            current_fd = descriptor
+        self._assert_posix_descriptor_contained(current_fd)
+        return current_fd, parts[-1]
+
+    def _assert_posix_descriptor_contained(self, descriptor: int) -> None:
+        """Detect a rename of a pinned directory out of the trusted root on Linux."""
+        if self._posix_root_path is None:
+            return  # Platforms without procfs still use descriptor-relative syscalls.
+        current = os.path.realpath(os.readlink(f"/proc/self/fd/{descriptor}"))
+        try:
+            Path(current).relative_to(self._posix_root_path)
+        except ValueError as exc:
+            raise ValueError("publishing_asset_write_failed") from exc
+
+    @staticmethod
+    def _windows_final_path(handle: int) -> str:
+        kernel32 = ctypes.windll.kernel32
+        needed = kernel32.GetFinalPathNameByHandleW(ctypes.c_void_p(handle), None, 0, 0)
+        if not needed:
+            raise OSError(ctypes.get_last_error(), "GetFinalPathNameByHandleW")
+        buffer = ctypes.create_unicode_buffer(needed + 1)
+        if not kernel32.GetFinalPathNameByHandleW(ctypes.c_void_p(handle), buffer, len(buffer), 0):
+            raise OSError(ctypes.get_last_error(), "GetFinalPathNameByHandleW")
+        return os.path.normcase(os.path.normpath(buffer.value.removeprefix("\\\\?\\")))
+
+    def _pin_windows_directory(self, path: Path) -> None:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        flags = 0x02000000 | 0x00200000  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        handle = kernel32.CreateFileW(
+            str(path), 0x80000000, 0x00000001 | 0x00000002, None, 3, flags, None
+        )
+        if handle == -1 or handle == ctypes.c_void_p(-1).value:
+            raise OSError(ctypes.get_last_error(), "CreateFileW")
+        attrs = kernel32.GetFileAttributesW(str(path))
+        if attrs == 0xFFFFFFFF or attrs & self._REPARSE_POINT:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+            raise ValueError("publishing_asset_write_failed")
+        final = self._windows_final_path(handle)
+        if self._windows_final_root is None:
+            self._windows_final_root = final
+        elif os.path.commonpath([self._windows_final_root, final]) != self._windows_final_root:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+            raise ValueError("publishing_asset_write_failed")
+        self._windows_handles.append(handle)
+
+    def _windows_assert_target(self, path: Path, *, create: bool) -> None:
+        parts = self._relative(path)
+        current = self.root
+        for part in parts[:-1]:
+            current = current / part
+            if not os.path.lexists(current):
+                if not create:
+                    raise ValueError("publishing_asset_write_failed")
+                current.mkdir()
+            self._pin_windows_directory(current)
+        if os.path.lexists(path) and FileProjectStore._is_reparse_point(path):
+            raise ValueError("publishing_asset_write_failed")
+
+    def assert_target(self, path: Path) -> None:
+        parts = self._relative(path)
+        create = self._is_asset_target(parts)
+        if os.name == "nt":
+            self._windows_assert_target(path, create=create)
+            return
+        parent_fd, name = self._parent_fd(path, create=create)
+        try:
+            details = os.lstat(name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(details.st_mode):
+            raise ValueError("publishing_asset_write_failed")
+
+    def exists(self, path: Path) -> bool:
+        self.assert_target(path)
+        if os.name == "nt":
+            return os.path.lexists(path)
+        parent_fd, name = self._parent_fd(path, create=False)
+        try:
+            os.lstat(name, dir_fd=parent_fd)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def read_bytes(self, path: Path) -> bytes:
+        self.assert_target(path)
+        if os.name == "nt":
+            return path.read_bytes()
+        parent_fd, name = self._parent_fd(path, create=False)
+        descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+        try:
+            with os.fdopen(descriptor, "rb") as handle:
+                descriptor = -1
+                return handle.read()
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def prepare(self, path: Path, content: bytes, *, suffix: str) -> Path:
+        self.assert_target(path)
+        if os.name == "nt":
+            return self._prepare_windows(path, content, suffix=suffix)
+        parent_fd, _ = self._parent_fd(path, create=True)
+        name = f".{path.name}.{uuid.uuid4().hex}{suffix}"
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_fd,
+        )
+        temp_path = path.parent / name
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = -1
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
+            try:
+                os.unlink(name, dir_fd=parent_fd)
+            except OSError:
+                logging.getLogger(__name__).warning("publishing temp cleanup deferred: %s", temp_path)
+            raise
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        return temp_path
+
+    def _prepare_windows(self, path: Path, content: bytes, *, suffix: str) -> Path:
+        fd, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=suffix)
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                logging.getLogger(__name__).warning("publishing temp cleanup deferred: %s", temp_path)
+            raise
+        return temp_path
+
+    def replace(self, source: Path, target: Path) -> None:
+        self.assert_target(source)
+        self.assert_target(target)
+        if os.name == "nt":
+            os.replace(source, target)
+            return
+        source_fd, source_name = self._parent_fd(source, create=False)
+        target_fd, target_name = self._parent_fd(target, create=False)
+        os.replace(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
+
+    def unlink(self, path: Path) -> None:
+        self.assert_target(path)
+        if os.name == "nt":
+            path.unlink(missing_ok=True)
+            return
+        parent_fd, name = self._parent_fd(path, create=False)
+        try:
+            os.unlink(name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+
+    def fsync_parent(self, path: Path) -> None:
+        if os.name == "nt":
+            return
+        try:
+            descriptor, _ = self._parent_fd(path, create=False)
+            os.fsync(descriptor)
+        except OSError:
+            pass
+
+
 class FileProjectStore:
     """Read plugin-friendly story project files from a directory."""
+
+    PUBLISHING_ASSET_MAX_BYTES = 20 * 1024 * 1024
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
         self.story_system_dir = self.root / ".story-system"
         self.webnovel_dir = self.root / ".webnovel"
         self.chapters_dir = self.root / "chapters"
+        self._active_publishing_filesystem: _PinnedPublishingFilesystem | None = None
 
     def _read_json(self, path: Path, default: Any = None) -> Any:
         if not path.exists():
@@ -875,9 +1145,41 @@ class FileProjectStore:
     @staticmethod
     def _publishing_path_like_key(key: str) -> bool:
         folded = key.casefold()
-        return folded in {"path", "file", "filename", "url"} or folded.endswith(
-            ("_path", "_file", "_filename", "_url")
+        return folded in {"path", "file", "filename", "url", "uri", "filepath", "file_path"} or folded.endswith(
+            ("_path", "_file", "_filename", "_url", "_uri", "_filepath")
         )
+
+    @classmethod
+    def _sanitize_future_publishing_value(cls, value: Any) -> Any:
+        """Deep-clone JSON-safe future data while removing storage references."""
+        dropped = object()
+
+        def unsafe_string(item: str) -> bool:
+            candidate = item.strip()
+            return bool(
+                candidate.startswith(("/", "\\", "file:"))
+                or re.match(r"^[a-zA-Z]:[\\/]", candidate)
+                or re.search(r"(^|[\\/])\.\.([\\/]|$)", candidate)
+            )
+
+        def clean(item: Any) -> Any:
+            if isinstance(item, str) and unsafe_string(item):
+                return dropped
+            if isinstance(item, dict):
+                sanitized: dict[str, Any] = {}
+                for key, nested in item.items():
+                    if not isinstance(key, str) or cls._publishing_path_like_key(key):
+                        continue
+                    cleaned = clean(nested)
+                    if cleaned is not dropped:
+                        sanitized[key] = cleaned
+                return sanitized
+            if isinstance(item, list):
+                return [cleaned for nested in item if (cleaned := clean(nested)) is not dropped]
+            return item
+
+        cleaned = clean(value)
+        return None if cleaned is dropped else cleaned
 
     @classmethod
     def _normalize_publishing_assets(cls, value: Any) -> dict[str, Any]:
@@ -891,14 +1193,14 @@ class FileProjectStore:
                 continue
             is_safe, safe_item = cls._json_safe_value(item)
             if is_safe:
-                normalized[key] = safe_item
+                normalized[key] = cls._sanitize_future_publishing_value(safe_item)
         updated_at = value.get("updated_at")
         if isinstance(updated_at, str) and updated_at.strip():
             normalized["updated_at"] = updated_at.strip()
         synopsis = value.get("synopsis")
         if isinstance(synopsis, dict):
             try:
-                normalized["synopsis"] = cls._json_safe_dict(synopsis)
+                normalized["synopsis"] = cls._sanitize_future_publishing_value(cls._json_safe_dict(synopsis))
             except ValueError:
                 pass
         raw_cover = value.get("cover")
@@ -912,7 +1214,7 @@ class FileProjectStore:
                 continue
             is_safe, safe_item = cls._json_safe_value(item)
             if is_safe:
-                cover[key] = safe_item
+                cover[key] = cls._sanitize_future_publishing_value(safe_item)
         prompt = raw_cover.get("prompt")
         if isinstance(prompt, str) and prompt.strip():
             cover["prompt"] = prompt.strip()[:2000]
@@ -960,6 +1262,9 @@ class FileProjectStore:
         return path.is_symlink() or bool(getattr(details, "st_file_attributes", 0) & 0x400)
 
     def _assert_publishing_target_safe(self, target: Path) -> None:
+        if self._active_publishing_filesystem is not None:
+            self._active_publishing_filesystem.assert_target(target)
+            return
         target = Path(target)
         try:
             relative = target.absolute().relative_to(self.root)
@@ -972,20 +1277,40 @@ class FileProjectStore:
             current = current / part
             if self._is_reparse_point(current):
                 raise ValueError("publishing_asset_write_failed")
-        if target.exists() and self._is_reparse_point(target):
+        if os.path.lexists(target) and self._is_reparse_point(target):
             raise ValueError("publishing_asset_write_failed")
         if not target.parent.resolve().is_relative_to(self.root):
             raise ValueError("publishing_asset_write_failed")
 
     @staticmethod
     def _complete_project_payload(project: Any) -> bool:
-        return isinstance(project, dict) and isinstance(project.get("project_id"), str) and isinstance(project.get("title"), str)
+        return (
+            isinstance(project, dict)
+            and isinstance(project.get("project_id"), str)
+            and bool(project["project_id"].strip())
+            and isinstance(project.get("title"), str)
+            and bool(project["title"].strip())
+        )
+
+    @classmethod
+    def _complete_master_payload(cls, master: Any) -> bool:
+        return (
+            isinstance(master, dict)
+            and master.get("schema_version") == "story-system-master-setting/v1"
+            and cls._complete_project_payload(master.get("project"))
+        )
 
     def _mutation_metadata_document(self, path: Path) -> dict[str, Any] | None:
         self._assert_publishing_target_safe(path)
-        if not path.exists():
+        filesystem = self._active_publishing_filesystem
+        exists = filesystem.exists(path) if filesystem is not None else os.path.lexists(path)
+        if not exists:
             return None
-        payload = self._read_json(path, None)
+        try:
+            raw = filesystem.read_bytes(path) if filesystem is not None else path.read_bytes()
+            payload = json.loads(raw.decode("utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("publishing_asset_write_failed") from exc
         if not isinstance(payload, dict):
             raise ValueError("publishing_asset_write_failed")
         return dict(payload)
@@ -1001,6 +1326,8 @@ class FileProjectStore:
         return self._publishing_assets_default()
 
     def _prepare_publishing_temp(self, path: Path, content: bytes, *, suffix: str = ".tmp") -> Path:
+        if self._active_publishing_filesystem is not None:
+            return self._active_publishing_filesystem.prepare(path, content, suffix=suffix)
         self._assert_publishing_target_safe(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._assert_publishing_target_safe(path)
@@ -1014,29 +1341,49 @@ class FileProjectStore:
             if os.name != "nt" and path.exists():
                 os.chmod(temp_path, os.stat(path).st_mode & 0o777)
         except Exception:
-            temp_path.unlink(missing_ok=True)
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                logging.getLogger(__name__).warning("publishing temp cleanup deferred: %s", temp_path)
             raise
         return temp_path
 
     def _replace_asset(self, source: Path, target: Path) -> None:
-        os.replace(source, target)
+        if self._active_publishing_filesystem is not None:
+            self._active_publishing_filesystem.replace(source, target)
+        else:
+            os.replace(source, target)
 
     def _replace_metadata(self, source: Path, target: Path) -> None:
-        os.replace(source, target)
+        if self._active_publishing_filesystem is not None:
+            self._active_publishing_filesystem.replace(source, target)
+        else:
+            os.replace(source, target)
 
     def _restore_publishing_backup(self, backup: Path, target: Path) -> None:
         self._assert_publishing_target_safe(target)
-        os.replace(backup, target)
+        if self._active_publishing_filesystem is not None:
+            self._active_publishing_filesystem.replace(backup, target)
+        else:
+            os.replace(backup, target)
 
-    @staticmethod
-    def _best_effort_unlink(path: Path) -> None:
+    def _best_effort_unlink(self, path: Path) -> None:
         try:
-            path.unlink(missing_ok=True)
-        except OSError:
+            if self._active_publishing_filesystem is not None:
+                self._active_publishing_filesystem.unlink(path)
+            else:
+                path.unlink(missing_ok=True)
+        except (OSError, ValueError):
             logging.getLogger(__name__).warning("publishing transaction cleanup deferred: %s", path)
 
     def _best_effort_fsync_parent(self, path: Path) -> None:
         if os.name == "nt":
+            return
+        if self._active_publishing_filesystem is not None:
+            try:
+                self._active_publishing_filesystem.fsync_parent(path)
+            except (OSError, ValueError):
+                logging.getLogger(__name__).warning("publishing parent fsync deferred: %s", path.parent)
             return
         try:
             descriptor = os.open(path.parent, os.O_RDONLY)
@@ -1047,7 +1394,10 @@ class FileProjectStore:
         except OSError:
             pass
         finally:
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError:
+                logging.getLogger(__name__).warning("publishing parent descriptor cleanup deferred: %s", path.parent)
 
     def _publishing_metadata_payloads(
         self,
@@ -1061,7 +1411,7 @@ class FileProjectStore:
             raise ValueError("publishing_asset_write_failed")
         if project is None:
             master_project = master.get("project") if isinstance(master, dict) else None
-            if not self._complete_project_payload(master_project):
+            if not self._complete_master_payload(master) or not self._complete_project_payload(master_project):
                 raise ValueError("publishing_asset_write_failed")
             project = dict(master_project)
         if master is None:
@@ -1087,76 +1437,81 @@ class FileProjectStore:
     ) -> None:
         """Best-effort cross-file transaction; retained .rollback files signal incomplete recovery after a fault."""
         self._validate_publishing_value(publishing_assets)
-        metadata_payloads = self._publishing_metadata_payloads(publishing_assets)
-        metadata_targets = list(metadata_payloads)
+        metadata_targets = [
+            self.webnovel_dir / "project.json",
+            self.story_system_dir / "MASTER_SETTING.json",
+        ]
         asset_targets = [self.cover_base_path, self.rendered_cover_path] if asset_contents is not None else []
         all_targets = asset_targets + metadata_targets
         prepared: list[Path] = []
         rollback_files: dict[Path, Path | None] = {}
         committed: list[Path] = []
-        try:
-            for target in all_targets:
-                self._assert_publishing_target_safe(target)
-                if target.exists():
-                    rollback_files[target] = self._prepare_publishing_temp(
-                        target, target.read_bytes(), suffix=".rollback"
-                    )
-                else:
-                    rollback_files[target] = None
-            if asset_contents is not None:
-                asset_temps: list[Path] = []
-                for target, content in zip(asset_targets, asset_contents, strict=True):
-                    prepared_temp = self._prepare_publishing_temp(target, content)
-                    prepared.append(prepared_temp)
-                    asset_temps.append(prepared_temp)
-            else:
-                asset_temps = []
-
-            metadata_temps: dict[Path, Path] = {}
-            for target, payload in metadata_payloads.items():
-                serialized = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
-                metadata_temps[target] = self._prepare_publishing_temp(target, serialized)
-                prepared.append(metadata_temps[target])
-
-            for source, target in zip(asset_temps, asset_targets, strict=True):
-                self._assert_publishing_target_safe(target)
-                self._replace_asset(source, target)
-                committed.append(target)
-                self._best_effort_fsync_parent(target)
-            for target in metadata_targets:
-                self._assert_publishing_target_safe(target)
-                self._replace_metadata(metadata_temps[target], target)
-                committed.append(target)
-                self._best_effort_fsync_parent(target)
-        except Exception as exc:
-            rollback_errors: list[Exception] = []
-            for target in reversed(committed):
-                try:
-                    backup = rollback_files[target]
-                    if backup is None:
-                        self._assert_publishing_target_safe(target)
-                        target.unlink(missing_ok=True)
+        with _PinnedPublishingFilesystem(self.root) as filesystem:
+            prior_filesystem = self._active_publishing_filesystem
+            self._active_publishing_filesystem = filesystem
+            try:
+                metadata_payloads = self._publishing_metadata_payloads(publishing_assets)
+                metadata_targets = list(metadata_payloads)
+                for target in all_targets:
+                    self._assert_publishing_target_safe(target)
+                    if filesystem.exists(target):
+                        rollback_files[target] = self._prepare_publishing_temp(
+                            target, filesystem.read_bytes(target), suffix=".rollback"
+                        )
                     else:
-                        self._restore_publishing_backup(backup, target)
+                        rollback_files[target] = None
+                if asset_contents is not None:
+                    asset_temps: list[Path] = []
+                    for target, content in zip(asset_targets, asset_contents, strict=True):
+                        prepared_temp = self._prepare_publishing_temp(target, content)
+                        prepared.append(prepared_temp)
+                        asset_temps.append(prepared_temp)
+                else:
+                    asset_temps = []
+
+                metadata_temps: dict[Path, Path] = {}
+                for target, payload in metadata_payloads.items():
+                    serialized = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
+                    metadata_temps[target] = self._prepare_publishing_temp(target, serialized)
+                    prepared.append(metadata_temps[target])
+
+                for source, target in zip(asset_temps, asset_targets, strict=True):
+                    self._replace_asset(source, target)
+                    committed.append(target)
                     self._best_effort_fsync_parent(target)
-                except Exception as rollback_exc:  # pragma: no cover - exercised by fault seams
-                    rollback_errors.append(rollback_exc)
-            for path in prepared:
-                self._best_effort_unlink(path)
-            if rollback_errors:
-                raise ValueError("publishing_asset_write_failed") from ExceptionGroup(
-                    "publishing transaction and recovery failures", [exc, *rollback_errors]
-                )
-            for backup in rollback_files.values():
-                if backup is not None:
-                    self._best_effort_unlink(backup)
-            raise ValueError("publishing_asset_write_failed") from exc
-        finally:
-            for path in prepared:
-                self._best_effort_unlink(path)
-        for backup in rollback_files.values():
-            if backup is not None:
-                self._best_effort_unlink(backup)
+                for target in metadata_targets:
+                    self._replace_metadata(metadata_temps[target], target)
+                    committed.append(target)
+                    self._best_effort_fsync_parent(target)
+                for backup in rollback_files.values():
+                    if backup is not None:
+                        self._best_effort_unlink(backup)
+            except Exception as exc:
+                rollback_errors: list[Exception] = []
+                for target in reversed(committed):
+                    try:
+                        backup = rollback_files[target]
+                        if backup is None:
+                            self._best_effort_unlink(target)
+                        else:
+                            self._restore_publishing_backup(backup, target)
+                        self._best_effort_fsync_parent(target)
+                    except Exception as rollback_exc:  # pragma: no cover - exercised by fault seams
+                        rollback_errors.append(rollback_exc)
+                for path in prepared:
+                    self._best_effort_unlink(path)
+                if rollback_errors:
+                    raise ValueError("publishing_asset_write_failed") from ExceptionGroup(
+                        "publishing transaction and recovery failures", [exc, *rollback_errors]
+                    )
+                for backup in rollback_files.values():
+                    if backup is not None:
+                        self._best_effort_unlink(backup)
+                raise ValueError("publishing_asset_write_failed") from exc
+            finally:
+                for path in prepared:
+                    self._best_effort_unlink(path)
+                self._active_publishing_filesystem = prior_filesystem
 
     @_with_project_update_lock
     def publishing_assets(self) -> dict[str, Any]:
@@ -1219,6 +1574,8 @@ class FileProjectStore:
     ) -> dict[str, Any]:
         try:
             if not isinstance(base_image, bytes) or not isinstance(rendered_image, bytes):
+                raise ValueError("publishing_asset_write_failed")
+            if len(base_image) > self.PUBLISHING_ASSET_MAX_BYTES or len(rendered_image) > self.PUBLISHING_ASSET_MAX_BYTES:
                 raise ValueError("publishing_asset_write_failed")
             if not base_image or not rendered_image or not isinstance(model, str) or not model.strip() or len(model.strip()) > 256:
                 raise ValueError("publishing_asset_write_failed")

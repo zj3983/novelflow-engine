@@ -499,3 +499,179 @@ def test_invalid_publishing_asset_inputs_fail_stably(tmp_path, operation, args):
             store.save_cover_prompt(*args)
         else:
             store.save_cover(prompt="valid", base_image="not-bytes", rendered_image=b"ok", model="m")
+
+
+def test_asset_parent_swap_at_replace_never_writes_external_directory(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_replace = store._replace_asset
+    swapped = False
+
+    def swap_then_replace(source, target):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            assets = store.webnovel_dir / "assets"
+            staged_bytes = source.read_bytes()
+            assets.rename(tmp_path / "displaced-assets")
+            os.symlink(outside, assets, target_is_directory=True)
+            (outside / source.name).write_bytes(staged_bytes)
+        original_replace(source, target)
+
+    monkeypatch.setattr(store, "_replace_asset", swap_then_replace)
+    try:
+        with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+            store.save_cover(prompt="one", base_image=b"base", rendered_image=b"rendered", model="m")
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    assert not (outside / "cover-base.png").exists()
+    assert not (outside / "cover.png").exists()
+
+
+def test_metadata_parent_swap_at_replace_never_writes_external_directory(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    before = (outside / "project.json")
+    before.write_bytes(b"external metadata")
+    original_replace = store._replace_metadata
+    swapped = False
+
+    def swap_then_replace(source, target):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            staged_bytes = source.read_bytes()
+            store.webnovel_dir.rename(tmp_path / "displaced-webnovel")
+            os.symlink(outside, store.webnovel_dir, target_is_directory=True)
+            (outside / source.name).write_bytes(staged_bytes)
+        original_replace(source, target)
+
+    monkeypatch.setattr(store, "_replace_metadata", swap_then_replace)
+    try:
+        with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+            store.save_synopsis({"summary": "new"})
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    assert before.read_bytes() == b"external metadata"
+
+
+def test_normalization_recursively_drops_future_path_values_but_keeps_safe_values(tmp_path):
+    store = _make_store(tmp_path / "novel")
+    project_path = store.webnovel_dir / "project.json"
+    project = _read(project_path)
+    project["publishing_assets"] = {
+        "schema_version": "publishing-assets/v1",
+        "synopsis": {"nested": {"output_path": "../escape", "summary": "safe"}},
+        "cover": {"base_path": "assets/cover-base.png", "rendered_path": "assets/cover.png"},
+        "future": {
+            "nested": {"output_path": "../../escape", "safe": "kept"},
+            "absolute_file": "C:/escape",
+            "url": "https://example.invalid/escape",
+            "untrusted_path_value": "../../escape",
+            "untrusted_absolute_value": "/escape",
+            "items": [{"uri": "file:///escape", "safe": 3}, "../escape", {"note": "safe"}],
+        },
+    }
+    project_path.write_text(json.dumps(project), encoding="utf-8")
+
+    visible = store.publishing_assets()
+
+    assert visible["future"] == {"nested": {"safe": "kept"}, "items": [{"safe": 3}, {"note": "safe"}]}
+    assert visible["synopsis"] == {"nested": {"summary": "safe"}}
+    assert visible["cover"]["base_path"] == "assets/cover-base.png"
+
+
+def test_prepare_temp_preserves_fsync_error_when_cleanup_also_fails(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    original_unlink = Path.unlink
+
+    monkeypatch.setattr(os, "fsync", lambda _fd: (_ for _ in ()).throw(OSError("fsync failed")))
+    monkeypatch.setattr(
+        Path,
+        "unlink",
+        lambda path, *args, **kwargs: (_ for _ in ()).throw(OSError("unlink failed"))
+        if path.suffix == ".tmp"
+        else original_unlink(path, *args, **kwargs),
+    )
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$") as error:
+        store.save_cover(prompt="one", base_image=b"base", rendered_image=b"rendered", model="m")
+
+    assert "fsync failed" in repr(error.value.__cause__)
+
+
+@pytest.mark.parametrize("missing", ["project", "master"])
+def test_missing_metadata_mirror_rejects_empty_identity_counterpart(tmp_path, missing):
+    store = _make_store(tmp_path / "novel")
+    missing_path = store.webnovel_dir / "project.json" if missing == "project" else store.story_system_dir / "MASTER_SETTING.json"
+    missing_path.unlink()
+    counterpart = store.story_system_dir / "MASTER_SETTING.json" if missing == "project" else store.webnovel_dir / "project.json"
+    payload = _read(counterpart)
+    target = payload["project"] if missing == "project" else payload
+    target["title"] = "   "
+    counterpart.write_text(json.dumps(payload), encoding="utf-8")
+    before = counterpart.read_bytes()
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+        store.save_synopsis({"summary": "new"})
+
+    assert counterpart.read_bytes() == before
+    assert not missing_path.exists()
+
+
+def test_missing_project_mirror_rejects_counterpart_with_wrong_master_schema(tmp_path):
+    store = _make_store(tmp_path / "novel")
+    project_path = store.webnovel_dir / "project.json"
+    project_path.unlink()
+    master_path = store.story_system_dir / "MASTER_SETTING.json"
+    master = _read(master_path)
+    master["schema_version"] = "untrusted/v1"
+    master_path.write_text(json.dumps(master), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+        store.save_synopsis({"summary": "new"})
+
+    assert not project_path.exists()
+
+
+@pytest.mark.parametrize("missing", ["project", "master"])
+def test_dangling_metadata_symlink_is_not_treated_as_missing(tmp_path, missing):
+    store = _make_store(tmp_path / "novel")
+    path = store.webnovel_dir / "project.json" if missing == "project" else store.story_system_dir / "MASTER_SETTING.json"
+    path.unlink()
+    try:
+        os.symlink(tmp_path / "does-not-exist.json", path)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+        store.save_synopsis({"summary": "new"})
+
+    assert os.path.lexists(path)
+
+
+def test_cover_byte_cap_rejects_before_creating_assets_or_changing_metadata(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    before = (store.webnovel_dir / "project.json").read_bytes()
+    monkeypatch.setattr(FileProjectStore, "PUBLISHING_ASSET_MAX_BYTES", 3)
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+        store.save_cover(prompt="one", base_image=b"four", rendered_image=b"ok", model="m")
+
+    assert not (store.webnovel_dir / "assets").exists()
+    assert (store.webnovel_dir / "project.json").read_bytes() == before
+
+
+def test_parent_fsync_close_failure_is_best_effort(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    target = tmp_path / "parent" / "file"
+    target.parent.mkdir()
+    monkeypatch.setattr(os, "open", lambda *_args, **_kwargs: 99)
+    monkeypatch.setattr(os, "fsync", lambda _fd: None)
+    monkeypatch.setattr(os, "close", lambda _fd: (_ for _ in ()).throw(OSError("close failed")))
+
+    store._best_effort_fsync_parent(target)
