@@ -31,7 +31,11 @@ def portable_renderer_font(monkeypatch):
     """Keep visual renderer tests independent of host-installed CJK fonts."""
 
     default_font = ImageFont.load_default()
-    monkeypatch.setattr(cover_renderer, "_resolve_font", lambda *_args, **_kwargs: _font_path())
+    monkeypatch.setattr(
+        cover_renderer,
+        "_resolve_font",
+        lambda *_args, **_kwargs: cover_renderer._ResolvedFont(_font_path(), b"portable-font"),
+    )
     monkeypatch.setattr(cover_renderer.ImageFont, "truetype", lambda *_args, **_kwargs: default_font)
 
 
@@ -184,9 +188,13 @@ def test_explicit_font_path_takes_precedence_over_environment(monkeypatch, tmp_p
     explicit_font = tmp_path / "explicit.ttf"
     environment_font = tmp_path / "missing.ttf"
     monkeypatch.setenv("NOVEL_COVER_FONT_PATH", str(environment_font))
-    monkeypatch.setattr(cover_renderer, "_font_supports", lambda path, _title: path == explicit_font)
+    monkeypatch.setattr(
+        cover_renderer,
+        "_load_usable_font",
+        lambda path, _title: cover_renderer._ResolvedFont(path, b"test") if path == explicit_font else None,
+    )
 
-    assert REAL_RESOLVE_FONT("星河", explicit_font) == explicit_font
+    assert REAL_RESOLVE_FONT("星河", explicit_font).path == explicit_font
 
 
 def test_explicit_missing_or_broken_font_is_a_terminal_stable_error(tmp_path) -> None:
@@ -203,9 +211,13 @@ def test_environment_font_is_used_before_default_candidates(monkeypatch) -> None
     monkeypatch.setattr(
         "packages.story_core.cover_renderer.DEFAULT_FONT_CANDIDATES", (Path("missing.ttf"),)
     )
-    monkeypatch.setattr(cover_renderer, "_font_supports", lambda path, _title: path == environment_font)
+    monkeypatch.setattr(
+        cover_renderer,
+        "_load_usable_font",
+        lambda path, _title: cover_renderer._ResolvedFont(path, b"test") if path == environment_font else None,
+    )
 
-    assert REAL_RESOLVE_FONT("星河", None) == environment_font
+    assert REAL_RESOLVE_FONT("星河", None).path == environment_font
 
 
 def test_missing_environment_and_default_fonts_raise_stable_error(monkeypatch) -> None:
@@ -224,7 +236,7 @@ def test_glyph_incomplete_candidate_is_skipped_for_glyph_complete_font(monkeypat
         "packages.story_core.cover_renderer.DEFAULT_FONT_CANDIDATES",
         (Path("C:/Windows/Fonts/arial.ttf"),),
     )
-    monkeypatch.setattr(cover_renderer, "_font_supports", lambda _path, _title: False)
+    monkeypatch.setattr(cover_renderer, "_load_usable_font", lambda _path, _title: None)
     with pytest.raises(CoverRenderError, match="^cover_font_unavailable$"):
         REAL_RESOLVE_FONT("星河", None)
 
@@ -233,9 +245,13 @@ def test_glyph_incomplete_candidate_is_skipped_for_glyph_complete_font(monkeypat
         "packages.story_core.cover_renderer.DEFAULT_FONT_CANDIDATES",
         (Path("C:/Windows/Fonts/arial.ttf"), complete),
     )
-    monkeypatch.setattr(cover_renderer, "_font_supports", lambda path, _title: path == complete)
+    monkeypatch.setattr(
+        cover_renderer,
+        "_load_usable_font",
+        lambda path, _title: cover_renderer._ResolvedFont(path, b"test") if path == complete else None,
+    )
 
-    assert REAL_RESOLVE_FONT("星河", None) == complete
+    assert REAL_RESOLVE_FONT("星河", None).path == complete
 
 
 def test_whitespace_title_and_invalid_image_use_stable_errors() -> None:
@@ -299,10 +315,10 @@ def test_grapheme_clusters_keep_zwj_combining_and_variation_sequences_whole() ->
     assert cover_renderer._grapheme_clusters("A👩‍💻e\u0301✈️B") == ["A", "👩‍💻", "e\u0301", "✈️", "B"]
 
 
-def test_font_coverage_ignores_joiners_and_variation_selectors_but_keeps_combining_marks() -> None:
+def test_font_coverage_requires_joiners_and_combining_marks_but_not_variation_selectors() -> None:
     required = cover_renderer._required_glyph_codepoints("👩‍💻e\u0301✈️")
 
-    assert ord("\u200d") not in required
+    assert ord("\u200d") in required
     assert ord("\ufe0f") not in required
     assert {ord("👩"), ord("💻"), ord("e"), ord("\u0301"), ord("✈")} <= required
 
@@ -432,6 +448,39 @@ def test_generated_true_type_font_integrates_with_freetype_and_rejects_notdef(tm
         render_cover(_image_bytes(), "B", font_path=font_path)
     with pytest.raises(CoverRenderError, match="^cover_font_unavailable$"):
         render_cover(_image_bytes(), "A️", font_path=font_path)
+    with pytest.raises(CoverRenderError, match="^cover_font_unavailable$"):
+        render_cover(_image_bytes(), "A\u200dA", font_path=font_path)
+
+
+def test_jpeg_reader_trims_consumed_bits_and_has_a_symbol_budget() -> None:
+    reader = cover_renderer._JpegBitReader(bytes(range(1, 128)), 0, symbol_budget=10)
+    for _ in range(128):
+        reader.read(1)
+        assert reader.buffer.bit_length() <= 8
+
+    table = {(1, 0): 0, (1, 1): 0}
+    with pytest.raises(ValueError, match="jpeg_validation_budget"):
+        for _ in range(11):
+            cover_renderer._jpeg_huffman_symbol(reader, table)
+
+
+def test_baseline_jpeg_validation_has_a_deterministic_block_ceiling_and_handles_multi_megapixels() -> None:
+    source = Image.effect_noise((1024, 2048), 80)
+    encoded = io.BytesIO()
+    source.save(encoded, format="JPEG", quality=75)
+
+    assert render_cover(encoded.getvalue(), "星河", font_path=_font_path()).startswith(b"\x89PNG")
+    assert cover_renderer.MAX_JPEG_VALIDATION_BLOCKS < cover_renderer.MAX_IMAGE_PIXELS
+
+
+def test_render_uses_validated_font_bytes_after_the_path_is_replaced(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cover_renderer.ImageFont, "truetype", REAL_TRUETYPE)
+    font_path = _build_test_ttf(tmp_path / "swap.ttf")
+    resolved = REAL_RESOLVE_FONT("A", font_path)
+    font_path.write_bytes(b"replaced")
+    monkeypatch.setattr(cover_renderer, "_resolve_font", lambda *_args, **_kwargs: resolved)
+
+    assert render_cover(_image_bytes(), "A").startswith(b"\x89PNG")
 
 
 def _build_test_ttf(path: Path) -> Path:

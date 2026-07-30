@@ -1,4 +1,10 @@
-"""Deterministically compose title-only novel cover PNGs."""
+"""Deterministically compose title-only novel cover PNGs.
+
+Baseline JPEG scans are bounded by a deterministic MCU/block ceiling and
+validated through their Huffman entropy stream. Progressive JPEG remains
+supported through Pillow's decoder, whose multi-scan EOB-run grammar is not
+duplicated by this lightweight validator.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,7 @@ import re
 import stat
 import struct
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 
 import regex
@@ -17,6 +24,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, Unidentified
 CANVAS_SIZE = (768, 1024)
 MAX_IMAGE_PIXELS = 40_000_000
 MAX_FONT_BYTES = 64 * 1024 * 1024
+MAX_JPEG_VALIDATION_BLOCKS = 200_000
 _SUPPORTED_FORMATS = {"PNG", "JPEG", "WEBP"}
 DEFAULT_FONT_CANDIDATES = (
     Path("C:/Windows/Fonts/msyh.ttc"),
@@ -50,6 +58,12 @@ _MAX_TITLE_CHARACTERS = 80
 
 class CoverRenderError(ValueError):
     """A stable, user-safe cover rendering failure."""
+
+
+@dataclass(frozen=True)
+class _ResolvedFont:
+    path: Path
+    data: bytes
 
 
 def render_cover(base_bytes: bytes, title: str, font_path: str | Path | None = None) -> bytes:
@@ -265,8 +279,9 @@ def _read_jpeg_huffman_tables(payload: bytes, tables: dict[tuple[int, int], dict
 
 
 class _JpegBitReader:
-    def __init__(self, data: bytes, position: int) -> None:
+    def __init__(self, data: bytes, position: int, *, symbol_budget: int) -> None:
         self.data, self.position, self.buffer, self.bits = data, position, 0, 0
+        self.symbol_budget = symbol_budget
 
     def read(self, count: int) -> int:
         while self.bits < count:
@@ -289,10 +304,15 @@ class _JpegBitReader:
             self.buffer = (self.buffer << 8) | value
             self.bits += 8
         self.bits -= count
-        return (self.buffer >> self.bits) & ((1 << count) - 1)
+        result = (self.buffer >> self.bits) & ((1 << count) - 1)
+        self.buffer &= (1 << self.bits) - 1 if self.bits else 0
+        return result
 
 
 def _jpeg_huffman_symbol(reader: _JpegBitReader, table: dict[tuple[int, int], int]) -> int:
+    reader.symbol_budget -= 1
+    if reader.symbol_budget < 0:
+        raise ValueError("jpeg_validation_budget")
     code = 0
     for length in range(1, 17):
         code = (code << 1) | reader.read(1)
@@ -312,7 +332,6 @@ def _validate_jpeg_scan(
 ) -> None:
     if set(component for component, _ in scan) != set(frame):
         raise ValueError("unsupported_jpeg_scan")
-    reader = _JpegBitReader(data, position)
     max_h = max(horizontal for horizontal, _vertical in frame.values())
     max_v = max(vertical for _horizontal, vertical in frame.values())
     blocks: list[tuple[dict[tuple[int, int], int], dict[tuple[int, int], int], int]] = []
@@ -324,6 +343,10 @@ def _validate_jpeg_scan(
         horizontal, vertical = frame[component]
         blocks.extend((dc, ac, 0) for _ in range(horizontal * vertical))
     mcu_count = ((width + (8 * max_h) - 1) // (8 * max_h)) * ((height + (8 * max_v) - 1) // (8 * max_v))
+    block_count = mcu_count * len(blocks)
+    if block_count > MAX_JPEG_VALIDATION_BLOCKS:
+        raise ValueError("jpeg_validation_budget")
+    reader = _JpegBitReader(data, position, symbol_budget=block_count * 65)
     for _ in range(mcu_count):
         for dc, ac, _unused in blocks:
             _ = _jpeg_huffman_symbol(reader, dc)
@@ -372,34 +395,40 @@ def _validate_png_idat_stream(
         raise ValueError("png_scanline_length")
 
 
-def _resolve_font(title: str, explicit_path: str | Path | None) -> Path:
+def _resolve_font(title: str, explicit_path: str | Path | None) -> _ResolvedFont:
     if explicit_path is not None:
         candidate = Path(explicit_path)
-        if _font_supports(candidate, title):
-            return candidate
+        resolved = _load_usable_font(candidate, title)
+        if resolved is not None:
+            return resolved
         raise CoverRenderError("cover_font_unavailable")
 
     environment_path = os.environ.get("NOVEL_COVER_FONT_PATH")
     candidates = (Path(environment_path),) if environment_path else ()
     candidates += DEFAULT_FONT_CANDIDATES
     for candidate in candidates:
-        if _font_supports(candidate, title):
-            return candidate
+        resolved = _load_usable_font(candidate, title)
+        if resolved is not None:
+            return resolved
     raise CoverRenderError("cover_font_unavailable")
 
 
 def _font_supports(path: Path, title: str) -> bool:
+    return _load_usable_font(path, title) is not None
+
+
+def _load_usable_font(path: Path, title: str) -> _ResolvedFont | None:
     try:
         data = _read_font_bytes(path)
         if data is None:
-            return False
+            return None
         if not _variation_sequences_supported(title):
-            return False
+            return None
         ImageFont.truetype(io.BytesIO(data), size=32)
         codepoints = _required_glyph_codepoints(title)
-        return _cmap_supports_data(data, codepoints)
+        return _ResolvedFont(path, data) if _cmap_supports_data(data, codepoints) else None
     except (OSError, ValueError, struct.error):
-        return False
+        return None
 
 
 def _cmap_supports_all(path: Path, codepoints: set[int]) -> bool:
@@ -615,7 +644,6 @@ def _required_glyph_codepoints(title: str) -> set[int]:
         ord(character)
         for character in title
         if not character.isspace()
-        and character not in {"\u200c", "\u200d"}
         and not _is_variation_selector(character)
     }
 
@@ -625,7 +653,7 @@ def _is_variation_selector(character: str) -> bool:
     return 0xFE00 <= codepoint <= 0xFE0F or 0xE0100 <= codepoint <= 0xE01EF
 
 
-def _draw_title(canvas: Image.Image, title: str, font_file: Path) -> None:
+def _draw_title(canvas: Image.Image, title: str, font_file: _ResolvedFont) -> None:
     shadow = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
     try:
         shadow_draw = ImageDraw.Draw(shadow)
@@ -649,9 +677,9 @@ def _draw_title(canvas: Image.Image, title: str, font_file: Path) -> None:
 
 
 def _draw_vertical_title(
-    draw: ImageDraw.ImageDraw, title: str, font_file: Path, *, shadow: bool = False
+    draw: ImageDraw.ImageDraw, title: str, font_file: _ResolvedFont, *, shadow: bool = False
 ) -> None:
-    font = ImageFont.truetype(str(font_file), size=100)
+    font = ImageFont.truetype(io.BytesIO(font_file.data), size=100)
     clusters = _grapheme_clusters(title)
     sample_box = draw.textbbox((0, 0), clusters[0], font=font, stroke_width=_STROKE_WIDTH)
     glyph_height = sample_box[3] - sample_box[1]
@@ -666,13 +694,13 @@ def _draw_vertical_title(
 
 
 def _draw_wrapped_title(
-    draw: ImageDraw.ImageDraw, title: str, font_file: Path, *, shadow: bool = False
+    draw: ImageDraw.ImageDraw, title: str, font_file: _ResolvedFont, *, shadow: bool = False
 ) -> None:
     max_width = _SAFE_RIGHT - _SAFE_LEFT - _SHADOW_OFFSET[0] - _SHADOW_BLUR_RADIUS
     max_height = _SAFE_BOTTOM - _SAFE_TOP - _SHADOW_OFFSET[1] - _SHADOW_BLUR_RADIUS
     chosen: tuple[ImageFont.FreeTypeFont, list[str], int, int] | None = None
     for size in range(96, 23, -2):
-        font = ImageFont.truetype(str(font_file), size=size)
+        font = ImageFont.truetype(io.BytesIO(font_file.data), size=size)
         lines = _wrap_lines(draw, title, font, max_width)
         line_boxes = [draw.textbbox((0, 0), line, font=font, stroke_width=_STROKE_WIDTH) for line in lines]
         line_height = max(box[3] - box[1] for box in line_boxes)
