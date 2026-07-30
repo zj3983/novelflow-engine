@@ -4,10 +4,13 @@ import io
 import inspect
 import struct
 import warnings
+import zlib
 from pathlib import Path
 
 import pytest
 from PIL import Image, ImageChops, ImageFile, ImageFont, PngImagePlugin
+from fontTools.fontBuilder import FontBuilder
+from fontTools.pens.ttGlyphPen import TTGlyphPen
 
 from packages.story_core import cover_renderer
 from packages.story_core.cover_renderer import CoverRenderError, render_cover
@@ -16,6 +19,7 @@ from packages.story_core.cover_renderer import CoverRenderError, render_cover
 CANVAS = (768, 1024)
 BASE = (19, 45, 79)
 REAL_RESOLVE_FONT = cover_renderer._resolve_font
+REAL_TRUETYPE = cover_renderer.ImageFont.truetype
 
 
 def _font_path() -> Path:
@@ -261,8 +265,9 @@ def test_renderer_maps_an_externally_lowered_pillow_bomb_threshold_stably(monkey
             render_cover(_image_bytes(size=(3, 2)), "星河", font_path=_font_path())
 
 
-def test_renderer_rejects_png_missing_iend_even_when_pillow_allows_truncation(monkeypatch) -> None:
-    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", True)
+@pytest.mark.parametrize("allow_truncated", [False, True])
+def test_renderer_rejects_png_missing_iend_regardless_of_pillow_truncation_setting(monkeypatch, allow_truncated) -> None:
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", allow_truncated)
     source = _image_bytes()
     with pytest.raises(CoverRenderError, match="^invalid_cover_image$"):
         render_cover(source[:-12], "星河", font_path=_font_path())
@@ -369,4 +374,77 @@ def test_cmap_parser_accepts_format4_and_ttc_unicode_faces(tmp_path) -> None:
 
 def _write_font(path: Path, data: bytes | bytearray) -> Path:
     path.write_bytes(data)
+    return path
+
+
+def test_png_container_rejects_bad_crc_and_repaired_compressed_stream() -> None:
+    valid = _image_bytes()
+    damaged_crc = bytearray(valid)
+    damaged_crc[45] ^= 1
+    with pytest.raises(ValueError):
+        cover_renderer._validate_png_container(bytes(damaged_crc))
+
+    payload = zlib.compress(b"\0" * 400)
+    repaired = payload[:-4] + payload[-2:]
+    with pytest.raises(ValueError):
+        cover_renderer._validate_png_idat_stream(repaired, 20, 20, 8, 2, 0)
+
+
+@pytest.mark.parametrize("allow_truncated", [False, True])
+def test_renderer_rejects_jpeg_with_removed_entropy_and_restored_eoi(monkeypatch, allow_truncated) -> None:
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", allow_truncated)
+    source = Image.effect_noise((100, 100), 100).convert("RGB")
+    encoded = io.BytesIO()
+    source.save(encoded, format="JPEG", quality=90)
+    repaired = encoded.getvalue()[:-(66)] + b"\xff\xd9"
+
+    with pytest.raises(CoverRenderError, match="^invalid_cover_image$"):
+        render_cover(repaired, "星河", font_path=_font_path())
+
+
+@pytest.mark.parametrize("title", ["️", "\u200d", "\u200c", "\u0301"])
+def test_titles_with_only_default_ignorables_or_combining_marks_are_rejected(title: str) -> None:
+    with pytest.raises(CoverRenderError, match="^cover_title_required$"):
+        render_cover(_image_bytes(), title, font_path=_font_path())
+
+
+def test_han_clusters_with_variation_selectors_stay_vertical_but_need_font_proof() -> None:
+    assert cover_renderer._is_short_han_title("星️河")
+    assert not cover_renderer._variation_sequences_supported("星️河")
+
+
+def test_valid_progressive_jpeg_remains_supported() -> None:
+    source = Image.effect_noise((40, 40), 50).convert("RGB")
+    encoded = io.BytesIO()
+    source.save(encoded, format="JPEG", progressive=True)
+
+    assert render_cover(encoded.getvalue(), "星河", font_path=_font_path()).startswith(b"\x89PNG")
+
+
+def test_generated_true_type_font_integrates_with_freetype_and_rejects_notdef(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cover_renderer, "_resolve_font", REAL_RESOLVE_FONT)
+    monkeypatch.setattr(cover_renderer.ImageFont, "truetype", REAL_TRUETYPE)
+    font_path = _build_test_ttf(tmp_path / "minimal.ttf")
+
+    assert cover_renderer._font_supports(font_path, "A")
+    assert render_cover(_image_bytes(), "A", font_path=font_path).startswith(b"\x89PNG")
+    with pytest.raises(CoverRenderError, match="^cover_font_unavailable$"):
+        render_cover(_image_bytes(), "B", font_path=font_path)
+    with pytest.raises(CoverRenderError, match="^cover_font_unavailable$"):
+        render_cover(_image_bytes(), "A️", font_path=font_path)
+
+
+def _build_test_ttf(path: Path) -> Path:
+    glyphs = {name: TTGlyphPen(None).glyph() for name in (".notdef", "A")}
+    builder = FontBuilder(1024, isTTF=True)
+    builder.setupGlyphOrder([".notdef", "A"])
+    builder.setupCharacterMap({ord("A"): "A"})
+    builder.setupGlyf(glyphs)
+    builder.setupHorizontalMetrics({".notdef": (512, 0), "A": (512, 0)})
+    builder.setupHorizontalHeader(ascent=800, descent=-200)
+    builder.setupNameTable({"familyName": "Cover Test", "styleName": "Regular"})
+    builder.setupOS2()
+    builder.setupPost()
+    builder.setupMaxp()
+    builder.save(path)
     return path

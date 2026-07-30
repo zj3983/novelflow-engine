@@ -5,7 +5,9 @@ from __future__ import annotations
 import io
 import os
 import re
+import stat
 import struct
+import zlib
 from pathlib import Path
 
 import regex
@@ -86,6 +88,8 @@ def _normalise_title(title: str) -> str:
     if not isinstance(title, str) or not title.strip():
         raise CoverRenderError("cover_title_required")
     text = re.sub(r"\s+", " ", title.strip())
+    if not _title_clusters_have_visible_bases(text):
+        raise CoverRenderError("cover_title_required")
     if len(text) > _MAX_TITLE_CHARACTERS:
         raise CoverRenderError("cover_title_too_long")
     return text
@@ -128,6 +132,7 @@ def _validate_image_container(data: bytes, image_format: str) -> None:
     elif image_format == "JPEG":
         if len(data) < 4 or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
             raise ValueError("incomplete_jpeg")
+        _validate_baseline_jpeg_entropy(data)
     elif image_format == "WEBP":
         if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
             raise ValueError("incomplete_webp")
@@ -141,6 +146,9 @@ def _validate_png_container(data: bytes) -> None:
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         raise ValueError("invalid_png")
     position = 8
+    chunks_seen: list[bytes] = []
+    idat = bytearray()
+    ihdr: tuple[int, int, int, int, int] | None = None
     while position < len(data):
         if position + 12 > len(data):
             raise ValueError("truncated_png")
@@ -148,12 +156,220 @@ def _validate_png_container(data: bytes) -> None:
         end = position + 12 + length
         if end > len(data):
             raise ValueError("truncated_png")
-        if data[position + 4 : position + 8] == b"IEND":
+        chunk_type = data[position + 4 : position + 8]
+        payload = data[position + 8 : end - 4]
+        expected_crc = _u32(data, end - 4)
+        if zlib.crc32(chunk_type + payload) & 0xFFFFFFFF != expected_crc:
+            raise ValueError("png_crc")
+        if not chunks_seen and chunk_type != b"IHDR":
+            raise ValueError("png_order")
+        if chunk_type == b"IHDR":
+            if chunks_seen or length != 13:
+                raise ValueError("png_ihdr")
+            width, height, bit_depth, color_type, compression, filter_method, interlace = struct.unpack_from(
+                ">IIBBBBB", payload
+            )
+            if compression != 0 or filter_method != 0:
+                raise ValueError("unsupported_png")
+            ihdr = width, height, bit_depth, color_type, interlace
+        elif chunk_type == b"IDAT":
+            if ihdr is None or (b"IEND" in chunks_seen):
+                raise ValueError("png_order")
+            idat.extend(payload)
+        elif chunk_type == b"IEND":
             if length != 0 or end != len(data):
                 raise ValueError("invalid_png_end")
+            if ihdr is None or not idat:
+                raise ValueError("png_missing_data")
+            _validate_png_idat_stream(bytes(idat), *ihdr)
             return
+        chunks_seen.append(chunk_type)
         position = end
     raise ValueError("missing_png_end")
+
+
+def _validate_baseline_jpeg_entropy(data: bytes) -> None:
+    """Verify a baseline JPEG scan has enough Huffman-coded blocks for its MCU grid."""
+
+    position = 2
+    frame: dict[int, tuple[int, int]] | None = None
+    huffman: dict[tuple[int, int], dict[tuple[int, int], int]] = {}
+    while position + 1 < len(data):
+        if data[position] != 0xFF:
+            raise ValueError("jpeg_marker")
+        while position < len(data) and data[position] == 0xFF:
+            position += 1
+        if position >= len(data):
+            raise ValueError("jpeg_marker")
+        marker = data[position]
+        position += 1
+        if marker == 0xD9:
+            raise ValueError("jpeg_missing_scan")
+        if marker in {0xD8, 0x01} or 0xD0 <= marker <= 0xD7:
+            continue
+        if position + 2 > len(data):
+            raise ValueError("jpeg_segment")
+        length = struct.unpack_from(">H", data, position)[0]
+        end = position + length
+        if length < 2 or end > len(data):
+            raise ValueError("jpeg_segment")
+        payload = data[position + 2 : end]
+        position = end
+        if marker == 0xC0:
+            if len(payload) < 6 or payload[0] != 8 or len(payload) != 6 + payload[5] * 3:
+                raise ValueError("unsupported_jpeg")
+            frame = {payload[6 + index * 3]: (payload[7 + index * 3] >> 4, payload[7 + index * 3] & 15) for index in range(payload[5])}
+            width, height = struct.unpack_from(">HH", payload, 1)
+        elif marker == 0xC4:
+            _read_jpeg_huffman_tables(payload, huffman)
+        elif marker == 0xDA:
+            if frame is None or len(payload) < 3 or payload[-3:] != b"\x00\x3f\x00":
+                raise ValueError("unsupported_jpeg")
+            count = payload[0]
+            if len(payload) != 1 + count * 2 + 3:
+                raise ValueError("jpeg_scan")
+            scan = [(payload[1 + index * 2], payload[2 + index * 2]) for index in range(count)]
+            _validate_jpeg_scan(data, position, width, height, frame, scan, huffman)
+            return
+        elif marker == 0xC2:  # Progressive JPEG has multi-scan EOB-run semantics.
+            return
+        elif marker in {0xC1, 0xC3, 0xC9, 0xCA, 0xCB}:  # extended/lossless/arithmetic
+            raise ValueError("unsupported_jpeg")
+    raise ValueError("jpeg_missing_scan")
+
+
+def _read_jpeg_huffman_tables(payload: bytes, tables: dict[tuple[int, int], dict[tuple[int, int], int]]) -> None:
+    position = 0
+    while position < len(payload):
+        if position + 17 > len(payload):
+            raise ValueError("jpeg_dht")
+        table_id = payload[position]
+        table_class, table_number = table_id >> 4, table_id & 15
+        if table_class > 1 or table_number > 3:
+            raise ValueError("jpeg_dht")
+        counts = payload[position + 1 : position + 17]
+        value_count = sum(counts)
+        end = position + 17 + value_count
+        if end > len(payload):
+            raise ValueError("jpeg_dht")
+        code = 0
+        values = iter(payload[position + 17 : end])
+        table: dict[tuple[int, int], int] = {}
+        for length, count in enumerate(counts, start=1):
+            for _ in range(count):
+                table[length, code] = next(values)
+                code += 1
+            code <<= 1
+        tables[table_class, table_number] = table
+        position = end
+
+
+class _JpegBitReader:
+    def __init__(self, data: bytes, position: int) -> None:
+        self.data, self.position, self.buffer, self.bits = data, position, 0, 0
+
+    def read(self, count: int) -> int:
+        while self.bits < count:
+            if self.position >= len(self.data):
+                raise ValueError("truncated_jpeg_entropy")
+            value = self.data[self.position]
+            self.position += 1
+            if value == 0xFF:
+                if self.position >= len(self.data):
+                    raise ValueError("truncated_jpeg_entropy")
+                following = self.data[self.position]
+                self.position += 1
+                if following == 0x00:
+                    value = 0xFF
+                elif 0xD0 <= following <= 0xD7:
+                    self.buffer = self.bits = 0
+                    continue
+                else:
+                    raise ValueError("premature_jpeg_marker")
+            self.buffer = (self.buffer << 8) | value
+            self.bits += 8
+        self.bits -= count
+        return (self.buffer >> self.bits) & ((1 << count) - 1)
+
+
+def _jpeg_huffman_symbol(reader: _JpegBitReader, table: dict[tuple[int, int], int]) -> int:
+    code = 0
+    for length in range(1, 17):
+        code = (code << 1) | reader.read(1)
+        if (length, code) in table:
+            return table[length, code]
+    raise ValueError("jpeg_huffman")
+
+
+def _validate_jpeg_scan(
+    data: bytes,
+    position: int,
+    width: int,
+    height: int,
+    frame: dict[int, tuple[int, int]],
+    scan: list[tuple[int, int]],
+    tables: dict[tuple[int, int], dict[tuple[int, int], int]],
+) -> None:
+    if set(component for component, _ in scan) != set(frame):
+        raise ValueError("unsupported_jpeg_scan")
+    reader = _JpegBitReader(data, position)
+    max_h = max(horizontal for horizontal, _vertical in frame.values())
+    max_v = max(vertical for _horizontal, vertical in frame.values())
+    blocks: list[tuple[dict[tuple[int, int], int], dict[tuple[int, int], int], int]] = []
+    for component, selectors in scan:
+        dc = tables.get((0, selectors >> 4))
+        ac = tables.get((1, selectors & 15))
+        if dc is None or ac is None:
+            raise ValueError("jpeg_huffman")
+        horizontal, vertical = frame[component]
+        blocks.extend((dc, ac, 0) for _ in range(horizontal * vertical))
+    mcu_count = ((width + (8 * max_h) - 1) // (8 * max_h)) * ((height + (8 * max_v) - 1) // (8 * max_v))
+    for _ in range(mcu_count):
+        for dc, ac, _unused in blocks:
+            _ = _jpeg_huffman_symbol(reader, dc)
+            reader.read(_)
+            coefficient = 1
+            while coefficient < 64:
+                symbol = _jpeg_huffman_symbol(reader, ac)
+                run, size = symbol >> 4, symbol & 15
+                if size == 0:
+                    if run == 0:
+                        break
+                    if run != 15:
+                        raise ValueError("jpeg_ac")
+                    coefficient += 16
+                else:
+                    coefficient += run + 1
+                    if coefficient > 64:
+                        raise ValueError("jpeg_ac")
+                    reader.read(size)
+
+
+def _validate_png_idat_stream(
+    compressed: bytes, width: int, height: int, bit_depth: int, color_type: int, interlace: int
+) -> None:
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color_type)
+    if channels is None or bit_depth not in {1, 2, 4, 8, 16} or interlace not in {0, 1}:
+        raise ValueError("unsupported_png")
+    bits_per_pixel = channels * bit_depth
+    if interlace == 0:
+        expected = height * (1 + ((width * bits_per_pixel + 7) // 8))
+    else:
+        expected = 0
+        for start_x, start_y, step_x, step_y in ((0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)):
+            pass_width = max(0, (width - start_x + step_x - 1) // step_x)
+            pass_height = max(0, (height - start_y + step_y - 1) // step_y)
+            if pass_width and pass_height:
+                expected += pass_height * (1 + ((pass_width * bits_per_pixel + 7) // 8))
+    decoder = zlib.decompressobj()
+    decoded = decoder.decompress(compressed, expected + 1)
+    if len(decoded) > expected or decoder.unconsumed_tail:
+        raise ValueError("png_scanline_length")
+    decoded += decoder.flush(expected + 1 - len(decoded))
+    if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+        raise ValueError("truncated_png_idat")
+    if len(decoded) != expected:
+        raise ValueError("png_scanline_length")
 
 
 def _resolve_font(title: str, explicit_path: str | Path | None) -> Path:
@@ -174,11 +390,14 @@ def _resolve_font(title: str, explicit_path: str | Path | None) -> Path:
 
 def _font_supports(path: Path, title: str) -> bool:
     try:
-        if not path.is_file() or path.stat().st_size > MAX_FONT_BYTES:
+        data = _read_font_bytes(path)
+        if data is None:
             return False
-        ImageFont.truetype(str(path), size=32)
+        if not _variation_sequences_supported(title):
+            return False
+        ImageFont.truetype(io.BytesIO(data), size=32)
         codepoints = _required_glyph_codepoints(title)
-        return _cmap_supports_all(path, codepoints)
+        return _cmap_supports_data(data, codepoints)
     except (OSError, ValueError, struct.error):
         return False
 
@@ -189,13 +408,39 @@ def _cmap_supports_all(path: Path, codepoints: set[int]) -> bool:
     if not codepoints:
         return True
     try:
-        if path.stat().st_size > MAX_FONT_BYTES:
+        data = _read_font_bytes(path)
+        if data is None:
             return False
-        data = path.read_bytes()
+        return _cmap_supports_data(data, codepoints)
+    except (IndexError, OSError, ValueError, struct.error):
+        return False
+
+
+def _read_font_bytes(path: Path) -> bytes | None:
+    """Open once, fstat the opened target, and bound the read from that handle.
+
+    Symlinks are allowed only when their opened target is a regular file.
+    """
+
+    try:
+        with path.open("rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode) or size < 1 or size > MAX_FONT_BYTES:
+                return None
+            data = handle.read(MAX_FONT_BYTES + 1)
+    except OSError:
+        return None
+    return data if len(data) == size and len(data) <= MAX_FONT_BYTES else None
+
+
+def _cmap_supports_data(data: bytes, codepoints: set[int]) -> bool:
+    try:
         face_offset = _sfnt_face_offset(data)
         cmap_offset, cmap_length = _table_location(data, face_offset, b"cmap")
         maxp_offset, maxp_length = _table_location(data, face_offset, b"maxp")
         if maxp_length < 6 or maxp_offset + 6 > len(data):
+            return False
+        if _u32(data, maxp_offset) not in {0x00005000, 0x00010000}:
             return False
         glyph_count = _u16(data, maxp_offset + 4)
         if glyph_count < 1:
@@ -254,7 +499,10 @@ def _table_location(data: bytes, face_offset: int, tag: bytes) -> tuple[int, int
     for index in range(table_count):
         record = face_offset + 12 + (index * 16)
         if data[record : record + 4] == tag:
-            return _u32(data, record + 8), _u32(data, record + 12)
+            offset, length = _u32(data, record + 8), _u32(data, record + 12)
+            if offset > len(data) or length > len(data) - offset:
+                raise ValueError("table_out_of_bounds")
+            return offset, length
     raise ValueError("table_missing")
 
 
@@ -292,14 +540,17 @@ def _format4_glyph(data: bytes, offset: int, limit: int, codepoint: int) -> int 
         return None
     length = _u16(data, offset + 2)
     end = offset + length
-    seg_count = _u16(data, offset + 6) // 2
-    if length < 16 or end > limit or seg_count == 0:
+    seg_count_x2 = _u16(data, offset + 6)
+    seg_count = seg_count_x2 // 2
+    if length < 16 or end > limit or seg_count == 0 or seg_count_x2 % 2:
         return None
     end_codes = offset + 14
     start_codes = end_codes + (seg_count * 2) + 2
     deltas = start_codes + (seg_count * 2)
     ranges = deltas + (seg_count * 2)
     if ranges + (seg_count * 2) > end:
+        return None
+    if _u16(data, end_codes + (seg_count * 2)) != 0:
         return None
     for index in range(seg_count):
         start = _u16(data, start_codes + (index * 2))
@@ -335,8 +586,28 @@ def _grapheme_clusters(text: str) -> list[str]:
 def _is_short_han_title(title: str) -> bool:
     clusters = _grapheme_clusters(title)
     return 2 <= len(clusters) <= 6 and all(
-        regex.fullmatch(r"\p{Script=Han}+", cluster) is not None for cluster in clusters
+        regex.fullmatch(r"\p{Script=Han}+", _visible_cluster_bases(cluster)) is not None for cluster in clusters
     )
+
+
+def _title_clusters_have_visible_bases(title: str) -> bool:
+    return all(_visible_cluster_bases(cluster) for cluster in _grapheme_clusters(title))
+
+
+def _visible_cluster_bases(cluster: str) -> str:
+    return "".join(
+        character
+        for character in cluster
+        if character not in {"\u200c", "\u200d"}
+        and not _is_variation_selector(character)
+        and not regex.fullmatch(r"\p{M}", character)
+    )
+
+
+def _variation_sequences_supported(title: str) -> bool:
+    """Fail closed until a selected font proves each Unicode variation sequence."""
+
+    return not any(_is_variation_selector(character) for character in title)
 
 
 def _required_glyph_codepoints(title: str) -> set[int]:
