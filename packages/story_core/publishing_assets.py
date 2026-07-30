@@ -16,6 +16,7 @@ _OUTLINE_OVERALL_FIELDS = (
     "theme",
     "overall_arc",
 )
+_MAX_SERIALIZED_CONTEXT_CHARS = 11_999
 
 
 def _bounded_text(value: Any, limit: int) -> str:
@@ -30,6 +31,11 @@ class FanqieSynopsis(BaseModel):
     body: str = Field(min_length=200, max_length=450)
     pattern: Literal["conflict", "contrast", "micro_scene"]
     visual_hook: str = ""
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def normalize_body(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -55,6 +61,55 @@ class PublishingContext(BaseModel):
     world_summary: str = Field(default="", max_length=2000)
     protagonists: list[dict[str, str]] = Field(default_factory=list, max_length=8)
     outline_summary: dict[str, object] = Field(default_factory=dict)
+
+
+def _halve_optional_text(data: dict[str, Any]) -> bool:
+    """Reduce every optional text value once, preserving the required title."""
+    changed = False
+
+    def halve(mapping: dict[str, Any], key: str) -> None:
+        nonlocal changed
+        value = mapping.get(key)
+        if isinstance(value, str) and value:
+            mapping[key] = value[: len(value) // 2]
+            changed = True
+
+    for key in ("novel_type", "opening_idea", "world_summary"):
+        halve(data, key)
+
+    protagonists = data.get("protagonists")
+    if isinstance(protagonists, list):
+        for protagonist in protagonists:
+            if isinstance(protagonist, dict):
+                for key in ("goal", "role", "name"):
+                    halve(protagonist, key)
+
+    outline_summary = data.get("outline_summary")
+    if isinstance(outline_summary, dict):
+        overall = outline_summary.get("overall")
+        if isinstance(overall, dict):
+            for key in sorted(overall):
+                halve(overall, key)
+        arcs = outline_summary.get("arcs")
+        if isinstance(arcs, list):
+            for arc in arcs:
+                if isinstance(arc, dict):
+                    for key in ("main_conflict", "summary", "name"):
+                        halve(arc, key)
+    return changed
+
+
+def _enforce_serialized_budget(context: PublishingContext) -> PublishingContext:
+    """Apply finite, deterministic reductions using the actual JSON size."""
+    data = context.model_dump()
+    for _ in range(16):
+        compact = PublishingContext.model_validate(data)
+        if len(compact.model_dump_json()) <= _MAX_SERIALIZED_CONTEXT_CHARS:
+            return compact
+        if not _halve_optional_text(data):
+            break
+
+    return PublishingContext(title=context.title)
 
 
 def _bounded_outline_summary(outline: dict) -> dict[str, object]:
@@ -149,7 +204,7 @@ def build_publishing_context(
         state.get("genre") or project.get("genre") or project.get("novel_type") or opening_brief.get("novel_type_id"),
         120,
     )
-    return PublishingContext(
+    context = PublishingContext(
         title=title,
         novel_type=novel_type,
         opening_idea=_bounded_text(opening_brief.get("idea"), 1000),
@@ -157,3 +212,4 @@ def build_publishing_context(
         protagonists=_bounded_characters(project, state),
         outline_summary=_bounded_outline_summary(outline),
     )
+    return _enforce_serialized_budget(context)

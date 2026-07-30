@@ -21,6 +21,18 @@ def test_fanqie_synopsis_normalizes_unique_tags_and_preserves_visual_hook() -> N
     assert synopsis.visual_hook == "血月下的渡船"
 
 
+def test_fanqie_synopsis_strips_body_before_validating_and_storing() -> None:
+    body = "陆沉醒来后发现渡船已驶入归墟，甲板上每个人都在倒数自己的死期。" * 8
+
+    synopsis = FanqieSynopsis(
+        tags=["穿越", "成长", "无系统", "克系"],
+        body=f"  \n{body}\t ",
+        pattern="micro_scene",
+    )
+
+    assert synopsis.body == body
+
+
 @pytest.mark.parametrize(
     ("kwargs", "error_field"),
     [
@@ -115,6 +127,41 @@ def test_publishing_context_applies_deterministic_caps_to_oversized_inputs() -> 
     assert all(len(character["goal"]) <= 240 for character in context.protagonists)
     assert len(context.outline_summary["arcs"]) <= 6
     assert len(serialized) < 12_000
+
+
+def test_publishing_context_enforces_json_serialization_budget_after_escaping() -> None:
+    escaped_text = "\\\x00" * 20_000
+    context = build_publishing_context(
+        project={
+            "title": "归墟行舟" + escaped_text,
+            "world_summary": "归墟吞没失约者。" + escaped_text,
+            "character_profiles": [
+                {
+                    "name": f"角色{index}" + escaped_text,
+                    "role": "同行者" + escaped_text,
+                    "goal": "活着靠岸" + escaped_text,
+                }
+                for index in range(8)
+            ],
+        },
+        state={"genre": "玄幻" + escaped_text},
+        opening_brief={"idea": "亡魂渡船" + escaped_text},
+        outline={
+            "overall": {"main_conflict": "活着靠岸" + escaped_text},
+            "arcs": [
+                {
+                    "name": "第一卷" + escaped_text,
+                    "summary": "争夺船票" + escaped_text,
+                    "main_conflict": "渡船封闭" + escaped_text,
+                }
+                for _ in range(5)
+            ],
+        },
+    )
+
+    assert context.title.startswith("归墟行舟")
+    assert context.outline_summary["overall"]["main_conflict"].startswith("活着靠岸")
+    assert len(context.model_dump_json()) < 12_000
 
 
 def test_publishing_context_uses_fallback_title() -> None:
