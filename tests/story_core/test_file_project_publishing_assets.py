@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.story_core.file_project_store import FileProjectStore
+from packages.story_core.file_project_store import FileProjectStore, _PinnedPublishingFilesystem
 
 
 EXPECTED_EMPTY = {
@@ -507,19 +507,32 @@ def test_asset_parent_swap_at_replace_never_writes_external_directory(tmp_path, 
     outside.mkdir()
     original_replace = store._replace_asset
     swapped = False
+    rename_attempted = False
+    rename_completed = False
+    replace_reached = False
+    final_replace_calls = []
+    original_os_replace = os.replace
+
+    def record_final_replace(source, target, *args, **kwargs):
+        final_replace_calls.append((source, target))
+        return original_os_replace(source, target, *args, **kwargs)
 
     def swap_then_replace(source, target):
-        nonlocal swapped
+        nonlocal swapped, rename_attempted, rename_completed, replace_reached
         if not swapped:
             swapped = True
             assets = store.webnovel_dir / "assets"
             staged_bytes = source.read_bytes()
+            rename_attempted = True
             assets.rename(tmp_path / "displaced-assets")
+            rename_completed = True
             os.symlink(outside, assets, target_is_directory=True)
             (outside / source.name).write_bytes(staged_bytes)
+        replace_reached = True
         original_replace(source, target)
 
     monkeypatch.setattr(store, "_replace_asset", swap_then_replace)
+    monkeypatch.setattr(os, "replace", record_final_replace)
     try:
         with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
             store.save_cover(prompt="one", base_image=b"base", rendered_image=b"rendered", model="m")
@@ -528,6 +541,14 @@ def test_asset_parent_swap_at_replace_never_writes_external_directory(tmp_path, 
 
     assert not (outside / "cover-base.png").exists()
     assert not (outside / "cover.png").exists()
+    assert rename_attempted
+    assert not final_replace_calls
+    if os.name == "nt":
+        assert not rename_completed
+        assert not replace_reached
+    else:
+        assert rename_completed
+        assert replace_reached
 
 
 def test_metadata_parent_swap_at_replace_never_writes_external_directory(tmp_path, monkeypatch):
@@ -675,3 +696,108 @@ def test_parent_fsync_close_failure_is_best_effort(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "close", lambda _fd: (_ for _ in ()).throw(OSError("close failed")))
 
     store._best_effort_fsync_parent(target)
+
+
+def test_failed_removal_of_first_new_asset_is_a_rollback_failure_and_retains_backups(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    original_replace = store._replace_asset
+    original_unlink = _PinnedPublishingFilesystem.unlink
+    calls = 0
+
+    def fail_second_replace(source, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("second asset replace failed")
+        original_replace(source, target)
+
+    def fail_strict_base_removal(filesystem, path):
+        if path == store.cover_base_path:
+            raise OSError("strict rollback unlink failed")
+        return original_unlink(filesystem, path)
+
+    monkeypatch.setattr(store, "_replace_asset", fail_second_replace)
+    monkeypatch.setattr(_PinnedPublishingFilesystem, "unlink", fail_strict_base_removal)
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$") as error:
+        store.save_cover(prompt="new", base_image=b"base", rendered_image=b"rendered", model="m")
+
+    assert isinstance(error.value.__cause__, ExceptionGroup)
+    assert "second asset replace failed" in repr(error.value.__cause__)
+    assert "strict rollback unlink failed" in repr(error.value.__cause__)
+    assert list(store.root.rglob("*.rollback"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor mode semantics")
+def test_pinned_publishing_transaction_preserves_existing_file_modes_on_commit_and_rollback(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    store.save_cover(prompt="old", base_image=b"old-base", rendered_image=b"old-rendered", model="m")
+    targets = [
+        store.cover_base_path,
+        store.rendered_cover_path,
+        store.webnovel_dir / "project.json",
+        store.story_system_dir / "MASTER_SETTING.json",
+    ]
+    for target in targets:
+        os.chmod(target, 0o640)
+
+    store.save_cover(prompt="new", base_image=b"new-base", rendered_image=b"new-rendered", model="m")
+    assert [target.stat().st_mode & 0o777 for target in targets] == [0o640] * len(targets)
+
+    original_metadata_replace = store._replace_metadata
+    monkeypatch.setattr(store, "_replace_metadata", lambda *_args: (_ for _ in ()).throw(OSError("metadata replace failed")))
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+        store.save_cover(prompt="again", base_image=b"again-base", rendered_image=b"again-rendered", model="m")
+    assert [target.stat().st_mode & 0o777 for target in targets] == [0o640] * len(targets)
+    monkeypatch.setattr(store, "_replace_metadata", original_metadata_replace)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle acquisition semantics")
+def test_windows_pin_acquisition_closes_unregistered_handle_on_final_path_failure(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setattr(
+        _PinnedPublishingFilesystem,
+        "_windows_final_path",
+        staticmethod(lambda _handle: (_ for _ in ()).throw(OSError("final path failed"))),
+    )
+
+    with pytest.raises(OSError, match="final path failed"):
+        with _PinnedPublishingFilesystem(root):
+            pass
+
+    root.rename(tmp_path / "renamed-root")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX procfs semantics")
+def test_procfs_less_posix_fails_closed_before_publishing_writes(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    before = (store.webnovel_dir / "project.json").read_bytes()
+    original_exists = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda path: False if str(path) == "/proc/self/fd" else original_exists(path))
+
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+        store.save_synopsis({"summary": "new"})
+
+    assert (store.webnovel_dir / "project.json").read_bytes() == before
+    store.root.rename(tmp_path / "renamed-novel")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor acquisition semantics")
+def test_posix_pin_acquisition_closes_root_fd_when_proc_read_fails(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    original_readlink = os.readlink
+    monkeypatch.setattr(
+        os,
+        "readlink",
+        lambda path, *args, **kwargs: (_ for _ in ()).throw(OSError("proc read failed"))
+        if str(path).startswith("/proc/self/fd/")
+        else original_readlink(path, *args, **kwargs),
+    )
+
+    with pytest.raises(OSError, match="proc read failed"):
+        with _PinnedPublishingFilesystem(root):
+            pass
+
+    root.rename(tmp_path / "renamed-root")

@@ -9,6 +9,7 @@ import tempfile
 import threading
 import uuid
 import ctypes
+from ctypes import wintypes
 from copy import deepcopy
 from datetime import datetime, timezone
 from functools import wraps
@@ -16,6 +17,33 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+
+if os.name == "nt":
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _KERNEL32.CreateFileW.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    _KERNEL32.CreateFileW.restype = wintypes.HANDLE
+    _KERNEL32.GetFileAttributesW.argtypes = (wintypes.LPCWSTR,)
+    _KERNEL32.GetFileAttributesW.restype = wintypes.DWORD
+    _KERNEL32.GetFinalPathNameByHandleW.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    )
+    _KERNEL32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    _KERNEL32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _KERNEL32.CloseHandle.restype = wintypes.BOOL
+else:
+    _KERNEL32 = None
 
 from packages.story_core.attribute_allocation import (
     normalize_attribute_allocation_rule,
@@ -649,14 +677,20 @@ class _PinnedPublishingFilesystem:
         self._windows_final_root: str | None = None
 
     def __enter__(self) -> "_PinnedPublishingFilesystem":
-        if os.name == "nt":
-            self._pin_windows_directory(self.root)
-        else:
-            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-            self._root_fd = os.open(self.root, flags)
-            if not stat.S_ISDIR(os.fstat(self._root_fd).st_mode):
-                raise ValueError("publishing_asset_write_failed")
-            self._posix_root_path = os.path.realpath(os.readlink(f"/proc/self/fd/{self._root_fd}")) if os.path.exists("/proc/self/fd") else None
+        try:
+            if os.name == "nt":
+                self._pin_windows_directory(self.root)
+            else:
+                if not os.path.exists("/proc/self/fd"):
+                    raise ValueError("publishing_asset_write_failed")
+                flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                self._root_fd = os.open(self.root, flags)
+                if not stat.S_ISDIR(os.fstat(self._root_fd).st_mode):
+                    raise ValueError("publishing_asset_write_failed")
+                self._posix_root_path = os.path.realpath(os.readlink(f"/proc/self/fd/{self._root_fd}"))
+        except Exception:
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, *_exc_info: object) -> None:
@@ -675,7 +709,7 @@ class _PinnedPublishingFilesystem:
             self._root_fd = None
         if os.name == "nt":
             for handle in reversed(self._windows_handles):
-                if not ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle)):
+                if _KERNEL32 is not None and not _KERNEL32.CloseHandle(wintypes.HANDLE(handle)):
                     logger.warning("publishing directory handle cleanup deferred")
             self._windows_handles.clear()
 
@@ -714,9 +748,13 @@ class _PinnedPublishingFilesystem:
                 raise ValueError("publishing_asset_write_failed")
             flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
             descriptor = os.open(part, flags, dir_fd=current_fd)
-            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            try:
+                if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                    raise ValueError("publishing_asset_write_failed")
+                self._assert_posix_descriptor_contained(descriptor)
+            except Exception:
                 os.close(descriptor)
-                raise ValueError("publishing_asset_write_failed")
+                raise
             self._dir_fds[key] = descriptor
             current_fd = descriptor
         self._assert_posix_descriptor_contained(current_fd)
@@ -734,35 +772,40 @@ class _PinnedPublishingFilesystem:
 
     @staticmethod
     def _windows_final_path(handle: int) -> str:
-        kernel32 = ctypes.windll.kernel32
-        needed = kernel32.GetFinalPathNameByHandleW(ctypes.c_void_p(handle), None, 0, 0)
+        if _KERNEL32 is None:  # pragma: no cover - Windows only
+            raise OSError("kernel32 unavailable")
+        needed = _KERNEL32.GetFinalPathNameByHandleW(wintypes.HANDLE(handle), None, 0, 0)
         if not needed:
             raise OSError(ctypes.get_last_error(), "GetFinalPathNameByHandleW")
         buffer = ctypes.create_unicode_buffer(needed + 1)
-        if not kernel32.GetFinalPathNameByHandleW(ctypes.c_void_p(handle), buffer, len(buffer), 0):
+        if not _KERNEL32.GetFinalPathNameByHandleW(wintypes.HANDLE(handle), buffer, len(buffer), 0):
             raise OSError(ctypes.get_last_error(), "GetFinalPathNameByHandleW")
         return os.path.normcase(os.path.normpath(buffer.value.removeprefix("\\\\?\\")))
 
     def _pin_windows_directory(self, path: Path) -> None:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.CreateFileW.restype = ctypes.c_void_p
+        if _KERNEL32 is None:  # pragma: no cover - Windows only
+            raise OSError("kernel32 unavailable")
         flags = 0x02000000 | 0x00200000  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
-        handle = kernel32.CreateFileW(
+        handle = _KERNEL32.CreateFileW(
             str(path), 0x80000000, 0x00000001 | 0x00000002, None, 3, flags, None
         )
-        if handle == -1 or handle == ctypes.c_void_p(-1).value:
+        handle_value = wintypes.HANDLE(handle).value
+        invalid_handle = wintypes.HANDLE(-1).value
+        if handle_value is None or handle_value == invalid_handle:
             raise OSError(ctypes.get_last_error(), "CreateFileW")
-        attrs = kernel32.GetFileAttributesW(str(path))
-        if attrs == 0xFFFFFFFF or attrs & self._REPARSE_POINT:
-            kernel32.CloseHandle(ctypes.c_void_p(handle))
-            raise ValueError("publishing_asset_write_failed")
-        final = self._windows_final_path(handle)
-        if self._windows_final_root is None:
-            self._windows_final_root = final
-        elif os.path.commonpath([self._windows_final_root, final]) != self._windows_final_root:
-            kernel32.CloseHandle(ctypes.c_void_p(handle))
-            raise ValueError("publishing_asset_write_failed")
-        self._windows_handles.append(handle)
+        try:
+            attrs = _KERNEL32.GetFileAttributesW(str(path))
+            if attrs == 0xFFFFFFFF or attrs & self._REPARSE_POINT:
+                raise ValueError("publishing_asset_write_failed")
+            final = self._windows_final_path(handle_value)
+            if self._windows_final_root is None:
+                self._windows_final_root = final
+            elif os.path.commonpath([self._windows_final_root, final]) != self._windows_final_root:
+                raise ValueError("publishing_asset_write_failed")
+        except Exception:
+            _KERNEL32.CloseHandle(wintypes.HANDLE(handle_value))
+            raise
+        self._windows_handles.append(handle_value)
 
     def _windows_assert_target(self, path: Path, *, create: bool) -> None:
         parts = self._relative(path)
@@ -820,7 +863,15 @@ class _PinnedPublishingFilesystem:
         self.assert_target(path)
         if os.name == "nt":
             return self._prepare_windows(path, content, suffix=suffix)
-        parent_fd, _ = self._parent_fd(path, create=True)
+        parent_fd, target_name = self._parent_fd(path, create=True)
+        try:
+            existing_details = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existing_mode = None
+        else:
+            if stat.S_ISLNK(existing_details.st_mode):
+                raise ValueError("publishing_asset_write_failed")
+            existing_mode = stat.S_IMODE(existing_details.st_mode)
         name = f".{path.name}.{uuid.uuid4().hex}{suffix}"
         descriptor = os.open(
             name,
@@ -830,6 +881,8 @@ class _PinnedPublishingFilesystem:
         )
         temp_path = path.parent / name
         try:
+            if existing_mode is not None:
+                os.fchmod(descriptor, existing_mode)
             with os.fdopen(descriptor, "wb") as handle:
                 descriptor = -1
                 handle.write(content)
@@ -1492,7 +1545,7 @@ class FileProjectStore:
                     try:
                         backup = rollback_files[target]
                         if backup is None:
-                            self._best_effort_unlink(target)
+                            filesystem.unlink(target)
                         else:
                             self._restore_publishing_backup(backup, target)
                         self._best_effort_fsync_parent(target)
