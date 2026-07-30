@@ -3,8 +3,9 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import socket
 import struct
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import pytest
 from PIL import Image
@@ -72,6 +73,20 @@ def test_generate_rejects_url_only_response() -> None:
         _provider({"data": [{"url": "https://example.test/cover.png"}]}).generate("cover")
 
 
+@pytest.mark.parametrize("base64_value", [None, "", False, "not base64!"])
+def test_generate_treats_url_with_no_usable_base64_as_an_unsupported_url_response(base64_value) -> None:
+    with pytest.raises(CoverImageError, match="^unsupported_image_response$"):
+        _provider(
+            {"data": [{"url": "https://example.test/cover.png", "b64_json": base64_value}]}
+        ).generate("cover")
+
+
+@pytest.mark.parametrize("url", ["", "   "])
+def test_generate_rejects_empty_url_as_malformed_provider_payload(url: str) -> None:
+    with pytest.raises(CoverImageError, match="^invalid_image_payload$"):
+        _provider({"data": [{"url": url}]}).generate("cover")
+
+
 @pytest.mark.parametrize(
     "response",
     [
@@ -116,6 +131,30 @@ def test_generate_maps_timeout_error() -> None:
     assert timeout_error.value.__cause__ is timeout
 
 
+@pytest.mark.parametrize(
+    "timeout",
+    [socket.timeout("timed out"), URLError(socket.timeout("timed out"))],
+)
+def test_generate_maps_direct_and_wrapped_socket_timeouts(timeout: Exception) -> None:
+    with pytest.raises(CoverImageError, match="^image_generation_timeout$") as timeout_error:
+        _provider(timeout).generate("cover")
+    assert timeout_error.value.__cause__ is timeout
+
+
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        URLError("offline"),
+        HTTPError("https://images.example.test/v1/images/generations", 503, "unavailable", None, None),
+    ],
+)
+def test_generate_preserves_unrelated_transport_errors(transport_error: Exception) -> None:
+    with pytest.raises(type(transport_error)) as error:
+        _provider(transport_error).generate("cover")
+    assert error.value is transport_error
+    assert error.value.__cause__ is None
+
+
 def test_generate_enforces_encoded_decoded_and_dimension_limits(monkeypatch) -> None:
     provider = _provider(_b64_response(_image_bytes()))
     monkeypatch.setattr("packages.story_core.cover_image_provider.MAX_ENCODED_IMAGE_BYTES", 8)
@@ -141,3 +180,11 @@ def test_generate_rejects_image_over_40_megapixels_without_loading_pixels() -> N
 
     with pytest.raises(CoverImageError, match="^invalid_image_payload$"):
         _provider(_b64_response(png)).generate("cover")
+
+
+@pytest.mark.parametrize("pillow_pixel_limit", [4, 2])
+def test_generate_rejects_pillow_decompression_bomb_warning_and_error(monkeypatch, pillow_pixel_limit: int) -> None:
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", pillow_pixel_limit)
+
+    with pytest.raises(CoverImageError, match="^invalid_image_payload$"):
+        _provider(_b64_response(_image_bytes(size=(3, 2)))).generate("cover")

@@ -31,6 +31,21 @@ def _invalid_image_payload() -> CoverImageError:
     return CoverImageError("invalid_image_payload")
 
 
+def _has_usable_base64(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        encoded = value.encode("ascii", errors="strict")
+    except UnicodeEncodeError:
+        return False
+    if len(encoded) > MAX_ENCODED_IMAGE_BYTES:
+        return False
+    try:
+        return bool(base64.b64decode(encoded, validate=True))
+    except (binascii.Error, ValueError):
+        return False
+
+
 def _decode_and_validate_image(encoded: str) -> bytes:
     if not isinstance(encoded, str) or not encoded.strip():
         raise _invalid_image_payload()
@@ -120,9 +135,13 @@ class OpenAICoverImageProvider:
             raise _invalid_image_payload() from exc
         if not isinstance(first, dict):
             raise _invalid_image_payload()
-        if "b64_json" not in first and "url" in first:
+        url = first.get("url")
+        encoded = first.get("b64_json")
+        has_usable_url = isinstance(url, str) and bool(url.strip())
+        has_usable_base64 = _has_usable_base64(encoded)
+        if has_usable_url and not has_usable_base64:
             raise CoverImageError("unsupported_image_response")
-        return _decode_and_validate_image(first.get("b64_json"))
+        return _decode_and_validate_image(encoded)
 
 
 CoverImageProvider = OpenAICoverImageProvider
