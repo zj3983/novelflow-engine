@@ -39,6 +39,12 @@ def _runtime_configuration(*, provider="openai"):
                 "memory": "openai-memory",
             },
         },
+        "image": {
+            "enabled": False,
+            "api_key": "",
+            "base_url": "",
+            "model": "",
+        },
         "temperature": 0.7,
         "new_character_policy": "Director review",
     }
@@ -50,6 +56,8 @@ def _masked(configuration):
     for provider in masked["providers"].values():
         if provider["api_key"]:
             provider["api_key"] = "********"
+    if masked["image"]["api_key"]:
+        masked["image"]["api_key"] = "********"
     return masked
 
 
@@ -225,6 +233,7 @@ def test_runtime_settings_get_returns_only_provider_stage_contract():
     assert set(payload) == {
         "provider",
         "providers",
+        "image",
         "temperature",
         "new_character_policy",
     }
@@ -315,6 +324,41 @@ def test_runtime_settings_put_with_masked_api_key_preserves_stored_key():
     stored = get_runtime_configuration()
     assert stored.providers.openai.api_key == "sk-test"
     assert stored.temperature == 0.55
+
+
+def test_runtime_settings_image_configuration_is_masked_restored_and_revealed_without_changing_text_provider():
+    candidate = _runtime_configuration(provider="codexcli")
+    candidate["image"] = {
+        "enabled": True,
+        "api_key": "image-secret",
+        "base_url": "https://image.test/v1",
+        "model": "cover-test-model",
+    }
+
+    saved = client.put("/runtime-settings", json=candidate)
+    assert saved.status_code == 200
+    assert saved.json()["provider"] == "codexcli"
+    assert saved.json()["image"] == {
+        "enabled": True,
+        "api_key": "********",
+        "base_url": "https://image.test/v1",
+        "model": "cover-test-model",
+    }
+    assert "image-secret" not in json.dumps(saved.json())
+
+    masked_update = json.loads(json.dumps(candidate))
+    masked_update["image"]["api_key"] = "********"
+    masked_update["image"]["model"] = "cover-updated-model"
+    assert client.put("/runtime-settings", json=masked_update).status_code == 200
+
+    from packages.story_core.runtime_config import get_runtime_configuration
+
+    stored = get_runtime_configuration()
+    assert stored.provider == "codexcli"
+    assert stored.image.api_key == "image-secret"
+    reveal = client.post("/runtime-settings/reveal-api-key", json={"provider": "image"})
+    assert reveal.status_code == 200
+    assert reveal.json() == {"api_key": "image-secret"}
 
 
 @pytest.mark.parametrize("obsolete_key", ["global", "agents", "strategy", "global_model"])
@@ -2387,6 +2431,9 @@ def test_update_file_project_route_preserves_game_title_in_patch(monkeypatch, tm
 
         def summary(self):
             return {"current_chapter": 0, "title": "作品标题"}
+
+        def publishing_assets(self):
+            return {"schema_version": "publishing-assets/v1", "synopsis": None, "cover": None}
 
     store = FakeStore()
     monkeypatch.setattr(file_projects, "_store_for", lambda project_id: store)

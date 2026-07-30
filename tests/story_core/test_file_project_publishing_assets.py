@@ -118,6 +118,20 @@ def test_prompt_only_state_survives_cover_save_and_uses_project_title(tmp_path):
     assert str(store.root) not in json.dumps(saved)
 
 
+def test_save_cover_base_replaces_only_base_and_keeps_existing_final_cover(tmp_path):
+    store = _make_store(tmp_path / "novel")
+    store.save_cover(prompt="old", base_image=b"old-base", rendered_image=b"old-rendered", model="old-model")
+
+    saved = store.save_cover_base(prompt="new prompt", base_image=b"new-base", model="new-model")
+
+    assert store.cover_base_path.read_bytes() == b"new-base"
+    assert store.rendered_cover_path.read_bytes() == b"old-rendered"
+    assert saved["cover"]["prompt"] == "new prompt"
+    assert saved["cover"]["model"] == "new-model"
+    assert saved["cover"]["rendered_path"] == "assets/cover.png"
+    assert saved["cover"]["rendered_title"] == "File Novel"
+
+
 def test_update_project_preserves_publishing_assets_and_repeated_cover_replaces_both(tmp_path):
     store = _make_store(tmp_path / "novel")
     store.save_synopsis({"summary": "kept"})

@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 import os
 import re
@@ -10,23 +11,41 @@ from threading import Lock
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Path as ApiPath
+from fastapi import APIRouter, HTTPException, Path as ApiPath, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from packages.story_core.book_dissection import diagnose_project_chapter, dissect_reference_text
 from packages.story_core.file_project_creation import FileProjectCreateSpec, create_file_project
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
+from packages.story_core.cover_image_provider import CoverImageError, OpenAICoverImageProvider
+from packages.story_core.cover_renderer import CoverRenderError, render_cover
 from packages.story_core.models import AgentRuntimeState, AgentSettings, NovelProject
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
 from packages.story_core.simplified_review import build_simplified_review, user_facing_generation_error
+from packages.story_core.publishing_assets import (
+    CoverPromptGenerator,
+    FanqieSynopsis,
+    SynopsisGenerator,
+    build_publishing_context,
+)
+from packages.story_core.runtime_config import (
+    ImageRuntimeConfigurationError,
+    resolve_image_runtime,
+    resolve_stage_runtime,
+)
 from packages.story_core.world_enrichment import WorldEnrichmentError, enrich_project_world
 
 
 router = APIRouter()
 opening_direction_generator = LLMOpeningDirectionGenerator()
 outline_planning_generator = LLMOutlinePlanningGenerator()
+synopsis_generator = SynopsisGenerator()
+cover_prompt_generator = CoverPromptGenerator()
+# Kept as an explicit alias/seam for route tests and compatible image providers.
+OpenAICompatibleCoverImageProvider = OpenAICoverImageProvider
+cover_image_provider = OpenAICompatibleCoverImageProvider()
 FILE_ID_PREFIX = "file:"
 FILE_GENERATION_JOB_STALE_SECONDS = 15 * 60
 FILE_GENERATION_JOB_STEP_LIMIT = 200
@@ -108,6 +127,57 @@ class PromptTemplateUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str = Field(min_length=1)
+
+
+class PublishingGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    guidance: str = Field(default="", max_length=1000)
+
+    @field_validator("guidance", mode="before")
+    @classmethod
+    def trim_guidance(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+class SynopsisUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    tags: list[str] = Field(min_length=4, max_length=8)
+    body: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags(cls, value: Any) -> Any:
+        if not isinstance(value, list) or any(not isinstance(tag, str) for tag in value):
+            raise ValueError("tags_must_be_list_of_strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for tag in value:
+            clean = tag.strip()
+            if not clean or clean in seen:
+                continue
+            normalized.append(clean)
+            seen.add(clean)
+        if not 4 <= len(normalized) <= 8:
+            raise ValueError("tags_must_contain_4_to_8_unique_values")
+        return normalized
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def trim_body(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+class CoverPromptUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    prompt: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def trim_prompt(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
 
 def _now_iso() -> str:
@@ -681,7 +751,41 @@ def _project_payload(store: FileProjectStore) -> dict[str, Any]:
             }
         ],
         "storage_source": "file",
+        "publishing_assets": store.publishing_assets(),
     }
+
+
+def _publishing_context_for(store: FileProjectStore):
+    opening_setup = store.opening_setup()
+    opening_brief = opening_setup.get("brief") if isinstance(opening_setup, dict) else {}
+    return build_publishing_context(
+        project=store.project(),
+        state=store.state(),
+        opening_brief=opening_brief if isinstance(opening_brief, dict) else {},
+        outline=store.project_outline(),
+    )
+
+
+def _public_synopsis(value: Any) -> dict[str, Any]:
+    synopsis = dict(value) if isinstance(value, dict) else {}
+    return {
+        key: synopsis[key]
+        for key in ("tags", "body", "format", "updated_at")
+        if key in synopsis
+    }
+
+
+def _publishing_write_error(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=500, detail="publishing_asset_write_failed")
+
+
+def _cover_error(exc: Exception) -> HTTPException:
+    detail = str(exc)
+    if detail == "cover_font_unavailable":
+        return HTTPException(status_code=503, detail=detail)
+    if detail in {"image_provider_unauthorized", "image_generation_timeout", "unsupported_image_response", "invalid_image_payload"}:
+        return HTTPException(status_code=502, detail=detail)
+    return HTTPException(status_code=502, detail="cover_generation_failed")
 
 
 def _story_payload(store: FileProjectStore) -> dict[str, Any]:
@@ -935,6 +1039,162 @@ def init_file_project_routes() -> APIRouter:
     @router.get("/file-projects/{project_id}")
     def get_file_project(project_id: str) -> dict[str, Any]:
         return _project_payload(_store_for(project_id))
+
+    @router.post("/file-projects/{project_id}/publishing/synopsis")
+    def generate_file_project_synopsis(
+        project_id: str,
+        payload: PublishingGenerationRequest,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            generated = FanqieSynopsis.model_validate(
+                synopsis_generator.generate(
+                    _publishing_context_for(store),
+                    resolve_stage_runtime("planner"),
+                    guidance=payload.guidance,
+                )
+            )
+            saved = store.save_synopsis(
+                {
+                    **generated.model_dump(mode="json"),
+                    "format": "fanqie",
+                    "updated_at": _now_iso(),
+                }
+            )
+        except ValueError as exc:
+            if str(exc) == "publishing_asset_write_failed":
+                raise _publishing_write_error(exc) from exc
+            raise HTTPException(status_code=502, detail="synopsis_generation_failed") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="synopsis_generation_failed") from exc
+        return {"synopsis": _public_synopsis(saved.get("synopsis"))}
+
+    @router.put("/file-projects/{project_id}/publishing/synopsis")
+    def update_file_project_synopsis(
+        project_id: str,
+        payload: SynopsisUpdateRequest,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            saved = store.save_synopsis(
+                {
+                    "tags": payload.tags,
+                    "body": payload.body,
+                    "format": "fanqie",
+                    "updated_at": _now_iso(),
+                }
+            )
+        except ValueError as exc:
+            raise _publishing_write_error(exc) from exc
+        return {"synopsis": _public_synopsis(saved.get("synopsis"))}
+
+    @router.post("/file-projects/{project_id}/publishing/cover")
+    def generate_file_project_cover(
+        project_id: str,
+        payload: PublishingGenerationRequest,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            existing = store.publishing_assets()
+            synopsis = existing.get("synopsis") if isinstance(existing.get("synopsis"), dict) else {}
+            prompt = cover_prompt_generator.generate(
+                _publishing_context_for(store),
+                resolve_stage_runtime("planner"),
+                visual_hook=str(synopsis.get("visual_hook") or ""),
+                guidance=payload.guidance,
+            )
+            prompt_state = store.save_cover_prompt(prompt)
+        except ValueError as exc:
+            if str(exc) == "publishing_asset_write_failed":
+                raise _publishing_write_error(exc) from exc
+            raise HTTPException(status_code=502, detail="cover_prompt_generation_failed") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="cover_prompt_generation_failed") from exc
+
+        try:
+            image_runtime = resolve_image_runtime()
+        except ImageRuntimeConfigurationError:
+            return {
+                "status": "prompt_ready",
+                "reason": "image_provider_not_configured",
+                "cover": prompt_state.get("cover"),
+            }
+
+        try:
+            base_image = cover_image_provider.generate(prompt)
+            rendered_image = render_cover(base_image, _display_title(store.project(), store.state(), store.summary(), store.root.name))
+        except Exception as exc:
+            if str(exc) == "cover_font_unavailable":
+                try:
+                    store.save_cover_base(prompt=prompt, base_image=base_image, model=image_runtime.model)
+                except (UnboundLocalError, ValueError) as write_exc:
+                    if isinstance(write_exc, ValueError):
+                        raise _publishing_write_error(write_exc) from write_exc
+                raise _cover_error(exc) from exc
+            raise _cover_error(exc) from exc
+        try:
+            saved = store.save_cover(
+                prompt=prompt,
+                base_image=base_image,
+                rendered_image=rendered_image,
+                model=image_runtime.model,
+            )
+        except ValueError as exc:
+            raise _publishing_write_error(exc) from exc
+        return {"status": "ready", "cover": saved.get("cover")}
+
+    @router.put("/file-projects/{project_id}/publishing/cover-prompt")
+    def update_file_project_cover_prompt(
+        project_id: str,
+        payload: CoverPromptUpdateRequest,
+    ) -> dict[str, Any]:
+        try:
+            saved = _store_for(project_id).save_cover_prompt(payload.prompt)
+        except ValueError as exc:
+            raise _publishing_write_error(exc) from exc
+        return {"cover": saved.get("cover")}
+
+    @router.post("/file-projects/{project_id}/publishing/cover/render-title")
+    def render_file_project_cover_title(project_id: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            base_image = store.read_cover_base()
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail="publishing_asset_read_failed") from exc
+        if base_image is None:
+            raise HTTPException(status_code=404, detail="cover_base_not_found")
+        try:
+            rendered = render_cover(base_image, _display_title(store.project(), store.state(), store.summary(), store.root.name))
+        except Exception as exc:
+            raise _cover_error(exc) from exc
+        try:
+            saved = store.save_rendered_cover(rendered)
+        except ValueError as exc:
+            raise _publishing_write_error(exc) from exc
+        return {"status": "ready", "cover": saved.get("cover")}
+
+    @router.get("/file-projects/{project_id}/publishing/cover.png")
+    def get_file_project_cover(project_id: str, request: Request, download: int = 0) -> Response:
+        store = _store_for(project_id)
+        cover = store.publishing_assets().get("cover") or {}
+        if not isinstance(cover, dict) or cover.get("rendered_path") != "assets/cover.png":
+            raise HTTPException(status_code=404, detail="cover_not_found")
+        try:
+            image = store.read_rendered_cover()
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail="publishing_asset_read_failed") from exc
+        if image is None:
+            raise HTTPException(status_code=404, detail="cover_not_found")
+        etag = f'"{sha256(image).hexdigest()}"'
+        if etag in request.headers.get("if-none-match", ""):
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"})
+        filename = re.sub(r"[^A-Za-z0-9._-]+", "-", _display_title(store.project(), store.state(), store.summary(), "cover"))
+        headers = {"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"}
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="{filename or "cover"}.png"'
+        else:
+            headers["Content-Disposition"] = "inline"
+        return Response(content=image, media_type="image/png", headers=headers)
 
     @router.get("/file-projects/{project_id}/opening-directions")
     def get_opening_directions(project_id: str) -> dict[str, Any]:

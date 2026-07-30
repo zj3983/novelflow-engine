@@ -1500,14 +1500,26 @@ class FileProjectStore:
         publishing_assets: dict[str, Any],
         *,
         asset_contents: tuple[bytes, bytes] | None = None,
+        asset_updates: dict[Path, bytes] | None = None,
     ) -> None:
         """Best-effort cross-file transaction; retained .rollback files signal incomplete recovery after a fault."""
         self._validate_publishing_value(publishing_assets)
+        if asset_contents is not None and asset_updates is not None:
+            raise ValueError("publishing_asset_write_failed")
         metadata_targets = [
             self.webnovel_dir / "project.json",
             self.story_system_dir / "MASTER_SETTING.json",
         ]
-        asset_targets = [self.cover_base_path, self.rendered_cover_path] if asset_contents is not None else []
+        if asset_contents is not None:
+            asset_updates = {
+                self.cover_base_path: asset_contents[0],
+                self.rendered_cover_path: asset_contents[1],
+            }
+        asset_updates = asset_updates or {}
+        allowed_asset_targets = {self.cover_base_path, self.rendered_cover_path}
+        if any(target not in allowed_asset_targets or not isinstance(content, bytes) for target, content in asset_updates.items()):
+            raise ValueError("publishing_asset_write_failed")
+        asset_targets = list(asset_updates)
         all_targets = asset_targets + metadata_targets
         prepared: list[Path] = []
         rollback_files: dict[Path, Path | None] = {}
@@ -1526,9 +1538,10 @@ class FileProjectStore:
                         )
                     else:
                         rollback_files[target] = None
-                if asset_contents is not None:
+                if asset_updates:
                     asset_temps: list[Path] = []
-                    for target, content in zip(asset_targets, asset_contents, strict=True):
+                    for target in asset_targets:
+                        content = asset_updates[target]
                         prepared_temp = self._prepare_publishing_temp(target, content)
                         prepared.append(prepared_temp)
                         asset_temps.append(prepared_temp)
@@ -1664,6 +1677,93 @@ class FileProjectStore:
             }
             saved["updated_at"] = updated_at
             self._publishing_transaction(saved, asset_contents=(base_image, rendered_image))
+            return saved
+        except ValueError as exc:
+            if str(exc) == "publishing_asset_write_failed":
+                raise
+            raise ValueError("publishing_asset_write_failed") from exc
+        except Exception as exc:
+            raise ValueError("publishing_asset_write_failed") from exc
+
+    @_with_project_update_lock
+    def save_cover_base(self, *, prompt: str, base_image: bytes, model: str) -> dict[str, Any]:
+        """Persist a validated source image without replacing the current rendered cover."""
+        try:
+            if not isinstance(base_image, bytes) or not base_image or len(base_image) > self.PUBLISHING_ASSET_MAX_BYTES:
+                raise ValueError("publishing_asset_write_failed")
+            if not isinstance(model, str) or not model.strip() or len(model.strip()) > 256:
+                raise ValueError("publishing_asset_write_failed")
+            saved = self._publishing_assets_from_metadata()
+            cover = dict(saved["cover"] or {})
+            updated_at = self._publishing_updated_at()
+            cover.update(
+                {
+                    "prompt": self._publishing_prompt(prompt),
+                    "model": model.strip(),
+                    "base_path": "assets/cover-base.png",
+                    "schema_version": "cover/v1",
+                    "updated_at": updated_at,
+                }
+            )
+            saved["cover"] = cover
+            saved["updated_at"] = updated_at
+            self._publishing_transaction(saved, asset_updates={self.cover_base_path: base_image})
+            return saved
+        except ValueError as exc:
+            if str(exc) == "publishing_asset_write_failed":
+                raise
+            raise ValueError("publishing_asset_write_failed") from exc
+        except Exception as exc:
+            raise ValueError("publishing_asset_write_failed") from exc
+
+    def _read_publishing_asset(self, path: Path) -> bytes | None:
+        try:
+            with _PinnedPublishingFilesystem(self.root) as filesystem:
+                if not filesystem.exists(path):
+                    return None
+                content = filesystem.read_bytes(path)
+            if not content or len(content) > self.PUBLISHING_ASSET_MAX_BYTES:
+                raise ValueError("publishing_asset_read_failed")
+            return content
+        except ValueError:
+            raise
+        except OSError as exc:
+            raise ValueError("publishing_asset_read_failed") from exc
+
+    @_with_project_update_lock
+    def read_cover_base(self) -> bytes | None:
+        return self._read_publishing_asset(self.cover_base_path)
+
+    @_with_project_update_lock
+    def read_rendered_cover(self) -> bytes | None:
+        return self._read_publishing_asset(self.rendered_cover_path)
+
+    @_with_project_update_lock
+    def save_rendered_cover(self, rendered_image: bytes) -> dict[str, Any]:
+        try:
+            if not isinstance(rendered_image, bytes) or not rendered_image or len(rendered_image) > self.PUBLISHING_ASSET_MAX_BYTES:
+                raise ValueError("publishing_asset_write_failed")
+            saved = self._publishing_assets_from_metadata()
+            cover = dict(saved["cover"] or {})
+            if cover.get("base_path") != "assets/cover-base.png":
+                raise ValueError("publishing_asset_write_failed")
+            title = str(self.project().get("title") or "").strip()
+            if not title or len(title) > 120:
+                raise ValueError("publishing_asset_write_failed")
+            updated_at = self._publishing_updated_at()
+            cover.update(
+                {
+                    "rendered_path": "assets/cover.png",
+                    "schema_version": "cover/v1",
+                    "rendered_title": title,
+                    "image_version": sha256(rendered_image).hexdigest(),
+                    "mime_type": "image/png",
+                    "updated_at": updated_at,
+                }
+            )
+            saved["cover"] = cover
+            saved["updated_at"] = updated_at
+            self._publishing_transaction(saved, asset_updates={self.rendered_cover_path: rendered_image})
             return saved
         except ValueError as exc:
             if str(exc) == "publishing_asset_write_failed":
