@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -801,3 +802,37 @@ def test_posix_pin_acquisition_closes_root_fd_when_proc_read_fails(tmp_path, mon
             pass
 
     root.rename(tmp_path / "renamed-root")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows mkstemp/fdopen ownership")
+def test_windows_prepare_closes_raw_descriptor_when_fdopen_construction_fails(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    filesystem = _PinnedPublishingFilesystem(store.root)
+    opened: list[tuple[int, Path]] = []
+    real_mkstemp = tempfile.mkstemp
+    real_unlink = Path.unlink
+
+    def track_mkstemp(*args, **kwargs):
+        descriptor, name = real_mkstemp(*args, **kwargs)
+        opened.append((descriptor, Path(name)))
+        return descriptor, name
+
+    monkeypatch.setattr(tempfile, "mkstemp", track_mkstemp)
+    monkeypatch.setattr(os, "fdopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fdopen failed")))
+
+    with filesystem:
+        with pytest.raises(OSError, match="fdopen failed"):
+            filesystem.prepare(store.cover_base_path, b"cover", suffix=".tmp")
+
+    descriptor, temp_path = opened[-1]
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+    assert not temp_path.exists()
+
+    # Cleanup failure remains best-effort and cannot replace the fdopen error.
+    monkeypatch.setattr(Path, "unlink", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unlink failed")))
+    with _PinnedPublishingFilesystem(store.root) as retry_filesystem:
+        with pytest.raises(OSError, match="fdopen failed"):
+            retry_filesystem.prepare(store.cover_base_path, b"cover", suffix=".tmp")
+    _, retained_temp = opened[-1]
+    real_unlink(retained_temp, missing_ok=True)

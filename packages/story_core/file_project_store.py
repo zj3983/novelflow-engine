@@ -904,15 +904,28 @@ class _PinnedPublishingFilesystem:
         temp_path = Path(temp_name)
         try:
             with os.fdopen(fd, "wb") as handle:
+                fd = None
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
         except Exception:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    logging.getLogger(__name__).warning("publishing temp descriptor cleanup deferred: %s", temp_path)
+                fd = None
             try:
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 logging.getLogger(__name__).warning("publishing temp cleanup deferred: %s", temp_path)
             raise
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    logging.getLogger(__name__).warning("publishing temp descriptor cleanup deferred: %s", temp_path)
         return temp_path
 
     def replace(self, source: Path, target: Path) -> None:
