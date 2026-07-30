@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from packages.story_core.publishing_assets import FanqieSynopsis, build_publishing_context
+from packages.story_core.publishing_assets import (
+    MAX_SYNOPSIS_TAG_CHARS,
+    MAX_VISUAL_HOOK_CHARS,
+    FanqieSynopsis,
+    PublishingContext,
+    build_publishing_context,
+)
 
 
 def test_fanqie_synopsis_normalizes_unique_tags_and_preserves_visual_hook() -> None:
@@ -31,6 +37,43 @@ def test_fanqie_synopsis_strips_body_before_validating_and_storing() -> None:
     )
 
     assert synopsis.body == body
+
+
+@pytest.mark.parametrize("body_length", [200, 450])
+def test_fanqie_synopsis_accepts_exact_body_and_tag_boundaries(body_length: int) -> None:
+    synopsis = FanqieSynopsis(
+        tags=[f"标签{index}" for index in range(8)],
+        body="文" * body_length,
+        pattern="contrast",
+    )
+
+    assert len(synopsis.tags) == 8
+    assert len(synopsis.body) == body_length
+
+
+def test_fanqie_synopsis_strips_and_bounds_tags_and_visual_hook() -> None:
+    synopsis = FanqieSynopsis(
+        tags=[f" {index}{'标' * (MAX_SYNOPSIS_TAG_CHARS - 1)} " for index in range(4)],
+        body="文" * 200,
+        pattern="conflict",
+        visual_hook=f" {'钩' * MAX_VISUAL_HOOK_CHARS} ",
+    )
+
+    assert all(len(tag) == MAX_SYNOPSIS_TAG_CHARS for tag in synopsis.tags)
+    assert synopsis.visual_hook == "钩" * MAX_VISUAL_HOOK_CHARS
+    with pytest.raises(ValidationError):
+        FanqieSynopsis(
+            tags=["超" * (MAX_SYNOPSIS_TAG_CHARS + 1), "二", "三", "四"],
+            body="文" * 200,
+            pattern="conflict",
+        )
+    with pytest.raises(ValidationError):
+        FanqieSynopsis(
+            tags=["一", "二", "三", "四"],
+            body="文" * 200,
+            pattern="conflict",
+            visual_hook="钩" * (MAX_VISUAL_HOOK_CHARS + 1),
+        )
 
 
 @pytest.mark.parametrize(
@@ -162,6 +205,106 @@ def test_publishing_context_enforces_json_serialization_budget_after_escaping() 
     assert context.title.startswith("归墟行舟")
     assert context.outline_summary["overall"]["main_conflict"].startswith("活着靠岸")
     assert len(context.model_dump_json()) < 12_000
+
+
+def test_direct_context_rejects_unallowlisted_or_oversized_nested_content() -> None:
+    with pytest.raises(ValidationError):
+        PublishingContext(
+            title="归墟行舟",
+            protagonists=[{"name": "陆沉" * 81, "role": "主角", "goal": "靠岸", "body": "章节正文"}],
+            outline_summary={"overall": {"main_conflict": "靠岸", "chapter_body": "章节正文"}},
+        )
+
+
+def test_direct_context_enforces_actual_escaped_json_budget() -> None:
+    escaped_text = "\\\x00" * 20_000
+    with pytest.raises(ValidationError):
+        PublishingContext(
+            title="归墟行舟",
+            novel_type=escaped_text[:120],
+            opening_idea=escaped_text[:1_000],
+            world_summary=escaped_text[:2_000],
+            protagonists=[
+                {"name": escaped_text[:80], "role": escaped_text[:80], "goal": escaped_text[:240]}
+                for _ in range(8)
+            ],
+            outline_summary={
+                "overall": {"main_conflict": escaped_text[:240]},
+                "arcs": [
+                    {"name": escaped_text[:80], "summary": escaped_text[:260], "main_conflict": escaped_text[:160]}
+                    for _ in range(5)
+                ],
+            },
+        )
+
+
+def test_revalidating_an_unchecked_context_enforces_public_invariants() -> None:
+    unchecked = PublishingContext.model_construct(
+        title="归墟行舟",
+        protagonists=[{"name": "陆沉", "role": "主角", "goal": "靠岸", "body": "章节正文"}],
+        outline_summary={},
+    )
+
+    with pytest.raises(ValidationError):
+        PublishingContext.model_validate(unchecked)
+
+
+def test_direct_context_accepts_exact_nested_character_and_arc_caps() -> None:
+    context = PublishingContext(
+        title="归墟行舟",
+        protagonists=[{"name": "名" * 80, "role": "角" * 80, "goal": "志" * 240}],
+        outline_summary={
+            "arcs": [
+                {"name": "卷" * 80, "summary": "概" * 260, "main_conflict": "突" * 160}
+                for _ in range(5)
+            ]
+        },
+    )
+
+    assert context.protagonists[0]["name"] == "名" * 80
+    assert len(context.outline_summary["arcs"]) == 5
+
+
+def test_direct_context_uses_fallback_title_after_normalization() -> None:
+    context = PublishingContext(title="  \n")
+
+    assert context.title == "未命名作品"
+
+
+def test_publishing_context_skips_fallback_candidates_that_are_blank_or_non_scalar() -> None:
+    context = build_publishing_context(
+        project={"title": {}, "genre": "  ", "seed_outline": "项目开篇", "world_summary": []},
+        state={"genre": {"bad": "value"}, "world_summary": "世界摘要"},
+        opening_brief={"working_title": "  备用标题 ", "idea": "  ", "novel_type_id": " 仙侠 "},
+        outline={},
+    )
+
+    assert context.title == "备用标题"
+    assert context.novel_type == "仙侠"
+    assert context.opening_idea == "项目开篇"
+    assert context.world_summary == "世界摘要"
+
+
+def test_publishing_context_stops_reading_profiles_after_eighth_valid_item() -> None:
+    class ProfilesProbe(list):
+        def __iter__(self):
+            for index, item in enumerate(super().__iter__()):
+                if index >= 8:
+                    raise AssertionError("profile after the eighth valid item was read")
+                yield item
+
+    context = build_publishing_context(
+        project={
+            "character_profiles": ProfilesProbe(
+                [{"name": f"角色{index}", "role": "角色", "goal": "靠岸"} for index in range(9)]
+            )
+        },
+        state={},
+        opening_brief={},
+        outline={},
+    )
+
+    assert len(context.protagonists) == 8
 
 
 def test_publishing_context_uses_fallback_title() -> None:

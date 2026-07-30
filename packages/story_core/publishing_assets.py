@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from collections.abc import Iterable
+from itertools import chain
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 _TEXT_SCALARS = (str, int, float, bool)
+MAX_SYNOPSIS_TAG_CHARS = 32
+MAX_VISUAL_HOOK_CHARS = 240
+_MAX_TITLE_CHARS = 120
+_MAX_NOVEL_TYPE_CHARS = 120
+_MAX_OPENING_IDEA_CHARS = 1_000
+_MAX_WORLD_SUMMARY_CHARS = 2_000
+_MAX_CHARACTER_NAME_CHARS = 80
+_MAX_CHARACTER_ROLE_CHARS = 80
+_MAX_CHARACTER_GOAL_CHARS = 240
+_MAX_OUTLINE_ARCS = 5
 _OUTLINE_OVERALL_FIELDS = (
     "story",
     "summary",
@@ -26,15 +38,28 @@ def _bounded_text(value: Any, limit: int) -> str:
     return str(value).strip()[:limit]
 
 
+def _first_bounded_text(limit: int, *values: Any) -> str:
+    for value in values:
+        text = _bounded_text(value, limit)
+        if text:
+            return text
+    return ""
+
+
 class FanqieSynopsis(BaseModel):
-    tags: list[str] = Field(min_length=4, max_length=8)
+    tags: list[Annotated[str, Field(max_length=MAX_SYNOPSIS_TAG_CHARS)]] = Field(min_length=4, max_length=8)
     body: str = Field(min_length=200, max_length=450)
     pattern: Literal["conflict", "contrast", "micro_scene"]
-    visual_hook: str = ""
+    visual_hook: str = Field(default="", max_length=MAX_VISUAL_HOOK_CHARS)
 
     @field_validator("body", mode="before")
     @classmethod
     def normalize_body(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("visual_hook", mode="before")
+    @classmethod
+    def normalize_visual_hook(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
 
     @field_validator("tags", mode="before")
@@ -54,13 +79,97 @@ class FanqieSynopsis(BaseModel):
         return normalized
 
 
+class _PublishingCharacterSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=_MAX_CHARACTER_NAME_CHARS)
+    role: str = Field(default="", max_length=_MAX_CHARACTER_ROLE_CHARS)
+    goal: str = Field(default="", max_length=_MAX_CHARACTER_GOAL_CHARS)
+
+    @field_validator("name", "role", "goal", mode="before")
+    @classmethod
+    def normalize_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+class _PublishingOutlineOverall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    story: str = Field(default="", max_length=240)
+    summary: str = Field(default="", max_length=240)
+    premise: str = Field(default="", max_length=240)
+    main_conflict: str = Field(default="", max_length=240)
+    theme: str = Field(default="", max_length=240)
+    overall_arc: str = Field(default="", max_length=240)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def normalize_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+class _PublishingOutlineArc(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="", max_length=_MAX_CHARACTER_NAME_CHARS)
+    summary: str = Field(default="", max_length=260)
+    main_conflict: str = Field(default="", max_length=160)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def normalize_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+class _PublishingOutlineSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    overall: _PublishingOutlineOverall | None = None
+    arcs: list[_PublishingOutlineArc] = Field(default_factory=list, max_length=_MAX_OUTLINE_ARCS)
+
+
 class PublishingContext(BaseModel):
-    title: str = Field(max_length=120)
-    novel_type: str = Field(default="", max_length=120)
-    opening_idea: str = Field(default="", max_length=1000)
-    world_summary: str = Field(default="", max_length=2000)
+    model_config = ConfigDict(extra="forbid", revalidate_instances="always")
+
+    title: str = Field(max_length=_MAX_TITLE_CHARS)
+    novel_type: str = Field(default="", max_length=_MAX_NOVEL_TYPE_CHARS)
+    opening_idea: str = Field(default="", max_length=_MAX_OPENING_IDEA_CHARS)
+    world_summary: str = Field(default="", max_length=_MAX_WORLD_SUMMARY_CHARS)
     protagonists: list[dict[str, str]] = Field(default_factory=list, max_length=8)
     outline_summary: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or "未命名作品"
+
+    @field_validator("novel_type", "opening_idea", "world_summary", mode="before")
+    @classmethod
+    def normalize_top_level_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("protagonists", mode="before")
+    @classmethod
+    def validate_protagonists(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [_PublishingCharacterSummary.model_validate(item).model_dump() for item in value]
+
+    @field_validator("outline_summary", mode="before")
+    @classmethod
+    def validate_outline_summary(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        summary = _PublishingOutlineSummary.model_validate(value)
+        return summary.model_dump(exclude_none=True, exclude_defaults=True)
+
+    @model_validator(mode="after")
+    def validate_serialized_budget(self) -> "PublishingContext":
+        if len(self.model_dump_json()) > _MAX_SERIALIZED_CONTEXT_CHARS:
+            raise ValueError("publishing_context_serialized_budget_exceeded")
+        return self
 
 
 def _halve_optional_text(data: dict[str, Any]) -> bool:
@@ -99,17 +208,16 @@ def _halve_optional_text(data: dict[str, Any]) -> bool:
     return changed
 
 
-def _enforce_serialized_budget(context: PublishingContext) -> PublishingContext:
+def _enforce_serialized_budget(data: dict[str, Any]) -> PublishingContext:
     """Apply finite, deterministic reductions using the actual JSON size."""
-    data = context.model_dump()
     for _ in range(16):
-        compact = PublishingContext.model_validate(data)
+        compact = PublishingContext.model_construct(**data)
         if len(compact.model_dump_json()) <= _MAX_SERIALIZED_CONTEXT_CHARS:
-            return compact
+            return PublishingContext.model_validate(data)
         if not _halve_optional_text(data):
             break
 
-    return PublishingContext(title=context.title)
+    return PublishingContext.model_validate({"title": data["title"]})
 
 
 def _bounded_outline_summary(outline: dict) -> dict[str, object]:
@@ -133,7 +241,7 @@ def _bounded_outline_summary(outline: dict) -> dict[str, object]:
         arcs_source = outline.get("act_breaks")
     arcs: list[dict[str, str]] = []
     if isinstance(arcs_source, list):
-        for raw_arc in arcs_source[:5]:
+        for raw_arc in arcs_source[:_MAX_OUTLINE_ARCS]:
             if not isinstance(raw_arc, dict):
                 continue
             arc: dict[str, str] = {}
@@ -161,33 +269,35 @@ def _bounded_outline_summary(outline: dict) -> dict[str, object]:
 
 def _bounded_characters(project: dict, state: dict) -> list[dict[str, str]]:
     profiles = project.get("character_profiles")
-    if not isinstance(profiles, list):
-        profiles = []
+    if not isinstance(profiles, Iterable) or isinstance(profiles, (str, bytes, dict)):
+        profiles = ()
     state_characters = state.get("characters")
-    if isinstance(state_characters, list):
-        profiles = [*profiles, *state_characters]
+    if not isinstance(state_characters, Iterable) or isinstance(state_characters, (str, bytes, dict)):
+        state_characters = ()
 
     characters: list[dict[str, str]] = []
     seen_names: set[str] = set()
-    for raw_profile in profiles:
-        if len(characters) >= 8 or not isinstance(raw_profile, dict):
+    for raw_profile in chain(profiles, state_characters):
+        if not isinstance(raw_profile, dict):
             continue
-        name = _bounded_text(raw_profile.get("name"), 80)
+        name = _bounded_text(raw_profile.get("name"), _MAX_CHARACTER_NAME_CHARS)
         if not name or name in seen_names:
             continue
-        role = _bounded_text(raw_profile.get("role") or raw_profile.get("story_role"), 80)
+        role = _bounded_text(raw_profile.get("role") or raw_profile.get("story_role"), _MAX_CHARACTER_ROLE_CHARS)
         goal = _bounded_text(
             raw_profile.get("goal")
             or raw_profile.get("motivation")
             or raw_profile.get("core_motivation")
             or raw_profile.get("story_goal"),
-            240,
+            _MAX_CHARACTER_GOAL_CHARS,
         )
         if not goal and isinstance(raw_profile.get("goals"), list):
-            goal = _bounded_text(next(iter(raw_profile["goals"]), ""), 240)
+            goal = _bounded_text(next(iter(raw_profile["goals"]), ""), _MAX_CHARACTER_GOAL_CHARS)
         character = {"name": name, "role": role, "goal": goal}
         characters.append(character)
         seen_names.add(name)
+        if len(characters) == 8:
+            break
     return characters
 
 
@@ -199,17 +309,26 @@ def build_publishing_context(
     state = state if isinstance(state, dict) else {}
     opening_brief = opening_brief if isinstance(opening_brief, dict) else {}
 
-    title = _bounded_text(project.get("title") or opening_brief.get("working_title"), 120) or "未命名作品"
-    novel_type = _bounded_text(
-        state.get("genre") or project.get("genre") or project.get("novel_type") or opening_brief.get("novel_type_id"),
-        120,
+    title = _first_bounded_text(_MAX_TITLE_CHARS, project.get("title"), opening_brief.get("working_title")) or "未命名作品"
+    novel_type = _first_bounded_text(
+        _MAX_NOVEL_TYPE_CHARS,
+        state.get("genre"),
+        project.get("genre"),
+        project.get("novel_type"),
+        opening_brief.get("novel_type_id"),
     )
-    context = PublishingContext(
-        title=title,
-        novel_type=novel_type,
-        opening_idea=_bounded_text(opening_brief.get("idea"), 1000),
-        world_summary=_bounded_text(project.get("world_summary"), 2000),
-        protagonists=_bounded_characters(project, state),
-        outline_summary=_bounded_outline_summary(outline),
-    )
-    return _enforce_serialized_budget(context)
+    world_blueprint = project.get("world_blueprint")
+    blueprint_overview = world_blueprint.get("overview") if isinstance(world_blueprint, dict) else None
+    data = {
+        "title": title,
+        "novel_type": novel_type,
+        "opening_idea": _first_bounded_text(
+            _MAX_OPENING_IDEA_CHARS, opening_brief.get("idea"), project.get("seed_outline"), state.get("outline")
+        ),
+        "world_summary": _first_bounded_text(
+            _MAX_WORLD_SUMMARY_CHARS, project.get("world_summary"), blueprint_overview, state.get("world_summary")
+        ),
+        "protagonists": _bounded_characters(project, state),
+        "outline_summary": _bounded_outline_summary(outline),
+    }
+    return _enforce_serialized_budget(data)
