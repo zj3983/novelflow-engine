@@ -218,7 +218,10 @@ def _message_content(response: Any) -> str:
 
 
 def _validated_synopsis(response: Any) -> FanqieSynopsis:
-    parsed = parse_json_message_content(response)
+    try:
+        parsed = parse_json_message_content(response)
+    except Exception as exc:
+        raise ValueError("invalid_json") from exc
     if parsed is None:
         raise ValueError("invalid_json")
     try:
@@ -268,12 +271,11 @@ class SynopsisGenerator:
             "temperature": float(validated_runtime.temperature),
         }
 
-        invalid_payload = ""
+        response = _request_chat_completion(self._post_json, validated_runtime, payload)
+        invalid_payload = _message_content(response)
         try:
-            response = _request_chat_completion(self._post_json, validated_runtime, payload)
-            invalid_payload = _message_content(response)
             return _validated_synopsis(response)
-        except Exception as exc:
+        except ValueError as exc:
             problem = str(exc)
 
         repair_payload = {
@@ -299,22 +301,30 @@ class SynopsisGenerator:
                 },
             ],
         }
+        repaired_response = _request_chat_completion(self._post_json, validated_runtime, repair_payload)
         try:
-            repaired_response = _request_chat_completion(self._post_json, validated_runtime, repair_payload)
             return _validated_synopsis(repaired_response)
-        except Exception as exc:
+        except ValueError as exc:
             raise ValueError("synopsis_generation_invalid") from exc
 
 
 def _add_cover_requirements(concept: str) -> str:
-    missing = [clause for clause in _COVER_REQUIRED_CLAUSES if clause not in concept]
-    if not missing:
-        return concept[:_MAX_COVER_PROMPT_CHARS].strip()
+    normalized_concept = concept.strip()
+    missing = list(_COVER_REQUIRED_CLAUSES)
+    bounded_concept = ""
+    for _ in range(len(_COVER_REQUIRED_CLAUSES) + 1):
+        suffix = "，".join(missing)
+        separator = "，" if normalized_concept and suffix else ""
+        concept_limit = _MAX_COVER_PROMPT_CHARS - len(separator) - len(suffix)
+        bounded_concept = normalized_concept[: max(0, concept_limit)].rstrip("，、；; ")
+        next_missing = [clause for clause in _COVER_REQUIRED_CLAUSES if clause not in bounded_concept]
+        if next_missing == missing:
+            break
+        missing = next_missing
+
     suffix = "，".join(missing)
-    separator = "，" if concept else ""
-    concept_limit = _MAX_COVER_PROMPT_CHARS - len(separator) - len(suffix)
-    bounded_concept = concept[: max(0, concept_limit)].rstrip("，、；; ")
-    return f"{bounded_concept}{separator if bounded_concept else ''}{suffix}"
+    separator = "，" if bounded_concept and suffix else ""
+    return f"{bounded_concept}{separator}{suffix}"
 
 
 class CoverPromptGenerator:

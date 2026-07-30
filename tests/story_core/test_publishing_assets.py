@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from urllib.error import URLError
 
 import pytest
 from pydantic import ValidationError
@@ -112,6 +113,21 @@ def test_synopsis_generator_fails_stably_after_exactly_one_repair_for_invalid_or
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize("error", [TimeoutError("timed out"), URLError("offline")])
+def test_synopsis_generator_propagates_transport_failures_without_a_repair_call(error: Exception) -> None:
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise error
+
+    with pytest.raises(type(error)) as exc_info:
+        SynopsisGenerator(post_json=fake_post).generate(_publishing_context(), _publishing_runtime())
+
+    assert exc_info.value is error
+    assert len(calls) == 1
+
+
 def test_synopsis_generator_bounds_guidance_and_only_serializes_publishing_context() -> None:
     captured = {}
 
@@ -162,6 +178,20 @@ def test_cover_prompt_generator_strips_caps_and_passes_codex_runtime_settings() 
     prompt_context = json.loads(calls[0][2]["messages"][1]["content"])
     assert prompt_context["visual_hook"] == "亡魂渡船"
     assert prompt_context["guidance"] == "更冷峻"
+
+
+def test_cover_prompt_generator_keeps_all_guarantees_when_model_clauses_are_beyond_the_cap() -> None:
+    concept = "无文字，幽蓝巨船穿过归墟" + ("巨浪翻涌" * 700)
+    delayed_constraints = "，适合3:4小说封面，低细节标题安全留白，无字母，无标志，无水印"
+
+    result = CoverPromptGenerator(
+        post_json=lambda *args, **kwargs: {"choices": [{"message": {"content": concept + delayed_constraints}}]}
+    ).generate(_publishing_context(), _publishing_runtime())
+
+    assert len(result) <= 2_000
+    for requirement in ("适合3:4小说封面", "留白", "无文字", "无字母", "无标志", "无水印"):
+        assert requirement in result
+    assert result.count("无文字") == 1
 
 
 @pytest.mark.parametrize("response", [{"choices": []}, {"choices": [{"message": {"content": "   "}}]}])
