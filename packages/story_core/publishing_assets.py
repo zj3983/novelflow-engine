@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from itertools import chain
 import json
+import re
 from typing import Annotated, Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -36,6 +37,7 @@ _OUTLINE_OVERALL_FIELDS = (
 _MAX_SERIALIZED_CONTEXT_CHARS = 11_999
 _MAX_GENERATION_GUIDANCE_CHARS = 1_000
 _MAX_COVER_PROMPT_CHARS = 2_000
+_MAX_REPAIR_INVALID_PAYLOAD_CHARS = 4_000
 
 _SYNOPSIS_SYSTEM_PROMPT = (
     "你是番茄小说的出版文案编辑。只返回 JSON，不要 Markdown 或额外说明。"
@@ -76,6 +78,8 @@ def _first_bounded_text(limit: int, *values: Any) -> str:
 
 
 class FanqieSynopsis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tags: list[Annotated[str, Field(max_length=MAX_SYNOPSIS_TAG_CHARS)]] = Field(min_length=4, max_length=8)
     body: str = Field(min_length=200, max_length=450)
     pattern: Literal["conflict", "contrast", "micro_scene"]
@@ -209,12 +213,27 @@ def _normalize_generation_guidance(guidance: str) -> str:
 
 
 def _message_content(response: Any) -> str:
-    """Extract the one text message expected from an OpenAI-compatible response."""
+    """Normalize OpenAI-compatible string and rich message content to text."""
     try:
-        content = response["choices"][0]["message"]["content"]
+        message = response["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
         return ""
-    return content if isinstance(content, str) else ""
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content", "")
+    if isinstance(content, list):
+        fragments: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if text:
+                    fragments.append(str(text))
+            elif isinstance(block, str):
+                fragments.append(block)
+        return "\n".join(fragments).strip()
+    if isinstance(content, dict):
+        return str(content.get("text", "")).strip()
+    return str(content).strip()
 
 
 def _validated_synopsis(response: Any) -> FanqieSynopsis:
@@ -272,7 +291,7 @@ class SynopsisGenerator:
         }
 
         response = _request_chat_completion(self._post_json, validated_runtime, payload)
-        invalid_payload = _message_content(response)
+        invalid_payload = _message_content(response)[:_MAX_REPAIR_INVALID_PAYLOAD_CHARS]
         try:
             return _validated_synopsis(response)
         except ValueError as exc:
@@ -284,7 +303,7 @@ class SynopsisGenerator:
                 {
                     "role": "system",
                     "content": (
-                        "修复上一条番茄小说简介输出。只返回符合原始 JSON 字段和约束的 JSON，"
+                        f"{_SYNOPSIS_SYSTEM_PROMPT} 修复上一条番茄小说简介输出。只返回符合原始 JSON 字段和约束的 JSON，"
                         "不要解释修复过程。"
                     ),
                 },
@@ -309,21 +328,17 @@ class SynopsisGenerator:
 
 
 def _add_cover_requirements(concept: str) -> str:
-    normalized_concept = concept.strip()
-    missing = list(_COVER_REQUIRED_CLAUSES)
-    bounded_concept = ""
-    for _ in range(len(_COVER_REQUIRED_CLAUSES) + 1):
-        suffix = "，".join(missing)
-        separator = "，" if normalized_concept and suffix else ""
-        concept_limit = _MAX_COVER_PROMPT_CHARS - len(separator) - len(suffix)
-        bounded_concept = normalized_concept[: max(0, concept_limit)].rstrip("，、；; ")
-        next_missing = [clause for clause in _COVER_REQUIRED_CLAUSES if clause not in bounded_concept]
-        if next_missing == missing:
-            break
-        missing = next_missing
-
-    suffix = "，".join(missing)
-    separator = "，" if bounded_concept and suffix else ""
+    segments = [
+        segment.strip()
+        for segment in re.split(r"[，,。；;、\r\n]+", concept.strip())
+        if segment.strip() and segment.strip() not in _COVER_REQUIRED_CLAUSES
+    ]
+    normalized_concept = "，".join(segments)
+    suffix = "，".join(_COVER_REQUIRED_CLAUSES)
+    separator = "，" if normalized_concept else ""
+    concept_limit = _MAX_COVER_PROMPT_CHARS - len(separator) - len(suffix)
+    bounded_concept = normalized_concept[: max(0, concept_limit)].rstrip("，、；; ")
+    separator = "，" if bounded_concept else ""
     return f"{bounded_concept}{separator}{suffix}"
 
 
@@ -353,13 +368,13 @@ class CoverPromptGenerator:
             ],
             "temperature": float(validated_runtime.temperature),
         }
+        response = _request_chat_completion(self._post_json, validated_runtime, payload)
         try:
-            response = _request_chat_completion(self._post_json, validated_runtime, payload)
             concept = _message_content(response).strip()
             if not concept:
                 raise ValueError("blank_cover_prompt")
             return _add_cover_requirements(concept)
-        except Exception as exc:
+        except ValueError as exc:
             raise ValueError("cover_prompt_generation_invalid") from exc
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 import pytest
 from pydantic import ValidationError
@@ -99,6 +99,56 @@ def test_synopsis_generator_repairs_one_invalid_result_and_reports_the_problem()
     assert repair_context["problem"]
 
 
+def test_synopsis_repair_repeats_contract_and_bounds_rich_invalid_payload() -> None:
+    calls = []
+    invalid_payload = "x" * 5_000
+    responses = iter(
+        [
+            {"choices": [{"message": {"content": [{"text": invalid_payload}]}}]},
+            {"choices": [{"message": {"content": json.dumps(_valid_synopsis(), ensure_ascii=False)}}]},
+        ]
+    )
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        calls.append((base_url, path, payload, api_key, kwargs))
+        return next(responses)
+
+    result = SynopsisGenerator(post_json=fake_post).generate(
+        _publishing_context(), _publishing_runtime(provider="codexcli")
+    )
+
+    assert result.pattern == "conflict"
+    assert len(calls) == 2
+    _, path, repair_payload, api_key, kwargs = calls[1]
+    assert path == "/chat/completions"
+    assert api_key == ""
+    assert kwargs == {"provider": "codexcli", "codex_command": "codex-publishing"}
+    repair_system = repair_payload["messages"][0]["content"]
+    for requirement in ("tags", "body", "visual_hook", "4-8", "200-450", "conflict", "contrast", "micro_scene"):
+        assert requirement in repair_system
+    repair_context = json.loads(repair_payload["messages"][1]["content"])
+    assert repair_context["problem"] == "invalid_json"
+    assert repair_context["invalid_payload"] == invalid_payload[:4_000]
+
+
+def test_synopsis_generator_repairs_an_unexpected_root_field() -> None:
+    calls = []
+    invalid = _valid_synopsis() | {"unexpected": "must not be ignored"}
+    responses = iter(
+        [
+            {"choices": [{"message": {"content": json.dumps(invalid, ensure_ascii=False)}}]},
+            {"choices": [{"message": {"content": json.dumps(_valid_synopsis(), ensure_ascii=False)}}]},
+        ]
+    )
+
+    result = SynopsisGenerator(post_json=lambda *args, **kwargs: calls.append(args) or next(responses)).generate(
+        _publishing_context(), _publishing_runtime()
+    )
+
+    assert result.pattern == "conflict"
+    assert len(calls) == 2
+
+
 def test_synopsis_generator_fails_stably_after_exactly_one_repair_for_invalid_or_malformed_results() -> None:
     calls = []
     responses = iter([{"choices": []}, {"choices": [{"message": {"content": "not json"}}]}])
@@ -192,6 +242,50 @@ def test_cover_prompt_generator_keeps_all_guarantees_when_model_clauses_are_beyo
     for requirement in ("适合3:4小说封面", "留白", "无文字", "无字母", "无标志", "无水印"):
         assert requirement in result
     assert result.count("无文字") == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError("timed out"),
+        URLError("offline"),
+        HTTPError("https://text.test/v1/chat/completions", 503, "unavailable", None, None),
+    ],
+)
+def test_cover_prompt_generator_propagates_transport_failures_without_retrying(error: Exception) -> None:
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise error
+
+    with pytest.raises(type(error)) as exc_info:
+        CoverPromptGenerator(post_json=fake_post).generate(_publishing_context(), _publishing_runtime())
+
+    assert exc_info.value is error
+    assert len(calls) == 1
+
+
+def test_cover_prompt_generator_normalizes_rich_message_content() -> None:
+    result = CoverPromptGenerator(
+        post_json=lambda *args, **kwargs: {
+            "choices": [{"message": {"content": [{"text": "  血月下的亡魂"}, "渡船  "]}}]
+        }
+    ).generate(_publishing_context(), _publishing_runtime())
+
+    assert result.startswith("血月下的亡魂，渡船")
+
+
+def test_cover_prompt_generator_appends_positive_canonical_segments_after_adversarial_substrings() -> None:
+    adversarial_concept = "不适合3:4小说封面，不要无文字，不要无字母，不用无标志，无水印"
+    result = CoverPromptGenerator(
+        post_json=lambda *args, **kwargs: {"choices": [{"message": {"content": adversarial_concept}}]}
+    ).generate(_publishing_context(), _publishing_runtime())
+
+    segments = [segment.strip() for segment in result.split("，")]
+    for clause in ("适合3:4小说封面", "低细节标题安全留白", "无文字", "无字母", "无标志", "无水印"):
+        assert segments.count(clause) == 1
+    assert len(result) <= 2_000
 
 
 @pytest.mark.parametrize("response", [{"choices": []}, {"choices": [{"message": {"content": "   "}}]}])
