@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import json
 import socket
 import struct
 from urllib.error import HTTPError, URLError
@@ -11,6 +12,7 @@ import pytest
 from PIL import Image
 
 from packages.story_core.cover_image_provider import CoverImageError, OpenAICoverImageProvider
+from packages.story_core.http_retry import RetryConfig
 from packages.story_core.runtime_config import ImageRuntimeSettings
 
 
@@ -63,7 +65,11 @@ def test_generate_posts_one_openai_compatible_base64_request_and_returns_image_b
                 "response_format": "b64_json",
             },
             "image-key",
-            {"provider": "openai", "codex_command": ""},
+            {
+                "config": RetryConfig(timeout=180, allow_compatibility_fallback=False),
+                "provider": "openai",
+                "codex_command": "",
+            },
         )
     ]
 
@@ -155,6 +161,19 @@ def test_generate_preserves_unrelated_transport_errors(transport_error: Exceptio
     assert error.value.__cause__ is None
 
 
+@pytest.mark.parametrize(
+    "parsing_error",
+    [
+        json.JSONDecodeError("invalid response JSON", "{", 1),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+    ],
+)
+def test_generate_maps_response_parsing_errors_to_invalid_image_payload(parsing_error: Exception) -> None:
+    with pytest.raises(CoverImageError, match="^invalid_image_payload$") as error:
+        _provider(parsing_error).generate("cover")
+    assert error.value.__cause__ is parsing_error
+
+
 def test_generate_enforces_encoded_decoded_and_dimension_limits(monkeypatch) -> None:
     provider = _provider(_b64_response(_image_bytes()))
     monkeypatch.setattr("packages.story_core.cover_image_provider.MAX_ENCODED_IMAGE_BYTES", 8)
@@ -172,6 +191,15 @@ def test_generate_enforces_encoded_decoded_and_dimension_limits(monkeypatch) -> 
         provider.generate("cover")
 
 
+def test_generate_accepts_image_at_encoded_and_decoded_size_boundaries(monkeypatch) -> None:
+    source = _image_bytes()
+    encoded_length = len(base64.b64encode(source))
+    monkeypatch.setattr("packages.story_core.cover_image_provider.MAX_ENCODED_IMAGE_BYTES", encoded_length)
+    monkeypatch.setattr("packages.story_core.cover_image_provider.MAX_DECODED_IMAGE_BYTES", len(source))
+
+    assert _provider(_b64_response(source)).generate("cover") == source
+
+
 def test_generate_rejects_image_over_40_megapixels_without_loading_pixels() -> None:
     width, height = 7_500, 6_000
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
@@ -182,9 +210,8 @@ def test_generate_rejects_image_over_40_megapixels_without_loading_pixels() -> N
         _provider(_b64_response(png)).generate("cover")
 
 
-@pytest.mark.parametrize("pillow_pixel_limit", [4, 2])
-def test_generate_rejects_pillow_decompression_bomb_warning_and_error(monkeypatch, pillow_pixel_limit: int) -> None:
-    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", pillow_pixel_limit)
+def test_generate_rejects_pillow_decompression_bomb_error_without_warning_filter_mutation(monkeypatch) -> None:
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 2)
 
     with pytest.raises(CoverImageError, match="^invalid_image_payload$"):
         _provider(_b64_response(_image_bytes(size=(3, 2)))).generate("cover")

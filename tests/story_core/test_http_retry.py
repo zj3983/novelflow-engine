@@ -73,6 +73,32 @@ def test_post_json_with_retry_400_strips_compat_fields(monkeypatch):
     assert sent[1] == {"model": "m", "messages": [{"role": "user", "content": "ping"}]}
 
 
+def test_post_json_with_retry_can_preserve_required_compatibility_fields(monkeypatch):
+    sent = []
+
+    def fake_urlopen(request, timeout):
+        sent.append(json.loads(request.data.decode("utf-8")))
+        raise _http_400()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    payload = {"model": "image", "prompt": "cover", "n": 1, "response_format": "b64_json"}
+
+    with pytest.raises(urllib.error.HTTPError):
+        post_json_with_retry(
+            "http://api.test",
+            "/images/generations",
+            payload,
+            "key",
+            config=RetryConfig(
+                max_retries=1,
+                initial_delay=0,
+                allow_compatibility_fallback=False,
+            ),
+        )
+
+    assert sent == [payload]
+
+
 def test_post_json_with_retry_400_without_compat_fields_raises(monkeypatch):
     calls = {"count": 0}
 

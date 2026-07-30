@@ -103,6 +103,27 @@ def test_disabled_or_incomplete_image_configuration_has_a_stable_resolution_erro
     with pytest.raises(ImageRuntimeConfigurationError, match="^image_runtime_not_configured$"):
         resolve_image_runtime()
 
+
+def test_resolve_image_runtime_strips_secret_model_and_base_url(monkeypatch):
+    monkeypatch.setattr(
+        runtime_config,
+        "_runtime_configuration",
+        RuntimeConfiguration(
+            image={
+                "enabled": True,
+                "api_key": " image-key ",
+                "base_url": " https://images.example.test/v1/// ",
+                "model": " cover-model ",
+            }
+        ),
+    )
+
+    assert resolve_image_runtime() == runtime_config.ImageRuntimeSettings(
+        api_key="image-key",
+        base_url="https://images.example.test/v1",
+        model="cover-model",
+    )
+
     configuration = RuntimeConfiguration(image={"enabled": True, "api_key": "key"})
     monkeypatch.setattr(runtime_config, "_runtime_configuration", configuration)
     with pytest.raises(ImageRuntimeConfigurationError, match="^image_runtime_not_configured$"):

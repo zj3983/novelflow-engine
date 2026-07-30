@@ -450,12 +450,15 @@ def resolve_stage_runtime(stage: RuntimeStage) -> StageRuntimeSettings:
 
 def resolve_image_runtime() -> ImageRuntimeSettings:
     image = get_runtime_configuration().image
-    if not image.enabled or not image.api_key.strip() or not image.base_url.strip() or not image.model.strip():
+    api_key = image.api_key.strip()
+    base_url = image.base_url.strip().rstrip("/")
+    model = image.model.strip()
+    if not image.enabled or not api_key or not base_url or not model:
         raise ImageRuntimeConfigurationError("image_runtime_not_configured")
     return ImageRuntimeSettings(
-        api_key=image.api_key,
-        base_url=image.base_url.rstrip("/"),
-        model=image.model,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
     )
 
 

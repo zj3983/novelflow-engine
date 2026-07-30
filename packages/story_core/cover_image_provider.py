@@ -5,15 +5,16 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import json
+import re
 import socket
 import urllib.error
-import warnings
 from collections.abc import Callable
 from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
-from packages.story_core.http_retry import post_json_with_retry
+from packages.story_core.http_retry import RetryConfig, post_json_with_retry
 from packages.story_core.runtime_config import ImageRuntimeSettings, resolve_image_runtime
 
 
@@ -31,19 +32,21 @@ def _invalid_image_payload() -> CoverImageError:
     return CoverImageError("invalid_image_payload")
 
 
-def _has_usable_base64(value: object) -> bool:
+_BASE64_PATTERN = re.compile(rb"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?\Z")
+
+
+def _base64_preflight(value: object) -> bool:
     if not isinstance(value, str) or not value.strip():
         return False
     try:
         encoded = value.encode("ascii", errors="strict")
     except UnicodeEncodeError:
         return False
-    if len(encoded) > MAX_ENCODED_IMAGE_BYTES:
+    if len(encoded) > MAX_ENCODED_IMAGE_BYTES or not _BASE64_PATTERN.fullmatch(encoded):
         return False
-    try:
-        return bool(base64.b64decode(encoded, validate=True))
-    except (binascii.Error, ValueError):
-        return False
+    padding_bytes = 2 if encoded.endswith(b"==") else 1 if encoded.endswith(b"=") else 0
+    decoded_length = (len(encoded) // 4) * 3 - padding_bytes
+    return 0 < decoded_length <= MAX_DECODED_IMAGE_BYTES
 
 
 def _decode_and_validate_image(encoded: str) -> bytes:
@@ -63,22 +66,19 @@ def _decode_and_validate_image(encoded: str) -> bytes:
         raise _invalid_image_payload()
 
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(image_bytes)) as image:
-                if image.format not in _SUPPORTED_FORMATS:
-                    raise _invalid_image_payload()
-                width, height = image.size
-                if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
-                    raise _invalid_image_payload()
-                image.verify()
-            with Image.open(io.BytesIO(image_bytes)) as image:
-                image.load()
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            if image.format not in _SUPPORTED_FORMATS:
+                raise _invalid_image_payload()
+            width, height = image.size
+            if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+                raise _invalid_image_payload()
+            image.verify()
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image.load()
     except CoverImageError:
         raise
     except (
         Image.DecompressionBombError,
-        Image.DecompressionBombWarning,
         OSError,
         SyntaxError,
         ValueError,
@@ -114,6 +114,7 @@ class OpenAICoverImageProvider:
                 "/images/generations",
                 payload,
                 runtime.api_key,
+                config=RetryConfig(timeout=180, allow_compatibility_fallback=False),
                 provider="openai",
                 codex_command="",
             )
@@ -127,6 +128,8 @@ class OpenAICoverImageProvider:
             if isinstance(exc.reason, (TimeoutError, socket.timeout)):
                 raise CoverImageError("image_generation_timeout") from exc
             raise
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise _invalid_image_payload() from exc
 
         try:
             data = response["data"]
@@ -138,7 +141,7 @@ class OpenAICoverImageProvider:
         url = first.get("url")
         encoded = first.get("b64_json")
         has_usable_url = isinstance(url, str) and bool(url.strip())
-        has_usable_base64 = _has_usable_base64(encoded)
+        has_usable_base64 = _base64_preflight(encoded)
         if has_usable_url and not has_usable_base64:
             raise CoverImageError("unsupported_image_response")
         return _decode_and_validate_image(encoded)

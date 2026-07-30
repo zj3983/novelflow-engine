@@ -10,11 +10,13 @@ import http.client
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 
 
 _COMPAT_FALLBACK_STRIP_FIELDS = ("parameters", "response_format", "temperature")
 
 
+@dataclass
 class RetryConfig:
     """Configuration for retry behavior."""
     max_retries: int = 2
@@ -23,6 +25,7 @@ class RetryConfig:
     max_delay: float = 2.0
     timeout: int = 360  # seconds; long webnovel chapters can require several minutes per LLM call
     retry_on_status: tuple[int, ...] = (429, 500, 502, 503, 504)
+    allow_compatibility_fallback: bool = True
 
 
 def post_json_with_retry(
@@ -73,7 +76,7 @@ def post_json_with_retry(
 
     payloads = [payload]
     stripped = {k: v for k, v in payload.items() if k not in _COMPAT_FALLBACK_STRIP_FIELDS}
-    if stripped != payload:
+    if cfg.allow_compatibility_fallback and stripped != payload:
         payloads.append(stripped)
 
     last_error: Exception | None = None
