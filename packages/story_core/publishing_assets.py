@@ -221,19 +221,19 @@ def _message_content(response: Any) -> str:
     if not isinstance(message, dict):
         return ""
     content = message.get("content", "")
+    if isinstance(content, str):
+        return content.strip()
     if isinstance(content, list):
         fragments: list[str] = []
         for block in content:
             if isinstance(block, dict):
                 text = block.get("text")
-                if text:
-                    fragments.append(str(text))
+                if isinstance(text, str):
+                    fragments.append(text)
             elif isinstance(block, str):
                 fragments.append(block)
         return "\n".join(fragments).strip()
-    if isinstance(content, dict):
-        return str(content.get("text", "")).strip()
-    return str(content).strip()
+    return ""
 
 
 def _validated_synopsis(response: Any) -> FanqieSynopsis:
@@ -330,7 +330,7 @@ class SynopsisGenerator:
 def _add_cover_requirements(concept: str) -> str:
     segments = [
         segment.strip()
-        for segment in re.split(r"[，,。；;、\r\n]+", concept.strip())
+        for segment in re.split(r"[，,。；;、！!？?\r\n]+", concept.strip())
         if segment.strip() and segment.strip() not in _COVER_REQUIRED_CLAUSES
     ]
     normalized_concept = "，".join(segments)

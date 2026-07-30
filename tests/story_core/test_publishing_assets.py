@@ -149,6 +149,25 @@ def test_synopsis_generator_repairs_an_unexpected_root_field() -> None:
     assert len(calls) == 2
 
 
+def test_synopsis_generator_repairs_null_content_with_an_empty_invalid_payload() -> None:
+    calls = []
+    responses = iter(
+        [
+            {"choices": [{"message": {"content": None}}]},
+            {"choices": [{"message": {"content": json.dumps(_valid_synopsis(), ensure_ascii=False)}}]},
+        ]
+    )
+
+    result = SynopsisGenerator(post_json=lambda *args, **kwargs: calls.append(args) or next(responses)).generate(
+        _publishing_context(), _publishing_runtime()
+    )
+
+    assert result.pattern == "conflict"
+    assert len(calls) == 2
+    repair_context = json.loads(calls[1][2]["messages"][1]["content"])
+    assert repair_context["invalid_payload"] == ""
+
+
 def test_synopsis_generator_fails_stably_after_exactly_one_repair_for_invalid_or_malformed_results() -> None:
     calls = []
     responses = iter([{"choices": []}, {"choices": [{"message": {"content": "not json"}}]}])
@@ -286,6 +305,38 @@ def test_cover_prompt_generator_appends_positive_canonical_segments_after_advers
     for clause in ("适合3:4小说封面", "低细节标题安全留白", "无文字", "无字母", "无标志", "无水印"):
         assert segments.count(clause) == 1
     assert len(result) <= 2_000
+
+
+def test_cover_prompt_generator_recognizes_exclamation_delimited_canonical_segments() -> None:
+    result = CoverPromptGenerator(
+        post_json=lambda *args, **kwargs: {"choices": [{"message": {"content": "无文字！无水印"}}]}
+    ).generate(_publishing_context(), _publishing_runtime())
+
+    assert result.count("无文字") == 1
+    assert result.count("无水印") == 1
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"choices": [{"message": {"content": None}}]},
+        {"choices": [{"message": {"content": 0}}]},
+        {"choices": [{"message": {"content": False}}]},
+        {"choices": [{"message": {"content": [{"text": None}]}}]},
+        {"choices": [{"message": {"content": [{"text": 0}]}}]},
+        {"choices": [{"message": {"content": [{"text": 1}]}}]},
+        {"choices": [{"message": {"content": [{"text": False}]}}]},
+        {"choices": [{"message": {"content": [{"text": True}]}}]},
+        {"choices": [{"message": {"content": [None]}}]},
+        {"choices": [{"message": {"content": [0]}}]},
+        {"choices": [{"message": {"content": [False]}}]},
+    ],
+)
+def test_cover_prompt_generator_rejects_non_text_content_shapes(response: dict) -> None:
+    with pytest.raises(ValueError, match="^cover_prompt_generation_invalid$"):
+        CoverPromptGenerator(post_json=lambda *args, **kwargs: response).generate(
+            _publishing_context(), _publishing_runtime()
+        )
 
 
 @pytest.mark.parametrize("response", [{"choices": []}, {"choices": [{"message": {"content": "   "}}]}])
