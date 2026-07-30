@@ -798,6 +798,268 @@ class FileProjectStore:
             for temp_path in prepared.values():
                 temp_path.unlink(missing_ok=True)
 
+    @property
+    def cover_base_path(self) -> Path:
+        return self.webnovel_dir / "assets" / "cover-base.png"
+
+    @property
+    def rendered_cover_path(self) -> Path:
+        return self.webnovel_dir / "assets" / "cover.png"
+
+    @staticmethod
+    def _publishing_assets_default() -> dict[str, Any]:
+        return {
+            "schema_version": "publishing-assets/v1",
+            "synopsis": None,
+            "cover": None,
+        }
+
+    @staticmethod
+    def _json_safe_dict(value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+            raise ValueError("publishing_asset_write_failed")
+        try:
+            serialized = json.dumps(value, ensure_ascii=False, allow_nan=False)
+            restored = json.loads(serialized)
+        except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+            raise ValueError("publishing_asset_write_failed") from exc
+        if not isinstance(restored, dict):  # pragma: no cover - guarded above
+            raise ValueError("publishing_asset_write_failed")
+        return restored
+
+    @classmethod
+    def _normalize_publishing_assets(cls, value: Any) -> dict[str, Any]:
+        normalized = cls._publishing_assets_default()
+        if not isinstance(value, dict):
+            return normalized
+        synopsis = value.get("synopsis")
+        if isinstance(synopsis, dict):
+            try:
+                normalized["synopsis"] = cls._json_safe_dict(synopsis)
+            except ValueError:
+                pass
+        raw_cover = value.get("cover")
+        if not isinstance(raw_cover, dict):
+            return normalized
+        cover: dict[str, Any] = {}
+        prompt = raw_cover.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            cover["prompt"] = prompt.strip()[:2000]
+        model = raw_cover.get("model")
+        if isinstance(model, str) and model.strip():
+            cover["model"] = model.strip()
+        if raw_cover.get("base_path") == "assets/cover-base.png":
+            cover["base_path"] = "assets/cover-base.png"
+        if raw_cover.get("rendered_path") == "assets/cover.png":
+            cover["rendered_path"] = "assets/cover.png"
+        if raw_cover.get("schema_version") == "cover/v1":
+            cover["schema_version"] = "cover/v1"
+        rendered_title = raw_cover.get("rendered_title")
+        if isinstance(rendered_title, str):
+            cover["rendered_title"] = rendered_title
+        normalized["cover"] = cover or None
+        return normalized
+
+    def _safe_metadata_document(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = self._read_json(path, {})
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {}
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def _publishing_assets_from_metadata(self) -> dict[str, Any]:
+        project = self._safe_metadata_document(self.webnovel_dir / "project.json")
+        if "publishing_assets" in project:
+            return self._normalize_publishing_assets(project.get("publishing_assets"))
+        master = self._safe_metadata_document(self.story_system_dir / "MASTER_SETTING.json")
+        master_project = master.get("project")
+        if isinstance(master_project, dict):
+            return self._normalize_publishing_assets(master_project.get("publishing_assets"))
+        return self._publishing_assets_default()
+
+    def _prepare_publishing_temp(self, path: Path, content: bytes, *, suffix: str = ".tmp") -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=suffix)
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+        return temp_path
+
+    def _replace_asset(self, source: Path, target: Path) -> None:
+        os.replace(source, target)
+
+    def _replace_metadata(self, source: Path, target: Path) -> None:
+        os.replace(source, target)
+
+    def _restore_publishing_target(self, target: Path, content: bytes | None) -> None:
+        if content is None:
+            target.unlink(missing_ok=True)
+            return
+        replacement = self._prepare_publishing_temp(target, content)
+        try:
+            os.replace(replacement, target)
+        finally:
+            replacement.unlink(missing_ok=True)
+
+    def _publishing_metadata_payloads(
+        self,
+        publishing_assets: dict[str, Any],
+    ) -> dict[Path, dict[str, Any]]:
+        project_path = self.webnovel_dir / "project.json"
+        master_path = self.story_system_dir / "MASTER_SETTING.json"
+        project = self._safe_metadata_document(project_path)
+        master = self._safe_metadata_document(master_path)
+        master_project = master.get("project")
+        master_project = dict(master_project) if isinstance(master_project, dict) else dict(project)
+        project["publishing_assets"] = deepcopy(publishing_assets)
+        master_project["publishing_assets"] = deepcopy(publishing_assets)
+        master["project"] = master_project
+        return {project_path: project, master_path: master}
+
+    def _publishing_transaction(
+        self,
+        publishing_assets: dict[str, Any],
+        *,
+        asset_contents: tuple[bytes, bytes] | None = None,
+    ) -> None:
+        metadata_payloads = self._publishing_metadata_payloads(publishing_assets)
+        metadata_targets = list(metadata_payloads)
+        asset_targets = [self.cover_base_path, self.rendered_cover_path] if asset_contents is not None else []
+        if asset_contents is not None:
+            assets_dir = self.cover_base_path.parent
+            if not assets_dir.resolve().is_relative_to(self.root):
+                raise ValueError("publishing_asset_write_failed")
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            if not assets_dir.resolve().is_relative_to(self.root):
+                raise ValueError("publishing_asset_write_failed")
+        all_targets = asset_targets + metadata_targets
+        snapshots = {path: path.read_bytes() if path.exists() else None for path in all_targets}
+        prepared: list[Path] = []
+        rollback_files: list[Path] = []
+        try:
+            if asset_contents is not None:
+                asset_temps = [
+                    self._prepare_publishing_temp(target, content)
+                    for target, content in zip(asset_targets, asset_contents, strict=True)
+                ]
+                prepared.extend(asset_temps)
+                for target in asset_targets:
+                    snapshot = snapshots[target]
+                    if snapshot is not None:
+                        rollback = self._prepare_publishing_temp(target, snapshot, suffix=".rollback")
+                        rollback_files.append(rollback)
+            else:
+                asset_temps = []
+
+            metadata_temps: dict[Path, Path] = {}
+            for target, payload in metadata_payloads.items():
+                serialized = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
+                metadata_temps[target] = self._prepare_publishing_temp(target, serialized)
+                prepared.append(metadata_temps[target])
+
+            for source, target in zip(asset_temps, asset_targets, strict=True):
+                self._replace_asset(source, target)
+            for target in metadata_targets:
+                self._replace_metadata(metadata_temps[target], target)
+        except Exception as exc:
+            for target in asset_targets:
+                try:
+                    self._restore_publishing_target(target, snapshots[target])
+                except Exception:  # pragma: no cover - catastrophic rollback failure
+                    logging.getLogger(__name__).exception("publishing asset rollback failed")
+            for target in metadata_targets:
+                try:
+                    self._restore_publishing_target(target, snapshots[target])
+                except Exception:  # pragma: no cover - catastrophic rollback failure
+                    logging.getLogger(__name__).exception("publishing metadata rollback failed")
+            raise ValueError("publishing_asset_write_failed") from exc
+        finally:
+            for path in prepared + rollback_files:
+                path.unlink(missing_ok=True)
+
+    @_with_project_update_lock
+    def publishing_assets(self) -> dict[str, Any]:
+        return self._publishing_assets_from_metadata()
+
+    @_with_project_update_lock
+    def save_synopsis(self, synopsis: dict[str, Any]) -> dict[str, Any]:
+        try:
+            saved = self._publishing_assets_from_metadata()
+            saved["synopsis"] = self._json_safe_dict(synopsis)
+            self._publishing_transaction(saved)
+            return saved
+        except ValueError as exc:
+            if str(exc) == "publishing_asset_write_failed":
+                raise
+            raise ValueError("publishing_asset_write_failed") from exc
+        except Exception as exc:
+            raise ValueError("publishing_asset_write_failed") from exc
+
+    @staticmethod
+    def _publishing_prompt(prompt: str) -> str:
+        if not isinstance(prompt, str):
+            raise ValueError("publishing_asset_write_failed")
+        normalized = prompt.strip()
+        if not normalized or len(normalized) > 2000:
+            raise ValueError("publishing_asset_write_failed")
+        return normalized
+
+    @_with_project_update_lock
+    def save_cover_prompt(self, prompt: str) -> dict[str, Any]:
+        try:
+            saved = self._publishing_assets_from_metadata()
+            cover = dict(saved["cover"] or {})
+            cover["prompt"] = self._publishing_prompt(prompt)
+            saved["cover"] = cover
+            self._publishing_transaction(saved)
+            return saved
+        except ValueError as exc:
+            if str(exc) == "publishing_asset_write_failed":
+                raise
+            raise ValueError("publishing_asset_write_failed") from exc
+        except Exception as exc:
+            raise ValueError("publishing_asset_write_failed") from exc
+
+    @_with_project_update_lock
+    def save_cover(
+        self,
+        *,
+        prompt: str,
+        base_image: bytes,
+        rendered_image: bytes,
+        model: str,
+    ) -> dict[str, Any]:
+        try:
+            if not isinstance(base_image, bytes) or not isinstance(rendered_image, bytes):
+                raise ValueError("publishing_asset_write_failed")
+            if not base_image or not rendered_image or not isinstance(model, str) or not model.strip():
+                raise ValueError("publishing_asset_write_failed")
+            project = self.project()
+            title = str(project.get("title") or "").strip()
+            saved = self._publishing_assets_from_metadata()
+            saved["cover"] = {
+                "prompt": self._publishing_prompt(prompt),
+                "model": model.strip(),
+                "base_path": "assets/cover-base.png",
+                "rendered_path": "assets/cover.png",
+                "schema_version": "cover/v1",
+                "rendered_title": title,
+            }
+            self._publishing_transaction(saved, asset_contents=(base_image, rendered_image))
+            return saved
+        except ValueError as exc:
+            if str(exc) == "publishing_asset_write_failed":
+                raise
+            raise ValueError("publishing_asset_write_failed") from exc
+        except Exception as exc:
+            raise ValueError("publishing_asset_write_failed") from exc
+
     @staticmethod
     def _snapshot_managed_files(
         paths: list[Path],
