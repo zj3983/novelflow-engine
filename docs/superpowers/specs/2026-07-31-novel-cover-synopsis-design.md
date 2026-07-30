@@ -95,6 +95,7 @@
       "height": 1024,
       "mime_type": "image/png",
       "model": "configured-image-model",
+      "rendered_title": "归墟行舟",
       "updated_at": "2026-07-31T00:00:00Z"
     }
   }
@@ -106,6 +107,7 @@
 - `publishing_assets` 对旧项目可选；读取缺失字段时返回空状态。
 - 图片二进制和 API 密钥不得写入项目 JSON。
 - 只生成出提示词时，`cover.prompt` 与 `updated_at` 必须保存，图片版本、尺寸、格式和模型字段可以缺省。
+- 成功输出最终封面时保存 `cover.rendered_title`，用于识别项目书名是否已变化并提示重新排版。
 - `synopsis.tags` 保存 4 至 8 个去重后的非空标签。
 - `synopsis.body` 保存 200 至 450 个中文字符的正文；人工编辑时仍执行非空和最大长度校验，但不强制用户保持模型生成长度下限。
 - 时间使用 UTC ISO 8601 字符串。
