@@ -8,7 +8,7 @@ import re
 import struct
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
 
 
 CANVAS_SIZE = (768, 1024)
@@ -37,6 +37,8 @@ _STROKE_FILL = (34, 19, 25)
 _SHADOW_FILL = (0, 0, 0)
 _STROKE_WIDTH = 2
 _SHADOW_OFFSET = (6, 7)
+_SHADOW_BLUR_RADIUS = 3
+_SHADOW_ALPHA = 190
 _MAX_TITLE_CHARACTERS = 80
 
 
@@ -64,6 +66,7 @@ def render_cover(base_bytes: bytes, title: str, font_path: str | Path | None = N
             canvas.close()
             canvas = converted
         _draw_title(canvas, text, font_file)
+        canvas.info.clear()
         output = io.BytesIO()
         canvas.save(output, format="PNG")
         return output.getvalue()
@@ -260,6 +263,21 @@ def _u32(data: bytes, offset: int) -> int:
 
 
 def _draw_title(canvas: Image.Image, title: str, font_file: Path) -> None:
+    shadow = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
+    try:
+        shadow_draw = ImageDraw.Draw(shadow)
+        if _is_short_chinese_title(title):
+            _draw_vertical_title(shadow_draw, title, font_file, shadow=True)
+        else:
+            _draw_wrapped_title(shadow_draw, title, font_file, shadow=True)
+        softened_shadow = shadow.filter(ImageFilter.GaussianBlur(_SHADOW_BLUR_RADIUS))
+        try:
+            canvas.paste(softened_shadow, (0, 0), softened_shadow)
+        finally:
+            softened_shadow.close()
+    finally:
+        shadow.close()
+
     draw = ImageDraw.Draw(canvas)
     if _is_short_chinese_title(title):
         _draw_vertical_title(draw, title, font_file)
@@ -271,7 +289,9 @@ def _is_short_chinese_title(title: str) -> bool:
     return 2 <= len(title) <= 6 and all("\u4e00" <= char <= "\u9fff" for char in title)
 
 
-def _draw_vertical_title(draw: ImageDraw.ImageDraw, title: str, font_file: Path) -> None:
+def _draw_vertical_title(
+    draw: ImageDraw.ImageDraw, title: str, font_file: Path, *, shadow: bool = False
+) -> None:
     font = ImageFont.truetype(str(font_file), size=100)
     sample_box = draw.textbbox((0, 0), title[0], font=font, stroke_width=_STROKE_WIDTH)
     glyph_height = sample_box[3] - sample_box[1]
@@ -281,13 +301,15 @@ def _draw_vertical_title(draw: ImageDraw.ImageDraw, title: str, font_file: Path)
     for character in title:
         box = draw.textbbox((0, 0), character, font=font, stroke_width=_STROKE_WIDTH)
         x = (CANVAS_SIZE[0] - (box[2] - box[0])) // 2 - box[0]
-        _draw_text(draw, (x, y - box[1]), character, font)
+        _draw_text(draw, (x, y - box[1]), character, font, shadow=shadow)
         y += glyph_height + gap
 
 
-def _draw_wrapped_title(draw: ImageDraw.ImageDraw, title: str, font_file: Path) -> None:
-    max_width = _SAFE_RIGHT - _SAFE_LEFT - _SHADOW_OFFSET[0]
-    max_height = _SAFE_BOTTOM - _SAFE_TOP - _SHADOW_OFFSET[1]
+def _draw_wrapped_title(
+    draw: ImageDraw.ImageDraw, title: str, font_file: Path, *, shadow: bool = False
+) -> None:
+    max_width = _SAFE_RIGHT - _SAFE_LEFT - _SHADOW_OFFSET[0] - _SHADOW_BLUR_RADIUS
+    max_height = _SAFE_BOTTOM - _SAFE_TOP - _SHADOW_OFFSET[1] - _SHADOW_BLUR_RADIUS
     chosen: tuple[ImageFont.FreeTypeFont, list[str], int, int] | None = None
     for size in range(96, 23, -2):
         font = ImageFont.truetype(str(font_file), size=size)
@@ -307,7 +329,7 @@ def _draw_wrapped_title(draw: ImageDraw.ImageDraw, title: str, font_file: Path) 
     for line in lines:
         box = draw.textbbox((0, 0), line, font=font, stroke_width=_STROKE_WIDTH)
         x = (CANVAS_SIZE[0] - (box[2] - box[0])) // 2 - box[0]
-        _draw_text(draw, (x, y - box[1]), line, font)
+        _draw_text(draw, (x, y - box[1]), line, font, shadow=shadow)
         y += line_height + gap
 
 
@@ -327,9 +349,18 @@ def _wrap_lines(draw: ImageDraw.ImageDraw, title: str, font: ImageFont.FreeTypeF
     return [line for line in lines if line] or [title]
 
 
-def _draw_text(draw: ImageDraw.ImageDraw, position: tuple[int, int], text: str, font: ImageFont.FreeTypeFont) -> None:
-    shadow_position = (position[0] + _SHADOW_OFFSET[0], position[1] + _SHADOW_OFFSET[1])
-    draw.text(shadow_position, text, font=font, fill=_SHADOW_FILL)
+def _draw_text(
+    draw: ImageDraw.ImageDraw,
+    position: tuple[int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    *,
+    shadow: bool = False,
+) -> None:
+    if shadow:
+        shadow_position = (position[0] + _SHADOW_OFFSET[0], position[1] + _SHADOW_OFFSET[1])
+        draw.text(shadow_position, text, font=font, fill=(*_SHADOW_FILL, _SHADOW_ALPHA))
+        return
     draw.text(
         position,
         text,

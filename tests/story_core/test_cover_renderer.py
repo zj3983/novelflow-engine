@@ -5,7 +5,7 @@ import inspect
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageChops, ImageFont
+from PIL import Image, ImageChops, ImageFont, PngImagePlugin
 
 from packages.story_core.cover_renderer import CoverRenderError, render_cover
 
@@ -44,6 +44,18 @@ def _title_bbox(rendered: Image.Image) -> tuple[int, int, int, int]:
     return box
 
 
+def _pixel_bbox(image: Image.Image, predicate) -> tuple[int, int, int, int]:
+    points = [
+        (x, y)
+        for y in range(image.height)
+        for x in range(image.width)
+        if predicate(image.getpixel((x, y)))
+    ]
+    assert points
+    xs, ys = zip(*points)
+    return min(xs), min(ys), max(xs) + 1, max(ys) + 1
+
+
 def test_render_cover_returns_a_metadata_free_768_by_1024_png() -> None:
     rendered = render_cover(_image_bytes(), "星河", font_path=_font_path())
 
@@ -51,6 +63,24 @@ def test_render_cover_returns_a_metadata_free_768_by_1024_png() -> None:
     with Image.open(io.BytesIO(rendered)) as image:
         assert image.format == "PNG"
         assert image.size == CANVAS
+        assert image.info == {}
+
+
+def test_render_cover_strips_icc_and_text_metadata_from_source_png() -> None:
+    source = Image.new("RGB", (400, 400), BASE)
+    metadata = PngImagePlugin.PngInfo()
+    metadata.add_text("Comment", "source attribution must not survive")
+    encoded = io.BytesIO()
+    source.save(encoded, format="PNG", pnginfo=metadata, icc_profile=b"test-icc-profile")
+    with Image.open(io.BytesIO(encoded.getvalue())) as image:
+        assert image.info["Comment"] == "source attribution must not survive"
+        assert image.info["icc_profile"] == b"test-icc-profile"
+
+    rendered = render_cover(encoded.getvalue(), "星河", font_path=_font_path())
+
+    with Image.open(io.BytesIO(rendered)) as image:
+        assert "Comment" not in image.info
+        assert "icc_profile" not in image.info
         assert image.info == {}
 
 
@@ -108,7 +138,25 @@ def test_title_has_light_fill_dark_stroke_and_offset_shadow() -> None:
 
     assert (255, 242, 186) in colors
     assert (34, 19, 25) in colors
-    assert (0, 0, 0) in colors
+    assert any(all(channel < base for channel, base in zip(color, BASE)) for color in colors)
+
+
+def test_title_shadow_is_softened_and_extends_down_right_of_the_title() -> None:
+    rendered = _cover(_image_bytes(), "星河")
+    fill_box = _pixel_bbox(rendered, lambda pixel: pixel == (255, 242, 186))
+    shadow_box = _pixel_bbox(
+        rendered,
+        lambda pixel: all(channel < base for channel, base in zip(pixel, BASE)),
+    )
+    blurred_colours = {
+        color
+        for _count, color in rendered.getcolors(CANVAS[0] * CANVAS[1]) or []
+        if all(0 < channel < base for channel, base in zip(color, BASE))
+    }
+
+    assert shadow_box[2] >= fill_box[2] + 10
+    assert shadow_box[3] >= fill_box[3] + 11
+    assert len(blurred_colours) >= 4
 
 
 @pytest.mark.parametrize("image_format", ["JPEG", "WEBP"])
