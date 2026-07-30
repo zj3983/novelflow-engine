@@ -167,6 +167,35 @@ def test_asset_failure_from_initial_absence_leaves_no_assets(tmp_path, monkeypat
     _assert_no_transaction_files(store.root)
 
 
+def test_second_asset_temp_prepare_failure_cleans_up_and_keeps_all_targets_unchanged(tmp_path, monkeypatch):
+    store = _make_store(tmp_path / "novel")
+    before_metadata = (
+        (store.webnovel_dir / "project.json").read_bytes(),
+        (store.story_system_dir / "MASTER_SETTING.json").read_bytes(),
+    )
+    original_prepare = store._prepare_publishing_temp
+    calls = 0
+
+    def fail_second_prepare(path, content, *, suffix=".tmp"):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("second temp preparation failed")
+        return original_prepare(path, content, suffix=suffix)
+
+    monkeypatch.setattr(store, "_prepare_publishing_temp", fail_second_prepare)
+    with pytest.raises(ValueError, match="^publishing_asset_write_failed$"):
+        store.save_cover(prompt="new", base_image=b"new-base", rendered_image=b"new-rendered", model="new")
+
+    assert not store.cover_base_path.exists()
+    assert not store.rendered_cover_path.exists()
+    assert (
+        (store.webnovel_dir / "project.json").read_bytes(),
+        (store.story_system_dir / "MASTER_SETTING.json").read_bytes(),
+    ) == before_metadata
+    _assert_no_transaction_files(store.root)
+
+
 @pytest.mark.parametrize("failed_call", [1, 2])
 def test_metadata_write_failure_restores_assets_and_exact_metadata_bytes(tmp_path, monkeypatch, failed_call):
     store = _make_store(tmp_path / "novel")
@@ -261,6 +290,55 @@ def test_cover_write_rejects_assets_directory_redirected_outside_project(tmp_pat
 
     assert read_outside == []
     assert original_read_bytes(outside / "cover-base.png") == b"must not be read"
+
+
+def test_synopsis_and_prompt_writes_preserve_forward_compatible_cover_fields(tmp_path):
+    store = _make_store(tmp_path / "novel")
+    initial = store.save_cover(prompt="old", base_image=b"base", rendered_image=b"rendered", model="m")
+    extras = {
+        "image_version": "image/v3",
+        "width": 1024,
+        "height": 1536,
+        "mime_type": "image/png",
+        "updated_at": "2026-07-31T12:00:00Z",
+        "future": {"palette": ["blue", "gold"]},
+    }
+    for path in (store.webnovel_dir / "project.json", store.story_system_dir / "MASTER_SETTING.json"):
+        document = _read(path)
+        target = document if path.name == "project.json" else document["project"]
+        target["publishing_assets"]["cover"].update(extras)
+        path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+
+    after_synopsis = store.save_synopsis({"summary": "new"})
+    after_prompt = store.save_cover_prompt("new prompt")
+
+    assert after_synopsis["cover"] == {**initial["cover"], **extras}
+    assert after_prompt["cover"] == {**initial["cover"], **extras, "prompt": "new prompt"}
+    mirrored_project, mirrored_master = _mirror_payloads(store.root)
+    assert mirrored_project == mirrored_master == after_prompt
+
+
+def test_malicious_fixed_cover_paths_are_discarded_without_read_mutation(tmp_path):
+    store = _make_store(tmp_path / "novel")
+    project_path = store.webnovel_dir / "project.json"
+    raw = _read(project_path)
+    raw["publishing_assets"] = {
+        "schema_version": "publishing-assets/v1",
+        "synopsis": None,
+        "cover": {
+            "prompt": "valid prompt",
+            "base_path": "C:/outside/cover-base.png",
+            "rendered_path": "../../outside/cover.png",
+            "image_version": "future/v2",
+        },
+    }
+    project_path.write_text(json.dumps(raw), encoding="utf-8")
+    before = project_path.read_bytes()
+
+    visible = store.publishing_assets()
+
+    assert visible["cover"] == {"prompt": "valid prompt", "image_version": "future/v2"}
+    assert project_path.read_bytes() == before
 
 
 @pytest.mark.parametrize(

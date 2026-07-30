@@ -827,6 +827,14 @@ class FileProjectStore:
             raise ValueError("publishing_asset_write_failed")
         return restored
 
+    @staticmethod
+    def _json_safe_value(value: Any) -> tuple[bool, Any]:
+        try:
+            serialized = json.dumps(value, ensure_ascii=False, allow_nan=False)
+            return True, json.loads(serialized)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            return False, None
+
     @classmethod
     def _normalize_publishing_assets(cls, value: Any) -> dict[str, Any]:
         normalized = cls._publishing_assets_default()
@@ -842,21 +850,40 @@ class FileProjectStore:
         if not isinstance(raw_cover, dict):
             return normalized
         cover: dict[str, Any] = {}
+        for key, item in raw_cover.items():
+            if not isinstance(key, str):
+                continue
+            is_safe, safe_item = cls._json_safe_value(item)
+            if is_safe:
+                cover[key] = safe_item
         prompt = raw_cover.get("prompt")
         if isinstance(prompt, str) and prompt.strip():
             cover["prompt"] = prompt.strip()[:2000]
+        else:
+            cover.pop("prompt", None)
         model = raw_cover.get("model")
         if isinstance(model, str) and model.strip():
             cover["model"] = model.strip()
+        else:
+            cover.pop("model", None)
         if raw_cover.get("base_path") == "assets/cover-base.png":
             cover["base_path"] = "assets/cover-base.png"
+        else:
+            cover.pop("base_path", None)
         if raw_cover.get("rendered_path") == "assets/cover.png":
             cover["rendered_path"] = "assets/cover.png"
-        if raw_cover.get("schema_version") == "cover/v1":
-            cover["schema_version"] = "cover/v1"
+        else:
+            cover.pop("rendered_path", None)
+        schema_version = raw_cover.get("schema_version")
+        if isinstance(schema_version, str) and schema_version.strip():
+            cover["schema_version"] = schema_version.strip()
+        else:
+            cover.pop("schema_version", None)
         rendered_title = raw_cover.get("rendered_title")
         if isinstance(rendered_title, str):
             cover["rendered_title"] = rendered_title
+        else:
+            cover.pop("rendered_title", None)
         normalized["cover"] = cover or None
         return normalized
 
@@ -944,11 +971,11 @@ class FileProjectStore:
         rollback_files: list[Path] = []
         try:
             if asset_contents is not None:
-                asset_temps = [
-                    self._prepare_publishing_temp(target, content)
-                    for target, content in zip(asset_targets, asset_contents, strict=True)
-                ]
-                prepared.extend(asset_temps)
+                asset_temps: list[Path] = []
+                for target, content in zip(asset_targets, asset_contents, strict=True):
+                    prepared_temp = self._prepare_publishing_temp(target, content)
+                    prepared.append(prepared_temp)
+                    asset_temps.append(prepared_temp)
                 for target in asset_targets:
                     snapshot = snapshots[target]
                     if snapshot is not None:
