@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from itertools import chain
-from typing import Annotated, Any, Literal
+import json
+from typing import Annotated, Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+from packages.story_core.agent_base import parse_json_message_content
+from packages.story_core.http_retry import post_json_with_retry
+from packages.story_core.runtime_config import StageRuntimeSettings
 
 
 _TEXT_SCALARS = (str, int, float, bool)
@@ -29,6 +34,30 @@ _OUTLINE_OVERALL_FIELDS = (
     "overall_arc",
 )
 _MAX_SERIALIZED_CONTEXT_CHARS = 11_999
+_MAX_GENERATION_GUIDANCE_CHARS = 1_000
+_MAX_COVER_PROMPT_CHARS = 2_000
+
+_SYNOPSIS_SYSTEM_PROMPT = (
+    "你是番茄小说的出版文案编辑。只返回 JSON，不要 Markdown 或额外说明。"
+    "根对象必须只包含 tags、body、pattern、visual_hook。tags 为 4-8 个中文标签，"
+    "body 为 200-450 个中文字符，pattern 必须选择 conflict、contrast、micro_scene 之一。"
+    "文案必须包含主角身份、核心优势、眼前危机和读者收益；选一个清晰的冲突、反差或微场景切入。"
+    "不要剧透完整结局，不要堆砌设定，不要空洞反问，也不要泛泛夸赞。"
+)
+
+_COVER_SYSTEM_PROMPT = (
+    "你是中文网文封面提示词编辑。只返回一条中文纯文本图像提示词，不要 JSON、Markdown、标题或解释。"
+    "保留故事核心视觉概念，画面适合3:4小说封面，预留低细节标题安全留白；无文字、无字母、无标志、无水印。"
+)
+
+_COVER_REQUIRED_CLAUSES = (
+    "适合3:4小说封面",
+    "低细节标题安全留白",
+    "无文字",
+    "无字母",
+    "无标志",
+    "无水印",
+)
 
 
 def _bounded_text(value: Any, limit: int) -> str:
@@ -170,6 +199,158 @@ class PublishingContext(BaseModel):
         if len(self.model_dump_json()) > _MAX_SERIALIZED_CONTEXT_CHARS:
             raise ValueError("publishing_context_serialized_budget_exceeded")
         return self
+
+
+def _normalize_generation_guidance(guidance: str) -> str:
+    normalized = guidance.strip()
+    if len(normalized) > _MAX_GENERATION_GUIDANCE_CHARS:
+        raise ValueError("regeneration_guidance_too_long")
+    return normalized
+
+
+def _message_content(response: Any) -> str:
+    """Extract the one text message expected from an OpenAI-compatible response."""
+    try:
+        content = response["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    return content if isinstance(content, str) else ""
+
+
+def _validated_synopsis(response: Any) -> FanqieSynopsis:
+    parsed = parse_json_message_content(response)
+    if parsed is None:
+        raise ValueError("invalid_json")
+    try:
+        return FanqieSynopsis.model_validate(parsed)
+    except ValidationError as exc:
+        raise ValueError(f"invalid_synopsis: {exc}") from exc
+
+
+def _request_chat_completion(
+    post_json: Callable[..., dict[str, Any]],
+    runtime: StageRuntimeSettings,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    return post_json(
+        runtime.base_url,
+        "/chat/completions",
+        payload,
+        runtime.api_key,
+        provider=runtime.provider,
+        codex_command=runtime.codex_command,
+    )
+
+
+class SynopsisGenerator:
+    def __init__(self, *, post_json: Callable[..., dict[str, Any]] = post_json_with_retry) -> None:
+        self._post_json = post_json
+
+    def generate(
+        self,
+        context: PublishingContext,
+        runtime: StageRuntimeSettings,
+        guidance: str = "",
+    ) -> FanqieSynopsis:
+        validated_context = PublishingContext.model_validate(context)
+        validated_runtime = StageRuntimeSettings.model_validate(runtime)
+        prompt_context = {
+            **validated_context.model_dump(mode="json"),
+            "guidance": _normalize_generation_guidance(guidance),
+        }
+        payload = {
+            "model": validated_runtime.model,
+            "messages": [
+                {"role": "system", "content": _SYNOPSIS_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(prompt_context, ensure_ascii=False)},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": float(validated_runtime.temperature),
+        }
+
+        invalid_payload = ""
+        try:
+            response = _request_chat_completion(self._post_json, validated_runtime, payload)
+            invalid_payload = _message_content(response)
+            return _validated_synopsis(response)
+        except Exception as exc:
+            problem = str(exc)
+
+        repair_payload = {
+            **payload,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "修复上一条番茄小说简介输出。只返回符合原始 JSON 字段和约束的 JSON，"
+                        "不要解释修复过程。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "prompt_context": prompt_context,
+                            "problem": problem,
+                            "invalid_payload": invalid_payload,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        }
+        try:
+            repaired_response = _request_chat_completion(self._post_json, validated_runtime, repair_payload)
+            return _validated_synopsis(repaired_response)
+        except Exception as exc:
+            raise ValueError("synopsis_generation_invalid") from exc
+
+
+def _add_cover_requirements(concept: str) -> str:
+    missing = [clause for clause in _COVER_REQUIRED_CLAUSES if clause not in concept]
+    if not missing:
+        return concept[:_MAX_COVER_PROMPT_CHARS].strip()
+    suffix = "，".join(missing)
+    separator = "，" if concept else ""
+    concept_limit = _MAX_COVER_PROMPT_CHARS - len(separator) - len(suffix)
+    bounded_concept = concept[: max(0, concept_limit)].rstrip("，、；; ")
+    return f"{bounded_concept}{separator if bounded_concept else ''}{suffix}"
+
+
+class CoverPromptGenerator:
+    def __init__(self, *, post_json: Callable[..., dict[str, Any]] = post_json_with_retry) -> None:
+        self._post_json = post_json
+
+    def generate(
+        self,
+        context: PublishingContext,
+        runtime: StageRuntimeSettings,
+        visual_hook: str = "",
+        guidance: str = "",
+    ) -> str:
+        validated_context = PublishingContext.model_validate(context)
+        validated_runtime = StageRuntimeSettings.model_validate(runtime)
+        prompt_context = {
+            **validated_context.model_dump(mode="json"),
+            "visual_hook": _bounded_text(visual_hook, MAX_VISUAL_HOOK_CHARS),
+            "guidance": _normalize_generation_guidance(guidance),
+        }
+        payload = {
+            "model": validated_runtime.model,
+            "messages": [
+                {"role": "system", "content": _COVER_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(prompt_context, ensure_ascii=False)},
+            ],
+            "temperature": float(validated_runtime.temperature),
+        }
+        try:
+            response = _request_chat_completion(self._post_json, validated_runtime, payload)
+            concept = _message_content(response).strip()
+            if not concept:
+                raise ValueError("blank_cover_prompt")
+            return _add_cover_requirements(concept)
+        except Exception as exc:
+            raise ValueError("cover_prompt_generation_invalid") from exc
 
 
 def _halve_optional_text(data: dict[str, Any]) -> bool:

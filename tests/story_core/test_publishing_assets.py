@@ -1,15 +1,175 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from packages.story_core.publishing_assets import (
+    CoverPromptGenerator,
     MAX_SYNOPSIS_TAG_CHARS,
     MAX_VISUAL_HOOK_CHARS,
     FanqieSynopsis,
     PublishingContext,
+    SynopsisGenerator,
     build_publishing_context,
 )
+from packages.story_core.runtime_config import StageRuntimeSettings
+
+
+def _publishing_runtime(*, provider: str = "openai") -> StageRuntimeSettings:
+    return StageRuntimeSettings(
+        provider=provider,
+        model="publishing-model",
+        api_key="publishing-key" if provider == "openai" else "",
+        base_url="https://text.test/v1",
+        codex_command="codex-publishing" if provider == "codexcli" else "",
+        temperature=0.23,
+    )
+
+
+def _publishing_context() -> PublishingContext:
+    return PublishingContext(
+        title="归墟行舟",
+        novel_type="玄幻",
+        opening_idea="亡魂渡船",
+        world_summary="归墟吞没所有失约者。",
+        protagonists=[{"name": "陆沉", "role": "渡船人", "goal": "带妹妹活着靠岸"}],
+        outline_summary={"overall": {"main_conflict": "渡船即将沉没"}},
+    )
+
+
+def _valid_synopsis() -> dict[str, object]:
+    return {
+        "tags": ["玄幻", "穿越", "成长", "克系"],
+        "body": "陆沉醒来时，亡魂渡船已经驶入归墟，甲板上的乘客正在倒数自己的死期。" * 8,
+        "pattern": "conflict",
+        "visual_hook": "血月下的亡魂渡船",
+    }
+
+
+def test_synopsis_generator_returns_validated_synopsis_and_uses_runtime_transport() -> None:
+    calls = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        calls.append((base_url, path, payload, api_key, kwargs))
+        return {"choices": [{"message": {"content": json.dumps(_valid_synopsis(), ensure_ascii=False)}}]}
+
+    result = SynopsisGenerator(post_json=fake_post).generate(
+        _publishing_context(), _publishing_runtime(), guidance="  突出渡船危机  "
+    )
+
+    assert isinstance(result, FanqieSynopsis)
+    assert result.pattern == "conflict"
+    assert len(calls) == 1
+    base_url, path, payload, api_key, kwargs = calls[0]
+    assert (base_url, path, api_key) == ("https://text.test/v1", "/chat/completions", "publishing-key")
+    assert payload["model"] == "publishing-model"
+    assert payload["temperature"] == 0.23
+    assert payload["response_format"] == {"type": "json_object"}
+    assert kwargs == {"provider": "openai", "codex_command": ""}
+    prompt_context = json.loads(payload["messages"][1]["content"])
+    assert prompt_context["guidance"] == "突出渡船危机"
+    assert prompt_context["title"] == "归墟行舟"
+    system_prompt = payload["messages"][0]["content"]
+    for requirement in ("tags", "body", "pattern", "visual_hook", "4-8", "200-450", "conflict", "contrast", "micro_scene"):
+        assert requirement in system_prompt
+
+
+def test_synopsis_generator_repairs_one_invalid_result_and_reports_the_problem() -> None:
+    calls = []
+    responses = iter(
+        [
+            {"choices": [{"message": {"content": '{"tags": ["玄幻"], "body": "太短"}'}}]},
+            {"choices": [{"message": {"content": json.dumps(_valid_synopsis(), ensure_ascii=False)}}]},
+        ]
+    )
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return next(responses)
+
+    result = SynopsisGenerator(post_json=fake_post).generate(_publishing_context(), _publishing_runtime())
+
+    assert result.visual_hook == "血月下的亡魂渡船"
+    assert len(calls) == 2
+    repair_context = json.loads(calls[1][0][2]["messages"][1]["content"])
+    assert repair_context["invalid_payload"] == '{"tags": ["玄幻"], "body": "太短"}'
+    assert repair_context["problem"]
+
+
+def test_synopsis_generator_fails_stably_after_exactly_one_repair_for_invalid_or_malformed_results() -> None:
+    calls = []
+    responses = iter([{"choices": []}, {"choices": [{"message": {"content": "not json"}}]}])
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return next(responses)
+
+    with pytest.raises(ValueError, match="^synopsis_generation_invalid$"):
+        SynopsisGenerator(post_json=fake_post).generate(_publishing_context(), _publishing_runtime())
+
+    assert len(calls) == 2
+
+
+def test_synopsis_generator_bounds_guidance_and_only_serializes_publishing_context() -> None:
+    captured = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": json.dumps(_valid_synopsis(), ensure_ascii=False)}}]}
+
+    SynopsisGenerator(post_json=fake_post).generate(
+        _publishing_context(), _publishing_runtime(), guidance="  ONCE_ONLY  "
+    )
+
+    prompt = captured["payload"]["messages"][1]["content"]
+    assert json.loads(prompt)["guidance"] == "ONCE_ONLY"
+    assert "chapter_body" not in prompt
+    assert "history" not in prompt
+    with pytest.raises(ValueError, match="^regeneration_guidance_too_long$"):
+        SynopsisGenerator(post_json=fake_post).generate(
+            _publishing_context(), _publishing_runtime(), guidance=" x" * 501
+        )
+
+
+def test_cover_prompt_generator_preserves_concept_and_adds_missing_fixed_constraints() -> None:
+    result = CoverPromptGenerator(
+        post_json=lambda *args, **kwargs: {"choices": [{"message": {"content": "  血月下，少年站在亡魂渡船船头，巨浪翻涌  "}}]}
+    ).generate(_publishing_context(), _publishing_runtime(), visual_hook="亡魂渡船")
+
+    assert result.startswith("血月下，少年站在亡魂渡船船头，巨浪翻涌")
+    for requirement in ("适合3:4小说封面", "留白", "无文字", "无字母", "无标志", "无水印"):
+        assert requirement in result
+
+
+def test_cover_prompt_generator_strips_caps_and_passes_codex_runtime_settings() -> None:
+    calls = []
+    concept = "幽蓝巨船穿过归墟" * 400
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        calls.append((base_url, path, payload, api_key, kwargs))
+        return {"choices": [{"message": {"content": f"  {concept}  "}}]}
+
+    result = CoverPromptGenerator(post_json=fake_post).generate(
+        _publishing_context(), _publishing_runtime(provider="codexcli"), visual_hook="亡魂渡船", guidance="  更冷峻  "
+    )
+
+    assert result.startswith("幽蓝巨船穿过归墟")
+    assert len(result) <= 2_000
+    assert calls[0][1] == "/chat/completions"
+    assert calls[0][4] == {"provider": "codexcli", "codex_command": "codex-publishing"}
+    prompt_context = json.loads(calls[0][2]["messages"][1]["content"])
+    assert prompt_context["visual_hook"] == "亡魂渡船"
+    assert prompt_context["guidance"] == "更冷峻"
+
+
+@pytest.mark.parametrize("response", [{"choices": []}, {"choices": [{"message": {"content": "   "}}]}])
+def test_cover_prompt_generator_rejects_blank_or_malformed_response_stably(response: dict) -> None:
+    with pytest.raises(ValueError, match="^cover_prompt_generation_invalid$"):
+        CoverPromptGenerator(post_json=lambda *args, **kwargs: response).generate(
+            _publishing_context(), _publishing_runtime()
+        )
 
 
 def test_fanqie_synopsis_normalizes_unique_tags_and_preserves_visual_hook() -> None:
