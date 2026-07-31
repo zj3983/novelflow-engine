@@ -432,7 +432,7 @@ def test_unrelated_validation_error_keeps_fastapi_default_detail_input():
     assert response.json()["detail"][0]["input"] == 3
 
 
-def _run_runtime_body_guard(path: str, *, headers: list[tuple[bytes, bytes]], chunks: list[bytes]):
+def _run_runtime_body_guard(path: str, *, method: str = "PUT", headers: list[tuple[bytes, bytes]], chunks: list[bytes]):
     received = []
     sent = []
 
@@ -445,7 +445,7 @@ def _run_runtime_body_guard(path: str, *, headers: list[tuple[bytes, bytes]], ch
         sent.append(message)
 
     scope = {
-        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "PUT",
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
         "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
         "headers": [(b"host", b"testserver"), *headers], "client": ("127.0.0.1", 1), "server": ("testserver", 80),
     }
@@ -456,7 +456,7 @@ def _run_runtime_body_guard(path: str, *, headers: list[tuple[bytes, bytes]], ch
 @pytest.mark.parametrize("path", ["/runtime-settings", "/runtime-settings/test"])
 def test_runtime_body_guard_stops_chunked_stream_at_limit(path):
     chunks = [b"x" * (128 * 1024)] * 10
-    received, sent = _run_runtime_body_guard(path, headers=[], chunks=chunks)
+    received, sent = _run_runtime_body_guard(path, method="POST" if path.endswith("/test") else "PUT", headers=[], chunks=chunks)
     starts = [message for message in sent if message["type"] == "http.response.start"]
     assert len(received) == 9
     assert len(starts) == 1
