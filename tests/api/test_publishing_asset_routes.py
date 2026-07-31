@@ -108,7 +108,7 @@ def test_cover_generation_persists_base_when_font_rendering_fails(publishing_api
             return "new cover prompt"
 
     class FakeImage:
-        def generate(self, prompt):
+        def generate(self, prompt, runtime):
             assert prompt == "new cover prompt"
             return b"new-base"
 
@@ -136,7 +136,7 @@ def test_configured_cover_generation_prompt_edits_and_title_rerender(publishing_
             return "generated prompt"
 
     class FakeImage:
-        def generate(self, prompt):
+        def generate(self, prompt, runtime):
             calls.append(prompt)
             return b"base-art"
 
@@ -218,7 +218,7 @@ def test_cover_uses_authoritative_long_title_and_if_none_match_is_standard_compl
             return "prompt"
 
     class FakeImage:
-        def generate(self, _prompt):
+        def generate(self, _prompt, runtime):
             return b"base"
 
     titles = []
@@ -249,7 +249,7 @@ def test_unsupported_image_model_preserves_prompt_and_existing_final_cover(publi
             return "new prompt"
 
     class UnsupportedImage:
-        def generate(self, _prompt):
+        def generate(self, _prompt, runtime):
             raise CoverImageError("image_model_unsupported")
 
     monkeypatch.setattr(file_projects, "cover_prompt_generator", FakePrompt())
@@ -261,6 +261,29 @@ def test_unsupported_image_model_preserves_prompt_and_existing_final_cover(publi
     assert response.json()["detail"] == "image_model_unsupported"
     assert store.publishing_assets()["cover"]["prompt"] == "new prompt"
     assert store.rendered_cover_path.read_bytes() == b"old-final"
+
+
+def test_image_provider_type_error_is_called_once_and_preserves_prompt(publishing_api, monkeypatch):
+    client, created = publishing_api
+    calls = []
+
+    class FakePrompt:
+        def generate(self, *args, **kwargs):
+            return "type error prompt"
+
+    class FailingImage:
+        def generate(self, prompt, runtime):
+            calls.append((prompt, runtime.model))
+            raise TypeError("internal argument failure")
+
+    monkeypatch.setattr(file_projects, "cover_prompt_generator", FakePrompt())
+    monkeypatch.setattr(file_projects, "cover_image_provider", FailingImage())
+    monkeypatch.setattr(file_projects, "resolve_image_runtime", lambda: SimpleNamespace(model="image-model"))
+    response = client.post(f"/file-projects/{created['project_id']}/publishing/cover", json={})
+    assert response.status_code == 502
+    assert response.json()["detail"] == "cover_generation_failed"
+    assert calls == [("type error prompt", "image-model")]
+    assert FileProjectStore(Path(created["source_path"])).publishing_assets()["cover"]["prompt"] == "type error prompt"
 
 
 def test_cover_rejects_titles_over_the_publishing_limit(publishing_api, monkeypatch):

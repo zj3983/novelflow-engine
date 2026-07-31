@@ -1153,13 +1153,7 @@ def init_file_project_routes() -> APIRouter:
             }
 
         try:
-            try:
-                base_image = cover_image_provider.generate(prompt, image_runtime)
-            except TypeError as exc:
-                # Backward-compatible seam for injected legacy fakes only.
-                if "positional" not in str(exc) and "argument" not in str(exc):
-                    raise
-                base_image = cover_image_provider.generate(prompt)
+            base_image = cover_image_provider.generate(prompt, image_runtime)
             rendered_image = render_cover(base_image, cover_title)
         except Exception as exc:
             if str(exc) == "cover_font_unavailable":
