@@ -215,6 +215,11 @@ test("/config normalizes missing legacy image settings and validates enabled cov
   await expect(page.getByText("封面图片 API 密钥不能为空")).toBeVisible();
   await expect(page.getByLabel("封面图片模型名称")).toHaveAttribute("aria-invalid", "true");
   await expect(page.getByLabel("封面图片 API 密钥", { exact: true })).toHaveAttribute("aria-invalid", "true");
+  await page.getByLabel("启用封面图片模型").uncheck();
+  await expect(page.getByText("封面图片模型名称不能为空")).toHaveCount(0);
+  await expect(page.getByText("封面图片 API 密钥不能为空")).toHaveCount(0);
+  await expect(page.getByLabel("封面图片模型名称")).toHaveAttribute("aria-invalid", "false");
+  await expect(page.getByLabel("封面图片 API 密钥", { exact: true })).toHaveAttribute("aria-invalid", "false");
   expect(putCount).toBe(0);
 });
 

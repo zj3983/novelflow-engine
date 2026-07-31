@@ -1990,12 +1990,17 @@ function normalizeSynopsisAsset(value: unknown): SynopsisAsset | null {
   ) {
     return null;
   }
-  return {
+  const safeExtras = cloneSafePublishingValue(value);
+  const synopsis = safeExtras && typeof safeExtras === "object" && !Array.isArray(safeExtras)
+    ? safeExtras as SynopsisAsset & { [key: string]: unknown }
+    : {} as SynopsisAsset & { [key: string]: unknown };
+  for (const field of ["tags", "body", "format", "updated_at"]) delete synopsis[field];
+  return Object.assign(synopsis, {
     tags: [...candidate.tags],
     body: candidate.body,
     format: candidate.format,
     updated_at: candidate.updated_at,
-  };
+  } satisfies SynopsisAsset);
 }
 
 const UNSAFE_PUBLISHING_KEYS = new Set(["__proto__", "prototype", "constructor"]);
@@ -3441,7 +3446,11 @@ function mockListProjects(): ProjectSummary[] {
 }
 
 function mockFetchProject(projectId: string): ProjectResponse {
-  const project = mockProjectStore.get(projectId);
+  let project = mockProjectStore.get(projectId);
+  if (!project && typeof window !== "undefined") {
+    project = loadMockProjectStore().get(projectId);
+    if (project) mockProjectStore.set(projectId, project);
+  }
   if (!project) {
     throw new Error("mock: project_not_found");
   }
@@ -3454,7 +3463,7 @@ function mockFetchProject(projectId: string): ProjectResponse {
       branched_from_chapter: mockStore.get(storyId)?.branched_from_chapter ?? null,
     })),
     storage_source: project.storage_source,
-    publishing_assets: clone(project.publishing_assets),
+    publishing_assets: project.publishing_assets,
   });
 }
 

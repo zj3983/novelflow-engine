@@ -163,7 +163,9 @@ export function ConfigPageClient() {
           disabled={busy}
           onChange={(image, field) => {
             const nextSettings = { ...settings, image };
-            if (field) {
+            if (!image.enabled) {
+              setImageErrors({});
+            } else if (field) {
               setImageErrors((current) => {
                 const next = { ...current };
                 const error = validateImageField(nextSettings, field);
