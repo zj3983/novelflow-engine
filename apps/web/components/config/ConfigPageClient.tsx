@@ -13,6 +13,7 @@ import {
   type RuntimeSettings,
   type RuntimeStageName,
 } from "../../lib/api";
+import { CoverImageConfigCard } from "./CoverImageConfigCard";
 import { GlobalApiConfigCard } from "./GlobalApiConfigCard";
 import { RuntimeStrategyCard } from "./RuntimeStrategyCard";
 import type { RuntimeConnectionMap } from "./types";
@@ -25,10 +26,33 @@ function createConnectionMap(): RuntimeConnectionMap {
   };
 }
 
+function validateImageSettings(settings: RuntimeSettings): Partial<Record<"api_key" | "base_url" | "model", string>> {
+  if (!settings.image.enabled) return {};
+  const errors: Partial<Record<"api_key" | "base_url" | "model", string>> = {};
+  if (!settings.image.base_url.trim()) {
+    errors.base_url = "封面图片 API 地址不能为空";
+  } else if (!isHttpUrl(settings.image.base_url)) {
+    errors.base_url = "封面图片 API 地址格式不正确";
+  }
+  if (!settings.image.model.trim()) errors.model = "封面图片模型名称不能为空";
+  if (!settings.image.api_key.trim()) errors.api_key = "封面图片 API 密钥不能为空";
+  return errors;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function ConfigPageClient() {
   const [settings, setSettings] = useState<RuntimeSettings>(createDefaultRuntimeSettings());
   const [cliInfo, setCliInfo] = useState<CodexCLIInfo | null>(null);
   const [connections, setConnections] = useState<RuntimeConnectionMap>(createConnectionMap());
+  const [imageErrors, setImageErrors] = useState<Partial<Record<"api_key" | "base_url" | "model", string>>>({});
   const [pageStatus, setPageStatus] = useState<"loading" | "idle" | "saving" | "success" | "error">("loading");
   const [pageMessage, setPageMessage] = useState("正在载入配置中心...");
   const mounted = useRef(true);
@@ -88,6 +112,14 @@ export function ConfigPageClient() {
       setPageMessage(`${runtimeStageLabel(blankStage)}模型不能为空。`);
       return;
     }
+    const nextImageErrors = validateImageSettings(settings);
+    if (Object.keys(nextImageErrors).length > 0) {
+      setImageErrors(nextImageErrors);
+      setPageStatus("error");
+      setPageMessage("请完善封面图片模型配置后再保存。");
+      return;
+    }
+    setImageErrors({});
     setPageStatus("saving");
     setPageMessage("正在保存配置...");
     try {
@@ -107,6 +139,14 @@ export function ConfigPageClient() {
     <main className="config-shell">
       <div className="config-shell__primary">
         <GlobalApiConfigCard value={settings} cliInfo={cliInfo} onChange={setSettings} />
+        <CoverImageConfigCard
+          value={settings.image}
+          errors={imageErrors}
+          onChange={(image) => {
+            setImageErrors({});
+            setSettings((current) => ({ ...current, image }));
+          }}
+        />
         <RuntimeStrategyCard
           value={settings}
           cliModels={cliInfo?.models ?? []}

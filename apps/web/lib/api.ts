@@ -78,12 +78,53 @@ export type RuntimeProviderSettings = {
   memory: string;
 };
 
+export type RuntimeImageSettings = {
+  enabled: boolean;
+  api_key: string;
+  base_url: string;
+  model: string;
+};
+
 export type RuntimeSettings = {
   provider: RuntimeProvider;
   providers: Record<RuntimeProvider, RuntimeProviderSettings>;
+  image: RuntimeImageSettings;
   temperature: number;
   new_character_policy: AgentSettings["new_character_policy"];
 };
+
+export type SynopsisAsset = {
+  tags: string[];
+  body: string;
+  format: string;
+  updated_at: string;
+};
+
+export type CoverAsset = {
+  prompt?: string;
+  image_version?: string;
+  base_image_version?: string;
+  rendered_from_base_version?: string;
+  width?: number;
+  height?: number;
+  mime_type?: string;
+  model?: string;
+  rendered_title?: string;
+  updated_at?: string;
+  schema_version?: "cover/v1";
+  base_path?: "assets/cover-base.png";
+  rendered_path?: "assets/cover.png";
+};
+
+export type PublishingAssets = {
+  schema_version: "publishing-assets/v1";
+  synopsis: SynopsisAsset | null;
+  cover: CoverAsset | null;
+};
+
+export type CoverGenerationResponse =
+  | { status: "prompt_ready"; reason: "image_provider_not_configured"; cover: CoverAsset | null }
+  | { status: "ready"; cover: CoverAsset | null };
 
 export type RuntimeConnectionResult = {
   ok: boolean;
@@ -953,6 +994,7 @@ export type ProjectResponse = {
   active_story_id: string;
   branches: StorySummary[];
   storage_source?: "sqlite" | "file";
+  publishing_assets: PublishingAssets;
 };
 
 export type NewFileProjectRequest = {
@@ -1682,6 +1724,7 @@ type MockProject = {
   active_story_id: string;
   branches: string[];
   storage_source?: "sqlite" | "file";
+  publishing_assets: PublishingAssets;
 };
 
 const MOCK_STORE_STORAGE_KEY = "novel-autogrowth-engine.stories";
@@ -1826,6 +1869,12 @@ export function createDefaultRuntimeSettings(): RuntimeSettings {
       codexcli: defaultCodexCLIProvider(),
       openai: defaultOpenAIProvider(),
     },
+    image: {
+      enabled: false,
+      api_key: "",
+      base_url: "",
+      model: "",
+    },
     temperature: 0.7,
     new_character_policy: "Director review",
   };
@@ -1917,6 +1966,69 @@ function normalizeRuntimeProvider(
   };
 }
 
+function normalizeRuntimeImage(value: unknown): RuntimeImageSettings {
+  const candidate = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Partial<RuntimeImageSettings>
+    : {};
+  return {
+    enabled: candidate.enabled === true,
+    api_key: typeof candidate.api_key === "string" ? candidate.api_key : "",
+    base_url: typeof candidate.base_url === "string" ? candidate.base_url : "",
+    model: typeof candidate.model === "string" ? candidate.model : "",
+  };
+}
+
+function normalizeSynopsisAsset(value: unknown): SynopsisAsset | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<SynopsisAsset>;
+  if (
+    !Array.isArray(candidate.tags)
+    || candidate.tags.some((tag) => typeof tag !== "string")
+    || typeof candidate.body !== "string"
+    || typeof candidate.format !== "string"
+    || typeof candidate.updated_at !== "string"
+  ) {
+    return null;
+  }
+  return {
+    tags: [...candidate.tags],
+    body: candidate.body,
+    format: candidate.format,
+    updated_at: candidate.updated_at,
+  };
+}
+
+function normalizeCoverAsset(value: unknown): CoverAsset | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as CoverAsset;
+  const cover: CoverAsset = {};
+  if (typeof candidate.prompt === "string") cover.prompt = candidate.prompt;
+  if (typeof candidate.image_version === "string") cover.image_version = candidate.image_version;
+  if (typeof candidate.base_image_version === "string") cover.base_image_version = candidate.base_image_version;
+  if (typeof candidate.rendered_from_base_version === "string") cover.rendered_from_base_version = candidate.rendered_from_base_version;
+  if (typeof candidate.width === "number" && Number.isFinite(candidate.width)) cover.width = candidate.width;
+  if (typeof candidate.height === "number" && Number.isFinite(candidate.height)) cover.height = candidate.height;
+  if (typeof candidate.mime_type === "string") cover.mime_type = candidate.mime_type;
+  if (typeof candidate.model === "string") cover.model = candidate.model;
+  if (typeof candidate.rendered_title === "string") cover.rendered_title = candidate.rendered_title;
+  if (typeof candidate.updated_at === "string") cover.updated_at = candidate.updated_at;
+  if (candidate.schema_version === "cover/v1") cover.schema_version = candidate.schema_version;
+  if (candidate.base_path === "assets/cover-base.png") cover.base_path = candidate.base_path;
+  if (candidate.rendered_path === "assets/cover.png") cover.rendered_path = candidate.rendered_path;
+  return Object.keys(cover).length > 0 ? cover : null;
+}
+
+function normalizePublishingAssets(value: unknown): PublishingAssets {
+  const candidate = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Partial<PublishingAssets>
+    : {};
+  return {
+    schema_version: "publishing-assets/v1",
+    synopsis: normalizeSynopsisAsset(candidate.synopsis),
+    cover: normalizeCoverAsset(candidate.cover),
+  };
+}
+
 function normalizeRuntimeSettings(value?: Partial<RuntimeSettings>): RuntimeSettings {
   const base = defaultRuntimeSettings();
   if (!value) {
@@ -1928,6 +2040,7 @@ function normalizeRuntimeSettings(value?: Partial<RuntimeSettings>): RuntimeSett
       codexcli: normalizeRuntimeProvider(value.providers?.codexcli, base.providers.codexcli),
       openai: normalizeRuntimeProvider(value.providers?.openai, base.providers.openai),
     },
+    image: normalizeRuntimeImage(value.image),
     temperature: Number(value.temperature ?? base.temperature),
     new_character_policy: value.new_character_policy ?? base.new_character_policy,
   };
@@ -2537,7 +2650,7 @@ export async function fetchRuntimeSettings(): Promise<RuntimeSettings> {
   return normalizeRuntimeSettings(response);
 }
 
-export async function revealRuntimeApiKey(provider: RuntimeSettings["provider"]): Promise<string> {
+export async function revealRuntimeApiKey(provider: RuntimeProvider | "image"): Promise<string> {
   const response = (await tryFetchJson(`${apiBase()}/runtime-settings/reveal-api-key`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -3162,11 +3275,15 @@ export async function createProject(payload: CreateProjectRequest): Promise<Proj
 }
 
 export async function createFileProject(payload: NewFileProjectRequest): Promise<NewFileProjectResponse> {
-  return (await tryFetchJson(`${apiBase()}/file-projects`, {
+  const response = (await tryFetchJson(`${apiBase()}/file-projects`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   })) as NewFileProjectResponse;
+  return {
+    ...response,
+    publishing_assets: normalizePublishingAssets(response.publishing_assets),
+  };
 }
 
 export async function fetchOpeningSetup(projectId: string): Promise<OpeningSetup> {
@@ -3220,6 +3337,7 @@ function mockCreateProject(payload: CreateProjectRequest): ProjectResponse {
     pipeline_stage: payload.pipeline_stage ?? (payload.active_story_id ? "environment_ready" : "imported"),
     active_story_id: payload.active_story_id ?? "",
     branches: payload.active_story_id ? [payload.active_story_id] : [],
+    publishing_assets: normalizePublishingAssets(undefined),
   };
   mockProjectStore.set(project.project_id, project);
   const activeStory = project.active_story_id ? mockStore.get(project.active_story_id) : null;
@@ -3267,6 +3385,7 @@ function mockFetchProject(projectId: string): ProjectResponse {
       branched_from_chapter: mockStore.get(storyId)?.branched_from_chapter ?? null,
     })),
     storage_source: project.storage_source,
+    publishing_assets: normalizePublishingAssets(project.publishing_assets),
   };
 }
 
@@ -3288,6 +3407,7 @@ function persistProjectIntoMockStore(project: ProjectResponse): ProjectResponse 
     active_story_id: project.active_story_id,
     branches: project.branches.map((branch) => branch.story_id),
     storage_source: project.storage_source,
+    publishing_assets: normalizePublishingAssets(project.publishing_assets),
   };
   mockProjectStore.set(project.project_id, mirroredProject);
   saveMockProjectStore(mockProjectStore);
