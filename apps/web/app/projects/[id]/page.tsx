@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import { PageHeader } from "../../../components/ws/PageHeader";
+import { PublishingAssetsCards } from "../../../components/ws/PublishingAssetsCards";
 import { useProjectWorkspace } from "../../../components/ws/ProjectWorkspaceProvider";
 import type { ProjectStatus } from "../../../lib/api";
 import { cleanLines, isGameWebnovel, mergeCharacters, shortStatus } from "../../../lib/worldDisplay";
@@ -27,7 +28,7 @@ function formatNumber(value: number): string {
 }
 
 export default function ProjectOverviewPage() {
-  const { project, story, chapterIndex, error, encodedProjectId } = useProjectWorkspace();
+  const { project, story, chapterIndex, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
   const currentChapter = story?.current_chapter ?? 0;
   const recentBundles = [...chapterIndex].slice(-5).reverse();
   const latest = chapterIndex.at(-1) ?? null;
@@ -73,6 +74,15 @@ export default function ProjectOverviewPage() {
               </Link>
             ) : null}
           </section>
+
+          {project.storage_source === "file" || project.project_id.startsWith("file:") ? (
+            <PublishingAssetsCards
+              projectId={projectId}
+              title={project.title}
+              assets={project.publishing_assets}
+              onChanged={() => refresh({ invalidateChapter: false })}
+            />
+          ) : null}
 
           <section className="ws-card">
             <div className="ws-section-head">

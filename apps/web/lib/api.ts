@@ -3467,6 +3467,75 @@ function mockFetchProject(projectId: string): ProjectResponse {
   });
 }
 
+export async function generateSynopsis(projectId: string, guidance = ""): Promise<SynopsisAsset> {
+  const response = (await tryFetchJson(
+    `${fileProjectPath(projectId)}/publishing/synopsis`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ guidance }),
+    },
+    180000,
+  )) as { synopsis: SynopsisAsset };
+  return response.synopsis;
+}
+
+export async function updateSynopsis(
+  projectId: string,
+  payload: Pick<SynopsisAsset, "tags" | "body">,
+): Promise<SynopsisAsset> {
+  const response = (await tryFetchJson(
+    `${fileProjectPath(projectId)}/publishing/synopsis`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    30000,
+  )) as { synopsis: SynopsisAsset };
+  return response.synopsis;
+}
+
+export async function generateCover(projectId: string, guidance = ""): Promise<CoverGenerationResponse> {
+  const response = (await tryFetchJson(
+    `${fileProjectPath(projectId)}/publishing/cover`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ guidance }),
+    },
+    180000,
+  )) as CoverGenerationResponse;
+  return response;
+}
+
+export async function updateCoverPrompt(projectId: string, prompt: string): Promise<CoverAsset> {
+  const response = (await tryFetchJson(
+    `${fileProjectPath(projectId)}/publishing/cover-prompt`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    },
+    30000,
+  )) as { cover: CoverAsset };
+  return response.cover;
+}
+
+export async function renderCoverTitle(projectId: string): Promise<CoverAsset> {
+  const response = (await tryFetchJson(
+    `${fileProjectPath(projectId)}/publishing/cover/render-title`,
+    { method: "POST" },
+    30000,
+  )) as { status: "ready"; cover: CoverAsset };
+  return response.cover;
+}
+
+export function coverImageUrl(projectId: string, version: string, download = false): string {
+  const suffix = download ? "&download=1" : "";
+  return `${fileProjectPath(projectId)}/publishing/cover.png?version=${encodeURIComponent(version)}${suffix}`;
+}
+
 function persistProjectIntoMockStore(project: ProjectResponse): ProjectResponse {
   const mirroredProject: MockProject = {
     project_id: project.project_id,
