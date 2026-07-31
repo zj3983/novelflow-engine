@@ -31,8 +31,8 @@ function message(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function assetSignature(assets: PublishingAssets) {
-  return JSON.stringify(assets);
+function assetSignature(value: unknown) {
+  return JSON.stringify(value);
 }
 
 function parseTags(value: string) {
@@ -62,8 +62,8 @@ async function copyText(value: string) {
 }
 
 export function PublishingAssetsCards({ projectId, title, assets, onChanged }: PublishingAssetsCardsProps) {
-  const initialSignature = assetSignature(assets);
-  const serverSignature = useRef(initialSignature);
+  const synopsisServerSignature = useRef(assetSignature(assets.synopsis));
+  const coverServerSignature = useRef(assetSignature(assets.cover));
   const mounted = useRef(true);
   const currentProjectId = useRef(projectId);
   const previousProjectId = useRef(projectId);
@@ -103,7 +103,8 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
     previousProjectId.current = projectId;
     synopsisToken.current += 1;
     coverToken.current += 1;
-    serverSignature.current = assetSignature(assets);
+    synopsisServerSignature.current = assetSignature(assets.synopsis);
+    coverServerSignature.current = assetSignature(assets.cover);
     setSynopsis(assets.synopsis);
     setCover(assets.cover);
     setPromptReady(Boolean(assets.cover?.prompt && !assets.cover.image_version));
@@ -125,20 +126,25 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
   }, [assets, projectId]);
 
   useEffect(() => {
-    const nextSignature = assetSignature(assets);
-    if (nextSignature === serverSignature.current) return;
-    serverSignature.current = nextSignature;
-    synopsisToken.current += 1;
-    coverToken.current += 1;
-    setSynopsis(assets.synopsis);
-    setCover(assets.cover);
-    setPromptReady(Boolean(assets.cover?.prompt && !assets.cover.image_version));
-    setSynopsisState("idle");
-    setCoverState("idle");
-    setSynopsisError("");
-    setCoverError("");
-    setSynopsisRetry(null);
-    setCoverRetry(null);
+    const nextSynopsisSignature = assetSignature(assets.synopsis);
+    if (nextSynopsisSignature !== synopsisServerSignature.current) {
+      synopsisServerSignature.current = nextSynopsisSignature;
+      synopsisToken.current += 1;
+      setSynopsis(assets.synopsis);
+      setSynopsisState("idle");
+      setSynopsisError("");
+      setSynopsisRetry(null);
+    }
+    const nextCoverSignature = assetSignature(assets.cover);
+    if (nextCoverSignature !== coverServerSignature.current) {
+      coverServerSignature.current = nextCoverSignature;
+      coverToken.current += 1;
+      setCover(assets.cover);
+      setPromptReady(Boolean(assets.cover?.prompt && !assets.cover.image_version));
+      setCoverState("idle");
+      setCoverError("");
+      setCoverRetry(null);
+    }
   }, [assets]);
 
   const changed = async () => {

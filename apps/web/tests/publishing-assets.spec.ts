@@ -264,14 +264,27 @@ test("a delayed cover generation does not lock synopsis controls", async ({ page
   const fixture = await routePublishingProject(page);
   let releaseCover!: () => void;
   const coverGate = new Promise<void>((resolve) => { releaseCover = resolve; });
+  let synopsisCalls = 0;
+  let coverCalls = 0;
+  const detailReads: string[] = [];
+  let accumulated: api.PublishingAssets = { schema_version: "publishing-assets/v1", synopsis: null, cover: null };
+  await page.route(`**/file-stories/${encodedId}/chapters/*`, async (route) => {
+    detailReads.push(route.request().url());
+    await fulfill(route, { detail: "unexpected_chapter_read" }, 500);
+  });
   await page.route(`**/file-projects/${encodedId}/publishing/cover`, async (route) => {
+    coverCalls += 1;
     await coverGate;
     const cover = { prompt: "潮雾港口", image_version: "cover-v2", base_image_version: "base-v2", rendered_from_base_version: "base-v2", rendered_title: "雾港来信" };
-    fixture.update({ schema_version: "publishing-assets/v1", synopsis: null, cover });
+    accumulated = { ...accumulated, cover };
+    fixture.update(accumulated);
     await fulfill(route, { status: "ready", cover });
   });
   await page.route(`**/file-projects/${encodedId}/publishing/synopsis`, async (route) => {
+    synopsisCalls += 1;
     const synopsis = { tags: ["悬疑", "都市", "成长", "反转"], body: "简介在封面等待时完成。", format: "fanqie", updated_at: "2026-07-31" };
+    accumulated = { ...accumulated, synopsis };
+    fixture.update(accumulated);
     await fulfill(route, { synopsis });
   });
   await page.goto(`/projects/${encodedId}`);
@@ -282,6 +295,40 @@ test("a delayed cover generation does not lock synopsis controls", async ({ page
   await expect(page.getByText("简介在封面等待时完成。")).toBeVisible();
   releaseCover();
   await expect(page.getByRole("img", { name: "雾港来信封面" })).toBeVisible();
+  await expect(page.getByText("简介在封面等待时完成。")).toBeVisible();
+  expect({ synopsisCalls, coverCalls, detailReads }).toEqual({ synopsisCalls: 1, coverCalls: 1, detailReads: [] });
+});
+
+test("a delayed synopsis survives an earlier cover refresh and both accumulated assets remain", async ({ page }) => {
+  const fixture = await routePublishingProject(page);
+  let releaseSynopsis!: () => void;
+  const synopsisGate = new Promise<void>((resolve) => { releaseSynopsis = resolve; });
+  let accumulated: api.PublishingAssets = { schema_version: "publishing-assets/v1", synopsis: null, cover: null };
+  const calls: string[] = [];
+  await page.route(`**/file-projects/${encodedId}/publishing/synopsis`, async (route) => {
+    calls.push("synopsis");
+    await synopsisGate;
+    const synopsis = { tags: ["悬疑", "都市", "成长", "反转"], body: "封面先完成时，简介也保留下来。", format: "fanqie", updated_at: "2026-07-31" };
+    accumulated = { ...accumulated, synopsis };
+    fixture.update(accumulated);
+    await fulfill(route, { synopsis });
+  });
+  await page.route(`**/file-projects/${encodedId}/publishing/cover`, async (route) => {
+    calls.push("cover");
+    const cover = { prompt: "潮雾港口", image_version: "cover-v3", base_image_version: "base-v3", rendered_from_base_version: "base-v3", rendered_title: "雾港来信" };
+    accumulated = { ...accumulated, cover };
+    fixture.update(accumulated);
+    await fulfill(route, { status: "ready", cover });
+  });
+  await page.goto(`/projects/${encodedId}`);
+  await page.getByRole("button", { name: "生成简介" }).click();
+  await expect(page.getByRole("button", { name: "生成封面" })).toBeEnabled();
+  await page.getByRole("button", { name: "生成封面" }).click();
+  await expect(page.getByRole("img", { name: "雾港来信封面" })).toBeVisible();
+  releaseSynopsis();
+  await expect(page.getByText("封面先完成时，简介也保留下来。")).toBeVisible();
+  await expect(page.getByRole("img", { name: "雾港来信封面" })).toBeVisible();
+  expect(calls).toEqual(["synopsis", "cover"]);
 });
 
 test("invalid cover prompt editing clears generation retry and PUT failure retries only prompt save", async ({ page }) => {
