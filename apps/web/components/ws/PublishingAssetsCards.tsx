@@ -93,6 +93,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
   const [coverFeedback, setCoverFeedback] = useState("");
   const [refreshWarning, setRefreshWarning] = useState("");
   const [imageFailedUrl, setImageFailedUrl] = useState("");
+  const [imageNonce, setImageNonce] = useState(0);
   const synopsisInFlight = useRef(false);
   const coverInFlight = useRef(false);
   const [synopsisRetry, setSynopsisRetry] = useState<SynopsisRetryOperation>(null);
@@ -113,6 +114,8 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
     coverServerSignature.current = assetSignature(assets.cover);
     setSynopsis(assets.synopsis);
     setCover(assets.cover);
+    setImageFailedUrl("");
+    setImageNonce(0);
     setPromptReady(false);
     setSynopsisState("idle");
     setCoverState("idle");
@@ -146,6 +149,8 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       coverServerSignature.current = nextCoverSignature;
       coverToken.current += 1;
       setCover(assets.cover);
+      setImageFailedUrl("");
+      setImageNonce(0);
       setPromptReady(false);
       setCoverState("idle");
       setCoverError("");
@@ -320,6 +325,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
 
   const savePrompt = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (coverInFlight.current) return;
     const prompt = promptDraft.trim();
     if (!prompt) {
       setCoverRetry(null);
@@ -334,6 +340,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       return;
     }
     const token = ++coverToken.current;
+    coverInFlight.current = true;
     const requestProjectId = projectId;
     setCoverRetry("save");
     setCoverState("saving");
@@ -354,11 +361,15 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
         setCoverError(message(error));
         setCoverState("error");
       }
+    } finally {
+      coverInFlight.current = false;
     }
   };
 
   const rerenderTitle = async () => {
+    if (coverInFlight.current) return;
     const token = ++coverToken.current;
+    coverInFlight.current = true;
     const requestProjectId = projectId;
     setCoverRetry("render");
     setCoverState("saving");
@@ -379,6 +390,8 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
         setCoverError(detail.includes("publishing_asset_stale_base") ? "底图已更新，请刷新后重试排版。" : detail);
         setCoverState("error");
       }
+    } finally {
+      coverInFlight.current = false;
     }
   };
 
@@ -394,7 +407,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
     if (coverRetry === "render") void rerenderTitle();
   };
 
-  const coverUrl = cover?.image_version ? coverImageUrl(projectId, cover.image_version) : "";
+  const coverUrl = cover?.image_version ? `${coverImageUrl(projectId, cover.image_version)}&reload=${imageNonce}` : "";
   const hasBase = Boolean(cover?.base_image_version);
   const hasRendered = Boolean(cover?.image_version) && imageFailedUrl !== coverUrl;
   const knownTitleMismatch = Boolean(cover?.rendered_title?.trim() && cover.rendered_title !== title);
@@ -425,16 +438,16 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
             </>
           ) : editingSynopsis ? (
             <form onSubmit={saveSynopsis} className={styles.editForm}>
-              <label>标签<input ref={tagsInput} aria-label="标签" value={tagsDraft} onChange={(event) => setTagsDraft(event.target.value)} disabled={synopsisBusy} /></label>
+              <label>标签<input ref={tagsInput} aria-label="标签" aria-invalid={Boolean(synopsisError)} aria-describedby="synopsis-error" value={tagsDraft} onChange={(event) => setTagsDraft(event.target.value)} disabled={synopsisBusy} /></label>
               <small>用逗号或顿号分隔，保留 4–8 个标签。</small>
-              <label>简介正文<textarea ref={bodyInput} aria-label="简介正文" rows={7} value={bodyDraft} onChange={(event) => setBodyDraft(event.target.value)} disabled={synopsisBusy} /></label>
+              <label>简介正文<textarea ref={bodyInput} aria-label="简介正文" aria-invalid={Boolean(synopsisError)} aria-describedby="synopsis-error" rows={7} value={bodyDraft} onChange={(event) => setBodyDraft(event.target.value)} disabled={synopsisBusy} /></label>
               <div className={styles.actions}><button className="ws-button ws-button--primary" type="submit" disabled={synopsisBusy}>{synopsisState === "saving" ? "保存中…" : "保存简介"}</button><button className="ws-button" type="button" onClick={() => { setEditingSynopsis(false); setSynopsisError(""); setSynopsisState("idle"); setSynopsisRetry(null); }} disabled={synopsisBusy}>取消</button></div>
             </form>
           ) : <p className={styles.empty}>还没有简介。生成后可在这里人工修订。</p>}
         </div>
         {!editingSynopsis ? <label className={styles.guidance}>简介生成要求（可选）<textarea ref={synopsisGuidanceInput} rows={2} value={synopsisGuidance} onChange={(event) => setSynopsisGuidance(event.target.value)} disabled={synopsisBusy} maxLength={1001} /></label> : null}
         {!editingSynopsis ? <button type="button" className="ws-button ws-button--primary" onClick={() => void generateNewSynopsis()} disabled={synopsisBusy}>{synopsisState === "generating" ? "生成中…" : synopsis ? "重新生成" : "生成简介"}</button> : null}
-        <div className={styles.feedback} aria-live="polite">{synopsisError ? <><span className={styles.error}>{synopsisError}</span>{synopsisRetry ? <button type="button" className={styles.textButton} onClick={retrySynopsis}>重试</button> : null}</> : synopsisFeedback}</div>
+        <div id="synopsis-error" className={styles.feedback} aria-live="polite">{synopsisError ? <><span className={styles.error}>{synopsisError}</span>{synopsisRetry ? <button type="button" className={styles.textButton} onClick={retrySynopsis}>重试</button> : null}</> : synopsisFeedback}</div>
       </article>
 
       <article className={`${styles.card} ${styles.coverCard}`} aria-labelledby="cover-title" aria-busy={coverBusy}>
@@ -453,6 +466,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
             {!promptReady && cover?.prompt && !hasBase && !hasRendered ? <><p className={styles.notice}>提示词已就绪，等待生成图片。</p><button type="button" className="ws-button" onClick={() => void generateCurrentPromptImage()} disabled={coverBusy}>使用当前提示词生成图片</button></> : null}
             {needsRendering ? <div className={styles.renderNotice}><strong>{knownTitleMismatch ? "书名已变化，重新排版" : provenanceMismatch ? "底图已变化，重新排版" : "底图已生成，待排版书名"}</strong><button type="button" className="ws-button" onClick={() => void rerenderTitle()} disabled={coverBusy}>{coverState === "saving" ? "排版中…" : "重新排版"}</button></div> : null}
             {hasRendered ? <a className="ws-button" href={coverImageUrl(projectId, cover?.image_version ?? "", true)} download>下载封面</a> : null}
+            {imageFailedUrl ? <button type="button" className="ws-button" onClick={() => { setImageFailedUrl(""); setImageNonce((value) => value + 1); }}>重新加载图片</button> : null}
           </div>
         </div>
         {!editingPrompt ? <><label className={styles.guidance}>封面生成要求（可选）<textarea ref={coverGuidanceInput} rows={2} value={coverGuidance} onChange={(event) => setCoverGuidance(event.target.value)} disabled={coverBusy} maxLength={1001} /></label><button type="button" className="ws-button ws-button--primary" onClick={() => void generateNewCover()} disabled={coverBusy}>{coverState === "generating" ? "生成中…" : hasRendered || cover?.prompt ? "重新生成提示词与封面" : "生成封面"}</button></> : null}
