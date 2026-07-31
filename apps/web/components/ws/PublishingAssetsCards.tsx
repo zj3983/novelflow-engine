@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   coverImageUrl,
   generateCover,
+  generateCoverFromPrompt,
   generateSynopsis,
   renderCoverTitle,
   updateCoverPrompt,
@@ -25,7 +26,7 @@ export type PublishingAssetsCardsProps = {
 
 export type CardRequestState = "idle" | "generating" | "saving" | "error";
 type SynopsisRetryOperation = "generate" | "save" | null;
-type CoverRetryOperation = "generate" | "save" | "render" | null;
+type CoverRetryOperation = "generate" | "image" | "save" | "render" | null;
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -89,9 +90,13 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
   const [promptDraft, setPromptDraft] = useState("");
   const [synopsisFeedback, setSynopsisFeedback] = useState("");
   const [coverFeedback, setCoverFeedback] = useState("");
+  const [refreshWarning, setRefreshWarning] = useState("");
+  const [imageFailedUrl, setImageFailedUrl] = useState("");
+  const synopsisInFlight = useRef(false);
+  const coverInFlight = useRef(false);
   const [synopsisRetry, setSynopsisRetry] = useState<SynopsisRetryOperation>(null);
   const [coverRetry, setCoverRetry] = useState<CoverRetryOperation>(null);
-  const [promptReady, setPromptReady] = useState(Boolean(assets.cover?.prompt && !assets.cover.image_version));
+  const [promptReady, setPromptReady] = useState(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -107,7 +112,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
     coverServerSignature.current = assetSignature(assets.cover);
     setSynopsis(assets.synopsis);
     setCover(assets.cover);
-    setPromptReady(Boolean(assets.cover?.prompt && !assets.cover.image_version));
+    setPromptReady(false);
     setSynopsisState("idle");
     setCoverState("idle");
     setSynopsisError("");
@@ -140,7 +145,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       coverServerSignature.current = nextCoverSignature;
       coverToken.current += 1;
       setCover(assets.cover);
-      setPromptReady(Boolean(assets.cover?.prompt && !assets.cover.image_version));
+      setPromptReady(false);
       setCoverState("idle");
       setCoverError("");
       setCoverRetry(null);
@@ -148,7 +153,12 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
   }, [assets]);
 
   const changed = async () => {
-    await onChanged();
+    try {
+      await onChanged();
+      return "";
+    } catch (error) {
+      return message(error);
+    }
   };
 
   const generateNewSynopsis = async () => {
@@ -170,7 +180,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       if (!mounted.current || currentProjectId.current !== requestProjectId || token !== synopsisToken.current) return;
       setSynopsis(next);
       setEditingSynopsis(false);
-      await changed();
+      setRefreshWarning(await changed());
       if (mounted.current && currentProjectId.current === requestProjectId && token === synopsisToken.current) {
         setSynopsisState("idle");
         setSynopsisRetry(null);
@@ -212,7 +222,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       if (!mounted.current || currentProjectId.current !== requestProjectId || token !== synopsisToken.current) return;
       setSynopsis(next);
       setEditingSynopsis(false);
-      await changed();
+      setRefreshWarning(await changed());
       if (mounted.current && currentProjectId.current === requestProjectId && token === synopsisToken.current) {
         setSynopsisState("idle");
         setSynopsisRetry(null);
@@ -226,6 +236,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
   };
 
   const generateNewCover = async () => {
+    if (coverInFlight.current) return;
     if (coverGuidance.length > 1000) {
       setCoverRetry(null);
       setCoverError("生成要求不能超过 1000 个字符");
@@ -234,6 +245,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       return;
     }
     const token = ++coverToken.current;
+    coverInFlight.current = true;
     const requestProjectId = projectId;
     setCoverRetry("generate");
     setCoverState("generating");
@@ -245,16 +257,52 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       if (result.cover) setCover(result.cover);
       setPromptReady(result.status === "prompt_ready");
       setEditingPrompt(false);
-      await changed();
+      const refreshError = await changed();
       if (mounted.current && currentProjectId.current === requestProjectId && token === coverToken.current) {
         setCoverState("idle");
         setCoverRetry(null);
+        setRefreshWarning(refreshError);
       }
     } catch (error) {
       if (mounted.current && currentProjectId.current === requestProjectId && token === coverToken.current) {
         setCoverError(message(error));
         setCoverState("error");
+        setCoverRetry("image");
+        void changed().then((refreshError) => { if (mounted.current) setRefreshWarning(refreshError); });
       }
+    } finally {
+      coverInFlight.current = false;
+    }
+  };
+
+  const generateCurrentPromptImage = async () => {
+    if (coverInFlight.current) return;
+    const token = ++coverToken.current;
+    const requestProjectId = projectId;
+    coverInFlight.current = true;
+    setCoverRetry("image");
+    setCoverState("generating");
+    setCoverError("");
+    try {
+      const result = await generateCoverFromPrompt(projectId);
+      if (!mounted.current || currentProjectId.current !== requestProjectId || token !== coverToken.current) return;
+      if (result.cover) setCover(result.cover);
+      setPromptReady(result.status === "prompt_ready");
+      const refreshError = await changed();
+      if (mounted.current && currentProjectId.current === requestProjectId && token === coverToken.current) {
+        setCoverState("idle");
+        setCoverRetry(null);
+        setRefreshWarning(refreshError);
+      }
+    } catch (error) {
+      if (mounted.current && currentProjectId.current === requestProjectId && token === coverToken.current) {
+        setCoverError(message(error));
+        setCoverState("error");
+        setCoverRetry("image");
+        void changed().then((refreshError) => { if (mounted.current) setRefreshWarning(refreshError); });
+      }
+    } finally {
+      coverInFlight.current = false;
     }
   };
 
@@ -267,9 +315,9 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       setCoverState("error");
       return;
     }
-    if (prompt.length > 4000) {
+    if (prompt.length > 2000) {
       setCoverRetry(null);
-      setCoverError("封面提示词不能超过 4000 个字符");
+      setCoverError("封面提示词不能超过 2000 个字符");
       setCoverState("error");
       return;
     }
@@ -282,9 +330,9 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       const next = await updateCoverPrompt(projectId, prompt);
       if (!mounted.current || currentProjectId.current !== requestProjectId || token !== coverToken.current) return;
       setCover(next);
-      setPromptReady(!next.image_version);
+      setPromptReady(false);
       setEditingPrompt(false);
-      await changed();
+      setRefreshWarning(await changed());
       if (mounted.current && currentProjectId.current === requestProjectId && token === coverToken.current) {
         setCoverState("idle");
         setCoverRetry(null);
@@ -308,7 +356,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       if (!mounted.current || currentProjectId.current !== requestProjectId || token !== coverToken.current) return;
       setCover(next);
       setPromptReady(false);
-      await changed();
+      setRefreshWarning(await changed());
       if (mounted.current && currentProjectId.current === requestProjectId && token === coverToken.current) {
         setCoverState("idle");
         setCoverRetry(null);
@@ -329,20 +377,23 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
 
   const retryCover = () => {
     if (coverRetry === "generate") void generateNewCover();
+    if (coverRetry === "image") void generateCurrentPromptImage();
     if (coverRetry === "save") void savePrompt({ preventDefault() {} } as React.FormEvent<HTMLFormElement>);
     if (coverRetry === "render") void rerenderTitle();
   };
 
-  const hasImage = Boolean(cover?.image_version);
-  const titleStale = Boolean(cover?.base_image_version && cover.rendered_title !== title);
-  const baseStale = Boolean(cover?.base_image_version && cover.base_image_version !== cover.rendered_from_base_version);
-  const needsRendering = Boolean(cover?.base_image_version && (!hasImage || titleStale || baseStale));
+  const coverUrl = cover?.image_version ? coverImageUrl(projectId, cover.image_version) : "";
+  const hasBase = Boolean(cover?.base_image_version);
+  const hasRendered = Boolean(cover?.image_version) && imageFailedUrl !== coverUrl;
+  const knownTitleMismatch = Boolean(cover?.rendered_title?.trim() && cover.rendered_title !== title);
+  const provenanceMismatch = Boolean(cover?.base_image_version && cover?.rendered_from_base_version && cover.base_image_version !== cover.rendered_from_base_version);
+  const needsRendering = Boolean(hasBase && (!hasRendered || knownTitleMismatch || provenanceMismatch));
   const synopsisBusy = synopsisState === "generating" || synopsisState === "saving";
   const coverBusy = coverState === "generating" || coverState === "saving";
 
   return (
     <section className={styles.grid} aria-label="作品包装">
-      <article className={`${styles.card} ${styles.synopsisCard}`} aria-labelledby="synopsis-title">
+      <article className={`${styles.card} ${styles.synopsisCard}`} aria-labelledby="synopsis-title" aria-busy={synopsisBusy}>
         <header className={styles.header}>
           <div>
             <p className={styles.kicker}>书稿简介</p>
@@ -357,7 +408,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
               <p className={styles.body}>{synopsis.body}</p>
               <div className={styles.meta}>
                 <span>{synopsis.updated_at ? `更新于 ${synopsis.updated_at}` : "已保存"}</span>
-                <button type="button" className={styles.textButton} onClick={() => void copyText(synopsis.body).then(() => setSynopsisFeedback("简介已复制")).catch(() => setSynopsisFeedback("复制简介失败"))}>复制简介</button>
+                <button type="button" className={styles.textButton} onClick={() => void copyText(`${synopsis.tags.join("，")}\n${synopsis.body}`).then(() => setSynopsisFeedback("简介已复制")).catch(() => setSynopsisFeedback("复制简介失败"))}>复制简介</button>
               </div>
             </>
           ) : editingSynopsis ? (
@@ -374,25 +425,27 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
         <div className={styles.feedback} aria-live="polite">{synopsisError ? <><span className={styles.error}>{synopsisError}</span>{synopsisRetry ? <button type="button" className={styles.textButton} onClick={retrySynopsis}>重试</button> : null}</> : synopsisFeedback}</div>
       </article>
 
-      <article className={`${styles.card} ${styles.coverCard}`} aria-labelledby="cover-title">
+      <article className={`${styles.card} ${styles.coverCard}`} aria-labelledby="cover-title" aria-busy={coverBusy}>
         <header className={styles.header}>
           <div><p className={styles.kicker}>封面校样</p><h2 id="cover-title">封面</h2></div>
           {cover?.prompt && !editingPrompt ? <button type="button" className="ws-button" onClick={() => { setPromptDraft(cover.prompt ?? ""); setEditingPrompt(true); setCoverError(""); setCoverRetry(null); }} disabled={coverBusy}>编辑提示词</button> : null}
         </header>
         <div className={styles.coverDesk}>
           <div className={styles.coverFrame}>
-            {hasImage ? <img src={coverImageUrl(projectId, cover?.image_version ?? "")} alt={`${title}封面`} /> : <span>封面校样</span>}
+            {hasRendered ? <img src={coverUrl} alt={`${title}封面`} onError={() => setImageFailedUrl(coverUrl)} /> : <span>{imageFailedUrl ? "封面图片无法加载" : "封面校样"}</span>}
           </div>
           <div className={styles.coverNotes}>
             {cover?.prompt && !editingPrompt ? <><p className={styles.prompt}>{cover.prompt}</p><button type="button" className={styles.textButton} onClick={() => void copyText(cover.prompt ?? "").then(() => setCoverFeedback("提示词已复制")).catch(() => setCoverFeedback("复制提示词失败"))}>复制提示词</button></> : null}
-            {editingPrompt ? <form onSubmit={savePrompt} className={styles.editForm}><label>封面提示词<textarea aria-label="封面提示词" rows={6} value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} disabled={coverBusy} /></label><div className={styles.actions}><button type="submit" className="ws-button ws-button--primary" disabled={coverBusy}>{coverState === "saving" ? "保存中…" : "保存提示词"}</button><button type="button" className="ws-button" disabled={coverBusy} onClick={() => { setEditingPrompt(false); setCoverError(""); setCoverState("idle"); setCoverRetry(null); }}>取消</button></div></form> : null}
-            {(promptReady || (cover?.prompt && !hasImage)) ? <p className={styles.notice}>图像模型尚未配置。<Link href="/config">前往配置</Link></p> : null}
-            {needsRendering ? <div className={styles.renderNotice}><strong>{titleStale ? "书名已变化，重新排版" : "底图已变化，重新排版"}</strong><button type="button" className="ws-button" onClick={() => void rerenderTitle()} disabled={coverBusy}>{coverState === "saving" ? "排版中…" : "重新排版"}</button></div> : null}
-            {hasImage ? <a className="ws-button" href={coverImageUrl(projectId, cover?.image_version ?? "", true)} download>下载封面</a> : null}
+            {editingPrompt ? <form onSubmit={savePrompt} className={styles.editForm}><label>封面提示词<textarea aria-label="封面提示词" aria-invalid={Boolean(coverError)} aria-describedby="cover-prompt-error" maxLength={2000} rows={6} value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} disabled={coverBusy} /></label><div className={styles.actions}><button type="submit" className="ws-button ws-button--primary" disabled={coverBusy}>{coverState === "saving" ? "保存中…" : "保存提示词"}</button><button type="button" className="ws-button" disabled={coverBusy} onClick={() => { setEditingPrompt(false); setCoverError(""); setCoverState("idle"); setCoverRetry(null); }}>取消</button></div></form> : null}
+            {promptReady ? <><p className={styles.notice}>图像模型尚未配置。<Link href="/config">前往配置</Link></p><button type="button" className="ws-button ws-button--primary" onClick={() => void generateCurrentPromptImage()} disabled={coverBusy}>使用当前提示词生成图片</button></> : null}
+            {!promptReady && cover?.prompt && !hasRendered ? <><p className={styles.notice}>提示词已就绪，等待生成图片。</p><button type="button" className="ws-button" onClick={() => void generateCurrentPromptImage()} disabled={coverBusy}>使用当前提示词生成图片</button></> : null}
+            {needsRendering ? <div className={styles.renderNotice}><strong>{knownTitleMismatch ? "书名已变化，重新排版" : provenanceMismatch ? "底图已变化，重新排版" : "底图已生成，待排版书名"}</strong><button type="button" className="ws-button" onClick={() => void rerenderTitle()} disabled={coverBusy}>{coverState === "saving" ? "排版中…" : "重新排版"}</button></div> : null}
+            {hasRendered ? <a className="ws-button" href={coverImageUrl(projectId, cover?.image_version ?? "", true)} download>下载封面</a> : null}
           </div>
         </div>
-        {!editingPrompt ? <><label className={styles.guidance}>封面生成要求（可选）<textarea ref={coverGuidanceInput} rows={2} value={coverGuidance} onChange={(event) => setCoverGuidance(event.target.value)} disabled={coverBusy} maxLength={1001} /></label><button type="button" className="ws-button ws-button--primary" onClick={() => void generateNewCover()} disabled={coverBusy}>{coverState === "generating" ? "生成中…" : hasImage || cover?.prompt ? "重新生成" : "生成封面"}</button></> : null}
-        <div className={styles.feedback} aria-live="polite">{coverError ? <><span className={styles.error}>{coverError}</span>{coverRetry ? <button type="button" className={styles.textButton} onClick={retryCover}>重试</button> : null}</> : coverFeedback}</div>
+        {!editingPrompt ? <><label className={styles.guidance}>封面生成要求（可选）<textarea ref={coverGuidanceInput} rows={2} value={coverGuidance} onChange={(event) => setCoverGuidance(event.target.value)} disabled={coverBusy} maxLength={1001} /></label><button type="button" className="ws-button ws-button--primary" onClick={() => void generateNewCover()} disabled={coverBusy}>{coverState === "generating" ? "生成中…" : hasRendered || cover?.prompt ? "重新生成提示词与封面" : "生成封面"}</button></> : null}
+        <div id="cover-prompt-error" className={styles.feedback} aria-live="polite">{coverError ? <><span className={styles.error}>{coverError}</span>{coverRetry ? <button type="button" className={styles.textButton} onClick={retryCover}>重试</button> : null}</> : coverFeedback}</div>
+        {refreshWarning ? <div className={styles.feedback} aria-live="polite">项目刷新失败：{refreshWarning}<button type="button" className={styles.textButton} onClick={() => void changed().then(setRefreshWarning)}>刷新项目</button></div> : null}
       </article>
     </section>
   );

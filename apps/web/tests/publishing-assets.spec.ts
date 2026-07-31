@@ -49,6 +49,9 @@ async function routePublishingProject(page: Page, assets: unknown = emptyAssets,
     overviewReads += 1;
     await fulfill(route, { story_id: projectId, chapter_count: 0, total_body_chars: 0, chapters: [], storage_source: "file" });
   });
+  await page.route(`**/file-projects/${encodedId}/publishing/cover.png**`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="3" height="4" />' });
+  });
   return {
     reads: () => overviewReads,
     projectReads: () => projectReads,
@@ -63,6 +66,7 @@ test("publishing API encodes the file-project id and unwraps endpoint envelopes"
     generateSynopsis: (id: string, guidance?: string) => Promise<unknown>;
     updateSynopsis: (id: string, payload: { tags: string[]; body: string }) => Promise<unknown>;
     generateCover: (id: string, guidance?: string) => Promise<unknown>;
+    generateCoverFromPrompt: (id: string) => Promise<unknown>;
     updateCoverPrompt: (id: string, prompt: string) => Promise<unknown>;
     renderCoverTitle: (id: string) => Promise<unknown>;
     coverImageUrl: (id: string, version: string, download?: boolean) => string;
@@ -83,12 +87,14 @@ test("publishing API encodes the file-project id and unwraps endpoint envelopes"
     await expect(clients.generateSynopsis(projectId, "更克制")).resolves.toMatchObject({ body: "简介" });
     await expect(clients.updateSynopsis(projectId, { tags: ["悬疑", "都市", "成长", "反转"], body: "简介" })).resolves.toMatchObject({ body: "简介" });
     await expect(clients.generateCover(projectId, "夜色")).resolves.toMatchObject({ status: "prompt_ready" });
+    await expect(clients.generateCoverFromPrompt(projectId)).resolves.toMatchObject({ status: "prompt_ready" });
     await expect(clients.updateCoverPrompt(projectId, "新提示词")).resolves.toMatchObject({ prompt: "新提示词" });
     await expect(clients.renderCoverTitle(projectId)).resolves.toMatchObject({ image_version: "v2" });
     expect(clients.coverImageUrl(projectId, "v & 2", true)).toContain(`/file-projects/${encodedId}/publishing/cover.png?version=v%20%26%202&download=1`);
     expect(calls.map((call) => call.url)).toEqual(expect.arrayContaining([
       expect.stringContaining(`/file-projects/${encodedId}/publishing/synopsis`),
       expect.stringContaining(`/file-projects/${encodedId}/publishing/cover`),
+      expect.stringContaining(`/file-projects/${encodedId}/publishing/cover/render-image`),
       expect.stringContaining(`/file-projects/${encodedId}/publishing/cover-prompt`),
       expect.stringContaining(`/file-projects/${encodedId}/publishing/cover/render-title`),
     ]));
@@ -127,8 +133,8 @@ test("prompt-ready cover remains editable without a broken image or generation o
     await fulfill(route, { cover: { prompt: "港口、旧信、冷色潮雾" } });
   });
   await page.goto(`/projects/${encodedId}`);
-  await expect(page.getByText("图像模型尚未配置")).toBeVisible();
-  await expect(page.getByRole("link", { name: "前往配置" })).toHaveAttribute("href", "/config");
+  await expect(page.getByText("提示词已就绪，等待生成图片。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "使用当前提示词生成图片" })).toBeVisible();
   await expect(page.getByRole("button", { name: "复制提示词" })).toBeVisible();
   await expect(page.locator("img")).toHaveCount(0);
   await page.getByRole("button", { name: "编辑提示词" }).click();

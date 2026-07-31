@@ -2663,8 +2663,14 @@ async function requestWithTimeout<T>(
       if (detail) {
         try {
           const parsed = JSON.parse(detail);
-          if (typeof parsed?.detail === "string" && parsed.detail.trim()) {
-            message = parsed.detail.trim();
+          const structuredDetail = parsed?.detail;
+          if (typeof structuredDetail === "string" && structuredDetail.trim()) {
+            message = structuredDetail.trim();
+          } else if (Array.isArray(structuredDetail)) {
+            const issues = structuredDetail
+              .map((issue) => typeof issue?.msg === "string" ? issue.msg.trim() : "")
+              .filter(Boolean);
+            if (issues.length) message = issues.join("；");
           }
         } catch {
           // Keep the raw detail string if it is not JSON.
@@ -3507,6 +3513,14 @@ export async function generateCover(projectId: string, guidance = ""): Promise<C
     180000,
   )) as CoverGenerationResponse;
   return response;
+}
+
+export async function generateCoverFromPrompt(projectId: string): Promise<CoverGenerationResponse> {
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/publishing/cover/render-image`,
+    { method: "POST" },
+    180000,
+  )) as CoverGenerationResponse;
 }
 
 export async function updateCoverPrompt(projectId: string, prompt: string): Promise<CoverAsset> {
