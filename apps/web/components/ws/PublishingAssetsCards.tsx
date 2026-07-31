@@ -11,6 +11,7 @@ import {
   renderCoverTitle,
   updateCoverPrompt,
   updateSynopsis,
+  PublishingApiError,
   type CoverAsset,
   type PublishingAssets,
   type SynopsisAsset,
@@ -265,9 +266,12 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       }
     } catch (error) {
       if (mounted.current && currentProjectId.current === requestProjectId && token === coverToken.current) {
+        if (error instanceof PublishingApiError && error.promptSaved && error.cover) {
+          setCover(error.cover);
+        }
         setCoverError(message(error));
         setCoverState("error");
-        setCoverRetry("image");
+        setCoverRetry(error instanceof PublishingApiError && error.phase === "image" && error.promptSaved ? "image" : "generate");
         void changed().then((refreshError) => { if (mounted.current) setRefreshWarning(refreshError); });
       }
     } finally {

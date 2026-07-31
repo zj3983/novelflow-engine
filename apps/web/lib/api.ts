@@ -126,6 +126,20 @@ export type CoverGenerationResponse =
   | { status: "prompt_ready"; reason: "image_provider_not_configured"; cover: CoverAsset | null }
   | { status: "ready"; cover: CoverAsset | null };
 
+export class PublishingApiError extends Error {
+  readonly phase?: "prompt" | "image";
+  readonly promptSaved: boolean;
+  readonly cover?: CoverAsset | null;
+
+  constructor(code: string, detail: { phase?: "prompt" | "image"; prompt_saved?: boolean; cover?: CoverAsset | null }) {
+    super(code);
+    this.name = "PublishingApiError";
+    this.phase = detail.phase;
+    this.promptSaved = detail.prompt_saved === true;
+    this.cover = detail.cover;
+  }
+}
+
 export type RuntimeConnectionResult = {
   ok: boolean;
   provider: RuntimeProvider;
@@ -2664,7 +2678,10 @@ async function requestWithTimeout<T>(
         try {
           const parsed = JSON.parse(detail);
           const structuredDetail = parsed?.detail;
-          if (typeof structuredDetail === "string" && structuredDetail.trim()) {
+          if (structuredDetail && typeof structuredDetail === "object" && !Array.isArray(structuredDetail)
+            && typeof structuredDetail.code === "string") {
+            throw new PublishingApiError(structuredDetail.code, structuredDetail);
+          } else if (typeof structuredDetail === "string" && structuredDetail.trim()) {
             message = structuredDetail.trim();
           } else if (Array.isArray(structuredDetail)) {
             const issues = structuredDetail
