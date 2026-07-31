@@ -1839,7 +1839,7 @@ class FileProjectStore:
         return self._read_publishing_asset(self.rendered_cover_path)
 
     @_with_project_update_lock
-    def save_rendered_cover(self, rendered_image: bytes, *, expected_base_version: str) -> dict[str, Any]:
+    def save_rendered_cover(self, rendered_image: bytes, *, expected_base_version: str, expected_title: str | None = None, rendered_title: str | None = None) -> dict[str, Any]:
         try:
             if not isinstance(rendered_image, bytes) or not rendered_image or len(rendered_image) > self.PUBLISHING_ASSET_MAX_BYTES:
                 raise ValueError("publishing_asset_write_failed")
@@ -1862,12 +1862,16 @@ class FileProjectStore:
                 raise ValueError("publishing_asset_write_failed") from exc
             if not title:
                 raise ValueError("publishing_asset_write_failed")
+            if expected_title is not None and title != expected_title:
+                raise ValueError("publishing_asset_stale_cover")
+            if rendered_title is not None and rendered_title != title:
+                raise ValueError("publishing_asset_stale_cover")
             updated_at = self._publishing_updated_at()
             cover.update(
                 {
                     "rendered_path": "assets/cover.png",
                     "schema_version": "cover/v1",
-                    "rendered_title": title,
+                    "rendered_title": rendered_title or title,
                     "image_version": sha256(rendered_image).hexdigest(),
                     "rendered_from_base_version": expected_base_version,
                     "mime_type": "image/png",
@@ -1879,7 +1883,7 @@ class FileProjectStore:
             self._publishing_transaction(saved, asset_updates={self.rendered_cover_path: rendered_image})
             return saved
         except ValueError as exc:
-            if str(exc) in {"publishing_asset_write_failed", "publishing_asset_stale_base"}:
+            if str(exc) in {"publishing_asset_write_failed", "publishing_asset_stale_base", "publishing_asset_stale_cover"}:
                 raise
             raise ValueError("publishing_asset_write_failed") from exc
         except Exception as exc:

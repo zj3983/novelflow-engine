@@ -2675,9 +2675,14 @@ async function requestWithTimeout<T>(
       console.error('[tryFetchJson] Not OK, detail:', detail.slice(0, 500));
       let message = detail ? `${url} failed: ${resp.status} ${detail}` : `${url} failed: ${resp.status}`;
       if (detail) {
+        let parsed: any;
         try {
-          const parsed = JSON.parse(detail);
-          const structuredDetail = parsed?.detail;
+          parsed = JSON.parse(detail);
+        } catch {
+          parsed = undefined;
+        }
+        if (parsed) {
+          const structuredDetail = parsed.detail;
           if (structuredDetail && typeof structuredDetail === "object" && !Array.isArray(structuredDetail)
             && typeof structuredDetail.code === "string") {
             throw new PublishingApiError(structuredDetail.code, structuredDetail);
@@ -2689,8 +2694,6 @@ async function requestWithTimeout<T>(
               .filter(Boolean);
             if (issues.length) message = issues.join("；");
           }
-        } catch {
-          // Keep the raw detail string if it is not JSON.
         }
       }
       throw new Error(message);

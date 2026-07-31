@@ -1269,10 +1269,12 @@ def init_file_project_routes() -> APIRouter:
         except Exception as exc:
             raise _cover_error(exc) from exc
         try:
-            saved = store.save_rendered_cover(rendered, expected_base_version=base_version)
+            saved = store.save_rendered_cover(rendered, expected_base_version=base_version, expected_title=cover_title, rendered_title=cover_title)
         except ValueError as exc:
             if str(exc) == "publishing_asset_stale_base":
                 raise HTTPException(status_code=409, detail="publishing_asset_stale_base") from exc
+            if str(exc) == "publishing_asset_stale_cover":
+                raise HTTPException(status_code=409, detail="publishing_asset_stale_cover") from exc
             raise _publishing_write_error(exc) from exc
         return {"status": "ready", "cover": saved.get("cover")}
 
