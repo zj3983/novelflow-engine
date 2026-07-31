@@ -42,6 +42,10 @@ if os.name == "nt":
     _KERNEL32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
     _KERNEL32.CloseHandle.argtypes = (wintypes.HANDLE,)
     _KERNEL32.CloseHandle.restype = wintypes.BOOL
+    _KERNEL32.GetFileSizeEx.argtypes = (wintypes.HANDLE, ctypes.POINTER(ctypes.c_longlong))
+    _KERNEL32.GetFileSizeEx.restype = wintypes.BOOL
+    _KERNEL32.ReadFile.argtypes = (wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID)
+    _KERNEL32.ReadFile.restype = wintypes.BOOL
 else:
     _KERNEL32 = None
 
@@ -859,6 +863,73 @@ class _PinnedPublishingFilesystem:
             if descriptor >= 0:
                 os.close(descriptor)
 
+    def read_bounded_bytes(self, path: Path, max_bytes: int) -> bytes:
+        """Open once through pinned ancestors and read a regular file with a hard cap."""
+        if not isinstance(max_bytes, int) or max_bytes <= 0:
+            raise ValueError("publishing_asset_read_failed")
+        self.assert_target(path)
+        if os.name == "nt":
+            if _KERNEL32 is None:  # pragma: no cover - Windows only
+                raise ValueError("publishing_asset_read_failed")
+            flags = 0x00200000  # OPEN_REPARSE_POINT
+            handle = _KERNEL32.CreateFileW(str(path), 0x80000000, 0x00000001 | 0x00000002, None, 3, flags, None)
+            handle_value = wintypes.HANDLE(handle).value
+            invalid_handle = wintypes.HANDLE(-1).value
+            if handle_value is None or handle_value == invalid_handle:
+                if ctypes.get_last_error() in {2, 3}:
+                    raise FileNotFoundError(path)
+                raise ValueError("publishing_asset_read_failed")
+            try:
+                attrs = _KERNEL32.GetFileAttributesW(str(path))
+                if attrs == 0xFFFFFFFF or attrs & self._REPARSE_POINT:
+                    raise ValueError("publishing_asset_read_failed")
+                final = self._windows_final_path(handle_value)
+                if self._windows_final_root is None or os.path.commonpath([self._windows_final_root, final]) != self._windows_final_root:
+                    raise ValueError("publishing_asset_read_failed")
+                size_value = ctypes.c_longlong()
+                if not _KERNEL32.GetFileSizeEx(wintypes.HANDLE(handle_value), ctypes.byref(size_value)):
+                    raise ValueError("publishing_asset_read_failed")
+                size = size_value.value
+                if size <= 0 or size > max_bytes:
+                    raise ValueError("publishing_asset_read_failed")
+                chunks: list[bytes] = []
+                remaining = max_bytes + 1
+                while remaining:
+                    buffer = ctypes.create_string_buffer(min(64 * 1024, remaining))
+                    read = wintypes.DWORD()
+                    if not _KERNEL32.ReadFile(wintypes.HANDLE(handle_value), buffer, len(buffer), ctypes.byref(read), None):
+                        raise ValueError("publishing_asset_read_failed")
+                    if not read.value:
+                        break
+                    chunks.append(buffer.raw[: read.value])
+                    remaining -= read.value
+                content = b"".join(chunks)
+            finally:
+                _KERNEL32.CloseHandle(wintypes.HANDLE(handle_value))
+            if not content or len(content) > max_bytes:
+                raise ValueError("publishing_asset_read_failed")
+            return content
+        parent_fd, name = self._parent_fd(path, create=False)
+        descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+        try:
+            details = os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode) or details.st_size <= 0 or details.st_size > max_bytes:
+                raise ValueError("publishing_asset_read_failed")
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            content = b"".join(chunks)
+            if not content or len(content) > max_bytes:
+                raise ValueError("publishing_asset_read_failed")
+            return content
+        finally:
+            os.close(descriptor)
+
     def prepare(self, path: Path, content: bytes, *, suffix: str) -> Path:
         self.assert_target(path)
         if os.name == "nt":
@@ -1670,6 +1741,8 @@ class FileProjectStore:
                 "base_path": "assets/cover-base.png",
                 "rendered_path": "assets/cover.png",
                 "schema_version": "cover/v1",
+                "base_image_version": sha256(base_image).hexdigest(),
+                "rendered_from_base_version": sha256(base_image).hexdigest(),
                 "rendered_title": title,
                 "image_version": sha256(rendered_image).hexdigest(),
                 "mime_type": "image/png",
@@ -1702,6 +1775,7 @@ class FileProjectStore:
                     "model": model.strip(),
                     "base_path": "assets/cover-base.png",
                     "schema_version": "cover/v1",
+                    "base_image_version": sha256(base_image).hexdigest(),
                     "updated_at": updated_at,
                 }
             )
@@ -1721,7 +1795,7 @@ class FileProjectStore:
             with _PinnedPublishingFilesystem(self.root) as filesystem:
                 if not filesystem.exists(path):
                     return None
-                content = filesystem.read_bytes(path)
+                content = filesystem.read_bounded_bytes(path, self.PUBLISHING_ASSET_MAX_BYTES)
             if not content or len(content) > self.PUBLISHING_ASSET_MAX_BYTES:
                 raise ValueError("publishing_asset_read_failed")
             return content
@@ -1731,15 +1805,22 @@ class FileProjectStore:
             raise ValueError("publishing_asset_read_failed") from exc
 
     @_with_project_update_lock
-    def read_cover_base(self) -> bytes | None:
-        return self._read_publishing_asset(self.cover_base_path)
+    def read_cover_base(self) -> tuple[bytes, str] | None:
+        content = self._read_publishing_asset(self.cover_base_path)
+        if content is None:
+            return None
+        cover = self._publishing_assets_from_metadata().get("cover") or {}
+        version = str(cover.get("base_image_version") or "") if isinstance(cover, dict) else ""
+        if not version or version != sha256(content).hexdigest():
+            raise ValueError("publishing_asset_read_failed")
+        return content, version
 
     @_with_project_update_lock
     def read_rendered_cover(self) -> bytes | None:
         return self._read_publishing_asset(self.rendered_cover_path)
 
     @_with_project_update_lock
-    def save_rendered_cover(self, rendered_image: bytes) -> dict[str, Any]:
+    def save_rendered_cover(self, rendered_image: bytes, *, expected_base_version: str) -> dict[str, Any]:
         try:
             if not isinstance(rendered_image, bytes) or not rendered_image or len(rendered_image) > self.PUBLISHING_ASSET_MAX_BYTES:
                 raise ValueError("publishing_asset_write_failed")
@@ -1747,6 +1828,8 @@ class FileProjectStore:
             cover = dict(saved["cover"] or {})
             if cover.get("base_path") != "assets/cover-base.png":
                 raise ValueError("publishing_asset_write_failed")
+            if not expected_base_version or cover.get("base_image_version") != expected_base_version:
+                raise ValueError("publishing_asset_stale_base")
             title = str(self.project().get("title") or "").strip()
             if not title or len(title) > 120:
                 raise ValueError("publishing_asset_write_failed")
@@ -1757,6 +1840,7 @@ class FileProjectStore:
                     "schema_version": "cover/v1",
                     "rendered_title": title,
                     "image_version": sha256(rendered_image).hexdigest(),
+                    "rendered_from_base_version": expected_base_version,
                     "mime_type": "image/png",
                     "updated_at": updated_at,
                 }

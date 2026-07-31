@@ -8,7 +8,7 @@ import os
 import re
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Path as ApiPath, Request, Response
@@ -19,7 +19,7 @@ from packages.story_core.file_project_creation import FileProjectCreateSpec, cre
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.cover_image_provider import CoverImageError, OpenAICoverImageProvider
-from packages.story_core.cover_renderer import CoverRenderError, render_cover
+from packages.story_core.cover_renderer import CoverRenderError, normalize_cover_title, render_cover
 from packages.story_core.models import AgentRuntimeState, AgentSettings, NovelProject
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
@@ -143,7 +143,7 @@ class PublishingGenerationRequest(BaseModel):
 class SynopsisUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    tags: list[str] = Field(min_length=4, max_length=8)
+    tags: list[Annotated[str, Field(strict=True, min_length=1, max_length=32)]] = Field(min_length=4, max_length=8)
     body: str = Field(min_length=1, max_length=2000)
 
     @field_validator("tags", mode="before")
@@ -791,10 +791,14 @@ def _cover_error(exc: Exception) -> HTTPException:
 def _cover_title(store: FileProjectStore) -> str:
     title = str(store.project().get("title") or "").strip()
     if title:
-        if len(title) > 120:
-            raise ValueError("cover_title_invalid")
-        return title
-    return _display_title(store.project(), store.state(), store.summary(), store.root.name)
+        try:
+            return normalize_cover_title(title)
+        except CoverRenderError as exc:
+            raise ValueError(str(exc)) from exc
+    try:
+        return normalize_cover_title(_display_title(store.project(), store.state(), store.summary(), store.root.name))
+    except CoverRenderError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _if_none_match_matches(value: str, etag: str) -> bool:
@@ -1133,8 +1137,8 @@ def init_file_project_routes() -> APIRouter:
         except ValueError as exc:
             if str(exc) == "publishing_asset_write_failed":
                 raise _publishing_write_error(exc) from exc
-            if str(exc) == "cover_title_invalid":
-                raise HTTPException(status_code=422, detail="cover_title_invalid") from exc
+            if str(exc) in {"cover_title_invalid", "cover_title_required", "cover_title_too_long"}:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             raise HTTPException(status_code=502, detail="cover_prompt_generation_failed") from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail="cover_prompt_generation_failed") from exc
@@ -1149,7 +1153,13 @@ def init_file_project_routes() -> APIRouter:
             }
 
         try:
-            base_image = cover_image_provider.generate(prompt)
+            try:
+                base_image = cover_image_provider.generate(prompt, image_runtime)
+            except TypeError as exc:
+                # Backward-compatible seam for injected legacy fakes only.
+                if "positional" not in str(exc) and "argument" not in str(exc):
+                    raise
+                base_image = cover_image_provider.generate(prompt)
             rendered_image = render_cover(base_image, cover_title)
         except Exception as exc:
             if str(exc) == "cover_font_unavailable":
@@ -1187,20 +1197,23 @@ def init_file_project_routes() -> APIRouter:
         store = _store_for(project_id)
         try:
             cover_title = _cover_title(store)
-            base_image = store.read_cover_base()
+            base_snapshot = store.read_cover_base()
         except ValueError as exc:
-            if str(exc) == "cover_title_invalid":
-                raise HTTPException(status_code=422, detail="cover_title_invalid") from exc
+            if str(exc) in {"cover_title_invalid", "cover_title_required", "cover_title_too_long"}:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             raise HTTPException(status_code=500, detail="publishing_asset_read_failed") from exc
-        if base_image is None:
+        if base_snapshot is None:
             raise HTTPException(status_code=404, detail="cover_base_not_found")
+        base_image, base_version = base_snapshot
         try:
             rendered = render_cover(base_image, cover_title)
         except Exception as exc:
             raise _cover_error(exc) from exc
         try:
-            saved = store.save_rendered_cover(rendered)
+            saved = store.save_rendered_cover(rendered, expected_base_version=base_version)
         except ValueError as exc:
+            if str(exc) == "publishing_asset_stale_base":
+                raise HTTPException(status_code=409, detail="publishing_asset_stale_base") from exc
             raise _publishing_write_error(exc) from exc
         return {"status": "ready", "cover": saved.get("cover")}
 

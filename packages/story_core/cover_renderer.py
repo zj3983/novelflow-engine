@@ -53,7 +53,7 @@ _STROKE_WIDTH = 2
 _SHADOW_OFFSET = (6, 7)
 _SHADOW_BLUR_RADIUS = 3
 _SHADOW_ALPHA = 190
-_MAX_TITLE_CHARACTERS = 80
+MAX_COVER_TITLE_LENGTH = 120
 
 
 class CoverRenderError(ValueError):
@@ -73,7 +73,7 @@ def render_cover(base_bytes: bytes, title: str, font_path: str | Path | None = N
     only the requested title over the supplied base artwork.
     """
 
-    text = _normalise_title(title)
+    text = normalize_cover_title(title)
     base = _load_base_image(base_bytes)
     try:
         font_file = _resolve_font(text, font_path)
@@ -98,13 +98,13 @@ def render_cover(base_bytes: bytes, title: str, font_path: str | Path | None = N
         canvas.close()
 
 
-def _normalise_title(title: str) -> str:
+def normalize_cover_title(title: str) -> str:
     if not isinstance(title, str) or not title.strip():
         raise CoverRenderError("cover_title_required")
     text = re.sub(r"\s+", " ", title.strip())
     if not _title_clusters_have_visible_bases(text):
         raise CoverRenderError("cover_title_required")
-    if len(text) > _MAX_TITLE_CHARACTERS:
+    if len(text) > MAX_COVER_TITLE_LENGTH:
         raise CoverRenderError("cover_title_too_long")
     return text
 

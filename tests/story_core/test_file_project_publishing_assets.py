@@ -103,7 +103,7 @@ def test_prompt_only_state_survives_cover_save_and_uses_project_title(tmp_path):
 
     assert store.cover_base_path.read_bytes() == b"base-png"
     assert store.rendered_cover_path.read_bytes() == b"rendered-png"
-    assert {key: value for key, value in saved["cover"].items() if key not in {"image_version", "mime_type", "updated_at"}} == {
+    assert {key: value for key, value in saved["cover"].items() if key not in {"image_version", "mime_type", "updated_at", "base_image_version", "rendered_from_base_version"}} == {
         "prompt": "cinematic city at night",
         "model": "cover-model/v1",
         "base_path": "assets/cover-base.png",
@@ -111,6 +111,7 @@ def test_prompt_only_state_survives_cover_save_and_uses_project_title(tmp_path):
         "schema_version": "cover/v1",
         "rendered_title": "Rendered Title",
     }
+    assert saved["cover"]["base_image_version"] == saved["cover"]["rendered_from_base_version"]
     assert saved["cover"]["image_version"]
     assert saved["cover"]["mime_type"] == "image/png"
     assert saved["cover"]["updated_at"]

@@ -45,10 +45,7 @@ def _unsupported_model_error(exc: urllib.error.HTTPError) -> bool:
     if not isinstance(error, dict):
         return False
     code = str(error.get("code") or error.get("type") or "").strip().casefold()
-    if code in {"model_not_found", "model_not_supported", "unsupported_model", "invalid_model", "model_does_not_exist"}:
-        return True
-    message = str(error.get("message") or "").casefold()
-    return "model" in message and any(marker in message for marker in ("not found", "not supported", "unsupported", "does not exist"))
+    return code in {"model_not_found", "model_not_supported", "unsupported_model", "invalid_model", "model_does_not_exist"}
 
 
 _BASE64_PATTERN = re.compile(rb"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?\Z")
@@ -120,8 +117,8 @@ class OpenAICoverImageProvider:
         self._post_json = post_json
         self._runtime_resolver = runtime_resolver
 
-    def generate(self, prompt: str) -> bytes:
-        runtime = ImageRuntimeSettings.model_validate(self._runtime_resolver())
+    def generate(self, prompt: str, runtime: ImageRuntimeSettings | None = None) -> bytes:
+        runtime = ImageRuntimeSettings.model_validate(runtime if runtime is not None else self._runtime_resolver())
         payload = {
             "model": runtime.model,
             "prompt": prompt,

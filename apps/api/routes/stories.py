@@ -24,9 +24,10 @@ from uuid import uuid4
 
 
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import ValidationError
 
 
 
@@ -2512,6 +2513,7 @@ def _revise_latest_chapter(project: NovelProject, record, bundle, payload: Agent
 
 
 _MASKED_API_KEY = "********"
+_MAX_RUNTIME_SETTINGS_REQUEST_BYTES = 1024 * 1024
 
 
 
@@ -4071,9 +4073,31 @@ def read_runtime_cli_info() -> CodexCLIInfoResponse:
 
 
 
-@router.put("/runtime-settings")
+def _runtime_settings_validation_error() -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"type": "validation_error", "loc": ["runtime_settings"], "msg": "invalid runtime settings"},
+    )
 
-def update_runtime_settings(payload: RuntimeConfiguration) -> dict[str, object]:
+
+@router.put("/runtime-settings")
+async def update_runtime_settings(request: Request) -> dict[str, object]:
+    content_length = request.headers.get("content-length", "")
+    try:
+        if content_length and int(content_length) > _MAX_RUNTIME_SETTINGS_REQUEST_BYTES:
+            raise HTTPException(status_code=413, detail="runtime_settings_payload_too_large")
+    except ValueError:
+        raise _runtime_settings_validation_error()
+    body = await request.body()
+    if len(body) > _MAX_RUNTIME_SETTINGS_REQUEST_BYTES:
+        raise HTTPException(status_code=413, detail="runtime_settings_payload_too_large")
+    try:
+        raw = json.loads(body.decode("utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("runtime_settings_must_be_object")
+        payload = RuntimeConfiguration.model_validate(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError):
+        raise _runtime_settings_validation_error()
 
     saved = set_runtime_configuration(_restore_masked_api_keys(payload))
 

@@ -401,6 +401,18 @@ def test_runtime_settings_validation_errors_never_echo_text_or_image_api_keys():
     assert "image-validation-secret" not in response.text
 
 
+def test_runtime_settings_manual_boundary_rejects_non_json_and_oversize_without_echoing_body():
+    binary = client.put("/runtime-settings", content=b"\xff\x00secret", headers={"content-type": "application/octet-stream"})
+    assert binary.status_code == 422
+    assert "secret" not in binary.text
+    oversized = client.put(
+        "/runtime-settings",
+        content=b"x" * (1024 * 1024 + 1),
+        headers={"content-type": "application/json"},
+    )
+    assert oversized.status_code == 413
+
+
 def test_serialized_history_uses_saved_quality_and_adds_simplified_review(monkeypatch):
     from apps.api.routes.stories import _serialize_chapter_bundle
     from packages.story_core.engine import ChapterBundle

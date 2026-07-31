@@ -84,6 +84,12 @@ def test_render_cover_returns_a_metadata_free_768_by_1024_png() -> None:
         assert image.info == {}
 
 
+@pytest.mark.parametrize("length", [81, 120])
+def test_render_cover_accepts_titles_through_shared_publishing_limit(length: int) -> None:
+    rendered = render_cover(_image_bytes(), "A" * length, font_path=_font_path())
+    assert rendered.startswith(b"\x89PNG")
+
+
 def test_render_cover_strips_icc_and_text_metadata_from_source_png() -> None:
     source = Image.new("RGB", (400, 400), BASE)
     metadata = PngImagePlugin.PngInfo()

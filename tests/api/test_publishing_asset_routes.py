@@ -274,4 +274,4 @@ def test_cover_rejects_titles_over_the_publishing_limit(publishing_api, monkeypa
     monkeypatch.setattr(file_projects, "cover_prompt_generator", UnexpectedPrompt())
     response = client.post(f"/file-projects/{created['project_id']}/publishing/cover", json={})
     assert response.status_code == 422
-    assert response.json()["detail"] == "cover_title_invalid"
+    assert response.json()["detail"] == "cover_title_too_long"
