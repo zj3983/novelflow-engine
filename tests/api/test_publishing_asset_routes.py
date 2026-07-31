@@ -70,6 +70,50 @@ def test_publishing_routes_generate_and_edit_synopsis_without_exposing_visual_ho
     ).status_code == 422
 
 
+def test_synopsis_generation_rejects_a_concurrent_manual_edit(publishing_api, monkeypatch):
+    client, created = publishing_api
+    store = FileProjectStore(Path(created["source_path"]))
+    store.save_synopsis({"tags": ["old"], "body": "old manual copy"})
+
+    class ConcurrentSynopsis:
+        def generate(self, *_args, **_kwargs):
+            edited = client.put(
+                f"/file-projects/{created['project_id']}/publishing/synopsis",
+                json={"tags": ["one", "two", "three", "four"], "body": "new manual copy"},
+            )
+            assert edited.status_code == 200
+            return _synopsis()
+
+    monkeypatch.setattr(file_projects, "synopsis_generator", ConcurrentSynopsis())
+    response = client.post(f"/file-projects/{created['project_id']}/publishing/synopsis", json={})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "publishing_asset_stale_synopsis"
+    assert store.publishing_assets()["synopsis"]["body"] == "new manual copy"
+
+
+def test_cover_prompt_generation_rejects_a_concurrent_manual_edit(publishing_api, monkeypatch):
+    client, created = publishing_api
+    store = FileProjectStore(Path(created["source_path"]))
+    store.save_cover_prompt("old prompt")
+
+    class ConcurrentPrompt:
+        def generate(self, *_args, **_kwargs):
+            edited = client.put(
+                f"/file-projects/{created['project_id']}/publishing/cover-prompt",
+                json={"prompt": "new manual prompt"},
+            )
+            assert edited.status_code == 200
+            return "generated prompt"
+
+    monkeypatch.setattr(file_projects, "cover_prompt_generator", ConcurrentPrompt())
+    response = client.post(f"/file-projects/{created['project_id']}/publishing/cover", json={})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "publishing_asset_stale_cover"
+    assert store.publishing_assets()["cover"]["prompt"] == "new manual prompt"
+
+
 def test_cover_prompt_ready_and_asset_download_are_isolated(publishing_api, monkeypatch):
     client, created = publishing_api
 

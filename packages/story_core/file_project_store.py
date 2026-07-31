@@ -19,6 +19,9 @@ from typing import Any
 from urllib.parse import quote
 
 
+_MISSING = object()
+
+
 if os.name == "nt":
     _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _KERNEL32.CreateFileW.argtypes = (
@@ -1669,15 +1672,22 @@ class FileProjectStore:
         return self._publishing_assets_from_metadata()
 
     @_with_project_update_lock
-    def save_synopsis(self, synopsis: dict[str, Any]) -> dict[str, Any]:
+    def save_synopsis(
+        self,
+        synopsis: dict[str, Any],
+        *,
+        expected_synopsis: dict[str, Any] | None | object = _MISSING,
+    ) -> dict[str, Any]:
         try:
             saved = self._publishing_assets_from_metadata()
+            if expected_synopsis is not _MISSING and saved.get("synopsis") != expected_synopsis:
+                raise ValueError("publishing_asset_stale_synopsis")
             saved["synopsis"] = self._json_safe_dict(synopsis)
             saved["updated_at"] = self._publishing_updated_at()
             self._publishing_transaction(saved)
             return saved
         except ValueError as exc:
-            if str(exc) == "publishing_asset_write_failed":
+            if str(exc) in {"publishing_asset_write_failed", "publishing_asset_stale_synopsis"}:
                 raise
             raise ValueError("publishing_asset_write_failed") from exc
         except Exception as exc:
@@ -1697,10 +1707,12 @@ class FileProjectStore:
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     @_with_project_update_lock
-    def save_cover_prompt(self, prompt: str) -> dict[str, Any]:
+    def save_cover_prompt(self, prompt: str, *, expected_prompt: str | None = None) -> dict[str, Any]:
         try:
             saved = self._publishing_assets_from_metadata()
             cover = dict(saved["cover"] or {})
+            if expected_prompt is not None and str(cover.get("prompt") or "") != expected_prompt.strip():
+                raise ValueError("publishing_asset_stale_cover")
             cover["prompt"] = self._publishing_prompt(prompt)
             cover["updated_at"] = self._publishing_updated_at()
             saved["cover"] = cover
@@ -1708,7 +1720,7 @@ class FileProjectStore:
             self._publishing_transaction(saved)
             return saved
         except ValueError as exc:
-            if str(exc) == "publishing_asset_write_failed":
+            if str(exc) in {"publishing_asset_write_failed", "publishing_asset_stale_cover"}:
                 raise
             raise ValueError("publishing_asset_write_failed") from exc
         except Exception as exc:

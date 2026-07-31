@@ -9,6 +9,7 @@ services:
       NOVEL_AUTOGROWTH_DB_PATH: /data/stories.db
       NOVEL_AUTOGROWTH_RUNTIME_CONFIG_PATH: /data/runtime_config.json
       NOVEL_AUTOGROWTH_CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
+      NOVEL_COVER_FONT_PATH: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
     ports:
       - "8000:8000"
     volumes:

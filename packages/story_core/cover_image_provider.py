@@ -14,13 +14,14 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
-from packages.story_core.http_retry import RetryConfig, post_json_with_retry
+from packages.story_core.http_retry import ResponseTooLargeError, RetryConfig, post_json_with_retry
 from packages.story_core.runtime_config import ImageRuntimeSettings, resolve_image_runtime
 
 
 MAX_ENCODED_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_DECODED_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
+IMAGE_GENERATION_TIMEOUT_SECONDS = 70
 _SUPPORTED_FORMATS = {"PNG", "JPEG", "WEBP"}
 
 
@@ -131,7 +132,12 @@ class OpenAICoverImageProvider:
                 "/images/generations",
                 payload,
                 runtime.api_key,
-                config=RetryConfig(timeout=180, allow_compatibility_fallback=False),
+                config=RetryConfig(
+                    timeout=IMAGE_GENERATION_TIMEOUT_SECONDS,
+                    max_retries=1,
+                    allow_compatibility_fallback=False,
+                    max_response_bytes=MAX_ENCODED_IMAGE_BYTES,
+                ),
                 provider="openai",
                 codex_command="",
             )
@@ -147,7 +153,7 @@ class OpenAICoverImageProvider:
             if isinstance(exc.reason, (TimeoutError, socket.timeout)):
                 raise CoverImageError("image_generation_timeout") from exc
             raise
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        except (ResponseTooLargeError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise _invalid_image_payload() from exc
 
         try:

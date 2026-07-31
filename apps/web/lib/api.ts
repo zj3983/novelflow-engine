@@ -2723,6 +2723,9 @@ async function tryFetchJson(url: string, init: RequestInit, timeoutMs = 30000): 
 }
 
 const LONG_RUNNING_REQUEST_TIMEOUT_MS = 1_800_000;
+// A cover can make one 70s text request followed by one 70s image request;
+// synopsis repair can make two 70s text requests. Keep client time above both.
+export const PUBLISHING_GENERATION_TIMEOUT_MS = 180_000;
 
 async function fetchOptionalJson(url: string, init: RequestInit, timeoutMs = 30000): Promise<any | null> {
   const controller = new AbortController();
@@ -3501,7 +3504,7 @@ export async function generateSynopsis(projectId: string, guidance = ""): Promis
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ guidance }),
     },
-    180000,
+    PUBLISHING_GENERATION_TIMEOUT_MS,
   )) as { synopsis: SynopsisAsset };
   return response.synopsis;
 }
@@ -3530,7 +3533,7 @@ export async function generateCover(projectId: string, guidance = ""): Promise<C
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ guidance }),
     },
-    180000,
+    PUBLISHING_GENERATION_TIMEOUT_MS,
   )) as CoverGenerationResponse;
   return response;
 }
@@ -3539,7 +3542,7 @@ export async function generateCoverFromPrompt(projectId: string): Promise<CoverG
   return (await tryFetchJson(
     `${fileProjectPath(projectId)}/publishing/cover/render-image`,
     { method: "POST" },
-    180000,
+    PUBLISHING_GENERATION_TIMEOUT_MS,
   )) as CoverGenerationResponse;
 }
 

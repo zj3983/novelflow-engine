@@ -1073,6 +1073,8 @@ def init_file_project_routes() -> APIRouter:
         payload: PublishingGenerationRequest,
     ) -> dict[str, Any]:
         store = _store_for(project_id)
+        existing = store.publishing_assets()
+        synopsis_snapshot = existing.get("synopsis") if isinstance(existing.get("synopsis"), dict) else None
         try:
             generated = FanqieSynopsis.model_validate(
                 synopsis_generator.generate(
@@ -1086,9 +1088,12 @@ def init_file_project_routes() -> APIRouter:
                     **generated.model_dump(mode="json"),
                     "format": "fanqie",
                     "updated_at": _now_iso(),
-                }
+                },
+                expected_synopsis=synopsis_snapshot,
             )
         except ValueError as exc:
+            if str(exc) == "publishing_asset_stale_synopsis":
+                raise HTTPException(status_code=409, detail="publishing_asset_stale_synopsis") from exc
             if str(exc) == "publishing_asset_write_failed":
                 raise _publishing_write_error(exc) from exc
             if str(exc) == "synopsis_generation_invalid":
@@ -1126,6 +1131,7 @@ def init_file_project_routes() -> APIRouter:
         try:
             cover_title = _cover_title(store)
             existing = store.publishing_assets()
+            cover_snapshot = str((existing.get("cover") or {}).get("prompt") or "")
             synopsis = existing.get("synopsis") if isinstance(existing.get("synopsis"), dict) else {}
             prompt = cover_prompt_generator.generate(
                 _publishing_context_for(store),
@@ -1133,8 +1139,10 @@ def init_file_project_routes() -> APIRouter:
                 visual_hook=str(synopsis.get("visual_hook") or ""),
                 guidance=payload.guidance,
             )
-            prompt_state = store.save_cover_prompt(prompt)
+            prompt_state = store.save_cover_prompt(prompt, expected_prompt=cover_snapshot)
         except ValueError as exc:
+            if str(exc) == "publishing_asset_stale_cover":
+                raise HTTPException(status_code=409, detail="publishing_asset_stale_cover") from exc
             if str(exc) == "publishing_asset_write_failed":
                 raise _publishing_write_error(exc) from exc
             if str(exc) in {"cover_title_invalid", "cover_title_required", "cover_title_too_long"}:

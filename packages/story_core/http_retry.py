@@ -14,6 +14,11 @@ from dataclasses import dataclass
 
 
 _COMPAT_FALLBACK_STRIP_FIELDS = ("parameters", "response_format", "temperature")
+_RESPONSE_READ_CHUNK_BYTES = 64 * 1024
+
+
+class ResponseTooLargeError(ValueError):
+    """Raised before an HTTP JSON response can exceed its configured budget."""
 
 
 @dataclass
@@ -29,8 +34,36 @@ class RetryConfig:
     backoff_factor: float = 2.0
     max_delay: float = 2.0
     timeout: int = 360  # seconds; long webnovel chapters can require several minutes per LLM call
+    max_response_bytes: int | None = None
     retry_on_status: tuple[int, ...] = (429, 500, 502, 503, 504)
     allow_compatibility_fallback: bool = True
+
+
+def _read_response_bytes(response: object, max_response_bytes: int | None) -> bytes:
+    if max_response_bytes is None:
+        return response.read()  # type: ignore[union-attr]
+    if max_response_bytes <= 0:
+        raise ValueError("max_response_bytes_must_be_positive")
+
+    headers = getattr(response, "headers", {})
+    content_length = headers.get("Content-Length") if hasattr(headers, "get") else None
+    try:
+        declared_length = int(content_length) if content_length is not None else None
+    except (TypeError, ValueError):
+        declared_length = None
+    if declared_length is not None and declared_length > max_response_bytes:
+        raise ResponseTooLargeError("response_too_large")
+
+    chunks: list[bytes] = []
+    remaining = max_response_bytes
+    while True:
+        chunk = response.read(min(_RESPONSE_READ_CHUNK_BYTES, remaining + 1))  # type: ignore[union-attr]
+        if not chunk:
+            return b"".join(chunks)
+        if len(chunk) > remaining:
+            raise ResponseTooLargeError("response_too_large")
+        chunks.append(chunk)
+        remaining -= len(chunk)
 
 
 def post_json_with_retry(
@@ -96,7 +129,7 @@ def post_json_with_retry(
             request = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(request, timeout=cfg.timeout) as response:
-                    return json.loads(response.read().decode("utf-8"))
+                    return json.loads(_read_response_bytes(response, cfg.max_response_bytes).decode("utf-8"))
             except urllib.error.HTTPError as e:
                 last_error = e
                 if e.code == 400 and index + 1 < len(payloads):

@@ -11,7 +11,7 @@ from typing import Annotated, Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from packages.story_core.agent_base import parse_json_message_content
-from packages.story_core.http_retry import post_json_with_retry
+from packages.story_core.http_retry import RetryConfig, post_json_with_retry
 from packages.story_core.runtime_config import StageRuntimeSettings
 
 
@@ -38,6 +38,7 @@ _MAX_SERIALIZED_CONTEXT_CHARS = 11_999
 _MAX_GENERATION_GUIDANCE_CHARS = 1_000
 _MAX_COVER_PROMPT_CHARS = 2_000
 _MAX_REPAIR_INVALID_PAYLOAD_CHARS = 4_000
+PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS = 70
 
 _SYNOPSIS_SYSTEM_PROMPT = (
     "你是番茄小说的出版文案编辑。只返回 JSON，不要 Markdown 或额外说明。"
@@ -259,6 +260,11 @@ def _request_chat_completion(
         "/chat/completions",
         payload,
         runtime.api_key,
+        config=RetryConfig(
+            timeout=PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
+            max_retries=1,
+            allow_compatibility_fallback=False,
+        ),
         provider=runtime.provider,
         codex_command=runtime.codex_command,
     )

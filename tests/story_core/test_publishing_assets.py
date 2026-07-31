@@ -12,9 +12,11 @@ from packages.story_core.publishing_assets import (
     MAX_VISUAL_HOOK_CHARS,
     FanqieSynopsis,
     PublishingContext,
+    PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
     SynopsisGenerator,
     build_publishing_context,
 )
+from packages.story_core.http_retry import RetryConfig
 from packages.story_core.runtime_config import StageRuntimeSettings
 
 
@@ -68,7 +70,15 @@ def test_synopsis_generator_returns_validated_synopsis_and_uses_runtime_transpor
     assert payload["model"] == "publishing-model"
     assert payload["temperature"] == 0.23
     assert payload["response_format"] == {"type": "json_object"}
-    assert kwargs == {"provider": "openai", "codex_command": ""}
+    assert kwargs == {
+        "config": RetryConfig(
+            timeout=PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
+            max_retries=1,
+            allow_compatibility_fallback=False,
+        ),
+        "provider": "openai",
+        "codex_command": "",
+    }
     prompt_context = json.loads(payload["messages"][1]["content"])
     assert prompt_context["guidance"] == "突出渡船危机"
     assert prompt_context["title"] == "归墟行舟"
@@ -122,7 +132,15 @@ def test_synopsis_repair_repeats_contract_and_bounds_rich_invalid_payload() -> N
     _, path, repair_payload, api_key, kwargs = calls[1]
     assert path == "/chat/completions"
     assert api_key == ""
-    assert kwargs == {"provider": "codexcli", "codex_command": "codex-publishing"}
+    assert kwargs == {
+        "config": RetryConfig(
+            timeout=PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
+            max_retries=1,
+            allow_compatibility_fallback=False,
+        ),
+        "provider": "codexcli",
+        "codex_command": "codex-publishing",
+    }
     repair_system = repair_payload["messages"][0]["content"]
     for requirement in ("tags", "body", "visual_hook", "4-8", "200-450", "conflict", "contrast", "micro_scene"):
         assert requirement in repair_system
@@ -218,6 +236,22 @@ def test_synopsis_generator_bounds_guidance_and_only_serializes_publishing_conte
         )
 
 
+def test_publishing_text_generation_uses_a_bounded_non_retrying_request() -> None:
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append(kwargs)
+        return {"choices": [{"message": {"content": json.dumps(_valid_synopsis(), ensure_ascii=False)}}]}
+
+    SynopsisGenerator(post_json=fake_post).generate(_publishing_context(), _publishing_runtime())
+
+    assert calls == [{
+        "config": RetryConfig(timeout=70, max_retries=1, allow_compatibility_fallback=False),
+        "provider": "openai",
+        "codex_command": "",
+    }]
+
+
 def test_cover_prompt_generator_preserves_concept_and_adds_missing_fixed_constraints() -> None:
     result = CoverPromptGenerator(
         post_json=lambda *args, **kwargs: {"choices": [{"message": {"content": "  血月下，少年站在亡魂渡船船头，巨浪翻涌  "}}]}
@@ -243,7 +277,15 @@ def test_cover_prompt_generator_strips_caps_and_passes_codex_runtime_settings() 
     assert result.startswith("幽蓝巨船穿过归墟")
     assert len(result) <= 2_000
     assert calls[0][1] == "/chat/completions"
-    assert calls[0][4] == {"provider": "codexcli", "codex_command": "codex-publishing"}
+    assert calls[0][4] == {
+        "config": RetryConfig(
+            timeout=PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
+            max_retries=1,
+            allow_compatibility_fallback=False,
+        ),
+        "provider": "codexcli",
+        "codex_command": "codex-publishing",
+    }
     prompt_context = json.loads(calls[0][2]["messages"][1]["content"])
     assert prompt_context["visual_hook"] == "亡魂渡船"
     assert prompt_context["guidance"] == "更冷峻"

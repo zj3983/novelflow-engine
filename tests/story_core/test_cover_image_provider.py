@@ -67,7 +67,12 @@ def test_generate_posts_one_openai_compatible_base64_request_and_returns_image_b
             },
             "image-key",
             {
-                "config": RetryConfig(timeout=180, allow_compatibility_fallback=False),
+                "config": RetryConfig(
+                    timeout=70,
+                    max_retries=1,
+                    allow_compatibility_fallback=False,
+                    max_response_bytes=20 * 1024 * 1024,
+                ),
                 "provider": "openai",
                 "codex_command": "",
             },

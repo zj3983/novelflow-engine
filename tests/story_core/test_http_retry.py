@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.story_core.http_retry import RetryConfig, post_json_with_retry
+from packages.story_core.http_retry import ResponseTooLargeError, RetryConfig, post_json_with_retry
 
 
 class _Response:
@@ -17,8 +17,60 @@ class _Response:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def read(self) -> bytes:
+    def read(self, size: int = -1) -> bytes:
         return b'{"ok": true}'
+
+
+class _BoundedResponse:
+    def __init__(self, chunks: list[bytes], content_length: str | None = None) -> None:
+        self._chunks = chunks
+        self.headers = {} if content_length is None else {"Content-Length": content_length}
+        self.read_sizes: list[int] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, size: int) -> bytes:
+        assert size > 0
+        self.read_sizes.append(size)
+        if not self._chunks:
+            return b""
+        chunk = self._chunks[0]
+        returned, remaining = chunk[:size], chunk[size:]
+        if remaining:
+            self._chunks[0] = remaining
+        else:
+            self._chunks.pop(0)
+        return returned
+
+
+def test_post_json_with_retry_rejects_known_oversized_content_length_before_reading(monkeypatch):
+    response = _BoundedResponse([b'{"ok": true}'], content_length="9")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ResponseTooLargeError, match="^response_too_large$"):
+        post_json_with_retry(
+            "http://api.test", "/images", {"x": 1}, "key",
+            config=RetryConfig(max_retries=1, max_response_bytes=8),
+        )
+
+    assert response.read_sizes == []
+
+
+def test_post_json_with_retry_stops_chunked_response_at_its_size_limit(monkeypatch):
+    response = _BoundedResponse([b'{"ok": ', b'true}'])
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ResponseTooLargeError, match="^response_too_large$"):
+        post_json_with_retry(
+            "http://api.test", "/images", {"x": 1}, "key",
+            config=RetryConfig(max_retries=1, max_response_bytes=8),
+        )
+
+    assert response.read_sizes and max(response.read_sizes) <= 9
 
 
 def test_post_json_with_retry_retries_incomplete_read(monkeypatch):
