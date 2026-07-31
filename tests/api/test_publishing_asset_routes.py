@@ -396,3 +396,20 @@ def test_render_cover_image_handles_missing_prompt_runtime_and_font_base_states(
     assert font.status_code == 503
     assert store.cover_base_path.read_bytes() == b"font-base"
     assert store.publishing_assets()["cover"]["prompt"] == "saved prompt"
+
+
+def test_render_title_rejects_concurrent_title_change_and_keeps_old_pixels(publishing_api, monkeypatch):
+    client, created = publishing_api
+    store = FileProjectStore(Path(created["source_path"]))
+    before = store.save_cover(prompt="prompt", base_image=b"base", rendered_image=b"old-final", model="model")
+
+    def rename_during_render(_base, _title):
+        assert client.put(f"/file-projects/{created['project_id']}", json={"title": "Changed title"}).status_code == 200
+        return b"new-final"
+
+    monkeypatch.setattr(file_projects, "render_cover", rename_during_render)
+    response = client.post(f"/file-projects/{created['project_id']}/publishing/cover/render-title")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "publishing_asset_stale_cover"
+    assert store.rendered_cover_path.read_bytes() == b"old-final"
+    assert store.publishing_assets()["cover"]["image_version"] == before["cover"]["image_version"]

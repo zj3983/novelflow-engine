@@ -146,6 +146,7 @@ export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspa
   const refresh = useCallback(async (options?: { invalidateChapter?: boolean }) => {
     const token = ++refreshToken.current;
     const requestedProjectId = activeProjectId.current;
+    setError(null);
     if (options?.invalidateChapter !== false) {
       setChapterRefreshVersion((current) => current + 1);
     }
@@ -163,9 +164,8 @@ export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspa
         : await fetchStory(nextProject.active_story_id);
       if (mountedRef.current && activeProjectId.current === requestedProjectId && token === refreshToken.current) setStory(nextStory);
     } catch (err) {
-      if (mountedRef.current && activeProjectId.current === requestedProjectId && token === refreshToken.current) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+      if (!mountedRef.current || activeProjectId.current !== requestedProjectId || token !== refreshToken.current) return;
+      setError(err instanceof Error ? err.message : String(err));
       throw err;
     }
   }, []);

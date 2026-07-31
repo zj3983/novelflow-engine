@@ -1161,6 +1161,8 @@ def init_file_project_routes() -> APIRouter:
                     store.save_cover_base(prompt=prompt, base_image=base_image, model=image_runtime.model, expected_prompt=prompt, expected_title=cover_title)
                 except (UnboundLocalError, ValueError) as write_exc:
                     if isinstance(write_exc, ValueError):
+                        if str(write_exc) == "publishing_asset_stale_cover":
+                            raise HTTPException(status_code=409, detail="publishing_asset_stale_cover") from write_exc
                         raise _publishing_write_error(write_exc) from write_exc
                 raise _cover_error(exc) from exc
             mapped = _cover_error(exc)
@@ -1232,6 +1234,8 @@ def init_file_project_routes() -> APIRouter:
                     store.save_cover_base(prompt=prompt, base_image=base_image, model=image_runtime.model, expected_prompt=prompt, expected_title=cover_title)
                 except (UnboundLocalError, ValueError) as write_exc:
                     if isinstance(write_exc, ValueError):
+                        if str(write_exc) == "publishing_asset_stale_cover":
+                            raise HTTPException(status_code=409, detail="publishing_asset_stale_cover") from write_exc
                         raise _publishing_write_error(write_exc) from write_exc
                 raise _cover_error(exc) from exc
             raise _cover_error(exc) from exc

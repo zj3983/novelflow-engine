@@ -103,6 +103,20 @@ test("publishing API encodes the file-project id and unwraps endpoint envelopes"
   }
 });
 
+test("cover partial image errors retain structured retry metadata", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ detail: {
+      code: "image_model_unsupported", phase: "image", prompt_saved: true, cover: { prompt: "saved prompt" },
+    } }), { status: 502, headers: { "content-type": "application/json" } });
+    await expect(api.generateCover(projectId)).rejects.toMatchObject({
+      name: "PublishingApiError", message: "image_model_unsupported", phase: "image", promptSaved: true, cover: { prompt: "saved prompt" },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("file projects show independent empty synopsis and cover cards", async ({ page }) => {
   await routePublishingProject(page);
   const requests: string[] = [];
