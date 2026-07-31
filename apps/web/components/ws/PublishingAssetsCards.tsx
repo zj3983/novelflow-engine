@@ -163,6 +163,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
   };
 
   const generateNewSynopsis = async () => {
+    if (synopsisInFlight.current) return;
     if (synopsisGuidance.length > 1000) {
       setSynopsisRetry(null);
       setSynopsisError("生成要求不能超过 1000 个字符");
@@ -171,6 +172,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
       return;
     }
     const token = ++synopsisToken.current;
+    synopsisInFlight.current = true;
     const requestProjectId = projectId;
     setSynopsisRetry("generate");
     setSynopsisState("generating");
@@ -191,6 +193,8 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
         setSynopsisError(message(error));
         setSynopsisState("error");
       }
+    } finally {
+      synopsisInFlight.current = false;
     }
   };
 
@@ -204,6 +208,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
 
   const saveSynopsis = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (synopsisInFlight.current) return;
     const validation = synopsisValidation(tagsDraft, bodyDraft);
     if ("error" in validation) {
       setSynopsisRetry(null);
@@ -214,6 +219,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
     }
     const submitted = { tags: validation.tags, body: bodyDraft.trim() };
     const token = ++synopsisToken.current;
+    synopsisInFlight.current = true;
     const requestProjectId = projectId;
     setSynopsisRetry("save");
     setSynopsisState("saving");
@@ -233,6 +239,8 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
         setSynopsisError(message(error));
         setSynopsisState("error");
       }
+    } finally {
+      synopsisInFlight.current = false;
     }
   };
 
@@ -442,7 +450,7 @@ export function PublishingAssetsCards({ projectId, title, assets, onChanged }: P
             {cover?.prompt && !editingPrompt ? <><p className={styles.prompt}>{cover.prompt}</p><button type="button" className={styles.textButton} onClick={() => void copyText(cover.prompt ?? "").then(() => setCoverFeedback("提示词已复制")).catch(() => setCoverFeedback("复制提示词失败"))}>复制提示词</button></> : null}
             {editingPrompt ? <form onSubmit={savePrompt} className={styles.editForm}><label>封面提示词<textarea aria-label="封面提示词" aria-invalid={Boolean(coverError)} aria-describedby="cover-prompt-error" maxLength={2000} rows={6} value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} disabled={coverBusy} /></label><div className={styles.actions}><button type="submit" className="ws-button ws-button--primary" disabled={coverBusy}>{coverState === "saving" ? "保存中…" : "保存提示词"}</button><button type="button" className="ws-button" disabled={coverBusy} onClick={() => { setEditingPrompt(false); setCoverError(""); setCoverState("idle"); setCoverRetry(null); }}>取消</button></div></form> : null}
             {promptReady ? <><p className={styles.notice}>图像模型尚未配置。<Link href="/config">前往配置</Link></p><button type="button" className="ws-button ws-button--primary" onClick={() => void generateCurrentPromptImage()} disabled={coverBusy}>使用当前提示词生成图片</button></> : null}
-            {!promptReady && cover?.prompt && !hasRendered ? <><p className={styles.notice}>提示词已就绪，等待生成图片。</p><button type="button" className="ws-button" onClick={() => void generateCurrentPromptImage()} disabled={coverBusy}>使用当前提示词生成图片</button></> : null}
+            {!promptReady && cover?.prompt && !hasBase && !hasRendered ? <><p className={styles.notice}>提示词已就绪，等待生成图片。</p><button type="button" className="ws-button" onClick={() => void generateCurrentPromptImage()} disabled={coverBusy}>使用当前提示词生成图片</button></> : null}
             {needsRendering ? <div className={styles.renderNotice}><strong>{knownTitleMismatch ? "书名已变化，重新排版" : provenanceMismatch ? "底图已变化，重新排版" : "底图已生成，待排版书名"}</strong><button type="button" className="ws-button" onClick={() => void rerenderTitle()} disabled={coverBusy}>{coverState === "saving" ? "排版中…" : "重新排版"}</button></div> : null}
             {hasRendered ? <a className="ws-button" href={coverImageUrl(projectId, cover?.image_version ?? "", true)} download>下载封面</a> : null}
           </div>
