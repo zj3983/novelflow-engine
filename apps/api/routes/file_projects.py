@@ -783,9 +783,32 @@ def _cover_error(exc: Exception) -> HTTPException:
     detail = str(exc)
     if detail == "cover_font_unavailable":
         return HTTPException(status_code=503, detail=detail)
-    if detail in {"image_provider_unauthorized", "image_generation_timeout", "unsupported_image_response", "invalid_image_payload"}:
+    if detail in {"image_provider_unauthorized", "image_generation_timeout", "unsupported_image_response", "invalid_image_payload", "image_model_unsupported"}:
         return HTTPException(status_code=502, detail=detail)
     return HTTPException(status_code=502, detail="cover_generation_failed")
+
+
+def _cover_title(store: FileProjectStore) -> str:
+    title = str(store.project().get("title") or "").strip()
+    if title:
+        if len(title) > 120:
+            raise ValueError("cover_title_invalid")
+        return title
+    return _display_title(store.project(), store.state(), store.summary(), store.root.name)
+
+
+def _if_none_match_matches(value: str, etag: str) -> bool:
+    """Use RFC weak comparison for GET without accepting malformed substrings."""
+    stripped = value.strip()
+    if stripped == "*":
+        return True
+    for raw_tag in value.split(","):
+        tag = raw_tag.strip()
+        if tag.startswith("W/"):
+            tag = tag[2:].strip()
+        if len(tag) >= 2 and tag.startswith('"') and tag.endswith('"') and tag == etag:
+            return True
+    return False
 
 
 def _story_payload(store: FileProjectStore) -> dict[str, Any]:
@@ -1064,6 +1087,8 @@ def init_file_project_routes() -> APIRouter:
         except ValueError as exc:
             if str(exc) == "publishing_asset_write_failed":
                 raise _publishing_write_error(exc) from exc
+            if str(exc) == "synopsis_generation_invalid":
+                raise HTTPException(status_code=502, detail="synopsis_generation_invalid") from exc
             raise HTTPException(status_code=502, detail="synopsis_generation_failed") from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail="synopsis_generation_failed") from exc
@@ -1095,6 +1120,7 @@ def init_file_project_routes() -> APIRouter:
     ) -> dict[str, Any]:
         store = _store_for(project_id)
         try:
+            cover_title = _cover_title(store)
             existing = store.publishing_assets()
             synopsis = existing.get("synopsis") if isinstance(existing.get("synopsis"), dict) else {}
             prompt = cover_prompt_generator.generate(
@@ -1107,6 +1133,8 @@ def init_file_project_routes() -> APIRouter:
         except ValueError as exc:
             if str(exc) == "publishing_asset_write_failed":
                 raise _publishing_write_error(exc) from exc
+            if str(exc) == "cover_title_invalid":
+                raise HTTPException(status_code=422, detail="cover_title_invalid") from exc
             raise HTTPException(status_code=502, detail="cover_prompt_generation_failed") from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail="cover_prompt_generation_failed") from exc
@@ -1122,7 +1150,7 @@ def init_file_project_routes() -> APIRouter:
 
         try:
             base_image = cover_image_provider.generate(prompt)
-            rendered_image = render_cover(base_image, _display_title(store.project(), store.state(), store.summary(), store.root.name))
+            rendered_image = render_cover(base_image, cover_title)
         except Exception as exc:
             if str(exc) == "cover_font_unavailable":
                 try:
@@ -1158,13 +1186,16 @@ def init_file_project_routes() -> APIRouter:
     def render_file_project_cover_title(project_id: str) -> dict[str, Any]:
         store = _store_for(project_id)
         try:
+            cover_title = _cover_title(store)
             base_image = store.read_cover_base()
         except ValueError as exc:
+            if str(exc) == "cover_title_invalid":
+                raise HTTPException(status_code=422, detail="cover_title_invalid") from exc
             raise HTTPException(status_code=500, detail="publishing_asset_read_failed") from exc
         if base_image is None:
             raise HTTPException(status_code=404, detail="cover_base_not_found")
         try:
-            rendered = render_cover(base_image, _display_title(store.project(), store.state(), store.summary(), store.root.name))
+            rendered = render_cover(base_image, cover_title)
         except Exception as exc:
             raise _cover_error(exc) from exc
         try:
@@ -1186,7 +1217,7 @@ def init_file_project_routes() -> APIRouter:
         if image is None:
             raise HTTPException(status_code=404, detail="cover_not_found")
         etag = f'"{sha256(image).hexdigest()}"'
-        if etag in request.headers.get("if-none-match", ""):
+        if _if_none_match_matches(request.headers.get("if-none-match", ""), etag):
             return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"})
         filename = re.sub(r"[^A-Za-z0-9._-]+", "-", _display_title(store.project(), store.state(), store.summary(), "cover"))
         headers = {"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"}

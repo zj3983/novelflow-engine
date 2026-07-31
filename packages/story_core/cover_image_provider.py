@@ -32,6 +32,25 @@ def _invalid_image_payload() -> CoverImageError:
     return CoverImageError("invalid_image_payload")
 
 
+def _unsupported_model_error(exc: urllib.error.HTTPError) -> bool:
+    """Recognize only explicit structured model errors, never every 400/404."""
+    if exc.code not in {400, 404}:
+        return False
+    try:
+        raw = exc.read()
+        payload = json.loads(raw.decode("utf-8"))
+    except (AttributeError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return False
+    code = str(error.get("code") or error.get("type") or "").strip().casefold()
+    if code in {"model_not_found", "model_not_supported", "unsupported_model", "invalid_model", "model_does_not_exist"}:
+        return True
+    message = str(error.get("message") or "").casefold()
+    return "model" in message and any(marker in message for marker in ("not found", "not supported", "unsupported", "does not exist"))
+
+
 _BASE64_PATTERN = re.compile(rb"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?\Z")
 
 
@@ -122,6 +141,8 @@ class OpenAICoverImageProvider:
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):
                 raise CoverImageError("image_provider_unauthorized") from exc
+            if _unsupported_model_error(exc):
+                raise CoverImageError("image_model_unsupported") from exc
             raise
         except (TimeoutError, socket.timeout) as exc:
             raise CoverImageError("image_generation_timeout") from exc

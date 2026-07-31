@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.main import app
 from apps.api.routes import file_projects
+from packages.story_core.cover_image_provider import CoverImageError
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.publishing_assets import FanqieSynopsis
 
@@ -185,3 +186,92 @@ def test_publishing_validation_and_missing_base_errors_are_stable(publishing_api
     missing = client.post(f"{base}/cover/render-title")
     assert missing.status_code == 404
     assert missing.json()["detail"] == "cover_base_not_found"
+
+
+def test_known_invalid_synopsis_result_preserves_existing_assets(publishing_api, monkeypatch):
+    client, created = publishing_api
+    store = FileProjectStore(Path(created["source_path"]))
+    store.save_synopsis({"tags": ["old"], "body": "old body"})
+    store.save_cover(prompt="old", base_image=b"old-base", rendered_image=b"old-final", model="old-model")
+    before = store.publishing_assets()
+
+    class InvalidSynopsis:
+        def generate(self, *args, **kwargs):
+            raise ValueError("synopsis_generation_invalid")
+
+    monkeypatch.setattr(file_projects, "synopsis_generator", InvalidSynopsis())
+    response = client.post(f"/file-projects/{created['project_id']}/publishing/synopsis", json={})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "synopsis_generation_invalid"
+    assert store.publishing_assets() == before
+
+
+@pytest.mark.parametrize("title_length", [41, 50, 120])
+def test_cover_uses_authoritative_long_title_and_if_none_match_is_standard_compliant(publishing_api, monkeypatch, title_length):
+    client, created = publishing_api
+    title = "T" * title_length
+    assert client.put(f"/file-projects/{created['project_id']}", json={"title": title}).status_code == 200
+
+    class FakePrompt:
+        def generate(self, *args, **kwargs):
+            return "prompt"
+
+    class FakeImage:
+        def generate(self, _prompt):
+            return b"base"
+
+    titles = []
+    monkeypatch.setattr(file_projects, "cover_prompt_generator", FakePrompt())
+    monkeypatch.setattr(file_projects, "cover_image_provider", FakeImage())
+    monkeypatch.setattr(file_projects, "resolve_image_runtime", lambda: SimpleNamespace(model="image-model"))
+    monkeypatch.setattr(file_projects, "render_cover", lambda _base, current_title: titles.append(current_title) or b"final")
+    ready = client.post(f"/file-projects/{created['project_id']}/publishing/cover", json={})
+    assert ready.status_code == 200
+    assert titles == [title]
+    assert ready.json()["cover"]["rendered_title"] == title
+
+    image = client.get(f"/file-projects/{created['project_id']}/publishing/cover.png")
+    etag = image.headers["etag"]
+    endpoint = f"/file-projects/{created['project_id']}/publishing/cover.png"
+    assert client.get(endpoint, headers={"If-None-Match": f'"other", W/{etag}'}).status_code == 304
+    assert client.get(endpoint, headers={"If-None-Match": "*"}).status_code == 304
+    assert client.get(endpoint, headers={"If-None-Match": f"broken{etag}suffix"}).status_code == 200
+
+
+def test_unsupported_image_model_preserves_prompt_and_existing_final_cover(publishing_api, monkeypatch):
+    client, created = publishing_api
+    store = FileProjectStore(Path(created["source_path"]))
+    store.save_cover(prompt="old", base_image=b"old-base", rendered_image=b"old-final", model="old-model")
+
+    class FakePrompt:
+        def generate(self, *args, **kwargs):
+            return "new prompt"
+
+    class UnsupportedImage:
+        def generate(self, _prompt):
+            raise CoverImageError("image_model_unsupported")
+
+    monkeypatch.setattr(file_projects, "cover_prompt_generator", FakePrompt())
+    monkeypatch.setattr(file_projects, "cover_image_provider", UnsupportedImage())
+    monkeypatch.setattr(file_projects, "resolve_image_runtime", lambda: SimpleNamespace(model="missing-model"))
+    response = client.post(f"/file-projects/{created['project_id']}/publishing/cover", json={})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "image_model_unsupported"
+    assert store.publishing_assets()["cover"]["prompt"] == "new prompt"
+    assert store.rendered_cover_path.read_bytes() == b"old-final"
+
+
+def test_cover_rejects_titles_over_the_publishing_limit(publishing_api, monkeypatch):
+    client, created = publishing_api
+    assert client.put(f"/file-projects/{created['project_id']}", json={"title": "T" * 121}).status_code == 200
+
+    class UnexpectedPrompt:
+        def generate(self, *args, **kwargs):
+            raise AssertionError("title should be checked before prompt generation")
+
+    monkeypatch.setattr(file_projects, "cover_prompt_generator", UnexpectedPrompt())
+    response = client.post(f"/file-projects/{created['project_id']}/publishing/cover", json={})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "cover_title_invalid"

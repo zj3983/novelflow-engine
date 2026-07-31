@@ -131,6 +131,17 @@ def test_generate_maps_unauthorized_errors(status: int) -> None:
     assert unauthorized_error.value.__cause__ is unauthorized
 
 
+@pytest.mark.parametrize("status", [400, 404])
+def test_generate_maps_structured_unsupported_model_errors(status: int) -> None:
+    body = io.BytesIO(b'{"error":{"code":"model_not_found","message":"requested model is not supported"}}')
+    unsupported = HTTPError("https://images.example.test/v1/images/generations", status, "bad request", None, body)
+
+    with pytest.raises(CoverImageError, match="^image_model_unsupported$") as error:
+        _provider(unsupported).generate("cover")
+
+    assert error.value.__cause__ is unsupported
+
+
 def test_generate_maps_timeout_error() -> None:
     timeout = TimeoutError("timed out")
     with pytest.raises(CoverImageError, match="^image_generation_timeout$") as timeout_error:

@@ -383,6 +383,24 @@ def test_runtime_settings_put_validation_does_not_replace_saved_configuration():
     assert client.get("/runtime-settings").json() == _masked(saved)
 
 
+def test_runtime_settings_validation_errors_never_echo_text_or_image_api_keys():
+    candidate = _runtime_configuration()
+    candidate["providers"]["openai"]["api_key"] = "text-validation-secret"
+    candidate["providers"]["openai"]["writer"] = " "
+    candidate["image"] = {
+        "enabled": True,
+        "api_key": "image-validation-secret",
+        "base_url": "https://images.test/v1",
+        "model": "cover-model",
+    }
+
+    response = client.put("/runtime-settings", json=candidate)
+
+    assert response.status_code == 422
+    assert "text-validation-secret" not in response.text
+    assert "image-validation-secret" not in response.text
+
+
 def test_serialized_history_uses_saved_quality_and_adds_simplified_review(monkeypatch):
     from apps.api.routes.stories import _serialize_chapter_bundle
     from packages.story_core.engine import ChapterBundle
