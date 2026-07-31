@@ -56,6 +56,25 @@ Override with:
 NOVEL_AUTOGROWTH_RUNTIME_CONFIG_PATH=D:/novel-autogrowth/runtime_config.json
 ```
 
+## Cover Images
+
+Configure the image service from **`/config`**. Its endpoint is
+OpenAI-compatible and must return image data as base64 in the generation
+response; URL-only image responses are not accepted.
+
+If no image service is configured, cover work remains in prompt mode: the
+workspace saves and lets you edit or copy the cover prompt, then you can add
+the image configuration later and render from that saved prompt.
+
+To choose the local font used for the book title printed on a cover, set an
+optional path to a readable font file:
+
+```env
+NOVEL_COVER_FONT_PATH=D:/fonts/NotoSerifSC-Regular.otf
+```
+
+Leave `NOVEL_COVER_FONT_PATH` empty to use the normal font discovery order.
+
 ## CORS
 
 Development origins are allowed by default. Production should provide an
