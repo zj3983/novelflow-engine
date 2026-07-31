@@ -2,6 +2,7 @@ import urllib.error
 import json
 import threading
 import time
+import asyncio
 
 import pytest
 
@@ -429,6 +430,47 @@ def test_unrelated_validation_error_keeps_fastapi_default_detail_input():
     response = client.post("/file-projects/not-a-project/publishing/synopsis", json={"guidance": 3})
     assert response.status_code == 422
     assert response.json()["detail"][0]["input"] == 3
+
+
+def _run_runtime_body_guard(path: str, *, headers: list[tuple[bytes, bytes]], chunks: list[bytes]):
+    received = []
+    sent = []
+
+    async def receive():
+        received.append(True)
+        index = len(received) - 1
+        return {"type": "http.request", "body": chunks[index] if index < len(chunks) else b"", "more_body": index + 1 < len(chunks)}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "PUT",
+        "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
+        "headers": [(b"host", b"testserver"), *headers], "client": ("127.0.0.1", 1), "server": ("testserver", 80),
+    }
+    asyncio.run(app(scope, receive, send))
+    return received, sent
+
+
+@pytest.mark.parametrize("path", ["/runtime-settings", "/runtime-settings/test"])
+def test_runtime_body_guard_stops_chunked_stream_at_limit(path):
+    chunks = [b"x" * (128 * 1024)] * 10
+    received, sent = _run_runtime_body_guard(path, headers=[], chunks=chunks)
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    assert len(received) == 9
+    assert len(starts) == 1
+    assert starts[0]["status"] == 413
+
+
+def test_runtime_body_guard_content_length_rejection_reads_zero_chunks():
+    received, sent = _run_runtime_body_guard(
+        "/runtime-settings", headers=[(b"content-length", str(1024 * 1024 + 1).encode())], chunks=[b"never-read"]
+    )
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    assert received == []
+    assert len(starts) == 1
+    assert starts[0]["status"] == 413
 
 
 def test_serialized_history_uses_saved_quality_and_adds_simplified_review(monkeypatch):
