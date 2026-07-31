@@ -258,7 +258,9 @@ def test_unsupported_image_model_preserves_prompt_and_existing_final_cover(publi
     response = client.post(f"/file-projects/{created['project_id']}/publishing/cover", json={})
 
     assert response.status_code == 502
-    assert response.json()["detail"] == "image_model_unsupported"
+    assert response.json()["detail"]["code"] == "image_model_unsupported"
+    assert response.json()["detail"]["phase"] == "image"
+    assert response.json()["detail"]["prompt_saved"] is True
     assert store.publishing_assets()["cover"]["prompt"] == "new prompt"
     assert store.rendered_cover_path.read_bytes() == b"old-final"
 
@@ -281,7 +283,8 @@ def test_image_provider_type_error_is_called_once_and_preserves_prompt(publishin
     monkeypatch.setattr(file_projects, "resolve_image_runtime", lambda: SimpleNamespace(model="image-model"))
     response = client.post(f"/file-projects/{created['project_id']}/publishing/cover", json={})
     assert response.status_code == 502
-    assert response.json()["detail"] == "cover_generation_failed"
+    assert response.json()["detail"]["code"] == "cover_generation_failed"
+    assert response.json()["detail"]["phase"] == "image"
     assert calls == [("type error prompt", "image-model")]
     assert FileProjectStore(Path(created["source_path"])).publishing_assets()["cover"]["prompt"] == "type error prompt"
 

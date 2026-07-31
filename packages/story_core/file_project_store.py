@@ -1722,6 +1722,9 @@ class FileProjectStore:
         base_image: bytes,
         rendered_image: bytes,
         model: str,
+        expected_prompt: str | None = None,
+        expected_title: str | None = None,
+        rendered_title: str | None = None,
     ) -> dict[str, Any]:
         try:
             if not isinstance(base_image, bytes) or not isinstance(rendered_image, bytes):
@@ -1738,6 +1741,13 @@ class FileProjectStore:
             if not title:
                 raise ValueError("publishing_asset_write_failed")
             saved = self._publishing_assets_from_metadata()
+            current_prompt = str((saved.get("cover") or {}).get("prompt") or "")
+            if expected_prompt is not None and current_prompt != expected_prompt.strip():
+                raise ValueError("publishing_asset_stale_cover")
+            if expected_title is not None and title != expected_title:
+                raise ValueError("publishing_asset_stale_cover")
+            if rendered_title is not None and rendered_title != title:
+                raise ValueError("publishing_asset_stale_cover")
             updated_at = self._publishing_updated_at()
             saved["cover"] = {
                 "prompt": self._publishing_prompt(prompt),
@@ -1747,7 +1757,7 @@ class FileProjectStore:
                 "schema_version": "cover/v1",
                 "base_image_version": sha256(base_image).hexdigest(),
                 "rendered_from_base_version": sha256(base_image).hexdigest(),
-                "rendered_title": title,
+                "rendered_title": rendered_title or title,
                 "image_version": sha256(rendered_image).hexdigest(),
                 "mime_type": "image/png",
                 "updated_at": updated_at,
@@ -1756,14 +1766,14 @@ class FileProjectStore:
             self._publishing_transaction(saved, asset_contents=(base_image, rendered_image))
             return saved
         except ValueError as exc:
-            if str(exc) == "publishing_asset_write_failed":
+            if str(exc) in {"publishing_asset_write_failed", "publishing_asset_stale_cover"}:
                 raise
             raise ValueError("publishing_asset_write_failed") from exc
         except Exception as exc:
             raise ValueError("publishing_asset_write_failed") from exc
 
     @_with_project_update_lock
-    def save_cover_base(self, *, prompt: str, base_image: bytes, model: str) -> dict[str, Any]:
+    def save_cover_base(self, *, prompt: str, base_image: bytes, model: str, expected_prompt: str | None = None, expected_title: str | None = None) -> dict[str, Any]:
         """Persist a validated source image without replacing the current rendered cover."""
         try:
             if not isinstance(base_image, bytes) or not base_image or len(base_image) > self.PUBLISHING_ASSET_MAX_BYTES:
@@ -1771,6 +1781,10 @@ class FileProjectStore:
             if not isinstance(model, str) or not model.strip() or len(model.strip()) > 256:
                 raise ValueError("publishing_asset_write_failed")
             saved = self._publishing_assets_from_metadata()
+            current_prompt = str((saved.get("cover") or {}).get("prompt") or "")
+            current_title = normalize_cover_title(str(self.project().get("title") or ""))
+            if (expected_prompt is not None and current_prompt != expected_prompt.strip()) or (expected_title is not None and current_title != expected_title):
+                raise ValueError("publishing_asset_stale_cover")
             cover = dict(saved["cover"] or {})
             updated_at = self._publishing_updated_at()
             cover.update(
@@ -1788,7 +1802,7 @@ class FileProjectStore:
             self._publishing_transaction(saved, asset_updates={self.cover_base_path: base_image})
             return saved
         except ValueError as exc:
-            if str(exc) == "publishing_asset_write_failed":
+            if str(exc) in {"publishing_asset_write_failed", "publishing_asset_stale_cover"}:
                 raise
             raise ValueError("publishing_asset_write_failed") from exc
         except Exception as exc:

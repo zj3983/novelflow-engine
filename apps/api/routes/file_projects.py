@@ -1158,20 +1158,34 @@ def init_file_project_routes() -> APIRouter:
         except Exception as exc:
             if str(exc) == "cover_font_unavailable":
                 try:
-                    store.save_cover_base(prompt=prompt, base_image=base_image, model=image_runtime.model)
+                    store.save_cover_base(prompt=prompt, base_image=base_image, model=image_runtime.model, expected_prompt=prompt, expected_title=cover_title)
                 except (UnboundLocalError, ValueError) as write_exc:
                     if isinstance(write_exc, ValueError):
                         raise _publishing_write_error(write_exc) from write_exc
                 raise _cover_error(exc) from exc
-            raise _cover_error(exc) from exc
+            mapped = _cover_error(exc)
+            raise HTTPException(
+                status_code=mapped.status_code,
+                detail={
+                    "code": str(mapped.detail),
+                    "phase": "image",
+                    "prompt_saved": True,
+                    "cover": prompt_state.get("cover"),
+                },
+            ) from exc
         try:
             saved = store.save_cover(
                 prompt=prompt,
                 base_image=base_image,
                 rendered_image=rendered_image,
                 model=image_runtime.model,
+                expected_prompt=prompt,
+                expected_title=cover_title,
+                rendered_title=cover_title,
             )
         except ValueError as exc:
+            if str(exc) == "publishing_asset_stale_cover":
+                raise HTTPException(status_code=409, detail="publishing_asset_stale_cover") from exc
             raise _publishing_write_error(exc) from exc
         return {"status": "ready", "cover": saved.get("cover")}
 
@@ -1215,7 +1229,7 @@ def init_file_project_routes() -> APIRouter:
         except Exception as exc:
             if str(exc) == "cover_font_unavailable":
                 try:
-                    store.save_cover_base(prompt=prompt, base_image=base_image, model=image_runtime.model)
+                    store.save_cover_base(prompt=prompt, base_image=base_image, model=image_runtime.model, expected_prompt=prompt, expected_title=cover_title)
                 except (UnboundLocalError, ValueError) as write_exc:
                     if isinstance(write_exc, ValueError):
                         raise _publishing_write_error(write_exc) from write_exc
@@ -1227,8 +1241,13 @@ def init_file_project_routes() -> APIRouter:
                 base_image=base_image,
                 rendered_image=rendered_image,
                 model=image_runtime.model,
+                expected_prompt=prompt,
+                expected_title=cover_title,
+                rendered_title=cover_title,
             )
         except ValueError as exc:
+            if str(exc) == "publishing_asset_stale_cover":
+                raise HTTPException(status_code=409, detail="publishing_asset_stale_cover") from exc
             raise _publishing_write_error(exc) from exc
         return {"status": "ready", "cover": saved.get("cover")}
 
