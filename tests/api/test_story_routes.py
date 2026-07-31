@@ -413,6 +413,24 @@ def test_runtime_settings_manual_boundary_rejects_non_json_and_oversize_without_
     assert oversized.status_code == 413
 
 
+def test_runtime_settings_test_validation_hides_all_nested_provider_keys():
+    candidate = _runtime_configuration()
+    candidate["providers"]["codexcli"]["api_key"] = "codex-secret"
+    candidate["providers"]["openai"]["api_key"] = "text-secret"
+    candidate["image"] = {"enabled": True, "api_key": "image-secret", "base_url": "https://image.test", "model": "m"}
+    candidate["providers"]["openai"]["writer"] = " "
+    response = client.post("/runtime-settings/test", json={"stage": "writer", "runtime_settings": candidate})
+    assert response.status_code == 422
+    assert isinstance(response.json()["detail"], list)
+    assert all(secret not in response.text for secret in ("codex-secret", "text-secret", "image-secret"))
+
+
+def test_unrelated_validation_error_keeps_fastapi_default_detail_input():
+    response = client.post("/file-projects/not-a-project/publishing/synopsis", json={"guidance": 3})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["input"] == 3
+
+
 def test_serialized_history_uses_saved_quality_and_adds_simplified_review(monkeypatch):
     from apps.api.routes.stories import _serialize_chapter_bundle
     from packages.story_core.engine import ChapterBundle
