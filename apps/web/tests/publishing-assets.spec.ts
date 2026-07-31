@@ -36,11 +36,13 @@ async function fulfill(route: Route, body: unknown, status = 200) {
 async function routePublishingProject(page: Page, assets: unknown = emptyAssets, storageSource: "file" | "sqlite" = "file") {
   let current = project(assets, storageSource);
   let overviewReads = 0;
+  let projectReads = 0;
   await page.route(`**/file-projects/${encodedId}`, async (route) => {
     if (new URL(route.request().url()).pathname !== `/file-projects/${encodedId}`) {
       await route.fallback();
       return;
     }
+    projectReads += 1;
     await fulfill(route, current);
   });
   await page.route(`**/file-stories/${encodedId}/overview`, async (route) => {
@@ -49,6 +51,7 @@ async function routePublishingProject(page: Page, assets: unknown = emptyAssets,
   });
   return {
     reads: () => overviewReads,
+    projectReads: () => projectReads,
     update(nextAssets: unknown) { current = project(nextAssets, storageSource); },
   };
 }
@@ -190,4 +193,155 @@ test("publishing cards are not mounted for SQLite projects", async ({ page }) =>
   await page.goto(`/projects/${encodedId}`);
   await expect(page.getByRole("heading", { name: "简介" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "封面" })).toHaveCount(0);
+});
+
+test("invalid synopsis editing clears generation retry and PUT failures retry only the save", async ({ page }) => {
+  const fixture = await routePublishingProject(page, {
+    schema_version: "publishing-assets/v1",
+    synopsis: { tags: ["悬疑", "都市", "成长", "反转"], body: "旧简介。", format: "fanqie", updated_at: "2026-07-30" },
+    cover: null,
+  });
+  const requests: string[] = [];
+  let putAttempts = 0;
+  await page.route(`**/file-projects/${encodedId}/publishing/synopsis`, async (route) => {
+    requests.push(route.request().method());
+    if (route.request().method() === "POST") {
+      const next = { tags: ["悬疑", "都市", "成长", "反转"], body: "生成后的简介。", format: "fanqie", updated_at: "2026-07-31" };
+      fixture.update({ schema_version: "publishing-assets/v1", synopsis: next, cover: null });
+      await fulfill(route, { synopsis: next });
+      return;
+    }
+    putAttempts += 1;
+    if (putAttempts === 1) {
+      await fulfill(route, { detail: "save_failed" }, 503);
+      return;
+    }
+    const next = { tags: ["悬疑", "都市", "成长", "反转"], body: "手工保存后的简介。", format: "fanqie", updated_at: "2026-07-31" };
+    fixture.update({ schema_version: "publishing-assets/v1", synopsis: next, cover: null });
+    await fulfill(route, { synopsis: next });
+  });
+  await page.goto(`/projects/${encodedId}`);
+  await page.getByRole("button", { name: "重新生成" }).click();
+  await expect(page.getByText("生成后的简介。")).toBeVisible();
+  await page.getByRole("button", { name: "编辑简介" }).click();
+  await page.getByLabel("标签").fill("悬疑，都市");
+  await page.getByRole("button", { name: "保存简介" }).click();
+  await expect(page.getByText("标签需保留 4 至 8 个")).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试" })).toHaveCount(0);
+  expect(requests).toEqual(["POST"]);
+  await page.getByLabel("标签").fill("悬疑，都市，成长，反转");
+  await page.getByLabel("简介正文").fill("手工保存后的简介。");
+  await page.getByRole("button", { name: "保存简介" }).click();
+  await expect(page.getByText("save_failed")).toBeVisible();
+  await page.getByRole("button", { name: "重试" }).click();
+  await expect(page.getByText("手工保存后的简介。")).toBeVisible();
+  expect(requests).toEqual(["POST", "PUT", "PUT"]);
+});
+
+test("successful publishing mutations refresh metadata without reading chapter bodies", async ({ page }) => {
+  const fixture = await routePublishingProject(page);
+  const detailReads: string[] = [];
+  await page.route(`**/file-stories/${encodedId}/chapters/*`, async (route) => {
+    detailReads.push(route.request().url());
+    await fulfill(route, { detail: "unexpected_chapter_read" }, 500);
+  });
+  await page.route(`**/file-projects/${encodedId}/publishing/synopsis`, async (route) => {
+    const next = { tags: ["悬疑", "都市", "成长", "反转"], body: "刷新后的简介。", format: "fanqie", updated_at: "2026-07-31" };
+    fixture.update({ schema_version: "publishing-assets/v1", synopsis: next, cover: null });
+    await fulfill(route, { synopsis: next });
+  });
+  await page.goto(`/projects/${encodedId}`);
+  const initialProjectReads = fixture.projectReads();
+  const initialOverviewReads = fixture.reads();
+  await page.getByRole("button", { name: "生成简介" }).click();
+  await expect(page.getByText("刷新后的简介。")).toBeVisible();
+  await expect.poll(fixture.projectReads).toBeGreaterThan(initialProjectReads);
+  expect(detailReads).toEqual([]);
+  expect(fixture.reads()).toBeGreaterThanOrEqual(initialOverviewReads);
+});
+
+test("a delayed cover generation does not lock synopsis controls", async ({ page }) => {
+  const fixture = await routePublishingProject(page);
+  let releaseCover!: () => void;
+  const coverGate = new Promise<void>((resolve) => { releaseCover = resolve; });
+  await page.route(`**/file-projects/${encodedId}/publishing/cover`, async (route) => {
+    await coverGate;
+    const cover = { prompt: "潮雾港口", image_version: "cover-v2", base_image_version: "base-v2", rendered_from_base_version: "base-v2", rendered_title: "雾港来信" };
+    fixture.update({ schema_version: "publishing-assets/v1", synopsis: null, cover });
+    await fulfill(route, { status: "ready", cover });
+  });
+  await page.route(`**/file-projects/${encodedId}/publishing/synopsis`, async (route) => {
+    const synopsis = { tags: ["悬疑", "都市", "成长", "反转"], body: "简介在封面等待时完成。", format: "fanqie", updated_at: "2026-07-31" };
+    await fulfill(route, { synopsis });
+  });
+  await page.goto(`/projects/${encodedId}`);
+  await page.getByRole("button", { name: "生成封面" }).click();
+  await expect(page.getByRole("button", { name: "生成中…" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成简介" })).toBeEnabled();
+  await page.getByRole("button", { name: "生成简介" }).click();
+  await expect(page.getByText("简介在封面等待时完成。")).toBeVisible();
+  releaseCover();
+  await expect(page.getByRole("img", { name: "雾港来信封面" })).toBeVisible();
+});
+
+test("invalid cover prompt editing clears generation retry and PUT failure retries only prompt save", async ({ page }) => {
+  await routePublishingProject(page, {
+    schema_version: "publishing-assets/v1",
+    synopsis: null,
+    cover: { prompt: "旧提示词", image_version: "cover-v1", base_image_version: "base-v1", rendered_from_base_version: "base-v1", rendered_title: "雾港来信" },
+  });
+  const calls: string[] = [];
+  let putAttempts = 0;
+  await page.route(`**/file-projects/${encodedId}/publishing/cover`, async (route) => {
+    calls.push(route.request().method());
+    await fulfill(route, { detail: "cover_generate_failed" }, 502);
+  });
+  await page.route(`**/file-projects/${encodedId}/publishing/cover-prompt`, async (route) => {
+    calls.push(route.request().method());
+    putAttempts += 1;
+    if (putAttempts === 1) {
+      await fulfill(route, { detail: "prompt_save_failed" }, 503);
+      return;
+    }
+    await fulfill(route, { cover: { prompt: "新提示词", image_version: "cover-v1", base_image_version: "base-v1", rendered_from_base_version: "base-v1", rendered_title: "雾港来信" } });
+  });
+  await page.goto(`/projects/${encodedId}`);
+  await page.getByRole("button", { name: "重新生成" }).click();
+  await expect(page.getByText("cover_generate_failed")).toBeVisible();
+  await page.getByRole("button", { name: "编辑提示词" }).click();
+  await page.getByLabel("封面提示词").fill("");
+  await page.getByRole("button", { name: "保存提示词" }).click();
+  await expect(page.getByText("封面提示词不能为空")).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试" })).toHaveCount(0);
+  expect(calls).toEqual(["POST"]);
+  await page.getByLabel("封面提示词").fill("新提示词");
+  await page.getByRole("button", { name: "保存提示词" }).click();
+  await expect(page.getByText("prompt_save_failed")).toBeVisible();
+  await page.getByRole("button", { name: "重试" }).click();
+  await expect(page.getByText("新提示词")).toBeVisible();
+  expect(calls).toEqual(["POST", "PUT", "PUT"]);
+});
+
+test("a late generation response after reload cannot overwrite replacement assets or refresh again", async ({ page }) => {
+  const fixture = await routePublishingProject(page);
+  let release!: () => void;
+  const responseGate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(`**/file-projects/${encodedId}/publishing/synopsis`, async (route) => {
+    await responseGate;
+    await fulfill(route, { synopsis: { tags: ["悬疑", "都市", "成长", "反转"], body: "过期响应。", format: "fanqie", updated_at: "2026-07-31" } });
+  });
+  await page.goto(`/projects/${encodedId}`);
+  await page.getByRole("button", { name: "生成简介" }).click();
+  fixture.update({
+    schema_version: "publishing-assets/v1",
+    synopsis: { tags: ["悬疑", "都市", "成长", "反转"], body: "服务器替换后的简介。", format: "fanqie", updated_at: "2026-07-31" },
+    cover: null,
+  });
+  await page.reload();
+  await expect(page.getByText("服务器替换后的简介。")).toBeVisible();
+  const readsAfterReload = fixture.projectReads();
+  release();
+  await page.waitForTimeout(150);
+  await expect(page.getByText("过期响应。")).toHaveCount(0);
+  expect(fixture.projectReads()).toBe(readsAfterReload);
 });
