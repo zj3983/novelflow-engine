@@ -108,7 +108,7 @@ export default function RelationshipsPage() {
     try {
       await updateProject(projectId, { relationship_graph: draft });
       setMessage("关系图已保存。");
-      refresh();
+      void refresh().catch(() => undefined);
     } catch (saveError) {
       setMessage(`保存失败：${saveError instanceof Error ? saveError.message : String(saveError)}`);
     } finally {
