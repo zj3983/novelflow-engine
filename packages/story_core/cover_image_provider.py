@@ -14,7 +14,12 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
-from packages.story_core.http_retry import ResponseTooLargeError, RetryConfig, post_json_with_retry
+from packages.story_core.http_retry import (
+    ResponseTooLargeError,
+    RetryConfig,
+    post_json_with_retry,
+    read_bounded_response_bytes,
+)
 from packages.story_core.runtime_config import ImageRuntimeSettings, resolve_image_runtime
 
 
@@ -22,6 +27,7 @@ MAX_ENCODED_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_DECODED_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
 IMAGE_GENERATION_TIMEOUT_SECONDS = 70
+MAX_PROVIDER_ERROR_RESPONSE_BYTES = 64 * 1024
 _SUPPORTED_FORMATS = {"PNG", "JPEG", "WEBP"}
 
 
@@ -38,9 +44,9 @@ def _unsupported_model_error(exc: urllib.error.HTTPError) -> bool:
     if exc.code not in {400, 404}:
         return False
     try:
-        raw = exc.read()
+        raw = read_bounded_response_bytes(exc, MAX_PROVIDER_ERROR_RESPONSE_BYTES)
         payload = json.loads(raw.decode("utf-8"))
-    except (AttributeError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except (AttributeError, OSError, ResponseTooLargeError, UnicodeDecodeError, json.JSONDecodeError):
         return False
     error = payload.get("error") if isinstance(payload, dict) else None
     if not isinstance(error, dict):

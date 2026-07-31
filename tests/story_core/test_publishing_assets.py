@@ -12,11 +12,12 @@ from packages.story_core.publishing_assets import (
     MAX_VISUAL_HOOK_CHARS,
     FanqieSynopsis,
     PublishingContext,
+    PUBLISHING_TEXT_MAX_RESPONSE_BYTES,
     PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
     SynopsisGenerator,
     build_publishing_context,
 )
-from packages.story_core.http_retry import RetryConfig
+from packages.story_core.http_retry import ResponseTooLargeError, RetryConfig
 from packages.story_core.runtime_config import StageRuntimeSettings
 
 
@@ -75,6 +76,7 @@ def test_synopsis_generator_returns_validated_synopsis_and_uses_runtime_transpor
             timeout=PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
             max_retries=1,
             allow_compatibility_fallback=False,
+            max_response_bytes=PUBLISHING_TEXT_MAX_RESPONSE_BYTES,
         ),
         "provider": "openai",
         "codex_command": "",
@@ -137,6 +139,7 @@ def test_synopsis_repair_repeats_contract_and_bounds_rich_invalid_payload() -> N
             timeout=PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
             max_retries=1,
             allow_compatibility_fallback=False,
+            max_response_bytes=PUBLISHING_TEXT_MAX_RESPONSE_BYTES,
         ),
         "provider": "codexcli",
         "codex_command": "codex-publishing",
@@ -246,10 +249,22 @@ def test_publishing_text_generation_uses_a_bounded_non_retrying_request() -> Non
     SynopsisGenerator(post_json=fake_post).generate(_publishing_context(), _publishing_runtime())
 
     assert calls == [{
-        "config": RetryConfig(timeout=70, max_retries=1, allow_compatibility_fallback=False),
+        "config": RetryConfig(
+            timeout=70,
+            max_retries=1,
+            allow_compatibility_fallback=False,
+            max_response_bytes=PUBLISHING_TEXT_MAX_RESPONSE_BYTES,
+        ),
         "provider": "openai",
         "codex_command": "",
     }]
+
+
+def test_publishing_text_generation_maps_an_oversized_response_to_a_safe_error() -> None:
+    with pytest.raises(ValueError, match="^publishing_text_response_too_large$"):
+        SynopsisGenerator(
+            post_json=lambda *_args, **_kwargs: (_ for _ in ()).throw(ResponseTooLargeError("response_too_large"))
+        ).generate(_publishing_context(), _publishing_runtime())
 
 
 def test_cover_prompt_generator_preserves_concept_and_adds_missing_fixed_constraints() -> None:
@@ -282,6 +297,7 @@ def test_cover_prompt_generator_strips_caps_and_passes_codex_runtime_settings() 
             timeout=PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
             max_retries=1,
             allow_compatibility_fallback=False,
+            max_response_bytes=PUBLISHING_TEXT_MAX_RESPONSE_BYTES,
         ),
         "provider": "codexcli",
         "codex_command": "codex-publishing",

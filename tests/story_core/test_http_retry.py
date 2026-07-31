@@ -73,6 +73,18 @@ def test_post_json_with_retry_stops_chunked_response_at_its_size_limit(monkeypat
     assert response.read_sizes and max(response.read_sizes) <= 9
 
 
+def test_post_json_with_retry_accepts_a_response_exactly_at_its_size_limit(monkeypatch):
+    payload = b'{"ok":1}'
+    response = _BoundedResponse([payload])
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    assert post_json_with_retry(
+        "http://api.test", "/text", {"x": 1}, "key",
+        config=RetryConfig(max_retries=1, max_response_bytes=len(payload)),
+    ) == {"ok": 1}
+    assert response.read_sizes == [len(payload) + 1, 1]
+
+
 def test_post_json_with_retry_retries_incomplete_read(monkeypatch):
     calls = {"count": 0}
 

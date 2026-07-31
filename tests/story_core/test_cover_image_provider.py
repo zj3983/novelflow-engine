@@ -12,7 +12,12 @@ from urllib.error import HTTPError, URLError
 import pytest
 from PIL import Image
 
-from packages.story_core.cover_image_provider import CoverImageError, OpenAICoverImageProvider
+from packages.story_core.cover_image_provider import (
+    MAX_PROVIDER_ERROR_RESPONSE_BYTES,
+    CoverImageError,
+    OpenAICoverImageProvider,
+    _unsupported_model_error,
+)
 from packages.story_core.http_retry import RetryConfig
 from packages.story_core.runtime_config import ImageRuntimeSettings
 
@@ -145,6 +150,25 @@ def test_generate_maps_structured_unsupported_model_errors(status: int) -> None:
         _provider(unsupported).generate("cover")
 
     assert error.value.__cause__ is unsupported
+
+
+def test_unsupported_model_error_bounds_an_unknown_length_error_body() -> None:
+    class ChunkedErrorBody:
+        def __init__(self) -> None:
+            self.remaining = b"x" * (MAX_PROVIDER_ERROR_RESPONSE_BYTES + 1)
+            self.read_sizes: list[int] = []
+
+        def read(self, size: int = -1) -> bytes:
+            assert size > 0, "error bodies must not be read without a bound"
+            self.read_sizes.append(size)
+            chunk, self.remaining = self.remaining[:size], self.remaining[size:]
+            return chunk
+
+    body = ChunkedErrorBody()
+    error = HTTPError("https://images.example.test/v1/images/generations", 400, "bad request", {}, body)
+
+    assert _unsupported_model_error(error) is False
+    assert body.read_sizes == [MAX_PROVIDER_ERROR_RESPONSE_BYTES, 1]
 
 
 def test_generate_maps_timeout_error() -> None:

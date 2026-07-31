@@ -39,7 +39,7 @@ class RetryConfig:
     allow_compatibility_fallback: bool = True
 
 
-def _read_response_bytes(response: object, max_response_bytes: int | None) -> bytes:
+def read_bounded_response_bytes(response: object, max_response_bytes: int | None) -> bytes:
     if max_response_bytes is None:
         return response.read()  # type: ignore[union-attr]
     if max_response_bytes <= 0:
@@ -129,7 +129,7 @@ def post_json_with_retry(
             request = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(request, timeout=cfg.timeout) as response:
-                    return json.loads(_read_response_bytes(response, cfg.max_response_bytes).decode("utf-8"))
+                    return json.loads(read_bounded_response_bytes(response, cfg.max_response_bytes).decode("utf-8"))
             except urllib.error.HTTPError as e:
                 last_error = e
                 if e.code == 400 and index + 1 < len(payloads):
