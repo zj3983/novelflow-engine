@@ -335,3 +335,61 @@ def test_cover_rejects_titles_over_the_publishing_limit(publishing_api, monkeypa
     response = client.post(f"/file-projects/{created['project_id']}/publishing/cover", json={})
     assert response.status_code == 422
     assert response.json()["detail"] == "cover_title_too_long"
+
+
+def test_render_cover_image_uses_existing_prompt_without_text_generation_and_preserves_old_final(publishing_api, monkeypatch):
+    client, created = publishing_api
+    store = FileProjectStore(Path(created["source_path"]))
+    store.save_cover(prompt="edited prompt verbatim", base_image=b"old-base", rendered_image=b"old-final", model="old")
+    image_calls = []
+
+    class UnexpectedPrompt:
+        def generate(self, *args, **kwargs):
+            raise AssertionError("text prompt generator must not run")
+
+    class FakeImage:
+        def generate(self, prompt, runtime):
+            image_calls.append((prompt, runtime.model))
+            return b"new-base"
+
+    monkeypatch.setattr(file_projects, "cover_prompt_generator", UnexpectedPrompt())
+    monkeypatch.setattr(file_projects, "cover_image_provider", FakeImage())
+    monkeypatch.setattr(file_projects, "resolve_image_runtime", lambda: SimpleNamespace(model="image-model"))
+    monkeypatch.setattr(file_projects, "render_cover", lambda base, title: b"new-final")
+    response = client.post(f"/file-projects/{created['project_id']}/publishing/cover/render-image")
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ready"
+    assert image_calls == [("edited prompt verbatim", "image-model")]
+    assert store.publishing_assets()["cover"]["prompt"] == "edited prompt verbatim"
+    assert store.rendered_cover_path.read_bytes() == b"new-final"
+
+    class FailingImage:
+        def generate(self, *_args):
+            raise CoverImageError("image_model_unsupported")
+
+    monkeypatch.setattr(file_projects, "cover_image_provider", FailingImage())
+    failed = client.post(f"/file-projects/{created['project_id']}/publishing/cover/render-image")
+    assert failed.status_code == 502
+    assert failed.json()["detail"] == "image_model_unsupported"
+    assert store.publishing_assets()["cover"]["prompt"] == "edited prompt verbatim"
+    assert store.rendered_cover_path.read_bytes() == b"new-final"
+
+
+def test_render_cover_image_handles_missing_prompt_runtime_and_font_base_states(publishing_api, monkeypatch):
+    client, created = publishing_api
+    base = f"/file-projects/{created['project_id']}/publishing/cover/render-image"
+    assert client.post(base).status_code == 404
+    store = FileProjectStore(Path(created["source_path"]))
+    store.save_cover_prompt("saved prompt")
+    missing = client.post(base)
+    assert missing.status_code == 200
+    assert missing.json()["status"] == "prompt_ready"
+    assert missing.json()["reason"] == "image_provider_not_configured"
+
+    monkeypatch.setattr(file_projects, "resolve_image_runtime", lambda: SimpleNamespace(model="image-model"))
+    monkeypatch.setattr(file_projects, "cover_image_provider", SimpleNamespace(generate=lambda *_args: b"font-base"))
+    monkeypatch.setattr(file_projects, "render_cover", lambda *_args: (_ for _ in ()).throw(ValueError("cover_font_unavailable")))
+    font = client.post(base)
+    assert font.status_code == 503
+    assert store.cover_base_path.read_bytes() == b"font-base"
+    assert store.publishing_assets()["cover"]["prompt"] == "saved prompt"

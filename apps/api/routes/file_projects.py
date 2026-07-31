@@ -1186,6 +1186,52 @@ def init_file_project_routes() -> APIRouter:
             raise _publishing_write_error(exc) from exc
         return {"cover": saved.get("cover")}
 
+    @router.post("/file-projects/{project_id}/publishing/cover/render-image")
+    def render_file_project_cover_image(project_id: str) -> dict[str, Any]:
+        """Render from the saved human-approved prompt without invoking the text model."""
+        store = _store_for(project_id)
+        existing = store.publishing_assets()
+        cover = existing.get("cover") if isinstance(existing.get("cover"), dict) else {}
+        prompt = str(cover.get("prompt") or "").strip()
+        if not prompt:
+            raise HTTPException(status_code=404, detail="cover_prompt_not_found")
+        try:
+            cover_title = _cover_title(store)
+        except ValueError as exc:
+            if str(exc) in {"cover_title_invalid", "cover_title_required", "cover_title_too_long"}:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=500, detail="publishing_asset_read_failed") from exc
+        try:
+            image_runtime = resolve_image_runtime()
+        except ImageRuntimeConfigurationError:
+            return {
+                "status": "prompt_ready",
+                "reason": "image_provider_not_configured",
+                "cover": cover,
+            }
+        try:
+            base_image = cover_image_provider.generate(prompt, image_runtime)
+            rendered_image = render_cover(base_image, cover_title)
+        except Exception as exc:
+            if str(exc) == "cover_font_unavailable":
+                try:
+                    store.save_cover_base(prompt=prompt, base_image=base_image, model=image_runtime.model)
+                except (UnboundLocalError, ValueError) as write_exc:
+                    if isinstance(write_exc, ValueError):
+                        raise _publishing_write_error(write_exc) from write_exc
+                raise _cover_error(exc) from exc
+            raise _cover_error(exc) from exc
+        try:
+            saved = store.save_cover(
+                prompt=prompt,
+                base_image=base_image,
+                rendered_image=rendered_image,
+                model=image_runtime.model,
+            )
+        except ValueError as exc:
+            raise _publishing_write_error(exc) from exc
+        return {"status": "ready", "cover": saved.get("cover")}
+
     @router.post("/file-projects/{project_id}/publishing/cover/render-title")
     def render_file_project_cover_title(project_id: str) -> dict[str, Any]:
         store = _store_for(project_id)
