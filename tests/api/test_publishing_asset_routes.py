@@ -286,6 +286,43 @@ def test_image_provider_type_error_is_called_once_and_preserves_prompt(publishin
     assert FileProjectStore(Path(created["source_path"])).publishing_assets()["cover"]["prompt"] == "type error prompt"
 
 
+def test_render_title_rejects_real_stale_base_and_keeps_final(publishing_api, monkeypatch):
+    client, created = publishing_api
+    store = FileProjectStore(Path(created["source_path"]))
+    before = store.save_cover(prompt="old", base_image=b"old-base", rendered_image=b"old-final", model="old-model")
+
+    def interleaving_render(_base, _title):
+        store.save_cover_base(prompt="new", base_image=b"new-base", model="new-model")
+        return b"new-rendered"
+
+    monkeypatch.setattr(file_projects, "render_cover", interleaving_render)
+    response = client.post(f"/file-projects/{created['project_id']}/publishing/cover/render-title")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "publishing_asset_stale_base"
+    assert store.rendered_cover_path.read_bytes() == b"old-final"
+    after = store.publishing_assets()["cover"]
+    assert after["image_version"] == before["cover"]["image_version"]
+    assert after["rendered_from_base_version"] == before["cover"]["rendered_from_base_version"]
+
+
+def test_render_title_lazily_migrates_legacy_base_version(publishing_api, monkeypatch):
+    client, created = publishing_api
+    store = FileProjectStore(Path(created["source_path"]))
+    store.save_cover(prompt="old", base_image=b"legacy-base", rendered_image=b"old-final", model="model")
+    for path, nested in ((store.webnovel_dir / "project.json", False), (store.story_system_dir / "MASTER_SETTING.json", True)):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        cover = data["project"]["publishing_assets"]["cover"] if nested else data["publishing_assets"]["cover"]
+        cover.pop("base_image_version")
+        cover.pop("rendered_from_base_version")
+        path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(file_projects, "render_cover", lambda base, title: b"legacy-rerender")
+    response = client.post(f"/file-projects/{created['project_id']}/publishing/cover/render-title")
+    assert response.status_code == 200
+    cover = store.publishing_assets()["cover"]
+    assert cover["base_image_version"] == cover["rendered_from_base_version"]
+    assert cover["rendered_title"] == "Publishing Route Novel"
+
+
 def test_cover_rejects_titles_over_the_publishing_limit(publishing_api, monkeypatch):
     client, created = publishing_api
     assert client.put(f"/file-projects/{created['project_id']}", json={"title": "T" * 121}).status_code == 200
