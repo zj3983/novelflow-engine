@@ -1998,16 +1998,65 @@ function normalizeSynopsisAsset(value: unknown): SynopsisAsset | null {
   };
 }
 
+const UNSAFE_PUBLISHING_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+const COVER_FIELDS = new Set([
+  "prompt", "image_version", "base_image_version", "rendered_from_base_version", "width", "height",
+  "mime_type", "model", "rendered_title", "updated_at", "schema_version", "base_path", "rendered_path",
+]);
+
+function publishingPathLikeKey(key: string): boolean {
+  const folded = key.toLowerCase();
+  return ["path", "file", "filename", "url", "uri", "filepath", "file_path"].includes(folded)
+    || /_(?:path|file|filename|url|uri|filepath)$/.test(folded);
+}
+
+function unsafePublishingString(value: string): boolean {
+  const candidate = value.trim();
+  return candidate.startsWith("/")
+    || candidate.startsWith("\\")
+    || candidate.startsWith("file:")
+    || /^[a-zA-Z]:[\\/]/.test(candidate)
+    || /(^|[\\/])\.\.([\\/]|$)/.test(candidate);
+}
+
+function cloneSafePublishingValue(value: unknown, seen = new WeakSet<object>(), depth = 0): unknown {
+  if (depth > 32) return undefined;
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") return unsafePublishingString(value) ? undefined : value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (!value || typeof value !== "object" || seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const cloned = value
+      .map((item) => cloneSafePublishingValue(item, seen, depth + 1))
+      .filter((item) => item !== undefined);
+    seen.delete(value);
+    return cloned;
+  }
+  const cloned: { [key: string]: unknown } = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (UNSAFE_PUBLISHING_KEYS.has(key) || publishingPathLikeKey(key)) continue;
+    const safeItem = cloneSafePublishingValue(item, seen, depth + 1);
+    if (safeItem !== undefined) cloned[key] = safeItem;
+  }
+  seen.delete(value);
+  return cloned;
+}
+
 function normalizeCoverAsset(value: unknown): CoverAsset | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as CoverAsset;
-  const cover: CoverAsset = {};
+  const safeExtras = cloneSafePublishingValue(value);
+  const cover = safeExtras && typeof safeExtras === "object" && !Array.isArray(safeExtras)
+    ? safeExtras as CoverAsset & { [key: string]: unknown }
+    : {} as CoverAsset & { [key: string]: unknown };
+  for (const field of COVER_FIELDS) delete cover[field];
   if (typeof candidate.prompt === "string") cover.prompt = candidate.prompt;
   if (typeof candidate.image_version === "string") cover.image_version = candidate.image_version;
   if (typeof candidate.base_image_version === "string") cover.base_image_version = candidate.base_image_version;
   if (typeof candidate.rendered_from_base_version === "string") cover.rendered_from_base_version = candidate.rendered_from_base_version;
-  if (typeof candidate.width === "number" && Number.isFinite(candidate.width)) cover.width = candidate.width;
-  if (typeof candidate.height === "number" && Number.isFinite(candidate.height)) cover.height = candidate.height;
+  if (typeof candidate.width === "number" && Number.isFinite(candidate.width) && candidate.width > 0) cover.width = candidate.width;
+  if (typeof candidate.height === "number" && Number.isFinite(candidate.height) && candidate.height > 0) cover.height = candidate.height;
   if (typeof candidate.mime_type === "string") cover.mime_type = candidate.mime_type;
   if (typeof candidate.model === "string") cover.model = candidate.model;
   if (typeof candidate.rendered_title === "string") cover.rendered_title = candidate.rendered_title;
@@ -2022,11 +2071,33 @@ function normalizePublishingAssets(value: unknown): PublishingAssets {
   const candidate = value && typeof value === "object" && !Array.isArray(value)
     ? value as Partial<PublishingAssets>
     : {};
-  return {
+  const safeExtras = cloneSafePublishingValue(value);
+  const normalized = safeExtras && typeof safeExtras === "object" && !Array.isArray(safeExtras)
+    ? safeExtras as { [key: string]: unknown }
+    : {} as { [key: string]: unknown };
+  delete normalized.schema_version;
+  delete normalized.synopsis;
+  delete normalized.cover;
+  return Object.assign(normalized, {
     schema_version: "publishing-assets/v1",
     synopsis: normalizeSynopsisAsset(candidate.synopsis),
     cover: normalizeCoverAsset(candidate.cover),
+  } satisfies PublishingAssets) as PublishingAssets;
+}
+
+export function normalizeProjectResponse(value: unknown): ProjectResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid_project_response");
+  }
+  const candidate = value as ProjectResponse & { publishing_assets?: unknown };
+  return {
+    ...candidate,
+    publishing_assets: normalizePublishingAssets(candidate.publishing_assets),
   };
+}
+
+function normalizeNestedProjectResponse<T extends { project: unknown }>(value: T): T & { project: ProjectResponse } {
+  return { ...value, project: normalizeProjectResponse(value.project) };
 }
 
 function normalizeRuntimeSettings(value?: Partial<RuntimeSettings>): RuntimeSettings {
@@ -2986,11 +3057,12 @@ export async function regenerateFileProjectChapter(
   if (!isFileProjectId(projectId)) {
     throw new Error("regenerate_chapter_only_supports_file_projects");
   }
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/regenerate-chapter`, {
+  const response = (await tryFetchJson(`${fileProjectPath(projectId)}/regenerate-chapter`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ chapter_number: chapterNumber, variant, guidance }),
   }, 900000)) as { project: ProjectResponse; story: StoryResponse; generated: Record<string, unknown> };
+  return normalizeNestedProjectResponse(response);
 }
 
 export async function startProjectAutomationJob(
@@ -3268,7 +3340,7 @@ export async function createProject(payload: CreateProjectRequest): Promise<Proj
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     })) as ProjectResponse;
-    return persistProjectIntoMockStore(response);
+    return persistProjectIntoMockStore(normalizeProjectResponse(response));
   } catch {
     return mockCreateProject(payload);
   }
@@ -3280,10 +3352,7 @@ export async function createFileProject(payload: NewFileProjectRequest): Promise
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   })) as NewFileProjectResponse;
-  return {
-    ...response,
-    publishing_assets: normalizePublishingAssets(response.publishing_assets),
-  };
+  return normalizeProjectResponse(response) as NewFileProjectResponse;
 }
 
 export async function fetchOpeningSetup(projectId: string): Promise<OpeningSetup> {
@@ -3347,7 +3416,7 @@ function mockCreateProject(payload: CreateProjectRequest): ProjectResponse {
   }
   saveMockProjectStore(mockProjectStore);
   setMockProjectPreference(true);
-  return {
+  return normalizeProjectResponse({
     ...project,
     branches: project.branches.map((storyId) => ({
       story_id: storyId,
@@ -3355,7 +3424,7 @@ function mockCreateProject(payload: CreateProjectRequest): ProjectResponse {
       parent_story_id: mockStore.get(storyId)?.parent_story_id ?? null,
       branched_from_chapter: mockStore.get(storyId)?.branched_from_chapter ?? null,
     })),
-  };
+  });
 }
 
 function mockListProjects(): ProjectSummary[] {
@@ -3376,7 +3445,7 @@ function mockFetchProject(projectId: string): ProjectResponse {
   if (!project) {
     throw new Error("mock: project_not_found");
   }
-  return {
+  return normalizeProjectResponse({
     ...project,
     branches: project.branches.map((storyId) => ({
       story_id: storyId,
@@ -3385,8 +3454,8 @@ function mockFetchProject(projectId: string): ProjectResponse {
       branched_from_chapter: mockStore.get(storyId)?.branched_from_chapter ?? null,
     })),
     storage_source: project.storage_source,
-    publishing_assets: normalizePublishingAssets(project.publishing_assets),
-  };
+    publishing_assets: clone(project.publishing_assets),
+  });
 }
 
 function persistProjectIntoMockStore(project: ProjectResponse): ProjectResponse {
@@ -3407,7 +3476,7 @@ function persistProjectIntoMockStore(project: ProjectResponse): ProjectResponse 
     active_story_id: project.active_story_id,
     branches: project.branches.map((branch) => branch.story_id),
     storage_source: project.storage_source,
-    publishing_assets: normalizePublishingAssets(project.publishing_assets),
+    publishing_assets: clone(project.publishing_assets),
   };
   mockProjectStore.set(project.project_id, mirroredProject);
   saveMockProjectStore(mockProjectStore);
@@ -3419,7 +3488,10 @@ function persistProjectIntoMockStore(project: ProjectResponse): ProjectResponse 
     saveMockStore(mockStore);
   }
 
-  return mockFetchProject(project.project_id);
+  return {
+    ...project,
+    publishing_assets: clone(project.publishing_assets),
+  };
 }
 
 function mockUpdateProject(projectId: string, payload: UpdateProjectRequest): ProjectResponse {
@@ -3518,7 +3590,7 @@ export async function fetchProject(projectId: string): Promise<ProjectResponse> 
     const response = (await tryFetchJson(path, {
       method: "GET",
     }, fileProject ? 90000 : 30000)) as ProjectResponse;
-    return persistProjectIntoMockStore(response);
+    return persistProjectIntoMockStore(normalizeProjectResponse(response));
   } catch {
     return mockFetchProject(projectId);
   }
@@ -3542,7 +3614,7 @@ export async function updateProject(
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     })) as ProjectResponse;
-    return persistProjectIntoMockStore(response);
+    return persistProjectIntoMockStore(normalizeProjectResponse(response));
   } catch (error) {
     if (!fallbackToMock) throw error;
     return mockUpdateProject(projectId, payload);
@@ -3593,14 +3665,14 @@ export async function enrichProjectWorld(projectId: string): Promise<ProjectResp
   const response = (await tryFetchJson(path, {
     method: "POST",
   }, LONG_RUNNING_REQUEST_TIMEOUT_MS)) as ProjectResponse;
-  return persistProjectIntoMockStore(response);
+  return persistProjectIntoMockStore(normalizeProjectResponse(response));
 }
 
 export async function enrichProjectRulebook(projectId: string): Promise<ProjectResponse> {
   const response = (await tryFetchJson(`${apiBase()}/projects/${encodeURIComponent(projectId)}/enrich-rulebook`, {
     method: "POST",
   }, 180000)) as ProjectResponse;
-  return persistProjectIntoMockStore(response);
+  return persistProjectIntoMockStore(normalizeProjectResponse(response));
 }
 
 export async function activateProjectStory(projectId: string, storyId: string): Promise<ProjectResponse> {
@@ -3610,7 +3682,7 @@ export async function activateProjectStory(projectId: string, storyId: string): 
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ story_id: storyId }),
     })) as ProjectResponse;
-    return persistProjectIntoMockStore(response);
+    return persistProjectIntoMockStore(normalizeProjectResponse(response));
   } catch {
     return mockActivateProjectStory(projectId, storyId);
   }

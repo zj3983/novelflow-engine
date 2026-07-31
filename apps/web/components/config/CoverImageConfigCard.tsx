@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { revealRuntimeApiKey, type RuntimeImageSettings } from "../../lib/api";
 
@@ -7,32 +7,52 @@ type ImageValidationErrors = Partial<Record<"api_key" | "base_url" | "model", st
 type Props = {
   value: RuntimeImageSettings;
   errors: ImageValidationErrors;
-  onChange: (next: RuntimeImageSettings) => void;
+  disabled: boolean;
+  onChange: (next: RuntimeImageSettings, field?: keyof ImageValidationErrors) => void;
 };
 
-export function CoverImageConfigCard({ value, errors, onChange }: Props) {
+export function CoverImageConfigCard({ value, errors, disabled, onChange }: Props) {
   const [showApiKey, setShowApiKey] = useState(false);
   const [revealedApiKey, setRevealedApiKey] = useState("");
   const [revealPending, setRevealPending] = useState(false);
   const [revealError, setRevealError] = useState("");
+  const mounted = useRef(true);
+  const revealGeneration = useRef(0);
+  const latestValue = useRef(value);
+  const latestDisabled = useRef(disabled);
+  latestValue.current = value;
+  latestDisabled.current = disabled;
   const apiKeyIsStored = value.api_key === "********";
   const apiKeyInputValue = apiKeyIsStored ? revealedApiKey : value.api_key;
 
-  useEffect(() => {
+  function invalidateReveal() {
+    revealGeneration.current += 1;
+    setRevealPending(false);
     setShowApiKey(false);
     setRevealedApiKey("");
     setRevealError("");
-  }, [value.api_key]);
+  }
 
-  function update(patch: Partial<RuntimeImageSettings>) {
-    onChange({ ...value, ...patch });
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      revealGeneration.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    invalidateReveal();
+  }, [value.api_key, disabled]);
+
+  function update(patch: Partial<RuntimeImageSettings>, field?: keyof ImageValidationErrors) {
+    if (field === "api_key") invalidateReveal();
+    onChange({ ...value, ...patch }, field);
   }
 
   async function toggleApiKeyVisibility() {
-    if (showApiKey) {
-      setShowApiKey(false);
-      setRevealedApiKey("");
-      setRevealError("");
+    if (revealPending || showApiKey) {
+      invalidateReveal();
       return;
     }
     if (!apiKeyIsStored) {
@@ -40,20 +60,32 @@ export function CoverImageConfigCard({ value, errors, onChange }: Props) {
       return;
     }
 
+    const generation = revealGeneration.current + 1;
+    revealGeneration.current = generation;
+    const maskedValue = value.api_key;
     setRevealPending(true);
     setRevealError("");
     try {
-      setRevealedApiKey(await revealRuntimeApiKey("image"));
+      const revealed = await revealRuntimeApiKey("image");
+      if (
+        !mounted.current
+        || revealGeneration.current !== generation
+        || latestValue.current.api_key !== maskedValue
+        || latestDisabled.current
+        || maskedValue !== "********"
+      ) return;
+      setRevealedApiKey(revealed);
       setShowApiKey(true);
     } catch (error) {
+      if (!mounted.current || revealGeneration.current !== generation) return;
       setRevealError(error instanceof Error ? error.message : "读取已保存的封面图片密钥失败");
     } finally {
-      setRevealPending(false);
+      if (mounted.current && revealGeneration.current === generation) setRevealPending(false);
     }
   }
 
   return (
-    <section className="config-card config-card--spacious" aria-label="封面图片模型">
+    <section className="config-card config-card--spacious" aria-label="封面图片模型" aria-busy={disabled || revealPending}>
       <div className="config-card__header">
         <div>
           <p className="config-card__eyebrow">IMAGE PIPELINE</p>
@@ -67,14 +99,15 @@ export function CoverImageConfigCard({ value, errors, onChange }: Props) {
           <label className="config-image-toggle" htmlFor="config-cover-image-enabled">
             <input
               id="config-cover-image-enabled"
-              aria-label="启用封面图片模型"
+              aria-describedby="config-cover-image-enabled-help"
               type="checkbox"
               checked={value.enabled}
+              disabled={disabled}
               onChange={(event) => update({ enabled: event.target.checked })}
             />
             <span>
               <strong>启用封面图片模型</strong>
-              <small>关闭后保留当前配置，保存时不会用于封面生成。</small>
+              <small id="config-cover-image-enabled-help">关闭后保留当前配置，保存时不会用于封面生成。</small>
             </span>
           </label>
         </div>
@@ -89,7 +122,8 @@ export function CoverImageConfigCard({ value, errors, onChange }: Props) {
               aria-describedby={errors.base_url ? "config-cover-image-base-url-error" : undefined}
               className="text-input"
               value={value.base_url}
-              onChange={(event) => update({ base_url: event.target.value })}
+              disabled={disabled}
+              onChange={(event) => update({ base_url: event.target.value }, "base_url")}
               placeholder="https://api.example.com/v1"
               inputMode="url"
             />
@@ -104,7 +138,8 @@ export function CoverImageConfigCard({ value, errors, onChange }: Props) {
               aria-describedby={errors.model ? "config-cover-image-model-error" : undefined}
               className="text-input"
               value={value.model}
-              onChange={(event) => update({ model: event.target.value })}
+              disabled={disabled}
+              onChange={(event) => update({ model: event.target.value }, "model")}
               placeholder="cover-model"
             />
             {errors.model ? <p id="config-cover-image-model-error" className="field-error" role="alert">{errors.model}</p> : null}
@@ -122,10 +157,11 @@ export function CoverImageConfigCard({ value, errors, onChange }: Props) {
               type={showApiKey ? "text" : "password"}
               className="text-input"
               value={apiKeyInputValue}
+              disabled={disabled}
               readOnly={apiKeyIsStored && showApiKey}
               onChange={(event) => {
                 setRevealedApiKey("");
-                update({ api_key: event.target.value });
+                update({ api_key: event.target.value }, "api_key");
               }}
               placeholder={apiKeyIsStored ? "输入新密钥以替换" : "请输入封面图片 API 密钥"}
               autoComplete="new-password"
@@ -134,11 +170,12 @@ export function CoverImageConfigCard({ value, errors, onChange }: Props) {
               className="btn btn--ghost"
               type="button"
               aria-pressed={showApiKey}
-              aria-label={showApiKey ? "隐藏封面图片 API 密钥" : "显示封面图片 API 密钥"}
-              disabled={revealPending}
+              aria-label={revealPending ? "取消读取封面图片 API 密钥" : showApiKey ? "隐藏封面图片 API 密钥" : "显示封面图片 API 密钥"}
+              aria-busy={revealPending}
+              disabled={disabled}
               onClick={() => void toggleApiKeyVisibility()}
             >
-              {revealPending ? "读取中" : showApiKey ? "隐藏" : "显示"}
+              {revealPending ? "取消读取" : showApiKey ? "隐藏" : "显示"}
             </button>
           </div>
           {errors.api_key ? <p id="config-cover-image-api-key-error" className="field-error" role="alert">{errors.api_key}</p> : null}

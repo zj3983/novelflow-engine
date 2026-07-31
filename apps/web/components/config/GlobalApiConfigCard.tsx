@@ -5,10 +5,11 @@ import { revealRuntimeApiKey, type CodexCLIInfo, type RuntimeSettings } from "..
 type Props = {
   value: RuntimeSettings;
   cliInfo: CodexCLIInfo | null;
+  disabled: boolean;
   onChange: (next: RuntimeSettings) => void;
 };
 
-export function GlobalApiConfigCard({ value, cliInfo, onChange }: Props) {
+export function GlobalApiConfigCard({ value, cliInfo, disabled, onChange }: Props) {
   const selected = value.providers[value.provider];
   const [showApiKey, setShowApiKey] = useState(false);
   const [revealedApiKey, setRevealedApiKey] = useState("");
@@ -65,7 +66,7 @@ export function GlobalApiConfigCard({ value, cliInfo, onChange }: Props) {
   }
 
   return (
-    <section className="config-card config-card--spacious" aria-label="模型执行方式">
+    <section className="config-card config-card--spacious" aria-label="模型执行方式" aria-busy={disabled || revealPending}>
       <div className="config-card__header">
         <h2 className="config-card__title">模型执行方式</h2>
       </div>
@@ -78,6 +79,7 @@ export function GlobalApiConfigCard({ value, cliInfo, onChange }: Props) {
             aria-label="模型提供方"
             className="text-input"
             value={value.provider}
+            disabled={disabled}
             onChange={(event) => onChange({ ...value, provider: event.target.value as RuntimeSettings["provider"] })}
           >
             <option value="codexcli">Codex CLI</option>
@@ -94,6 +96,7 @@ export function GlobalApiConfigCard({ value, cliInfo, onChange }: Props) {
                 aria-label="Codex CLI 命令"
                 className="text-input"
                 value={selected.codex_command}
+                disabled={disabled}
                 onChange={(event) => updateSelected({ codex_command: event.target.value })}
                 placeholder="codex"
               />
@@ -127,6 +130,7 @@ export function GlobalApiConfigCard({ value, cliInfo, onChange }: Props) {
                   type={showApiKey ? "text" : "password"}
                   className="text-input"
                   value={apiKeyInputValue}
+                  disabled={disabled}
                   readOnly={apiKeyIsStored && showApiKey}
                   onChange={(event) => {
                     setRevealedApiKey("");
@@ -140,7 +144,7 @@ export function GlobalApiConfigCard({ value, cliInfo, onChange }: Props) {
                   type="button"
                   aria-pressed={showApiKey}
                   aria-label={showApiKey ? "隐藏 API 密钥" : "显示 API 密钥"}
-                  disabled={revealPending}
+                  disabled={disabled || revealPending}
                   onClick={toggleApiKeyVisibility}
                 >
                   {revealPending ? "读取中" : showApiKey ? "隐藏" : "显示"}
@@ -158,6 +162,7 @@ export function GlobalApiConfigCard({ value, cliInfo, onChange }: Props) {
                 aria-label="全局 API 地址"
                 className="text-input"
                 value={selected.base_url}
+                disabled={disabled}
                 onChange={(event) => updateSelected({ base_url: event.target.value })}
               />
             </div>

@@ -207,7 +207,99 @@ test("/config normalizes missing legacy image settings and validates enabled cov
   await expect(page.getByText("封面图片 API 地址不能为空")).toBeVisible();
   await expect(page.getByText("封面图片模型名称不能为空")).toBeVisible();
   await expect(page.getByText("封面图片 API 密钥不能为空")).toBeVisible();
+  await expect(page.getByLabel("封面图片 API 地址")).toBeFocused();
+  await page.getByLabel("封面图片 API 地址").fill("http://localhost:8188/v1");
+  await expect(page.getByText("封面图片 API 地址不能为空")).toHaveCount(0);
+  await expect(page.getByLabel("封面图片 API 地址")).toHaveAttribute("aria-invalid", "false");
+  await expect(page.getByText("封面图片模型名称不能为空")).toBeVisible();
+  await expect(page.getByText("封面图片 API 密钥不能为空")).toBeVisible();
+  await expect(page.getByLabel("封面图片模型名称")).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByLabel("封面图片 API 密钥", { exact: true })).toHaveAttribute("aria-invalid", "true");
   expect(putCount).toBe(0);
+});
+
+test("/config ignores stale cover-key reveals after edit, cancel, save, and unmount", async ({ page }) => {
+  const releases: Array<() => void> = [];
+  const consoleErrors: string[] = [];
+  let revealCount = 0;
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => consoleErrors.push(error.message));
+
+  await page.route("**/runtime-settings/reveal-api-key", async (route) => {
+    revealCount += 1;
+    const attempt = revealCount;
+    await new Promise<void>((resolve) => releases.push(resolve));
+    await route.fulfill(attempt === 1
+      ? { status: 500, contentType: "text/plain", body: "stale reveal error" }
+      : { status: 200, contentType: "application/json", body: JSON.stringify({ api_key: `old-secret-${attempt}` }) }
+    ).catch(() => undefined);
+  });
+  await page.route("**/runtime-settings", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(runtimeConfiguration) });
+  });
+  await page.route("**/runtime-settings/cli-info", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ available: false, command: "codex", version: "", latest_version: "", update_status: "unknown", models: [] }) });
+  });
+
+  await page.goto("/config");
+  await page.getByRole("button", { name: "显示封面图片 API 密钥" }).click();
+  await expect.poll(() => releases.length).toBe(1);
+  await page.getByLabel("封面图片 API 密钥", { exact: true }).fill("replacement-key");
+  releases[0]();
+  await expect(page.getByLabel("封面图片 API 密钥", { exact: true })).toHaveValue("replacement-key");
+  await expect(page.getByRole("button", { name: "显示封面图片 API 密钥" })).toBeVisible();
+  await expect(page.getByText(/stale reveal error/)).toHaveCount(0);
+
+  await page.reload();
+  await page.getByRole("button", { name: "显示封面图片 API 密钥" }).click();
+  await expect.poll(() => releases.length).toBe(2);
+  const cancelButton = page.getByRole("button", { name: "取消读取封面图片 API 密钥" });
+  await expect(cancelButton).toHaveAttribute("aria-busy", "true");
+  await cancelButton.click();
+  releases[1]();
+  await expect(page.getByLabel("封面图片 API 密钥", { exact: true })).toHaveValue("");
+
+  await page.reload();
+  await page.getByRole("button", { name: "显示封面图片 API 密钥" }).click();
+  await expect.poll(() => releases.length).toBe(3);
+  await page.getByRole("button", { name: "统一保存" }).click();
+  releases[2]();
+  await expect(page.getByLabel("封面图片 API 密钥", { exact: true })).toHaveValue("");
+  await expect(page.getByRole("button", { name: "显示封面图片 API 密钥" })).toBeVisible();
+
+  await page.reload();
+  await page.getByRole("button", { name: "显示封面图片 API 密钥" }).click();
+  await expect.poll(() => releases.length).toBe(4);
+  await page.goto("/");
+  releases[3]();
+  await page.waitForTimeout(50);
+  expect(consoleErrors.filter((message) => /state update|unmounted component/i.test(message))).toEqual([]);
+});
+
+test("/config disables every control while saving and refreshes from the response", async ({ page }) => {
+  let releaseSave: (() => void) | null = null;
+  await page.route("**/runtime-settings", async (route) => {
+    if (route.request().method() === "PUT") {
+      await new Promise<void>((resolve) => { releaseSave = resolve; });
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(runtimeConfiguration) });
+  });
+  await page.route("**/runtime-settings/cli-info", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ available: false, command: "codex", version: "", latest_version: "", update_status: "unknown", models: [] }) });
+  });
+
+  await page.goto("/config");
+  await page.getByRole("button", { name: "统一保存" }).click();
+  await expect.poll(() => releaseSave).not.toBeNull();
+  const controls = page.locator(".config-shell input, .config-shell select, .config-shell button");
+  for (let index = 0; index < await controls.count(); index += 1) {
+    await expect(controls.nth(index)).toBeDisabled();
+  }
+  releaseSave!();
+  await expect(page.getByRole("button", { name: "统一保存" })).toBeEnabled();
+  await expect(page.getByLabel("封面图片模型名称")).toHaveValue("cover-art-v1");
 });
 
 test("/config scopes cover-key reveal failures to the image card and allows retry", async ({ page }) => {

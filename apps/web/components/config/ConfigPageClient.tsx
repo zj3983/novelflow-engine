@@ -18,6 +18,9 @@ import { GlobalApiConfigCard } from "./GlobalApiConfigCard";
 import { RuntimeStrategyCard } from "./RuntimeStrategyCard";
 import type { RuntimeConnectionMap } from "./types";
 
+type ImageField = "api_key" | "base_url" | "model";
+type ImageValidationErrors = Partial<Record<ImageField, string>>;
+
 function createConnectionMap(): RuntimeConnectionMap {
   return {
     planner: { state: "idle", message: "" },
@@ -26,16 +29,24 @@ function createConnectionMap(): RuntimeConnectionMap {
   };
 }
 
-function validateImageSettings(settings: RuntimeSettings): Partial<Record<"api_key" | "base_url" | "model", string>> {
-  if (!settings.image.enabled) return {};
-  const errors: Partial<Record<"api_key" | "base_url" | "model", string>> = {};
-  if (!settings.image.base_url.trim()) {
-    errors.base_url = "封面图片 API 地址不能为空";
-  } else if (!isHttpUrl(settings.image.base_url)) {
-    errors.base_url = "封面图片 API 地址格式不正确";
+function validateImageField(settings: RuntimeSettings, field: ImageField): string {
+  if (!settings.image.enabled) return "";
+  if (field === "base_url") {
+    if (!settings.image.base_url.trim()) return "封面图片 API 地址不能为空";
+    if (!isHttpUrl(settings.image.base_url)) return "封面图片 API 地址格式不正确";
   }
-  if (!settings.image.model.trim()) errors.model = "封面图片模型名称不能为空";
-  if (!settings.image.api_key.trim()) errors.api_key = "封面图片 API 密钥不能为空";
+  if (field === "model" && !settings.image.model.trim()) return "封面图片模型名称不能为空";
+  if (field === "api_key" && !settings.image.api_key.trim()) return "封面图片 API 密钥不能为空";
+  return "";
+}
+
+function validateImageSettings(settings: RuntimeSettings): ImageValidationErrors {
+  if (!settings.image.enabled) return {};
+  const errors: ImageValidationErrors = {};
+  for (const field of ["base_url", "model", "api_key"] as ImageField[]) {
+    const error = validateImageField(settings, field);
+    if (error) errors[field] = error;
+  }
   return errors;
 }
 
@@ -52,10 +63,11 @@ export function ConfigPageClient() {
   const [settings, setSettings] = useState<RuntimeSettings>(createDefaultRuntimeSettings());
   const [cliInfo, setCliInfo] = useState<CodexCLIInfo | null>(null);
   const [connections, setConnections] = useState<RuntimeConnectionMap>(createConnectionMap());
-  const [imageErrors, setImageErrors] = useState<Partial<Record<"api_key" | "base_url" | "model", string>>>({});
+  const [imageErrors, setImageErrors] = useState<ImageValidationErrors>({});
   const [pageStatus, setPageStatus] = useState<"loading" | "idle" | "saving" | "success" | "error">("loading");
   const [pageMessage, setPageMessage] = useState("正在载入配置中心...");
   const mounted = useRef(true);
+  const busy = pageStatus === "loading" || pageStatus === "saving";
 
   useEffect(() => {
     mounted.current = true;
@@ -117,6 +129,12 @@ export function ConfigPageClient() {
       setImageErrors(nextImageErrors);
       setPageStatus("error");
       setPageMessage("请完善封面图片模型配置后再保存。");
+      const firstInvalidField = (["base_url", "model", "api_key"] as ImageField[]).find(
+        (field) => Boolean(nextImageErrors[field]),
+      );
+      window.requestAnimationFrame(() => {
+        if (firstInvalidField) document.getElementById(`config-cover-image-${firstInvalidField.replace("_", "-")}`)?.focus();
+      });
       return;
     }
     setImageErrors({});
@@ -136,14 +154,24 @@ export function ConfigPageClient() {
   }
 
   return (
-    <main className="config-shell">
+    <main className="config-shell" aria-busy={busy}>
       <div className="config-shell__primary">
-        <GlobalApiConfigCard value={settings} cliInfo={cliInfo} onChange={setSettings} />
+        <GlobalApiConfigCard value={settings} cliInfo={cliInfo} disabled={busy} onChange={setSettings} />
         <CoverImageConfigCard
           value={settings.image}
           errors={imageErrors}
-          onChange={(image) => {
-            setImageErrors({});
+          disabled={busy}
+          onChange={(image, field) => {
+            const nextSettings = { ...settings, image };
+            if (field) {
+              setImageErrors((current) => {
+                const next = { ...current };
+                const error = validateImageField(nextSettings, field);
+                if (error) next[field] = error;
+                else delete next[field];
+                return next;
+              });
+            }
             setSettings((current) => ({ ...current, image }));
           }}
         />
@@ -151,13 +179,14 @@ export function ConfigPageClient() {
           value={settings}
           cliModels={cliInfo?.models ?? []}
           statuses={connections}
+          disabled={busy}
           onChange={setSettings}
           onTest={(stage) => void testStage(stage)}
         />
 
-        <section className="config-card config-card--spacious" aria-label="统一保存">
+        <section className="config-card config-card--spacious" aria-label="统一保存" aria-busy={busy}>
           <div className="config-savebar">
-            <button className="btn" type="button" onClick={() => void saveAll()} disabled={pageStatus === "saving"}>
+            <button className="btn" type="button" onClick={() => void saveAll()} disabled={busy}>
               统一保存
             </button>
             <p className="config-status" aria-live="polite">
