@@ -59,6 +59,7 @@ from packages.story_core.web_game_economy import (
     normalize_legacy_economy_prompt_value,
 )
 from packages.story_core.character_portraits import complete_character_portrait as complete_portrait
+from packages.story_core.cover_renderer import CoverRenderError, normalize_cover_title
 from packages.story_core.character_profiles import (
     merge_character_profile,
     normalize_character_profile,
@@ -1730,8 +1731,11 @@ class FileProjectStore:
             if not base_image or not rendered_image or not isinstance(model, str) or not model.strip() or len(model.strip()) > 256:
                 raise ValueError("publishing_asset_write_failed")
             project = self.project()
-            title = str(project.get("title") or "").strip()
-            if not title or len(title) > 120:
+            try:
+                title = normalize_cover_title(str(project.get("title") or ""))
+            except CoverRenderError as exc:
+                raise ValueError("publishing_asset_write_failed") from exc
+            if not title:
                 raise ValueError("publishing_asset_write_failed")
             saved = self._publishing_assets_from_metadata()
             updated_at = self._publishing_updated_at()
@@ -1810,8 +1814,9 @@ class FileProjectStore:
         if content is None:
             return None
         cover = self._publishing_assets_from_metadata().get("cover") or {}
-        version = str(cover.get("base_image_version") or "") if isinstance(cover, dict) else ""
-        if not version or version != sha256(content).hexdigest():
+        derived = sha256(content).hexdigest()
+        version = str(cover.get("base_image_version") or derived) if isinstance(cover, dict) else derived
+        if version != derived:
             raise ValueError("publishing_asset_read_failed")
         return content, version
 
@@ -1828,10 +1833,20 @@ class FileProjectStore:
             cover = dict(saved["cover"] or {})
             if cover.get("base_path") != "assets/cover-base.png":
                 raise ValueError("publishing_asset_write_failed")
-            if not expected_base_version or cover.get("base_image_version") != expected_base_version:
+            current_base_version = str(cover.get("base_image_version") or "")
+            if not current_base_version:
+                base = self._read_publishing_asset(self.cover_base_path)
+                if base is None:
+                    raise ValueError("publishing_asset_write_failed")
+                current_base_version = sha256(base).hexdigest()
+                cover["base_image_version"] = current_base_version
+            if not expected_base_version or current_base_version != expected_base_version:
                 raise ValueError("publishing_asset_stale_base")
-            title = str(self.project().get("title") or "").strip()
-            if not title or len(title) > 120:
+            try:
+                title = normalize_cover_title(str(self.project().get("title") or ""))
+            except CoverRenderError as exc:
+                raise ValueError("publishing_asset_write_failed") from exc
+            if not title:
                 raise ValueError("publishing_asset_write_failed")
             updated_at = self._publishing_updated_at()
             cover.update(
@@ -1850,7 +1865,7 @@ class FileProjectStore:
             self._publishing_transaction(saved, asset_updates={self.rendered_cover_path: rendered_image})
             return saved
         except ValueError as exc:
-            if str(exc) == "publishing_asset_write_failed":
+            if str(exc) in {"publishing_asset_write_failed", "publishing_asset_stale_base"}:
                 raise
             raise ValueError("publishing_asset_write_failed") from exc
         except Exception as exc:

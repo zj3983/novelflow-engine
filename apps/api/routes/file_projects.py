@@ -809,7 +809,7 @@ def _if_none_match_matches(value: str, etag: str) -> bool:
     for raw_tag in value.split(","):
         tag = raw_tag.strip()
         if tag.startswith("W/"):
-            tag = tag[2:].strip()
+            tag = tag[2:]
         if len(tag) >= 2 and tag.startswith('"') and tag.endswith('"') and tag == etag:
             return True
     return False
