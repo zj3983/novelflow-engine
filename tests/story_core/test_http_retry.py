@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.story_core.http_retry import RetryConfig, post_json_with_retry
+from packages.story_core.http_retry import ResponseTooLargeError, RetryConfig, post_json_with_retry
 
 
 class _Response:
@@ -17,8 +17,72 @@ class _Response:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def read(self) -> bytes:
+    def read(self, size: int = -1) -> bytes:
         return b'{"ok": true}'
+
+
+class _BoundedResponse:
+    def __init__(self, chunks: list[bytes], content_length: str | None = None) -> None:
+        self._chunks = chunks
+        self.headers = {} if content_length is None else {"Content-Length": content_length}
+        self.read_sizes: list[int] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, size: int) -> bytes:
+        assert size > 0
+        self.read_sizes.append(size)
+        if not self._chunks:
+            return b""
+        chunk = self._chunks[0]
+        returned, remaining = chunk[:size], chunk[size:]
+        if remaining:
+            self._chunks[0] = remaining
+        else:
+            self._chunks.pop(0)
+        return returned
+
+
+def test_post_json_with_retry_rejects_known_oversized_content_length_before_reading(monkeypatch):
+    response = _BoundedResponse([b'{"ok": true}'], content_length="9")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ResponseTooLargeError, match="^response_too_large$"):
+        post_json_with_retry(
+            "http://api.test", "/images", {"x": 1}, "key",
+            config=RetryConfig(max_retries=1, max_response_bytes=8),
+        )
+
+    assert response.read_sizes == []
+
+
+def test_post_json_with_retry_stops_chunked_response_at_its_size_limit(monkeypatch):
+    response = _BoundedResponse([b'{"ok": ', b'true}'])
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ResponseTooLargeError, match="^response_too_large$"):
+        post_json_with_retry(
+            "http://api.test", "/images", {"x": 1}, "key",
+            config=RetryConfig(max_retries=1, max_response_bytes=8),
+        )
+
+    assert response.read_sizes and max(response.read_sizes) <= 9
+
+
+def test_post_json_with_retry_accepts_a_response_exactly_at_its_size_limit(monkeypatch):
+    payload = b'{"ok":1}'
+    response = _BoundedResponse([payload])
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    assert post_json_with_retry(
+        "http://api.test", "/text", {"x": 1}, "key",
+        config=RetryConfig(max_retries=1, max_response_bytes=len(payload)),
+    ) == {"ok": 1}
+    assert response.read_sizes == [len(payload) + 1, 1]
 
 
 def test_post_json_with_retry_retries_incomplete_read(monkeypatch):
@@ -71,6 +135,32 @@ def test_post_json_with_retry_400_strips_compat_fields(monkeypatch):
     assert len(sent) == 2
     assert sent[0] == payload
     assert sent[1] == {"model": "m", "messages": [{"role": "user", "content": "ping"}]}
+
+
+def test_post_json_with_retry_can_preserve_required_compatibility_fields(monkeypatch):
+    sent = []
+
+    def fake_urlopen(request, timeout):
+        sent.append(json.loads(request.data.decode("utf-8")))
+        raise _http_400()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    payload = {"model": "image", "prompt": "cover", "n": 1, "response_format": "b64_json"}
+
+    with pytest.raises(urllib.error.HTTPError):
+        post_json_with_retry(
+            "http://api.test",
+            "/images/generations",
+            payload,
+            "key",
+            config=RetryConfig(
+                max_retries=1,
+                initial_delay=0,
+                allow_compatibility_fallback=False,
+            ),
+        )
+
+    assert sent == [payload]
 
 
 def test_post_json_with_retry_400_without_compat_fields_raises(monkeypatch):

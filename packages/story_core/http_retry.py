@@ -10,19 +10,60 @@ import http.client
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 
 
 _COMPAT_FALLBACK_STRIP_FIELDS = ("parameters", "response_format", "temperature")
+_RESPONSE_READ_CHUNK_BYTES = 64 * 1024
 
 
+class ResponseTooLargeError(ValueError):
+    """Raised before an HTTP JSON response can exceed its configured budget."""
+
+
+@dataclass
 class RetryConfig:
-    """Configuration for retry behavior."""
+    """Configuration for retry behavior.
+
+    ``allow_compatibility_fallback`` defaults to ``True``. When enabled, an HTTP
+    400 retries once after stripping optional compatibility fields; set it to
+    ``False`` when every request field is required by the target endpoint.
+    """
     max_retries: int = 2
     initial_delay: float = 0.5  # seconds
     backoff_factor: float = 2.0
     max_delay: float = 2.0
     timeout: int = 360  # seconds; long webnovel chapters can require several minutes per LLM call
+    max_response_bytes: int | None = None
     retry_on_status: tuple[int, ...] = (429, 500, 502, 503, 504)
+    allow_compatibility_fallback: bool = True
+
+
+def read_bounded_response_bytes(response: object, max_response_bytes: int | None) -> bytes:
+    if max_response_bytes is None:
+        return response.read()  # type: ignore[union-attr]
+    if max_response_bytes <= 0:
+        raise ValueError("max_response_bytes_must_be_positive")
+
+    headers = getattr(response, "headers", {})
+    content_length = headers.get("Content-Length") if hasattr(headers, "get") else None
+    try:
+        declared_length = int(content_length) if content_length is not None else None
+    except (TypeError, ValueError):
+        declared_length = None
+    if declared_length is not None and declared_length > max_response_bytes:
+        raise ResponseTooLargeError("response_too_large")
+
+    chunks: list[bytes] = []
+    remaining = max_response_bytes
+    while True:
+        chunk = response.read(min(_RESPONSE_READ_CHUNK_BYTES, remaining + 1))  # type: ignore[union-attr]
+        if not chunk:
+            return b"".join(chunks)
+        if len(chunk) > remaining:
+            raise ResponseTooLargeError("response_too_large")
+        chunks.append(chunk)
+        remaining -= len(chunk)
 
 
 def post_json_with_retry(
@@ -41,7 +82,8 @@ def post_json_with_retry(
         path: API path (e.g. "/chat/completions")
         payload: Request body dict
         api_key: Bearer token
-        config: Optional retry configuration
+        config: Optional retry configuration. Its ``allow_compatibility_fallback``
+            option defaults to enabling the HTTP 400 compatibility fallback.
     
     Returns:
         Parsed JSON response as dict
@@ -51,7 +93,8 @@ def post_json_with_retry(
         json.JSONDecodeError: If response is not valid JSON
 
     Note:
-        On HTTP 400, retries once with provider-specific compatibility fields
+        When ``config.allow_compatibility_fallback`` is enabled (the default), an
+        HTTP 400 retries once with provider-specific compatibility fields
         (parameters, response_format, temperature) stripped, since some
         OpenAI-compatible endpoints reject them.
     """
@@ -73,7 +116,7 @@ def post_json_with_retry(
 
     payloads = [payload]
     stripped = {k: v for k, v in payload.items() if k not in _COMPAT_FALLBACK_STRIP_FIELDS}
-    if stripped != payload:
+    if cfg.allow_compatibility_fallback and stripped != payload:
         payloads.append(stripped)
 
     last_error: Exception | None = None
@@ -86,7 +129,7 @@ def post_json_with_retry(
             request = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(request, timeout=cfg.timeout) as response:
-                    return json.loads(response.read().decode("utf-8"))
+                    return json.loads(read_bounded_response_bytes(response, cfg.max_response_bytes).decode("utf-8"))
             except urllib.error.HTTPError as e:
                 last_error = e
                 if e.code == 400 and index + 1 < len(payloads):

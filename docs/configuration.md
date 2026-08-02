@@ -56,6 +56,31 @@ Override with:
 NOVEL_AUTOGROWTH_RUNTIME_CONFIG_PATH=D:/novel-autogrowth/runtime_config.json
 ```
 
+## Cover Images
+
+Configure the image service from **`/config`**. Its endpoint is
+OpenAI-compatible and must return image data as base64 in the generation
+response; URL-only image responses are not accepted.
+
+If no image service is configured, cover work remains in prompt mode: the
+workspace saves and lets you edit or copy the cover prompt, then you can add
+the image configuration later and render from that saved prompt.
+
+To choose the local font used for the book title printed on a cover, set an
+optional path to a readable font file:
+
+```env
+NOVEL_COVER_FONT_PATH=D:/fonts/NotoSerifSC-Regular.otf
+```
+
+Leave `NOVEL_COVER_FONT_PATH` empty to use the normal font discovery order.
+
+The API Docker image installs `fonts-noto-cjk` without recommended packages and
+Docker Compose pins `NOVEL_COVER_FONT_PATH` to
+`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`. This adds a Chinese
+font to the image so title rendering works consistently on Linux hosts; override
+the variable only when you deliberately provide another readable font file.
+
 ## CORS
 
 Development origins are allowed by default. Production should provide an

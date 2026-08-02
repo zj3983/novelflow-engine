@@ -253,7 +253,7 @@ export default function CharactersPage() {
       setDraft(null);
       setStateDrafts({});
       setMessage("角色卡已保存。");
-      refresh();
+      void refresh().catch(() => undefined);
     } catch (saveError) {
       setMessage(`保存失败：${saveError instanceof Error ? saveError.message : String(saveError)}`);
     } finally {
@@ -267,7 +267,7 @@ export default function CharactersPage() {
     try {
       await completeFileProjectCharacterPortrait(projectId, character.name);
       setMessage(`${character.name} 的基础侧写已补全。`);
-      refresh();
+      void refresh().catch(() => undefined);
     } catch (completeError) {
       setMessage(`补全失败：${completeError instanceof Error ? completeError.message : String(completeError)}`);
     } finally {

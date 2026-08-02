@@ -222,7 +222,7 @@ export default function WritePage() {
       }
       if (!operationIsActive()) return;
       clearTemporaryGuidance();
-      refresh();
+      void refresh().catch(() => undefined);
     } catch (err) {
       if (operationIsActive()) setRegenerateError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -263,7 +263,7 @@ export default function WritePage() {
         ? completedChapterNumber
         : nextChapterNumber;
       router.replace(`/projects/${encodedProjectId}/write?chapter=${generatedChapterNumber}`);
-      refresh({ invalidateChapter: false });
+      void refresh({ invalidateChapter: false }).catch(() => undefined);
     } catch (err) {
       if (operationIsActive()) setRegenerateError(err instanceof Error ? err.message : String(err));
     } finally {

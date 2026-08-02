@@ -131,7 +131,7 @@ export default function ProjectSettingsPage() {
         kind: "success",
         text: `小说类型已保存为：${nextTypeName}。下一次推演和写作包会读取这个类型。`,
       });
-      refresh();
+      void refresh().catch(() => undefined);
     } catch {
       if (!mountedRef.current || requestId !== saveRequestIdRef.current) return;
       setSelectedTypeId(previousTypeId);
@@ -161,7 +161,7 @@ export default function ProjectSettingsPage() {
           ? `文风已保存为：${nextStyle}。下一次写作会读取这个选择。`
           : "已清空文风选择。下一次写作不会注入额外文风。",
       });
-      refresh();
+      void refresh().catch(() => undefined);
     } catch {
       if (!mountedRef.current || requestId !== saveStyleRequestIdRef.current) return;
       setSelectedStyle(previousStyle);

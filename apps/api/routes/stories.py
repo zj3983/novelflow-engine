@@ -696,7 +696,7 @@ class RuntimeApiKeyRevealRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: RuntimeProvider
+    provider: Literal["openai", "codexcli", "image"]
 
 
 class RuntimeApiKeyRevealResponse(BaseModel):
@@ -2512,6 +2512,7 @@ def _revise_latest_chapter(project: NovelProject, record, bundle, payload: Agent
 
 
 _MASKED_API_KEY = "********"
+_MAX_RUNTIME_SETTINGS_REQUEST_BYTES = 1024 * 1024
 
 
 
@@ -2525,7 +2526,7 @@ def _serialize_runtime_settings(configuration: RuntimeConfiguration | None = Non
 
         key: data[key]
 
-        for key in ("provider", "providers", "temperature", "new_character_policy")
+        for key in ("provider", "providers", "image", "temperature", "new_character_policy")
 
     }
 
@@ -2534,6 +2535,10 @@ def _serialize_runtime_settings(configuration: RuntimeConfiguration | None = Non
         if provider_settings.get("api_key"):
 
             provider_settings["api_key"] = _MASKED_API_KEY
+
+    if serialized["image"].get("api_key"):
+
+        serialized["image"]["api_key"] = _MASKED_API_KEY
 
     return serialized
 
@@ -2556,6 +2561,10 @@ def _restore_masked_api_keys(configuration: RuntimeConfiguration) -> RuntimeConf
         if candidate.api_key == _MASKED_API_KEY:
 
             candidate.api_key = getattr(stored.providers, name).api_key
+
+    if restored.image.api_key == _MASKED_API_KEY:
+
+        restored.image.api_key = stored.image.api_key
 
     return restored
 
@@ -4064,9 +4073,7 @@ def read_runtime_cli_info() -> CodexCLIInfoResponse:
 
 
 @router.put("/runtime-settings")
-
 def update_runtime_settings(payload: RuntimeConfiguration) -> dict[str, object]:
-
     saved = set_runtime_configuration(_restore_masked_api_keys(payload))
 
     return _serialize_runtime_settings(saved)
@@ -4080,7 +4087,8 @@ def reveal_runtime_api_key(
     payload: RuntimeApiKeyRevealRequest,
     response: Response,
 ) -> RuntimeApiKeyRevealResponse:
-    provider_settings = getattr(get_runtime_configuration().providers, payload.provider)
+    configuration = get_runtime_configuration()
+    provider_settings = configuration.image if payload.provider == "image" else getattr(configuration.providers, payload.provider)
     if not provider_settings.api_key:
         raise HTTPException(status_code=404, detail="api_key_not_configured")
     response.headers["Cache-Control"] = "no-store"

@@ -11,11 +11,12 @@ type Props = {
   value: RuntimeSettings;
   cliModels: string[];
   statuses: RuntimeConnectionMap;
+  disabled: boolean;
   onChange: (next: RuntimeSettings) => void;
   onTest: (stage: RuntimeStageName) => void;
 };
 
-export function RuntimeStrategyCard({ value, cliModels, statuses, onChange, onTest }: Props) {
+export function RuntimeStrategyCard({ value, cliModels, statuses, disabled, onChange, onTest }: Props) {
   const selected = value.providers[value.provider];
 
   function updateModel(stage: RuntimeStageName, model: string) {
@@ -29,7 +30,7 @@ export function RuntimeStrategyCard({ value, cliModels, statuses, onChange, onTe
   }
 
   return (
-    <section className="config-card config-card--spacious" aria-label="写作阶段模型">
+    <section className="config-card config-card--spacious" aria-label="写作阶段模型" aria-busy={disabled}>
       <div className="config-card__header">
         <h2 className="config-card__title">写作阶段模型</h2>
       </div>
@@ -50,6 +51,7 @@ export function RuntimeStrategyCard({ value, cliModels, statuses, onChange, onTe
                   aria-label={`${stage.label}模型`}
                   className="text-input"
                   value={currentModel}
+                  disabled={disabled}
                   onChange={(event) => updateModel(stage.key, event.target.value)}
                 >
                   {modelOptions.map((model) => (
@@ -62,10 +64,11 @@ export function RuntimeStrategyCard({ value, cliModels, statuses, onChange, onTe
                   aria-label={`${stage.label}模型`}
                   className="text-input"
                   value={currentModel}
+                  disabled={disabled}
                   onChange={(event) => updateModel(stage.key, event.target.value)}
                 />
               )}
-              <button className="btn btn--ghost" type="button" onClick={() => onTest(stage.key)} disabled={status.state === "testing"}>
+              <button className="btn btn--ghost" type="button" onClick={() => onTest(stage.key)} disabled={disabled || status.state === "testing"}>
                 测试{stage.label}
               </button>
               <p className="config-status" aria-live="polite">

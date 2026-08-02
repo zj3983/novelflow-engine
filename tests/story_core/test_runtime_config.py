@@ -8,12 +8,15 @@ from pydantic import ValidationError
 
 from packages.story_core import runtime_config
 from packages.story_core.runtime_config import (
+    ImageRuntimeConfiguration,
+    ImageRuntimeConfigurationError,
     OpenAIRuntimeSettings,
     RuntimeConfiguration,
     get_agent_runtime_settings,
     get_runtime_configuration,
     load_runtime_configuration,
     resolve_stage_runtime,
+    resolve_image_runtime,
     save_runtime_configuration,
     set_runtime_configuration,
 )
@@ -62,6 +65,69 @@ def test_new_configuration_round_trips_and_resolves_selected_stage(tmp_path, mon
     assert resolved.base_url == "https://example.test/v1"
     assert resolved.temperature == 0.35
     assert resolved.new_character_policy == "Manual review"
+
+
+def test_image_configuration_is_independent_and_round_trips_with_its_protected_secret(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    data = _configuration_data(provider="codexcli")
+    data["image"] = {
+        "enabled": True,
+        "api_key": "image-secret",
+        "base_url": "https://images.example.test/v1/",
+        "model": "cover-image-model",
+    }
+    configuration = RuntimeConfiguration.model_validate(data)
+
+    save_runtime_configuration(configuration, path)
+    stored = path.read_text(encoding="utf-8")
+    if os.name == "nt":
+        assert "image-secret" not in stored
+        assert "dpapi:v1:" in stored
+    loaded = load_runtime_configuration(path)
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    set_runtime_configuration(loaded)
+
+    assert loaded.image == ImageRuntimeConfiguration(**data["image"])
+    assert loaded.providers.codexcli.api_key == ""
+    assert loaded.providers.openai.api_key == "test-key"
+    assert resolve_image_runtime().model == "cover-image-model"
+    assert resolve_image_runtime().api_key == "image-secret"
+    assert resolve_image_runtime().base_url == "https://images.example.test/v1"
+
+
+def test_disabled_or_incomplete_image_configuration_has_a_stable_resolution_error(monkeypatch):
+    default_configuration = RuntimeConfiguration()
+    assert default_configuration.image == ImageRuntimeConfiguration()
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", default_configuration)
+
+    with pytest.raises(ImageRuntimeConfigurationError, match="^image_runtime_not_configured$"):
+        resolve_image_runtime()
+
+
+def test_resolve_image_runtime_strips_secret_model_and_base_url(monkeypatch):
+    monkeypatch.setattr(
+        runtime_config,
+        "_runtime_configuration",
+        RuntimeConfiguration(
+            image={
+                "enabled": True,
+                "api_key": " image-key ",
+                "base_url": " https://images.example.test/v1/// ",
+                "model": " cover-model ",
+            }
+        ),
+    )
+
+    assert resolve_image_runtime() == runtime_config.ImageRuntimeSettings(
+        api_key="image-key",
+        base_url="https://images.example.test/v1",
+        model="cover-model",
+    )
+
+    configuration = RuntimeConfiguration(image={"enabled": True, "api_key": "key"})
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", configuration)
+    with pytest.raises(ImageRuntimeConfigurationError, match="^image_runtime_not_configured$"):
+        resolve_image_runtime()
 
 
 def test_runtime_configuration_does_not_store_plaintext_api_key_on_windows(tmp_path):

@@ -2,6 +2,7 @@ import urllib.error
 import json
 import threading
 import time
+import asyncio
 
 import pytest
 
@@ -39,6 +40,12 @@ def _runtime_configuration(*, provider="openai"):
                 "memory": "openai-memory",
             },
         },
+        "image": {
+            "enabled": False,
+            "api_key": "",
+            "base_url": "",
+            "model": "",
+        },
         "temperature": 0.7,
         "new_character_policy": "Director review",
     }
@@ -50,6 +57,8 @@ def _masked(configuration):
     for provider in masked["providers"].values():
         if provider["api_key"]:
             provider["api_key"] = "********"
+    if masked["image"]["api_key"]:
+        masked["image"]["api_key"] = "********"
     return masked
 
 
@@ -225,6 +234,7 @@ def test_runtime_settings_get_returns_only_provider_stage_contract():
     assert set(payload) == {
         "provider",
         "providers",
+        "image",
         "temperature",
         "new_character_policy",
     }
@@ -317,6 +327,41 @@ def test_runtime_settings_put_with_masked_api_key_preserves_stored_key():
     assert stored.temperature == 0.55
 
 
+def test_runtime_settings_image_configuration_is_masked_restored_and_revealed_without_changing_text_provider():
+    candidate = _runtime_configuration(provider="codexcli")
+    candidate["image"] = {
+        "enabled": True,
+        "api_key": "image-secret",
+        "base_url": "https://image.test/v1",
+        "model": "cover-test-model",
+    }
+
+    saved = client.put("/runtime-settings", json=candidate)
+    assert saved.status_code == 200
+    assert saved.json()["provider"] == "codexcli"
+    assert saved.json()["image"] == {
+        "enabled": True,
+        "api_key": "********",
+        "base_url": "https://image.test/v1",
+        "model": "cover-test-model",
+    }
+    assert "image-secret" not in json.dumps(saved.json())
+
+    masked_update = json.loads(json.dumps(candidate))
+    masked_update["image"]["api_key"] = "********"
+    masked_update["image"]["model"] = "cover-updated-model"
+    assert client.put("/runtime-settings", json=masked_update).status_code == 200
+
+    from packages.story_core.runtime_config import get_runtime_configuration
+
+    stored = get_runtime_configuration()
+    assert stored.provider == "codexcli"
+    assert stored.image.api_key == "image-secret"
+    reveal = client.post("/runtime-settings/reveal-api-key", json={"provider": "image"})
+    assert reveal.status_code == 200
+    assert reveal.json() == {"api_key": "image-secret"}
+
+
 @pytest.mark.parametrize("obsolete_key", ["global", "agents", "strategy", "global_model"])
 def test_runtime_settings_put_rejects_obsolete_fields(obsolete_key):
     candidate = _runtime_configuration()
@@ -337,6 +382,95 @@ def test_runtime_settings_put_validation_does_not_replace_saved_configuration():
 
     assert response.status_code == 422
     assert client.get("/runtime-settings").json() == _masked(saved)
+
+
+def test_runtime_settings_validation_errors_never_echo_text_or_image_api_keys():
+    candidate = _runtime_configuration()
+    candidate["providers"]["openai"]["api_key"] = "text-validation-secret"
+    candidate["providers"]["openai"]["writer"] = " "
+    candidate["image"] = {
+        "enabled": True,
+        "api_key": "image-validation-secret",
+        "base_url": "https://images.test/v1",
+        "model": "cover-model",
+    }
+
+    response = client.put("/runtime-settings", json=candidate)
+
+    assert response.status_code == 422
+    assert "text-validation-secret" not in response.text
+    assert "image-validation-secret" not in response.text
+
+
+def test_runtime_settings_manual_boundary_rejects_non_json_and_oversize_without_echoing_body():
+    binary = client.put("/runtime-settings", content=b"\xff\x00secret", headers={"content-type": "application/octet-stream"})
+    assert binary.status_code == 422
+    assert "secret" not in binary.text
+    oversized = client.put(
+        "/runtime-settings",
+        content=b"x" * (1024 * 1024 + 1),
+        headers={"content-type": "application/json"},
+    )
+    assert oversized.status_code == 413
+
+
+def test_runtime_settings_test_validation_hides_all_nested_provider_keys():
+    candidate = _runtime_configuration()
+    candidate["providers"]["codexcli"]["api_key"] = "codex-secret"
+    candidate["providers"]["openai"]["api_key"] = "text-secret"
+    candidate["image"] = {"enabled": True, "api_key": "image-secret", "base_url": "https://image.test", "model": "m"}
+    candidate["providers"]["openai"]["writer"] = " "
+    response = client.post("/runtime-settings/test", json={"stage": "writer", "runtime_settings": candidate})
+    assert response.status_code == 422
+    assert isinstance(response.json()["detail"], list)
+    assert all(secret not in response.text for secret in ("codex-secret", "text-secret", "image-secret"))
+
+
+def test_unrelated_validation_error_keeps_fastapi_default_detail_input():
+    response = client.post("/file-projects/not-a-project/publishing/synopsis", json={"guidance": 3})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["input"] == 3
+
+
+def _run_runtime_body_guard(path: str, *, method: str = "PUT", headers: list[tuple[bytes, bytes]], chunks: list[bytes]):
+    received = []
+    sent = []
+
+    async def receive():
+        received.append(True)
+        index = len(received) - 1
+        return {"type": "http.request", "body": chunks[index] if index < len(chunks) else b"", "more_body": index + 1 < len(chunks)}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
+        "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
+        "headers": [(b"host", b"testserver"), *headers], "client": ("127.0.0.1", 1), "server": ("testserver", 80),
+    }
+    asyncio.run(app(scope, receive, send))
+    return received, sent
+
+
+@pytest.mark.parametrize("path", ["/runtime-settings", "/runtime-settings/test"])
+def test_runtime_body_guard_stops_chunked_stream_at_limit(path):
+    chunks = [b"x" * (128 * 1024)] * 10
+    received, sent = _run_runtime_body_guard(path, method="POST" if path.endswith("/test") else "PUT", headers=[], chunks=chunks)
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    assert len(received) == 9
+    assert len(starts) == 1
+    assert starts[0]["status"] == 413
+
+
+def test_runtime_body_guard_content_length_rejection_reads_zero_chunks():
+    received, sent = _run_runtime_body_guard(
+        "/runtime-settings", headers=[(b"content-length", str(1024 * 1024 + 1).encode())], chunks=[b"never-read"]
+    )
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    assert received == []
+    assert len(starts) == 1
+    assert starts[0]["status"] == 413
 
 
 def test_serialized_history_uses_saved_quality_and_adds_simplified_review(monkeypatch):
@@ -2387,6 +2521,9 @@ def test_update_file_project_route_preserves_game_title_in_patch(monkeypatch, tm
 
         def summary(self):
             return {"current_chapter": 0, "title": "作品标题"}
+
+        def publishing_assets(self):
+            return {"schema_version": "publishing-assets/v1", "synopsis": None, "cover": None}
 
     store = FakeStore()
     monkeypatch.setattr(file_projects, "_store_for", lambda project_id: store)

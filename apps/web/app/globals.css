@@ -3682,6 +3682,30 @@ body {
   border-radius: 12px;
 }
 
+.config-image-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.config-image-toggle input {
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.config-image-toggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.config-image-toggle small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .config-card__note {
   display: grid;
   gap: 4px;

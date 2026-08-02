@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from apps.api.routes.book_import import init_book_import_routes
 from apps.api.routes.continuation_imports import init_continuation_import_routes
@@ -41,6 +43,75 @@ def _cors_origins() -> list[str]:
 
 
 app = FastAPI()
+_RUNTIME_SECRET_PATHS = {("PUT", "/runtime-settings"), ("POST", "/runtime-settings/test")}
+_RUNTIME_BODY_MAX = 1024 * 1024
+
+
+def _runtime_secret_request(request) -> bool:
+    return (request.method, request.url.path) in _RUNTIME_SECRET_PATHS
+
+
+def _json_depth_exceeds(data: bytes, limit: int = 64) -> bool:
+    depth = 0
+    in_string = False
+    escaped = False
+    for byte in data:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 92:
+                escaped = True
+            elif byte == 34:
+                in_string = False
+            continue
+        if byte == 34:
+            in_string = True
+        elif byte in (91, 123):
+            depth += 1
+            if depth > limit:
+                return True
+        elif byte in (93, 125):
+            depth = max(0, depth - 1)
+    return False
+
+
+@app.middleware("http")
+async def bound_runtime_secret_bodies(request, call_next):
+    if not _runtime_secret_request(request):
+        return await call_next(request)
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > _RUNTIME_BODY_MAX:
+                return JSONResponse(status_code=413, content={"detail": "runtime_settings_payload_too_large"})
+        except ValueError:
+            return JSONResponse(status_code=422, content={"detail": [{"type": "validation_error", "loc": ["body"], "msg": "invalid runtime settings"}]})
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > _RUNTIME_BODY_MAX:
+            return JSONResponse(status_code=413, content={"detail": "runtime_settings_payload_too_large"})
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    if _json_depth_exceeds(body):
+        return JSONResponse(status_code=422, content={"detail": [{"type": "validation_error", "loc": ["body"], "msg": "invalid runtime settings"}]})
+    request._body = body
+    return await call_next(request)
+
+
+@app.exception_handler(RequestValidationError)
+async def redact_runtime_validation_error(request, exc: RequestValidationError):
+    if not _runtime_secret_request(request):
+        return await request_validation_exception_handler(request, exc)
+    details = []
+    for error in exc.errors()[:32]:
+        raw_loc = error.get("loc")
+        loc = ["body"]
+        if isinstance(raw_loc, tuple) and raw_loc and raw_loc[0] != "body":
+            loc = [str(raw_loc[0])[:32]]
+        details.append({"type": str(error.get("type") or "validation_error")[:80], "loc": loc, "msg": "invalid runtime settings"})
+    return JSONResponse(status_code=422, content={"detail": details or [{"type": "validation_error", "loc": ["body"], "msg": "invalid runtime settings"}]})
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),

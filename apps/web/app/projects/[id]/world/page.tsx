@@ -25,7 +25,7 @@ export default function WorldPage() {
     try {
       await enrichProjectWorld(projectId);
       setSetupMessage("世界观已补全，可以继续检查或直接开始写作。");
-      refresh({ invalidateChapter: false });
+      void refresh({ invalidateChapter: false }).catch(() => undefined);
     } catch (enrichError) {
       setSetupMessage(`世界观补全失败：${enrichError instanceof Error ? enrichError.message : String(enrichError)}`);
     } finally {

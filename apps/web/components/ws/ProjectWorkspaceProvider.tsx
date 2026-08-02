@@ -25,7 +25,7 @@ type ProjectWorkspaceContextValue = {
   loading: boolean;
   error: string | null;
   refreshVersion: number;
-  refresh: (options?: { invalidateChapter?: boolean }) => void;
+  refresh: (options?: { invalidateChapter?: boolean }) => Promise<void>;
 };
 
 const ProjectWorkspaceContext = createContext<ProjectWorkspaceContextValue | null>(null);
@@ -84,6 +84,13 @@ export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspa
   const [overviewVersion, setOverviewVersion] = useState(0);
   const [chapterRefreshVersion, setChapterRefreshVersion] = useState(0);
   const activeProjectId = useRef(projectId);
+  const mountedRef = useRef(true);
+  const refreshToken = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     try {
@@ -136,10 +143,30 @@ export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspa
     };
   }, [overviewVersion, projectId]);
 
-  const refresh = useCallback((options?: { invalidateChapter?: boolean }) => {
-    setOverviewVersion((current) => current + 1);
+  const refresh = useCallback(async (options?: { invalidateChapter?: boolean }) => {
+    const token = ++refreshToken.current;
+    const requestedProjectId = activeProjectId.current;
+    setError(null);
     if (options?.invalidateChapter !== false) {
       setChapterRefreshVersion((current) => current + 1);
+    }
+    try {
+      const nextProject = await fetchProject(requestedProjectId);
+      if (!mountedRef.current || activeProjectId.current !== requestedProjectId || token !== refreshToken.current) return;
+      setProject(nextProject);
+      if (!nextProject.active_story_id) {
+        setStory(null);
+        return;
+      }
+      const isFileProject = requestedProjectId.startsWith("file:") || nextProject.storage_source === "file";
+      const nextStory = isFileProject
+        ? await fetchFileStoryOverview(nextProject.active_story_id)
+        : await fetchStory(nextProject.active_story_id);
+      if (mountedRef.current && activeProjectId.current === requestedProjectId && token === refreshToken.current) setStory(nextStory);
+    } catch (err) {
+      if (!mountedRef.current || activeProjectId.current !== requestedProjectId || token !== refreshToken.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+      throw err;
     }
   }, []);
 

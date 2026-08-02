@@ -2,6 +2,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md ./
@@ -15,6 +19,7 @@ ENV PYTHONPATH=/app
 ENV NOVEL_AUTOGROWTH_DB_PATH=/data/stories.db
 ENV NOVEL_AUTOGROWTH_RUNTIME_CONFIG_PATH=/data/runtime_config.json
 ENV NOVEL_AUTOGROWTH_CORS_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
+ENV NOVEL_COVER_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
 
 VOLUME ["/data"]
 EXPOSE 8000

@@ -95,6 +95,9 @@ def _configuration_storage_data(configuration: "RuntimeConfiguration") -> dict:
     for agent in agents.values() if isinstance(agents, dict) else ():
         if isinstance(agent, dict):
             agent["api_key"] = _protect_api_key(agent.get("api_key", ""))
+    image = data.get("image")
+    if isinstance(image, dict):
+        image["api_key"] = _protect_api_key(image.get("api_key", ""))
     return data
 
 
@@ -107,6 +110,9 @@ def _configuration_runtime_data(data: dict) -> dict:
     for agent in agents.values() if isinstance(agents, dict) else ():
         if isinstance(agent, dict):
             agent["api_key"] = _unprotect_api_key(agent.get("api_key", ""))
+    image = restored.get("image")
+    if isinstance(image, dict):
+        image["api_key"] = _unprotect_api_key(image.get("api_key", ""))
     return restored
 
 
@@ -189,12 +195,20 @@ class RuntimeCompatibilityConfiguration(_StrictModel):
     agents: dict[AgentRuntimeName, CompatibilityAgentConnection] = Field(default_factory=dict)
 
 
+class ImageRuntimeConfiguration(_StrictModel):
+    enabled: bool = False
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+
+
 class RuntimeConfiguration(_StrictModel):
     provider: RuntimeProvider = Field(default_factory=_default_provider)
     providers: ProviderConfigurations = Field(default_factory=ProviderConfigurations)
     compatibility: RuntimeCompatibilityConfiguration = Field(
         default_factory=RuntimeCompatibilityConfiguration
     )
+    image: ImageRuntimeConfiguration = Field(default_factory=ImageRuntimeConfiguration)
     temperature: float = 0.7
     new_character_policy: NewCharacterPolicy = "Director review"
 
@@ -217,6 +231,16 @@ class StageRuntimeSettings(_StrictModel):
     codex_command: str = ""
     temperature: float = 0.7
     new_character_policy: NewCharacterPolicy = "Director review"
+
+
+class ImageRuntimeSettings(_StrictModel):
+    api_key: str
+    base_url: str
+    model: str
+
+
+class ImageRuntimeConfigurationError(ValueError):
+    pass
 
 
 LEGACY_CONFIG_FILE = Path(os.path.dirname(os.path.abspath(__file__))) / "runtime_config.json"
@@ -421,6 +445,20 @@ def resolve_stage_runtime(stage: RuntimeStage) -> StageRuntimeSettings:
         codex_command=selected.codex_command,
         temperature=configuration.temperature,
         new_character_policy=configuration.new_character_policy,
+    )
+
+
+def resolve_image_runtime() -> ImageRuntimeSettings:
+    image = get_runtime_configuration().image
+    api_key = image.api_key.strip()
+    base_url = image.base_url.strip().rstrip("/")
+    model = image.model.strip()
+    if not image.enabled or not api_key or not base_url or not model:
+        raise ImageRuntimeConfigurationError("image_runtime_not_configured")
+    return ImageRuntimeSettings(
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
     )
 
 
