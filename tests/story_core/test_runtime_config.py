@@ -51,12 +51,12 @@ def _v2_data() -> dict:
     }
 
 
-def test_story_core_conftest_isolates_runtime_config_before_module_import():
+def test_root_conftest_isolates_story_core_runtime_config_before_module_import():
     configured = Path(os.environ["NOVEL_AUTOGROWTH_RUNTIME_CONFIG_PATH"])
 
     assert runtime_config.CONFIG_FILE == configured
-    assert configured.parent == Path(tempfile.gettempdir())
-    assert str(os.getpid()) in configured.name
+    assert Path(tempfile.gettempdir()) in configured.parents
+    assert str(os.getpid()) in str(configured)
     assert configured != runtime_config.DEFAULT_CONFIG_FILE
 
 
