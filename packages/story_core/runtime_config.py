@@ -548,9 +548,6 @@ def get_runtime_configuration_error() -> str | None:
         return _runtime_configuration_error
 
 
-_load_config_from_file()
-
-
 def _stage_for_agent(agent_name: AgentRuntimeName | None) -> RuntimeStage:
     return "writer" if agent_name == "writer" else "planner"
 
@@ -745,3 +742,6 @@ def resolve_openai_runtime_settings(
     )
     selected.provider = _settings_provider_id(selected)
     return selected
+
+
+_load_config_from_file()

@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -58,6 +60,72 @@ def test_root_conftest_isolates_story_core_runtime_config_before_module_import()
     assert Path(tempfile.gettempdir()) in configured.parents
     assert str(os.getpid()) in str(configured)
     assert configured != runtime_config.DEFAULT_CONFIG_FILE
+
+
+def test_first_import_migrates_legacy_agent_settings_in_new_process(tmp_path):
+    path = tmp_path / "runtime.json"
+    path.write_text(
+        json.dumps(
+            {
+                "global": {
+                    "provider": "openai",
+                    "api_key": "global-key",
+                    "base_url": "https://api.openai.com/v1",
+                },
+                "agents": {
+                    "director": {
+                        "provider": "deepseek",
+                        "api_key": "planner-key",
+                        "base_url": "https://api.deepseek.com/v1",
+                    },
+                    "writer": {
+                        "provider": "kimi",
+                        "api_key": "writer-key",
+                        "base_url": "https://api.moonshot.cn/v1",
+                    },
+                },
+                "strategy": {
+                    "director_model": "deepseek-planner",
+                    "writer_model": "kimi-writer",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = """
+import json
+from packages.story_core import runtime_config
+
+configuration = runtime_config.get_runtime_configuration()
+print(json.dumps({
+    "error": runtime_config.get_runtime_configuration_error(),
+    "planner_provider": configuration.stages.planner.provider_id,
+    "planner_model": configuration.stages.planner.model,
+    "writer_provider": configuration.stages.writer.provider_id,
+    "writer_model": configuration.stages.writer.model,
+}))
+"""
+    environment = os.environ.copy()
+    environment["NOVEL_AUTOGROWTH_RUNTIME_CONFIG_PATH"] = str(path)
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    migrated = json.loads(result.stdout.strip().splitlines()[-1])
+    assert migrated == {
+        "error": None,
+        "planner_provider": "deepseek",
+        "planner_model": "deepseek-planner",
+        "writer_provider": "kimi",
+        "writer_model": "kimi-writer",
+    }
 
 
 def test_v2_round_trips_and_resolves_different_stage_providers(tmp_path, monkeypatch):
