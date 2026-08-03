@@ -10,7 +10,8 @@ import math
 import urllib.error
 from typing import Protocol
 
-from packages.story_core.agent_base import BaseOpenAIProvider
+from packages.story_core.agent_base import BaseOpenAIProvider, _parse_json_text
+from packages.story_core.model_gateway import ModelRequest
 from packages.story_core.models import (
     ChapterOutline,
     NovelOutline,
@@ -214,34 +215,25 @@ class OpenAIOutlineGenerator(BaseOpenAIProvider):
         target_chapters: int = 30,
     ) -> NovelOutline | None:
         settings = self._runtime_settings()
-        if settings.provider != "codexcli" and not settings.api_key:
-            return None
-
         prompt = self._build_prompt(story, target_chapters)
-        payload = {
-            "model": settings.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a novel outline generator. "
-                        "Return JSON only with a 'chapters' array and optional 'overall_arc' and 'act_breaks'. "
-                        "Each chapter must have: chapter_number, chapter_title, summary, key_characters, "
-                        "primary_conflict, cadence (urgent/measured/breathing), arc_phase."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": float(settings.temperature),
-        }
-
-        try:
-            response = self._post_json("/chat/completions", payload, settings)
-            content = response["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-        except (KeyError, IndexError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, ValueError):
+        request = ModelRequest(
+            prompt=prompt,
+            system_prompt=(
+                "You are a novel outline generator. "
+                "Return JSON only with a 'chapters' array and optional 'overall_arc' and 'act_breaks'. "
+                "Each chapter must have: chapter_number, chapter_title, summary, key_characters, "
+                "primary_conflict, cadence (urgent/measured/breathing), arc_phase."
+            ),
+            provider=settings.provider,
+            model=settings.model,
+            operation="planner",
+            temperature=float(settings.temperature),
+            json_mode=True,
+        )
+        response = self.complete(request)
+        if not response.ok:
             return None
+        parsed = _parse_json_text(response.text)
 
         if not isinstance(parsed, dict):
             return None

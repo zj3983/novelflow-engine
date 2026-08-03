@@ -4,7 +4,17 @@ from packages.story_core.model_gateway.contracts import (
     ModelResponse,
     normalize_model_error,
 )
-from packages.story_core.agent_base import BaseOpenAIProvider
+from packages.story_core.agent_base import BaseLLMAgent, BaseOpenAIProvider
+
+
+class RecordingStageGateway:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.stages: list[str] = []
+
+    def complete_stage(self, stage: str, request: ModelRequest) -> ModelResponse:
+        self.stages.append(stage)
+        return ModelResponse.success(request, text=self.text, request_id="req-7")
 
 
 def test_model_response_keeps_provider_model_and_text_metadata():
@@ -86,23 +96,8 @@ def test_openai_provider_implements_shared_model_gateway_contract():
     class Provider(BaseOpenAIProvider):
         runtime_key = "writer"
 
-        def _runtime_settings(self):
-            return type(
-                "Settings",
-                (),
-                {"provider": "deepseek", "api_key": "token", "base_url": "http://model", "codex_command": ""},
-            )()
-
-        def _post_json(self, path, payload, settings=None):
-            assert path == "/chat/completions"
-            assert payload["model"] == "deepseek-chat"
-            return {
-                "id": "req-7",
-                "choices": [{"message": {"content": "生成正文"}}],
-                "usage": {"prompt_tokens": 12, "completion_tokens": 8},
-            }
-
-    provider = Provider()
+    gateway = RecordingStageGateway("生成正文")
+    provider = Provider(model_gateway=gateway)
     request = ModelRequest(
         prompt="写正文",
         system_prompt="你是写手",
@@ -118,4 +113,34 @@ def test_openai_provider_implements_shared_model_gateway_contract():
     assert response.ok is True
     assert response.text == "生成正文"
     assert response.request_id == "req-7"
-    assert response.usage["completion_tokens"] == 8
+    assert gateway.stages == ["writer"]
+
+
+def test_base_llm_agent_routes_memory_to_planner_before_parsing_json():
+    class Agent(BaseLLMAgent[dict]):
+        agent_name = "MemoryAgent"
+        runtime_key = "memory"
+
+        def _runtime_settings(self, story):
+            return type("Settings", (), {"provider": "deepseek"})()
+
+        def _resolve_model(self, story):
+            return "deepseek-chat"
+
+        def _build_prompt(self, story, **kwargs):
+            return "extract memory"
+
+        def _parse_response(self, story, parsed, **kwargs):
+            return parsed
+
+    gateway = RecordingStageGateway('{"summary": "done"}')
+    story = type(
+        "Story",
+        (),
+        {"agent_settings": type("AgentSettings", (), {"temperature": 0.2})()},
+    )()
+
+    result = Agent(model_gateway=gateway).call_llm(story)
+
+    assert result == {"summary": "done"}
+    assert gateway.stages == ["planner"]

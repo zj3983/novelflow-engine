@@ -7,10 +7,11 @@ from typing import Protocol
 
 from packages.story_core.agent_base import (
     BaseOpenAIProvider,
+    _parse_json_text,
     compact_list,
     compact_text,
-    parse_json_message_content,
 )
+from packages.story_core.model_gateway import ModelRequest
 from packages.story_core.models import CharacterProposal, CharacterState, StoryState, default_fast_model_name
 
 
@@ -171,9 +172,6 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
 
     def propose_all(self, story: StoryState) -> list[CharacterProposal]:
         settings = self._runtime_settings()
-        if not settings.api_key:
-            return []
-
         active_characters = [
             character
             for character in story.characters
@@ -183,37 +181,27 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
             return []
 
         prompt = self._build_prompt(story, active_characters)
-        payload = {
-            "model": story.agent_settings.character_model or story.agent_settings.global_model or default_fast_model_name(),
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a character action planner for an evolving Chinese novel project. "
-                        "Return JSON only with a top-level object containing a proposals array. "
-                        "Each proposal must include name, goal, emotion, action, priority, and new_character_candidates."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": float(story.agent_settings.temperature),
-            "max_tokens": 700,
-        }
-
-        try:
-            response = self._post_json("/chat/completions", payload, settings)
-            parsed = parse_json_message_content(response)
-            if parsed is None:
+        request = ModelRequest(
+            prompt=prompt,
+            system_prompt=(
+                "You are a character action planner for an evolving Chinese novel project. "
+                "Return JSON only with a top-level object containing a proposals array. "
+                "Each proposal must include name, goal, emotion, action, priority, and new_character_candidates."
+            ),
+            provider=settings.provider,
+            model=story.agent_settings.character_model or story.agent_settings.global_model or default_fast_model_name(),
+            operation="character",
+            temperature=float(story.agent_settings.temperature),
+            max_tokens=700,
+            json_mode=True,
+        )
+        response = self.complete(request)
+        parsed = _parse_json_text(response.text) if response.ok else None
+        if parsed is None:
+            if response.ok:
                 self._set_last_error("角色代理返回的内容不是有效 JSON")
-                return []
-            self._clear_last_error()
-        except urllib.error.HTTPError as exc:
-            self._set_last_error(f"角色代理 HTTP {exc.code}")
             return []
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            self._set_last_error(f"角色代理请求失败：{exc}")
-            return []
+        self._clear_last_error()
 
         raw_proposals = parsed.get("proposals", [])
         proposals: list[CharacterProposal] = []

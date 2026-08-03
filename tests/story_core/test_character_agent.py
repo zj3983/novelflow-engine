@@ -1,4 +1,5 @@
-from packages.story_core.character_agent import CharacterAgent
+from packages.story_core.character_agent import CharacterAgent, OpenAICharacterProposalProvider
+from packages.story_core.model_gateway import ModelRequest, ModelResponse
 from packages.story_core.models import CharacterProposal, CharacterState, StoryState
 from packages.story_core.runtime_config import OpenAIRuntimeSettings
 
@@ -15,6 +16,22 @@ class FakeLLMCharacterProvider:
                 new_character_candidates=["Old Archivist"],
             )
         ]
+
+
+class RecordingStageGateway:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ModelRequest]] = []
+
+    def complete_stage(self, stage: str, request: ModelRequest) -> ModelResponse:
+        self.calls.append((stage, request))
+        return ModelResponse.success(
+            request,
+            text=(
+                '{"proposals":[{"name":"Lin Yue","goal":"find the witness",'
+                '"emotion":"alert","action":"presses the lead","priority":9,'
+                '"new_character_candidates":[]}]}'
+            ),
+        )
 
 
 def test_openai_character_provider_uses_runtime_settings(monkeypatch):
@@ -49,7 +66,7 @@ def test_openai_character_provider_uses_runtime_settings(monkeypatch):
         "packages.story_core.agent_base.resolve_openai_runtime_settings",
         fake_runtime_settings,
     )
-    monkeypatch.setattr("packages.story_core.http_retry.urllib.request.urlopen", fake_urlopen)
+    gateway = RecordingStageGateway()
 
     story = StoryState(
         story_id="s-agent-runtime",
@@ -66,11 +83,13 @@ def test_openai_character_provider_uses_runtime_settings(monkeypatch):
         ],
     )
 
-    proposals = CharacterAgent().propose_all(story)
+    proposals = CharacterAgent(
+        llm_provider=OpenAICharacterProposalProvider(model_gateway=gateway)
+    ).propose_all(story)
 
     assert captured["agent_name"] == "character"
-    assert captured["url"] == "https://api.example.com/v1/chat/completions"
-    assert captured["authorization"] == "Bearer sk-test-123"
+    assert gateway.calls[0][0] == "planner"
+    assert gateway.calls[0][1].operation == "character"
     assert proposals[0].name == "Lin Yue"
 
 
@@ -111,7 +130,7 @@ def test_openai_character_provider_uses_character_specific_runtime_settings(monk
         "packages.story_core.agent_base.resolve_openai_runtime_settings",
         fake_runtime_settings,
     )
-    monkeypatch.setattr("packages.story_core.http_retry.urllib.request.urlopen", fake_urlopen)
+    gateway = RecordingStageGateway()
 
     story = StoryState(
         story_id="s-agent-runtime-specific",
@@ -128,11 +147,13 @@ def test_openai_character_provider_uses_character_specific_runtime_settings(monk
         ],
     )
 
-    proposals = CharacterAgent().propose_all(story)
+    proposals = CharacterAgent(
+        llm_provider=OpenAICharacterProposalProvider(model_gateway=gateway)
+    ).propose_all(story)
 
     assert "character" in captured["calls"]
-    assert captured["url"] == "https://character.example.com/v1/chat/completions"
-    assert captured["authorization"] == "Bearer sk-character-123"
+    assert gateway.calls[0][0] == "planner"
+    assert gateway.calls[0][1].operation == "character"
     assert proposals[0].name == "Lin Yue"
 
 
@@ -246,7 +267,7 @@ def test_character_agent_falls_back_to_global_default_model_when_character_model
         "packages.story_core.agent_base.resolve_openai_runtime_settings",
         fake_runtime_settings,
     )
-    monkeypatch.setattr("packages.story_core.http_retry.urllib.request.urlopen", fake_urlopen)
+    gateway = RecordingStageGateway()
 
     story = StoryState(
         story_id="s-agent-runtime-global-model",
@@ -267,7 +288,9 @@ def test_character_agent_falls_back_to_global_default_model_when_character_model
         ],
     )
 
-    proposals = CharacterAgent().propose_all(story)
+    proposals = CharacterAgent(
+        llm_provider=OpenAICharacterProposalProvider(model_gateway=gateway)
+    ).propose_all(story)
 
-    assert '"model": "gpt-global"' in captured["body"]
+    assert gateway.calls[0][1].model == "gpt-global"
     assert proposals[0].name == "Lin Yue"

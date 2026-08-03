@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from packages.story_core import agent_base, outline_agent as outline_agent_module
+from packages.story_core import outline_agent as outline_agent_module
+from packages.story_core.model_gateway import ModelRequest, ModelResponse
 from packages.story_core.models import AgentSettings, CharacterState, StoryState
 from packages.story_core.outline_agent import (
     OpenAIOutlineGenerator,
@@ -51,31 +52,19 @@ def test_openai_outline_generator_uses_planner_stage_runtime(monkeypatch):
             temperature=0.23,
         )
 
-    def fake_post(base_url, path, payload, api_key, **kwargs):
-        captured.update(
-            base_url=base_url,
-            path=path,
-            payload=payload,
-            api_key=api_key,
-            provider=kwargs["provider"],
-            codex_command=kwargs["codex_command"],
-        )
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "content": (
-                            '{"chapters":[{"chapter_number":1,"chapter_title":"Plan",'
-                            '"summary":"Summary","key_characters":[],"primary_conflict":"Conflict",'
-                            '"cadence":"measured","arc_phase":"intro"}]}'
-                        )
-                    }
-                }
-            ]
-        }
+    class RecordingGateway:
+        def complete_stage(self, stage: str, request: ModelRequest) -> ModelResponse:
+            captured.update(stage=stage, request=request)
+            return ModelResponse.success(
+                request,
+                text=(
+                    '{"chapters":[{"chapter_number":1,"chapter_title":"Plan",'
+                    '"summary":"Summary","key_characters":[],"primary_conflict":"Conflict",'
+                    '"cadence":"measured","arc_phase":"intro"}]}'
+                ),
+            )
 
     monkeypatch.setattr(outline_agent_module, "resolve_stage_runtime", fake_resolve, raising=False)
-    monkeypatch.setattr(agent_base, "post_json_with_retry", fake_post)
     story = StoryState(
         story_id="outline-stage-runtime",
         outline="outline",
@@ -88,17 +77,16 @@ def test_openai_outline_generator_uses_planner_stage_runtime(monkeypatch):
         ),
     )
 
-    result = OpenAIOutlineGenerator().generate(story, target_chapters=1)
+    result = OpenAIOutlineGenerator(model_gateway=RecordingGateway()).generate(
+        story, target_chapters=1
+    )
 
     assert result is not None
     assert runtime_calls == ["planner"]
-    assert captured["base_url"] == "https://planner.example/v1"
-    assert captured["path"] == "/chat/completions"
-    assert captured["api_key"] == "planner-key"
-    assert captured["provider"] == "codexcli"
-    assert captured["codex_command"] == "planner-codex"
-    assert captured["payload"]["model"] == "configured-planner-model"
-    assert captured["payload"]["temperature"] == 0.23
+    assert captured["stage"] == "planner"
+    assert captured["request"].provider == "codexcli"
+    assert captured["request"].model == "configured-planner-model"
+    assert captured["request"].temperature == 0.23
 
 
 # ── heuristics ────────────────────────────────────────────────

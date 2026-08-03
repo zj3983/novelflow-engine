@@ -6,6 +6,7 @@ import pytest
 from packages.story_core.generation_progress import generation_progress
 
 from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.model_gateway import ModelResponse
 from packages.story_core.genre_types.base import GenrePlugin
 from packages.story_core import orchestrator as orchestrator_module
 from packages.story_core.orchestrator import StoryOrchestrator
@@ -390,27 +391,21 @@ def test_structured_attribute_rule_syncs_ledger_values_without_legacy_suye_fallb
     assert character.game_state["current"]["unallocated_attribute_points"] == 2
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        RuntimeError("codexcli_failed:boom"),
-        subprocess.TimeoutExpired(cmd="codex", timeout=1),
-    ],
-)
-def test_chat_returns_error_tuple_when_cli_provider_fails(monkeypatch, failure):
+@pytest.mark.parametrize("failure_code", ["provider_unavailable", "request_timed_out"])
+def test_chat_returns_error_tuple_when_cli_provider_fails(monkeypatch, failure_code):
     from packages.story_core.runtime_config import StageRuntimeSettings
 
     settings = StageRuntimeSettings(
-        provider="codexcli",
+        provider_id="codexcli",
+        protocol="codex_cli",
         model="codex-model",
         codex_command="codex",
     )
     monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", lambda stage: settings)
 
-    def _raise(*args, **kwargs):
-        raise failure
-
-    monkeypatch.setattr(orchestrator_module, "post_json_with_retry", _raise)
+    class FailingGateway:
+        def complete_stage(self, stage, request):
+            return ModelResponse.failure(request, failure_code)
 
     story = StoryState(
         story_id="s-chat-cli-failure",
@@ -419,7 +414,12 @@ def test_chat_returns_error_tuple_when_cli_provider_fails(monkeypatch, failure):
         style="noir",
     )
     text, error = _REAL_CHAT(
-        StoryOrchestrator(), story, "prompt", max_tokens=16, json_mode=False, stage="写作"
+        StoryOrchestrator(model_gateway=FailingGateway()),
+        story,
+        "prompt",
+        max_tokens=16,
+        json_mode=False,
+        stage="写作",
     )
 
     assert text == ""

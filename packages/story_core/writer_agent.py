@@ -6,10 +6,11 @@ from typing import Protocol
 
 from packages.story_core.agent_base import (
     BaseOpenAIProvider,
+    _parse_json_text,
     compact_list,
     compact_text,
-    parse_json_message_content,
 )
+from packages.story_core.model_gateway import ModelRequest
 from packages.story_core.models import DirectorDecision, StoryState, default_model_name
 from packages.story_core.writer import write_chapter_body
 
@@ -44,48 +45,32 @@ class OpenAIWriterTextProvider(BaseOpenAIProvider):
         memory_constraints: dict | None = None,
     ) -> str | None:
         settings = self._runtime_settings()
-        if not settings.api_key:
-            return None
-
-        payload = {
-            "model": story.agent_settings.writer_model or story.agent_settings.global_model or default_model_name(),
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "你是中文网文写作助手。只返回 JSON，结构为 {\"body\": \"...\"}。",
-                },
-                {
-                    "role": "user",
-                    "content": self._build_prompt(
-                        story,
-                        chapter_number,
-                        decision,
-                        conflict_summary,
-                        event_beat,
-                        cadence,
-                        event_plan,
-                        memory_constraints,
-                    ),
-                },
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": float(story.agent_settings.temperature),
-            "max_tokens": 1800,
-        }
-
-        try:
-            response = self._post_json("/chat/completions", payload, settings)
-            parsed = parse_json_message_content(response)
-            if parsed is None:
+        request = ModelRequest(
+            prompt=self._build_prompt(
+                story,
+                chapter_number,
+                decision,
+                conflict_summary,
+                event_beat,
+                cadence,
+                event_plan,
+                memory_constraints,
+            ),
+            system_prompt="你是中文网文写作助手。只返回 JSON，结构为 {\"body\": \"...\"}。",
+            provider=settings.provider,
+            model=story.agent_settings.writer_model or story.agent_settings.global_model or default_model_name(),
+            operation="writer",
+            temperature=float(story.agent_settings.temperature),
+            max_tokens=1800,
+            json_mode=True,
+        )
+        response = self.complete(request)
+        parsed = _parse_json_text(response.text) if response.ok else None
+        if parsed is None:
+            if response.ok:
                 self._set_last_error("写作模型返回结果不是标准 JSON")
-                return None
-            self._clear_last_error()
-        except urllib.error.HTTPError as exc:
-            self._set_last_error(f"写作调用 HTTP {exc.code}")
             return None
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            self._set_last_error(f"写作调用失败：{exc}")
-            return None
+        self._clear_last_error()
 
         body = compact_text(str(parsed.get("body", "")).strip(), 8000)
         return body or None

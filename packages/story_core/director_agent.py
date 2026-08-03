@@ -6,10 +6,11 @@ from typing import Protocol
 
 from packages.story_core.agent_base import (
     BaseOpenAIProvider,
+    _parse_json_text,
     compact_list,
     compact_text,
-    parse_json_message_content,
 )
+from packages.story_core.model_gateway import ModelRequest
 from packages.story_core.models import CharacterProposal, DirectorDecision, NewCharacterPolicy, StoryState, default_model_name
 from packages.story_core.planner import build_chapter_title, select_primary_pair
 
@@ -143,40 +144,27 @@ class OpenAIDirectorDecisionProvider(BaseOpenAIProvider):
         cadence: str,
     ) -> DirectorDecision | None:
         settings = self._runtime_settings()
-        if not settings.api_key:
-            return None
-
-        payload = {
-            "model": story.agent_settings.director_model or story.agent_settings.global_model or default_model_name(),
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are the director agent for an evolving Chinese novel project. "
-                        "Return JSON only with primary_conflict, secondary_conflict, event_beat, cadence, chapter_title, "
-                        "approved_new_characters, deferred_characters, rejected_characters, and next_focus."
-                    ),
-                },
-                {"role": "user", "content": self._build_prompt(story, proposals, conflict_summary, event_beat, cadence)},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": float(story.agent_settings.temperature),
-            "max_tokens": 800,
-        }
-
-        try:
-            response = self._post_json("/chat/completions", payload, settings)
-            parsed = parse_json_message_content(response)
-            if parsed is None:
+        request = ModelRequest(
+            prompt=self._build_prompt(story, proposals, conflict_summary, event_beat, cadence),
+            system_prompt=(
+                "You are the director agent for an evolving Chinese novel project. "
+                "Return JSON only with primary_conflict, secondary_conflict, event_beat, cadence, chapter_title, "
+                "approved_new_characters, deferred_characters, rejected_characters, and next_focus."
+            ),
+            provider=settings.provider,
+            model=story.agent_settings.director_model or story.agent_settings.global_model or default_model_name(),
+            operation="director",
+            temperature=float(story.agent_settings.temperature),
+            max_tokens=800,
+            json_mode=True,
+        )
+        response = self.complete(request)
+        parsed = _parse_json_text(response.text) if response.ok else None
+        if parsed is None:
+            if response.ok:
                 self._set_last_error("导演代理返回的内容不是有效 JSON")
-                return None
-            self._clear_last_error()
-        except urllib.error.HTTPError as exc:
-            self._set_last_error(f"导演代理 HTTP {exc.code}")
             return None
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            self._set_last_error(f"导演代理请求失败：{exc}")
-            return None
+        self._clear_last_error()
 
         return DirectorDecision(
             primary_conflict=_nested_dict(parsed.get("primary_conflict")),

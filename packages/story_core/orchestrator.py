@@ -13,7 +13,7 @@ import urllib.error
 from time import perf_counter
 from types import SimpleNamespace
 
-from packages.story_core.agent_base import compact_list, compact_text, parse_json_message_content
+from packages.story_core.agent_base import _parse_json_text, compact_list, compact_text
 from packages.story_core.attribute_allocation import (
     apply_attribute_allocation,
     attribute_allocation_context,
@@ -76,7 +76,7 @@ from packages.story_core.review.quality_gate import (
     _merge_world_state_reviews as _quality_merge_world_state_reviews,
     review_chapter_body as _run_review_quality_gate,
 )
-from packages.story_core.http_retry import RetryConfig, post_json_with_retry
+from packages.story_core.model_gateway import ModelRequest, RuntimeModelGateway, normalize_model_error
 from packages.story_core.memory import (
     apply_post_chapter_updates,
     build_character_cards,
@@ -2960,6 +2960,9 @@ def _failed_bundle(story: StoryState, chapter_number: int, reason: str = ""):
 
 
 class StoryOrchestrator:
+    def __init__(self, model_gateway: Any | None = None) -> None:
+        self.model_gateway = model_gateway or RuntimeModelGateway()
+
     def _emit_workflow_step(
         self,
         step_id: str,
@@ -3035,9 +3038,7 @@ class StoryOrchestrator:
         stage: str = "",
         timeout_seconds: int | None = None,
     ) -> tuple[str, str]:
-        runtime_stage = "planner" if agent == "director" else agent
-        if runtime_stage not in {"planner", "writer", "memory"}:
-            raise ValueError(f"unknown runtime stage: {runtime_stage}")
+        runtime_stage = "writer" if agent == "writer" else "planner"
         prepared_runtime = getattr(self, "_prepared_runtime_request", None)
         if prepared_runtime is not None and prepared_runtime[0] == runtime_stage:
             settings = prepared_runtime[1]
@@ -3045,83 +3046,46 @@ class StoryOrchestrator:
         else:
             settings = resolve_stage_runtime(runtime_stage)
         self._last_runtime_request = (runtime_stage, settings)
-        provider = settings.provider
-        codex_command = settings.codex_command
-        if provider != "codexcli" and not settings.api_key:
-            return "", "Missing OPENAI_API_KEY"
-
         model = settings.model
         temperature = float(settings.temperature)
         if json_mode and max_tokens < 2000:
             max_tokens = 2000
 
         system_msg = self._model_system_prompt(json_mode, agent=agent)
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "parameters": {
-                "enable_thinking": False,
-                "thinking_budget": 64,
-            },
-        }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
+        request = ModelRequest(
+            prompt=prompt,
+            system_prompt=system_msg,
+            provider=settings.provider,
+            model=model,
+            operation=agent,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            timeout_seconds=timeout_seconds,
+        )
 
-        config = RetryConfig()
-        if timeout_seconds is not None:
-            config.timeout = int(timeout_seconds)
         if stage:
-            report_generation_progress(f"{stage}：模型请求中（timeout={config.timeout}s）")
+            timeout_label = timeout_seconds if timeout_seconds is not None else "default"
+            report_generation_progress(f"{stage}: model request running (timeout={timeout_label}s)")
 
-        try:
-            try:
-                response = post_json_with_retry(
-                    settings.base_url,
-                    "/chat/completions",
-                    payload,
-                    settings.api_key,
-                    config=config,
-                    provider=provider,
-                    codex_command=codex_command,
-                )
-            except TypeError as exc:
-                if "unexpected keyword argument" not in str(exc):
-                    raise
-                response = post_json_with_retry(
-                    settings.base_url,
-                    "/chat/completions",
-                    payload,
-                    settings.api_key,
-                    config=config,
-                )
-            if json_mode:
-                parsed = parse_json_message_content(response)
-                if parsed is None:
-                    return "", "计划返回内容不是有效 JSON"
-                if stage:
-                    report_generation_progress(f"{stage}：模型返回")
-                return json.dumps(parsed, ensure_ascii=False), ""
-            text = _extract_text_message(response)
-            if stage and text:
-                report_generation_progress(f"{stage}：模型返回")
-            return text, "" if text else "正文返回为空"
-        except urllib.error.HTTPError as exc:
+        response = self.model_gateway.complete_stage(runtime_stage, request)
+        if not response.ok:
+            error = normalize_model_error(response)
             if stage:
-                error = f"{stage} model_request_failed:模型 HTTP {exc.code}"
-                report_generation_progress(f"模型请求失败：{error}")
-                return "", error
-            return "", f"模型 HTTP {exc.code}"
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                error = f"{stage} model_request_failed:{error}"
+                report_generation_progress(f"model request failed: {error}")
+            return "", error
+        if json_mode:
+            parsed = _parse_json_text(response.text)
+            if parsed is None:
+                return "", "invalid_json_response"
             if stage:
-                error = f"{stage} model_request_failed:{exc}"
-                report_generation_progress(f"模型请求失败：{error}")
-                return "", error
-            return "", f"模型请求失败：{exc}"
+                report_generation_progress(f"{stage}: model response received")
+            return json.dumps(parsed, ensure_ascii=False), ""
+        text = str(response.text or "")
+        if stage and text:
+            report_generation_progress(f"{stage}: model response received")
+        return text, "" if text else "empty_model_response"
 
     def _timed_chat(
         self,
@@ -3134,7 +3098,7 @@ class StoryOrchestrator:
         stage: str,
         timeout_seconds: int | None = None,
     ) -> tuple[str, str]:
-        runtime_stage = "planner" if agent == "director" else agent
+        runtime_stage = "writer" if agent == "writer" else "planner"
         self._last_runtime_request = None
         template_key = ""
         module_keys: list[str] = []
@@ -3190,6 +3154,7 @@ class StoryOrchestrator:
             template_source=template_source,
             template_version=template_version,
             provider=initial_settings.provider,
+            protocol=str(getattr(initial_settings, "protocol", "")),
             model=initial_settings.model,
             temperature=float(getattr(initial_settings, "temperature", 0.2)),
             genre_stage=genre_stage,
@@ -3217,6 +3182,7 @@ class StoryOrchestrator:
                 call_id,
                 status="failed",
                 provider=initial_settings.provider,
+                protocol=str(getattr(initial_settings, "protocol", "")),
                 model=initial_settings.model,
                 elapsed_seconds=elapsed,
                 error=str(exc),
@@ -3245,6 +3211,7 @@ class StoryOrchestrator:
             call_id,
             status="failed" if error else "succeeded",
             provider=settings.provider,
+            protocol=str(getattr(settings, "protocol", "")),
             model=settings.model,
             elapsed_seconds=elapsed,
             output=text,
