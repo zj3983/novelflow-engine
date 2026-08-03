@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import math
 import socket
 import subprocess
 import time
@@ -57,7 +58,9 @@ def _post_json_with_retry(
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
             if retry_after:
                 try:
-                    delay = float(retry_after)
+                    parsed_delay = float(retry_after)
+                    if math.isfinite(parsed_delay) and parsed_delay >= 0:
+                        delay = min(parsed_delay, max(0.0, config.max_delay))
                 except ValueError:
                     pass
         except (
@@ -122,22 +125,23 @@ def _redact_raw(value: Any, secret: str = "") -> Any:
 def _stable_error(exc: Exception) -> str:
     if isinstance(exc, urllib.error.HTTPError):
         return {
-            401: "unauthorized",
+            401: "authentication_failed",
+            403: "authentication_failed",
             404: "model_not_found",
             429: "rate_limited",
-        }.get(exc.code, f"http_{exc.code}")
+        }.get(exc.code, "provider_unavailable")
     if isinstance(exc, (TimeoutError, socket.timeout, subprocess.TimeoutExpired)):
-        return "timeout"
+        return "request_timed_out"
     if isinstance(exc, urllib.error.URLError) and isinstance(
         getattr(exc, "reason", None), (TimeoutError, socket.timeout)
     ):
-        return "timeout"
+        return "request_timed_out"
     if isinstance(
         exc,
         (json.JSONDecodeError, ResponseTooLargeError, ValueError, KeyError, TypeError, IndexError),
     ):
-        return "malformed_response"
-    return "request_failed"
+        return "invalid_provider_response"
+    return "provider_unavailable"
 
 
 class _Adapter:
@@ -340,6 +344,6 @@ class CodexCLIAdapter(_Adapter):
             text = _content_text(raw["choices"][0]["message"]["content"])
             if not text:
                 raise ValueError("empty_content")
-            return ModelResponse.success(request, text=text, raw=raw)
+            return ModelResponse.success(request, text=text, raw=_redact_raw(raw))
         except Exception as exc:
             return self._failure(request, exc)

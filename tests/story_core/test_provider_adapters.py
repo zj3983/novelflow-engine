@@ -113,6 +113,39 @@ def test_default_http_transport_retries_and_keeps_timeout_and_size_limit(monkeyp
     assert calls[1][0].full_url == "https://model/v1/chat/completions"
 
 
+@pytest.mark.parametrize(
+    ("retry_after", "expected_delay"),
+    [("999", 2.0), ("-1", 0.5), ("not-a-number", 0.5)],
+)
+def test_retry_after_is_non_negative_and_clamped(monkeypatch, retry_after, expected_delay):
+    sleeps = []
+    calls = 0
+
+    def fake_urlopen(http_request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise urllib.error.HTTPError(
+                http_request.full_url,
+                429,
+                "slow",
+                {"Retry-After": retry_after},
+                None,
+            )
+        return FakeHTTPResponse({"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("time.sleep", sleeps.append)
+    adapter = OpenAICompatibleAdapter(
+        base_url="https://model/v1",
+        api_key="secret",
+        retry_config=RetryConfig(max_retries=2, initial_delay=0.5, max_delay=2.0),
+    )
+
+    assert adapter.complete(request()).ok is True
+    assert sleeps == [expected_delay]
+
+
 def test_default_http_transport_rejects_oversized_response(monkeypatch):
     monkeypatch.setattr(
         "urllib.request.urlopen",
@@ -127,7 +160,7 @@ def test_default_http_transport_rejects_oversized_response(monkeypatch):
     response = adapter.complete(request())
 
     assert response.ok is False
-    assert response.error == "malformed_response"
+    assert response.error == "invalid_provider_response"
 
 
 def test_anthropic_uses_native_messages_and_splits_system_content():
@@ -189,7 +222,10 @@ def test_codex_cli_adapter_reuses_existing_provider(monkeypatch):
 
     def fake_cli(payload, *, command, config):
         captured.update(payload=payload, command=command, config=config)
-        return {"choices": [{"message": {"content": "from cli"}}]}
+        return {
+            "choices": [{"message": {"content": "from cli"}}],
+            "Authorization": "must-not-survive",
+        }
 
     monkeypatch.setattr(
         "packages.story_core.codex_cli_provider.post_json_via_codex_cli", fake_cli
@@ -201,16 +237,20 @@ def test_codex_cli_adapter_reuses_existing_provider(monkeypatch):
     assert captured["command"] == "codex-custom"
     assert captured["payload"]["messages"][1]["content"] == "Write it"
     assert response.ok and response.text == "from cli"
+    assert response.raw["Authorization"] == "[REDACTED]"
 
 
 @pytest.mark.parametrize(
     ("exception", "expected"),
     [
-        (urllib.error.HTTPError("https://model", 401, "secret-token", {}, None), "unauthorized"),
+        (urllib.error.HTTPError("https://model", 401, "secret-token", {}, None), "authentication_failed"),
+        (urllib.error.HTTPError("https://model", 403, "secret-token", {}, None), "authentication_failed"),
         (urllib.error.HTTPError("https://model", 404, "missing", {}, None), "model_not_found"),
         (urllib.error.HTTPError("https://model", 429, "slow", {}, None), "rate_limited"),
-        (TimeoutError("secret-token"), "timeout"),
-        (socket.timeout("secret-token"), "timeout"),
+        (urllib.error.HTTPError("https://model", 503, "down", {}, None), "provider_unavailable"),
+        (TimeoutError("secret-token"), "request_timed_out"),
+        (socket.timeout("secret-token"), "request_timed_out"),
+        (urllib.error.URLError("secret-token"), "provider_unavailable"),
     ],
 )
 def test_adapter_errors_are_stable_and_never_leak_secrets(exception, expected):
@@ -234,7 +274,7 @@ def test_malformed_provider_response_has_stable_error():
     response = adapter.complete(request())
 
     assert response.ok is False
-    assert response.error == "malformed_response"
+    assert response.error == "invalid_provider_response"
 
 
 def test_success_raw_response_is_redacted_too():
@@ -304,3 +344,68 @@ def test_runtime_gateway_complete_keeps_constructor_bound_stage_compatibility():
     gateway = RuntimeModelGateway("writer", runtime_resolver=resolver, transport=transport)
 
     assert gateway.complete(request()).text == "written"
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        (
+            StageRuntimeSettings(
+                provider_id="deepseek",
+                protocol="openai_compatible",
+                model="deepseek-chat",
+                api_key="",
+                base_url="https://api.deepseek.com/v1",
+            ),
+            "missing_api_key",
+        ),
+        (
+            StageRuntimeSettings(
+                provider_id="ollama",
+                protocol="openai_compatible",
+                model="qwen3:8b",
+                base_url="",
+            ),
+            "invalid_base_url",
+        ),
+        (
+            StageRuntimeSettings(
+                provider_id="ollama",
+                protocol="openai_compatible",
+                model="qwen3:8b",
+                base_url="ftp://localhost/v1",
+            ),
+            "invalid_base_url",
+        ),
+        (
+            StageRuntimeSettings(
+                provider_id="unknown-provider",
+                protocol="openai_compatible",
+                model="unknown-model",
+                api_key="secret-token",
+                base_url="https://model.invalid/v1",
+            ),
+            "unsupported_protocol",
+        ),
+    ],
+)
+def test_runtime_gateway_returns_stable_configuration_errors(settings, expected):
+    gateway = RuntimeModelGateway(runtime_resolver=lambda _stage: settings)
+
+    response = gateway.complete_stage("writer", request())
+
+    assert response.ok is False
+    assert response.error == expected
+    assert "secret-token" not in json.dumps(response.raw)
+
+
+def test_runtime_gateway_contains_resolver_errors_without_leaking_details():
+    def resolver(_stage):
+        raise RuntimeError("secret-token from config")
+
+    response = RuntimeModelGateway(runtime_resolver=resolver).complete_stage("planner", request())
+
+    assert response.ok is False
+    assert response.error == "unsupported_protocol"
+    assert "secret-token" not in response.error
+    assert "secret-token" not in json.dumps(response.raw)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from typing import Any, Callable, Literal
+from urllib.parse import urlsplit
 
 from .contracts import ModelRequest, ModelResponse
 from .provider_adapters import (
@@ -43,37 +44,61 @@ class RuntimeModelGateway:
         request: ModelRequest,
     ) -> ModelResponse:
         resolved_stage = "planner" if stage == "memory" else stage
-        settings = self.runtime_resolver(resolved_stage)
-        runtime_request = replace(
-            request,
-            provider=settings.provider_id,
-            model=settings.model,
-            temperature=request.temperature if request.temperature is not None else settings.temperature,
-        )
-        common: dict[str, Any] = {}
-        if self.transport is not None:
-            common["transport"] = self.transport
-        protocol = provider_definition(settings.provider_id).protocol
-        if protocol == "openai_compatible":
-            adapter = OpenAICompatibleAdapter(
-                base_url=settings.base_url,
-                api_key=settings.api_key,
-                **common,
+        runtime_request = request
+        try:
+            settings = self.runtime_resolver(resolved_stage)
+            runtime_request = replace(
+                request,
+                provider=settings.provider_id,
+                model=settings.model,
+                temperature=(
+                    request.temperature
+                    if request.temperature is not None
+                    else settings.temperature
+                ),
             )
-        elif protocol == "anthropic":
-            adapter = AnthropicAdapter(
-                base_url=settings.base_url,
-                api_key=settings.api_key,
-                **common,
-            )
-        elif protocol == "gemini":
-            adapter = GeminiAdapter(
-                base_url=settings.base_url,
-                api_key=settings.api_key,
-                **common,
-            )
-        elif protocol == "codex_cli":
-            adapter = CodexCLIAdapter(command=settings.codex_command)
-        else:  # pragma: no cover - StageRuntimeSettings validates catalog protocols.
+            definition = provider_definition(settings.provider_id)
+            protocol = definition.protocol
+            if settings.protocol != protocol:
+                return ModelResponse.failure(runtime_request, "unsupported_protocol")
+            if definition.requires_api_key and not settings.api_key.strip():
+                return ModelResponse.failure(runtime_request, "missing_api_key")
+            if protocol != "codex_cli" and not _valid_http_base_url(settings.base_url):
+                return ModelResponse.failure(runtime_request, "invalid_base_url")
+
+            common: dict[str, Any] = {}
+            if self.transport is not None:
+                common["transport"] = self.transport
+            if protocol == "openai_compatible":
+                adapter = OpenAICompatibleAdapter(
+                    base_url=settings.base_url,
+                    api_key=settings.api_key,
+                    **common,
+                )
+            elif protocol == "anthropic":
+                adapter = AnthropicAdapter(
+                    base_url=settings.base_url,
+                    api_key=settings.api_key,
+                    **common,
+                )
+            elif protocol == "gemini":
+                adapter = GeminiAdapter(
+                    base_url=settings.base_url,
+                    api_key=settings.api_key,
+                    **common,
+                )
+            elif protocol == "codex_cli":
+                adapter = CodexCLIAdapter(command=settings.codex_command)
+            else:
+                return ModelResponse.failure(runtime_request, "unsupported_protocol")
+        except Exception:
             return ModelResponse.failure(runtime_request, "unsupported_protocol")
         return adapter.complete(runtime_request)
+
+
+def _valid_http_base_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value.strip())
+        return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+    except (AttributeError, ValueError):
+        return False
