@@ -128,6 +128,8 @@ def _redact_raw(value: Any, secret: str = "") -> Any:
 
 
 def _stable_error(exc: Exception) -> str:
+    if isinstance(exc, ResponseTooLargeError):
+        return "response_too_large"
     if isinstance(exc, urllib.error.HTTPError):
         return {
             401: "authentication_failed",
@@ -143,7 +145,7 @@ def _stable_error(exc: Exception) -> str:
         return "request_timed_out"
     if isinstance(
         exc,
-        (json.JSONDecodeError, ResponseTooLargeError, ValueError, KeyError, TypeError, IndexError),
+        (json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError),
     ):
         return "invalid_provider_response"
     return "provider_unavailable"

@@ -76,7 +76,12 @@ from packages.story_core.review.quality_gate import (
     _merge_world_state_reviews as _quality_merge_world_state_reviews,
     review_chapter_body as _run_review_quality_gate,
 )
-from packages.story_core.model_gateway import ModelRequest, RuntimeModelGateway, normalize_model_error
+from packages.story_core.model_gateway import (
+    ModelRequest,
+    RuntimeModelGateway,
+    normalize_model_error,
+    provider_definition,
+)
 from packages.story_core.memory import (
     apply_post_chapter_updates,
     build_character_cards,
@@ -3068,7 +3073,12 @@ class StoryOrchestrator:
             timeout_label = timeout_seconds if timeout_seconds is not None else "default"
             report_generation_progress(f"{stage}: model request running (timeout={timeout_label}s)")
 
-        response = self.model_gateway.complete_stage(runtime_stage, request)
+        complete_resolved = getattr(self.model_gateway, "complete_resolved", None)
+        if callable(complete_resolved):
+            response = complete_resolved(settings, request)
+        else:
+            response = self.model_gateway.complete_stage(runtime_stage, request)
+        self._last_model_response = response
         if not response.ok:
             error = normalize_model_error(response)
             if stage:
@@ -3100,6 +3110,7 @@ class StoryOrchestrator:
     ) -> tuple[str, str]:
         runtime_stage = "writer" if agent == "writer" else "planner"
         self._last_runtime_request = None
+        self._last_model_response = None
         template_key = ""
         module_keys: list[str] = []
         if runtime_stage == "planner":
@@ -3198,21 +3209,30 @@ class StoryOrchestrator:
             if runtime_request is not None and runtime_request[0] == runtime_stage
             else initial_settings
         )
+        model_response = self._last_model_response
+        actual_provider = str(getattr(model_response, "provider", "") or settings.provider)
+        actual_model = str(getattr(model_response, "model", "") or settings.model)
+        actual_protocol = str(getattr(settings, "protocol", ""))
+        if actual_provider != settings.provider:
+            try:
+                actual_protocol = provider_definition(actual_provider).protocol
+            except (KeyError, ValueError):
+                pass
         record_stage_runtime(
             story,
             runtime_stage,
             "fallback" if error else "llm",
-            settings.provider,
-            settings.model,
+            actual_provider,
+            actual_model,
             story.current_chapter,
             fallback_reason=error,
         )
         finish_prompt_call(
             call_id,
             status="failed" if error else "succeeded",
-            provider=settings.provider,
-            protocol=str(getattr(settings, "protocol", "")),
-            model=settings.model,
+            provider=actual_provider,
+            protocol=actual_protocol,
+            model=actual_model,
             elapsed_seconds=elapsed,
             output=text,
             error=error,

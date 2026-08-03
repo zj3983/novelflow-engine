@@ -44,12 +44,23 @@ class RuntimeModelGateway:
         request: ModelRequest,
     ) -> ModelResponse:
         resolved_stage = "planner" if stage == "memory" else stage
-        runtime_request = request
         try:
             settings = self.runtime_resolver(resolved_stage)
+        except Exception:
+            return ModelResponse.failure(request, "unsupported_protocol")
+        return self.complete_resolved(settings, request)
+
+    def complete_resolved(self, settings: Any, request: ModelRequest) -> ModelResponse:
+        """Complete a request using settings already resolved by the caller."""
+
+        runtime_request = request
+        try:
+            provider_id = str(
+                getattr(settings, "provider_id", "") or getattr(settings, "provider", "")
+            )
             runtime_request = replace(
                 request,
-                provider=settings.provider_id,
+                provider=provider_id,
                 model=settings.model,
                 temperature=(
                     request.temperature
@@ -57,7 +68,7 @@ class RuntimeModelGateway:
                     else settings.temperature
                 ),
             )
-            definition = provider_definition(settings.provider_id)
+            definition = provider_definition(provider_id)
             protocol = definition.protocol
             if settings.protocol != protocol:
                 return ModelResponse.failure(runtime_request, "unsupported_protocol")

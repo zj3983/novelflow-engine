@@ -6,7 +6,7 @@ from urllib.error import HTTPError, URLError
 import pytest
 from pydantic import ValidationError
 
-from packages.story_core.model_gateway import ModelResponse
+from packages.story_core.model_gateway import ModelResponse, RuntimeModelGateway
 from packages.story_core.publishing_assets import (
     CoverPromptGenerator,
     MAX_SYNOPSIS_TAG_CHARS,
@@ -291,6 +291,19 @@ def test_publishing_text_generation_maps_an_oversized_response_to_a_safe_error()
         SynopsisGenerator(
             post_json=lambda *_args, **_kwargs: (_ for _ in ()).throw(ResponseTooLargeError("response_too_large"))
         ).generate(_publishing_context(), _publishing_runtime())
+
+
+def test_publishing_text_generation_maps_oversized_response_through_runtime_gateway() -> None:
+    runtime = _publishing_runtime()
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: runtime,
+        transport=lambda **_kwargs: (_ for _ in ()).throw(
+            ResponseTooLargeError("response_too_large")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="^publishing_text_response_too_large$"):
+        SynopsisGenerator(model_gateway=gateway).generate(_publishing_context(), runtime)
 
 
 def test_cover_prompt_generator_preserves_concept_and_adds_missing_fixed_constraints() -> None:

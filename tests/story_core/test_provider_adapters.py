@@ -5,7 +5,7 @@ import urllib.error
 
 import pytest
 
-from packages.story_core.http_retry import RetryConfig
+from packages.story_core.http_retry import ResponseTooLargeError, RetryConfig
 from packages.story_core.model_gateway import ModelRequest
 from packages.story_core.model_gateway.provider_adapters import (
     AnthropicAdapter,
@@ -59,6 +59,19 @@ def request(**overrides):
     }
     values.update(overrides)
     return ModelRequest(**values)
+
+
+def test_provider_adapter_preserves_response_too_large_error_code() -> None:
+    adapter = OpenAICompatibleAdapter(
+        base_url="https://api.example.test/v1",
+        api_key="secret",
+        transport=RecordingTransport(ResponseTooLargeError("response_too_large")),
+    )
+
+    response = adapter.complete(request())
+
+    assert response.ok is False
+    assert response.error == "response_too_large"
 
 
 def test_openai_compatible_request_and_response_use_standard_chat_shape():
@@ -160,7 +173,7 @@ def test_default_http_transport_rejects_oversized_response(monkeypatch):
     response = adapter.complete(request())
 
     assert response.ok is False
-    assert response.error == "invalid_provider_response"
+    assert response.error == "response_too_large"
 
 
 def test_anthropic_uses_native_messages_and_splits_system_content():
