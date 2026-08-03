@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import urllib.error
 from typing import Protocol
 
@@ -153,14 +154,16 @@ class MemoryAgent:
                 cadence,
             )
             if analysis:
-                memory = normalize_post_draft_memory(
-                    analysis,
-                    body=body,
-                    existing_character_names=character_update_names(story.characters),
-                    evidence_character_names=character_evidence_names(story.characters),
-                    character_aliases_by_name=character_aliases_by_name(story.characters),
-                    protagonist_aliases=protagonist_aliases_from_characters(story.characters),
-                )
+                normalizer_kwargs = {
+                    "body": body,
+                    "existing_character_names": character_update_names(story.characters),
+                    "evidence_character_names": character_evidence_names(story.characters),
+                    "character_aliases_by_name": character_aliases_by_name(story.characters),
+                    "protagonist_aliases": protagonist_aliases_from_characters(story.characters),
+                }
+                if "chapter_number" in inspect.signature(normalize_post_draft_memory).parameters:
+                    normalizer_kwargs["chapter_number"] = chapter_number
+                memory = normalize_post_draft_memory(analysis, **normalizer_kwargs)
 
         if memory is None:
             memory = fallback_post_draft_memory(body)

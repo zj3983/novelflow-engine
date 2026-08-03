@@ -23,6 +23,10 @@ from packages.story_core.genre_types import (
     GenrePlugin,
 )
 from packages.story_core.novel_type_ids import canonical_novel_type_id
+from packages.story_core.outline_templates import (
+    copy_outline_template,
+    normalize_outline_template,
+)
 from packages.story_core.power_system_templates import copy_power_system_template
 
 
@@ -48,7 +52,7 @@ _BUILTIN_DESCRIPTIONS = {
 }
 _EDITABLE_FIELDS = tuple(
     item.name for item in fields(GenrePlugin) if item.name not in {"plugin_id"}
-)
+) + ("outline_template",)
 _EMPTY_STORAGE: dict[str, dict[str, Any]] = {"overrides": {}, "custom": {}}
 _PATH_LOCKS: dict[str, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
@@ -103,6 +107,18 @@ def _custom_power_system_template(value: Any) -> dict[str, object]:
     return template
 
 
+def _outline_template(value: Any) -> dict[str, object]:
+    if not value:
+        return {}
+    return normalize_outline_template(value)
+
+
+def _custom_outline_template(value: Any) -> dict[str, object]:
+    if not value:
+        return copy_outline_template("generic_webnovel")
+    return normalize_outline_template(value)
+
+
 def _canonical_type_id(value: Any) -> str:
     return canonical_novel_type_id(value)
 
@@ -119,6 +135,7 @@ class NovelTypeRecord:
     quality_checks: tuple[str, ...] = ()
     trope_templates: tuple[dict[str, object], ...] = ()
     power_system_template: dict[str, object] = field(default_factory=dict)
+    outline_template: dict[str, object] = field(default_factory=dict)
     builtin: bool = False
 
     def __post_init__(self) -> None:
@@ -136,6 +153,7 @@ class NovelTypeRecord:
         self.rulebook = _normalized_rulebook(self.rulebook)
         self.trope_templates = _trope_templates(self.trope_templates)
         self.power_system_template = _power_system_template(self.power_system_template)
+        self.outline_template = _outline_template(self.outline_template)
         self.builtin = bool(self.builtin)
 
     @classmethod
@@ -163,6 +181,7 @@ class NovelTypeRecord:
             "quality_checks": list(self.quality_checks),
             "trope_templates": deepcopy(list(self.trope_templates)),
             "power_system_template": deepcopy(self.power_system_template),
+            "outline_template": deepcopy(self.outline_template),
         }
         if include_builtin:
             payload["builtin"] = self.builtin
@@ -181,6 +200,7 @@ def _record_from_plugin(plugin: GenrePlugin) -> NovelTypeRecord:
         quality_checks=plugin.quality_checks,
         trope_templates=plugin.trope_templates,
         power_system_template=deepcopy(plugin.power_system_template),
+        outline_template=copy_outline_template(plugin.plugin_id),
         builtin=True,
     )
 
@@ -252,6 +272,9 @@ class NovelTypeLibrary:
             merged["power_system_template"] = _custom_power_system_template(
                 payload.get("power_system_template")
             )
+            merged["outline_template"] = _custom_outline_template(
+                payload.get("outline_template")
+            )
             merged.update({"id": type_id, "builtin": False})
             records[type_id] = NovelTypeRecord.from_payload(merged)
             canonical_ids.add(canonical_id)
@@ -281,6 +304,9 @@ class NovelTypeLibrary:
                     **record.to_dict(),
                     "power_system_template": _custom_power_system_template(
                         record.power_system_template
+                    ),
+                    "outline_template": _custom_outline_template(
+                        record.outline_template
                     ),
                     "builtin": False,
                 }
@@ -312,6 +338,9 @@ class NovelTypeLibrary:
             if not current.builtin:
                 merged["power_system_template"] = _custom_power_system_template(
                     merged.get("power_system_template")
+                )
+                merged["outline_template"] = _custom_outline_template(
+                    merged.get("outline_template")
                 )
             updated = NovelTypeRecord.from_payload(merged)
             updated_payload = updated.to_dict()

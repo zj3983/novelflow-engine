@@ -86,6 +86,11 @@ def valid_payload() -> dict:
         "outline": {
             "overall": {
                 "story": "林照借断香炉留下的零碎提醒追查宗门旧案。",
+                "theme_statement": "守住事实，比赢下一次争斗更重要。",
+                "foreground_story": "林照从祖祠失火查到宗门旧案。",
+                "background_story": "多年前有人借改名和封档重分宗门权力。",
+                "book_objective": "公开旧案证据并改变宗门封档规则。",
+                "ending_image": "旧案名册在议事堂当众展开。",
                 "protagonist_goal": "在宗门站稳并查清旧案。",
                 "main_conflict": "掌管旧产的人持续销毁证据。",
                 "growth_path": "从只能守住现场成长为能调动宗门规则。",
@@ -101,6 +106,10 @@ def valid_payload() -> dict:
                     "obstacle": "赵衡掌握清点和封存权",
                     "payoff": "林照拿到进入旧档房的机会",
                     "end_state": "赵衡失去对祖祠的独占控制",
+                    "emotional_curve": "受压查证，抓住破绽，取得主动。",
+                    "key_results": ["保住现场证据", "取得旧档房资格", "锁定改名记录"],
+                    "hook_plan": "旧名册缺失的一页指向宗门高层。",
+                    "irreversible_change": "赵衡失去对祖祠和旧档房的独占控制。",
                     "stage_antagonist": "赵衡",
                     "long_term_antagonist_traces": ["旧名册有一页被换过"],
                 }
@@ -367,6 +376,17 @@ def test_generated_plan_allows_nonfinancial_quantities_and_qualitative_money_out
     plan = validate_generated_opening_plan(valid_payload)
 
     assert plan.outline.chapters[0].action == "击杀5只灰狼，升到2级，扣除手续费后款项到账"
+
+
+def test_amount_sanitizer_never_emits_prompt_instruction_as_story_event() -> None:
+    from packages.story_core.outline_planning import _sanitize_generated_narrative_value
+
+    sanitized = _sanitize_generated_narrative_value("平台扣除5%手续费后，到账1764.00元。")
+
+    assert "不在大纲中" not in sanitized
+    assert "写明具体数额" not in sanitized
+    assert "1764" not in sanitized
+    assert "5%" not in sanitized
 
 
 def test_generated_plan_allows_time_and_unrelated_percentage(valid_payload: dict) -> None:

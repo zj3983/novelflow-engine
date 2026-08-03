@@ -21,9 +21,20 @@ const SOURCE_LABELS: Record<PromptTemplateEntry["source"], string> = {
   project_override: "项目覆盖",
 };
 
+const APPLICABILITY_LABELS: Record<NonNullable<PromptTemplateEntry["applicability"]>, string> = {
+  all: "全部题材",
+  game_only: "仅网游",
+  non_game_only: "非网游",
+};
+
+function isActiveForProject(template: PromptTemplateEntry) {
+  return template.active_for_project !== false;
+}
+
 export function PromptTemplatesView({ projectId }: { projectId: string }) {
   const [templates, setTemplates] = useState<PromptTemplateEntry[]>([]);
   const [selectedKey, setSelectedKey] = useState("");
+  const [viewMode, setViewMode] = useState<"current" | "all">("current");
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<"project" | "global" | "restore" | null>(null);
@@ -39,9 +50,14 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
   const auditRequestId = useRef(0);
   const deepRequestId = useRef(0);
 
+  const visibleTemplates = useMemo(
+    () => viewMode === "all" ? templates : templates.filter(isActiveForProject),
+    [templates, viewMode],
+  );
+
   const selected = useMemo(
-    () => templates.find((template) => template.key === selectedKey) ?? templates[0] ?? null,
-    [selectedKey, templates],
+    () => visibleTemplates.find((template) => template.key === selectedKey) ?? visibleTemplates[0] ?? null,
+    [selectedKey, visibleTemplates],
   );
 
   async function loadTemplates(preferredKey?: string) {
@@ -59,9 +75,12 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
     try {
       const response = await fetchProjectPromptTemplates(projectId);
       setTemplates(response.templates);
-      const nextKey = preferredKey && response.templates.some((item) => item.key === preferredKey)
+      const currentTemplates = viewMode === "all"
+        ? response.templates
+        : response.templates.filter(isActiveForProject);
+      const nextKey = preferredKey && currentTemplates.some((item) => item.key === preferredKey)
         ? preferredKey
-        : response.templates[0]?.key ?? "";
+        : currentTemplates[0]?.key ?? "";
       setSelectedKey(nextKey);
       setContent(response.templates.find((item) => item.key === nextKey)?.content ?? "");
     } catch (reason) {
@@ -89,6 +108,15 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
     setAuditLoading(false);
     setDeepError("");
     setDeepLoading(false);
+  }
+
+  function changeViewMode(nextMode: "current" | "all") {
+    setViewMode(nextMode);
+    const nextTemplates = nextMode === "all" ? templates : templates.filter(isActiveForProject);
+    const nextTemplate = nextTemplates.find((template) => template.key === selectedKey) ?? nextTemplates[0];
+    if (nextTemplate && nextTemplate.key !== selectedKey) {
+      selectTemplate(nextTemplate);
+    }
   }
 
   async function runAudit() {
@@ -219,18 +247,26 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
 
   return (
     <div className="ws-template-workbench">
-      <aside className="ws-template-list" aria-label="提示词模板列表">
-        {templates.map((template) => (
-          <button
-            key={template.key}
-            type="button"
-            className={template.key === selected?.key ? "is-active" : ""}
-            onClick={() => selectTemplate(template)}
-          >
-            <strong>{template.title}</strong>
-            <small>{template.stage} · {SOURCE_LABELS[template.source]}</small>
-          </button>
-        ))}
+      <aside className="ws-template-sidebar">
+        <div className="ws-template-filter" role="group" aria-label="模板显示范围">
+          <button type="button" aria-pressed={viewMode === "current"} onClick={() => changeViewMode("current")}>当前项目</button>
+          <button type="button" aria-pressed={viewMode === "all"} onClick={() => changeViewMode("all")}>全部模板</button>
+        </div>
+        <div className="ws-template-list" aria-label="提示词模板列表">
+          {visibleTemplates.map((template) => (
+            <button
+              key={template.key}
+              type="button"
+              className={template.key === selected?.key ? "is-active" : ""}
+              onClick={() => selectTemplate(template)}
+            >
+              <strong>{template.title}</strong>
+              <small>
+                {template.stage} · {APPLICABILITY_LABELS[template.applicability ?? "all"]} · {SOURCE_LABELS[template.source]}
+              </small>
+            </button>
+          ))}
+        </div>
       </aside>
 
       {selected ? (
@@ -239,7 +275,7 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
             <div>
               <h2 id="prompt-template-title" className="ws-card__title">{selected.title}</h2>
               <p className="ws-card__hint">
-                {selected.key} · {SOURCE_LABELS[selected.source]} · 版本 {selected.version.slice(0, 12)}
+                {selected.key} · {APPLICABILITY_LABELS[selected.applicability ?? "all"]} · {SOURCE_LABELS[selected.source]} · 版本 {selected.version.slice(0, 12)}
               </p>
             </div>
           </div>

@@ -329,6 +329,59 @@
   tab-size: 2;
 }
 
+.templateTabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--ws-line);
+}
+
+.templateTab,
+.templateTabActive {
+  min-width: 76px;
+  min-height: 36px;
+  padding: 7px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ws-ink-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.templateTabActive {
+  border-bottom-color: var(--ws-accent);
+  color: var(--ws-ink);
+}
+
+.templatePanel {
+  display: grid;
+  gap: 15px;
+}
+
+.templateFields {
+  display: grid;
+  gap: 8px;
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+}
+
+.templateFields > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.templateFields code {
+  padding: 3px 6px;
+  border: 1px solid var(--ws-line);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--ws-ink-muted);
+  font-size: 11px;
+}
+
 .actions {
   display: flex;
   align-items: center;

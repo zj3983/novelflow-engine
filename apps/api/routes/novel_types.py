@@ -43,6 +43,7 @@ class NovelTypeWriteRequest(BaseModel):
     quality_checks: list[str] = Field(default_factory=list)
     trope_templates: list[dict[str, Any]] = Field(default_factory=list)
     power_system_template: dict[str, Any] | None = None
+    outline_template: dict[str, Any] | None = None
 
     @field_validator("name", "description", mode="before")
     @classmethod
@@ -56,13 +57,13 @@ class NovelTypeWriteRequest(BaseModel):
     def trim_string_lists(cls, value: Any) -> Any:
         return _trim_string_list(value)
 
-    @field_validator("power_system_template")
+    @field_validator("power_system_template", "outline_template")
     @classmethod
-    def reject_null_power_system_template(
+    def reject_null_object_templates(
         cls, value: dict[str, Any] | None
     ) -> dict[str, Any]:
         if value is None:
-            raise ValueError("power_system_template must be an object when supplied")
+            raise ValueError("template fields must be objects when supplied")
         return value
 
 

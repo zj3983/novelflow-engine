@@ -8,10 +8,11 @@ const executablePath = process.env.PLAYWRIGHT_EXECUTABLE_PATH;
 const repoRoot = path.resolve(__dirname, "../..").replaceAll("\\", "/");
 
 export default defineConfig({
-  // We keep E2E tests in repo-root `tests/e2e` but also retain local UI shell tests in `apps/web/tests`.
-  // testDir resolves relative to this config file (apps/web).
+  // The active file-project workbench suite lives with the web app. The repo-root
+  // tests/e2e suite targets the retired single-page story editor and is kept only
+  // as migration reference.
   testDir: "../..",
-  testMatch: ["apps/web/tests/**/*.spec.ts", "tests/e2e/**/*.spec.ts"],
+  testMatch: ["apps/web/tests/**/*.spec.ts"],
   testIgnore: [`${repoRoot}/.worktrees/**`],
   fullyParallel: true,
   timeout: 30_000,

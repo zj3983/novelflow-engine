@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import json
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -10,6 +12,7 @@ import apps.api.routes.prompt_audit as prompt_audit_routes
 from apps.api.routes.prompt_audit import init_prompt_audit_routes
 from packages.story_core.prompt_audit import audit_prompt
 from packages.story_core.prompt_audit_deep import DeepPromptAuditResult
+from packages.story_core.file_project_store import FileProjectStore
 
 
 def _client() -> TestClient:
@@ -31,6 +34,32 @@ def _deep_result(content: str, mode: str = "final_call") -> DeepPromptAuditResul
             },
         }
     )
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_prompt_project(root: Path, *, project_id: str, genre: str) -> FileProjectStore:
+    project_root = root / project_id
+    project = {"project_id": project_id, "title": project_id}
+    _write_json(
+        project_root / ".story-system" / "MASTER_SETTING.json",
+        {"project": project},
+    )
+    _write_json(project_root / ".webnovel" / "project.json", project)
+    _write_json(
+        project_root / ".webnovel" / "state.json",
+        {
+            "story_id": project_id,
+            "outline": "A chapter transparency fixture.",
+            "genre": genre,
+            "style": "serial fiction",
+            "current_chapter": 0,
+        },
+    )
+    return FileProjectStore(project_root)
 
 
 def test_init_routes_is_idempotent():
@@ -288,3 +317,109 @@ def test_main_app_keeps_health_root_and_project_independent_routes(monkeypatch):
     paths = [route.path for route in app.routes]
     assert paths.count("/prompt-audit") == 1
     assert paths.count("/prompt-audit/deep") == 1
+
+
+@pytest.mark.parametrize(
+    ("project_id", "genre", "profile_id", "expected_modules"),
+    [
+        (
+            "prompt-stage-game",
+            "网游",
+            "game_webnovel",
+            {
+                "director": ["game_webnovel.director"],
+                "writer": ["game_webnovel.writer"],
+                "review": ["game_webnovel.review"],
+                "revision": ["game_webnovel.revision"],
+                "length": ["game_webnovel.length"],
+            },
+        ),
+        (
+            "prompt-stage-xianxia",
+            "仙侠",
+            "generic",
+            {
+                "director": ["generic.director"],
+                "writer": ["common.writer"],
+                "review": ["generic.review"],
+                "revision": ["common.revision"],
+                "length": ["generic.length"],
+            },
+        ),
+    ],
+)
+def test_file_project_prompt_artifacts_and_actual_calls_expose_active_genre_stage_modules(
+    tmp_path: Path,
+    monkeypatch,
+    project_id: str,
+    genre: str,
+    profile_id: str,
+    expected_modules: dict[str, list[str]],
+):
+    from apps.api.main import app
+
+    export_root = tmp_path / "exported-projects"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(export_root))
+    store = _write_prompt_project(export_root, project_id=project_id, genre=genre)
+    call_log = store.prompt_call_log()
+    call_ids = {
+        stage_name: call_log.start(
+            chapter_number=1,
+            stage=f"{stage_name} runtime",
+            agent="planner" if stage_name == "director" else stage_name,
+            genre_stage=stage_name,
+            user_prompt=f"Run the {stage_name} stage.",
+        )
+        for stage_name in ("director", "writer", "review", "revision")
+    }
+    client = TestClient(app)
+
+    preview_response = client.get(
+        f"/file-projects/file:{project_id}/prompt-preview?chapter_number=1"
+    )
+    call_responses = {
+        stage_name: client.get(
+            f"/file-projects/file:{project_id}/prompt-calls/{call_id}"
+        )
+        for stage_name, call_id in call_ids.items()
+    }
+
+    assert preview_response.status_code == 200
+    assert all(response.status_code == 200 for response in call_responses.values())
+    preview = preview_response.json()
+    prompt_artifacts = preview["prompts"]
+    assert prompt_artifacts
+    assert {item["genre_stage_profile"] for item in prompt_artifacts} == {profile_id}
+    artifact_stages = {
+        "director_plan": "director",
+        "writer_body": "writer",
+        "writing_taskbook": "writer",
+        "revision": "revision",
+        "expansion": "length",
+        "compression": "length",
+        "review_agents": "review",
+    }
+    for artifact in prompt_artifacts:
+        assert artifact["genre_stage_modules"] == expected_modules[artifact_stages[artifact["key"]]]
+    calls = {stage_name: response.json() for stage_name, response in call_responses.items()}
+    for stage_name, call in calls.items():
+        assert call["genre_stage_profile"] == profile_id
+        assert call["genre_stage_modules"] == expected_modules[stage_name]
+
+    if profile_id == "generic":
+        serialized = json.dumps(
+            {
+                "preview_metadata": [
+                    {
+                        "genre_stage_profile": item["genre_stage_profile"],
+                        "genre_stage_modules": item["genre_stage_modules"],
+                    }
+                    for item in prompt_artifacts
+                ],
+                "call_metadata": calls,
+            },
+            ensure_ascii=False,
+        )
+        assert "game_webnovel" not in serialized
+        assert "游戏" not in serialized
+        assert "网游" not in serialized

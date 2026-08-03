@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { ConfirmedFactsPanel } from "../../../../components/ws/ConfirmedFactsPanel";
+import { EquipmentCatalog } from "../../../../components/ws/EquipmentCatalog";
 import { MonsterBestiary } from "../../../../components/ws/MonsterBestiary";
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
@@ -11,6 +12,7 @@ import { WorldBackgroundEditor } from "../../../../components/ws/WorldBackground
 import { WorldEntitiesEditor } from "../../../../components/ws/WorldEntitiesEditor";
 import { WorldRulesEditor } from "../../../../components/ws/WorldRulesEditor";
 import { enrichProjectWorld } from "../../../../lib/api";
+import { isGameWebnovel } from "../../../../lib/worldDisplay";
 
 export default function WorldPage() {
   const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
@@ -79,7 +81,12 @@ export default function WorldPage() {
           />
           <WorldRulesEditor projectId={projectId} blueprint={blueprint} onSaved={refresh} />
           <WorldEntitiesEditor projectId={projectId} blueprint={blueprint} onSaved={refresh} />
-          <MonsterBestiary projectId={projectId} blueprint={blueprint} onSaved={refresh} />
+          {isGameWebnovel(project) ? (
+            <>
+              <EquipmentCatalog projectId={projectId} blueprint={blueprint} onSaved={refresh} />
+              <MonsterBestiary projectId={projectId} blueprint={blueprint} onSaved={refresh} />
+            </>
+          ) : null}
           <ConfirmedFactsPanel facts={story?.world_facts ?? []} />
         </>
       ) : null}

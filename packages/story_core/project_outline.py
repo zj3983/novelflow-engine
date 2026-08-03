@@ -18,8 +18,21 @@ class ExtensionGate(_OutlineModel):
     close_route: str = ""
 
 
+class LongTermStoryLine(_OutlineModel):
+    name: str = ""
+    purpose: str = ""
+    start_state: str = ""
+    progression_steps: list[str] = Field(default_factory=list)
+    final_payoff: str = ""
+
+
 class OverallOutline(_OutlineModel):
     story: str = ""
+    theme_statement: str = ""
+    foreground_story: str = ""
+    background_story: str = ""
+    book_objective: str = ""
+    ending_image: str = ""
     protagonist_goal: str = ""
     main_conflict: str = ""
     growth_path: str = ""
@@ -29,6 +42,12 @@ class OverallOutline(_OutlineModel):
     extension_ceiling_chapter: int = Field(default=1, ge=1, strict=True)
     current_strategy: OutlineStrategy = "observe"
     ending_contract: str = ""
+    core_selling_point: str = ""
+    long_term_lines: list[LongTermStoryLine] = Field(default_factory=list)
+    planned_arc_count: int = Field(default=0, ge=0, strict=True)
+    planned_length: int = Field(default=0, ge=0, strict=True)
+    expansion_route: str = ""
+    closing_route: str = ""
 
 
 class ArcOutline(_OutlineModel):
@@ -39,6 +58,10 @@ class ArcOutline(_OutlineModel):
     goal: str = ""
     obstacle: str = ""
     payoff: str = ""
+    emotional_curve: str = ""
+    key_results: list[str] = Field(default_factory=list)
+    hook_plan: str = ""
+    irreversible_change: str = ""
     trope_id: str | None = None
     end_state: str = ""
     stage_antagonist: str = ""
@@ -46,6 +69,15 @@ class ArcOutline(_OutlineModel):
     game_line_payoff: str = ""
     reality_line_payoff: str = ""
     extension_gate: ExtensionGate = Field(default_factory=ExtensionGate)
+    active_long_term_lines: list[str] = Field(default_factory=list)
+    core_loop: str = ""
+    escalations: list[str] = Field(default_factory=list)
+    midpoint_turn: str = ""
+    climax: str = ""
+    relationship_changes: list[str] = Field(default_factory=list)
+    foreshadowing_in: list[str] = Field(default_factory=list)
+    foreshadowing_out: list[str] = Field(default_factory=list)
+    next_arc_entry: str = ""
 
     @field_validator("id")
     @classmethod
@@ -119,6 +151,9 @@ class ChapterPlan(_OutlineModel):
     cast: list[str] = Field(default_factory=list)
     level_target: str | int | None = None
     attribute_allocation_decision: AttributeAllocationDecision | None = None
+    opponent_response: str = ""
+    emotional_change: str = ""
+    gain_or_loss: str = ""
 
     @field_validator("chapter_number", mode="before")
     @classmethod
@@ -158,8 +193,6 @@ class ProjectOutline(_OutlineModel):
             for arc in self.arcs:
                 if arc.end_chapter > self.overall.core_ending_chapter:
                     continue
-                if not arc.game_line_payoff.strip() or not arc.reality_line_payoff.strip():
-                    raise ValueError(f"missing_arc_dual_line_payoff:{arc.id}")
                 if (
                     not arc.extension_gate.continue_route.strip()
                     or not arc.extension_gate.close_route.strip()
@@ -200,6 +233,52 @@ def _with_elastic_defaults(payload: Any) -> Any:
     overall.setdefault("extension_ceiling_chapter", overall["core_ending_chapter"])
     overall.setdefault("current_strategy", "observe")
     overall.setdefault("ending_contract", overall.get("ending_direction", ""))
+    overall.setdefault("theme_statement", "")
+    overall.setdefault("foreground_story", str(overall.get("story") or ""))
+    overall.setdefault("background_story", "")
+    overall.setdefault(
+        "book_objective",
+        str(
+            overall.get("ending_contract")
+            or overall.get("ending_direction")
+            or overall.get("protagonist_goal")
+            or ""
+        ),
+    )
+    overall.setdefault("ending_image", str(overall.get("ending_direction") or ""))
+    overall.setdefault("core_selling_point", "")
+    overall.setdefault("long_term_lines", [])
+    overall.setdefault("planned_arc_count", len(arcs))
+    overall.setdefault("planned_length", overall.get("core_ending_chapter", legacy_end))
+    overall.setdefault("expansion_route", "")
+    overall.setdefault("closing_route", str(overall.get("ending_contract") or ""))
+    for arc in arcs:
+        if not isinstance(arc, dict):
+            continue
+        arc.setdefault("emotional_curve", "")
+        fallback_results: list[str] = []
+        for field in ("goal", "payoff", "end_state"):
+            value = str(arc.get(field) or "").strip()
+            if value and value not in fallback_results:
+                fallback_results.append(value)
+        arc.setdefault("key_results", fallback_results)
+        traces = arc.get("long_term_antagonist_traces")
+        arc.setdefault(
+            "hook_plan",
+            "、".join(str(item).strip() for item in traces if str(item).strip())
+            if isinstance(traces, list)
+            else "",
+        )
+        arc.setdefault("irreversible_change", str(arc.get("end_state") or ""))
+        arc.setdefault("active_long_term_lines", [])
+        arc.setdefault("core_loop", "")
+        arc.setdefault("escalations", [])
+        arc.setdefault("midpoint_turn", "")
+        arc.setdefault("climax", str(arc.get("payoff") or ""))
+        arc.setdefault("relationship_changes", [])
+        arc.setdefault("foreshadowing_in", [])
+        arc.setdefault("foreshadowing_out", [])
+        arc.setdefault("next_arc_entry", "")
     return prepared
 
 
@@ -215,6 +294,19 @@ def normalize_project_outline(payload: Any) -> dict[str, Any]:
             chapter.pop("level_target", None)
         if chapter.get("attribute_allocation_decision") is None:
             chapter.pop("attribute_allocation_decision", None)
+    return normalized
+
+
+def normalize_outline_for_story_type(
+    payload: Any,
+    *,
+    is_game_story: bool,
+) -> dict[str, Any]:
+    normalized = normalize_project_outline(payload)
+    if not is_game_story:
+        for arc in normalized["arcs"]:
+            arc["game_line_payoff"] = ""
+            arc["reality_line_payoff"] = ""
     return normalized
 
 
@@ -305,6 +397,11 @@ def select_outline_context(
         key: normalized["overall"][key]
         for key in (
             "story",
+            "theme_statement",
+            "foreground_story",
+            "background_story",
+            "book_objective",
+            "ending_image",
             "protagonist_goal",
             "main_conflict",
             "growth_path",
@@ -312,6 +409,12 @@ def select_outline_context(
             "primary_trope_id",
             "current_strategy",
             "ending_contract",
+            "core_selling_point",
+            "long_term_lines",
+            "planned_arc_count",
+            "planned_length",
+            "expansion_route",
+            "closing_route",
         )
     }
     active_arc_context = (
@@ -325,12 +428,25 @@ def select_outline_context(
                 "goal",
                 "obstacle",
                 "payoff",
+                "emotional_curve",
+                "key_results",
+                "hook_plan",
+                "irreversible_change",
                 "trope_id",
                 "game_line_payoff",
                 "reality_line_payoff",
                 "end_state",
                 "stage_antagonist",
                 "long_term_antagonist_traces",
+                "active_long_term_lines",
+                "core_loop",
+                "escalations",
+                "midpoint_turn",
+                "climax",
+                "relationship_changes",
+                "foreshadowing_in",
+                "foreshadowing_out",
+                "next_arc_entry",
             )
         }
         if active_arc is not None

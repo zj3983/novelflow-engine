@@ -14,6 +14,7 @@ import urllib.error
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from packages.story_core.http_retry import post_json_with_retry
+from packages.story_core.model_gateway.contracts import ModelRequest, ModelResponse
 from packages.story_core.runtime_config import resolve_openai_runtime_settings
 
 if TYPE_CHECKING:
@@ -163,6 +164,38 @@ class BaseOpenAIProvider:
             provider=settings.provider,
             codex_command=settings.codex_command,
         )
+
+    def complete(self, request: ModelRequest) -> ModelResponse:
+        settings = self._runtime_settings()
+        payload: dict[str, Any] = {
+            "model": request.model,
+            "messages": [
+                {"role": "system", "content": request.system_prompt},
+                {"role": "user", "content": request.prompt},
+            ],
+        }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        if request.max_tokens is not None:
+            payload["max_tokens"] = request.max_tokens
+        try:
+            raw = self._post_json("/chat/completions", payload, settings)
+            content = raw["choices"][0]["message"]["content"]
+            if isinstance(content, list):
+                content = "\n".join(
+                    str(item.get("text", "")) if isinstance(item, dict) else str(item)
+                    for item in content
+                )
+            return ModelResponse.success(
+                request,
+                text=str(content or ""),
+                request_id=str(raw.get("id") or ""),
+                usage=raw.get("usage") if isinstance(raw.get("usage"), dict) else {},
+                raw=raw,
+            )
+        except Exception as exc:
+            self._set_last_error(str(exc))
+            return ModelResponse.failure(request, str(exc) or exc.__class__.__name__)
 
 
 class StoryAgentProvider(Protocol):

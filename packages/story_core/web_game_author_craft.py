@@ -10,6 +10,43 @@ from packages.story_core.web_game_economy import (
 )
 
 
+def web_game_revision_fact_lock() -> str:
+    """Return the continuity surface a web-game revision must preserve."""
+
+    return "职业、余额、库存、任务、装备和NPC能知道什么/不知道什么保持不变"
+
+
+def web_game_writer_method_lines(
+    chapter_number: int,
+    *,
+    plan: dict[str, Any] | None = None,
+    language_cards: list[Any] | None = None,
+) -> list[str]:
+    """Render the single compact web-game genre method card for writers."""
+
+    phase_hint = (
+        "第一章试清一条基础规则、藏住第一次优势；领奖、修理、补给服从项目账本。"
+        if chapter_number == 1
+        else "后续围绕当前等级目标推进，不无理由跨阶段。"
+    )
+    lines = [
+        "## 网游写法",
+        phase_hint,
+        "围绕眼前目标行动，遇到阻力后付出代价，并拿到一个看得见的小进展。",
+        "规则通过战斗、任务、背包、价格、NPC回应和结算出现，不用旁白解释。",
+        "面板只显示马上影响选择的事实；怪物面板首次写名称、等级、生命和攻击方式，同类普通怪后续不重复，精英怪和首领补技能、特性，掉落在击杀后结算；面板后不复述字段含义，下一句直接写人物的动作、选择或受到的影响。",
+        "任务、等级、属性、技能、装备、消耗、掉落、货币必须与项目账本一致。",
+        "玩家、NPC、怪物和组织按可见证据反应；隐藏优势只在幕后起作用，不因一次普通收益暴露。",
+        "交易写游戏内操作和结果；现实兑换仅在项目设定允许时出现。",
+    ]
+    for card in language_cards or []:
+        lines.append(
+            f"语言卡[{card.card_id}]：常用{'、'.join(card.preferred)}；"
+            f"避开{'、'.join(card.avoid)}；例：{card.example}"
+        )
+    return lines
+
+
 def build_web_game_author_craft(chapter_number: int, *, chapter_goal: str = "") -> dict[str, Any]:
     """Return a compact craft profile for web-game chapters.
 

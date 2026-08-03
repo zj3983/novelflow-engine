@@ -66,6 +66,25 @@ def _selected_novel_type_plugin(project: NovelProject, plugins=None):
     return plugin_by_id["generic_webnovel"]
 
 
+def _requires_structured_power_system(plugin_id: str) -> bool:
+    return plugin_id not in {"generic_webnovel", "urban"}
+
+
+def _uses_game_world_modules(plugin_id: str) -> bool:
+    return plugin_id == "game_webnovel"
+
+
+def _world_plugin_prompt_guide(plugins: list[Any], *, uses_game_modules: bool) -> str:
+    payload = json.loads(plugin_prompt_guide(plugins))
+    if not uses_game_modules:
+        for plugin in payload:
+            rulebook = plugin.get("rulebook") if isinstance(plugin, dict) else None
+            if isinstance(rulebook, dict):
+                rulebook.pop("quest_rules", None)
+                rulebook.pop("panel_rules", None)
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _safe_compact_text(value: Any, limit: int) -> str:
     try:
         return compact_text(value, limit)
@@ -285,6 +304,19 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
     plugins = select_genre_plugins(prompt_project)
     selected_plugin = _selected_novel_type_plugin(prompt_project, plugins)
     power_template = _runtime_power_template(selected_plugin)
+    requires_power_system = _requires_structured_power_system(selected_plugin.plugin_id)
+    uses_game_modules = _uses_game_world_modules(selected_plugin.plugin_id)
+    world_fields = [
+        "premise", "world_rules", "locations", "factions",
+        "current_arc", "constraints", "relationship_graph", "progression_rules",
+        "economy_rules", "faction_rules",
+        "chapter_formula", "forbidden_breaks", "opening_arc", "volume_plan",
+        "longform_framework", "world_systems", "living_world",
+    ]
+    if requires_power_system:
+        world_fields.extend(("power_system", "power_system_spec"))
+    if uses_game_modules:
+        world_fields.extend(("quest_rules", "panel_rules", "npc_system", "quest_network", "server_runtime", "map_ecology"))
     mode_line = (
         "请在不重写已有剧情的前提下，补强中文长篇网文项目的世界规则手册，只返回 JSON。"
         if rules_only
@@ -295,7 +327,7 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "不要写小说正文，不要推进章节剧情；只整理世界观、角色档案、关系网、类型规则和后续写作约束。",
             "必须沿用输入里的既有设定，不要随意改名；规则要能支撑连续几十章的成长、资源、势力冲突和爽点循环。",
             "输出 JSON 字段：",
-            "world_blueprint: {premise, world_rules, power_system, power_system_spec, locations, factions, current_arc, constraints, relationship_graph, progression_rules, economy_rules, quest_rules, faction_rules, panel_rules, chapter_formula, forbidden_breaks, opening_arc, volume_plan, longform_framework, world_systems, living_world, npc_system, quest_network, server_runtime, map_ecology}",
+            f"world_blueprint: {{{', '.join(world_fields)}}}",
             "power_system_spec 必须是完整具体的结构化力量体系，禁止使用待定、略、同上或其他模糊占位符。规范字段：",
             "name: 体系名称字符串；origin: 力量来源与获得方式字符串数组；attributes: [{name, effect}] 属性名与具体效果；",
             "paths: [{name, role, core_resource, core_attributes, weapons, armor, combat_loop, strengths, weaknesses, skill_categories, branches, transfer_task, advancement}]，逐路线写明职责、资源、属性、武防、战斗循环、强弱项、技能类别、至少两个分支、转职任务和晋升；",
@@ -303,6 +335,17 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "skills: 技能获得与使用规则；equipment: 装备类别与限制；resources: 资源产出、转化与消耗；advancement: 晋升条件与流程；",
             "costs: 使用和突破代价；counters: 路线或机制克制；boundaries: 越级与能力硬边界；social_impact: 对组织、职业和秩序的影响；visibility: 角色可观察到的信息；continuity_ledger: 后续逐章必须追踪的状态字段。以上字段除 name 外均使用数组，paths/stages/attributes 使用前述对象数组。",
             f"selected_novel_type: {selected_plugin.plugin_id}",
+            (
+                "game_class_advancement_rule: 所有基础职业共用三个转职节点："
+                "Lv.10正式转职、Lv.30选择职业分支、Lv.60晋升传承职业。"
+                "power_system_spec.class_advancement_tiers 必须完整列出三个节点；"
+                "每个 paths 条目必须提供 advancement_tree，逐节点列出 options，"
+                "每个选项必须写明 name、requirements、transfer_task、ability_changes、"
+                "new_resources、equipment_permissions、failure_consequence、next_options。"
+                "隐藏职业只能作为相同等级节点内的特殊选项，不得改变转职等级。"
+                if selected_plugin.plugin_id == "game_webnovel"
+                else "game_class_advancement_rule: not_applicable"
+            ),
             f"genre_power_system_template: {_serialized_json(power_template)}",
             "character_profiles: [{name, role, motivation, current_state, personality, speech_style, goals, secrets, conflict_hooks}]",
             "world_summary: 120字以内的世界摘要",
@@ -320,16 +363,37 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "living_world 必须包含：daily_routines, economy, power_structure, information_network, player_ecology, information_visibility_rules, world_reaction_ladder, location_functions, timeline, reaction_rules。",
             "living_world 要回答：普通人每天在做什么，资源如何流动，谁控制秩序，消息如何传播，地点有什么功能，时间如何推进，主角行动会造成什么连锁反应。",
             "如果是网游/游戏经济题材，必须明确币制和低级物价尺度，并严格复用题材插件提供的交易行与官方兑换统一边界。",
-            f"已识别题材插件：{plugin_prompt_guide(plugins)}",
+            f"已识别题材插件：{_world_plugin_prompt_guide(plugins, uses_game_modules=uses_game_modules)}",
             "请根据题材插件补齐可泛化的类型规则；若是复合题材，主题材负责主线逻辑，副题材提供钩子、规则或爽点。",
+        ]
+    if not requires_power_system:
+        power_only_prefixes = (
+            "power_system_spec ",
+            "name:",
+            "paths:",
+            "stages:",
+            "skills:",
+            "costs:",
+            "game_class_advancement_rule:",
+            "genre_power_system_template:",
+        )
+        lines = [line for line in lines if not line.startswith(power_only_prefixes)]
+    if not uses_game_modules:
+        lines = [
+            line.replace(", player_ecology", "")
+            .replace("quest_rules/", "")
+            .replace("panel_rules/", "")
+            for line in lines
         ]
     context_prefix = "当前项目数据："
     template_prefix = "genre_power_system_template: "
-    template_index = next(
-        index for index, line in enumerate(lines) if line.startswith(template_prefix)
-    )
     lines_without_template = list(lines)
-    lines_without_template[template_index] = template_prefix
+    template_index = next(
+        (index for index, line in enumerate(lines) if line.startswith(template_prefix)),
+        None,
+    )
+    if template_index is not None:
+        lines_without_template[template_index] = template_prefix
     fixed_without_template = len(
         "\n".join([*lines_without_template, context_prefix])
     )
@@ -338,16 +402,17 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "world_enrichment_prompt_fixed_instructions_exceed_budget"
         )
 
-    template_budget = min(
-        6_000,
-        _FINAL_PROMPT_MAX
-        - fixed_without_template
-        - _MIN_PROJECT_CONTEXT_BUDGET,
-    )
-    if template_budget <= 0:
-        raise WorldEnrichmentError("world_enrichment_prompt_budget_exceeded")
-    power_template = _core_power_template(power_template, template_budget)
-    lines[template_index] = f"{template_prefix}{_serialized_json(power_template)}"
+    if template_index is not None:
+        template_budget = min(
+            6_000,
+            _FINAL_PROMPT_MAX
+            - fixed_without_template
+            - _MIN_PROJECT_CONTEXT_BUDGET,
+        )
+        if template_budget <= 0:
+            raise WorldEnrichmentError("world_enrichment_prompt_budget_exceeded")
+        power_template = _core_power_template(power_template, template_budget)
+        lines[template_index] = f"{template_prefix}{_serialized_json(power_template)}"
 
     fixed_length = len("\n".join([*lines, context_prefix]))
     context_budget = min(
@@ -1661,6 +1726,34 @@ def _derive_author_constraints(world_blueprint: dict[str, Any]) -> list[str]:
     return deduped
 
 
+def _drop_irrelevant_genre_constraints(
+    constraints: list[str],
+    *,
+    uses_game_modules: bool,
+    requires_power_system: bool,
+) -> list[str]:
+    if uses_game_modules or requires_power_system:
+        return constraints
+    irrelevant_markers = (
+        "金手指",
+        "玄幻系统文",
+        "游戏系统",
+        "万能系统",
+        "不写超自然",
+        "爽点",
+        "玩家",
+        "NPC",
+        "任务面板",
+        "属性面板",
+        "等级经验",
+    )
+    return [
+        constraint
+        for constraint in constraints
+        if not any(marker in constraint for marker in irrelevant_markers)
+    ]
+
+
 def _plugin_metadata(project: NovelProject) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     plugins = select_genre_plugins(project)
     rulebook = merge_plugin_rulebooks(plugins)
@@ -1694,6 +1787,8 @@ def _validated_power_system_merge(
     rules_only: bool | None,
 ) -> tuple[dict[str, Any] | None, bool]:
     selected_plugin = _selected_novel_type_plugin(project)
+    if not _requires_structured_power_system(selected_plugin.plugin_id):
+        return None, False
     validation_args = {
         "novel_type_id": selected_plugin.plugin_id,
         "template": selected_plugin.power_system_template,
@@ -1747,6 +1842,10 @@ def _merge_enrichment(
     )
     next_project = project.model_copy(deep=True)
     genre_plugins, plugin_rulebook = _plugin_metadata(project)
+    plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
+    uses_game_modules = "game_webnovel" in plugin_ids
+    selected_plugin = _selected_novel_type_plugin(project)
+    requires_power_system = _requires_structured_power_system(selected_plugin.plugin_id)
 
     relationships = _as_relationships(
         parsed.get("relationship_graph") or incoming_world.get("relationship_graph") or project.relationship_graph,
@@ -1755,7 +1854,14 @@ def _merge_enrichment(
     world_blueprint: dict[str, Any] = {
         "premise": compact_text(str(incoming_world.get("premise") or current_world.get("premise") or project.world_summary), 360),
         "world_rules": _merge_string_lists(incoming_world.get("world_rules"), current_world.get("world_rules"), limit=16),
-        "power_system": (
+        "locations": _as_entry_list(incoming_world.get("locations") or current_world.get("locations"), 16),
+        "factions": _as_entry_list(incoming_world.get("factions") or current_world.get("factions"), 16),
+        "current_arc": compact_text(str(incoming_world.get("current_arc") or current_world.get("current_arc") or project.current_focus), 520),
+        "relationship_graph": relationships,
+        "genre_plugins": genre_plugins,
+    }
+    if requires_power_system:
+        world_blueprint["power_system"] = (
             legacy_power_summary(power_system_spec)
             if power_system_changed
             else deepcopy(current_world.get("power_system", []))
@@ -1765,13 +1871,7 @@ def _merge_enrichment(
                 current_world.get("power_system"),
                 limit=16,
             )
-        ),
-        "locations": _as_entry_list(incoming_world.get("locations") or current_world.get("locations"), 16),
-        "factions": _as_entry_list(incoming_world.get("factions") or current_world.get("factions"), 16),
-        "current_arc": compact_text(str(incoming_world.get("current_arc") or current_world.get("current_arc") or project.current_focus), 520),
-        "relationship_graph": relationships,
-        "genre_plugins": genre_plugins,
-    }
+        )
     if power_system_spec is not None:
         world_blueprint["power_system_spec"] = deepcopy(power_system_spec)
     world_blueprint["opening_arc"] = _merge_opening_arc(project, incoming_world, current_world, genre_plugins)
@@ -1780,15 +1880,19 @@ def _merge_enrichment(
     world_blueprint["progression_ledger"] = _merge_progression_ledger(project, incoming_world, current_world, genre_plugins)
     world_blueprint["world_systems"] = _merge_world_systems(project, incoming_world, current_world, genre_plugins)
     world_blueprint["living_world"] = _merge_living_world(project, incoming_world, current_world, genre_plugins)
-    world_blueprint["npc_system"] = _merge_npc_system(project, incoming_world, current_world, genre_plugins)
-    world_blueprint["quest_network"] = _merge_quest_network(project, incoming_world, current_world, genre_plugins)
-    world_blueprint["server_runtime"] = _merge_server_runtime(project, incoming_world, current_world, genre_plugins)
-    world_blueprint["map_ecology"] = _merge_map_ecology(project, incoming_world, current_world, genre_plugins)
+    if not uses_game_modules:
+        world_blueprint["living_world"].pop("player_ecology", None)
+    else:
+        world_blueprint["npc_system"] = _merge_npc_system(project, incoming_world, current_world, genre_plugins)
+        world_blueprint["quest_network"] = _merge_quest_network(project, incoming_world, current_world, genre_plugins)
+        world_blueprint["server_runtime"] = _merge_server_runtime(project, incoming_world, current_world, genre_plugins)
+        world_blueprint["map_ecology"] = _merge_map_ecology(project, incoming_world, current_world, genre_plugins)
     if incoming_world.get("genre_plugin_ids") or current_world.get("genre_plugin_ids"):
         world_blueprint["genre_plugin_ids"] = incoming_world.get("genre_plugin_ids") or current_world.get("genre_plugin_ids")
 
-    plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
     for field in RULEBOOK_FIELDS:
+        if field in {"quest_rules", "panel_rules"} and not uses_game_modules:
+            continue
         sources = (
             (
                 [*market_rules(), *appraisal_rules(), *exchange_rules()],
@@ -1806,7 +1910,7 @@ def _merge_enrichment(
         )
 
     derived_constraints = _derive_author_constraints(world_blueprint)
-    world_blueprint["constraints"] = _merge_string_lists(
+    merged_constraints = _merge_string_lists(
         incoming_world.get("constraints"),
         current_world.get("constraints"),
         project.author_constraints,
@@ -1814,14 +1918,23 @@ def _merge_enrichment(
         limit=8,
         item_limit=200,
     )
+    world_blueprint["constraints"] = _drop_irrelevant_genre_constraints(
+        merged_constraints,
+        uses_game_modules=uses_game_modules,
+        requires_power_system=requires_power_system,
+    )
 
     next_project.world_blueprint = world_blueprint
-    next_project.author_constraints = _merge_string_lists(
+    next_project.author_constraints = _drop_irrelevant_genre_constraints(
+        _merge_string_lists(
         project.author_constraints,
         world_blueprint["constraints"],
         derived_constraints,
         limit=8,
         item_limit=200,
+        ),
+        uses_game_modules=uses_game_modules,
+        requires_power_system=requires_power_system,
     )
     next_project.character_profiles = _as_character_profiles(
         parsed.get("character_profiles"),

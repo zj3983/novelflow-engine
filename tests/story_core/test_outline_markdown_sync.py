@@ -218,6 +218,34 @@ def test_round_trip_export_then_import_deep_equal(tmp_path: Path) -> None:
     assert (root / "大纲" / "爽点规划.md").read_text(encoding="utf-8") == "# 爽点规划\n人类专属\n"
 
 
+def test_long_form_outline_fields_round_trip_through_markdown(tmp_path: Path) -> None:
+    root = _make_project(tmp_path)
+    outline = import_markdown_outline(root)
+    assert outline is not None
+    outline["overall"].update(
+        theme_statement="力量不能代替选择。",
+        foreground_story="主角处理眼前冲突并建立自己的位置。",
+        background_story="幕后势力借每次冲突推进长期计划。",
+        book_objective="主角公开真相并改变旧秩序。",
+        ending_image="旧门重新打开，主角把钥匙交给后来者。",
+    )
+    outline["arcs"][0].update(
+        emotional_curve="先压后扬，卷尾留下余震。",
+        key_results=["取得立足身份", "赢得关键盟友", "拿到后台线索"],
+        hook_plan="本卷留下的旧印记在第三卷回收。",
+        irreversible_change="主角公开站队，不能再退回旁观位置。",
+    )
+
+    assert export_outline_to_markdown(root, outline) == "ok"
+    restored = import_markdown_outline(root)
+
+    assert restored is not None
+    assert restored["overall"]["theme_statement"] == "力量不能代替选择。"
+    assert restored["overall"]["background_story"].startswith("幕后势力")
+    assert restored["arcs"][0]["key_results"] == ["取得立足身份", "赢得关键盟友", "拿到后台线索"]
+    assert restored["arcs"][0]["irreversible_change"].startswith("主角公开")
+
+
 def test_export_preserves_md_only_content_and_unknown_sections(tmp_path: Path) -> None:
     root = _make_project(tmp_path)
     json1 = import_markdown_outline(root)

@@ -720,7 +720,6 @@ HARD_REVIEWERS: frozenset[str] = frozenset({
     "required_beats_critical",    # >50% required_beats 未在正文落地
     "plot_spine_critical",
     "longform_payoff_missing",
-    "trope_beat_missing",
 })
 
 SOFT_REVIEWERS: frozenset[str] = frozenset({
@@ -738,6 +737,7 @@ SOFT_REVIEWERS: frozenset[str] = frozenset({
     "required_beats_partial",     # required_beats 部分覆盖或少量缺失
     "plot_spine_partial",
     "longform_followup_weak",
+    "trope_beat_missing",        # 套路只提供方向，不应单独强迫正文返工
 })
 
 SOFT_REVISION_THRESHOLD = 3

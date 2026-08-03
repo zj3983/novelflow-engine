@@ -3,21 +3,33 @@ from pathlib import Path
 import pytest
 
 import packages.story_core.orchestrator as orchestrator_module
+import packages.story_core.genre_stages.game_webnovel.director as game_director_module
+import packages.story_core.genre_stages.game_webnovel.revision as game_revision_module
+import packages.story_core.genre_stages.game_webnovel.writer as game_writer_module
 
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.genre_types.urban import URBAN
 from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.genre_stages.common_writer import (
+    _plan_target_chars,
+    _writer_character_section,
+    _writer_craft_section,
+)
+from packages.story_core.genre_stages.game_webnovel.writer import (
+    _augment_game_character_section,
+    _web_game_writing_method_lines,
+)
 from packages.story_core.orchestrator import (
     StoryOrchestrator,
     _character_context_for_prompt,
     _compact_writer_plan_for_prompt,
-    _web_game_writing_method_lines,
-    _writer_character_section,
-    _writer_fact_section,
+    _director_context_payload,
     _review_context_facts,
 )
-from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
-from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
+from packages.story_core.web_game_economy import (
+    normalize_legacy_economy_prompt_value,
+    opening_market_exchange_flow_lines,
+)
 from packages.story_core.writing_packet import build_codex_writing_packet
 
 
@@ -44,6 +56,184 @@ def _writer_power_spec() -> dict:
         "boundaries": ["不得无条件跨越两个阶段"],
         "continuity_ledger": ["level", "class_path", "skills", "equipment", "resources", "conditions"],
     }
+
+
+def test_writer_default_length_matches_quality_target_instead_of_triggering_expansion():
+    assert _plan_target_chars({}) == "4200到5000字，绝对不要超过5500字"
+    assert _plan_target_chars({"target_chars": 3000}) == "4200到5000字，绝对不要超过5500字"
+    assert _plan_target_chars({"target_chars": 4800}) == "4500到5100字，绝对不要超过5500字"
+
+
+def test_director_context_uses_current_chapter_cast_not_future_outline_names():
+    story = StoryState(
+        story_id="s-current-cast",
+        outline="The long outline eventually introduces Lu Heng.",
+        genre="urban",
+        style="",
+        outline_context={"chapter": {"chapter_number": 1, "cast": ["Shen Chuan", "Shen Yu"]}},
+        characters=[
+            CharacterState(name="Shen Chuan", role="protagonist"),
+            CharacterState(name="Shen Yu", role="son"),
+            CharacterState(name="Lu Heng", role="future antagonist"),
+        ],
+    )
+
+    payload = _director_context_payload(story, 1)
+    names = [card["identity"]["name"] for card in payload["character_cards"]["cards"]]
+    snapshot_names = [card["name"] for card in payload["project_snapshot"]["characters"]]
+
+    assert names == ["Shen Chuan", "Shen Yu"]
+    assert snapshot_names == ["Shen Chuan", "Shen Yu"]
+
+
+def test_writer_character_section_uses_story_identity_instead_of_internal_role_label():
+    story = StoryState(
+        story_id="s-display-role",
+        outline="A watchmaker faces eviction.",
+        genre="urban",
+        style="",
+        characters=[
+            CharacterState(
+                name="Shen Chuan",
+                role="protagonist",
+                identity_profile={
+                    "current_identity": "old mall watch shop owner",
+                    "occupation": "watchmaker",
+                },
+            )
+        ],
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        1,
+        {"event_plan": {"character_moves": [{"name": "Shen Chuan"}]}},
+    )
+
+    assert "Shen Chuan：old mall watch shop owner" in prompt
+    assert "Shen Chuan：protagonist" not in prompt
+
+
+def test_writer_prompt_prevents_long_runs_of_telegraphic_everyday_dialogue():
+    story = StoryState(story_id="s-dialogue-rhythm", outline="A family argument.", genre="urban", style="")
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {})
+
+    assert "连续问答不能三句以上都只剩两到六个字" in prompt
+
+
+def test_writer_prompt_does_not_turn_professional_character_notes_into_checklist_dialogue():
+    lines = _writer_character_section(
+        {
+            "cards": [
+                {
+                    "identity": {"name": "沈屿", "display_role": "沈川的儿子"},
+                    "motivation": "找出旧表的来路",
+                    "speech_style": "说话像在核对条款，常用流程、数据和时间节点压人，不愿先示弱。",
+                }
+            ]
+        },
+        {},
+    )
+    prompt = "\n".join(lines)
+
+    assert "说话像在核对条款" not in prompt
+    assert "不连续罗列术语或材料" in prompt
+
+
+def test_writer_prompt_keeps_book_level_outline_and_growth_rules_out_of_prose_context():
+    story = StoryState(
+        story_id="s-chapter-only-context",
+        outline="父子在互不信任中被迫合作，最终完成整座商场的权益谈判。",
+        genre="urban",
+        style="",
+        author_constraints=[
+            "沈川的成长从沉默匠人转向证据组织者，每一步必须依靠台账拼合和证人确认。"
+        ],
+    )
+    plan = {
+        "event_plan": {
+            "chapter_satisfaction": {
+                "core_event": "沈川认出旧表上的维修定位痕。",
+                "obstacle": "儿子不肯说明旧表来路。",
+                "state_change": "沈川把旧表留下。",
+                "next_hook": "清退负责人带着协议进门。",
+            }
+        }
+    }
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, plan)
+
+    assert "最终完成整座商场的权益谈判" not in prompt
+    assert "成长从沉默匠人转向证据组织者" not in prompt
+
+
+def test_writer_prompt_forbids_padding_with_process_explanations():
+    story = StoryState(story_id="s-no-process-padding", outline="A tense family meeting.", genre="urban", style="")
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {})
+
+    assert "不靠重复问答、材料清单或流程解释补足篇幅" in prompt
+    assert "只说促成眼前决定所需的信息" in prompt
+
+
+def test_non_game_writer_does_not_receive_procedural_world_rule_checklists():
+    story = StoryState(
+        story_id="s-urban-procedure-boundary",
+        outline="A watchmaker examines an old watch.",
+        genre="urban",
+        style="",
+        world_context={
+            "world_rules": [
+                "旧物只能作为线索入口，不能替代法律程序；每次鉴定必须落到痕迹、编号、维修记录、照片、证言或票据。"
+            ]
+        },
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {})
+
+    assert "编号、维修记录、照片、证言或票据" not in prompt
+
+
+def test_writer_character_section_uses_scene_voice_not_book_length_motivation():
+    lines = _writer_character_section(
+        {
+            "cards": [
+                {
+                    "identity": {"name": "沈川", "display_role": "老商场修表匠"},
+                    "motivation": "证明旧表与历史权益有关，争取暂缓清退，并弥补过去对家人的逃避。",
+                    "risk_posture": "不肯在来路不明时下结论",
+                    "speech_style": "平时话少，但会把当下决定说清楚。",
+                }
+            ]
+        },
+        {},
+    )
+    prompt = "\n".join(lines)
+
+    assert "老商场修表匠" in prompt
+    assert "不肯在来路不明时下结论" in prompt
+    assert "平时话少" in prompt
+    assert "弥补过去对家人的逃避" not in prompt
+
+
+def test_writer_character_section_drops_planner_meta_wants():
+    lines = _writer_character_section(
+        {},
+        {
+            "participants": [
+                {
+                    "name": "沈川",
+                    "want": "让沈川在清退倒计时里接下旧表，建立核心悬念。",
+                    "emotion": "警惕",
+                }
+            ]
+        },
+    )
+    prompt = "\n".join(lines)
+
+    assert "让沈川" not in prompt
+    assert "沈川当前情绪：警惕" in prompt
 
 
 def test_writer_prompt_surfaces_financial_attribute_and_anomaly_anchors():
@@ -156,6 +346,100 @@ def test_non_game_body_prompt_does_not_receive_game_interface_rules():
     assert "交易与鉴定也按现场来写" not in prompt
 
 
+def test_universal_writer_craft_is_short_and_genre_neutral():
+    lines = _writer_craft_section(
+        {},
+        {},
+        include_genre_method=False,
+        style_guidance={},
+    )
+    text = "\n".join(lines)
+
+    for phrase in (
+        "经历、眼前利益和性格",
+        "配角有自己的目的",
+        "关键冲突、转折和结果写成现场",
+        "对话先回应对方刚说的内容",
+        "情绪放进动作、停顿、语气、回避和选择",
+        "环境跟着人物行动出现",
+        "完整的现代中文句子",
+        "具体动作、物件和后果",
+        "场景结束时发生看得见的变化",
+    ):
+        assert phrase in text
+    for game_term in (
+        "玩家",
+        "NPC",
+        "怪物",
+        "面板",
+        "等级",
+        "技能",
+        "装备",
+        "任务",
+        "掉落",
+        "背包",
+        "拍卖行",
+        "铜币",
+        "每300字",
+        "每500字",
+        "80%",
+    ):
+        assert game_term not in text
+    assert len(lines) <= 11
+
+
+@pytest.mark.parametrize("genre", ["都市", "东方玄幻", "仙侠"])
+def test_non_game_writer_prompts_do_not_receive_web_game_craft(genre):
+    story = StoryState(
+        story_id=f"s-genre-neutral-{genre}",
+        outline="主角进入一处陌生环境并处理眼前冲突。",
+        genre=genre,
+        style="白描",
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        1,
+        {"event_plan": {"chapter_title": "初入此地"}},
+    )
+
+    for game_phrase in (
+        "## 网游写法",
+        "怪物面板",
+        "背包",
+        "拍卖行",
+        "一口价",
+        "掉落",
+        "玩家和NPC",
+    ):
+        assert game_phrase not in prompt
+
+
+def test_web_game_writer_prompt_has_one_compact_genre_method_card():
+    story = StoryState(
+        story_id="s-one-web-game-method-card",
+        outline="玩家继续完成新手区委托。",
+        genre="网游",
+        style="白描",
+        current_chapter=2,
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        2,
+        {"chapter_goal": "击败同级怪物并提交任务"},
+    )
+
+    output_section = prompt.split("## 输出要求", 1)[1].split("\n## ", 1)[0]
+    web_game_section = prompt.split("## 网游写法", 1)[1].split("\n## ", 1)[0]
+
+    assert "面板只作为" not in output_section
+    assert "交易、鉴定和任务办理" not in output_section
+    assert prompt.count("## 网游写法") == 1
+    for phrase in ("面板", "交易", "任务", "背包", "隐藏优势"):
+        assert phrase in web_game_section
+
+
 def test_new_game_story_does_not_inherit_another_books_names_or_cheat():
     story = StoryState(story_id="s-space-game", outline="玩家进入星舰网游，准备修复采矿机器人。", genre="网游", style="")
     plan = {
@@ -176,6 +460,27 @@ def test_new_game_story_does_not_inherit_another_books_names_or_cheat():
     assert "采矿机器人" in prompt
     for term in ("夜烬", "千倍爆率", "混沌之种", "灰狼", "毒腺", "清道夫"):
         assert term not in prompt
+
+
+def test_game_writer_prompt_does_not_rewrite_profession_words_inside_seed_facts():
+    story = StoryState(
+        story_id="s-no-profession-string-patch",
+        outline="玩家选择战士路线。",
+        genre="网游",
+        style="",
+        world_facts=["元素法师协会位于王城东区。"],
+    )
+    plan = {
+        "chapter_seed": {
+            "continuity_facts": ["元素法师协会位于王城东区。"],
+            "genre_plugins": ["game_webnovel"],
+        },
+        "event_plan": {"chapter_title": "王城东区"},
+    }
+
+    prompt = StoryOrchestrator()._body_prompt(story, 2, plan)
+
+    assert "元素法师协会位于王城东区" in prompt
 
 
 def test_body_prompt_injects_selected_style_once():
@@ -212,7 +517,7 @@ def test_web_game_method_requests_at_most_three_language_cards(monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "packages.story_core.orchestrator.select_game_language_cards",
+        "packages.story_core.genre_stages.game_webnovel.writer.select_game_language_cards",
         record_selection,
     )
 
@@ -267,17 +572,6 @@ def _urban_story_with_trope(template_id: str, beat: str | None) -> StoryState:
     )
 
 
-def test_segment_prompt_puts_scene_method_before_guardrails():
-    spec = build_segment_specs(1, {})[0]
-    prompt = build_segment_prompt(chapter_number=1, spec=spec, plan={})
-
-    assert "输出要求：只写连续小说正文" in prompt
-    assert "把这一场写成连续小说正文" in prompt
-    assert "要有完整来回" in prompt
-    assert "情绪放进动作、停顿和回答里" in prompt
-    assert "写法施工单" not in prompt
-    assert "本段收住自己的场面" in prompt
-    assert prompt.index("## 本章方向") < prompt.index("写作保护线")
 
 
 def test_compact_writer_plan_excludes_planning_memory_and_world_noise():
@@ -331,62 +625,13 @@ def test_compact_writer_plan_excludes_planning_memory_and_world_noise():
     }
 
 
-def test_segment_prompt_uses_web_game_director_card_not_full_plan_dump():
-    spec = build_segment_specs(1, {})[0]
-    plan = {
-        "event_plan": {"chapter_title": "灰狼坡验边界", "ordered_actions": ["登录", "刷怪"]},
-        "simulation_plan": {
-            "chapter_goal": "确认边界",
-            "web_game_director_card": {
-                "read_feel": "主角撞到游戏世界的边界",
-                "scene_formula": "现实压力 -> 试探动作 -> 即时反馈 -> 资源代价 -> 半个答案 -> 更大问题",
-                "one_line": "第一章不是赚钱，是确认边界。",
-                "reaction_ladder": ["NPC：只按岗位规则回应。"],
-                "write_rules": ["规则只能通过动作、面板变化、NPC岗位回答出现。"],
-                "boundary_chapter_bans": ["寄售", "成交", "到账"],
-            },
-        },
-        "debug_noise": {"huge": ["不要进入提示词"] * 50},
-    }
-
-    prompt = build_segment_prompt(chapter_number=1, spec=spec, plan=plan)
-
-    assert "网游导演卡" in prompt
-    assert "第一章不是赚钱，是试清楚能不能走" in prompt
-    assert "灰狼坡验边界" not in prompt
-    assert "确认边界" not in prompt
-    assert "本章推演计划" not in prompt
-    assert "debug_noise" not in prompt
-    assert "不要进入提示词" not in prompt
 
 
-def test_segment_prompt_promotes_variant_fact_locks():
-    spec = build_segment_specs(1, {})[2]
-    plan = {
-        "event_plan": {"chapter_title": "灰狼坡验边界"},
-        "simulation_plan": {
-            "simulation_variant": "boundary-inventory-route",
-            "chapter_goal": "确认背包容量边界",
-            "web_game_director_card": {
-                "read_feel": "主角撞到游戏世界的边界",
-                "fact_locks": [
-                    "本章首次验证对象固定为灰狼，地点固定为灰狼坡；不得写成灰鼠、灰鼠坡、鼠皮或灰鼠毒囊。",
-                    "本章服务NPC固定为仓库管理员铁栓；他只懂仓储格、寄存门槛和背包占用。",
-                ],
-            },
-        },
-    }
-
-    prompt = build_segment_prompt(chapter_number=1, spec=spec, plan=plan)
-
-    assert "变体事实锁" in prompt
-    assert "固定为灰狼" in prompt
-    assert "不得写成灰鼠" in prompt
-    assert "仓库管理员铁栓" in prompt
 
 
 def test_writer_character_section_renders_compact_projected_states():
-    lines = _writer_character_section(
+    lines = _augment_game_character_section(
+        ["## 出场人物"],
         {
             "cards": [
                 {
@@ -399,7 +644,6 @@ def test_writer_character_section_renders_compact_projected_states():
                 }
             ]
         },
-        {},
     )
 
     rendered = "\n".join(lines)
@@ -412,7 +656,8 @@ def test_writer_character_section_renders_compact_projected_states():
 
 
 def test_writer_character_section_omits_metadata_only_zero_state():
-    lines = _writer_character_section(
+    lines = _augment_game_character_section(
+        ["## 出场人物"],
         {
             "cards": [
                 {
@@ -421,7 +666,6 @@ def test_writer_character_section_omits_metadata_only_zero_state():
                 }
             ]
         },
-        {},
     )
 
     assert "游戏状态：0" not in "\n".join(lines)
@@ -455,6 +699,148 @@ def test_writer_context_excludes_unapproved_proposed_character_from_stale_plan()
     assert [card["identity"]["name"] for card in context["cards"]] == ["苏叶"]
 
 
+def test_writer_context_reads_generic_director_character_move_mapping():
+    story = StoryState(
+        story_id="s-generic-cast-mapping",
+        outline="林修与沈墨璃困在雪山神殿。",
+        genre="玄幻",
+        style="自然口语",
+        characters=[
+            CharacterState(name="林修", role="主角"),
+            CharacterState(name="沈墨璃", role="同伴"),
+            CharacterState(name="青云宗主", role="师长"),
+        ],
+    )
+    plan = {
+        "character_moves": {
+            "林修": [{"goal": "检查寒毒", "emotion": "强撑", "action": "阻止沈墨璃继续探查"}],
+            "沈墨璃": [{"goal": "确认伤势", "emotion": "着急", "action": "用灵力探查经脉"}],
+        }
+    }
+
+    context = _character_context_for_prompt(story, plan)
+
+    assert [card["identity"]["name"] for card in context["cards"]] == ["林修", "沈墨璃"]
+
+
+def test_writer_character_context_prefers_concrete_drive_and_omits_raw_memory():
+    future_marker = "STALE_MEMORY_THAT_BELONGS_TO_CONTINUITY"
+    story = StoryState(
+        story_id="s-compact-character-context",
+        outline="林修检查祖祠阵纹。",
+        genre="玄幻",
+        style="自然口语",
+        characters=[
+            CharacterState(
+                name="林修",
+                role="主角",
+                core_motivation="围绕主线目标行动",
+                story_drive={"motivation": "保住祖祠，也查清父亲失踪的原因。"},
+                memory=[future_marker],
+            )
+        ],
+    )
+
+    context = _character_context_for_prompt(
+        story,
+        {"character_moves": [{"name": "林修", "action": "检查阵纹"}]},
+    )
+
+    card = context["cards"][0]
+    assert card["motivation"] == "保住祖祠，也查清父亲失踪的原因。"
+    assert "memory" not in card
+    assert future_marker not in str(context)
+
+
+def test_writer_context_does_not_pull_names_from_broad_chapter_intent_metadata():
+    story = StoryState(
+        story_id="s-scoped-cast",
+        outline="陈砚接手早餐店。",
+        genre="都市",
+        style="自然口语",
+        characters=[
+            CharacterState(name="陈砚", role="主角"),
+            CharacterState(name="梁守成", role="房东"),
+            CharacterState(name="赵明启", role="商会负责人"),
+            CharacterState(name="周兰", role="母亲"),
+        ],
+    )
+    plan = {
+        "character_moves": [{"name": "陈砚", "action": "核对欠租单"}],
+        "event_plan": {"ordered_actions": [{"name": "梁守成", "action": "催租"}]},
+        "chapter_intent": {
+            "background_reference": "赵明启和周兰属于长期人物资料，本章不出场。"
+        },
+    }
+
+    context = _character_context_for_prompt(story, plan)
+
+    assert [card["identity"]["name"] for card in context["cards"]] == ["陈砚", "梁守成"]
+
+
+def test_writer_context_does_not_treat_author_constraint_names_as_cast():
+    story = StoryState(
+        story_id="s-author-constraint-cast",
+        outline="沈川检查旧表。",
+        genre="都市",
+        style="自然口语",
+        characters=[
+            CharacterState(name="沈川", role="protagonist"),
+            CharacterState(name="沈屿", role="儿子"),
+            CharacterState(name="陆衡", role="后期对手"),
+        ],
+    )
+    plan = {
+        "character_moves": [{"name": "沈川", "action": "检查旧表"}],
+        "event_plan": {
+            "ordered_actions": ["沈川检查旧表，沈屿在旁边等待。"],
+            "author_constraints": ["陆衡前期不能正面出场。"],
+        },
+    }
+
+    context = _character_context_for_prompt(story, plan)
+
+    assert [card["identity"]["name"] for card in context["cards"]] == ["沈川", "沈屿"]
+
+
+def test_writer_context_adds_known_character_named_in_chapter_continuity():
+    story = StoryState(
+        story_id="s-continuity-cast",
+        outline="雪山神殿争夺。",
+        genre="玄幻",
+        style="自然口语",
+        characters=[
+            CharacterState(name="林修", role="主角"),
+            CharacterState(name="沈墨璃", role="同伴"),
+            CharacterState(name="青云宗主", role="师长"),
+        ],
+    )
+    plan = {
+        "character_moves": {"林修": [{"action": "检查阵心"}]},
+        "chapter_seed": {"must_carry": ["沈墨璃和林修同在雪山神殿，并负责查看他的伤势。"]},
+    }
+
+    context = _character_context_for_prompt(story, plan)
+
+    assert [card["identity"]["name"] for card in context["cards"]] == ["林修", "沈墨璃"]
+
+
+def test_writer_context_honors_protagonist_tier_when_imported_role_is_stale():
+    story = StoryState(
+        story_id="s-stale-protagonist-role",
+        outline="林修继承维修之道。",
+        genre="玄幻",
+        style="自然口语",
+        characters=[CharacterState(name="林修", role="supporting", character_tier="protagonist")],
+    )
+
+    context = _character_context_for_prompt(story, {"character_moves": {"林修": [{"action": "检查阵心"}]}})
+
+    card = context["cards"][0]
+    assert card["identity"]["role"] == "protagonist"
+    assert "围绕自己的职位" not in card["motivation"]
+
+
 def test_writer_prompt_projects_only_the_scene_line_and_renders_it():
     story = StoryState(
         story_id="s-dual-prompt",
@@ -473,7 +859,7 @@ def test_writer_prompt_projects_only_the_scene_line_and_renders_it():
     plan = {"scene_cards": [{"location": "副本入口", "purpose": "领取任务"}]}
 
     context = _character_context_for_prompt(story, plan)
-    assert set(context["cards"][0]["state_context"]) == {"game_state"}
+    assert "state_context" not in context["cards"][0]
     assert "27.60" not in str(context)
 
     prompt = StoryOrchestrator()._body_prompt(story, 1, plan)
@@ -488,13 +874,61 @@ def test_fallback_body_prompt_uses_same_scene_method():
 
     assert "## 输出要求" in prompt
     assert "写成一章顺着人物行动自然展开的连续正文" in prompt
-    assert "人物说话要有来有回" in prompt
+    assert "对话先回应对方刚说的内容" in prompt
     assert "## 本章方向" in prompt
     assert "写法施工单" not in prompt
     assert prompt.index("## 本章方向") < prompt.index("## 本章事实")
 
 
-def test_non_game_writer_prompt_receives_trope_contract_without_game_fact_label(monkeypatch):
+def test_writer_prompt_uses_scene_dialogue_contract_without_fixed_exchange_template():
+    story = StoryState(
+        story_id="s-natural-dialogue-contract",
+        outline="林修和沈墨璃处理失控的寒毒。",
+        genre="玄幻",
+        style="自然口语",
+        characters=[
+            CharacterState(name="林修", role="主角"),
+            CharacterState(name="沈墨璃", role="配角"),
+        ],
+    )
+    plan = {
+        "event_plan": {
+            "chapter_title": "寒毒",
+            "chapter_satisfaction": {"emotion_target": "两人决定是否继续引出寒毒"},
+            "unsaid_pressure": "林修没有说出寒毒已经接近心脉",
+        },
+        "character_moves": {
+            "林修": [{"goal": "劝沈墨璃停手", "emotion": "担心", "action": "按住她的手腕"}],
+            "沈墨璃": [{"goal": "确认寒毒位置", "emotion": "着急", "action": "继续运转灵力"}],
+        },
+    }
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, plan)
+
+    for phrase in (
+        "先回应对方刚说的内容",
+        "关系和场合决定说话方式",
+        "允许解释、犹豫、回避和日常过渡",
+        "整场对话发生变化即可",
+        "谈话缘由：两人决定是否继续引出寒毒",
+        "林修此刻想要：劝沈墨璃停手",
+        "沈墨璃当前情绪：着急",
+        "没有说出口：林修没有说出寒毒已经接近心脉",
+    ):
+        assert phrase in prompt
+    for old_rule in (
+        "每段对话都让人知道一个条件",
+        "本场对话目的：",
+        "不用两个字装冷静",
+        "一人问/催/提醒",
+        "每章至少有一轮连续问答",
+        "先试，不深入",
+        "柜台不认",
+    ):
+        assert old_rule not in prompt
+
+
+def test_non_game_writer_prompt_does_not_receive_planning_trope_contract(monkeypatch):
     contract = {
         "template_id": "public-turnaround",
         "name": "Public turnaround",
@@ -514,18 +948,17 @@ def test_non_game_writer_prompt_receives_trope_contract_without_game_fact_label(
 
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Proof"}})
 
-    assert "当前阶段套路" in prompt
-    assert "public-turnaround" in prompt
-    assert "collect visible proof" in prompt
-    assert TROPE_PROGRESS_GUIDANCE in prompt
-    assert "不能只提到节点" in prompt
-    assert TROPE_AVOID_GUIDANCE in prompt
+    assert "当前阶段套路" not in prompt
+    assert "public-turnaround" not in prompt
+    assert "collect visible proof" not in prompt
+    assert TROPE_PROGRESS_GUIDANCE not in prompt
+    assert TROPE_AVOID_GUIDANCE not in prompt
     assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
     assert OLD_ENGLISH_AVOID_GUIDANCE not in prompt
     assert "游戏主角" not in prompt
 
 
-def test_empty_beat_writer_prompt_keeps_contract_without_forcing_full_beat(monkeypatch):
+def test_empty_beat_writer_prompt_omits_planning_contract(monkeypatch):
     contract = {
         "template_id": "slow-burn",
         "name": "Slow burn",
@@ -545,9 +978,9 @@ def test_empty_beat_writer_prompt_keeps_contract_without_forcing_full_beat(monke
 
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "Promise"}})
 
-    assert "slow-burn" in prompt
-    assert '"current_beat": ""' in prompt
-    assert TROPE_EMPTY_BEAT_GUIDANCE in prompt
+    assert "slow-burn" not in prompt
+    assert '"current_beat": ""' not in prompt
+    assert TROPE_EMPTY_BEAT_GUIDANCE not in prompt
     assert TROPE_PROGRESS_GUIDANCE not in prompt
     assert OLD_ENGLISH_EMPTY_BEAT_GUIDANCE not in prompt
     assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
@@ -556,7 +989,11 @@ def test_empty_beat_writer_prompt_keeps_contract_without_forcing_full_beat(monke
 def test_writer_fact_section_omits_trope_guidance_when_contract_missing():
     story = StoryState(story_id="s-no-trope", outline="plain", genre="urban", style="plain")
 
-    rendered = "\n".join(_writer_fact_section(story, 1, {}, chapter_seed={"chapter_number": 1}))
+    rendered = StoryOrchestrator()._body_prompt(
+        story,
+        1,
+        {"chapter_seed": {"chapter_number": 1}},
+    )
 
     assert "当前阶段套路" not in rendered
     assert "current_beat" not in rendered
@@ -564,7 +1001,7 @@ def test_writer_fact_section_omits_trope_guidance_when_contract_missing():
     assert OLD_ENGLISH_AVOID_GUIDANCE not in rendered
 
 
-def test_game_writer_prompt_keeps_game_facts_and_adds_trope_contract(monkeypatch):
+def test_game_writer_prompt_keeps_game_facts_without_planning_trope_contract(monkeypatch):
     contract = {
         "template_id": "first-advantage",
         "name": "First advantage",
@@ -594,11 +1031,10 @@ def test_game_writer_prompt_keeps_game_facts_and_adds_trope_contract(monkeypatch
     assert "游戏主角" in prompt
     assert "Night" in prompt
     assert "Rogue" in prompt
-    assert "当前阶段套路" in prompt
-    assert "first-advantage" in prompt
-    assert TROPE_PROGRESS_GUIDANCE in prompt
-    assert "不能只提到节点" in prompt
-    assert TROPE_AVOID_GUIDANCE in prompt
+    assert "当前阶段套路" not in prompt
+    assert "first-advantage" not in prompt
+    assert TROPE_PROGRESS_GUIDANCE not in prompt
+    assert TROPE_AVOID_GUIDANCE not in prompt
     assert OLD_ENGLISH_PROGRESS_GUIDANCE not in prompt
 
 
@@ -616,15 +1052,17 @@ def test_real_non_game_director_and_writer_prompts_include_selected_trope_only()
     assert selected_id in blueprint_ids
     assert unrelated_id in blueprint_ids
     assert seed["trope_contract"]["template_id"] == selected_id
+    assert "当前阶段套路" in plan_prompt
+    assert selected_id in plan_prompt
+    assert str(beat) in plan_prompt
+    assert "当前阶段套路" not in body_prompt
+    assert selected_id not in body_prompt
+    assert str(beat) not in body_prompt
     for prompt in (plan_prompt, body_prompt):
-        assert "当前阶段套路" in prompt
-        assert selected_id in prompt
-        assert str(beat) in prompt
         assert unrelated_id not in prompt
         assert "trope_templates" not in prompt
-    assert TROPE_PROGRESS_GUIDANCE in body_prompt
-    assert TROPE_AVOID_GUIDANCE in body_prompt
-    assert "不能只提到节点" in body_prompt
+    assert TROPE_PROGRESS_GUIDANCE not in body_prompt
+    assert TROPE_AVOID_GUIDANCE not in body_prompt
     assert OLD_ENGLISH_PROGRESS_GUIDANCE not in body_prompt
     assert OLD_ENGLISH_AVOID_GUIDANCE not in body_prompt
 
@@ -702,6 +1140,36 @@ def test_writer_direction_drops_generic_taskbook_placeholders():
     assert "完成本章推进" not in prompt
     assert "出现可见阻力" not in prompt
     assert "形成下一场压力" not in prompt
+    assert "现场素材" not in prompt
+    assert "接住：" not in prompt
+
+
+def test_writer_direction_drops_repeated_and_scaffolding_scene_goals():
+    story = StoryState(
+        story_id="s-no-scaffold",
+        outline="现实都市父子修表故事",
+        genre="urban",
+        style="",
+    )
+    chapter_goal = "沈川检查儿子带来的旧表，发现它和商场旧案有关。"
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        1,
+        {
+            "writing_taskbook": {
+                "chapter_goal": chapter_goal,
+                "scenes": [
+                    {"goal": chapter_goal + "两人因此发生争执。"},
+                    {"goal": "让阻碍具体出现：清退人员来到铺子。"},
+                    {"goal": "主角做选择，兑现一点收益，同时付出可见代价。"},
+                ],
+            }
+        },
+    )
+
+    assert prompt.count("沈川检查儿子带来的旧表") == 1
+    assert "让阻碍具体出现" not in prompt
+    assert "主角做选择" not in prompt
 
 
 def test_fallback_body_prompt_includes_web_game_director_card():
@@ -725,7 +1193,7 @@ def test_fallback_body_prompt_includes_web_game_director_card():
     )
 
     assert "## 本章方向" in prompt
-    assert "网游写法方法卡" in prompt
+    assert "## 网游写法" in prompt
     assert "眼前目标" in prompt
     assert "看得见的小进展" in prompt
     assert "隐藏优势只在幕后起作用" in prompt
@@ -742,14 +1210,15 @@ def test_web_game_first_chapter_whole_body_prompt_has_plain_four_beat_contract()
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})
 
     assert "整章顺序" in prompt
-    assert "网游写法方法卡" in prompt
+    assert "## 网游写法" in prompt
     assert "遇到阻力后付出代价" in prompt
     assert "现实压力 -> 登录建号 -> 低级验证 -> 下一步钩子" in prompt
-    assert "本次不用分段生成" in prompt
+    assert "连续小说正文" in prompt
+    assert "分段" not in prompt
     assert "白描" not in prompt
-    assert "自然对话" in prompt
-    assert "句子随动作和对话自然变化，保持现代中文语序" in prompt
-    assert "规则从动作和反馈里露出来" in prompt
+    assert "对话先回应对方刚说的内容" in prompt
+    assert "使用完整的现代中文句子" in prompt
+    assert "优先写具体动作、物件和后果" in prompt
     assert prompt.index("整章顺序") < prompt.index("## 本章事实")
 
 
@@ -801,7 +1270,7 @@ def test_formal_prompts_normalize_legacy_plan_review_and_source_body_without_cha
     assert "1764.00元" in prompts[-1]
 
 
-def test_each_formal_prompt_normalizes_once_at_its_final_output(monkeypatch):
+def test_each_formal_prompt_uses_its_single_normalization_owner(monkeypatch):
     story = StoryState(
         story_id="s-single-migration-exit",
         outline="第一章通过裂纹狼心担保交易解决现实急账。",
@@ -810,24 +1279,47 @@ def test_each_formal_prompt_normalizes_once_at_its_final_output(monkeypatch):
     )
     plan = {"event_plan": {"turn": "裂纹狼心通过担保平台成交"}}
     review = {"issues": ["裂纹狼心提交鉴定"]}
-    original = orchestrator_module.normalize_legacy_economy_prompt_value
-    calls: list[tuple[bool, int]] = []
+    original = normalize_legacy_economy_prompt_value
+    director_calls: list[tuple[bool, int]] = []
+    revision_calls: list[tuple[bool, int]] = []
+    writer_calls: list[tuple[bool, int]] = []
 
-    def track(value, *, game_context, chapter_number):
-        calls.append((game_context, chapter_number))
+    def track_director(value, *, game_context, chapter_number):
+        director_calls.append((game_context, chapter_number))
         return original(value, game_context=game_context, chapter_number=chapter_number)
 
-    monkeypatch.setattr(orchestrator_module, "normalize_legacy_economy_prompt_value", track)
+    def track_writer(value, *, game_context, chapter_number):
+        writer_calls.append((game_context, chapter_number))
+        return original(value, game_context=game_context, chapter_number=chapter_number)
+
+    def track_revision(value, *, game_context, chapter_number):
+        revision_calls.append((game_context, chapter_number))
+        return original(value, game_context=game_context, chapter_number=chapter_number)
+
+    monkeypatch.setattr(game_director_module, "normalize_legacy_economy_prompt_value", track_director)
+    monkeypatch.setattr(game_revision_module, "normalize_legacy_economy_prompt_value", track_revision)
+    monkeypatch.setattr(game_writer_module, "normalize_legacy_economy_prompt_value", track_writer)
     orchestrator = StoryOrchestrator()
 
-    for build in (
-        lambda: orchestrator._plan_prompt(story, 1),
-        lambda: orchestrator._body_prompt(story, 1, plan),
-        lambda: orchestrator._revision_prompt(story, 1, "裂纹狼心担保交易。", plan, review),
+    assert not hasattr(orchestrator_module, "normalize_legacy_economy_prompt_value")
+
+    for build, expected_director_calls, expected_writer_calls, expected_revision_calls in (
+        (lambda: orchestrator._plan_prompt(story, 1), [(True, 1)], [], []),
+        (lambda: orchestrator._body_prompt(story, 1, plan), [], [(True, 1)], []),
+        (
+            lambda: orchestrator._revision_prompt(story, 1, "裂纹狼心担保交易。", plan, review),
+            [],
+            [],
+            [(True, 1)],
+        ),
     ):
-        calls.clear()
+        director_calls.clear()
+        writer_calls.clear()
+        revision_calls.clear()
         build()
-        assert calls == [(True, 1)]
+        assert director_calls == expected_director_calls
+        assert writer_calls == expected_writer_calls
+        assert revision_calls == expected_revision_calls
 
 
 def test_revision_prompt_migrates_real_order_status_appraisal_sentence() -> None:
@@ -848,7 +1340,6 @@ def test_revision_prompt_migrates_real_order_status_appraisal_sentence() -> None
     assert "鉴定中" not in prompt
     assert "求购单显示已成交" in prompt
     assert "订单状态变成" not in prompt
-    assert "求购单显示已成交" in prompt
 
 
 def test_real_chapter_one_revision_prompt_uses_natural_local_trade_migration() -> None:
@@ -922,6 +1413,15 @@ def test_writer_system_prompt_distinguishes_prose_from_json_work():
     assert "不解释创作规则" in prose_prompt
     assert "novel simulation engine" not in prose_prompt
     assert "json format only" in json_prompt
+
+
+def test_writer_system_prompt_is_genre_neutral():
+    prompt = StoryOrchestrator._model_system_prompt(False, agent="writer")
+
+    assert "只输出正在发生的小说正文" in prompt
+    assert "不解释创作规则" in prompt
+    for game_term in ("面板", "任务", "NPC"):
+        assert game_term not in prompt
 
 
 def test_web_game_writer_seed_is_rendered_as_clean_chinese_not_python_data():
@@ -1018,8 +1518,8 @@ def test_body_prompt_prefers_positive_craft_guidance_over_rule_scolding():
     story = StoryState(story_id="s-positive-guidance", outline="网游开服，千倍爆率。", genre="网游", style="番茄升级流")
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "灰狼坡"}})
 
-    assert "段落写法：长短段交替" in prompt
-    assert "人物说话要有来有回" in prompt
+    assert "使用完整的现代中文句子" in prompt
+    assert "每个场景结束时发生看得见的变化" in prompt
     assert "段落形态：禁止" not in prompt
     assert "后台术语和事实矛盾词不得进正文" not in prompt
     assert prompt.count("不要") <= 8
@@ -1028,10 +1528,10 @@ def test_body_prompt_prefers_positive_craft_guidance_over_rule_scolding():
 
 
 def test_body_prompt_loads_only_enabled_skill_purposes(monkeypatch):
-    from packages.story_core import orchestrator as orchestrator_module
+    from packages.story_core.genre_stages import common_writer as common_writer_module
 
     monkeypatch.setattr(
-        orchestrator_module,
+        common_writer_module,
         "skill_pack_prompt_context",
         lambda skill_ids, *, purpose, max_chars_per_pack: [{"purpose": purpose, "skill_ids": skill_ids}],
     )
@@ -1046,6 +1546,36 @@ def test_body_prompt_loads_only_enabled_skill_purposes(monkeypatch):
 
     assert "启用 Skill 模块摘要" in prompt
     assert "plain-webnovel" in prompt
+
+
+def test_writer_skill_rules_are_deduplicated_and_use_full_instructions():
+    from packages.story_core.genre_stages.common_writer import _writer_skill_lines, writer_skill_trace
+
+    module = {
+        "module_id": "dialogue",
+        "instructions": "先明确说话双方和场景，再让对白回应前一句；把必要的原因和决定说完整。",
+        "summary": "这是一段不完整的摘要",
+    }
+    context = {
+        "dialogue": [{"skill_id": "local-pack", "name": "Local Pack", "modules": [module]}],
+        "continuity": [{"skill_id": "local-pack", "name": "Local Pack", "modules": [module.copy()]}],
+    }
+
+    lines = _writer_skill_lines(context)
+
+    assert len(lines) == 1
+    assert "把必要的原因和决定说完整" in lines[0]
+    assert len(writer_skill_trace(context)) == 1
+
+
+def test_short_speech_marker_keeps_reticence_without_forcing_clipped_dialogue():
+    from packages.story_core.character_profiles import normalize_speech_style_for_writing
+
+    speech = normalize_speech_style_for_writing("平时话少，短句偏多，但会把当下决定说清楚。")
+
+    assert "平时话少" in speech
+    assert "必要的对象、原因和决定要说完整" in speech
+    assert "短句偏多" not in speech
 
 
 def test_body_prompt_does_not_teach_by_checklist_or_imitation_sample():
@@ -1105,7 +1635,7 @@ def test_body_prompt_translates_planning_jargon_into_natural_chinese():
     ):
         assert jargon not in prompt
     assert "主角动手以后，马上出现一个具体结果或麻烦" in prompt
-    assert "现场人物、环境或对手的反应" in prompt
+    assert "现场素材" not in prompt
 
 
 def test_body_prompt_keeps_normal_chinese_connectors_available():
@@ -1114,16 +1644,16 @@ def test_body_prompt_keeps_normal_chinese_connectors_available():
 
     assert "禁用‘但是’" not in prompt
     assert "禁用‘虽然’" not in prompt
-    assert "正常的接话、解释和情绪变化" in prompt
-    assert "不要把多个判断压成逗号清单" in prompt
-    assert "没好处，没奖励，地方偏" in prompt
+    assert "使用完整的现代中文句子" in prompt
+    assert "不把判断压成逗号清单" in prompt
+    assert "把必要的原因、条件和结果说清楚" in prompt
 
 
 def test_web_game_second_chapter_does_not_inherit_first_chapter_service_bans():
     story = StoryState(story_id="s-ch2-method", outline="网游开服，千倍爆率。", genre="网游", style="番茄升级流")
     prompt = StoryOrchestrator()._body_prompt(story, 2, {"event_plan": {"chapter_title": "清道夫柜台"}})
 
-    assert "网游写法方法卡" in prompt
+    assert "## 网游写法" in prompt
     assert "第一章领先流" not in prompt
     assert "不要写成交任务、领取铜币、扣费修理或购买药水" not in prompt
 
@@ -1249,7 +1779,7 @@ def test_revision_prompt_reuses_plan_chapter_seed_when_build_seed_drifts(monkeyp
         },
     )
 
-    assert "locked-contract" in prompt
+    assert "locked-contract" not in prompt
     assert "locked beat" in prompt
     assert "locked avoid" in prompt
     assert "drift-contract" not in prompt
@@ -1362,5 +1892,60 @@ def test_game_writer_prompt_filters_unplanned_common_monster_drops_from_locked_c
     assert "裂纹狼心" in prompt
     assert "磨损狼牙" not in prompt
     assert "本章普通掉落账本：灰狼毒腺、粗糙狼皮" in prompt
+
+
+def test_writer_prompt_keeps_director_scene_actions_instead_of_only_scene_goals():
+    story = StoryState(
+        story_id="s-director-scenes",
+        outline="林照进入祖祠查账。",
+        genre="玄幻",
+        style="",
+        characters=[CharacterState(name="林照", role="protagonist")],
+    )
+    plan = {
+        "event_plan": {
+            "chapter_title": "祖祠旧账",
+            "chapter_satisfaction": {
+                "obstacle": "侧门被锁",
+                "state_change": "林照拿到账册",
+                "next_hook": "账册少了三个名字",
+            },
+        },
+        "scene_cards": [
+            {
+                "scene_id": "s1-director",
+                "location": "祖祠侧门",
+                "pov": "林照",
+                "purpose": "进入账房",
+                "conflict": "赵管事提前换锁",
+                "must_show": ["林照拿旧工牌追问换锁时间", "守门人说钥匙送进了内院"],
+                "ending_pressure": "林照必须混进送香队伍",
+            },
+            {
+                "scene_id": "s2-director",
+                "location": "祖祠内院",
+                "pov": "林照",
+                "purpose": "拿到钥匙",
+                "conflict": "保管人不肯交钥匙",
+                "must_show": ["林照要求当面核对换锁记录"],
+                "ending_pressure": "账房门终于打开",
+            },
+            {
+                "scene_id": "s3-director",
+                "location": "祖祠账房",
+                "pov": "林照",
+                "purpose": "核对账册",
+                "conflict": "其中一页被撕掉",
+                "must_show": ["林照对照页码发现三个名字消失"],
+                "ending_pressure": "线索指向内院库房",
+            },
+        ],
+    }
+
+    prompt = StoryOrchestrator()._body_prompt(story, 3, plan)
+
+    assert "林照拿旧工牌追问换锁时间" in prompt
+    assert "守门人说钥匙送进了内院" in prompt
+    assert "账房门终于打开" in prompt
 
 

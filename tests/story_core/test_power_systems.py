@@ -59,7 +59,7 @@ def test_non_game_power_system_uses_genre_ledger_without_game_inventory_fields()
 
 
 def complete_spec() -> dict[str, object]:
-    return {
+    spec = {
         "name": "神域职业体系",
         "origin": ["完成觉醒任务获得职业权能"],
         "attributes": [{"name": "智力", "effect": "提高法术强度"}],
@@ -115,6 +115,38 @@ def complete_spec() -> dict[str, object]:
             "conditions",
         ],
     }
+    spec["class_advancement_tiers"] = [
+        {
+            "level": level,
+            "name": f"Lv.{level} advancement",
+            "purpose": f"Define the level {level} class milestone",
+            "common_requirements": [f"Reach level {level} and complete the shared trial"],
+            "failure_rule": "The trial may be attempted again after its cooldown",
+        }
+        for level in (10, 30, 60)
+    ]
+    for path in spec["paths"]:
+        path["advancement_tree"] = [
+            {
+                "level": level,
+                "tier_name": f"Lv.{level} advancement",
+                "options": [
+                    {
+                        "name": f"{path['name']} Lv.{level} path",
+                        "role": path["role"],
+                        "requirements": [f"Reach level {level}"],
+                        "transfer_task": f"Complete the level {level} class trial",
+                        "ability_changes": [f"Unlock the level {level} class ability"],
+                        "new_resources": [path["core_resource"]],
+                        "equipment_permissions": path["weapons"],
+                        "failure_consequence": "Keep the current class until retry",
+                        "next_options": [f"{path['name']} next path"] if level < 60 else [],
+                    }
+                ],
+            }
+            for level in (10, 30, 60)
+        ]
+    return spec
 
 
 def validation_error(
@@ -515,7 +547,7 @@ def test_normalization_is_canonical_json_safe_bounded_and_deep_independent() -> 
     assert set(result) <= {
         "name", "origin", "attributes", "paths", "stages", "skills", "equipment",
         "resources", "advancement", "costs", "counters", "boundaries", "social_impact",
-        "visibility", "continuity_ledger", "attribute_allocation",
+        "visibility", "continuity_ledger", "attribute_allocation", "class_advancement_tiers",
     }
     assert result["name"].startswith("神域 职业 体系")
     assert len(result["name"]) <= 240
@@ -581,7 +613,7 @@ def test_normalization_preserves_bounded_extended_path_schema() -> None:
     assert set(normalized) == {
         "name", "role", "core_resource", "core_attributes", "weapons", "armor",
         "combat_loop", "strengths", "weaknesses", "skill_categories", "branches",
-        "transfer_task", "advancement",
+        "transfer_task", "advancement", "advancement_tree",
     }
     assert len(normalized["core_attributes"]) == 64
     assert len(normalized["core_attributes"][0]) == 240
@@ -985,7 +1017,9 @@ def test_prompt_slice_uses_longest_bidirectional_path_alias_for_production_class
 
     result = power_system_prompt_slice(spec, stage_hint=12, path_hint="元素法师学徒")
 
-    assert result["paths"] == [normalize_power_system_spec(spec)["paths"][1]]
+    expected_path = normalize_power_system_spec(spec)["paths"][1]
+    expected_path["advancement_tree"] = expected_path["advancement_tree"][:2]
+    assert result["paths"] == [expected_path]
     assert result["paths"][0]["branches"][0] == "元素法师"
 
 

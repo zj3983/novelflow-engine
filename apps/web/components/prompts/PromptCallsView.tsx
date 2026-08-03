@@ -196,6 +196,18 @@ export function PromptCallsView({ projectId, chapterNumber }: { projectId: strin
                 </p>
               </div>
             </div>
+            {selected.genre_stage_modules?.length ? (
+              <div>
+                <p className="ws-card__hint">
+                  题材阶段来源：{selected.genre_stage_profile || "未标注"}
+                </p>
+                <div className="ws-tag-list" aria-label="题材阶段模块">
+                  {selected.genre_stage_modules.map((module) => (
+                    <span className="ws-tag" key={module}>{module}</span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             {selected.system_prompt ? (
               <details className="ws-prompt-source-body">
                 <summary>系统提示词</summary>

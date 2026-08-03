@@ -33,6 +33,24 @@ def _structured_level_target(chapter: dict[str, Any]) -> int | None:
     return max(levels) if levels else None
 
 
+def _complete_scene_chain(chapter: dict[str, Any]) -> list[dict[str, Any]] | None:
+    raw_chain = chapter.get("scene_chain")
+    if not isinstance(raw_chain, list) or not 3 <= len(raw_chain) <= 5:
+        return None
+    fields = ("location", "pov", "goal", "obstacle", "action", "change", "next")
+    scenes: list[dict[str, Any]] = []
+    for raw_scene in raw_chain:
+        if not isinstance(raw_scene, dict):
+            return None
+        scene = {field: _text(raw_scene.get(field)) for field in fields}
+        if any(not scene[field] for field in fields):
+            return None
+        if isinstance(raw_scene.get("state_delta"), dict) and raw_scene["state_delta"]:
+            scene["state_delta"] = deepcopy(raw_scene["state_delta"])
+        scenes.append(scene)
+    return scenes
+
+
 def build_outline_chapter_plan(
     director_context: dict[str, Any],
     chapter_number: int,
@@ -56,6 +74,9 @@ def build_outline_chapter_plan(
     ending_hook = _text(chapter.get("ending_hook"))
     if not goal or not any((action, turn, payoff)):
         return None
+    scene_chain = _complete_scene_chain(chapter)
+    if scene_chain is None:
+        return None
 
     ordered_actions: list[str] = []
     for item in (goal, obstacle, action, turn, payoff, ending_hook):
@@ -64,7 +85,10 @@ def build_outline_chapter_plan(
 
     cast = chapter.get("cast") if isinstance(chapter.get("cast"), list) else []
     character_moves = []
-    for index, raw_name in enumerate(cast):
+    # A chapter-level goal belongs to the viewpoint character.  The outline
+    # contract does not contain per-character goals, so copying it to every
+    # cast member gives the writer several people with the same intent.
+    for index, raw_name in enumerate(cast[:1]):
         name = _text(raw_name)
         if not name:
             continue
@@ -74,7 +98,7 @@ def build_outline_chapter_plan(
                 "goal": goal,
                 "emotion": "",
                 "action": action or turn or payoff,
-                "priority": "primary" if index == 0 else "secondary",
+                "priority": "primary",
             }
         )
 
@@ -89,6 +113,7 @@ def build_outline_chapter_plan(
     }
     event_plan = {
         "chapter_title": title,
+        "scene_chain": scene_chain,
         "ordered_actions": ordered_actions,
         "chapter_satisfaction": chapter_satisfaction,
         "chapter_end_hook": {

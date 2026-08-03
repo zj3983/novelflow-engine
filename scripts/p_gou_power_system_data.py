@@ -103,7 +103,97 @@ _PATH_DETAILS = (
 )
 
 
+_CLASS_ADVANCEMENT_TIERS = [
+    {
+        "level": 10,
+        "name": "正式转职",
+        "purpose": "从见习者确定基础职业并解锁职业资源循环",
+        "common_requirements": ["达到Lv.10", "完成对应职业导师试炼"],
+        "failure_rule": "保留见习者身份，等待冷却后重新挑战",
+    },
+    {
+        "level": 30,
+        "name": "职业分支",
+        "purpose": "在正式职业内选择一个可验证的进阶分支",
+        "common_requirements": ["达到Lv.30", "完成分支资格任务"],
+        "failure_rule": "保留原正式职业，承担任务冷却或材料损失",
+    },
+    {
+        "level": 60,
+        "name": "传承职业",
+        "purpose": "取得受世界规则约束的高阶职业权柄",
+        "common_requirements": ["达到Lv.60", "完成分支成就和传承试炼"],
+        "failure_rule": "传承资格冻结，修复条件后才能再次挑战",
+    },
+]
+
+
+def _advancement_tree(path: dict[str, Any]) -> list[dict[str, Any]]:
+    path_name = str(path["name"])
+    branches = [str(item) for item in path.get("branches", [])]
+    resource = str(path["core_resource"])
+    weapons = list(path.get("weapons", []))
+    return [
+        {
+            "level": 10,
+            "tier_name": "正式转职",
+            "options": [
+                {
+                    "name": f"正式{path_name}",
+                    "role": path["role"],
+                    "requirements": ["达到Lv.10", "完成职业导师试炼"],
+                    "transfer_task": f"完成{path_name}基础职业试炼",
+                    "ability_changes": ["解锁职业资源循环", "解锁基础职业技能类别"],
+                    "new_resources": [resource],
+                    "equipment_permissions": weapons,
+                    "failure_consequence": "保留见习者身份并进入任务冷却",
+                    "next_options": branches,
+                }
+            ],
+        },
+        {
+            "level": 30,
+            "tier_name": "职业分支",
+            "options": [
+                {
+                    "name": branch,
+                    "role": path["role"],
+                    "requirements": ["达到Lv.30", "完成对应分支资格条件"],
+                    "transfer_task": f"完成{branch}分支任务",
+                    "ability_changes": [f"解锁{branch}分支技能与战斗倾向"],
+                    "new_resources": [resource],
+                    "equipment_permissions": weapons,
+                    "failure_consequence": "保留原正式职业并承担任务冷却或材料损失",
+                    "next_options": [f"{branch}传承"],
+                }
+                for branch in branches
+            ],
+        },
+        {
+            "level": 60,
+            "tier_name": "传承职业",
+            "options": [
+                {
+                    "name": f"{branch}传承",
+                    "role": path["role"],
+                    "requirements": ["达到Lv.60", f"完成{branch}分支成就"],
+                    "transfer_task": f"完成{branch}传承试炼",
+                    "ability_changes": [f"取得{branch}高阶职业权柄"],
+                    "new_resources": [resource],
+                    "equipment_permissions": weapons,
+                    "failure_consequence": "传承资格冻结，修复条件后重试",
+                    "next_options": [],
+                }
+                for branch in branches
+            ],
+        },
+    ]
+
+
 def build_power_system_spec() -> dict[str, Any]:
+    paths = deepcopy(list(_PATH_DETAILS))
+    for path in paths:
+        path["advancement_tree"] = _advancement_tree(path)
     spec = {
         "name": "神域职业力量体系",
         "origin": [
@@ -133,7 +223,8 @@ def build_power_system_spec() -> dict[str, Any]:
             "allow_carry": True,
             "respec_rule": "仅在游戏明确提供洗点机会时重置",
         },
-        "paths": deepcopy(list(_PATH_DETAILS)),
+        "paths": paths,
+        "class_advancement_tiers": deepcopy(_CLASS_ADVANCEMENT_TIERS),
         "stages": [
             {"name": "见习者", "level": 1, "entry": "创建角色并完成新手引导", "change": "获得基础属性、通用武器和初始技能选择，尚无正式职业", "failure": "引导未完成则不能离开新手区或接取职业任务"},
             {"name": "正式职业", "level": 10, "entry": "达到Lv.10并完成所选基础职业任务；主角通过元素回廊成为元素法师", "change": "确定六大职业之一，解锁职业资源、装备适性和核心技能循环", "failure": "任务失败只会进入重试冷却并消耗已投入的任务材料，不授予职业身份"},

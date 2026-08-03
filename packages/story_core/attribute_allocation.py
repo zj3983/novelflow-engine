@@ -29,6 +29,17 @@ _ATTRIBUTE_IGNORED_FIELDS = {
 }
 
 
+def director_attribute_allocation_contract() -> str:
+    """Return the structured planning contract for stories with free attributes."""
+
+    return (
+        "本章明确成长或处理已有属性点时，event_plan.attribute_allocation_decision 必须为 "
+        "allocate 或 carry；allocate 给出 allocations 和 remaining，carry 给出保留理由和 remaining。"
+        "成长导致层级变化时，必须提供机器可读的 state_delta.protagonist.level 或等价当前章 level 字段，"
+        "不能只在自然语言里记录。"
+    )
+
+
 def _compact_text(value: Any, limit: int) -> str:
     if not isinstance(value, str) or limit <= 0:
         return ""

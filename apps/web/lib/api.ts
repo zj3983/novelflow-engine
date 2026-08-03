@@ -167,6 +167,26 @@ export type NovelTypeRulebook = {
   forbidden_breaks: string[];
 };
 
+export type NovelOutlineTemplate = {
+  schema_version: "novel-outline-template/v1";
+  overall: {
+    required_fields: string[];
+    long_term_lines: string[];
+    instructions: string[];
+  };
+  arc: {
+    required_fields: string[];
+    minimum_arc_count: number;
+    maximum_chapter_span: number;
+    instructions: string[];
+  };
+  chapter: {
+    required_fields: string[];
+    opening_window_size: number;
+    instructions: string[];
+  };
+};
+
 export type NovelType = {
   id: string;
   name: string;
@@ -178,6 +198,7 @@ export type NovelType = {
   quality_checks: string[];
   trope_templates: Array<Record<string, unknown>>;
   power_system_template?: Record<string, unknown>;
+  outline_template?: NovelOutlineTemplate;
   builtin: boolean;
 };
 
@@ -213,6 +234,27 @@ export type GenerationJobSummary = Omit<GenerationJobResponse, "steps">;
 export type GenerationJobHistoryResponse = {
   schema_version: "file-generation-job-history/v1" | string;
   items: GenerationJobSummary[];
+};
+
+export type CandidateDraft = {
+  schema_version?: string;
+  candidate_id: string;
+  project_id: string;
+  chapter_number: number;
+  chapter_title: string;
+  body: string;
+  context_snapshot_id: string;
+  quality_report: Record<string, unknown>;
+  revision_history: Record<string, unknown>[];
+  submission_payload?: Record<string, unknown>;
+  status: "pending" | "confirmed" | "discarded" | string;
+  created_at: string;
+  confirmed_at: string;
+};
+
+export type CandidateListResponse = {
+  schema_version: string;
+  items: CandidateDraft[];
 };
 
 export type ProjectAutomationJobStatus = "queued" | "running" | "completed" | "paused" | "failed";
@@ -538,6 +580,8 @@ export type ChapterBundle = {
   quality_report?: {
     ok: boolean;
     issues: string[];
+    downstream_rewrite_required?: boolean;
+    downstream_chapter_number?: number;
     revision_safety?: RevisionSafetyReport;
     writing_review?: ReviewSection;
     critical_review?: ReviewSection;
@@ -554,6 +598,15 @@ export type ChapterBundle = {
   };
   updated_story?: unknown;
 };
+
+export function downstreamRewriteNotice(
+  report?: { downstream_rewrite_required?: boolean; downstream_chapter_number?: number } | null,
+): string {
+  if (!report?.downstream_rewrite_required) return "";
+  return report.downstream_chapter_number
+    ? `第${report.downstream_chapter_number}章需要同步重写`
+    : "后续章节需要同步重写";
+}
 
 export type RevisionSafetyReport = {
   reviewer?: string;
@@ -589,6 +642,7 @@ export type StoryResponse = {
     role: string;
     game_id?: string;
     game_panel?: GamePanel;
+    current_state?: CharacterStateLayer | string;
     real_state?: CharacterStateLayer;
     game_state?: CharacterStateLayer;
     character_tier?: string;
@@ -671,6 +725,8 @@ export type ImportedRelationshipEdge = {
   relation_type?: string;
   bond?: string;
   origin?: string;
+  history?: string;
+  long_term_conflict_boundary?: string;
   current_state?: string;
   shared_interest_or_conflict?: string;
   tension?: number;
@@ -795,6 +851,7 @@ export type ImportedOpeningArc = {
 export type ImportedCharacterProfile = {
   name: string;
   game_id?: string;
+  current_state?: CharacterStateLayer | string;
   real_state?: CharacterStateLayer;
   game_state?: CharacterStateLayer;
   game_panel?: GamePanel;
@@ -818,12 +875,46 @@ export type ImportedCharacterProfile = {
   story_function?: string;
   chapter_role?: string;
   motivation?: string;
-  current_state?: string;
   personality?: string;
   speech_style?: string;
   goals?: string[];
   secrets?: string[];
   conflict_hooks?: string[];
+};
+
+export type ImportedEquipmentEvidence = {
+  chapter?: number;
+  quote?: string;
+  confidence?: "confirmed" | "rumor" | "unknown";
+};
+
+export type ImportedEquipmentCard = {
+  id?: string;
+  name: string;
+  aliases?: string[];
+  equipment_type: string;
+  slot?: string;
+  rarity?: string;
+  required_level?: string;
+  class_restrictions?: string[];
+  base_attributes?: Record<string, string>;
+  special_effects?: string[];
+  skills?: string[];
+  durability?: string;
+  source?: string;
+  current_owner?: string;
+  current_location?: string;
+  first_appearance_chapter?: number;
+  last_update_chapter?: number;
+  status?: string;
+  description?: string;
+  lore?: string;
+  lore_status?: "confirmed" | "rumor" | "unknown";
+  related_characters?: string[];
+  related_factions?: string[];
+  set_name?: string;
+  set_lore?: string;
+  evidence?: ImportedEquipmentEvidence[];
 };
 
 export type ImportedWorldBlueprint = {
@@ -857,6 +948,7 @@ export type ImportedWorldBlueprint = {
   map_ecology?: ImportedMapEcology;
   relationship_graph?: ImportedRelationshipEdge[];
   monster_profiles?: ImportedMonsterProfile[];
+  equipment_cards?: ImportedEquipmentCard[];
 };
 
 export type PowerSystemAttribute = {
@@ -870,6 +962,32 @@ export type PowerSystemStage = {
   entry?: string;
   change?: string;
   failure?: string;
+};
+
+export type ClassAdvancementTier = {
+  level?: number;
+  name?: string;
+  purpose?: string;
+  common_requirements?: string[];
+  failure_rule?: string;
+};
+
+export type ClassAdvancementOption = {
+  name?: string;
+  role?: string;
+  requirements?: string[];
+  transfer_task?: string;
+  ability_changes?: string[];
+  new_resources?: string[];
+  equipment_permissions?: string[];
+  failure_consequence?: string;
+  next_options?: string[];
+};
+
+export type ClassAdvancementNode = {
+  level?: number;
+  tier_name?: string;
+  options?: ClassAdvancementOption[];
 };
 
 export type PowerSystemPath = {
@@ -886,6 +1004,7 @@ export type PowerSystemPath = {
   branches?: string[];
   transfer_task?: string;
   advancement?: string[];
+  advancement_tree?: ClassAdvancementNode[];
 };
 
 export type AttributeAllocationRule = {
@@ -914,6 +1033,7 @@ export type PowerSystemSpec = {
   visibility?: string[];
   continuity_ledger?: string[];
   attribute_allocation?: AttributeAllocationRule;
+  class_advancement_tiers?: ClassAdvancementTier[];
 };
 
 export type ImportedMonsterProfile = {
@@ -944,6 +1064,7 @@ export type CreateProjectRequest = {
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
   enabled_skill_ids?: string[];
+  enabled_skill_module_ids?: string[];
   pipeline_stage?: ProjectPipelineStage;
   active_story_id?: string;
 };
@@ -963,6 +1084,7 @@ export type ProjectPipelineStage =
   | "completed";
 
 export type ProjectStatus = "draft" | "outlining" | "writing" | "reviewing" | "simulating" | "paused" | "completed" | string;
+export type ProjectLifecycle = "active" | "archived" | "trashed";
 
 export type UpdateProjectRequest = {
   title?: string;
@@ -975,6 +1097,7 @@ export type UpdateProjectRequest = {
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
   enabled_skill_ids?: string[];
+  enabled_skill_module_ids?: string[];
   status?: ProjectStatus;
   pipeline_stage?: ProjectPipelineStage;
   active_story_id?: string;
@@ -989,6 +1112,9 @@ export type ProjectSummary = {
   current_chapter: number;
   source_path: string;
   storage_source?: "sqlite" | "file";
+  project_lifecycle?: ProjectLifecycle;
+  archived_at?: string;
+  trashed_at?: string;
 };
 
 export type ProjectResponse = {
@@ -1003,12 +1129,17 @@ export type ProjectResponse = {
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
   enabled_skill_ids?: string[];
+  enabled_skill_module_ids?: string[] | null;
   status: ProjectStatus;
   pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
   branches: StorySummary[];
   storage_source?: "sqlite" | "file";
   publishing_assets: PublishingAssets;
+  project_lifecycle?: ProjectLifecycle;
+  archived_at?: string;
+  trashed_at?: string;
+  continuation?: { start_after_chapter: number } | null;
 };
 
 export type NewFileProjectRequest = {
@@ -1055,6 +1186,11 @@ export type OutlineExtensionGate = {
 
 export type ProjectOutlineOverall = {
   story: string;
+  theme_statement: string;
+  foreground_story: string;
+  background_story: string;
+  book_objective: string;
+  ending_image: string;
   protagonist_goal: string;
   main_conflict: string;
   growth_path: string;
@@ -1063,6 +1199,18 @@ export type ProjectOutlineOverall = {
   extension_ceiling_chapter: number;
   current_strategy: OutlineStrategy;
   ending_contract: string;
+  core_selling_point: string;
+  long_term_lines: Array<{
+    name: string;
+    purpose: string;
+    start_state: string;
+    progression_steps: string[];
+    final_payoff: string;
+  }>;
+  planned_arc_count: number;
+  planned_length: number;
+  expansion_route: string;
+  closing_route: string;
 };
 
 export type ProjectOutlineArc = {
@@ -1073,12 +1221,25 @@ export type ProjectOutlineArc = {
   goal: string;
   obstacle: string;
   payoff: string;
+  emotional_curve: string;
+  key_results: string[];
+  hook_plan: string;
+  irreversible_change: string;
   end_state: string;
   stage_antagonist: string;
   long_term_antagonist_traces: string[];
   game_line_payoff: string;
   reality_line_payoff: string;
   extension_gate: OutlineExtensionGate;
+  active_long_term_lines: string[];
+  core_loop: string;
+  escalations: string[];
+  midpoint_turn: string;
+  climax: string;
+  relationship_changes: string[];
+  foreshadowing_in: string[];
+  foreshadowing_out: string[];
+  next_arc_entry: string;
 };
 
 export type CharacterIdentityProfile = {
@@ -1138,6 +1299,9 @@ export type ProjectChapterOutline = {
   payoff: string;
   ending_hook: string;
   cast: string[];
+  opponent_response: string;
+  emotional_change: string;
+  gain_or_loss: string;
 };
 
 export type ProjectOutline = {
@@ -1151,6 +1315,21 @@ export type ProjectOutline = {
 export type ProjectOutlineUpdate = Omit<ProjectOutline, "source">;
 
 export type OutlineGenerationMode = "initial" | "regenerate" | "extend";
+export type OutlineGenerationPhaseId = "outline_foundation" | "character_roster" | "chapter_window";
+export type OutlineGenerationCheckpoint = {
+  id: OutlineGenerationPhaseId;
+  status: "waiting" | "running" | "completed" | "failed";
+  started_at?: string;
+  completed_at?: string;
+  error?: string;
+  has_payload?: boolean;
+  payload?: Record<string, unknown>;
+};
+export type OutlineGenerationCheckpointResponse = {
+  fingerprint?: string;
+  updated_at?: string;
+  phases: OutlineGenerationCheckpoint[];
+};
 
 export type GeneratedOutlinePlanResponse = {
   schema_version: "generated-outline-plan/v1";
@@ -1158,6 +1337,22 @@ export type GeneratedOutlinePlanResponse = {
   outline: ProjectOutlineUpdate;
   characters: StoryCharacter[];
   source: "generated";
+};
+
+export type ForeshadowingStatus = "open" | "reinforced" | "resolved" | "expired";
+
+export type ForeshadowingEntry = {
+  text: string;
+  first_chapter: number;
+  last_touched_chapter: number;
+  status: ForeshadowingStatus;
+  payoff_plan: string;
+  resolved_chapter: number | null;
+};
+
+export type ForeshadowingResponse = {
+  items: ForeshadowingEntry[];
+  version: string;
 };
 
 export type AgentReviseRequest = {
@@ -1201,6 +1396,13 @@ export type SkillPackSummary = {
   root_skill?: string;
 };
 
+export type UninstallSkillPackResponse = {
+  skill_id: string;
+  pack: SkillPackSummary;
+  affected_project_count: number;
+  affected_project_ids: string[];
+};
+
 export type ChapterDirectionOptions = {
   schema_version: "chapter-direction-options/v1";
   chapter_number: number;
@@ -1242,6 +1444,8 @@ export type PromptPreviewEntry = {
   content: string;
   chars: number;
   module_keys?: string[];
+  genre_stage_profile?: string;
+  genre_stage_modules?: string[];
 };
 
 export type PromptPreviewResponse = {
@@ -1265,6 +1469,8 @@ export type PromptTemplateEntry = {
   required_variables: string[];
   version: string;
   source: "global_default" | "global_override" | "project_override";
+  applicability?: "all" | "game_only" | "non_game_only";
+  active_for_project?: boolean;
 };
 
 export type PromptTemplatesResponse = {
@@ -1353,6 +1559,8 @@ export type PromptCallSummary = {
   prompt_chars?: number;
   output_chars?: number;
   error?: string;
+  genre_stage_profile?: string;
+  genre_stage_modules?: string[];
 };
 
 export type PromptCallDetail = PromptCallSummary & {
@@ -1733,12 +1941,14 @@ type MockProject = {
   character_profiles?: ImportedCharacterProfile[];
   relationship_graph?: ImportedRelationshipEdge[];
   enabled_skill_ids?: string[];
+  enabled_skill_module_ids?: string[] | null;
   status: ProjectStatus;
   pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
   branches: string[];
   storage_source?: "sqlite" | "file";
   publishing_assets: PublishingAssets;
+  continuation?: { start_after_chapter: number } | null;
 };
 
 const MOCK_STORE_STORAGE_KEY = "novel-autogrowth-engine.stories";
@@ -3340,6 +3550,19 @@ export async function uploadSkillPackZip(file: File): Promise<SkillPackSummary> 
   })) as SkillPackSummary;
 }
 
+export async function uninstallSkillPack(skillId: string): Promise<UninstallSkillPackResponse> {
+  return (await tryFetchJson(`${apiBase()}/skill-packs/${encodeURIComponent(skillId)}`, {
+    method: "DELETE",
+  })) as UninstallSkillPackResponse;
+}
+
+export async function uninstallSkillModule(skillId: string, moduleId: string): Promise<UninstallSkillPackResponse> {
+  return (await tryFetchJson(
+    `${apiBase()}/skill-packs/${encodeURIComponent(skillId)}/modules/${encodeURIComponent(moduleId)}`,
+    { method: "DELETE" },
+  )) as UninstallSkillPackResponse;
+}
+
 export async function fetchStory(storyId: string): Promise<StoryResponse> {
   try {
     const fileStory = isFileProjectId(storyId);
@@ -3436,6 +3659,7 @@ function mockCreateProject(payload: CreateProjectRequest): ProjectResponse {
     character_profiles: payload.character_profiles ?? [],
     relationship_graph: payload.relationship_graph ?? payload.world_blueprint?.relationship_graph ?? [],
     enabled_skill_ids: payload.enabled_skill_ids ?? [],
+    enabled_skill_module_ids: payload.enabled_skill_module_ids ?? [],
     status: payload.active_story_id ? "simulating" : "draft",
     pipeline_stage: payload.pipeline_stage ?? (payload.active_story_id ? "environment_ready" : "imported"),
     active_story_id: payload.active_story_id ?? "",
@@ -3493,6 +3717,7 @@ function mockFetchProject(projectId: string): ProjectResponse {
     })),
     storage_source: project.storage_source,
     publishing_assets: project.publishing_assets,
+    continuation: clone(project.continuation ?? null),
   });
 }
 
@@ -3586,12 +3811,14 @@ function persistProjectIntoMockStore(project: ProjectResponse): ProjectResponse 
     character_profiles: clone(project.character_profiles ?? []),
     relationship_graph: clone(project.relationship_graph ?? project.world_blueprint?.relationship_graph ?? []),
     enabled_skill_ids: clone(project.enabled_skill_ids ?? []),
+    enabled_skill_module_ids: clone(project.enabled_skill_module_ids ?? []),
     status: project.status,
     pipeline_stage: project.pipeline_stage ?? "imported",
     active_story_id: project.active_story_id,
     branches: project.branches.map((branch) => branch.story_id),
     storage_source: project.storage_source,
     publishing_assets: clone(project.publishing_assets),
+    continuation: clone(project.continuation ?? null),
   };
   mockProjectStore.set(project.project_id, mirroredProject);
   saveMockProjectStore(mockProjectStore);
@@ -3626,6 +3853,7 @@ function mockUpdateProject(projectId: string, payload: UpdateProjectRequest): Pr
     ...(payload.character_profiles !== undefined ? { character_profiles: payload.character_profiles } : {}),
     ...(payload.relationship_graph !== undefined ? { relationship_graph: payload.relationship_graph } : {}),
     ...(payload.enabled_skill_ids !== undefined ? { enabled_skill_ids: payload.enabled_skill_ids } : {}),
+    ...(payload.enabled_skill_module_ids !== undefined ? { enabled_skill_module_ids: payload.enabled_skill_module_ids } : {}),
     ...(payload.status !== undefined ? { status: payload.status } : {}),
     ...(payload.pipeline_stage !== undefined ? { pipeline_stage: payload.pipeline_stage } : {}),
     ...(payload.active_story_id !== undefined ? { active_story_id: payload.active_story_id } : {}),
@@ -3675,18 +3903,19 @@ export async function listStories(): Promise<StorySummary[]> {
   }
 }
 
-export async function listProjects(): Promise<ProjectSummary[]> {
+export async function listProjects(lifecycle: ProjectLifecycle = "active"): Promise<ProjectSummary[]> {
+  const query = `?lifecycle=${encodeURIComponent(lifecycle)}`;
   try {
-    const response = (await tryFetchJson(`${apiBase()}/projects`, {
+    const response = (await tryFetchJson(`${apiBase()}/projects${query}`, {
       method: "GET",
     })) as ProjectSummary[];
-    const fileProjects = (await tryFetchJson(`${apiBase()}/file-projects`, {
+    const fileProjects = (await tryFetchJson(`${apiBase()}/file-projects${query}`, {
       method: "GET",
     }).catch(() => [])) as ProjectSummary[];
     const seen = new Set(response.map((project) => project.project_id));
     return [...response, ...fileProjects.filter((project) => !seen.has(project.project_id))];
   } catch (err) {
-    const fileProjects = (await tryFetchJson(`${apiBase()}/file-projects`, {
+    const fileProjects = (await tryFetchJson(`${apiBase()}/file-projects${query}`, {
       method: "GET",
     }).catch(() => [])) as ProjectSummary[];
     if (fileProjects.length > 0) {
@@ -3694,6 +3923,59 @@ export async function listProjects(): Promise<ProjectSummary[]> {
     }
     throw err;
   }
+}
+
+export async function fetchFileProjectCandidates(
+  projectId: string,
+  chapterNumber?: number,
+): Promise<CandidateListResponse> {
+  if (!isFileProjectId(projectId)) throw new Error("candidates_only_support_file_projects");
+  const query = Number.isInteger(chapterNumber) ? `?chapter_number=${chapterNumber}` : "";
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/candidates${query}`, { method: "GET" })) as CandidateListResponse;
+}
+
+export async function discardFileProjectCandidate(projectId: string, candidateId: string): Promise<{ candidate: CandidateDraft }> {
+  if (!isFileProjectId(projectId)) throw new Error("candidates_only_support_file_projects");
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/candidates/${encodeURIComponent(candidateId)}/discard`, {
+    method: "POST",
+  })) as { candidate: CandidateDraft };
+}
+
+export async function confirmFileProjectCandidate(projectId: string, candidateId: string): Promise<{
+  candidate: CandidateDraft;
+  project: ProjectResponse;
+  story: StoryResponse;
+}> {
+  if (!isFileProjectId(projectId)) throw new Error("candidates_only_support_file_projects");
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/candidates/${encodeURIComponent(candidateId)}/confirm`, {
+    method: "POST",
+  }, 900000)) as { candidate: CandidateDraft; project: ProjectResponse; story: StoryResponse };
+}
+
+function projectLifecyclePath(projectId: string, action: "archive" | "trash" | "restore"): string {
+  const base = isFileProjectId(projectId)
+    ? fileProjectPath(projectId)
+    : `${apiBase()}/projects/${encodeURIComponent(projectId)}`;
+  return `${base}/${action}`;
+}
+
+export async function archiveProject(projectId: string): Promise<ProjectResponse> {
+  return await tryFetchJson(projectLifecyclePath(projectId, "archive"), { method: "POST" });
+}
+
+export async function trashProject(projectId: string): Promise<ProjectResponse> {
+  return await tryFetchJson(projectLifecyclePath(projectId, "trash"), { method: "POST" });
+}
+
+export async function restoreProject(projectId: string): Promise<ProjectResponse> {
+  return await tryFetchJson(projectLifecyclePath(projectId, "restore"), { method: "POST" });
+}
+
+export async function permanentlyDeleteProject(projectId: string, title: string): Promise<void> {
+  const base = isFileProjectId(projectId)
+    ? fileProjectPath(projectId)
+    : `${apiBase()}/projects/${encodeURIComponent(projectId)}`;
+  await tryFetchJson(`${base}?confirm_title=${encodeURIComponent(title)}`, { method: "DELETE" });
 }
 
 export async function fetchProject(projectId: string): Promise<ProjectResponse> {
@@ -3754,10 +4036,29 @@ export async function updateProjectOutline(projectId: string, payload: ProjectOu
   })) as ProjectOutline;
 }
 
+export async function fetchProjectForeshadowing(projectId: string): Promise<ForeshadowingResponse> {
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/foreshadowing`, {
+    method: "GET",
+  })) as ForeshadowingResponse;
+}
+
+export async function updateProjectForeshadowing(
+  projectId: string,
+  items: ForeshadowingEntry[],
+  baseVersion: string,
+): Promise<ForeshadowingResponse> {
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/foreshadowing`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ items, base_version: baseVersion }),
+  })) as ForeshadowingResponse;
+}
+
 export async function generateProjectOutline(
   projectId: string,
   mode: OutlineGenerationMode,
   guidance = "",
+  restartFrom?: OutlineGenerationPhaseId,
 ): Promise<GeneratedOutlinePlanResponse> {
   if (!isFileProjectId(projectId)) {
     throw new Error("只有文件项目支持生成大纲");
@@ -3767,10 +4068,19 @@ export async function generateProjectOutline(
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ mode, guidance }),
+      body: JSON.stringify({ mode, guidance, ...(restartFrom ? { restart_from: restartFrom } : {}) }),
     },
     420000,
   )) as GeneratedOutlinePlanResponse;
+}
+
+export async function fetchOutlineGenerationCheckpoints(
+  projectId: string,
+): Promise<OutlineGenerationCheckpointResponse> {
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/outline/generation-checkpoints`,
+    { method: "GET" },
+  )) as OutlineGenerationCheckpointResponse;
 }
 
 export async function enrichProjectWorld(projectId: string): Promise<ProjectResponse> {

@@ -1,4 +1,5 @@
 from packages.story_core.planner import build_chapter_title
+from packages.story_core.orchestrator import _planned_chapter_title
 
 
 def test_web_game_chapter_title_uses_tomato_hook_language():
@@ -55,3 +56,13 @@ def test_xianxia_chapter_title_distinguishes_followup_mirror_crisis():
     )
 
     assert title == "残镜夺灵"
+
+
+def test_planned_chapter_title_prefers_current_event_plan_over_stale_intent():
+    title = _planned_chapter_title(
+        event_plan={"chapter_title": "六光压雪山"},
+        chapter_intent={"chapter_title": "残镜夺灵"},
+        chapter_summary={"chapter_title": "残镜夺灵"},
+    )
+
+    assert title == "六光压雪山"

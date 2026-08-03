@@ -6,7 +6,32 @@ from packages.story_core.engine import ChapterBundle
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.orchestrator import _normalize_event_plan
+from packages.story_core.power_systems import power_system_prompt_slice
 from packages.story_core.writing_packet import build_codex_writing_packet, power_system_context_for_state
+
+
+def test_power_system_prompt_selects_nearest_shared_transfer_tiers_and_path_tree() -> None:
+    spec = {
+        "name": "Class system",
+        "class_advancement_tiers": [
+            {"level": 10, "name": "Class", "purpose": "Choose class", "common_requirements": ["Trial"], "failure_rule": "Retry"},
+            {"level": 30, "name": "Branch", "purpose": "Choose branch", "common_requirements": ["Branch trial"], "failure_rule": "Delay"},
+            {"level": 60, "name": "Legacy", "purpose": "Claim legacy", "common_requirements": ["Legacy trial"], "failure_rule": "Repair"},
+        ],
+        "paths": [{
+            "name": "Mage",
+            "branches": ["Fire", "Ice"],
+            "advancement_tree": [
+                {"level": level, "tier_name": tier, "options": [{"name": tier, "transfer_task": f"{tier} task", "ability_changes": [f"{tier} power"]}]}
+                for level, tier in ((10, "Class"), (30, "Branch"), (60, "Legacy"))
+            ],
+        }],
+    }
+
+    result = power_system_prompt_slice(spec, stage_hint=12, path_hint="Fire")
+
+    assert [tier["level"] for tier in result["class_advancement_tiers"]] == [10, 30]
+    assert [node["level"] for node in result["paths"][0]["advancement_tree"]] == [10, 30]
 
 
 def _packet_power_spec() -> dict:
@@ -572,6 +597,32 @@ def test_file_writer_character_cards_project_only_selected_state_line():
         assert "game_secret" not in str(cards[0]["state_context"] if scene_kind == "reality" else {})
 
 
+def test_file_writer_character_cards_use_generic_state_for_non_game_story():
+    store = object.__new__(FileProjectStore)
+    cards = store._writer_character_cards(
+        {
+            "characters": [
+                {
+                    "name": "沈墨",
+                    "role": "主角",
+                    "current_state": {"current": {"location": "祖祠"}},
+                    "real_state": {"current": {"location": "旧住处"}},
+                }
+            ]
+        },
+        {"chapter": {"cast": ["沈墨"]}},
+        scene_kind="reality",
+        is_game_story=False,
+    )
+
+    assert cards[0]["state_context"] == {
+        "current_state": {
+            "current": {"location": "祖祠"},
+            "recent_changes": [],
+        }
+    }
+
+
 def test_writer_scene_kind_uses_all_scene_card_text_and_mixes_lines():
     store = object.__new__(FileProjectStore)
 
@@ -713,5 +764,35 @@ def test_file_project_packet_and_prompt_preview_share_scene_kind_and_state_conte
     assert '"scene_kind": "game"' in preview["modules"][-1]["content"]
     assert '"game_state"' in character_module["content"]
     assert '"real_state"' not in character_module["content"]
+
+    generic_root = tmp_path / "generic-file-project"
+    (generic_root / ".story-system" / "chapters").mkdir(parents=True)
+    (generic_root / ".story-system" / "reviews").mkdir(parents=True)
+    (generic_root / ".webnovel").mkdir(parents=True)
+    (generic_root / "chapters").mkdir(parents=True)
+    generic_project = deepcopy(project)
+    generic_project["project_id"] = "p-generic-dual"
+    generic_project["world_blueprint"]["genre_plugin_ids"] = ["suspense"]
+    generic_state = deepcopy(state)
+    generic_state["story_id"] = "s-generic-dual"
+    generic_state["genre"] = "suspense"
+    (generic_root / ".story-system" / "MASTER_SETTING.json").write_text(
+        json.dumps({"project": generic_project}, ensure_ascii=False), encoding="utf-8"
+    )
+    (generic_root / ".webnovel" / "project.json").write_text(
+        json.dumps(generic_project, ensure_ascii=False), encoding="utf-8"
+    )
+    (generic_root / ".webnovel" / "state.json").write_text(
+        json.dumps(generic_state, ensure_ascii=False), encoding="utf-8"
+    )
+    (generic_root / ".webnovel" / "outline.json").write_text(
+        json.dumps(outline, ensure_ascii=False), encoding="utf-8"
+    )
+
+    generic_preview = FileProjectStore(generic_root).prompt_preview(1)
+    generic_character_module = next(
+        item for item in generic_preview["modules"] if item["key"] == "character_context"
+    )
+    assert '"game_state"' not in generic_character_module["content"]
     assert "游戏状态：" in prompts["writer_body"]["content"]
     assert "现实状态：" not in prompts["writer_body"]["content"]

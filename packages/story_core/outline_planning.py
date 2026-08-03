@@ -54,6 +54,11 @@ class GeneratedOutlinePlan(_PlanningModel):
 
 _GENERATED_OVERALL_NARRATIVE_FIELDS = (
     "story",
+    "theme_statement",
+    "foreground_story",
+    "background_story",
+    "book_objective",
+    "ending_image",
     "protagonist_goal",
     "main_conflict",
     "growth_path",
@@ -65,6 +70,9 @@ _GENERATED_ARC_NARRATIVE_FIELDS = (
     "goal",
     "obstacle",
     "payoff",
+    "emotional_curve",
+    "hook_plan",
+    "irreversible_change",
     "end_state",
     "game_line_payoff",
     "reality_line_payoff",
@@ -242,6 +250,10 @@ def sanitize_generated_outline_amounts(payload: Any) -> dict[str, Any]:
             _sanitize_generated_narrative_value(item)
             for item in arc.long_term_antagonist_traces
         ]
+        arc.key_results = [
+            _sanitize_generated_narrative_value(item)
+            for item in arc.key_results
+        ]
         for field_name in ("continue_route", "close_route"):
             setattr(
                 arc.extension_gate,
@@ -287,6 +299,11 @@ def _validate_generated_outline_amounts(plan: GeneratedOutlinePlan) -> None:
                 trace,
                 f"arc:{arc.id}:long_term_antagonist_traces:{index}",
             )
+        for index, result in enumerate(arc.key_results):
+            _validate_generated_narrative_value(
+                result,
+                f"arc:{arc.id}:key_results:{index}",
+            )
         for field_name in ("continue_route", "close_route"):
             _validate_generated_narrative_value(
                 getattr(arc.extension_gate, field_name),
@@ -317,12 +334,30 @@ def validate_generated_opening_plan(
     overall = plan.outline.overall
     for field_name in (
         "story",
+        "theme_statement",
+        "foreground_story",
+        "background_story",
+        "book_objective",
+        "ending_image",
         "protagonist_goal",
         "main_conflict",
         "growth_path",
         "ending_direction",
     ):
         _require_text(getattr(overall, field_name), f"missing_overall_field:{field_name}")
+
+    for arc in plan.outline.arcs:
+        for field_name in (
+            "emotional_curve",
+            "hook_plan",
+            "irreversible_change",
+        ):
+            _require_text(
+                getattr(arc, field_name),
+                f"missing_arc_field:{arc.id}:{field_name}",
+            )
+        if len(arc.key_results) != 3 or any(not item.strip() for item in arc.key_results):
+            raise ValueError(f"invalid_arc_key_results:{arc.id}")
 
     tiers = {card.character_tier for card in plan.characters}
     for tier in ("protagonist", "stage_antagonist", "long_term_antagonist"):

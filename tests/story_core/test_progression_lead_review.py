@@ -1,6 +1,33 @@
-from packages.story_core.orchestrator import _merge_writing_review_quality, _review_chapter_body, _sanitize_chapter_output
+from packages.story_core.genre_stages.postprocess import PostprocessContext
+from packages.story_core.genre_stages.registry import genre_stage_profile_for
+from packages.story_core.models import StoryState
+from packages.story_core.orchestrator import _merge_writing_review_quality, _review_chapter_body
 from packages.story_core.progression_lead_review import review_progression_lead
 from packages.story_core.world_consistency_review import review_world_event_consistency
+
+
+def _postprocess_game_body(
+    body: str,
+    *,
+    chapter_number: int,
+    scene_cards: list[dict] | None = None,
+) -> str:
+    story = StoryState(
+        story_id="postprocess-game",
+        outline="A player enters a virtual world.",
+        genre="网游",
+        style="serial fiction",
+    )
+    profile = genre_stage_profile_for(story)
+    assert profile.profile_id == "game_webnovel"
+    return profile.postprocess_body(
+        context=PostprocessContext(
+            story=story,
+            body=body,
+            chapter_number=chapter_number,
+            scene_cards=scene_cards or [],
+        )
+    )
 
 
 def test_progression_lead_review_rejects_first_chapter_service_loop():
@@ -149,6 +176,7 @@ def test_chapter_body_review_includes_progression_lead_review():
         body,
         {"world_reactions": ["普通玩家只觉得他运气好。"], "next_focus": "继续抢路线。"},
         world_facts=["长期核心：混沌之种、千倍爆率、进度领先钩子。"],
+        genre_context={"genre": "game_webnovel", "genre_plugin_ids": ["game_webnovel"]},
     )
 
     assert "progression_lead_review" in review
@@ -180,7 +208,7 @@ def test_first_chapter_sanitizer_does_not_rewrite_service_closure_or_add_hook():
         "他去修理铺扣除：30铜，把法杖修满，又买药水。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1)
+    cleaned = _postprocess_game_body(body, chapter_number=1)
 
     assert "任务完成" in cleaned
     assert "获得：30铜" in cleaned
@@ -204,7 +232,7 @@ def test_first_chapter_sanitizer_leaves_missing_npc_window_for_review():
         }
     ]
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=scene_cards)
+    cleaned = _postprocess_game_body(body, chapter_number=1, scene_cards=scene_cards)
     review = review_world_event_consistency(cleaned, world_events=[], scene_cards=scene_cards)
 
     assert "柜台窗口" not in cleaned
@@ -223,7 +251,7 @@ def test_first_chapter_sanitizer_does_not_add_reality_skill_source():
         }
     ]
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=scene_cards)
+    cleaned = _postprocess_game_body(body, chapter_number=1, scene_cards=scene_cards)
 
     assert cleaned == body
     assert "外包测试员" not in cleaned
@@ -236,7 +264,7 @@ def test_first_chapter_sanitizer_leaves_missing_progression_and_misread_for_revi
         "第一次击杀灰狼后，混沌之种提示掉落判定×1000，背包里多了灰狼毒腺八份。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _postprocess_game_body(body, chapter_number=1, scene_cards=[])
     review = review_progression_lead(chapter_number=1, body=cleaned, event_plan={}, world_facts=[])
 
     assert "夜烬" not in cleaned
@@ -254,7 +282,7 @@ def test_first_chapter_sanitizer_does_not_delete_damage_or_currency_events():
         "修理匠问他要不要买两瓶药水，他摇头，又往职业导师门口看了一眼。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1)
+    cleaned = _postprocess_game_body(body, chapter_number=1)
     review = review_progression_lead(chapter_number=1, body=cleaned, event_plan={}, world_facts=[])
 
     assert "跳出的数值" in cleaned

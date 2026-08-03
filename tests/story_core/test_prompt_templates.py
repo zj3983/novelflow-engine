@@ -66,6 +66,18 @@ def test_generic_director_template_documents_action_object_shapes():
     assert parsed_example == [{"name": "角色名", "action": "具体动作"}]
     assert "chapter_satisfaction" in content
     assert "chapter_end_hook" in content
+    assert "scene_chain" in content
+    assert "3至5个" in content
+    assert "场景变化" in content
+
+
+def test_generic_director_template_excludes_game_only_outsider_misread():
+    generic = get_default_prompt_template("director_generic").content
+    game = get_default_prompt_template("director").content
+
+    for game_only_term in ("outsider_misread", "游戏ID", "等级", "背包", "装备耐久", "任务进度"):
+        assert game_only_term not in generic
+    assert "outsider_misread" in game
 
 
 def test_render_rejects_missing_template_variable():
@@ -153,6 +165,35 @@ def test_project_override_rejects_missing_required_variable(tmp_path):
 
     with pytest.raises(ValueError, match="missing_required_template_variable:chapter_direction"):
         store.set_prompt_template_override("writer", "只写正文：{{output_section}}")
+
+
+@pytest.mark.parametrize(
+    ("genre", "active_key", "inactive_key"),
+    [
+        ("网游", "director", "director_generic"),
+        ("都市异能", "director_generic", "director"),
+    ],
+)
+def test_project_prompt_templates_mark_current_genre_applicability(
+    tmp_path,
+    genre,
+    active_key,
+    inactive_key,
+):
+    store = FileProjectStore(tmp_path / genre)
+    store.webnovel_dir.mkdir(parents=True, exist_ok=True)
+    (store.webnovel_dir / "state.json").write_text(
+        json.dumps({"genre": genre}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    templates = {item["key"]: item for item in store.prompt_templates()}
+
+    assert templates[active_key]["active_for_project"] is True
+    assert templates[inactive_key]["active_for_project"] is False
+    assert templates["director"]["applicability"] == "game_only"
+    assert templates["director_generic"]["applicability"] == "non_game_only"
+    assert templates["writer"]["applicability"] == "all"
 
 
 def test_orchestrator_uses_template_from_current_project_scope():

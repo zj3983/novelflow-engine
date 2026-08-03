@@ -1,36 +1,70 @@
 from packages.story_core.agent_base import compact_list
 import packages.story_core.orchestrator as orchestrator_module
+import packages.story_core.genre_stages.game_webnovel.review as game_review_module
+import packages.story_core.genre_stages.game_webnovel.postprocess as game_postprocess_module
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.models import NovelProject
 from packages.story_core.models import StoryState
+from packages.story_core.genre_stages.game_webnovel.postprocess import (
+    _normalize_web_game_terms,
+    _repair_outline_amount_anchors,
+)
+from packages.story_core.genre_stages.game_webnovel.director import (
+    _compact_first_chapter_scene_cards,
+)
+from packages.story_core.genre_stages.generic import GENERIC_STAGES
+from packages.story_core.genre_stages.game_webnovel import GAME_WEBNOVEL_STAGES
+from packages.story_core.genre_stages.postprocess import (
+    PostprocessContext,
+    _limit_metaphor_markers,
+    normalize_generated_body,
+)
 from packages.story_core.orchestrator import (
     _apply_ledger_updates,
     _extract_economy_anchors,
     _extract_equipment_ledger_updates,
     _extract_system_anchors,
     _merge_writing_review_quality,
-    _limit_metaphor_markers,
     _normalize_chapter_summary,
     _normalize_moves,
-    _normalize_web_game_terms,
     _review_chapter_body,
-    _sanitize_chapter_output,
     _expanded_body_is_acceptable,
     _compressed_body_is_acceptable,
     _compressed_body_is_progress,
     _compression_candidate_action,
     _chapter_body_is_hard_length_acceptable,
     _rebalanced_body_is_acceptable,
-    _repair_outline_amount_anchors,
+    _repair_generic_chapter_title,
     _should_extract_final_memory,
     _should_run_full_revision,
-    _compact_first_chapter_scene_cards,
     _compression_review_not_worse,
     _should_expand_chapter,
 )
 from packages.story_core.prose_rule_review import review_critical_prose_rules, review_emotion_quota, review_paragraph_form
 from packages.story_core.simplified_review import build_simplified_review
 from packages.story_core.world_enrichment import _merge_enrichment
+
+
+GAME_GENRE_CONTEXT = {
+    "genre": "game_webnovel",
+    "genre_plugin_ids": ["game_webnovel"],
+}
+
+
+def _run_game_postprocess(
+    body: str,
+    *,
+    chapter_number: int,
+    scene_cards: list[dict] | None = None,
+) -> str:
+    return GAME_WEBNOVEL_STAGES.postprocess_body(
+        context=PostprocessContext(
+            story=None,
+            body=body,
+            chapter_number=chapter_number,
+            scene_cards=scene_cards or [],
+        )
+    )
 
 
 def test_compact_list_treats_single_string_as_one_item():
@@ -71,6 +105,32 @@ def test_chapter_review_passes_explicit_genre_context_to_shared_reviewers(monkey
     }
 
 
+def test_non_game_review_does_not_activate_game_review_from_body_content():
+    report = _review_chapter_body(
+        1,
+        "game ID: Nightfire; 1 gold = 10 RMB; marketplace batch x1000",
+        {},
+        [],
+        genre_context={"genre": "xianxia", "genre_plugin_ids": ["xianxia"]},
+    )
+
+    assert report["active_genre_reviews"] == {}
+    assert "web_game_review" not in report
+
+
+def test_game_review_preserves_legacy_web_game_report_schema():
+    report = _review_chapter_body(
+        1,
+        "game ID: Nightfire",
+        {"next_focus": "continue"},
+        [],
+        genre_context={"genre": "game_webnovel", "genre_plugin_ids": ["game_webnovel"]},
+    )
+
+    assert "web_game_review" in report["active_genre_reviews"]
+    assert report["web_game_review"] is report["active_genre_reviews"]["web_game_review"]
+
+
 def test_chapter_review_preserves_nested_reports_to_repair_aggregate_plan_shift(monkeypatch):
     body = "网游正文"
     local_issue_a = (
@@ -106,7 +166,8 @@ def test_chapter_review_preserves_nested_reports_to_repair_aggregate_plan_shift(
         calls["style"] += 1
         return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
 
-    monkeypatch.setattr(orchestrator_module, "review_web_game_chapter", web_game_review)
+    monkeypatch.setattr(game_review_module, "review_web_game_chapter", web_game_review)
+    monkeypatch.setattr(game_review_module, "review_progression_lead", empty_review)
     monkeypatch.setattr(orchestrator_module, "review_world_event_consistency", consistency_review)
     monkeypatch.setattr(orchestrator_module, "review_prose_style", style_review)
     for name in (
@@ -116,7 +177,6 @@ def test_chapter_review_preserves_nested_reports_to_repair_aggregate_plan_shift(
         "review_reader_feel",
         "review_cold_reader_experience",
             "review_plot_spine_completion",
-            "review_progression_lead",
             "review_critical_prose_rules",
         ):
         monkeypatch.setattr(orchestrator_module, name, empty_review)
@@ -126,6 +186,7 @@ def test_chapter_review_preserves_nested_reports_to_repair_aggregate_plan_shift(
         body,
         {"world_reactions": ["玩家继续练级。"], "next_focus": "继续推进。"},
         [],
+        genre_context=GAME_GENRE_CONTEXT,
     )
     simplified = build_simplified_review({"writing_review": writing_review})
     issue = next(item for item in simplified["issues"] if item["message"] == issue_b)
@@ -574,6 +635,53 @@ def test_metaphor_limiter_never_rewrites_like_into_ungrammatical_gen():
 
     assert cleaned == body
     assert "跟有人" not in cleaned
+
+
+def test_metaphor_limiter_removes_excess_soft_comparison_markers():
+    body = "风声仿佛贴着门缝。灯影好像晃了一下。他仿佛听见脚步。"
+
+    cleaned = _limit_metaphor_markers(body, max_like=1)
+
+    assert sum(cleaned.count(marker) for marker in ("仿佛", "好像")) == 1
+    assert "风声" in cleaned
+    assert "脚步" in cleaned
+
+
+def test_game_postprocess_calls_common_normalizer_once(monkeypatch):
+    calls: list[str] = []
+    original = game_postprocess_module.normalize_generated_body
+
+    def tracked(*, context):
+        calls.append(context.body)
+        return original(context=context)
+
+    monkeypatch.setattr(game_postprocess_module, "normalize_generated_body", tracked)
+    story = StoryState(story_id="postprocess-once", outline="进入虚拟世界。", genre="网游", style="白描")
+
+    cleaned = orchestrator_module._postprocess_chapter_output(
+        story,
+        "夜烬仿佛听见风声。?灰狼靠近。",
+        chapter_number=1,
+        scene_cards=[],
+    )
+
+    assert calls == ["夜烬仿佛听见风声。?灰狼靠近。"]
+    assert "。?灰狼" not in cleaned
+
+
+def test_common_postprocess_owns_paragraph_merging_for_generic_profile():
+    body = "\n\n".join(f"林照看向门外{index}。" for index in range(90))
+
+    cleaned = normalize_generated_body(
+        context=PostprocessContext(
+            story=None,
+            body=body,
+            chapter_number=1,
+            scene_cards=[],
+        )
+    )
+
+    assert len([part for part in cleaned.split("\n\n") if part.strip()]) < 90
     assert "跟是在" not in cleaned
 
 
@@ -587,7 +695,7 @@ def test_sanitizer_does_not_author_missing_story_content():
         {"scene_id": "s4-c1-npc-service", "must_show": ["NPC地点", "信息边界"]},
     ]
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=scene_cards)
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=scene_cards)
 
     assert cleaned == body
     assert "底层协议校验通过" not in cleaned
@@ -600,7 +708,7 @@ def test_sanitizer_does_not_author_missing_story_content():
 def test_sanitizer_preserves_completed_reward_and_payment_events():
     body = "任务完成。系统提示：获得：30铜。随后修理装备，扣除：30铜。"
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=2, scene_cards=[])
 
     assert cleaned == body
     assert "奖励栏还没亮" not in cleaned
@@ -617,7 +725,7 @@ def test_first_chapter_sanitizer_leaves_missing_emotion_for_review():
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
     review = review_emotion_quota(cleaned)
 
     assert review["scores"]["emotion_quota"] < 8
@@ -695,13 +803,14 @@ def test_review_chapter_body_treats_review_exception_as_failure(monkeypatch):
     def broken_web_game_review(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("packages.story_core.orchestrator.review_web_game_chapter", broken_web_game_review)
+    monkeypatch.setattr(game_review_module, "review_web_game_chapter", broken_web_game_review)
 
     review = _review_chapter_body(
         1,
         "《天启之门》开服，夜烬用新手法杖试打一只灰狼，混沌之种提示掉落判定×1000。旁边玩家只当他运气好，他把材料压进背包，下一步准备再刷一轮。",
         {"summary": "夜烬试打灰狼", "next_focus": "再刷一轮"},
         world_facts=["网游开服，夜烬低调验证千倍爆率。"],
+        genre_context=GAME_GENRE_CONTEXT,
     )
 
     assert review["pass"] is False
@@ -715,7 +824,7 @@ def test_first_chapter_sanitizer_normalizes_panel_values_and_report_phrase():
         "面板边缘泛着微光，数据很干净。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert "法力：60/60" in cleaned
     assert "数据很干净" not in cleaned
@@ -731,7 +840,7 @@ def test_first_chapter_sanitizer_does_not_add_progression_hook():
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert cleaned == body
     assert "清道夫委托" not in cleaned
@@ -749,7 +858,7 @@ def test_first_chapter_sanitizer_does_not_rewrite_premature_story_events():
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert cleaned == body
     assert "钱袋里多了" in cleaned
@@ -767,7 +876,7 @@ def test_first_chapter_sanitizer_does_not_truncate_service_overrun():
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert cleaned == body
     assert "清道夫委托完成" in cleaned
@@ -784,7 +893,16 @@ def test_first_chapter_review_blocks_premature_rewards_and_services():
         "窗口NPC盖章，钱袋里多了5枚铜币。夜烬又把法杖修好，想着下一步换技能书。"
     )
 
-    review = _review_chapter_body(1, body, {}, ["本书设定：夜烬拥有千倍爆率。"], {}, [], [])
+    review = _review_chapter_body(
+        1,
+        body,
+        {},
+        ["本书设定：夜烬拥有千倍爆率。"],
+        {},
+        [],
+        [],
+        GAME_GENRE_CONTEXT,
+    )
 
     assert review["pass"] is False
     assert any("第一章账本越界" in issue for issue in review["issues"])
@@ -811,7 +929,7 @@ def test_first_chapter_sanitizer_preserves_price_and_precondition_surface():
         "背包里现在只有灰狼毒腺八份，还差两份才能提交委托，后坡探路只是后续前置。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert "基础法力药水价格" in cleaned
     assert "灰狼毒腺十份" in cleaned
@@ -827,7 +945,7 @@ def test_first_chapter_sanitizer_does_not_insert_protagonist_speech():
         "背包里现在只有灰狼毒腺八份，还差两份。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert "夜烬把背包扣上，低声说" not in cleaned
     assert "先不交" not in cleaned
@@ -928,7 +1046,7 @@ def test_review_rejects_trade_amount_that_differs_from_outline_anchor():
     }
     world_facts = ["第一章必须通过裂纹狼心担保交易解决现实急账。"]
 
-    review = _review_chapter_body(1, body, event_plan, world_facts, {}, [], [])
+    review = _review_chapter_body(1, body, event_plan, world_facts, {}, [], [], GAME_GENRE_CONTEXT)
 
     assert any("大纲金额不一致" in issue and "1764.00元" in issue for issue in review["issues"])
 
@@ -961,7 +1079,7 @@ def test_review_rejects_opening_and_ending_balances_that_differ_from_outline():
         '{"payoff":"担保交易到账1764.00元，现实余额变为312.60元。"}',
     ]
 
-    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [], GAME_GENRE_CONTEXT)
 
     assert any("开篇余额不一致" in issue and "27.60元" in issue for issue in review["issues"])
     assert any("章末余额不一致" in issue and "312.60元" in issue for issue in review["issues"])
@@ -1102,7 +1220,7 @@ def test_review_rejects_ending_balance_shown_before_real_world_payments():
         '{"payoff":"担保交易到账1764.00元，现实余额变为332.60元。"}',
     ]
 
-    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [], GAME_GENRE_CONTEXT)
 
     assert any("现实余额出现顺序错误" in issue for issue in review["issues"])
 
@@ -1119,7 +1237,7 @@ def test_review_rejects_opening_balance_repeated_after_trade_arrival():
         "担保交易到账1764.00元，付清急账后现实余额变为332.60元。",
     ]
 
-    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [], GAME_GENRE_CONTEXT)
 
     assert any("到账后余额仍停在登录前金额" in issue for issue in review["issues"])
 
@@ -1136,7 +1254,7 @@ def test_review_rejects_same_amount_as_gross_price_and_net_arrival_with_fee():
         '{"payoff":"担保交易到账1764.00元，现实余额变为332.60元。"}',
     ]
 
-    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [])
+    review = _review_chapter_body(1, body, {}, world_facts, {}, [], [], GAME_GENRE_CONTEXT)
 
     assert any("交易金额流水矛盾" in issue for issue in review["issues"])
 
@@ -1144,7 +1262,7 @@ def test_review_rejects_same_amount_as_gross_price_and_net_arrival_with_fee():
 def test_first_chapter_sanitizer_merges_overfragmented_paragraphs():
     body = "\n\n".join([f"夜烬看了一眼背包{i}。" for i in range(90)])
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert len([part for part in cleaned.split("\n\n") if part.strip()]) < 90
 
@@ -1156,7 +1274,7 @@ def test_chapter_sanitizer_compacts_adjacent_system_panels_into_one_block():
         "夜烬关掉面板。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert cleaned.count("【") == 1
     assert "击杀灰狼，获得经验22；等级提升至Lv.2；获得自由属性点×5" in cleaned
@@ -1165,7 +1283,7 @@ def test_chapter_sanitizer_compacts_adjacent_system_panels_into_one_block():
 def test_first_chapter_sanitizer_merges_sentence_shards_until_paragraph_form_passes():
     body = "\n\n".join([f"法力栏见底{i}。夜烬退到石头后面。" for i in range(100)])
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
     form_review = review_paragraph_form(cleaned)
 
     assert form_review["pass"] is True
@@ -1175,7 +1293,7 @@ def test_first_chapter_sanitizer_merges_sentence_shards_until_paragraph_form_pas
 def test_first_chapter_sanitizer_softens_repeated_state_openers():
     body = "\n\n".join([f"法力栏见底{i}。夜烬退到石头后面。" for i in range(30)])
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
     review = _review_chapter_body(1, cleaned, {}, ["网游"], {}, [], [])
 
     assert not any("段首主语过度单调" in issue and "法力" in issue for issue in review["issues"])
@@ -1187,7 +1305,7 @@ def test_first_chapter_sanitizer_does_not_add_protocol_anchor():
         "第一次击杀灰狼后，背包里多出几份毒腺。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert cleaned == body
     assert "底层协议校验通过" not in cleaned
@@ -1367,7 +1485,7 @@ def test_sanitizer_removes_ai_formula_and_report_clarity_phrase():
         "疼痛不重，却很清楚，像被钝刀刮了一下。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
     ai_review = review_ai_flavor(cleaned)
 
     assert "不是一张皮" not in cleaned
@@ -1385,7 +1503,7 @@ def test_sanitizer_does_not_turn_name_action_into_dialogue():
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert cleaned == body
     assert "低声说" not in cleaned
@@ -1397,7 +1515,7 @@ def test_first_chapter_sanitizer_normalizes_starting_identity_and_stackable_bag(
         "背包格子一下子亮了好几格，灰狼毒腺×8，粗糙狼皮×7。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert "元素法师学徒" not in cleaned
     assert "见习冒险者（未转职）" in cleaned
@@ -1409,7 +1527,7 @@ def test_first_chapter_sanitizer_normalizes_starting_identity_and_stackable_bag(
 def test_first_chapter_sanitizer_keeps_empty_starting_backpack_empty():
     body = "角色面板显示：游戏ID夜烬，身份见习冒险者（未转职），Lv.1，背包：0/20。"
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert "背包：0/20" in cleaned
     assert "背包：2/20" not in cleaned
@@ -1418,7 +1536,7 @@ def test_first_chapter_sanitizer_keeps_empty_starting_backpack_empty():
 def test_first_chapter_sanitizer_removes_obvious_doubled_weapon_typo():
     body = "夜烬冲上去，用法法杖末端端连砸两下。"
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert "用法杖末端连砸两下" in cleaned
 
@@ -1473,7 +1591,7 @@ def test_chapter_body_review_uses_lower_minimum_for_regeneration_fast_path():
     assert not any("字数偏少" in issue for issue in review["issues"])
 
 
-def test_sanitize_chapter_output_repairs_regeneration_surface_traps():
+def test_game_postprocess_repairs_regeneration_surface_traps():
     body = "\n\n".join(
         [
             "夜烬看着法力满格，继续往前走。",
@@ -1497,21 +1615,21 @@ def test_sanitize_chapter_output_repairs_regeneration_surface_traps():
         }
     ]
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=scene_cards)
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=scene_cards)
 
     assert "法力满" not in cleaned
     assert "法力只剩一截" in cleaned
     assert cleaned.count("\n\n夜烬") == body.count("\n\n夜烬")
 
 
-def test_sanitize_chapter_output_does_not_delete_npcs_or_guild_events():
+def test_game_postprocess_does_not_delete_npcs_or_guild_events():
     body = (
         "夜烬走到仓库管理员铁栓面前，问背包能不能寄存。\n\n"
         "修理匠老葛也把修理价格和耐久规则说了一遍。\n\n"
         "白袍公会很快锁定坐标，知道了他的隐藏天赋。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=1, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=1, scene_cards=[])
 
     assert "铁栓" in cleaned
     assert "老葛" in cleaned
@@ -1533,6 +1651,7 @@ def test_opening_review_rejects_1000_times_wording_mixed_with_qianbei():
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "继续低调变现。"},
         ["本书设定：夜烬拥有千倍爆率。"],
+        genre_context=GAME_GENRE_CONTEXT,
     )
 
     assert review["pass"] is False
@@ -1552,6 +1671,7 @@ def test_review_rejects_decimal_game_currency_denominations():
         body,
         {"world_reactions": ["交易行商人记录价格和时间戳。"]},
         ["网游币制默认使用 1金币=100银币=10000铜币。"],
+        genre_context=GAME_GENRE_CONTEXT,
     )
 
     assert review["pass"] is False
@@ -1583,6 +1703,7 @@ def test_opening_review_rejects_overpacked_first_chapter_pacing():
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "继续低调变现。"},
         ["本书设定：夜烬拥有千倍爆率。"],
+        genre_context=GAME_GENRE_CONTEXT,
     )
 
     assert review["pass"] is False
@@ -1683,6 +1804,7 @@ def test_second_chapter_rejects_rushing_element_corridor_completion():
         body,
         {"world_reactions": ["交易行商人记录价格和时间戳。"], "next_focus": "继续低调变现。"},
         ["第2章必须承接第一章账本：夜烬等级1、经验30/100、职业元素法师学徒、货币15铜、库存毒腺×8狼皮×5。"],
+        genre_context=GAME_GENRE_CONTEXT,
     )
 
     assert review["pass"] is False
@@ -1702,6 +1824,7 @@ def test_second_chapter_rejects_level_one_transfer_or_trial_start():
         body,
         {"world_reactions": ["普通玩家还在排队。"], "next_focus": "继续任务。"},
         ["第2章必须承接第一章账本：夜烬仍是Lv.1，只能推进新手村任务。"],
+        genre_context=GAME_GENRE_CONTEXT,
     )
 
     assert review["pass"] is False
@@ -1721,6 +1844,7 @@ def test_later_low_level_chapter_rejects_transfer_or_trial_start():
         body,
         {"world_reactions": ["普通玩家还在新手村刷材料。"], "next_focus": "继续任务。"},
         ["第6章账本：夜烬等级4，仍在新手村低级地图推进，10级前不能正式接取转职任务或职业试炼。"],
+        genre_context=GAME_GENRE_CONTEXT,
     )
 
     assert review["pass"] is False
@@ -1739,6 +1863,7 @@ def test_game_review_rejects_unexplained_full_exp_without_level_up():
         body,
         {"world_reactions": ["普通玩家还在新手村排队。"], "next_focus": "继续凑技能书钱。"},
         ["第2章必须承接第一章账本：夜烬仍是Lv.1元素法师学徒。"],
+        genre_context=GAME_GENRE_CONTEXT,
     )
 
     assert review["pass"] is False
@@ -1757,6 +1882,7 @@ def test_game_review_rejects_task_submission_contradiction():
         body,
         {"world_reactions": ["旁人只当他普通排队。"], "next_focus": "凑技能书钱。"},
         ["网游新手村开局，夜烬选择元素法师学徒。"],
+        genre_context=GAME_GENRE_CONTEXT,
     )
 
     assert review["pass"] is False
@@ -1776,6 +1902,7 @@ def test_game_review_rejects_repeated_newbie_task_loop():
         body,
         {"world_reactions": ["散人只看见他排队交任务。"], "next_focus": "继续刷怪。"},
         ["第2章仍在灰狼坡和灰烬村。"],
+        genre_context=GAME_GENRE_CONTEXT,
     )
 
     assert review["pass"] is False
@@ -1802,7 +1929,7 @@ def test_sanitizer_rewrites_reader_facing_bad_game_terms():
         "他握杖退后，杖尖对着灰狼，系统提示火球术熟练度还差一点。"
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+    cleaned = _run_game_postprocess(body, chapter_number=2, scene_cards=[])
 
     assert "门槛" not in cleaned
     assert "修杖" not in cleaned
@@ -1814,10 +1941,39 @@ def test_sanitizer_rewrites_reader_facing_bad_game_terms():
     assert "握着法杖" in cleaned
     assert "法杖前端" in cleaned
     assert "基础火球术记录" in cleaned
-def test_sanitize_chapter_output_does_not_inject_webgame_text_into_xianxia():
+
+
+def test_sanitizer_preserves_physical_threshold_wording():
+    body = "周满把香放在门槛边，转身跨过门槛。"
+
+    cleaned = _run_game_postprocess(body, chapter_number=2, scene_cards=[])
+
+    assert cleaned == body
+
+
+def test_generic_chapter_title_uses_concrete_chapter_object():
+    title = _repair_generic_chapter_title(
+        "真相交锋",
+        chapter_number=3,
+        next_focus="林照发现掌心黑痕与供桌下的刻字相互呼应。",
+        conflict_summary={},
+        genre="xuanhuan",
+    )
+
+    assert title == "掌心黑痕"
+
+
+def test_generic_postprocess_does_not_inject_webgame_text_into_xianxia():
     body = "林照守在祖祠里，等第三块青砖后面的人露出破绽。"
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[], game_story=False)
+    cleaned = GENERIC_STAGES.postprocess_body(
+        context=PostprocessContext(
+            story=None,
+            body=body,
+            chapter_number=2,
+            scene_cards=[],
+        )
+    )
 
     assert cleaned == body
     assert "夜烬" not in cleaned

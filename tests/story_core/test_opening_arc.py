@@ -7,6 +7,11 @@ from packages.story_core.web_game_economy import appraisal_rules, exchange_rules
 from packages.story_core.world_enrichment import _build_prompt, _merge_enrichment
 
 
+def _review_game_chapter(*args, **kwargs):
+    kwargs["genre_context"] = {"genre_plugin_ids": ["game_webnovel"]}
+    return _review_chapter_body(*args, **kwargs)
+
+
 def test_world_enrichment_adds_game_golden_three_chapters():
     project = NovelProject(
         project_id="p-opening-game",
@@ -259,7 +264,7 @@ def test_review_rejects_low_tier_market_trade_as_precise_tracking():
         "交易行显示匿名寄售、手续费、流水、风控异常；白袍、赤焰、星河和散人都在频道争论。"
     )
 
-    review = _review_chapter_body(
+    review = _review_game_chapter(
         1,
         body,
         {
@@ -282,7 +287,7 @@ def test_opening_review_rejects_overleveled_game_conflict():
         "白袍公会会长却突然带人围杀苏叶，双方正面撞上，争夺世界BOSS和核心资源。"
     ) * 20
 
-    review = _review_chapter_body(
+    review = _review_game_chapter(
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "继续低调变现。"},
@@ -301,7 +306,7 @@ def test_opening_review_rejects_missing_real_job_or_skill_source():
         "白袍公会、赤焰公会、星河商会和散人玩家都在争抢新手村资源。"
     ) * 25
 
-    review = _review_chapter_body(
+    review = _review_game_chapter(
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "公会试探。"},
@@ -322,7 +327,7 @@ def test_opening_review_rejects_unforeshadowed_goldfinger():
         "他关掉背包，下一步准备再刷一轮，先摸清后坡入口。"
     ) * 25
 
-    review = _review_chapter_body(
+    review = _review_game_chapter(
         1,
         body,
         {"world_reactions": ["NPC只记录任务登记。"], "next_focus": "继续摸后坡入口。"},
@@ -394,7 +399,7 @@ def test_opening_review_requires_background_and_motivation():
         "他关掉背包，下一步准备再刷一轮，先摸清后坡入口。"
     ) * 45
 
-    review = _review_chapter_body(
+    review = _review_game_chapter(
         1,
         body,
         {"world_reactions": ["NPC只记录任务登记。"], "next_focus": "继续摸后坡入口。"},
@@ -416,7 +421,7 @@ def test_opening_review_rejects_invented_real_money_exchange_rate():
         "玩家频道有人断言，1金币=500人民币，这让所有人都疯狂起来。"
     ) * 25
 
-    review = _review_chapter_body(
+    review = _review_game_chapter(
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "公会试探。"},
@@ -436,7 +441,7 @@ def test_opening_review_rejects_wrong_coin_conversion():
         "【确认上架？扣除5%手续费后，预计到账：8550铜币（8金55银）。】"
     ) * 25
 
-    review = _review_chapter_body(
+    review = _review_game_chapter(
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "公会试探。"},
@@ -457,7 +462,7 @@ def test_opening_review_rejects_fractional_copper_and_limit_breaks():
         "【系统提示：您已上架“腐皮×80”，单价9.5铜币。】"
     ) * 25
 
-    review = _review_chapter_body(
+    review = _review_game_chapter(
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "公会试探。"},
@@ -479,7 +484,7 @@ def test_opening_review_rejects_drop_multiplier_mismatch():
         "【触发天赋“千倍爆率”。获得：腐皮野猪皮×100。】"
     ) * 25
 
-    review = _review_chapter_body(
+    review = _review_game_chapter(
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "公会试探。"},

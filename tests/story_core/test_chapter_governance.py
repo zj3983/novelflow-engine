@@ -195,3 +195,11 @@ def test_xianxia_later_chapter_ignores_stale_game_keywords() -> None:
     assert "game_panel" not in governance["runtime_context"]["protagonist"]
     assert "等级、经验、货币、背包" not in soft_text
     assert "术法、法宝、境界、伤势" in soft_text
+    generated_rules = "、".join(
+        [
+            *governance["chapter_intent"]["must_avoid"],
+            *governance["rule_stack"]["hard_facts"],
+        ]
+    )
+    for term in ("网游", "面板", "背包", "掉落", "交易行", "铜币"):
+        assert term not in generated_rules

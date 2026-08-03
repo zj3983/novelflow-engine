@@ -11,8 +11,31 @@ type NovelTypeFixture = {
   quality_checks: string[];
   trope_templates: Array<Record<string, unknown>>;
   power_system_template?: Record<string, unknown>;
+  outline_template?: Record<string, unknown>;
   builtin: boolean;
 };
+
+function outlineTemplate() {
+  return {
+    schema_version: "novel-outline-template/v1",
+    overall: {
+      required_fields: ["core_selling_point", "long_term_lines"],
+      long_term_lines: ["力量成长线", "宿敌冲突线"],
+      instructions: ["力量提升必须改变人物处境。"],
+    },
+    arc: {
+      required_fields: ["arc_goal", "escalations", "climax"],
+      minimum_arc_count: 3,
+      maximum_chapter_span: 60,
+      instructions: ["每卷揭开一层世界秘密。"],
+    },
+    chapter: {
+      required_fields: ["goal", "obstacle", "turn", "ending_hook"],
+      opening_window_size: 10,
+      instructions: ["每章发生一次可见变化。"],
+    },
+  };
+}
 
 const emptyRulebook = {
   progression_rules: [] as string[],
@@ -53,6 +76,7 @@ function fixtures(): NovelTypeFixture[] {
         system_form: "九境灵脉",
         progression_shape: { stages: ["淬体", "筑基"] },
       },
+      outline_template: outlineTemplate(),
       builtin: true,
     },
     {
@@ -65,6 +89,7 @@ function fixtures(): NovelTypeFixture[] {
       rulebook: { ...emptyRulebook },
       quality_checks: ["赛制一致"],
       trope_templates: [],
+      outline_template: outlineTemplate(),
       builtin: false,
     },
   ];
@@ -256,6 +281,31 @@ test("导航进入全局小说类型库，选择并保存内置类型", async ({
       progression_shape: { stages: ["淬体", "筑基"] },
       system_form: "九境灵脉",
     },
+    outline_template: outlineTemplate(),
+  });
+});
+
+test("大纲模板按总纲分卷章节三层编辑并保存", async ({ page }) => {
+  const api = await mockNovelTypes(page);
+  await page.goto("/novel-types", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("status")).toContainText("已载入");
+
+  await expect(page.getByRole("tab", { name: "总纲" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel("长期主线（每行一项）")).toHaveValue("力量成长线\n宿敌冲突线");
+
+  await page.getByRole("tab", { name: "分卷" }).click();
+  await page.getByLabel("分卷生成要求（每行一项）").fill("每卷更换主要矛盾\n卷尾改变主角处境");
+  await page.getByRole("button", { name: "保存修改" }).click();
+
+  await expect.poll(() => api.requests.filter((request) => request.method === "PUT")).toHaveLength(1);
+  expect(api.requests.at(-1)?.payload?.outline_template).toMatchObject({
+    schema_version: "novel-outline-template/v1",
+    arc: {
+      minimum_arc_count: 3,
+      maximum_chapter_span: 60,
+      instructions: ["每卷更换主要矛盾", "卷尾改变主角处境"],
+    },
+    chapter: { opening_window_size: 10 },
   });
 });
 

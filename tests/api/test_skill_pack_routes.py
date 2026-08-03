@@ -48,3 +48,74 @@ def test_skill_pack_import_rejects_path_outside_allowed_roots(tmp_path: Path, mo
 
     assert response.status_code == 403
     assert "path_outside_allowed_roots" in response.json()["detail"]
+
+
+def test_skill_pack_delete_uninstalls_pack_and_clears_project_selection(tmp_path: Path, monkeypatch) -> None:
+    registry = tmp_path / "registry"
+    projects = tmp_path / "projects"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(registry))
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(projects))
+    source = tmp_path / "pack"
+    source.mkdir()
+    (source / "manifest.json").write_text(
+        json.dumps({"skill_id": "delete-me", "name": "Delete Me"}), encoding="utf-8"
+    )
+    (source / "SKILL.md").write_text("# Delete Me\n", encoding="utf-8")
+    assert client.post("/skill-packs/import", json={"source_path": str(source)}).status_code == 200
+
+    project_root = projects / "p-one" / ".webnovel"
+    project_root.mkdir(parents=True)
+    (project_root / "project.json").write_text(
+        json.dumps({"enabled_skill_ids": ["delete-me"]}), encoding="utf-8"
+    )
+    (project_root / "state.json").write_text(
+        json.dumps({"enabled_skill_ids": ["delete-me"], "current_chapter": 2}), encoding="utf-8"
+    )
+
+    response = client.delete("/skill-packs/delete-me")
+
+    assert response.status_code == 200
+    assert response.json()["affected_project_count"] == 1
+    assert client.get("/skill-packs/delete-me").status_code == 404
+    assert json.loads((project_root / "project.json").read_text(encoding="utf-8"))["enabled_skill_ids"] == []
+    assert json.loads((project_root / "state.json").read_text(encoding="utf-8"))["current_chapter"] == 2
+
+
+def test_skill_module_delete_keeps_pack_and_other_modules(tmp_path: Path, monkeypatch) -> None:
+    registry = tmp_path / "registry"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(registry))
+    source = tmp_path / "pack"
+    (source / "skills" / "writer").mkdir(parents=True)
+    (source / "skills" / "dialogue").mkdir(parents=True)
+    (source / "manifest.json").write_text(
+        json.dumps({"skill_id": "module-delete", "name": "Module Delete"}), encoding="utf-8"
+    )
+    (source / "SKILL.md").write_text("# Root\n", encoding="utf-8")
+    (source / "skills" / "writer" / "SKILL.md").write_text("---\nname: writer\n---\nwriter", encoding="utf-8")
+    (source / "skills" / "dialogue" / "SKILL.md").write_text("---\nname: dialogue\n---\ndialogue", encoding="utf-8")
+    assert client.post("/skill-packs/import", json={"source_path": str(source)}).status_code == 200
+
+    response = client.delete("/skill-packs/module-delete/modules/writer")
+
+    assert response.status_code == 200
+    assert response.json()["module_id"] == "writer"
+    detail = client.get("/skill-packs/module-delete").json()
+    assert detail["module_count"] == 1
+    assert detail["modules"][0]["module_id"] == "dialogue"
+
+
+def test_skill_root_module_delete_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    registry = tmp_path / "registry"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(registry))
+    source = tmp_path / "pack"
+    source.mkdir()
+    (source / "manifest.json").write_text(
+        json.dumps({"skill_id": "root-delete", "name": "Root Delete"}), encoding="utf-8"
+    )
+    (source / "SKILL.md").write_text("# Root\n", encoding="utf-8")
+    assert client.post("/skill-packs/import", json={"source_path": str(source)}).status_code == 200
+
+    response = client.delete("/skill-packs/root-delete/modules/root")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "skill_pack_root_module_cannot_uninstall"

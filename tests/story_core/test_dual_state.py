@@ -6,6 +6,7 @@ from packages.story_core.character_profiles import normalize_character_profile
 from packages.story_core.dual_state import (
     infer_scene_kind,
     merge_state_change,
+    normalize_character_state,
     normalize_dual_state,
     project_dual_state,
     project_character_for_scene,
@@ -56,6 +57,84 @@ def test_non_game_story_does_not_create_game_state() -> None:
 
     assert "real_state" in normalized
     assert "game_state" not in normalized
+
+
+def test_non_game_character_state_migrates_legacy_namespaces_without_static_duplicates() -> None:
+    normalized = normalize_character_state(
+        {
+            "name": "沈墨",
+            "identity_profile": {"current_identity": "外门弟子"},
+            "current_state": "左臂受伤，正在祖祠值夜",
+            "real_state": {
+                "current": {
+                    "identity_profile": {"current_identity": "外门弟子"},
+                    "location": "祖祠",
+                    "injury": "左臂轻伤",
+                },
+                "recent_changes": [{"chapter": 1, "fact": "被调去祖祠值夜"}],
+            },
+            "game_state": {"current": {"level": "Lv.1"}},
+            "game_panel": {"level": "Lv.1"},
+        },
+        is_game_story=False,
+    )
+
+    assert normalized["current_state"] == {
+        "current": {
+            "location": "祖祠",
+            "injury": "左臂轻伤",
+            "summary": "左臂受伤，正在祖祠值夜",
+        },
+        "recent_changes": [{"chapter": 1, "fact": "被调去祖祠值夜"}],
+    }
+    assert "real_state" not in normalized
+    assert "game_state" not in normalized
+    assert "game_panel" not in normalized
+
+
+def test_non_game_structured_current_state_wins_and_recent_changes_are_deduplicated() -> None:
+    normalized = normalize_character_state(
+        {
+            "name": "沈墨",
+            "current_state": {
+                "current": {"location": "藏经阁", "emotion": "警惕"},
+                "recent_changes": [{"chapter": 2, "fact": "进入藏经阁"}],
+            },
+            "real_state": {
+                "current": {"location": "祖祠", "injury": "左臂轻伤"},
+                "recent_changes": [
+                    {"chapter": 2, "fact": "进入藏经阁"},
+                    {"chapter": 1, "fact": "左臂受伤"},
+                ],
+            },
+        },
+        is_game_story=False,
+    )
+
+    assert normalized["current_state"]["current"] == {
+        "location": "藏经阁",
+        "injury": "左臂轻伤",
+        "emotion": "警惕",
+    }
+    assert normalized["current_state"]["recent_changes"] == [
+        {"chapter": 2, "fact": "进入藏经阁"},
+        {"chapter": 1, "fact": "左臂受伤"},
+    ]
+
+
+def test_game_character_state_keeps_dual_state_contract() -> None:
+    normalized = normalize_character_state(
+        {
+            "name": "夜烬",
+            "real_state": {"current": {"occupation": "代练"}},
+            "game_panel": {"level": "Lv.1"},
+        },
+        is_game_story=True,
+    )
+
+    assert normalized["real_state"]["current"]["occupation"] == "代练"
+    assert normalized["game_state"]["current"]["level"] == "Lv.1"
+    assert "current_state" not in normalized
 
 
 def test_scene_projection_keeps_only_requested_line() -> None:
@@ -178,6 +257,30 @@ def test_project_character_for_scene_keeps_public_card_and_only_projected_state(
     assert "隐藏秘密" not in str(projected)
 
 
+def test_project_non_game_character_for_scene_exposes_only_generic_current_state() -> None:
+    card = {
+        "name": "沈墨",
+        "role": "主角",
+        "current_state": {
+            "current": {"location": "祖祠", "injury": "左臂轻伤"},
+            "recent_changes": [{"chapter": 1, "fact": "被调来值夜"}],
+        },
+        "real_state": {"current": {"location": "旧住处"}},
+        "game_state": {"current": {"level": "Lv.1"}},
+    }
+
+    projected = project_character_for_scene(
+        card,
+        scene_kind="reality",
+        is_game_story=False,
+    )
+
+    assert set(projected["state_context"]) == {"current_state"}
+    assert projected["state_context"]["current_state"]["current"]["location"] == "祖祠"
+    assert "real_state" not in str(projected)
+    assert "game_state" not in str(projected)
+
+
 def test_scene_projection_has_no_cross_line_state_leakage() -> None:
     card = {
         "name": "苏叶",
@@ -254,6 +357,17 @@ def test_character_state_keeps_legacy_panel_and_accepts_both_state_namespaces() 
     assert character.game_panel.game_id == "Night Ember"
     assert character.real_state["current"]["balance"] == "27.60"
     assert character.game_state["current"]["level"] == "Lv.1"
+
+
+def test_character_state_accepts_legacy_current_state_string_as_structured_state() -> None:
+    character = CharacterState.model_validate(
+        {"name": "沈墨", "role": "主角", "current_state": "正在祖祠值夜"}
+    )
+
+    assert character.current_state == {
+        "current": {"summary": "正在祖祠值夜"},
+        "recent_changes": [],
+    }
 
 
 def test_character_profile_normalization_is_genre_neutral_by_default() -> None:

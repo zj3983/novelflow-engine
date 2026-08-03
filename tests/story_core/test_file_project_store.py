@@ -146,6 +146,131 @@ def test_first_chapter_regeneration_removes_post_chapter_character_states(tmp_pa
     assert reset["current_chapter"] == 0
 
 
+def test_first_chapter_regeneration_keeps_structured_portrait_from_visible_state(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "rewrite-character-portrait",
+        project={
+            "project_id": "p-rewrite-character-portrait",
+            "title": "Repair Shop",
+            "character_profiles": [
+                {
+                    "name": "Shen Chuan",
+                    "role": "watch shop owner",
+                    "motivation": "Keep the shop open",
+                    "personality": "Reserved and exacting",
+                    "speech_style": "Speaks briefly",
+                }
+            ],
+        },
+        state={
+            "story_id": "s-rewrite-character-portrait",
+            "outline": "A father and son investigate an old watch.",
+            "genre": "urban",
+            "style": "",
+            "current_chapter": 1,
+            "characters": [
+                {
+                    "name": "Shen Chuan",
+                    "role": "watch shop owner",
+                    "story_drive": {
+                        "immediate_goal": "Identify the old watch",
+                        "long_term_goal": "Repair the family relationship",
+                        "motivation": "Protect the shop and learn why his son returned",
+                    },
+                    "performance_profile": {
+                        "speech_style": "Reserved, but answers in complete sentences",
+                        "action_style": "Checks physical evidence before deciding",
+                    },
+                    "current_emotion": "CHAPTER1_EMOTION",
+                    "location": "CHAPTER1_LOCATION",
+                    "memory": ["CHAPTER1_MEMORY"],
+                }
+            ],
+        },
+    )
+
+    reset = store._conservative_regeneration_state(store.state())
+    character = reset["characters"][0]
+
+    assert character["story_drive"]["motivation"] == "Protect the shop and learn why his son returned"
+    assert character["performance_profile"]["speech_style"] == "Reserved, but answers in complete sentences"
+    assert "current_emotion" not in character
+    assert "location" not in character
+    assert "memory" not in character
+
+
+def test_first_chapter_regeneration_drops_null_character_profile_fields(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "rewrite-null-profile",
+        project={
+            "project_id": "p-rewrite-null-profile",
+            "title": "Repair Shop",
+            "character_profiles": [
+                {
+                    "name": "沈川",
+                    "role": "protagonist",
+                    "character_type": None,
+                    "core_motivation": None,
+                    "poison_points": None,
+                    "social_profile": None,
+                }
+            ],
+        },
+        state={
+            "story_id": "s-rewrite-null-profile",
+            "current_chapter": 1,
+            "characters": [
+                {
+                    "name": "沈川",
+                    "role": "protagonist",
+                    "current_life_profile": {
+                        "economic_state": None,
+                        "immediate_problem": None,
+                    },
+                    "story_drive": {"immediate_goal": None},
+                }
+            ],
+        },
+    )
+
+    base_state = store._conservative_regeneration_state(store.state())
+    payload = store._story_state_payload_for_direction(base_state, store.project(), 1)
+
+    StoryState.model_validate(payload)
+    assert "character_type" not in base_state["characters"][0]
+    assert "poison_points" not in base_state["characters"][0]
+    assert "current_life_profile" not in payload["characters"][0]
+    assert "story_drive" not in payload["characters"][0]
+
+
+def test_visible_character_card_softens_professional_checklist_speech(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "natural-professional-speech",
+        project={"project_id": "p-natural-professional-speech", "title": "Repair Shop"},
+        state={
+            "story_id": "s-natural-professional-speech",
+            "outline": "A son investigates a redevelopment project.",
+            "genre": "urban",
+            "style": "",
+            "characters": [
+                {
+                    "name": "Shen Yu",
+                    "role": "supporting",
+                    "performance_profile": {
+                        "speech_style": "说话像在核对条款，常用流程、数据和时间节点压人。"
+                    },
+                }
+            ],
+        },
+    )
+
+    speech = store.state()["characters"][0]["performance_profile"]["speech_style"]
+
+    assert "追问具体依据" in speech
+    assert "不连续罗列术语或材料" in speech
+    assert "像在核对条款" not in speech
+
+
 def test_chapter_outline_title_uses_matching_detailed_outline_title():
     outline_context = {
         "chapter": {
@@ -181,6 +306,74 @@ def test_regeneration_gate_blocks_missing_first_monster_panel():
     }
 
     assert _regeneration_quality_blocking({"issues": ["writing_review"]}, writing_review) is True
+
+
+def test_chapter_sync_persists_equipment_cards_to_world_blueprint(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "equipment-sync",
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "world_blueprint": {"equipment_cards": []},
+        },
+    )
+    card = {
+        "name": "Dusk Verdict",
+        "equipment_type": "weapon",
+        "rarity": "epic",
+        "current_owner": "Night Ember",
+    }
+
+    store._sync_after_chapter(
+        {"chapter_number": 8, "chapter_title": "Vault", "body": "body"},
+        {
+            "story_id": "s-file",
+            "genre": "game_webnovel",
+            "genre_plugin_ids": ["game_webnovel"],
+            "equipment_cards": [card],
+        },
+    )
+
+    persisted = store.project()["world_blueprint"]["equipment_cards"]
+    assert len(persisted) == 1
+    assert persisted[0]["name"] == "Dusk Verdict"
+
+
+def test_writing_packet_selects_relevant_equipment_cards(tmp_path):
+    project = {
+        "project_id": "p-file",
+        "title": "File Novel",
+        "active_story_id": "s-file",
+        "current_focus": "Find Dusk Verdict in Ashen Hall",
+        "world_blueprint": {
+            "genre_plugin_ids": ["game_webnovel"],
+            "equipment_cards": [
+                {"name": "Dusk Verdict", "equipment_type": "weapon", "current_owner": "Night Ember"},
+                {"name": "Tide Ring", "equipment_type": "accessory", "current_owner": "Tide Priest"},
+            ],
+        },
+    }
+    store = _make_minimal_file_project(
+        tmp_path / "equipment-context",
+        project=project,
+        state={
+            "story_id": "s-file",
+            "genre": "game_webnovel",
+            "genre_plugin_ids": ["game_webnovel"],
+            "style": "commercial",
+            "current_chapter": 0,
+            "characters": [{"name": "Night Ember", "role": "protagonist"}],
+        },
+    )
+
+    packet, is_game_story, _ = store._build_writing_packet(1)
+    story_payload = store._story_state_payload_for_direction(store.state(), store.project(), 1)
+
+    assert is_game_story is True
+    assert [item["name"] for item in packet["equipment_cards"]] == ["Dusk Verdict"]
+    assert packet["project"]["world_blueprint"]["equipment_cards"] == packet["equipment_cards"]
+    assert [item["name"] for item in story_payload["equipment_cards"]] == ["Dusk Verdict", "Tide Ring"]
 
 
 def _make_minimal_file_project(root, *, state=None, project=None):
@@ -237,6 +430,90 @@ def test_direction_payload_keeps_opening_chapter_facts_when_regeneration_rolls_b
     payload = store._story_state_payload_for_direction(store.state(), store.project(), 1)
 
     assert payload["world_facts"] == project["world_blueprint"]["opening_arc"]["golden_three_chapters"]["1"]["must_include"]
+
+
+def test_saved_outline_does_not_mix_legacy_opening_facts_into_direction_payload(tmp_path):
+    project = {
+        "project_id": "p-file",
+        "title": "File Novel",
+        "active_story_id": "s-file",
+        "world_blueprint": {
+            "opening_arc": {
+                "golden_three_chapters": {
+                    "1": {"must_include": ["旧计划：第一章不要升级。"]}
+                }
+            }
+        },
+    }
+    store = _make_minimal_file_project(
+        tmp_path / "saved-outline",
+        project=project,
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": []},
+    )
+    (store.webnovel_dir / "outline.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "project-outline/v1",
+                "overall": {"story": "新大纲"},
+                "arcs": [],
+                "chapters": [
+                    {
+                        "chapter_number": 1,
+                        "title": "第一章",
+                        "goal": "本章升到二级",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = store._story_state_payload_for_direction(store.state(), store.project(), 1)
+
+    assert "旧计划：第一章不要升级。" not in payload["world_facts"]
+
+
+def test_direction_payload_merges_full_project_character_profile_into_story_state(tmp_path):
+    project = {
+        "project_id": "p-character-sync",
+        "title": "修表铺的冬天",
+        "active_story_id": "s-character-sync",
+        "character_profiles": [
+            {
+                "name": "沈川",
+                "role": "修表铺店主",
+                "character_tier": "protagonist",
+                "story_drive": {
+                    "motivation": "保住修表铺。",
+                    "immediate_goal": "确认旧表来历。",
+                },
+                "performance_profile": {
+                    "speech_style": "回应会把原因和决定说清楚。",
+                    "action_style": "先查痕迹再判断。",
+                },
+                "dialogue_examples": ["你先告诉我这块表是从哪里拿到的。"],
+            }
+        ],
+    }
+    store = _make_minimal_file_project(
+        tmp_path / "character-sync",
+        project=project,
+        state={
+            "story_id": "s-character-sync",
+            "genre": "都市",
+            "current_chapter": 0,
+            "characters": [{"name": "沈川", "role": "protagonist"}],
+        },
+    )
+
+    payload = store._story_state_payload_for_direction(store.state(), store.project(), 1)
+    character = payload["characters"][0]
+
+    assert character["story_drive"]["motivation"] == "保住修表铺。"
+    assert character["performance_profile"]["speech_style"] == "回应会把原因和决定说清楚。"
+    assert character["dialogue_examples"] == ["你先告诉我这块表是从哪里拿到的。"]
+    assert character["goals"] == ["确认旧表来历。"]
 
 
 def test_summary_reads_chapter_metadata_without_hydrating_full_chapters(tmp_path, monkeypatch):
@@ -606,6 +883,11 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
             "outline": {
                 "overall": {
                     "story": "林照追查祖祠旧案。",
+                    "theme_statement": "守住事实，比赢下一次争斗更重要。",
+                    "foreground_story": "林照从祖祠异动查到宗门旧案。",
+                    "background_story": "多年前有人借封档重分宗门权力。",
+                    "book_objective": "公开旧案证据并改变封档规则。",
+                    "ending_image": "旧名册在议事堂当众展开。",
                     "protagonist_goal": "查清旧案。",
                     "main_conflict": "有人销毁证据。",
                     "growth_path": "逐步取得调查旧档的权力。",
@@ -621,6 +903,10 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
                         "goal": "找到换名册的人",
                         "obstacle": "赵衡控制清点权",
                         "payoff": "取得查档资格",
+                        "emotional_curve": "受压查证，抓住破绽，取得主动。",
+                        "key_results": ["保住证据", "取得查档资格", "锁定换册人"],
+                        "hook_plan": "缺失的一页指向宗门高层。",
+                        "irreversible_change": "赵衡失去对祖祠的独占控制。",
                         "trope_id": "low_status_reversal",
                         "end_state": "祖祠不再由赵衡独占",
                         "stage_antagonist": "赵衡",
@@ -1273,6 +1559,7 @@ def test_body_ledger_sync_reads_compact_protagonist_level_panel(tmp_path):
             "panel": {"level": "Lv.1"},
         },
     }
+
     body = (
         "路边有一只Lv.2灰狼。\n"
         "【灰狼；等级：Lv.1；生命82/82；攻击方式：扑咬】\n"
@@ -1286,6 +1573,37 @@ def test_body_ledger_sync_reads_compact_protagonist_level_panel(tmp_path):
 
     assert synced["progression_ledger"]["protagonist"]["level"] == "Lv.3"
     assert synced["progression_ledger"]["panel"]["level"] == "Lv.3"
+
+
+def test_update_project_can_replace_world_blueprint_after_genre_enrichment(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-replace-world",
+            "title": "Realistic Novel",
+            "world_blueprint": {
+                "genre_plugin_ids": ["urban"],
+                "premise": "Old premise",
+                "power_system": ["stale generated field"],
+                "panel_rules": ["stale generated field"],
+            },
+        },
+    )
+
+    updated = store.update_project(
+        {
+            "world_blueprint": {
+                "genre_plugin_ids": ["urban"],
+                "premise": "New premise",
+            }
+        },
+        replace_world_blueprint=True,
+    )
+
+    assert updated["world_blueprint"] == {
+        "genre_plugin_ids": ["urban"],
+        "premise": "New premise",
+    }
 
 
 def test_game_character_sync_mirrors_complete_attribute_ledger(tmp_path):
@@ -1725,10 +2043,31 @@ def test_story_payload_uses_project_constraints_and_preserves_character_lifecycl
     payload = store._story_state_payload_for_direction(store.state(), store.project(), 2)
 
     assert payload["author_constraints"] == ["游戏内使用夜烬。"]
-    assert payload["characters"][1]["lifecycle_state"] == "proposed"
-    assert payload["characters"][1]["last_approved_chapter"] == 0
+    assert [character["name"] for character in payload["characters"]] == ["苏叶"]
     assert [item["chapter_number"] for item in payload["timeline"]] == [1]
     assert [item["chapter_number"] for item in payload["chapter_summaries"]] == [1]
+
+
+def test_generation_context_does_not_repeat_chapter_specific_rules_as_global_constraints(tmp_path):
+    chapter_rule = "第一章必须完成旧表交易并付清欠款。"
+    global_rule = "人物对话要使用完整、自然的现代中文。"
+    store = _make_minimal_file_project(
+        tmp_path / "scoped-author-constraints",
+        project={
+            "project_id": "p-scoped-rules",
+            "title": "Repair Shop",
+            "active_story_id": "s-scoped-rules",
+            "author_constraints": [chapter_rule, global_rule],
+        },
+        state={"story_id": "s-scoped-rules", "current_chapter": 1, "world_facts": []},
+    )
+
+    payload = store._story_state_payload_for_direction(store.state(), store.project(), 2)
+    packet = store.writing_packet(2)
+
+    assert payload["author_constraints"] == [global_rule]
+    assert packet["state"]["author_constraints"] == [global_rule]
+    assert packet["project"]["author_constraints"] == [global_rule]
 
 
 def test_director_story_payload_contains_progression_and_scoped_quest_context(tmp_path):
@@ -2664,6 +3003,75 @@ def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path
     assert all(secret not in path.read_bytes() for path in store.root.rglob("*") if path.is_file())
 
 
+def test_generate_outline_plan_resumes_from_persisted_phase_checkpoints(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "断香炉",
+            "seed_outline": "林照看守断香炉。",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+            "character_profiles": [],
+        },
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": [], "characters": []},
+    )
+    (store.webnovel_dir / "opening_directions.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "opening-directions/v1",
+                "directions": [{
+                    "id": f"direction-{index}",
+                    "title": f"方向{index}",
+                    "hook": "林照看守断香炉。",
+                    "protagonist_goal": "守住香火。",
+                    "main_conflict": "有人要毁掉旧案。",
+                    "growth_path": "从守住现场开始掌握宗门规则。",
+                    "opening_promise": "每次解决问题都会得到线索。",
+                } for index in range(1, 4)],
+                "selected_id": "direction-1",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    class CheckpointGenerator:
+        def __init__(self):
+            self.calls = 0
+            self.received = []
+
+        def generate(self, brief, *, mode, guidance, phase_payloads, phase_callback):
+            self.calls += 1
+            self.received.append(set(phase_payloads))
+            if self.calls == 1:
+                phase_callback("outline_foundation", "running", None, "")
+                phase_callback("outline_foundation", "completed", {"outline": {}}, "")
+                phase_callback("character_roster", "running", None, "")
+                phase_callback("character_roster", "completed", {"characters": []}, "")
+                phase_callback("chapter_window", "running", None, "")
+                phase_callback("chapter_window", "failed", None, "chapter timeout")
+                raise ValueError("outline_planning_generation_failed")
+            phase_callback("chapter_window", "running", None, "")
+            phase_callback("chapter_window", "completed", {"chapters": []}, "")
+            return _generated_opening_plan()
+
+    generator = CheckpointGenerator()
+    with pytest.raises(ValueError, match="outline_planning_generation_failed"):
+        store.generate_outline_plan(generator, mode="initial")
+
+    failed_status = store.outline_generation_checkpoints()
+    assert [item["status"] for item in failed_status["phases"]] == [
+        "completed", "completed", "failed"
+    ]
+
+    store.generate_outline_plan(generator, mode="initial")
+
+    assert generator.received == [set(), {"outline_foundation", "character_roster"}]
+    assert [item["status"] for item in store.outline_generation_checkpoints()["phases"]] == [
+        "completed", "completed", "completed"
+    ]
+
+
 def test_planning_brief_falls_back_to_saved_overall_primary_trope_id(tmp_path) -> None:
     store = _make_minimal_file_project(
         tmp_path / "novel",
@@ -2727,6 +3135,46 @@ def test_planning_brief_keeps_all_character_names_while_limiting_detailed_cards(
     assert brief.existing_character_names == [
         *[f"已有角色{number}" for number in range(1, 8)],
         "状态角色8",
+    ]
+
+
+def test_continuation_planning_brief_loads_all_imported_history_summaries(tmp_path) -> None:
+    store = _make_minimal_file_project(
+        tmp_path / "continuation",
+        project={
+            "project_id": "p-continuation",
+            "title": "万界维修工",
+            "continuation": {"start_after_chapter": 141},
+        },
+        state={
+            "story_id": "s-continuation",
+            "current_chapter": 145,
+            "world_facts": [],
+            "characters": [],
+            "chapter_summaries": [{"chapter_number": 145, "summary": "最近摘要"}],
+        },
+    )
+    chapter_dir = store.story_system_dir / "chapters"
+    chapter_dir.mkdir(parents=True, exist_ok=True)
+    for number, title in ((1, "维修铺"), (141, "雪山神殿"), (142, "续写章")):
+        (chapter_dir / f"{number:04d}.json").write_text(
+            json.dumps(
+                {
+                    "chapter_number": number,
+                    "chapter_title": title,
+                    "chapter_summary": {"summary": f"第{number}章摘要"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    brief = store._planning_brief()
+
+    assert brief.continuation_start_chapter == 141
+    assert brief.historical_chapter_summaries == [
+        {"chapter_number": 1, "title": "维修铺", "summary": "第1章摘要"},
+        {"chapter_number": 141, "title": "雪山神殿", "summary": "第141章摘要"},
     ]
 
 
@@ -3443,6 +3891,106 @@ def test_regenerate_drops_omitted_future_only_arc(tmp_path) -> None:
     assert "future-placeholder" not in {arc["id"] for arc in saved["outline"]["arcs"]}
 
 
+def test_continuation_regenerate_preserves_historical_arcs_and_drops_crossing_placeholder(tmp_path) -> None:
+    store = _make_minimal_file_project(
+        tmp_path / "continuation-history",
+        project={"continuation": {"start_after_chapter": 141}},
+        state={"current_chapter": 145, "world_facts": [], "characters": []},
+    )
+    current = _generated_opening_plan().outline.model_dump(mode="json")
+    historical = {
+        **current["arcs"][0],
+        "id": "history-1",
+        "title": "原著第一阶段",
+        "start_chapter": 1,
+        "end_chapter": 141,
+        "extension_gate": {"continue_route": "进入下一阶段", "close_route": "按原著结果收束"},
+    }
+    crossing = {
+        **current["arcs"][0],
+        "id": "old-crossing",
+        "title": "错误跨界阶段",
+        "start_chapter": 1,
+        "end_chapter": 153,
+        "extension_gate": {"continue_route": "追查总部", "close_route": "守住神殿"},
+    }
+    current["overall"].update(core_ending_chapter=300, extension_ceiling_chapter=500)
+    current["arcs"] = [historical, crossing]
+    current["chapters"] = []
+    generated = deepcopy(current)
+    generated["arcs"] = [
+        {**historical, "title": "模型试图改写历史"},
+        {
+            **historical,
+            "id": "future-142",
+            "title": "续写阶段",
+            "start_chapter": 142,
+            "end_chapter": 300,
+        },
+    ]
+
+    merged = store._preserve_committed_outline(
+        current,
+        generated,
+        current_chapter=145,
+        immutable_arc_through=141,
+    )
+
+    arcs = {arc["id"]: arc for arc in merged["arcs"]}
+    assert arcs["history-1"] == historical
+    assert "old-crossing" not in arcs
+    assert arcs["future-142"]["start_chapter"] == 142
+
+
+def test_continuation_trope_lock_ignores_old_arc_crossing_import_boundary() -> None:
+    current = _generated_opening_plan().outline.model_dump(mode="json")
+    current["arcs"][0].update(start_chapter=1, end_chapter=153)
+    generated = deepcopy(current)
+    generated["arcs"] = [
+        {
+            **current["arcs"][0],
+            "id": "historical-reconstruction",
+            "start_chapter": 1,
+            "end_chapter": 141,
+        },
+        {
+            **current["arcs"][0],
+            "id": "future-plan",
+            "start_chapter": 142,
+            "end_chapter": 300,
+        },
+    ]
+
+    FileProjectStore._validate_generated_locked_tropes_match(
+        current,
+        generated,
+        current_chapter=145,
+        locked_through_chapter=141,
+    )
+
+
+def test_continuation_outline_splits_generated_arc_at_import_boundary() -> None:
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["arcs"] = [
+        {**outline["arcs"][0], "id": "history", "start_chapter": 1, "end_chapter": 140},
+        {**outline["arcs"][0], "id": "crossing", "start_chapter": 141, "end_chapter": 153},
+        {**outline["arcs"][0], "id": "future", "start_chapter": 154, "end_chapter": 220},
+    ]
+
+    normalized = FileProjectStore._split_outline_arcs_at_boundary(outline, 141)
+
+    assert [(arc["id"], arc["start_chapter"], arc["end_chapter"]) for arc in normalized["arcs"]] == [
+        ("history", 1, 140),
+        ("crossing-history", 141, 141),
+        ("crossing", 142, 153),
+        ("future", 154, 220),
+    ]
+    assert all(
+        not (arc["start_chapter"] <= 141 < arc["end_chapter"])
+        for arc in normalized["arcs"]
+    )
+
+
 def test_regenerate_at_extension_ceiling_rejects_without_file_changes(tmp_path) -> None:
     store = _make_minimal_file_project(tmp_path / "novel")
     store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
@@ -3533,6 +4081,161 @@ def test_writing_packet_uses_planned_cast_and_hides_long_term_secrets(tmp_path):
     assert packet["outline_context"]["overall"]["ending_contract"]
     assert "extension_gate" not in packet["outline_context"]["active_arc"]
     assert "chapters" not in packet["outline_context"]
+
+
+def test_xianxia_writing_packet_uses_genre_neutral_titles_and_style_rules(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "xianxia-packet",
+        project={
+            "project_id": "p-xianxia-packet",
+            "title": "万界维修工",
+            "world_blueprint": {"genre_plugin_ids": ["xianxia"]},
+        },
+        state={
+            "story_id": "s-xianxia-packet",
+            "genre": "修仙",
+            "genre_plugin_ids": ["xianxia"],
+            "current_chapter": 143,
+            "world_facts": [],
+        },
+    )
+
+    packet = store.writing_packet(144)
+    rendered = json.dumps(
+        {
+            "hard_locks": packet["hard_locks"],
+            "title_contract": packet["title_contract"],
+            "style_rules": packet["style_rules"],
+        },
+        ensure_ascii=False,
+    )
+
+    assert "具体事件、地点、物件或人物关系" in rendered
+    assert "新人物必须先有角色卡" in rendered
+    for term in ("网游", "法杖", "前置任务", "NPC服务点", "铜币", "交易行", "角色面板"):
+        assert term not in rendered
+
+
+def test_writing_packet_removes_replaced_baseline_protagonist(tmp_path):
+    real_protagonist = {
+        "name": "Lin Zhao",
+        "role": "protagonist",
+        "lifecycle_state": "active",
+        "introduced_by": "",
+    }
+    stale_baseline = {
+        "name": "Legacy Hero",
+        "role": "protagonist",
+        "lifecycle_state": "active",
+        "introduced_by": "baseline:protagonist",
+    }
+    store = _make_minimal_file_project(
+        tmp_path / "replaced-baseline-protagonist",
+        project={
+            "project_id": "p-replaced-baseline",
+            "title": "Incense Hall",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        },
+        state={
+            "story_id": "s-replaced-baseline",
+            "current_chapter": 0,
+            "world_facts": [],
+            "characters": [real_protagonist, stale_baseline],
+        },
+    )
+
+    packet = store.writing_packet(1)
+
+    assert [card["name"] for card in packet["character_cards"]] == ["Lin Zhao"]
+    assert [card["name"] for card in packet["state"]["characters"]] == ["Lin Zhao"]
+
+
+def test_writing_packet_keeps_only_baseline_protagonist_when_not_replaced(tmp_path):
+    baseline = {
+        "name": "Only Hero",
+        "role": "protagonist",
+        "lifecycle_state": "active",
+        "introduced_by": "baseline:protagonist",
+    }
+    store = _make_minimal_file_project(
+        tmp_path / "only-baseline-protagonist",
+        project={"project_id": "p-only-baseline", "title": "Game Story"},
+        state={
+            "story_id": "s-only-baseline",
+            "current_chapter": 0,
+            "world_facts": [],
+            "characters": [baseline],
+        },
+    )
+
+    packet = store.writing_packet(1)
+
+    assert [card["name"] for card in packet["character_cards"]] == ["Only Hero"]
+
+
+def test_visible_state_promotes_protagonist_from_project_character_tier(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "stale-protagonist-role",
+        project={
+            "project_id": "file:stale-protagonist-role",
+            "title": "万界维修工",
+            "character_profiles": [
+                {"name": "林修", "role": "supporting", "character_tier": "protagonist"}
+            ],
+        },
+        state={
+            "story_id": "s-stale-role",
+            "outline": "林修继承维修之道。",
+            "genre": "玄幻",
+            "style": "自然口语",
+            "characters": [
+                {"name": "林修", "role": "supporting", "character_tier": "supporting"}
+            ],
+        },
+    )
+
+    character = store.state()["characters"][0]
+
+    assert character["role"] == "protagonist"
+    assert character["character_tier"] == "protagonist"
+
+
+def test_direction_payload_promotes_stale_chapter_snapshot_protagonist(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "stale-snapshot-protagonist",
+        project={
+            "project_id": "file:stale-snapshot-protagonist",
+            "title": "万界维修工",
+            "character_profiles": [
+                {"name": "林修", "role": "supporting", "character_tier": "protagonist"}
+            ],
+        },
+        state={
+            "story_id": "s-stale-snapshot-role",
+            "outline": "林修继承维修之道。",
+            "genre": "玄幻",
+            "style": "自然口语",
+            "current_chapter": 2,
+            "characters": [
+                {"name": "林修", "role": "protagonist", "character_tier": "protagonist"}
+            ],
+        },
+    )
+    stale_snapshot = {
+        "story_id": "s-stale-snapshot-role",
+        "outline": "林修继承维修之道。",
+        "genre": "玄幻",
+        "style": "自然口语",
+        "current_chapter": 1,
+        "characters": [
+            {"name": "林修", "role": "supporting", "character_tier": "supporting"}
+        ],
+    }
+
+    payload = store._story_state_payload_for_direction(stale_snapshot, store.project(), 2)
+
+    assert payload["characters"][0]["role"] == "protagonist"
+    assert payload["characters"][0]["character_tier"] == "protagonist"
 
 
 def test_writing_packet_only_includes_relationships_within_chapter_cast(tmp_path):
@@ -3760,6 +4463,7 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
             "project_id": "p-file",
             "title": "File Novel",
             "active_story_id": "s-file",
+            "character_profiles": [{"name": "苏叶", "role": "protagonist"}],
             "world_blueprint": {
                 "world_rules": ["NPC只能处理岗位权限内的事务。"],
                 "quest_rules": ["任务必须先登记，再执行和提交。"],
@@ -3840,14 +4544,16 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert "NPC只能处理岗位权限内的事务" in by_key["writer_body"]["content"]
     assert "任务必须先登记" not in by_key["writer_body"]["content"]
     assert "材料价格必须来自任务" not in by_key["writer_body"]["content"]
-    assert "网游写法方法卡" in by_key["writer_body"]["content"]
+    assert "## 网游写法" in by_key["writer_body"]["content"]
     assert "语言卡[base]" in by_key["writer_body"]["content"]
     assert "语言卡[login_server]" in by_key["writer_body"]["content"]
     assert "语言卡[combat]" in by_key["writer_body"]["content"]
     assert "语言卡[quest]" not in by_key["writer_body"]["content"]
     assert "语言卡[group_dungeon]" not in by_key["writer_body"]["content"]
     assert "genre_context" in by_key["writer_body"]["module_keys"]
-    assert "web_game" in modules["genre_context"]["content"]
+    assert "web_game" not in modules["genre_context"]["content"]
+    assert by_key["writer_body"]["genre_stage_profile"] == "game_webnovel"
+    assert "game_webnovel.writer" in by_key["writer_body"]["genre_stage_modules"]
 
     context = store.prompt_context(1)
     assert context["schema_version"] == "file-project-prompt-context/v1"
@@ -3871,6 +4577,65 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert "面板反馈" in by_key["compression"]["content"]
     assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in by_key["compression"]["content"]
     assert "4300到5000字" not in by_key["compression"]["content"]
+
+
+def test_first_chapter_prompt_preview_uses_regeneration_start_state(tmp_path):
+    root = tmp_path / "first-chapter-preview-state"
+    store = _make_minimal_file_project(
+        root,
+        project={
+            "project_id": "p-preview-state",
+            "title": "Preview State",
+            "active_story_id": "s-preview-state",
+            "character_profiles": [
+                {
+                    "name": "苏叶",
+                    "role": "protagonist",
+                    "story_drive": {
+                        "long_term_goal": "在游戏里站稳脚跟",
+                        "immediate_goal": "处理第一章之后的新任务",
+                    },
+                    "current_life_profile": {"economic_state": "第一章结束后余额332.60元"},
+                }
+            ],
+        },
+        state={
+            "story_id": "s-preview-state",
+            "outline": "苏叶进入新游戏。",
+            "genre": "网游",
+            "style": "",
+            "current_chapter": 1,
+            "world_facts": ["第一章结束后余额332.60元。"],
+            "characters": [
+                {
+                    "name": "苏叶",
+                    "role": "protagonist",
+                    "memory": ["第一章已经完成。"],
+                    "real_state": {"current": {"balance": "332.60元"}},
+                }
+            ],
+        },
+    )
+    store._write_json(
+        root / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "进入游戏",
+            "body": _long_test_body(),
+            "event_plan": {"chapter_title": "进入游戏"},
+        },
+    )
+
+    preview = store.prompt_preview(1)
+
+    modules = {item["key"]: item["content"] for item in preview["modules"]}
+    generation_context = "\n".join(
+        [modules["core_context"], modules["character_context"]]
+    )
+    assert "332.60" not in generation_context
+    assert "第一章已经完成" not in generation_context
+    assert "处理第一章之后的新任务" not in generation_context
+    assert "在游戏里站稳脚跟" in generation_context
 
 
 def test_non_game_prompt_preview_uses_generic_expansion_and_compression(tmp_path):
@@ -4008,7 +4773,7 @@ def test_prompt_preview_genre_contract_matches_runtime_effective_story(
     state_ids,
     expected_game,
 ):
-    from packages.story_core.orchestrator import _story_game_context
+    from packages.story_core.genre_stages.registry import genre_stage_profile_for
 
     root = tmp_path / f"genre-contract-{len(blueprint_ids)}-{len(state_ids)}-{state_genre or project_genre}"
     project = {
@@ -4045,7 +4810,7 @@ def test_prompt_preview_genre_contract_matches_runtime_effective_story(
     preview = store.prompt_preview(1)
 
     prompts = {item["key"]: item["content"] for item in preview["prompts"]}
-    assert _story_game_context(effective_story) is expected_game
+    assert (genre_stage_profile_for(effective_story).profile_id == "game_webnovel") is expected_game
     assert store._is_game_story_payload(store.project(), store.state()) is expected_game
     if expected_game:
         assert "游戏账本" in prompts["compression"]
@@ -4152,19 +4917,31 @@ def test_project_length_template_runtime_matches_preview_economy_normalization(
         "CUSTOM COMPRESSION 担保订单 {{opening_line}}\n{{target_chars}}\n{{compression_method}}\n{{chapter_scope}}\n{{source_body}}",
     )
     source_body = f"[原正文由 source_body 注入；面板不展示正文全文；当前正文 {len(body)} 字。]"
+    event_plan = {"chapter_title": "第一章", "next_focus": "继续追查"}
+    state_before_chapter = store._state_before_chapter(1)
+    story = StoryState.model_validate(
+        store._story_state_payload_for_direction(
+            state_before_chapter,
+            store.project(),
+            1,
+        )
+    )
 
     with prompt_template_scope(store.prompt_template_object, store.prompt_template_source):
         runtime_expansion = _render_expansion_length_prompt(
+            story,
             source_body=source_body,
-            game_context=game_context,
-            allow_trade_payoff=False,
             chapter_number=1,
+            event_plan=event_plan,
+            world_facts=[],
         )
         runtime_compression = _render_compression_length_prompt(
+            story,
             source_body=source_body,
-            game_context=game_context,
-            allow_trade_payoff=False,
             chapter_number=1,
+            event_plan=event_plan,
+            world_facts=[],
+            outline_anchor=None,
         )
 
     preview = store.prompt_preview(1)
@@ -4298,10 +5075,12 @@ def test_prompt_preview_normalizes_legacy_economy_context_in_every_active_module
     forbidden = (legacy_trade, legacy_delivery, legacy_appraisal, forbidden_currency, "担保", "买家确认")
 
     assert set(entries) == {"director_plan", "writer_body", "revision", "core_context", "character_context", "packet_context"}
-    for content in entries.values():
+    for key, content in entries.items():
         assert all(term not in content for term in forbidden)
-        assert "1764.00" in content or "交易行" in content
-        assert all(line in content for line in opening_market_exchange_flow_lines())
+        if key in {"director_plan", "writer_body", "revision"}:
+            assert "1764.00" in content or "交易行" in content
+            assert all(line in content for line in opening_market_exchange_flow_lines())
+    assert "1764.00" not in entries["packet_context"]
 
     stored_state = json.dumps(store.state(), ensure_ascii=False)
     stored_chapter = json.dumps(store.chapter(1), ensure_ascii=False)
@@ -4519,6 +5298,13 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
                 },
             )
 
+    candidate = FileProjectStore(root).generate_next_chapter(engine=FakeEngine(), persist=False)
+
+    assert candidate["schema_version"] == "file-project-candidate/v1"
+    assert candidate["candidate"]["status"] == "pending"
+    assert not (root / ".story-system" / "chapters" / "0001.json").exists()
+    assert json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))["current_chapter"] == 0
+
     generated = FileProjectStore(root).generate_next_chapter(engine=FakeEngine())
 
     assert generated["schema_version"] == "file-project-generate-next/v1"
@@ -4729,9 +5515,13 @@ def test_file_project_writing_packet_exposes_outline_constraints(tmp_path):
 
     packet = store.writing_packet(2)
 
-    assert packet["target_chars"] == {"min": 3800, "max": 5500}
+    assert packet["target_chars"] == {"min": 4200, "max": 5500}
+    assert packet["acceptance_chars"] == {"min": 3800, "max": 5700}
+    assert packet["hard_locks"][0] == (
+        "正文目标为4200至5500字；低于3800字或超过5700字不能通过章节检查，超过5500字应压缩。"
+    )
     assert packet["chapter_number"] == 2
-    assert any("正文必须满足目标字数区间" in lock for lock in packet["hard_locks"])
+    assert any("4200至5500字" in lock for lock in packet["hard_locks"])
     assert any("当前主线焦点：Follow the arc." in lock for lock in packet["hard_locks"])
     assert packet["scene_cards"][0]["title"] == "First Sale"
     assert packet["scene_cards"][0]["purpose"] == "finish first sale"
@@ -4762,11 +5552,21 @@ def test_file_project_writing_packet_exposes_outline_constraints(tmp_path):
     assert isinstance(packet["state"]["characters"], list)
 
 
-def test_compact_prompt_preview_keeps_only_governance_outline_constraints(tmp_path):
+def test_compact_prompt_preview_keeps_only_chapter_execution_contract(tmp_path):
     store = FileProjectStore(tmp_path / "novel")
 
     preview = store._compact_prompt_preview_packet(
         {
+            "target_chars": {"min": 4200, "max": 5500},
+            "acceptance_chars": {"min": 3800, "max": 5700},
+            "hard_locks": ["Keep the chapter within its acceptance range."],
+            "scene_cards": [{"title": "First repair", "purpose": "Fix the gate."}],
+            "outline_context": {
+                "overall": "A long story summary that already exists in core context.",
+                "chapter": {"goal": "Fix the gate", "payoff": "Earn trust", "ending_hook": "A new crack appears"},
+            },
+            "title_contract": {"style": "concrete_short_title"},
+            "style_rules": ["Use concrete action."],
             "outline_constraints": {
                 "volume_plan": {"title": "第一卷"},
                 "longform_framework": {"chapters": 300},
@@ -4774,16 +5574,69 @@ def test_compact_prompt_preview_keeps_only_governance_outline_constraints(tmp_pa
                 "progression_rules": ["每章可见成长"],
                 "forbidden_breaks": ["不得跳过大纲"],
                 "reality_bridge_rules": ["现实到账需结算"],
-            }
+            },
+            "state": {
+                "world_facts": ["Repeated world fact"],
+                "characters": [
+                    {
+                        "name": "Lin Xiu",
+                        "role": "protagonist",
+                        "location": "Repair shop",
+                        "goal": "Fix the gate",
+                        "state_context": {"cultivation": "Foundation"},
+                    }
+                ],
+            },
+            "recent_chapters": [{"chapter_number": 144, "summary": "Repeated recent chapter"}],
+            "latest_event_plan": {"turn": "The repair fails once", "chapter_end_hook": "A new crack appears"},
+            "latest_review": {"issues": ["Repeated review issue"]},
+            "power_system": {"levels": ["Foundation"]},
+            "skill_context": {
+                "dialogue": [
+                    {
+                        "skill_id": "dialogue-pack",
+                        "modules": [{"module_id": "dialogue", "title": "对话规则"}],
+                    }
+                ],
+                "style": [
+                    {
+                        "skill_id": "dialogue-pack",
+                        "modules": [{"module_id": "dialogue", "title": "对话规则"}],
+                    }
+                ],
+            },
         }
     )
 
-    assert set(preview["outline_constraints"]) == {
-        "volume_plan",
-        "longform_framework",
-        "chapter_formula",
-        "forbidden_breaks",
+    assert preview["target_chars"] == {"min": 4200, "max": 5500}
+    assert preview["acceptance_chars"] == {"min": 3800, "max": 5700}
+    assert preview["chapter_outline"] == {
+        "goal": "Fix the gate",
+        "payoff": "Earn trust",
+        "ending_hook": "A new crack appears",
     }
+    assert preview["characters"] == [
+        {"name": "Lin Xiu", "role": "protagonist", "location": "Repair shop", "goal": "Fix the gate"}
+    ]
+    assert preview["loaded_skill_modules"] == [
+        {
+            "skill_id": "dialogue-pack",
+            "module_id": "dialogue",
+            "title": "对话规则",
+            "purposes": ["dialogue", "style"],
+        }
+    ]
+    for duplicate_key in (
+        "outline_context",
+        "outline_constraints",
+        "state",
+        "recent_chapters",
+        "event_plan",
+        "latest_event_plan",
+        "latest_review",
+        "power_system",
+    ):
+        assert duplicate_key not in preview
 
 
 def test_writing_packet_keeps_only_global_progression_governance_in_hard_locks(tmp_path):
@@ -4937,6 +5790,140 @@ def test_rewriting_old_chapter_removes_future_focus_from_entire_writing_packet(t
     assert "current_focus" not in packet["project"]
     assert packet["state"].get("current_focus") in (None, "")
     assert packet["chapter_direction_options"] == {}
+
+
+def test_rewriting_first_chapter_reconstructs_start_state_in_writing_packet(tmp_path):
+    future_marker = "FUTURE_CHAPTER_RESULT_SHOULD_NOT_REACH_CHAPTER_ONE"
+    store = _make_minimal_file_project(
+        tmp_path / "historical-first-chapter-packet",
+        project={
+            "project_id": "p-history",
+            "title": "Historical Rewrite",
+            "active_story_id": "s-history",
+            "character_profiles": [
+                {
+                    "name": "苏叶",
+                    "role": "protagonist",
+                    "game_id": "夜烬",
+                    "performance_profile": {"speech_style": "会把原因和决定说完整。"},
+                }
+            ],
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+        state={
+            "story_id": "s-history",
+            "genre": "网游",
+            "current_chapter": 4,
+            "world_facts": [future_marker],
+            "progression_ledger": {"protagonist": {"level": "Lv.9"}},
+            "characters": [
+                {
+                    "name": "苏叶",
+                    "role": "protagonist",
+                    "game_id": "夜烬",
+                    "current_life_profile": {"immediate_problem": future_marker},
+                    "story_drive": {"immediate_goal": future_marker},
+                    "game_state": {"current": {"level": "Lv.9", "future": future_marker}},
+                    "memory": [future_marker],
+                }
+            ],
+        },
+    )
+
+    packet = store.writing_packet(1)
+    rendered = json.dumps(packet, ensure_ascii=False)
+
+    assert packet["state"]["current_chapter"] == 0
+    assert future_marker not in rendered
+    assert packet["character_cards"][0]["name"] == "苏叶"
+    assert "会把原因和决定说完整" in rendered
+
+
+def test_first_chapter_direction_payload_does_not_restore_future_project_profile(tmp_path):
+    future_marker = "PROFILE_UPDATED_AFTER_CHAPTER_FOUR"
+    store = _make_minimal_file_project(
+        tmp_path / "historical-direction-profile",
+        project={
+            "project_id": "p-history-direction",
+            "title": "Historical Direction",
+            "active_story_id": "s-history-direction",
+            "character_profiles": [
+                {
+                    "name": "苏叶",
+                    "role": "protagonist",
+                    "latest_chapter": 4,
+                    "identity_profile": {"age": 24, "current_identity": future_marker},
+                    "current_life_profile": {"immediate_problem": future_marker},
+                    "story_drive": {
+                        "long_term_goal": "查清异常来源",
+                        "immediate_goal": future_marker,
+                    },
+                    "performance_profile": {"speech_style": "说话完整。"},
+                }
+            ],
+        },
+        state={
+            "story_id": "s-history-direction",
+            "genre": "网游",
+            "current_chapter": 4,
+            "characters": [{"name": "苏叶", "role": "protagonist"}],
+        },
+    )
+    base_state = store._conservative_regeneration_state(store.state())
+
+    payload = store._story_state_payload_for_direction(base_state, store.project(), 1)
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert future_marker not in rendered
+    assert "查清异常来源" in rendered
+    assert "说话完整" in rendered
+
+
+def test_rewriting_later_chapter_uses_previous_snapshot_not_current_state(tmp_path):
+    prior_marker = "CHAPTER_ONE_CONFIRMED_STATE"
+    future_marker = "CHAPTER_FIVE_CURRENT_STATE"
+    store = _make_minimal_file_project(
+        tmp_path / "historical-later-chapter-packet",
+        project={
+            "project_id": "p-history-2",
+            "title": "Historical Rewrite",
+            "active_story_id": "s-history-2",
+            "character_profiles": [{"name": "林修", "role": "protagonist"}],
+        },
+        state={
+            "story_id": "s-history-2",
+            "genre": "玄幻",
+            "current_chapter": 5,
+            "world_facts": [future_marker],
+            "characters": [
+                {"name": "林修", "role": "protagonist", "memory": [future_marker]}
+            ],
+        },
+    )
+    store._write_json(
+        store.story_system_dir / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "第一章",
+            "chapter_summary": {"summary": prior_marker},
+            "updated_story": {
+                "story_id": "s-history-2",
+                "genre": "玄幻",
+                "current_chapter": 1,
+                "world_facts": [prior_marker],
+                "characters": [
+                    {"name": "林修", "role": "protagonist", "memory": [prior_marker]}
+                ],
+            },
+        },
+    )
+
+    packet = store.writing_packet(2)
+    rendered = json.dumps(packet, ensure_ascii=False)
+
+    assert packet["state"]["current_chapter"] == 1
+    assert prior_marker in rendered
+    assert future_marker not in rendered
 
 
 def test_rewriting_chapter_uses_only_chapters_before_target_for_writer_context(tmp_path):
@@ -5300,6 +6287,7 @@ def test_state_does_not_append_legacy_defaults_to_saved_protagonist(tmp_path):
         state={
             "story_id": "s-file",
             "current_chapter": 1,
+            "genre_plugin_ids": ["game_webnovel"],
             "world_facts": [],
             "characters": [
                 {
@@ -5422,7 +6410,7 @@ def test_negated_quest_completion_does_not_mark_quest_completed(tmp_path):
     assert "灰狼材料收集" not in quests
 
 
-def test_state_adds_proposed_character_card_before_outline_appearance(tmp_path):
+def test_state_does_not_add_market_buyer_as_character_before_outline_appearance(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(
         root,
@@ -5454,11 +6442,7 @@ def test_state_adds_proposed_character_card_before_outline_appearance(tmp_path):
     )
 
     characters = store.state()["characters"]
-    proposed = next(character for character in characters if character["name"] == "白河仓库收购方")
-
-    assert proposed["lifecycle_state"] == "proposed"
-    assert proposed["last_proposed_chapter"] == 5
-    assert "材料来源" in proposed["memory"][0]
+    assert "白河仓库收购方" not in {character["name"] for character in characters}
 
 
 def test_xianxia_state_does_not_infer_web_game_service_characters(tmp_path) -> None:
@@ -5505,7 +6489,7 @@ def test_xianxia_state_does_not_infer_web_game_service_characters(tmp_path) -> N
     assert "白河仓库收购方" not in json.dumps(synced, ensure_ascii=False)
 
 
-def test_chapter_entity_keeps_white_river_buyer_proposed_until_real_appearance(tmp_path):
+def test_chapter_entity_does_not_turn_market_buyer_into_character(tmp_path):
     store = FileProjectStore(tmp_path / "novel")
 
     mention_only = store._chapter_entity_cards(
@@ -5515,22 +6499,7 @@ def test_chapter_entity_keeps_white_river_buyer_proposed_until_real_appearance(t
             "body": "帖子里的收购人ID叫白河仓库，认证是材料商。",
         }
     )
-    proposed = next(card for card in mention_only if card["name"] == "白河仓库收购方")
-
-    assert proposed["lifecycle_state"] == "proposed"
-    assert proposed["last_approved_chapter"] == 0
-
-    real_appearance = store._chapter_entity_cards(
-        {
-            "chapter_number": 5,
-            "chapter_title": "担保名单",
-            "body": "白河仓库的人追问材料来源，收购方问这批灰粉是不是从灰石裂缝来的。",
-        }
-    )
-    active = next(card for card in real_appearance if card["name"] == "白河仓库收购方")
-
-    assert active["lifecycle_state"] == "active"
-    assert active["last_approved_chapter"] == 5
+    assert "白河仓库收购方" not in {card["name"] for card in mention_only}
 
 
 def test_state_sanitizes_placeholder_facts_from_writing_context(tmp_path):
@@ -5565,6 +6534,55 @@ def test_state_sanitizes_placeholder_facts_from_writing_context(tmp_path):
     assert state["chapter_summaries"][0]["secondary_conflict"] == {}
     assert state["chapter_summaries"][0]["event_beat"] == {"turn": "real beat"}
     assert state["memory_index"][0]["facts"] == ["clean memory"]
+
+
+def test_non_game_chapter_hides_legacy_game_pulse_and_self_conflict(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-xuanhuan",
+            "genre": "xuanhuan",
+            "current_chapter": 1,
+            "characters": [{"name": "Lin", "role": "protagonist"}],
+        },
+    )
+    store._write_json(
+        store.story_system_dir / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "Old clue",
+            "body": "Lin finds an old key.",
+            "simulation_plan": {
+                "world_context": {
+                    "schema_version": "world-context/v1",
+                    "latest_pulse": {
+                        "schema_version": "world-pulse/v1",
+                        "market_order_book": {"price_copper": 2},
+                    },
+                }
+            },
+            "chapter_summary": {
+                "chapter_number": 1,
+                "summary": "Lin finds an old key.",
+                "primary_conflict": {
+                    "lead": "Lin",
+                    "opposition": "Lin",
+                    "collision": "Lin collides with Lin.",
+                },
+                "event_beat": {
+                    "turn": "pressure spike",
+                    "pivot": "Lin collides with Lin. Another person applies pressure.",
+                },
+            },
+        },
+    )
+
+    chapter = store.chapter(1)
+
+    assert "world_context" not in chapter["simulation_plan"]
+    assert chapter["chapter_summary"]["primary_conflict"] == {}
+    assert chapter["chapter_summary"]["event_beat"]["pivot"] == "Another person applies pressure."
 
 
 def test_rewrite_latest_chapter_keeps_canonical_state_and_summary(tmp_path):
@@ -6922,7 +7940,7 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
 
     class FakeEngine:
         def generate_next_chapter(self, story):
-            assert story.author_constraints == ["第一章必须通过裂纹狼心担保交易解决现实急账。"]
+            assert story.author_constraints == []
             assert story.writing_lessons == []
             simulation_variant = story.progression_ledger["simulation_variant"]
             variant = simulation_variant["id"]
@@ -7305,6 +8323,15 @@ def test_regenerate_without_snapshot_uses_static_standard_character_profiles(mon
                     "character_tier": "lead",
                     "first_appearance": 1,
                     "game_id": "Ember",
+                    "identity_profile": {"age": 31, "occupation": "watchmaker"},
+                    "background_profile": {"upbringing": "Old mall"},
+                    "story_drive": {
+                        "immediate_goal": "Keep the shop open",
+                        "long_term_goal": "Repair the family relationship",
+                    },
+                    "performance_profile": {
+                        "speech_style": "Reserved, but answers in complete sentences."
+                    },
                     "current_emotion": "CHAPTER2_EMOTION",
                     "goals": ["CHAPTER2_GOAL"],
                     "location": "CHAPTER2_LOCATION",
@@ -7340,8 +8367,14 @@ def test_regenerate_without_snapshot_uses_static_standard_character_profiles(mon
             assert ari.character_tier == "lead"
             assert ari.first_appearance == 1
             assert ari.game_id == "Ember"
+            assert ari.identity_profile.age == 31
+            assert ari.identity_profile.occupation == "watchmaker"
+            assert ari.background_profile.upbringing == "Old mall"
+            assert ari.story_drive.immediate_goal == "Keep the shop open"
+            assert ari.story_drive.long_term_goal == "Repair the family relationship"
+            assert ari.performance_profile.speech_style == "Reserved, but answers in complete sentences."
             assert ari.current_emotion == "neutral"
-            assert ari.goals == []
+            assert ari.goals == ["Keep the shop open", "Repair the family relationship"]
             assert ari.location == ""
             assert ari.game_state == {}
             assert ari.memory == []

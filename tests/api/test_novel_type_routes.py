@@ -110,8 +110,29 @@ def test_get_returns_complete_types_in_stable_order(novel_type_api):
         "quality_checks",
         "trope_templates",
         "power_system_template",
+        "outline_template",
         "builtin",
     }
+
+
+def test_get_outline_templates_are_genre_specific_and_round_trip(novel_type_api):
+    client, _, _ = novel_type_api
+    records = {item["id"]: item for item in client.get("/novel-types").json()}
+    game_template = records["game_webnovel"]["outline_template"]
+    xuanhuan_template = records["xuanhuan"]["outline_template"]
+
+    assert game_template != xuanhuan_template
+    assert game_template["chapter"]["opening_window_size"] == 10
+
+    payload = records["xuanhuan"]
+    payload.pop("builtin")
+    payload["outline_template"]["overall"]["instructions"] = ["按新的玄幻总纲要求填写。"]
+    updated = client.put("/novel-types/xuanhuan", json=payload)
+
+    assert updated.status_code == 200
+    assert updated.json()["outline_template"]["overall"]["instructions"] == [
+        "按新的玄幻总纲要求填写。"
+    ]
 
 
 def test_get_power_template_round_trips_through_put(novel_type_api):
@@ -273,6 +294,7 @@ def test_unknown_duplicate_and_custom_id_conflict_errors(novel_type_api):
         {**_custom_payload(), "rulebook": {"unknown_rules": ["no"]}},
         {**_custom_payload(), "keywords": "league"},
         {**_custom_payload(), "power_system_template": None},
+        {**_custom_payload(), "outline_template": None},
     ],
 )
 def test_create_rejects_unknown_or_invalid_fields(novel_type_api, payload):

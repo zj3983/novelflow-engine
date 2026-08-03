@@ -65,6 +65,7 @@ from packages.story_core.power_system_templates import (
     compact_power_system_template,
     copy_power_system_template,
 )
+from packages.story_core.outline_templates import copy_outline_template
 
 
 def _trope_template(
@@ -99,6 +100,9 @@ def _prompt_context_record(
         quality_checks=("check",),
         trope_templates=tuple(templates),
         power_system_template=copy_power_system_template("generic_webnovel"),
+        outline_template=copy_outline_template(
+            type_id if type_id in {"generic_webnovel", "game_webnovel", "xuanhuan", "xianxia", "urban", "romance", "suspense", "rules_mystery"} else "generic_webnovel"
+        ),
     )
 
 
@@ -142,6 +146,15 @@ def test_novel_type_prompt_context_contains_compact_power_template() -> None:
     assert context["genre_power_system_template"]["minimum_path_count"] == 6
     assert context["genre_power_system_template"]["fixed_milestones"] == [1, 10, 20, 30, 60]
     assert len(json.dumps(context, ensure_ascii=False)) <= 6000
+
+
+def test_novel_type_prompt_context_contains_only_selected_outline_template() -> None:
+    game = novel_type_prompt_context(runtime_novel_type("game_webnovel"))
+    xuanhuan = novel_type_prompt_context(runtime_novel_type("xuanhuan"))
+
+    assert game["genre_outline_template"] != xuanhuan["genre_outline_template"]
+    assert "游戏" in json.dumps(game["genre_outline_template"], ensure_ascii=False)
+    assert "游戏" not in json.dumps(xuanhuan["genre_outline_template"], ensure_ascii=False)
 
 
 def test_prompt_context_cap_preserves_required_power_template_contract() -> None:
@@ -443,6 +456,7 @@ def test_novel_type_prompt_context_trims_candidate_free_singleton_base_lists_unt
         rulebook=rulebook,
         quality_checks=(escaped_singleton,),
         trope_templates=(),
+        outline_template=copy_outline_template("generic_webnovel"),
     )
 
     context = novel_type_prompt_context(record)
@@ -554,7 +568,10 @@ def test_director_summary_keeps_longform_memory_arc_and_world_context():
             "outline_context": {"active_arc": {"goal": "本卷追查旧印"}},
             "relevant_memories": [{"chapter_number": 7, "summary": "七章前埋下旧印"}],
             "arc_recaps": [{"range": "1-10", "recap": "第一卷前半回顾", "open_threads": ["旧印来源"]}],
-            "world_pulse": {"latest": {"summary": "执事已封锁炉房"}},
+            "world_pulse": {
+                "latest": {"summary": "执事已封锁炉房"},
+                "threads": [{"summary": "宗门正在追查旧印来源", "status": "active"}],
+            },
             "characters": [
                 {
                     "name": "林照",
@@ -572,7 +589,8 @@ def test_director_summary_keeps_longform_memory_arc_and_world_context():
     assert summary["relevant_memories"][0]["summary"] == "七章前埋下旧印"
     assert summary["arc_recaps"][0]["recap"] == "第一卷前半回顾"
     assert summary["world_pulse"]["latest"]["summary"] == "执事已封锁炉房"
-    assert summary["characters"][0]["game_panel"]["level"] == "炼体一重"
+    assert summary["world_pulse"]["threads"][0]["summary"] == "宗门正在追查旧印来源"
+    assert "game_panel" not in summary["characters"][0]
     assert summary["characters"][0]["secrets"] == ["认得残缺族徽"]
 
 
@@ -921,7 +939,7 @@ def test_explicit_non_game_type_rejects_type_words_embedded_in_prose():
     assert is_game_genre(prose_samples[0] + " VRMMO 交易行") is True
 
 
-def test_game_context_entrypoints_share_the_same_evidence_matrix():
+def test_game_keyword_detectors_and_profile_routing_respect_explicit_type():
     samples = (
         ("爆率", True),
         ("铜币", True),
@@ -936,7 +954,15 @@ def test_game_context_entrypoints_share_the_same_evidence_matrix():
         assert is_game_genre(text) is expected, text
         assert _has_game_context(text, {}, []) is expected, text
 
-        review = _review_chapter_body(1, text, {}, [])
+        review = _review_chapter_body(
+            1,
+            text,
+            {},
+            [],
+            genre_context={
+                "genre_plugin_ids": ["game_webnovel" if expected else "xianxia"]
+            },
+        )
         review_detected_game = any("游戏ID" in issue for issue in review["issues"])
         assert review_detected_game is expected, text
 

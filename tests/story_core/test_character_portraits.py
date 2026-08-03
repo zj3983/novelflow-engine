@@ -13,6 +13,32 @@ def test_character_state_defaults_to_an_empty_personality_portrait():
     assert portrait == PersonalityPortrait()
 
 
+def test_internal_supporting_role_does_not_leak_into_chinese_portrait():
+    character = CharacterState(
+        name="小乐",
+        role="supporting",
+        personality_portrait=PersonalityPortrait.model_validate(
+            {
+                "temperament": {
+                    "outward_impression": "在修仙中以supporting的立场参与局面",
+                    "values": ["围绕supporting行动"],
+                },
+                "psychology": {"desire": "围绕supporting行动"},
+                "growth": {
+                    "invariants": ["保留独立驱动力：围绕supporting行动"],
+                    "stage_direction": "围绕supporting调整个人目标与关系位置",
+                },
+            }
+        ),
+    )
+
+    completed = complete_character_portrait(character, genre="修仙")
+    serialized = completed.personality_portrait.model_dump_json()
+
+    assert "supporting" not in serialized
+    assert "自身目标与当前关系" in serialized
+
+
 def test_protagonist_portrait_has_required_detail():
     character = CharacterState(
         name="Lin",

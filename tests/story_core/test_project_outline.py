@@ -12,9 +12,32 @@ from packages.story_core.project_outline import (
     OverallOutline,
     ProjectOutline,
     normalize_project_outline,
+    normalize_outline_for_story_type,
     outline_from_legacy_project,
     select_outline_context,
 )
+
+
+def test_non_game_outline_discards_game_only_arc_payoffs() -> None:
+    payload = {
+        "overall": {"story": "修理师追查仙器失控。"},
+        "arcs": [
+            {
+                "id": "opening",
+                "start_chapter": 1,
+                "end_chapter": 10,
+                "game_line_payoff": "错误混入的游戏线",
+                "reality_line_payoff": "错误混入的现实线",
+            }
+        ],
+    }
+
+    generic = normalize_outline_for_story_type(payload, is_game_story=False)
+    game = normalize_outline_for_story_type(payload, is_game_story=True)
+
+    assert generic["arcs"][0]["game_line_payoff"] == ""
+    assert generic["arcs"][0]["reality_line_payoff"] == ""
+    assert game["arcs"][0]["game_line_payoff"] == "错误混入的游戏线"
 
 
 def test_models_expose_the_canonical_outline_fields() -> None:
@@ -57,6 +80,11 @@ def test_models_expose_the_canonical_outline_fields() -> None:
     assert payload["schema_version"] == "project-outline/v1"
     assert set(payload["overall"]) == {
         "story",
+        "theme_statement",
+        "foreground_story",
+        "background_story",
+        "book_objective",
+        "ending_image",
         "protagonist_goal",
         "main_conflict",
         "growth_path",
@@ -66,6 +94,12 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "extension_ceiling_chapter",
         "current_strategy",
         "ending_contract",
+        "core_selling_point",
+        "long_term_lines",
+        "planned_arc_count",
+        "planned_length",
+        "expansion_route",
+        "closing_route",
     }
     assert set(payload["arcs"][0]) == {
         "id",
@@ -81,7 +115,20 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "long_term_antagonist_traces",
         "game_line_payoff",
         "reality_line_payoff",
+        "emotional_curve",
+        "key_results",
+        "hook_plan",
+        "irreversible_change",
         "extension_gate",
+        "active_long_term_lines",
+        "core_loop",
+        "escalations",
+        "midpoint_turn",
+        "climax",
+        "relationship_changes",
+        "foreshadowing_in",
+        "foreshadowing_out",
+        "next_arc_entry",
     }
     assert payload["arcs"][0]["id"]
     assert set(payload["chapters"][0]) == {
@@ -97,7 +144,61 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "cast",
         "level_target",
         "attribute_allocation_decision",
+        "opponent_response",
+        "emotional_change",
+        "gain_or_loss",
     }
+
+
+def test_filled_long_form_outline_template_fields_round_trip() -> None:
+    normalized = normalize_project_outline(
+        {
+            "overall": {
+                "core_selling_point": "维修能力从家电一路作用到天地规则。",
+                "long_term_lines": [
+                    {
+                        "name": "维修成长线",
+                        "purpose": "推动能力与职业变化",
+                        "start_state": "只能修普通家电",
+                        "progression_steps": ["修法器", "修灵脉", "修世界规则"],
+                        "final_payoff": "阻止万界崩坏",
+                    }
+                ],
+                "planned_arc_count": 8,
+                "planned_length": 320,
+                "expansion_route": "进入更多世界处理不同层级的故障。",
+                "closing_route": "回收天地故障源头并完成主角选择。",
+            },
+            "arcs": [
+                {
+                    "id": "opening",
+                    "start_chapter": 1,
+                    "end_chapter": 40,
+                    "active_long_term_lines": ["维修成长线"],
+                    "core_loop": "接单、诊断、维修、获得更高权限。",
+                    "escalations": ["修家电", "修法器", "修护宗阵"],
+                    "midpoint_turn": "故障并非自然形成。",
+                    "climax": "公开修复护宗阵。",
+                    "relationship_changes": ["宗门从轻视转为争取"],
+                    "foreshadowing_in": ["异常裂纹"],
+                    "foreshadowing_out": ["天机阁标记"],
+                    "next_arc_entry": "天机阁派人上门。",
+                }
+            ],
+            "chapters": [
+                {
+                    "chapter_number": 1,
+                    "opponent_response": "掌柜拒绝让他碰坏掉的法器。",
+                    "emotional_change": "从忍耐转为决定当场证明。",
+                    "gain_or_loss": "获得第一次公开维修机会。",
+                }
+            ],
+        }
+    )
+
+    assert normalized["overall"]["long_term_lines"][0]["progression_steps"][-1] == "修世界规则"
+    assert normalized["arcs"][0]["escalations"] == ["修家电", "修法器", "修护宗阵"]
+    assert normalized["chapters"][0]["opponent_response"].startswith("掌柜")
 
 
 def test_elastic_outline_fields_round_trip() -> None:
@@ -210,6 +311,74 @@ def test_extension_ceiling_cannot_precede_core_ending() -> None:
         )
 
 
+def test_general_outline_keeps_long_form_story_and_volume_fields() -> None:
+    normalized = normalize_project_outline(
+        {
+            "overall": {
+                "story": "林修以维修之道追查天地崩坏。",
+                "theme_statement": "修复世界之前，先决定什么值得保留。",
+                "foreground_story": "林修修复法宝、阵法和灵脉，逐步建立自己的势力。",
+                "background_story": "天机阁利用天地故障熔炼万界。",
+                "book_objective": "林修建立万修宗，并阻止天机阁熔炼灵气界。",
+                "ending_image": "恢复流动的灵气穿过各州，林修收起最后一件修复工具。",
+            },
+            "arcs": [
+                {
+                    "id": "opening",
+                    "title": "青云宗立足",
+                    "start_chapter": 1,
+                    "end_chapter": 30,
+                    "emotional_curve": "先受压，再以连续修复建立信任，卷尾首次公开反击。",
+                    "key_results": ["取得正式弟子身份", "修复宗门灵气井", "拿到天机阁的第一条线索"],
+                    "hook_plan": "灵气井中的旧刻痕在第三卷回收。",
+                    "irreversible_change": "林修公开维修之道，无法再退回普通杂役身份。",
+                }
+            ],
+        }
+    )
+
+    assert normalized["overall"]["foreground_story"].startswith("林修修复")
+    assert normalized["overall"]["background_story"].startswith("天机阁")
+    assert normalized["overall"]["book_objective"].endswith("灵气界。")
+    assert normalized["arcs"][0]["key_results"] == [
+        "取得正式弟子身份",
+        "修复宗门灵气井",
+        "拿到天机阁的第一条线索",
+    ]
+    assert normalized["arcs"][0]["irreversible_change"].startswith("林修公开")
+
+
+def test_legacy_outline_derives_safe_long_form_defaults_without_overwriting_content() -> None:
+    normalized = normalize_project_outline(
+        {
+            "overall": {
+                "story": "林修从青云宗杂役起步，追查天地故障。",
+                "ending_direction": "林修修复天道并建立万修宗。",
+            },
+            "arcs": [
+                {
+                    "id": "opening",
+                    "goal": "取得正式弟子身份",
+                    "payoff": "修复宗门灵气井",
+                    "end_state": "林修获得独立修复法宝的资格",
+                    "long_term_antagonist_traces": ["井底留有天机阁旧印"],
+                }
+            ],
+        }
+    )
+
+    assert normalized["overall"]["foreground_story"] == normalized["overall"]["story"]
+    assert normalized["overall"]["book_objective"] == normalized["overall"]["ending_direction"]
+    assert normalized["overall"]["ending_image"] == normalized["overall"]["ending_direction"]
+    assert normalized["arcs"][0]["key_results"] == [
+        "取得正式弟子身份",
+        "修复宗门灵气井",
+        "林修获得独立修复法宝的资格",
+    ]
+    assert normalized["arcs"][0]["hook_plan"] == "井底留有天机阁旧印"
+    assert normalized["arcs"][0]["irreversible_change"] == "林修获得独立修复法宝的资格"
+
+
 def test_expandable_outline_requires_both_routes_for_core_arcs() -> None:
     with pytest.raises(ValueError, match="missing_arc_extension_route:opening"):
         normalize_project_outline(
@@ -232,27 +401,29 @@ def test_expandable_outline_requires_both_routes_for_core_arcs() -> None:
         )
 
 
-def test_expandable_outline_requires_dual_line_payoffs_for_core_arcs() -> None:
-    with pytest.raises(ValueError, match="missing_arc_dual_line_payoff:opening"):
-        normalize_project_outline(
-            {
-                "overall": {
-                    "core_ending_chapter": 150,
-                    "extension_ceiling_chapter": 500,
-                },
-                "arcs": [
-                    {
-                        "id": "opening",
-                        "start_chapter": 1,
-                        "end_chapter": 30,
-                        "extension_gate": {
-                            "continue_route": "进入下一阶段。",
-                            "close_route": "进入结局。",
-                        },
-                    }
-                ],
-            }
-        )
+def test_general_expandable_outline_does_not_require_game_dual_lines() -> None:
+    normalized = normalize_project_outline(
+        {
+            "overall": {
+                "core_ending_chapter": 150,
+                "extension_ceiling_chapter": 500,
+            },
+            "arcs": [
+                {
+                    "id": "opening",
+                    "start_chapter": 1,
+                    "end_chapter": 30,
+                    "extension_gate": {
+                        "continue_route": "进入下一阶段。",
+                        "close_route": "进入结局。",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert normalized["arcs"][0]["game_line_payoff"] == ""
+    assert normalized["arcs"][0]["reality_line_payoff"] == ""
 
 
 def test_normalize_is_deterministic_non_mutating_json_serializable_and_sorted() -> None:
@@ -436,13 +607,26 @@ def test_legacy_project_projects_into_three_levels_without_mutation() -> None:
             "goal": "先查清祖祠失火原因。",
             "obstacle": "",
             "payoff": "",
+            "emotional_curve": "",
+            "key_results": ["先查清祖祠失火原因。"],
+            "hook_plan": "",
+            "irreversible_change": "",
             "trope_id": None,
             "end_state": "",
             "stage_antagonist": "",
             "long_term_antagonist_traces": [],
             "game_line_payoff": "",
             "reality_line_payoff": "",
-            "extension_gate": {"continue_route": "", "close_route": ""},
+                "extension_gate": {"continue_route": "", "close_route": ""},
+                "active_long_term_lines": [],
+                "core_loop": "",
+                "escalations": [],
+                "midpoint_turn": "",
+                "climax": "",
+                "relationship_changes": [],
+                "foreshadowing_in": [],
+                "foreshadowing_out": [],
+                "next_arc_entry": "",
         }
     ]
     assert [chapter["chapter_number"] for chapter in outline["chapters"]] == [2, 4]
@@ -461,6 +645,11 @@ def test_legacy_projection_tolerates_missing_or_malformed_optional_sections() ->
         "schema_version": "project-outline/v1",
         "overall": {
             "story": "只有总纲",
+            "theme_statement": "",
+            "foreground_story": "只有总纲",
+            "background_story": "",
+            "book_objective": "",
+            "ending_image": "",
             "protagonist_goal": "",
             "main_conflict": "",
             "growth_path": "",
@@ -469,7 +658,13 @@ def test_legacy_projection_tolerates_missing_or_malformed_optional_sections() ->
             "core_ending_chapter": 1,
             "extension_ceiling_chapter": 1,
             "current_strategy": "observe",
-            "ending_contract": "",
+                "ending_contract": "",
+                "core_selling_point": "",
+                "long_term_lines": [],
+                "planned_arc_count": 0,
+                "planned_length": 1,
+                "expansion_route": "",
+                "closing_route": "",
         },
         "arcs": [],
         "chapters": [],

@@ -362,6 +362,9 @@ def test_file_project_outline_get_projects_legacy_data_without_writing(tmp_path:
             "ending_hook": "The seal is still warm.",
             "trope_beat": None,
             "cast": [],
+            "opponent_response": "",
+            "emotional_change": "",
+            "gain_or_loss": "",
         }
     ]
     assert not outline_path.exists()
@@ -729,23 +732,25 @@ def test_file_project_writing_packet_scopes_saved_outline_to_target_chapter(tmp_
     assert "收购方追问材料来源" in hard_locks
     assert "夜烬核对担保名单" not in hard_locks
     assert "收购方认出旧印章" not in hard_locks
-    buyer = next(character for character in packet["state"]["characters"] if character["name"] == "白河仓库收购方")
-    assert buyer["lifecycle_state"] == "proposed"
+    assert "白河仓库收购方" not in {
+        character["name"]
+        for character in packet["state"]["characters"]
+    }
 
     preview_response = client.get("/file-projects/file:packet-fixture/prompt-preview?chapter_number=12")
     assert preview_response.status_code == 200
     preview = preview_response.json()
     packet_module = next(module for module in preview["modules"] if module["key"] == "packet_context")
     preview_packet = json.loads(packet_module["content"])
-    assert set(preview_packet["outline_context"]) == {"overall", "active_arc", "chapter"}
-    assert preview_packet["outline_context"]["overall"]["story"] == "总纲内容"
-    assert preview_packet["outline_context"]["active_arc"]["id"] == "phase-2"
-    assert preview_packet["outline_context"]["chapter"]["chapter_number"] == 12
-    preview_context_text = json.dumps(preview_packet["outline_context"], ensure_ascii=False)
-    assert "OTHER-PHASE-LEAK" not in preview_context_text
-    assert "CHAPTER-13-LEAK" not in preview_context_text
-    assert "current_arc" not in preview_packet["outline_constraints"]
-    assert "opening_arc" not in preview_packet["outline_constraints"]
+    assert preview_packet["chapter_outline"]["chapter_number"] == 12
+    assert preview_packet["chapter_outline"]["goal"] == "本章目标：确认收购规则"
+    assert "outline_context" not in preview_packet
+    assert "outline_constraints" not in preview_packet
+    assert "state" not in preview_packet
+    assert "recent_chapters" not in preview_packet
+    assert "总纲内容" not in packet_module["content"]
+    assert "OTHER-PHASE-LEAK" not in packet_module["content"]
+    assert "CHAPTER-13-LEAK" not in packet_module["content"]
     director_prompt = next(item["content"] for item in preview["prompts"] if item["key"] == "director_plan")
     assert "本阶段目标：建立仓库交易线" in director_prompt
     assert "本章目标：确认收购规则" in director_prompt

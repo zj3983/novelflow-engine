@@ -81,7 +81,8 @@ def test_plot_spine_scores_are_classified_for_revision_gate():
     assert "plot_spine_partial" in SOFT_REVIEWERS
     assert "longform_payoff_missing" in HARD_REVIEWERS
     assert "longform_followup_weak" in SOFT_REVIEWERS
-    assert "trope_beat_missing" in HARD_REVIEWERS
+    assert "trope_beat_missing" not in HARD_REVIEWERS
+    assert "trope_beat_missing" in SOFT_REVIEWERS
 
 
 def test_longform_contract_fails_when_chapter_only_observes_without_payoff():
@@ -157,6 +158,29 @@ def test_scheduled_trope_beat_passes_when_covered_and_keeps_avoid_guidance():
     assert not any("套路节点未兑现" in issue for issue in review["issues"])
     assert review["diagnostics"]["trope_beat_covered"] is True
     assert review["diagnostics"]["trope_avoid"] == ["不要换套路", "不要提前解决整条主线"]
+
+
+def test_structural_payoff_trope_uses_concrete_plot_payoff_instead_of_meta_words():
+    body = (
+        "林修终于看清了阵心石下的结构。雪山神殿本身就是第三件神器的外壳，"
+        "残镜只是脱落的核心碎件，小乐的血也不是开门的钥匙，而是辨认真伪的校验印。"
+    )
+    plan = {
+        "plot_simulation": {
+            "payoff": "林修确认雪山神殿本身就是第三件神器的外壳，残镜只是核心碎件，小乐的血不是钥匙而是校验印。",
+        },
+        "trope_contract": {
+            "template_id": "chapter_hook_escalation",
+            "current_beat": "兑现本章收益",
+            "payoff": "章节有闭环，也有继续读的理由。",
+        },
+    }
+
+    review = review_plot_spine_completion(body, plan)
+
+    assert review["pass"] is True
+    assert review["diagnostics"]["trope_beat_covered"] is True
+    assert "trope_beat_missing" not in review["scores"]
 
 
 def test_scheduled_trope_beat_rejects_negated_or_planned_mentions():
