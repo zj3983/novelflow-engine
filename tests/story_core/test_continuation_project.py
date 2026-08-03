@@ -221,10 +221,13 @@ def test_conversion_generates_requested_continuation_outline(tmp_path: Path) -> 
 
     outline = FileProjectStore(created.root).project_outline()
     assert outline["overall"]["story"] == session.analysis["story_overview"]
-    assert outline["arcs"][0]["start_chapter"] == 4
-    assert outline["arcs"][0]["end_chapter"] == 13
+    assert outline["arcs"][0]["start_chapter"] == 1
+    assert outline["arcs"][0]["end_chapter"] == 3
+    assert outline["arcs"][0]["title"] == "原著已发生"
+    assert outline["arcs"][1]["start_chapter"] == 4
+    assert outline["arcs"][1]["end_chapter"] == 13
     assert outline["overall"]["primary_trope_id"] == "chapter_hook_escalation"
-    assert outline["arcs"][0]["trope_id"] == "chapter_hook_escalation"
+    assert outline["arcs"][1]["trope_id"] == "chapter_hook_escalation"
     assert [chapter["chapter_number"] for chapter in outline["chapters"]] == list(
         range(4, 14)
     )
@@ -366,7 +369,8 @@ def test_conversion_extracts_profile_and_realm_from_confirmed_character_analysis
     character_state = FileProjectStore(created.root).state()["characters"][0]
     assert character_state["identity_profile"]["current_identity"] == "旧书店学徒"
     assert character_state["identity_profile"]["age"] == 19
-    assert character_state["real_state"]["current"]["realm"] == "筑基初期"
+    assert character_state["current_state"]["current"]["realm"] == "筑基初期"
+    assert "real_state" not in character_state
     assert "##" not in character_state["memory"][0]
 
 
@@ -568,6 +572,27 @@ def test_conversion_rejects_blocking_analysis_conflicts(tmp_path: Path) -> None:
             _ready_session(needs_confirmation=True),
             _settings(3),
         )
+
+
+def test_conversion_rejects_historical_character_missing_from_source(tmp_path: Path) -> None:
+    session = _ready_session()
+    session.analysis["characters"].append(
+        {
+            "name": "小乐",
+            "role": "supporting",
+            "summary": "模型误认成原著人物",
+            "confidence": "confirmed",
+            "evidence": [],
+            "states": [],
+            "relationships": [],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="^continuation_character_missing_from_source:小乐$",
+    ):
+        _create_project(tmp_path, session, _settings(3))
 
 
 def test_imported_filenames_are_safe_and_unicode_is_preserved(tmp_path: Path) -> None:
@@ -866,6 +891,7 @@ def test_relationship_graph_and_timeline_keep_evidence_chapter_and_sequence(
     tmp_path: Path,
 ) -> None:
     session = _ready_session()
+    session.chapters[1].body += "\n守钟人站在地图旁，没有让沈砚靠近。"
     evidence = [
         {
             "chapter_id": "chapter-2",

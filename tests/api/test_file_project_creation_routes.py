@@ -48,6 +48,28 @@ def test_blank_file_project_creation_returns_201_and_is_readable(creation_api):
     legacy_create.assert_not_called()
 
 
+def test_file_project_response_exposes_sanitized_continuation_boundary(creation_api):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "续写项目", "novel_type_id": "xuanhuan"},
+    ).json()
+    root = Path(created["source_path"])
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["continuation"] = {
+        "start_after_chapter": 141,
+        "source_path": "C:/private/original.txt",
+        "session_id": "private-session",
+    }
+    project_path.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+
+    response = client.get(f"/file-projects/{created['project_id']}")
+
+    assert response.status_code == 200
+    assert response.json()["continuation"] == {"start_after_chapter": 141}
+
+
 def test_file_project_world_enrichment_completes_opening_environment(creation_api, monkeypatch):
     client, _, _ = creation_api
     created = client.post(
@@ -409,7 +431,7 @@ def test_file_project_character_put_persists_normalized_dual_state_to_both_cards
     ]
 
 
-def test_non_game_file_project_persistence_omits_empty_game_state(creation_api):
+def test_non_game_file_project_persistence_migrates_to_generic_current_state(creation_api):
     client, _, _ = creation_api
     created = client.post(
         "/file-projects",
@@ -433,9 +455,12 @@ def test_non_game_file_project_persistence_omits_empty_game_state(creation_api):
 
     assert response.status_code == 200
     returned = response.json()
-    assert returned["real_state"]["current"] == {"occupation": "抄书", "residence": "旧城"}
+    assert returned["current_state"]["current"] == {"occupation": "抄书", "residence": "旧城"}
+    assert "real_state" not in returned
     assert "game_state" not in returned
     persisted_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted_state["characters"][0]["current_state"] == returned["current_state"]
+    assert "real_state" not in persisted_state["characters"][0]
     assert "game_state" not in persisted_state["characters"][0]
 
 
@@ -511,6 +536,68 @@ def test_legacy_game_character_api_reads_and_saves_both_state_namespaces(creatio
     for persisted_card in (persisted_project_card, persisted_state_card):
         assert persisted_card["real_state"] == saved_card["real_state"]
         assert persisted_card["game_state"] == saved_card["game_state"]
+
+
+def test_file_project_update_normalizes_equipment_cards(creation_api):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Equipment API", "novel_type_id": "game_webnovel"},
+    ).json()
+
+    response = client.put(
+        f"/file-projects/{created['project_id']}",
+        json={
+            "world_blueprint": {
+                "equipment_cards": [
+                    {
+                        "name": "Dusk Verdict",
+                        "equipment_type": "weapon",
+                        "rarity": "epic",
+                        "lore": "Forged for the last watch of Ashen Hall.",
+                        "lore_status": "rumor",
+                    }
+                ]
+            }
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    card = response.json()["world_blueprint"]["equipment_cards"][0]
+    assert card["id"].startswith("equipment-")
+    assert card["name"] == "Dusk Verdict"
+    assert card["lore_status"] == "rumor"
+
+
+@pytest.mark.parametrize(
+    "equipment_cards",
+    [
+        [{"equipment_type": "weapon"}],
+        [{"name": "Dusk Verdict"}],
+        [{"name": "Ash Ore", "equipment_type": "material"}],
+        {"name": "Dusk Verdict", "equipment_type": "weapon"},
+    ],
+)
+def test_file_project_update_rejects_invalid_equipment_cards_atomically(
+    creation_api,
+    equipment_cards,
+):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Equipment Atomic", "novel_type_id": "game_webnovel"},
+    ).json()
+    store = FileProjectStore(Path(created["source_path"]))
+    before = store.project()
+
+    response = client.put(
+        f"/file-projects/{created['project_id']}",
+        json={"world_blueprint": {"equipment_cards": equipment_cards}},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid_equipment_cards"
+    assert store.project() == before
 
 
 def test_file_project_settings_update_syncs_runtime_genre_id_to_state(
@@ -633,6 +720,105 @@ def test_file_project_list_ignores_in_progress_dot_directories(creation_api):
     root.rename(root.with_name(f".{root.name}.tmp-in-progress"))
 
     assert client.get("/file-projects").json() == []
+
+
+def test_file_project_archive_trash_restore_and_permanent_delete(creation_api):
+    client, export_root, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "可回收的小说", "novel_type_id": "urban"},
+    ).json()
+    project_id = created["project_id"]
+    original_root = Path(created["source_path"])
+
+    archived = client.post(f"/file-projects/{project_id}/archive")
+    assert archived.status_code == 200
+    assert archived.json()["project_lifecycle"] == "archived"
+    assert client.get("/file-projects").json() == []
+    assert [item["project_id"] for item in client.get("/file-projects?lifecycle=archived").json()] == [project_id]
+
+    restored = client.post(f"/file-projects/{project_id}/restore")
+    assert restored.status_code == 200
+    assert restored.json()["project_lifecycle"] == "active"
+
+    trashed = client.post(f"/file-projects/{project_id}/trash")
+    assert trashed.status_code == 200
+    trash_root = export_root / ".trash" / original_root.name
+    assert not original_root.exists()
+    assert trash_root.is_dir()
+    assert client.get(f"/file-projects/{project_id}").status_code == 404
+    assert [item["project_id"] for item in client.get("/file-projects?lifecycle=trashed").json()] == [project_id]
+
+    wrong_title = client.delete(f"/file-projects/{project_id}", params={"confirm_title": "错误书名"})
+    assert wrong_title.status_code == 422
+    deleted = client.delete(f"/file-projects/{project_id}", params={"confirm_title": "可回收的小说"})
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert not trash_root.exists()
+
+
+def test_file_project_restore_returns_conflict_when_original_path_is_occupied(creation_api):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "路径冲突测试", "novel_type_id": "urban"},
+    ).json()
+    project_id = created["project_id"]
+    original_root = Path(created["source_path"])
+    assert client.post(f"/file-projects/{project_id}/trash").status_code == 200
+    original_root.mkdir(parents=True)
+
+    response = client.post(f"/file-projects/{project_id}/restore")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "file_project_restore_path_conflict"
+
+
+def test_file_project_lifecycle_change_is_blocked_while_generation_is_active(creation_api):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "生成中的文件项目", "novel_type_id": "urban"},
+    ).json()
+    story_id = created["active_story_id"]
+    with file_project_routes._file_generation_jobs_lock:
+        file_project_routes._file_generation_jobs["job-busy"] = {
+            "job_id": "job-busy",
+            "story_id": story_id,
+            "status": "running",
+        }
+        file_project_routes._active_file_generation_jobs[story_id] = "job-busy"
+    try:
+        response = client.post(f"/file-projects/{created['project_id']}/trash")
+    finally:
+        with file_project_routes._file_generation_jobs_lock:
+            file_project_routes._file_generation_jobs.clear()
+            file_project_routes._active_file_generation_jobs.clear()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "project_generation_in_progress"
+
+
+def test_file_project_trash_move_failure_rolls_back_lifecycle(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    created = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "移动失败回滚", "novel_type_id": "urban"},
+    ).json()
+    project_root = Path(created["source_path"])
+
+    def fail_move(_source, _destination):
+        raise OSError("disk move failed")
+
+    monkeypatch.setattr(file_project_routes.shutil, "move", fail_move)
+    response = client.post(f"/file-projects/{created['project_id']}/trash")
+
+    assert response.status_code == 500
+    assert project_root.is_dir()
+    assert not (project_root / "trash.json").exists()
+    reread = client.get(f"/file-projects/{created['project_id']}")
+    assert reread.status_code == 200
+    assert reread.json()["project_lifecycle"] == "active"
 
 
 def test_inspiration_file_project_creation_returns_setup_path_and_opening_brief(creation_api):
@@ -776,6 +962,11 @@ def _outline_plan_with_trope(trope_id: str, trope_beat: str) -> dict:
         "outline": {
             "overall": {
                 "story": "The lead investigates a sealed record.",
+                "theme_statement": "Verified facts matter more than inherited authority.",
+                "foreground_story": "The lead investigates the sealed record and earns archive access.",
+                "background_story": "The sponsor altered the archive to preserve political control.",
+                "book_objective": "Expose the altered record and remove the sponsor's control.",
+                "ending_image": "The restored record is opened to the public.",
                 "protagonist_goal": "Open the record.",
                 "main_conflict": "The rival controls access.",
                 "growth_path": "Earn authority through verified results.",
@@ -790,6 +981,14 @@ def _outline_plan_with_trope(trope_id: str, trope_beat: str) -> dict:
                 "goal": "Obtain the first record.",
                 "obstacle": "The rival blocks the archive.",
                 "payoff": "The record becomes public.",
+                "emotional_curve": "The lead moves from exclusion to public proof.",
+                "key_results": [
+                    "Obtain archive access.",
+                    "Verify the altered index.",
+                    "Make the first record public.",
+                ],
+                "hook_plan": "The changed index points to the sponsor.",
+                "irreversible_change": "The investigation becomes an official dispute.",
                 "trope_id": trope_id,
                 "end_state": "The investigation is official.",
                 "stage_antagonist": "Rival",
@@ -918,7 +1117,6 @@ def test_generate_and_select_direction_only_updates_allowed_fields(creation_api,
     persisted_project = json.loads(project_path.read_text(encoding="utf-8"))
     assert persisted_project == {
         **original_project,
-        "title": "Second direction",
         "pipeline_stage": "outlining",
     }
     outline = json.loads(outline_path.read_text(encoding="utf-8"))
@@ -926,6 +1124,11 @@ def test_generate_and_select_direction_only_updates_allowed_fields(creation_api,
         "schema_version": "project-outline/v1",
         "overall": {
             "story": "Hook direction-2",
+            "theme_statement": "",
+            "foreground_story": "Hook direction-2",
+            "background_story": "",
+            "book_objective": "Promise direction-2",
+            "ending_image": "Promise direction-2",
             "protagonist_goal": "Goal direction-2",
             "main_conflict": "Conflict direction-2",
             "growth_path": "Growth direction-2",
@@ -935,6 +1138,12 @@ def test_generate_and_select_direction_only_updates_allowed_fields(creation_api,
             "extension_ceiling_chapter": 1,
             "current_strategy": "observe",
             "ending_contract": "Promise direction-2",
+            "core_selling_point": "",
+            "long_term_lines": [],
+            "planned_arc_count": 0,
+            "planned_length": 1,
+            "expansion_route": "",
+            "closing_route": "Promise direction-2",
         },
         "arcs": [],
         "chapters": [],
@@ -1043,6 +1252,38 @@ def test_generate_file_project_plan_passes_mode_and_trimmed_guidance(creation_ap
     assert response.status_code == 200
     assert response.json()["outline"]["chapters"][0]["chapter_number"] == 1
     assert calls[0][1:] == ("regenerate", "阶段对手要有现实利益")
+
+
+def test_outline_generation_checkpoint_api_and_restart_phase(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "断香炉", "novel_type_id": "xuanhuan"},
+    ).json()
+    calls = []
+
+    def fake_generate(store, generator, *, mode, guidance, restart_from=None):
+        calls.append((mode, guidance, restart_from))
+        return {"outline": {"chapters": []}, "characters": [], "source": "generated"}
+
+    monkeypatch.setattr(file_project_routes.FileProjectStore, "generate_outline_plan", fake_generate)
+
+    generated = client.post(
+        f"/file-projects/{project['project_id']}/outline/generate",
+        json={"mode": "initial", "guidance": "", "restart_from": "character_roster"},
+    )
+    checkpoints = client.get(
+        f"/file-projects/{project['project_id']}/outline/generation-checkpoints"
+    )
+
+    assert generated.status_code == 200
+    assert calls == [("initial", "", "character_roster")]
+    assert checkpoints.status_code == 200
+    assert [item["id"] for item in checkpoints.json()["phases"]] == [
+        "outline_foundation",
+        "character_roster",
+        "chapter_window",
+    ]
 
 
 def test_outline_api_round_trips_trope_lock_fields(creation_api, monkeypatch):

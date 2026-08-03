@@ -17,6 +17,7 @@ from packages.story_core.genre_plugins import select_genre_plugins
 from packages.story_core.genre_types import XUANHUAN
 from packages.story_core.models import NovelProject
 from packages.story_core.power_system_templates import copy_power_system_template
+from packages.story_core.outline_templates import copy_outline_template
 
 
 def test_builtin_types_are_marked_builtin():
@@ -97,6 +98,38 @@ def test_custom_type_inherits_isolated_generic_power_template():
     assert "custom_only" not in second.power_system_template["required_sections"]
     assert "global_mutation" not in library.get("sports").power_system_template["required_sections"]
     assert "global_mutation" not in copy_power_system_template("generic_webnovel")["required_sections"]
+
+
+def test_builtin_and_custom_types_preserve_isolated_outline_templates():
+    library = NovelTypeLibrary()
+    game = library.get("game_webnovel")
+    xuanhuan = library.get("xuanhuan")
+    custom = library.create({"id": "sports", "name": "竞技体育"})
+
+    assert game is not None
+    assert xuanhuan is not None
+    assert game.outline_template == copy_outline_template("game_webnovel")
+    assert xuanhuan.outline_template == copy_outline_template("xuanhuan")
+    assert custom.outline_template == copy_outline_template("generic_webnovel")
+
+    game.outline_template["overall"]["instructions"].append("副本修改")
+
+    assert "副本修改" not in library.get("game_webnovel").outline_template["overall"]["instructions"]
+
+
+def test_custom_outline_template_override_survives_reload():
+    library = NovelTypeLibrary()
+    template = copy_outline_template("generic_webnovel")
+    template["overall"]["instructions"] = ["围绕赛事冠军组织全书主线。"]
+
+    created = library.create(
+        {"id": "sports", "name": "竞技体育", "outline_template": template}
+    )
+    reloaded = NovelTypeLibrary().get("sports")
+
+    assert created.outline_template == template
+    assert reloaded is not None
+    assert reloaded.outline_template == template
 
 
 def test_custom_power_template_override_preserves_omitted_generic_sections_and_reloads():

@@ -2,7 +2,6 @@ from packages.story_core.writing_taskbook import (
     build_writing_taskbook,
     ensure_writing_taskbook,
     format_taskbook_prompt_section,
-    taskbook_segment_specs,
 )
 
 
@@ -19,6 +18,42 @@ def test_taskbook_uses_one_selected_style_prompt():
     assert taskbook["style_contract"] == [
         "幽默：让笑点来自人物反应、处境反差和顺口接话，不刻意抖包袱。"
     ]
+
+
+def test_xianxia_taskbook_does_not_receive_web_game_surfaces():
+    taskbook = build_writing_taskbook(
+        chapter_number=144,
+        genre="修仙",
+        plan={
+            "simulation_plan": {
+                "plot_simulation": {
+                    "obstacle_chain": ["寒毒沿经脉上行", "残镜牵引小乐的血脉"],
+                }
+            }
+        },
+    )
+
+    rendered = str(taskbook)
+    assert "人物反应、现场物件、身体状态、环境变化或关系后果" in rendered
+    for term in ("NPC", "面板", "背包", "血蓝", "耐久", "交易行", "铜币"):
+        assert term not in rendered
+
+
+def test_old_compiled_taskbook_is_rebuilt_when_genre_mode_is_missing():
+    taskbook = ensure_writing_taskbook(
+        144,
+        {
+            "writing_taskbook": {
+                "source": "compiled_from_0_scene_cards",
+                "scenes": [{"key": "pressure", "required_surface": "面板、背包、血蓝或耐久"}],
+            },
+            "simulation_plan": {"plot_simulation": {"obstacle_chain": ["寒毒继续上行"]}},
+        },
+        genre="修仙",
+    )
+
+    assert taskbook["genre_mode"] == "general"
+    assert "面板、背包、血蓝或耐久" not in str(taskbook)
 
 
 def test_trade_authorized_first_chapter_taskbook_does_not_invent_item_specific_exchange_steps():
@@ -70,7 +105,8 @@ def test_first_chapter_taskbook_builds_three_useful_scenes_from_one_seed():
     assert "同类普通怪" in templates
     assert "精英怪和首领" in templates
     assert "爽点场面" in templates
-    assert "不要用两三个字装冷静" in templates
+    assert "玩家和NPC先回应眼前发生的事" in templates
+    assert "不要用两三个字装冷静" not in templates
     assert "不要只写命中、倒地和掉落" in templates
 
 
@@ -219,7 +255,7 @@ def test_taskbook_compiles_scene_cards_for_later_chapters():
         ],
     }
 
-    specs = taskbook_segment_specs(2, plan)
+    specs = build_writing_taskbook(chapter_number=2, plan=plan)["scenes"]
 
     assert len(specs) == 3
     assert specs[0]["key"] == "npc-counter"
@@ -265,13 +301,14 @@ def test_taskbook_prompt_section_is_writer_facing_not_json_dump():
         style="白话爽文",
     )
 
-    section = format_taskbook_prompt_section(taskbook, segment_key="single_npc_service")
+    section = format_taskbook_prompt_section(taskbook)
 
     assert "## 本章写法材料" in section
     assert "下面是给作者的场面材料" in section
     assert "洛婶报价" in section
     assert "场面参考" in section
-    assert "别人询问、催促或提醒时" in section
+    assert "玩家和NPC先回应眼前发生的事" in section
+    assert "别人询问、催促或提醒时" not in section
     assert "不要只写命中、倒地和掉落" in section
     assert "写作任务书" not in section
     assert "必写：" not in section

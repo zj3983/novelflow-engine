@@ -813,7 +813,7 @@ def test_regular_project_updates_are_serialized_per_project(monkeypatch):
     }
 
 
-def test_project_delete_removes_owned_story_and_project():
+def test_project_lifecycle_archive_trash_restore_and_permanent_delete():
     project_id = "p-delete-project"
     story_id = "s-delete-project"
     story_response = client.post(
@@ -838,7 +838,29 @@ def test_project_delete_removes_owned_story_and_project():
     )
     assert project_response.status_code == 200
 
-    delete_response = client.delete(f"/projects/{project_id}")
+    archive_response = client.post(f"/projects/{project_id}/archive")
+    assert archive_response.status_code == 200
+    assert archive_response.json()["project_lifecycle"] == "archived"
+    assert client.get("/projects").json() == []
+    assert [item["project_id"] for item in client.get("/projects?lifecycle=archived").json()] == [project_id]
+
+    restore_response = client.post(f"/projects/{project_id}/restore")
+    assert restore_response.status_code == 200
+    assert restore_response.json()["project_lifecycle"] == "active"
+
+    trash_response = client.post(f"/projects/{project_id}/trash")
+    assert trash_response.status_code == 200
+    assert trash_response.json()["project_lifecycle"] == "trashed"
+    assert client.get(f"/projects/{project_id}").status_code == 404
+    assert [item["project_id"] for item in client.get("/projects?lifecycle=trashed").json()] == [project_id]
+
+    wrong_title = client.delete(f"/projects/{project_id}?confirm_title=wrong")
+    assert wrong_title.status_code == 422
+
+    delete_response = client.delete(
+        f"/projects/{project_id}",
+        params={"confirm_title": "待删除修仙项目"},
+    )
 
     assert delete_response.status_code == 200
     assert delete_response.json() == {
@@ -848,6 +870,24 @@ def test_project_delete_removes_owned_story_and_project():
     }
     assert client.get(f"/projects/{project_id}").status_code == 404
     assert client.get(f"/stories/{story_id}").status_code == 404
+
+
+def test_project_lifecycle_change_is_blocked_while_generation_is_active():
+    project_id = "p-busy-project"
+    story_id = "s-busy-project"
+    assert client.post(
+        "/stories",
+        json={"story_id": story_id, "outline": "主角处理一桩现实麻烦。", "genre": "urban", "style": "现代中文"},
+    ).status_code == 200
+    assert client.post("/projects", json={"project_id": project_id, "title": "生成中的项目", "active_story_id": story_id}).status_code == 200
+    with story_routes._generation_jobs_lock:
+        story_routes._generation_jobs["job-busy"] = {"job_id": "job-busy", "story_id": story_id, "status": "running"}
+        story_routes._active_generation_jobs[story_id] = "job-busy"
+
+    response = client.post(f"/projects/{project_id}/archive")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "project_generation_in_progress"
 
 
 def test_database_project_prompt_preview_exposes_modular_prompts():
@@ -971,6 +1011,66 @@ def test_file_project_generate_next_accepts_chapter_direction_id(tmp_path, monke
     assert response.status_code == 200
     assert captured["chapter_direction_id"] == "chaos-seed-trace"
     assert response.json()["generated"]["chapter_title"] == "Direction"
+
+
+def test_file_project_candidate_routes_list_and_discard_pending_draft(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "candidate-file-project"
+    _make_file_project(
+        project_root,
+        project_id="p-candidate-file",
+        state={"story_id": "s-file-api", "outline": "A story.", "current_chapter": 0, "world_facts": []},
+    )
+    from packages.story_core.candidate_draft import CandidateDraft
+    from packages.story_core.file_project_store import FileProjectStore
+
+    draft = CandidateDraft.create(project_id="p-candidate-file", chapter_number=1, body="候选正文")
+    FileProjectStore(project_root).candidate_store.save(draft)
+
+    listed = client.get("/file-projects/p-candidate-file/candidates")
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["candidate_id"] == draft.candidate_id
+
+    discarded = client.post(f"/file-projects/p-candidate-file/candidates/{draft.candidate_id}/discard")
+    assert discarded.status_code == 200
+    assert discarded.json()["candidate"]["status"] == "discarded"
+
+
+def test_file_project_candidate_routes_accept_file_prefixed_candidate_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "prefixed-candidate-project"
+    _make_file_project(
+        project_root,
+        project_id="",
+        state={
+            "story_id": "file:prefixed-candidate-project",
+            "outline": "A story.",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    from packages.story_core.candidate_draft import CandidateDraft
+    from packages.story_core.file_project_store import FileProjectStore
+
+    draft = CandidateDraft.create(
+        project_id="file:prefixed-candidate-project",
+        chapter_number=1,
+        body="带前缀的候选正文",
+    )
+    FileProjectStore(project_root).candidate_store.save(draft)
+
+    base = "/file-projects/file%3Aprefixed-candidate-project/candidates"
+    listed = client.get(f"{base}?chapter_number=1")
+    assert listed.status_code == 200
+    assert [item["candidate_id"] for item in listed.json()["items"]] == [draft.candidate_id]
+
+    loaded = client.get(f"{base}/{draft.candidate_id}")
+    assert loaded.status_code == 200
+    assert loaded.json()["candidate"]["body"] == "带前缀的候选正文"
+
+    discarded = client.post(f"{base}/{draft.candidate_id}/discard")
+    assert discarded.status_code == 200
+    assert discarded.json()["candidate"]["status"] == "discarded"
 
 
 def test_file_project_generation_job_accepts_temporary_guidance(tmp_path, monkeypatch):

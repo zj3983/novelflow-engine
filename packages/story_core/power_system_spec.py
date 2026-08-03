@@ -28,6 +28,7 @@ CANONICAL_FIELDS = (
     "visibility",
     "continuity_ledger",
     "attribute_allocation",
+    "class_advancement_tiers",
 )
 PATH_FIELDS = (
     "name",
@@ -43,9 +44,29 @@ PATH_FIELDS = (
     "branches",
     "transfer_task",
     "advancement",
+    "advancement_tree",
 )
 STAGE_FIELDS = ("name", "level", "entry", "change", "failure")
 ATTRIBUTE_FIELDS = ("name", "effect")
+CLASS_ADVANCEMENT_TIER_FIELDS = (
+    "level",
+    "name",
+    "purpose",
+    "common_requirements",
+    "failure_rule",
+)
+CLASS_ADVANCEMENT_NODE_FIELDS = ("level", "tier_name", "options")
+CLASS_ADVANCEMENT_OPTION_FIELDS = (
+    "name",
+    "role",
+    "requirements",
+    "transfer_task",
+    "ability_changes",
+    "new_resources",
+    "equipment_permissions",
+    "failure_consequence",
+    "next_options",
+)
 TEXT_LIST_FIELDS = (
     "origin",
     "skills",
@@ -69,6 +90,14 @@ PATH_TEXT_LIST_FIELDS = (
     "branches",
     "advancement",
 )
+CLASS_ADVANCEMENT_TIER_LIST_FIELDS = ("common_requirements",)
+CLASS_ADVANCEMENT_OPTION_LIST_FIELDS = (
+    "requirements",
+    "ability_changes",
+    "new_resources",
+    "equipment_permissions",
+    "next_options",
+)
 
 _MAX_STRING = 240
 _MAX_RAW_TEXT_SCAN = 4_096
@@ -77,6 +106,7 @@ _MAX_NUMBER = 1_000_000
 _MAPPING_SCAN_CAP = 64
 _GAME_MILESTONES = frozenset((1, 10, 20, 30, 60))
 _GAME_CLASS_COUNT = 6
+GAME_CLASS_ADVANCEMENT_LEVELS = (10, 30, 60)
 _PLACEHOLDER_CONTENT = frozenset(
     (
         "\u5f85\u5b9a",
@@ -238,6 +268,56 @@ def _normalize_record(value: Any, fields: Sequence[str]) -> dict[str, Any]:
     return result
 
 
+def _normalize_class_advancement_option(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    for field in CLASS_ADVANCEMENT_OPTION_FIELDS:
+        raw = _mapping_get(value, field)
+        if field in CLASS_ADVANCEMENT_OPTION_LIST_FIELDS:
+            items = _text_list(raw)
+            if items or _has_key(value, field):
+                result[field] = items
+        else:
+            compact = _text(raw)
+            if compact:
+                result[field] = compact
+    return result
+
+
+def _normalize_class_advancement_node(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result = _normalize_record(value, CLASS_ADVANCEMENT_NODE_FIELDS)
+    result["options"] = [
+        option
+        for item in _items(_mapping_get(value, "options"))
+        if (option := _normalize_class_advancement_option(item))
+    ][:_MAX_LIST]
+    return result
+
+
+def _normalize_class_advancement_tier(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    for field in CLASS_ADVANCEMENT_TIER_FIELDS:
+        raw = _mapping_get(value, field)
+        if field == "level":
+            number = _number(raw)
+            if number is not None:
+                result[field] = number
+        elif field in CLASS_ADVANCEMENT_TIER_LIST_FIELDS:
+            items = _text_list(raw)
+            if items or _has_key(value, field):
+                result[field] = items
+        else:
+            compact = _text(raw)
+            if compact:
+                result[field] = compact
+    return result
+
+
 def normalize_power_system_spec(value: Any) -> dict[str, Any]:
     """Return a bounded, canonical, JSON-safe copy of an untrusted specification."""
 
@@ -264,11 +344,18 @@ def normalize_power_system_spec(value: Any) -> dict[str, Any]:
                     if (record := _normalize_record(item, ATTRIBUTE_FIELDS))
                 ][:_MAX_LIST]
             elif field == "paths":
-                result[field] = [
-                    _normalize_record(item, PATH_FIELDS)
-                    for item in _items(raw)
-                    if isinstance(item, Mapping)
-                ][:_MAX_LIST]
+                paths: list[dict[str, Any]] = []
+                for item in _items(raw):
+                    if not isinstance(item, Mapping):
+                        continue
+                    path = _normalize_record(item, PATH_FIELDS)
+                    path["advancement_tree"] = [
+                        node
+                        for raw_node in _items(_mapping_get(item, "advancement_tree"))
+                        if (node := _normalize_class_advancement_node(raw_node))
+                    ][:_MAX_LIST]
+                    paths.append(path)
+                result[field] = paths[:_MAX_LIST]
             elif field == "stages":
                 result[field] = [
                     _normalize_record(item, STAGE_FIELDS)
@@ -279,6 +366,12 @@ def normalize_power_system_spec(value: Any) -> dict[str, Any]:
                 rule = normalize_attribute_allocation_rule(raw)
                 if rule:
                     result[field] = rule
+            elif field == "class_advancement_tiers":
+                result[field] = [
+                    tier
+                    for item in _items(raw)
+                    if (tier := _normalize_class_advancement_tier(item))
+                ][:_MAX_LIST]
         return deepcopy(result)
     except Exception:
         return {}
@@ -522,6 +615,37 @@ def validate_power_system_spec(
             violations.add("game.path_missing_weapon_affinity")
         if any(not path.get("armor") for path in paths):
             violations.add("game.path_missing_armor_affinity")
+        class_tiers = normalized.get("class_advancement_tiers", [])
+        class_tier_levels = tuple(
+            tier.get("level") for tier in class_tiers if isinstance(tier, Mapping)
+        )
+        if class_tier_levels != GAME_CLASS_ADVANCEMENT_LEVELS:
+            violations.add("game.invalid_class_advancement_tiers")
+        for tier in class_tiers:
+            if any(
+                _is_empty(tier.get(field))
+                for field in ("name", "purpose", "common_requirements", "failure_rule")
+            ):
+                violations.add("game.incomplete_class_advancement_tier")
+        for path in paths:
+            tree = path.get("advancement_tree", [])
+            tree_levels = tuple(
+                node.get("level") for node in tree if isinstance(node, Mapping)
+            )
+            if tree_levels != GAME_CLASS_ADVANCEMENT_LEVELS:
+                violations.add("game.path_invalid_advancement_tree")
+                continue
+            for node in tree:
+                options = node.get("options", [])
+                if not node.get("tier_name") or not options:
+                    violations.add("game.path_incomplete_advancement_node")
+                    continue
+                for option in options:
+                    if any(
+                        _is_empty(option.get(field))
+                        for field in ("name", "transfer_task", "ability_changes")
+                    ):
+                        violations.add("game.path_incomplete_advancement_option")
         has_inferred_level = bool(levels)
         if any(
             _is_level_twenty_second_transfer(

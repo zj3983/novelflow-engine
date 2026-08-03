@@ -7,6 +7,7 @@ import {
   deleteNovelType,
   fetchNovelTypes,
   updateNovelType,
+  type NovelOutlineTemplate,
   type NovelType,
   type NovelTypeRulebook,
   type NovelTypeWriteRequest,
@@ -34,8 +35,33 @@ type Draft = {
   quality_checks: string;
   trope_templates: string;
   power_system_template: string;
+  outline_template: NovelOutlineTemplate;
   builtin: boolean;
 };
+
+const DEFAULT_OUTLINE_TEMPLATE: NovelOutlineTemplate = {
+  schema_version: "novel-outline-template/v1",
+  overall: {
+    required_fields: ["core_selling_point", "protagonist_final_goal", "ending_state", "theme_statement", "main_conflict", "long_term_lines", "planned_arc_count", "planned_length", "expansion_route", "closing_route"],
+    long_term_lines: ["主角成长线", "核心冲突线", "关系变化线", "世界秘密线"],
+    instructions: ["先确定全书终点，再安排能够持续升级的阶段目标。"],
+  },
+  arc: {
+    required_fields: ["arc_goal", "active_long_term_lines", "stage_antagonist", "core_loop", "escalations", "midpoint_turn", "climax", "payoff", "relationship_changes", "foreshadowing_in", "foreshadowing_out", "irreversible_change", "next_arc_entry"],
+    minimum_arc_count: 3,
+    maximum_chapter_span: 60,
+    instructions: ["每卷解决一个阶段问题，同时改变至少一条长期主线。"],
+  },
+  chapter: {
+    required_fields: ["goal", "obstacle", "protagonist_action", "opponent_response", "emotional_change", "gain_or_loss", "turn", "ending_hook"],
+    opening_window_size: 10,
+    instructions: ["章节必须发生可见变化，不能只说明设定或重复上一章结论。"],
+  },
+};
+
+function copyDefaultOutlineTemplate(): NovelOutlineTemplate {
+  return JSON.parse(JSON.stringify(DEFAULT_OUTLINE_TEMPLATE)) as NovelOutlineTemplate;
+}
 
 function emptyRulebook(): NovelTypeRulebook {
   return {
@@ -72,6 +98,7 @@ function draftFromType(record: NovelType): Draft {
     quality_checks: toLines(record.quality_checks),
     trope_templates: JSON.stringify(record.trope_templates, null, 2),
     power_system_template: JSON.stringify(canonicalJson(record.power_system_template ?? {}), null, 2),
+    outline_template: canonicalJson(record.outline_template ?? copyDefaultOutlineTemplate()) as NovelOutlineTemplate,
     builtin: record.builtin,
   };
 }
@@ -115,6 +142,15 @@ function parseDraft(draft: Draft): NovelTypeWriteRequest {
     throw new Error("类型 ID 需以小写字母开头，只能包含小写字母、数字、下划线或连字符。");
   }
   if (!draft.name.trim()) throw new Error("请填写类型名称。");
+  if (draft.outline_template.overall.long_term_lines.length < 2) {
+    throw new Error("总纲模板至少需要两条长期主线。");
+  }
+  if (draft.outline_template.arc.minimum_arc_count < 3) {
+    throw new Error("核心分卷数不能少于三卷。");
+  }
+  if (draft.outline_template.arc.maximum_chapter_span < 10) {
+    throw new Error("单卷最大章数不能少于十章。");
+  }
 
   return {
     id: draft.id.trim(),
@@ -129,6 +165,7 @@ function parseDraft(draft: Draft): NovelTypeWriteRequest {
     quality_checks: fromLines(draft.quality_checks),
     trope_templates: templates as Array<Record<string, unknown>>,
     power_system_template: powerSystemTemplate as Record<string, unknown>,
+    outline_template: draft.outline_template,
   };
 }
 
@@ -168,6 +205,7 @@ function normalizedDraft(draft: Draft): string {
     quality_checks: fromLines(draft.quality_checks),
     trope_templates: templates,
     power_system_template: powerSystemTemplate,
+    outline_template: canonicalJson(draft.outline_template),
     builtin: draft.builtin,
   });
 }
@@ -199,6 +237,7 @@ export function NovelTypeLibraryClient() {
   const [mode, setMode] = useState<"loading" | "idle" | "saving" | "deleting" | "error">("loading");
   const [message, setMessage] = useState("正在载入全局小说类型库...");
   const [isCreating, setIsCreating] = useState(false);
+  const [outlineTab, setOutlineTab] = useState<"overall" | "arc" | "chapter">("overall");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const editVersionRef = useRef(0);
   const draftRef = useRef(draft);
@@ -499,6 +538,61 @@ export function NovelTypeLibraryClient() {
           </section>
 
           <section className={styles.section}>
+            <div className={styles.sectionHeading}>
+              <h3>开书大纲模板</h3>
+              <p>AI 开书时只读取当前类型的这份模板。</p>
+            </div>
+            <div className={styles.templateTabs} role="tablist" aria-label="大纲模板层级">
+              {(["overall", "arc", "chapter"] as const).map((tab) => (
+                <button key={tab} type="button" role="tab" aria-selected={outlineTab === tab} className={outlineTab === tab ? styles.templateTabActive : styles.templateTab} onClick={() => setOutlineTab(tab)}>
+                  {tab === "overall" ? "总纲" : tab === "arc" ? "分卷" : "章节"}
+                </button>
+              ))}
+            </div>
+
+            {outlineTab === "overall" ? (
+              <div className={styles.templatePanel} role="tabpanel">
+                <Field label="长期主线（每行一项）" hint="AI 会为每条线填写起点、推进步骤和最终兑现。">
+                  <textarea rows={6} value={toLines(draft.outline_template.overall.long_term_lines)} disabled={busy} onChange={(event) => setDraft({ ...draft, outline_template: { ...draft.outline_template, overall: { ...draft.outline_template.overall, long_term_lines: fromLines(event.target.value) } } })} />
+                </Field>
+                <Field label="总纲生成要求（每行一项）">
+                  <textarea rows={5} value={toLines(draft.outline_template.overall.instructions)} disabled={busy} onChange={(event) => setDraft({ ...draft, outline_template: { ...draft.outline_template, overall: { ...draft.outline_template.overall, instructions: fromLines(event.target.value) } } })} />
+                </Field>
+                <TemplateFields fields={draft.outline_template.overall.required_fields} />
+              </div>
+            ) : null}
+
+            {outlineTab === "arc" ? (
+              <div className={styles.templatePanel} role="tabpanel">
+                <div className={styles.twoColumns}>
+                  <Field label="核心分卷数">
+                    <input type="number" min={3} value={draft.outline_template.arc.minimum_arc_count} disabled={busy} onChange={(event) => setDraft({ ...draft, outline_template: { ...draft.outline_template, arc: { ...draft.outline_template.arc, minimum_arc_count: Number(event.target.value) } } })} />
+                  </Field>
+                  <Field label="单卷最大章数">
+                    <input type="number" min={10} value={draft.outline_template.arc.maximum_chapter_span} disabled={busy} onChange={(event) => setDraft({ ...draft, outline_template: { ...draft.outline_template, arc: { ...draft.outline_template.arc, maximum_chapter_span: Number(event.target.value) } } })} />
+                  </Field>
+                </div>
+                <Field label="分卷生成要求（每行一项）">
+                  <textarea rows={6} value={toLines(draft.outline_template.arc.instructions)} disabled={busy} onChange={(event) => setDraft({ ...draft, outline_template: { ...draft.outline_template, arc: { ...draft.outline_template.arc, instructions: fromLines(event.target.value) } } })} />
+                </Field>
+                <TemplateFields fields={draft.outline_template.arc.required_fields} />
+              </div>
+            ) : null}
+
+            {outlineTab === "chapter" ? (
+              <div className={styles.templatePanel} role="tabpanel">
+                <Field label="开书细纲章数" hint="固定生成前十章，后续按窗口滚动补充。">
+                  <input type="number" value={draft.outline_template.chapter.opening_window_size} disabled />
+                </Field>
+                <Field label="章节生成要求（每行一项）">
+                  <textarea rows={6} value={toLines(draft.outline_template.chapter.instructions)} disabled={busy} onChange={(event) => setDraft({ ...draft, outline_template: { ...draft.outline_template, chapter: { ...draft.outline_template.chapter, instructions: fromLines(event.target.value) } } })} />
+                </Field>
+                <TemplateFields fields={draft.outline_template.chapter.required_fields} />
+              </div>
+            ) : null}
+          </section>
+
+          <section className={styles.section}>
             <h3>检查与模板</h3>
             <Field label="质量检查（每行一项）">
               <textarea rows={6} value={draft.quality_checks} disabled={busy} onChange={(event) => setDraft({ ...draft, quality_checks: event.target.value })} />
@@ -538,5 +632,14 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {hint ? <small>{hint}</small> : null}
       {children}
     </label>
+  );
+}
+
+function TemplateFields({ fields }: { fields: string[] }) {
+  return (
+    <div className={styles.templateFields}>
+      <span>AI 必填内容</span>
+      <div>{fields.map((field) => <code key={field}>{field}</code>)}</div>
+    </div>
   );
 }

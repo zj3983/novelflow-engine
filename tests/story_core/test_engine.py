@@ -228,6 +228,8 @@ def test_successful_generation_records_only_actual_writing_stages(monkeypatch):
 
     bundle = StoryOrchestrator().generate_next_chapter(_runtime_story("stage-success"))
 
+    assert bundle.context_snapshot_id
+
     runtime = bundle.updated_story.agent_runtime.model_dump()
     assert set(runtime) == {"planner", "writer", "memory", "recent_events"}
     assert runtime["planner"] == {
@@ -468,6 +470,47 @@ def test_game_opening_arc_chapter_two_avoids_direct_resource_collision():
     assert "价格曲线" in collision
     assert "补给流水" in collision
     assert conflict["secondary_conflict"]["pressure"] == "market-signal"
+
+
+def test_non_game_outline_negative_constraint_does_not_enable_game_conflict():
+    story = StoryState(
+        story_id="s-xuanhuan-conflict",
+        outline="守住断香炉，不写游戏登录、面板、背包或玩家生态。",
+        genre="xuanhuan",
+        style="现代中文",
+        current_chapter=3,
+    )
+    action_briefs = [
+        {"name": "Lin Zhao", "goal": "find the hidden inscription", "emotion": "careful", "priority": 9},
+        {"name": "Manager Zhao", "goal": "hide the old record", "emotion": "guarded", "priority": 8},
+    ]
+
+    conflict = build_conflict_summary(story, action_briefs)
+
+    serialized = str(conflict)
+    assert "market-signal" not in serialized
+    assert "NPC" not in serialized
+    assert "交易行" not in serialized
+
+
+def test_conflict_summary_does_not_select_same_character_as_both_sides():
+    story = StoryState(
+        story_id="s-duplicate-actions",
+        outline="林照追查祖祠旧案。",
+        genre="xuanhuan",
+        style="现代中文",
+        current_chapter=3,
+    )
+    action_briefs = [
+        {"name": "林照", "goal": "check the brick", "emotion": "careful", "priority": 9},
+        {"name": "林照", "goal": "hide the ash", "emotion": "alert", "priority": 8},
+        {"name": "赵管事", "goal": "stop the search", "emotion": "guarded", "priority": 7},
+    ]
+
+    conflict = build_conflict_summary(story, action_briefs)
+
+    assert conflict["primary_conflict"]["lead"] == "林照"
+    assert conflict["primary_conflict"]["opposition"] == "赵管事"
 
 
 def test_generate_chapter_does_not_mutate_frozen_character_state():

@@ -275,3 +275,25 @@ def test_game_simulation_plan_carries_author_craft_and_director_card():
     assert director["boundary_focus"] is True
     assert "寄售" in director["boundary_chapter_bans"]
     assert any("NPC" in item for item in director["reaction_ladder"])
+
+
+def test_non_game_simulation_does_not_expose_stale_game_world_pulse():
+    story = StoryState(
+        story_id="s-stale-game-pulse",
+        outline="林照守住祖祠。",
+        genre="xuanhuan",
+        style="现代中文",
+        current_chapter=2,
+        world_facts=["祖祠的第三块青砖下有异响。"],
+        progression_ledger={
+            "world_pulse": {"latest": {"market_order_book": {"price_copper": 2}}},
+            "persistent_world": {"guild_intel": {"white_robe_guild": {}}},
+        },
+    )
+
+    plan = build_chapter_simulation_plan(story, 3)
+
+    serialized = str(plan.world_context)
+    assert "market_order_book" not in serialized
+    assert "white_robe_guild" not in serialized
+    assert "第三块青砖" in serialized

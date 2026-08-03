@@ -37,6 +37,9 @@ CHAPTER_FIELD_ORDER = [
     "等级目标",
     "属性点安排",
     "阻力",
+    "对手反应",
+    "情绪变化",
+    "得失",
     "代价",
     "时间锚点",
     "章内时间跨度",
@@ -63,6 +66,9 @@ CHAPTER_JSON_TO_MD = {
     "ending_hook": "章末未闭合问题",
     "level_target": "等级目标",
     "attribute_allocation_decision": "属性点安排",
+    "opponent_response": "对手反应",
+    "emotional_change": "情绪变化",
+    "gain_or_loss": "得失",
 }
 CHAPTER_MD_TO_JSON = {value: key for key, value in CHAPTER_JSON_TO_MD.items()}
 
@@ -71,6 +77,10 @@ ARC_MD_TO_JSON = {
     "阶段目标": "goal",
     "核心冲突": "obstacle",
     "卷末高潮": "payoff",
+    "情绪曲线": "emotional_curve",
+    "三个阶段结果": "key_results",
+    "伏笔安排": "hook_plan",
+    "卷尾不可逆变化": "irreversible_change",
     "现实线": "reality_line_payoff",
     "阶段反派": "stage_antagonist",
     "终态": "end_state",
@@ -78,6 +88,15 @@ ARC_MD_TO_JSON = {
     "长期反派痕迹": "long_term_antagonist_traces",
     "延续路线": "extension_gate.continue_route",
     "收束路线": "extension_gate.close_route",
+    "推进中的长期线": "active_long_term_lines",
+    "核心循环": "core_loop",
+    "三次升级": "escalations",
+    "中段转折": "midpoint_turn",
+    "卷末高潮事件": "climax",
+    "关系变化": "relationship_changes",
+    "承接伏笔": "foreshadowing_in",
+    "新埋伏笔": "foreshadowing_out",
+    "下卷入口": "next_arc_entry",
 }
 # 导出时分卷纲要 bullet 的补充顺序（已存在的 bullet 保持原位置）。
 ARC_BULLET_ORDER = [
@@ -86,11 +105,24 @@ ARC_BULLET_ORDER = [
     "阶段反派",
     "长期反派痕迹",
     "卷末高潮",
+    "情绪曲线",
+    "三个阶段结果",
+    "伏笔安排",
+    "卷尾不可逆变化",
     "游戏线兑现",
     "现实线",
     "终态",
     "延续路线",
     "收束路线",
+    "推进中的长期线",
+    "核心循环",
+    "三次升级",
+    "中段转折",
+    "卷末高潮事件",
+    "关系变化",
+    "承接伏笔",
+    "新埋伏笔",
+    "下卷入口",
 ]
 
 # 总纲中由同步模块自动维护的小节，存放 md 里没有自然归属的 overall 字段。
@@ -362,12 +394,35 @@ def _parse_overview(path: Path) -> dict[str, Any]:
                 overall["core_ending_chapter"] = int(bullets["核心终局章"][2])
             if "扩展上限章" in bullets:
                 overall["extension_ceiling_chapter"] = int(bullets["扩展上限章"][2])
+            if "规划卷数" in bullets:
+                overall["planned_arc_count"] = int(bullets["规划卷数"][2])
+            if "规划章数" in bullets:
+                overall["planned_length"] = int(bullets["规划章数"][2])
         except ValueError:
             pass
         if "当前策略" in bullets and bullets["当前策略"][2] in ("observe", "expand", "close"):
             overall["current_strategy"] = bullets["当前策略"][2]
         if "终局契约" in bullets:
             overall["ending_contract"] = bullets["终局契约"][2]
+        for md_key, json_key in (
+            ("主题命题", "theme_statement"),
+            ("前台故事", "foreground_story"),
+            ("后台故事", "background_story"),
+            ("全书可验证目标", "book_objective"),
+            ("终局画面", "ending_image"),
+            ("核心卖点", "core_selling_point"),
+            ("扩展路线", "expansion_route"),
+            ("收束路线", "closing_route"),
+        ):
+            if md_key in bullets:
+                overall[json_key] = bullets[md_key][2]
+        if "长期主线" in bullets:
+            try:
+                long_term_lines = json.loads(bullets["长期主线"][2])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                long_term_lines = None
+            if isinstance(long_term_lines, list):
+                overall["long_term_lines"] = long_term_lines
 
     arcs: list[dict[str, Any]] = []
     arcs_span = by_title.get("分卷纲要")
@@ -396,8 +451,16 @@ def _parse_overview(path: Path) -> dict[str, Any]:
                     continue
                 value = entry[2]
                 provided.add(json_key)
-                if json_key == "long_term_antagonist_traces":
-                    arc["long_term_antagonist_traces"] = _split_traces(value)
+                if json_key in {"long_term_antagonist_traces", "key_results"}:
+                    arc[json_key] = _split_traces(value)
+                elif json_key in {
+                    "active_long_term_lines",
+                    "escalations",
+                    "relationship_changes",
+                    "foreshadowing_in",
+                    "foreshadowing_out",
+                }:
+                    arc[json_key] = _split_traces(value)
                 elif json_key.startswith("extension_gate."):
                     arc["extension_gate"][json_key.split(".", 1)[1]] = value
                 else:
@@ -435,6 +498,12 @@ def _merge_with_existing_json(
             "extension_ceiling_chapter",
             "current_strategy",
             "ending_contract",
+            "core_selling_point",
+            "long_term_lines",
+            "planned_arc_count",
+            "planned_length",
+            "expansion_route",
+            "closing_route",
         ):
             if key not in overall and existing_overall.get(key) not in (None, ""):
                 overall[key] = existing_overall[key]
@@ -459,6 +528,15 @@ def _merge_with_existing_json(
             "stage_antagonist",
             "game_line_payoff",
             "reality_line_payoff",
+            "active_long_term_lines",
+            "core_loop",
+            "escalations",
+            "midpoint_turn",
+            "climax",
+            "relationship_changes",
+            "foreshadowing_in",
+            "foreshadowing_out",
+            "next_arc_entry",
         ):
             if key not in provided and old.get(key):
                 arc[key] = old[key]
@@ -787,8 +865,16 @@ def _export_overview(path: Path, outline: dict[str, Any]) -> bool:
     def _arc_bullet_values(arc: dict[str, Any]) -> dict[str, str]:
         values: dict[str, str] = {}
         for md_key, json_key in ARC_MD_TO_JSON.items():
-            if json_key == "long_term_antagonist_traces":
-                values[md_key] = "、".join(arc.get("long_term_antagonist_traces") or [])
+            if json_key in {
+                "long_term_antagonist_traces",
+                "key_results",
+                "active_long_term_lines",
+                "escalations",
+                "relationship_changes",
+                "foreshadowing_in",
+                "foreshadowing_out",
+            }:
+                values[md_key] = "、".join(arc.get(json_key) or [])
             elif json_key.startswith("extension_gate."):
                 values[md_key] = str(
                     (arc.get("extension_gate") or {}).get(json_key.split(".", 1)[1], "")
@@ -861,6 +947,17 @@ def _export_overview(path: Path, outline: dict[str, Any]) -> bool:
         "扩展上限章": str(overall.get("extension_ceiling_chapter") or ""),
         "当前策略": str(overall.get("current_strategy") or "observe"),
         "终局契约": str(overall.get("ending_contract") or ""),
+        "主题命题": str(overall.get("theme_statement") or ""),
+        "前台故事": str(overall.get("foreground_story") or ""),
+        "后台故事": str(overall.get("background_story") or ""),
+        "全书可验证目标": str(overall.get("book_objective") or ""),
+        "终局画面": str(overall.get("ending_image") or ""),
+        "核心卖点": str(overall.get("core_selling_point") or ""),
+        "长期主线": json.dumps(overall.get("long_term_lines") or [], ensure_ascii=False),
+        "规划卷数": str(overall.get("planned_arc_count") or ""),
+        "规划章数": str(overall.get("planned_length") or ""),
+        "扩展路线": str(overall.get("expansion_route") or ""),
+        "收束路线": str(overall.get("closing_route") or ""),
     }
     meta_span = _find_section(lines, "同步元数据")
     if meta_span:

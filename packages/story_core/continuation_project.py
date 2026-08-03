@@ -750,6 +750,33 @@ def _continuation_outline(
         growth_chars += separator_chars + len(claim)
     growth = "；".join(growth_items)
     focuses = hooks or [direction]
+    arcs: list[dict[str, Any]] = []
+    if settings.start_after_chapter > 0:
+        arcs.append(
+            {
+                "id": f"imported-history-1-{settings.start_after_chapter}",
+                "title": "原著已发生",
+                "start_chapter": 1,
+                "end_chapter": settings.start_after_chapter,
+                "goal": analysis.story_overview.strip() or "承接原著既有主线",
+                "obstacle": situation,
+                "payoff": f"原著推进至第{settings.start_after_chapter}章的既定状态。",
+                "end_state": situation,
+            }
+        )
+    arcs.append(
+        {
+            "id": f"continuation-{start}-{end}",
+            "title": f"续写阶段：{direction[:18]}",
+            "start_chapter": start,
+            "end_chapter": end,
+            "goal": direction,
+            "obstacle": situation,
+            "payoff": f"完成从第{settings.start_after_chapter}章遗留局势到下一阶段的推进。",
+            "trope_id": primary_trope_id,
+            "end_state": "当前冲突获得阶段性结果，并建立新的明确目标。",
+        }
+    )
     chapters: list[dict[str, Any]] = []
     for offset in range(settings.outline_chapters):
         number = start + offset
@@ -792,19 +819,7 @@ def _continuation_outline(
                 "current_strategy": "observe",
                 "ending_contract": direction,
             },
-            "arcs": [
-                {
-                    "id": f"continuation-{start}-{end}",
-                    "title": f"续写阶段：{direction[:18]}",
-                    "start_chapter": start,
-                    "end_chapter": end,
-                    "goal": direction,
-                    "obstacle": situation,
-                    "payoff": f"完成从第{settings.start_after_chapter}章遗留局势到下一阶段的推进。",
-                    "trope_id": primary_trope_id,
-                    "end_state": "当前冲突获得阶段性结果，并建立新的明确目标。",
-                }
-            ],
+            "arcs": arcs,
             "chapters": chapters,
         }
     )
@@ -1156,6 +1171,23 @@ def create_continuation_project(
     ]
     if not accepted or accepted[-1].number != settings.start_after_chapter:
         raise ValueError("invalid_continuation_point")
+    accepted_source_text = "\n".join(
+        f"{chapter.title}\n{chapter.body}" for chapter in accepted
+    )
+    accepted_ids = {chapter.chapter_id for chapter in accepted}
+    branch_excludes_source = bool(excluded)
+    for character in analysis.characters:
+        if character.confidence != "confirmed" or not _included_at_branch(
+            character,
+            accepted_ids,
+            branch_excludes_source=branch_excludes_source,
+        ):
+            continue
+        character_name = character.name.strip()
+        if character_name and character_name not in accepted_source_text:
+            raise ValueError(
+                f"continuation_character_missing_from_source:{character_name}"
+            )
 
     export_path = Path(export_root)
     export_path.mkdir(parents=True, exist_ok=True)

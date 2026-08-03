@@ -2,6 +2,7 @@ from packages.story_core import chapter_seed as chapter_seed_module
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.genre_types.base import GenrePlugin
 from packages.story_core.models import ChapterSummary, StoryState
+from packages.story_core.genre_stages.postprocess import PostprocessContext, normalize_generated_body
 from packages.story_core.orchestrator import (
     StoryOrchestrator,
     _compact_chapter_seed_for_prompt,
@@ -9,8 +10,6 @@ from packages.story_core.orchestrator import (
     _writer_seed_summary,
     _merge_writing_review_quality,
     _review_chapter_body,
-    _scene_card_writing_protocol,
-    _sanitize_generated_body,
 )
 
 
@@ -572,50 +571,17 @@ def test_orchestrator_prompts_use_chapter_seed_contract():
     assert "生成前世界推演契约" not in plan_prompt
     assert "writing_contract" not in plan_prompt
     assert "章节：1" not in body_prompt
-    assert "人物情绪" in body_prompt
+    assert "情绪放进动作、停顿、语气、回避和选择" in body_prompt
     assert "整章顺序" in body_prompt
     assert "chapter-seed/v1" not in body_prompt
     assert "生成前世界推演契约" not in body_prompt
     assert "emotional_arc" not in body_prompt
     assert "genre_craft" not in body_prompt
-    assert "网游写法方法卡" in body_prompt
+    assert "## 网游写法" in body_prompt
     assert "眼前目标" in body_prompt
     assert "遇到阻力后付出代价" in body_prompt
-    assert "情绪放在动作、停顿和回答里" in body_prompt
+    assert "对话先回应对方刚说的内容" in body_prompt
     assert "隐藏优势只在幕后起作用" in body_prompt
-
-
-def test_scene_card_writing_protocol_compiles_ordered_prose_contract():
-    scene_cards = [
-        {
-            "scene_id": "s1-character-create",
-            "template_id": "character_creation",
-            "location": "角色创建界面",
-            "purpose": "建立游戏ID、职业选择和第一版角色面板。",
-            "conflict": "职业选择必须解释后续路线。",
-            "must_show": ["游戏ID", "职业选择", "角色面板", "生命/法力"],
-            "must_not_explain": ["world_events", "state_delta", "爽点"],
-        },
-        {
-            "scene_id": "s2-market",
-            "template_id": "market_weak_trace",
-            "location": "交易行",
-            "purpose": "小额匿名寄售。",
-            "conflict": "交易只留下弱线索。",
-            "must_show": ["价格", "数量", "批次", "手续费", "到账"],
-            "must_not_explain": ["coordinate_lock", "real_identity_exposure"],
-        },
-    ]
-
-    protocol = _scene_card_writing_protocol(scene_cards)
-
-    assert "场景1" in protocol
-    assert "character_creation" in protocol
-    assert "角色创建界面" in protocol
-    assert "必须表面化：游戏ID、职业选择、角色面板、生命/法力" in protocol
-    assert "场景2" in protocol
-    assert "交易行" in protocol
-    assert "禁止写成后台解释：coordinate_lock、real_identity_exposure" in protocol
 
 
 def test_chapter_body_review_merges_anti_ai_style_review():
@@ -759,6 +725,7 @@ def test_review_splits_world_state_patch_plan_from_prose_issues():
         body,
         {"world_reactions": ["公会外围开始注意。"]},
         [f"没有明确设定前，不得把金币直接换算成{forbidden_currency_name}。"],
+        genre_context={"genre": "网游", "genre_plugin_ids": ["game_webnovel"]},
     )
 
     world_review = review["world_state_review"]
@@ -848,10 +815,46 @@ def test_revision_prompt_includes_style_coach_and_fact_lock_rule():
     assert "等级" in prompt
 
 
+def test_revision_fact_lock_text_is_owned_by_genre_modules():
+    from packages.story_core.chapter_continuity import generic_revision_fact_lock
+    from packages.story_core.web_game_author_craft import web_game_revision_fact_lock
+
+    assert "职业、余额、库存、任务、装备和NPC" in web_game_revision_fact_lock()
+    assert "人物身份、能力、伤势、持有物、关系、地点" in generic_revision_fact_lock()
+    assert "NPC" not in generic_revision_fact_lock()
+
+
+def test_xianxia_revision_prompt_uses_genre_neutral_fact_locks():
+    story = StoryState(
+        story_id="s-xianxia-revision-locks",
+        outline="林修在雪山神殿重校残镜器纹。",
+        genre="修仙",
+        style="白话",
+    )
+
+    prompt = StoryOrchestrator()._revision_prompt(
+        story,
+        144,
+        "林修把残锋探入阵心石。",
+        {"event_plan": {"chapter_title": "六光压雪山"}},
+        {"pass": False, "issues": ["伤势反馈不足。"], "revision_plan": ["补出寒毒反应。"]},
+    )
+
+    assert "人物身份、能力、伤势、持有物、关系、地点和各自知情范围" in prompt
+    assert "职业、余额、库存、任务、装备和NPC" not in prompt
+
+
 def test_sanitize_generated_body_removes_lone_ascii_question_marks_in_chinese_prose():
     body = "角色创建界面展开。?输入ID。夜烬。?职业列表弹出。保留英文 URL query?a=1。"
 
-    cleaned = _sanitize_generated_body(body)
+    cleaned = normalize_generated_body(
+        context=PostprocessContext(
+            story=None,
+            body=body,
+            chapter_number=1,
+            scene_cards=[],
+        )
+    )
 
     assert "。?输入" not in cleaned
     assert "。?职业" not in cleaned

@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+
+FIRST_CHAPTER_FORBIDDEN_TERMS = (
+    "寄售",
+    "成交",
+    "到账",
+    "手续费",
+    "挂单",
+    "商人",
+    "赵胖子",
+    "白袍",
+    "公会追查",
+    "论坛热帖",
+    "锁定坐标",
+)
+
 import re
 from typing import Any, Iterable
 

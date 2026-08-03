@@ -5,6 +5,25 @@ export type GroupedWorldFacts = {
   chapters: Array<{ chapterNumber: number; facts: string[] }>;
 };
 
+const NOVEL_TYPE_DISPLAY_NAMES: Record<string, string> = {
+  generic_webnovel: "通用网文",
+  game_webnovel: "网游升级流",
+  urban: "都市现代",
+  xuanhuan: "东方玄幻",
+  xianxia: "修仙仙侠",
+  suspense: "悬疑推理",
+  romance: "言情关系流",
+  rules_mystery: "规则怪谈",
+};
+
+export function displayNovelTypeMetadata(value: string): string {
+  return value.replace(/小说类型[：:]\s*([a-z][a-z0-9_-]*)/gi, (source, rawTypeId: string) => {
+    const typeId = rawTypeId.toLowerCase();
+    const displayName = NOVEL_TYPE_DISPLAY_NAMES[typeId];
+    return displayName ? `小说类型：${displayName}` : source;
+  });
+}
+
 export function groupWorldFacts(facts: string[] | undefined): GroupedWorldFacts {
   const projectFacts: string[] = [];
   const chapters = new Map<number, string[]>();
@@ -15,13 +34,13 @@ export function groupWorldFacts(facts: string[] | undefined): GroupedWorldFacts 
     if (!fact) continue;
     const match = fact.match(chapterPrefix);
     if (!match) {
-      projectFacts.push(fact);
+      projectFacts.push(displayNovelTypeMetadata(fact));
       continue;
     }
     const content = match[2].trim();
     if (!content) continue;
     const chapterNumber = Number(match[1]);
-    chapters.set(chapterNumber, [...(chapters.get(chapterNumber) ?? []), content]);
+    chapters.set(chapterNumber, [...(chapters.get(chapterNumber) ?? []), displayNovelTypeMetadata(content)]);
   }
 
   return {
@@ -35,6 +54,7 @@ export function groupWorldFacts(facts: string[] | undefined): GroupedWorldFacts 
 
 type ProfileWithRuntime = ImportedCharacterProfile & {
   game_panel?: GamePanel;
+  current_state?: CharacterStateLayer | string;
   real_state?: CharacterStateLayer;
   game_state?: CharacterStateLayer;
   memory?: string[];
@@ -48,6 +68,7 @@ type ProfileWithRuntime = ImportedCharacterProfile & {
 
 export type DisplayCharacter = ProfileWithRuntime & {
   game_panel?: GamePanel;
+  current_state?: CharacterStateLayer | string;
   real_state?: CharacterStateLayer;
   game_state?: CharacterStateLayer;
   character_type?: string;
@@ -71,8 +92,8 @@ function cleanText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-const NON_CHARACTER_ROLES = new Set(["信息源", "玩家群体", "市场机制", "任务线", "服务设施", "系统机制"]);
-const NON_CHARACTER_NAMES = new Set(["论坛", "公共频道", "交易行告示牌", "清道夫委托", "系统公告"]);
+const NON_CHARACTER_ROLES = new Set(["信息源", "玩家群体", "市场机制", "任务线", "服务设施", "系统机制", "收购方NPC"]);
+const NON_CHARACTER_NAMES = new Set(["论坛", "公共频道", "交易行告示牌", "清道夫委托", "系统公告", "白河仓库收购方"]);
 
 function canonicalCharacterName(name: unknown): string {
   const text = cleanText(name);
@@ -97,6 +118,68 @@ function isCharacterLike(value: { name?: unknown; role?: unknown }): boolean {
   if (NON_CHARACTER_NAMES.has(name)) return false;
   if (NON_CHARACTER_ROLES.has(role)) return false;
   return true;
+}
+
+const IDENTITY_ALIAS_PATTERN = /(?:现实身份|本名|真名|原名|现实姓名|游戏ID|游戏名|网名|化名)\s*[：:]?\s*([A-Za-z0-9_\-\u4e00-\u9fff]{2,24})/g;
+
+function characterIdentityTokens(character: ProfileWithRuntime): Set<string> {
+  const tokens = new Set<string>();
+  const add = (value: unknown) => {
+    const text = cleanText(value);
+    if (text) tokens.add(text.toLocaleLowerCase());
+  };
+  add(character.name);
+  add(character.game_id);
+  add(character.game_panel?.game_id);
+  add(character.game_state?.current?.game_id);
+  const identity = character.identity_profile as Record<string, unknown> | undefined;
+  for (const alias of Array.isArray(identity?.aliases) ? identity.aliases : []) add(alias);
+  for (const value of [character.role, identity?.current_identity]) {
+    const text = cleanText(value);
+    for (const match of text.matchAll(IDENTITY_ALIAS_PATTERN)) add(match[1]);
+  }
+  return tokens;
+}
+
+function characterPreference(character: ProfileWithRuntime): number {
+  const name = cleanText(character.name);
+  const gameId = cleanText(character.game_id);
+  const role = cleanText(character.role).toLocaleLowerCase();
+  const tier = cleanText(character.character_tier).toLocaleLowerCase();
+  return (gameId && gameId !== name ? 4 : 0)
+    + (role === "protagonist" || role === "主角" || tier === "protagonist" || tier === "主角" ? 2 : 0);
+}
+
+function mergeDisplayCharacter(previous: DisplayCharacter, character: ProfileWithRuntime): DisplayCharacter {
+  const preferred = characterPreference(character) > characterPreference(previous) ? character : previous;
+  const name = cleanText(preferred.name) || cleanText(character.name) || cleanText(previous.name);
+  return {
+    ...previous,
+    ...character,
+    name,
+    role: character.role || previous.role,
+    game_id: character.game_id || previous.game_id,
+    character_type: character.character_type || previous.character_type,
+    core_motivation: character.core_motivation || previous.core_motivation,
+    behavior_logic: character.behavior_logic || previous.behavior_logic,
+    interaction_mode: character.interaction_mode || previous.interaction_mode,
+    poison_points: character.poison_points?.length ? character.poison_points : previous.poison_points,
+    social_profile: character.social_profile ?? previous.social_profile,
+    psychological_profile: character.psychological_profile ?? previous.psychological_profile,
+    moral_profile: character.moral_profile ?? previous.moral_profile,
+    story_function: character.story_function || previous.story_function,
+    chapter_role: character.chapter_role || previous.chapter_role,
+    goals: character.goals?.length ? character.goals : previous.goals,
+    memory: character.memory?.length ? character.memory : previous.memory,
+    secrets: character.secrets?.length ? character.secrets : previous.secrets,
+    location: character.location || previous.location || previous.current_location,
+    game_panel: character.game_panel ?? previous.game_panel,
+    current_state: character.current_state ?? previous.current_state,
+    real_state: character.real_state ?? previous.real_state,
+    game_state: character.game_state ?? previous.game_state,
+    lifecycle_state: character.lifecycle_state || previous.lifecycle_state,
+    personality_portrait: character.personality_portrait ?? previous.personality_portrait,
+  };
 }
 
 export function isReadableLine(value: unknown): value is string {
@@ -129,51 +212,46 @@ export function mergeCharacters(
   storyCharacters: StoryCharacter[] | undefined,
 ): DisplayCharacter[] {
   const byName = new Map<string, DisplayCharacter>();
+  const tokensByName = new Map<string, Set<string>>();
+
+  const addCharacter = (raw: ProfileWithRuntime) => {
+    if (!isCharacterLike(raw)) return;
+    const name = canonicalCharacterName(raw.name);
+    const tokens = characterIdentityTokens(raw);
+    const existingName = Array.from(tokensByName.entries()).find(([, existingTokens]) => (
+      Array.from(tokens).some((token) => existingTokens.has(token))
+    ))?.[0];
+    if (!existingName) {
+      byName.set(name, { ...raw, name });
+      tokensByName.set(name, tokens);
+      return;
+    }
+    const previous = byName.get(existingName) ?? { name: existingName };
+    const merged = mergeDisplayCharacter(previous, { ...raw, name });
+    byName.delete(existingName);
+    byName.set(merged.name, merged);
+    const mergedTokens = tokensByName.get(existingName) ?? new Set<string>();
+    tokensByName.delete(existingName);
+    tokensByName.set(merged.name, new Set([...mergedTokens, ...tokens]));
+  };
 
   for (const profile of (profiles ?? []) as ProfileWithRuntime[]) {
-    if (!isCharacterLike(profile)) continue;
-    const name = canonicalCharacterName(profile.name);
-    byName.set(name, { ...profile, name });
+    addCharacter(profile);
   }
 
   for (const character of storyCharacters ?? []) {
-    if (!isCharacterLike(character)) continue;
-    const name = canonicalCharacterName(character.name);
-    const previous = byName.get(name) ?? { name };
-    byName.set(name, {
-      ...previous,
-      ...character,
-      name,
-      role: character.role || previous.role,
-      game_id: character.game_id || previous.game_id,
-      character_type: character.character_type || previous.character_type,
-      core_motivation: character.core_motivation || previous.core_motivation,
-      behavior_logic: character.behavior_logic || previous.behavior_logic,
-      interaction_mode: character.interaction_mode || previous.interaction_mode,
-      poison_points: character.poison_points?.length ? character.poison_points : previous.poison_points,
-      social_profile: character.social_profile ?? previous.social_profile,
-      psychological_profile: character.psychological_profile ?? previous.psychological_profile,
-      moral_profile: character.moral_profile ?? previous.moral_profile,
-      story_function: character.story_function || previous.story_function,
-      chapter_role: character.chapter_role || previous.chapter_role,
-      goals: character.goals?.length ? character.goals : previous.goals,
-      memory: character.memory?.length ? character.memory : previous.memory,
-      secrets: character.secrets?.length ? character.secrets : previous.secrets,
-      location: character.location || previous.location || previous.current_location,
-      game_panel: character.game_panel ?? previous.game_panel,
-      real_state: character.real_state ?? previous.real_state,
-      game_state: character.game_state ?? previous.game_state,
-      lifecycle_state: character.lifecycle_state || previous.lifecycle_state,
-      personality_portrait: character.personality_portrait ?? previous.personality_portrait,
-    });
+    addCharacter(character as ProfileWithRuntime);
   }
 
   return Array.from(byName.values());
 }
 
 export function shortStatus(character: DisplayCharacter): string {
+  const explicitState = typeof character.current_state === "string"
+    ? character.current_state
+    : String(character.current_state?.current?.summary ?? "");
   const status = (
-    character.current_state ||
+    explicitState ||
     character.motivation ||
     character.location ||
     character.current_location ||

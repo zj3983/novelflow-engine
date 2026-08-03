@@ -1,5 +1,4 @@
 from packages.story_core.prose_style_review import review_prose_style
-from packages.story_core.segmented_writing import build_segment_prompt, build_segment_specs
 from packages.story_core.writing_taskbook import build_writing_taskbook, format_taskbook_prompt_section
 
 
@@ -18,8 +17,9 @@ def test_prose_style_review_flags_outline_and_translation_dialogue():
     assert "现代中文对话" in joined_issues
     assert "先试，不深入" in joined_issues
     assert "柜台不认" in joined_issues
-    assert "我就在坡口打两只看看" in joined_plan
-    assert "你手里没毒腺" in joined_plan
+    assert "完整口语" in joined_plan
+    assert "我就在坡口打两只看看" not in joined_plan
+    assert "你手里没毒腺" not in joined_plan
 
 
 def test_prose_style_review_flags_single_command_like_line():
@@ -29,7 +29,30 @@ def test_prose_style_review_flags_single_command_like_line():
 
     assert review["pass"] is False
     assert any("电报码式台词" in item for item in review["issues"])
-    assert any("不要只说‘先试，不深入’" in item or "先报我" in item for item in review["revision_plan"])
+    assert any("完整口语" in item for item in review["revision_plan"])
+
+
+def test_prose_style_review_flags_consecutive_elliptical_status_dialogue():
+    body = (
+        "沈墨璃按住他的手腕。\n\n"
+        "“已经过了肘。”\n\n"
+        "“还没进心脉。”\n\n"
+        "林修把手抽了回来。"
+    )
+
+    review = review_prose_style(body)
+
+    assert review["pass"] is False
+    assert any("连续省略对象" in issue for issue in review["issues"])
+    assert any("补足连续状态对白里被省略的对象" in item for item in review["revision_plan"])
+
+
+def test_prose_style_review_allows_complete_short_emergency_exchange():
+    body = "沈墨璃推开石门。\n\n“快走！”\n\n“我留下断后。”"
+
+    review = review_prose_style(body)
+
+    assert not any("连续省略对象" in issue for issue in review["issues"])
 
 
 def test_prose_style_review_flags_telegraphic_rule_list_dialogue():
@@ -39,7 +62,8 @@ def test_prose_style_review_flags_telegraphic_rule_list_dialogue():
 
     assert review["pass"] is False
     assert any("清单式短句" in issue for issue in review["issues"])
-    assert any("要是窗子、屋瓦或者门锁出了问题" in item for item in review["revision_plan"])
+    assert any("完整口语" in item for item in review["revision_plan"])
+    assert not any("要是窗子、屋瓦或者门锁出了问题" in item for item in review["revision_plan"])
 
 
 def test_prose_style_review_flags_comma_separated_short_judgments_inside_long_dialogue():
@@ -62,7 +86,7 @@ def test_prose_style_review_flags_command_style_dialogue_without_reasoning():
 
     assert review["pass"] is False
     assert any("电报码式台词" in issue for issue in review["issues"])
-    assert any("台词" in item for item in review["revision_plan"])
+    assert any("完整口语" in item for item in review["revision_plan"])
 
 
 def test_prose_style_review_flags_command_style_dialogue_without_standard_quotes():
@@ -97,13 +121,3 @@ def test_taskbook_exposes_modern_chinese_dialogue_method():
     assert "自己看见了什么、缺什么、准备怎么做" in section
     assert "不会替系统解释整套流程" in section
     assert "对话场面" in section
-
-
-def test_segment_prompt_includes_modern_chinese_dialogue_filter():
-    spec = build_segment_specs(1, {})[0]
-
-    prompt = build_segment_prompt(chapter_number=1, spec=spec, plan={})
-
-    assert "现代中文对话" in prompt
-    assert "话题先摆出来" in prompt
-    assert "提纲句、翻译腔和系统腔改成普通说法" in prompt

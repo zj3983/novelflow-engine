@@ -135,7 +135,7 @@ export default function ProjectOverviewPage() {
                 查看
               </Link>
             </div>
-            <p className="ws-card__hint">{project.current_focus || latest?.next_focus || "暂无当前大纲焦点。"}</p>
+            <p className="ws-card__hint">{project.seed_outline || story?.outline || "暂无大纲内容。"}</p>
           </section>
 
           <section className="ws-card">

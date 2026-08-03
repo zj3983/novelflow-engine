@@ -163,4 +163,5 @@ def test_non_game_legacy_game_panel_never_materializes_game_state(tmp_path: Path
     persisted_project = json.loads((tmp_path / ".webnovel" / "project.json").read_text(encoding="utf-8"))
     assert "game_state" not in persisted_state["characters"][0]
     assert "game_state" not in persisted_project["character_profiles"][0]
-    assert persisted_state["characters"][0]["real_state"]["current"]["balance"] == "27.60元"
+    assert persisted_state["characters"][0]["current_state"]["current"]["balance"] == "27.60元"
+    assert "real_state" not in persisted_state["characters"][0]

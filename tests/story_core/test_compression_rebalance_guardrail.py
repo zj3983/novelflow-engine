@@ -1,6 +1,7 @@
 import json
 
 from packages.story_core import orchestrator as orchestrator_module
+from packages.story_core.genre_stages.game_webnovel import review as game_review_module
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.orchestrator import StoryOrchestrator, _chapter_char_count, _review_chapter_body
 
@@ -172,7 +173,7 @@ def test_explicit_xuanhuan_context_skips_web_game_review_for_generic_terms(monke
         calls["web_game"] += 1
         return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
 
-    monkeypatch.setattr(orchestrator_module, "review_web_game_chapter", fake_web_game_review)
+    monkeypatch.setattr(game_review_module, "review_web_game_chapter", fake_web_game_review)
     body = "宗门任务已列入执事堂系统，弟子等级决定领取顺序。"
 
     review = _review_chapter_body(
@@ -183,19 +184,56 @@ def test_explicit_xuanhuan_context_skips_web_game_review_for_generic_terms(monke
     )
 
     assert calls["web_game"] == 0
-    assert review["web_game_review"]["pass"] is True
+    assert review["active_genre_reviews"] == {}
+    assert "web_game_review" not in review
 
 
-def test_legacy_review_without_genre_context_keeps_text_heuristic(monkeypatch):
+def test_review_without_genre_context_does_not_infer_game_from_body(monkeypatch):
     calls = {"web_game": 0}
 
     def fake_web_game_review(**_kwargs):
         calls["web_game"] += 1
         return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
 
-    monkeypatch.setattr(orchestrator_module, "review_web_game_chapter", fake_web_game_review)
+    monkeypatch.setattr(game_review_module, "review_web_game_chapter", fake_web_game_review)
     body = "宗门任务已列入执事堂系统，弟子等级决定领取顺序。"
 
-    _review_chapter_body(2, body, {"next_focus": "完成宗门任务"})
+    review = _review_chapter_body(2, body, {"next_focus": "完成宗门任务"})
+
+    assert calls["web_game"] == 0
+    assert review["active_genre_reviews"] == {}
+    assert "web_game_review" not in review
+
+
+def test_explicit_game_story_state_activates_web_game_review(monkeypatch):
+    calls = {"web_game": 0}
+
+    def fake_web_game_review(**_kwargs):
+        calls["web_game"] += 1
+        return {
+            "reviewer": "web_game/test",
+            "pass": True,
+            "scores": {},
+            "issues": [],
+            "revision_plan": [],
+        }
+
+    monkeypatch.setattr(game_review_module, "review_web_game_chapter", fake_web_game_review)
+    game_story = StoryState(
+        story_id="explicit-game-review",
+        outline="A player enters a persistent online world.",
+        genre="game_webnovel",
+        genre_plugin_ids=["game_webnovel"],
+        style="",
+    )
+
+    review = _review_chapter_body(
+        2,
+        "The protagonist checks the quest system and continues leveling.",
+        {"next_focus": "continue the quest"},
+        genre_context=game_story,
+    )
 
     assert calls["web_game"] == 1
+    assert "web_game_review" in review["active_genre_reviews"]
+    assert review["web_game_review"] is review["active_genre_reviews"]["web_game_review"]

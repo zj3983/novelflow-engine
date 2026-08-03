@@ -6,23 +6,75 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
-import { WritingFlowPanel } from "../../../../components/ws/WritingFlow";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
 import { resolveChapterDirectionId } from "../../../../lib/chapterDirections";
 import {
+  downstreamRewriteNotice,
+  confirmFileProjectCandidate,
+  discardFileProjectCandidate,
+  fetchFileProjectCandidates,
   fetchGenerationJob,
   fetchProjectWritingPacket,
   startFileProjectRegenerationJob,
   startGenerationJob,
   type ChapterIndexEntry,
   type ChapterDirectionOption,
+  type CandidateDraft,
   type CodexWritingPacket,
   type GenerationJobStep,
 } from "../../../../lib/api";
 
 const PAGE_SIZE = 80;
+
+function WritingProgressRow({ status, href }: { status: string; href: string }) {
+  return (
+    <section className="ws-writing-progress" aria-label="工作进度">
+      <strong>工作进度</strong>
+      <span className="ws-writing-progress__status" title={status}>{status}</span>
+      <Link href={href}>查看完整日志</Link>
+    </section>
+  );
+}
+
+function CandidatePanel({
+  candidate,
+  action,
+  onConfirm,
+  onDiscard,
+}: {
+  candidate: CandidateDraft;
+  action: "confirm" | "discard" | null;
+  onConfirm: () => void;
+  onDiscard: () => void;
+}) {
+  return (
+    <section className="ws-card" aria-label="候选稿">
+      <div className="ws-section-head">
+        <div>
+          <p className="ws-card__title">候选稿，尚未提交</p>
+          <p className="ws-card__hint">
+            第 {candidate.chapter_number} 章 · {chapterCharCount(candidate.body)} 字 · 快照 {candidate.context_snapshot_id || "未记录"}
+          </p>
+        </div>
+        <div className="ws-toolbar">
+          <button className="ws-btn ws-btn--sm" type="button" disabled={Boolean(action)} onClick={onDiscard}>
+            {action === "discard" ? "丢弃中..." : "丢弃候选稿"}
+          </button>
+          <button className="ws-btn ws-btn--sm ws-btn--primary" type="button" disabled={Boolean(action)} onClick={onConfirm}>
+            {action === "confirm" ? "提交中..." : "确认提交"}
+          </button>
+        </div>
+      </div>
+      <article className="ws-reader__body" style={{ maxHeight: 360, overflow: "auto" }}>
+        {candidate.body.split(/\n{2,}/).slice(0, 12).map((paragraph, index) => (
+          <p key={index}>{paragraph}</p>
+        ))}
+      </article>
+    </section>
+  );
+}
 
 type CopyStatus = "idle" | "copied" | "failed";
 
@@ -84,6 +136,8 @@ export default function WritePage() {
   const [nextWritingPacket, setNextWritingPacket] = useState<CodexWritingPacket | null>(null);
   const [selectedDirectionId, setSelectedDirectionId] = useState("");
   const [copyStatus, setCopyStatus] = useState<CopyStatus>("idle");
+  const [pendingCandidate, setPendingCandidate] = useState<CandidateDraft | null>(null);
+  const [candidateAction, setCandidateAction] = useState<"confirm" | "discard" | null>(null);
   const mountedRef = useRef(false);
   const operationTokenRef = useRef(0);
 
@@ -185,9 +239,34 @@ export default function WritePage() {
     };
   }, [isFileProject, nextChapterNumber, projectId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!isFileProject || !projectId) {
+      setPendingCandidate(null);
+      return;
+    }
+    const chapterNumbers = Array.from(new Set([requestedChapter, nextChapterNumber].filter((value) => value > 0)));
+    Promise.all(chapterNumbers.map((number) => fetchFileProjectCandidates(projectId, number)))
+      .then((responses) => {
+        if (cancelled) return;
+        const pending = responses
+          .flatMap((response) => response.items)
+          .filter((item) => item.status === "pending")
+          .sort((left, right) => left.created_at.localeCompare(right.created_at));
+        setPendingCandidate(pending.at(-1) ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setPendingCandidate(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isFileProject, projectId, requestedChapter, nextChapterNumber, refreshVersion]);
+
   const directionOptions = nextWritingPacket?.chapter_direction_options?.options ?? [];
   const selectedDirection = directionOptions.find((option) => option.id === selectedDirectionId) ?? directionOptions[0] ?? null;
   const writingReview = chapter?.quality_report?.writing_review;
+  const downstreamNotice = downstreamRewriteNotice(chapter?.quality_report);
   const lengthReview = chapter?.quality_report?.length_review ?? writingReview?.length_review;
   const bodyChars = lengthReview?.body_chars ?? chapterCharCount(chapter?.body);
   const minChars = lengthReview?.min_chars ?? 3800;
@@ -195,6 +274,16 @@ export default function WritePage() {
   const lengthPassed = lengthReview?.pass ?? bodyChars >= minChars;
   const lengthIssues = lengthReview?.issues ?? [];
   const writingLessons = story?.writing_lessons ?? [];
+
+  async function loadPendingCandidate(chapterNumber: number): Promise<void> {
+    if (!isFileProject) return;
+    const response = await fetchFileProjectCandidates(projectId, chapterNumber);
+    const pending = response.items
+      .filter((item) => item.status === "pending")
+      .sort((left, right) => left.created_at.localeCompare(right.created_at))
+      .at(-1) ?? null;
+    setPendingCandidate(pending);
+  }
 
   async function handleRegenerateChapter() {
     if (!chapter || !canRegenerate || chapterLoading || chapter.chapter_number !== requestedChapter) return;
@@ -222,7 +311,8 @@ export default function WritePage() {
       }
       if (!operationIsActive()) return;
       clearTemporaryGuidance();
-      void refresh().catch(() => undefined);
+      const completedChapterNumber = Number(currentJob.chapter_number) || chapter.chapter_number;
+      await loadPendingCandidate(completedChapterNumber);
     } catch (err) {
       if (operationIsActive()) setRegenerateError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -262,8 +352,7 @@ export default function WritePage() {
       const generatedChapterNumber = Number.isInteger(completedChapterNumber) && completedChapterNumber > 0
         ? completedChapterNumber
         : nextChapterNumber;
-      router.replace(`/projects/${encodedProjectId}/write?chapter=${generatedChapterNumber}`);
-      void refresh({ invalidateChapter: false }).catch(() => undefined);
+      await loadPendingCandidate(generatedChapterNumber);
     } catch (err) {
       if (operationIsActive()) setRegenerateError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -271,6 +360,36 @@ export default function WritePage() {
         setGeneratingNext(false);
         setRegenerateStatus(null);
       }
+    }
+  }
+
+  async function handleConfirmCandidate() {
+    if (!pendingCandidate || !isFileProject || candidateAction) return;
+    setCandidateAction("confirm");
+    setRegenerateError(null);
+    try {
+      await confirmFileProjectCandidate(projectId, pendingCandidate.candidate_id);
+      setPendingCandidate(null);
+      void refresh().catch(() => undefined);
+      router.replace(`/projects/${encodedProjectId}/write?chapter=${pendingCandidate.chapter_number}`);
+    } catch (err) {
+      setRegenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCandidateAction(null);
+    }
+  }
+
+  async function handleDiscardCandidate() {
+    if (!pendingCandidate || !isFileProject || candidateAction) return;
+    setCandidateAction("discard");
+    setRegenerateError(null);
+    try {
+      await discardFileProjectCandidate(projectId, pendingCandidate.candidate_id);
+      setPendingCandidate(null);
+    } catch (err) {
+      setRegenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCandidateAction(null);
     }
   }
 
@@ -403,21 +522,21 @@ export default function WritePage() {
             {copyStatus === "failed" ? <p className="ws-error" role="alert">复制失败，请允许浏览器访问剪贴板后重试。</p> : null}
 
             {(regenerating || generatingNext || generationSteps.length > 0) ? (
-              <section className="ws-card">
-                <div className="ws-section-head">
-                  <p className="ws-card__title">生成任务</p>
-                  <span className="ws-badge">
-                    {regenerateStatus || generationSteps[generationSteps.length - 1]?.message || "准备中"}
-                  </span>
-                </div>
-                <WritingFlowPanel steps={generationSteps} />
-                <p className="ws-card__hint">
-                  <Link href={`/projects/${encodedProjectId}/log`}>查看日志页，获取完整历史记录 →</Link>
-                </p>
-              </section>
+              <WritingProgressRow
+                status={regenerateStatus || generationSteps[generationSteps.length - 1]?.message || "准备中"}
+                href={`/projects/${encodedProjectId}/log`}
+              />
             ) : null}
 
             {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
+            {pendingCandidate ? (
+              <CandidatePanel
+                candidate={pendingCandidate}
+                action={candidateAction}
+                onDiscard={() => void handleDiscardCandidate()}
+                onConfirm={() => void handleConfirmCandidate()}
+              />
+            ) : null}
             {directionOptions.length > 0 ? (
               <section className="ws-card">
                 <div className="ws-section-head">
@@ -502,6 +621,12 @@ export default function WritePage() {
                 </p>
                 {lengthIssues[0] ? <p className="ws-card__hint">{lengthIssues[0]}</p> : null}
               </div>
+              {downstreamNotice ? (
+                <div>
+                  <p className="ws-card__title">章节连续性</p>
+                  <p className="ws-card__hint">{downstreamNotice}</p>
+                </div>
+              ) : null}
               <SimplifiedReview report={chapter.quality_report?.simplified_review} compact />
             </section>
               </>
@@ -525,12 +650,20 @@ export default function WritePage() {
             {generatingNext ? "生成中..." : "生成第一章"}
           </button>
           {(generatingNext || generationSteps.length > 0) ? (
-            <section className="ws-card">
-              <p className="ws-card__title">生成任务</p>
-              <WritingFlowPanel steps={generationSteps} />
-            </section>
+            <WritingProgressRow
+              status={regenerateStatus || generationSteps[generationSteps.length - 1]?.message || "准备中"}
+              href={`/projects/${encodedProjectId}/log`}
+            />
           ) : null}
           {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
+          {pendingCandidate ? (
+            <CandidatePanel
+              candidate={pendingCandidate}
+              action={candidateAction}
+              onDiscard={() => void handleDiscardCandidate()}
+              onConfirm={() => void handleConfirmCandidate()}
+            />
+          ) : null}
         </div>
       )}
     </div>

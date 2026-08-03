@@ -94,6 +94,10 @@ _DIALOGUE_SNIPPET_RE = (
     r"「([^」]{1,300})」",
 )
 _DIALOGUE_COLON_LINE_RE = re.compile(r"[^\n。！？!?]{0,6}[：:]+\s*([^\n。！？!?，,]{2,90})")
+_ELLIPTICAL_BODY_STATUS_RE = re.compile(
+    r"^(?:已经|还没|还未|尚未|没|未|刚|才)[^，。！？!?]{0,8}"
+    r"(?:肘|心脉|经脉|丹田|识海|气海|肺腑|脏腑|胸口|肩头|手腕|手臂|血脉|体内|骨髓)[^，。！？!?]{0,2}$"
+)
 
 _SHORT_CLAUSE_ACTION_VERBS = re.compile(
     r"(说|问|答|回|告诉|回应|交|拿|给|把|去|来|看|提|放|开|关|扔|丢|打|抛|跑|走|进|出|坐|站|停|盯|收|买|卖|修|做|想|听|见|见到|拿到|先)"
@@ -237,16 +241,15 @@ def anti_ai_style_rules() -> list[str]:
     return [
         "避免书面生硬、流水账、模板化心理和重复句式；人物说话完整自然，行为符合人设，前后逻辑严谨。",
         "不要把句子全部切短：写清人物正在做什么、为什么这么做，以及动作带来的结果；情绪放在停顿、手势、语气和选择里。",
-        "动作示例：他走到门口，先听了听里面的动静，才抬手敲门；不要写成‘他谨慎判断后决定进入’。",
-        "一章分3到4个叙事段落推进：开局铺垫、冲突发生、高潮互动、结尾留钩子；不要一次性把事件压成流水账。",
+        "把抽象判断改成角色当场做出的动作，并写清这个动作带来的反馈。",
         "生成后自检第一步：替换心中一紧、五味杂陈、脸色一变、眸光一凝、身形一闪、霎时间、此刻、见状、不由得、殊不知、与此同时等AI高频套话。",
-        "用动作 + 微表情 + 细微生理反应替代抽象心理；例如用指尖收紧、肩线绷住、笑意变淡，而不是直接写心中一紧。",
+        "用动作、微表情和细微生理反应替代抽象心理，不替人物直接宣布情绪结论。",
         "打散句式：叙述可以拆短，但对话不要拆成口令；调换主语顺序，删除无意义修饰和注水形容词。",
-        "少解释只针对旁白：对白不能省略连接词和因果，不要写成‘窗坏、瓦落、门锁坏，先报我’这类名词清单加命令的电报句。",
+        "少解释只针对旁白：对白要让人听懂对象、原因和选择，紧急场景中的自然短句除外。",
         "增加专属生活化细节：人物小习惯、环境气味/声音/光线、道具使用痕迹、口头禅、过往小阴影或偏执小习惯。",
         "修正逻辑并防吃设定：核对实力、身份、伏笔、时间、地点、道具、装备、货币和任务状态；删除强行降智、强行巧合、强行煽情。",
         "改写对话：配角说话要符合身份，接地气，别绕太远；加说话动作，删除像念台词的空洞废话。",
-        "对白结构要求：对方先说一句（催/抱怨/提醒），主角一句完整回应（说清原因和选择），对方再有一句真实反应；别让一段台词只剩命令和短语。",
+        "对白先回应上一句，再说人物真正关心的事；不强制固定轮次，也不要求每句话都承担剧情任务。",
         "不要把后台词写进正文和标题。边界/验证/服务节点/信息边界/逻辑/模型/阈值/可见性，要换成角色能说出口、能看见、能处理的具体事情。",
         "交易、鉴定和任务办理也要写现场：写角色点了什么、界面弹出什么、物品或钱怎样变化；不要旁白解释平台怎样验货、谁能看见哪些字段或后台怎样流转。",
         "不要连续堆形容词；网游场景中的信息优先落到动作、对话、面板提示、背包格、耐久和直接后果。",
@@ -291,6 +294,16 @@ def _modern_chinese_dialogue_problems(body: str) -> list[str]:
         quoted_lines.extend(re.findall(pattern, dialogue_source, flags=re.DOTALL))
     quoted_lines.extend(match.group(1).strip() for match in _DIALOGUE_COLON_LINE_RE.finditer(dialogue_source))
     dialogue_lines = [line.strip() for line in quoted_lines if line.strip()]
+    quote_only_lines: list[str] = []
+    for paragraph in (item.strip() for item in dialogue_source.split("\n\n") if item.strip()):
+        match = re.fullmatch(r"[“\"]([^”\"]{1,30})[”\"]", paragraph)
+        if match:
+            quote_only_lines.append(match.group(1).strip().rstrip("。！？!?"))
+        else:
+            quote_only_lines.append("")
+    for first, second in zip(quote_only_lines, quote_only_lines[1:]):
+        if first and second and _ELLIPTICAL_BODY_STATUS_RE.fullmatch(first) and _ELLIPTICAL_BODY_STATUS_RE.fullmatch(second):
+            problems.append(f"连续省略对象的状态台词“{first} / {second}”")
 
     def _looks_like_command_snippet(sentence: str) -> bool:
         compact = re.sub(r"\s+", "", sentence)
@@ -478,7 +491,11 @@ def review_prose_style(body: str, *, genre_context: Any = None) -> dict[str, Any
             scores=scores,
             score_key="dialogue_texture",
             issue=f"现代中文对话不自然：{sample}。台词像提纲句、翻译腔或系统说明，不像人物顺嘴说话。",
-            plan="少解释只针对旁白，不是让人物省略连接词。对白/台词要完整说出原因和决策，再带一个动作。把清单式短句改成完整口语；例如“窗坏、瓦落、门锁坏，先报我”改成“要是窗子、屋瓦或者门锁出了问题，你先来报我”。“先试，不深入”改成“我就在坡口打两只看看，不往里走”；“柜台不认”改成“你手里没毒腺，接了也交不了”。",
+            plan=(
+                "补足连续状态对白里被省略的对象，并让后一句回应前一句的判断或决定。"
+                if any("连续省略对象" in item for item in modern_dialogue)
+                else "把清单式短句改成符合人物关系和场合的完整口语；补足必要的对象、原因或选择，但保留紧急场景中自然的短句。"
+            ),
             score=5,
         )
 

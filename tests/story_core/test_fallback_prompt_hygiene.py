@@ -33,7 +33,7 @@ def test_body_prompt_does_not_dump_full_plan_or_game_rules_into_non_game_story()
     assert "genre_family" not in prompt
     assert "网游写法方法卡" not in prompt
     assert "## 正文写法" in prompt
-    assert "段落写法：长短段交替" in prompt
+    assert "使用完整的现代中文句子" in prompt
     assert "玩家势力内部频道" not in prompt
     assert "人物不能全知" in prompt
 
@@ -70,7 +70,7 @@ def test_explicit_game_genre_wins_over_generic_marker_in_project_context():
 
     prompt = StoryOrchestrator()._body_prompt(story, 1, {"event_plan": {"chapter_title": "开服"}})
 
-    assert "网游写法方法卡" in prompt
+    assert "## 网游写法" in prompt
     assert "隐藏优势只在幕后起作用" in prompt
 
 
@@ -96,7 +96,7 @@ def test_revision_prompt_does_not_inject_game_rules_into_non_game_story():
     assert "## 本章方向" in prompt
     assert "scene_cards" not in prompt
     assert "## 正文写法" in prompt
-    assert "规则从动作和反馈里露出来" in prompt
+    assert "优先写具体动作、物件和后果" in prompt
 
 
 def test_plan_prompt_does_not_inject_game_rules_into_non_game_story():

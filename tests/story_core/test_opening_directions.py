@@ -129,6 +129,15 @@ def make_opening_store(tmp_path) -> FileProjectStore:
     return FileProjectStore(root)
 
 
+def test_selecting_direction_preserves_user_supplied_working_title(tmp_path):
+    store = make_opening_store(tmp_path)
+    store.generate_opening_directions(StaticDirectionGenerator())
+
+    store.select_opening_direction("direction-2")
+
+    assert store.project()["title"] == "Original title"
+
+
 def test_direction_set_requires_exactly_three_unique_candidates_and_forbids_extra_fields():
     with pytest.raises(ValidationError):
         OpeningDirectionSet.model_validate({"directions": [direction("a"), direction("b")]})
@@ -229,6 +238,7 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
         "genre_quality_checks",
         "genre_trope_templates",
         "genre_power_system_template",
+        "genre_outline_template",
         "working_title",
         "idea",
         "regeneration_guidance",

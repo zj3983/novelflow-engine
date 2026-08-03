@@ -62,7 +62,9 @@ _DEFAULT_TEMPLATES: dict[str, PromptTemplate] = {
                 "相关角色卡：{{character_cards}}",
                 "输出JSON：character_moves；chapter_intent；event_plan。",
                 "character_moves为按角色名分组的动作对象或对象数组，例如 {\"林照\":[{\"action\":\"核对账册\"}]}；每个动作必须有具体action。",
-                "event_plan包含ordered_actions（建议 [{\"name\":\"角色名\",\"action\":\"具体动作\"}]）、chapter_satisfaction、chapter_end_hook、world_reactions、stakes、next_focus；chapter_satisfaction包含core_event、obstacle、visible_payoff、cost、outsider_misread、state_change、next_hook。",
+                "event_plan包含scene_chain、chapter_satisfaction、chapter_end_hook、world_reactions、stakes、next_focus，并可保留ordered_actions（建议 [{\"name\":\"角色名\",\"action\":\"具体动作\"}]）。",
+                "scene_chain必须有3至5个场景，每场包含location、pov、goal、obstacle、action、change、next；写清人物当场做什么、场景变化是什么、怎样接到下一场，不写主题总结或创作说明。",
+                "chapter_satisfaction只作验收摘要，包含core_event、obstacle、visible_payoff、cost、state_change、next_hook；它不能代替scene_chain。",
                 "chapter_end_hook 使用结构：{type, strength, content}；type 只能是危机钩、悬念钩、渴望钩、反转钩、余韵钩；strength 只能是 strong、medium、weak。",
                 "要求：动作具体，焦点明确，事件链短但有效，不要写正文。",
             ]
@@ -84,7 +86,9 @@ _DEFAULT_TEMPLATES: dict[str, PromptTemplate] = {
                 "相关角色卡：{{character_cards}}",
                 "输出JSON字段：",
                 "character_moves: [{name, goal, emotion, action, priority}]；chapter_intent: {chapter_title, cadence, next_focus, primary_conflict, secondary_conflict}。",
-                "event_plan: {chapter_title, ordered_actions, chapter_satisfaction, chapter_end_hook, world_reactions, stakes, next_focus}；chapter_satisfaction: {core_event, obstacle, visible_payoff, cost, outsider_misread, state_change, next_hook}。",
+                "event_plan: {chapter_title, scene_chain, ordered_actions, chapter_satisfaction, chapter_end_hook, world_reactions, stakes, next_focus}。",
+                "scene_chain必须有3至5个场景，每场包含location、pov、goal、obstacle、action、change、next；场景变化必须是人物能看见或承受的结果，下一场要承接上一场。",
+                "chapter_satisfaction: {core_event, obstacle, visible_payoff, cost, outsider_misread, state_change, next_hook}；它只用于验收，不能代替scene_chain。",
                 "chapter_end_hook: {type, strength, content}；type为危机钩|悬念钩|渴望钩|反转钩|余韵钩，strength为strong|medium|weak。",
                 "只补齐本章行动链，不生成章节摘要、既成事实或账本更新；这些内容必须在正文完成后提取。",
                 "活跃角色：{{active_characters}}",
@@ -143,6 +147,14 @@ _DEFAULT_TEMPLATES: dict[str, PromptTemplate] = {
 
 def list_default_prompt_templates() -> list[PromptTemplate]:
     return list(_DEFAULT_TEMPLATES.values())
+
+
+def prompt_template_applicability(key: str) -> str:
+    if key == "director":
+        return "game_only"
+    if key == "director_generic":
+        return "non_game_only"
+    return "all"
 
 
 def get_default_prompt_template(key: str) -> PromptTemplate:

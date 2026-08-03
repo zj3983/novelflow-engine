@@ -10,7 +10,7 @@ def test_taskbook_allows_plain_payoff_line_without_forcing_slogan():
     assert "章末压句" in section
     assert "白话反打承诺" in section
     assert "不套成语、不喊口号" in section
-    assert "先让他们抢" in section
+    assert "先让他们抢" not in section
 
 
 def test_prose_style_review_flags_old_slogan_payoff_lines():

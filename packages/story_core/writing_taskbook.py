@@ -42,17 +42,17 @@ WRITER_TERM_REPLACEMENTS = (
 
 GENERIC_CRAFT_TEMPLATES = (
     "选择场面：先写角色看见一个具体东西（信、门、价牌、队伍、伤口、物件），再写这个东西带来的麻烦，最后让角色做一个小决定；不要直接写“他权衡利弊”。",
-    "对话场面：一人问/催/提醒，主角用完整句子给表面理由，对方再接一句生活化反应；台词必须改变信息、关系、价格、风险或下一步行动。",
-    "现代中文对话：不要把后台事实直译成台词；“先试，不深入”要改成“我就在门口看一眼，不往里走”，“柜台不认”要改成“没材料也交不了”。",
+    "对话场面：人物先听懂上一句再作答；只有关系和情境允许时，才使用玩笑、调侃或省略说法。",
+    "现代中文对话：台词说人物当场知道、在意和愿意说出口的事，不替作者解释设定或流程。",
     "章末压句：如果本章有误判、羞辱、卡任务或资源压力，结尾允许一句白话反打承诺；必须来自当章具体矛盾，不套成语、不喊口号。",
     "情绪场面：不要写抽象感慨，写手指停住、视线移开、话说到一半、笑意收住、把东西重新放回去这类能看见的动作。",
 )
 
 GAME_CRAFT_TEMPLATES = (
     "选择场面：先写主角看见一个具体东西，例如价牌、角色面板、任务提示、队伍或敌人位置，再写眼前麻烦，最后让主角做一个会影响后续的小决定。",
-    "对话场面：别人询问、催促或提醒时，主角用完整句子说明表面理由，对方再按双方关系作出自然反应；不要用两三个字装冷静，也不要说出应当隐藏的机制。",
+    "对话场面：玩家和NPC先回应眼前发生的事，再按关系、身份和各自利益继续谈，不说应当隐藏的机制。",
     "现代中文对话：不要把后台事实直译成台词。玩家会说自己看见了什么、缺什么、准备怎么做，不会替系统解释整套流程。",
-    "章末压句：如果本章有误判、卡任务或资源压力，结尾允许一句白话反打承诺；必须来自当章具体矛盾，不套成语、不喊口号。例：先让他们抢。等他们卡在任务牌前，就该轮到他往前走了。",
+    "章末压句：如果本章有误判、卡任务或资源压力，结尾允许一句白话反打承诺；必须来自当章具体矛盾，不套成语、不喊口号。",
     "战斗场面：敌人怎么逼近，主角如何应对，技能、生命或装备产生什么消耗，战斗结果怎样改变下一步；不要只写命中、倒地和掉落。",
     "怪物面板：同类普通怪第一次正式交战前显示一次名称、等级、生命和攻击方式，后面不重复刷；精英怪和首领首次出现时再加技能和特性，掉落必须等击杀后结算。",
     "爽点场面：先写其他玩家面对的正常困难，再写主角凭本书已有优势取得什么具体领先；优势是否隐藏、怎样使用以及下一步目标都服从本章计划。",
@@ -82,16 +82,12 @@ def first_chapter_whole_body_contract(*, game_genre: bool, trade_authorized: boo
             "少写验证、逻辑、收益、路线这种判断词，改成试一把、看一眼、包快满、前置任务还没做完。",
         ],
         "dialogue": [
-            "自然对话：人物说话要顺、接地气，可以有半句抱怨、解释和接话，不要全是口令式回答。",
-            "主角需要主动表达时，要用完整句子说清理由或选择，不要只补一句装冷静。",
-            "每章至少有一轮连续问答：别人问/催/提醒，主角回答并给原因，对方再有一句反应；这轮对话要改变价钱、任务、误会或下一步行动。",
+            "自然对话：人物先回应对方刚说的内容，再谈自己关心的事；允许解释、犹豫、回避和自然接话。",
             "台词不能替作者讲规则、讲设定或讲审稿结论。",
-            "对话要推进价格、任务、信任、误会、信息或行动。",
-            "先判断关系和场合再定语气：陌生人客气试探，普通熟人可以轻微调侃，亲近关系才允许接梗或互相损；没有关系依据时不要突然开玩笑。",
-            "关键台词要带一层人物情绪或关系目的：想隐瞒、怕被看轻、替自己找台阶、试探对方、压住火气或故意缓和气氛。",
+            "整场谈话结束后，信息、态度、关系或下一步行动有所变化即可，不要求每句话都承担剧情任务。",
         ],
         "avoid": [
-            "不用分段生成；按整章连续正文自然写出四拍。",
+            "按整章连续正文自然写出四拍。",
             "变现、成交、到账和手续费扣款必须服从本章计划；公共频道扩散、论坛爆帖、公会追查或市场玩家盯盘不得擅自提前。",
             "NPC只能处理本书设定中属于其岗位和权限的事务，不能为了讲设定突然全知全能。",
             "提交任务、交易、修理、购买或转职必须跟随项目账本和章节计划，未安排的流程不要擅自提前完成。",
@@ -120,6 +116,7 @@ class WritingTaskScene:
 @dataclass(frozen=True)
 class WritingTaskBook:
     chapter_number: int
+    genre_mode: str = "general"
     chapter_title: str = ""
     chapter_goal: str = ""
     target_chars: str = ""
@@ -360,7 +357,12 @@ def _scene_source_id(card: dict[str, Any], index: int) -> str:
     return str(card.get("template_id") or card.get("scene_id") or card.get("id") or f"scene_{index}")
 
 
-def _apply_plot_to_scenes(scenes: list[WritingTaskScene], plot: dict[str, Any]) -> list[WritingTaskScene]:
+def _apply_plot_to_scenes(
+    scenes: list[WritingTaskScene],
+    plot: dict[str, Any],
+    *,
+    game_context: bool,
+) -> list[WritingTaskScene]:
     if not plot:
         return scenes
 
@@ -386,7 +388,12 @@ def _apply_plot_to_scenes(scenes: list[WritingTaskScene], plot: dict[str, Any]) 
             )
         elif scene.key == "pressure" and obstacle_text:
             updates["goal"] = f"让阻碍具体出现：{obstacle_text}。"
-            updates["required_surface"] = f"阻碍必须可见：{obstacle_text}。用NPC回答、面板、背包、路况、价格、血蓝或耐久承载，不写后台解释。"
+            surface_channels = (
+                "用NPC回答、界面、背包、路况、价格、生命法力或装备状态承载"
+                if game_context
+                else "用人物反应、现场物件、身体状态、环境变化或关系后果承载"
+            )
+            updates["required_surface"] = f"阻碍必须可见：{obstacle_text}。{surface_channels}，不写后台解释。"
         elif scene.key == "choice" and (choice or payoff or cost):
             updates["goal"] = choice or scene.goal
             updates["required_surface"] = _join(
@@ -481,7 +488,7 @@ def _apply_attribute_decision_to_scenes(
     ], True
 
 
-def _generic_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
+def _generic_scenes(plan: dict[str, Any], *, game_context: bool) -> list[WritingTaskScene]:
     cards = _scene_cards(plan)
     plot = _plot_simulation(_simulation_plan(plan))
     if not cards:
@@ -491,7 +498,7 @@ def _generic_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
                 key="opening",
                 title="承接与目标",
                 goal="承接上一章状态，明确本章目标、资源和可见风险。",
-                required_surface="上一章结果、当前目标、关键账本或状态、场景入口",
+                required_surface="上一章结果、当前目标、眼前处境和场景入口",
                 entry_state="承接上一章章末状态。",
                 exit_state="目标、资源和第一处行动地点已经清楚。",
                 handoff="下一场从已明确的行动地点推进阻力。",
@@ -501,7 +508,7 @@ def _generic_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
                 key="pressure",
                 title="阻力出现",
                 goal="让世界根据主角行动给出可见反应，形成具体阻力。",
-                required_surface="可观察痕迹、NPC/环境/任务/对手反应、主角判断",
+                required_surface="可观察痕迹、人物、环境或对手反应，以及主角当场判断",
                 entry_state="主角开始行动，阻力尚未完全显形。",
                 exit_state="阻力改变了路线、花费、信息或关系。",
                 handoff="下一场必须基于这个阻力做选择。",
@@ -513,22 +520,22 @@ def _generic_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
                 goal="主角做选择，兑现一点收益，同时付出可见代价。",
                 required_surface="选择过程、行动细节、收益、代价、状态变化",
                 entry_state="主角面对上一场形成的阻力。",
-                exit_state="选择完成，收益和代价落到账本或关系里。",
-                handoff="下一场收束结果并抛出新的前置任务。",
+                exit_state="选择完成，结果和代价已经改变处境或人物关系。",
+                handoff="下一场收束结果并抛出新的问题或行动。",
                 target_chars=max(950, total // 4),
             ),
             WritingTaskScene(
                 key="hook",
-                title="收束与新前置",
+                title="收束与下一步",
                 goal="收住本章事件，更新状态，并留下下一章具体问题。",
                 required_surface="结果回收、状态更新、未解问题、下一章目标",
                 entry_state="核心选择已完成。",
-                exit_state="本章结果已落地，下一章前置任务清楚。",
-                handoff="下一章必须承接这个前置任务。",
+                exit_state="本章结果已落地，下一章要做什么已经清楚。",
+                handoff="下一章必须承接这个行动。",
                 target_chars=max(700, total // 4),
             ),
         ]
-        return _apply_plot_to_scenes(scenes, plot)
+        return _apply_plot_to_scenes(scenes, plot, game_context=game_context)
 
     total = _target_chars_int(plan)
     planned_scene_count = min(5, max(3, len(cards)))
@@ -589,7 +596,7 @@ def _generic_scenes(plan: dict[str, Any]) -> list[WritingTaskScene]:
                 source_ids=["compiled-hook"],
             )
         )
-    return _apply_plot_to_scenes(scenes, plot)
+    return _apply_plot_to_scenes(scenes, plot, game_context=game_context)
 
 
 def build_writing_taskbook(
@@ -604,7 +611,7 @@ def build_writing_taskbook(
     governance = plan.get("governance") if isinstance(plan.get("governance"), dict) else {}
     chapter_intent = governance.get("chapter_intent") if isinstance(governance.get("chapter_intent"), dict) else {}
     trade_authorized = bool(chapter_intent.get("first_chapter_trade_authorized"))
-    scenes = _generic_scenes(plan)
+    scenes = _generic_scenes(plan, game_context=game_context)
     simulation_plan = _simulation_plan(plan)
     event_plan = _event_plan(plan)
     decision = _attribute_decision(plan)
@@ -655,6 +662,7 @@ def build_writing_taskbook(
         global_required.append("重要情绪落到人物当场的动作、停顿、回答或选择里，不写空泛感慨。")
     taskbook = WritingTaskBook(
         chapter_number=chapter_number,
+        genre_mode="game" if game_context else "general",
         chapter_title=_chapter_title(plan),
         chapter_goal=_chapter_goal(plan),
         target_chars=_target_chars_text(plan),
@@ -678,14 +686,14 @@ def ensure_writing_taskbook(
     plan = plan if isinstance(plan, dict) else {}
     existing = plan.get("writing_taskbook")
     if isinstance(existing, dict) and isinstance(existing.get("scenes"), list):
-        return existing
+        existing_mode = str(existing.get("genre_mode") or "").strip()
+        if not genre and existing_mode in {"game", "general"}:
+            return existing
+        expected_mode = "game" if _looks_like_game_context(plan, genre) else "general"
+        compiled_cache = str(existing.get("source") or "").startswith("compiled_from_")
+        if existing_mode == expected_mode or (not existing_mode and not compiled_cache):
+            return existing
     return build_writing_taskbook(chapter_number=chapter_number, plan=plan, genre=genre, style=style)
-
-
-def taskbook_segment_specs(chapter_number: int, plan: dict[str, Any] | None) -> list[dict[str, Any]]:
-    taskbook = ensure_writing_taskbook(chapter_number, plan)
-    scenes = taskbook.get("scenes") if isinstance(taskbook.get("scenes"), list) else []
-    return [scene for scene in scenes if isinstance(scene, dict)]
 
 
 def _scene_lines(scene: dict[str, Any], index: int) -> list[str]:
@@ -704,16 +712,12 @@ def _scene_lines(scene: dict[str, Any], index: int) -> list[str]:
 def format_taskbook_prompt_section(
     taskbook: dict[str, Any] | None,
     *,
-    segment_key: str | None = None,
     include_all_scenes: bool = True,
 ) -> str:
     taskbook = taskbook if isinstance(taskbook, dict) else {}
     scenes = [scene for scene in taskbook.get("scenes", []) if isinstance(scene, dict)]
-    selected = [scene for scene in scenes if not segment_key or scene.get("key") == segment_key]
-    if not selected and segment_key:
-        selected = scenes[:1]
-    scene_block = selected if segment_key else scenes
-    if not include_all_scenes and not segment_key:
+    scene_block = scenes
+    if not include_all_scenes:
         scene_block = scenes[:3]
     lines = [
         "## 本章写法材料",
@@ -747,14 +751,10 @@ def format_taskbook_brief_section(
     taskbook: dict[str, Any] | None,
     *,
     max_scenes: int = 3,
-    segment_key: str | None = None,
 ) -> str:
     taskbook = taskbook if isinstance(taskbook, dict) else {}
     scenes_all = [scene for scene in taskbook.get("scenes", []) if isinstance(scene, dict)]
-    if segment_key:
-        scenes = [scene for scene in scenes_all if scene.get("key") == segment_key][:1]
-    else:
-        scenes = scenes_all[:max_scenes]
+    scenes = scenes_all[:max_scenes]
     lines = [
         "## 本章方向",
         f"这一章要推进：{writer_facing_text(taskbook.get('chapter_goal') or '完成本章推进')}",

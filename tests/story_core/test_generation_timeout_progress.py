@@ -41,7 +41,7 @@ def test_chat_passes_stage_timeout_and_reports_progress(monkeypatch):
             max_tokens=4000,
             json_mode=False,
             agent="writer",
-            stage="分段写作 1/3",
+            stage="整章写作 第1章",
             timeout_seconds=123,
         )
 
@@ -49,7 +49,7 @@ def test_chat_passes_stage_timeout_and_reports_progress(monkeypatch):
     assert error == ""
     assert captured["timeout"] == 123
     assert captured["model"] == "writer-model"
-    assert any("分段写作 1/3" in item and "123" in item for item in progress)
+    assert any("整章写作 第1章" in item and "123" in item for item in progress)
     assert any("模型返回" in item for item in progress)
 
 

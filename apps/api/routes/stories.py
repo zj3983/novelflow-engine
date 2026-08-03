@@ -445,6 +445,7 @@ class CreateProjectRequest(BaseModel):
     relationship_graph: list[dict] = Field(default_factory=list)
 
     enabled_skill_ids: list[str] = Field(default_factory=list)
+    enabled_skill_module_ids: list[str] = Field(default_factory=list)
 
     pipeline_stage: str = "imported"
 
@@ -483,6 +484,7 @@ class UpdateProjectRequest(BaseModel):
     relationship_graph: list[dict] | None = None
 
     enabled_skill_ids: list[str] | None = None
+    enabled_skill_module_ids: list[str] | None = None
 
     status: str | None = None
 
@@ -568,6 +570,12 @@ class ProjectSummaryResponse(BaseModel):
 
     source_path: str = ""
 
+    project_lifecycle: str = "active"
+
+    archived_at: str = ""
+
+    trashed_at: str = ""
+
 
 
 
@@ -595,12 +603,19 @@ class ProjectResponse(BaseModel):
     relationship_graph: list[dict] = Field(default_factory=list)
 
     enabled_skill_ids: list[str] = Field(default_factory=list)
+    enabled_skill_module_ids: list[str] = Field(default_factory=list)
 
     status: str = "draft"
 
     pipeline_stage: str = "imported"
 
     active_story_id: str = ""
+
+    project_lifecycle: str = "active"
+
+    archived_at: str = ""
+
+    trashed_at: str = ""
 
     branches: list[StorySummaryResponse] = Field(default_factory=list)
 
@@ -1887,12 +1902,19 @@ def _serialize_project(project: NovelProject) -> ProjectResponse:
         relationship_graph=project.relationship_graph,
 
         enabled_skill_ids=project.enabled_skill_ids,
+        enabled_skill_module_ids=project.enabled_skill_module_ids,
 
         status=project.status,
 
         pipeline_stage=project.pipeline_stage,
 
         active_story_id=project.active_story_id,
+
+        project_lifecycle=project.project_lifecycle,
+
+        archived_at=project.archived_at,
+
+        trashed_at=project.trashed_at,
 
         branches=branches,
 
@@ -1929,6 +1951,12 @@ def _serialize_project_summary(project: NovelProjectSummary | NovelProject) -> P
         current_chapter=current_chapter,
 
         source_path=project.source_path,
+
+        project_lifecycle=project.project_lifecycle,
+
+        archived_at=project.archived_at,
+
+        trashed_at=project.trashed_at,
 
     )
 
@@ -2729,6 +2757,7 @@ def create_project(payload: CreateProjectRequest) -> ProjectResponse:
         relationship_graph=payload.relationship_graph,
 
         enabled_skill_ids=payload.enabled_skill_ids,
+        enabled_skill_module_ids=payload.enabled_skill_module_ids,
 
         status="simulating" if payload.active_story_id else "draft",
 
@@ -2754,9 +2783,109 @@ def create_project(payload: CreateProjectRequest) -> ProjectResponse:
 
 @router.get("/projects")
 
-def list_projects() -> list[ProjectSummaryResponse]:
+def list_projects(lifecycle: Literal["active", "archived", "trashed"] = "active") -> list[ProjectSummaryResponse]:
 
-    return [_serialize_project_summary(project) for project in store.list_projects()]
+    return [_serialize_project_summary(project) for project in store.list_projects(lifecycle=lifecycle)]
+
+
+
+def _assert_project_lifecycle_mutation_allowed(project: NovelProject) -> None:
+
+    with _automation_jobs_lock:
+
+        automation_job_id = _active_automation_jobs.get(project.project_id)
+
+        automation_job = _automation_jobs.get(automation_job_id or "")
+
+        if automation_job and automation_job.get("status") in {"queued", "running"}:
+
+            raise HTTPException(status_code=409, detail="project_generation_in_progress")
+
+    story_ids = {record.story.story_id for record in store.list_project_stories(project.project_id)}
+
+    with _generation_jobs_lock:
+
+        for story_id in story_ids:
+
+            job_id = _active_generation_jobs.get(story_id)
+
+            job = _generation_jobs.get(job_id or "")
+
+            if job and job.get("status") in {"queued", "running"}:
+
+                raise HTTPException(status_code=409, detail="project_generation_in_progress")
+
+
+
+def _project_for_lifecycle_mutation(project_id: str) -> NovelProject:
+
+    project = store.get_project(project_id)
+
+    if project is None:
+
+        raise HTTPException(status_code=404, detail="project_not_found")
+
+    _assert_project_lifecycle_mutation_allowed(project)
+
+    return project
+
+
+
+@router.post("/projects/{project_id}/archive")
+
+def archive_project(project_id: str) -> ProjectResponse:
+
+    project = _project_for_lifecycle_mutation(project_id)
+
+    if project.project_lifecycle == "trashed":
+
+        raise HTTPException(status_code=409, detail="project_is_trashed")
+
+    project.project_lifecycle = "archived"
+
+    project.archived_at = datetime.now(timezone.utc).isoformat()
+
+    store.update_project(project)
+
+    return _serialize_project(project)
+
+
+
+@router.post("/projects/{project_id}/trash")
+
+def trash_project(project_id: str) -> ProjectResponse:
+
+    project = _project_for_lifecycle_mutation(project_id)
+
+    if project.project_lifecycle != "trashed":
+
+        project.pre_trash_lifecycle = "archived" if project.project_lifecycle == "archived" else "active"
+
+    project.project_lifecycle = "trashed"
+
+    project.trashed_at = datetime.now(timezone.utc).isoformat()
+
+    store.update_project(project)
+
+    return _serialize_project(project)
+
+
+
+@router.post("/projects/{project_id}/restore")
+
+def restore_project(project_id: str) -> ProjectResponse:
+
+    project = _project_for_lifecycle_mutation(project_id)
+
+    project.project_lifecycle = project.pre_trash_lifecycle if project.project_lifecycle == "trashed" else "active"
+
+    project.archived_at = "" if project.project_lifecycle == "active" else project.archived_at
+
+    project.trashed_at = ""
+
+    store.update_project(project)
+
+    return _serialize_project(project)
 
 
 
@@ -2764,13 +2893,23 @@ def list_projects() -> list[ProjectSummaryResponse]:
 
 @router.delete("/projects/{project_id}")
 
-def delete_project(project_id: str) -> DeleteProjectResponse:
+def delete_project(project_id: str, confirm_title: str) -> DeleteProjectResponse:
 
     project = store.get_project(project_id)
 
     if project is None:
 
         raise HTTPException(status_code=404, detail="project_not_found")
+
+    _assert_project_lifecycle_mutation_allowed(project)
+
+    if project.project_lifecycle != "trashed":
+
+        raise HTTPException(status_code=409, detail="project_must_be_trashed")
+
+    if confirm_title != project.title:
+
+        raise HTTPException(status_code=422, detail="project_title_confirmation_mismatch")
 
     story_ids = [record.story.story_id for record in store.list_project_stories(project_id)]
 
@@ -2791,6 +2930,10 @@ def get_project(project_id: str) -> ProjectResponse:
     project = store.get_project(project_id)
 
     if project is None:
+
+        raise HTTPException(status_code=404, detail="project_not_found")
+
+    if project.project_lifecycle == "trashed":
 
         raise HTTPException(status_code=404, detail="project_not_found")
 
@@ -2900,7 +3043,12 @@ def get_project_writing_packet(project_id: str, chapter_number: int | None = Non
 
     skill_context = {
 
-        purpose: skill_pack_prompt_context(project.enabled_skill_ids, purpose=purpose, max_chars_per_pack=2600)
+        purpose: skill_pack_prompt_context(
+            project.enabled_skill_ids,
+            enabled_module_ids=project.enabled_skill_module_ids or None,
+            purpose=purpose,
+            max_chars_per_pack=2600,
+        )
 
         for purpose in ("writer", "dialogue", "style", "genre", "continuity", "reviewer")
 
@@ -3537,6 +3685,10 @@ def update_project(project_id: str, payload: UpdateProjectRequest) -> ProjectRes
     if payload.enabled_skill_ids is not None:
 
         project.enabled_skill_ids = payload.enabled_skill_ids
+
+    if payload.enabled_skill_module_ids is not None:
+
+        project.enabled_skill_module_ids = payload.enabled_skill_module_ids
 
     if payload.status is not None:
 

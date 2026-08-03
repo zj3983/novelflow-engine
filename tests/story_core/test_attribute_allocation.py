@@ -3,6 +3,7 @@ from copy import deepcopy
 import pytest
 
 from packages.story_core.attribute_allocation import (
+    director_attribute_allocation_contract,
     apply_attribute_allocation,
     attribute_allocation_context,
     attribute_allocation_rule_from_story,
@@ -14,6 +15,14 @@ from packages.story_core.attribute_allocation import (
     rebuild_attribute_progression,
     validate_attribute_allocation_decision,
 )
+
+
+def test_director_attribute_allocation_contract_is_owned_by_progression_module():
+    contract = director_attribute_allocation_contract()
+
+    assert "attribute_allocation_decision" in contract
+    assert "allocate" in contract and "carry" in contract
+    assert "state_delta.protagonist.level" in contract
 
 
 def free_attribute_rule() -> dict[str, object]:

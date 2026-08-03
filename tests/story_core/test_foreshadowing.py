@@ -1,10 +1,85 @@
 import packages.story_core.foreshadowing as foreshadowing_module
 from packages.story_core.foreshadowing import (
+    canonicalize_foreshadowing_ledger,
     normalize_foreshadowing_text,
     reconcile_foreshadowing,
     select_unresolved_foreshadowing,
 )
 from packages.story_core.models import ForeshadowingState
+
+
+def test_canonicalize_foreshadowing_ledger_deduplicates_and_stably_sorts():
+    canonical = canonicalize_foreshadowing_ledger(
+        [
+            ForeshadowingState(text="Later", first_chapter=8),
+            ForeshadowingState(
+                text="  SEALED\tLetter ",
+                first_chapter=4,
+                last_touched_chapter=5,
+            ),
+            ForeshadowingState(
+                text="sealed letter",
+                first_chapter=2,
+                last_touched_chapter=7,
+                status="reinforced",
+            ),
+        ]
+    )
+
+    assert [item.text for item in canonical] == ["sealed letter", "Later"]
+    assert canonical[0].first_chapter == 2
+    assert canonical[0].last_touched_chapter == 7
+    assert canonical[0].status == "reinforced"
+
+
+def test_canonicalize_terminal_expired_clears_resolved_chapter():
+    canonical = canonicalize_foreshadowing_ledger(
+        [
+            ForeshadowingState(
+                text="The sealed letter",
+                first_chapter=1,
+                last_touched_chapter=2,
+                status="resolved",
+                resolved_chapter=2,
+            ),
+            ForeshadowingState(
+                text="the sealed letter",
+                first_chapter=1,
+                last_touched_chapter=10,
+                status="expired",
+            ),
+        ]
+    )
+
+    assert len(canonical) == 1
+    assert canonical[0].status == "expired"
+    assert canonical[0].last_touched_chapter == 10
+    assert canonical[0].resolved_chapter is None
+
+
+def test_canonicalize_terminal_resolved_covers_merged_last_touch():
+    canonical = canonicalize_foreshadowing_ledger(
+        [
+            ForeshadowingState(
+                text="The sealed letter",
+                first_chapter=1,
+                last_touched_chapter=2,
+                status="resolved",
+                resolved_chapter=2,
+            ),
+            ForeshadowingState(
+                text="the sealed letter",
+                first_chapter=1,
+                last_touched_chapter=10,
+                status="reinforced",
+            ),
+        ]
+    )
+
+    assert len(canonical) == 1
+    assert canonical[0].status == "resolved"
+    assert canonical[0].last_touched_chapter == 10
+    assert canonical[0].resolved_chapter == 10
 
 
 def test_legacy_entry_defaults_last_touched_to_first_chapter():
@@ -217,7 +292,7 @@ def test_existing_normalized_duplicates_are_canonicalized_deterministically():
     assert forward[0].last_touched_chapter == 10
     assert forward[0].status == "expired"
     assert forward[0].payoff_plan == "Reveal the sender."
-    assert forward[0].resolved_chapter == 9
+    assert forward[0].resolved_chapter is None
 
 
 def test_out_of_order_replay_does_not_advance_or_resolve_a_thread():
@@ -282,6 +357,21 @@ def test_selection_with_non_positive_limit_is_empty():
     ledger = [ForeshadowingState(text="thread", first_chapter=1, status="open")]
 
     assert select_unresolved_foreshadowing(ledger, limit=0) == []
+
+
+def test_selection_hides_threads_that_start_after_target_chapter():
+    ledger = [
+        ForeshadowingState(text="current", first_chapter=4, status="open"),
+        ForeshadowingState(text="future", first_chapter=20, status="open"),
+    ]
+
+    selected = select_unresolved_foreshadowing(
+        ledger,
+        chapter_number=5,
+        limit=8,
+    )
+
+    assert [entry.text for entry in selected] == ["current"]
 
 
 def test_module_does_not_expose_misleading_open_selection_alias():

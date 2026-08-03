@@ -130,6 +130,80 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.classTree {
+  min-width: 0;
+  padding: 14px 0;
+  border-top: 1px solid rgba(31, 29, 26, 0.09);
+}
+
+.classTree > h3,
+.tierHead h4,
+.tierHead p,
+.tierPath h5 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.classTree > h3 {
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.tierList {
+  display: grid;
+  gap: 18px;
+}
+
+.tier {
+  min-width: 0;
+  padding-left: 16px;
+  border-left: 3px solid var(--ws-accent);
+}
+
+.tierHead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.tierHead h4 {
+  font-size: 15px;
+}
+
+.tierHead p {
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+}
+
+.tierRules {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+  margin: 10px 0 0;
+}
+
+.tierPaths {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+  margin-top: 14px;
+}
+
+.tierPath {
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(31, 29, 26, 0.1);
+}
+
+.tierPath h5,
+.classOption > strong {
+  font-size: 13px;
+}
+
+.classOption {
+  margin-top: 9px;
+}
+
 @media (max-width: 900px) {
   .pathGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -147,5 +221,15 @@
   .detail {
     grid-template-columns: minmax(0, 1fr);
     gap: 1px;
+  }
+
+  .tierHead {
+    display: grid;
+    gap: 3px;
+  }
+
+  .tierRules,
+  .tierPaths {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

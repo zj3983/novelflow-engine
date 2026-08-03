@@ -224,9 +224,9 @@ def test_power_system_builder_locks_complete_payload_content_and_insertion_order
         allow_nan=False,
     ).encode("utf-8")
 
-    assert len(serialized) == 10045
+    assert len(serialized) == 27002
     assert hashlib.sha256(serialized).hexdigest() == (
-        "ab71139269d0fb2ff285fdf41b9ddeecf1d893b1863dadf4d5e80a7f3408c03f"
+        "05a67b1fb3d6f6a3179ffc1c0c299ab0512b7c736161bb6fe0e984f040f7c1fa"
     )
 
 

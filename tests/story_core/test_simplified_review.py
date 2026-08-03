@@ -1,4 +1,5 @@
 from packages.story_core.simplified_review import build_simplified_review
+from packages.story_core.orchestrator import _should_run_full_revision
 
 
 def test_simplified_review_only_blocks_hard_errors():
@@ -29,6 +30,35 @@ def test_simplified_review_keeps_advisory_issues_non_blocking():
     assert all(item["severity"] == "advisory" for item in report["issues"])
 
 
+def test_simplified_review_marks_elliptical_dialogue_for_targeted_revision():
+    report = build_simplified_review(
+        {"writing_review": {"issues": ["现代中文对话不自然：连续省略对象的状态台词。"]}}
+    )
+
+    assert report["has_hard_errors"] is False
+    assert report["has_blocking_dialogue"] is True
+    assert report["issues"][0]["severity"] == "blocking"
+    assert _should_run_full_revision(report) is True
+
+
+def test_simplified_review_keeps_telegraphic_dialogue_as_visible_advice():
+    report = build_simplified_review(
+        {
+            "writing_review": {
+                "issues": [
+                    "现代中文对话不自然：清单式短句“你守住校验，残镜若再拉你，立刻拒绝”、"
+                    "电报码式台词“你守住校验，残镜若再拉你，立刻拒绝”。"
+                ]
+            }
+        }
+    )
+
+    assert report["has_hard_errors"] is False
+    assert report["has_blocking_dialogue"] is False
+    assert report["issues"][0]["severity"] == "advisory"
+    assert _should_run_full_revision(report) is False
+
+
 def test_simplified_review_does_not_revise_for_ordinary_prose_advice():
     report = build_simplified_review(
         {"writing_review": {"pass": False, "issues": ["章末动作还可以更具体。"]}}
@@ -39,7 +69,7 @@ def test_simplified_review_does_not_revise_for_ordinary_prose_advice():
     assert report["categories"]["prose"]["count"] == 1
 
 
-def test_simplified_review_treats_scheduled_trope_miss_as_hard_revision():
+def test_simplified_review_keeps_scheduled_trope_miss_as_advice():
     report = build_simplified_review(
         {
             "writing_review": {
@@ -50,11 +80,11 @@ def test_simplified_review_treats_scheduled_trope_miss_as_hard_revision():
         }
     )
 
-    assert report["pass"] is False
-    assert report["has_hard_errors"] is True
-    assert report["needs_revision"] is True
-    assert report["categories"]["hard"]["count"] == 1
-    assert report["categories"]["prose"]["count"] == 0
+    assert report["pass"] is True
+    assert report["has_hard_errors"] is False
+    assert report["needs_revision"] is False
+    assert report["categories"]["hard"]["count"] == 0
+    assert report["categories"]["prose"]["count"] == 1
 
 
 def test_simplified_review_revises_ai_flavor_once():
