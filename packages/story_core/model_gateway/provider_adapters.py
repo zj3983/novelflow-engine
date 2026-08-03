@@ -79,9 +79,14 @@ def _post_json_with_retry(
 
 
 def _request_config(request: ModelRequest, base: RetryConfig) -> RetryConfig:
-    if request.timeout_seconds is None:
-        return base
-    return replace(base, timeout=request.timeout_seconds)
+    changes: dict[str, Any] = {}
+    if request.timeout_seconds is not None:
+        changes["timeout"] = request.timeout_seconds
+    metadata = request.metadata
+    for key in ("max_retries", "max_response_bytes", "allow_compatibility_fallback"):
+        if key in metadata:
+            changes[key] = metadata[key]
+    return replace(base, **changes) if changes else base
 
 
 def _content_text(content: Any) -> str:

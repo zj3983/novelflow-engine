@@ -10,6 +10,7 @@ from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.character_profiles import normalize_speech_style_for_writing
 from packages.story_core.elastic_outline import outline_window_status
 from packages.story_core.http_retry import post_json_with_retry
+from packages.story_core.model_gateway import ModelRequest, RuntimeModelGateway
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.novel_type_ids import canonical_novel_type_id
 from packages.story_core.outline_planning import (
@@ -34,6 +35,71 @@ from packages.story_core.world_blueprint_context import outline_power_system_con
 
 
 PlanningMode = Literal["initial", "regenerate", "extend"]
+
+
+def _runtime_gateway_for_legacy_injection(
+    post_json: Callable[..., dict[str, Any]],
+    runtime_resolver: Callable[[str], StageRuntimeSettings],
+) -> RuntimeModelGateway:
+    if post_json is post_json_with_retry:
+        return RuntimeModelGateway(runtime_resolver=runtime_resolver)
+    active: dict[str, Any] = {}
+
+    def compatible_runtime(stage: str) -> StageRuntimeSettings:
+        runtime = runtime_resolver(stage)
+        active["runtime"] = runtime
+        provider = str(getattr(runtime, "provider_id", getattr(runtime, "provider", "")))
+        protocol = getattr(runtime, "protocol", "openai_compatible")
+        if protocol == "codex_cli" or provider == "codexcli":
+            provider, protocol = "custom_openai", "openai_compatible"
+        return StageRuntimeSettings(
+            provider_id=provider,
+            protocol=protocol,
+            model=runtime.model,
+            api_key=runtime.api_key or ("legacy-injected" if provider == "custom_openai" else ""),
+            base_url=runtime.base_url or "http://legacy-injected.invalid",
+            codex_command=runtime.codex_command,
+            temperature=runtime.temperature,
+        )
+
+    def transport(*, url: str, payload: dict[str, Any], headers: dict[str, str], config: Any) -> dict[str, Any]:
+        runtime = active["runtime"]
+        base_url = str(runtime.base_url).rstrip("/")
+        path = url[len(base_url) :] if url.startswith(base_url) else url
+        return post_json(
+            base_url,
+            path,
+            payload,
+            runtime.api_key,
+            provider=runtime.provider,
+            codex_command=runtime.codex_command,
+        )
+
+    return RuntimeModelGateway(runtime_resolver=compatible_runtime, transport=transport)
+
+
+def _complete_payload(
+    gateway: RuntimeModelGateway,
+    payload: dict[str, Any],
+    *,
+    operation: str,
+) -> dict[str, Any]:
+    response = gateway.complete_stage(
+        "planner",
+        ModelRequest(
+            prompt="",
+            messages=tuple(payload.get("messages", ())),
+            provider="",
+            model="",
+            operation=operation,
+            temperature=payload.get("temperature"),
+            max_tokens=payload.get("max_tokens"),
+            json_mode=payload.get("response_format") == {"type": "json_object"},
+        ),
+    )
+    if not response.ok:
+        raise ValueError(response.error or "model_call_failed")
+    return {"choices": [{"message": {"content": response.text}}]}
 
 
 def _compact_historical_chapter_summaries(
@@ -271,9 +337,19 @@ class LLMOutlinePlanningGenerator:
         *,
         post_json: Callable[..., dict[str, Any]] = post_json_with_retry,
         runtime_resolver: Callable[[str], StageRuntimeSettings] = resolve_stage_runtime,
+        model_gateway: RuntimeModelGateway | None = None,
     ) -> None:
-        self._post_json = post_json
-        self._runtime_resolver = runtime_resolver
+        runtime_cache: dict[str, StageRuntimeSettings] = {}
+
+        def cached_runtime_resolver(stage: str) -> StageRuntimeSettings:
+            if stage not in runtime_cache:
+                runtime_cache[stage] = runtime_resolver(stage)
+            return runtime_cache[stage]
+
+        self._runtime_resolver = cached_runtime_resolver
+        self._model_gateway = model_gateway or _runtime_gateway_for_legacy_injection(
+            post_json, cached_runtime_resolver
+        )
 
     def generate(
         self,
@@ -530,13 +606,10 @@ class LLMOutlinePlanningGenerator:
                     if phase_callback:
                         phase_callback(phase, "running", None, "")
                     try:
-                        response = self._post_json(
-                            runtime.base_url,
-                            "/chat/completions",
+                        response = _complete_payload(
+                            self._model_gateway,
                             request_payload,
-                            runtime.api_key,
-                            provider=runtime.provider,
-                            codex_command=runtime.codex_command,
+                            operation=f"outline_planning_{phase}",
                         )
                         data = parse_json_message_content(response)
                         if data is None and phase == "chapter_window":
@@ -553,13 +626,10 @@ class LLMOutlinePlanningGenerator:
                                     },
                                 ],
                             }
-                            response = self._post_json(
-                                runtime.base_url,
-                                "/chat/completions",
+                            response = _complete_payload(
+                                self._model_gateway,
                                 retry_payload,
-                                runtime.api_key,
-                                provider=runtime.provider,
-                                codex_command=runtime.codex_command,
+                                operation="outline_planning_chapter_window_retry",
                             )
                             data = parse_json_message_content(response)
                         if data is None:
@@ -726,13 +796,10 @@ class LLMOutlinePlanningGenerator:
                 parsed = foundation_data
                 split_plan_completed = True
             else:
-                response = self._post_json(
-                    runtime.base_url,
-                    "/chat/completions",
+                response = _complete_payload(
+                    self._model_gateway,
                     payload,
-                    runtime.api_key,
-                    provider=runtime.provider,
-                    codex_command=runtime.codex_command,
+                    operation="outline_planning",
                 )
                 parsed = parse_json_message_content(response)
                 if parsed is None:

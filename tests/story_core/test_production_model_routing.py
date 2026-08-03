@@ -77,14 +77,14 @@ def test_orchestrator_routes_planner_writer_and_memory_through_stage_gateway(mon
 def test_production_text_modules_do_not_call_legacy_chat_completions_transport():
     root = Path(__file__).resolve().parents[2] / "packages" / "story_core"
     violations: list[str] = []
-    for path in (
-        root / "agent_base.py",
-        root / "orchestrator.py",
-        root / "character_agent.py",
-        root / "director_agent.py",
-        root / "outline_agent.py",
-        root / "writer_agent.py",
-    ):
+    excluded_transport_modules = {
+        "codex_cli_provider.py",
+        "cover_image_provider.py",
+        "http_retry.py",
+    }
+    for path in root.glob("*.py"):
+        if path.name in excluded_transport_modules:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):

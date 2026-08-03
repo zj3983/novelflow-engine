@@ -159,7 +159,7 @@ class BaseOpenAIProvider:
     
     Eliminates duplicated _runtime_settings(), available(), and _post_json()
     across OpenAIWriterTextProvider, OpenAIDirectorDecisionProvider,
-    OpenAICharacterProposalProvider, and OpenAIMemorySummaryProvider.
+    OpenAICharacterProposalProvider and other legacy callers.
     
     Subclass must set:
     - runtime_key: str  (e.g. "writer", "director", "character", "memory")

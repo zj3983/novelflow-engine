@@ -6,6 +6,7 @@ from urllib.error import HTTPError, URLError
 import pytest
 from pydantic import ValidationError
 
+from packages.story_core.model_gateway import ModelResponse
 from packages.story_core.publishing_assets import (
     CoverPromptGenerator,
     MAX_SYNOPSIS_TAG_CHARS,
@@ -23,7 +24,8 @@ from packages.story_core.runtime_config import StageRuntimeSettings
 
 def _publishing_runtime(*, provider: str = "openai") -> StageRuntimeSettings:
     return StageRuntimeSettings(
-        provider=provider,
+        provider_id=provider,
+        protocol="codex_cli" if provider == "codexcli" else "openai_compatible",
         model="publishing-model",
         api_key="publishing-key" if provider == "openai" else "",
         base_url="https://text.test/v1",
@@ -50,6 +52,30 @@ def _valid_synopsis() -> dict[str, object]:
         "pattern": "conflict",
         "visual_hook": "血月下的亡魂渡船",
     }
+
+
+def test_publishing_text_routes_through_planner_gateway() -> None:
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            return ModelResponse.success(
+                request,
+                text=json.dumps(_valid_synopsis(), ensure_ascii=False),
+            )
+
+    result = SynopsisGenerator(model_gateway=Gateway()).generate(
+        _publishing_context(), _publishing_runtime()
+    )
+
+    assert result.pattern == "conflict"
+    assert calls[0][0] == "planner"
+    request = calls[0][1]
+    assert request.operation == "publishing_synopsis"
+    assert request.timeout_seconds == PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS
+    assert request.metadata["max_retries"] == 1
+    assert request.metadata["max_response_bytes"] == PUBLISHING_TEXT_MAX_RESPONSE_BYTES
 
 
 def test_synopsis_generator_returns_validated_synopsis_and_uses_runtime_transport() -> None:

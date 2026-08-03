@@ -14,7 +14,7 @@ from packages.story_core.genre_plugins import (
     plugin_prompt_guide,
     select_genre_plugins,
 )
-from packages.story_core.http_retry import post_json_with_retry
+from packages.story_core.model_gateway import ModelRequest, RuntimeModelGateway
 from packages.story_core.models import NovelProject
 from packages.story_core.novel_type_catalog import (
     normalize_novel_type_ids,
@@ -1952,32 +1952,31 @@ def _merge_enrichment(
     return next_project
 
 
-def _call_world_enrichment_model(project: NovelProject, *, rules_only: bool) -> NovelProject:
-    settings = resolve_stage_runtime("planner")
-    if settings.provider != "codexcli" and not settings.api_key:
-        raise WorldEnrichmentError("missing_api_key")
-
-    payload = {
-        "model": settings.model,
-        "messages": [
-            {"role": "system", "content": "You are a senior Chinese webnovel worldbuilding editor. Return JSON only."},
-            {"role": "user", "content": _build_prompt(project, rules_only=rules_only)},
-        ],
-        "response_format": {"type": "json_object"},
-        "reasoning_effort": "low",
-        "temperature": float(settings.temperature),
-        "max_tokens": 6000,
-        "parameters": {"enable_thinking": False},
-    }
-    response = post_json_with_retry(
-        settings.base_url,
-        "/chat/completions",
-        payload,
-        settings.api_key,
-        provider=settings.provider,
-        codex_command=settings.codex_command,
+def _call_world_enrichment_model(
+    project: NovelProject,
+    *,
+    rules_only: bool,
+    model_gateway: RuntimeModelGateway | None = None,
+) -> NovelProject:
+    gateway = model_gateway or RuntimeModelGateway(runtime_resolver=resolve_stage_runtime)
+    response = gateway.complete_stage(
+        "planner",
+        ModelRequest(
+            prompt=_build_prompt(project, rules_only=rules_only),
+            system_prompt="You are a senior Chinese webnovel worldbuilding editor. Return JSON only.",
+            provider="",
+            model="",
+            operation="world_rulebook_enrichment" if rules_only else "world_enrichment",
+            max_tokens=6000,
+            json_mode=True,
+            metadata={"reasoning_effort": "low", "enable_thinking": False},
+        ),
     )
-    parsed = parse_json_message_content(response)
+    if not response.ok:
+        raise WorldEnrichmentError(response.error or "model_call_failed")
+    parsed = parse_json_message_content(
+        {"choices": [{"message": {"content": response.text}}]}
+    )
     if not parsed:
         raise WorldEnrichmentError("invalid_llm_response")
     try:

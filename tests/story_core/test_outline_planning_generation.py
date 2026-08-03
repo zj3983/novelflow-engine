@@ -6,6 +6,7 @@ import inspect
 
 import pytest
 
+from packages.story_core.model_gateway import ModelResponse
 from packages.story_core.outline_planning import (
     INITIAL_OUTLINE_CHAPTER_COUNT,
     validate_generated_continuation_plan,
@@ -580,7 +581,8 @@ class RecordingRuntime:
     def resolve(self, stage):
         self.runtime_calls.append(stage)
         return StageRuntimeSettings(
-            provider="openai",
+            provider_id="openai",
+            protocol="openai_compatible",
             model="planning-test-model",
             base_url="http://runtime.test",
             api_key="test-key",
@@ -631,6 +633,38 @@ class RecordingRuntime:
 @pytest.fixture
 def generator_fixture() -> RecordingRuntime:
     return RecordingRuntime()
+
+
+def test_outline_generation_routes_through_planner_gateway() -> None:
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            return ModelResponse.success(
+                request,
+                text=json.dumps(_valid_plan(), ensure_ascii=False),
+            )
+
+    runtime_calls = []
+    runtime = StageRuntimeSettings(
+        provider_id="deepseek",
+        protocol="openai_compatible",
+        model="deepseek-chat",
+        api_key="test-key",
+        base_url="https://api.deepseek.test",
+        temperature=0.31,
+    )
+    result = LLMOutlinePlanningGenerator(
+        runtime_resolver=lambda stage: runtime_calls.append(stage) or runtime,
+        model_gateway=Gateway(),
+    ).generate(_brief(), mode="initial")
+
+    assert result.outline.chapters
+    assert runtime_calls == ["planner"]
+    assert calls[0][0] == "planner"
+    assert calls[0][1].operation == "outline_planning"
+    assert calls[0][1].json_mode is True
 
 
 def test_generator_requests_one_compact_structured_plan() -> None:
@@ -768,7 +802,8 @@ def test_codexcli_full_plan_is_generated_in_three_bounded_phases(mode: str) -> N
     generator = LLMOutlinePlanningGenerator(
         post_json=fake_post,
         runtime_resolver=lambda _stage: StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="planning-test-model",
             codex_command="codex-test",
         ),
@@ -820,7 +855,7 @@ def test_codexcli_generation_callbacks_keep_completed_phases_after_later_failure
     generator = LLMOutlinePlanningGenerator(
         post_json=fake_post,
         runtime_resolver=lambda _stage: StageRuntimeSettings(
-            provider="codexcli", model="planning-test-model", codex_command="codex-test"
+            provider_id="codexcli", protocol="codex_cli", model="planning-test-model", codex_command="codex-test"
         ),
     )
 
@@ -850,7 +885,7 @@ def test_codexcli_generation_reuses_validated_cached_phases() -> None:
         return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
 
     runtime = lambda _stage: StageRuntimeSettings(
-        provider="codexcli", model="planning-test-model", codex_command="codex-test"
+        provider_id="codexcli", protocol="codex_cli", model="planning-test-model", codex_command="codex-test"
     )
     with pytest.raises(ValueError):
         LLMOutlinePlanningGenerator(post_json=first_post, runtime_resolver=runtime).generate(
@@ -894,7 +929,7 @@ def test_codexcli_retries_once_when_chapter_window_is_not_json() -> None:
     generator = LLMOutlinePlanningGenerator(
         post_json=fake_post,
         runtime_resolver=lambda _stage: StageRuntimeSettings(
-            provider="codexcli", model="planning-test-model", codex_command="codex-test"
+            provider_id="codexcli", protocol="codex_cli", model="planning-test-model", codex_command="codex-test"
         ),
     )
 
@@ -917,7 +952,7 @@ def test_codexcli_marks_chapter_phase_failed_when_combined_plan_validation_fails
     generator = LLMOutlinePlanningGenerator(
         post_json=fake_post,
         runtime_resolver=lambda _stage: StageRuntimeSettings(
-            provider="codexcli", model="planning-test-model", codex_command="codex-test"
+            provider_id="codexcli", protocol="codex_cli", model="planning-test-model", codex_command="codex-test"
         ),
     )
 
@@ -1370,7 +1405,7 @@ def test_generator_rejects_invalid_output_and_long_guidance() -> None:
     generator = LLMOutlinePlanningGenerator(
         post_json=lambda *args, **kwargs: {"choices": [{"message": {"content": "{}"}}]},
         runtime_resolver=lambda name: runtime_calls.append(name) or StageRuntimeSettings(
-            provider="codexcli", model="planning-test-model"
+            provider_id="codexcli", protocol="codex_cli", model="planning-test-model"
         ),
     )
 
