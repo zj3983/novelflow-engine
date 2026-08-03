@@ -66,16 +66,33 @@ export type CharacterPortrait = {
 export type AgentSettings = NonNullable<CreateStoryRequest["agent_settings"]>;
 export type RuntimeStrategySettings = AgentSettings;
 
-export type RuntimeProvider = "codexcli" | "openai";
-export type RuntimeStageName = "planner" | "writer" | "memory";
+export type RuntimeProvider = string;
+export type RuntimeStageName = "planner" | "writer";
 
-export type RuntimeProviderSettings = {
+export type RuntimeProviderAccount = {
   api_key: string;
   base_url: string;
+  custom_models: string[];
   codex_command: string;
-  planner: string;
-  writer: string;
-  memory: string;
+};
+
+export type RuntimeStageBinding = { provider_id: string; model: string };
+
+export type RuntimeProviderDefinition = {
+  provider_id: string;
+  name: string;
+  protocol: "openai_compatible" | "anthropic" | "gemini" | "codex_cli";
+  default_base_url: string;
+  planner_models: string[];
+  writer_models: string[];
+  requires_api_key: boolean;
+  base_url_editable: boolean;
+  help_text: string;
+};
+
+export type RuntimeProviderCatalog = {
+  schema_version: "provider-catalog/v1";
+  providers: RuntimeProviderDefinition[];
 };
 
 export type RuntimeImageSettings = {
@@ -86,8 +103,9 @@ export type RuntimeImageSettings = {
 };
 
 export type RuntimeSettings = {
-  provider: RuntimeProvider;
-  providers: Record<RuntimeProvider, RuntimeProviderSettings>;
+  schema_version: "runtime-config/v2";
+  accounts: Record<string, RuntimeProviderAccount>;
+  stages: Record<RuntimeStageName, RuntimeStageBinding>;
   image: RuntimeImageSettings;
   temperature: number;
   new_character_policy: AgentSettings["new_character_policy"];
@@ -142,7 +160,7 @@ export class PublishingApiError extends Error {
 
 export type RuntimeConnectionResult = {
   ok: boolean;
-  provider: RuntimeProvider;
+  provider: string;
   stage: RuntimeStageName;
   model: string;
   message: string;
@@ -2064,34 +2082,15 @@ export function createDefaultAgentSettings(): AgentSettings {
   return defaultAgentSettings();
 }
 
-function defaultCodexCLIProvider(): RuntimeProviderSettings {
-  return {
-    api_key: "",
-    base_url: "",
-    codex_command: "codex",
-    planner: "gpt-5.4",
-    writer: "gpt-5.4",
-    memory: "gpt-5.4",
-  };
-}
-
-function defaultOpenAIProvider(): RuntimeProviderSettings {
-  return {
-    api_key: "",
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    codex_command: "",
-    planner: "qwen3.6-plus",
-    writer: "qwen3.6-plus",
-    memory: "qwen3.6-plus",
-  };
-}
-
 export function createDefaultRuntimeSettings(): RuntimeSettings {
   return {
-    provider: "codexcli",
-    providers: {
-      codexcli: defaultCodexCLIProvider(),
-      openai: defaultOpenAIProvider(),
+    schema_version: "runtime-config/v2",
+    accounts: {
+      codexcli: { api_key: "", base_url: "", custom_models: [], codex_command: "codex" },
+    },
+    stages: {
+      planner: { provider_id: "codexcli", model: "gpt-5-codex" },
+      writer: { provider_id: "codexcli", model: "gpt-5-codex" },
     },
     image: {
       enabled: false,
@@ -2176,17 +2175,12 @@ function updateRuntimeForChapter(
   return nextRuntime;
 }
 
-function normalizeRuntimeProvider(
-  value: Partial<RuntimeProviderSettings> | undefined,
-  fallback: RuntimeProviderSettings,
-): RuntimeProviderSettings {
+function normalizeRuntimeAccount(value: Partial<RuntimeProviderAccount> | undefined): RuntimeProviderAccount {
   return {
-    api_key: value?.api_key ?? fallback.api_key,
-    base_url: value?.base_url ?? fallback.base_url,
-    codex_command: value?.codex_command ?? fallback.codex_command,
-    planner: value?.planner ?? fallback.planner,
-    writer: value?.writer ?? fallback.writer,
-    memory: value?.memory ?? fallback.memory,
+    api_key: typeof value?.api_key === "string" ? value.api_key : "",
+    base_url: typeof value?.base_url === "string" ? value.base_url : "",
+    custom_models: Array.isArray(value?.custom_models) ? value.custom_models.filter((model): model is string => typeof model === "string") : [],
+    codex_command: typeof value?.codex_command === "string" ? value.codex_command : "",
   };
 }
 
@@ -2331,14 +2325,23 @@ function normalizeNestedProjectResponse<T extends { project: unknown }>(value: T
 
 function normalizeRuntimeSettings(value?: Partial<RuntimeSettings>): RuntimeSettings {
   const base = defaultRuntimeSettings();
-  if (!value) {
-    return base;
-  }
+  if (!value || value.schema_version !== "runtime-config/v2") return base;
+  const accounts = Object.fromEntries(
+    Object.entries(value.accounts ?? {}).map(([providerId, account]) => [providerId, normalizeRuntimeAccount(account)]),
+  );
+  if (!accounts.codexcli) accounts.codexcli = base.accounts.codexcli;
   return {
-    provider: value.provider === "openai" ? "openai" : "codexcli",
-    providers: {
-      codexcli: normalizeRuntimeProvider(value.providers?.codexcli, base.providers.codexcli),
-      openai: normalizeRuntimeProvider(value.providers?.openai, base.providers.openai),
+    schema_version: "runtime-config/v2",
+    accounts,
+    stages: {
+      planner: {
+        provider_id: value.stages?.planner?.provider_id || base.stages.planner.provider_id,
+        model: value.stages?.planner?.model ?? base.stages.planner.model,
+      },
+      writer: {
+        provider_id: value.stages?.writer?.provider_id || base.stages.writer.provider_id,
+        model: value.stages?.writer?.model ?? base.stages.writer.model,
+      },
     },
     image: normalizeRuntimeImage(value.image),
     temperature: Number(value.temperature ?? base.temperature),
@@ -2965,11 +2968,15 @@ export async function fetchRuntimeSettings(): Promise<RuntimeSettings> {
   return normalizeRuntimeSettings(response);
 }
 
-export async function revealRuntimeApiKey(provider: RuntimeProvider | "image"): Promise<string> {
+export async function fetchRuntimeProviderCatalog(): Promise<RuntimeProviderCatalog> {
+  return (await tryFetchJson(`${apiBase()}/runtime-settings/providers`, { method: "GET" })) as RuntimeProviderCatalog;
+}
+
+export async function revealRuntimeApiKey(providerId: RuntimeProvider | "image"): Promise<string> {
   const response = (await tryFetchJson(`${apiBase()}/runtime-settings/reveal-api-key`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ provider }),
+    body: JSON.stringify({ provider_id: providerId }),
   })) as { api_key?: string };
   return response.api_key ?? "";
 }
