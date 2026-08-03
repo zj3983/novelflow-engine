@@ -5,6 +5,8 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+
+from packages.story_core.model_gateway import ModelResponse
 from pydantic import ValidationError
 
 import packages.story_core.opening_directions as opening_directions_module
@@ -207,7 +209,8 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     generator = LLMOpeningDirectionGenerator(
         post_json=fake_post,
         runtime_resolver=lambda name: runtime_calls.append(name) or StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="direction-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
@@ -261,6 +264,28 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     assert "SECRET_SKILL" not in entire_prompt
 
 
+def test_generator_uses_planner_gateway_model_request():
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"directions": direction_set()["directions"]}),
+            )
+
+    result = LLMOpeningDirectionGenerator(model_gateway=Gateway()).generate(
+        OpeningBrief(novel_type_id="urban", idea="An idea")
+    )
+
+    assert len(result.directions) == 3
+    assert calls[0][0] == "planner"
+    assert calls[0][1].operation == "opening_directions"
+    assert calls[0][1].json_mode is True
+    assert "An idea" in calls[0][1].prompt
+
+
 def test_generator_adds_trimmed_one_time_guidance_to_prompt():
     captured = {}
 
@@ -275,7 +300,8 @@ def test_generator_adds_trimmed_one_time_guidance_to_prompt():
     generator = LLMOpeningDirectionGenerator(
         post_json=fake_post,
         runtime_resolver=lambda _: StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="direction-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
@@ -344,7 +370,8 @@ def test_generator_accepts_known_primary_trope_choices(monkeypatch):
             ]
         },
         runtime_resolver=lambda _: StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="direction-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
@@ -397,7 +424,8 @@ def test_generator_rejects_missing_blank_or_unknown_primary_trope_when_candidate
             ]
         },
         runtime_resolver=lambda _: StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="direction-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
@@ -445,7 +473,8 @@ def test_generator_allows_null_primary_trope_only_when_candidate_list_empty(monk
             ]
         },
         runtime_resolver=lambda _: StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="direction-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
@@ -482,12 +511,12 @@ def test_store_passes_trimmed_guidance_without_persisting_it(tmp_path):
 @pytest.mark.parametrize(
     "runtime,response",
     [
-        (StageRuntimeSettings(provider="openai", model="planner-model", api_key=""), None),
+        (StageRuntimeSettings(provider_id="openai", protocol="openai_compatible", model="planner-model", api_key=""), None),
         (
-            StageRuntimeSettings(provider="codexcli", model="planner-model", codex_command="codex"),
+            StageRuntimeSettings(provider_id="codexcli", protocol="codex_cli", model="planner-model", codex_command="codex"),
             {"choices": [{"message": {"content": json.dumps({"directions": [direction("only")]})}}]},
         ),
-        (StageRuntimeSettings(provider="codexcli", model="planner-model", codex_command="codex"), {"choices": []}),
+        (StageRuntimeSettings(provider_id="codexcli", protocol="codex_cli", model="planner-model", codex_command="codex"), {"choices": []}),
     ],
 )
 def test_generator_unifies_unavailable_runtime_and_invalid_output(runtime, response):

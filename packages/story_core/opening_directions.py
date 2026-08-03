@@ -7,11 +7,46 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.http_retry import post_json_with_retry
+from packages.story_core.model_gateway import ModelRequest, RuntimeModelGateway
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.runtime_config import (
     StageRuntimeSettings,
     resolve_stage_runtime,
 )
+
+
+def _runtime_gateway_for_legacy_injection(
+    post_json: Callable[..., dict[str, Any]],
+    runtime_resolver: Callable[[str], StageRuntimeSettings],
+) -> RuntimeModelGateway:
+    if post_json is post_json_with_retry:
+        return RuntimeModelGateway(runtime_resolver=runtime_resolver)
+    active: dict[str, Any] = {}
+
+    def compatible_runtime(stage: str) -> StageRuntimeSettings:
+        runtime = runtime_resolver(stage)
+        active["runtime"] = runtime
+        provider = str(getattr(runtime, "provider_id", getattr(runtime, "provider", "")))
+        protocol = getattr(runtime, "protocol", "openai_compatible")
+        if protocol == "codex_cli" or provider == "codexcli":
+            provider, protocol = "custom_openai", "openai_compatible"
+        return StageRuntimeSettings(
+            provider_id=provider,
+            protocol=protocol,
+            model=runtime.model,
+            api_key=runtime.api_key or ("legacy-injected" if provider == "custom_openai" else ""),
+            base_url=runtime.base_url or "http://legacy-injected.invalid",
+            codex_command=runtime.codex_command,
+            temperature=runtime.temperature,
+        )
+
+    def transport(*, url: str, payload: dict[str, Any], headers: dict[str, str], config: Any) -> dict[str, Any]:
+        runtime = active["runtime"]
+        base_url = str(runtime.base_url).rstrip("/")
+        path = url[len(base_url) :] if url.startswith(base_url) else url
+        return post_json(base_url, path, payload, runtime.api_key, provider=runtime.provider, codex_command=runtime.codex_command)
+
+    return RuntimeModelGateway(runtime_resolver=compatible_runtime, transport=transport)
 
 
 class _StrictOpeningModel(BaseModel):
@@ -102,9 +137,11 @@ class LLMOpeningDirectionGenerator:
         *,
         post_json: Callable[..., dict[str, Any]] = post_json_with_retry,
         runtime_resolver: Callable[[str], StageRuntimeSettings] = resolve_stage_runtime,
+        model_gateway: RuntimeModelGateway | None = None,
     ) -> None:
-        self._post_json = post_json
-        self._runtime_resolver = runtime_resolver
+        self._model_gateway = model_gateway or _runtime_gateway_for_legacy_injection(
+            post_json, runtime_resolver
+        )
 
     def generate(self, brief: OpeningBrief, *, guidance: str = "") -> OpeningDirectionSet:
         validated_brief = OpeningBrief.model_validate(brief)
@@ -116,10 +153,6 @@ class LLMOpeningDirectionGenerator:
             raise ValueError("regeneration_guidance_too_long")
 
         try:
-            runtime = self._runtime_resolver("planner")
-            if runtime.provider != "codexcli" and not runtime.api_key:
-                raise ValueError("runtime_unavailable")
-
             prompt_context = {
                 **novel_type_prompt_context(genre),
                 "working_title": validated_brief.working_title,
@@ -127,35 +160,28 @@ class LLMOpeningDirectionGenerator:
                 "regeneration_guidance": normalized_guidance,
             }
             trope_candidates = prompt_context.get("genre_trope_templates", [])
-            payload = {
-                "model": runtime.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Create exactly three distinct Chinese webnovel opening directions from the supplied "
-                            "brief. Return JSON only with a directions array. Each item must contain only id, title, "
-                            "hook, protagonist_goal, main_conflict, growth_path, opening_promise, and primary_trope_id. "
-                            "choose one listed primary_trope_id for every direction. Return null only when candidate list empty."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(prompt_context, ensure_ascii=False),
-                    },
-                ],
-                "response_format": {"type": "json_object"},
-                "temperature": float(runtime.temperature),
-            }
-            response = self._post_json(
-                runtime.base_url,
-                "/chat/completions",
-                payload,
-                runtime.api_key,
-                provider=runtime.provider,
-                codex_command=runtime.codex_command,
+            system_prompt = (
+                "Create exactly three distinct Chinese webnovel opening directions from the supplied "
+                "brief. Return JSON only with a directions array. Each item must contain only id, title, "
+                "hook, protagonist_goal, main_conflict, growth_path, opening_promise, and primary_trope_id. "
+                "choose one listed primary_trope_id for every direction. Return null only when candidate list empty."
             )
-            parsed = parse_json_message_content(response)
+            response = self._model_gateway.complete_stage(
+                "planner",
+                ModelRequest(
+                    prompt=json.dumps(prompt_context, ensure_ascii=False),
+                    system_prompt=system_prompt,
+                    provider="",
+                    model="",
+                    operation="opening_directions",
+                    json_mode=True,
+                ),
+            )
+            if not response.ok:
+                raise ValueError(response.error or "model_call_failed")
+            parsed = parse_json_message_content(
+                {"choices": [{"message": {"content": response.text}}]}
+            )
             if parsed is None:
                 raise ValueError("invalid_json")
             directions = OpeningDirectionSet.model_validate(parsed)

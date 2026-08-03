@@ -5,6 +5,7 @@ import pytest
 
 import packages.story_core.prompt_audit as prompt_audit
 import packages.story_core.prompt_audit_deep as prompt_audit_deep
+from packages.story_core.model_gateway import ModelResponse
 from packages.story_core.prompt_audit import (
     PromptAuditIssue,
     PromptAuditResult,
@@ -23,7 +24,8 @@ CONTENT = "请保持角色动机一致，并让结尾形成悬念。"
 
 def runtime(*, provider="openai", api_key="secret", model="planner-model") -> StageRuntimeSettings:
     return StageRuntimeSettings(
-        provider=provider,
+        provider_id=provider,
+        protocol="codex_cli" if provider == "codexcli" else "openai_compatible",
         model=model,
         api_key=api_key,
         base_url="https://llm.example/v1",
@@ -120,6 +122,31 @@ def test_openai_runtime_calls_model_once_with_expected_payload_and_merges_runtim
         "elapsed_seconds": 0.124,
         "prompt_characters": len(CONTENT),
     }
+
+
+def test_deep_auditor_uses_planner_gateway_model_request():
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            return ModelResponse(
+                ok=True,
+                text=json.dumps({"issues": []}),
+                provider="openai",
+                model="planner-model",
+                operation=request.operation,
+            )
+
+    result = DeepPromptAuditor(model_gateway=Gateway(), clock=lambda: 1.0).analyze(
+        content=CONTENT, local_result=local_result()
+    )
+
+    assert result.runtime.provider == "openai"
+    assert calls[0][0] == "planner"
+    assert calls[0][1].operation == "prompt_audit_deep"
+    assert calls[0][1].json_mode is True
+    assert calls[0][1].system_prompt == prompt_audit_deep._SYSTEM_PROMPT
 
 
 def test_codexcli_without_api_key_is_available():
