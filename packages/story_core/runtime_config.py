@@ -250,10 +250,15 @@ def _configuration_runtime_data(data: dict) -> dict:
     return restored
 
 
-def _backup_pre_provider_v2(path: Path) -> Path | None:
-    backup = path.with_name("runtime_config.pre-provider-v2.json")
+def _backup_pre_provider_v2(
+    path: Path,
+    backup_directory: Path | None = None,
+) -> Path | None:
+    backup_parent = backup_directory or path.parent
+    backup = backup_parent / "runtime_config.pre-provider-v2.json"
     if not path.exists() or backup.exists():
         return backup if backup.exists() else None
+    backup_parent.mkdir(parents=True, exist_ok=True)
     try:
         with backup.open("xb") as handle:
             handle.write(path.read_bytes())
@@ -449,7 +454,7 @@ def save_runtime_configuration(
     with _lock:
         global _runtime_configuration_error
         validated = _validate_runtime_configuration(configuration)
-        _write_validated(validated, config_path, backup_pre_v2=path is None)
+        _write_validated(validated, config_path, backup_pre_v2=config_path == CONFIG_FILE)
         if config_path == CONFIG_FILE:
             _runtime_configuration_error = None
         return validated.model_copy(deep=True)
@@ -530,6 +535,7 @@ def _load_config_from_file() -> None:
             try:
                 configuration, _ = _read_runtime_configuration(LEGACY_CONFIG_FILE)
                 validated = _validate_runtime_configuration(configuration)
+                _backup_pre_provider_v2(LEGACY_CONFIG_FILE, CONFIG_FILE.parent)
                 _write_validated(validated, CONFIG_FILE, backup_pre_v2=True)
                 _runtime_configuration = validated
                 _runtime_configuration_error = None

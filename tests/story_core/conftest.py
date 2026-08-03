@@ -1,10 +1,19 @@
 """Mock the StoryOrchestrator._chat method so engine tests don't need a real LLM API."""
 import json
+import os
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from packages.story_core.runtime_config import OpenAIRuntimeSettings
+_RUNTIME_CONFIG_TEST_PATH = (
+    Path(tempfile.gettempdir())
+    / f"novel-autogrowth-runtime-config-test-{os.getpid()}.json"
+)
+os.environ["NOVEL_AUTOGROWTH_RUNTIME_CONFIG_PATH"] = str(_RUNTIME_CONFIG_TEST_PATH)
+
+from packages.story_core.runtime_config import OpenAIRuntimeSettings  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

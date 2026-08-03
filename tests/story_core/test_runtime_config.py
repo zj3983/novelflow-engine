@@ -1,5 +1,7 @@
 import json
 import os
+import tempfile
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -47,6 +49,15 @@ def _v2_data() -> dict:
         "temperature": 0.35,
         "new_character_policy": "Manual review",
     }
+
+
+def test_story_core_conftest_isolates_runtime_config_before_module_import():
+    configured = Path(os.environ["NOVEL_AUTOGROWTH_RUNTIME_CONFIG_PATH"])
+
+    assert runtime_config.CONFIG_FILE == configured
+    assert configured.parent == Path(tempfile.gettempdir())
+    assert str(os.getpid()) in configured.name
+    assert configured != runtime_config.DEFAULT_CONFIG_FILE
 
 
 def test_v2_round_trips_and_resolves_different_stage_providers(tmp_path, monkeypatch):
@@ -274,6 +285,38 @@ def test_first_v2_save_to_default_config_file_creates_backup_once(tmp_path, monk
     save_runtime_configuration(RuntimeConfiguration())
 
     assert backup.read_text(encoding="utf-8") == legacy
+
+
+def test_explicit_save_to_config_file_creates_pre_v2_backup(tmp_path, monkeypatch):
+    path = tmp_path / "runtime_config.json"
+    backup = tmp_path / "runtime_config.pre-provider-v2.json"
+    legacy = json.dumps({"provider": "codexcli", "providers": {}})
+    path.write_text(legacy, encoding="utf-8")
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+
+    save_runtime_configuration(RuntimeConfiguration(), runtime_config.CONFIG_FILE)
+
+    assert backup.read_text(encoding="utf-8") == legacy
+
+
+def test_legacy_fallback_backs_up_source_before_writing_v2(tmp_path, monkeypatch):
+    config_path = tmp_path / "new" / "runtime_config.json"
+    legacy_path = tmp_path / "old" / "runtime_config.json"
+    legacy_path.parent.mkdir()
+    legacy = json.dumps({
+        "global": {"provider": "codexcli", "codex_command": "legacy-codex"},
+        "strategy": {"director_model": "planner", "writer_model": "writer"},
+    })
+    legacy_path.write_text(legacy, encoding="utf-8")
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", legacy_path)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
+
+    runtime_config._load_config_from_file()
+
+    backup = config_path.with_name("runtime_config.pre-provider-v2.json")
+    assert backup.read_text(encoding="utf-8") == legacy
+    assert load_runtime_configuration(config_path).schema_version == "runtime-config/v2"
 
 
 @pytest.mark.parametrize(
