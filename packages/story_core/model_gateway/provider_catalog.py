@@ -228,8 +228,11 @@ def provider_id_for_base_url(base_url: str) -> str:
     """Identify a provider from a URL hostname, preserving hostname boundaries."""
 
     candidate = base_url.strip()
-    parsed = urlsplit(candidate if "://" in candidate else f"//{candidate}")
-    hostname = (parsed.hostname or "").lower().rstrip(".")
+    try:
+        parsed = urlsplit(candidate if "://" in candidate else f"//{candidate}")
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return "custom_openai"
     for provider in _PROVIDERS:
         if any(
             hostname == pattern or hostname.endswith(f".{pattern}")

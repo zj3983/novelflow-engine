@@ -83,6 +83,19 @@ def test_unknown_and_deceptively_similar_hosts_resolve_to_custom_openai(base_url
     assert provider_id_for_base_url(base_url) == "custom_openai"
 
 
+def test_malformed_base_url_resolves_to_custom_openai():
+    assert provider_id_for_base_url("http://[::1") == "custom_openai"
+
+
+def test_default_base_urls_resolve_back_to_their_provider():
+    for provider_id in BUILTIN_PROVIDER_IDS:
+        definition = provider_definition(provider_id)
+        if definition.default_base_url:
+            assert (
+                provider_id_for_base_url(definition.default_base_url) == provider_id
+            )
+
+
 def test_presets_have_complete_metadata_and_model_suggestions():
     for provider_id in BUILTIN_PROVIDER_IDS:
         definition = provider_definition(provider_id)
