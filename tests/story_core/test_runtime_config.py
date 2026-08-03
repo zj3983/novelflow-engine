@@ -1,7 +1,5 @@
 import json
 import os
-import stat
-import threading
 
 import pytest
 from pydantic import ValidationError
@@ -11,278 +9,403 @@ from packages.story_core.runtime_config import (
     ImageRuntimeConfiguration,
     ImageRuntimeConfigurationError,
     OpenAIRuntimeSettings,
+    ProviderAccount,
     RuntimeConfiguration,
+    RuntimeProvider,
+    StageBinding,
     get_agent_runtime_settings,
     get_runtime_configuration,
     load_runtime_configuration,
-    resolve_stage_runtime,
     resolve_image_runtime,
+    resolve_stage_runtime,
     save_runtime_configuration,
     set_runtime_configuration,
 )
 
 
-def _configuration_data(*, provider: str = "codexcli") -> dict:
+def _v2_data() -> dict:
     return {
-        "provider": provider,
-        "providers": {
+        "schema_version": "runtime-config/v2",
+        "accounts": {
             "codexcli": {
                 "api_key": "",
                 "base_url": "",
+                "custom_models": ["codex-custom"],
                 "codex_command": "codex --quiet",
-                "planner": "gpt-5.4",
-                "writer": "gpt-5.4",
-                "memory": "gpt-5.4-mini",
             },
-            "openai": {
-                "api_key": "test-key",
-                "base_url": "https://example.test/v1/",
+            "deepseek": {
+                "api_key": "deepseek-key",
+                "base_url": "https://api.deepseek.com/v1/",
+                "custom_models": ["my-deepseek"],
                 "codex_command": "",
-                "planner": "o3",
-                "writer": "gpt-4.1",
-                "memory": "gpt-4.1-mini",
             },
+        },
+        "stages": {
+            "planner": {"provider_id": "deepseek", "model": "my-deepseek"},
+            "writer": {"provider_id": "codexcli", "model": "codex-custom"},
         },
         "temperature": 0.35,
         "new_character_policy": "Manual review",
     }
 
 
-def test_new_configuration_round_trips_and_resolves_selected_stage(tmp_path, monkeypatch):
+def test_v2_round_trips_and_resolves_different_stage_providers(tmp_path, monkeypatch):
     path = tmp_path / "runtime.json"
-    configuration = RuntimeConfiguration.model_validate(_configuration_data(provider="openai"))
+    configuration = RuntimeConfiguration.model_validate(_v2_data())
 
     save_runtime_configuration(configuration, path)
     loaded = load_runtime_configuration(path)
     monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
     set_runtime_configuration(loaded)
 
-    assert get_runtime_configuration() == configuration
-    resolved = resolve_stage_runtime("planner")
-    assert resolved.provider == "openai"
-    assert resolved.model == "o3"
-    assert resolved.api_key == "test-key"
-    assert resolved.base_url == "https://example.test/v1"
-    assert resolved.temperature == 0.35
-    assert resolved.new_character_policy == "Manual review"
+    planner = resolve_stage_runtime("planner")
+    writer = resolve_stage_runtime("writer")
+    assert loaded.schema_version == "runtime-config/v2"
+    assert planner.provider_id == "deepseek"
+    assert planner.provider == "deepseek"
+    assert planner.protocol == "openai_compatible"
+    assert planner.model == "my-deepseek"
+    assert planner.api_key == "deepseek-key"
+    assert planner.base_url == "https://api.deepseek.com/v1"
+    assert writer.provider_id == "codexcli"
+    assert writer.protocol == "codex_cli"
+    assert writer.codex_command == "codex --quiet"
 
 
-def test_image_configuration_is_independent_and_round_trips_with_its_protected_secret(tmp_path, monkeypatch):
-    path = tmp_path / "runtime.json"
-    data = _configuration_data(provider="codexcli")
-    data["image"] = {
-        "enabled": True,
-        "api_key": "image-secret",
-        "base_url": "https://images.example.test/v1/",
-        "model": "cover-image-model",
-    }
-    configuration = RuntimeConfiguration.model_validate(data)
-
-    save_runtime_configuration(configuration, path)
-    stored = path.read_text(encoding="utf-8")
-    if os.name == "nt":
-        assert "image-secret" not in stored
-        assert "dpapi:v1:" in stored
-    loaded = load_runtime_configuration(path)
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
-    set_runtime_configuration(loaded)
-
-    assert loaded.image == ImageRuntimeConfiguration(**data["image"])
-    assert loaded.providers.codexcli.api_key == ""
-    assert loaded.providers.openai.api_key == "test-key"
-    assert resolve_image_runtime().model == "cover-image-model"
-    assert resolve_image_runtime().api_key == "image-secret"
-    assert resolve_image_runtime().base_url == "https://images.example.test/v1"
-
-
-def test_disabled_or_incomplete_image_configuration_has_a_stable_resolution_error(monkeypatch):
-    default_configuration = RuntimeConfiguration()
-    assert default_configuration.image == ImageRuntimeConfiguration()
-    monkeypatch.setattr(runtime_config, "_runtime_configuration", default_configuration)
-
-    with pytest.raises(ImageRuntimeConfigurationError, match="^image_runtime_not_configured$"):
-        resolve_image_runtime()
-
-
-def test_resolve_image_runtime_strips_secret_model_and_base_url(monkeypatch):
-    monkeypatch.setattr(
-        runtime_config,
-        "_runtime_configuration",
-        RuntimeConfiguration(
-            image={
-                "enabled": True,
-                "api_key": " image-key ",
-                "base_url": " https://images.example.test/v1/// ",
-                "model": " cover-model ",
-            }
-        ),
-    )
-
-    assert resolve_image_runtime() == runtime_config.ImageRuntimeSettings(
-        api_key="image-key",
-        base_url="https://images.example.test/v1",
-        model="cover-model",
-    )
-
-    configuration = RuntimeConfiguration(image={"enabled": True, "api_key": "key"})
+def test_memory_is_an_internal_alias_for_planner(monkeypatch):
+    configuration = RuntimeConfiguration.model_validate(_v2_data())
     monkeypatch.setattr(runtime_config, "_runtime_configuration", configuration)
-    with pytest.raises(ImageRuntimeConfigurationError, match="^image_runtime_not_configured$"):
-        resolve_image_runtime()
+
+    assert resolve_stage_runtime("memory") == resolve_stage_runtime("planner")
 
 
-def test_runtime_configuration_does_not_store_plaintext_api_key_on_windows(tmp_path):
-    path = tmp_path / "runtime.json"
-    configuration = RuntimeConfiguration.model_validate(_configuration_data(provider="openai"))
-
-    save_runtime_configuration(configuration, path)
-
-    stored = path.read_text(encoding="utf-8")
-    if os.name == "nt":
-        assert "test-key" not in stored
-        assert "dpapi:v1:" in stored
-    assert load_runtime_configuration(path).providers.openai.api_key == "test-key"
+def test_public_runtime_stage_excludes_memory_and_runtime_provider_symbol_remains_importable():
+    assert runtime_config.RuntimeStage == runtime_config.Literal["planner", "writer"]
+    assert RuntimeProvider is not None
 
 
-def test_load_migrates_codexcli_qwen_stage_models_and_discards_obsolete_models(tmp_path):
-    path = tmp_path / "runtime.json"
-    legacy = {
-        "global": {
-            "provider": "codexcli",
-            "api_key": "legacy-key",
-            "base_url": "https://legacy.test/v1",
-            "codex_command": "legacy-codex",
-        },
-        "strategy": {
-            "global_model": "discard-me",
-            "character_model": "discard-me-too",
-            "director_model": "qwen3.6-plus",
-            "writer_model": "qwen3.6-plus",
-            "memory_model": "qwen3.6-plus",
-            "temperature": 0.2,
-            "new_character_policy": "Auto-approve named candidates",
-        },
-    }
-    legacy_bytes = json.dumps(legacy).encode("utf-8")
-    path.write_bytes(legacy_bytes)
-
-    migrated = load_runtime_configuration(path)
-
-    assert migrated.provider == "codexcli"
-    assert migrated.providers.codexcli.planner == "gpt-5.6-sol"
-    assert migrated.providers.codexcli.writer == "gpt-5.6-sol"
-    assert migrated.providers.codexcli.memory == "gpt-5.6-terra"
-    assert migrated.temperature == 0.2
-    assert migrated.new_character_policy == "Auto-approve named candidates"
-    assert path.read_bytes() == legacy_bytes
-    assert "character_model" not in json.dumps(migrated.model_dump(mode="json"))
-    assert "global_model" not in json.dumps(migrated.model_dump(mode="json"))
-
-
-def test_read_only_legacy_migrates_to_new_file_without_modifying_legacy(tmp_path, monkeypatch):
-    legacy_path = tmp_path / "legacy-runtime.json"
-    config_path = tmp_path / "runtime.json"
-    legacy_bytes = json.dumps(
-        {
-            "global": {"provider": "codexcli", "codex_command": "legacy-codex"},
-            "strategy": {
-                "director_model": "qwen3.6-plus",
-                "writer_model": "qwen3.6-plus",
-                "memory_model": "qwen3.6-plus",
-            },
-        }
-    ).encode("utf-8")
-    legacy_path.write_bytes(legacy_bytes)
-    legacy_path.chmod(stat.S_IREAD)
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", config_path)
-    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", legacy_path)
-    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
-
-    try:
-        runtime_config._load_config_from_file()
-    finally:
-        legacy_path.chmod(stat.S_IREAD | stat.S_IWRITE)
-
-    assert legacy_path.read_bytes() == legacy_bytes
-    assert config_path.exists()
-    migrated = load_runtime_configuration(config_path)
-    assert migrated.providers.codexcli.planner == "gpt-5.6-sol"
-
-
-def test_codexcli_defaults_do_not_use_models_below_gpt_5_5():
+def test_defaults_prefer_codex_cli_and_catalog_accounts_have_endpoints_without_keys():
     configuration = RuntimeConfiguration()
 
-    assert configuration.providers.codexcli.planner == "gpt-5.6-sol"
-    assert configuration.providers.codexcli.writer == "gpt-5.6-sol"
-    assert configuration.providers.codexcli.memory == "gpt-5.6-terra"
-
-
-def test_openai_migration_preserves_non_qwen_stage_models(tmp_path):
-    path = tmp_path / "runtime.json"
-    legacy = {
-        "global": {"provider": "openai", "api_key": "key", "base_url": "https://api.test/v1"},
-        "strategy": {
-            "director_model": "o3",
-            "writer_model": "gpt-4.1",
-            "memory_model": "gpt-4.1-mini",
-        },
-    }
-    path.write_text(json.dumps(legacy), encoding="utf-8")
-
-    migrated = load_runtime_configuration(path)
-
-    assert migrated.providers.openai.planner == "o3"
-    assert migrated.providers.openai.writer == "gpt-4.1"
-    assert migrated.providers.openai.memory == "gpt-4.1-mini"
-
-
-def test_migration_is_idempotent(tmp_path):
-    path = tmp_path / "runtime.json"
-    legacy = {
-        "global": {"provider": "codexcli", "codex_command": "codex"},
-        "strategy": {
-            "director_model": "qwen3.6-plus",
-            "writer_model": "qwen3.6-plus",
-            "memory_model": "qwen3.6-plus",
-        },
-    }
-    path.write_text(json.dumps(legacy), encoding="utf-8")
-
-    first = load_runtime_configuration(path)
-    first_bytes = path.read_bytes()
-    second = load_runtime_configuration(path)
-
-    assert second == first
-    assert path.read_bytes() == first_bytes
+    assert configuration.stages.planner.provider_id == "codexcli"
+    assert configuration.stages.writer.provider_id == "codexcli"
+    assert configuration.accounts["deepseek"].base_url == "https://api.deepseek.com/v1"
+    assert configuration.accounts["kimi"].base_url == "https://api.moonshot.cn/v1"
+    assert configuration.accounts["deepseek"].api_key == ""
+    assert configuration.accounts["kimi"].api_key == ""
 
 
 @pytest.mark.parametrize(
-    "mutation",
+    ("base_url", "provider_id"),
     [
-        lambda data: data.update({"unexpected": True}),
-        lambda data: data["providers"]["openai"].update({"unexpected": True}),
-        lambda data: data["providers"].update({"unexpected": {}}),
+        ("https://api.deepseek.com/v1", "deepseek"),
+        ("https://api.moonshot.cn/v1", "kimi"),
+        ("https://unknown.example/v1", "custom_openai"),
     ],
 )
-def test_new_configuration_rejects_unknown_fields(mutation):
-    data = _configuration_data()
+def test_v1_openai_slot_migrates_by_base_url_and_preserves_key_and_models(
+    tmp_path, base_url, provider_id
+):
+    path = tmp_path / "runtime.json"
+    legacy = {
+        "provider": "openai",
+        "providers": {
+            "codexcli": {"codex_command": "codex", "planner": "cp", "writer": "cw", "memory": "cm"},
+            "openai": {
+                "api_key": "current-deepseek-key",
+                "base_url": base_url,
+                "planner": "legacy-planner",
+                "writer": "legacy-writer",
+                "memory": "legacy-memory",
+            },
+        },
+        "temperature": 0.2,
+        "new_character_policy": "Manual review",
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    migrated = load_runtime_configuration(path)
+
+    assert migrated.accounts[provider_id].api_key == "current-deepseek-key"
+    assert migrated.stages.planner == StageBinding(provider_id=provider_id, model="legacy-planner")
+    assert migrated.stages.writer == StageBinding(provider_id=provider_id, model="legacy-writer")
+    assert "memory" not in migrated.model_dump(mode="json")["stages"]
+
+
+def test_v1_codexcli_migration_uses_codex_account_and_only_memory_fills_blank_planner(tmp_path):
+    path = tmp_path / "runtime.json"
+    legacy = {
+        "provider": "codexcli",
+        "providers": {
+            "codexcli": {
+                "codex_command": "legacy-codex",
+                "planner": "   ",
+                "writer": "legacy-writer",
+                "memory": "memory-fallback",
+            },
+            "openai": {"api_key": "ds-key", "base_url": "https://api.deepseek.com/v1"},
+        },
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    migrated = load_runtime_configuration(path)
+
+    assert migrated.accounts["codexcli"].codex_command == "legacy-codex"
+    assert migrated.accounts["deepseek"].api_key == "ds-key"
+    assert migrated.stages.planner.model == "memory-fallback"
+    assert migrated.stages.writer.model == "legacy-writer"
+
+
+def test_older_global_strategy_migrates_one_provider_to_both_bindings(tmp_path):
+    path = tmp_path / "runtime.json"
+    legacy = {
+        "global": {
+            "provider": "openai",
+            "api_key": "kimi-key",
+            "base_url": "https://api.moonshot.cn/v1",
+        },
+        "strategy": {
+            "director_model": "planner-model",
+            "writer_model": "writer-model",
+            "memory_model": "ignored-memory-model",
+            "temperature": 0.1,
+        },
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    migrated = load_runtime_configuration(path)
+
+    assert migrated.accounts["kimi"].api_key == "kimi-key"
+    assert migrated.stages.planner == StageBinding(provider_id="kimi", model="planner-model")
+    assert migrated.stages.writer == StageBinding(provider_id="kimi", model="writer-model")
+
+
+def test_migration_is_idempotent(tmp_path):
+    legacy_path = tmp_path / "legacy.json"
+    v2_path = tmp_path / "v2.json"
+    legacy_path.write_text(
+        json.dumps({
+            "global": {"provider": "openai", "api_key": "key", "base_url": "https://api.deepseek.com/v1"},
+            "strategy": {"director_model": "p", "writer_model": "w", "memory_model": "m"},
+        }),
+        encoding="utf-8",
+    )
+
+    once = load_runtime_configuration(legacy_path)
+    save_runtime_configuration(once, v2_path)
+    twice = load_runtime_configuration(v2_path)
+
+    assert twice == once
+    assert twice.model_dump(mode="json") == once.model_dump(mode="json")
+
+
+def test_account_and_image_keys_are_protected_in_storage(tmp_path):
+    path = tmp_path / "runtime.json"
+    data = _v2_data()
+    data["image"] = {
+        "enabled": True,
+        "api_key": "image-secret",
+        "base_url": "https://images.example/v1",
+        "model": "image-model",
+    }
+
+    save_runtime_configuration(RuntimeConfiguration.model_validate(data), path)
+    stored = path.read_text(encoding="utf-8")
+
+    if os.name == "nt":
+        assert "deepseek-key" not in stored
+        assert "image-secret" not in stored
+        assert stored.count("dpapi:v1:") == 2
+    loaded = load_runtime_configuration(path)
+    assert loaded.accounts["deepseek"].api_key == "deepseek-key"
+    assert loaded.image.api_key == "image-secret"
+
+
+def test_storage_transform_protects_keys_before_json_masking(monkeypatch):
+    monkeypatch.setattr(runtime_config, "_protect_api_key", lambda value: f"protected:{value}")
+
+    stored = runtime_config._configuration_storage_data(RuntimeConfiguration.model_validate(_v2_data()))
+
+    assert stored["accounts"]["deepseek"]["api_key"] == "protected:deepseek-key"
+    assert "providers" not in stored
+    assert "provider" not in stored
+    assert "memory" not in stored["stages"]
+
+
+def test_explicit_pre_v2_backup_is_created_once(tmp_path):
+    path = tmp_path / "runtime_config.json"
+    backup = tmp_path / "runtime_config.pre-provider-v2.json"
+    path.write_text("first", encoding="utf-8")
+
+    runtime_config._backup_pre_provider_v2(path)
+    path.write_text("second", encoding="utf-8")
+    runtime_config._backup_pre_provider_v2(path)
+
+    assert backup.read_text(encoding="utf-8") == "first"
+
+
+def test_custom_save_path_does_not_automatically_create_fixed_backup(tmp_path):
+    path = tmp_path / "runtime_config.json"
+    path.write_text("legacy", encoding="utf-8")
+
+    save_runtime_configuration(RuntimeConfiguration(), path)
+
+    assert not (tmp_path / "runtime_config.pre-provider-v2.json").exists()
+
+
+def test_existing_v2_default_file_does_not_create_pre_v2_backup(tmp_path, monkeypatch):
+    path = tmp_path / "runtime_config.json"
+    path.write_text(json.dumps(_v2_data()), encoding="utf-8")
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+
+    save_runtime_configuration(RuntimeConfiguration.model_validate(_v2_data()))
+
+    assert not (tmp_path / "runtime_config.pre-provider-v2.json").exists()
+
+
+def test_first_v2_save_to_default_config_file_creates_backup_once(tmp_path, monkeypatch):
+    path = tmp_path / "runtime_config.json"
+    backup = tmp_path / "runtime_config.pre-provider-v2.json"
+    legacy = json.dumps({"provider": "codexcli", "providers": {}})
+    path.write_text(legacy, encoding="utf-8")
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+
+    save_runtime_configuration(RuntimeConfiguration())
+    save_runtime_configuration(RuntimeConfiguration())
+
+    assert backup.read_text(encoding="utf-8") == legacy
+
+
+@pytest.mark.parametrize(
+    "mutation,match",
+    [
+        (lambda data: data["stages"]["planner"].update(model="  "), "model"),
+        (lambda data: data["stages"]["planner"].update(provider_id="missing"), "missing"),
+        (lambda data: data["accounts"].pop("deepseek"), "deepseek"),
+    ],
+)
+def test_v2_rejects_blank_models_unknown_providers_and_missing_accounts(mutation, match):
+    data = _v2_data()
     mutation(data)
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=match):
         RuntimeConfiguration.model_validate(data)
 
 
-@pytest.mark.parametrize("stage", ["planner", "writer", "memory"])
-def test_selected_provider_rejects_blank_stage_models(stage):
-    data = _configuration_data(provider="openai")
-    data["providers"]["openai"][stage] = "   "
+def test_custom_model_name_need_not_be_in_catalog_presets():
+    configuration = RuntimeConfiguration.model_validate(_v2_data())
 
-    with pytest.raises(ValidationError, match=stage):
-        RuntimeConfiguration.model_validate(data)
+    assert configuration.stages.planner.model == "my-deepseek"
+    assert configuration.accounts["deepseek"] == ProviderAccount(
+        api_key="deepseek-key",
+        base_url="https://api.deepseek.com/v1/",
+        custom_models=["my-deepseek"],
+        codex_command="",
+    )
+
+
+def test_image_runtime_behavior_is_unchanged(monkeypatch):
+    configuration = RuntimeConfiguration(
+        image=ImageRuntimeConfiguration(
+            enabled=True,
+            api_key=" image-key ",
+            base_url=" https://images.example/v1/// ",
+            model=" image-model ",
+        )
+    )
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", configuration)
+    assert resolve_image_runtime().base_url == "https://images.example/v1"
+
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
+    with pytest.raises(ImageRuntimeConfigurationError, match="^image_runtime_not_configured$"):
+        resolve_image_runtime()
+
+
+def test_compatibility_functions_project_only_planner_and_writer(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    set_runtime_configuration(_v2_data())
+
+    assert runtime_config.get_runtime_settings().provider == "deepseek"
+    assert get_agent_runtime_settings("director").provider == "deepseek"
+    assert get_agent_runtime_settings("memory").provider == "deepseek"
+    assert get_agent_runtime_settings("writer").provider == "codexcli"
+    strategy = runtime_config.get_runtime_strategy_settings()
+    assert strategy.director_model == "my-deepseek"
+    assert strategy.writer_model == "codex-custom"
+    assert strategy.memory_model == "my-deepseek"
+
+    strategy.director_model = "new-planner"
+    strategy.writer_model = "new-writer"
+    strategy.memory_model = "must-not-persist"
+    runtime_config.set_runtime_strategy_settings(strategy)
+    dumped = get_runtime_configuration().model_dump(mode="json")
+    assert dumped["stages"]["planner"]["model"] == "new-planner"
+    assert dumped["stages"]["writer"]["model"] == "new-writer"
+    assert "memory" not in dumped["stages"]
+
+
+def test_global_compatibility_setter_rebinds_both_stages(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    set_runtime_configuration(_v2_data())
+
+    result = runtime_config.set_runtime_settings(
+        OpenAIRuntimeSettings(
+            provider="openai",
+            api_key="qwen-key",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/",
+        )
+    )
+
+    configuration = get_runtime_configuration()
+    assert result.provider == "qwen"
+    assert configuration.stages.planner.provider_id == "qwen"
+    assert configuration.stages.writer.provider_id == "qwen"
+    assert configuration.accounts["qwen"].api_key == "qwen-key"
+
+
+def test_compatibility_agent_setter_rebinds_its_mapped_stage(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    set_runtime_configuration(_v2_data())
+
+    runtime_config.set_agent_runtime_settings(
+        "writer",
+        OpenAIRuntimeSettings(
+            provider="openai",
+            api_key="kimi-key",
+            base_url="https://api.moonshot.cn/v1/",
+        ),
+    )
+
+    configuration = get_runtime_configuration()
+    assert configuration.stages.writer.provider_id == "kimi"
+    assert configuration.accounts["kimi"].api_key == "kimi-key"
+    assert runtime_config.resolve_openai_runtime_settings("writer").provider == "kimi"
+    assert runtime_config.resolve_openai_runtime_settings("writer").base_url == "https://api.moonshot.cn/v1"
+
+
+def test_set_all_runtime_settings_keeps_memory_as_planner_alias(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    set_runtime_configuration(_v2_data())
+    strategy = runtime_config.get_runtime_strategy_settings()
+    strategy.director_model = "all-planner"
+    strategy.writer_model = "all-writer"
+    strategy.memory_model = "ignored-memory"
+
+    runtime_config.set_all_runtime_settings({"strategy": strategy})
+
+    configuration = get_runtime_configuration()
+    assert configuration.stages.planner.model == "all-planner"
+    assert configuration.stages.writer.model == "all-writer"
+    assert runtime_config.get_all_runtime_settings()["strategy"].memory_model == "all-planner"
 
 
 def test_damaged_configuration_is_not_overwritten(tmp_path):
     path = tmp_path / "runtime.json"
-    damaged = b'{"provider": "openai", broken'
+    damaged = b'{"schema_version": "runtime-config/v2", broken'
     path.write_bytes(damaged)
 
     with pytest.raises(ValueError, match="runtime configuration"):
@@ -291,299 +414,12 @@ def test_damaged_configuration_is_not_overwritten(tmp_path):
     assert path.read_bytes() == damaged
 
 
-def test_damaged_primary_configuration_stops_legacy_fallback(tmp_path, monkeypatch):
-    primary_path = tmp_path / "runtime.json"
-    legacy_path = tmp_path / "legacy-runtime.json"
-    damaged = b'{"provider": "openai", broken'
-    primary_path.write_bytes(damaged)
-    legacy_path.write_text(
-        json.dumps(
-            {
-                "global": {"provider": "openai", "api_key": "must-not-load"},
-                "strategy": {
-                    "director_model": "o3",
-                    "writer_model": "gpt-4.1",
-                    "memory_model": "gpt-4.1-mini",
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    in_memory_default = RuntimeConfiguration()
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", primary_path)
-    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", legacy_path)
-    monkeypatch.setattr(runtime_config, "_runtime_configuration", in_memory_default)
+def test_runtime_configuration_error_tracks_main_load_failure(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.json"
+    path.write_bytes(b'{"schema_version": "runtime-config/v2", broken')
+    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", None)
 
     runtime_config._load_config_from_file()
-
-    assert primary_path.read_bytes() == damaged
-    assert get_runtime_configuration() == in_memory_default
-
-
-def test_legacy_agent_override_is_available_after_migration(tmp_path, monkeypatch):
-    path = tmp_path / "runtime.json"
-    legacy = {
-        "global": {"provider": "codexcli", "codex_command": "codex"},
-        "agents": {
-            "writer": {
-                "api_key": "writer-key",
-                "base_url": "https://writer.test/v1",
-                "provider": "openai",
-                "codex_command": "writer-codex",
-            }
-        },
-        "strategy": {
-            "director_model": "gpt-5.4",
-            "writer_model": "gpt-5.4",
-            "memory_model": "gpt-5.4",
-        },
-    }
-    path.write_text(json.dumps(legacy), encoding="utf-8")
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
-    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", tmp_path / "missing.json")
-    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
-    monkeypatch.setattr(runtime_config, "_agent_runtime_settings", {})
-
-    runtime_config._load_config_from_file()
-
-    assert get_agent_runtime_settings("writer") == OpenAIRuntimeSettings(
-        api_key="writer-key",
-        base_url="https://writer.test/v1",
-        provider="openai",
-        codex_command="writer-codex",
-    )
-
-
-def test_set_agent_runtime_settings_persists_across_reload(tmp_path, monkeypatch):
-    path = tmp_path / "runtime.json"
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
-    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", tmp_path / "missing.json")
-    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
-    monkeypatch.setattr(runtime_config, "_agent_runtime_settings", {})
-    save_runtime_configuration(RuntimeConfiguration(), path)
-
-    expected = OpenAIRuntimeSettings(
-        api_key="persisted-writer-key",
-        base_url="https://persisted-writer.test/v1",
-        provider="codexcli",
-        codex_command="persisted-codex",
-    )
-    runtime_config.set_agent_runtime_settings("writer", expected)
-    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
-    monkeypatch.setattr(runtime_config, "_agent_runtime_settings", {})
-
-    runtime_config._load_config_from_file()
-
-    assert get_agent_runtime_settings("writer") == expected
-
-
-def test_concurrent_compatibility_setters_preserve_both_updates(tmp_path, monkeypatch):
-    path = tmp_path / "runtime.json"
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
-    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
-    set_runtime_configuration(_configuration_data(provider="codexcli"))
-    strategy = runtime_config.get_runtime_strategy_settings()
-    strategy.writer_model = "thread-writer-model"
-    writer_override = OpenAIRuntimeSettings(
-        api_key="thread-writer-key",
-        base_url="https://thread-writer.test/v1",
-        provider="openai",
-        codex_command="thread-writer-codex",
-    )
-
-    original_atomic_write = runtime_config._atomic_write_configuration
-    first_write_entered = threading.Event()
-    release_first_write = threading.Event()
-    second_write_entered = threading.Event()
-    second_thread_started = threading.Event()
-    write_call_lock = threading.Lock()
-    write_call_count = 0
-    errors: list[BaseException] = []
-
-    def synchronized_atomic_write(configuration, config_path):
-        nonlocal write_call_count
-        with write_call_lock:
-            write_call_count += 1
-            call_number = write_call_count
-        if call_number == 1:
-            first_write_entered.set()
-            if not release_first_write.wait(timeout=5):
-                raise TimeoutError("first write was not released")
-        elif call_number == 2:
-            second_write_entered.set()
-        original_atomic_write(configuration, config_path)
-
-    def run(callable_):
-        try:
-            callable_()
-        except BaseException as exc:
-            errors.append(exc)
-
-    monkeypatch.setattr(runtime_config, "_atomic_write_configuration", synchronized_atomic_write)
-    agent_thread = threading.Thread(
-        target=run,
-        args=(lambda: runtime_config.set_agent_runtime_settings("writer", writer_override),),
-    )
-
-    def update_strategy():
-        second_thread_started.set()
-        runtime_config.set_runtime_strategy_settings(strategy)
-
-    strategy_thread = threading.Thread(target=run, args=(update_strategy,))
-    threads = [agent_thread, strategy_thread]
-
-    agent_thread.start()
-    assert first_write_entered.wait(timeout=5)
-    strategy_thread.start()
-    assert second_thread_started.wait(timeout=5)
-    second_entered_while_first_blocked = second_write_entered.wait(timeout=0.5)
-    release_first_write.set()
-    for thread in threads:
-        thread.join(timeout=10)
-
-    assert not any(thread.is_alive() for thread in threads)
-    assert errors == []
-    assert second_entered_while_first_blocked is False
-    assert write_call_count == 2
-    persisted = load_runtime_configuration(path)
-    assert persisted.providers.codexcli.writer == "thread-writer-model"
-    assert persisted.compatibility.agents["writer"].api_key == "thread-writer-key"
-
-
-def test_save_revalidates_mutated_configuration_instance_before_writing(tmp_path):
-    path = tmp_path / "runtime.json"
-    configuration = RuntimeConfiguration.model_validate(_configuration_data(provider="openai"))
-    save_runtime_configuration(configuration, path)
-    original_bytes = path.read_bytes()
-    configuration.providers.openai.writer = None
-
-    with pytest.raises(ValidationError, match="writer"):
-        save_runtime_configuration(configuration, path)
-
-    assert path.read_bytes() == original_bytes
-
-
-def test_explicit_openai_agent_override_wins_over_global_codexcli(tmp_path, monkeypatch):
-    path = tmp_path / "runtime.json"
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
-    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
-    set_runtime_configuration(_configuration_data(provider="codexcli"))
-    runtime_config.set_agent_runtime_settings(
-        "writer",
-        {
-            "api_key": "writer-openai-key",
-            "base_url": "https://writer-openai.test/v1",
-            "provider": "openai",
-            "codex_command": "",
-        },
-    )
-
-    resolved = runtime_config.resolve_openai_runtime_settings("writer")
-
-    assert resolved.provider == "openai"
-    assert resolved.api_key == "writer-openai-key"
-    assert resolved.base_url == "https://writer-openai.test/v1"
-
-
-def test_none_agent_provider_inherits_global_provider(tmp_path, monkeypatch):
-    path = tmp_path / "runtime.json"
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
-    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
-    set_runtime_configuration(_configuration_data(provider="codexcli"))
-    runtime_config.set_agent_runtime_settings(
-        "memory",
-        {"api_key": "memory-key", "base_url": "", "provider": None, "codex_command": ""},
-    )
-
-    assert get_agent_runtime_settings("memory").provider is None
-    assert runtime_config.resolve_openai_runtime_settings("memory").provider == "codexcli"
-
-
-def test_runtime_configuration_error_tracks_failed_and_successful_loads(
-    tmp_path,
-    monkeypatch,
-    caplog,
-):
-    path = tmp_path / "runtime.json"
-    damaged = b'{"api_key": "do-not-log", broken'
-    path.write_bytes(damaged)
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
-    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", tmp_path / "missing.json")
-    monkeypatch.setattr(runtime_config, "_runtime_configuration", RuntimeConfiguration())
-    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", None, raising=False)
-    caplog.set_level("ERROR", logger=runtime_config.__name__)
-
-    runtime_config._load_config_from_file()
-
-    assert "invalid runtime configuration" in runtime_config.get_runtime_configuration_error()
-    assert path.read_bytes() == damaged
-    assert str(path) in caplog.text
-    assert "JSONDecodeError" in caplog.text
-    assert "do-not-log" not in caplog.text
-
-    path.write_text(
-        json.dumps(RuntimeConfiguration().model_dump(mode="json")),
-        encoding="utf-8",
-    )
-    runtime_config._load_config_from_file()
-
-    assert runtime_config.get_runtime_configuration_error() is None
-
-
-def test_public_main_configuration_load_updates_error_state(tmp_path, monkeypatch):
-    path = tmp_path / "runtime.json"
-    path.write_bytes(b'{"provider": "openai", broken')
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
-    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", None, raising=False)
-
-    with pytest.raises(ValueError, match="invalid runtime configuration"):
-        load_runtime_configuration()
 
     assert str(path) in runtime_config.get_runtime_configuration_error()
-
-    path.write_text(
-        json.dumps(RuntimeConfiguration().model_dump(mode="json")),
-        encoding="utf-8",
-    )
-    load_runtime_configuration()
-
-    assert runtime_config.get_runtime_configuration_error() is None
-
-
-def test_custom_save_preserves_main_error_until_main_save(tmp_path, monkeypatch):
-    main_path = tmp_path / "runtime.json"
-    export_path = tmp_path / "export.json"
-    main_path.write_bytes(b'{"provider": "openai", broken')
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", main_path)
-    monkeypatch.setattr(runtime_config, "LEGACY_CONFIG_FILE", tmp_path / "missing.json")
-    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", None, raising=False)
-
-    runtime_config._load_config_from_file()
-    main_error = runtime_config.get_runtime_configuration_error()
-
-    save_runtime_configuration(RuntimeConfiguration(), export_path)
-
-    assert runtime_config.get_runtime_configuration_error() == main_error
-    assert main_path.read_bytes() == b'{"provider": "openai", broken'
-    assert export_path.exists()
-
-    save_runtime_configuration(RuntimeConfiguration())
-
-    assert runtime_config.get_runtime_configuration_error() is None
-
-
-def test_legacy_interfaces_project_new_configuration(tmp_path, monkeypatch):
-    path = tmp_path / "runtime.json"
-    monkeypatch.setattr(runtime_config, "CONFIG_FILE", path)
-    set_runtime_configuration(_configuration_data(provider="codexcli"))
-
-    connection = runtime_config.resolve_openai_runtime_settings("director")
-    strategy = runtime_config.get_runtime_strategy_settings()
-
-    assert connection.provider == "codexcli"
-    assert connection.codex_command == "codex --quiet"
-    assert strategy.director_model == "gpt-5.4"
-    assert strategy.writer_model == "gpt-5.4"
-    assert strategy.memory_model == "gpt-5.4-mini"
-    assert strategy.temperature == 0.35
-    assert strategy.new_character_policy == "Manual review"
