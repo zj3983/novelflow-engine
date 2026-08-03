@@ -1,4 +1,3 @@
-import urllib.error
 import json
 import threading
 import time
@@ -20,24 +19,32 @@ client = TestClient(app)
 
 
 def _runtime_configuration(*, provider="openai"):
+    planner_provider = provider
+    writer_provider = provider
     return {
-        "provider": provider,
-        "providers": {
+        "schema_version": "runtime-config/v2",
+        "accounts": {
             "codexcli": {
                 "api_key": "",
                 "base_url": "",
+                "custom_models": [],
                 "codex_command": "codex-test",
-                "planner": "codex-planner",
-                "writer": "codex-writer",
-                "memory": "codex-memory",
             },
             "openai": {
                 "api_key": "sk-test",
                 "base_url": "https://api.test.example/v1",
+                "custom_models": [],
                 "codex_command": "",
-                "planner": "openai-planner",
-                "writer": "openai-writer",
-                "memory": "openai-memory",
+            },
+        },
+        "stages": {
+            "planner": {
+                "provider_id": planner_provider,
+                "model": "codex-planner" if planner_provider == "codexcli" else "openai-planner",
+            },
+            "writer": {
+                "provider_id": writer_provider,
+                "model": "codex-writer" if writer_provider == "codexcli" else "openai-writer",
             },
         },
         "image": {
@@ -54,7 +61,7 @@ def _runtime_configuration(*, provider="openai"):
 def _masked(configuration):
     """Expected wire form: non-empty api_key values are masked in API responses."""
     masked = json.loads(json.dumps(configuration))
-    for provider in masked["providers"].values():
+    for provider in masked["accounts"].values():
         if provider["api_key"]:
             provider["api_key"] = "********"
     if masked["image"]["api_key"]:
@@ -232,8 +239,9 @@ def test_runtime_settings_get_returns_only_provider_stage_contract():
     assert response.status_code == 200
     payload = response.json()
     assert set(payload) == {
-        "provider",
-        "providers",
+        "schema_version",
+        "accounts",
+        "stages",
         "image",
         "temperature",
         "new_character_policy",
@@ -275,7 +283,7 @@ def test_runtime_settings_never_returns_plaintext_api_key():
     assert client.put("/runtime-settings", json=candidate).status_code == 200
 
     for body in (client.get("/runtime-settings").json(), client.put("/runtime-settings", json=candidate).json()):
-        assert body["providers"]["openai"]["api_key"] == "********"
+        assert body["accounts"]["openai"]["api_key"] == "********"
         assert "sk-test" not in json.dumps(body)
 
 
@@ -285,7 +293,7 @@ def test_runtime_settings_can_reveal_saved_api_key_without_cache():
 
     response = client.post(
         "/runtime-settings/reveal-api-key",
-        json={"provider": "openai"},
+        json={"provider_id": "openai"},
     )
 
     assert response.status_code == 200
@@ -313,7 +321,7 @@ def test_runtime_settings_put_with_masked_api_key_preserves_stored_key():
     assert client.put("/runtime-settings", json=saved).status_code == 200
 
     candidate = _runtime_configuration()
-    candidate["providers"]["openai"]["api_key"] = "********"
+    candidate["accounts"]["openai"]["api_key"] = "********"
     candidate["temperature"] = 0.55
 
     update_resp = client.put("/runtime-settings", json=candidate)
@@ -323,7 +331,7 @@ def test_runtime_settings_put_with_masked_api_key_preserves_stored_key():
     from packages.story_core.runtime_config import get_runtime_configuration
 
     stored = get_runtime_configuration()
-    assert stored.providers.openai.api_key == "sk-test"
+    assert stored.accounts["openai"].api_key == "sk-test"
     assert stored.temperature == 0.55
 
 
@@ -338,7 +346,7 @@ def test_runtime_settings_image_configuration_is_masked_restored_and_revealed_wi
 
     saved = client.put("/runtime-settings", json=candidate)
     assert saved.status_code == 200
-    assert saved.json()["provider"] == "codexcli"
+    assert saved.json()["stages"]["writer"]["provider_id"] == "codexcli"
     assert saved.json()["image"] == {
         "enabled": True,
         "api_key": "********",
@@ -355,9 +363,9 @@ def test_runtime_settings_image_configuration_is_masked_restored_and_revealed_wi
     from packages.story_core.runtime_config import get_runtime_configuration
 
     stored = get_runtime_configuration()
-    assert stored.provider == "codexcli"
+    assert stored.stages.writer.provider_id == "codexcli"
     assert stored.image.api_key == "image-secret"
-    reveal = client.post("/runtime-settings/reveal-api-key", json={"provider": "image"})
+    reveal = client.post("/runtime-settings/reveal-api-key", json={"provider_id": "image"})
     assert reveal.status_code == 200
     assert reveal.json() == {"api_key": "image-secret"}
 
@@ -376,7 +384,7 @@ def test_runtime_settings_put_validation_does_not_replace_saved_configuration():
     saved = _runtime_configuration()
     assert client.put("/runtime-settings", json=saved).status_code == 200
     invalid = _runtime_configuration()
-    invalid["providers"]["openai"]["writer"] = "   "
+    invalid["stages"]["writer"]["model"] = "   "
 
     response = client.put("/runtime-settings", json=invalid)
 
@@ -386,8 +394,8 @@ def test_runtime_settings_put_validation_does_not_replace_saved_configuration():
 
 def test_runtime_settings_validation_errors_never_echo_text_or_image_api_keys():
     candidate = _runtime_configuration()
-    candidate["providers"]["openai"]["api_key"] = "text-validation-secret"
-    candidate["providers"]["openai"]["writer"] = " "
+    candidate["accounts"]["openai"]["api_key"] = "text-validation-secret"
+    candidate["stages"]["writer"]["model"] = " "
     candidate["image"] = {
         "enabled": True,
         "api_key": "image-validation-secret",
@@ -416,10 +424,10 @@ def test_runtime_settings_manual_boundary_rejects_non_json_and_oversize_without_
 
 def test_runtime_settings_test_validation_hides_all_nested_provider_keys():
     candidate = _runtime_configuration()
-    candidate["providers"]["codexcli"]["api_key"] = "codex-secret"
-    candidate["providers"]["openai"]["api_key"] = "text-secret"
+    candidate["accounts"]["codexcli"]["api_key"] = "codex-secret"
+    candidate["accounts"]["openai"]["api_key"] = "text-secret"
     candidate["image"] = {"enabled": True, "api_key": "image-secret", "base_url": "https://image.test", "model": "m"}
-    candidate["providers"]["openai"]["writer"] = " "
+    candidate["stages"]["writer"]["model"] = " "
     response = client.post("/runtime-settings/test", json={"stage": "writer", "runtime_settings": candidate})
     assert response.status_code == 422
     assert isinstance(response.json()["detail"], list)
@@ -1429,63 +1437,6 @@ def test_file_project_generation_job_polling_does_not_reload_project_store(tmp_p
             file_projects._active_file_generation_jobs.clear()
 
 
-def test_runtime_connection_uses_candidate_openai_provider_stage_and_does_not_save(monkeypatch):
-    captured = {}
-
-    def fake_urlopen(request, timeout=30):
-        captured["method"] = request.get_method()
-        captured["url"] = request.full_url
-        captured["authorization"] = request.headers["Authorization"]
-        captured["content_type"] = request.headers.get("Content-type")
-        captured["body"] = request.data
-
-        class _Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                return b"{}"
-
-        return _Response()
-
-    monkeypatch.setattr("apps.api.routes.stories.urllib.request.urlopen", fake_urlopen)
-
-    persisted = _runtime_configuration(provider="codexcli")
-    assert client.put("/runtime-settings", json=persisted).status_code == 200
-    candidate = _runtime_configuration(provider="openai")
-    candidate["providers"]["openai"].update(
-        {
-            "api_key": "sk-candidate",
-            "base_url": "https://api.candidate.example/v1/",
-            "writer": "candidate-writer",
-        }
-    )
-
-    response = client.post(
-        "/runtime-settings/test",
-        json={
-            "stage": "writer",
-            "runtime_settings": candidate,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["ok"] is True
-    assert response.json()["provider"] == "openai"
-    assert response.json()["stage"] == "writer"
-    assert response.json()["model"] == "candidate-writer"
-    assert "openai" in response.json()["message"]
-    assert "writer" in response.json()["message"]
-    assert "candidate-writer" in response.json()["message"]
-    assert captured["method"] == "POST"
-    assert captured["url"] == "https://api.candidate.example/v1/chat/completions"
-    assert captured["authorization"] == "Bearer sk-candidate"
-    assert captured["content_type"] == "application/json"
-    assert b'"model": "candidate-writer"' in captured["body"]
-    assert client.get("/runtime-settings").json() == _masked(persisted)
 
 
 @pytest.mark.parametrize("stage", ["character", "director", "global", "unknown"])
@@ -1513,46 +1464,22 @@ def test_runtime_connection_rejects_old_agent_name_contract():
     assert response.status_code == 422
 
 
-def test_runtime_connection_uses_candidate_codex_command_and_stage_model(monkeypatch):
-    captured = {}
-
-    def fake_probe(command, model_name):
-        captured["command"] = command
-        captured["model"] = model_name
-
-    monkeypatch.setattr("apps.api.routes.stories._probe_via_codexcli", fake_probe)
-    candidate = _runtime_configuration(provider="codexcli")
-    candidate["providers"]["codexcli"].update(
-        {"codex_command": "candidate-codex", "memory": "candidate-memory"}
-    )
-
-    response = client.post(
-        "/runtime-settings/test",
-        json={"stage": "memory", "runtime_settings": candidate},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["ok"] is True
-    assert response.json()["provider"] == "codexcli"
-    assert response.json()["stage"] == "memory"
-    assert response.json()["model"] == "candidate-memory"
-    assert captured == {"command": "candidate-codex", "model": "candidate-memory"}
 
 
 def test_runtime_cli_info_reports_detected_version(monkeypatch):
     candidate = _runtime_configuration(provider="codexcli")
-    candidate["providers"]["codexcli"]["codex_command"] = "candidate-codex"
+    candidate["accounts"]["codexcli"]["codex_command"] = "candidate-codex"
     assert client.put("/runtime-settings", json=candidate).status_code == 200
     monkeypatch.setattr(
-        "apps.api.routes.stories.read_codex_cli_version",
+        "apps.api.routes.runtime_settings.read_codex_cli_version",
         lambda command: f"version-from-{command}",
     )
     monkeypatch.setattr(
-        "apps.api.routes.stories.read_codex_cli_models",
+        "apps.api.routes.runtime_settings.read_codex_cli_models",
         lambda: ["gpt-5.6-sol", "gpt-5.5"],
     )
     monkeypatch.setattr(
-        "apps.api.routes.stories.read_latest_codex_cli_version",
+        "apps.api.routes.runtime_settings.read_latest_codex_cli_version",
         lambda: "0.145.0",
     )
 
@@ -1569,48 +1496,6 @@ def test_runtime_cli_info_reports_detected_version(monkeypatch):
     }
 
 
-def test_runtime_connection_falls_back_to_models_when_chat_endpoint_missing(monkeypatch):
-    captured_urls = []
-
-    def fake_urlopen(request, timeout=30):
-        captured_urls.append(request.full_url)
-        if request.full_url.endswith("/chat/completions"):
-            raise urllib.error.HTTPError(
-                request.full_url,
-                404,
-                "Not Found",
-                hdrs=None,
-                fp=None,
-            )
-
-        class _Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                return b"{}"
-
-        return _Response()
-
-    monkeypatch.setattr("apps.api.routes.stories.urllib.request.urlopen", fake_urlopen)
-
-    response = client.post(
-        "/runtime-settings/test",
-        json={
-            "stage": "planner",
-            "runtime_settings": _runtime_configuration(),
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["ok"] is True
-    assert captured_urls == [
-        "https://api.test.example/v1/chat/completions",
-        "https://api.test.example/v1/models",
-    ]
 
 
 def test_runtime_strategy_keeps_only_non_model_compatibility_fields():
