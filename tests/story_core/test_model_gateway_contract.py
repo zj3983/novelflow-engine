@@ -47,6 +47,41 @@ def test_model_error_is_normalized_without_losing_provider_context():
     assert normalize_model_error(response) == "codexcli/writer/writing: timeout"
 
 
+def test_model_request_builds_messages_from_legacy_prompts():
+    request = ModelRequest(
+        prompt="write a chapter",
+        system_prompt="You are the writer",
+        provider="openai",
+        model="gpt-5",
+        operation="writer",
+        json_mode=True,
+        timeout_seconds=45,
+    )
+
+    assert request.normalized_messages() == (
+        {"role": "system", "content": "You are the writer"},
+        {"role": "user", "content": "write a chapter"},
+    )
+    assert request.json_mode is True
+    assert request.timeout_seconds == 45
+
+
+def test_explicit_messages_take_precedence_without_losing_system_prompt():
+    request = ModelRequest(
+        prompt="legacy prompt",
+        system_prompt="system",
+        messages=({"role": "user", "content": "current prompt"},),
+        provider="anthropic",
+        model="claude-sonnet-4",
+        operation="planner",
+    )
+
+    assert request.normalized_messages() == (
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "current prompt"},
+    )
+
+
 def test_openai_provider_implements_shared_model_gateway_contract():
     class Provider(BaseOpenAIProvider):
         runtime_key = "writer"

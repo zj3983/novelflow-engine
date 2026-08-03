@@ -13,9 +13,24 @@ class ModelRequest:
     model: str
     operation: str
     system_prompt: str = ""
+    messages: tuple[Mapping[str, Any], ...] = ()
     temperature: float | None = None
     max_tokens: int | None = None
+    json_mode: bool = False
+    timeout_seconds: int | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def normalized_messages(self) -> tuple[dict[str, Any], ...]:
+        """Return a chat-style representation while preserving legacy prompts."""
+
+        normalized: list[dict[str, Any]] = []
+        if self.system_prompt.strip():
+            normalized.append({"role": "system", "content": self.system_prompt})
+        if self.messages:
+            normalized.extend(dict(message) for message in self.messages)
+        elif self.prompt:
+            normalized.append({"role": "user", "content": self.prompt})
+        return tuple(normalized)
 
 
 @dataclass(frozen=True)

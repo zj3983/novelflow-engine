@@ -7,13 +7,25 @@ from .provider_catalog import (
     provider_definition,
     provider_id_for_base_url,
 )
+from .provider_adapters import (
+    AnthropicAdapter,
+    CodexCLIAdapter,
+    GeminiAdapter,
+    OpenAICompatibleAdapter,
+)
+from .runtime_gateway import RuntimeModelGateway
 
 __all__ = [
     "BUILTIN_PROVIDER_IDS",
+    "AnthropicAdapter",
+    "CodexCLIAdapter",
+    "GeminiAdapter",
     "ModelGateway",
     "ModelRequest",
     "ModelResponse",
     "ProviderDefinition",
+    "OpenAICompatibleAdapter",
+    "RuntimeModelGateway",
     "normalize_model_error",
     "provider_definition",
     "provider_id_for_base_url",
