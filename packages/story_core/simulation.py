@@ -372,7 +372,19 @@ def _director_plot_projection(event_plan: dict, *, chapter_goal: str) -> dict[st
     }
 
 
-def _world_context(story: StoryState, chapter_number: int) -> dict[str, Any]:
+def _world_context(
+    story: StoryState,
+    chapter_number: int,
+    *,
+    game_story: bool,
+) -> dict[str, Any]:
+    if not game_story:
+        return {
+            "schema_version": "world-context/v1",
+            "simulation_horizon": "long_running_world_then_chapter_slice",
+            "rules": _compact_list(story.world_facts, limit=8),
+            "visibility_rule": "Only facts the viewpoint character can observe may enter prose.",
+        }
     ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
     pulse_store = ledger.get("world_pulse") if isinstance(ledger.get("world_pulse"), dict) else {}
     persistent_world = ledger.get("persistent_world") if isinstance(ledger.get("persistent_world"), dict) else {}
@@ -563,7 +575,7 @@ def build_chapter_simulation_plan(
     return ChapterSimulationPlan(
         chapter_number=chapter_number,
         chapter_goal=chapter_goal,
-        world_context=_world_context(story, chapter_number),
+        world_context=_world_context(story, chapter_number, game_story=game_story),
         event_plan=event_plan,
         plot_simulation=plot_simulation,
         longform_plot_contract=longform_plot_contract,

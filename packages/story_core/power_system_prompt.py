@@ -321,6 +321,20 @@ def _path_slice(paths: list[dict[str, Any]], hint: Any) -> list[dict[str, Any]]:
     ]
 
 
+def _class_advancement_path_slice(
+    paths: list[dict[str, Any]],
+    *,
+    stage_hint: Any,
+    path_hint: Any,
+) -> list[dict[str, Any]]:
+    selected = _path_slice(paths, path_hint)
+    for path in selected:
+        tree = path.get("advancement_tree")
+        if isinstance(tree, list):
+            path["advancement_tree"] = _stage_slice(tree, stage_hint)
+    return selected
+
+
 def _json_length(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False))
 
@@ -356,8 +370,18 @@ def power_system_prompt_slice(
             )
         if "stages" in normalized:
             result["stages"] = deepcopy(_stage_slice(normalized["stages"], stage_hint))
+        if "class_advancement_tiers" in normalized:
+            result["class_advancement_tiers"] = deepcopy(
+                _stage_slice(normalized["class_advancement_tiers"], stage_hint)
+            )
         if "paths" in normalized:
-            result["paths"] = deepcopy(_path_slice(normalized["paths"], path_hint))
+            result["paths"] = deepcopy(
+                _class_advancement_path_slice(
+                    normalized["paths"],
+                    stage_hint=stage_hint,
+                    path_hint=path_hint,
+                )
+            )
         for field in ("skills", "resources", "equipment", "advancement"):
             if field in normalized:
                 result[field] = _compact_prompt_value(normalized[field], chars=160, items=8)

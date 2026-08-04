@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any, Iterable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -67,16 +68,104 @@ _NESTED_MODELS: dict[str, type[BaseModel]] = {
 }
 
 
+# These entries describe a service, rule, or interface rather than a person.
+# Keep them out of character cards so the writer does not invent a personality
+# for a market function that should be represented by the world rules.
+_NON_CHARACTER_NAMES = frozenset(
+    {
+        "论坛",
+        "公共频道",
+        "交易行告示牌",
+        "清道夫委托",
+        "系统公告",
+        "白河仓库收购方",
+    }
+)
+_NON_CHARACTER_ROLES = frozenset(
+    {
+        "信息源",
+        "玩家群体",
+        "市场机制",
+        "任务线",
+        "服务设施",
+        "系统机制",
+        "收购方NPC",
+    }
+)
+_MISSING = object()
+
+
+def is_non_character_card(card: dict[str, Any] | None) -> bool:
+    """Return whether a record is a functional entity, not a person."""
+
+    if not isinstance(card, dict):
+        return False
+    name = str(card.get("name") or "").strip()
+    role = str(card.get("role") or "").strip()
+    return name in _NON_CHARACTER_NAMES or role in _NON_CHARACTER_ROLES
+
+
+def filter_character_cards(cards: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only person-like cards while preserving input order and data."""
+
+    return [
+        deepcopy(dict(card))
+        for card in cards
+        if isinstance(card, dict) and not is_non_character_card(card)
+    ]
+
+
 def _is_empty(value: Any) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
+def normalize_speech_style_for_writing(value: Any) -> str:
+    """Keep professional voice without turning every line into a checklist."""
+
+    speech = str(value or "").strip()
+    professional_markers = ("核对条款", "流程", "数据", "时间节点", "公文", "口径")
+    if "核对条款" in speech or sum(marker in speech for marker in professional_markers) >= 3:
+        return (
+            "会追问具体依据和时间，情绪上来时语速变快；专业内容只在必要时说，"
+            "和熟人交谈仍用完整日常口语，不连续罗列术语或材料。"
+        )
+    short_markers = (
+        "\u77ed\u53e5\u504f\u591a",
+        "\u77ed\u53e5\u4f18\u5148",
+        "\u5c11\u8bf4\u8bdd",
+        "\u53e5\u5b50\u77ed",
+        "\u60dc\u5b57\u5982\u91d1",
+        "\u8a00\u7b80\u610f\u8d45",
+        "\u8bdd\u4e0d\u591a",
+        "\u77ed\u53e5\u8d77\u6b65",
+        "\u5be1\u8a00",
+        "\u4e0d\u7231\u8bf4\u8bdd",
+    )
+    if any(marker in speech for marker in short_markers):
+        cleaned = speech
+        for marker in short_markers:
+            cleaned = cleaned.replace(marker, "")
+        cleaned = re.sub(r"[，,、；;]+", "，", cleaned).strip("，,、；; 。.!！?？")
+        complete_dialogue = (
+            "保留角色克制的表达习惯，但必要的对象、原因和决定要说完整。"
+        )
+        return f"{cleaned}；{complete_dialogue}" if cleaned else complete_dialogue
+    return speech
+
+
 def _merge_prefer_existing(existing: Any, generated: Any) -> Any:
+    if generated is _MISSING:
+        return deepcopy(existing)
+    if existing is _MISSING:
+        return deepcopy(generated)
     if isinstance(existing, dict) and isinstance(generated, dict):
         keys = list(existing)
         keys.extend(key for key in generated if key not in existing)
         return {
-            key: _merge_prefer_existing(existing.get(key), generated.get(key))
+            key: _merge_prefer_existing(
+                existing.get(key, _MISSING),
+                generated.get(key, _MISSING),
+            )
             for key in keys
         }
     return deepcopy(generated) if _is_empty(existing) else deepcopy(existing)
@@ -100,13 +189,16 @@ def normalize_character_profile(
         raw = normalized.get(field_name)
         raw = dict(raw) if isinstance(raw, dict) else {}
         if field_name == "story_drive" and not raw.get("motivation"):
-            raw["motivation"] = str(normalized.get("motivation") or normalized.get("core_motivation") or "")
+            raw["motivation"] = str(
+                normalized.get("motivation") or normalized.get("core_motivation") or ""
+            )
         normalized[field_name] = model.model_validate(raw).model_dump()
 
     performance = normalized.get("performance_profile")
     performance = dict(performance) if isinstance(performance, dict) else {}
-    if not performance.get("speech_style") and normalized.get("speech_style"):
-        performance["speech_style"] = str(normalized["speech_style"])
+    speech_style = performance.get("speech_style") or normalized.get("speech_style")
+    if speech_style:
+        performance["speech_style"] = normalize_speech_style_for_writing(speech_style)
     normalized["performance_profile"] = performance
     normalized.setdefault("character_tier", str(normalized.get("role") or ""))
     normalized.setdefault("first_appearance", 0)
@@ -145,3 +237,58 @@ def project_character_for_writer(
         relationship_notes.append(note)
     projected["relationship_notes"] = relationship_notes
     return projected
+
+
+def remove_cross_character_aliases(cards: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prevent one character's canonical name from becoming another card's alias."""
+
+    result = [deepcopy(dict(card)) for card in cards if isinstance(card, dict)]
+    names = {str(card.get("name") or "").strip() for card in result}
+    for card in result:
+        own_name = str(card.get("name") or "").strip()
+        identity = card.get("identity_profile")
+        if not isinstance(identity, dict):
+            continue
+        aliases = identity.get("aliases")
+        if not isinstance(aliases, list):
+            continue
+        identity["aliases"] = [
+            alias
+            for alias in aliases
+            if str(alias).strip() == own_name or str(alias).strip() not in names
+        ]
+    return result
+
+
+def merge_character_alias_cards(cards: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge a game-ID card into the same person's real-name card."""
+
+    result = [deepcopy(dict(card)) for card in cards if isinstance(card, dict)]
+    index_by_name = {
+        str(card.get("name") or "").strip(): index
+        for index, card in enumerate(result)
+        if str(card.get("name") or "").strip()
+    }
+    removed: set[int] = set()
+    for real_index, real_card in enumerate(result):
+        game_id = str(real_card.get("game_id") or "").strip()
+        if not game_id:
+            game_state = real_card.get("game_state")
+            current = game_state.get("current") if isinstance(game_state, dict) else None
+            game_id = str(current.get("game_id") or "").strip() if isinstance(current, dict) else ""
+        alias_index = index_by_name.get(game_id)
+        if not game_id or alias_index is None or alias_index == real_index:
+            continue
+        merged = merge_character_profile(real_card, result[alias_index])
+        merged["name"] = str(real_card.get("name") or "").strip()
+        merged["game_id"] = game_id
+        identity = merged.get("identity_profile")
+        identity = dict(identity) if isinstance(identity, dict) else {}
+        aliases = [str(alias).strip() for alias in identity.get("aliases", []) if str(alias).strip()]
+        if game_id not in aliases:
+            aliases.append(game_id)
+        identity["aliases"] = aliases
+        merged["identity_profile"] = identity
+        result[real_index] = merged
+        removed.add(alias_index)
+    return [card for index, card in enumerate(result) if index not in removed]

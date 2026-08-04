@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from packages.story_core.models import (
@@ -10,10 +11,15 @@ from packages.story_core.models import (
     TimelineEvent,
 )
 from packages.story_core.character_portraits import complete_character_portrait
+from packages.story_core.foreshadowing import select_unresolved_foreshadowing
+from packages.story_core.equipment_cards import merge_equipment_cards, normalize_equipment_card
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.novel_type_catalog import normalize_novel_type_id
 from packages.story_core.planner import build_chapter_title
-from packages.story_core.post_draft_memory import fallback_post_draft_memory
+from packages.story_core.post_draft_memory import (
+    fallback_post_draft_memory,
+    normalize_post_draft_memory,
+)
 
 
 MEMORY_KEYWORDS = {
@@ -91,8 +97,11 @@ def add_chapter_memory_index(
     summary: str,
     facts: list[str] | None = None,
     unresolved_threads: list[str] | None = None,
+    resolved_threads: list[str] | None = None,
 ) -> None:
-    text = "\n".join([chapter_title, summary, *(facts or []), *(unresolved_threads or [])])
+    text = "\n".join(
+        [chapter_title, summary, *(facts or []), *(unresolved_threads or []), *(resolved_threads or [])]
+    )
     keywords = _story_dynamic_keywords(story)
     entry = MemoryIndexEntry(
         chapter_number=chapter_number,
@@ -106,6 +115,7 @@ def add_chapter_memory_index(
         items=_unique_matches(text, keywords["items"]),
         facts=list(facts or [])[:6],
         unresolved_threads=list(unresolved_threads or [])[:6],
+        resolved_threads=list(resolved_threads or [])[:6],
     )
     story.memory_index = [item for item in story.memory_index if item.chapter_number != chapter_number]
     story.memory_index.append(entry)
@@ -122,7 +132,9 @@ def retrieve_relevant_memories(story: StoryState, query: str, *, limit: int = 6)
 
     def score(entry: MemoryIndexEntry) -> tuple[int, int]:
         searchable = set(entry.tags + entry.characters + entry.locations + entry.factions + entry.quests + entry.items)
-        text = " ".join([entry.chapter_title, entry.summary, *entry.facts, *entry.unresolved_threads])
+        text = " ".join(
+            [entry.chapter_title, entry.summary, *entry.facts, *entry.unresolved_threads, *entry.resolved_threads]
+        )
         overlap = len(searchable & query_terms)
         fuzzy = sum(1 for term in query_terms if term and term in text)
         recency = max(0, entry.chapter_number - latest_chapter)
@@ -267,6 +279,31 @@ def _promote_goal(character, intent: str) -> None:
     character.goals = [intent, *remaining]
 
 
+def _append_character_recent_change(
+    layer: dict[str, Any], *, chapter_number: int, evidence: str
+) -> None:
+    recent = layer.get("recent_changes")
+    changes = list(recent) if isinstance(recent, list) else []
+    change = {"chapter": chapter_number, "fact": evidence}
+    if change not in changes:
+        changes.append(change)
+    layer["recent_changes"] = changes[-24:]
+
+
+_LAYER_METADATA_KEYS = {"current", "recent_changes", "history", "metadata", "snapshots"}
+
+
+def _character_current_from_layer(layer: dict[str, Any]) -> dict[str, Any]:
+    raw_current = layer.get("current")
+    if isinstance(raw_current, dict):
+        return dict(raw_current)
+    return {
+        key: deepcopy(value)
+        for key, value in layer.items()
+        if key not in _LAYER_METADATA_KEYS
+    }
+
+
 def _primary_follow_up_intent(character_name: str, primary: dict) -> str:
     topic = _goal_topic(primary.get("collision", "the core objective"))
     lead = primary.get("lead", "the lead")
@@ -310,19 +347,6 @@ def _build_next_focus(
     return f"第{chapter_number}章之后，需要重新掀开最近一次压力爆点。"
 
 
-def _generic_foreshadowing_text(chapter_number: int) -> str:
-    """Generate a genre-agnostic foreshadowing hook."""
-    hooks = [
-        "某个被隐藏的秘密即将浮出水面。",
-        "一场更大的风暴正在暗处酝酿。",
-        "一个意想不到的身影在暗处注视着一切。",
-        "某种被遗忘的力量正在苏醒。",
-        "一条未被发现的线索悄然浮现。",
-    ]
-    # Use chapter number to deterministically pick a hook
-    return hooks[chapter_number % len(hooks)]
-
-
 def apply_post_chapter_updates(
     story: StoryState,
     body: str,
@@ -336,35 +360,85 @@ def apply_post_chapter_updates(
         if isinstance(post_draft_memory, dict)
         else fallback_post_draft_memory(body)
     )
+    equipment_updates = [
+        normalized
+        for item in memory.get("equipment_updates", [])
+        if (normalized := normalize_equipment_card(item, chapter_number=chapter_number))
+    ]
+    equipment_merge = merge_equipment_cards(
+        story.equipment_cards,
+        equipment_updates,
+    )
+    story.equipment_cards = equipment_merge.cards
     summary_text = str(memory.get("summary") or "").strip() or body.strip()[:240]
     facts = [str(item).strip() for item in memory.get("facts", []) if str(item).strip()][:12]
     unresolved_threads = [
         str(item).strip() for item in memory.get("unresolved_threads", []) if str(item).strip()
     ][:8]
+    resolved_threads = [
+        str(item).strip() for item in memory.get("resolved_threads", []) if str(item).strip()
+    ][:8]
     next_focus = str(memory.get("next_focus") or "").strip()
     primary = (conflict_summary or {}).get("primary_conflict", {})
     secondary = (conflict_summary or {}).get("secondary_conflict", {})
     by_name = {character.name: character for character in story.characters}
-    for update in memory.get("character_updates", []):
+    aliases_by_name: dict[str, set[str]] = {}
+    for character in story.characters:
+        aliases = {
+            str(alias).strip()
+            for alias in getattr(character.identity_profile, "aliases", [])
+            if str(alias).strip()
+        }
+        game_id = str(getattr(character, "game_id", "") or "").strip()
+        if game_id:
+            aliases.add(game_id)
+        aliases_by_name[character.name] = aliases
+    validated_updates = normalize_post_draft_memory(
+        {"character_updates": memory.get("character_updates", [])},
+        body=body,
+        existing_character_names=set(by_name),
+        evidence_character_names=set(by_name),
+        character_aliases_by_name=aliases_by_name,
+    )["character_updates"]
+    for update in validated_updates:
         if not isinstance(update, dict):
             continue
         character = by_name.get(str(update.get("name") or "").strip())
         if character is None or character.frozen:
             continue
+        evidence = str(update.get("evidence") or "").strip()
+        if not evidence:
+            continue
         emotion = str(update.get("emotion") or "").strip()
         goal = str(update.get("goal") or "").strip()
         location = str(update.get("location") or "").strip()
-        evidence = str(update.get("evidence") or "").strip()
-        if emotion:
-            character.current_emotion = emotion
-        if goal:
-            _promote_goal(character, goal)
-        if location:
-            character.location = location
-        if evidence:
-            note = f"第{chapter_number}章：{evidence}"
-            if note not in character.memory:
-                character.memory.append(note)
+        state_line = update.get("state_line")
+        if state_line not in {"reality", "game"}:
+            if _is_game_story_for_cards(story):
+                continue
+            state_line = "reality"
+        note = f"第{chapter_number}章：{evidence}"
+        if note not in character.memory:
+            character.memory.append(note)
+        if state_line != "game":
+            if emotion:
+                character.current_emotion = emotion
+            if goal:
+                _promote_goal(character, goal)
+            if location:
+                character.location = location
+        layer_name = "game_state" if state_line == "game" else "real_state"
+        raw_layer = getattr(character, layer_name)
+        layer = dict(raw_layer) if isinstance(raw_layer, dict) else {}
+        current = _character_current_from_layer(layer)
+        current["last_appearance_chapter"] = chapter_number
+        layer["current"] = current
+        _append_character_recent_change(
+            layer,
+            chapter_number=chapter_number,
+            evidence=evidence,
+        )
+        setattr(character, layer_name, layer)
 
     for fact in facts:
         if fact not in story.world_facts:
@@ -389,6 +463,7 @@ def apply_post_chapter_updates(
         summary=summary_text,
         facts=facts,
         unresolved_threads=unresolved_threads,
+        resolved_threads=resolved_threads,
         next_focus=next_focus,
         primary_conflict=primary,
         secondary_conflict=secondary,
@@ -402,11 +477,16 @@ def apply_post_chapter_updates(
         summary=summary_text,
         facts=chapter_summary.facts,
         unresolved_threads=chapter_summary.unresolved_threads,
+        resolved_threads=chapter_summary.resolved_threads,
     )
 
 
 def _is_protagonist(character: Any) -> bool:
-    return getattr(character, "role", "") in {"protagonist", "主角"} or getattr(character, "name", "") == "苏叶"
+    return (
+        getattr(character, "role", "") in {"protagonist", "主角"}
+        or getattr(character, "character_tier", "") == "protagonist"
+        or getattr(character, "name", "") == "苏叶"
+    )
 
 
 def _is_game_story_for_cards(story: StoryState) -> bool:
@@ -434,6 +514,26 @@ def _is_game_story_for_cards(story: StoryState) -> bool:
 
 def _clean_dict(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
+
+
+def _usable_character_memories(character: Any, story: StoryState) -> list[str]:
+    known_names = {
+        str(getattr(item, "name", "") or "").strip()
+        for item in story.characters
+        if str(getattr(item, "name", "") or "").strip()
+    }
+    memories: list[str] = []
+    for raw in getattr(character, "memory", []) or []:
+        text = str(raw or "").strip()
+        if not text or (text.startswith("## 基本信息") and "**姓名**" in text):
+            continue
+        relation_head = text.split(":", 1)[0].split("：", 1)[0]
+        relation_parts = [part.strip() for part in relation_head.split("-", 1)]
+        if len(relation_parts) == 2 and set(relation_parts).issubset(known_names):
+            continue
+        if text not in memories:
+            memories.append(text)
+    return memories[-24:]
 
 
 def _profile_defaults(character: Any, story: StoryState) -> dict[str, Any]:
@@ -471,6 +571,16 @@ def _profile_defaults(character: Any, story: StoryState) -> dict[str, Any]:
             "chapter_role": "本章要用行动暴露处境、验证优势、留下下一步目标。",
             "game_panel": _clean_dict(panel_data),
         }
+    if _is_protagonist(character):
+        return {
+            "character_type": "主线目标驱动的主角",
+            "core_motivation": "围绕本书已经确立的核心目标行动，并对自己的选择和代价负责。",
+            "behavior_logic": "先根据已经掌握的信息做判断，再用行动推进问题；不替作者讲解世界。",
+            "interaction_mode": "按双方关系和当时压力说话，把必要的对象、原因和决定说清楚。",
+            "poison_points": ["装高手式省略回答", "替作者解释设定", "无代价解决问题"],
+            "story_function": "主动制造选择并承担结果，推动主线发生可见变化。",
+            "chapter_role": "本章用明确行动推进当前目标，并让人物关系或处境发生变化。",
+        }
     return {
         "character_type": "function-anchored supporting character",
         "core_motivation": "围绕自己的职位、利益或关系压力行动，不替主角解释世界。",
@@ -489,6 +599,7 @@ def _character_card(character: Any, story: StoryState) -> dict[str, Any]:
         story_function=str(getattr(character, "story_function", "") or ""),
     )
     defaults = _profile_defaults(character, story)
+    drive = getattr(character, "story_drive", None)
     profile = getattr(character, "performance_profile", None)
     voice = getattr(profile, "voice", None) if profile is not None else None
     npc_profile = getattr(character, "npc_profile", None)
@@ -496,18 +607,31 @@ def _character_card(character: Any, story: StoryState) -> dict[str, Any]:
     panel_data = panel.model_dump() if hasattr(panel, "model_dump") else {}
     game_id = getattr(character, "game_id", "") or panel_data.get("game_id", "")
     game_story = _is_game_story_for_cards(story)
+    raw_role = getattr(character, "role", "")
+    normalized_role = raw_role
+    if raw_role not in {"protagonist", "主角"} and _is_protagonist(character):
+        normalized_role = "protagonist"
     identity = {
         "name": getattr(character, "name", ""),
-        "role": getattr(character, "role", ""),
+        "role": normalized_role,
         "location": getattr(character, "location", ""),
     }
     if game_story:
         identity["game_id"] = game_id
+    structured_motivation = (
+        str(getattr(drive, "motivation", "") or "").strip()
+        or str(getattr(drive, "immediate_goal", "") or "").strip()
+        or str(getattr(drive, "long_term_goal", "") or "").strip()
+    )
+    action_style = str(getattr(profile, "action_style", "") or "").strip() if profile is not None else ""
+    decision_rules = list(getattr(profile, "decision_rules", []) or []) if profile is not None else []
+    structured_behavior = "；".join([item for item in [action_style, *decision_rules[:2]] if item])
+    structured_interaction = str(getattr(profile, "speech_style", "") or "").strip() if profile is not None else ""
     webnovel_profile = {
         "character_type": getattr(character, "character_type", "") or defaults.get("character_type", ""),
-        "core_motivation": getattr(character, "core_motivation", "") or defaults.get("core_motivation", ""),
-        "behavior_logic": getattr(character, "behavior_logic", "") or defaults.get("behavior_logic", ""),
-        "interaction_mode": getattr(character, "interaction_mode", "") or defaults.get("interaction_mode", ""),
+        "core_motivation": getattr(character, "core_motivation", "") or structured_motivation or defaults.get("core_motivation", ""),
+        "behavior_logic": getattr(character, "behavior_logic", "") or structured_behavior or defaults.get("behavior_logic", ""),
+        "interaction_mode": getattr(character, "interaction_mode", "") or structured_interaction or defaults.get("interaction_mode", ""),
         "poison_points": list(getattr(character, "poison_points", []) or defaults.get("poison_points", [])),
     }
     dimensions = {
@@ -527,7 +651,7 @@ def _character_card(character: Any, story: StoryState) -> dict[str, Any]:
     npc_boundary = npc_profile.model_dump() if hasattr(npc_profile, "model_dump") else {}
     return {
         "name": getattr(character, "name", ""),
-        "role": getattr(character, "role", ""),
+        "role": normalized_role,
         "identity": identity,
         "webnovel_profile": _clean_dict(webnovel_profile),
         "three_dimensions": _clean_dict(dimensions),
@@ -549,7 +673,7 @@ def _character_card(character: Any, story: StoryState) -> dict[str, Any]:
         "personality_portrait": character.personality_portrait.model_dump(),
         "continuity_locks": _clean_dict(
             {
-                "memory": list(getattr(character, "memory", [])),
+                "memory": _usable_character_memories(character, story),
                 "secrets": list(getattr(character, "secrets", [])),
                 "relationships": {
                     key: value.model_dump() for key, value in getattr(character, "relationships", {}).items()
@@ -566,12 +690,11 @@ def build_character_cards(story: StoryState) -> list[dict]:
 
 
 def build_foreshadowing(story: StoryState, chapter_number: int) -> list[dict]:
-    if not story.foreshadowing:
-        return [
-            {
-                "text": _generic_foreshadowing_text(chapter_number),
-                "first_chapter": chapter_number,
-                "status": "open",
-            }
-        ]
-    return [item.model_dump() for item in story.foreshadowing]
+    return [
+        item.model_dump()
+        for item in select_unresolved_foreshadowing(
+            story.foreshadowing,
+            chapter_number=chapter_number,
+            limit=8,
+        )
+    ]

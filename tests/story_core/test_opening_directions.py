@@ -5,6 +5,8 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+
+from packages.story_core.model_gateway import ModelResponse
 from pydantic import ValidationError
 
 import packages.story_core.opening_directions as opening_directions_module
@@ -20,6 +22,7 @@ from packages.story_core.opening_directions import (
 )
 from packages.story_core.project_outline import normalize_project_outline
 from packages.story_core.runtime_config import StageRuntimeSettings
+from packages.story_core.story_core_card import story_core_from_direction
 
 
 def test_generator_constructor_does_not_accept_legacy_strategy_resolver():
@@ -41,17 +44,46 @@ def direction(
     *,
     title: str | None = None,
     primary_trope_id: object | str | None = _AUTO_TROPE,
-) -> dict[str, str | None]:
+) -> dict[str, object]:
     if primary_trope_id is _AUTO_TROPE:
         primary_trope_id = _primary_trope_ids("urban")[0]
     return {
         "id": direction_id,
         "title": title or f"Title {direction_id}",
         "hook": f"Hook {direction_id}",
+        "logline": f"Logline {direction_id}",
+        "protagonist_profile": f"Profile {direction_id}",
+        "inciting_incident": f"Incident {direction_id}",
         "protagonist_goal": f"Goal {direction_id}",
         "main_conflict": f"Conflict {direction_id}",
+        "failure_stakes": f"Stakes {direction_id}",
         "growth_path": f"Growth {direction_id}",
+        "excitement_point": f"Excitement {direction_id}",
+        "target_audience": f"Audience {direction_id}",
+        "reader_promise": f"Reader promise {direction_id}",
+        "ending_direction": f"Ending {direction_id}",
         "opening_promise": f"Promise {direction_id}",
+        "core_advantage": {
+            "name": f"Advantage {direction_id}",
+            "type": "probability",
+            "ability": "Improves rare outcomes.",
+            "growth_rule": "Grows after verified milestones.",
+            "limits": "Cannot create impossible drops.",
+            "early_payoff": "Wins the first contested reward.",
+        },
+        "central_mystery": {
+            "surface_anomaly": "Game attributes leave physical traces.",
+            "hidden_truth": "The game is connected to a real world.",
+            "reality_impact": "Abilities gradually manifest outside the game.",
+            "reveal_path": ["personal anomaly", "shared evidence", "world convergence"],
+        },
+        "initial_drive": {
+            "immediate_need": "Earn enough to solve an urgent problem.",
+            "trigger": "The new server opens today.",
+            "short_term_goal": "Secure the first reliable income.",
+            "failure_stakes": "The immediate real-world problem worsens.",
+            "long_term_transition": "Moves from earning money to investigating the anomaly.",
+        },
         "primary_trope_id": primary_trope_id,
     }
 
@@ -129,6 +161,75 @@ def make_opening_store(tmp_path) -> FileProjectStore:
     return FileProjectStore(root)
 
 
+def test_selecting_direction_preserves_user_supplied_working_title(tmp_path):
+    store = make_opening_store(tmp_path)
+    store.generate_opening_directions(StaticDirectionGenerator())
+
+    store.select_opening_direction("direction-2")
+
+    assert store.project()["title"] == "Original title"
+
+
+def test_selecting_direction_writes_story_core_into_overall_only(tmp_path):
+    store = make_opening_store(tmp_path)
+    store.generate_opening_directions(StaticDirectionGenerator())
+
+    store.select_opening_direction("direction-2")
+
+    outline = store.project_outline()
+    assert outline["overall"]["story"] == "Logline direction-2"
+    assert outline["overall"]["positioning"]["failure_stakes"] == "Stakes direction-2"
+    assert outline["overall"]["positioning"]["reader_promise"] == "Reader promise direction-2"
+    assert outline["overall"]["core_advantage"]["name"] == "Advantage direction-2"
+    assert not (store.webnovel_dir / "story_core.json").exists()
+
+
+def test_legacy_project_reads_story_core_without_creating_file(tmp_path):
+    store = make_opening_store(tmp_path)
+    outline = store.project_outline()
+    outline.pop("source", None)
+    outline["overall"]["story"] = "Legacy core story"
+    store.update_project_outline(outline)
+
+    core = store.story_core()
+
+    assert core["schema_version"] == "story-core/v1"
+    assert core["logline"] == "Legacy core story"
+    assert not (store.webnovel_dir / "story_core.json").exists()
+
+
+def test_updating_legacy_story_core_updates_overall_without_creating_file(tmp_path):
+    store = make_opening_store(tmp_path)
+    core = store.story_core()
+    core["reader_promise"] = "Every arc pays off one visible promise."
+
+    saved = store.update_story_core(core)
+
+    assert saved["reader_promise"] == core["reader_promise"]
+    assert store.project_outline()["overall"]["positioning"]["reader_promise"] == core["reader_promise"]
+    assert not (store.webnovel_dir / "story_core.json").exists()
+
+
+def test_legacy_story_core_file_only_fills_empty_overall_fields(tmp_path):
+    store = make_opening_store(tmp_path)
+    outline = store.project_outline()
+    outline.pop("source", None)
+    outline["overall"]["story"] = "User-edited outline story"
+    store.update_project_outline(outline)
+    legacy = story_core_from_direction(direction("legacy-core")).model_dump(mode="json")
+    legacy["reader_promise"] = "Legacy reader promise"
+    (store.webnovel_dir / "story_core.json").write_text(
+        json.dumps(legacy, ensure_ascii=False), encoding="utf-8"
+    )
+
+    migrated = store.story_core()
+
+    assert migrated["logline"] == "User-edited outline story"
+    assert migrated["reader_promise"] == "Legacy reader promise"
+    assert store.project_outline()["overall"]["story"] == "User-edited outline story"
+    assert store.project_outline()["overall"]["positioning"]["reader_promise"] == "Legacy reader promise"
+
+
 def test_direction_set_requires_exactly_three_unique_candidates_and_forbids_extra_fields():
     with pytest.raises(ValidationError):
         OpeningDirectionSet.model_validate({"directions": [direction("a"), direction("b")]})
@@ -137,9 +238,32 @@ def test_direction_set_requires_exactly_three_unique_candidates_and_forbids_extr
             {"directions": [direction("a"), direction("a"), direction("c")]}
         )
     invalid = direction_set()
-    invalid["directions"][0]["ending_direction"] = "not part of the candidate contract"
+    invalid["directions"][0]["unknown_field"] = "not part of the candidate contract"
     with pytest.raises(ValidationError):
         OpeningDirectionSet.model_validate(invalid)
+
+
+def test_generated_opening_direction_requires_complete_story_core_fields():
+    invalid = direction_set()
+    invalid["directions"][0].pop("failure_stakes")
+
+    with pytest.raises(ValidationError):
+        opening_directions_module.GeneratedOpeningDirectionSet.model_validate(invalid)
+
+    invalid = direction_set()
+    invalid["directions"][0].pop("core_advantage")
+    with pytest.raises(ValidationError):
+        opening_directions_module.GeneratedOpeningDirectionSet.model_validate(invalid)
+
+    invalid = direction_set()
+    invalid["directions"][0]["core_advantage"].pop("limits")
+    with pytest.raises(ValidationError):
+        opening_directions_module.GeneratedOpeningDirectionSet.model_validate(invalid)
+
+    invalid = direction_set()
+    invalid["directions"][0]["central_mystery"]["reveal_path"] = []
+    with pytest.raises(ValidationError):
+        opening_directions_module.GeneratedOpeningDirectionSet.model_validate(invalid)
 
 
 def test_opening_brief_is_strict_and_trims_required_text():
@@ -198,7 +322,8 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     generator = LLMOpeningDirectionGenerator(
         post_json=fake_post,
         runtime_resolver=lambda name: runtime_calls.append(name) or StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="direction-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
@@ -229,6 +354,8 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
         "genre_quality_checks",
         "genre_trope_templates",
         "genre_power_system_template",
+        "genre_outline_template",
+        "genre_opening_core_reference",
         "working_title",
         "idea",
         "regeneration_guidance",
@@ -237,18 +364,45 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     assert prompt_context["working_title"] == "SECRET_WORKING_TITLE"
     assert prompt_context["regeneration_guidance"] == ""
     assert prompt_context["genre_trope_templates"]
+    assert prompt_context["genre_opening_core_reference"] == {}
     assert prompt_context["genre_power_system_template"]["system_form"]
     assert prompt_context["genre_power_system_template"]["required_sections"]
     assert prompt_context["genre_power_system_template"]["minimum_path_count"] >= 1
     assert "genre_trope_templates" in captured["payload"]["messages"][1]["content"]
     system_prompt = captured["payload"]["messages"][0]["content"]
     assert "primary_trope_id" in system_prompt
-    assert "choose one listed primary_trope_id" in system_prompt
-    assert "Return null only when candidate list empty" in system_prompt
+    assert "core_advantage" in system_prompt
+    assert "central_mystery" in system_prompt
+    assert "initial_drive" in system_prompt
+    assert "从给定候选中" in system_prompt
+    assert "失败后果" in system_prompt
+    assert "候选为空时才返回 null" in system_prompt
     entire_prompt = json.dumps(captured["payload"]["messages"], ensure_ascii=False)
     assert "SECRET_CHARACTER_CARD" not in entire_prompt
     assert "SECRET_HISTORY_CHAPTER" not in entire_prompt
     assert "SECRET_SKILL" not in entire_prompt
+
+
+def test_generator_uses_planner_gateway_model_request():
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"directions": direction_set()["directions"]}),
+            )
+
+    result = LLMOpeningDirectionGenerator(model_gateway=Gateway()).generate(
+        OpeningBrief(novel_type_id="urban", idea="An idea")
+    )
+
+    assert len(result.directions) == 3
+    assert calls[0][0] == "planner"
+    assert calls[0][1].operation == "opening_directions"
+    assert calls[0][1].json_mode is True
+    assert "An idea" in calls[0][1].prompt
 
 
 def test_generator_adds_trimmed_one_time_guidance_to_prompt():
@@ -265,7 +419,8 @@ def test_generator_adds_trimmed_one_time_guidance_to_prompt():
     generator = LLMOpeningDirectionGenerator(
         post_json=fake_post,
         runtime_resolver=lambda _: StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="direction-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
@@ -334,7 +489,8 @@ def test_generator_accepts_known_primary_trope_choices(monkeypatch):
             ]
         },
         runtime_resolver=lambda _: StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="direction-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
@@ -387,7 +543,8 @@ def test_generator_rejects_missing_blank_or_unknown_primary_trope_when_candidate
             ]
         },
         runtime_resolver=lambda _: StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="direction-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
@@ -435,7 +592,8 @@ def test_generator_allows_null_primary_trope_only_when_candidate_list_empty(monk
             ]
         },
         runtime_resolver=lambda _: StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="direction-test-model",
             base_url="http://runtime.test",
             codex_command="codex-test",
@@ -472,12 +630,12 @@ def test_store_passes_trimmed_guidance_without_persisting_it(tmp_path):
 @pytest.mark.parametrize(
     "runtime,response",
     [
-        (StageRuntimeSettings(provider="openai", model="planner-model", api_key=""), None),
+        (StageRuntimeSettings(provider_id="openai", protocol="openai_compatible", model="planner-model", api_key=""), None),
         (
-            StageRuntimeSettings(provider="codexcli", model="planner-model", codex_command="codex"),
+            StageRuntimeSettings(provider_id="codexcli", protocol="codex_cli", model="planner-model", codex_command="codex"),
             {"choices": [{"message": {"content": json.dumps({"directions": [direction("only")]})}}]},
         ),
-        (StageRuntimeSettings(provider="codexcli", model="planner-model", codex_command="codex"), {"choices": []}),
+        (StageRuntimeSettings(provider_id="codexcli", protocol="codex_cli", model="planner-model", codex_command="codex"), {"choices": []}),
     ],
 )
 def test_generator_unifies_unavailable_runtime_and_invalid_output(runtime, response):

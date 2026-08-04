@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.http_retry import ResponseTooLargeError, RetryConfig, post_json_with_retry
+from packages.story_core.model_gateway import ModelRequest, ModelResponse, RuntimeModelGateway
 from packages.story_core.runtime_config import StageRuntimeSettings
 
 
@@ -251,33 +252,105 @@ def _validated_synopsis(response: Any) -> FanqieSynopsis:
         raise ValueError(f"invalid_synopsis: {exc}") from exc
 
 
-def _request_chat_completion(
+def _runtime_gateway_for_publishing(
     post_json: Callable[..., dict[str, Any]],
     runtime: StageRuntimeSettings,
+    model_gateway: RuntimeModelGateway | None,
+) -> RuntimeModelGateway:
+    if model_gateway is not None:
+        return model_gateway
+    if post_json is post_json_with_retry:
+        return RuntimeModelGateway(runtime_resolver=lambda _stage: runtime)
+    return _LegacyPublishingGateway(post_json, runtime)
+
+
+class _LegacyPublishingGateway(RuntimeModelGateway):
+    """Preserve the old test/integration injection without using it in production."""
+
+    def __init__(
+        self,
+        post_json: Callable[..., dict[str, Any]],
+        runtime: StageRuntimeSettings,
+    ) -> None:
+        self._legacy_post_json = post_json
+        self._legacy_runtime = runtime
+
+    def complete_stage(self, stage: str, request: ModelRequest):
+        payload: dict[str, Any] = {
+            "model": self._legacy_runtime.model,
+            "messages": list(request.normalized_messages()),
+        }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        if request.max_tokens is not None:
+            payload["max_tokens"] = request.max_tokens
+        if request.json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        try:
+            raw = self._legacy_post_json(
+                self._legacy_runtime.base_url,
+                "/" + "chat/completions",
+                payload,
+                self._legacy_runtime.api_key,
+                config=RetryConfig(
+                    timeout=PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
+                    max_retries=1,
+                    allow_compatibility_fallback=False,
+                    max_response_bytes=PUBLISHING_TEXT_MAX_RESPONSE_BYTES,
+                ),
+                provider=self._legacy_runtime.provider,
+                codex_command=self._legacy_runtime.codex_command,
+            )
+        except ResponseTooLargeError as exc:
+            raise ValueError("publishing_text_response_too_large") from exc
+        return ModelResponse.success(request, text="", raw=raw)
+
+
+def _request_text_completion(
+    gateway: RuntimeModelGateway,
     payload: dict[str, Any],
+    *,
+    operation: str,
 ) -> dict[str, Any]:
-    try:
-        return post_json(
-            runtime.base_url,
-            "/chat/completions",
-            payload,
-            runtime.api_key,
-            config=RetryConfig(
-                timeout=PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
-                max_retries=1,
-                allow_compatibility_fallback=False,
-                max_response_bytes=PUBLISHING_TEXT_MAX_RESPONSE_BYTES,
-            ),
-            provider=runtime.provider,
-            codex_command=runtime.codex_command,
-        )
-    except ResponseTooLargeError as exc:
-        raise ValueError("publishing_text_response_too_large") from exc
+    response = gateway.complete_stage(
+        "planner",
+        ModelRequest(
+            prompt="",
+            messages=tuple(payload.get("messages", ())),
+            provider="",
+            model="",
+            operation=operation,
+            temperature=payload.get("temperature"),
+            max_tokens=payload.get("max_tokens"),
+            json_mode=payload.get("response_format") == {"type": "json_object"},
+            timeout_seconds=PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS,
+            metadata={
+                "max_retries": 1,
+                "max_response_bytes": PUBLISHING_TEXT_MAX_RESPONSE_BYTES,
+                "allow_compatibility_fallback": False,
+            },
+        ),
+    )
+    if not response.ok:
+        if response.error == "invalid_provider_response":
+            return {"choices": []}
+        if response.error == "response_too_large":
+            raise ValueError("publishing_text_response_too_large")
+        raise ValueError(response.error or "model_call_failed")
+    if isinstance(response.raw, dict):
+        return response.raw
+    return {"choices": [{"message": {"content": response.text}}]}
 
 
 class SynopsisGenerator:
-    def __init__(self, *, post_json: Callable[..., dict[str, Any]] = post_json_with_retry) -> None:
+    def __init__(
+        self,
+        *,
+        post_json: Callable[..., dict[str, Any]] = post_json_with_retry,
+        model_gateway: RuntimeModelGateway | None = None,
+    ) -> None:
         self._post_json = post_json
+        self._model_gateway = model_gateway
 
     def generate(
         self,
@@ -301,7 +374,10 @@ class SynopsisGenerator:
             "temperature": float(validated_runtime.temperature),
         }
 
-        response = _request_chat_completion(self._post_json, validated_runtime, payload)
+        gateway = _runtime_gateway_for_publishing(
+            self._post_json, validated_runtime, self._model_gateway
+        )
+        response = _request_text_completion(gateway, payload, operation="publishing_synopsis")
         invalid_payload = _message_content(response)[:_MAX_REPAIR_INVALID_PAYLOAD_CHARS]
         try:
             return _validated_synopsis(response)
@@ -331,7 +407,9 @@ class SynopsisGenerator:
                 },
             ],
         }
-        repaired_response = _request_chat_completion(self._post_json, validated_runtime, repair_payload)
+        repaired_response = _request_text_completion(
+            gateway, repair_payload, operation="publishing_synopsis_repair"
+        )
         try:
             return _validated_synopsis(repaired_response)
         except ValueError as exc:
@@ -354,8 +432,14 @@ def _add_cover_requirements(concept: str) -> str:
 
 
 class CoverPromptGenerator:
-    def __init__(self, *, post_json: Callable[..., dict[str, Any]] = post_json_with_retry) -> None:
+    def __init__(
+        self,
+        *,
+        post_json: Callable[..., dict[str, Any]] = post_json_with_retry,
+        model_gateway: RuntimeModelGateway | None = None,
+    ) -> None:
         self._post_json = post_json
+        self._model_gateway = model_gateway
 
     def generate(
         self,
@@ -379,7 +463,10 @@ class CoverPromptGenerator:
             ],
             "temperature": float(validated_runtime.temperature),
         }
-        response = _request_chat_completion(self._post_json, validated_runtime, payload)
+        gateway = _runtime_gateway_for_publishing(
+            self._post_json, validated_runtime, self._model_gateway
+        )
+        response = _request_text_completion(gateway, payload, operation="publishing_cover_prompt")
         try:
             concept = _message_content(response).strip()
             if not concept:

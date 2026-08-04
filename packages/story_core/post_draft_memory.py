@@ -11,6 +11,8 @@ from packages.story_core.attribute_evidence import (
     latest_attribute_points,
     latest_confirmed_attribute_points,
 )
+from packages.story_core.foreshadowing import normalize_foreshadowing_text
+from packages.story_core.equipment_cards import normalize_equipment_card
 
 
 def _empty_result() -> dict[str, Any]:
@@ -18,9 +20,11 @@ def _empty_result() -> dict[str, Any]:
         "summary": "",
         "facts": [],
         "unresolved_threads": [],
+        "resolved_threads": [],
         "next_focus": "",
         "chapter_title": "",
         "character_updates": [],
+        "equipment_updates": [],
         "ledger_updates": {},
         "ledger_evidence": {},
         "rejected_updates": [],
@@ -106,19 +110,25 @@ def build_post_draft_memory_prompt(
     ]
     return "\n".join(
         [
+            "装备提取：equipment_updates 只记录最终正文明确出现的具名武器、防具、护甲、饰品或特殊装备；材料、货币、消耗品和普通任务物品禁止建卡。",
+            "每个 equipment_update 必须包含 name、equipment_type、evidence；evidence 必须逐字来自最终正文。可选字段包括 rarity、slot、required_level、class_restrictions、base_attributes、special_effects、skills、durability、source、current_owner、current_location、status、description、lore、lore_status、related_characters、related_factions、set_name、set_lore。",
+            "装备来历只能来自正文；明确事实填 confirmed，传闻或角色转述填 rumor，尚未揭晓填 unknown。",
             "你是小说项目的后置记忆提取器。JSON only，不要解释。",
             "硬性规则：最终正文是唯一事实来源。",
             "计划、大纲、模拟只是上下文，不能直接当事实。写前事实锁只用于识别冲突。",
             "summary只能概括最终正文实际写出的内容。",
-            "facts与unresolved_threads的每一项必须是{text, evidence}，evidence必须逐字来自最终正文。",
+            "facts、unresolved_threads、resolved_threads的每一项必须是{text, evidence}，evidence必须逐字来自最终正文。",
+            "resolved_threads.text只能从写前事实锁的open_foreshadowing中原样复制；evidence填写正文中明确揭晓或解除该伏笔的原句，不要改写伏笔名。",
             "每个character_update必须包含已知人物name与evidence；character_updates.name必须返回真实人物名，不能填游戏ID；不得创建未知人物。",
+            "每个character_update还必须写state_line：现实场景填reality，游戏场景填game；无法确定就不要更新该人物，禁止省略后猜测。",
+            "角色更新限emotion、goal、location，其他结构化状态由明确状态事件负责，稳定档案禁改。",
             "ledger_updates只写正文已落地的叶子；ledger_evidence用protagonist.location这类扁平路径逐项给证据。",
             "自由属性加点必须同时写成：ledger_updates.protagonist.attribute_allocation={allocations:{智力:5}, remaining:0, reason?:...}；"
             "并给出protagonist.attribute_allocation.allocations.智力和protagonist.attribute_allocation.remaining两条ledger_evidence。"
             "加点只返回attribute_allocation这个增量指令；不得同时返回attributes中的最终属性镜像或unallocated_attribute_points。"
             "只有正文明确写出人物把几点加到哪项、并确认结果或剩余点数时才可落账；只列最终面板不算。",
             "证据可以忽略空白和常见中英文标点差异，但禁止同义改写、模糊匹配或语义猜测。",
-            "返回字段：summary, facts, unresolved_threads, next_focus, chapter_title, character_updates, ledger_updates, ledger_evidence。",
+            "返回字段：summary, facts, unresolved_threads, resolved_threads, next_focus, chapter_title, character_updates, equipment_updates, ledger_updates, ledger_evidence。",
             f"题材：{_text(genre)}",
             f"上一章状态摘要（仅连续性上下文）：{_text(previous_summary)[:600]}",
             f"已知人物：{_compact_json(names, limit=600)}",
@@ -129,17 +139,83 @@ def build_post_draft_memory_prompt(
     )
 
 
+def _normalize_equipment_updates(
+    value: Any,
+    *,
+    body: str,
+    chapter_number: int | None,
+    rejected: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    accepted: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            rejected.append({"kind": "equipment_update", "reason": "invalid_item"})
+            continue
+        name = _text(raw.get("name"))
+        evidence = _text(raw.get("evidence"))
+        if not name or not evidence:
+            rejected.append({"kind": "equipment_update", "reason": "missing_evidence"})
+            continue
+        if not _evidence_matches(body, evidence) or not _literal_value_in_body(name, body):
+            rejected.append({"kind": "equipment_update", "name": name, "reason": "evidence_not_in_body"})
+            continue
+
+        candidate = dict(raw)
+        for field in (
+            "rarity",
+            "required_level",
+            "durability",
+            "source",
+            "current_owner",
+            "current_location",
+            "description",
+            "lore",
+            "set_name",
+            "set_lore",
+        ):
+            field_value = _text(candidate.get(field))
+            if field_value and not _literal_value_in_body(field_value, body):
+                candidate.pop(field, None)
+        lore_status = _text(candidate.get("lore_status")).casefold()
+        confidence = lore_status if lore_status in {"confirmed", "rumor", "unknown"} else "unknown"
+        candidate["evidence"] = [
+            {
+                "chapter": chapter_number,
+                "quote": evidence,
+                "confidence": confidence,
+            }
+        ]
+        card = normalize_equipment_card(candidate, chapter_number=chapter_number)
+        if not card:
+            rejected.append({"kind": "equipment_update", "name": name, "reason": "not_equipment"})
+            continue
+        accepted.append(card)
+    return accepted
+
+
 def _normalize_evidenced_items(
     value: Any,
     *,
     body: str,
     kind: str,
     rejected: list[dict[str, str]],
+    allowed_texts: Iterable[str] | None = None,
 ) -> list[str]:
     if not isinstance(value, list):
         return []
 
     accepted: list[str] = []
+    allowed_by_key = (
+        {
+            normalize_foreshadowing_text(str(item)): str(item).strip()
+            for item in allowed_texts
+            if str(item).strip()
+        }
+        if allowed_texts is not None
+        else None
+    )
     for item in value:
         if not isinstance(item, dict):
             rejected.append({"kind": kind, "reason": "invalid_item"})
@@ -151,12 +227,20 @@ def _normalize_evidenced_items(
                 {"kind": kind, "value": text, "reason": "missing_evidence"}
             )
             continue
+        if allowed_by_key is not None:
+            canonical_text = allowed_by_key.get(normalize_foreshadowing_text(text))
+            if canonical_text is None:
+                rejected.append(
+                    {"kind": kind, "value": text, "reason": "thread_not_open"}
+                )
+                continue
+            text = canonical_text
         if not _evidence_matches(body, evidence):
             rejected.append(
                 {"kind": kind, "value": text, "reason": "evidence_not_in_body"}
             )
             continue
-        if not _claim_has_body_anchors(text, body):
+        if allowed_by_key is None and not _claim_has_body_anchors(text, body):
             rejected.append(
                 {"kind": kind, "value": text, "reason": "claim_not_supported_by_body"}
             )
@@ -283,13 +367,13 @@ def _normalize_character_updates(
     existing_character_names: Any,
     character_aliases_by_name: Mapping[str, Iterable[str]] | None,
     rejected: list[dict[str, str]],
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
 
     known_names = _known_names(existing_character_names)
     aliases_by_name = _normalized_character_aliases_by_name(character_aliases_by_name)
-    accepted: list[dict[str, str]] = []
+    accepted: list[dict[str, Any]] = []
     for item in value:
         if not isinstance(item, dict):
             rejected.append({"kind": "character_update", "reason": "invalid_item"})
@@ -301,6 +385,24 @@ def _normalize_character_updates(
                     "kind": "character_update",
                     "name": name,
                     "reason": "unknown_character",
+                }
+            )
+            continue
+        raw_state_line = item.get("state_line")
+        state_line = _text(raw_state_line).lower()
+        empty_state_line = raw_state_line is None or (
+            isinstance(raw_state_line, str) and not raw_state_line.strip()
+        )
+        if (
+            "state_line" in item
+            and not empty_state_line
+            and state_line not in {"reality", "game"}
+        ):
+            rejected.append(
+                {
+                    "kind": "character_update",
+                    "name": name,
+                    "reason": "invalid_state_line",
                 }
             )
             continue
@@ -339,20 +441,29 @@ def _normalize_character_updates(
             )
             continue
 
-        update = {"name": name}
+        update: dict[str, Any] = {"name": name}
+        if state_line in {"reality", "game"}:
+            update["state_line"] = state_line
+        proposed_state_fields = False
         for field in ("emotion", "goal", "location"):
             field_value = _text(item.get(field))
+            proposed_state_fields = proposed_state_fields or bool(field_value)
             if field_value and any(_evidence_matches(span, field_value) for span in spans):
                 update[field] = field_value
-        if len(update) == 1:
-            rejected.append(
-                {
-                    "kind": "character_update",
-                    "name": name,
-                    "reason": "empty_update",
-                }
-            )
-            continue
+        if proposed_state_fields and not any(
+            field in update for field in ("emotion", "goal", "location")
+        ):
+            if state_line in {"reality", "game"}:
+                evidence = spans[0]
+            else:
+                rejected.append(
+                    {
+                        "kind": "character_update",
+                        "name": name,
+                        "reason": "empty_update",
+                    }
+                )
+                continue
         update["evidence"] = evidence
         accepted.append(update)
     return accepted
@@ -687,6 +798,8 @@ def normalize_post_draft_memory(
     evidence_character_names: set[str] | None = None,
     character_aliases_by_name: Mapping[str, Iterable[str]] | None = None,
     protagonist_aliases: set[str] | None = None,
+    open_foreshadowing_texts: Iterable[str] | None = None,
+    chapter_number: int | None = None,
 ) -> dict[str, Any]:
     """Drop every proposed state change that lacks literal final-prose evidence."""
 
@@ -716,11 +829,24 @@ def normalize_post_draft_memory(
         kind="unresolved_thread",
         rejected=rejected,
     )
+    result["resolved_threads"] = _normalize_evidenced_items(
+        payload.get("resolved_threads"),
+        body=body_text,
+        kind="resolved_thread",
+        rejected=rejected,
+        allowed_texts=open_foreshadowing_texts,
+    )
     result["character_updates"] = _normalize_character_updates(
         payload.get("character_updates"),
         body=body_text,
         existing_character_names=existing_character_names,
         character_aliases_by_name=character_aliases_by_name,
+        rejected=rejected,
+    )
+    result["equipment_updates"] = _normalize_equipment_updates(
+        payload.get("equipment_updates"),
+        body=body_text,
+        chapter_number=chapter_number,
         rejected=rejected,
     )
     alias_map = _normalized_character_aliases_by_name(character_aliases_by_name)

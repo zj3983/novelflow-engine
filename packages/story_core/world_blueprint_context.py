@@ -575,7 +575,7 @@ def select_world_context(
     return selected
 
 
-def outline_power_system_context(spec: Any) -> dict[str, Any]:
+def outline_power_system_context(spec: Any, current_level: int = 1) -> dict[str, Any]:
     """Build the compact all-stage contract needed by outline planning."""
 
     base = power_system_prompt_slice(spec)
@@ -613,7 +613,7 @@ def outline_power_system_context(spec: Any) -> dict[str, Any]:
         result["stages"] = stages
     if paths:
         result["paths"] = paths
-    return _fit_outline_power_budget(result)
+    return _fit_outline_power_budget(result, current_level=current_level)
 
 
 def _matches_power_spec(relevance: str) -> bool:
@@ -638,9 +638,11 @@ def _outline_text(value: Any, limit: int) -> str:
     return str(value or "")[:limit]
 
 
-def _major_outline_stages(stages: Any) -> list[dict[str, Any]]:
+def _major_outline_stages(stages: Any, current_level: int = 1) -> list[dict[str, Any]]:
     values = [stage for stage in stages if isinstance(stage, dict)] if isinstance(stages, list) else []
     major_levels = {1, 10, 20, 30, 60}
+    if current_level > 0:
+        major_levels.update({current_level - 1, current_level, current_level + 1, current_level + 2})
     selected = [
         stage
         for index, stage in enumerate(values)
@@ -706,11 +708,11 @@ def _compact_outline_contract(
     return candidate
 
 
-def _fit_outline_power_budget(value: dict[str, Any]) -> dict[str, Any]:
+def _fit_outline_power_budget(value: dict[str, Any], current_level: int = 1) -> dict[str, Any]:
     if _outline_json_length(value) <= 5000:
         return deepcopy(value)
 
-    stages = _major_outline_stages(value.get("stages"))
+    stages = _major_outline_stages(value.get("stages"), current_level=current_level)
     paths = [
         path
         for path in (value.get("paths") if isinstance(value.get("paths"), list) else [])

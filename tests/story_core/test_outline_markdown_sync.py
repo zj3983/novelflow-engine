@@ -134,17 +134,28 @@ def test_import_real_project_markdown() -> None:
     outline = import_markdown_outline(REAL_PROJECT)
     assert outline is not None
     assert outline["schema_version"] == "project-outline/v1"
-    assert len(outline["chapters"]) == 100
-    assert len(outline["arcs"]) == 6
+    assert len(outline["chapters"]) == 14
+    assert len(outline["arcs"]) == 8
+    assert outline["arcs"][0]["title"] == "新手区争先"
+    assert outline["arcs"][-1]["title"] == "神域重启"
 
     overall = outline["overall"]
     for key in ("story", "protagonist_goal", "main_conflict", "growth_path", "ending_direction"):
         assert str(overall.get(key) or "").strip(), key
 
     arc_ids = [arc["id"] for arc in outline["arcs"]]
-    assert arc_ids == ["vol-1", "vol-2", "vol-3", "vol-4", "vol-5", "vol-6"]
+    assert arc_ids == [
+        "vol-1",
+        "vol-2",
+        "vol-3",
+        "vol-4",
+        "vol-5",
+        "vol-6",
+        "vol-7",
+        "vol-8",
+    ]
     first_arc = outline["arcs"][0]
-    assert first_arc["title"] == "灰烬起点"
+    assert first_arc["title"] == "新手区争先"
     assert (first_arc["start_chapter"], first_arc["end_chapter"]) == (1, 50)
     for key in ("goal", "obstacle", "payoff", "reality_line_payoff"):
         assert first_arc[key].strip(), key
@@ -154,13 +165,13 @@ def test_import_real_project_markdown() -> None:
     for key in ("title", "goal", "obstacle", "action", "turn", "payoff", "ending_hook"):
         assert str(first.get(key) or "").strip(), key
     assert "苏叶" in first["cast"]
-    assert "夜烬" in first["cast"]
+    assert "夜烬" not in first["cast"]
 
     last = outline["chapters"][-1]
-    assert last["chapter_number"] == 100
+    assert last["chapter_number"] == 14
 
     validated = validate_outline_for_project(outline, current_chapter=2)
-    assert len(validated["chapters"]) == 100
+    assert len(validated["chapters"]) == 14
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +227,34 @@ def test_round_trip_export_then_import_deep_equal(tmp_path: Path) -> None:
     # 无关文件绝不改动。
     assert (root / "大纲" / "第1卷-节拍表.md").read_text(encoding="utf-8") == "# 节拍表\n人类专属\n"
     assert (root / "大纲" / "爽点规划.md").read_text(encoding="utf-8") == "# 爽点规划\n人类专属\n"
+
+
+def test_long_form_outline_fields_round_trip_through_markdown(tmp_path: Path) -> None:
+    root = _make_project(tmp_path)
+    outline = import_markdown_outline(root)
+    assert outline is not None
+    outline["overall"].update(
+        theme_statement="力量不能代替选择。",
+        foreground_story="主角处理眼前冲突并建立自己的位置。",
+        background_story="幕后势力借每次冲突推进长期计划。",
+        book_objective="主角公开真相并改变旧秩序。",
+        ending_image="旧门重新打开，主角把钥匙交给后来者。",
+    )
+    outline["arcs"][0].update(
+        emotional_curve="先压后扬，卷尾留下余震。",
+        key_results=["取得立足身份", "赢得关键盟友", "拿到后台线索"],
+        hook_plan="本卷留下的旧印记在第三卷回收。",
+        irreversible_change="主角公开站队，不能再退回旁观位置。",
+    )
+
+    assert export_outline_to_markdown(root, outline) == "ok"
+    restored = import_markdown_outline(root)
+
+    assert restored is not None
+    assert restored["overall"]["theme_statement"] == "力量不能代替选择。"
+    assert restored["overall"]["background_story"].startswith("幕后势力")
+    assert restored["arcs"][0]["key_results"] == ["取得立足身份", "赢得关键盟友", "拿到后台线索"]
+    assert restored["arcs"][0]["irreversible_change"].startswith("主角公开")
 
 
 def test_export_preserves_md_only_content_and_unknown_sections(tmp_path: Path) -> None:

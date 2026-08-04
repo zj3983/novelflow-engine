@@ -6,7 +6,32 @@ from packages.story_core.engine import ChapterBundle
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.orchestrator import _normalize_event_plan
+from packages.story_core.power_systems import power_system_prompt_slice
 from packages.story_core.writing_packet import build_codex_writing_packet, power_system_context_for_state
+
+
+def test_power_system_prompt_selects_nearest_shared_transfer_tiers_and_path_tree() -> None:
+    spec = {
+        "name": "Class system",
+        "class_advancement_tiers": [
+            {"level": 10, "name": "Class", "purpose": "Choose class", "common_requirements": ["Trial"], "failure_rule": "Retry"},
+            {"level": 30, "name": "Branch", "purpose": "Choose branch", "common_requirements": ["Branch trial"], "failure_rule": "Delay"},
+            {"level": 60, "name": "Legacy", "purpose": "Claim legacy", "common_requirements": ["Legacy trial"], "failure_rule": "Repair"},
+        ],
+        "paths": [{
+            "name": "Mage",
+            "branches": ["Fire", "Ice"],
+            "advancement_tree": [
+                {"level": level, "tier_name": tier, "options": [{"name": tier, "transfer_task": f"{tier} task", "ability_changes": [f"{tier} power"]}]}
+                for level, tier in ((10, "Class"), (30, "Branch"), (60, "Legacy"))
+            ],
+        }],
+    }
+
+    result = power_system_prompt_slice(spec, stage_hint=12, path_hint="Fire")
+
+    assert [tier["level"] for tier in result["class_advancement_tiers"]] == [10, 30]
+    assert [node["level"] for node in result["paths"][0]["advancement_tree"]] == [10, 30]
 
 
 def _packet_power_spec() -> dict:
@@ -572,6 +597,32 @@ def test_file_writer_character_cards_project_only_selected_state_line():
         assert "game_secret" not in str(cards[0]["state_context"] if scene_kind == "reality" else {})
 
 
+def test_file_writer_character_cards_use_generic_state_for_non_game_story():
+    store = object.__new__(FileProjectStore)
+    cards = store._writer_character_cards(
+        {
+            "characters": [
+                {
+                    "name": "沈墨",
+                    "role": "主角",
+                    "current_state": {"current": {"location": "祖祠"}},
+                    "real_state": {"current": {"location": "旧住处"}},
+                }
+            ]
+        },
+        {"chapter": {"cast": ["沈墨"]}},
+        scene_kind="reality",
+        is_game_story=False,
+    )
+
+    assert cards[0]["state_context"] == {
+        "current_state": {
+            "current": {"location": "祖祠"},
+            "recent_changes": [],
+        }
+    }
+
+
 def test_writer_scene_kind_uses_all_scene_card_text_and_mixes_lines():
     store = object.__new__(FileProjectStore)
 
@@ -698,20 +749,106 @@ def test_file_project_packet_and_prompt_preview_share_scene_kind_and_state_conte
     (root / ".webnovel" / "project.json").write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
     (root / ".webnovel" / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     (root / ".webnovel" / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
+    (root / ".webnovel" / "story_core.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "story-core/v1",
+                "title": "双状态测试",
+                "logline": "苏叶进入神域后必须靠游戏收益解决现实困境，否则会失去唯一住处。",
+                "protagonist_profile": "谨慎的失业青年。",
+                "inciting_incident": "他获得异常掉落能力。",
+                "protagonist_goal": "在游戏中站稳并解决现实困境。",
+                "main_conflict": "游戏规则和现实压力同时逼近。",
+                "failure_stakes": "失去住处和翻身机会。",
+                "growth_path": "从只求自保变成掌握规则的人。",
+                "excitement_point": "游戏能力逐步影响现实。",
+                "target_audience": "喜欢网游升级的读者。",
+                "reader_promise": "每章都有可见成长或现实回报。",
+                "ending_direction": "主角掌握神域规则并改变现实。",
+                "core_advantage": {
+                    "name": "异常掉落",
+                    "type": "概率优势",
+                    "ability": "提高符合当前等级怪物的有效掉落。",
+                    "growth_rule": "完成阶段验证后开放新的掉落类别。",
+                    "limits": "不能绕过等级差和任务条件。",
+                    "early_payoff": "用第一批材料换到启动资金。",
+                },
+                "central_mystery": {
+                    "surface_anomaly": "掉落记录偶尔出现未知校验信息。",
+                    "hidden_truth": "神域正在筛选能够承受现实反馈的玩家。",
+                    "reality_impact": "游戏属性会分阶段反馈现实。",
+                    "reveal_path": ["异常校验", "属性反馈", "筛选真相"],
+                },
+                "initial_drive": {
+                    "immediate_need": "先挣到稳定生活费。",
+                    "trigger": "现实工作中断后进入神域。",
+                    "short_term_goal": "靠第一批材料解决住处问题。",
+                    "failure_stakes": "失去住处和继续游戏的条件。",
+                    "long_term_transition": "从打金转向追查神域异常。",
+                },
+                "source_direction_id": "direction-1",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
     store = FileProjectStore(root)
     packet = store.writing_packet(1)
     preview = store.prompt_preview(1)
     prompts = {item["key"]: item for item in preview["prompts"]}
     character_module = next(item for item in preview["modules"] if item["key"] == "character_context")
+    core_module = next(item for item in preview["modules"] if item["key"] == "core_context")
 
     assert packet["scene_kind"] == "game"
+    assert "story_core" not in packet
+    assert packet["outline_context"]["overall"]["story"] == "双状态测试"
+    assert packet["outline_context"]["overall"]["positioning"]["reader_promise"] == (
+        "每章都有可见成长或现实回报。"
+    )
+    assert packet["outline_context"]["overall"]["core_advantage"]["name"] == "异常掉落"
+    assert not (root / ".webnovel" / "story_core.json").exists()
+    assert (root / ".webnovel" / "story_core.legacy.json").exists()
+    assert "神域正在筛选" not in json.dumps(packet, ensure_ascii=False)
+    assert "pacing_stages" not in json.dumps(packet, ensure_ascii=False)
     assert [stage["level"] for stage in packet["power_system"]["stages"]] == [10, 20]
     assert [path["name"] for path in packet["power_system"]["paths"]] == ["法师"]
     assert '"power_system"' in preview["modules"][-1]["content"]
     assert "神域职业体系" in prompts["writer_body"]["content"]
+    assert "每章都有可见成长或现实回报" in core_module["content"]
+    assert "喜欢网游升级的读者" not in prompts["writer_body"]["content"]
     assert '"scene_kind": "game"' in preview["modules"][-1]["content"]
     assert '"game_state"' in character_module["content"]
     assert '"real_state"' not in character_module["content"]
+
+    generic_root = tmp_path / "generic-file-project"
+    (generic_root / ".story-system" / "chapters").mkdir(parents=True)
+    (generic_root / ".story-system" / "reviews").mkdir(parents=True)
+    (generic_root / ".webnovel").mkdir(parents=True)
+    (generic_root / "chapters").mkdir(parents=True)
+    generic_project = deepcopy(project)
+    generic_project["project_id"] = "p-generic-dual"
+    generic_project["world_blueprint"]["genre_plugin_ids"] = ["suspense"]
+    generic_state = deepcopy(state)
+    generic_state["story_id"] = "s-generic-dual"
+    generic_state["genre"] = "suspense"
+    (generic_root / ".story-system" / "MASTER_SETTING.json").write_text(
+        json.dumps({"project": generic_project}, ensure_ascii=False), encoding="utf-8"
+    )
+    (generic_root / ".webnovel" / "project.json").write_text(
+        json.dumps(generic_project, ensure_ascii=False), encoding="utf-8"
+    )
+    (generic_root / ".webnovel" / "state.json").write_text(
+        json.dumps(generic_state, ensure_ascii=False), encoding="utf-8"
+    )
+    (generic_root / ".webnovel" / "outline.json").write_text(
+        json.dumps(outline, ensure_ascii=False), encoding="utf-8"
+    )
+
+    generic_preview = FileProjectStore(generic_root).prompt_preview(1)
+    generic_character_module = next(
+        item for item in generic_preview["modules"] if item["key"] == "character_context"
+    )
+    assert '"game_state"' not in generic_character_module["content"]
     assert "游戏状态：" in prompts["writer_body"]["content"]
     assert "现实状态：" not in prompts["writer_body"]["content"]

@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+
+FIRST_CHAPTER_FORBIDDEN_TERMS = (
+    "寄售",
+    "成交",
+    "到账",
+    "手续费",
+    "挂单",
+    "商人",
+    "赵胖子",
+    "白袍",
+    "公会追查",
+    "论坛热帖",
+    "锁定坐标",
+)
+
 import re
 from typing import Any, Iterable
 
@@ -257,7 +272,19 @@ def _first_chapter_anchor_issues(body: str, *, allow_trade_payoff: bool = False)
                 "初始货币锁为0铜；没有铜币掉落或任务奖励时，章末仍应是0铜。",
             )
         )
-    if not any(token in body for token in ("0铜", "零铜", "钱袋：空", "钱袋为空", "铜币栏还是空", "一枚铜都没有")):
+    if not any(
+        token in body
+        for token in (
+            "0铜",
+            "零铜",
+            "钱袋：空",
+            "钱袋为空",
+            "铜币栏还是空",
+            "一枚铜都没有",
+            "一枚铜币都没有",
+            "一枚铜币也没有",
+        )
+    ):
         issues.append(
             (
                 "economy_rules",
@@ -718,6 +745,11 @@ def _panel_value_drift_issues(body: str) -> list[str]:
             if key == "生命" and hp_change_explained:
                 continue
             if key == "法力" and mp_change_explained:
+                continue
+            if key in {"智力", "敏捷", "体质", "力量", "精神"} and (
+                character_attribute_allocation_points(body, key) is not None
+                and has_positive_attribute_allocation_confirmation(body)
+            ):
                 continue
             drift.append(f"{key}{'/'.join(normalized[:3])}")
     if drift:

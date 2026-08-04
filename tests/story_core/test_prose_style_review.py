@@ -7,12 +7,13 @@ def test_anti_ai_style_rules_include_generation_and_revision_constraints():
     rules = anti_ai_style_rules()
 
     assert any("人物说话完整自然" in rule for rule in rules)
-    assert any("一章分3到4个叙事段落" in rule for rule in rules)
-    assert any("动作 + 微表情 + 细微生理反应" in rule for rule in rules)
+    assert all("一章分3到4个叙事段落" not in rule for rule in rules)
+    assert any("动作、微表情和细微生理反应" in rule for rule in rules)
     assert any("不要把后台词写进正文和标题" in rule for rule in rules)
     assert any("不要把句子全部切短" in rule for rule in rules)
     assert all("固定文风" not in rule for rule in rules)
-    assert any("走到门口" in rule for rule in rules)
+    assert all("走到门口" not in rule for rule in rules)
+    assert any("不强制固定轮次" in rule for rule in rules)
 
 
 def test_prose_style_review_flags_ai_cliche_and_meta_explanation():

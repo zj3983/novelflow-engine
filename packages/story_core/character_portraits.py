@@ -62,6 +62,15 @@ _SERVICE_DUTY_PHRASES = (
     "装备修理服务",
 )
 
+_INTERNAL_ROLE_FUNCTIONS = {
+    "protagonist": "主线目标",
+    "supporting": "自身目标与当前关系",
+    "recurring": "自身目标与当前关系",
+    "recurring npc": "自身目标与当前关系",
+    "stage antagonist": "阶段对手目标",
+    "long term antagonist": "长期对手目标",
+}
+
 
 def _clean(value: str) -> str:
     return value.strip() if value else ""
@@ -81,6 +90,11 @@ def _join_unique(values: list[str]) -> str:
 
 def _first(*values: str, fallback: str) -> str:
     return next((cleaned for value in values if (cleaned := _clean(value))), fallback)
+
+
+def _role_function(character: CharacterState) -> str:
+    normalized = _normalize_label(character.character_tier or character.role)
+    return _INTERNAL_ROLE_FUNCTIONS.get(normalized, _clean(character.role) or "当前人物职责")
 
 
 def _portrait_kind(character: CharacterState, story_function: str) -> str:
@@ -160,7 +174,7 @@ def _shared_inputs(
         story_function,
         character.story_function,
         character.npc_profile.service_role,
-        fallback=_clean(character.role) or "当前人物职责",
+        fallback=_role_function(character),
     )
     goals = _clean_list(character.goals)
     incentives = _clean_list(character.npc_profile.incentives)
@@ -394,6 +408,34 @@ def _fill_empty(existing: Any, defaults: Any) -> Any:
     return defaults if existing is None else existing
 
 
+def _contains_internal_role(value: str) -> bool:
+    normalized = _normalize_label(value)
+    return any(role in normalized for role in _INTERNAL_ROLE_FUNCTIONS)
+
+
+def _repair_internal_role_leaks(existing: Any, defaults: Any) -> Any:
+    if isinstance(existing, dict) and isinstance(defaults, dict):
+        return {
+            key: _repair_internal_role_leaks(value, defaults.get(key))
+            for key, value in existing.items()
+        }
+    if isinstance(existing, list):
+        default_items = defaults if isinstance(defaults, list) else []
+        repaired = []
+        for index, value in enumerate(existing):
+            fallback = default_items[index] if index < len(default_items) else None
+            repaired.append(_repair_internal_role_leaks(value, fallback))
+        return repaired
+    if isinstance(existing, str) and _contains_internal_role(existing):
+        if isinstance(defaults, str) and not _contains_internal_role(defaults):
+            return defaults
+        repaired = existing
+        for role, label in _INTERNAL_ROLE_FUNCTIONS.items():
+            repaired = repaired.replace(role.replace(" ", "_"), label).replace(role, label)
+        return repaired
+    return existing
+
+
 def complete_character_portrait(
     character: CharacterState,
     genre: str = "",
@@ -409,9 +451,13 @@ def complete_character_portrait(
         "recurring_support": _recurring_support_template,
     }[kind]
     defaults = template_builder(inputs)
+    existing_portrait = _repair_internal_role_leaks(
+        character.personality_portrait.model_dump(),
+        defaults.model_dump(),
+    )
     completed = PersonalityPortrait.model_validate(
         _fill_empty(
-            character.personality_portrait.model_dump(),
+            existing_portrait,
             defaults.model_dump(),
         )
     )

@@ -51,7 +51,8 @@ def test_merge_enrichment_adds_genre_plugin_rules():
 
     assert world["genre_plugins"][0]["id"] == "generic_webnovel"
     assert any(plugin["id"] == "rules_mystery" for plugin in world["genre_plugins"])
-    assert any("规则" in rule for rule in world["quest_rules"])
+    assert "quest_rules" not in world
+    assert any("规则" in rule for rule in world["chapter_formula"])
     assert world["living_world"]["daily_routines"]
     assert world["living_world"]["reaction_rules"]
     assert enriched.author_constraints

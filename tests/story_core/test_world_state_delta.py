@@ -1,9 +1,36 @@
 from packages.story_core.models import CharacterState, StoryState
-from packages.story_core.orchestrator import (
-    _sanitize_chapter_output,
+from packages.story_core.genre_stages.postprocess import PostprocessContext
+from packages.story_core.genre_stages.registry import genre_stage_profile_for
+from packages.story_core.genre_stages.game_webnovel.postprocess import (
     _soften_repeated_paragraph_openers,
+)
+from packages.story_core.orchestrator import (
     apply_simulated_state_deltas,
 )
+
+
+def _postprocess_game_body(
+    body: str,
+    *,
+    chapter_number: int,
+    scene_cards: list[dict] | None = None,
+) -> str:
+    story = StoryState(
+        story_id="postprocess-game",
+        outline="A player enters a virtual world.",
+        genre="网游",
+        style="serial fiction",
+    )
+    profile = genre_stage_profile_for(story)
+    assert profile.profile_id == "game_webnovel"
+    return profile.postprocess_body(
+        context=PostprocessContext(
+            story=story,
+            body=body,
+            chapter_number=chapter_number,
+            scene_cards=scene_cards or [],
+        )
+    )
 
 
 def test_apply_simulated_state_deltas_merges_world_event_and_scene_card_state():
@@ -242,7 +269,7 @@ def test_second_chapter_sanitizer_does_not_add_outsider_or_emotion_scenes():
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+    cleaned = _postprocess_game_body(body, chapter_number=2, scene_cards=[])
 
     assert cleaned == body
     assert "路线挺熟" not in cleaned
@@ -261,7 +288,7 @@ def test_second_chapter_sanitizer_does_not_insert_retroactive_venom_after_turn_i
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+    cleaned = _postprocess_game_body(body, chapter_number=2, scene_cards=[])
 
     assert "回村前，夜烬只在坡口补打一只灰狼" not in cleaned
     assert cleaned.count("清道夫委托") == 1
@@ -277,7 +304,7 @@ def test_second_chapter_sanitizer_normalizes_guide_terms_without_adding_npc_scen
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+    cleaned = _postprocess_game_body(body, chapter_number=2, scene_cards=[])
 
     assert "仇恨值" not in cleaned
     assert "AI规矩" not in cleaned
@@ -297,7 +324,7 @@ def test_second_chapter_sanitizer_does_not_complete_partial_npc_boundary():
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+    cleaned = _postprocess_game_body(body, chapter_number=2, scene_cards=[])
 
     assert cleaned == body
     assert "只看裂纹和耐久" not in cleaned
@@ -312,7 +339,7 @@ def test_second_chapter_sanitizer_does_not_add_luoshen_service_boundary():
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+    cleaned = _postprocess_game_body(body, chapter_number=2, scene_cards=[])
 
     assert cleaned == body
     assert "洛婶只按清单收钱拿药" not in cleaned
@@ -330,7 +357,7 @@ def test_second_chapter_sanitizer_removes_stale_webgame_terms_and_prices():
         ]
     )
 
-    cleaned = _sanitize_chapter_output(body, chapter_number=2, scene_cards=[])
+    cleaned = _postprocess_game_body(body, chapter_number=2, scene_cards=[])
 
     assert "仇恨标识" not in cleaned
     assert "灰鼠" not in cleaned

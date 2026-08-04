@@ -6,6 +6,7 @@ from urllib.error import HTTPError, URLError
 import pytest
 from pydantic import ValidationError
 
+from packages.story_core.model_gateway import ModelResponse, RuntimeModelGateway
 from packages.story_core.publishing_assets import (
     CoverPromptGenerator,
     MAX_SYNOPSIS_TAG_CHARS,
@@ -23,7 +24,8 @@ from packages.story_core.runtime_config import StageRuntimeSettings
 
 def _publishing_runtime(*, provider: str = "openai") -> StageRuntimeSettings:
     return StageRuntimeSettings(
-        provider=provider,
+        provider_id=provider,
+        protocol="codex_cli" if provider == "codexcli" else "openai_compatible",
         model="publishing-model",
         api_key="publishing-key" if provider == "openai" else "",
         base_url="https://text.test/v1",
@@ -50,6 +52,30 @@ def _valid_synopsis() -> dict[str, object]:
         "pattern": "conflict",
         "visual_hook": "血月下的亡魂渡船",
     }
+
+
+def test_publishing_text_routes_through_planner_gateway() -> None:
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            return ModelResponse.success(
+                request,
+                text=json.dumps(_valid_synopsis(), ensure_ascii=False),
+            )
+
+    result = SynopsisGenerator(model_gateway=Gateway()).generate(
+        _publishing_context(), _publishing_runtime()
+    )
+
+    assert result.pattern == "conflict"
+    assert calls[0][0] == "planner"
+    request = calls[0][1]
+    assert request.operation == "publishing_synopsis"
+    assert request.timeout_seconds == PUBLISHING_TEXT_REQUEST_TIMEOUT_SECONDS
+    assert request.metadata["max_retries"] == 1
+    assert request.metadata["max_response_bytes"] == PUBLISHING_TEXT_MAX_RESPONSE_BYTES
 
 
 def test_synopsis_generator_returns_validated_synopsis_and_uses_runtime_transport() -> None:
@@ -265,6 +291,19 @@ def test_publishing_text_generation_maps_an_oversized_response_to_a_safe_error()
         SynopsisGenerator(
             post_json=lambda *_args, **_kwargs: (_ for _ in ()).throw(ResponseTooLargeError("response_too_large"))
         ).generate(_publishing_context(), _publishing_runtime())
+
+
+def test_publishing_text_generation_maps_oversized_response_through_runtime_gateway() -> None:
+    runtime = _publishing_runtime()
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: runtime,
+        transport=lambda **_kwargs: (_ for _ in ()).throw(
+            ResponseTooLargeError("response_too_large")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="^publishing_text_response_too_large$"):
+        SynopsisGenerator(model_gateway=gateway).generate(_publishing_context(), runtime)
 
 
 def test_cover_prompt_generator_preserves_concept_and_adds_missing_fixed_constraints() -> None:

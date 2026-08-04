@@ -49,15 +49,15 @@ def _latest_next_focus(story: StoryState) -> str:
 def _is_game_opening_chapter(story: StoryState) -> bool:
     if story.current_chapter != 1:
         return False
-    context = " ".join([story.genre, story.style, story.outline, *story.world_facts]).lower()
-    return any(token in context for token in ("网游", "vrmmo", "游戏", "game_webnovel", "天启之门"))
+    genre = story.genre.lower()
+    return any(token in genre for token in ("网游", "vrmmo", "game_webnovel"))
 
 
 def _is_game_opening_arc(story: StoryState) -> bool:
     if story.current_chapter not in (1, 2, 3):
         return False
-    context = " ".join([story.genre, story.style, story.outline, *story.world_facts]).lower()
-    return any(token in context for token in ("网游", "vrmmo", "游戏", "game_webnovel", "天启之门"))
+    genre = story.genre.lower()
+    return any(token in genre for token in ("网游", "vrmmo", "game_webnovel"))
 
 
 def _early_game_opposition(rival: dict) -> str:
@@ -244,6 +244,8 @@ def select_primary_pair(action_briefs: list[dict]) -> tuple[dict, dict | None]:
     rival = None
     best_score = -1
     for candidate in action_briefs[1:]:
+        if candidate.get("name") == lead.get("name"):
+            continue
         score = 0
         if _goal_topic(candidate["goal"]) == _goal_topic(lead["goal"]):
             score += 2

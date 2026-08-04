@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 
 import pytest
+
+from packages.story_core.model_gateway import ModelResponse
 from pydantic import ValidationError
 
 from packages.story_core.continuation_import import ContinuationChapter, scan_continuation_source
@@ -883,6 +885,29 @@ def test_llm_analyzer_rejects_invalid_json_stably() -> None:
 
     with pytest.raises(ValueError, match="^continuation_analysis_invalid_response$"):
         analyzer.analyze_chapters([chapter])
+
+
+def test_llm_analyzer_uses_planner_gateway_model_request() -> None:
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"chapters": [{"chapter_id": "c2"}]}),
+            )
+
+    analyzer = LLMContinuationAnalyzer(model_gateway=Gateway())
+    result = analyzer.analyze_chapters(
+        [ContinuationChapter(chapter_id="c2", number=2, title="title", body="body", source_name="2.txt", fingerprint="x")]
+    )
+
+    assert [item.chapter_id for item in result] == ["c2"]
+    assert calls[0][0] == "planner"
+    assert calls[0][1].operation == "continuation_analysis"
+    assert calls[0][1].json_mode is True
+    assert calls[0][1].max_tokens == 6000
 
 
 def test_llm_batch_prompt_contains_only_requested_chapters() -> None:

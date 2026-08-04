@@ -6,13 +6,14 @@ from hashlib import sha256
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Path as ApiPath, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from packages.story_core.book_dissection import diagnose_project_chapter, dissect_reference_text
 from packages.story_core.file_project_creation import FileProjectCreateSpec, create_file_project
@@ -20,7 +21,14 @@ from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.cover_image_provider import CoverImageError, OpenAICoverImageProvider
 from packages.story_core.cover_renderer import CoverRenderError, normalize_cover_title, render_cover
-from packages.story_core.models import AgentRuntimeState, AgentSettings, NovelProject
+from packages.story_core.skill_packs import resolve_enabled_skill_ids, resolve_enabled_skill_module_ids
+from packages.story_core.models import (
+    AgentRuntimeState,
+    AgentSettings,
+    ForeshadowingState,
+    ForeshadowingStatus,
+    NovelProject,
+)
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
 from packages.story_core.simplified_review import build_simplified_review, user_facing_generation_error
@@ -36,6 +44,15 @@ from packages.story_core.runtime_config import (
     resolve_stage_runtime,
 )
 from packages.story_core.world_enrichment import WorldEnrichmentError, enrich_project_world
+from packages.story_core.workflow_steps import merge_workflow_step, normalize_workflow_artifact, normalize_workflow_step
+from apps.api.services.file_project_lifecycle import (
+    FileProjectLifecycleError,
+    activate_project,
+    archive_project,
+    delete_trashed_project,
+    restore_project,
+    trash_project,
+)
 
 
 router = APIRouter()
@@ -81,6 +98,11 @@ class OutlinePlanGenerationRequest(BaseModel):
 
     mode: Literal["initial", "regenerate", "extend"] = "initial"
     guidance: str = Field(default="", max_length=1000)
+    restart_from: Literal[
+        "outline_foundation",
+        "character_roster",
+        "chapter_window",
+    ] | None = None
 
     @field_validator("guidance", mode="before")
     @classmethod
@@ -106,6 +128,7 @@ class FileProjectUpdateRequest(BaseModel):
     character_profiles: list[dict[str, Any]] | None = None
     relationship_graph: list[dict[str, Any]] | None = None
     enabled_skill_ids: list[str] | None = None
+    enabled_skill_module_ids: list[str] | None = None
     status: str | None = None
     pipeline_stage: str | None = None
 
@@ -180,6 +203,59 @@ class CoverPromptUpdateRequest(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class ForeshadowingLedgerItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    text: str
+    first_chapter: int = Field(ge=0)
+    last_touched_chapter: int | None = Field(default=None, ge=0)
+    status: ForeshadowingStatus = "open"
+    payoff_plan: str = ""
+    resolved_chapter: int | None = Field(default=None, ge=0)
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("foreshadowing_text_required")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_resolution(self) -> "ForeshadowingLedgerItemRequest":
+        last_touched_chapter = (
+            self.last_touched_chapter
+            if self.last_touched_chapter is not None
+            else self.first_chapter
+        )
+        if last_touched_chapter < self.first_chapter:
+            raise ValueError("last_touched_chapter_before_first_chapter")
+        if (
+            self.resolved_chapter is not None
+            and self.resolved_chapter < last_touched_chapter
+        ):
+            raise ValueError("resolved_chapter_before_last_touched_chapter")
+        if self.status == "resolved":
+            if self.resolved_chapter is None:
+                raise ValueError("resolved_chapter_required")
+        elif self.status in {"open", "reinforced"} and self.resolved_chapter is not None:
+            raise ValueError("unresolved_status_has_resolved_chapter")
+        return self
+
+    def to_domain(self) -> ForeshadowingState:
+        payload = self.model_dump()
+        if payload["last_touched_chapter"] is None:
+            payload["last_touched_chapter"] = self.first_chapter
+        return ForeshadowingState.model_validate(payload)
+
+
+class ForeshadowingLedgerUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ForeshadowingLedgerItemRequest]
+    base_version: str | None = None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -201,6 +277,27 @@ def _file_id(value: str) -> str:
 
 def _public_project_id(store: FileProjectStore) -> str:
     return _file_id(store.root.name)
+
+
+def _candidate_project_ids(store: FileProjectStore, requested_project_id: str) -> set[str]:
+    project = store.project()
+    state = store.state()
+    raw_ids = {
+        str(project.get("project_id") or "").strip(),
+        str(project.get("active_story_id") or "").strip(),
+        str(state.get("story_id") or "").strip(),
+        str(store.root.name).strip(),
+        str(requested_project_id or "").strip(),
+    }
+    accepted: set[str] = set()
+    for raw_id in raw_ids:
+        if not raw_id:
+            continue
+        plain_id = _strip_file_prefix(raw_id)
+        accepted.add(raw_id)
+        accepted.add(plain_id)
+        accepted.add(_file_id(plain_id))
+    return accepted
 
 
 def _file_generation_job_log_dir(store: FileProjectStore) -> Path:
@@ -255,59 +352,11 @@ def _list_file_generation_jobs(store: FileProjectStore, *, limit: int = 30) -> l
 
 
 def _sanitize_file_generation_step_item(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
-        return {}
-    message = str(value.get("message", "")).strip()
-    if not message:
-        return {}
-    status = str(value.get("status", "running")).strip().lower()
-    normalized_status = status if status in {"running", "done", "error", "queued"} else "running"
-    normalized: dict[str, object] = {
-        "message": message,
-        "status": normalized_status,
-        "at": str(value.get("at", "")) or _now_iso(),
-    }
-    raw_stage = value.get("stage")
-    if isinstance(raw_stage, str) and raw_stage.strip():
-        normalized["stage"] = raw_stage.strip()
-    raw_source = value.get("source")
-    if isinstance(raw_source, str) and raw_source.strip():
-        normalized["source"] = raw_source.strip()
-    return normalized
+    return normalize_workflow_step(value)
 
 
 def _normalize_file_generation_step_artifact(value: object) -> dict[str, object] | list[object] | str | int | float | bool | None:
-    if isinstance(value, dict):
-        normalized: dict[str, object] = {}
-        for artifact_key, artifact_value in value.items():
-            key = str(artifact_key)
-            if key.startswith("_"):
-                continue
-            normalized_value = _normalize_file_generation_step_artifact(artifact_value)
-            if normalized_value is not None:
-                normalized[key] = normalized_value
-        if not normalized:
-            return None
-        return normalized
-    if isinstance(value, list):
-        items: list[object] = []
-        for index, item in enumerate(value):
-            if index >= 24:
-                break
-            normalized_item = _normalize_file_generation_step_artifact(item)
-            if normalized_item is not None:
-                items.append(normalized_item)
-        return items
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        if len(text) > 280:
-            text = f"{text[:260]}..."
-        return text
-    if isinstance(value, (int, float, bool)) or value is None:
-        return value
-    return str(value)
+    return normalize_workflow_artifact(value)
 
 
 def _infer_file_generation_source(message: str, stage: str | None = None) -> str:
@@ -359,22 +408,10 @@ def _append_file_generation_job_step(
         steps = []
         job["steps"] = steps
     normalized_status = "running" if status not in {"running", "done", "error", "queued"} else status
-    normalized = {
-        "message": cleaned,
-        "status": normalized_status,
-        "at": _now_iso(),
-    }
-    if stage:
-        normalized["stage"] = stage
-    if source:
-        normalized["source"] = source
-    compacted_artifact = _normalize_file_generation_step_artifact(artifact) if artifact is not None else None
-    if compacted_artifact is not None:
-        normalized["artifact"] = compacted_artifact
-    if steps and isinstance(steps[-1], dict) and str(steps[-1].get("message", "")).strip() == cleaned:
-        steps[-1] = normalized
-    else:
-        steps.append(normalized)
+    normalized = {"message": cleaned, "status": normalized_status, "stage": stage, "source": source}
+    if artifact is not None:
+        normalized["artifact"] = artifact
+    merge_workflow_step(steps, normalized)
     if len(steps) > FILE_GENERATION_JOB_STEP_LIMIT:
         steps.pop(0)
     _persist_file_generation_job(job)
@@ -408,8 +445,8 @@ def _is_hidden_file_project_dir(path: Path) -> bool:
     )
 
 
-def _stores() -> list[FileProjectStore]:
-    root = _export_root()
+def _stores(*, lifecycle: Literal["active", "archived", "trashed"] | None = None) -> list[FileProjectStore]:
+    root = _export_root() / ".trash" if lifecycle == "trashed" else _export_root()
     if not root.exists():
         return []
     stores: list[FileProjectStore] = []
@@ -418,7 +455,9 @@ def _stores() -> list[FileProjectStore]:
             continue
         store = FileProjectStore(child)
         if store.exists():
-            stores.append(store)
+            project_lifecycle = str(store.project().get("project_lifecycle") or "active")
+            if lifecycle is None or project_lifecycle == lifecycle:
+                stores.append(store)
     return stores
 
 
@@ -445,11 +484,48 @@ def _store_for(project_id: str) -> FileProjectStore:
     raise HTTPException(status_code=404, detail="file_project_not_found")
 
 
+def _trashed_store_for(project_id: str) -> FileProjectStore:
+    wanted = _strip_file_prefix(project_id)
+    for store in _stores(lifecycle="trashed"):
+        if store.root.name == wanted or _strip_file_prefix(_story_id_for(store)) == wanted:
+            return store
+        if str(store.project().get("project_id") or "") == wanted:
+            return store
+    raise HTTPException(status_code=404, detail="file_project_not_found")
+
+
+def _assert_file_project_lifecycle_mutation_allowed(store: FileProjectStore) -> None:
+    story_id = _story_id_for(store)
+    project_id = _strip_file_prefix(_public_project_id(store))
+    with _file_generation_jobs_lock:
+        for key in (story_id, project_id, f"file:{project_id}"):
+            job_id = _active_file_generation_jobs.get(key)
+            job = _file_generation_jobs.get(job_id or "")
+            if job and job.get("status") in {"queued", "running"}:
+                raise HTTPException(status_code=409, detail="project_generation_in_progress")
+
+
+def _file_project_lifecycle_payload(store: FileProjectStore) -> dict[str, Any]:
+    project = store.project()
+    return {
+        **_project_payload(store),
+        "project_lifecycle": str(project.get("project_lifecycle") or "active"),
+        "archived_at": str(project.get("archived_at") or ""),
+        "trashed_at": str(project.get("trashed_at") or ""),
+    }
+
+
 def _raise_file_project_error(exc: ValueError) -> None:
     detail = str(exc)
     if detail.startswith("chapter_frozen:"):
         raise HTTPException(status_code=409, detail=detail) from exc
     raise HTTPException(status_code=400, detail=detail) from exc
+
+
+def _raise_file_project_lifecycle_error(exc: FileProjectLifecycleError) -> None:
+    detail = str(exc)
+    status_code = 422 if detail == "project_title_confirmation_mismatch" else 409
+    raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
 def _story_id_for(store: FileProjectStore) -> str:
@@ -620,9 +696,9 @@ def _run_file_generation_job(
         store = _store_for(project_id)
         with generation_progress(report_progress):
             generated = (
-                store.regenerate_chapter(chapter_number, variant=variant, guidance=guidance)
+                store.regenerate_chapter(chapter_number, variant=variant, guidance=guidance, persist=False)
                 if isinstance(chapter_number, int) and chapter_number > 0
-                else store.generate_next_chapter(chapter_direction_id=chapter_direction_id)
+                else store.generate_next_chapter(chapter_direction_id=chapter_direction_id, persist=False)
             )
     except Exception as exc:  # pragma: no cover - background safety net
         friendly_error = _user_facing_generation_error(exc)
@@ -727,6 +803,15 @@ def _project_payload(store: FileProjectStore) -> dict[str, Any]:
     summary = store.summary()
     current_chapter = int(summary.get("current_chapter") or 0)
     title = _display_title(project, state, summary, store.root.name)
+    continuation = project.get("continuation") if isinstance(project.get("continuation"), dict) else {}
+    raw_continuation_start = continuation.get("start_after_chapter")
+    public_continuation = (
+        {"start_after_chapter": raw_continuation_start}
+        if isinstance(raw_continuation_start, int)
+        and not isinstance(raw_continuation_start, bool)
+        and raw_continuation_start >= 1
+        else None
+    )
     return {
         "project_id": _public_project_id(store),
         "title": title,
@@ -738,7 +823,8 @@ def _project_payload(store: FileProjectStore) -> dict[str, Any]:
         "world_blueprint": project.get("world_blueprint") or state.get("world_blueprint") or {},
         "character_profiles": project.get("character_profiles") or [],
         "relationship_graph": project.get("relationship_graph") or [],
-        "enabled_skill_ids": project.get("enabled_skill_ids") or state.get("enabled_skill_ids") or [],
+        "enabled_skill_ids": resolve_enabled_skill_ids(project, state),
+        "enabled_skill_module_ids": resolve_enabled_skill_module_ids(project, state),
         "status": project.get("status") or "simulating",
         "pipeline_stage": project.get("pipeline_stage") or ("simulating" if current_chapter else "environment_ready"),
         "active_story_id": _story_id_for(store),
@@ -752,6 +838,10 @@ def _project_payload(store: FileProjectStore) -> dict[str, Any]:
         ],
         "storage_source": "file",
         "publishing_assets": store.publishing_assets(),
+        "continuation": public_continuation,
+        "project_lifecycle": str(project.get("project_lifecycle") or "active"),
+        "archived_at": str(project.get("archived_at") or ""),
+        "trashed_at": str(project.get("trashed_at") or ""),
     }
 
 
@@ -913,6 +1003,9 @@ def _summary_payload(store: FileProjectStore) -> dict[str, Any]:
         "current_chapter": store.summary().get("current_chapter") or 0,
         "source_path": project["source_path"],
         "storage_source": "file",
+        "project_lifecycle": project["project_lifecycle"],
+        "archived_at": project["archived_at"],
+        "trashed_at": project["trashed_at"],
     }
 
 
@@ -1052,8 +1145,10 @@ def init_file_project_routes() -> APIRouter:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("/file-projects")
-    def list_file_projects() -> list[dict[str, Any]]:
-        return [_summary_payload(store) for store in _stores()]
+    def list_file_projects(
+        lifecycle: Literal["active", "archived", "trashed"] = "active",
+    ) -> list[dict[str, Any]]:
+        return [_summary_payload(store) for store in _stores(lifecycle=lifecycle)]
 
     @router.post("/file-projects", status_code=201)
     def create_new_file_project(payload: FileProjectCreateSpec) -> dict[str, Any]:
@@ -1313,6 +1408,60 @@ def init_file_project_routes() -> APIRouter:
             headers["Content-Disposition"] = "inline"
         return Response(content=image, media_type="image/png", headers=headers)
 
+
+    @router.post("/file-projects/{project_id}/archive")
+    def archive_file_project(project_id: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        _assert_file_project_lifecycle_mutation_allowed(store)
+        return _file_project_lifecycle_payload(archive_project(store))
+
+    @router.post("/file-projects/{project_id}/trash")
+    def trash_file_project(project_id: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        _assert_file_project_lifecycle_mutation_allowed(store)
+        try:
+            moved_store = trash_project(store, export_root=_export_root(), move=shutil.move)
+        except FileProjectLifecycleError as exc:
+            _raise_file_project_lifecycle_error(exc)
+        return _file_project_lifecycle_payload(moved_store)
+
+    @router.post("/file-projects/{project_id}/restore")
+    def restore_file_project(project_id: str) -> dict[str, Any]:
+        try:
+            active_store = _store_for(project_id)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            active_store = None
+        if active_store is not None:
+            _assert_file_project_lifecycle_mutation_allowed(active_store)
+            return _file_project_lifecycle_payload(activate_project(active_store))
+
+        store = _trashed_store_for(project_id)
+        _assert_file_project_lifecycle_mutation_allowed(store)
+        try:
+            restored_store = restore_project(store, export_root=_export_root(), move=shutil.move)
+        except FileProjectLifecycleError as exc:
+            _raise_file_project_lifecycle_error(exc)
+        return _file_project_lifecycle_payload(restored_store)
+
+    @router.delete("/file-projects/{project_id}")
+    def delete_file_project(project_id: str, confirm_title: str) -> dict[str, Any]:
+        store = _trashed_store_for(project_id)
+        _assert_file_project_lifecycle_mutation_allowed(store)
+        story_id = _story_id_for(store)
+        try:
+            delete_trashed_project(
+                store,
+                export_root=_export_root(),
+                confirmation_title=confirm_title,
+                actual_title=_display_title(store.project(), store.state(), store.summary(), store.root.name),
+                remove_tree=shutil.rmtree,
+            )
+        except FileProjectLifecycleError as exc:
+            _raise_file_project_lifecycle_error(exc)
+        return {"deleted": True, "project_id": project_id, "deleted_story_ids": [story_id]}
+
     @router.get("/file-projects/{project_id}/opening-directions")
     def get_opening_directions(project_id: str) -> dict[str, Any]:
         return _store_for(project_id).opening_setup()
@@ -1342,6 +1491,23 @@ def init_file_project_routes() -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @router.get("/file-projects/{project_id}/story-core")
+    def get_file_project_story_core(project_id: str) -> dict[str, Any]:
+        try:
+            return _store_for(project_id).story_core()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.put("/file-projects/{project_id}/story-core")
+    def update_file_project_story_core(
+        project_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return _store_for(project_id).update_story_core(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @router.get("/file-projects/{project_id}/outline")
     def get_file_project_outline(project_id: str) -> dict[str, Any]:
         store = _store_for(project_id)
@@ -1357,11 +1523,13 @@ def init_file_project_routes() -> APIRouter:
     ) -> dict[str, Any]:
         store = _store_for(project_id)
         try:
-            return store.generate_outline_plan(
-                outline_planning_generator,
-                mode=payload.mode,
-                guidance=payload.guidance,
-            )
+            kwargs: dict[str, Any] = {
+                "mode": payload.mode,
+                "guidance": payload.guidance,
+            }
+            if payload.restart_from is not None:
+                kwargs["restart_from"] = payload.restart_from
+            return store.generate_outline_plan(outline_planning_generator, **kwargs)
         except ValueError as exc:
             detail = str(exc)
             if detail == "outline_planning_generation_failed" and exc.__cause__ is not None:
@@ -1371,6 +1539,10 @@ def init_file_project_routes() -> APIRouter:
             status_code = 502 if detail.startswith("outline_planning_generation_failed") else 422
             raise HTTPException(status_code=status_code, detail=detail) from exc
 
+    @router.get("/file-projects/{project_id}/outline/generation-checkpoints")
+    def get_outline_generation_checkpoints(project_id: str) -> dict[str, Any]:
+        return _store_for(project_id).outline_generation_checkpoints()
+
     @router.post("/file-projects/{project_id}/enrich-world")
     def enrich_file_project_world(project_id: str) -> dict[str, Any]:
         store = _store_for(project_id)
@@ -1379,6 +1551,7 @@ def init_file_project_routes() -> APIRouter:
             "project_id": _public_project_id(store),
             "source_path": str(store.root),
             "active_story_id": _story_id_for(store),
+            "story_core_context": store.story_core_context("world"),
         }
         try:
             enriched = enrich_project_world(NovelProject.model_validate(project_payload))
@@ -1408,10 +1581,12 @@ def init_file_project_routes() -> APIRouter:
                     "character_profiles",
                     "relationship_graph",
                     "enabled_skill_ids",
+                    "enabled_skill_module_ids",
                     "status",
                 }
             }
-            | {"pipeline_stage": "environment_ready"}
+            | {"pipeline_stage": "environment_ready"},
+            replace_world_blueprint=True,
         )
         return _project_payload(store)
 
@@ -1422,6 +1597,35 @@ def init_file_project_routes() -> APIRouter:
             return store.update_project_outline(payload)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.get("/file-projects/{project_id}/foreshadowing")
+    def get_file_project_foreshadowing(project_id: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        items = store.foreshadowing_ledger()
+        return {
+            "items": [item.model_dump() for item in items],
+            "version": store.foreshadowing_version(items),
+        }
+
+    @router.put("/file-projects/{project_id}/foreshadowing")
+    def update_file_project_foreshadowing(
+        project_id: str,
+        payload: ForeshadowingLedgerUpdateRequest,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            items = store.update_foreshadowing_ledger(
+                [item.to_domain() for item in payload.items],
+                expected_version=payload.base_version,
+            )
+        except ValueError as exc:
+            if str(exc) == "foreshadowing_version_conflict":
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise
+        return {
+            "items": [item.model_dump() for item in items],
+            "version": store.foreshadowing_version(items),
+        }
 
     @router.get("/file-projects/{project_id}/characters")
     def get_file_project_characters(project_id: str) -> list[dict[str, Any]]:
@@ -1558,6 +1762,56 @@ def init_file_project_routes() -> APIRouter:
             "project": _project_payload(store),
             "story": _story_payload(store),
             "generated": generated,
+        }
+
+    @router.get("/file-projects/{project_id}/candidates")
+    def list_file_project_candidates(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:
+        store = _store_for(project_id)
+        accepted_project_ids = _candidate_project_ids(store, project_id)
+        items = [
+            item
+            for item in store.candidate_store.list(chapter_number=chapter_number)
+            if item.project_id in accepted_project_ids
+        ]
+        return {
+            "schema_version": "file-project-candidate-list/v1",
+            "items": [item.to_dict() for item in items],
+        }
+
+    @router.get("/file-projects/{project_id}/candidates/{candidate_id}")
+    def get_file_project_candidate(project_id: str, candidate_id: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        candidate = store.candidate_store.get(candidate_id)
+        if candidate is None or candidate.project_id not in _candidate_project_ids(store, project_id):
+            raise HTTPException(status_code=404, detail="candidate_not_found")
+        return {"schema_version": "file-project-candidate/v1", "candidate": candidate.to_dict()}
+
+    @router.post("/file-projects/{project_id}/candidates/{candidate_id}/discard")
+    def discard_file_project_candidate(project_id: str, candidate_id: str) -> dict[str, Any]:
+        store = _store_for(project_id)
+        candidate = store.candidate_store.get(candidate_id)
+        if candidate is None or candidate.project_id not in _candidate_project_ids(store, project_id):
+            raise HTTPException(status_code=404, detail="candidate_not_found")
+        try:
+            candidate.discard()
+        except ValueError as exc:
+            _raise_file_project_error(exc)
+        store.candidate_store.save(candidate)
+        return {"schema_version": "file-project-candidate-discard/v1", "candidate": candidate.to_dict()}
+
+    @router.post("/file-projects/{project_id}/candidates/{candidate_id}/confirm")
+    def confirm_file_project_candidate(project_id: str, candidate_id: str, force: bool = False) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            confirmed = store.confirm_candidate(candidate_id, accept_quality_warnings=force)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            _raise_file_project_error(exc)
+        return {
+            **confirmed,
+            "project": _project_payload(store),
+            "story": _story_payload(store),
         }
 
     @router.post("/file-projects/{project_id}/generation-jobs")

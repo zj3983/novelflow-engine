@@ -14,6 +14,8 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
+from packages.story_core.genre_stages.base import GenreStageProfile
+
 
 _current_recorder: ContextVar["PromptCallLog | None"] = ContextVar("current_prompt_call_recorder", default=None)
 _index_lock = Lock()
@@ -38,9 +40,16 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
 
 
 class PromptCallLog:
-    def __init__(self, root: str | Path, *, project_id: str) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        project_id: str,
+        profile: GenreStageProfile | None = None,
+    ) -> None:
         self.root = Path(root)
         self.project_id = str(project_id)
+        self.profile = profile
         self.calls_dir = self.root / "prompt_calls"
         self.index_path = self.calls_dir / "index.jsonl"
 
@@ -60,6 +69,7 @@ class PromptCallLog:
                 "attempt",
                 "status",
                 "provider",
+                "protocol",
                 "model",
                 "temperature",
                 "started_at",
@@ -68,6 +78,8 @@ class PromptCallLog:
                 "prompt_chars",
                 "output_chars",
                 "error",
+                "genre_stage_profile",
+                "genre_stage_modules",
             )
         }
         with _index_lock:
@@ -95,8 +107,10 @@ class PromptCallLog:
         template_source: str = "",
         template_version: str = "",
         provider: str = "",
+        protocol: str = "",
         model: str = "",
         temperature: float | None = None,
+        genre_stage: str = "",
     ) -> str:
         call_id = f"pc-{uuid4().hex}"
         payload: dict[str, Any] = {
@@ -109,6 +123,7 @@ class PromptCallLog:
             "attempt": self._attempt(chapter_number=int(chapter_number), stage=str(stage)),
             "status": "started",
             "provider": str(provider),
+            "protocol": str(protocol),
             "model": str(model),
             "temperature": temperature,
             "started_at": _now_iso(),
@@ -121,6 +136,12 @@ class PromptCallLog:
             "template_key": str(template_key),
             "template_source": str(template_source),
             "template_version": str(template_version),
+            "genre_stage_profile": self.profile.profile_id if self.profile is not None else "",
+            "genre_stage_modules": (
+                list(self.profile.modules_for(genre_stage))
+                if self.profile is not None
+                else []
+            ),
             "output_chars": 0,
             "output_summary": "",
             "error": "",
@@ -135,6 +156,7 @@ class PromptCallLog:
         *,
         status: str,
         provider: str = "",
+        protocol: str = "",
         model: str = "",
         elapsed_seconds: float | None = None,
         output: str = "",
@@ -145,6 +167,7 @@ class PromptCallLog:
             {
                 "status": str(status),
                 "provider": str(provider),
+                "protocol": str(protocol),
                 "model": str(model),
                 "finished_at": _now_iso(),
                 "elapsed_seconds": elapsed_seconds,
@@ -186,6 +209,7 @@ class PromptCallLog:
                         "attempt",
                         "status",
                         "provider",
+                        "protocol",
                         "model",
                         "temperature",
                         "started_at",
@@ -194,6 +218,8 @@ class PromptCallLog:
                         "prompt_chars",
                         "output_chars",
                         "error",
+                        "genre_stage_profile",
+                        "genre_stage_modules",
                     )
                 }
             )

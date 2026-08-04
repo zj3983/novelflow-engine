@@ -3,6 +3,7 @@ import time
 import pytest
 
 from packages.story_core.attribute_evidence import (
+    character_attribute_allocation_points,
     character_attribute_carry_choice_evidence,
     has_character_attribute_carry_choice_and_reason,
     has_character_attribute_allocation,
@@ -445,6 +446,12 @@ def test_parse_count_supports_common_chinese_and_arabic_numbers(text: str, expec
 
 def test_attribute_allocation_accepts_character_action_that_mentions_rules():
     assert has_character_attribute_allocation("夜烬按规则把五点加到智力上", "智力", 5)
+
+
+def test_attribute_allocation_accepts_natural_completed_action():
+    body = "他打开属性面板，把新增的五点自由属性点全部加在了智力上。"
+
+    assert character_attribute_allocation_points(body, "智力") == 5
 
 
 @pytest.mark.parametrize(

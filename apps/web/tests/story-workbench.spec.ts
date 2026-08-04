@@ -29,6 +29,7 @@ import {
 } from "../components/ws/WorldBackgroundEditor";
 import {
   WORLD_RULE_EDITOR_SECTIONS,
+  worldRuleEditorSections,
   createWorldRulesEditorState,
   editWorldRuleField,
   markWorldRuleSaved,
@@ -36,13 +37,16 @@ import {
   saveWorldRules,
   syncWorldBlueprintStore,
 } from "../components/ws/WorldRulesEditor";
+import { structuredPowerLabels } from "../components/ws/StructuredPowerSystem";
 import {
+  downstreamRewriteNotice,
   fetchFileChapter,
   fetchFileStoryOverview,
+  type CandidateDraft,
   type ImportedWorldBlueprint,
   type updateProject,
 } from "../lib/api";
-import { groupWorldFacts } from "../lib/worldDisplay";
+import { displayNovelTypeMetadata, groupWorldFacts, mergeCharacters } from "../lib/worldDisplay";
 import { buildWritingFlow, writingFlowPlanningSourceText } from "../components/ws/WritingFlow";
 import { resolveChapterDirectionId } from "../lib/chapterDirections";
 
@@ -518,6 +522,36 @@ test("世界事实完整分组并去掉章节来源前缀", () => {
   ]);
 });
 
+test("structured power labels follow the selected novel type", () => {
+  expect(structuredPowerLabels(["game_webnovel"]).pathsTitle).toBe("职业与路线");
+  expect(structuredPowerLabels(["game_webnovel"]).transferTask).toBe("转职任务");
+
+  const xianxia = structuredPowerLabels(["xianxia"]);
+  expect(xianxia.pathsTitle).toBe("修炼道路");
+  expect(xianxia.transferTask).toBe("立道条件");
+  expect(xianxia.skillsAndEquipmentTitle).toBe("术法与器物");
+  expect(xianxia.continuityTitle).toBe("连续性记录");
+});
+
+test("世界事实将小说类型内部 ID 显示为中文名称", () => {
+  const grouped = groupWorldFacts([
+    "小说类型：xuanhuan",
+    "第1章事实：小说类型：xianxia",
+    "小说类型：custom_fantasy",
+  ]);
+
+  expect(grouped.projectFacts).toEqual([
+    "小说类型：东方玄幻",
+    "小说类型：custom_fantasy",
+  ]);
+  expect(grouped.chapters).toEqual([
+    { chapterNumber: 1, facts: ["小说类型：修仙仙侠"] },
+  ]);
+  expect(displayNovelTypeMetadata('{"world_facts":["小说类型：xuanhuan"]}')).toBe(
+    '{"world_facts":["小说类型：东方玄幻"]}',
+  );
+});
+
 test("世界事实保留重复记录并严格匹配章节事实前缀", () => {
   const grouped = groupWorldFacts([
     "重复项目事实",
@@ -765,7 +799,10 @@ function currentProjectFixture(projectId: string) {
     world_summary: "现实与游戏线并行推进。",
     current_focus: "追查灰狼坡留下的交易线索。",
     author_constraints: [],
-    world_blueprint: { premise: "游戏事件会留下现实痕迹", constraints: ["交易必须遵守市场规则"] },
+    world_blueprint: {
+      premise: "游戏事件会留下现实痕迹",
+      constraints: ["交易必须遵守市场规则"],
+    } as Record<string, unknown>,
     character_profiles: [],
     relationship_graph: [],
     enabled_skill_ids: [],
@@ -894,15 +931,63 @@ async function routeCurrentFileProject(
   return { projectId, encodedId, project, story, overview };
 }
 
+type CandidateRouteState = { current: CandidateDraft | null };
+
+async function routeCandidateLifecycle(
+  page: Page,
+  encodedProjectId: string,
+  state: CandidateRouteState,
+  onConfirm?: (candidate: CandidateDraft, requestUrl: string) => void,
+) {
+  await page.route(`**/file-projects/${encodedProjectId}/candidates?*`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ schema_version: "candidate-list/v1", items: state.current ? [state.current] : [] }),
+    });
+  });
+  await page.route(`**/file-projects/${encodedProjectId}/candidates/*/confirm**`, async (route) => {
+    const candidate = state.current;
+    if (!candidate) {
+      await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ detail: "candidate_not_found" }) });
+      return;
+    }
+    onConfirm?.(candidate, route.request().url());
+    state.current = null;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ candidate: { ...candidate, status: "confirmed" }, project: {}, story: {} }),
+    });
+  });
+}
+
+function pendingCandidate(projectId: string, chapterNumber: number, body: string): CandidateDraft {
+  return {
+    schema_version: "candidate-draft/v1",
+    candidate_id: `candidate-${chapterNumber}`,
+    project_id: projectId,
+    chapter_number: chapterNumber,
+    chapter_title: `第 ${chapterNumber} 章候选稿`,
+    body,
+    context_snapshot_id: `snapshot-${chapterNumber}`,
+    quality_report: {},
+    revision_history: [],
+    status: "pending",
+    created_at: "2026-08-01T00:00:00Z",
+    confirmed_at: "",
+  };
+}
+
 async function routeProjectLists(page: Page, projects: unknown[]) {
-  await page.route("**/projects", async (route) => {
+  await page.route("http://127.0.0.1:8000/projects?*", async (route) => {
     if (route.request().resourceType() === "document") {
       await route.fallback();
       return;
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(projects) });
   });
-  await page.route("**/file-projects", async (route) => {
+  await page.route("http://127.0.0.1:8000/file-projects?*", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
   });
 }
@@ -972,6 +1057,66 @@ test("生成日志历史默认显示最新任务并可切换旧任务", async ({
   expect(latestReads).toBe(readsAfterSwitch);
 });
 
+test("world rule sections exclude game-only fields for xianxia projects", () => {
+  const xianxiaSections = worldRuleEditorSections({ genre_plugin_ids: ["xianxia"] });
+  const gameSections = worldRuleEditorSections({ genre_plugin_ids: ["game_webnovel"] });
+
+  expect(xianxiaSections.map((section) => section.id)).toEqual([
+    "basic",
+    "progression",
+    "economy",
+    "faction-panel",
+    "constraints",
+  ]);
+  expect(xianxiaSections.find((section) => section.id === "faction-panel")?.fields.map((field) => field.field)).toEqual([
+    "faction_rules",
+  ]);
+  expect(xianxiaSections.find((section) => section.id === "progression")).toMatchObject({
+    title: "修炼体系",
+    fields: [
+      { field: "power_system", label: "境界、功法与能力" },
+      { field: "progression_rules", label: "突破、战斗与代价" },
+    ],
+  });
+  expect(xianxiaSections.find((section) => section.id === "economy")).toMatchObject({
+    title: "资源体系",
+    fields: [{ field: "economy_rules", label: "灵石、资源与交换" }],
+  });
+  expect(xianxiaSections.find((section) => section.id === "faction-panel")).toMatchObject({
+    title: "宗门与势力",
+  });
+  expect(gameSections.map((section) => section.id)).toContain("quest");
+  expect(gameSections.map((section) => section.id)).toContain("reality");
+  expect(gameSections.find((section) => section.id === "faction-panel")?.fields.map((field) => field.field)).toEqual([
+    "faction_rules",
+    "panel_rules",
+  ]);
+});
+
+test("xianxia world page hides the game monster panel", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "xianxia-world-template");
+  fixture.project.world_blueprint = {
+    genre_plugin_ids: ["xianxia"],
+    premise: "A cultivation world.",
+    world_rules: ["Cultivation follows established realms."],
+  };
+
+  await page.goto(`/projects/${fixture.encodedId}/world`);
+
+  await expect(page.locator('section[aria-labelledby="basic-world-rules-title"]')).toBeVisible();
+  await expect(page.locator('section[aria-labelledby="quest-world-rules-title"]')).toHaveCount(0);
+  await expect(page.locator('section[aria-labelledby="reality-world-rules-title"]')).toHaveCount(0);
+  await expect(page.locator('section[aria-labelledby="monster-bestiary-title"]')).toHaveCount(0);
+});
+
+test("downstream rewrite notice names the conflicting chapter", () => {
+  expect(downstreamRewriteNotice({
+    downstream_rewrite_required: true,
+    downstream_chapter_number: 145,
+  })).toBe("第145章需要同步重写");
+  expect(downstreamRewriteNotice({ downstream_rewrite_required: false })).toBe("");
+});
+
 const OPENING_PROJECT_ID = "file:opening-setup";
 const OPENING_PROJECT_PATH = `/projects/${encodeURIComponent(OPENING_PROJECT_ID)}`;
 
@@ -988,30 +1133,77 @@ const openingDirections = [
     id: "direction-1",
     title: "雨夜遗嘱",
     hook: "陌生人的遗嘱在雨夜生效。",
+    logline: "一个失业律师收到陌生人的遗嘱后，必须查清旧账，否则会被当成伪造遗嘱的主谋。",
+    protagonist_profile: "失业律师，擅长查证，但已经不愿再相信同行。",
+    inciting_incident: "一份写着次日日期的遗嘱送到他的住处。",
     protagonist_goal: "查清旧账的真正债主。",
     main_conflict: "律师必须对抗伪造证据的前同事。",
+    failure_stakes: "他会背上伪造遗嘱的罪名，证人也会被灭口。",
     growth_path: "从自保走向承担真相的代价。",
+    excitement_point: "沿着遗嘱和旧账逐层翻出被改写的人生。",
+    target_audience: "喜欢都市悬疑和职业查案的读者。",
+    reader_promise: "每笔旧账解决一个现实困局，同时逼近伪造者。",
+    ending_direction: "主角公开完整证据，并重新建立自己的事务所。",
     opening_promise: "每笔旧账都会牵出一段被改写的人生。",
   },
   {
     id: "direction-2",
     title: "夜班追债",
     hook: "午夜委托人只留下明天才会出现的欠条。",
+    logline: "一个不再信任任何人的失业律师收到未来欠条后，必须在兑现前找到委托人，否则会替真正债主背罪。",
+    protagonist_profile: "失业律师，办事细致，对所有合作都保持怀疑。",
+    inciting_incident: "午夜委托人留下了一张明天才会生效的欠条。",
     protagonist_goal: "在欠条兑现前找到失踪的委托人。",
     main_conflict: "旧律所和神秘债主同时封锁线索。",
+    failure_stakes: "委托人会失踪，主角也会成为债务案件的替罪者。",
     growth_path: "从不再相信任何人到重新选择同盟。",
+    excitement_point: "每张未来欠条都会提前暴露一次即将发生的交易。",
+    target_audience: "喜欢都市悬疑、职业博弈和连续反转的读者。",
+    reader_promise: "每个阶段追清一笔账，并反转债务人与受害者的身份。",
+    ending_direction: "主角找到第一张欠条的来源，并决定主动追查下一笔。",
     opening_promise: "追债过程不断反转债务人与受害者的身份。",
   },
   {
     id: "direction-3",
     title: "无名账本",
     hook: "一本没有姓名的账本记录着城市里尚未发生的交易。",
+    logline: "一个急于翻身的失业律师得到未来账本后，必须阻止致命交易，否则每次改账都会夺走身边人的机会。",
+    protagonist_profile: "失业律师，渴望翻身，容易把规则当成可以利用的工具。",
+    inciting_incident: "他在旧办公室里发现一本记录未来交易的账本。",
     protagonist_goal: "阻止下一笔致命交易。",
     main_conflict: "主角每改动一笔账，现实就会索取新的代价。",
+    failure_stakes: "交易会导致死亡，改账的代价也会落到身边人身上。",
     growth_path: "从利用规则翻身到主动打破规则。",
+    excitement_point: "通过修改未来账目改变现实，再承受对应代价。",
+    target_audience: "喜欢都市异能、规则博弈和成长的读者。",
+    reader_promise: "每页账本带来一次选择、一次代价和一个明确结果。",
+    ending_direction: "主角毁掉账本控制权，让所有交易回到当事人手中。",
     opening_promise: "账本的每一页都将制造一次现实选择题。",
   },
-];
+].map((direction, index) => ({
+  ...direction,
+  core_advantage: {
+    name: `方向${index + 1}的优势`,
+    type: "信息优势",
+    ability: "能提前看到一笔即将发生的交易。",
+    growth_rule: "每解决一笔旧账，能看到的因果更完整。",
+    limits: "同一时间只能追查一笔交易。",
+    early_payoff: "阻止第一笔致命交易。",
+  },
+  central_mystery: {
+    surface_anomaly: "账目会提前出现。",
+    hidden_truth: "有人在重写失败的时间线。",
+    reality_impact: "每次改账都会改变一段现实关系。",
+    reveal_path: ["验证第一笔账", "找到寄件人", "查清时间线"],
+  },
+  initial_drive: {
+    immediate_need: "保住工作并洗清嫌疑。",
+    trigger: "妹妹出现在下一份记录里。",
+    short_term_goal: "午夜前找到失踪者。",
+    failure_stakes: "妹妹会成为下一名目标。",
+    long_term_transition: "从自保转向追查寄件人。",
+  },
+}));
 
 function openingSetupPayload(
   {
@@ -1105,7 +1297,7 @@ test("projects page creates entry in the empty state", async ({ page }) => {
 
   await page.goto("/projects");
 
-  await expect(page.getByText("还没有作品")).toBeVisible();
+  await expect(page.getByText("还没有正在创作的小说")).toBeVisible();
   await expect(page.getByRole("link", { name: "新建小说" })).toHaveCount(2);
 });
 
@@ -1209,12 +1401,15 @@ test("projects page creates a blank file novel", async ({ page }) => {
 
 test("empty file novel can generate its first chapter", async ({ page }) => {
   const fixture = await routeCurrentFileProject(page, "empty-first-chapter", { chapterCount: 0 });
+  const candidateState: CandidateRouteState = { current: null };
+  await routeCandidateLifecycle(page, fixture.encodedId, candidateState);
   let generationStarted = false;
   await page.route(`**/file-projects/${fixture.encodedId}/writing-packet**`, async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ chapter_direction_options: { options: [], recommended_id: "" } }) });
   });
   await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
     generationStarted = true;
+    candidateState.current = pendingCandidate(fixture.projectId, 1, "FIRST_CHAPTER_CANDIDATE");
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -1231,7 +1426,28 @@ test("empty file novel can generate its first chapter", async ({ page }) => {
   await generateButton.click();
 
   await expect.poll(() => generationStarted).toBe(true);
+  await expect(page.getByLabel("候选稿")).toBeVisible();
+  await page.getByRole("button", { name: "确认提交" }).click();
   await expect(page).toHaveURL(new RegExp(`/write\\?chapter=1$`));
+});
+
+test("candidate with review warnings can still be accepted explicitly", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "force-accept-candidate");
+  const candidateState: CandidateRouteState = {
+    current: {
+      ...pendingCandidate(fixture.projectId, 1, "REVIEW_WARNING_CANDIDATE"),
+      quality_report: { ok: false, issues: ["body_too_long"] },
+    },
+  };
+  let confirmUrl = "";
+  await routeCandidateLifecycle(page, fixture.encodedId, candidateState, (_candidate, requestUrl) => {
+    confirmUrl = requestUrl;
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
+  await page.getByRole("button", { name: "仍然采用" }).click();
+
+  await expect.poll(() => confirmUrl).toContain("force=true");
 });
 
 test("file novel world page completes setup and links to first chapter", async ({ page }) => {
@@ -1307,6 +1523,24 @@ test("file novel overview continues every opening stage", async ({ page }) => {
   );
 });
 
+test("file novel overview keeps world state and outline content separate", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "overview-card-fields", { chapterCount: 1 });
+
+  await page.goto(`/projects/${fixture.encodedId}`);
+
+  const worldStateCard = page.locator("section.ws-card").filter({
+    has: page.getByRole("heading", { name: "世界状态", exact: true }),
+  });
+  const outlineCard = page.locator("section.ws-card").filter({
+    has: page.getByRole("heading", { name: "大纲", exact: true }),
+  });
+
+  await expect(worldStateCard).toContainText("尚无已确认的世界状态");
+  await expect(worldStateCard).not.toContainText(fixture.story.history[0].next_outline);
+  await expect(outlineCard).toContainText(fixture.project.seed_outline);
+  await expect(outlineCard).not.toContainText(fixture.story.history[0].next_outline);
+});
+
 test("projects page creates an inspiration novel and preserves input after failure", async ({ page }) => {
   const requests: unknown[] = [];
   let attempt = 0;
@@ -1370,7 +1604,7 @@ test("opening setup GET keeps the inspiration visible without auto-generation or
 
   await page.goto(`${OPENING_PROJECT_PATH}/setup`);
 
-  await expect(page.getByRole("heading", { name: "选择开篇方向" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "选择故事核心" })).toBeVisible();
   await expect(page.getByText(openingBrief.idea)).toBeVisible();
   await expect(page.getByRole("button", { name: "生成故事方向" })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "本次补充要求" })).toHaveCount(0);
@@ -1500,6 +1734,7 @@ test("opening setup generates three plain radio sections and selects the second 
   });
 
   await page.goto(`${OPENING_PROJECT_PATH}/setup`);
+  await expect(page.getByRole("heading", { name: "选择故事核心" })).toBeVisible();
   const generateButton = page.getByRole("button", { name: /生成/ });
   await generateButton.click();
   await expect(generateButton).toBeDisabled();
@@ -1510,17 +1745,27 @@ test("opening setup generates three plain radio sections and selects the second 
 
   const sections = page.locator("section.ws-opening-direction");
   await expect(sections).toHaveCount(3);
+  await expect(page.getByText("失败后果", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("目标读者", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("核心优势", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("核心谜团", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("初始驱动力", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("阻止第一笔致命交易。", { exact: false }).first()).toBeVisible();
   await expect(page.getByRole("radio")).toHaveCount(3);
   await expect(page.locator(".ws-opening-direction.ws-card")).toHaveCount(0);
   expect(generateRequests).toBe(1);
   for (const [index, direction] of openingDirections.entries()) {
     const section = sections.nth(index);
     await expect(section).toContainText(direction.title);
-    await expect(section).toContainText(`开篇钩子${direction.hook}`);
+    await expect(section).toContainText(`一句话简介${direction.logline}`);
+    await expect(section).toContainText(`主角起点${direction.protagonist_profile}`);
+    await expect(section).toContainText(`故事契机${direction.inciting_incident}`);
     await expect(section).toContainText(`主角目标${direction.protagonist_goal}`);
+    await expect(section).toContainText(`失败后果${direction.failure_stakes}`);
     await expect(section).toContainText(`主线冲突${direction.main_conflict}`);
-    await expect(section).toContainText(`成长路径${direction.growth_path}`);
-    await expect(section).toContainText(`开篇承诺${direction.opening_promise}`);
+    await expect(section).toContainText(`成长方向${direction.growth_path}`);
+    await expect(section).toContainText(`目标读者${direction.target_audience}`);
+    await expect(section).toContainText(`核心阅读期待${direction.reader_promise}`);
   }
 
   const adoptButton = page.getByRole("button", { name: /采用/ });
@@ -1653,8 +1898,8 @@ test("project overview foregrounds writing status and recent chapter history", a
   await expect(page.getByRole("heading", { name: "灰狼坡纪事" })).toBeVisible();
   await expect(page.getByText("第 1 章 · 4,321 字 · 写作中", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "第 1 章 · 灰狼坡旧痕" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "世界响应" })).toBeVisible();
-  await expect(page.getByText("循着铜牌查到临川商会。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "世界状态" })).toBeVisible();
+  await expect(page.getByText("尚无已确认的世界状态", { exact: true })).toBeVisible();
   expect(calls.filter((path) => path.endsWith("/overview"))).toHaveLength(1);
   expect(calls.filter((path) => path.includes("/chapters/"))).toHaveLength(0);
 });
@@ -1668,6 +1913,60 @@ test("write page shows current progress and core writing actions", async ({ page
   await expect(page.getByLabel("章节目录")).toContainText("9876 字");
   await expect(page.getByRole("button", { name: "生成下一章" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "重新生成本章" })).toBeEnabled();
+});
+
+test("write page keeps generation progress to one summary row", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "compact-write-progress");
+  await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "job-compact-progress",
+        story_id: fixture.projectId,
+        status: "completed",
+        progress: "正文生成完成",
+        steps: [
+          {
+            message: "读取大纲完成",
+            status: "done",
+            stage: "director",
+            artifact: {
+              workflow_step: { id: "director", label: "章节规划", reads: ["总纲", "人物状态"] },
+              outputs: { chapter_goal: "推进当前主线" },
+            },
+          },
+          {
+            message: "模型请求完成",
+            status: "done",
+            stage: "writer",
+            source: "llm",
+            artifact: { duration_ms: 1200 },
+          },
+        ],
+        chapter_number: 1,
+        error: "",
+        created_at: "",
+        updated_at: "",
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "重新生成本章" }).click();
+
+  const progress = page.getByLabel("工作进度");
+  await expect(progress).toContainText("正文生成完成");
+  await expect(progress.getByRole("link", { name: "查看完整日志" })).toBeVisible();
+  await expect(progress).not.toContainText("读取：");
+  await expect(progress).not.toContainText("查看本步产物");
+  await expect(progress).not.toContainText("运行日志");
+  const progressLayout = await progress.evaluate((element) => ({
+    whiteSpace: window.getComputedStyle(element).whiteSpace,
+    childTops: Array.from(element.children).map((child) => Math.round(child.getBoundingClientRect().top)),
+  }));
+  expect(progressLayout.whiteSpace).toBe("nowrap");
+  expect(new Set(progressLayout.childTops).size).toBe(1);
 });
 
 test("write page copies the current chapter title and body", async ({ page }) => {
@@ -1920,8 +2219,11 @@ test("simulation lazy chapter fetches only the newest simulated detail", async (
   const { encodedId } = await routeCurrentFileProject(page, "simulation-lazy-chapter", { calls, hasSimulation: true });
 
   await page.goto(`/projects/${encodedId}/sim`);
-  await expect(page.getByRole("heading", { name: "世界响应" })).toBeVisible();
-  await expect(page.getByText("第 1 章响应记录")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "世界状态" })).toBeVisible();
+  await expect(page.getByText("第 1 章状态记录")).toBeVisible();
+  await expect(page.getByText("商会开始追查铜牌去向。", { exact: true })).toBeVisible();
+  await expect(page.getByText("章节计划明细", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("角色动作", { exact: true })).toHaveCount(0);
   await expect.poll(() => calls.filter((path) => path.includes("/chapters/")).length).toBe(1);
   expect(calls.filter((path) => path.endsWith("/chapters/1"))).toHaveLength(1);
   expect(calls.some((path) => /^\/file-stories\/[^/]+$/.test(path))).toBe(false);
@@ -1936,9 +2238,9 @@ test("simulation switching chapters requests only the newly selected detail", as
   });
 
   await page.goto(`/projects/${encodedId}/sim`);
-  await expect(page.getByText("第 2 章响应记录")).toBeVisible();
-  await page.getByLabel("响应章节").selectOption("1");
-  await expect(page.getByText("第 1 章响应记录")).toBeVisible();
+  await expect(page.getByText("第 2 章状态记录")).toBeVisible();
+  await page.getByLabel("状态章节").selectOption("1");
+  await expect(page.getByText("第 1 章状态记录")).toBeVisible();
   expect(calls.filter((path) => path.endsWith("/chapters/2"))).toHaveLength(1);
   expect(calls.filter((path) => path.endsWith("/chapters/1"))).toHaveLength(1);
   expect(calls.filter((path) => path.includes("/chapters/"))).toHaveLength(2);
@@ -1975,12 +2277,55 @@ test("simulation shows loading instead of retained prior chapter content", async
 
 test("file project outline edits three levels and runs outline generation", async ({ page }) => {
   let savedBody: Record<string, unknown> | null = null;
+  let storyCoreRequestCount = 0;
   let generationBody: Record<string, unknown> | null = null;
+  const storyCore = {
+    schema_version: "story-core/v1",
+    title: "断香炉",
+    logline: "守祠杂役发现断香炉会指出宗门旧案，必须在证据被毁前查清真相，否则会被当成盗宝者处死。",
+    protagonist_profile: "谨慎的守祠杂役，习惯忍让。",
+    inciting_incident: "断香炉第一次指出被封住的旧案证物。",
+    protagonist_goal: "查清旧案并保住性命。",
+    main_conflict: "执事要销毁证据并把罪名推给主角。",
+    failure_stakes: "主角会被处死，旧案也会永远被掩埋。",
+    growth_path: "从忍让求生变成敢于掌握证据和规则。",
+    excitement_point: "利用破损器物留下的痕迹翻查旧案。",
+    target_audience: "喜欢玄幻升级和查案推进的读者。",
+    reader_promise: "每个阶段查出一件旧物的真相，并获得可见成长。",
+    ending_direction: "主角公开旧案并建立新的宗门查验规则。",
+    core_advantage: {
+      name: "断香炉残痕",
+      type: "线索能力",
+      ability: "看见破损器物留下的一段因果痕迹。",
+      growth_rule: "每查清一件旧案，残痕会更完整。",
+      limits: "只能读取留有实物痕迹的旧事。",
+      early_payoff: "找到祖祠失火的第一处证据。",
+    },
+    central_mystery: {
+      surface_anomaly: "断香炉会显示不属于当前年代的残痕。",
+      hidden_truth: "香炉保存着被宗门改写的历史。",
+      reality_impact: "恢复旧事会改变当前宗门关系。",
+      reveal_path: ["验证火灾残痕", "找到被改写的名册"],
+    },
+    initial_drive: {
+      immediate_need: "洗清盗宝嫌疑并保住性命。",
+      trigger: "断香炉指出被封住的证物。",
+      short_term_goal: "查清祖祠失火案。",
+      failure_stakes: "主角会被处死。",
+      long_term_transition: "从自证清白转向恢复宗门旧史。",
+    },
+    source_direction_id: "direction-1",
+  };
   const outline = {
     schema_version: "project-outline/v1",
     source: "saved",
     overall: {
-      story: "林照追查祖祠旧案。",
+      story: storyCore.logline,
+      theme_statement: "守住事实，比赢下一次争斗更重要。",
+      foreground_story: "林照追查纵火案，并争取进入内门查档。",
+      background_story: "宗门高层借旧案改写名册，清洗异己。",
+      book_objective: "林照公开旧案真相，并取得宗门执法权。",
+      ending_image: "祖祠重新开放，林照把旧名册交还死者家属。",
       protagonist_goal: "",
       main_conflict: "宗门有人阻止他追查。",
       growth_path: "从杂役成长为内门弟子。",
@@ -1989,6 +2334,17 @@ test("file project outline edits three levels and runs outline generation", asyn
       extension_ceiling_chapter: 500,
       current_strategy: "observe",
       ending_contract: "现实线和游戏线都完成核心结局。",
+      positioning: {
+        protagonist_profile: storyCore.protagonist_profile,
+        inciting_incident: storyCore.inciting_incident,
+        failure_stakes: storyCore.failure_stakes,
+        excitement_point: storyCore.excitement_point,
+        target_audience: storyCore.target_audience,
+        reader_promise: storyCore.reader_promise,
+      },
+      protagonist_drive: storyCore.initial_drive,
+      core_advantage: storyCore.core_advantage,
+      central_mystery: storyCore.central_mystery,
     },
     arcs: [
       {
@@ -1999,6 +2355,10 @@ test("file project outline edits three levels and runs outline generation", asyn
         goal: "找出纵火者",
         obstacle: "管事阻挠",
         payoff: "拿到旧名册",
+        emotional_curve: "先受压，再反查，卷尾公开拿出证据。",
+        key_results: ["取得查档资格", "找到旧名册", "确认高层参与改名"],
+        hook_plan: "旧名册缺页在第三阶段回收。",
+        irreversible_change: "林照公开挑战管事，无法再做旁观的杂役。",
         end_state: "进入外门调查",
         stage_antagonist: "赵衡",
         long_term_antagonist_traces: ["旧名册被换过"],
@@ -2055,6 +2415,10 @@ test("file project outline edits three levels and runs outline generation", asyn
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(outline) });
   });
+  await page.route("**/file-projects/file%3Aoutline-fixture/story-core", async (route) => {
+    storyCoreRequestCount += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(storyCore) });
+  });
   await page.route("**/file-projects/file%3Aoutline-fixture/outline/generate", async (route) => {
     generationBody = route.request().postDataJSON() as Record<string, unknown>;
     await route.fulfill({
@@ -2066,6 +2430,20 @@ test("file project outline edits three levels and runs outline generation", asyn
         outline: { ...outline, source: undefined },
         characters: [],
         source: "generated",
+      }),
+    });
+  });
+  await page.route("**/file-projects/file%3Aoutline-fixture/outline/generation-checkpoints", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        fingerprint: "fixture",
+        phases: [
+          { id: "outline_foundation", status: "completed", has_payload: true, payload: { outline: { overall: { story: "林照追查祖祠纵火案。" } } } },
+          { id: "character_roster", status: "completed", has_payload: true, payload: { characters: [{ name: "林照" }] } },
+          { id: "chapter_window", status: "completed", has_payload: true, payload: { chapters: [{ chapter_number: 1 }] } },
+        ],
       }),
     });
   });
@@ -2107,25 +2485,51 @@ test("file project outline edits three levels and runs outline generation", asyn
   });
 
   await page.goto("/projects/file%3Aoutline-fixture/outline");
-  await expect(page.getByText("章节计划还剩 10 章，请补充下一批。", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "总纲", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "故事定位" })).toBeVisible();
+  await expect(page.getByLabel("一句话简介")).toHaveValue(storyCore.logline);
+  await expect(page.getByLabel("具体能力")).toHaveValue(storyCore.core_advantage.ability);
+  await expect(page.getByLabel("隐藏真相")).toHaveValue(storyCore.central_mystery.hidden_truth);
+  await expect(page.getByLabel("眼前需求")).toHaveValue(storyCore.initial_drive.immediate_need);
+  await page.getByLabel("读者持续能得到什么").fill("每卷查清一件旧物，并兑现一次可见成长。");
+  await page.getByRole("button", { name: "保存大纲" }).click();
+  await expect(page.getByText("大纲已保存，下一次剧情规划会读取这版内容。")).toBeVisible();
+  expect(((savedBody as { overall?: { positioning?: { reader_promise?: string } } } | null)?.overall?.positioning?.reader_promise)).toBe("每卷查清一件旧物，并兑现一次可见成长。");
+  expect(storyCoreRequestCount).toBe(0);
+  savedBody = null;
+  await expect(page.getByText("章节计划还剩 10 章，请补充下一批。", { exact: true })).toBeHidden();
+  await expect(page.getByRole("button", { name: "补充后续章节" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "补充后续章节" })).toHaveAttribute(
+    "title",
+    "后续大纲已规划到第 30 章，写到接近末尾时再补充。",
+  );
   await expect(page.getByRole("tab", { name: "总纲", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "阶段大纲", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "章节大纲", exact: true })).toBeVisible();
   await expect(page.getByLabel("核心完结章数")).toHaveValue("150");
   await expect(page.getByLabel("最大扩展章数")).toHaveValue("500");
   await expect(page.getByRole("radio", { name: "观察中" })).toBeChecked();
+  await expect(page.getByLabel("主题命题")).toHaveValue("守住事实，比赢下一次争斗更重要。");
+  await expect(page.getByLabel("前台故事")).toHaveValue("林照追查纵火案，并争取进入内门查档。");
+  await expect(page.getByLabel("后台故事")).toHaveValue("宗门高层借旧案改写名册，清洗异己。");
+  await expect(page.getByLabel("全书可验证目标")).toHaveValue("林照公开旧案真相，并取得宗门执法权。");
+  await expect(page.getByLabel("终局画面")).toHaveValue("祖祠重新开放，林照把旧名册交还死者家属。");
   await page.getByLabel("最大扩展章数").fill("30");
   await expect(page.getByText("章节计划还剩 10 章，请补充下一批。", { exact: true })).toBeHidden();
   await expect(page.getByText("最大扩展章数不能小于核心完结章数。", { exact: true })).toBeVisible();
   await page.getByLabel("最大扩展章数").fill("500");
-  await expect(page.getByText("章节计划还剩 10 章，请补充下一批。", { exact: true })).toBeVisible();
+  await expect(page.getByText("章节计划还剩 10 章，请补充下一批。", { exact: true })).toBeHidden();
   await expect(page.getByText("最大扩展章数不能小于核心完结章数。", { exact: true })).toBeHidden();
   await page.getByRole("radio", { name: "收束" }).check();
   await page.getByLabel("主角长期目标").fill("洗清父亲旧案");
   await page.getByRole("tab", { name: "阶段大纲", exact: true }).click();
   await expect(page.getByLabel("阶段名称")).toHaveValue("祖祠阶段");
-  await expect(page.getByLabel("修行线阶段结果")).toHaveValue("进入内门并获得新功法。");
-  await expect(page.getByLabel("联盟线阶段结果")).toHaveValue("解决住处和眼前收入问题。");
+  await expect(page.getByLabel("情绪曲线")).toHaveValue("先受压，再反查，卷尾公开拿出证据。");
+  await expect(page.getByLabel("三个阶段结果")).toHaveValue("取得查档资格\n找到旧名册\n确认高层参与改名");
+  await expect(page.getByLabel("伏笔安排")).toHaveValue("旧名册缺页在第三阶段回收。");
+  await expect(page.getByLabel("卷尾不可逆变化")).toHaveValue("林照公开挑战管事，无法再做旁观的杂役。");
+  await expect(page.getByLabel("修行线阶段结果")).toHaveCount(0);
+  await expect(page.getByLabel("联盟线阶段结果")).toHaveCount(0);
   await expect(page.getByLabel("继续路线")).toHaveValue("进入内门并扩大旧案。");
   await expect(page.getByLabel("收束路线")).toHaveValue("回收旧名册并转入最终审判。");
   await page.getByLabel("收束路线").fill("");
@@ -2159,6 +2563,10 @@ test("file project outline edits three levels and runs outline generation", asyn
   await page.getByRole("button", { name: "重新生成" }).click();
   await expect.poll(() => generationBody).toEqual({ mode: "regenerate", guidance: "阶段对手必须有现实利益" });
   await expect(page.getByLabel("本次生成补充要求")).toHaveValue("");
+  await expect(page.getByLabel("大纲生成步骤")).toContainText("总纲与阶段大纲");
+  await expect(page.getByLabel("大纲生成步骤")).toContainText("开篇角色表");
+  await expect(page.getByLabel("大纲生成步骤")).toContainText("章节细纲");
+  await expect(page.getByLabel("大纲生成步骤").getByText("已保存", { exact: true })).toHaveCount(3);
   await page.getByRole("tab", { name: "阶段大纲", exact: true }).click();
   await expect(page.getByLabel("阶段对手")).toHaveValue("赵衡");
   await page.getByRole("tab", { name: "章节大纲", exact: true }).click();
@@ -2168,6 +2576,53 @@ test("file project outline edits three levels and runs outline generation", asyn
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth))
     .toBe(true);
+});
+
+test("continuation outline locks historical arcs and labels future arcs", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "continuation-outline-states");
+  (fixture.project as typeof fixture.project & { continuation: { start_after_chapter: number } }).continuation = {
+    start_after_chapter: 1,
+  };
+  await page.route(`**/file-projects/${fixture.encodedId}`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture.project) });
+  });
+  const arc = (id: string, title: string, start: number, end: number) => ({
+    id, title, start_chapter: start, end_chapter: end,
+    goal: "阶段目标", obstacle: "阶段阻碍", payoff: "阶段兑现", end_state: "阶段结果",
+    emotional_curve: "情绪变化", key_results: ["结果一", "结果二", "结果三"],
+    hook_plan: "伏笔安排", irreversible_change: "不可逆变化", trope_id: null,
+    stage_antagonist: "对手", long_term_antagonist_traces: [], game_line_payoff: "", reality_line_payoff: "",
+    extension_gate: { continue_route: "继续", close_route: "收束" },
+  });
+  const outline = {
+    schema_version: "project-outline/v1", source: "saved",
+    overall: {
+      story: "覆盖原著与续写的全书故事。", protagonist_goal: "完成全书目标", main_conflict: "长期冲突",
+      growth_path: "完整成长路线", ending_direction: "全书结局", core_ending_chapter: 100,
+      extension_ceiling_chapter: 150, current_strategy: "observe", ending_contract: "完成全书结局",
+    },
+    arcs: [arc("history", "原著阶段", 1, 1), arc("future", "续写阶段", 2, 100)],
+    chapters: [],
+  };
+  await page.route(`**/file-projects/${fixture.encodedId}/outline`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(outline) });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/foreshadowing`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], version: "" }) });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/outline`);
+  await expect(page.getByText("正在读取大纲...", { exact: true })).toBeHidden();
+  await page.getByRole("tab", { name: "阶段大纲", exact: true }).click();
+
+  const historical = page.locator('article[data-arc-state="historical"]');
+  const future = page.locator('article[data-arc-state="future"]');
+  await expect(historical.locator(".ws-outline-item__head strong")).toContainText("已发生");
+  await expect(historical.getByLabel("阶段名称")).toBeDisabled();
+  await expect(historical.getByRole("button", { name: "删除" })).toBeDisabled();
+  await expect(future.locator(".ws-outline-item__head strong")).toContainText("规划中");
+  await expect(future.getByLabel("阶段名称")).toBeEnabled();
+  await expect(page.getByText("覆盖原著与续写后的全书方向", { exact: true })).toBeVisible();
 });
 
 test("concrete character card shows and saves factual profile fields", async ({ page }) => {
@@ -2223,7 +2678,7 @@ test("concrete character card shows and saves factual profile fields", async ({ 
   await expect(page.getByText("守祠人之子", { exact: true })).toBeVisible();
   await expect(page.getByText("会被逐出祖祠并失去线索", { exact: true })).toBeVisible();
   await expect(page.getByText("这炉子昨夜还好好的，谁动过，查值夜册就知道。", { exact: true })).toBeVisible();
-  await expect(page.getByText("赵衡", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("character-card-protagonist").getByText(/赵衡：管事与杂役/)).toBeVisible();
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await page.getByLabel("职业").fill("守祠杂役");
   await page.getByRole("button", { name: "保存角色卡" }).click();
@@ -2235,6 +2690,65 @@ test("concrete character card shows and saves factual profile fields", async ({ 
     dialogue_examples: ["这炉子昨夜还好好的，谁动过，查值夜册就知道。"],
   });
   expect(savedBody).not.toHaveProperty("relationship_notes");
+});
+
+test("character cards use fixed detail levels for protagonists and supporting roles", async ({ page }) => {
+  const characters = [
+    {
+      name: "林照", role: "protagonist", character_tier: "protagonist", first_appearance: 1,
+      identity_profile: { gender: "男", age: 19, current_identity: "祖祠杂役", occupation: "守炉人", affiliation: "赤霄宗" },
+      background_profile: { family: "父亲失踪", upbringing: "由老仆带大", formative_events: ["十三岁目睹父亲被带走"] },
+      current_life_profile: { residence: "祖祠偏房", resources_and_ability: "识字，会修香炉" },
+      story_drive: { long_term_goal: "查清父亲旧案", immediate_goal: "找到旧账", failure_stakes: "永远失去线索", hidden_matters: ["藏有残页"] },
+      personality_portrait: {
+        temperament: { core_traits: ["冷静", "执拗"], bottom_line: "不牵连无辜" },
+        psychology: { fear: "父亲确实有罪" },
+        growth: { initial_flaw: "不信任任何人", stage_direction: "学会把真相交给同伴" },
+      },
+      dialogue_examples: ["账册不会自己烧掉。"], story_function: "推动旧案主线", lifecycle_state: "active",
+    },
+    {
+      name: "周满", role: "supporting", character_tier: "supporting", first_appearance: 3,
+      identity_profile: { current_identity: "巡夜弟子", occupation: "巡夜人", affiliation: "赤霄宗" },
+      current_life_profile: { resources_and_ability: "熟悉山门暗道" },
+      story_drive: { immediate_goal: "保住巡夜差事", main_conflict_reason: "隐瞒当夜行踪" },
+      personality_portrait: { temperament: { core_traits: ["圆滑", "胆小"] }, psychology: { fear: "被逐出宗门" } },
+      story_function: "提供巡夜线索", lifecycle_state: "active",
+    },
+    {
+      name: "刘婶", role: "npc", character_tier: "minor", first_appearance: 4,
+      identity_profile: { current_identity: "食堂帮工", affiliation: "外院" },
+      story_drive: { immediate_goal: "按时交饭" }, story_function: "传递外院消息", lifecycle_state: "active",
+    },
+  ];
+  const project = {
+    project_id: "file:character-template-fixture", title: "Character Templates", source_path: "", seed_outline: "祖祠旧案", world_summary: "",
+    current_focus: "", author_constraints: [], world_blueprint: {}, character_profiles: characters,
+    relationship_graph: [{ source: "林照", target: "周满", relation_type: "临时同伴", current_state: "互相试探" }], enabled_skill_ids: [],
+    status: "simulating", pipeline_stage: "world_ready", active_story_id: "file:character-template-fixture", branches: [], storage_source: "file",
+  };
+
+  await page.route("**/file-projects/file%3Acharacter-template-fixture", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Acharacter-template-fixture/overview", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:character-template-fixture", genre: "玄幻", current_chapter: 4, characters, history: [], world_facts: [], author_constraints: [], agent_runtime: { recent_events: [] },
+    }) });
+  });
+
+  await page.goto("/projects/file%3Acharacter-template-fixture/characters");
+  const protagonist = page.getByTestId("character-card-protagonist");
+  const supporting = page.getByTestId("character-card-supporting");
+  const minor = page.getByTestId("character-card-minor");
+
+  await expect(protagonist.getByRole("heading", { level: 3 })).toHaveText(["基本身份", "性格与动机", "当前剧情"]);
+  await expect(supporting.getByRole("heading", { level: 3 })).toHaveText(["基本身份", "性格与动机", "关系与作用"]);
+  await expect(minor.getByRole("heading", { level: 3 })).toHaveText(["角色摘要"]);
+  await expect(supporting.getByText("人物弧光", { exact: true })).toHaveCount(0);
+  await expect(minor.getByText("成长经历", { exact: true })).toHaveCount(0);
+  await page.setViewportSize({ width: 360, height: 780 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
 test("relationship workspace defaults to protagonist and saves the canonical graph", async ({ page }) => {
@@ -2337,6 +2851,8 @@ for (const generationCase of [
   test(`generated chapter ${generationCase.name} and refreshes lazy data`, async ({ page }) => {
     const calls: string[] = [];
     const fixture = await routeCurrentFileProject(page, `generated-chapter-${generationCase.expectedChapter}`, { calls });
+    const candidateState: CandidateRouteState = { current: null };
+    await routeCandidateLifecycle(page, fixture.encodedId, candidateState);
     await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
       const chapterNumber = generationCase.expectedChapter;
       const generated = {
@@ -2364,6 +2880,7 @@ for (const generationCase of [
         has_quality_report: true,
         has_simulation: false,
       });
+      candidateState.current = pendingCandidate(fixture.projectId, chapterNumber, generated.body);
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -2385,12 +2902,15 @@ for (const generationCase of [
     await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
     await page.getByRole("button", { name: "生成下一章" }).click();
 
+    await expect(page.getByLabel("候选稿")).toContainText(`GENERATED_CHAPTER_${generationCase.expectedChapter}`);
+    await page.getByRole("button", { name: "确认提交" }).click();
     await expect(page).toHaveURL(new RegExp(`chapter=${generationCase.expectedChapter}$`));
     await expect(page.locator(".ws-reader__body")).toContainText(`GENERATED_CHAPTER_${generationCase.expectedChapter}`);
     expect(calls.filter((path) => path.endsWith("/overview"))).toHaveLength(2);
     expect(calls.some((path) => /^\/file-stories\/[^/]+$/.test(path))).toBe(false);
     expect(calls.filter((path) => path.endsWith(`/chapters/${generationCase.expectedChapter}`))).toHaveLength(1);
-    expect(calls.filter((path) => path.includes("/chapters/"))).toHaveLength(2);
+    expect(calls.filter((path) => path.endsWith("/chapters/1"))).toHaveLength(2);
+    expect(calls.filter((path) => path.includes("/chapters/"))).toHaveLength(3);
   });
 }
 
@@ -2398,10 +2918,13 @@ test("write page can regenerate the current file-project chapter", async ({ page
   const calls: string[] = [];
   const detailDelays: Record<number, number> = {};
   const fixture = await routeCurrentFileProject(page, "regenerate-chapter", { calls, detailDelays });
+  const candidateState: CandidateRouteState = { current: null };
+  await routeCandidateLifecycle(page, fixture.encodedId, candidateState);
   let regenerationPayload: Record<string, unknown> | null = null;
   await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
     regenerationPayload = route.request().postDataJSON() as Record<string, unknown>;
     fixture.story.history[0].body = "REGENERATED_CHAPTER: 商会规则和主角动机已经补全。";
+    candidateState.current = pendingCandidate(fixture.projectId, 1, fixture.story.history[0].body);
     detailDelays[1] = 600;
     await route.fulfill({
       status: 200,
@@ -2567,26 +3090,6 @@ test("write page can regenerate the current file-project chapter", async ({ page
                 original_chars: 4200,
                 candidate_chars: 1200,
               },
-              segment_pipeline: {
-                enabled: true,
-                pass: false,
-                segments: [
-                  {
-                    segment_key: "setup",
-                    segment_title: "现实入口",
-                    pass: false,
-                    issues: ["局部改稿缩水"],
-                    segment_revision_safety: {
-                      reviewer: "segment_revision_safety/v1",
-                      accepted: false,
-                      selected: "original",
-                      reason: "candidate_worse_than_original",
-                      original_score: 60,
-                      candidate_score: 20,
-                    },
-                  },
-                ],
-              },
               writing_review: {
                 pass: false,
                 scores: { genre_rules: 5 },
@@ -2607,8 +3110,10 @@ test("write page can regenerate the current file-project chapter", async ({ page
   await page.getByRole("button", { name: "重新生成本章" }).click();
 
   await expect.poll(() => regenerationPayload).toMatchObject({ chapter_number: 1 });
-  await expect(page.locator(".ws-reader__body")).toContainText("商会印记的旧铜牌");
-  await expect(page.locator(".ws-reader__body")).toContainText("REGENERATED_CHAPTER");
+  await expect(page.locator("div.ws-reader__body")).toContainText("商会印记的旧铜牌");
+  await expect(page.getByLabel("候选稿")).toContainText("REGENERATED_CHAPTER");
+  await page.getByRole("button", { name: "确认提交" }).click();
+  await expect(page.locator("div.ws-reader__body")).toContainText("REGENERATED_CHAPTER");
   expect(calls.filter((path) => path.endsWith("/overview"))).toHaveLength(2);
   expect(calls.some((path) => /^\/file-stories\/[^/]+$/.test(path))).toBe(false);
   expect(calls.filter((path) => path.endsWith("/chapters/1"))).toHaveLength(2);
@@ -2784,26 +3289,6 @@ test("write page accepts three-stage runtime state", async ({ page }) => {
                 original_chars: 4200,
                 candidate_chars: 1200,
               },
-              segment_pipeline: {
-                enabled: true,
-                pass: false,
-                segments: [
-                  {
-                    segment_key: "setup",
-                    segment_title: "现实入口",
-                    pass: false,
-                    issues: ["局部改稿缩水"],
-                    segment_revision_safety: {
-                      reviewer: "segment_revision_safety/v1",
-                      accepted: false,
-                      selected: "original",
-                      reason: "candidate_worse_than_original",
-                      original_score: 60,
-                      candidate_score: 20,
-                    },
-                  },
-                ],
-              },
               writing_review: {
                 pass: false,
                 scores: { genre_rules: 5 },
@@ -2900,12 +3385,35 @@ test("角色卡状态显示和编辑保存遵循网游插件", async ({ page }) 
   });
 });
 
+test("角色卡把现实姓名和游戏 ID 识别为同一人物", () => {
+  const merged = mergeCharacters(
+    [{ name: "夜烬", role: "主角，现实身份苏叶" }],
+    [{ name: "苏叶", role: "protagonist", game_id: "夜烬", game_state: { current: { game_id: "夜烬" } } }],
+  );
+
+  expect(merged).toHaveLength(1);
+  expect(merged[0]).toMatchObject({ name: "苏叶", game_id: "夜烬" });
+});
+
+test("角色卡不把白河仓库收购方显示为人物", () => {
+  const merged = mergeCharacters(
+    [
+      { name: "白河仓库收购方", role: "收购方NPC" },
+      { name: "药剂师洛婶", role: "服务NPC" },
+    ],
+    [],
+  );
+
+  expect(merged.map((character) => character.name)).toEqual(["药剂师洛婶"]);
+});
+
 test("非法状态 JSON 页面内报错且不发请求，非网游隐藏游戏状态", async ({ page }) => {
   let putCount = 0;
   const character = {
     name: "林照", role: "protagonist", goals: [], frozen: false, lifecycle_state: "active",
     last_proposed_chapter: 0, last_approved_chapter: 1, introduced_by: "outline", relationships: {},
     game_id: "不应显示的ID",
+    identity_profile: { current_identity: "守祠人之子" },
     memory: ["## 基本信息；- **姓名**：林照；- **身份**：守祠人之子"],
     real_state: {
       current: {
@@ -2937,7 +3445,7 @@ test("非法状态 JSON 页面内报错且不发请求，非网游隐藏游戏�
   });
 
   await page.goto("/projects/file%3Areal-state-fixture/characters");
-  await expect(page.getByRole("heading", { name: "现实状态" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "当前状态", exact: true })).toBeVisible();
   await expect(page.getByText("修为境界", { exact: true })).toBeVisible();
   await expect(page.getByText("筑基初期", { exact: true })).toBeVisible();
   await expect(page.getByText("守祠人之子", { exact: true })).toBeVisible();
@@ -2945,12 +3453,13 @@ test("非法状态 JSON 页面内报错且不发请求，非网游隐藏游戏�
   await expect(page.locator("body")).not.toContainText("aliases");
   await expect(page.getByText("状态补充", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "游戏状态" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "现实状态" })).toHaveCount(0);
   await expect(page.getByText("不应显示", { exact: true })).toHaveCount(0);
   await expect(page.getByText("不应显示的ID", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "编辑", exact: true }).click();
-  await page.getByLabel("现实状态 JSON").fill("{invalid");
+  await page.getByLabel("当前状态 JSON").fill("{invalid");
   await page.getByRole("button", { name: "保存角色卡" }).click();
-  await expect(page.getByText("现实状态 JSON 格式错误", { exact: false })).toBeVisible();
+  await expect(page.getByText("当前状态 JSON 格式错误", { exact: false })).toBeVisible();
   expect(putCount).toBe(0);
 });
 
@@ -2984,8 +3493,8 @@ test("网游角色卡兼容仅有旧游戏面板的角色状态", async ({ page 
 
   await page.goto("/projects/file%3Alegacy-panel-fixture/characters");
   await expect(page.getByRole("heading", { name: "游戏状态" })).toBeVisible();
-  await expect(page.getByText("旧夜烬", { exact: true })).toHaveCount(2);
-  await expect(page.getByText("4", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("旧夜烬", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("4", { exact: true })).toHaveCount(1);
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await expect(page.getByLabel("游戏状态 JSON")).toBeVisible();
   await page.getByLabel("游戏状态 JSON").fill(JSON.stringify({ current: { game_id: "新夜烬", level: 5, class_path: "刺客" }, recent_changes: [] }));
@@ -3069,6 +3578,60 @@ test("世界观页面显示并编辑怪物图鉴", async ({ page }) => {
   await expect.poll(() => savedBlueprint).toMatchObject({ monster_profiles: [{ name: "灰狼", hp: "90" }] });
 });
 
+test("世界观页面筛选并编辑装备图鉴", async ({ page }) => {
+  let savedBlueprint: Record<string, unknown> | null = null;
+  const project = {
+    project_id: "file:equipment-fixture", title: "装备图鉴测试", source_path: "", seed_outline: "", world_summary: "", current_focus: "",
+    author_constraints: [],
+    world_blueprint: {
+      genre_plugin_ids: ["game_webnovel"],
+      equipment_cards: [
+        {
+          id: "equipment-dusk", name: "暮色裁决", equipment_type: "武器", rarity: "史诗", slot: "主手",
+          required_level: "Lv.30", current_owner: "夜烬", durability: "31/40", status: "已装备",
+          description: "钟声响起时，持剑者已无退路。", lore: "传说由旧王庭最后一位铸剑师打造。", lore_status: "rumor",
+          base_attributes: { 攻击: "+86" }, special_effects: ["暮色中暴击提高"], first_appearance_chapter: 8,
+        },
+        { id: "equipment-ring", name: "潮汐指环", equipment_type: "饰品", rarity: "稀有", current_owner: "潮汐祭司" },
+      ],
+    },
+    character_profiles: [], relationship_graph: [], enabled_skill_ids: [], status: "simulating", pipeline_stage: "world_ready",
+    active_story_id: "file:equipment-fixture", branches: [], storage_source: "file",
+  };
+  await page.route("**/file-projects/file%3Aequipment-fixture", async (route) => {
+    if (route.request().method() === "PUT") {
+      const payload = route.request().postDataJSON() as { world_blueprint?: Record<string, unknown> };
+      savedBlueprint = payload.world_blueprint ?? null;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...project, world_blueprint: { ...project.world_blueprint, ...savedBlueprint } }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route("**/file-stories/file%3Aequipment-fixture/overview", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      story_id: "file:equipment-fixture", outline: "", genre: "网游", style: "白描", current_chapter: 8,
+      agent_settings: {}, agent_runtime: { recent_events: [] }, author_constraints: [], world_facts: [], characters: [], history: [], parent_story_id: null, branched_from_chapter: null,
+    }) });
+  });
+
+  await page.goto("/projects/file%3Aequipment-fixture/world");
+  const catalog = page.getByLabel("装备图鉴");
+  await expect(catalog.getByRole("heading", { name: "装备图鉴" })).toBeVisible();
+  await expect(catalog.getByText("暮色裁决", { exact: true })).toBeVisible();
+  await expect(catalog.getByText("来历传闻", { exact: true })).toBeVisible();
+  await catalog.getByLabel("装备类型").selectOption("饰品");
+  await expect(catalog.getByText("潮汐指环", { exact: true })).toBeVisible();
+  await expect(catalog.getByText("暮色裁决", { exact: true })).toHaveCount(0);
+  await catalog.getByLabel("装备类型").selectOption("");
+  await catalog.getByRole("button", { name: "编辑暮色裁决" }).click();
+  await catalog.getByLabel("装备说明").fill("钟声响起时，裁决已经落下。");
+  await catalog.getByRole("button", { name: "保存装备卡" }).click();
+  await expect.poll(() => {
+    const equipment = savedBlueprint?.equipment_cards as Array<Record<string, unknown>> | undefined;
+    return equipment?.[0]?.description;
+  }).toBe("钟声响起时，裁决已经落下。");
+});
+
 const structuredPowerSystemSpec = {
   name: "神域六职体系",
   origin: ["觉醒石连接神域权限"],
@@ -3101,6 +3664,23 @@ const structuredPowerSystemSpec = {
   social_impact: ["公会按职业配置队伍"],
   visibility: ["敌人只能看到公开等级", "<script>不可执行</script>"],
   continuity_ledger: ["level", "class_path", "skills", "equipment"],
+};
+
+const gameClassAdvancementSpec = {
+  ...structuredPowerSystemSpec,
+  class_advancement_tiers: [
+    { level: 10, name: "正式转职", purpose: "确立基础职业", common_requirements: ["达到 Lv.10"], failure_rule: "可重新挑战" },
+    { level: 30, name: "职业分支", purpose: "确定战斗专精", common_requirements: ["完成职业试炼"], failure_rule: "冷却七日" },
+    { level: 60, name: "传承职业", purpose: "取得职业传承", common_requirements: ["获得传承信物"], failure_rule: "保留原职业" },
+  ],
+  paths: structuredPowerSystemSpec.paths.map((path) => ({
+    ...path,
+    advancement_tree: [
+      { level: 10, tier_name: "正式转职", options: [{ name: path.name, role: path.role, requirements: ["达到 Lv.10"], transfer_task: `完成${path.name}导师试炼`, ability_changes: ["解锁职业资源"], next_options: path.branches }] },
+      { level: 30, tier_name: "职业分支", options: path.branches.map((name) => ({ name, role: path.role, requirements: ["完成职业试炼"], transfer_task: `完成${name}专精任务`, ability_changes: ["解锁专精循环"], next_options: [`${name}传承`] })) },
+      { level: 60, tier_name: "传承职业", options: path.branches.map((name) => ({ name: `${name}传承`, role: path.role, requirements: ["获得传承信物"], transfer_task: `完成${name}传承仪式`, ability_changes: ["解锁传承领域"], next_options: [] })) },
+    ],
+  })),
 };
 
 async function mockWorldPowerPage(
@@ -3174,6 +3754,34 @@ test("世界观展示结构化力量体系的完整章节、六职业与分支",
   await expect(structured.locator(".ws-card")).toHaveCount(0);
   await expect(structured.getByText("<script>不可执行</script>", { exact: true })).toBeVisible();
   await expect(page.locator("script").filter({ hasText: "不可执行" })).toHaveCount(0);
+});
+
+test("网游世界观显示统一职业转职树", async ({ page }) => {
+  await mockWorldPowerPage(page, "game-class-tree", {
+    genre_plugin_ids: ["game_webnovel"],
+    power_system_spec: gameClassAdvancementSpec,
+  });
+  await page.goto("/projects/file%3Agame-class-tree/world");
+
+  const tree = page.getByLabel("职业转职树");
+  await expect(tree.getByRole("heading", { name: "职业转职树" })).toBeVisible();
+  for (const label of ["Lv.10 正式转职", "Lv.30 职业分支", "Lv.60 传承职业"]) {
+    await expect(tree.getByRole("heading", { name: label, exact: true })).toBeVisible();
+  }
+  await expect(tree.getByText("完成战士导师试炼", { exact: true })).toBeVisible();
+  await expect(tree.getByText("解锁专精循环", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("力量体系需要补全", { exact: true })).toHaveCount(0);
+});
+
+test("网游职业树缺少统一节点时标记为需要补全", async ({ page }) => {
+  await mockWorldPowerPage(page, "incomplete-game-class-tree", {
+    genre_plugin_ids: ["game_webnovel"],
+    power_system_spec: structuredPowerSystemSpec,
+  });
+  await page.goto("/projects/file%3Aincomplete-game-class-tree/world");
+
+  await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
+  await expect(page.getByText("力量体系需要补全", { exact: true })).toBeVisible();
 });
 
 test("世界观展示启用的自由属性分配规则", async ({ page }) => {
@@ -3293,6 +3901,7 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
     project_id: "file:world-page-fixture", title: "世界观集成测试", source_path: "", seed_outline: "",
     world_summary: "旧项目摘要", current_focus: "", author_constraints: ["不应显示为页面标题"],
     world_blueprint: {
+      genre_plugin_ids: ["game_webnovel"],
       premise: "旧世界前提",
       current_arc: "旧局势",
       world_rules: ["基础世界规则"],

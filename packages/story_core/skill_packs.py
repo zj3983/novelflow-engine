@@ -6,6 +6,7 @@ import re
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,42 @@ def normalize_skill_id(value: str) -> str:
     return normalized or "skill-pack"
 
 
+def resolve_enabled_skill_ids(
+    project_payload: Mapping[str, Any] | None,
+    state_payload: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Respect an explicit project selection, including an explicit empty list."""
+
+    project = project_payload if isinstance(project_payload, Mapping) else {}
+    state = state_payload if isinstance(state_payload, Mapping) else {}
+    raw_ids = project.get("enabled_skill_ids")
+    if not isinstance(raw_ids, list):
+        raw_ids = state.get("enabled_skill_ids")
+    if not isinstance(raw_ids, list):
+        return []
+    return [str(item).strip() for item in raw_ids if str(item).strip()]
+
+
+def resolve_enabled_skill_module_ids(
+    project_payload: Mapping[str, Any] | None,
+    state_payload: Mapping[str, Any] | None = None,
+) -> list[str] | None:
+    """Return explicit module selections, or None for legacy pack-level projects."""
+
+    project = project_payload if isinstance(project_payload, Mapping) else {}
+    state = state_payload if isinstance(state_payload, Mapping) else {}
+    raw_ids = project.get("enabled_skill_module_ids")
+    if not isinstance(raw_ids, list):
+        raw_ids = state.get("enabled_skill_module_ids")
+    if not isinstance(raw_ids, list):
+        return None
+    return [str(item).strip() for item in raw_ids if str(item).strip()]
+
+
+def skill_module_key(skill_id: str, module_id: str) -> str:
+    return f"{normalize_skill_id(skill_id)}::{normalize_skill_id(module_id)}"
+
+
 def _read_text(path: Path, limit: int = 20000) -> str:
     text = path.read_text(encoding="utf-8")
     return text[:limit]
@@ -112,6 +149,70 @@ def _plain_summary(text: str, *, limit: int = 180) -> str:
             break
     summary = " ".join(lines).strip()
     return summary[:limit].rstrip()
+
+
+def extract_skill_instructions(text: str, *, limit: int = 1000) -> str:
+    """Extract complete, writer-facing rules from a Skill document.
+
+    The writer needs instructions, not a front-matter summary or a copied
+    example.  Keep whole lines so the prompt never ends halfway through a
+    rule, and soften the few terse-writing slogans that conflict with the
+    project's modern Chinese dialogue contract.
+    """
+
+    body = text
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            body = parts[2]
+
+    skipped_section = False
+    selected: list[str] = []
+    total = 0
+    skip_markers = (
+        "\u4f55\u65f6\u7528",
+        "\u4f55\u65f6\u4f7f\u7528",
+        "\u53cd\u4f8b",
+        "\u793a\u4f8b",
+        "\u4e0b\u4e00\u6b65",
+    )
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("|") or line.startswith("```"):
+            continue
+        if line.startswith("#"):
+            heading = line.lstrip("#").strip()
+            skipped_section = any(marker in heading for marker in skip_markers)
+            if skipped_section:
+                continue
+            line = heading
+        elif skipped_section:
+            continue
+
+        line = re.sub(r"^[-*]\s+", "", line)
+        line = re.sub(r"^\d+[.)]\s+", "", line)
+        line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
+        line = line.replace("`", "").strip()
+        if not line:
+            continue
+
+        # These slogans are useful as editing notes but too easy to turn
+        # into clipped, unnatural dialogue when copied literally.
+        for old, new in (
+            ("\u8d8a\u77ed\u8d8a\u72e0", "\u77ed\u53e5\u53ea\u7528\u4e8e\u5f3a\u8c03\u6216\u6253\u65ad"),
+            ("\u6253\u788e\u957f\u53e5", "\u62c6\u5206\u8fc7\u957f\u53e5\uff0c\u4f46\u4fdd\u7559\u5fc5\u8981\u7684\u5bf9\u8c61\u3001\u539f\u56e0\u548c\u7ed3\u679c"),
+            ("\u7559\u767d > \u8bf4\u5c3d", "\u53ef\u4ee5\u7559\u767d\u60c5\u7eea\uff0c\u4f46\u4e0d\u7701\u7565\u5bf9\u8bdd\u5bf9\u8c61\u548c\u884c\u52a8\u51b3\u5b9a"),
+        ):
+            line = line.replace(old, new)
+
+        if selected and total + len(line) + 1 > limit:
+            break
+        selected.append(line)
+        total += len(line) + 1
+
+    if not selected:
+        return _plain_summary(text, limit=limit)
+    return " ".join(selected).strip()
 
 
 def infer_skill_purposes(*values: str) -> list[str]:
@@ -209,6 +310,156 @@ def get_skill_pack(skill_id: str, root: Path | None = None) -> SkillPack | None:
     return None
 
 
+def _file_projects_root() -> Path:
+    configured = os.getenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR")
+    if configured:
+        return Path(configured).resolve()
+    return (Path.cwd() / "data" / "exported-projects").resolve()
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.skill-uninstall.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _scrub_project_skill_reference(project_root: Path, skill_id: str) -> bool:
+    changed = False
+    for filename in ("project.json", "state.json"):
+        path = project_root / ".webnovel" / filename
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("enabled_skill_ids"), list):
+            continue
+        enabled = [str(item).strip() for item in payload["enabled_skill_ids"] if str(item).strip()]
+        next_enabled = [item for item in enabled if item != skill_id]
+        if next_enabled == enabled:
+            continue
+        payload["enabled_skill_ids"] = next_enabled
+        _write_json_atomic(path, payload)
+        changed = True
+    return changed
+
+
+def _scrub_project_skill_module_reference(project_root: Path, skill_id: str, module_id: str) -> bool:
+    module_key = skill_module_key(skill_id, module_id)
+    pack_prefix = f"{normalize_skill_id(skill_id)}::"
+    changed = False
+    for filename in ("project.json", "state.json"):
+        path = project_root / ".webnovel" / filename
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("enabled_skill_module_ids"), list):
+            # Projects without this field use the legacy whole-pack mode. Keep
+            # their pack selection intact; the removed module simply vanishes.
+            continue
+        enabled_modules = [str(item).strip() for item in payload["enabled_skill_module_ids"] if str(item).strip()]
+        next_modules = [item for item in enabled_modules if item != module_key]
+        if next_modules == enabled_modules:
+            continue
+        payload["enabled_skill_module_ids"] = next_modules
+        enabled_packs = payload.get("enabled_skill_ids")
+        if isinstance(enabled_packs, list) and not any(item.startswith(pack_prefix) for item in next_modules):
+            payload["enabled_skill_ids"] = [
+                str(item).strip() for item in enabled_packs if str(item).strip() != normalize_skill_id(skill_id)
+            ]
+        _write_json_atomic(path, payload)
+        changed = True
+    return changed
+
+
+def uninstall_skill_pack(
+    skill_id: str,
+    *,
+    root: Path | None = None,
+    projects_root: Path | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_skill_id(skill_id)
+    registry = (root or skill_packs_root()).resolve()
+    target = (registry / normalized).resolve()
+    if target.parent != registry:
+        raise ValueError("invalid_skill_pack_path")
+    pack = get_skill_pack(normalized, registry)
+    if pack is None or not target.is_dir():
+        raise KeyError("skill_pack_not_found")
+
+    shutil.rmtree(target)
+    affected_project_ids: list[str] = []
+    project_base = (projects_root or _file_projects_root()).resolve()
+    if project_base.is_dir():
+        for project_root in sorted(project_base.iterdir()):
+            if not project_root.is_dir():
+                continue
+            if _scrub_project_skill_reference(project_root, normalized):
+                affected_project_ids.append(project_root.name)
+    return {
+        "skill_id": normalized,
+        "pack": pack.summary(),
+        "affected_project_count": len(affected_project_ids),
+        "affected_project_ids": affected_project_ids,
+    }
+
+
+def uninstall_skill_module(
+    skill_id: str,
+    module_id: str,
+    *,
+    root: Path | None = None,
+    projects_root: Path | None = None,
+) -> dict[str, Any]:
+    normalized_skill_id = normalize_skill_id(skill_id)
+    normalized_module_id = normalize_skill_id(module_id)
+    if normalized_module_id == "root":
+        raise ValueError("skill_pack_root_module_cannot_uninstall")
+
+    registry = (root or skill_packs_root()).resolve()
+    pack = get_skill_pack(normalized_skill_id, registry)
+    if pack is None:
+        raise KeyError("skill_pack_not_found")
+    module = next((item for item in pack.modules if item.module_id == normalized_module_id), None)
+    if module is None:
+        raise KeyError("skill_module_not_found")
+
+    skills_root = (pack.path / "skills").resolve()
+    module_file = (pack.path / module.relative_path).resolve()
+    module_root = module_file.parent
+    if (
+        module_file.name != "SKILL.md"
+        or module_root.parent != skills_root
+        or not module_file.is_file()
+    ):
+        raise ValueError("invalid_skill_module_path")
+
+    shutil.rmtree(module_root)
+    affected_project_ids: list[str] = []
+    project_base = (projects_root or _file_projects_root()).resolve()
+    if project_base.is_dir():
+        for project_root in sorted(project_base.iterdir()):
+            if not project_root.is_dir():
+                continue
+            if _scrub_project_skill_module_reference(project_root, normalized_skill_id, normalized_module_id):
+                affected_project_ids.append(project_root.name)
+
+    updated_pack = get_skill_pack(normalized_skill_id, registry)
+    if updated_pack is None:
+        raise RuntimeError("skill_pack_missing_after_module_uninstall")
+    return {
+        "skill_id": normalized_skill_id,
+        "module_id": normalized_module_id,
+        "pack": updated_pack.summary(),
+        "affected_project_count": len(affected_project_ids),
+        "affected_project_ids": affected_project_ids,
+    }
+
+
 def import_skill_pack_from_path(source_path: str | Path, root: Path | None = None) -> SkillPack:
     source = Path(source_path).resolve()
     pack = load_skill_pack(source)
@@ -250,18 +501,30 @@ def import_skill_pack_from_zip(zip_bytes: bytes, root: Path | None = None) -> Sk
 def skill_pack_prompt_context(
     skill_ids: list[str],
     *,
+    enabled_module_ids: list[str] | None = None,
     purpose: str | None = None,
     max_chars_per_pack: int = 5000,
 ) -> list[dict[str, Any]]:
     contexts: list[dict[str, Any]] = []
+    selected_module_keys = None if enabled_module_ids is None else {str(item).strip() for item in enabled_module_ids}
     for skill_id in skill_ids:
         pack = get_skill_pack(skill_id)
         if pack is None:
             continue
         module_summaries = []
-        root_skill = pack.root_content[:1800]
+        root_selected = selected_module_keys is None or skill_module_key(pack.skill_id, "root") in selected_module_keys
+        root_skill = (
+            extract_skill_instructions(
+                pack.root_content,
+                limit=min(1000, max(240, max_chars_per_pack)),
+            )
+            if root_selected
+            else ""
+        )
         used_chars = len(root_skill)
         for module in pack.modules:
+            if selected_module_keys is not None and skill_module_key(pack.skill_id, module.module_id) not in selected_module_keys:
+                continue
             if purpose and purpose not in module.purposes and "general" not in module.purposes:
                 continue
             if used_chars >= max_chars_per_pack:
@@ -276,11 +539,15 @@ def skill_pack_prompt_context(
                     "description": module.description,
                     "summary": module.summary,
                     "purposes": module.purposes,
+                    "instructions": extract_skill_instructions(
+                        module.content,
+                        limit=min(1000, max(240, remaining)),
+                    ),
                     "content": content,
                     "relative_path": module.relative_path,
                 }
             )
-        if purpose and not module_summaries:
+        if purpose and not module_summaries and not root_skill:
             continue
         contexts.append(
             {

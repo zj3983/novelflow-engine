@@ -782,6 +782,23 @@ def test_transaction_completion_before_exchange_is_authorized() -> None:
     )
 
 
+def test_structured_first_chapter_allows_natural_auction_wording() -> None:
+    assert first_chapter_market_exchange_authorized(
+        {
+            "chapter_number": 1,
+            "goal": "把裂纹狼心匿名上架拍卖，以2金币一口价成交，再通过官方兑换付清现实急账。",
+        },
+        [],
+    )
+
+
+def test_explicit_scope_flag_is_authorized() -> None:
+    assert first_chapter_market_exchange_authorized(
+        {"first_chapter_trade_authorized": True},
+        [],
+    )
+
+
 def test_contract_cannot_be_assembled_across_separate_entries() -> None:
     assert not first_chapter_market_exchange_authorized(
         {"ordered_actions": ["在交易行卖出裂纹狼心"]},

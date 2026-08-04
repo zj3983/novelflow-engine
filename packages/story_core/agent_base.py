@@ -14,6 +14,13 @@ import urllib.error
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from packages.story_core.http_retry import post_json_with_retry
+from packages.story_core.model_gateway import (
+    ModelGateway,
+    ModelRequest,
+    ModelResponse,
+    RuntimeModelGateway,
+    normalize_model_error,
+)
 from packages.story_core.runtime_config import resolve_openai_runtime_settings
 
 if TYPE_CHECKING:
@@ -125,24 +132,49 @@ def parse_json_message_content(response: dict) -> dict | None:
             return None
 
 
+def _parse_json_text(content: str) -> dict | None:
+    """Parse a provider-neutral text response while tolerating JSON fences."""
+
+    text = str(content or "").strip()
+    if text.startswith("```"):
+        text = "\n".join(
+            line for line in text.splitlines() if not line.strip().startswith("```")
+        ).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            parsed = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 class BaseOpenAIProvider:
     """Shared base for OpenAI-style LLM providers.
     
     Eliminates duplicated _runtime_settings(), available(), and _post_json()
     across OpenAIWriterTextProvider, OpenAIDirectorDecisionProvider,
-    OpenAICharacterProposalProvider, and OpenAIMemorySummaryProvider.
+    OpenAICharacterProposalProvider and other legacy callers.
     
     Subclass must set:
     - runtime_key: str  (e.g. "writer", "director", "character", "memory")
     """
     runtime_key: str = ""
+
+    def __init__(self, model_gateway: ModelGateway | None = None) -> None:
+        self.model_gateway = model_gateway or RuntimeModelGateway()
     
     def _runtime_settings(self) -> Any:
         return resolve_openai_runtime_settings(self.runtime_key)
     
     def available(self) -> bool:
         settings = self._runtime_settings()
-        return settings.provider == "codexcli" or bool(settings.api_key)
+        return settings.provider in {"codexcli", "antigravity"} or bool(settings.api_key)
 
     def _set_last_error(self, reason: str) -> None:
         self._last_error = compact_text(reason, 160)
@@ -163,6 +195,15 @@ class BaseOpenAIProvider:
             provider=settings.provider,
             codex_command=settings.codex_command,
         )
+
+    def complete(self, request: ModelRequest) -> ModelResponse:
+        stage = "writer" if self.runtime_key == "writer" else "planner"
+        response = self.model_gateway.complete_stage(stage, request)
+        if response.ok:
+            self._clear_last_error()
+        else:
+            self._set_last_error(normalize_model_error(response))
+        return response
 
 
 class StoryAgentProvider(Protocol):
@@ -210,6 +251,9 @@ class BaseLLMAgent(Generic[T]):
     
     agent_name: str = ""  # e.g. "CharacterAgent", "WriterAgent"
     runtime_key: str = ""  # e.g. "character", "writer", "director", "memory"
+
+    def __init__(self, model_gateway: ModelGateway | None = None) -> None:
+        self.model_gateway = model_gateway or RuntimeModelGateway()
     
     def _runtime_settings(self, story: StoryState):
         """Resolve runtime settings for this agent's role."""
@@ -234,34 +278,21 @@ class BaseLLMAgent(Generic[T]):
     def call_llm(self, story: StoryState, **kwargs: Any) -> T | None:
         """Call the LLM and return the parsed result, or None on failure."""
         settings = self._runtime_settings(story)
-        if settings.provider != "codexcli" and not settings.api_key:
-            return None
-        
         model = self._resolve_model(story)
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": self._system_message(story)},
-                {"role": "user", "content": self._build_prompt(story, **kwargs)},
-            ],
-            "response_format": self._response_format(),
-            "temperature": float(story.agent_settings.temperature),
-        }
-        
-        try:
-            response = post_json_with_retry(
-                settings.base_url,
-                "/chat/completions",
-                payload,
-                settings.api_key,
-                provider=settings.provider,
-                codex_command=settings.codex_command,
-            )
-            content = response["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-        except (KeyError, IndexError, json.JSONDecodeError, Exception):
+        request = ModelRequest(
+            prompt=self._build_prompt(story, **kwargs),
+            system_prompt=self._system_message(story),
+            provider=settings.provider,
+            model=model,
+            operation=self.runtime_key or self.agent_name or "planner",
+            temperature=float(story.agent_settings.temperature),
+            json_mode=True,
+        )
+        stage = "writer" if self.runtime_key == "writer" else "planner"
+        response = self.model_gateway.complete_stage(stage, request)
+        if not response.ok:
             return None
-        
+        parsed = _parse_json_text(response.text)
         if not isinstance(parsed, dict):
             return None
         

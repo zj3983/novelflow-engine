@@ -29,6 +29,8 @@ class ChapterBundle(BaseModel):
     updated_story: StoryState
     chapter_summary: dict = Field(default_factory=dict)
     quality_report: dict = Field(default_factory=dict)
+    pipeline_stages: list[str] = Field(default_factory=list)
+    context_snapshot_id: str = ""
 
 
 class StoryEngine:

@@ -5,8 +5,6 @@ from typing import Any
 
 HARD_TOKENS = (
     "body_too_short",
-    "body_too_long",
-    "套路节点未兑现",
     "正文为空",
     "字数不足",
     "章节字数偏少",
@@ -21,6 +19,7 @@ HARD_TOKENS = (
     "时间线",
     "数值冲突",
     "连续性冲突",
+    "中文残句",
     "推进过快",
     "提前展开交易闭环",
     "开篇余额不一致",
@@ -54,6 +53,11 @@ DIALOGUE_TOKENS = (
     "语气",
     "接话",
     "短句装高手",
+)
+
+BLOCKING_DIALOGUE_TOKENS = (
+    "连续省略对象",
+    "对白信息残缺",
 )
 
 NESTED_REVIEW_KEYS = (
@@ -228,10 +232,11 @@ def build_simplified_review(quality_report: Any, *, limit: int = 3) -> dict[str,
     for record in unique_records:
         message = record["message"]
         category = _category(message)
+        blocking_dialogue = category == "dialogue" and any(token in message for token in BLOCKING_DIALOGUE_TOKENS)
         grouped[category].append(
             {
                 "category": category,
-                "severity": "blocking" if category == "hard" else "advisory",
+                "severity": "blocking" if category == "hard" or blocking_dialogue else "advisory",
                 "message": message,
                 "suggestion": record["suggestion"] or _suggestion(category),
             }
@@ -240,6 +245,7 @@ def build_simplified_review(quality_report: Any, *, limit: int = 3) -> dict[str,
     ordered = [*grouped["hard"], *grouped["dialogue"], *grouped["ai_flavor"], *grouped["prose"]]
     selected = ordered[: min(3, max(1, limit))]
     has_hard_errors = bool(grouped["hard"])
+    has_blocking_dialogue = any(item["severity"] == "blocking" for item in grouped["dialogue"])
     needs_revision = has_hard_errors or bool(grouped["dialogue"]) or bool(grouped["ai_flavor"])
     status = "blocked" if has_hard_errors else ("needs_revision" if needs_revision else "passed")
     revision_plan = [item["suggestion"] for item in selected]
@@ -249,6 +255,7 @@ def build_simplified_review(quality_report: Any, *, limit: int = 3) -> dict[str,
         "status": status,
         "pass": not has_hard_errors,
         "has_hard_errors": has_hard_errors,
+        "has_blocking_dialogue": has_blocking_dialogue,
         "needs_revision": needs_revision,
         "summary": "存在必须修复的硬伤" if has_hard_errors else (
             "发现需要定向改写的问题" if needs_revision else ("可以继续，建议局部修改" if ordered else "未发现需要处理的问题")

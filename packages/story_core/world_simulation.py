@@ -681,6 +681,34 @@ def select_scene_cards(
         or bool(simulation_plan.get("web_game_author_craft"))
     )
     chapter_number = int(chapter_seed.get("chapter_number") or simulation_plan.get("chapter_number") or 0)
+    event_plan = simulation_plan.get("event_plan") if isinstance(simulation_plan.get("event_plan"), dict) else {}
+    director_chain = event_plan.get("scene_chain") if isinstance(event_plan.get("scene_chain"), list) else []
+    director_cards: list[SceneCard] = []
+    for index, scene in enumerate(director_chain[:5], start=1):
+        if not isinstance(scene, dict):
+            continue
+        action = str(scene.get("action") or "").strip()
+        change = str(scene.get("change") or "").strip()
+        director_cards.append(
+            SceneCard(
+                scene_id=f"s{index}-director",
+                template_id="director_scene_chain",
+                location=str(scene.get("location") or "当前场景").strip(),
+                pov=str(scene.get("pov") or "主角").strip(),
+                purpose=str(scene.get("goal") or action or "推进本章目标").strip(),
+                conflict=str(scene.get("obstacle") or "人物必须处理眼前阻碍").strip(),
+                source_events=[],
+                must_show=[item for item in (action, change) if item],
+                must_not_explain=[
+                    *META_TERMS,
+                    "不要复述场景目标、阻碍或场景变化；把它们写成人物的现场行动和结果。",
+                ],
+                state_delta=scene.get("state_delta") if isinstance(scene.get("state_delta"), dict) else {},
+                ending_pressure=str(scene.get("next") or "").strip(),
+            )
+        )
+    if director_cards:
+        return director_cards
     templates = _template_by_id(chapter_seed, allow_default_game=allow_default_game)
     order_rank = _template_order(chapter_seed, allow_default_game=allow_default_game)
     forbidden_conflicts = _forbidden_conflicts(chapter_seed, allow_default_game=allow_default_game)

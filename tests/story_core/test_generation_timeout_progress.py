@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from packages.story_core.generation_progress import generation_progress
+from packages.story_core.model_gateway.contracts import ModelResponse
 from packages.story_core.models import StoryState
 from packages.story_core.orchestrator import StoryOrchestrator, _expansion_timeout_seconds, _failed_bundle, _should_compress_chapter
 
@@ -11,12 +12,12 @@ REAL_CHAT = StoryOrchestrator._chat
 def test_chat_passes_stage_timeout_and_reports_progress(monkeypatch):
     captured = {}
 
-    def fake_post_json(base_url, path, payload, api_key, config=None, **kwargs):
-        captured["base_url"] = base_url
-        captured["path"] = path
-        captured["timeout"] = config.timeout if config else None
-        captured["model"] = payload["model"]
-        return {"choices": [{"message": {"content": "正文"}}]}
+    class FakeGateway:
+        def complete_resolved(self, settings, request):
+            captured["base_url"] = settings.base_url
+            captured["timeout"] = request.timeout_seconds
+            captured["model"] = request.model
+            return ModelResponse.success(request, text="正文")
 
     monkeypatch.setattr(
         "packages.story_core.orchestrator.resolve_stage_runtime",
@@ -29,19 +30,18 @@ def test_chat_passes_stage_timeout_and_reports_progress(monkeypatch):
             temperature=0,
         ),
     )
-    monkeypatch.setattr("packages.story_core.orchestrator.post_json_with_retry", fake_post_json)
     monkeypatch.setattr(StoryOrchestrator, "_chat", REAL_CHAT)
 
     progress = []
     story = StoryState(story_id="s-timeout-progress", outline="测试", genre="网文", style="简洁")
     with generation_progress(progress.append):
-        text, error = StoryOrchestrator()._chat(
+        text, error = StoryOrchestrator(model_gateway=FakeGateway())._chat(
             story,
             "写一段正文",
             max_tokens=4000,
             json_mode=False,
             agent="writer",
-            stage="分段写作 1/3",
+            stage="整章写作 第1章",
             timeout_seconds=123,
         )
 
@@ -49,13 +49,14 @@ def test_chat_passes_stage_timeout_and_reports_progress(monkeypatch):
     assert error == ""
     assert captured["timeout"] == 123
     assert captured["model"] == "writer-model"
-    assert any("分段写作 1/3" in item and "123" in item for item in progress)
+    assert any("整章写作 第1章" in item and "123" in item for item in progress)
     assert any("模型返回" in item for item in progress)
 
 
 def test_chat_returns_stage_specific_error_on_timeout(monkeypatch):
-    def fake_post_json(*args, **kwargs):
-        raise TimeoutError("timed out")
+    class TimeoutGateway:
+        def complete_resolved(self, _settings, request):
+            return ModelResponse.failure(request, "request_timed_out")
 
     monkeypatch.setattr(
         "packages.story_core.orchestrator.resolve_stage_runtime",
@@ -68,13 +69,12 @@ def test_chat_returns_stage_specific_error_on_timeout(monkeypatch):
             temperature=0,
         ),
     )
-    monkeypatch.setattr("packages.story_core.orchestrator.post_json_with_retry", fake_post_json)
     monkeypatch.setattr(StoryOrchestrator, "_chat", REAL_CHAT)
 
     progress = []
     story = StoryState(story_id="s-timeout-error", outline="测试", genre="网文", style="简洁")
     with generation_progress(progress.append):
-        text, error = StoryOrchestrator()._chat(
+        text, error = StoryOrchestrator(model_gateway=TimeoutGateway())._chat(
             story,
             "规划",
             max_tokens=8000,

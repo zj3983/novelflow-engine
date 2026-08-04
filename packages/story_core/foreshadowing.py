@@ -52,16 +52,27 @@ def _canonicalize_ledger(
             for entry in entries
             if entry.resolved_chapter is not None
         ]
-        canonical.append(
-            ForeshadowingState(
-                text=" ".join(text_source.text.split()),
-                first_chapter=min(entry.first_chapter for entry in entries),
-                last_touched_chapter=max(entry.last_touched_chapter for entry in entries),
-                status=max(entries, key=lambda entry: _STATUS_PRIORITY[entry.status]).status,
-                payoff_plan=payoff_plan,
-                resolved_chapter=max(resolved_chapters, default=None),
-            )
+        last_touched_chapter = max(entry.last_touched_chapter for entry in entries)
+        status = max(entries, key=lambda entry: _STATUS_PRIORITY[entry.status]).status
+        resolved_chapter = (
+            max([*resolved_chapters, last_touched_chapter])
+            if status == "resolved"
+            else None
         )
+        canonical_entry = ForeshadowingState(
+            text=" ".join(text_source.text.split()),
+            first_chapter=min(entry.first_chapter for entry in entries),
+            last_touched_chapter=last_touched_chapter,
+            status=status,
+            payoff_plan=payoff_plan,
+            resolved_chapter=resolved_chapter,
+        )
+        if canonical_entry.status == "resolved":
+            assert canonical_entry.resolved_chapter is not None
+            assert canonical_entry.resolved_chapter >= canonical_entry.last_touched_chapter
+        else:
+            assert canonical_entry.resolved_chapter is None
+        canonical.append(canonical_entry)
 
     canonical.sort(
         key=lambda entry: (
@@ -72,6 +83,15 @@ def _canonicalize_ledger(
     return canonical, {
         normalize_foreshadowing_text(entry.text): entry for entry in canonical
     }
+
+
+def canonicalize_foreshadowing_ledger(
+    ledger: Sequence[ForeshadowingState],
+) -> list[ForeshadowingState]:
+    """Deduplicate and stably order an explicitly edited ledger."""
+
+    canonical, _ = _canonicalize_ledger(ledger)
+    return canonical
 
 
 def reconcile_foreshadowing(
@@ -143,13 +163,19 @@ def reconcile_foreshadowing(
 def select_unresolved_foreshadowing(
     ledger: Sequence[ForeshadowingState],
     *,
+    chapter_number: int | None = None,
     limit: int = 8,
 ) -> list[ForeshadowingState]:
     """Select a bounded unresolved view without exposing the full ledger."""
 
     if limit <= 0:
         return []
-    unresolved = (entry for entry in ledger if entry.status in UNRESOLVED_STATUSES)
+    unresolved = (
+        entry
+        for entry in ledger
+        if entry.status in UNRESOLVED_STATUSES
+        and (chapter_number is None or entry.first_chapter <= chapter_number)
+    )
     ranked = sorted(
         unresolved,
         key=lambda entry: (

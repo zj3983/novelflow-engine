@@ -78,6 +78,46 @@ export const WORLD_RULE_EDITOR_SECTIONS: ReadonlyArray<{
   },
 ];
 
+export function worldRuleEditorSections(blueprint: ImportedWorldBlueprint) {
+  const genreIds = (blueprint.genre_plugin_ids ?? []).map((id) => String(id).trim().toLowerCase());
+  const isGameStory = genreIds.includes("game_webnovel");
+  const isXianxia = genreIds.includes("xianxia");
+  if (isGameStory) return WORLD_RULE_EDITOR_SECTIONS;
+
+  return WORLD_RULE_EDITOR_SECTIONS
+    .filter((section) => !["quest", "reality"].includes(section.id))
+    .map((section) => {
+      if (section.id === "progression" && isXianxia) {
+        return {
+          ...section,
+          title: "修炼体系",
+          fields: section.fields.map((field) => field.field === "power_system"
+            ? { ...field, label: "境界、功法与能力", buttonLabel: "保存修炼体系" }
+            : { ...field, label: "突破、战斗与代价", buttonLabel: "保存修炼规则" }),
+        };
+      }
+      if (section.id === "economy" && isXianxia) {
+        return {
+          ...section,
+          title: "资源体系",
+          fields: section.fields.map((field) => ({
+            ...field,
+            label: "灵石、资源与交换",
+            buttonLabel: "保存资源体系",
+          })),
+        };
+      }
+      if (section.id === "faction-panel") {
+        return {
+          ...section,
+          title: isXianxia ? "宗门与势力" : "阵营规则",
+          fields: section.fields.filter((field) => field.field === "faction_rules"),
+        };
+      }
+      return section;
+    });
+}
+
 function rulesText(value?: string[]) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").join("\n") : "";
 }
@@ -240,7 +280,7 @@ export function WorldRulesEditor({ projectId, blueprint, onSaved }: Props) {
   const [saving, setSaving] = useState<EditableWorldRuleField | null>(null);
   const blueprintStore = useRef<WorldBlueprintStore>({ current: blueprint });
   const powerSystemSpec = blueprint.power_system_spec as unknown;
-  const hasStructuredPower = hasStructuredPowerSystem(powerSystemSpec);
+  const hasStructuredPower = hasStructuredPowerSystem(powerSystemSpec, blueprint.genre_plugin_ids);
   const hasPowerDraft = hasPowerSystemDraft(powerSystemSpec);
   const hasLegacyPower = Array.isArray(blueprint.power_system)
     && blueprint.power_system.some((item) => typeof item === "string" && item.trim());
@@ -313,11 +353,16 @@ export function WorldRulesEditor({ projectId, blueprint, onSaved }: Props) {
         </div>
       </div>
 
-      {hasStructuredPower ? <StructuredPowerSystem spec={blueprint.power_system_spec} /> : null}
+      {hasStructuredPower ? (
+        <StructuredPowerSystem
+          spec={blueprint.power_system_spec}
+          genrePluginIds={blueprint.genre_plugin_ids}
+        />
+      ) : null}
       {!hasStructuredPower && (hasLegacyPower || hasPowerDraft) ? <p className="ws-card__hint">力量体系需要补全</p> : null}
 
       <div className="ws-form-grid">
-        {WORLD_RULE_EDITOR_SECTIONS.map((section) => (
+        {worldRuleEditorSections(blueprint).map((section) => (
           <section
             className={section.wide ? "ws-form-grid__wide" : undefined}
             aria-labelledby={`${section.id}-world-rules-title`}

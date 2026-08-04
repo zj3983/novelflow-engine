@@ -71,7 +71,7 @@ Expected: PASS.
 - Modify: `packages/story_core/models.py`
 - Modify: `packages/story_core/memory.py`
 - Modify: `packages/story_core/file_project_store.py`
-- Test: `tests/story_core/test_character_dynamic_state.py`
+- Test: `tests/story_core/test_character_chapter_state.py`
 
 - [ ] **Step 1: Write failing character-state tests**
 
@@ -79,17 +79,17 @@ Create tests showing that chapter updates may change location, emotion, short-te
 
 - [ ] **Step 2: Run the focused tests and verify RED**
 
-Run: `pytest tests/story_core/test_character_dynamic_state.py -q`
+Run: `pytest tests/story_core/test_character_chapter_state.py -q`
 
-Expected: FAIL because no explicit dynamic state container exists.
+Expected: FAIL because chapter evidence and last-appearance updates are not yet recorded safely.
 
-- [ ] **Step 3: Implement dynamic state updates**
+- [ ] **Step 3: Implement bounded chapter-state updates**
 
-Add a backward-compatible `dynamic_state` object to character state. Map verified `character_updates` into allowed dynamic keys only. Keep existing top-level location/emotion fields synchronized for old callers, but never overwrite stable profile fields from chapter memory.
+Record `last_appearance_chapter` and a bounded, deduplicated `recent_changes` evidence trail on the existing reality/game state layers. Apply structured position, goal, condition, knowledge, possession, or relationship changes only when they arrive through explicit state changes. Preserve old top-level compatibility fields, and never overwrite stable profile fields from chapter prose.
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
-Run: `pytest tests/story_core/test_character_dynamic_state.py -q`
+Run: `pytest tests/story_core/test_character_chapter_state.py -q`
 
 Expected: PASS.
 
@@ -160,7 +160,7 @@ Load the latest chapter summaries, run them through the canonical reconciler in 
 
 - [ ] **Step 2: Run backend regression tests**
 
-Run: `pytest tests/story_core/test_foreshadowing.py tests/story_core/test_character_dynamic_state.py tests/story_core/test_memory_retrieval.py tests/story_core/test_file_project_store.py -q`
+Run: `pytest tests/story_core/test_foreshadowing.py tests/story_core/test_character_chapter_state.py tests/story_core/test_memory_retrieval.py tests/story_core/test_file_project_store.py -q`
 
 Expected: PASS.
 

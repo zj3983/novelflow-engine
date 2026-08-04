@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { fetchProjectPromptContext, type PromptContextResponse } from "../../lib/api";
+import { displayNovelTypeMetadata } from "../../lib/worldDisplay";
 
 export function PromptContextView({ projectId, chapterNumber }: { projectId: string; chapterNumber: number }) {
   const [context, setContext] = useState<PromptContextResponse | null>(null);
@@ -47,7 +48,7 @@ export function PromptContextView({ projectId, chapterNumber }: { projectId: str
             </span>
           </summary>
           {module.available ? (
-            <pre className="ws-prompt-text">{module.content}</pre>
+            <pre className="ws-prompt-text">{displayNovelTypeMetadata(module.content)}</pre>
           ) : (
             <p className="ws-card__hint">本章没有提供该模块，不会把空内容传给模型。</p>
           )}

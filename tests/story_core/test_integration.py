@@ -168,7 +168,7 @@ def test_build_expression_patch_suggestions():
 
 def test_game_genre_defaults_from_ledger():
     """Should extract game ID and class path from progression ledger."""
-    from packages.story_core.orchestrator import _game_genre_defaults
+    from packages.story_core.genre_stages.game_webnovel.writer import _game_genre_defaults
 
     story = _make_story(
         progression_ledger={
@@ -187,7 +187,7 @@ def test_game_genre_defaults_from_ledger():
 
 def test_game_genre_defaults_fallback_to_character():
     """Should fall back to character.game_id when ledger is empty."""
-    from packages.story_core.orchestrator import _game_genre_defaults
+    from packages.story_core.genre_stages.game_webnovel.writer import _game_genre_defaults
 
     story = _make_story(
         progression_ledger={},
@@ -200,7 +200,7 @@ def test_game_genre_defaults_fallback_to_character():
 
 def test_game_genre_defaults_generic_fallback():
     """Should use a generic placeholder when no game ID is available."""
-    from packages.story_core.orchestrator import _game_genre_defaults
+    from packages.story_core.genre_stages.game_webnovel.writer import _game_genre_defaults
 
     story = _make_story(
         characters=[

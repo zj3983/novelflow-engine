@@ -14,10 +14,6 @@ import re
 
 from threading import Lock, RLock
 
-import urllib.error
-
-import urllib.request
-
 from typing import Any, Literal
 
 from uuid import uuid4
@@ -71,37 +67,7 @@ from packages.story_core.orchestrator import _merge_writing_review_quality, _rev
 
 from packages.story_core.quality import validate_bundle
 
-from packages.story_core.http_retry import RetryConfig, post_json_with_retry
-
-from packages.story_core.codex_cli_provider import (
-
-    codex_cli_update_status,
-
-    read_codex_cli_models,
-
-    read_codex_cli_version,
-
-    read_latest_codex_cli_version,
-
-)
-
-from packages.story_core.runtime_config import (
-
-    RuntimeConfiguration,
-
-    RuntimeProvider,
-
-    RuntimeStage,
-
-    StageRuntimeSettings,
-
-    get_runtime_configuration,
-
-    get_runtime_strategy_settings,
-
-    set_runtime_configuration,
-
-)
+from packages.story_core.runtime_config import get_runtime_strategy_settings
 
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.prompt_templates import (
@@ -445,6 +411,7 @@ class CreateProjectRequest(BaseModel):
     relationship_graph: list[dict] = Field(default_factory=list)
 
     enabled_skill_ids: list[str] = Field(default_factory=list)
+    enabled_skill_module_ids: list[str] = Field(default_factory=list)
 
     pipeline_stage: str = "imported"
 
@@ -483,6 +450,7 @@ class UpdateProjectRequest(BaseModel):
     relationship_graph: list[dict] | None = None
 
     enabled_skill_ids: list[str] | None = None
+    enabled_skill_module_ids: list[str] | None = None
 
     status: str | None = None
 
@@ -568,6 +536,12 @@ class ProjectSummaryResponse(BaseModel):
 
     source_path: str = ""
 
+    project_lifecycle: str = "active"
+
+    archived_at: str = ""
+
+    trashed_at: str = ""
+
 
 
 
@@ -595,12 +569,19 @@ class ProjectResponse(BaseModel):
     relationship_graph: list[dict] = Field(default_factory=list)
 
     enabled_skill_ids: list[str] = Field(default_factory=list)
+    enabled_skill_module_ids: list[str] = Field(default_factory=list)
 
     status: str = "draft"
 
     pipeline_stage: str = "imported"
 
     active_story_id: str = ""
+
+    project_lifecycle: str = "active"
+
+    archived_at: str = ""
+
+    trashed_at: str = ""
 
     branches: list[StorySummaryResponse] = Field(default_factory=list)
 
@@ -638,95 +619,11 @@ class DeleteProjectResponse(BaseModel):
 
 
 
-class RuntimeStrategyResponse(BaseModel):
-
-    model_config = ConfigDict(extra="forbid")
-
-
-
-    mode: str = "LLM-assisted"
-
-    temperature: float = 0.7
-
-    new_character_policy: NewCharacterPolicy = "Director review"
-
-
-
-
-
-class RuntimeStrategyRequest(RuntimeStrategyResponse):
-
-    mode: Literal["LLM-assisted"] = "LLM-assisted"
-
-
-
-
-
-class RuntimeSettingsTestRequest(BaseModel):
-
-    model_config = ConfigDict(extra="forbid")
-
-
-
-    stage: RuntimeStage
-
-    runtime_settings: RuntimeConfiguration
-
-
-
-
-
-class RuntimeSettingsTestResponse(BaseModel):
-
-    ok: bool
-
-    provider: RuntimeProvider
-
-    stage: RuntimeStage
-
-    model: str
-
-    message: str
-
-
-
-
-
-class RuntimeApiKeyRevealRequest(BaseModel):
-
-    model_config = ConfigDict(extra="forbid")
-
-    provider: Literal["openai", "codexcli", "image"]
-
-
-class RuntimeApiKeyRevealResponse(BaseModel):
-
-    api_key: str
-
-
 class PromptTemplateUpdateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
     content: str = Field(min_length=1)
-
-
-class CodexCLIInfoResponse(BaseModel):
-
-    available: bool
-
-    command: str
-
-    version: str
-
-    models: list[str] = Field(default_factory=list)
-
-    latest_version: str = ""
-
-    update_status: Literal["current", "available", "unknown"] = "unknown"
-
-
-
 
 
 class AgentContextResponse(BaseModel):
@@ -1887,12 +1784,19 @@ def _serialize_project(project: NovelProject) -> ProjectResponse:
         relationship_graph=project.relationship_graph,
 
         enabled_skill_ids=project.enabled_skill_ids,
+        enabled_skill_module_ids=project.enabled_skill_module_ids,
 
         status=project.status,
 
         pipeline_stage=project.pipeline_stage,
 
         active_story_id=project.active_story_id,
+
+        project_lifecycle=project.project_lifecycle,
+
+        archived_at=project.archived_at,
+
+        trashed_at=project.trashed_at,
 
         branches=branches,
 
@@ -1929,6 +1833,12 @@ def _serialize_project_summary(project: NovelProjectSummary | NovelProject) -> P
         current_chapter=current_chapter,
 
         source_path=project.source_path,
+
+        project_lifecycle=project.project_lifecycle,
+
+        archived_at=project.archived_at,
+
+        trashed_at=project.trashed_at,
 
     )
 
@@ -2511,197 +2421,6 @@ def _revise_latest_chapter(project: NovelProject, record, bundle, payload: Agent
 
 
 
-_MASKED_API_KEY = "********"
-_MAX_RUNTIME_SETTINGS_REQUEST_BYTES = 1024 * 1024
-
-
-
-
-
-def _serialize_runtime_settings(configuration: RuntimeConfiguration | None = None) -> dict[str, object]:
-
-    data = (configuration or get_runtime_configuration()).model_dump(mode="json")
-
-    serialized = {
-
-        key: data[key]
-
-        for key in ("provider", "providers", "image", "temperature", "new_character_policy")
-
-    }
-
-    for provider_settings in serialized["providers"].values():
-
-        if provider_settings.get("api_key"):
-
-            provider_settings["api_key"] = _MASKED_API_KEY
-
-    if serialized["image"].get("api_key"):
-
-        serialized["image"]["api_key"] = _MASKED_API_KEY
-
-    return serialized
-
-
-
-
-
-def _restore_masked_api_keys(configuration: RuntimeConfiguration) -> RuntimeConfiguration:
-
-    """Replace masked api_key placeholders with the currently stored keys."""
-
-    restored = configuration.model_copy(deep=True)
-
-    stored = get_runtime_configuration()
-
-    for name in ("codexcli", "openai"):
-
-        candidate = getattr(restored.providers, name)
-
-        if candidate.api_key == _MASKED_API_KEY:
-
-            candidate.api_key = getattr(stored.providers, name).api_key
-
-    if restored.image.api_key == _MASKED_API_KEY:
-
-        restored.image.api_key = stored.image.api_key
-
-    return restored
-
-
-
-
-
-def _resolve_candidate_stage_runtime(
-
-    configuration: RuntimeConfiguration,
-
-    stage: RuntimeStage,
-
-) -> StageRuntimeSettings:
-
-    selected = getattr(configuration.providers, configuration.provider)
-
-    return StageRuntimeSettings(
-
-        provider=configuration.provider,
-
-        model=getattr(selected, stage),
-
-        api_key=selected.api_key,
-
-        base_url=selected.base_url.rstrip("/"),
-
-        codex_command=selected.codex_command,
-
-        temperature=configuration.temperature,
-
-        new_character_policy=configuration.new_character_policy,
-
-    )
-
-
-
-
-
-def _probe_via_chat_completions(base_url: str, api_key: str, model_name: str) -> None:
-
-    payload = json.dumps(
-
-        {
-
-            "model": model_name,
-
-            "messages": [{"role": "user", "content": "ping"}],
-
-            "max_tokens": 1,
-
-        }
-
-    ).encode("utf-8")
-
-    request = urllib.request.Request(
-
-        f"{base_url.rstrip('/')}/chat/completions",
-
-        data=payload,
-
-        headers={
-
-            "Authorization": f"Bearer {api_key}",
-
-            "Content-Type": "application/json",
-
-        },
-
-        method="POST",
-
-    )
-
-    with urllib.request.urlopen(request, timeout=10):
-
-        return None
-
-
-
-
-
-def _probe_via_models(base_url: str, api_key: str) -> None:
-
-    request = urllib.request.Request(
-
-        f"{base_url.rstrip('/')}/models",
-
-        headers={"Authorization": f"Bearer {api_key}"},
-
-        method="GET",
-
-    )
-
-    with urllib.request.urlopen(request, timeout=10):
-
-        return None
-
-
-
-
-
-def _probe_via_codexcli(command: str, model_name: str) -> None:
-
-    config = RetryConfig()
-
-    config.timeout = 120
-
-    post_json_with_retry(
-
-        "",
-
-        "/chat/completions",
-
-        {
-
-            "model": model_name,
-
-            "messages": [{"role": "user", "content": "åªåå¤?pong"}],
-
-            "max_tokens": 8,
-
-        },
-
-        "",
-
-        config=config,
-
-        provider="codexcli",
-
-        codex_command=command,
-
-    )
-
-
-
-
-
 @router.post("/projects")
 
 def create_project(payload: CreateProjectRequest) -> ProjectResponse:
@@ -2729,6 +2448,7 @@ def create_project(payload: CreateProjectRequest) -> ProjectResponse:
         relationship_graph=payload.relationship_graph,
 
         enabled_skill_ids=payload.enabled_skill_ids,
+        enabled_skill_module_ids=payload.enabled_skill_module_ids,
 
         status="simulating" if payload.active_story_id else "draft",
 
@@ -2754,9 +2474,109 @@ def create_project(payload: CreateProjectRequest) -> ProjectResponse:
 
 @router.get("/projects")
 
-def list_projects() -> list[ProjectSummaryResponse]:
+def list_projects(lifecycle: Literal["active", "archived", "trashed"] = "active") -> list[ProjectSummaryResponse]:
 
-    return [_serialize_project_summary(project) for project in store.list_projects()]
+    return [_serialize_project_summary(project) for project in store.list_projects(lifecycle=lifecycle)]
+
+
+
+def _assert_project_lifecycle_mutation_allowed(project: NovelProject) -> None:
+
+    with _automation_jobs_lock:
+
+        automation_job_id = _active_automation_jobs.get(project.project_id)
+
+        automation_job = _automation_jobs.get(automation_job_id or "")
+
+        if automation_job and automation_job.get("status") in {"queued", "running"}:
+
+            raise HTTPException(status_code=409, detail="project_generation_in_progress")
+
+    story_ids = {record.story.story_id for record in store.list_project_stories(project.project_id)}
+
+    with _generation_jobs_lock:
+
+        for story_id in story_ids:
+
+            job_id = _active_generation_jobs.get(story_id)
+
+            job = _generation_jobs.get(job_id or "")
+
+            if job and job.get("status") in {"queued", "running"}:
+
+                raise HTTPException(status_code=409, detail="project_generation_in_progress")
+
+
+
+def _project_for_lifecycle_mutation(project_id: str) -> NovelProject:
+
+    project = store.get_project(project_id)
+
+    if project is None:
+
+        raise HTTPException(status_code=404, detail="project_not_found")
+
+    _assert_project_lifecycle_mutation_allowed(project)
+
+    return project
+
+
+
+@router.post("/projects/{project_id}/archive")
+
+def archive_project(project_id: str) -> ProjectResponse:
+
+    project = _project_for_lifecycle_mutation(project_id)
+
+    if project.project_lifecycle == "trashed":
+
+        raise HTTPException(status_code=409, detail="project_is_trashed")
+
+    project.project_lifecycle = "archived"
+
+    project.archived_at = datetime.now(timezone.utc).isoformat()
+
+    store.update_project(project)
+
+    return _serialize_project(project)
+
+
+
+@router.post("/projects/{project_id}/trash")
+
+def trash_project(project_id: str) -> ProjectResponse:
+
+    project = _project_for_lifecycle_mutation(project_id)
+
+    if project.project_lifecycle != "trashed":
+
+        project.pre_trash_lifecycle = "archived" if project.project_lifecycle == "archived" else "active"
+
+    project.project_lifecycle = "trashed"
+
+    project.trashed_at = datetime.now(timezone.utc).isoformat()
+
+    store.update_project(project)
+
+    return _serialize_project(project)
+
+
+
+@router.post("/projects/{project_id}/restore")
+
+def restore_project(project_id: str) -> ProjectResponse:
+
+    project = _project_for_lifecycle_mutation(project_id)
+
+    project.project_lifecycle = project.pre_trash_lifecycle if project.project_lifecycle == "trashed" else "active"
+
+    project.archived_at = "" if project.project_lifecycle == "active" else project.archived_at
+
+    project.trashed_at = ""
+
+    store.update_project(project)
+
+    return _serialize_project(project)
 
 
 
@@ -2764,13 +2584,23 @@ def list_projects() -> list[ProjectSummaryResponse]:
 
 @router.delete("/projects/{project_id}")
 
-def delete_project(project_id: str) -> DeleteProjectResponse:
+def delete_project(project_id: str, confirm_title: str) -> DeleteProjectResponse:
 
     project = store.get_project(project_id)
 
     if project is None:
 
         raise HTTPException(status_code=404, detail="project_not_found")
+
+    _assert_project_lifecycle_mutation_allowed(project)
+
+    if project.project_lifecycle != "trashed":
+
+        raise HTTPException(status_code=409, detail="project_must_be_trashed")
+
+    if confirm_title != project.title:
+
+        raise HTTPException(status_code=422, detail="project_title_confirmation_mismatch")
 
     story_ids = [record.story.story_id for record in store.list_project_stories(project_id)]
 
@@ -2791,6 +2621,10 @@ def get_project(project_id: str) -> ProjectResponse:
     project = store.get_project(project_id)
 
     if project is None:
+
+        raise HTTPException(status_code=404, detail="project_not_found")
+
+    if project.project_lifecycle == "trashed":
 
         raise HTTPException(status_code=404, detail="project_not_found")
 
@@ -2900,7 +2734,12 @@ def get_project_writing_packet(project_id: str, chapter_number: int | None = Non
 
     skill_context = {
 
-        purpose: skill_pack_prompt_context(project.enabled_skill_ids, purpose=purpose, max_chars_per_pack=2600)
+        purpose: skill_pack_prompt_context(
+            project.enabled_skill_ids,
+            enabled_module_ids=project.enabled_skill_module_ids or None,
+            purpose=purpose,
+            max_chars_per_pack=2600,
+        )
 
         for purpose in ("writer", "dialogue", "style", "genre", "continuity", "reviewer")
 
@@ -3538,6 +3377,10 @@ def update_project(project_id: str, payload: UpdateProjectRequest) -> ProjectRes
 
         project.enabled_skill_ids = payload.enabled_skill_ids
 
+    if payload.enabled_skill_module_ids is not None:
+
+        project.enabled_skill_module_ids = payload.enabled_skill_module_ids
+
     if payload.status is not None:
 
         project.status = payload.status
@@ -3986,13 +3829,6 @@ def freeze_character(story_id: str, character_name: str) -> StoryResponse:
 
 
 
-@router.get("/runtime-settings")
-
-def read_runtime_settings() -> dict[str, object]:
-
-    return _serialize_runtime_settings()
-
-
 @router.get("/prompt-templates")
 def read_global_prompt_templates() -> dict[str, object]:
     templates = []
@@ -4019,254 +3855,6 @@ def update_global_prompt_template(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {**template.as_dict(), "source": "global_override"}
-
-
-
-
-
-@router.get("/runtime-settings/cli-info")
-
-def read_runtime_cli_info() -> CodexCLIInfoResponse:
-
-    command = get_runtime_configuration().providers.codexcli.codex_command or "codex"
-
-    models = read_codex_cli_models()
-
-    try:
-
-        version = read_codex_cli_version(command)
-
-    except Exception:
-
-        return CodexCLIInfoResponse(available=False, command=command, version="", models=models)
-
-    try:
-
-        latest_version = read_latest_codex_cli_version()
-
-        update_status = codex_cli_update_status(version, latest_version)
-
-    except Exception:
-
-        latest_version = ""
-
-        update_status = "unknown"
-
-    return CodexCLIInfoResponse(
-
-        available=True,
-
-        command=command,
-
-        version=version,
-
-        models=models,
-
-        latest_version=latest_version,
-
-        update_status=update_status,
-
-    )
-
-
-
-
-
-@router.put("/runtime-settings")
-def update_runtime_settings(payload: RuntimeConfiguration) -> dict[str, object]:
-    saved = set_runtime_configuration(_restore_masked_api_keys(payload))
-
-    return _serialize_runtime_settings(saved)
-
-
-
-
-
-@router.post("/runtime-settings/reveal-api-key")
-def reveal_runtime_api_key(
-    payload: RuntimeApiKeyRevealRequest,
-    response: Response,
-) -> RuntimeApiKeyRevealResponse:
-    configuration = get_runtime_configuration()
-    provider_settings = configuration.image if payload.provider == "image" else getattr(configuration.providers, payload.provider)
-    if not provider_settings.api_key:
-        raise HTTPException(status_code=404, detail="api_key_not_configured")
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Pragma"] = "no-cache"
-    return RuntimeApiKeyRevealResponse(api_key=provider_settings.api_key)
-
-
-@router.get("/runtime-strategy")
-
-def read_runtime_strategy() -> dict[str, object]:
-
-    configuration = get_runtime_configuration()
-
-    return RuntimeStrategyResponse(
-
-        temperature=configuration.temperature,
-
-        new_character_policy=configuration.new_character_policy,
-
-    ).model_dump(mode="json")
-
-
-
-
-
-@router.put("/runtime-strategy")
-
-def update_runtime_strategy(payload: RuntimeStrategyRequest) -> dict[str, object]:
-
-    candidate = get_runtime_configuration()
-
-    candidate.temperature = payload.temperature
-
-    candidate.new_character_policy = payload.new_character_policy
-
-    saved = set_runtime_configuration(candidate)
-
-    return RuntimeStrategyResponse(
-
-        mode=payload.mode,
-
-        temperature=saved.temperature,
-
-        new_character_policy=saved.new_character_policy,
-
-    ).model_dump(mode="json")
-
-
-
-
-
-@router.post("/runtime-settings/test")
-
-def test_runtime_settings(payload: RuntimeSettingsTestRequest) -> RuntimeSettingsTestResponse:
-
-    runtime = _resolve_candidate_stage_runtime(
-
-        _restore_masked_api_keys(payload.runtime_settings), payload.stage
-
-    )
-
-    details = f"provider={runtime.provider}, stage={payload.stage}, model={runtime.model}"
-
-
-
-    if runtime.provider == "codexcli":
-
-        try:
-
-            _probe_via_codexcli(
-
-                runtime.codex_command or "codex",
-
-                runtime.model,
-
-            )
-
-        except Exception as exc:
-
-            return RuntimeSettingsTestResponse(
-
-                ok=False,
-
-                provider=runtime.provider,
-
-                stage=payload.stage,
-
-                model=runtime.model,
-
-                message=f"{details}: Codex CLI æµè¯å¤±è´¥ï¼{str(exc)[:200]}",
-
-            )
-
-        return RuntimeSettingsTestResponse(
-
-            ok=True,
-
-            provider=runtime.provider,
-
-            stage=payload.stage,
-
-            model=runtime.model,
-
-            message=f"{details}: Codex CLI è¿æ¥æ­£å¸¸",
-
-        )
-
-
-
-    if not runtime.api_key or not runtime.base_url:
-
-        return RuntimeSettingsTestResponse(
-
-            ok=False,
-
-            provider=runtime.provider,
-
-            stage=payload.stage,
-
-            model=runtime.model,
-
-            message=f"{details}: ç¼ºå° API å¯é¥ææ¥å£å°å",
-
-        )
-
-
-
-    try:
-
-        try:
-
-            _probe_via_chat_completions(
-
-                base_url=runtime.base_url,
-
-                api_key=runtime.api_key,
-
-                model_name=runtime.model,
-
-            )
-
-        except urllib.error.HTTPError as exc:
-
-            if exc.code not in {404, 405}:
-
-                raise
-
-            _probe_via_models(base_url=runtime.base_url, api_key=runtime.api_key)
-
-        return RuntimeSettingsTestResponse(
-
-            ok=True,
-
-            provider=runtime.provider,
-
-            stage=payload.stage,
-
-            model=runtime.model,
-
-            message=f"{details}: OpenAI è¿æ¥æ­£å¸¸",
-
-        )
-
-    except Exception as exc:  # pragma: no cover - surfaced in UI and tests
-
-        return RuntimeSettingsTestResponse(
-
-            ok=False,
-
-            provider=runtime.provider,
-
-            stage=payload.stage,
-
-            model=runtime.model,
-
-            message=f"{details}: OpenAI è¿æ¥å¤±è´¥ï¼{exc}",
-
-        )
 
 
 

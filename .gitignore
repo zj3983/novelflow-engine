@@ -28,6 +28,8 @@ apps/api/data/*.db-wal
 apps/api/data/backups/
 apps/api/data/**/*.db
 data/*.sqlite3
+data/*.db
+data/continuation-imports/
 
 # Build artifacts
 apps/web/.next-dev/

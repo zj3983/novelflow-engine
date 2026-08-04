@@ -10,7 +10,42 @@ from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.continuation_import import ContinuationChapter
 from packages.story_core.continuation_sessions import ContinuationSessionStore
 from packages.story_core.http_retry import post_json_with_retry
+from packages.story_core.model_gateway import ModelRequest, RuntimeModelGateway
 from packages.story_core.runtime_config import StageRuntimeSettings, resolve_stage_runtime
+
+
+def _runtime_gateway_for_legacy_injection(
+    post_json: Callable[..., dict[str, Any]],
+    runtime_resolver: Callable[[str], StageRuntimeSettings],
+) -> RuntimeModelGateway:
+    if post_json is post_json_with_retry:
+        return RuntimeModelGateway(runtime_resolver=runtime_resolver)
+    active: dict[str, Any] = {}
+
+    def compatible_runtime(stage: str) -> StageRuntimeSettings:
+        runtime = runtime_resolver(stage)
+        active["runtime"] = runtime
+        provider = str(getattr(runtime, "provider_id", getattr(runtime, "provider", "")))
+        protocol = getattr(runtime, "protocol", "openai_compatible")
+        if str(protocol).endswith("_cli") or provider in {"codexcli", "antigravity"}:
+            provider, protocol = "custom_openai", "openai_compatible"
+        return StageRuntimeSettings(
+            provider_id=provider,
+            protocol=protocol,
+            model=runtime.model,
+            api_key=runtime.api_key or ("legacy-injected" if provider == "custom_openai" else ""),
+            base_url=runtime.base_url or "http://legacy-injected.invalid",
+            codex_command=runtime.codex_command,
+            temperature=runtime.temperature,
+        )
+
+    def transport(*, url: str, payload: dict[str, Any], headers: dict[str, str], config: Any) -> dict[str, Any]:
+        runtime = active["runtime"]
+        base_url = str(runtime.base_url).rstrip("/")
+        path = url[len(base_url) :] if url.startswith(base_url) else url
+        return post_json(base_url, path, payload, runtime.api_key, provider=runtime.provider, codex_command=runtime.codex_command)
+
+    return RuntimeModelGateway(runtime_resolver=compatible_runtime, transport=transport)
 
 
 Confidence = Literal["confirmed", "inferred"]
@@ -894,6 +929,7 @@ class LLMContinuationAnalyzer:
         *,
         post_json: Callable[..., dict[str, Any]] = post_json_with_retry,
         runtime_resolver: Callable[[str], StageRuntimeSettings] = resolve_stage_runtime,
+        model_gateway: RuntimeModelGateway | None = None,
         batch_body_char_budget: int = CONTINUATION_BATCH_BODY_CHAR_BUDGET,
         chapter_max_chars: int = CONTINUATION_CHAPTER_MAX_CHARS,
         analysis_prompt_char_budget: int = CONTINUATION_ANALYSIS_PROMPT_CHAR_BUDGET,
@@ -908,8 +944,9 @@ class LLMContinuationAnalyzer:
             recent_body_char_budget,
         ) <= 0:
             raise ValueError("invalid_analysis_budget")
-        self._post_json = post_json
-        self._runtime_resolver = runtime_resolver
+        self._model_gateway = model_gateway or _runtime_gateway_for_legacy_injection(
+            post_json, runtime_resolver
+        )
         self._batch_body_char_budget = batch_body_char_budget
         self._chapter_max_chars = chapter_max_chars
         self._analysis_prompt_char_budget = analysis_prompt_char_budget
@@ -935,26 +972,23 @@ class LLMContinuationAnalyzer:
         ) > total_char_budget:
             raise ValueError("continuation_analysis_prompt_budget_too_small")
         try:
-            runtime = self._runtime_resolver("planner")
-            if runtime.provider != "codexcli" and not runtime.api_key:
-                raise ValueError("runtime_unavailable")
-            payload = {
-                "model": runtime.model,
-                "messages": messages,
-                "response_format": {"type": "json_object"},
-                "temperature": float(runtime.temperature),
-                "max_tokens": 6000,
-                "parameters": {"enable_thinking": False},
-            }
-            response = self._post_json(
-                runtime.base_url,
-                "/chat/completions",
-                payload,
-                runtime.api_key,
-                provider=runtime.provider,
-                codex_command=runtime.codex_command,
+            response = self._model_gateway.complete_stage(
+                "planner",
+                ModelRequest(
+                    prompt=user_content,
+                    system_prompt=system_prompt,
+                    provider="",
+                    model="",
+                    operation="continuation_analysis",
+                    json_mode=True,
+                    max_tokens=6000,
+                ),
             )
-            parsed = parse_json_message_content(response)
+            if not response.ok:
+                raise ValueError(response.error or "model_call_failed")
+            parsed = parse_json_message_content(
+                {"choices": [{"message": {"content": response.text}}]}
+            )
             if parsed is None:
                 raise ValueError("invalid_json")
             return parsed

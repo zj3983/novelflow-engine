@@ -102,6 +102,17 @@ def test_web_game_review_accepts_separated_exchange_and_conservative_economy_ter
     assert not any("经济边界" in issue for issue in review["issues"]), review
 
 
+def test_web_game_review_accepts_natural_initial_currency_anchor():
+    body = (
+        "《神域》开服后，夜烬进入灰烬村。"
+        "游戏钱包里空空荡荡，一枚铜币也没有。"
+    )
+
+    review = review_web_game_chapter(chapter_number=1, body=body, event_plan={}, world_facts=[])
+
+    assert not any("初始钱袋为空" in issue for issue in review["issues"])
+
+
 def test_web_game_review_detects_ordered_economy_chains_across_adjacent_units():
     body = (
         "《神域》里，交易行显示那件拍卖物已经成交。\n\n"
@@ -1427,6 +1438,18 @@ def test_web_game_review_allows_explained_hp_mp_drift():
     )
 
     assert review["pass"] is True, review
+
+
+def test_web_game_review_allows_attribute_drift_after_explicit_allocation():
+    body = (
+        "《神域》里，夜烬打开角色面板，看见智力：5。"
+        "升级后，他把刚拿到的五点自由属性都加到智力上，确认分配。"
+        "面板随即变成智力：10，可用属性点：0。"
+    )
+
+    review = review_web_game_chapter(chapter_number=2, body=body, event_plan={}, world_facts=[])
+
+    assert not any("角色面板数值" in issue for issue in review["issues"])
 
 
 def test_web_game_review_allows_hp_drift_from_visible_wolf_hit():

@@ -6,6 +6,7 @@ import inspect
 
 import pytest
 
+from packages.story_core.model_gateway import ModelResponse
 from packages.story_core.outline_planning import (
     INITIAL_OUTLINE_CHAPTER_COUNT,
     validate_generated_continuation_plan,
@@ -15,12 +16,43 @@ from packages.story_core.outline_planning import (
 from packages.story_core.outline_planning_generation import (
     LLMOutlinePlanningGenerator,
     OutlinePlanningBrief,
+    PlanningCharacterSeed,
+    _expand_character_seed,
 )
 from packages.story_core.runtime_config import StageRuntimeSettings
 
 
 def test_generator_constructor_does_not_accept_legacy_strategy_resolver() -> None:
     assert "strategy_resolver" not in inspect.signature(LLMOutlinePlanningGenerator).parameters
+
+
+def test_character_seed_keeps_personality_out_of_history_and_uses_complete_speech_guidance() -> None:
+    card = _expand_character_seed(
+        PlanningCharacterSeed(
+            name="陈砚",
+            role="早餐店临时店主",
+            character_tier="protagonist",
+            first_appearance=1,
+            age=29,
+            origin="在老街早餐店长大，成年后去外地做厨师。",
+            current_identity="返乡接店的失业厨师",
+            occupation="厨师",
+            immediate_problem="早餐店欠着三个月房租。",
+            immediate_goal="先核清欠租和店内账目。",
+            failure_stakes="店铺被收回，父母留下的旧账也失去查证机会。",
+            personality="嘴硬心软，不愿在人前示弱。",
+            speech_style="话少，句子短，常用修鞋和过日子的比喻。",
+            action_style="先核对账目，再决定是否让步。",
+            decision_rule="先把事实弄清，再谈人情。",
+            dialogue_examples=["合同呢？", "七天，可以。"],
+        )
+    )
+
+    assert card.background_profile.formative_events == []
+    assert card.story_drive.motivation != "嘴硬心软，不愿在人前示弱。"
+    assert "句子短" not in card.performance_profile.speech_style
+    assert "必要的对象、原因和决定" in card.performance_profile.speech_style
+    assert all(len(example) >= 10 for example in card.dialogue_examples)
 
 
 def _card(name: str, tier: str) -> dict:
@@ -44,6 +76,11 @@ def _valid_plan() -> dict:
         "outline": {
             "overall": {
                 "story": "林照追查祖祠旧案。",
+                "theme_statement": "守住事实，比赢下一次争斗更重要。",
+                "foreground_story": "林照追查祖祠纵火案并争取查档资格。",
+                "background_story": "宗门高层借旧案清洗异己并改写名册。",
+                "book_objective": "林照公开旧案真相并取得宗门执法权。",
+                "ending_image": "重开的祖祠前，林照把旧名册交还死者家属。",
                 "protagonist_goal": "查清旧案。",
                 "main_conflict": "有人销毁证据。",
                 "growth_path": "从守祠杂役成长为能调用宗门规则的人。",
@@ -58,6 +95,10 @@ def _valid_plan() -> dict:
                 "goal": "找到换名册的人",
                 "obstacle": "赵衡控制清点权",
                 "payoff": "取得查档资格",
+                "emotional_curve": "先受压，再反查，卷尾公开拿出证据。",
+                "key_results": ["取得查档资格", "找到旧名册", "确认高层参与改名"],
+                "hook_plan": "旧名册缺页在第三阶段回收。",
+                "irreversible_change": "林照公开挑战管事，无法再做旁观的杂役。",
                 "trope_id": "low_status_reversal",
                 "end_state": "祖祠不再由赵衡独占",
                 "stage_antagonist": "赵衡",
@@ -92,12 +133,45 @@ def _brief() -> OutlinePlanningBrief:
     return OutlinePlanningBrief(
         novel_type_id="xuanhuan",
         title="我替宗门看守断香炉",
+        overall_context={
+            "story": "守祠杂役发现断香炉会指出宗门旧案，必须在证据被毁前查清真相，否则会被当成盗宝者处死。",
+            "protagonist_goal": "查清旧案并保住性命。",
+            "main_conflict": "执事要销毁证据并把罪名推给主角。",
+            "growth_path": "从忍让求生变成敢于掌握证据和规则。",
+            "ending_direction": "主角公开旧案并建立新的宗门查验规则。",
+            "positioning": {
+                "protagonist_profile": "谨慎的守祠杂役，习惯忍让。",
+                "inciting_incident": "断香炉第一次指出被封住的旧案证物。",
+                "failure_stakes": "主角会被处死，旧案也会永远被掩埋。",
+                "excitement_point": "利用破损器物留下的痕迹翻查旧案。",
+                "target_audience": "喜欢玄幻升级和查案推进的读者。",
+                "reader_promise": "每个阶段查出一件旧物的真相，并获得可见成长。",
+            },
+            "core_advantage": {
+                "name": "断香炉残痕",
+                "type": "线索能力",
+                "ability": "看见破损器物留下的一段因果痕迹。",
+                "growth_rule": "每查清一件旧案，能看到的痕迹更完整。",
+                "limits": "只能读取已经发生且留有实物痕迹的事件。",
+                "early_payoff": "找到祖祠失火留下的第一处证据。",
+            },
+            "central_mystery": {
+                "surface_anomaly": "断香炉会显示不属于当前年代的残痕。",
+                "hidden_truth": "香炉保存着被宗门改写的历史。",
+                "reality_impact": "每次恢复旧事都会改变当前宗门关系。",
+                "reveal_path": ["验证火灾残痕", "找到被改写的名册", "公开宗门旧史"],
+            },
+            "protagonist_drive": {
+                "immediate_need": "洗清盗宝嫌疑并保住性命。",
+                "trigger": "断香炉指出被封住的旧案证物。",
+                "short_term_goal": "在证据被毁前查清祖祠失火案。",
+                "failure_stakes": "主角会被处死，旧案也会永远被掩埋。",
+                "long_term_transition": "从自证清白转向恢复被改写的宗门历史。",
+            },
+        },
         opening_direction={
             "title": "断香炉",
             "hook": "祖祠断香炉提醒林照别让人挖第三块青砖。",
-            "protagonist_goal": "在外门站稳并查清旧案。",
-            "main_conflict": "有人要毁掉旧案证据。",
-            "growth_path": "从守住现场开始掌握宗门规则。",
             "opening_promise": "每次解决具体问题都会换来一条可验证线索。",
             "primary_trope_id": "low_status_reversal",
         },
@@ -150,11 +224,17 @@ def test_outline_prompt_receives_compact_power_contract_and_explicit_game_milest
     def fake_post(base_url, path, payload, api_key, **kwargs):
         captured["system"] = payload["messages"][0]["content"]
         captured["context"] = json.loads(payload["messages"][1]["content"])
-        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+        plan = _valid_plan()
+        plan["outline"]["overall"]["primary_trope_id"] = "login_character_creation"
+        plan["outline"]["arcs"][0]["trope_id"] = "login_character_creation"
+        plan["outline"]["arcs"][0]["game_line_payoff"] = "完成新手区域的首个核心目标。"
+        plan["outline"]["arcs"][0]["reality_line_payoff"] = "解决眼前的一项现实压力。"
+        return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
     payload = _brief().model_dump(mode="json")
     payload["novel_type_id"] = "game_webnovel"
+    payload["opening_direction"]["primary_trope_id"] = "login_character_creation"
     payload["power_system_spec"] = _outline_power_spec()
     generator = LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve)
 
@@ -172,6 +252,80 @@ def test_outline_prompt_receives_compact_power_contract_and_explicit_game_milest
     assert "不得虚构" in contract and "技能" in contract and "装备" in contract
     assert "先安排解锁" in contract and "账本" in contract
     assert "条件" in contract and "代价" in contract and "失败" in contract
+    assert "pacing_stage_id" in contract
+    assert "reference_range" in contract and "planned_length" in contract
+
+
+def test_outline_prompt_fills_only_the_selected_genre_outline_template() -> None:
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["system"] = payload["messages"][0]["content"]
+        captured["context"] = json.loads(payload["messages"][1]["content"])
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    LLMOutlinePlanningGenerator(
+        post_json=fake_post, runtime_resolver=fixture.resolve
+    ).generate(_brief(), mode="initial")
+
+    template_text = json.dumps(
+        captured["context"]["genre_outline_template"], ensure_ascii=False
+    )
+
+
+def _codex_phase_content(prompt: dict) -> dict:
+    plan = _valid_plan()
+    if prompt["generation_phase"] == "outline":
+        plan["outline"]["chapters"] = []
+        return {"outline": plan["outline"]}
+    if prompt["generation_phase"] == "characters":
+        return {
+            "characters": [
+                {
+                    "name": card["name"],
+                    "role": card["role"],
+                    "character_tier": card["character_tier"],
+                    "first_appearance": card["first_appearance"],
+                    "age": card["identity_profile"].get("age"),
+                    "origin": card["identity_profile"]["origin"],
+                    "current_identity": card["identity_profile"]["current_identity"],
+                    "occupation": card["identity_profile"]["occupation"],
+                    "authority_scope": "只处理职责范围内的事",
+                    "immediate_problem": "眼前的冲突正在逼近",
+                    "immediate_goal": card["story_drive"]["immediate_goal"],
+                    "long_term_goal": "完成自己的长期目标",
+                    "failure_stakes": card["story_drive"]["failure_stakes"],
+                    "personality": "做事有明确取舍",
+                    "speech_style": "按关系和场合说完整的话",
+                    "action_style": "先观察再行动",
+                    "emotional_trigger": "利益受损",
+                    "decision_rule": "先保住最重要的目标",
+                    "hidden_matter": "",
+                    "dialogue_examples": card["dialogue_examples"],
+                }
+                for card in plan["characters"]
+            ]
+        }
+    template = plan["outline"]["chapters"][0]
+    return {
+        "chapters": [
+            {
+                **template,
+                "chapter_number": number,
+                "trope_beat": template["trope_beat"] if number == 1 else None,
+            }
+            for number in prompt["target_chapter_numbers"]
+        ]
+    }
+    assert "力量成长线" in template_text
+    assert "游戏成长线" not in template_text
+    assert "genre_outline_template" in captured["system"]
+    assert "逐项填写" in captured["system"]
 
 
 def test_outline_prompt_does_not_fabricate_power_contract_for_legacy_brief() -> None:
@@ -185,9 +339,60 @@ def test_outline_prompt_does_not_fabricate_power_contract_for_legacy_brief() -> 
     LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve).generate(
         _brief(), mode="initial"
     )
-
     assert "power_system" not in captured
 
+
+def test_non_game_outline_prompt_uses_general_long_form_fields_without_game_dual_lines() -> None:
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["system"] = payload["messages"][0]["content"]
+        captured["context"] = json.loads(payload["messages"][1]["content"])
+        plan = _valid_plan()
+        plan["outline"]["arcs"][0]["game_line_payoff"] = "不该进入非网游大纲"
+        plan["outline"]["arcs"][0]["reality_line_payoff"] = "不该进入非网游大纲"
+        return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    generator = LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve)
+
+    result = generator.generate(_brief(), mode="initial")
+
+    contract = "\n".join([captured["system"], *captured["context"]["validation_rules"]])
+    assert "Every core arc must state a concrete game_line_payoff and reality_line_payoff" not in contract
+    overall_fields = captured["context"]["output_schema"]["$defs"]["OverallOutline"]["properties"]
+    arc_fields = captured["context"]["output_schema"]["$defs"]["ArcOutline"]["properties"]
+    assert {"theme_statement", "foreground_story", "background_story", "book_objective", "ending_image"} <= set(overall_fields)
+    assert {"emotional_curve", "key_results", "hook_plan", "irreversible_change"} <= set(arc_fields)
+    assert result.outline.arcs[0].game_line_payoff == ""
+    assert result.outline.arcs[0].reality_line_payoff == ""
+
+
+def test_game_outline_generation_still_requires_game_and_reality_payoffs() -> None:
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    payload = _brief().model_dump(mode="json")
+    payload["novel_type_id"] = "game_webnovel"
+    generator = LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve)
+
+    with pytest.raises(ValueError, match="outline_planning_generation_failed") as exc_info:
+        generator.generate(OutlinePlanningBrief.model_validate(payload), mode="initial")
+
+    assert exc_info.value.__cause__ is not None
+    assert "missing_game_dual_line_payoff:opening" in str(exc_info.value.__cause__)
+
+
+def test_generated_opening_requires_complete_long_form_volume_fields() -> None:
+    plan = _valid_plan()
+    plan["outline"]["arcs"][0]["emotional_curve"] = ""
+
+    with pytest.raises(ValueError, match="missing_arc_field:opening:emotional_curve"):
+        validate_generated_opening_plan(
+            plan,
+            expected_chapter_numbers=list(range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)),
+        )
 
 def test_xianxia_structured_power_prompt_omits_game_only_milestone_rules() -> None:
     captured: dict = {}
@@ -237,6 +442,24 @@ def test_trope_validator_rejects_empty_string_beat_when_candidates_exist() -> No
 
     with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:1$"):
         validate_generated_trope_selection(plan, _trope_templates())
+
+
+def test_generator_drops_invalid_optional_trope_beat_before_strict_validation() -> None:
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        plan = _valid_plan()
+        plan["outline"]["chapters"][0]["trope_beat"] = "模型改写的低位压力"
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(plan, ensure_ascii=False)}}
+            ]
+        }
+
+    result = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=RecordingRuntime().resolve,
+    ).generate(_brief(), mode="initial")
+
+    assert result.outline.chapters[0].trope_beat is None
 
 
 def test_trope_validator_uses_active_arc_precedence_for_overlapping_arcs() -> None:
@@ -396,7 +619,8 @@ class RecordingRuntime:
     def resolve(self, stage):
         self.runtime_calls.append(stage)
         return StageRuntimeSettings(
-            provider="openai",
+            provider_id="openai",
+            protocol="openai_compatible",
             model="planning-test-model",
             base_url="http://runtime.test",
             api_key="test-key",
@@ -449,6 +673,47 @@ def generator_fixture() -> RecordingRuntime:
     return RecordingRuntime()
 
 
+def test_outline_generation_routes_through_planner_gateway() -> None:
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            return ModelResponse.success(
+                request,
+                text=json.dumps(_valid_plan(), ensure_ascii=False),
+            )
+
+    runtime_calls = []
+    runtime = StageRuntimeSettings(
+        provider_id="deepseek",
+        protocol="openai_compatible",
+        model="deepseek-chat",
+        api_key="test-key",
+        base_url="https://api.deepseek.test",
+        temperature=0.31,
+    )
+    result = LLMOutlinePlanningGenerator(
+        runtime_resolver=lambda stage: runtime_calls.append(stage) or runtime,
+        model_gateway=Gateway(),
+    ).generate(_brief(), mode="initial")
+
+    assert result.outline.chapters
+    assert runtime_calls == ["planner"]
+    assert calls[0][0] == "planner"
+    assert calls[0][1].operation == "outline_planning"
+    assert calls[0][1].json_mode is True
+
+
+def test_planning_brief_has_one_overall_source_instead_of_three_story_core_copies() -> None:
+    payload = _brief().model_dump(mode="json")
+
+    assert payload["overall_context"]["story"]
+    assert "story_core" not in payload
+    assert "character_story_core" not in payload
+    assert "planning_story_core" not in payload
+
+
 def test_generator_requests_one_compact_structured_plan() -> None:
     recording = RecordingRuntime()
     generator = recording.generator()
@@ -472,8 +737,10 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "genre_rulebook",
         "genre_quality_checks",
         "genre_trope_templates",
-        "genre_power_system_template",
+            "genre_power_system_template",
+            "genre_outline_template",
         "title",
+        "overall_context",
         "opening_direction",
         "author_constraints",
         "existing_outline",
@@ -481,12 +748,16 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "existing_character_names",
         "current_chapter",
         "recent_chapter_summaries",
+        "continuation_start_chapter",
+        "historical_chapter_summaries",
         "one_time_guidance",
         "output_schema",
         "validation_rules",
         "target_chapter_numbers",
         "current_strategy",
     }
+    assert prompt["overall_context"]["positioning"]["failure_stakes"]
+    assert "写长篇最怕" not in request["payload"]["messages"][1]["content"]
     assert prompt["one_time_guidance"] == "反派要有现实利益"
     assert prompt["opening_direction"]["primary_trope_id"] == "low_status_reversal"
     assert prompt["genre_trope_templates"]
@@ -523,12 +794,15 @@ def test_generator_requests_one_compact_structured_plan() -> None:
     assert "五章" not in request["payload"]["messages"][0]["content"]
 
 
-def test_codexcli_initial_plan_is_generated_in_three_bounded_phases() -> None:
+@pytest.mark.parametrize("mode", ["initial", "regenerate"])
+def test_codexcli_full_plan_is_generated_in_three_bounded_phases(mode: str) -> None:
     calls: list[dict] = []
+    systems: list[str] = []
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
         prompt = json.loads(payload["messages"][1]["content"])
         calls.append(prompt)
+        systems.append(payload["messages"][0]["content"])
         plan = _valid_plan()
         if prompt["generation_phase"] == "outline":
             plan["outline"]["chapters"] = []
@@ -578,13 +852,27 @@ def test_codexcli_initial_plan_is_generated_in_three_bounded_phases() -> None:
     generator = LLMOutlinePlanningGenerator(
         post_json=fake_post,
         runtime_resolver=lambda _stage: StageRuntimeSettings(
-            provider="codexcli",
+            provider_id="codexcli",
+            protocol="codex_cli",
             model="planning-test-model",
             codex_command="codex-test",
         ),
     )
 
-    plan = generator.generate(_brief(), mode="initial")
+    brief = _brief()
+    if mode == "regenerate":
+        brief = brief.model_copy(
+            update={
+                "current_chapter": 145,
+                "continuation_start_chapter": 141,
+                "historical_chapter_summaries": [
+                    {"chapter_number": 1, "title": "开端", "summary": "主角进入宗门。"},
+                    {"chapter_number": 141, "title": "断点", "summary": "主角守住关键证据。"},
+                ],
+            }
+        )
+
+    plan = generator.generate(brief, mode=mode)
 
     assert [call["generation_phase"] for call in calls] == [
         "outline",
@@ -592,10 +880,141 @@ def test_codexcli_initial_plan_is_generated_in_three_bounded_phases() -> None:
         "chapters",
     ]
     assert calls[0]["target_chapter_numbers"] == []
-    assert calls[2]["target_chapter_numbers"] == list(
-        range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)
+    assert "theme_statement" in systems[0]
+    assert "exactly three key_results" in systems[0]
+    assert "character cards" not in systems[0].lower()
+    expected_numbers = (
+        list(range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1))
+        if mode == "initial"
+        else list(range(146, 156))
     )
+    assert calls[2]["target_chapter_numbers"] == expected_numbers
     assert len(plan.outline.chapters) == INITIAL_OUTLINE_CHAPTER_COUNT
+
+
+def test_codexcli_generation_callbacks_keep_completed_phases_after_later_failure() -> None:
+    events: list[tuple[str, str, dict | None, str]] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        if prompt["generation_phase"] == "chapters":
+            raise TimeoutError("chapter timeout")
+        content = _codex_phase_content(prompt)
+        return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _stage: StageRuntimeSettings(
+            provider_id="codexcli", protocol="codex_cli", model="planning-test-model", codex_command="codex-test"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="outline_planning_generation_failed"):
+        generator.generate(
+            _brief(),
+            mode="initial",
+            phase_callback=lambda phase, status, payload, error: events.append((phase, status, payload, error)),
+        )
+
+    completed = [phase for phase, status, _, _ in events if status == "completed"]
+    assert completed == ["outline_foundation", "character_roster"]
+    assert events[-1][0:2] == ("chapter_window", "failed")
+    assert "chapter_window_generation_failed" in events[-1][3]
+
+
+def test_codexcli_generation_reuses_validated_cached_phases() -> None:
+    cached: dict[str, dict] = {}
+    first_calls: list[str] = []
+
+    def first_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        first_calls.append(prompt["generation_phase"])
+        if prompt["generation_phase"] == "chapters":
+            raise TimeoutError("chapter timeout")
+        content = _codex_phase_content(prompt)
+        return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
+
+    runtime = lambda _stage: StageRuntimeSettings(
+        provider_id="codexcli", protocol="codex_cli", model="planning-test-model", codex_command="codex-test"
+    )
+    with pytest.raises(ValueError):
+        LLMOutlinePlanningGenerator(post_json=first_post, runtime_resolver=runtime).generate(
+            _brief(),
+            mode="initial",
+            phase_callback=lambda phase, status, payload, _error: cached.update({phase: payload})
+            if status == "completed" and payload
+            else None,
+        )
+
+    resumed_calls: list[str] = []
+
+    def resumed_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        resumed_calls.append(prompt["generation_phase"])
+        content = _codex_phase_content(prompt)
+        return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
+
+    plan = LLMOutlinePlanningGenerator(post_json=resumed_post, runtime_resolver=runtime).generate(
+        _brief(), mode="initial", phase_payloads=cached
+    )
+
+    assert first_calls == ["outline", "characters", "chapters"]
+    assert resumed_calls == ["chapters"]
+    assert len(plan.outline.chapters) == INITIAL_OUTLINE_CHAPTER_COUNT
+
+
+def test_codexcli_retries_once_when_chapter_window_is_not_json() -> None:
+    chapter_attempts = 0
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal chapter_attempts
+        prompt = json.loads(payload["messages"][1]["content"])
+        if prompt["generation_phase"] == "chapters":
+            chapter_attempts += 1
+            if chapter_attempts == 1:
+                return {"choices": [{"message": {"content": "not-json"}}]}
+        content = _codex_phase_content(prompt)
+        return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _stage: StageRuntimeSettings(
+            provider_id="codexcli", protocol="codex_cli", model="planning-test-model", codex_command="codex-test"
+        ),
+    )
+
+    plan = generator.generate(_brief(), mode="initial")
+
+    assert chapter_attempts == 2
+    assert len(plan.outline.chapters) == INITIAL_OUTLINE_CHAPTER_COUNT
+
+
+def test_codexcli_marks_chapter_phase_failed_when_combined_plan_validation_fails() -> None:
+    events: list[tuple[str, str, str]] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        content = _codex_phase_content(prompt)
+        if prompt["generation_phase"] == "chapters":
+            content["chapters"][0]["cast"] = ["未登记角色"]
+        return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _stage: StageRuntimeSettings(
+            provider_id="codexcli", protocol="codex_cli", model="planning-test-model", codex_command="codex-test"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="outline_planning_generation_failed"):
+        generator.generate(
+            _brief(),
+            mode="initial",
+            phase_callback=lambda phase, status, _payload, error: events.append((phase, status, error)),
+        )
+
+    assert events[-1][0:2] == ("chapter_window", "failed")
+    assert events[-1][2].startswith("combined_outline_validation_failed:")
 
 
 @pytest.mark.parametrize("mode", ["initial", "regenerate", "extend"])
@@ -791,6 +1210,69 @@ def test_regenerate_requests_next_detail_window(generator_fixture) -> None:
     assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(11, 21))
 
 
+def test_continuation_regenerate_ignores_previous_batch_ceiling(generator_fixture) -> None:
+    brief = generator_fixture.brief(
+        current_chapter=145,
+        existing_chapters=list(range(136, 154)),
+    )
+    payload = brief.model_dump(mode="json")
+    payload["existing_outline"]["overall"].update(
+        core_ending_chapter=153,
+        extension_ceiling_chapter=153,
+    )
+    payload["continuation_start_chapter"] = 141
+    payload["historical_chapter_summaries"] = [
+        {"chapter_number": 1, "title": "维修铺", "summary": "林修从凡俗维修铺起步。"},
+        {"chapter_number": 141, "title": "雪山神殿", "summary": "林修守住残镜并发现皇血牵引。"},
+    ]
+
+    generator_fixture.generator().generate(
+        OutlinePlanningBrief.model_validate(payload),
+        mode="regenerate",
+    )
+
+    prompt = generator_fixture.prompt_context
+    assert prompt["target_chapter_numbers"] == list(range(146, 156))
+    assert prompt["continuation_start_chapter"] == 141
+    assert prompt["historical_chapter_summaries"] == [
+        {
+            "start_chapter": 1,
+            "end_chapter": 141,
+            "chapter_digest": [
+                "第1章 维修铺：林修从凡俗维修铺起步。",
+                "第141章 雪山神殿：林修守住残镜并发现皇血牵引。",
+            ],
+        }
+    ]
+    rules = "\n".join(prompt["validation_rules"])
+    assert "whole book" in rules
+    assert "historical arcs" in rules
+
+
+def test_continuation_history_is_compacted_into_bounded_chapter_blocks(generator_fixture) -> None:
+    brief = generator_fixture.brief(current_chapter=145, existing_chapters=list(range(136, 154)))
+    payload = brief.model_dump(mode="json")
+    payload["continuation_start_chapter"] = 141
+    payload["historical_chapter_summaries"] = [
+        {"chapter_number": number, "title": f"节点{number}", "summary": "剧情" * 160}
+        for number in range(1, 22)
+    ]
+
+    generator_fixture.generator().generate(
+        OutlinePlanningBrief.model_validate(payload),
+        mode="regenerate",
+    )
+
+    blocks = generator_fixture.prompt_context["historical_chapter_summaries"]
+    assert [(block["start_chapter"], block["end_chapter"]) for block in blocks] == [
+        (1, 10),
+        (11, 20),
+        (21, 21),
+    ]
+    assert sum(len(block["chapter_digest"]) for block in blocks) == 21
+    assert max(len(item) for block in blocks for item in block["chapter_digest"]) <= 100
+
+
 def test_initial_requires_unstarted_project(generator_fixture) -> None:
     brief = generator_fixture.brief(current_chapter=1, existing_chapters=list(range(1, 11)))
 
@@ -973,7 +1455,7 @@ def test_generator_rejects_invalid_output_and_long_guidance() -> None:
     generator = LLMOutlinePlanningGenerator(
         post_json=lambda *args, **kwargs: {"choices": [{"message": {"content": "{}"}}]},
         runtime_resolver=lambda name: runtime_calls.append(name) or StageRuntimeSettings(
-            provider="codexcli", model="planning-test-model"
+            provider_id="codexcli", protocol="codex_cli", model="planning-test-model"
         ),
     )
 

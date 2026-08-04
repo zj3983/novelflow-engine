@@ -106,6 +106,14 @@ def post_json_with_retry(
             command=codex_command or "codex",
             config=config,
         )
+    if provider == "antigravity":
+        from packages.story_core.antigravity_cli_provider import post_json_via_antigravity_cli
+
+        return post_json_via_antigravity_cli(
+            payload,
+            command=codex_command or "agy",
+            config=config,
+        )
 
     cfg = config or RetryConfig()
     url = f"{base_url}{path}"

@@ -558,6 +558,7 @@ def _sync_project_generation_context(story: StoryState, project: NovelProject, *
     story.author_constraints = list(project.author_constraints)
     story.world_facts = _project_world_facts(project)
     story.enabled_skill_ids = list(project.enabled_skill_ids)
+    story.enabled_skill_module_ids = list(project.enabled_skill_module_ids)
 
     genre_ids, _ = _project_genre_selection(project)
     primary_genre = genre_ids[0] if genre_ids else ""
@@ -1152,12 +1153,15 @@ class SQLiteStoryStore:
         self._save_record(self._conn(), record)
         return record
 
-    def list_projects(self) -> list[NovelProject]:
+    def list_projects(self, *, lifecycle: str | None = None) -> list[NovelProject]:
         conn = self._conn()
         cursor = conn.execute(
             "SELECT project_json FROM novel_projects ORDER BY updated_at DESC, created_at DESC"
         )
-        return [self._deserialize_project(row[0]) for row in cursor.fetchall()]
+        projects = [self._deserialize_project(row[0]) for row in cursor.fetchall()]
+        if lifecycle is None:
+            return projects
+        return [project for project in projects if project.project_lifecycle == lifecycle]
 
     def delete_project(self, project_id: str, *, delete_stories: bool = True) -> NovelProject:
         """Delete a project and, by default, all story branches owned by it."""

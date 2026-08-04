@@ -84,6 +84,25 @@ def test_list_calls_returns_latest_state_not_duplicate_lifecycle_events(tmp_path
     assert calls[0]["status"] == "succeeded"
 
 
+def test_prompt_call_log_persists_resolved_protocol_without_secrets(tmp_path):
+    log = PromptCallLog(tmp_path, project_id="file:p-test")
+
+    call_id = log.start(
+        chapter_number=4,
+        stage="writer",
+        agent="writer",
+        user_prompt="prompt",
+        provider="anthropic",
+        protocol="anthropic",
+        model="claude-sonnet",
+    )
+
+    detail = log.get(call_id)
+    assert detail["protocol"] == "anthropic"
+    assert "api_key" not in detail
+    assert "headers" not in detail
+
+
 def test_orchestrator_timed_chat_records_exact_prompt_and_runtime(tmp_path, monkeypatch):
     from packages.story_core import orchestrator as orchestrator_module
 

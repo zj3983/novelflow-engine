@@ -118,13 +118,15 @@ export default function ProjectOverviewPage() {
 
           <section className="ws-card">
             <div className="ws-section-head">
-              <h2 className="ws-section-title">世界响应</h2>
+              <h2 className="ws-section-title">世界状态</h2>
               <Link href={`/projects/${encodedProjectId}/sim`} className="ws-text-link">
                 查看
               </Link>
             </div>
             <p className="ws-card__hint">
-              {latest?.next_focus || project.current_focus || latest?.summary || "暂无剧情焦点。"}
+              {chapterIndex.some((chapter) => chapter.has_simulation)
+                ? `${chapterIndex.filter((chapter) => chapter.has_simulation).length} 章已记录`
+                : "尚无已确认的世界状态"}
             </p>
           </section>
 
@@ -135,7 +137,7 @@ export default function ProjectOverviewPage() {
                 查看
               </Link>
             </div>
-            <p className="ws-card__hint">{project.current_focus || latest?.next_focus || "暂无当前大纲焦点。"}</p>
+            <p className="ws-card__hint">{project.seed_outline || story?.outline || "暂无大纲内容。"}</p>
           </section>
 
           <section className="ws-card">

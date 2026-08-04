@@ -30,7 +30,7 @@ function projectNav(projectId: string): NavItem[] {
     { href: base, label: "概览", exact: true },
     { href: `${base}/write`, label: "章节" },
     { href: `${base}/dissection`, label: "拆书" },
-    { href: `${base}/sim`, label: "世界响应" },
+    { href: `${base}/sim`, label: "世界状态" },
     { href: `${base}/prompts`, label: "提示词" },
     { href: `${base}/skills`, label: "Skills" },
     { href: `${base}/outline`, label: "大纲" },

@@ -6,11 +6,44 @@ import pytest
 from packages.story_core.generation_progress import generation_progress
 
 from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.model_gateway import ModelResponse
 from packages.story_core.genre_types.base import GenrePlugin
 from packages.story_core import orchestrator as orchestrator_module
-from packages.story_core.orchestrator import StoryOrchestrator, _story_game_context
+from packages.story_core.orchestrator import StoryOrchestrator
 
 _REAL_CHAT = StoryOrchestrator._chat
+
+
+def _outline_scene_chain(pov: str = "Lin") -> list[dict[str, str]]:
+    return [
+        {
+            "location": "起始地点",
+            "pov": pov,
+            "goal": "确认眼前目标",
+            "obstacle": "有人当场阻拦",
+            "action": f"{pov}先查清阻拦的原因",
+            "change": "他找到可以继续行动的入口",
+            "next": "转去处理主要冲突",
+        },
+        {
+            "location": "冲突现场",
+            "pov": pov,
+            "goal": "完成主要行动",
+            "obstacle": "原来的办法行不通",
+            "action": f"{pov}换了一种办法继续尝试",
+            "change": "阻力被解决，但留下代价",
+            "next": "去确认行动结果",
+        },
+        {
+            "location": "结果发生处",
+            "pov": pov,
+            "goal": "拿到本章结果",
+            "obstacle": "结果还差最后一步",
+            "action": f"{pov}完成最后一步并检查结果",
+            "change": "本章目标兑现，新的问题出现",
+            "next": "按新线索继续行动",
+        },
+    ]
 
 
 def _trope_plugin() -> GenrePlugin:
@@ -358,27 +391,21 @@ def test_structured_attribute_rule_syncs_ledger_values_without_legacy_suye_fallb
     assert character.game_state["current"]["unallocated_attribute_points"] == 2
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        RuntimeError("codexcli_failed:boom"),
-        subprocess.TimeoutExpired(cmd="codex", timeout=1),
-    ],
-)
-def test_chat_returns_error_tuple_when_cli_provider_fails(monkeypatch, failure):
+@pytest.mark.parametrize("failure_code", ["provider_unavailable", "request_timed_out"])
+def test_chat_returns_error_tuple_when_cli_provider_fails(monkeypatch, failure_code):
     from packages.story_core.runtime_config import StageRuntimeSettings
 
     settings = StageRuntimeSettings(
-        provider="codexcli",
+        provider_id="codexcli",
+        protocol="codex_cli",
         model="codex-model",
         codex_command="codex",
     )
     monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", lambda stage: settings)
 
-    def _raise(*args, **kwargs):
-        raise failure
-
-    monkeypatch.setattr(orchestrator_module, "post_json_with_retry", _raise)
+    class FailingGateway:
+        def complete_stage(self, stage, request):
+            return ModelResponse.failure(request, failure_code)
 
     story = StoryState(
         story_id="s-chat-cli-failure",
@@ -387,7 +414,12 @@ def test_chat_returns_error_tuple_when_cli_provider_fails(monkeypatch, failure):
         style="noir",
     )
     text, error = _REAL_CHAT(
-        StoryOrchestrator(), story, "prompt", max_tokens=16, json_mode=False, stage="写作"
+        StoryOrchestrator(model_gateway=FailingGateway()),
+        story,
+        "prompt",
+        max_tokens=16,
+        json_mode=False,
+        stage="写作",
     )
 
     assert text == ""
@@ -433,6 +465,7 @@ def test_actionable_chapter_outline_skips_planner_model(monkeypatch):
                 "payoff": "提交任务并升到二级",
                 "ending_hook": "交易行出现新的收购单",
                 "cast": ["夜烬"],
+                "scene_chain": _outline_scene_chain("夜烬"),
             }
         },
         genre="game fantasy",
@@ -537,6 +570,7 @@ def test_outline_level_up_without_attribute_decision_is_completed_before_writer(
                 "next_hook": "A new route opens.",
             },
             "chapter_end_hook": {"type": "reveal", "strength": "medium", "content": "A new route opens."},
+            "scene_chain": _outline_scene_chain("Lin"),
         },
         "memory_constraints": {},
     }
@@ -579,6 +613,7 @@ def test_outline_level_up_with_valid_attribute_decision_reaches_writer_unchanged
                 "level_target": "Lv.2",
                 "attribute_allocation_decision": decision,
                 "cast": ["Lin"],
+                "scene_chain": _outline_scene_chain("Lin"),
             }
         },
         genre="fantasy",
@@ -639,6 +674,7 @@ def test_writer_request_failure_is_preserved_in_failed_bundle(monkeypatch):
                 "payoff": "提交任务并升到二级",
                 "ending_hook": "交易行出现新的收购单",
                 "cast": ["夜烬"],
+                "scene_chain": _outline_scene_chain("夜烬"),
             }
         },
         genre="game fantasy",
@@ -729,6 +765,7 @@ def test_generation_attaches_resolved_trope_contract_to_review_without_extra_pro
             "ending_hook": "check who sent the invitation",
             "trope_beat": "accept the rain duel",
             "cast": ["Lin"],
+            "scene_chain": _outline_scene_chain("Lin"),
         },
     }
     invalid_context = {
@@ -742,6 +779,7 @@ def test_generation_attaches_resolved_trope_contract_to_review_without_extra_pro
             "payoff": "wins trust",
             "ending_hook": "check who sent the invitation",
             "cast": ["Lin"],
+            "scene_chain": _outline_scene_chain("Lin"),
         },
     }
 
@@ -782,7 +820,7 @@ def test_attach_trope_contract_to_simulation_plan_deepcopies_only_resolved_contr
     assert "trope_candidates" not in attached
 
 
-def test_trope_beat_miss_triggers_existing_revision_prompt_with_avoid_guidance(monkeypatch):
+def test_trope_beat_miss_remains_advisory_without_full_chapter_revision(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
     initial_body = "林站在屋檐下想了想明天的安排，最后没有回应邀请就离开了。"
@@ -820,6 +858,7 @@ def test_trope_beat_miss_triggers_existing_revision_prompt_with_avoid_guidance(m
                 "payoff": "wins trust",
                 "ending_hook": "check who sent the invitation",
                 "cast": ["Lin"],
+                "scene_chain": _outline_scene_chain("Lin"),
             }
         },
         characters=[CharacterState(name="Lin", role="protagonist")],
@@ -862,12 +901,9 @@ def test_trope_beat_miss_triggers_existing_revision_prompt_with_avoid_guidance(m
 
     bundle = orchestrator.generate_next_chapter(story)
 
-    assert calls == ["writer", "writer"]
-    assert bundle.body == revised_body
-    assert "雨夜接下挑战" in revision_prompts[0]
-    assert "赢得信任且不暴露底牌" in revision_prompts[0]
-    assert "不要换套路" in revision_prompts[0]
-    assert "不要提前解决整条主线" in revision_prompts[0]
+    assert calls == ["writer"]
+    assert bundle.body == initial_body
+    assert revision_prompts == []
 
 
 def test_incomplete_chapter_outline_uses_planner_model(monkeypatch):
@@ -897,16 +933,20 @@ def test_incomplete_chapter_outline_uses_planner_model(monkeypatch):
     assert planner_calls == 1
 
 
-def test_whole_chapter_writing_is_default_path():
+def test_only_whole_chapter_pipeline_remains_in_production():
     orchestrator = StoryOrchestrator()
+    story = StoryState(
+        story_id="s-whole-chapter-only",
+        outline="主角处理眼前冲突。",
+        genre="都市",
+        style="",
+    )
 
-    assert orchestrator._use_segmented_writing(1, {}) is False
-
-
-def test_segmented_writing_is_disabled_in_production():
-    orchestrator = StoryOrchestrator()
-
-    assert orchestrator._use_segmented_writing(1, {"writing_settings": {"use_segmented_writing": True}}) is False
+    assert "分段" not in orchestrator._body_prompt(
+        story,
+        1,
+        {"event_plan": {"chapter_title": "眼前冲突"}},
+    )
 
 
 def _post_draft_plan() -> dict:
@@ -1086,47 +1126,6 @@ def test_runtime_compression_prompt_is_isolated_by_genre(
     assert all(term in prompt for term in required_terms)
     assert all(term not in prompt for term in forbidden_terms)
     assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompt
-
-
-def test_story_game_context_prefers_normalized_plugin_ids_over_text_fallback():
-    game_story = StoryState(
-        story_id="s-explicit-game",
-        outline="林照守住祖祠。",
-        genre="",
-        genre_plugin_ids=["game_webnovel"],
-        style="白描",
-    )
-    non_game_story = StoryState(
-        story_id="s-explicit-xuanhuan",
-        outline="主角登录游戏，查看掉落、背包和任务面板。",
-        genre="",
-        genre_plugin_ids=["xuanhuan"],
-        style="白描",
-    )
-    game_genre_story = StoryState(
-        story_id="s-explicit-game-genre",
-        outline="林照守住祖祠。",
-        genre="网游",
-        style="白描",
-    )
-    non_game_genre_story = StoryState(
-        story_id="s-explicit-xuanhuan-genre",
-        outline="主角登录游戏，查看掉落、背包和任务面板。",
-        genre="玄幻",
-        style="白描",
-    )
-    fallback_game_story = StoryState(
-        story_id="s-fallback-game-text",
-        outline="主角登录游戏，查看掉落、背包和任务面板。",
-        genre="",
-        style="白描",
-    )
-
-    assert _story_game_context(game_story) is True
-    assert _story_game_context(non_game_story) is False
-    assert _story_game_context(game_genre_story) is True
-    assert _story_game_context(non_game_genre_story) is False
-    assert _story_game_context(fallback_game_story) is False
 
 
 @pytest.mark.parametrize("genre_plugin_ids", [["xuanhuan"], []])
@@ -1742,12 +1741,7 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
     )
     assert director_done is not None
     assert "world_simulation" not in director_done["artifact"].get("used_modules", [])
-    world_response_done = next(
-        (entry for entry in dict_steps if entry.get("message") == "世界响应校验完成"),
-        None,
-    )
-    assert world_response_done is not None
-    assert world_response_done["source"] == "world_simulation"
+    assert not any(entry.get("stage") == "world_response" for entry in dict_steps)
 
     workflow_steps = {
         entry["artifact"]["workflow_step"]["id"]: entry
@@ -1762,7 +1756,7 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
             "read_characters",
             "read_world_state",
             "director_plan",
-            "prepare_scenes",
+            "prepare_writing_context",
             "write_body",
             "review_body",
             "write_memory",
@@ -1771,6 +1765,7 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
     ] == []
     assert workflow_steps["read_characters"]["artifact"]["workflow_step"]["reads"]
     assert workflow_steps["director_plan"]["artifact"]["outputs"]
+    assert workflow_steps["prepare_writing_context"]["source"] == "context_builder"
     assert workflow_steps["write_body"]["artifact"]["outputs"]["body_chars"] > 0
 
 
@@ -1799,6 +1794,7 @@ def test_workflow_step_reports_explicit_reads_and_outputs():
         "id": "read_outline",
         "label": "读取大纲",
         "reads": ["总纲", "第2章细纲", "上一章结尾"],
+        "pipeline_stage": "context",
     }
     assert artifact["used_modules"] == ["outline_agent"]
     assert artifact["outputs"] == {"chapter_goal": "推进灰狼坡任务"}

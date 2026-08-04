@@ -1,14 +1,98 @@
 import json
 
+from packages.story_core.genre_stages.game_webnovel.director import _game_ledger
 from packages.story_core.models import CharacterState, StoryState
 from packages.story_core.orchestrator import (
     StoryOrchestrator,
     _compact_writer_plan_for_prompt,
     _director_plan_quality_issues,
-    _director_prompt_snapshot,
+    _ensure_director_scene_chain,
     _normalize_event_plan,
     _normalize_intent,
 )
+
+
+def test_legacy_director_plan_is_upgraded_with_executable_scene_chain():
+    story = _story()
+    plan = _complete_plan([{"name": "苏叶", "action": "夜烬把毒腺交给洛婶"}])
+    del plan["event_plan"]["scene_chain"]
+
+    prepared = _ensure_director_scene_chain(story, plan)
+
+    chain = prepared["event_plan"]["scene_chain"]
+    assert len(chain) == 3
+    assert chain[0]["action"] == "夜烬把毒腺交给洛婶"
+    assert all(
+        scene[field]
+        for scene in chain
+        for field in ("location", "pov", "goal", "obstacle", "action", "change", "next")
+    )
+
+
+def test_director_prepare_uses_outline_cast_and_attribute_decision():
+    story = _attribute_story()
+    story.outline_context = {
+        "chapter": {
+            "cast": ["苏叶"],
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+        }
+    }
+    plan = _complete_plan(["夜烬击败灰狼并升级"])
+    plan["character_moves"] = [
+        {"name": "苏叶", "action": "以夜烬身份击败灰狼"},
+        {"name": "流霜", "action": "查看交易行"},
+    ]
+    plan["event_plan"]["level"] = "Lv.2"
+
+    prepared = _ensure_director_scene_chain(story, plan)
+
+    assert [move["name"] for move in prepared["character_moves"]] == ["苏叶"]
+    assert prepared["event_plan"]["attribute_allocation_decision"] == {
+        "mode": "allocate",
+        "allocations": {"智力": 5},
+        "remaining": 0,
+    }
+    assert not any(
+        "attribute_allocation_decision" in issue
+        for issue in _director_plan_quality_issues(story, prepared)
+    )
+
+
+def test_director_prepare_preserves_outline_hard_constraints():
+    story = _story()
+    story.outline_context = {
+        "chapter": {
+            "cast": ["苏叶"],
+            "must_include": ["灰狼毒腺进度为8/16"],
+            "must_not_write": ["不要提交清道夫委托"],
+        }
+    }
+    plan = _complete_plan(["夜烬击败灰狼"])
+
+    prepared = _ensure_director_scene_chain(story, plan)
+
+    assert prepared["event_plan"]["must_include"] == ["灰狼毒腺进度为8/16"]
+    assert prepared["event_plan"]["must_not_write"] == ["不要提交清道夫委托"]
+    compact = _compact_writer_plan_for_prompt(prepared)
+    assert compact["event_plan"]["must_include"] == ["灰狼毒腺进度为8/16"]
+    assert compact["event_plan"]["must_not_write"] == ["不要提交清道夫委托"]
+
+
+def test_director_allows_real_name_during_login_transition():
+    plan = _complete_plan(
+        [
+            "苏叶戴上头盔登录《神域》，创建角色后以夜烬身份进入灰烬村",
+            "夜烬去灰狼坡击杀灰狼",
+        ]
+    )
+
+    issues = _director_plan_quality_issues(_story(), plan)
+
+    assert not any("游戏内行动使用了现实姓名" in issue for issue in issues)
 
 
 def _story() -> StoryState:
@@ -33,6 +117,35 @@ def _complete_plan(ordered_actions: object) -> dict:
         "character_moves": {},
         "event_plan": {
             "ordered_actions": ordered_actions,
+            "scene_chain": [
+                {
+                    "location": "祖祠外院",
+                    "pov": "林照",
+                    "goal": "拿到账册",
+                    "obstacle": "赵管事锁住侧门",
+                    "action": "林照先问守门人换锁时间，再跟送香队进门",
+                    "change": "他确认钥匙已经被送进内院",
+                    "next": "转去内院找保管钥匙的人",
+                },
+                {
+                    "location": "祖祠内院",
+                    "pov": "林照",
+                    "goal": "找到旧钥匙",
+                    "obstacle": "保管人不肯交钥匙",
+                    "action": "林照拿出旧工牌，要求当面核对换锁记录",
+                    "change": "保管人被迫打开账房",
+                    "next": "进账房查缺失名单",
+                },
+                {
+                    "location": "祖祠账房",
+                    "pov": "林照",
+                    "goal": "查出香灰被谁调换",
+                    "obstacle": "账册被撕掉一页",
+                    "action": "林照对照页码和领用记录",
+                    "change": "他发现三个名字同时消失",
+                    "next": "沿名单线索去内院库房",
+                },
+            ],
             "chapter_satisfaction": {
                 "core_event": "林照拿到祖祠账册",
                 "obstacle": "赵管事提前锁住侧门",
@@ -104,24 +217,40 @@ def test_normalize_intent_keeps_string_conflicts():
     assert intent["secondary_conflict"]["summary"] == "柜台快关门"
 
 
-def test_director_quality_gate_accepts_complete_continuous_plan():
-    plan = {
-        "character_moves": [{"name": "夜烬", "action": "补齐灰狼毒腺后提交任务"}],
-        "event_plan": {
-            "ordered_actions": [{"name": "夜烬", "action": "击杀灰狼并提交灰狼毒腺"}],
-            "chapter_satisfaction": {
-                "core_event": "完成清道夫委托",
-                "obstacle": "法力不足",
-                "visible_payoff": "获得任务经验",
-                "cost": "消耗药水和法杖耐久",
-                "state_change": "任务变为已完成",
-                "next_hook": "NPC给出下一环线索",
-            },
-            "chapter_end_hook": {"type": "渴望钩", "strength": "medium", "content": "下一环任务出现"},
-        },
+def test_normalize_event_plan_keeps_concrete_director_scene_chain():
+    raw = {
+        "scene_chain": [
+            {
+                "location": "祖祠外院",
+                "pov": "林照",
+                "goal": "找到旧钥匙",
+                "obstacle": "看守拦住偏门",
+                "action": "林照拿出旧工牌询问换锁的人",
+                "change": "看守透露钥匙已经送进内院",
+                "next": "林照混进送香队伍",
+            }
+        ]
     }
 
+    normalized = _normalize_event_plan(raw, 7, _story())
+
+    assert normalized["scene_chain"] == raw["scene_chain"]
+
+
+def test_director_quality_gate_accepts_complete_continuous_plan():
+    plan = _complete_plan([{"name": "夜烬", "action": "击杀灰狼并提交灰狼毒腺"}])
+    plan["character_moves"] = [{"name": "夜烬", "action": "补齐灰狼毒腺后提交任务"}]
+
     assert _director_plan_quality_issues(_story(), plan) == []
+
+
+def test_director_quality_gate_rejects_summary_without_scene_chain():
+    plan = _complete_plan([{"name": "夜烬", "action": "提交清道夫委托"}])
+    plan["event_plan"].pop("scene_chain")
+
+    issues = _director_plan_quality_issues(_story(), plan)
+
+    assert any("scene_chain" in issue and "3至5个" in issue for issue in issues)
 
 
 def test_director_quality_gate_requires_decision_for_explicit_level_up() -> None:
@@ -229,7 +358,7 @@ def test_director_quality_gate_requires_decision_for_explicit_attribute_point_ha
     assert any("attribute_allocation_decision" in issue for issue in issues)
 
 
-def test_normalized_and_compact_event_plan_keep_valid_attribute_decision() -> None:
+def test_generic_compact_writer_plan_excludes_attribute_decision() -> None:
     story = _attribute_story()
     raw = {
         "level": "Lv.2",
@@ -239,30 +368,26 @@ def test_normalized_and_compact_event_plan_keep_valid_attribute_decision() -> No
     normalized = _normalize_event_plan(raw, chapter_number=2, story=story)
     compacted = _compact_writer_plan_for_prompt({"event_plan": normalized})
 
-    assert compacted["event_plan"]["attribute_allocation_decision"] == {
-        "mode": "allocate",
-        "allocations": {"智力": 5},
-        "remaining": 0,
-    }
+    assert "attribute_allocation_decision" not in str(compacted)
 
 
-def test_director_snapshot_exposes_attribute_ledger_fields_only_when_present() -> None:
-    snapshot = _director_prompt_snapshot(
+def test_game_director_snapshot_exposes_attribute_ledger_fields_only_when_present() -> None:
+    snapshot = _game_ledger(
         {"progression_ledger": {"protagonist": {"level": "Lv.2", "attributes": {"智力": 10}, "unallocated_attribute_points": 0}}}
     )
 
-    assert snapshot["ledger"]["protagonist"]["attributes"] == {"智力": 10}
-    assert snapshot["ledger"]["protagonist"]["unallocated_attribute_points"] == 0
+    assert snapshot["protagonist"]["attributes"] == {"智力": 10}
+    assert snapshot["protagonist"]["unallocated_attribute_points"] == 0
 
 
-def test_generic_director_prompt_keeps_attribute_decision_contract() -> None:
+def test_generic_director_prompt_excludes_game_attribute_decision_contract() -> None:
     story = _attribute_story()
     story.genre = "悬疑"
 
     prompt = StoryOrchestrator()._plan_prompt(story, 2)
 
-    assert "attribute_allocation_decision" in prompt
-    assert "state_delta.protagonist.level" in prompt
+    assert "attribute_allocation_decision" not in prompt
+    assert "state_delta.protagonist.level" not in prompt
 
 
 def test_director_quality_gate_rejects_plan_without_executable_actions():
@@ -311,21 +436,7 @@ def test_director_quality_gate_rejects_missing_blank_and_null_actions():
 
 
 def test_director_quality_gate_and_event_plan_normalization_accept_text_ordered_actions():
-    plan = {
-        "character_moves": {},
-        "event_plan": {
-            "ordered_actions": ["章首，林照核对祖祠账册", "林照带周满检查侧门香灰"],
-            "chapter_satisfaction": {
-                "core_event": "林照拿到祖祠账册",
-                "obstacle": "赵管事提前锁住侧门",
-                "visible_payoff": "账册当场打开",
-                "cost": "赵管事记住林照的查账意图",
-                "state_change": "林照确认香灰被人调换",
-                "next_hook": "账册里少了三个名字",
-            },
-            "chapter_end_hook": {"type": "悬念钩", "strength": "medium", "content": "缺失名单指向内院"},
-        },
-    }
+    plan = _complete_plan(["章首，林照核对祖祠账册", "林照带周满检查侧门香灰"])
 
     issues = _director_plan_quality_issues(_story(), plan)
     event_plan = _normalize_event_plan(plan["event_plan"], chapter_number=2, story=_story())

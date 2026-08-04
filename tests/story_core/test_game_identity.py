@@ -93,6 +93,7 @@ def test_opening_review_requires_game_id_identity_layer():
         1,
         body,
         {"world_reactions": ["交易行商人记录异常。"], "next_focus": "继续低调变现。"},
+        genre_context={"genre_plugin_ids": ["game_webnovel"]},
     )
 
     assert review["pass"] is False

@@ -69,6 +69,15 @@ _TROPE_PLAN_ONLY_LATIN_TERMS = ("plan", "plans", "planned", "intend", "intends")
 _TROPE_ACTION_CONFIRM_TERMS = ("当场", "立刻", "马上", "直接", "终于", "已经", "真的", "随后", "于是")
 _TROPE_OTHER_ACTOR_TERMS = ("别人", "旁人", "有人", "其他人", "另一边")
 
+# These beats describe chapter structure rather than words that should appear in
+# prose. Their concrete realization already lives in plot_simulation, so reuse
+# that field's coverage instead of asking the body to repeat a planning label.
+_STRUCTURAL_TROPE_BEAT_LABELS = {
+    ("chapter_hook_escalation", "兑现本章收益"): "爽点兑现",
+    ("chapter_hook_escalation", "暴露隐藏代价"): "代价",
+    ("chapter_hook_escalation", "给出下一步机会或危机"): "章末钩子",
+}
+
 
 def _terms(text: str) -> set[str]:
     terms: set[str] = set()
@@ -343,6 +352,13 @@ def review_plot_spine_completion(
     trope_beat_covered: bool | str = "not_scheduled"
     if trope_beat:
         trope_beat_covered, trope_beat_coverage = _trope_beat_coverage(body, trope_beat)
+        if not trope_beat_covered:
+            structural_label = _STRUCTURAL_TROPE_BEAT_LABELS.get(
+                (str(trope_contract.get("template_id") or "").strip(), trope_beat)
+            )
+            if structural_label:
+                trope_beat_covered = structural_label in covered
+                trope_beat_coverage = float(ratios.get(structural_label, 0.0))
         if not trope_beat_covered:
             scores["trope_beat_missing"] = 5
             issues.append(f"套路节点未兑现：本章未写出当前节点「{trope_beat}」的正文动作或反馈。")

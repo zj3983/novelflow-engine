@@ -20,6 +20,7 @@ const STAGE_LABELS: Record<string, string> = {
   memory: "记忆更新",
   context_loader: "资料读取",
   world_simulation: "剧情准备",
+  context_builder: "写作上下文准备",
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -32,6 +33,7 @@ const SOURCE_LABELS: Record<string, string> = {
   reviewer: "审稿模块",
   memory: "记忆模块",
   world_simulation: "剧情准备模块",
+  context_builder: "写作上下文准备",
   llm: "模型调用",
 };
 

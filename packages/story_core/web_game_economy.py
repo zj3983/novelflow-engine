@@ -1371,7 +1371,12 @@ def _first_chapter_ranges(text: str) -> tuple[str, ...]:
 
 
 def _ordered_new_chain(text: str) -> tuple[int, int, int] | None:
-    for transaction in re.finditer(r"卖出裂纹狼心|交易成交", text):
+    transaction_pattern = re.compile(
+        r"卖出裂纹狼心"
+        r"|裂纹狼心[^。；;\n]{0,48}(?:卖出|售出|成交)"
+        r"|(?:交易|拍卖|求购单)[^。；;\n]{0,24}成交"
+    )
+    for transaction in transaction_pattern.finditer(text):
         exchange = text.find("官方兑换", transaction.end())
         if exchange < 0:
             continue
@@ -1400,8 +1405,24 @@ def first_chapter_market_exchange_authorized(
     event_plan: dict[str, Any] | None = None,
     world_facts: list[str] | None = None,
 ) -> bool:
+    plan = event_plan or {}
+    if plan.get("first_chapter_trade_authorized") is True:
+        return True
+
+    # Structured outlines already carry the chapter number separately from
+    # goal/action text. Treat that object as one chapter-scoped contract instead
+    # of requiring authors to repeat a magic "第一章" phrase in every field.
+    try:
+        structured_first_chapter = int(plan.get("chapter_number") or 0) == 1
+    except (TypeError, ValueError):
+        structured_first_chapter = False
+    if structured_first_chapter:
+        scoped_text = "\n".join(_text_entries(plan))
+        if _first_chapter_range_authorized(scoped_text):
+            return True
+
     entries = (
-        *_text_entries(event_plan or {}),
+        *_text_entries(plan),
         *(str(item) for item in (world_facts or [])),
     )
     return any(

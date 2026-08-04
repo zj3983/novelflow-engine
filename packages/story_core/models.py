@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from packages.story_core.character_profiles import (
     BackgroundProfile,
@@ -175,6 +175,7 @@ class ChapterSummary(BaseModel):
     summary: str
     facts: list[str] = Field(default_factory=list)
     unresolved_threads: list[str] = Field(default_factory=list)
+    resolved_threads: list[str] = Field(default_factory=list)
     next_focus: str = ""
     primary_conflict: dict = Field(default_factory=dict)
     secondary_conflict: dict = Field(default_factory=dict)
@@ -193,6 +194,7 @@ class MemoryIndexEntry(BaseModel):
     items: list[str] = Field(default_factory=list)
     facts: list[str] = Field(default_factory=list)
     unresolved_threads: list[str] = Field(default_factory=list)
+    resolved_threads: list[str] = Field(default_factory=list)
 
 
 class ArcRecap(BaseModel):
@@ -247,6 +249,35 @@ class GamePanel(BaseModel):
     quests: dict = Field(default_factory=dict)
     risk: dict = Field(default_factory=dict)
     updated_chapter: int = 0
+
+
+class EquipmentCard(BaseModel):
+    id: str = ""
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+    equipment_type: str
+    slot: str = ""
+    rarity: str = ""
+    required_level: str = ""
+    class_restrictions: list[str] = Field(default_factory=list)
+    base_attributes: dict[str, str] = Field(default_factory=dict)
+    special_effects: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    durability: str = ""
+    source: str = ""
+    current_owner: str = ""
+    current_location: str = ""
+    first_appearance_chapter: int | None = None
+    last_update_chapter: int | None = None
+    status: str = ""
+    description: str = ""
+    lore: str = ""
+    lore_status: str = "unknown"
+    related_characters: list[str] = Field(default_factory=list)
+    related_factions: list[str] = Field(default_factory=list)
+    set_name: str = ""
+    set_lore: str = ""
+    evidence: list[dict] = Field(default_factory=list)
 
 
 class VoiceSignature(BaseModel):
@@ -360,6 +391,7 @@ class CharacterState(BaseModel):
     story_drive: StoryDriveProfile = Field(default_factory=StoryDriveProfile)
     dialogue_examples: list[str] = Field(default_factory=list)
     relationship_notes: list[RelationshipNote] = Field(default_factory=list)
+    current_state: dict = Field(default_factory=dict)
     real_state: dict = Field(default_factory=dict)
     game_state: dict = Field(default_factory=dict)
     game_id: str = ""
@@ -389,6 +421,17 @@ class CharacterState(BaseModel):
     last_proposed_chapter: int = 0
     last_approved_chapter: int = 0
     introduced_by: str = ""
+
+    @field_validator("current_state", mode="before")
+    @classmethod
+    def _normalize_legacy_current_state(cls, value):
+        if isinstance(value, str):
+            summary = value.strip()
+            return {
+                "current": {"summary": summary} if summary else {},
+                "recent_changes": [],
+            }
+        return value
 
     @model_validator(mode="after")
     def _sync_frozen_lifecycle(self) -> "CharacterState":
@@ -576,8 +619,10 @@ class StoryState(BaseModel):
     writing_lessons: list[str] = Field(default_factory=list)
     characters: list[CharacterState] = Field(default_factory=list)
     monster_profiles: list[dict] = Field(default_factory=list)
+    equipment_cards: list[dict] = Field(default_factory=list)
     world_facts: list[str] = Field(default_factory=list)
     progression_ledger: dict = Field(default_factory=dict)
+    story_core: dict = Field(default_factory=dict, exclude=True)
     world_context: dict = Field(default_factory=dict, exclude=True)
     outline_context: dict = Field(default_factory=dict, exclude=True)
     timeline: list[TimelineEvent] = Field(default_factory=list)
@@ -586,6 +631,7 @@ class StoryState(BaseModel):
     memory_index: list[MemoryIndexEntry] = Field(default_factory=list)
     arc_recaps: list[ArcRecap] = Field(default_factory=list)
     enabled_skill_ids: list[str] = Field(default_factory=list)
+    enabled_skill_module_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _sanitize_imported_state(self) -> "StoryState":
@@ -607,10 +653,16 @@ class NovelProject(BaseModel):
     world_blueprint: dict = Field(default_factory=dict)
     character_profiles: list[dict] = Field(default_factory=list)
     relationship_graph: list[dict] = Field(default_factory=list)
+    story_core_context: dict = Field(default_factory=dict, exclude=True)
     enabled_skill_ids: list[str] = Field(default_factory=list)
+    enabled_skill_module_ids: list[str] = Field(default_factory=list)
     status: ProjectStatusType = "draft"
     pipeline_stage: ProjectPipelineStage = "imported"
     active_story_id: str = ""
+    project_lifecycle: Literal["active", "archived", "trashed"] = "active"
+    archived_at: str = ""
+    trashed_at: str = ""
+    pre_trash_lifecycle: Literal["active", "archived"] = "active"
     created_at: str = ""
     updated_at: str = ""
 
@@ -625,3 +677,6 @@ class NovelProjectSummary(BaseModel):
     active_story_id: str = ""
     current_chapter: int = 0
     source_path: str = ""
+    project_lifecycle: Literal["active", "archived", "trashed"] = "active"
+    archived_at: str = ""
+    trashed_at: str = ""

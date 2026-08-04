@@ -27,7 +27,7 @@ from packages.story_core.novel_type_catalog import (
 )
 from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator, OpeningBrief
-from packages.story_core.orchestrator import _writer_seed_summary
+from packages.story_core.orchestrator import StoryOrchestrator, _writer_seed_summary
 from packages.story_core.outline_planning import INITIAL_OUTLINE_CHAPTER_COUNT
 from packages.story_core.outline_planning_generation import (
     LLMOutlinePlanningGenerator,
@@ -86,7 +86,8 @@ def _read_json(path):
 
 def _runtime_settings(_: str) -> StageRuntimeSettings:
     return StageRuntimeSettings(
-        provider="openai",
+        provider_id="openai",
+        protocol="openai_compatible",
         model="runtime-integration-model",
         base_url="http://runtime.test",
         api_key="test-key",
@@ -116,6 +117,35 @@ def _directions_payload(novel_type_id: str) -> dict:
                 "main_conflict": f"冲突{index}",
                 "growth_path": f"成长{index}",
                 "opening_promise": f"承诺{index}",
+                "logline": f"A flawed protagonist faces incident {index}, pursues a goal, and risks a lasting loss.",
+                "protagonist_profile": f"Protagonist profile {index}",
+                "inciting_incident": f"Inciting incident {index}",
+                "failure_stakes": f"Failure stakes {index}",
+                "excitement_point": f"Excitement point {index}",
+                "target_audience": f"Target audience {index}",
+                "reader_promise": f"Reader promise {index}",
+                "ending_direction": f"Ending direction {index}",
+                "core_advantage": {
+                    "name": f"Advantage {index}",
+                    "type": "talent",
+                    "ability": "Creates a measurable edge.",
+                    "growth_rule": "Grows after verified progress.",
+                    "limits": "Cannot bypass established costs.",
+                    "early_payoff": "Secures the first useful result.",
+                },
+                "central_mystery": {
+                    "surface_anomaly": "The rules behave differently once.",
+                    "hidden_truth": "A hidden actor is changing the rules.",
+                    "reality_impact": "The anomaly changes an external relationship.",
+                    "reveal_path": ["verify the anomaly", "trace the actor"],
+                },
+                "initial_drive": {
+                    "immediate_need": "Resolve the immediate pressure.",
+                    "trigger": "The opening incident makes delay impossible.",
+                    "short_term_goal": "Secure the first concrete result.",
+                    "failure_stakes": "The protagonist loses the current opportunity.",
+                    "long_term_transition": "The immediate goal becomes a larger investigation.",
+                },
                 "primary_trope_id": primary_trope_id,
             }
             for index in range(1, 4)
@@ -148,6 +178,11 @@ def _trope_plan(primary_trope_id: str | None, trope_beat: str | None) -> dict:
         "outline": {
             "overall": {
                 "story": "The lead investigates a public failure.",
+                "theme_statement": "Public facts matter more than protected status.",
+                "foreground_story": "The lead investigates the failure and earns a formal hearing.",
+                "background_story": "A hidden sponsor altered the rules to preserve control.",
+                "book_objective": "Expose the altered rules and remove the sponsor's control.",
+                "ending_image": "The verified evidence is entered into the public record.",
                 "protagonist_goal": "Find the cause.",
                 "main_conflict": "The rival blocks the investigation.",
                 "growth_path": "Earn the authority to expose the truth.",
@@ -162,6 +197,14 @@ def _trope_plan(primary_trope_id: str | None, trope_beat: str | None) -> dict:
                 "goal": "Secure the first piece of evidence.",
                 "obstacle": "The rival controls access.",
                 "payoff": "The lead earns a formal hearing.",
+                "emotional_curve": "The lead moves from exclusion to a public challenge.",
+                "key_results": [
+                    "Secure the first piece of evidence.",
+                    "Verify that the record was altered.",
+                    "Earn a formal hearing.",
+                ],
+                "hook_plan": "The altered record points to a hidden sponsor.",
+                "irreversible_change": "The dispute becomes public and cannot be buried quietly.",
                 "trope_id": primary_trope_id,
                 "end_state": "The case can no longer be buried.",
                 "stage_antagonist": "Rival",
@@ -915,6 +958,96 @@ def test_custom_type_creates_project_with_stable_lowercase_id(
     assert state["genre"] == CUSTOM_NAME
 
 
+def test_runtime_non_game_type_does_not_inherit_web_game_writer_method(
+    runtime_type_library,
+) -> None:
+    story = StoryState(
+        story_id="s-runtime-sports",
+        outline="替补队员调查训练数据被篡改的原因，并争取下一场首发。",
+        genre=CUSTOM_NAME,
+        genre_plugin_ids=[CUSTOM_ID],
+        style="白描",
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(
+        story,
+        1,
+        {"event_plan": {"chapter_title": "首发名单"}},
+    )
+
+    assert CUSTOM_DESCRIPTION in prompt
+    assert "通用写法：本章只推进一个主要目标" in prompt
+    assert "悬疑写法" not in prompt
+    assert "## 网游写法" not in prompt
+    assert "怪物面板" not in prompt
+    assert "玩家和NPC" not in prompt
+
+
+@pytest.mark.parametrize(
+    "outline",
+    [
+        "替补队员调查案件并争取下一场首发。",
+        "替补队员进入都市公司争取赞助合同。",
+        "替补队员在宗门修炼后参加联赛选拔。",
+    ],
+)
+def test_runtime_non_game_type_ignores_builtin_genre_keyword_interference(
+    runtime_type_library,
+    outline,
+) -> None:
+    story = StoryState(
+        story_id="s-runtime-sports-interference",
+        outline=outline,
+        genre=CUSTOM_NAME,
+        genre_plugin_ids=[CUSTOM_ID],
+        style="白描",
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {})
+
+    assert CUSTOM_DESCRIPTION in prompt
+    assert "通用写法：本章只推进一个主要目标" in prompt
+    for builtin_method in ("悬疑写法", "都市写法", "玄幻/修仙写法"):
+        assert builtin_method not in prompt
+
+
+def test_runtime_non_game_type_resolves_custom_record_from_genre_name(
+    runtime_type_library,
+) -> None:
+    story = StoryState(
+        story_id="s-runtime-sports-name-only",
+        outline="替补队员调查训练数据并争取下一场首发。",
+        genre=CUSTOM_NAME,
+        genre_plugin_ids=[],
+        style="白描",
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {})
+
+    assert CUSTOM_DESCRIPTION in prompt
+    assert "通用写法：本章只推进一个主要目标" in prompt
+    assert "悬疑写法" not in prompt
+
+
+def test_builtin_general_type_keeps_generic_method_without_description_injection(
+    runtime_type_library,
+) -> None:
+    record = runtime_novel_type("generic_webnovel")
+    description = novel_type_prompt_context(record)["genre_description"]
+    story = StoryState(
+        story_id="s-runtime-builtin-general",
+        outline="主角处理眼前的选择。",
+        genre=record.name,
+        genre_plugin_ids=[record.id],
+        style="白描",
+    )
+
+    prompt = StoryOrchestrator()._body_prompt(story, 1, {})
+
+    assert "通用写法：本章只推进一个主要目标" in prompt
+    assert description not in prompt
+
+
 @pytest.mark.parametrize(
     ("novel_type_id", "description", "promise"),
     [
@@ -1032,7 +1165,7 @@ def test_generation_prompt_caps_runtime_novel_type_context(
     }
     serialized = json.dumps(novel_type_context, ensure_ascii=False)
     assert marker in serialized
-    assert set(novel_type_context) == {
+    expected_context_keys = {
         "genre_label",
         "genre_description",
         "genre_core_promises",
@@ -1040,7 +1173,11 @@ def test_generation_prompt_caps_runtime_novel_type_context(
         "genre_quality_checks",
         "genre_trope_templates",
         "genre_power_system_template",
+        "genre_outline_template",
     }
+    if generator_kind == "opening":
+        expected_context_keys.add("genre_opening_core_reference")
+    assert set(novel_type_context) == expected_context_keys
     assert "genre_trope_templates" in captured["payload"]["messages"][1]["content"]
     assert len(serialized) <= 6000
 

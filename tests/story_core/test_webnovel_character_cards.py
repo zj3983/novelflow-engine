@@ -40,6 +40,36 @@ def test_build_character_cards_uses_webnovel_writer_style_axes():
     assert card["voice_and_action"]["risk_posture"] == "隐藏在幕后，不当众炫耀爆率"
 
 
+def test_character_card_uses_structured_story_drive_instead_of_generic_default():
+    story = StoryState(
+        story_id="s-structured-character-card",
+        outline="沈川鉴定旧表。",
+        genre="都市",
+        style="自然口语",
+        characters=[
+            CharacterState(
+                name="沈川",
+                role="protagonist",
+                story_drive={
+                    "motivation": "保住修表铺，并弄清儿子带回旧表的原因。",
+                    "immediate_goal": "先确认旧表的维修痕迹。",
+                },
+                performance_profile={
+                    "speech_style": "平时不主动多谈，但回应会把原因和决定说清楚。",
+                    "action_style": "先观察机芯痕迹，再下判断。",
+                    "decision_rules": ["证据能站住再表态。"],
+                },
+            )
+        ],
+    )
+
+    card = build_character_cards(story)[0]
+
+    assert card["webnovel_profile"]["core_motivation"] == "保住修表铺，并弄清儿子带回旧表的原因。"
+    assert "先观察机芯痕迹" in card["webnovel_profile"]["behavior_logic"]
+    assert "回应会把原因和决定说清楚" in card["webnovel_profile"]["interaction_mode"]
+
+
 def test_writing_packet_and_character_context_expose_character_cards():
     story = StoryState(
         story_id="s-character-card-packet",

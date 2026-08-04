@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { deepAuditPrompt, type DeepPromptAuditResult } from "../lib/api";
 
 const PROJECT_ID = "file:prompt-audit-fixture";
+const GAME_PROJECT_ID = "file:prompt-audit-game-fixture";
 const PROJECT_PATH = `/projects/${encodeURIComponent(PROJECT_ID)}/prompts`;
 const REQUIRED_VARIABLES = ["output_section", "chapter_direction"];
 const FIRST_CALL_PROMPT = "真实调用一的完整提示词";
@@ -23,6 +24,8 @@ const templatesResponse = {
       required_variables: REQUIRED_VARIABLES,
       version: "sha256:template",
       source: "global_default",
+      applicability: "all",
+      active_for_project: true,
     },
     {
       key: "reviewer",
@@ -32,6 +35,30 @@ const templatesResponse = {
       required_variables: ["output_section"],
       version: "sha256:reviewer",
       source: "global_default",
+      applicability: "all",
+      active_for_project: true,
+    },
+    {
+      key: "director_generic",
+      title: "章节规划补全（通用）",
+      stage: "planning",
+      content: "通用规划\n{{output_section}}",
+      required_variables: ["output_section"],
+      version: "sha256:director-generic",
+      source: "global_default",
+      applicability: "non_game_only",
+      active_for_project: true,
+    },
+    {
+      key: "director",
+      title: "章节规划补全（网游）",
+      stage: "planning",
+      content: "网游规划\n{{output_section}}",
+      required_variables: ["output_section"],
+      version: "sha256:director-game",
+      source: "global_default",
+      applicability: "game_only",
+      active_for_project: false,
     },
   ],
 };
@@ -92,10 +119,22 @@ const promptCallsResponse = {
   calls: [
     { call_id: "pc-audit", chapter_number: 1, stage: "正文写作", agent: "writer", attempt: 1, status: "succeeded", provider: "openai", model: "gpt-5-mini", prompt_chars: FIRST_CALL_PROMPT.length },
     { call_id: "pc-second", chapter_number: 1, stage: "章节审稿", agent: "reviewer", attempt: 2, status: "succeeded", provider: "openai", model: "gpt-5-mini", prompt_chars: SECOND_CALL_PROMPT.length },
+    { call_id: "pc-director", chapter_number: 1, stage: "director", agent: "planner", attempt: 1, status: "succeeded", provider: "openai", model: "gpt-5-mini", prompt_chars: FIRST_CALL_PROMPT.length },
+    { call_id: "pc-revision", chapter_number: 1, stage: "revision", agent: "writer", attempt: 1, status: "succeeded", provider: "openai", model: "gpt-5-mini", prompt_chars: FIRST_CALL_PROMPT.length },
   ],
 };
 
 const promptCallDetails = {
+  "pc-director": {
+    ...promptCallsResponse.calls[2],
+    user_prompt: FIRST_CALL_PROMPT,
+    system_prompt: SYSTEM_ONLY_SECRET,
+    output_summary: OUTPUT_ONLY_SECRET,
+    module_keys: ["core_context"],
+    template_source: "global_default",
+    genre_stage_profile: "generic",
+    genre_stage_modules: ["generic.director"],
+  },
   "pc-audit": {
     ...promptCallsResponse.calls[0],
     user_prompt: FIRST_CALL_PROMPT,
@@ -103,6 +142,8 @@ const promptCallDetails = {
     output_summary: OUTPUT_ONLY_SECRET,
     module_keys: ["character_context"],
     template_source: "global_default",
+    genre_stage_profile: "generic",
+    genre_stage_modules: ["common.writer"],
   },
   "pc-second": {
     ...promptCallsResponse.calls[1],
@@ -111,6 +152,18 @@ const promptCallDetails = {
     output_summary: "第二条调用的模型输出",
     module_keys: ["chapter_context"],
     template_source: "project_override",
+    genre_stage_profile: "generic",
+    genre_stage_modules: ["generic.review"],
+  },
+  "pc-revision": {
+    ...promptCallsResponse.calls[3],
+    user_prompt: FIRST_CALL_PROMPT,
+    system_prompt: SYSTEM_ONLY_SECRET,
+    output_summary: OUTPUT_ONLY_SECRET,
+    module_keys: ["review_context"],
+    template_source: "global_default",
+    genre_stage_profile: "generic",
+    genre_stage_modules: ["common.revision"],
   },
 };
 
@@ -173,6 +226,32 @@ async function mockPromptAuditPage(page: Page, options: AuditMockOptions = {}) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(templatesResponse) });
       return;
     }
+    if (pathname.endsWith("/prompt-context")) {
+      const chapterNumber = Number(url.searchParams.get("chapter_number") ?? 1);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema_version: "file-project-prompt-context/v1",
+          project_id: requestedProjectId,
+          chapter_number: chapterNumber,
+          chapter_title: "测试章节",
+          source: "current_project_context",
+          modules: [{
+            key: "core_context",
+            title: "核心上下文模块",
+            agent: "context",
+            stage: "核心上下文",
+            source: "test",
+            content: '{"world_facts":["小说类型：xuanhuan"]}',
+            chars: 39,
+            module_keys: [],
+            available: true,
+          }],
+        }),
+      });
+      return;
+    }
     if (pathname.endsWith("/prompt-calls")) {
       const chapterNumber = Number(url.searchParams.get("chapter_number") ?? 1);
       await route.fulfill({
@@ -187,9 +266,22 @@ async function mockPromptAuditPage(page: Page, options: AuditMockOptions = {}) {
       });
       return;
     }
-    const callId = pathname.match(/\/prompt-calls\/(pc-audit|pc-second)$/)?.[1] as keyof typeof promptCallDetails | undefined;
+    const callId = pathname.match(/\/prompt-calls\/(pc-audit|pc-second|pc-director|pc-revision)$/)?.[1] as keyof typeof promptCallDetails | undefined;
     if (callId) {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(promptCallDetails[callId]) });
+      const detail = requestedProjectId === GAME_PROJECT_ID
+        ? {
+            ...promptCallDetails[callId],
+            project_id: requestedProjectId,
+            genre_stage_profile: "game_webnovel",
+            genre_stage_modules: [{
+              "pc-director": "game_webnovel.director",
+              "pc-audit": "game_webnovel.writer",
+              "pc-second": "game_webnovel.review",
+              "pc-revision": "game_webnovel.revision",
+            }[callId]],
+          }
+        : { ...promptCallDetails[callId], project_id: requestedProjectId };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detail) });
       return;
     }
     if (pathname.includes("/prompt-templates/") && request.method() === "PUT") {
@@ -254,6 +346,42 @@ async function openRecordedCall(page: Page, callId = "pc-audit") {
   await expect(page.getByText(promptCallDetails[callId as keyof typeof promptCallDetails].user_prompt, { exact: true })).toBeVisible();
 }
 
+test("actual calls show only the active genre stage modules", async ({ page }) => {
+  await mockPromptAuditPage(page);
+
+  await openRecordedCall(page, "pc-director");
+  await expect(page.getByText("generic.director", { exact: true })).toBeVisible();
+  await openRecordedCall(page, "pc-audit");
+  await expect(page.getByText("common.writer", { exact: true })).toBeVisible();
+  await expect(page.getByText("generic.director", { exact: true })).toHaveCount(0);
+  await openRecordedCall(page, "pc-second");
+  await expect(page.getByText("generic.review", { exact: true })).toBeVisible();
+  await openRecordedCall(page, "pc-revision");
+  await expect(page.getByText("common.revision", { exact: true })).toBeVisible();
+  await expect(page.getByText(/game_webnovel\./)).toHaveCount(0);
+
+  const gamePath = `/projects/${encodeURIComponent(GAME_PROJECT_ID)}/prompts?view=calls&chapter=1`;
+  await page.goto(gamePath);
+  await page.getByRole("button", { name: "查看调用 pc-audit" }).click();
+  await expect(page.getByText("game_webnovel.writer", { exact: true })).toBeVisible();
+  await expect(page.getByText("game_webnovel.director", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: /pc-director$/ }).click();
+  await expect(page.getByText("game_webnovel.director", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /pc-second$/ }).click();
+  await expect(page.getByText("game_webnovel.review", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /pc-revision$/ }).click();
+  await expect(page.getByText("game_webnovel.revision", { exact: true })).toBeVisible();
+  await expect(page.getByText("game_webnovel.review", { exact: true })).toHaveCount(0);
+});
+
+test("核心上下文将小说类型内部 ID 显示为中文", async ({ page }) => {
+  await mockPromptAuditPage(page);
+  await page.goto(`${PROJECT_PATH}?view=context&chapter=1`, { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByText("小说类型：东方玄幻", { exact: false })).toBeVisible();
+  await expect(page.getByText("小说类型：xuanhuan", { exact: false })).toHaveCount(0);
+});
+
 test("deepAuditPrompt 仅序列化本地检查结果的白名单字段", async () => {
   const originalFetch = globalThis.fetch;
   let capturedBody: { local_result: Record<string, unknown> } | undefined;
@@ -316,6 +444,17 @@ test("检查当前未保存的模板并显示紧凑诊断", async ({ page }) => 
   await expect(page.getByText("分析报告", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "AI 深度检查" })).toBeEnabled();
   expect(api.deepAuditBodies).toHaveLength(0);
+});
+
+test("默认只显示当前项目使用的模板，可切换查看全部模板", async ({ page }) => {
+  await mockPromptAuditPage(page);
+
+  await page.goto(PROJECT_PATH);
+
+  await expect(page.getByRole("button", { name: /章节规划补全（通用）/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /章节规划补全（网游）/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "全部模板" }).click();
+  await expect(page.getByRole("button", { name: /章节规划补全（网游）.*仅网游/ })).toBeVisible();
 });
 
 test("AI 深度检查仅在显式点击后调用并显示语义建议与运行信息", async ({ page }) => {

@@ -155,11 +155,12 @@ def test_post_chapter_updates_apply_only_validated_final_memory():
         "next_focus": "明早去账房",
         "chapter_title": "搬炉",
         "character_updates": [
-            {
-                "name": "林照",
-                "goal": "明早去账房",
+                {
+                    "name": "林照",
+                    "state_line": "reality",
+                    "goal": "明早去账房",
                 "location": "偏殿",
-                "evidence": "林照把断香炉搬回偏殿",
+                "evidence": "林照把断香炉搬回偏殿。周执事叫他明早过去，林照答应明早去账房。",
             }
         ],
         "ledger_updates": {},
@@ -168,7 +169,7 @@ def test_post_chapter_updates_apply_only_validated_final_memory():
 
     apply_post_chapter_updates(
         story,
-        "林照把断香炉搬回偏殿。周执事让他明早去账房。",
+        "林照把断香炉搬回偏殿。周执事叫他明早过去，林照答应明早去账房。",
         1,
         post_draft_memory=memory,
         conflict_summary={

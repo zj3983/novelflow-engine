@@ -1,10 +1,27 @@
 from __future__ import annotations
 
 from packages.story_core.character_profiles import (
+    filter_character_cards,
+    is_non_character_card,
+    merge_character_alias_cards,
     merge_character_profile,
     normalize_character_profile,
+    normalize_speech_style_for_writing,
     project_character_for_writer,
+    remove_cross_character_aliases,
 )
+
+
+def test_functional_market_entity_is_not_a_character_card() -> None:
+    cards = filter_character_cards(
+        [
+            {"name": "白河仓库收购方", "role": "收购方NPC"},
+            {"name": "药剂师洛婶", "role": "服务NPC"},
+        ]
+    )
+
+    assert is_non_character_card({"name": "白河仓库收购方", "role": "收购方NPC"})
+    assert [card["name"] for card in cards] == ["药剂师洛婶"]
 from packages.story_core.models import CharacterState
 
 
@@ -73,6 +90,37 @@ def test_generated_patch_never_overwrites_non_empty_user_fields() -> None:
     assert merged["dialogue_examples"] == ["我先把来龙去脉问清楚。"]
 
 
+def test_profile_merge_does_not_turn_blank_existing_field_into_null_when_patch_omits_it() -> None:
+    existing = {
+        "current_life_profile": {
+            "residence": "出租屋",
+            "economic_state": "",
+            "immediate_problem": "",
+        },
+        "story_drive": {"long_term_goal": "查清异常", "immediate_goal": ""},
+    }
+    generated = {
+        "current_life_profile": {"residence": "出租屋"},
+        "story_drive": {"long_term_goal": "查清异常"},
+    }
+
+    merged = merge_character_profile(existing, generated)
+
+    assert merged["current_life_profile"]["economic_state"] == ""
+    assert merged["current_life_profile"]["immediate_problem"] == ""
+    assert merged["story_drive"]["immediate_goal"] == ""
+
+
+def test_speech_normalizer_softens_quiet_and_short_sentence_synonyms() -> None:
+    normalized = normalize_speech_style_for_writing(
+        "话不多但说完整，短句起步，关键判断会补一句理由。"
+    )
+
+    assert "话不多" not in normalized
+    assert "短句起步" not in normalized
+    assert "对象、原因和决定要说完整" in normalized
+
+
 def test_legacy_card_normalizes_without_losing_existing_fields() -> None:
     legacy = {
         "name": "赵管事",
@@ -89,6 +137,46 @@ def test_legacy_card_normalizes_without_losing_existing_fields() -> None:
     assert normalized["identity_profile"]["age"] is None
     assert normalized["story_drive"]["motivation"] == "把责任推出去"
     assert normalized["performance_profile"]["speech_style"] == "交代差事时会把责任说清楚"
+
+
+def test_remove_cross_character_aliases_keeps_distinct_character_cards_separate() -> None:
+    cards = [
+        {
+            "name": "小乐",
+            "identity_profile": {"aliases": ["乐乐", "小哑巴"]},
+        },
+        {
+            "name": "小哑巴",
+            "identity_profile": {"aliases": []},
+        },
+    ]
+
+    cleaned = remove_cross_character_aliases(cards)
+
+    assert cleaned[0]["identity_profile"]["aliases"] == ["乐乐"]
+    assert cleaned[1]["identity_profile"]["aliases"] == []
+
+
+def test_merge_character_alias_cards_joins_real_name_and_game_id() -> None:
+    cards = [
+        {"name": "夜烬", "role": "主角，现实身份苏叶", "story_drive": {"immediate_goal": "验证异常"}},
+        {
+            "name": "苏叶",
+            "role": "protagonist",
+            "game_id": "夜烬",
+            "game_state": {"current": {"game_id": "夜烬", "level": 3}},
+            "identity_profile": {"occupation": "自由职业者"},
+        },
+    ]
+
+    merged = merge_character_alias_cards(cards)
+
+    assert len(merged) == 1
+    assert merged[0]["name"] == "苏叶"
+    assert merged[0]["game_id"] == "夜烬"
+    assert merged[0]["story_drive"]["immediate_goal"] == "验证异常"
+    assert merged[0]["identity_profile"]["occupation"] == "自由职业者"
+    assert merged[0]["identity_profile"]["aliases"] == ["夜烬"]
 
 
 def test_writer_projection_hides_unreleased_secrets() -> None:

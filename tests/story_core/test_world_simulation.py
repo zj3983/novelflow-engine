@@ -3,7 +3,6 @@ from packages.story_core.models import CharacterState, StoryState, WorldEvent
 from packages.story_core.simulation import build_chapter_simulation_plan
 from packages.story_core.world_simulation import select_scene_cards, simulate_world_events
 
-
 def test_combat_scene_card_carries_level_gap_boundary():
     events = [
         WorldEvent(
@@ -187,3 +186,53 @@ def test_scene_cards_do_not_surface_question_mark_identity_placeholders():
 
     assert "??" not in serialized
     assert any(card.pov == "夜烬" for card in scene_cards)
+
+
+def test_scene_cards_fall_back_to_director_scene_chain_without_world_events():
+    cards = select_scene_cards(
+        [],
+        chapter_seed={"chapter_number": 7},
+        simulation_plan={
+            "event_plan": {
+                "scene_chain": [
+                    {
+                        "location": "祖祠外院",
+                        "pov": "林修",
+                        "goal": "找到账房留下的旧钥匙",
+                        "obstacle": "看守不肯让他靠近偏门",
+                        "action": "林修拿出旧工牌，追问昨夜是谁换过门锁",
+                        "change": "看守认出工牌，透露钥匙被送进内院",
+                        "next": "林修跟着送香队伍进入内院",
+                    },
+                    {
+                        "location": "祖祠内院",
+                        "pov": "林修",
+                        "goal": "取回旧钥匙",
+                        "obstacle": "钥匙已经挂在执事腰间",
+                        "action": "林修借着搬香案靠近执事",
+                        "change": "他发现钥匙上沾着昨夜阵灰",
+                        "next": "林修决定先查阵灰来源",
+                    },
+                    {
+                        "location": "废弃阵房",
+                        "pov": "林修",
+                        "goal": "确认阵灰来自哪里",
+                        "obstacle": "阵房门上新添了一道封条",
+                        "action": "林修对照钥匙齿痕检查门锁",
+                        "change": "门锁与旧钥匙吻合，封条却是今天才贴的",
+                        "next": "门内传来一声压低的咳嗽",
+                    },
+                ]
+            }
+        },
+    )
+
+    assert len(cards) == 3
+    assert cards[0].location == "祖祠外院"
+    assert cards[0].purpose == "找到账房留下的旧钥匙"
+    assert cards[0].conflict == "看守不肯让他靠近偏门"
+    assert cards[0].must_show == [
+        "林修拿出旧工牌，追问昨夜是谁换过门锁",
+        "看守认出工牌，透露钥匙被送进内院",
+    ]
+    assert cards[0].ending_pressure == "林修跟着送香队伍进入内院"

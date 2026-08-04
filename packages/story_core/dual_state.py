@@ -16,7 +16,13 @@ _LINES = {"game": "game_state", "reality": "real_state"}
 _GAME_SCENE_MARKERS = ("游戏", "副本", "任务", "背包", "等级")
 _REALITY_SCENE_MARKERS = ("现实", "出租屋", "工作", "房租", "银行")
 _PRIVATE_KEY_MARKERS = ("secret", "private", "hidden_matters", "continuity_locks")
-_SCENE_PRIVATE_KEYS = {"game_panel", "continuity_locks", "real_state", "game_state"}
+_SCENE_PRIVATE_KEYS = {
+    "game_panel",
+    "continuity_locks",
+    "current_state",
+    "real_state",
+    "game_state",
+}
 
 
 def infer_scene_kind(scene_card: Mapping[str, Any], *, is_game_story: bool) -> str:
@@ -125,6 +131,67 @@ def _normalize_state(value: Any, *, fallback_current: Mapping[str, Any] | None =
     return {"current": current, "recent_changes": _recent_changes(recent)}
 
 
+def _generic_state(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        summary = value.strip()
+        return {
+            "current": {"summary": summary} if summary else {},
+            "recent_changes": [],
+        }
+    return _normalize_state(value)
+
+
+def _merge_recent_changes(*groups: Any) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for group in groups:
+        for item in _recent_changes(group):
+            key = (item["chapter"], item["fact"])
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    return merged
+
+
+def normalize_character_state(
+    card: Mapping[str, Any],
+    *,
+    is_game_story: bool,
+) -> dict[str, Any]:
+    """Normalize mutable character state according to the project's genre."""
+
+    if is_game_story:
+        return normalize_dual_state(card, is_game_story=True)
+
+    normalized = deepcopy(dict(card))
+    explicit = _generic_state(normalized.get("current_state"))
+    legacy = _generic_state(normalized.get("real_state"))
+
+    # Earlier code copied static profile blocks into real_state. They describe
+    # who the character is, not what changed in the current story moment.
+    legacy_current = {
+        key: value
+        for key, value in legacy["current"].items()
+        if key not in _REAL_FIELDS
+    }
+    current = deepcopy(legacy_current)
+    current.update(deepcopy(explicit["current"]))
+    recent_changes = _merge_recent_changes(
+        explicit.get("recent_changes"),
+        legacy.get("recent_changes"),
+    )
+
+    normalized.pop("real_state", None)
+    normalized.pop("game_state", None)
+    normalized.pop("game_panel", None)
+    normalized["current_state"] = {
+        "current": current,
+        "recent_changes": recent_changes,
+    }
+    return normalized
+
+
 def normalize_dual_state(card: Mapping[str, Any], *, is_game_story: bool) -> dict[str, Any]:
     """Normalize legacy character fields into isolated reality and game lines."""
 
@@ -196,6 +263,7 @@ def project_character_for_scene(
     card: Mapping[str, Any],
     *,
     scene_kind: str,
+    is_game_story: bool = True,
     allowed_reveals: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Build one scene-safe writer card with a single projected state context."""
@@ -204,7 +272,13 @@ def project_character_for_scene(
 
     projected = project_character_for_writer(dict(card), allowed_reveals=allowed_reveals)
     projected = _strip_scene_private_fields(projected)
-    projected["state_context"] = project_dual_state(card, scene_kind=scene_kind)
+    if is_game_story:
+        projected["state_context"] = project_dual_state(card, scene_kind=scene_kind)
+    else:
+        normalized = normalize_character_state(card, is_game_story=False)
+        projected["state_context"] = {
+            "current_state": _scrub_private(normalized["current_state"]),
+        }
     return projected
 
 

@@ -31,8 +31,28 @@ def test_derived_author_constraints_only_add_game_identity_rule_for_game_project
     assert any("游戏ID" in item for item in game)
 
 
+def test_world_prompt_projection_includes_only_world_story_core_fields():
+    project = NovelProject(
+        project_id="p-world-core",
+        title="断香炉",
+        story_core_context={
+            "inciting_incident": "断香炉指出第一件旧案证物。",
+            "main_conflict": "执事要销毁证物。",
+            "excitement_point": "从旧物痕迹追查宗门旧案。",
+        },
+    )
+
+    payload = world_enrichment._project_payload(project, chars=240, items=8, depth=4)
+
+    assert set(payload["story_core"]) == {
+        "inciting_incident",
+        "main_conflict",
+        "excitement_point",
+    }
+
+
 def complete_game_power_spec() -> dict[str, object]:
-    return {
+    spec = {
         "name": "神域职业体系",
         "origin": ["完成觉醒任务后获得职业权限"],
         "attributes": [{"name": "智力", "effect": "提高法术强度"}],
@@ -77,6 +97,67 @@ def complete_game_power_spec() -> dict[str, object]:
             "level", "class_path", "skills", "equipment", "resources", "conditions"
         ],
     }
+    spec["class_advancement_tiers"] = [
+        {
+            "level": level,
+            "name": name,
+            "purpose": purpose,
+            "common_requirements": [requirement],
+            "failure_rule": failure,
+        }
+        for level, name, purpose, requirement, failure in (
+            (10, "正式转职", "确定基础职业", "完成职业导师试炼", "七日后可重新挑战"),
+            (30, "职业分支", "选择战斗分支", "完成分支资格任务", "保留原职业等待重试"),
+            (60, "传承职业", "获得职业传承", "完成传承仪式", "传承材料进入修复状态"),
+        )
+    ]
+    for path in spec["paths"]:
+        path["advancement_tree"] = [
+            {
+                "level": level,
+                "tier_name": tier_name,
+                "options": [
+                    {
+                        "name": f"{path['name']}{suffix}",
+                        "role": path["role"],
+                        "requirements": [requirement],
+                        "transfer_task": task,
+                        "ability_changes": [change],
+                        "new_resources": [path["core_resource"]],
+                        "equipment_permissions": path["weapons"],
+                        "failure_consequence": failure,
+                        "next_options": [f"{path['name']}后续路线"] if level < 60 else [],
+                    }
+                ],
+            }
+            for level, tier_name, suffix, requirement, task, change, failure in (
+                (10, "正式转职", "正式职业", "达到Lv.10", "完成导师试炼", "解锁职业资源", "七日后重试"),
+                (30, "职业分支", "专精分支", "达到Lv.30", "完成分支任务", "解锁分支技能", "保留原职业"),
+                (60, "传承职业", "传承者", "达到Lv.60", "完成传承仪式", "解锁职业权柄", "修复传承材料"),
+            )
+        ]
+    return spec
+
+
+def test_game_power_system_requires_shared_class_advancement_levels() -> None:
+    spec = complete_game_power_spec()
+
+    validated = validate_power_system_spec(spec, novel_type_id="game_webnovel")
+
+    assert [tier["level"] for tier in validated["class_advancement_tiers"]] == [10, 30, 60]
+    assert [node["level"] for node in validated["paths"][0]["advancement_tree"]] == [10, 30, 60]
+    assert validated["paths"][0]["advancement_tree"][0]["options"][0]["transfer_task"]
+
+
+@pytest.mark.parametrize("missing_level", [10, 30, 60])
+def test_game_power_system_rejects_missing_class_advancement_level(missing_level: int) -> None:
+    spec = complete_game_power_spec()
+    spec["class_advancement_tiers"] = [
+        tier for tier in spec["class_advancement_tiers"] if tier["level"] != missing_level
+    ]
+
+    with pytest.raises(ValueError, match="game.invalid_class_advancement_tiers"):
+        validate_power_system_spec(spec, novel_type_id="game_webnovel")
 
 
 def game_project(*, power_system_spec=None, power_system=None) -> NovelProject:
@@ -141,6 +222,9 @@ def test_world_enrichment_prompt_requests_canonical_spec_and_carries_template_an
 
     assert "power_system_spec" in prompt
     assert "genre_power_system_template" in prompt
+    assert "Lv.10正式转职、Lv.30选择职业分支、Lv.60晋升传承职业" in prompt
+    assert "class_advancement_tiers" in prompt
+    assert "advancement_tree" in prompt
     assert prompt_power_template(prompt)["fixed_milestones"] == [1, 10, 20, 30, 60]
     context_line = next(
         line for line in prompt.splitlines() if line.startswith("当前项目数据：")
@@ -153,6 +237,71 @@ def test_world_enrichment_prompt_requests_canonical_spec_and_carries_template_an
         "social_impact", "visibility", "continuity_ledger",
     ):
         assert field in prompt
+
+
+def test_generic_world_enrichment_prompt_omits_game_only_world_contracts():
+    project = NovelProject(
+        project_id="p-realistic-generic",
+        title="巷口早饭店",
+        seed_outline="失业厨师回到老街接手一家早餐店。",
+        world_blueprint={"genre_plugin_ids": ["generic_webnovel"]},
+    )
+
+    prompt = world_enrichment._build_prompt(project)
+
+    assert "power_system_spec 必须" not in prompt
+    assert "genre_power_system_template:" not in prompt
+    assert "power_system" not in prompt
+    assert "panel_rules" not in prompt
+    assert "quest_rules" not in prompt
+    assert "server_runtime" not in prompt
+    assert "player_ecology" not in prompt
+    assert "npc_system" not in prompt
+    assert "quest_network" not in prompt
+    assert "只整理世界观、角色档案、关系网、类型规则和后续写作约束" in prompt
+
+
+def test_generic_world_enrichment_drops_game_only_generated_sections():
+    project = NovelProject(
+        project_id="p-realistic-merge",
+        title="巷口早饭店",
+        world_blueprint={"genre_plugin_ids": ["generic_webnovel"]},
+    )
+
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {
+            "world_blueprint": {
+                "premise": "失业厨师接手欠租早餐店。",
+                "server_runtime": {"phase": "开服期"},
+                "npc_system": {"npcs": [{"name": "房东"}]},
+                "quest_network": {"active_chains": [{"name": "补租任务"}]},
+                "map_ecology": {"zones": [{"name": "早餐店"}]},
+                "living_world": {"player_ecology": ["主角是低位经营者"]},
+                "constraints": [
+                    "不写成玄幻系统文，所有金手指必须表现为现实资源。",
+                    "不写超自然，不出现凭空暴富或万能系统。",
+                    "所有爽点来自专业能力、证据链推进和阶段性谈判成果。",
+                    "人物借钱必须说明还款压力。",
+                ],
+            }
+        },
+        rules_only=False,
+    )
+
+    assert "power_system_spec" not in enriched.world_blueprint
+    assert "power_system" not in enriched.world_blueprint
+    assert "panel_rules" not in enriched.world_blueprint
+    assert "quest_rules" not in enriched.world_blueprint
+    assert "server_runtime" not in enriched.world_blueprint
+    assert "npc_system" not in enriched.world_blueprint
+    assert "quest_network" not in enriched.world_blueprint
+    assert "map_ecology" not in enriched.world_blueprint
+    assert "player_ecology" not in enriched.world_blueprint["living_world"]
+    assert "不写成玄幻系统文，所有金手指必须表现为现实资源。" not in enriched.author_constraints
+    assert "不写超自然，不出现凭空暴富或万能系统。" not in enriched.author_constraints
+    assert "所有爽点来自专业能力、证据链推进和阶段性谈判成果。" not in enriched.author_constraints
+    assert "人物借钱必须说明还款压力。" in enriched.author_constraints
 
 
 def test_world_enrichment_prompt_bounds_hostile_maximum_project_context():

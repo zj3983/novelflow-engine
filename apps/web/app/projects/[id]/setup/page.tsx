@@ -18,12 +18,32 @@ type PendingRequest = "generate" | "select" | null;
 type ErrorSource = "load" | "generate" | "select" | null;
 
 const directionFields = [
-  ["hook", "开篇钩子"],
+  ["logline", "一句话简介"],
+  ["protagonist_profile", "主角起点"],
+  ["inciting_incident", "故事契机"],
   ["protagonist_goal", "主角目标"],
+  ["failure_stakes", "失败后果"],
   ["main_conflict", "主线冲突"],
-  ["growth_path", "成长路径"],
-  ["opening_promise", "开篇承诺"],
+  ["growth_path", "成长方向"],
+  ["excitement_point", "创作兴奋点"],
+  ["target_audience", "目标读者"],
+  ["reader_promise", "核心阅读期待"],
+  ["ending_direction", "结局方向"],
 ] as const;
+
+const openingCoreFields = [
+  ["core_advantage", "核心优势"],
+  ["central_mystery", "核心谜团"],
+  ["initial_drive", "初始驱动力"],
+] as const;
+
+function coreSummary(value: Record<string, string | string[]>): string {
+  return Object.values(value)
+    .flatMap((item) => Array.isArray(item) ? item : [item])
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join("；");
+}
 
 export default function OpeningSetupPage() {
   const router = useRouter();
@@ -144,8 +164,8 @@ export default function OpeningSetupPage() {
           { label: "我的作品", href: "/projects" },
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
-        title="选择开篇方向"
-        subtitle="从原始灵感中选定故事的开篇承诺。"
+        title="选择故事核心"
+        subtitle="选定主角、冲突、失败后果和全书持续兑现的阅读体验。"
       />
 
       <div className="ws-opening-setup">
@@ -174,7 +194,7 @@ export default function OpeningSetupPage() {
 
         {directions.length > 0 ? (
           <fieldset className="ws-opening-directions">
-            <legend>故事方向</legend>
+            <legend>故事核心候选</legend>
             {directions.map((direction, index) => (
               <section className="ws-opening-direction" key={direction.id}>
                 <label className="ws-opening-direction__choice">
@@ -196,6 +216,12 @@ export default function OpeningSetupPage() {
                     <div key={field}>
                       <dt>{label}</dt>
                       <dd>{direction[field]}</dd>
+                    </div>
+                  ))}
+                  {openingCoreFields.map(([field, label]) => (
+                    <div key={field}>
+                      <dt>{label}</dt>
+                      <dd>{coreSummary(direction[field]) || "尚未填写"}</dd>
                     </div>
                   ))}
                 </dl>

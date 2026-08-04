@@ -66,6 +66,65 @@ def test_post_draft_memory_keeps_only_body_grounded_updates():
     )
 
 
+def test_post_draft_memory_extracts_only_body_grounded_resolved_threads():
+    body = "林照拆开旧账册，确认当年改账的人就是周执事。至于铜印是谁送来的，仍然没有答案。"
+    payload = {
+        "resolved_threads": [
+            {"text": "谁改了当年的账册", "evidence": "确认当年改账的人就是周执事"},
+            {"text": "铜印是谁送来的", "evidence": "城主已经承认送出铜印"},
+        ]
+    }
+
+    result = normalize_post_draft_memory(
+        payload,
+        body=body,
+        existing_character_names={"林照", "周执事"},
+    )
+
+    assert result["resolved_threads"] == ["谁改了当年的账册"]
+    assert any(
+        item.get("kind") == "resolved_thread"
+        and item.get("reason") == "evidence_not_in_body"
+        for item in result["rejected_updates"]
+    )
+
+
+def test_resolved_thread_must_copy_an_open_ledger_text_exactly():
+    body = "林修切断阵纹后，残镜对小乐的牵引终于消失。"
+    open_thread = "残镜仍以缓慢牵引继续影响小乐。"
+    payload = {
+        "resolved_threads": [
+            {
+                "text": open_thread,
+                "evidence": "残镜对小乐的牵引终于消失",
+            },
+            {
+                "text": "残镜的牵引已经解除",
+                "evidence": "残镜对小乐的牵引终于消失",
+            },
+        ]
+    }
+
+    result = normalize_post_draft_memory(
+        payload,
+        body=body,
+        existing_character_names={"林修", "小乐"},
+        open_foreshadowing_texts=[open_thread],
+    )
+
+    assert result["resolved_threads"] == [open_thread]
+    assert any(
+        item.get("reason") == "thread_not_open"
+        for item in result["rejected_updates"]
+    )
+
+
+def test_post_draft_memory_prompt_requests_evidenced_resolved_threads():
+    prompt = build_post_draft_memory_prompt("旧案已经查清。")
+
+    assert "facts、unresolved_threads、resolved_threads的每一项必须是{text, evidence}" in prompt
+
+
 def test_evidence_matching_ignores_whitespace_and_common_punctuation():
     body = "林照把断香炉，搬回\n偏殿。"
     payload = {
@@ -1121,6 +1180,47 @@ def test_fallback_uses_only_final_body_and_keeps_no_state_updates():
     assert result["ledger_updates"] == {}
 
 
+def test_character_evidence_without_inferred_fields_keeps_recent_change():
+    evidence = "林照把旧铜钥匙收进袖口，继续守在祖祠里。"
+
+    result = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {"name": "林照", "state_line": "reality", "evidence": evidence}
+            ]
+        },
+        body=evidence,
+        existing_character_names={"林照"},
+    )
+
+    assert result["character_updates"] == [
+        {"name": "林照", "state_line": "reality", "evidence": evidence}
+    ]
+
+
+def test_character_update_with_explicit_state_line_keeps_evidence_when_label_is_abstract():
+    evidence = "林照把旧铜钥匙收进袖口。"
+
+    result = normalize_post_draft_memory(
+        {
+            "character_updates": [
+                {
+                    "name": "林照",
+                    "state_line": "reality",
+                    "emotion": "alert",
+                    "evidence": evidence,
+                }
+            ]
+        },
+        body=evidence,
+        existing_character_names={"林照"},
+    )
+
+    assert result["character_updates"] == [
+        {"name": "林照", "state_line": "reality", "evidence": evidence.rstrip("。")}
+    ]
+
+
 def test_prompt_declares_final_body_as_the_only_factual_source():
     prompt = build_post_draft_memory_prompt(
         "林照把断香炉搬回偏殿。",
@@ -1146,3 +1246,65 @@ def test_prompt_documents_attribute_allocation_evidence_leaf_paths():
     assert "attribute_allocation" in prompt
     assert "allocations.智力" in prompt
     assert "remaining" in prompt
+
+
+def test_post_draft_memory_accepts_evidenced_equipment_card_update() -> None:
+    body = "夜烬举起史诗长剑暮色裁决，剑身耐久显示为80/100。传闻它由旧王庭最后一位铸剑师打造。"
+    evidence = "史诗长剑暮色裁决，剑身耐久显示为80/100"
+
+    result = normalize_post_draft_memory(
+        {
+            "equipment_updates": [{
+                "name": "暮色裁决",
+                "equipment_type": "武器",
+                "rarity": "史诗",
+                "durability": "80/100",
+                "current_owner": "夜烬",
+                "lore": "由旧王庭最后一位铸剑师打造",
+                "lore_status": "rumor",
+                "evidence": evidence,
+            }]
+        },
+        body=body,
+        existing_character_names={"夜烬"},
+        chapter_number=8,
+    )
+
+    assert result["equipment_updates"] == [{
+        "id": result["equipment_updates"][0]["id"],
+        "name": "暮色裁决",
+        "equipment_type": "武器",
+        "rarity": "史诗",
+        "durability": "80/100",
+        "current_owner": "夜烬",
+        "lore": "由旧王庭最后一位铸剑师打造",
+        "lore_status": "rumor",
+        "evidence": [{"chapter": 8, "quote": evidence, "confidence": "rumor"}],
+        "first_appearance_chapter": 8,
+        "last_update_chapter": 8,
+    }]
+
+
+def test_post_draft_memory_rejects_non_equipment_card_update() -> None:
+    body = "夜烬捡起三份灰狼毒腺，塞进材料袋。"
+
+    result = normalize_post_draft_memory(
+        {"equipment_updates": [{
+            "name": "灰狼毒腺",
+            "equipment_type": "材料",
+            "evidence": "三份灰狼毒腺",
+        }]},
+        body=body,
+        existing_character_names={"夜烬"},
+        chapter_number=3,
+    )
+
+    assert result["equipment_updates"] == []
+    assert any(item["kind"] == "equipment_update" for item in result["rejected_updates"])
+
+
+def test_post_draft_prompt_requests_evidenced_equipment_cards() -> None:
+    prompt = build_post_draft_memory_prompt("夜烬装备暮色裁决。", genre="网游")
+
+    assert "equipment_updates" in prompt
+    assert "装备来历" in prompt

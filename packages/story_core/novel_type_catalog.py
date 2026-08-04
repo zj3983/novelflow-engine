@@ -17,6 +17,7 @@ from packages.story_core.novel_type_ids import (
     is_game_type_compatibility_alias,
 )
 from packages.story_core.power_system_templates import compact_power_system_template
+from packages.story_core.outline_templates import normalize_outline_template
 from packages.story_core.trope_runtime import (
     compact_trope_candidates,
     merge_trope_templates,
@@ -371,7 +372,33 @@ def _emergency_compact_prompt_context(context: dict[str, Any]) -> None:
     }
 
 
-def _minimal_prompt_context() -> dict[str, Any]:
+def _compact_outline_template(value: Any) -> dict[str, object]:
+    template = normalize_outline_template(value)
+    overall = template["overall"]
+    arc = template["arc"]
+    chapter = template["chapter"]
+    compact: dict[str, object] = {
+        "schema_version": template["schema_version"],
+        "overall": {
+            "long_term_lines": deepcopy(overall["long_term_lines"]),
+            "instructions": deepcopy(overall["instructions"]),
+        },
+        "arc": {
+            "minimum_arc_count": arc["minimum_arc_count"],
+            "maximum_chapter_span": arc["maximum_chapter_span"],
+            "instructions": deepcopy(arc["instructions"]),
+        },
+        "chapter": {
+            "opening_window_size": chapter["opening_window_size"],
+            "instructions": deepcopy(chapter["instructions"]),
+        },
+    }
+    if "pacing_stages" in arc:
+        compact["arc"]["pacing_stages"] = deepcopy(arc["pacing_stages"])
+    return compact
+
+
+def _minimal_prompt_context(outline_template: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "genre_label": "",
         "genre_description": "",
@@ -385,6 +412,7 @@ def _minimal_prompt_context() -> dict[str, Any]:
             "minimum_path_count": 2,
             "fixed_milestones": [],
         },
+        "genre_outline_template": deepcopy(dict(outline_template)),
     }
 
 
@@ -429,6 +457,9 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
         "genre_power_system_template": compact_power_system_template(
             getattr(record, "power_system_template", {}) or {}
         ),
+        "genre_outline_template": _compact_outline_template(
+            getattr(record, "outline_template", {}) or {}
+        ),
     }
     power_template = context["genre_power_system_template"]
     lists = [
@@ -471,8 +502,9 @@ def novel_type_prompt_context(record: Any) -> dict[str, Any]:
         _emergency_compact_prompt_context(context)
         break
     if _prompt_context_exceeds_cap(context):
+        outline_template = context["genre_outline_template"]
         context.clear()
-        context.update(_minimal_prompt_context())
+        context.update(_minimal_prompt_context(outline_template))
     return deepcopy(context)
 
 

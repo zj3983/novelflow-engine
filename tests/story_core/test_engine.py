@@ -6,9 +6,11 @@ import pytest
 from packages.story_core import orchestrator as orchestrator_module
 from packages.story_core import world_enrichment as world_enrichment_module
 from packages.story_core.engine import StoryEngine
+from packages.story_core.model_gateway import ModelResponse, RuntimeModelGateway
 from packages.story_core.models import ChapterSummary, CharacterRelationship, CharacterState, ForeshadowingState, NovelProject, StoryState
 from packages.story_core.orchestrator import StoryOrchestrator
 from packages.story_core.planner import build_action_briefs, build_chapter_title, build_conflict_summary
+from packages.story_core.runtime_config import StageRuntimeSettings
 
 _REAL_ORCHESTRATOR_CHAT = StoryOrchestrator._chat
 _REAL_ORCHESTRATOR_TIMED_CHAT = StoryOrchestrator._timed_chat
@@ -18,38 +20,45 @@ def _runtime_story(story_id: str) -> StoryState:
     return StoryState(story_id=story_id, outline="outline", genre="fantasy", style="plain")
 
 
-@pytest.mark.parametrize("agent", ["planner", "writer", "memory"])
-def test_orchestrator_uses_resolved_stage_runtime_for_provider_request(monkeypatch, agent):
+@pytest.mark.parametrize(
+    ("agent", "runtime_stage"),
+    [("planner", "planner"), ("writer", "writer"), ("memory", "planner")],
+)
+def test_orchestrator_uses_resolved_stage_runtime_for_provider_request(
+    monkeypatch, agent, runtime_stage
+):
     runtime_calls: list[str] = []
     captured: dict[str, object] = {}
 
     def fake_resolve(stage):
         runtime_calls.append(stage)
-        return SimpleNamespace(
-            provider="codexcli",
+        return StageRuntimeSettings(
+            provider_id="openai",
+            protocol="openai_compatible",
             model=f"{stage}-model",
             api_key=f"{stage}-key",
             base_url=f"https://{stage}.example/v1",
-            codex_command=f"{stage}-codex",
             temperature=0.25,
         )
 
-    def fake_post(base_url, path, payload, api_key, **kwargs):
+    def transport(*, url, payload, headers, config):
         captured.update(
-            base_url=base_url,
-            path=path,
+            url=url,
             payload=payload,
-            api_key=api_key,
-            provider=kwargs["provider"],
-            codex_command=kwargs["codex_command"],
+            headers=headers,
+            config=config,
         )
         return {"choices": [{"message": {"content": "ok"}}]}
 
     monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", fake_resolve, raising=False)
-    monkeypatch.setattr(orchestrator_module, "post_json_with_retry", fake_post)
 
     text, error = _REAL_ORCHESTRATOR_CHAT(
-        StoryOrchestrator(),
+        StoryOrchestrator(
+            model_gateway=RuntimeModelGateway(
+                runtime_resolver=lambda _stage: pytest.fail("runtime must be resolved once"),
+                transport=transport,
+            )
+        ),
         _runtime_story("runtime-stage"),
         "prompt",
         max_tokens=100,
@@ -58,12 +67,10 @@ def test_orchestrator_uses_resolved_stage_runtime_for_provider_request(monkeypat
     )
 
     assert (text, error) == ("ok", "")
-    assert runtime_calls == [agent]
-    assert captured["base_url"] == f"https://{agent}.example/v1"
-    assert captured["api_key"] == f"{agent}-key"
-    assert captured["provider"] == "codexcli"
-    assert captured["codex_command"] == f"{agent}-codex"
-    assert captured["payload"]["model"] == f"{agent}-model"
+    assert runtime_calls == [runtime_stage]
+    assert captured["url"] == f"https://{runtime_stage}.example/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == f"Bearer {runtime_stage}-key"
+    assert captured["payload"]["model"] == f"{runtime_stage}-model"
     assert captured["payload"]["temperature"] == 0.25
 
 
@@ -72,8 +79,9 @@ def test_timed_chat_records_the_same_runtime_used_by_the_request(monkeypatch):
 
     def fake_resolve(stage):
         runtime_calls.append(stage)
-        return SimpleNamespace(
-            provider="openai",
+        return StageRuntimeSettings(
+            provider_id="openai",
+            protocol="openai_compatible",
             model="planner-actual",
             api_key="key",
             base_url="https://planner.example/v1",
@@ -83,15 +91,14 @@ def test_timed_chat_records_the_same_runtime_used_by_the_request(monkeypatch):
 
     monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", fake_resolve)
     monkeypatch.setattr(StoryOrchestrator, "_chat", _REAL_ORCHESTRATOR_CHAT)
-    monkeypatch.setattr(
-        orchestrator_module,
-        "post_json_with_retry",
-        lambda *args, **kwargs: {"choices": [{"message": {"content": "ok"}}]},
-    )
     story = _runtime_story("runtime-recording")
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: pytest.fail("runtime must be resolved once"),
+        transport=lambda **_kwargs: {"choices": [{"message": {"content": "ok"}}]},
+    )
 
     text, error = _REAL_ORCHESTRATOR_TIMED_CHAT(
-        StoryOrchestrator(),
+        StoryOrchestrator(model_gateway=gateway),
         story,
         "prompt",
         max_tokens=100,
@@ -106,29 +113,82 @@ def test_timed_chat_records_the_same_runtime_used_by_the_request(monkeypatch):
     assert story.agent_runtime.planner.model == "planner-actual"
 
 
+def test_timed_chat_resolves_runtime_once_and_logs_gateway_runtime(monkeypatch):
+    runtime_calls: list[str] = []
+    gateway_calls: list[tuple[StageRuntimeSettings, object]] = []
+    finished_calls: list[dict[str, object]] = []
+    runtime = StageRuntimeSettings(
+        provider_id="anthropic",
+        protocol="anthropic",
+        model="claude-sonnet",
+        api_key="secret",
+        base_url="https://api.anthropic.com",
+        temperature=0.3,
+    )
+
+    def resolve(stage: str) -> StageRuntimeSettings:
+        runtime_calls.append(stage)
+        return runtime
+
+    class Gateway:
+        def complete_resolved(self, settings, request):
+            gateway_calls.append((settings, request))
+            return ModelResponse.success(request, text="ok")
+
+        def complete_stage(self, *_args, **_kwargs):
+            raise AssertionError("resolved runtime must be reused")
+
+    monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", resolve)
+    monkeypatch.setattr(StoryOrchestrator, "_chat", _REAL_ORCHESTRATOR_CHAT)
+    monkeypatch.setattr(orchestrator_module, "start_prompt_call", lambda **_kwargs: "call-1")
+    monkeypatch.setattr(
+        orchestrator_module,
+        "finish_prompt_call",
+        lambda _call_id, **payload: finished_calls.append(payload),
+    )
+    story = _runtime_story("runtime-single-resolution")
+
+    text, error = _REAL_ORCHESTRATOR_TIMED_CHAT(
+        StoryOrchestrator(model_gateway=Gateway()),
+        story,
+        "prompt",
+        max_tokens=100,
+        json_mode=False,
+        agent="planner",
+        stage="test stage",
+    )
+
+    assert (text, error) == ("ok", "")
+    assert runtime_calls == ["planner"]
+    assert gateway_calls[0][0] is runtime
+    assert finished_calls[-1]["provider"] == "anthropic"
+    assert finished_calls[-1]["protocol"] == "anthropic"
+    assert finished_calls[-1]["model"] == "claude-sonnet"
+
+
 def test_orchestrator_maps_private_director_compatibility_to_planner(monkeypatch):
     runtime_calls: list[str] = []
 
     def fake_resolve(stage):
         runtime_calls.append(stage)
-        return SimpleNamespace(
-            provider="codexcli",
+        return StageRuntimeSettings(
+            provider_id="openai",
+            protocol="openai_compatible",
             model="planner-model",
-            api_key="",
-            base_url="",
-            codex_command="codex",
+            api_key="key",
+            base_url="https://planner.example/v1",
             temperature=0.2,
         )
 
     monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", fake_resolve, raising=False)
-    monkeypatch.setattr(
-        orchestrator_module,
-        "post_json_with_retry",
-        lambda *args, **kwargs: {"choices": [{"message": {"content": "ok"}}]},
-    )
 
     _REAL_ORCHESTRATOR_CHAT(
-        StoryOrchestrator(),
+        StoryOrchestrator(
+            model_gateway=RuntimeModelGateway(
+                runtime_resolver=lambda _stage: pytest.fail("runtime must be resolved once"),
+                transport=lambda **_kwargs: {"choices": [{"message": {"content": "ok"}}]},
+            )
+        ),
         _runtime_story("director-alias"),
         "prompt",
         max_tokens=100,
@@ -139,26 +199,36 @@ def test_orchestrator_maps_private_director_compatibility_to_planner(monkeypatch
     assert runtime_calls == ["planner"]
 
 
-def test_orchestrator_does_not_resolve_character_as_a_runtime_stage(monkeypatch):
+def test_orchestrator_maps_character_compatibility_to_planner(monkeypatch):
     runtime_calls: list[str] = []
-    monkeypatch.setattr(
-        orchestrator_module,
-        "resolve_stage_runtime",
-        lambda stage: runtime_calls.append(stage),
-        raising=False,
-    )
 
-    with pytest.raises(ValueError, match="unknown runtime stage: character"):
-        _REAL_ORCHESTRATOR_CHAT(
-            StoryOrchestrator(),
-            _runtime_story("character-stage"),
-            "prompt",
-            max_tokens=100,
-            json_mode=False,
-            agent="character",
+    def resolve(stage):
+        runtime_calls.append(stage)
+        return StageRuntimeSettings(
+            provider_id="openai",
+            protocol="openai_compatible",
+            model="planner-model",
+            api_key="key",
+            base_url="https://planner.example/v1",
         )
 
-    assert runtime_calls == []
+    monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", resolve)
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: pytest.fail("runtime must be resolved once"),
+        transport=lambda **_kwargs: {"choices": [{"message": {"content": "ok"}}]},
+    )
+
+    result = _REAL_ORCHESTRATOR_CHAT(
+        StoryOrchestrator(model_gateway=gateway),
+        _runtime_story("character-stage"),
+        "prompt",
+        max_tokens=100,
+        json_mode=False,
+        agent="character",
+    )
+
+    assert result == ("ok", "")
+    assert runtime_calls == ["planner"]
 
 
 def _patch_three_stage_generation(monkeypatch, responses):
@@ -228,6 +298,8 @@ def test_successful_generation_records_only_actual_writing_stages(monkeypatch):
 
     bundle = StoryOrchestrator().generate_next_chapter(_runtime_story("stage-success"))
 
+    assert bundle.context_snapshot_id
+
     runtime = bundle.updated_story.agent_runtime.model_dump()
     assert set(runtime) == {"planner", "writer", "memory", "recent_events"}
     assert runtime["planner"] == {
@@ -241,16 +313,19 @@ def test_successful_generation_records_only_actual_writing_stages(monkeypatch):
     assert runtime["writer"]["provider"] == "codexcli"
     assert runtime["writer"]["model"] == "writer-live"
     assert runtime["writer"]["last_run_chapter"] == 1
-    assert runtime["memory"]["source"] == "llm"
-    assert runtime["memory"]["provider"] == "openai"
-    assert runtime["memory"]["model"] == "memory-live"
-    assert runtime["memory"]["last_run_chapter"] == 1
+    assert runtime["memory"] == {
+        "source": "idle",
+        "provider": "",
+        "model": "",
+        "fallback_reason": "",
+        "last_run_chapter": 0,
+    }
     assert "character_agent" not in runtime
     assert set(bundle.simulation_status["agents"]) == {"planner", "writer", "memory"}
     assert runtime["recent_events"][0] == "规划阶段：模型，第 1 章"
-    assert runtime["recent_events"][-1] == "记忆阶段：模型，第 1 章"
+    assert runtime["recent_events"][-1] == "规划阶段：模型，第 1 章"
     assert all(
-        event.startswith(("规划阶段", "写作阶段", "记忆阶段"))
+        event.startswith(("规划阶段", "写作阶段"))
         for event in runtime["recent_events"]
     )
 
@@ -320,42 +395,34 @@ def test_world_enrichment_uses_planner_stage_runtime(monkeypatch):
 
     def fake_resolve(stage):
         runtime_calls.append(stage)
-        return SimpleNamespace(
-            provider="codexcli",
+        return StageRuntimeSettings(
+            provider_id="openai",
+            protocol="openai_compatible",
             model="world-planner-model",
-            api_key="",
+            api_key="planner-key",
             base_url="https://planner.example/v1",
-            codex_command="planner-codex",
             temperature=0.27,
         )
 
-    def fake_post(base_url, path, payload, api_key, **kwargs):
+    def transport(*, url, payload, headers, config):
         captured.update(
-            base_url=base_url,
+            url=url,
             payload=payload,
-            api_key=api_key,
-            provider=kwargs["provider"],
-            codex_command=kwargs["codex_command"],
+            headers=headers,
+            config=config,
         )
         return {"choices": [{"message": {"content": '{"ok": true}'}}]}
 
-    monkeypatch.setattr(world_enrichment_module, "resolve_stage_runtime", fake_resolve, raising=False)
-    monkeypatch.setattr(
-        world_enrichment_module,
-        "resolve_openai_runtime_settings",
-        lambda *args, **kwargs: pytest.fail("legacy runtime resolver must not be used"),
-        raising=False,
-    )
-    monkeypatch.setattr(world_enrichment_module, "post_json_with_retry", fake_post)
     monkeypatch.setattr(world_enrichment_module, "_merge_enrichment", lambda project, parsed: project)
 
     project = NovelProject(project_id="world-runtime", title="World Runtime")
-    assert world_enrichment_module.enrich_project_world(project) == project
+    gateway = RuntimeModelGateway(runtime_resolver=fake_resolve, transport=transport)
+    assert world_enrichment_module._call_world_enrichment_model(
+        project, rules_only=False, model_gateway=gateway
+    ) == project
     assert runtime_calls == ["planner"]
-    assert captured["base_url"] == "https://planner.example/v1"
-    assert captured["api_key"] == ""
-    assert captured["provider"] == "codexcli"
-    assert captured["codex_command"] == "planner-codex"
+    assert captured["url"] == "https://planner.example/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer planner-key"
     assert captured["payload"]["model"] == "world-planner-model"
     assert captured["payload"]["temperature"] == 0.27
 
@@ -468,6 +535,47 @@ def test_game_opening_arc_chapter_two_avoids_direct_resource_collision():
     assert "价格曲线" in collision
     assert "补给流水" in collision
     assert conflict["secondary_conflict"]["pressure"] == "market-signal"
+
+
+def test_non_game_outline_negative_constraint_does_not_enable_game_conflict():
+    story = StoryState(
+        story_id="s-xuanhuan-conflict",
+        outline="守住断香炉，不写游戏登录、面板、背包或玩家生态。",
+        genre="xuanhuan",
+        style="现代中文",
+        current_chapter=3,
+    )
+    action_briefs = [
+        {"name": "Lin Zhao", "goal": "find the hidden inscription", "emotion": "careful", "priority": 9},
+        {"name": "Manager Zhao", "goal": "hide the old record", "emotion": "guarded", "priority": 8},
+    ]
+
+    conflict = build_conflict_summary(story, action_briefs)
+
+    serialized = str(conflict)
+    assert "market-signal" not in serialized
+    assert "NPC" not in serialized
+    assert "交易行" not in serialized
+
+
+def test_conflict_summary_does_not_select_same_character_as_both_sides():
+    story = StoryState(
+        story_id="s-duplicate-actions",
+        outline="林照追查祖祠旧案。",
+        genre="xuanhuan",
+        style="现代中文",
+        current_chapter=3,
+    )
+    action_briefs = [
+        {"name": "林照", "goal": "check the brick", "emotion": "careful", "priority": 9},
+        {"name": "林照", "goal": "hide the ash", "emotion": "alert", "priority": 8},
+        {"name": "赵管事", "goal": "stop the search", "emotion": "guarded", "priority": 7},
+    ]
+
+    conflict = build_conflict_summary(story, action_briefs)
+
+    assert conflict["primary_conflict"]["lead"] == "林照"
+    assert conflict["primary_conflict"]["opposition"] == "赵管事"
 
 
 def test_generate_chapter_does_not_mutate_frozen_character_state():

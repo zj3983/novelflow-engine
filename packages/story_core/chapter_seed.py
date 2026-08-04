@@ -623,6 +623,28 @@ def _outline_anchor(story: StoryState, chapter_number: int) -> dict[str, str]:
     return anchor
 
 
+def _outline_hard_constraints(
+    story: StoryState,
+    chapter_number: int,
+) -> tuple[list[str], list[str]]:
+    context = story.outline_context if isinstance(story.outline_context, dict) else {}
+    chapter = context.get("chapter") if isinstance(context.get("chapter"), dict) else {}
+    try:
+        planned_number = int(chapter.get("chapter_number") or 0)
+    except (TypeError, ValueError):
+        return [], []
+    if planned_number != chapter_number:
+        return [], []
+
+    def cleaned(field: str) -> list[str]:
+        values = chapter.get(field)
+        if not isinstance(values, list):
+            return []
+        return compact_list(values, max_items=8, item_chars=180)
+
+    return cleaned("must_include"), cleaned("must_not_write")
+
+
 def _outline_trope_contract(
     story: StoryState,
     chapter_number: int,
@@ -679,6 +701,10 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
         simulation_blueprint = _authorized_market_exchange_blueprint(simulation_blueprint)
     contract = _contract_for_game(chapter_number) if is_game else _generic_contract()
     outline_anchor = _outline_anchor(story, chapter_number)
+    outline_must_show, outline_must_not_write = _outline_hard_constraints(
+        story,
+        chapter_number,
+    )
     trope_contract = _outline_trope_contract(story, chapter_number, prompt_plugins)
     seed = {
         "schema_version": "chapter-seed/v1",
@@ -705,6 +731,8 @@ def build_chapter_seed(story: StoryState, chapter_number: int) -> dict[str, Any]
         "longform_constraints": _longform_constraints(story),
         "world_facts": compact_list(story.world_facts, max_items=18, item_chars=180),
         "author_constraints": compact_list(story.author_constraints, max_items=12, item_chars=180),
+        "must_show": outline_must_show,
+        "must_not_write": outline_must_not_write,
     }
     if trope_contract:
         seed["trope_contract"] = trope_contract

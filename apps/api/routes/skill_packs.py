@@ -12,6 +12,8 @@ from packages.story_core.skill_packs import (
     import_skill_pack_from_zip,
     list_skill_packs,
     normalize_skill_id,
+    uninstall_skill_module,
+    uninstall_skill_pack,
 )
 
 from apps.api.fs_access import require_allowed_path
@@ -73,6 +75,24 @@ def init_skill_pack_routes() -> APIRouter:
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _pack_detail(pack)
+
+    @router.delete("/skill-packs/{skill_id}")
+    def uninstall_registered_skill_pack(skill_id: str) -> dict[str, Any]:
+        try:
+            return uninstall_skill_pack(skill_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.delete("/skill-packs/{skill_id}/modules/{module_id}")
+    def uninstall_registered_skill_module(skill_id: str, module_id: str) -> dict[str, Any]:
+        try:
+            return uninstall_skill_module(skill_id, module_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.get("/skill-packs/{skill_id}/exists")
     def skill_pack_exists(skill_id: str) -> dict[str, Any]:
