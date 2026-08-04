@@ -29,9 +29,12 @@ HARD_TOKENS = (
     "交易金额流水矛盾",
     "写死了游戏币与现实货币的汇率",
     "attribute_allocation_missing",
+    "attribute_allocation_mismatch",
     "缺少“混沌之种：未解析”",
     "缺少“底层协议校验通过”",
     "缺少“千倍爆率”",
+    "首杀前完整揭示",
+    "数值账本写进正文",
 )
 
 AI_FLAVOR_TOKENS = (

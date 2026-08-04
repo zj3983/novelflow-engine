@@ -224,7 +224,7 @@ def _first_chapter_anchor_issues(body: str, *, allow_trade_payoff: bool = False)
     """Return hard continuity issues for the current web-game opening contract."""
 
     issues: list[tuple[str, str, str]] = []
-    if "千倍爆率" not in body:
+    if "千倍爆率" not in body and "掉落判定×1000" not in body:
         issues.append(
             (
                 "class_equipment",
@@ -459,7 +459,8 @@ def _has_allocation_result(
     )
     visible_attribute_result = all(
         re.search(
-            rf"{re.escape(attribute)}\s*(?:为|：|:)?\s*\d+\s*(?:→|->|变成|提升到|增加到)\s*\d+",
+            rf"{re.escape(attribute)}(?:属性)?[^。！？\n]{{0,12}}?\d+\s*点?\s*"
+            rf"(?:→|->|变成|提升到|提升至|增加到)\s*\d+",
             body,
         )
         for attribute in expected
@@ -471,7 +472,11 @@ def _has_allocation_result(
     if latest_confirmed_attribute_points(body, protagonist_aliases=protagonist_aliases, other_character_names=other_character_names) == remaining:
         return True
     return any(
-        re.search(rf"{re.escape(attribute)}[^。！？\n]{{0,16}}(?:变成|提升到|增加到)\s*(?:\d+|[一二两三四五六七八九十]+)", body)
+        re.search(
+            rf"{re.escape(attribute)}[^。！？\n]{{0,20}}(?:变成|提升到|提升至|增加到)\s*"
+            rf"(?:\d+|[一二两三四五六七八九十]+)",
+            body,
+        )
         for attribute in expected
     )
 
@@ -612,6 +617,40 @@ def _material_inventory_issues(body: str) -> list[str]:
                 issues.append(f"毒腺支出超过库存：当前推算库存{balance}份，但正文写成{text}。")
             if balance is not None:
                 balance -= count
+
+    material_types = {
+        "灰狼毒腺": ("灰狼毒腺", "毒腺"),
+        "粗糙狼皮": ("粗糙狼皮", "狼皮"),
+        "裂纹狼心": ("裂纹狼心",),
+    }
+    for paragraph in re.split(r"\n\s*\n|(?<=[。！？])", body):
+        present = {
+            name
+            for name, aliases in material_types.items()
+            if any(alias in paragraph for alias in aliases)
+        }
+        if len(present) < 2:
+            continue
+        slot_values: list[int] = []
+        for match in re.finditer(
+            r"(?:合计|总共|一共|正好|刚好|只)[^。；\n]{0,12}?"
+            r"(?:占用|占据)(?:了)?[^。；\n]{0,8}?"
+            r"(?P<slot_count>\d+|[一二两三四五六七八九十]{1,3})\s*(?:个)?(?:背包|材料)?格",
+            paragraph,
+        ):
+            value = _parse_count(match.group("slot_count"))
+            if value is not None:
+                slot_values.append(value)
+        slot_values.extend(
+            int(match.group(1))
+            for match in re.finditer(r"(?<!\d)(\d{1,2})\s*/\s*\d{1,3}", paragraph)
+        )
+        if slot_values and min(slot_values) < len(present):
+            names = "、".join(sorted(present))
+            issues.append(
+                f"背包格数值冲突：{names}是{len(present)}种不同物品，正文却只计算为{min(slot_values)}格。"
+            )
+            break
 
     return issues[:3]
 
@@ -919,11 +958,34 @@ def review_web_game_chapter(
     combat_surface = _has_any(body, ("攻击", "扑来", "扑出", "出手", "命中", "击杀", "战斗", "开怪"))
     monster_surface = _has_any(combined, ("怪物", "野怪", "灰狼", "灰鼠", "精英", "首领", "BOSS", "Boss", "boss"))
     first_encounter = chapter_number == 1 or _has_any("\n".join([plan_text, facts_text]), ("第一次", "首次", "初见", "新敌人"))
-    panel_fields = ("等级：", "生命：", "攻击方式：")
+    panel_intro = re.search(r"(?:怪物|敌对目标)[^。！？\n]{0,40}面板", body)
+    explicit_panel = re.search(
+        r"(?:【[^】]*(?:精英|首领|BOSS|Boss|boss|狼|鼠|怪)[^】]*】|名称[：:][^，。；\n]+)"
+        r"[^。！？]{0,220}?(?:等级[：:]|Lv\.?\s*\d+)[^。！？]{0,100}?生命值?[：:]"
+        r"[^。！？]{0,100}?攻击方式[：:]",
+        body,
+        re.S,
+    )
+    compact_panel = re.search(
+        r"【[^】]{0,100}?(?:Lv\.?\s*\d+|等级[：:]\s*\d+)"
+        r"[^】]{0,100}?生命值?[：:]\s*\d+"
+        r"[^】]{0,100}?攻击方式[：:][^】]{1,100}】",
+        body,
+        re.S,
+    )
     panel_marker = body.find("怪物面板")
-    natural_panel = body[panel_marker:panel_marker + 240] if panel_marker >= 0 else ""
-    has_basic_monster_panel = all(field in natural_panel for field in panel_fields) or (
-        "【" in body and all(field in body for field in panel_fields)
+    if panel_marker < 0 and panel_intro:
+        panel_marker = panel_intro.start()
+    if panel_marker < 0 and explicit_panel:
+        panel_marker = explicit_panel.start()
+    if panel_marker < 0 and compact_panel:
+        panel_marker = compact_panel.start()
+    natural_panel = body[panel_marker:panel_marker + 320] if panel_marker >= 0 else ""
+    has_basic_monster_panel = bool(
+        natural_panel
+        and re.search(r"(?:等级[：:]|Lv\.?\s*\d+)", natural_panel)
+        and re.search(r"生命值?[：:]", natural_panel)
+        and re.search(r"攻击方式[：:]", natural_panel)
     )
     if combat_surface and monster_surface and first_encounter and not has_basic_monster_panel:
         _append_issue(
@@ -932,10 +994,18 @@ def review_web_game_chapter(
             scores=scores,
             score_key="monster_panel",
             issue="首次与该类怪物正式交战前缺少简洁怪物面板，读者无法直接确认敌人的等级、生命和攻击方式。",
-            plan="在第一次交手前补一次简短面板，正文中明确写出“怪物面板”，并只写名称、等级、生命和攻击方式；同类普通怪后续不要重复展示，掉落等击杀后再结算。",
+            plan="在第一次交手前自然带出一次简短怪物面板，只写名称、等级、生命和攻击方式；同类普通怪后续不要重复展示，掉落等击杀后再结算。",
         )
     elite_or_boss = _has_any(body, ("精英", "首领", "BOSS", "Boss", "boss"))
-    if combat_surface and elite_or_boss and has_basic_monster_panel and not all(field in body for field in ("技能：", "特性：")):
+    if (
+        combat_surface
+        and elite_or_boss
+        and has_basic_monster_panel
+        and (
+            not re.search(r"技能[：:]", natural_panel)
+            or not re.search(r"特性[：:]", natural_panel)
+        )
+    ):
         _append_issue(
             issues=issues,
             revision_plan=revision_plan,

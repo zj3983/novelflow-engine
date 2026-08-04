@@ -293,8 +293,20 @@ def _game_fact_lines(context: WriterContext) -> list[str]:
         anomaly_anchors.append("混沌之种：未解析")
     if anomaly_anchors:
         lines.append(f"本章异常锚点（按项目原文露出）：{'、'.join(anomaly_anchors)}。")
+        if context.chapter_number == 1:
+            lines.append(
+                "异常露出顺序：登录时只出现短暂协议异常或乱码，不能显示优势名称和倍率；"
+                "首次有效掉落后，再显示底层协议校验、掉落判定×1000和混沌之种未解析，并让主角先惊讶、再怀疑、再验证。"
+            )
 
     event_plan = plan.get("event_plan") if isinstance(plan.get("event_plan"), dict) else {}
+    numeric_plan = event_plan.get("numeric_plan") if isinstance(event_plan.get("numeric_plan"), dict) else {}
+    if numeric_plan:
+        lines.append(
+            "本章数值账本（只用于保证正文前后一致，不要解释规则）："
+            f"{prompt_json(numeric_plan)}。正文不得另编经验、生命、伤害、成交、兑换、手续费、到账或余额；"
+            "只写角色能看到的关键结算结果，不要把乘加算式写进正文，也不要逐项复述账本。"
+        )
     allocation = event_plan.get("attribute_allocation_decision") if isinstance(event_plan.get("attribute_allocation_decision"), dict) else {}
     mode = str(allocation.get("mode") or "").strip().lower()
     if mode == "allocate":
@@ -303,7 +315,11 @@ def _game_fact_lines(context: WriterContext) -> list[str]:
         if rendered:
             ending = "，可用点归零" if allocation.get("remaining") in (0, "0") else ""
             reason = compact_text(str(allocation.get("reason") or ""), 60)
-            lines.append(f"本章属性点决定：{rendered}{ending}。正文写出角色打开属性面板并确认加点{'，目的为' + reason if reason else ''}。")
+            lines.append(
+                f"本章属性点决定：{rendered}{ending}。正文写出角色打开属性面板并确认加点{'，目的为' + reason if reason else ''}。"
+                "用正常动作写成‘把五点都加到智力上’一类完整表达，不要写成“自由分配属性”或用抽象说明代替操作结果。"
+                "全章只执行一次加点，必须发生在章节计划安排的升级或属性处理节点；不得在建号或接任务时提前获得属性点。"
+            )
     elif mode == "carry":
         reason = compact_text(str(allocation.get("reason") or ""), 60)
         lines.append(f"本章属性点决定：暂不分配，保留{allocation.get('remaining')}点。正文写出角色主动保留的决定{'，原因是' + reason if reason else ''}。")

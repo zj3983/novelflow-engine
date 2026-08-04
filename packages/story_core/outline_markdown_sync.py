@@ -36,6 +36,7 @@ CHAPTER_FIELD_ORDER = [
     "目标",
     "等级目标",
     "属性点安排",
+    "数值账本",
     "阻力",
     "对手反应",
     "情绪变化",
@@ -66,6 +67,7 @@ CHAPTER_JSON_TO_MD = {
     "ending_hook": "章末未闭合问题",
     "level_target": "等级目标",
     "attribute_allocation_decision": "属性点安排",
+    "numeric_plan": "数值账本",
     "opponent_response": "对手反应",
     "emotional_change": "情绪变化",
     "gain_or_loss": "得失",
@@ -298,6 +300,14 @@ def _block_to_chapter(block: dict[str, Any]) -> dict[str, Any]:
             if decision is None:
                 raise ValueError("invalid_attribute_allocation_decision")
             chapter[json_key] = decision
+        elif json_key == "numeric_plan" and value:
+            try:
+                numeric_plan = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError("invalid_numeric_plan") from exc
+            if not isinstance(numeric_plan, dict):
+                raise ValueError("invalid_numeric_plan")
+            chapter[json_key] = numeric_plan
         elif value:
             chapter[json_key] = value
     return chapter
@@ -632,6 +642,12 @@ def _chapter_field_values(chapter: dict[str, Any], existing: dict[str, tuple[int
             values[md_key] = "、".join(str(item) for item in (raw or []))
         elif json_key == "attribute_allocation_decision":
             values[md_key] = _format_attribute_allocation_decision(raw)
+        elif json_key == "numeric_plan":
+            values[md_key] = (
+                json.dumps(raw, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                if isinstance(raw, dict) and raw
+                else ""
+            )
         else:
             values[md_key] = str(raw or "")
     return values
@@ -651,6 +667,13 @@ def _chapter_block_unchanged(block: dict[str, Any], chapter: dict[str, Any]) -> 
         elif json_key == "attribute_allocation_decision":
             parsed = _parse_attribute_allocation_decision(existing_value)
             if (existing_value and parsed is None) or parsed != raw:
+                return False
+        elif json_key == "numeric_plan":
+            try:
+                parsed = json.loads(existing_value) if existing_value else {}
+            except json.JSONDecodeError:
+                return False
+            if not isinstance(parsed, dict) or parsed != (raw or {}):
                 return False
         elif existing_value != str(raw or "").strip():
             return False

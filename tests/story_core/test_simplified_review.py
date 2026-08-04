@@ -1,4 +1,13 @@
 from packages.story_core.simplified_review import build_simplified_review
+
+
+def test_attribute_allocation_mismatch_is_a_hard_error() -> None:
+    report = build_simplified_review(
+        {"writing_review": {"issues": ["attribute_allocation_mismatch: 正文同章重复加点。"]}}
+    )
+
+    assert report["has_hard_errors"] is True
+    assert report["categories"]["hard"]["count"] == 1
 from packages.story_core.orchestrator import _should_run_full_revision
 
 

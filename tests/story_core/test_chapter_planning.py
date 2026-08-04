@@ -190,6 +190,36 @@ def test_outline_attribute_decision_is_handed_to_event_plan() -> None:
     assert plan["event_plan"]["attribute_allocation_decision"]["allocations"] == {"智力": 5}
 
 
+def test_outline_numeric_plan_is_handed_to_event_plan() -> None:
+    numeric_plan = {
+        "experience": {"kills": [12, 12, 12, 12, 12, 12, 12, 16], "level_threshold": 100},
+        "exchange": {
+            "game_currency_spent_silver": 75,
+            "quote_yuan_per_silver": 20,
+            "gross_yuan": 1500,
+            "fee_yuan": 7.5,
+            "net_yuan": 1492.5,
+        },
+    }
+    context = {
+        "project_snapshot": {
+            "outline_context": {
+                "chapter": {
+                    "chapter_number": 1,
+                    "goal": "解决现实急账",
+                    "action": "击败灰狼并兑换收益",
+                    "scene_chain": _scene_chain(),
+                    "numeric_plan": numeric_plan,
+                }
+            }
+        }
+    }
+
+    plan = build_outline_chapter_plan(context, 1)
+
+    assert plan["event_plan"]["numeric_plan"] == numeric_plan
+
+
 def test_outline_hard_constraints_are_handed_to_writer_plan() -> None:
     must_include = ["清道夫委托进度停在8/16", "使用新手法杖"]
     must_not_write = ["不要提交清道夫委托"]

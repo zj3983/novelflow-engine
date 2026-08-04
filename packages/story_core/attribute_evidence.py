@@ -372,13 +372,14 @@ def _has_character_action(
 
 def _action_matches(body: str, attribute: str | None = None, points: int | None = None) -> Iterator[re.Match[str]]:
     if attribute is not None and points is not None:
+        attribute_pattern = rf"(?:【\s*)?{re.escape(attribute)}(?:\s*】)?"
         forms = (str(points), _chinese_number(points))
         for form in forms:
             if not form:
                 continue
             pattern = (
                 rf"{re.escape(form)}\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
-                rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}\s*{re.escape(attribute)}(?:上|里)?"
+                rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}\s*{attribute_pattern}(?:上|里)?"
             )
             yield from re.finditer(pattern, body)
         return
@@ -411,6 +412,13 @@ def has_character_attribute_allocation(
             body, match.start(), protagonist_aliases, other_character_names
         ):
             return True
+    if attribute is not None and points is not None:
+        return character_attribute_allocation_points(
+            body,
+            attribute,
+            protagonist_aliases=protagonist_aliases,
+            other_character_names=other_character_names,
+        ) == points
     return False
 
 
@@ -439,9 +447,10 @@ def character_attribute_allocation_points(
     protagonist_aliases: Iterable[str] | None = None,
     other_character_names: Iterable[str] | None = None,
 ) -> int | None:
+    attribute_pattern = rf"(?:【\s*)?{re.escape(attribute)}(?:\s*】)?"
     pattern = (
         rf"(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?{_ATTRIBUTE_ACTION_GAP}"
-        rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}\s*{re.escape(attribute)}(?:上|里)?"
+        rf"(?:全部)?{_ATTRIBUTE_ALLOCATION_ACTIONS}\s*{attribute_pattern}(?:上|里)?"
     )
     values: list[int] = []
     for match in re.finditer(pattern, body):
@@ -451,11 +460,22 @@ def character_attribute_allocation_points(
         if points is not None:
             values.append(points)
     click_pattern = (
-        rf"(?:在|对)?\s*{re.escape(attribute)}(?:属性)?(?:后|栏|一项|选项)?"
+        rf"(?:在|对)?\s*{attribute_pattern}(?:属性)?(?:后|栏|一项|选项)?"
         rf"[^。！？\n]{{0,16}}?(?:连续)?(?:点了|点击|按了)\s*(?P<count>{_COUNT_PATTERN})\s*次"
     )
     for match in re.finditer(click_pattern, body):
         if not _has_character_action(body, match.start(), protagonist_aliases, other_character_names):
+            continue
+        points = parse_count(match.group("count"))
+        if points is not None:
+            values.append(points)
+    fill_pattern = (
+        rf"{attribute_pattern}(?:属性)?(?:栏|一栏|一项|选项)(?:上|里)?"
+        rf"[^。！？\n]{{0,24}}?(?P<count>{_COUNT_PATTERN})\s*点(?:(?:自由)?属性点?)?"
+        rf"[^。！？\n]{{0,16}}?(?:填了进去|填进去|投入进去|分配进去)"
+    )
+    for match in re.finditer(fill_pattern, body):
+        if not _has_character_action(body, match.start("count"), protagonist_aliases, other_character_names):
             continue
         points = parse_count(match.group("count"))
         if points is not None:

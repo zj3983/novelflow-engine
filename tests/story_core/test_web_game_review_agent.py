@@ -31,7 +31,59 @@ def test_web_game_review_requires_panel_before_first_monster_fight():
     )
 
     assert any("怪物面板" in issue for issue in review["issues"])
-    assert any("正文中明确写出“怪物面板”" in item for item in review["revision_plan"])
+    assert any("自然带出一次简短怪物面板" in item for item in review["revision_plan"])
+
+
+def test_web_game_review_rejects_distinct_item_types_counted_as_too_few_slots():
+    body = (
+        "夜烬清点背包，灰狼毒腺×8堆叠在一格，粗糙狼皮×7堆叠在另一格，"
+        "裂纹狼心单独收好，三种物品却只占用了两个材料格子（2/20）。"
+    )
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"novel_type": "game_webnovel"},
+        world_facts=[],
+    )
+
+    assert review["pass"] is False
+    assert any("背包格数值冲突" in issue for issue in review["issues"])
+
+
+def test_web_game_review_accepts_per_item_slots_with_correct_total():
+    body = (
+        "夜烬清点背包，背包里存有【灰狼毒腺】×8（占用1格）、"
+        "【粗糙狼皮】×7（占用1格），以及【裂纹狼心】×1（占用1格），"
+        "合计正好占用3个背包格。"
+    )
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"novel_type": "game_webnovel"},
+        world_facts=[],
+    )
+
+    assert not any("背包格数值冲突" in issue for issue in review["issues"])
+
+
+def test_web_game_review_accepts_naturally_introduced_monster_panel() -> None:
+    body = (
+        "《神域》开服后，夜烬走到灰狼坡。"
+        "他凝神看去，敌对目标的简洁面板浮现：【灰狼】\n"
+        "等级：Lv.1\n生命值：80/80\n攻击方式：低伏扑咬。\n"
+        "灰狼随后扑来，夜烬用三发火球完成击杀。"
+    ) * 20
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"ordered_actions": ["夜烬第一次和灰狼正式交战"]},
+        world_facts=["这是夜烬第一次遇见灰狼。"],
+    )
+
+    assert not any("缺少简洁怪物面板" in issue for issue in review["issues"])
 
 
 def test_web_game_review_accepts_compact_first_monster_panel():
@@ -39,6 +91,40 @@ def test_web_game_review_accepts_compact_first_monster_panel():
         "《天启之门》开服后，夜烬走到灰狼坡。"
         "【灰狼】【等级：1】【生命：80/80】【攻击方式：扑咬】"
         "灰狼从石头后扑出来，他抬手放出火球，随后击杀了灰狼。"
+    ) * 20
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"ordered_actions": ["夜烬第一次和灰狼正式交战"]},
+        world_facts=["这是夜烬第一次遇见灰狼。"],
+    )
+
+    assert not any("怪物面板" in issue for issue in review["issues"])
+
+
+def test_web_game_review_accepts_single_bracket_pipe_monster_panel():
+    body = (
+        "《神域》开服后，夜烬走到灰狼坡。"
+        "【灰狼（Lv.1）| 生命：80 | 攻击方式：低伏接近后短距离扑咬】"
+        "灰狼四蹄一蹬扑了过来，夜烬抬起法杖放出基础火球术。"
+    )
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"ordered_actions": ["夜烬第一次和灰狼正式交战"]},
+        world_facts=["这是夜烬第一次遇见灰狼。"],
+    )
+
+    assert not any("怪物面板" in issue for issue in review["issues"]), review
+
+
+def test_web_game_review_accepts_level_in_monster_name_line():
+    body = (
+        "《神域》开服后，夜烬走到灰狼坡。"
+        "【灰狼】（野兽·普通·Lv.1）\n生命值：80/80\n攻击方式：扑咬。"
+        "灰狼从石头后扑出来，他用三发火球将它击杀。"
     ) * 20
 
     review = review_web_game_chapter(
@@ -111,6 +197,77 @@ def test_web_game_review_accepts_natural_initial_currency_anchor():
     review = review_web_game_chapter(chapter_number=1, body=body, event_plan={}, world_facts=[])
 
     assert not any("初始钱袋为空" in issue for issue in review["issues"])
+
+
+def test_web_game_review_accepts_empty_purse_without_forcing_a_stock_sentence():
+    body = "《神域》开服后，夜烬看了看自己空无一物的钱袋，随后接下普通委托。"
+
+    review = review_web_game_chapter(chapter_number=1, body=body, event_plan={}, world_facts=[])
+
+    assert not any("初始钱袋为空" in issue for issue in review["issues"])
+
+
+def test_web_game_review_accepts_drop_multiplier_as_the_first_chapter_goldfinger_signal():
+    body = "《神域》里，夜烬击杀第一只灰狼后才看到提示：底层协议校验通过，掉落判定×1000，混沌之种：未解析。"
+
+    review = review_web_game_chapter(
+        chapter_number=1,
+        body=body,
+        event_plan={"novel_type": "game_webnovel", "must_include": ["长期核心：掉落判定×1000"]},
+        world_facts=[],
+    )
+
+    assert not any("长期金手指名" in issue for issue in review["issues"])
+
+
+def test_web_game_review_accepts_completed_toujia_attribute_wording():
+    body = (
+        "《神域》里，夜烬升到Lv.2后打开角色面板，将这5点自由分配属性全部投加到了智力一项上。"
+        "他点击确认，智力数值完成更新，可用属性点归零。"
+    )
+    event_plan = {
+        "novel_type": "game_webnovel",
+        "attribute_allocation_decision": {
+            "mode": "allocate",
+            "allocations": {"智力": 5},
+            "remaining": 0,
+        },
+    }
+
+    review = review_web_game_chapter(
+        chapter_number=4,
+        body=body,
+        event_plan=event_plan,
+        world_facts=[],
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert not any(issue.startswith("attribute_allocation_") for issue in review["issues"]), review
+
+
+def test_web_game_review_accepts_natural_attribute_allocation_result():
+    body = (
+        "《神域》里，夜烬升到Lv.2后打开属性面板，将这5点自由属性全部加到了智力一项上，"
+        "随后点击确认分配。他的智力属性从5点提升至10点，可用自由属性点随之清零为0。"
+    )
+    event_plan = {
+        "novel_type": "game_webnovel",
+        "attribute_allocation_decision": {
+            "mode": "allocate",
+            "allocations": {"智力": 5},
+            "remaining": 0,
+        },
+    }
+
+    review = review_web_game_chapter(
+        chapter_number=2,
+        body=body,
+        event_plan=event_plan,
+        world_facts=[],
+        protagonist_aliases={"夜烬"},
+    )
+
+    assert not any("attribute_allocation_" in issue for issue in review["issues"]), review
 
 
 def test_web_game_review_detects_ordered_economy_chains_across_adjacent_units():

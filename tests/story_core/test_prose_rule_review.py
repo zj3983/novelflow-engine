@@ -245,6 +245,17 @@ def test_review_flags_npc_boundary_overreach():
     assert any("信息边界" in issue for issue in review["issues"])
 
 
+def test_npc_boundary_does_not_treat_alchemist_players_as_service_npcs():
+    body = (
+        "夜烬把裂纹狼心放上交易行。许多大公会和药剂师玩家急需样本解锁图鉴，"
+        "他便选择匿名挂单。"
+    )
+
+    review = review_npc_boundary_violation(body)
+
+    assert review["pass"] is True
+
+
 def test_review_flags_pov_breach_and_omniscient_market_summary():
     body = (
         "白袍的通讯频道里，冷静的汇报声此起彼伏：“记录：散人刷怪频率异常。上报：外围刷新点已控制。”\n\n"

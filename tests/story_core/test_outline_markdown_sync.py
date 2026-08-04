@@ -400,6 +400,28 @@ def test_sync_preserves_visible_attribute_allocation_plan_when_markdown_is_newer
     }
 
 
+def test_chapter_numeric_plan_is_visible_and_round_trips_through_markdown(
+    tmp_path: Path,
+) -> None:
+    root = _make_project(tmp_path)
+    outline = import_markdown_outline(root)
+    assert outline is not None
+    numeric_plan = {
+        "experience": {"threshold": 100, "kills": [12, 12, 16]},
+        "combat": {"fireball_damage": 32, "wolf_hp": 80},
+    }
+    outline["chapters"][0]["numeric_plan"] = numeric_plan
+
+    assert export_outline_to_markdown(root, outline) == "ok"
+    volume_path = root / "大纲" / "第1卷-详细大纲.md"
+    volume_text = volume_path.read_text(encoding="utf-8")
+    assert "- 数值账本: {" in volume_text
+
+    imported = import_markdown_outline(root)
+    assert imported is not None
+    assert imported["chapters"][0]["numeric_plan"] == numeric_plan
+
+
 def test_import_rejects_malformed_attribute_allocation_plan(tmp_path: Path) -> None:
     root = _make_project(tmp_path)
     volume_path = root / "大纲" / "第1卷-详细大纲.md"

@@ -30,6 +30,16 @@ def _postprocess_game_body(
     )
 
 
+def test_game_postprocess_removes_forbidden_full_currency_name() -> None:
+    forbidden = "\u4eba\u6c11\u5e01"
+    body = f"【本次实时兑换价：1金币=2000元；预计到账2786.00{forbidden}】"
+
+    cleaned = _postprocess_game_body(body, chapter_number=1)
+
+    assert forbidden not in cleaned
+    assert "2786.00元" in cleaned
+
+
 def test_progression_lead_review_rejects_first_chapter_service_loop():
     body = (
         "《天启之门》开服，苏叶登录后用夜烬建号，职业是元素法师学徒。"

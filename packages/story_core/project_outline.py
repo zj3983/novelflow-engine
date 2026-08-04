@@ -200,6 +200,7 @@ class ChapterPlan(_OutlineModel):
     cast: list[str] = Field(default_factory=list)
     level_target: str | int | None = None
     attribute_allocation_decision: AttributeAllocationDecision | None = None
+    numeric_plan: dict[str, Any] = Field(default_factory=dict)
     opponent_response: str = ""
     emotional_change: str = ""
     gain_or_loss: str = ""

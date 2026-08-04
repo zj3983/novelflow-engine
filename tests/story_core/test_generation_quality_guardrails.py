@@ -908,6 +908,51 @@ def test_first_chapter_review_blocks_premature_rewards_and_services():
     assert any("第一章账本越界" in issue for issue in review["issues"])
 
 
+def test_first_chapter_review_treats_full_goldfinger_before_first_kill_as_hard_error():
+    body = (
+        "苏叶登录《神域》，角色创建时显示千倍爆率和混沌之种：未解析。"
+        "夜烬接取普通任务后走到灰狼坡，角色面板写明Lv.1、见习冒险者、新手法杖和基础火球术。"
+        "怪物面板显示灰狼Lv.1，生命80。夜烬用基础火球术击杀灰狼，掉落毒腺。"
+    )
+
+    review = _review_chapter_body(
+        1,
+        body,
+        {},
+        ["本书设定：首杀后才能确认千倍爆率和混沌之种。"],
+        {},
+        [],
+        [],
+        GAME_GENRE_CONTEXT,
+    )
+    gate = build_simplified_review({"writing_review": review})
+
+    assert gate["has_hard_errors"] is True
+    assert any("首杀前完整揭示" in item["message"] for item in gate["issues"])
+
+
+def test_game_review_blocks_numeric_ledger_equations_written_as_explanation():
+    body = (
+        "夜烬连续击杀七只灰狼，经验来到84点（7×12=84）。"
+        "第八只灰狼挨了三次伤害：32+32+36=100，随后倒地。"
+    )
+
+    review = _review_chapter_body(
+        1,
+        body,
+        {},
+        ["本章数值必须遵守章节账本，但不要解释计算过程。"],
+        {},
+        [],
+        [],
+        GAME_GENRE_CONTEXT,
+    )
+    gate = build_simplified_review({"writing_review": review})
+
+    assert gate["has_hard_errors"] is True
+    assert any("数值账本写进正文" in item["message"] for item in gate["issues"])
+
+
 def test_first_chapter_review_allows_visible_prices_as_future_goal():
     body = (
         "《天启之门》开服，苏叶现实余额27.60元。夜烬完成角色创建，职业元素法师学徒。"

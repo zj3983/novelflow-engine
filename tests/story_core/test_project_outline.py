@@ -57,6 +57,20 @@ def test_outline_arc_preserves_optional_game_pacing_stage_id() -> None:
     assert normalized["arcs"][0]["pacing_stage_id"] == "newcomer_rise"
 
 
+def test_chapter_numeric_plan_round_trips_as_structured_outline_data() -> None:
+    numeric_plan = {
+        "experience": {"start": 0, "threshold": 100, "kills": [12] * 7 + [16]},
+        "combat": {"fireball_damage": 32, "wolf_hp": 80},
+        "official_exchange": {"gross_yuan": 1500.0, "fee_yuan": 7.5, "net_yuan": 1492.5},
+    }
+
+    normalized = normalize_project_outline(
+        {"chapters": [{"chapter_number": 1, "numeric_plan": numeric_plan}]}
+    )
+
+    assert normalized["chapters"][0]["numeric_plan"] == numeric_plan
+
+
 def test_overall_story_core_groups_round_trip_without_a_second_document() -> None:
     normalized = normalize_project_outline(
         {
@@ -210,8 +224,9 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "ending_hook",
         "trope_beat",
         "cast",
-        "level_target",
-        "attribute_allocation_decision",
+            "level_target",
+            "attribute_allocation_decision",
+            "numeric_plan",
             "opponent_response",
             "emotional_change",
             "gain_or_loss",

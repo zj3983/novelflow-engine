@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from packages.story_core.pipeline.quality_stage import QualityStageCallbacks, run_quality_stage
 
 
@@ -66,7 +68,30 @@ def test_quality_stage_retries_short_compression_from_original_body():
     assert calls[0] == ("long original", 1, None)
     assert calls[1][0] == "long original"
     assert calls[1][1] == 1
-    assert calls[1][2] == {"previous_chars": 5}
+    assert calls[1][2] == {"previous_chars": 5, "reason": "too_short"}
+
+
+def test_quality_stage_retries_compression_that_expands_the_body() -> None:
+    calls = []
+
+    def compress(body, round_number, feedback):
+        calls.append((body, round_number, feedback))
+        return ("expanded beyond original", "") if feedback is None else ("normal", "")
+
+    callbacks = replace(
+        _callbacks(compress=compress),
+        compression_action=lambda before, candidate: (
+            "reject" if len(candidate) >= len(before) else "accept"
+        ),
+    )
+
+    result = run_quality_stage(body="long original", callbacks=callbacks)
+
+    assert result.body == "normal"
+    assert calls[1][2] == {
+        "previous_chars": len("expanded beyond original"),
+        "reason": "expanded",
+    }
 
 
 def test_quality_stage_rejects_compression_that_makes_review_worse():

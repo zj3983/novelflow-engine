@@ -167,6 +167,13 @@ def test_runtime_rules_exclude_legacy_flow_and_forbidden_currency_wording() -> N
     assert all(marker not in text for marker in ("担保交易", "封存交割", "鉴定求购"))
 
 
+@pytest.mark.parametrize("token", ["RMB", "CNY", "人民币"])
+def test_economy_review_rejects_forbidden_real_currency_names(token: str) -> None:
+    body = f"官方兑换页面显示预计到账1492.50 {token}。"
+
+    assert "forbidden_currency_name" in _economy_violation_codes(body)
+
+
 def test_new_opening_contract_authorizes_market_then_exchange() -> None:
     assert first_chapter_market_exchange_authorized(
         {"turn": "第一章在交易行卖出裂纹狼心，再走官方兑换渠道解决现实急账。"},
@@ -787,6 +794,45 @@ def test_structured_first_chapter_allows_natural_auction_wording() -> None:
         {
             "chapter_number": 1,
             "goal": "把裂纹狼心匿名上架拍卖，以2金币一口价成交，再通过官方兑换付清现实急账。",
+        },
+        [],
+    )
+
+
+def test_structured_first_chapter_authorizes_scene_chain_split_across_fields() -> None:
+    assert first_chapter_market_exchange_authorized(
+        {
+            "chapter_number": 1,
+            "action": "夜烬匿名寄售，成交后再使用独立的官方兑换。",
+            "turn": "裂纹狼心被需要开服样本的买家按一口价买走。",
+            "payoff": "苏叶按本章生成且前后一致的金额付清眼前急账。",
+            "scene_chain": [
+                {
+                    "location": "灰烬村交易行",
+                    "action": "买家直接买走，交易行只结算游戏币。",
+                    "next": "打开独立的官方兑换页面。",
+                },
+                {
+                    "location": "出租屋",
+                    "action": "苏叶确认报价后提交兑换，到账便付清急账。",
+                },
+            ],
+        },
+        [],
+    )
+
+
+def test_structured_authorization_ignores_prose_only_trade_restrictions() -> None:
+    assert first_chapter_market_exchange_authorized(
+        {
+            "chapter_number": 1,
+            "goal": "在现实急账截止前获得实际收入。",
+            "action": "夜烬出售裂纹狼心，成交后进入官方兑换。",
+            "payoff": "苏叶用净到账付清急账。",
+            "must_not_write": [
+                "不要用说明段介绍交易规则。",
+                "不要把开服求购单写成来源不明的巨额游戏币。",
+            ],
         },
         [],
     )

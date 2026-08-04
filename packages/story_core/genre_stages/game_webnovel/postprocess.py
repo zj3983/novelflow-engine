@@ -192,6 +192,16 @@ def _normalize_web_game_terms(body: str) -> str:
     )
     for old, new in replacements:
         normalized = normalized.replace(old, new)
+    normalized = re.sub(r"(\d+(?:\.\d+)?)\s*(?:RMB|CNY)\b", r"\1元", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(?:RMB|CNY)\b", "现实货币", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"(\d+(?:\.\d+)?)\s*元?人民币", r"\1元", normalized)
+    normalized = normalized.replace("人民币", "现实货币")
+    normalized = normalized.replace("自由分配属性点", "自由属性点")
+    normalized = re.sub(
+        r"将(?P<count>\d+|[一二两三四五六七八九十]+)点自由属性点全部加到了",
+        r"把\g<count>点自由属性点都加到了",
+        normalized,
+    )
     return normalized
 
 

@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from packages.story_core.generation_progress import report_generation_progress
+from packages.story_core.game_numeric_review import review_game_numeric_consistency
 from packages.story_core.progression_lead_review import review_progression_lead
 from packages.story_core.web_game_economy import first_chapter_market_exchange_authorized
 from packages.story_core.web_game_review import has_asserted_overreach, review_web_game_chapter
@@ -276,7 +277,16 @@ def review_game_chapter(*, context: Any) -> dict[str, Any]:
         rf"(?:1|一)\s*(?:枚)?金币\s*(?:=|约等于|等于|能换|可以换|折合)\s*\d+(?:\.\d+)?\s*(?:元|{_FORBIDDEN_REAL_CURRENCY_NAME}|RMB)",
         body,
     )
-    if invented_exchange_rate and not has_explicit_exchange_rate:
+    one_time_quote = False
+    if invented_exchange_rate:
+        quote_context = body[
+            max(0, invented_exchange_rate.start() - 40) : invented_exchange_rate.end() + 60
+        ]
+        one_time_quote = (
+            any(marker in quote_context for marker in ("本次", "当前", "实时", "即时"))
+            and not any(marker in quote_context for marker in ("稳定汇率", "固定汇率", "永久汇率"))
+        )
+    if invented_exchange_rate and not has_explicit_exchange_rate and not one_time_quote:
         scores["genre_rules"] = min(scores["genre_rules"], 5)
         issues.append("章节写死了游戏币与现实货币的汇率，但世界档案没有明确官方兑换行情。")
         revision_plan.append("删除固定现实汇率，改写为开服期行情未稳、商人询价、游戏内铜币/银币/金币价格或市场猜测。")
@@ -507,6 +517,12 @@ def review_game_chapter(*, context: Any) -> dict[str, Any]:
             "第一章金手指钩子不够明确。",
             "在前1000字内明确展示混沌之种/千倍爆率的首次验证和代价。",
         )
+        first_kill = re.search(r"(?:击杀|杀死|打死)[^。！？\n]{0,24}(?:灰狼|怪物)|(?:灰狼|怪物)[^。！？\n]{0,24}(?:倒下|死亡|化为)", body)
+        full_advantage = re.search(r"(?:千倍爆率|掉落判定\s*[×xX*＊]\s*1000|混沌之种\s*[：:]?\s*未解析)", body)
+        if first_kill and full_advantage and full_advantage.start() < first_kill.start():
+            scores["genre_rules"] = min(scores["genre_rules"], 5)
+            issues.append("第一章在首杀前完整揭示了金手指；登录阶段只能出现短暂异常，优势名称和效果应在有效掉落后再确认。")
+            revision_plan.append("登录时只保留乱码、协议异常或底层提示闪烁；首杀掉落后再显示千倍爆率、掉落判定×1000和混沌之种未解析。")
         if any(token in body for token in ("隐藏天赋", "混沌之种", "千倍爆率", "爆率修正")) and not any(
             token in body
             for token in (
@@ -583,6 +599,18 @@ def review_game_chapter(*, context: Any) -> dict[str, Any]:
             revision_plan.append("把第二章收束为材料、经验、补给或技能前置推进；继承上一章章末账本，不重造铜币、库存、血蓝或耐久，本章只推进到新的阶段目标，不直接完成元素回廊前置或升到2级。")
 
     if game_context:
+        ledger_equations = re.findall(
+            r"\d+(?:\.\d+)?\s*(?:[×xX*+＋]\s*\d+(?:\.\d+)?\s*)+=\s*\d+(?:\.\d+)?",
+            body,
+        )
+        if ledger_equations:
+            scores["genre_rules"] = min(scores["genre_rules"], 4)
+            examples = "、".join(dict.fromkeys(ledger_equations[:2]))
+            issues.append(f"数值账本写进正文：出现了直接计算式{examples}。")
+            revision_plan.append(
+                "保留结算结果和角色能看到的面板变化，删除乘加算式与验算说明；数值账本只用于后台校验。"
+            )
+
         unresolved_full_exp = re.search(
             r"经验[：:]\s*100\s*/\s*100[^\n。]*(?:未升级|没跳|卡住|卡在)|经验条[^\n。]*(?:卡在|卡住)\s*100\s*/\s*100",
             body,
@@ -628,7 +656,7 @@ def review_game_chapter(*, context: Any) -> dict[str, Any]:
             issues.append("统一蓝图缺少禁写项，无法约束低级材料扰乱全服、NPC越权、交易行暴露身份等常见网游逻辑问题。")
             revision_plan.append("在 simulation_plan.forbidden_moves 中加入NPC不得全知、低级材料不能扰乱全服、交易行不得暴露坐标/现实身份等禁写边界。")
     subreviews: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {
             "web_game_review": pool.submit(
                 review_web_game_chapter,
@@ -646,6 +674,10 @@ def review_game_chapter(*, context: Any) -> dict[str, Any]:
                 event_plan=event_plan,
                 world_facts=world_facts,
             ),
+            "numeric_consistency_review": pool.submit(
+                review_game_numeric_consistency,
+                body,
+            ),
         }
         for name, future in futures.items():
             try:
@@ -656,6 +688,7 @@ def review_game_chapter(*, context: Any) -> dict[str, Any]:
 
     web_game_review = subreviews["web_game_review"]
     progression_lead_review = subreviews["progression_lead_review"]
+    numeric_consistency_review = subreviews["numeric_consistency_review"]
     _merge_subreview(
         prefix="web_game",
         review=web_game_review,
@@ -670,8 +703,18 @@ def review_game_chapter(*, context: Any) -> dict[str, Any]:
         issues=issues,
         revision_plan=revision_plan,
     )
+    _merge_subreview(
+        prefix="numeric_consistency",
+        review=numeric_consistency_review,
+        scores=scores,
+        issues=issues,
+        revision_plan=revision_plan,
+    )
     return {
-        "pass": bool(web_game_review.get("pass", True)),
+        "pass": bool(
+            web_game_review.get("pass", True)
+            and numeric_consistency_review.get("pass", True)
+        ),
         "scores": scores,
         "issues": issues,
         "revision_plan": revision_plan,

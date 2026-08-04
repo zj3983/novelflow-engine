@@ -133,8 +133,20 @@ def run_quality_stage(
                 review, candidate_review, before_body, candidate_body
             )
             action = callbacks.compression_action(before_body, candidate_body)
-            if action == "retry" and callbacks.hard_length_acceptable(candidate_body):
-                retry_feedback = {"previous_chars": callbacks.char_count(candidate_body)}
+            candidate_chars = callbacks.char_count(candidate_body)
+            before_chars = callbacks.char_count(before_body)
+            retry_reason = (
+                "too_short"
+                if action == "retry"
+                else "expanded"
+                if action == "reject" and candidate_chars >= before_chars
+                else ""
+            )
+            if retry_reason:
+                retry_feedback = {
+                    "previous_chars": candidate_chars,
+                    "reason": retry_reason,
+                }
                 if on_event:
                     on_event(
                         "compression_retry_start",

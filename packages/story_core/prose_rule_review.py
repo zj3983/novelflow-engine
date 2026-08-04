@@ -282,7 +282,12 @@ def review_npc_boundary_violation(text: str) -> dict[str, Any]:
             issues.append(f"NPC信息边界越权：服务型NPC段落提到{'、'.join(overreach[:4])}。")
             revision_plan.append("让NPC只说岗位内信息和个人利益边界；任务、公会布防、市场全局分析改由公告、论坛、玩家闲聊或后续线索承担。")
             break
-        if "药剂" in window and any(term in window for term in ("公会", "警戒线", "职业试炼", "市场分析", "元素回廊")):
+        has_drug_service_npc = (
+            "药铺" in window
+            or "药剂铺" in window
+            or re.search(r"药剂师(?!玩家)", window) is not None
+        )
+        if has_drug_service_npc and any(term in window for term in ("公会", "警戒线", "职业试炼", "市场分析", "元素回廊")):
             issues.append("药剂师/药铺信息边界越权：药材服务节点不应讲公会布防、职业试炼或全局市场分析。")
             revision_plan.append("把药剂师台词收窄到药材库存、价格、药效、收购口径和她不知道的边界。")
             break

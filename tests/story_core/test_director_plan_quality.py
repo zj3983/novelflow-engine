@@ -237,6 +237,21 @@ def test_normalize_event_plan_keeps_concrete_director_scene_chain():
     assert normalized["scene_chain"] == raw["scene_chain"]
 
 
+def test_normalize_and_compact_event_plan_keep_numeric_plan():
+    numeric_plan = {
+        "experience": {"kills": [12, 12, 16], "level_threshold": 40},
+        "exchange": {"gross_yuan": 1500, "fee_yuan": 7.5, "net_yuan": 1492.5},
+    }
+    normalized = _normalize_event_plan(
+        {"numeric_plan": numeric_plan}, chapter_number=1, story=_story()
+    )
+
+    compacted = _compact_writer_plan_for_prompt({"event_plan": normalized})
+
+    assert normalized["numeric_plan"] == numeric_plan
+    assert compacted["event_plan"]["numeric_plan"] == numeric_plan
+
+
 def test_director_quality_gate_accepts_complete_continuous_plan():
     plan = _complete_plan([{"name": "夜烬", "action": "击杀灰狼并提交灰狼毒腺"}])
     plan["character_moves"] = [{"name": "夜烬", "action": "补齐灰狼毒腺后提交任务"}]

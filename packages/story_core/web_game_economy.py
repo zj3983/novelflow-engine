@@ -17,6 +17,8 @@ _EXCHANGE_RULES: tuple[str, ...] = (
     "官方兑换渠道独立于交易行，只兑换已进入游戏钱包的游戏币。",
     "确认兑换价、额度、手续费和预计到账后，款项进入现实账户。",
     "现实款项只能通过独立官方兑换渠道进入现实账户。",
+    "现实金额的单位一律直接写“元”，不写其他全称或英文缩写。",
+    "开服初期兑换价尚未稳定，除非世界档案明确给出官方兑换规则，否则不得写死游戏币与现实货币的兑换比例。",
 )
 
 _APPRAISAL_RULES: tuple[str, ...] = (
@@ -826,12 +828,12 @@ def detect_economy_boundary_violations(body: str) -> tuple[EconomyBoundaryViolat
                 revision="资金冻结的求购单应立即成交，成交后游戏币直接进入游戏钱包，不再等待买家确认。",
             )
         )
-    if _FORBIDDEN_CURRENCY_NAME in body:
+    if _FORBIDDEN_CURRENCY_NAME in body or re.search(r"\b(?:RMB|CNY)\b", body, re.IGNORECASE):
         violations.append(
             EconomyBoundaryViolation(
                 code="forbidden_currency_name",
-                issue="正文使用了禁止出现的完整现实货币名称。",
-                revision="删除完整现实货币名称；交易行只进游戏钱包，现实收益走独立官方兑换。",
+                issue="正文使用了禁止出现的现实货币名称或英文缩写。",
+                revision="金额直接使用“元”，不要写现实货币全称或英文缩写；交易行只进游戏钱包，现实收益走独立官方兑换。",
             )
         )
     return tuple(violations)
@@ -1401,6 +1403,47 @@ def _first_chapter_range_authorized(text: str) -> bool:
     return legacy_contract and not denial_matches
 
 
+def _structured_first_chapter_exchange_authorized(text: str) -> bool:
+    denial_matches = tuple(_ECONOMY_DENIAL.finditer(text))
+    current_denials = tuple(
+        match for match in denial_matches if not match.group().endswith("担保交易")
+    )
+    if current_denials or _FLOW_PURPOSE_DENIAL.search(text):
+        return False
+
+    has_transaction = bool(
+        re.search(r"(?:裂纹狼心|交易行|求购单)[^。；;\n]{0,80}(?:成交|出售|售出|买走|寄售)", text)
+        or re.search(r"(?:成交|出售|售出|买走|寄售)[^。；;\n]{0,80}(?:裂纹狼心|交易行|求购单)", text)
+    )
+    has_exchange = "官方兑换" in text
+    has_reality_settlement = bool(
+        re.search(r"(?:现实[^。；;\n]{0,24}(?:急账|账单|房租)|(?:付清|解决|处理)[^。；;\n]{0,24}(?:急账|账单|房租))", text)
+    )
+    return has_transaction and has_exchange and has_reality_settlement
+
+
+_STRUCTURED_FLOW_DENIAL = re.compile(
+    r"(?:不得|禁止|不允许|不能|不可|不应)"
+    r"[^，。；;！？!?\n]{0,12}"
+    r"(?:卖出裂纹狼心|出售裂纹狼心|交易行成交|进行交易|官方兑换|兑换游戏币)"
+)
+
+
+def _structured_authorization_text(plan: Mapping[str, Any]) -> tuple[str, str]:
+    excluded = {"must_not_write", "avoid", "forbidden", "forbidden_moves"}
+    positive = {
+        key: value
+        for key, value in plan.items()
+        if str(key) not in excluded
+    }
+    forbidden = {
+        key: value
+        for key, value in plan.items()
+        if str(key) in excluded
+    }
+    return "\n".join(_text_entries(positive)), "\n".join(_text_entries(forbidden))
+
+
 def first_chapter_market_exchange_authorized(
     event_plan: dict[str, Any] | None = None,
     world_facts: list[str] | None = None,
@@ -1418,7 +1461,12 @@ def first_chapter_market_exchange_authorized(
         structured_first_chapter = False
     if structured_first_chapter:
         scoped_text = "\n".join(_text_entries(plan))
-        if _first_chapter_range_authorized(scoped_text):
+        positive_text, forbidden_text = _structured_authorization_text(plan)
+        structured_authorized = (
+            not _STRUCTURED_FLOW_DENIAL.search(forbidden_text)
+            and _structured_first_chapter_exchange_authorized(positive_text)
+        )
+        if _first_chapter_range_authorized(scoped_text) or structured_authorized:
             return True
 
     entries = (

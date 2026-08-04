@@ -162,4 +162,6 @@ def test_economy_rules_separate_market_appraisal_and_official_exchange():
 
     assert rules[: len(boundary_rules)] == boundary_rules
     assert all(marker in text for marker in ("游戏币", "已识别物品不重复鉴定", "官方兑换渠道", "现实账户"))
+    assert "双向兑换" in text
+    assert "求购单冻结" in text
     assert forbidden_currency not in text

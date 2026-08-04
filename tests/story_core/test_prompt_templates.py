@@ -24,6 +24,9 @@ def test_game_director_prompt_reads_current_ledger_without_requesting_ledger_upd
     assert "不生成章节摘要、既成事实或账本更新" in template.content
     assert "ledger_updates" not in template.content
     assert "以当前连续性账本为准" in template.content
+    assert "numeric_plan" in template.content
+    assert "经验" in template.content
+    assert "净到账" in template.content
 
 
 def test_template_variable_occurrences_preserves_duplicates_and_order():

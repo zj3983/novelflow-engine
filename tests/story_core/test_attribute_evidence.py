@@ -454,6 +454,33 @@ def test_attribute_allocation_accepts_natural_completed_action():
     assert character_attribute_allocation_points(body, "智力") == 5
 
 
+def test_attribute_allocation_accepts_bracketed_game_panel_attribute_name():
+    body = "夜烬打开属性面板，将5点自由属性全部加在了【智力】上，确认提交。"
+
+    assert character_attribute_allocation_points(body, "智力", protagonist_aliases={"夜烬"}) == 5
+    assert has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+
+
+def test_attribute_allocation_accepts_natural_attribute_item_wording():
+    body = (
+        "夜烬打开属性面板，将这5点自由属性全部加到了智力一项上，随后点击确认分配。"
+        "他的智力属性从5点提升至10点，可用自由属性点随之清零为0。"
+    )
+
+    assert character_attribute_allocation_points(body, "智力", protagonist_aliases={"夜烬"}) == 5
+    assert has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+
+
+def test_attribute_allocation_accepts_click_attribute_then_fill_points_wording():
+    body = (
+        "夜烬直接唤出属性面板，手指点在智力一栏上，将5点自由属性一口气全部填了进去。"
+        "确定加点。【智力：5 -> 10；可用自由属性点：0】"
+    )
+
+    assert character_attribute_allocation_points(body, "智力", protagonist_aliases={"夜烬"}) == 5
+    assert has_character_attribute_allocation(body, "智力", 5, protagonist_aliases={"夜烬"})
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [("十", 10), ("十一", 11), ("二十", 20), ("二十五", 25), ("一百", 100)],

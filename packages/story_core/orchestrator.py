@@ -918,6 +918,7 @@ def _compact_writer_plan_for_prompt(plan: Any) -> dict[str, Any]:
                 "chapter_end_hook",
                 "must_include",
                 "must_not_write",
+                "numeric_plan",
             )
             if event_plan.get(key) not in (None, "", [], {})
         }
@@ -1845,6 +1846,9 @@ def _normalize_event_plan(raw_event_plan: object, chapter_number: int, story: St
         "chapter_satisfaction": _normalize_chapter_satisfaction(raw_event_plan.get("chapter_satisfaction")),
         "author_constraints": list(story.author_constraints),
     }
+    numeric_plan = raw_event_plan.get("numeric_plan")
+    if isinstance(numeric_plan, dict) and numeric_plan:
+        result["numeric_plan"] = deepcopy(numeric_plan)
     raw_scene_chain = raw_event_plan.get("scene_chain")
     if isinstance(raw_scene_chain, list):
         scene_fields = ("location", "pov", "goal", "obstacle", "action", "change", "next")
@@ -4343,6 +4347,7 @@ class StoryOrchestrator:
         ) -> tuple[str, str]:
             is_retry = feedback is not None
             previous_chars = int((feedback or {}).get("previous_chars") or 0)
+            retry_reason = str((feedback or {}).get("reason") or "")
             prompt = _render_compression_length_prompt(
                 working_story,
                 source_body=source_body,
@@ -4355,7 +4360,9 @@ class StoryOrchestrator:
                     "建议5200到5500字，绝对不要低于4200字或超过5500字"
                 ) if is_retry else None,
                 feedback=(
-                    f"上次压缩到{previous_chars}字，结果过短；本轮必须保留更多关键场景和有效细节。"
+                    f"上次压缩后反而变成{previous_chars}字，比原稿更长；本轮必须真正删减重复说明和面板，只保留事件链。"
+                    if retry_reason == "expanded"
+                    else f"上次压缩到{previous_chars}字，结果过短；本轮必须保留更多关键场景和有效细节。"
                     if is_retry else ""
                 ),
             )

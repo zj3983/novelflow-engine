@@ -340,6 +340,55 @@ def test_game_writer_does_not_fallback_to_unapproved_proposed_characters():
     assert raw_context["cards"] == []
 
 
+def test_first_chapter_game_writer_sequences_goldfinger_and_hides_ledger_math():
+    story = StoryState(
+        story_id="goldfinger-order",
+        outline="登录时协议异常，首杀后确认千倍爆率与混沌之种未解析。",
+        genre="网游",
+        style="",
+        world_facts=["底层协议校验通过", "掉落判定×1000", "混沌之种：未解析"],
+    )
+    plan = {
+        "event_plan": {
+            "attribute_allocation_decision": {
+                "mode": "allocate",
+                "allocations": {"智力": 5},
+                "remaining": 0,
+            },
+            "numeric_plan": {
+                "experience": {"lv1_exp_each": 12, "ending": 100},
+                "combat": {"base_fireball_damage": 32},
+            }
+        }
+    }
+    context = WriterContext(
+        story=story,
+        chapter_number=1,
+        plan=plan,
+        style_guidance={},
+        character_context={},
+        dialogue_context={},
+        chapter_seed={},
+        skill_context={},
+        include_genre_method=True,
+        writer_plan_for_prompt={},
+        world_facts_for_prompt=[],
+        trope_guidance=[],
+        trope_contract_for_prompt={},
+    )
+
+    lines = game_writer_module._game_fact_lines(context)
+    prompt = "\n".join(lines)
+
+    assert "登录时只出现短暂协议异常" in prompt
+    assert "首次有效掉落后" in prompt
+    assert "不要把乘加算式写进正文" in prompt
+    assert "不要逐项复述账本" in prompt
+    assert "全章只执行一次加点" in prompt
+    assert "不得在建号或接任务时提前获得属性点" in prompt
+    assert "不要写成“自由分配属性”" in prompt
+
+
 def test_common_world_context_prioritizes_late_relevant_rules_and_entities():
     world_context = {
         "world_rules": [

@@ -362,6 +362,7 @@ def test_file_project_outline_get_projects_legacy_data_without_writing(tmp_path:
             "ending_hook": "The seal is still warm.",
             "trope_beat": None,
             "cast": [],
+            "numeric_plan": {},
                 "opponent_response": "",
                 "emotional_change": "",
                 "gain_or_loss": "",

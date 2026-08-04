@@ -546,6 +546,9 @@ def test_game_packet_requires_fast_visible_progression():
     assert any("前10章节奏要快" in rule for rule in packet["style_rules"])
     assert any("连续两章不能只拿线索不给成长" in rule for rule in packet["style_rules"])
     assert any("等级、经验大幅推进、技能、装备、货币补给或任务权限" in rule for rule in packet["style_rules"])
+    assert any("首次达到升级阈值" in rule for rule in packet["style_rules"])
+    assert any("总额减手续费等于净到账" in rule for rule in packet["style_rules"])
+    assert any("不得额外赠送开局属性点" in rule for rule in packet["style_rules"])
 
 
 def test_packet_exposes_director_wow_hook_and_reality_bridge():

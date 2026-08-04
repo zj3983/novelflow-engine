@@ -432,6 +432,59 @@ def test_opening_review_rejects_invented_real_money_exchange_rate():
     assert any("汇率" in issue for issue in review["issues"])
 
 
+def test_opening_review_allows_one_time_official_exchange_quote() -> None:
+    body = (
+        "《神域》开服当晚，苏叶在出租屋里看着账单登录游戏。"
+        "他通过交易行卖出材料，离开交易行后打开独立官方兑换页面。"
+        "【本次实时兑换价：1金币=2000元；手续费：14元；预计到账：2786元】"
+        "现实账户收到2786元，他付清急账。"
+    ) * 25
+
+    review = _review_game_chapter(
+        1,
+        body,
+        {"world_reactions": [], "next_focus": "继续建立稳定收入。"},
+        [],
+    )
+
+    assert not any("写死了游戏币" in issue for issue in review["issues"])
+
+
+def test_opening_review_accepts_anomaly_before_combat_and_reveal_after_kill() -> None:
+    body = (
+        "《神域》开服，苏叶在出租屋登录游戏，角色创建时视野边缘闪过一行协议异常。"
+        "他使用游戏ID夜烬进入灰狼坡，怪物面板显示灰狼等级Lv.1、生命80。"
+        "夜烬用基础火球术击杀灰狼。掉落出现后，底层协议校验通过、掉落判定×1000和混沌之种未解析才完整闪过。"
+    ) * 25
+
+    review = _review_game_chapter(
+        1,
+        body,
+        {"world_reactions": [], "next_focus": "继续验证。"},
+        [],
+    )
+
+    assert not any("金手指出现缺少触发条件" in issue for issue in review["issues"])
+    assert not any("首杀前完整揭示" in issue for issue in review["issues"])
+
+
+def test_opening_review_rejects_full_advantage_reveal_before_first_kill() -> None:
+    body = (
+        "《神域》开服，苏叶在出租屋登录游戏。"
+        "角色创建时直接显示底层协议校验通过、千倍爆率生效、混沌之种未解析。"
+        "他使用游戏ID夜烬进入灰狼坡，随后用基础火球术击杀第一只灰狼。"
+    ) * 25
+
+    review = _review_game_chapter(
+        1,
+        body,
+        {"world_reactions": [], "next_focus": "继续验证。"},
+        [],
+    )
+
+    assert any("首杀前完整揭示" in issue for issue in review["issues"])
+
+
 def test_opening_review_rejects_wrong_coin_conversion():
     body = (
         "《天启之门》开服当晚，苏叶在出租屋里看着账单登录全沉浸VRMMO。"

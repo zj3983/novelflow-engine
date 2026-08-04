@@ -139,6 +139,9 @@ def build_outline_chapter_plan(
     decision = chapter.get("attribute_allocation_decision")
     if isinstance(decision, dict):
         event_plan["attribute_allocation_decision"] = deepcopy(decision)
+    numeric_plan = chapter.get("numeric_plan")
+    if isinstance(numeric_plan, dict) and numeric_plan:
+        event_plan["numeric_plan"] = deepcopy(numeric_plan)
     for field in ("level_target", "level_change", "progression", "level", "state_delta"):
         if field in chapter:
             event_plan[field] = deepcopy(chapter[field])
