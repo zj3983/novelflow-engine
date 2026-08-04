@@ -4146,37 +4146,38 @@ class StoryOrchestrator:
             for item in getattr(working_story, "enabled_skill_module_ids", [])
             if str(item).strip()
         ]
-        self._emit_workflow_step(
-            "load_writer_skills",
-            "加载写手 Skill",
-            status="done",
-            source="writer",
-            used_modules=["skill_packs"],
-            reads=["已启用的 Skill", "Skill 模块规则", "项目作者约束"],
-            outputs={
-                "enabled_skill_ids": enabled_skill_ids,
-                "enabled_skill_module_ids": enabled_skill_module_ids,
-                "injected_modules": injected_skill_modules,
-                "prompt_chars": len(body_prompt),
-            },
-        )
-        self._emit_progress_with_artifact(
-            "写手已加载 Skill",
-            "writer_skill_context",
-            source="writer",
-            used_modules=["writer_agent", "skill_packs"],
-            reason="记录实际进入写手提示词的技能模块，避免只显示启用状态",
-            inputs={
-                "chapter_number": chapter_number,
-                "enabled_skill_ids": enabled_skill_ids,
-                "enabled_skill_module_ids": enabled_skill_module_ids,
-            },
-            outputs={
-                "injected_modules": injected_skill_modules,
-                "prompt_chars": len(body_prompt),
-                "skill_rule_markers": body_prompt.count("Skill"),
-            },
-        )
+        if injected_skill_modules:
+            self._emit_workflow_step(
+                "load_writer_skills",
+                "加载写手 Skill",
+                status="done",
+                source="writer",
+                used_modules=["skill_packs"],
+                reads=["已启用的 Skill", "Skill 模块规则", "项目作者约束"],
+                outputs={
+                    "enabled_skill_ids": enabled_skill_ids,
+                    "enabled_skill_module_ids": enabled_skill_module_ids,
+                    "injected_modules": injected_skill_modules,
+                    "prompt_chars": len(body_prompt),
+                },
+            )
+            self._emit_progress_with_artifact(
+                "写手已加载 Skill",
+                "writer_skill_context",
+                source="writer",
+                used_modules=["writer_agent", "skill_packs"],
+                reason="记录实际进入写手提示词的技能模块，避免只显示启用状态",
+                inputs={
+                    "chapter_number": chapter_number,
+                    "enabled_skill_ids": enabled_skill_ids,
+                    "enabled_skill_module_ids": enabled_skill_module_ids,
+                },
+                outputs={
+                    "injected_modules": injected_skill_modules,
+                    "prompt_chars": len(body_prompt),
+                    "skill_rule_markers": body_prompt.count("Skill"),
+                },
+            )
 
         def report_writing_event(name: str, payload: dict[str, Any]) -> None:
             if name == "empty_retry":

@@ -1749,6 +1749,12 @@ def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
         if isinstance(entry.get("artifact"), dict)
         and isinstance(entry["artifact"].get("workflow_step"), dict)
     }
+    assert "load_writer_skills" not in workflow_steps
+    assert not any(
+        isinstance(entry.get("artifact"), dict)
+        and entry["artifact"].get("key") == "writer_skill_context"
+        for entry in dict_steps
+    )
     assert [
         step_id
         for step_id in (
