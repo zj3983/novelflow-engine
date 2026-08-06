@@ -40,6 +40,8 @@ def _callbacks(*, revise=None, compress=None) -> QualityStageCallbacks:
 
 
 def test_quality_stage_runs_at_most_one_full_revision_and_keeps_accepted_candidate():
+    """The bounded controller keeps the accepted candidate and records the
+    safety report when the rewrite was accepted."""
     calls = []
 
     def revise(body, review, round_number):
@@ -55,28 +57,30 @@ def test_quality_stage_runs_at_most_one_full_revision_and_keeps_accepted_candida
     assert calls == [("draft", {"pass": False, "issues": ["hard"]}, 1)]
 
 
-def test_quality_stage_retries_short_compression_from_original_body():
+def test_quality_stage_runs_at_most_one_compression_attempt():
+    """Compression never retries under the new bounded flow."""
     calls = []
 
     def compress(body, round_number, feedback):
         calls.append((body, round_number, feedback))
-        return ("short", "") if feedback is None else ("normal", "")
+        return ("normal", "")
 
     result = run_quality_stage(body="long original", callbacks=_callbacks(compress=compress))
 
+    assert calls == [("long original", 1, None)]
+    # The bounded flow runs a single compression; the candidate replaces the body
+    # when the action returns "accept".
     assert result.body == "normal"
-    assert calls[0] == ("long original", 1, None)
-    assert calls[1][0] == "long original"
-    assert calls[1][1] == 1
-    assert calls[1][2] == {"previous_chars": 5, "reason": "too_short"}
 
 
-def test_quality_stage_retries_compression_that_expands_the_body() -> None:
+def test_quality_stage_does_not_retry_compression_when_candidate_expands():
+    """The bounded flow does NOT issue a second compression attempt even if
+    the first candidate expanded past the original body."""
     calls = []
 
     def compress(body, round_number, feedback):
         calls.append((body, round_number, feedback))
-        return ("expanded beyond original", "") if feedback is None else ("normal", "")
+        return ("expanded beyond original", "")
 
     callbacks = replace(
         _callbacks(compress=compress),
@@ -87,14 +91,13 @@ def test_quality_stage_retries_compression_that_expands_the_body() -> None:
 
     result = run_quality_stage(body="long original", callbacks=callbacks)
 
-    assert result.body == "normal"
-    assert calls[1][2] == {
-        "previous_chars": len("expanded beyond original"),
-        "reason": "expanded",
-    }
+    assert result.body == "long original"
+    assert len(calls) == 1
 
 
 def test_quality_stage_rejects_compression_that_makes_review_worse():
+    """When compression quality is preserved and the action is not accept, the
+    original body is kept. No retry is attempted under the new bounded flow."""
     callbacks = _callbacks(compress=lambda _body, _round, _feedback: ("worse", ""))
 
     result = run_quality_stage(body="long original", callbacks=callbacks)

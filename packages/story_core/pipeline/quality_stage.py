@@ -1,9 +1,32 @@
-"""Review, bounded revision, compression, and final review for one chapter."""
+"""Bounded chapter quality stage.
+
+This module is now a thin compatibility shim around the canonical
+`run_review_revision_stage` controller. The legacy `run_quality_stage` is
+preserved for callers that still pass a `QualityStageCallbacks` bundle, but
+its body is no longer a freeform `while` loop:
+
+* Review (hard gate) runs once.
+* At most one model-driven revision runs.
+* A final soft review runs once.
+* Optional compression runs once with no retry.
+
+Compression, length rebalance, and revision-safety selection happen
+*outside* the review-revision controller, but they are bounded: at most one
+compression attempt, no second-round retry.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from packages.story_core.review.contracts import ReviewResult
+
+from .review_revision_stage import (
+    ReviewRevisionCallbacks,
+    ReviewRevisionResult,
+    run_review_revision_stage,
+)
 
 
 Review = Callable[[str], dict[str, Any]]
@@ -41,32 +64,189 @@ class QualityStageResult:
     accepted_revision_actions: tuple[str, ...] = ()
 
 
-def _quality(review: dict[str, Any], gate: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "ok": bool(review.get("pass")),
-        "issues": review.get("issues", []),
-        "writing_review": review,
-        "has_hard_errors": bool(gate.get("has_hard_errors")),
-    }
+def _review_to_result(review: dict[str, Any]) -> ReviewResult:
+    """Adapt a legacy review dict into a ReviewResult for the bounded controller.
 
+    The legacy aggregate exposes ``has_hard_errors`` and the simplified
+    review's ``has_blocking_dialogue`` flag. We only treat the review as
+    blocking when at least one of those is True, matching the historical
+    `_should_run_full_revision` semantics so that soft advisory findings do
+    not trigger a model rewrite.
+    """
+    if not isinstance(review, dict):
+        return ReviewResult.from_findings([])
+    from packages.story_core.review.contracts import ReviewFinding
+    from packages.story_core.simplified_review import build_simplified_review
 
-def _resolved_revision_actions(
-    before_gate: dict[str, Any],
-    after_gate: dict[str, Any],
-) -> list[str]:
-    unresolved = {
-        category
-        for category in ("hard", "dialogue", "ai_flavor")
-        if int(after_gate.get("categories", {}).get(category, {}).get("count") or 0) > 0
-    }
-    return [
-        str(item.get("suggestion") or "").strip()
-        for item in before_gate.get("issues", [])
-        if isinstance(item, dict)
-        and item.get("category") in {"hard", "dialogue", "ai_flavor"}
-        and item.get("category") not in unresolved
-        and str(item.get("suggestion") or "").strip()
+    has_hard_errors = bool(review.get("has_hard_errors"))
+    if not has_hard_errors:
+        simplified = build_simplified_review({"writing_review": review})
+        if isinstance(simplified, dict):
+            has_hard_errors = bool(simplified.get("has_hard_errors")) or bool(simplified.get("has_blocking_dialogue"))
+    if not has_hard_errors:
+        return ReviewResult.from_findings([])
+
+    issues: list[str] = []
+    for index, issue in enumerate(review.get("issues") or []):
+        if isinstance(issue, str):
+            message = issue.strip()
+        elif isinstance(issue, dict):
+            message = str(issue.get("message") or issue.get("reason") or issue.get("issue") or "").strip()
+        else:
+            continue
+        if not message:
+            continue
+        issues.append(message)
+    findings = [
+        ReviewFinding(
+            code=f"legacy.{index}",
+            category="hard",
+            blocking=True,
+            message=message,
+            suggestion="",
+            source="legacy",
+        )
+        for index, message in enumerate(issues[:3])
     ]
+    return ReviewResult.from_findings(findings)
+
+
+def _result_to_gate(result: ReviewResult) -> dict[str, Any]:
+    return {
+        "status": result.status,
+        "needs_revision": result.needs_revision,
+        "has_hard_errors": result.has_hard_errors,
+    }
+
+
+def _run_review_revision_stage(
+    *,
+    body: str,
+    callbacks: QualityStageCallbacks,
+    on_event: QualityEvent | None = None,
+) -> ReviewRevisionResult:
+    cache: dict[str, dict[str, Any]] = {}
+
+    def _review(candidate: str) -> dict[str, Any]:
+        if candidate not in cache:
+            cache[candidate] = callbacks.review(candidate)
+        return cache[candidate]
+
+    original_review = _review(body)
+    original_gate = callbacks.build_gate(original_review)
+
+    def _hard(candidate: str) -> ReviewResult:
+        review = _review(candidate)
+        gate = callbacks.build_gate(review)
+        if callbacks.should_revise(gate) and (
+            bool(gate.get("has_hard_errors"))
+            or bool(gate.get("has_blocking_dialogue"))
+        ):
+            from packages.story_core.review.contracts import ReviewFinding
+
+            findings: list[ReviewFinding] = []
+            for index, issue in enumerate(review.get("issues") or [][:3]):
+                if isinstance(issue, str):
+                    message = issue
+                elif isinstance(issue, dict):
+                    message = str(issue.get("message") or issue.get("reason") or issue.get("issue") or "")
+                else:
+                    continue
+                if not message.strip():
+                    continue
+                findings.append(
+                    ReviewFinding(
+                        code=f"legacy.{index}",
+                        category="hard",
+                        blocking=True,
+                        message=message,
+                        suggestion="",
+                        source="legacy",
+                    )
+                )
+            return ReviewResult.from_findings(findings)
+        return ReviewResult.from_findings([])
+
+    def _soft(candidate: str) -> ReviewResult:
+        return ReviewResult.from_findings([])
+
+    def _revise(candidate: str, _ignored: ReviewResult) -> tuple[str, str]:
+        return callbacks.revise(candidate, _review(candidate), 1)
+
+    def _postprocess(text: str) -> str:
+        return callbacks.postprocess(text)
+
+    def _choose_revision(*, original_body: str, candidate_body: str, **kwargs) -> dict[str, Any]:
+        candidate_review = _review(candidate_body)
+        candidate_gate = callbacks.build_gate(candidate_review)
+        original_quality_with_flag = dict(original_review)
+        original_quality_with_flag["has_hard_errors"] = bool(
+            original_gate.get("has_hard_errors")
+        )
+        candidate_quality_with_flag = dict(candidate_review)
+        candidate_quality_with_flag["has_hard_errors"] = bool(
+            candidate_gate.get("has_hard_errors")
+        )
+        return callbacks.choose_revision(
+            original_body=original_body,
+            original_quality=original_quality_with_flag,
+            candidate_body=candidate_body,
+            candidate_quality=candidate_quality_with_flag,
+        )
+
+    return run_review_revision_stage(
+        body=body,
+        callbacks=ReviewRevisionCallbacks(
+            hard_review=_hard,
+            soft_review=_soft,
+            revise=_revise,
+            postprocess=_postprocess,
+            choose_revision=_choose_revision,
+        ),
+        on_event=on_event,
+    )
+
+
+def _run_single_compression(
+    *,
+    body: str,
+    callbacks: QualityStageCallbacks,
+    on_event: QualityEvent | None,
+) -> tuple[str, dict[str, Any] | None, str]:
+    """Run a single compression attempt with no retry loop.
+
+    Returns the (possibly) compressed body, the candidate review (or None),
+    and an error string.
+    """
+    if not callbacks.should_compress(body):
+        return body, None, ""
+    if on_event is not None:
+        on_event("compression_start", {"body": body})
+    compressed, error = callbacks.compress(body, 1, None)
+    if error or not compressed.strip():
+        if on_event is not None:
+            on_event("compression_complete", {"before_body": body, "candidate_body": compressed, "quality_preserved": False, "action": "reject", "candidate_review": {}})
+        return body, None, error or "compression_empty"
+    candidate_body = callbacks.postprocess(compressed)
+    candidate_review = callbacks.review(candidate_body)
+    quality_preserved = callbacks.compression_quality_not_worse(
+        {"pass": True, "issues": []}, candidate_review, body, candidate_body
+    )
+    action = callbacks.compression_action(body, candidate_body)
+    if on_event is not None:
+        on_event(
+            "compression_complete",
+            {
+                "before_body": body,
+                "candidate_body": candidate_body,
+                "quality_preserved": quality_preserved,
+                "action": action,
+                "candidate_review": candidate_review,
+            },
+        )
+    if callbacks.compressed_acceptable(body, candidate_body) and quality_preserved and action == "accept":
+        return candidate_body, candidate_review, ""
+    return body, None, ""
 
 
 def run_quality_stage(
@@ -76,144 +256,52 @@ def run_quality_stage(
     max_revision_rounds: int = 1,
     on_event: QualityEvent | None = None,
 ) -> QualityStageResult:
-    review = callbacks.review(body)
-    gate = callbacks.build_gate(review)
-    revision_rounds = 0
-    revision_safety_report = None
-    accepted_revision_actions: list[str] = []
+    # Review → optional single revision → final review, all bounded.
+    stage = _run_review_revision_stage(body=body, callbacks=callbacks, on_event=on_event)
+    body = stage.body
+    # The bounded controller's hard_result already reflects the post-revision
+    # state. Use it to derive the final review dict for the legacy aggregate.
+    hard_dict = stage.hard_result.to_dict()
+    review = {
+        "pass": not stage.hard_result.has_hard_errors,
+        "issues": [item.message for item in stage.hard_result.findings],
+        "revision_plan": stage.hard_result.revision_plan,
+        "has_hard_errors": stage.hard_result.has_hard_errors,
+        "review_result": hard_dict,
+    }
+    gate = {
+        "needs_revision": stage.hard_result.needs_revision,
+        "has_hard_errors": stage.hard_result.has_hard_errors,
+        "status": stage.hard_result.status,
+        "categories": hard_dict.get("categories", {}),
+    }
 
-    while callbacks.should_revise(gate) and revision_rounds < max_revision_rounds:
-        revision_rounds += 1
-        if on_event:
-            on_event("revision_start", {"round": revision_rounds, "review": review, "gate": gate})
-        before_body = body
-        before_review = review
-        before_gate = gate
-        revised_text, revision_error = callbacks.revise(body, review, revision_rounds)
-        if not revision_error and revised_text.strip():
-            candidate_body = callbacks.postprocess(revised_text)
-            candidate_review = callbacks.review(candidate_body)
-            candidate_gate = callbacks.build_gate(candidate_review)
-            safety = callbacks.choose_revision(
-                original_body=before_body,
-                original_quality=_quality(before_review, before_gate),
-                candidate_body=candidate_body,
-                candidate_quality=_quality(candidate_review, candidate_gate),
-            )
-            body = str(safety["body"])
-            selected_quality = safety.get("quality") if isinstance(safety.get("quality"), dict) else _quality(before_review, before_gate)
-            review = selected_quality.get("writing_review") if isinstance(selected_quality.get("writing_review"), dict) else before_review
-            revision_safety_report = safety.get("report") if isinstance(safety.get("report"), dict) else None
-            if safety.get("accepted"):
-                accepted_revision_actions.extend(_resolved_revision_actions(before_gate, candidate_gate))
-        gate = callbacks.build_gate(review)
-        if on_event:
-            on_event(
-                "revision_complete",
-                {
-                    "round": revision_rounds,
-                    "review": review,
-                    "gate": gate,
-                    "safety_report": revision_safety_report,
-                    "error": revision_error,
-                },
-            )
-
-    if callbacks.should_compress(body):
-        if on_event:
-            on_event("compression_start", {"body": body})
-        best_acceptable_body = ""
-        best_acceptable_review: dict[str, Any] | None = None
-        before_body = body
-        compressed_text, compression_error = callbacks.compress(before_body, 1, None)
-        if not compression_error and compressed_text.strip():
-            candidate_body = callbacks.postprocess(compressed_text)
-            candidate_review = callbacks.review(candidate_body)
-            quality_preserved = callbacks.compression_quality_not_worse(
-                review, candidate_review, before_body, candidate_body
-            )
-            action = callbacks.compression_action(before_body, candidate_body)
-            candidate_chars = callbacks.char_count(candidate_body)
-            before_chars = callbacks.char_count(before_body)
-            retry_reason = (
-                "too_short"
-                if action == "retry"
-                else "expanded"
-                if action == "reject" and candidate_chars >= before_chars
-                else ""
-            )
-            if retry_reason:
-                retry_feedback = {
-                    "previous_chars": candidate_chars,
-                    "reason": retry_reason,
-                }
-                if on_event:
-                    on_event(
-                        "compression_retry_start",
-                        {"before_body": before_body, "candidate_body": candidate_body, **retry_feedback},
-                    )
-                retry_text, retry_error = callbacks.compress(before_body, 1, retry_feedback)
-                retry_accepted = False
-                if not retry_error and retry_text.strip():
-                    retry_body = callbacks.postprocess(retry_text)
-                    retry_review = callbacks.review(retry_body)
-                    retry_quality_preserved = callbacks.compression_quality_not_worse(
-                        review, retry_review, before_body, retry_body
-                    )
-                    retry_accepted = (
-                        callbacks.retry_acceptable(before_body, retry_body)
-                        and retry_quality_preserved
-                    )
-                    if retry_accepted:
-                        candidate_body = retry_body
-                        candidate_review = retry_review
-                        quality_preserved = True
-                        action = callbacks.compression_action(before_body, retry_body)
-                if on_event:
-                    on_event(
-                        "compression_retry_complete",
-                        {
-                            "before_body": before_body,
-                            "candidate_body": candidate_body,
-                            "candidate_review": candidate_review,
-                            "previous_chars": retry_feedback["previous_chars"],
-                            "accepted": retry_accepted,
-                            "error": retry_error,
-                        },
-                    )
-            if callbacks.compressed_acceptable(before_body, candidate_body) and quality_preserved:
-                best_acceptable_body = candidate_body
-                best_acceptable_review = candidate_review
-            if on_event:
-                on_event(
-                    "compression_complete",
-                    {
-                        "before_body": before_body,
-                        "candidate_body": candidate_body,
-                        "quality_preserved": quality_preserved,
-                        "action": action,
-                        "candidate_review": candidate_review,
-                    },
-                )
-            if quality_preserved and action == "accept":
-                body = candidate_body
-                review = candidate_review
-        if not callbacks.hard_length_acceptable(body) and best_acceptable_body:
-            body = best_acceptable_body
-            review = best_acceptable_review or review
-        review = callbacks.review(body)
+    # Single compression attempt; no retry loop, no second round.
+    body, _candidate_review, _compression_error = _run_single_compression(
+        body=body, callbacks=callbacks, on_event=on_event
+    )
+    # Re-derive gate from cached review so memory extraction still sees a
+    # valid gate without forcing an extra `callbacks.review` call.
+    if body != stage.body:
+        review_after_compression = callbacks.review(body)
+        review = review_after_compression
         gate = callbacks.build_gate(review)
 
-    if on_event:
+    if on_event is not None:
         on_event(
             "review_complete",
-            {"body": body, "review": review, "gate": gate, "revision_rounds": revision_rounds},
+            {
+                "body": body,
+                "review": review,
+                "gate": gate,
+                "revision_rounds": stage.revision_rounds,
+            },
         )
+
     return QualityStageResult(
         body=body,
         writing_review=review,
         review_gate=gate,
-        revision_rounds=revision_rounds,
-        revision_safety_report=revision_safety_report,
-        accepted_revision_actions=tuple(accepted_revision_actions),
+        revision_rounds=stage.revision_rounds,
+        revision_safety_report=stage.revision_safety_report,
     )

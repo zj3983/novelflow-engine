@@ -107,33 +107,36 @@ def _run_compression(
     return bundle, calls, initial_body
 
 
-def test_short_compression_candidate_retries_from_original_into_normal_range(monkeypatch):
+def test_short_compression_candidate_does_not_retry_under_bounded_flow(monkeypatch):
+    """The new bounded flow runs exactly one compression attempt; the
+    original body is kept when the candidate is too short."""
     compressed_body = _body("短", 3991)
     retry_body = _body("保", 5300)
 
-    bundle, calls, initial_body = _run_compression(
+    bundle, calls, _initial_body = _run_compression(
         monkeypatch,
-        story_id="s-compression-retry-success",
+        story_id="s-compression-no-retry",
         compressed_body=compressed_body,
         retry_body=retry_body,
     )
 
-    compression_stages = [
-        stage for agent, stage, _prompt in calls if agent == "writer" and stage.startswith("章节压缩")
+    compression_calls = [
+        (agent, stage) for agent, stage, _prompt in calls if agent == "writer" and stage.startswith("章节压缩")
     ]
-    retry_prompt = next(prompt for agent, stage, prompt in calls if agent == "writer" and stage.startswith("章节压缩重试"))
-    assert compression_stages == ["章节压缩 第2章 第1轮", "章节压缩重试 第2章"]
-    assert initial_body in retry_prompt
-    assert compressed_body not in retry_prompt
-    assert "上次压缩到3991字" in retry_prompt
-    assert "保留更多" in retry_prompt
-    assert "正常范围4200到5500字" in retry_prompt
-    assert "建议5200到5500字" in retry_prompt
-    assert bundle.body == retry_body
-    assert 4200 <= _chapter_char_count(bundle.body) <= 5500
+    assert len(compression_calls) == 1
+    assert compression_calls[0][1] == "章节压缩 第2章 第1轮"
+    # No retry stage should fire under the bounded flow.
+    assert not any(stage.startswith("章节压缩重试") for _agent, stage, _prompt in calls)
+    # The body should be the original, not the short candidate, because
+    # the bounded flow keeps the original when compression cannot produce
+    # an acceptable result in a single attempt.
+    assert _chapter_char_count(bundle.body) == 7801
 
 
-def test_failed_compression_retry_keeps_original_for_final_length_gate(monkeypatch):
+def test_failed_compression_keeps_original_for_final_length_gate(monkeypatch):
+    """Under the bounded flow, compression runs exactly once; if the candidate
+    fails the length check, the original body is kept and no retry is
+    attempted."""
     bundle, calls, initial_body = _run_compression(
         monkeypatch,
         story_id="s-compression-retry-failure",
@@ -144,7 +147,8 @@ def test_failed_compression_retry_keeps_original_for_final_length_gate(monkeypat
     compression_stages = [
         stage for agent, stage, _prompt in calls if agent == "writer" and stage.startswith("章节压缩")
     ]
-    assert compression_stages == ["章节压缩 第2章 第1轮", "章节压缩重试 第2章"]
+    assert compression_stages == ["章节压缩 第2章 第1轮"]
+    assert not any(stage.startswith("章节压缩重试") for _agent, stage, _prompt in calls)
     assert bundle.body == initial_body
     assert _chapter_char_count(bundle.body) == 7801
     assert "body_too_long" in bundle.quality_report["issues"]

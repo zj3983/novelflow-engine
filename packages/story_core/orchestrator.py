@@ -302,11 +302,13 @@ def _review_context_facts(story: StoryState) -> list[str]:
 def _should_extract_final_memory(body: str, review_gate: dict[str, Any] | None) -> bool:
     chars = _chapter_char_count(body)
     gate = review_gate or {}
-    review_blocks_memory = (
-        bool(gate.get("has_hard_errors"))
-        if "has_hard_errors" in gate
-        else bool(gate.get("needs_revision"))
-    )
+    status = str(gate.get("status") or "")
+    if status == "blocked":
+        review_blocks_memory = True
+    elif "has_hard_errors" in gate:
+        review_blocks_memory = bool(gate.get("has_hard_errors"))
+    else:
+        review_blocks_memory = bool(gate.get("needs_revision"))
     return MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE <= chars <= MAX_CHAPTER_CHARS + CHAPTER_MAX_CHAR_TOLERANCE and not review_blocks_memory
 
 
