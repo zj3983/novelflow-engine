@@ -50,6 +50,6 @@ def test_quality_gate_merges_selected_genre_review_into_compatible_report():
     assert report["pass"] is True
     assert report["scores"]["genre_specific"] == 8
     assert report["xuanhuan_review"]["pass"] is True
-    assert report["reader_agent_review"]["mode"] == "consolidated"
-    assert report["editor_agent_review"]["mode"] == "consolidated"
-    assert report["reviewer_agent_review"]["mode"] == "consolidated"
+    assert report["review_result"]["schema_version"] == "review-result/v2"
+    assert "reader_agent_review" not in report
+    assert report["prose_style_review"]["pass"] is True
