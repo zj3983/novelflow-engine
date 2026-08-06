@@ -1,3 +1,4 @@
+from packages.story_core.orchestrator import _should_run_full_revision
 from packages.story_core.simplified_review import build_simplified_review
 
 
@@ -8,7 +9,34 @@ def test_attribute_allocation_mismatch_is_a_hard_error() -> None:
 
     assert report["has_hard_errors"] is True
     assert report["categories"]["hard"]["count"] == 1
-from packages.story_core.orchestrator import _should_run_full_revision
+
+
+def test_explicit_finding_metadata_wins_over_message_keywords():
+    report = build_simplified_review(
+        {
+            "review_result": {
+                "schema_version": "review-result/v2",
+                "status": "warning",
+                "pass": True,
+                "has_hard_errors": False,
+                "needs_revision": False,
+                "issues": [
+                    {
+                        "code": "prose.timeline_metaphor",
+                        "category": "prose",
+                        "blocking": False,
+                        "message": "这句用了时间线作为比喻。",
+                        "suggestion": "换成具体动作。",
+                        "source": "prose",
+                    }
+                ],
+            }
+        }
+    )
+
+    assert report["status"] == "warning"
+    assert report["has_hard_errors"] is False
+    assert report["issues"][0]["category"] == "prose"
 
 
 def test_simplified_review_only_blocks_hard_errors():
