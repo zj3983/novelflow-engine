@@ -542,6 +542,27 @@ def _assert_auto_chapter_quality(
     if not isinstance(quality_report, dict) or quality_report.get("ok") is not False:
         return
     writing_review = quality_report.get("writing_review") if isinstance(quality_report.get("writing_review"), dict) else None
+    review_result = quality_report.get("review_result")
+    if isinstance(review_result, dict) and review_result.get("schema_version") == "review-result/v2":
+        review_status = str(review_result.get("status") or "")
+        if review_status in {"warning", "passed"}:
+            quality_report["quality_warning"] = {
+                "status": review_status,
+                "needs_revision": bool(review_result.get("needs_revision")),
+                "summary": "正文已保存，仍有局部修改建议。" if review_status == "warning" else "正文已通过硬门禁和软审稿。",
+            }
+            return
+        if review_status == "blocked":
+            issues = list(quality_report.get("issues") or [])
+            if isinstance(writing_review, dict):
+                issues.extend(writing_review.get("issues") or [])
+            issue_text = "; ".join(str(item) for item in issues[:6] if str(item).strip())
+            raise ChapterQualityError(
+                f"{operation}_quality_failed:{issue_text or 'review_result_blocked'}",
+                quality_report=quality_report,
+                operation=operation,
+            )
+    # Fall back to legacy simplified-review semantics for historical data.
     simplified_review = (
         quality_report.get("simplified_review")
         if isinstance(quality_report.get("simplified_review"), dict)
@@ -731,6 +752,29 @@ def _merge_revision_plans(*plans: Any) -> list[str]:
             if text and text not in merged:
                 merged.append(text)
     return merged
+
+
+def _project_legacy_review(payload: dict[str, Any]) -> dict[str, Any]:
+    """Ensure a v1 review payload also exposes the canonical v2 fields.
+
+    Persisted historical chapter data was saved before the v2 schema
+    existed. Callers that always expect ``review_result`` and
+    ``simplified_review`` keys get them computed on demand without
+    mutating the underlying persisted file.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    projected = dict(payload)
+    explicit = projected.get("review_result")
+    if isinstance(explicit, dict) and explicit.get("schema_version") == "review-result/v2":
+        projected.setdefault("simplified_review", explicit)
+        return projected
+    fallback = build_simplified_review(projected)
+    if isinstance(fallback, dict):
+        projected["simplified_review"] = fallback
+        projected.setdefault("review_result", fallback)
+        projected["ok"] = projected.get("ok", fallback.get("pass", True))
+    return projected
 
 
 class _PinnedPublishingFilesystem:
@@ -6193,10 +6237,10 @@ class FileProjectStore:
         target = int(chapter.get("chapter_number") or chapter_number or 0)
         review = self._read_json(self.story_system_dir / "reviews" / f"{target:04d}.json")
         if isinstance(review, dict) and review:
-            return review
+            return _project_legacy_review(review)
         quality_report = chapter.get("quality_report")
         if isinstance(quality_report, dict) and quality_report:
-            return quality_report
+            return _project_legacy_review(quality_report)
         return validate_bundle(chapter)
 
     def commit(self, *, message: str, operation: str = "manual", chapter_number: int | None = None) -> dict[str, Any]:

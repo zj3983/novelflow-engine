@@ -56,8 +56,8 @@ def _blocking_revision_suggestions(review: dict[str, Any]) -> list[tuple[str, st
 
     New runtime code always uses the v2 schema; only blocking findings may
     modify the chapter. Historical v1 reports that lack an explicit
-    ``review_result`` get no modification instructions from this helper —
-    the orchestrator is responsible for converting them to v2 first.
+    ``review_result`` fall back to the legacy ``revision_plan`` plus any
+    issues whose keyword classifier marked them as hard.
     """
     explicit = review.get("review_result")
     if isinstance(explicit, dict) and explicit.get("schema_version") == "review-result/v2":
@@ -76,7 +76,43 @@ def _blocking_revision_suggestions(review: dict[str, Any]) -> list[tuple[str, st
             if len(instructions) >= 3:
                 break
         return instructions
-    return []
+    return _legacy_revision_suggestions(review)
+
+
+def _legacy_revision_suggestions(review: dict[str, Any]) -> list[tuple[str, str]]:
+    instructions: list[tuple[str, str]] = []
+    writing_review = review.get("writing_review")
+    if not isinstance(writing_review, dict):
+        writing_review = {}
+    plans: list[Any] = []
+    plans.extend(writing_review.get("revision_plan") or [])
+    plans.extend(review.get("revision_plan") or [])
+
+    def _iter_issue_candidates(container: dict[str, Any]) -> list[Any]:
+        candidates: list[Any] = []
+        for issue in container.get("issues") or []:
+            if isinstance(issue, str):
+                candidates.append(issue)
+            elif isinstance(issue, dict):
+                message = str(issue.get("message") or issue.get("reason") or issue.get("issue") or "").strip()
+                if message:
+                    candidates.append(message)
+        return candidates
+
+    candidates = [*_iter_issue_candidates(writing_review), *_iter_issue_candidates(review)]
+    seen_messages: set[str] = set()
+    for index, issue in enumerate(candidates):
+        message = str(issue).strip()
+        if not message or message in seen_messages:
+            continue
+        seen_messages.add(message)
+        suggestion = ""
+        if index < len(plans):
+            suggestion = str(plans[index] or "").strip()
+        instructions.append((message, suggestion))
+        if len(instructions) >= 3:
+            break
+    return instructions
 
 
 def _slim_prompt_value(value: Any, *, depth: int = 0) -> Any:
