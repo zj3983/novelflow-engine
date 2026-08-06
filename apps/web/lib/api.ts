@@ -488,13 +488,27 @@ export type LengthReview = {
   issues?: string[];
 };
 
+export type ReviewStatus = "passed" | "warning" | "blocked" | string;
+
+export type ReviewFinding = {
+  code: string;
+  category: "hard" | "dialogue" | "ai_flavor" | "prose" | string;
+  blocking: boolean;
+  severity: "blocking" | "advisory" | string;
+  message: string;
+  suggestion: string;
+  source: string;
+  evidence?: string;
+};
+
 export type SimplifiedReview = {
-  schema_version: "simplified-review/v1" | string;
+  schema_version: "review-result/v2" | "simplified-review/v1" | string;
   agent_label?: string;
-  status?: "passed" | "needs_revision" | "blocked" | string;
+  status?: ReviewStatus;
   pass: boolean;
   has_hard_errors: boolean;
-  summary: string;
+  needs_revision?: boolean;
+  summary?: string;
   categories: {
     hard: { label: string; count: number };
     dialogue: { label: string; count: number };
@@ -502,13 +516,18 @@ export type SimplifiedReview = {
     ai_flavor: { label: string; count: number };
   };
   issues: Array<{
-    category: "hard" | "prose" | "ai_flavor" | string;
+    code?: string;
+    category: "hard" | "dialogue" | "prose" | "ai_flavor" | string;
     severity: "blocking" | "advisory" | string;
+    blocking?: boolean;
     message: string;
     suggestion: string;
+    source?: string;
+    evidence?: string;
   }>;
   revision_plan?: string[];
   total_issues: number;
+  diagnostics?: Record<string, unknown>;
 };
 
 export type ChapterBundle = {
@@ -616,6 +635,7 @@ export type ChapterBundle = {
     downstream_rewrite_required?: boolean;
     downstream_chapter_number?: number;
     revision_safety?: RevisionSafetyReport;
+    review_result?: SimplifiedReview;
     writing_review?: ReviewSection;
     critical_review?: ReviewSection;
     hook_review?: ReviewSection;

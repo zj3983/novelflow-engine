@@ -25,8 +25,8 @@ export function SimplifiedReview({ report, compact = false }: Props) {
   const categories = [report.categories.hard, report.categories.dialogue, report.categories.ai_flavor, report.categories.prose];
   const statusLabel = report.status === "blocked"
     ? "存在硬伤"
-    : report.status === "needs_revision"
-      ? "需要修改"
+    : report.status === "warning" || report.status === "needs_revision"
+      ? "有修改建议"
       : "通过";
   return (
     <section className={compact ? "" : "ws-card"} data-testid="simplified-review">
