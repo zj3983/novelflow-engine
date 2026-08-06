@@ -45,6 +45,7 @@ def run_review_revision_stage(
     *,
     body: str,
     callbacks: ReviewRevisionCallbacks,
+    on_event: Optional[Callable[[str, dict[str, Any]], None]] = None,
 ) -> ReviewRevisionResult:
     """Run hard-gate → optional one-shot revision → hard-gate → soft-review.
 
@@ -60,6 +61,8 @@ def run_review_revision_stage(
     revision_safety_report: Optional[dict[str, Any]] = None
 
     if hard.status == "blocked":
+        if on_event is not None:
+            on_event("revision_start", {"round": 1, "review": hard.to_dict(), "gate": {"status": hard.status}})
         candidate_body, revision_error = callbacks.revise(current_body, hard)
         if not revision_error and candidate_body.strip():
             postprocessed = callbacks.postprocess(candidate_body)
@@ -71,11 +74,30 @@ def run_review_revision_stage(
                     original_hard=hard,
                     candidate_hard=candidate_hard,
                 )
-                if isinstance(safety, dict) and safety.get("accepted"):
-                    current_body = str(safety.get("body") or postprocessed)
-                    hard = candidate_hard
-                    revision_rounds = 1
+                if isinstance(safety, dict):
                     revision_safety_report = safety.get("report") if isinstance(safety.get("report"), dict) else None
+                    # When the safety selector returns no explicit `accepted`
+                    # flag, treat the candidate as accepted (matches the
+                    # historical `run_quality_stage` semantics where the
+                    # returned body always replaces the original).
+                    accepted = safety.get("accepted")
+                    if accepted is None:
+                        accepted = True
+                    if accepted and safety.get("body"):
+                        current_body = str(safety.get("body") or postprocessed)
+                        hard = candidate_hard
+                        revision_rounds = 1
+        if on_event is not None:
+            on_event(
+                "revision_complete",
+                {
+                    "round": revision_rounds or 1,
+                    "review": hard.to_dict(),
+                    "gate": {"status": hard.status},
+                    "safety_report": revision_safety_report,
+                    "error": "" if revision_rounds else "candidate_not_accepted",
+                },
+            )
 
     soft = callbacks.soft_review(current_body)
     combined = ReviewResult.from_findings(
