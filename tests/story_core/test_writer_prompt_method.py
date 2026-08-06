@@ -1715,7 +1715,21 @@ def test_revision_prompt_reuses_five_sections_and_adds_only_revision_material():
         1,
         "林照关上门。",
         {"event_plan": {"chapter_title": "守炉"}},
-        {"issues": ["对话太短"], "revision_plan": ["补成完整来回"]},
+        {
+            "review_result": {
+                "schema_version": "review-result/v2",
+                "status": "blocked",
+                "issues": [
+                    {
+                        "code": "dialogue.too_short",
+                        "category": "hard",
+                        "blocking": True,
+                        "message": "对话太短。",
+                        "suggestion": "补成完整来回。",
+                    }
+                ],
+            }
+        },
     )
 
     headings = [
@@ -1772,9 +1786,19 @@ def test_revision_prompt_reuses_plan_chapter_seed_when_build_seed_drifts(monkeyp
             },
         },
         {
-            "pass": False,
-            "issues": ["套路节点未兑现：本章未写出当前节点「locked beat」的正文动作或反馈。"],
-            "revision_plan": ["按套路节点改：本章必须兑现「locked beat」，并落到回报「locked payoff」。"],
+            "review_result": {
+                "schema_version": "review-result/v2",
+                "status": "blocked",
+                "issues": [
+                    {
+                        "code": "trope.beat_miss",
+                        "category": "hard",
+                        "blocking": True,
+                        "message": "套路节点未兑现：本章未写出当前节点「locked beat」的正文动作或反馈。",
+                        "suggestion": "按套路节点改：本章必须兑现「locked beat」，并落到回报「locked payoff」。",
+                    }
+                ],
+            },
             "plot_spine_review": {"diagnostics": {"trope_avoid": ["locked avoid"]}},
         },
     )
@@ -1947,5 +1971,115 @@ def test_writer_prompt_keeps_director_scene_actions_instead_of_only_scene_goals(
     assert "林照拿旧工牌追问换锁时间" in prompt
     assert "守门人说钥匙送进了内院" in prompt
     assert "账房门终于打开" in prompt
+
+
+def test_revision_prompt_only_includes_blocking_suggestions():
+    from packages.story_core.genre_stages.common_revision import (
+        RevisionContext,
+        render_common_revision_prompt,
+    )
+
+    story = StoryState(
+        story_id="s-revision-prompt-boundary",
+        outline="林照看守断香炉。",
+        genre="xianxia",
+        style="白描",
+    )
+    review = {
+        "manual_instructions": ["保留断香炉位置。"],
+        "review_result": {
+            "schema_version": "review-result/v2",
+            "status": "blocked",
+            "pass": False,
+            "has_hard_errors": True,
+            "needs_revision": True,
+            "issues": [
+                {
+                    "code": "continuity.timeline",
+                    "category": "hard",
+                    "blocking": True,
+                    "message": "时间线与上一章冲突。",
+                    "suggestion": "修复时间线",
+                },
+                {
+                    "code": "style.ai_flavor",
+                    "category": "ai_flavor",
+                    "blocking": False,
+                    "message": "报告腔建议。",
+                    "suggestion": "改成动作",
+                },
+            ],
+            "diagnostics": {
+                "soft": "报告腔建议",
+                "reader_agent_review": "old agent payload",
+                "scores": {"something": 5},
+            },
+        },
+    }
+    context = RevisionContext(
+        story=story,
+        chapter_number=2,
+        body="林照检查断香炉。",
+        plan={"event_plan": {}},
+        review=review,
+        writer_context=None,
+    )
+    prompt = render_common_revision_prompt(
+        context=context,
+        base_prompt="writer-prompt-base",
+        fact_lock="时间线硬规则：事件时间需一致。",
+    )
+    assert "修复时间线" in prompt
+    assert "报告腔建议" not in prompt
+    assert "reader_agent_review" not in prompt
+    assert "scores" not in prompt
+    assert "保留断香炉位置" in prompt
+
+
+def test_revision_prompt_limits_to_three_blocking_suggestions():
+    from packages.story_core.genre_stages.common_revision import (
+        RevisionContext,
+        render_common_revision_prompt,
+    )
+
+    story = StoryState(
+        story_id="s-revision-three-blockers",
+        outline="outline",
+        genre="xianxia",
+        style="白描",
+    )
+    review = {
+        "review_result": {
+            "schema_version": "review-result/v2",
+            "status": "blocked",
+            "issues": [
+                {
+                    "code": f"hard.{i}",
+                    "category": "hard",
+                    "blocking": True,
+                    "message": f"问题{i}",
+                    "suggestion": f"修复{i}",
+                }
+                for i in range(5)
+            ],
+        },
+    }
+    context = RevisionContext(
+        story=story,
+        chapter_number=1,
+        body="正文",
+        plan={},
+        review=review,
+        writer_context=None,
+    )
+    prompt = render_common_revision_prompt(
+        context=context,
+        base_prompt="base",
+    )
+    assert "修复0" in prompt
+    assert "修复1" in prompt
+    assert "修复2" in prompt
+    assert "修复3" not in prompt
+    assert "修复4" not in prompt
 
 

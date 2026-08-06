@@ -51,6 +51,34 @@ def _plan_target_chars(plan: dict[str, Any]) -> str:
     return TARGET_CHAPTER_CHARS
 
 
+def _blocking_revision_suggestions(review: dict[str, Any]) -> list[tuple[str, str]]:
+    """Extract (message, suggestion) pairs for at most three blocking findings.
+
+    New runtime code always uses the v2 schema; only blocking findings may
+    modify the chapter. Historical v1 reports that lack an explicit
+    ``review_result`` get no modification instructions from this helper —
+    the orchestrator is responsible for converting them to v2 first.
+    """
+    explicit = review.get("review_result")
+    if isinstance(explicit, dict) and explicit.get("schema_version") == "review-result/v2":
+        issues = explicit.get("issues") if isinstance(explicit.get("issues"), list) else []
+        instructions: list[tuple[str, str]] = []
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            if not issue.get("blocking"):
+                continue
+            message = str(issue.get("message") or "").strip()
+            suggestion = str(issue.get("suggestion") or "").strip()
+            if not (message or suggestion):
+                continue
+            instructions.append((message, suggestion))
+            if len(instructions) >= 3:
+                break
+        return instructions
+    return []
+
+
 def _slim_prompt_value(value: Any, *, depth: int = 0) -> Any:
     if depth > 5:
         return compact_text(str(value), 160)
@@ -119,7 +147,7 @@ def _scene_repair_writer_summary(repair_plan: dict[str, Any]) -> dict[str, Any]:
     return {"范围": "只补这些场景，其他场景保持原顺序和事实", "场景": failed_scenes}
 
 
-def _neutral_forbidden_terms(review: dict[str, Any], plan: dict[str, Any]) -> list[str]:
+def _neutral_forbidden_terms(plan: dict[str, Any], extra_terms: Iterable[str]) -> list[str]:
     terms: list[str] = []
     scene_cards = plan.get("scene_cards") if isinstance(plan.get("scene_cards"), list) else []
     for card in scene_cards:
@@ -128,10 +156,10 @@ def _neutral_forbidden_terms(review: dict[str, Any], plan: dict[str, Any]) -> li
         raw_terms = card.get("must_not_explain")
         if isinstance(raw_terms, list):
             terms.extend(str(term).strip() for term in raw_terms if str(term).strip())
-    review_text = str(review)
-    for term in ("爽点", "钩子", "节奏", "读者", "网文规则", "生成", "审稿", "质量报告", "剧情需要", "下一阶段剧情"):
-        if term in review_text and term not in terms:
-            terms.append(term)
+    for term in extra_terms:
+        text = str(term).strip()
+        if text and text not in terms:
+            terms.append(text)
     return terms
 
 
@@ -154,8 +182,7 @@ def render_common_revision_prompt(
         ),
     }
     review = context.review if isinstance(context.review, dict) else {}
-    consolidated_review = build_simplified_review(review)
-    review_issues = consolidated_review.get("issues") if isinstance(consolidated_review.get("issues"), list) else []
+    blocking_instructions = _blocking_revision_suggestions(review)
     manual_instructions = compact_list(review.get("manual_instructions", []), max_items=3, item_chars=150)
     style_guidance = plan.get("style_guidance") if isinstance(plan.get("style_guidance"), dict) else {}
     scene_repair_plan = review.get("scene_repair_plan") if isinstance(review.get("scene_repair_plan"), dict) else {}
@@ -163,7 +190,7 @@ def render_common_revision_prompt(
         scene_repair_plan = build_scene_contract_repair_plan(review, plan.get("scene_cards", []))
     scene_repair_summary = _scene_repair_writer_summary(scene_repair_plan)
     forbidden_terms = compact_list(
-        [*_neutral_forbidden_terms(review, plan), *extra_forbidden_terms],
+        _neutral_forbidden_terms(plan, extra_forbidden_terms),
         max_items=32,
         item_chars=24,
     )
@@ -174,14 +201,15 @@ def render_common_revision_prompt(
     ]
     if manual_instructions:
         modification_lines.append(f"用户要求：{'；'.join(manual_instructions)}")
-    if review_issues:
-        modification_lines.append("修改意见（综合后，必须改到以下三项以内）：")
-        for index, item in enumerate(review_issues[:3], start=1):
-            if not isinstance(item, dict):
-                continue
-            message = compact_text(str(item.get("message") or ""), 100)
-            action = compact_text(str(item.get("suggestion") or ""), 120)
-            modification_lines.append(f"{index}. 问题：{message} 修改：{action}")
+    if blocking_instructions:
+        modification_lines.append("必须改到以下三项以内：")
+        for index, (message, suggestion) in enumerate(blocking_instructions, start=1):
+            label = compact_text(message, 100) or compact_text(suggestion, 120)
+            action = compact_text(suggestion, 120) if message else ""
+            if action:
+                modification_lines.append(f"{index}. 问题：{label} 修改：{action}")
+            else:
+                modification_lines.append(f"{index}. {label}")
     trope_avoid_guidance = _review_trope_avoid_guidance(review)
     if trope_avoid_guidance:
         modification_lines.append(f"套路避让：{'；'.join(trope_avoid_guidance)}")

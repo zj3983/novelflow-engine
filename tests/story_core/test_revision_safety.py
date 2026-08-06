@@ -500,3 +500,48 @@ def test_choose_best_revision_does_not_prioritize_candidate_with_hard_errors_rem
 
     assert result["accepted"] is False
     assert result["report"]["reason"] != "hard_errors_resolved"
+
+
+def test_choose_best_revision_prefers_candidate_with_fewer_blocking_findings():
+    original = _quality(False, {"genre_rules": 6}, ["设定冲突", "人物错位"])
+    original["has_hard_errors"] = True
+    candidate = _quality(True, {"genre_rules": 6}, ["对话稍长"])
+    candidate["has_hard_errors"] = False
+
+    result = choose_best_revision(
+        original_body="原" * 5000,
+        original_quality=original,
+        candidate_body="新" * 5000,
+        candidate_quality=candidate,
+    )
+    assert result["accepted"] is True
+    assert result["selected"] == "candidate"
+    assert result["report"]["reason"] == "hard_errors_resolved"
+
+
+def test_choose_best_revision_rejects_candidate_with_new_blocking_code():
+    original = _quality(False, {"genre_rules": 6}, ["设定冲突"])
+    original["has_hard_errors"] = True
+    original["review_result"] = {
+        "schema_version": "review-result/v2",
+        "issues": [
+            {"code": "continuity.setting", "blocking": True, "message": "设定冲突"},
+        ],
+    }
+    candidate = _quality(True, {"genre_rules": 6}, ["数值冲突"])
+    candidate["has_hard_errors"] = True  # new blocking code appeared
+    candidate["review_result"] = {
+        "schema_version": "review-result/v2",
+        "issues": [
+            {"code": "consistency.numeric", "blocking": True, "message": "数值冲突"},
+        ],
+    }
+
+    result = choose_best_revision(
+        original_body="原" * 5000,
+        original_quality=original,
+        candidate_body="新" * 5000,
+        candidate_quality=candidate,
+    )
+    assert result["accepted"] is False
+    assert result["selected"] == "original"

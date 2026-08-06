@@ -61,6 +61,32 @@ def _review_issue_count(quality: dict[str, Any]) -> int:
     return len(normalized)
 
 
+def _has_new_blocking_codes(original: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    """Return True if the candidate introduced a blocking issue code the
+    original draft did not have. Conservative for the legacy aggregate:
+    if either side lacks structured v2 findings, we treat the comparison as
+    inconclusive and return False.
+    """
+    original_codes = _collect_blocking_codes(original)
+    candidate_codes = _collect_blocking_codes(candidate)
+    return bool(candidate_codes - original_codes)
+
+
+def _collect_blocking_codes(quality: dict[str, Any]) -> set[str]:
+    if not isinstance(quality, dict):
+        return set()
+    explicit = quality.get("review_result")
+    if isinstance(explicit, dict) and explicit.get("schema_version") == "review-result/v2":
+        codes: set[str] = set()
+        for issue in explicit.get("issues") or []:
+            if not isinstance(issue, dict):
+                continue
+            if issue.get("blocking") and issue.get("code"):
+                codes.add(str(issue.get("code")))
+        return codes
+    return set()
+
+
 def choose_best_revision(
     *,
     original_body: str,
@@ -112,6 +138,16 @@ def choose_best_revision(
         candidate_score -= 120.0
     elif original_has_structural_length_error and candidate_has_hard_errors:
         forced_reject_reason = "candidate_hard_errors_remaining"
+        candidate_score -= 120.0
+    elif (
+        original_has_hard_errors
+        and candidate_has_hard_errors
+        and _has_new_blocking_codes(original_quality, candidate_quality)
+    ):
+        # Candidate introduced a new blocking code the original didn't
+        # have. The bounded flow rejects such candidates outright even if
+        # the soft score improved.
+        forced_reject_reason = "candidate_introduced_new_blocking_code"
         candidate_score -= 120.0
     elif original_has_structural_length_error and not candidate_in_preferred_range:
         forced_reject_reason = "failed_candidate_left_preferred_length"
