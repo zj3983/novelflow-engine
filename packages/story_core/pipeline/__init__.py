@@ -1,6 +1,11 @@
 from .chapter_pipeline import ChapterPipeline, build_chapter_pipeline_event, chapter_pipeline_stage_order
 from .context_stage import PreparedChapterContext, build_context_stage_events, prepare_chapter_context
 from .planning_stage import PlanningStageResult, resolve_chapter_plan
+from .review_revision_stage import (
+    ReviewRevisionCallbacks,
+    ReviewRevisionResult,
+    run_review_revision_stage,
+)
 from .simulation_stage import SimulationStageResult, prepare_simulation_stage
 from .writing_stage import WritingStageResult, generate_chapter_body
 from .quality_stage import QualityStageCallbacks, QualityStageResult, run_quality_stage
@@ -9,6 +14,8 @@ __all__ = [
     "ChapterPipeline",
     "PreparedChapterContext",
     "PlanningStageResult",
+    "ReviewRevisionCallbacks",
+    "ReviewRevisionResult",
     "SimulationStageResult",
     "WritingStageResult",
     "build_chapter_pipeline_event",
@@ -21,4 +28,5 @@ __all__ = [
     "QualityStageCallbacks",
     "QualityStageResult",
     "run_quality_stage",
+    "run_review_revision_stage",
 ]
