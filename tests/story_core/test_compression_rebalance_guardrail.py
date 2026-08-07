@@ -70,116 +70,14 @@ def _story(story_id: str) -> StoryState:
     )
 
 
-def _run_compression(
-    monkeypatch,
-    *,
-    story_id: str,
-    compressed_body: str,
-    retry_body: str | None = None,
-):
-    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
-    # Bypass the canonical hard gate and soft review so the bounded
-    # flow can exercise the compression stage without first
-    # triggering a rewrite on the over-length initial body and
-    # without the real soft reviewers dragging the
-    # "quality_preserved" check below zero. The previous
-    # ``_review_chapter_body`` mock is dead under the new
-    # ReviewService-driven flow; ``run_hard_gate`` and
-    # ``run_soft_review`` are the entry points the orchestrator now
-    # uses.
-    from packages.story_core.review.contracts import ReviewResult
-    from packages.story_core.review.service import ReviewService
-
-    def _passing(self, *, body, context):
-        return ReviewResult.from_findings([])
-
-    monkeypatch.setattr(ReviewService, "run_hard_gate", _passing)
-    monkeypatch.setattr(ReviewService, "run_soft_review", _passing)
-    initial_body = _body("原", 7801)
-    calls: list[tuple[str, str, str]] = []
-    orchestrator = StoryOrchestrator()
-
-    def fake_timed_chat(_story_state, prompt, *, agent, stage, **_kwargs):
-        calls.append((agent, stage, prompt))
-        if agent == "planner":
-            return json.dumps(_plan(), ensure_ascii=False), ""
-        if agent == "writer" and stage.startswith("整章写作"):
-            return initial_body, ""
-        if agent == "writer" and stage.startswith("章节压缩重试"):
-            assert retry_body is not None
-            return retry_body, ""
-        if agent == "writer" and stage.startswith("章节压缩"):
-            return compressed_body, ""
-        if agent == "memory":
-            return json.dumps(_memory_payload(), ensure_ascii=False), ""
-        raise AssertionError((agent, stage))
-
-    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
-    bundle = orchestrator.generate_next_chapter(_story(story_id))
-    return bundle, calls, initial_body
-
-
-def test_short_compression_candidate_does_not_retry_under_bounded_flow(monkeypatch):
-    """The new bounded flow runs exactly one compression attempt; the
-    original body is kept when the candidate is too short."""
-    compressed_body = _body("短", 3991)
-    retry_body = _body("保", 5300)
-
-    bundle, calls, _initial_body = _run_compression(
-        monkeypatch,
-        story_id="s-compression-no-retry",
-        compressed_body=compressed_body,
-        retry_body=retry_body,
-    )
-
-    compression_calls = [
-        (agent, stage) for agent, stage, _prompt in calls if agent == "writer" and stage.startswith("章节压缩")
-    ]
-    assert len(compression_calls) == 1
-    assert compression_calls[0][1] == "章节压缩 第2章 第1轮"
-    # No retry stage should fire under the bounded flow.
-    assert not any(stage.startswith("章节压缩重试") for _agent, stage, _prompt in calls)
-    # The body should be the original, not the short candidate, because
-    # the bounded flow keeps the original when compression cannot produce
-    # an acceptable result in a single attempt.
-    assert _chapter_char_count(bundle.body) == 7801
-
-
-def test_failed_compression_keeps_original_for_final_length_gate(monkeypatch):
-    """Under the bounded flow, compression runs exactly once; if the candidate
-    fails the length check, the original body is kept and no retry is
-    attempted."""
-    bundle, calls, initial_body = _run_compression(
-        monkeypatch,
-        story_id="s-compression-retry-failure",
-        compressed_body=_body("短", 3991),
-        retry_body=_body("涨", 8212),
-    )
-
-    compression_stages = [
-        stage for agent, stage, _prompt in calls if agent == "writer" and stage.startswith("章节压缩")
-    ]
-    assert compression_stages == ["章节压缩 第2章 第1轮"]
-    assert not any(stage.startswith("章节压缩重试") for _agent, stage, _prompt in calls)
-    assert bundle.body == initial_body
-    assert _chapter_char_count(bundle.body) == 7801
-    assert "body_too_long" in bundle.quality_report["issues"]
-
-
-def test_normal_compression_does_not_add_rebalance_call(monkeypatch):
-    compressed_body = _body("正", 5000)
-
-    bundle, calls, _initial_body = _run_compression(
-        monkeypatch,
-        story_id="s-compression-normal-call-count",
-        compressed_body=compressed_body,
-    )
-
-    compression_stages = [
-        stage for agent, stage, _prompt in calls if agent == "writer" and stage.startswith("章节压缩")
-    ]
-    assert compression_stages == ["章节压缩 第2章 第1轮"]
-    assert bundle.body == compressed_body
+# The orchestrator no longer runs a separate compression model
+# call after the bounded controller — over-length bodies are
+# reported as ``length.out_of_range`` blocking findings and
+# handed to the same revise pass. The three
+# ``test_*_compression_*`` cases that used to drive the
+# ``_run_compression`` helper are obsolete. The new contract is
+# pinned by
+# ``tests/story_core/test_orchestrator.py::test_over_length_body_is_fixed_in_single_revise_without_compression_model_call``.
 
 
 def test_explicit_xuanhuan_context_skips_web_game_review_for_generic_terms(monkeypatch):

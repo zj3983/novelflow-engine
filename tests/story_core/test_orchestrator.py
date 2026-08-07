@@ -842,7 +842,7 @@ def test_attach_trope_contract_to_simulation_plan_deepcopies_only_resolved_contr
     assert "trope_candidates" not in attached
 
 
-def test_trope_beat_miss_remains_advisory_without_full_chapter_revision(monkeypatch):
+def test_trope_beat_miss_remains_advisory_without_full_chapter_revision(passing_review_service, monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
     initial_body = "林站在屋檐下想了想明天的安排，最后没有回应邀请就离开了。"
@@ -1068,90 +1068,86 @@ def test_revision_prompt_requires_local_replacement_with_a_concrete_hard_ceiling
     assert "不要因为补问题而扩写整章" in prompt
 
 
-@pytest.mark.parametrize(
-    ("genre", "genre_plugin_ids", "outline", "required_terms", "forbidden_terms"),
-    [
-        (
-            "",
-            ["xuanhuan"],
-            "林照登录游戏后查看背包与掉落记录。",
-            ("剧情事实", "世界规则", "核心冲突", "人物反应", "关键线索", "代价", "转折"),
-            ("游戏账本", "面板反馈"),
-        ),
-        (
-            "",
-            ["game_webnovel"],
-            "林照守住断香炉，逼周执事先开口。",
-            ("游戏账本", "面板反馈"),
-            (),
-        ),
-        (
-            "",
-            [],
-            "网游里登录游戏后，主角查看游戏ID、交易行、爆率、掉落、背包、玩家和公会。",
-            ("剧情事实", "世界规则", "核心冲突", "人物反应", "关键线索", "代价", "转折"),
-            ("游戏账本", "面板反馈"),
-        ),
-    ],
-)
-def test_runtime_compression_prompt_is_isolated_by_genre(
-    monkeypatch,
-    genre,
-    genre_plugin_ids,
-    outline,
-    required_terms,
-    forbidden_terms,
-):
+def test_over_length_body_is_fixed_in_single_revise_without_compression_model_call(monkeypatch):
+    """The plan forbids a second model body modification after the
+    bounded controller. Over-length must be reported as a
+    ``length.out_of_range`` blocking finding inside the same revise
+    pass — no separate ``章节压缩`` writer call. This test pins the
+    contract so a future refactor that re-introduces the compression
+    path is caught immediately.
+    """
+    from packages.story_core.review.contracts import ReviewFinding, ReviewResult
+    from packages.story_core.review.service import ReviewService
+
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(
-        orchestrator_module,
-        "_review_chapter_body",
-        lambda *_args, **_kwargs: {"pass": True, "issues": [], "revision_plan": []},
-    )
-    initial_unit = (
-        "林照登录游戏后看见背包掉落异常。"
-        if genre_plugin_ids != ["game_webnovel"]
-        else "林照守住断香炉，逼周执事先开口。"
-    )
-    initial_body = (initial_unit * 500)[:6036]
-    compressed_body = ("林照守住断香炉，逼周执事先开口。" * 500)[:5200]
+    # The bounded controller alone must drive the body back into
+    # range. ``_should_compress_chapter`` is intentionally NOT
+    # monkeypatched — the orchestrator no longer asks.
+    over_length_body = "原" * 5800
+    in_range_body = "正" * 4800
+
+    def _length_blocking_hard(self, *, body, context):
+        if body is over_length_body:
+            return ReviewResult.from_findings(
+                [
+                    ReviewFinding(
+                        code="length.out_of_range",
+                        category="hard",
+                        blocking=True,
+                        message="正文超过章节硬上限，需要把篇幅压回正常范围。",
+                        suggestion=f"扩写或删减到{4800}字左右。",
+                        source="length",
+                    )
+                ]
+            )
+        return ReviewResult.from_findings([])
+
+    monkeypatch.setattr(ReviewService, "run_hard_gate", _length_blocking_hard)
+    monkeypatch.setattr(ReviewService, "run_soft_review", lambda self, *, body, context: ReviewResult.from_findings([]))
+
     story = StoryState(
-        story_id=f"s-compression-prompt-{genre}",
-        outline=outline,
-        genre=genre,
-        genre_plugin_ids=genre_plugin_ids,
+        story_id="s-length-in-revise",
+        outline="林照看守断香炉。",
+        genre="xuanhuan",
         style="白描",
-        current_chapter=1,
         characters=[CharacterState(name="林照", role="主角", location="祖祠")],
     )
     orchestrator = StoryOrchestrator()
-    compression_prompts = []
+    agent_calls: list[str] = []
 
     def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        agent_calls.append((agent, stage))
         if agent == "planner":
             return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
         if agent == "writer" and stage.startswith("整章写作"):
-            return initial_body, ""
-        if agent == "writer" and stage.startswith("章节压缩"):
-            compression_prompts.append(prompt)
-            return compressed_body, ""
+            return over_length_body, ""
+        if agent == "writer" and "审稿改稿" in stage:
+            # The revise prompt must tell the writer to also
+            # shorten the body. Verify the length instruction is
+            # in the prompt so the LLM has what it needs.
+            assert "length.out_of_range" in prompt or "硬上限" in prompt or "字数" in prompt
+            return in_range_body, ""
         if agent == "memory":
             return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
         raise AssertionError((agent, stage))
 
     monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+    bundle = orchestrator.generate_next_chapter(story)
 
-    orchestrator.generate_next_chapter(story)
-
-    assert len(compression_prompts) == 1
-    prompt = compression_prompts[0]
-    assert all(term in prompt for term in required_terms)
-    assert all(term not in prompt for term in forbidden_terms)
-    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompt
+    # The bounded controller's revise is the ONLY model body
+    # modification — no separate compression writer call ever fires.
+    writer_stages = [stage for agent, stage in agent_calls if agent == "writer"]
+    assert not any(stage.startswith("章节压缩") for stage in writer_stages)
+    assert sum(1 for stage in writer_stages if stage.startswith("整章写作")) == 1
+    assert sum(1 for stage in writer_stages if "审稿改稿" in stage) == 1
+    # The saved body is the revised one, already in the length
+    # window.
+    assert bundle.body == in_range_body
+    assert orchestrator_module._chapter_char_count(bundle.body) <= orchestrator_module.MAX_CHAPTER_CHARS + orchestrator_module.CHAPTER_MAX_CHAR_TOLERANCE
 
 
 @pytest.mark.parametrize("genre_plugin_ids", [["xuanhuan"], []])
-def test_runtime_expansion_prompt_uses_non_game_scope_without_game_id(monkeypatch, genre_plugin_ids):
+def test_runtime_expansion_prompt_uses_non_game_scope_without_game_id(passing_review_service, monkeypatch, genre_plugin_ids):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
@@ -1195,7 +1191,7 @@ def test_runtime_expansion_prompt_uses_non_game_scope_without_game_id(monkeypatc
     assert all(term not in instructions for term in ("交易", "委托", "修理", "药水"))
 
 
-def test_orchestrator_persists_only_memory_extracted_after_final_body(monkeypatch):
+def test_orchestrator_persists_only_memory_extracted_after_final_body(passing_review_service, monkeypatch):
     _disable_optional_writing_passes(monkeypatch)
     monkeypatch.setattr(
         orchestrator_module,
@@ -1277,7 +1273,7 @@ def test_orchestrator_retries_director_once_after_invalid_json(monkeypatch):
     assert bundle.body == "林照把断香炉搬回偏殿。"
 
 
-def test_orchestrator_retries_writer_once_after_empty_body(monkeypatch):
+def test_orchestrator_retries_writer_once_after_empty_body(passing_review_service, monkeypatch):
     _disable_optional_writing_passes(monkeypatch)
     story = StoryState(
         story_id="s-writer-empty-retry",
@@ -1311,7 +1307,7 @@ def test_orchestrator_retries_writer_once_after_empty_body(monkeypatch):
     assert bundle.body == "林照把断香炉搬回偏殿。"
 
 
-def test_orchestrator_memory_failure_uses_body_fallback_without_planned_state(monkeypatch):
+def test_orchestrator_memory_failure_uses_body_fallback_without_planned_state(passing_review_service, monkeypatch):
     _disable_optional_writing_passes(monkeypatch)
     monkeypatch.setattr(orchestrator_module, "apply_simulated_state_deltas", lambda *_args, **_kwargs: None)
     story = StoryState(
@@ -1350,7 +1346,7 @@ def test_orchestrator_memory_failure_uses_body_fallback_without_planned_state(mo
     assert "计划中的错误摘要" not in bundle.updated_story.model_dump_json()
 
 
-def test_grounded_memory_without_title_does_not_use_director_conflict_for_title(monkeypatch):
+def test_grounded_memory_without_title_does_not_use_director_conflict_for_title(passing_review_service, monkeypatch):
     _disable_optional_writing_passes(monkeypatch)
     plan = _post_draft_plan()
     plan["character_moves"] = [
@@ -1525,7 +1521,7 @@ def test_memory_extraction_uses_selected_revision_body(monkeypatch):
     assert bundle.chapter_summary["facts"] == ["断香炉已搬回偏殿"]
 
 
-def test_dialogue_advice_does_not_trigger_full_revision_but_updates_memory(monkeypatch):
+def test_dialogue_advice_does_not_trigger_full_revision_but_updates_memory(passing_review_service, monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
     initial_body = _reviewable_body("林照问：“账房？”周执事说：“明早。”")
@@ -1564,7 +1560,7 @@ def test_dialogue_advice_does_not_trigger_full_revision_but_updates_memory(monke
     assert bundle.updated_story.writing_lessons == []
 
 
-def test_ordinary_prose_advice_does_not_trigger_revision_or_learning(monkeypatch):
+def test_ordinary_prose_advice_does_not_trigger_revision_or_learning(passing_review_service, monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
     body = _reviewable_body("林照把断香炉搬回偏殿。周执事让他明早去账房回话。")
@@ -1601,7 +1597,7 @@ def test_ordinary_prose_advice_does_not_trigger_revision_or_learning(monkeypatch
     assert bundle.updated_story.writing_lessons == []
 
 
-def test_unresolved_dialogue_advice_is_not_sent_to_full_revision(monkeypatch):
+def test_unresolved_dialogue_advice_is_not_sent_to_full_revision(passing_review_service, monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
     body = _reviewable_body("林照问：“账房？”周执事说：“明早。”")
@@ -1863,92 +1859,10 @@ def test_workflow_step_reports_explicit_reads_and_outputs():
     assert artifact["outputs"] == {"chapter_goal": "推进灰狼坡任务"}
 
 
-@pytest.mark.real_review_gate
-def test_compression_re_evaluates_canonical_review_for_compressed_body(monkeypatch):
-    """When a compression candidate is accepted, the bounded flow must
-    re-run the canonical hard gate and soft review on the compressed
-    body and replace the saved review result so the saved body and
-    the saved review always match.
-    """
-    from packages.story_core.review.contracts import ReviewFinding, ReviewResult
-    from packages.story_core.review.service import ReviewService
-
-    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
-    # Trigger compression on the over-length initial body.
-    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: True)
-
-    initial_body = "原" * 6500
-    compressed_body = "正" * 4800
-
-    hard_calls = []
-    soft_calls = []
-
-    def _tracking_hard(self, *, body, context):
-        hard_calls.append(body)
-        # Both bodies pass the hard gate so the controller does not
-        # fire a rewrite before the compression stage.
-        return ReviewResult.from_findings([])
-
-    def _tracking_soft(self, *, body, context):
-        soft_calls.append(body)
-        if body is compressed_body:
-            return ReviewResult.from_findings(
-                [
-                    ReviewFinding(
-                        code="soft.compressed",
-                        category="prose",
-                        blocking=False,
-                        message="compressed-body soft note",
-                        suggestion="no-op",
-                        source="soft",
-                    )
-                ]
-            )
-        return ReviewResult.from_findings([])
-
-    monkeypatch.setattr(ReviewService, "run_hard_gate", _tracking_hard)
-    monkeypatch.setattr(ReviewService, "run_soft_review", _tracking_soft)
-
-    story = StoryState(
-        story_id="s-compression-reeval",
-        outline="林照看守断香炉。",
-        genre="xuanhuan",
-        style="白描",
-        characters=[CharacterState(name="林照", role="主角", location="祖祠")],
-    )
-    orchestrator = StoryOrchestrator()
-
-    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
-        if agent == "planner":
-            return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
-        if agent == "writer" and stage.startswith("整章写作"):
-            return initial_body, ""
-        if agent == "writer" and stage.startswith("章节压缩"):
-            return compressed_body, ""
-        if agent == "memory":
-            return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
-        raise AssertionError(agent)
-
-    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
-    bundle = orchestrator.generate_next_chapter(story)
-
-    # Compression accepted and replaced the saved body.
-    assert bundle.body == compressed_body
-    # The canonical hard gate and soft review both fired on the
-    # compressed body, after the bounded controller already ran
-    # them on the initial body. Final soft result is the
-    # compressed body's, not the initial body's.
-    assert compressed_body in hard_calls
-    assert compressed_body in soft_calls
-    final_soft = soft_calls[-1]
-    assert final_soft is compressed_body
-    # The saved review result reflects the compressed body, not the
-    # initial one. The orchestrator stores the canonical
-    # review-result/v2 payload under writing_review (the bounded
-    # controller's combined ReviewResult), so the compressed body's
-    # soft note must show up there after a successful compression.
-    writing_review = bundle.quality_report.get("writing_review")
-    assert isinstance(writing_review, dict)
-    assert writing_review.get("schema_version") == "review-result/v2"
-    issue_messages = [item.get("message") for item in writing_review.get("issues", [])]
-    assert "compressed-body soft note" in issue_messages
+# The orchestrator no longer runs a separate compression model
+# call after the bounded controller — the over-length
+# ``length.out_of_range`` finding is handed to the same revise
+# pass. The ``test_compression_re_evaluates_canonical_review_for_compressed_body``
+# test that previously lived here is obsolete; the new contract
+# is pinned by ``test_over_length_body_is_fixed_in_single_revise_without_compression_model_call``
+# above.

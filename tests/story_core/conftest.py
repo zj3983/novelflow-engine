@@ -224,47 +224,66 @@ def mock_llm_api():
         yield
 
 
-@pytest.fixture(autouse=True)
-def mock_orchestrator_review_gate(request, monkeypatch):
-    """Default the canonical hard gate to pass for orchestrator
-    tests that do not explicitly test the gate.
+@pytest.fixture
+def passing_hard_gate(monkeypatch):
+    """Explicitly bypass the canonical hard gate for orchestrator
+    tests that do not want the real length / continuity / critical /
+    genre / soft-review checks to fire.
 
     The bounded review flow in
     ``packages.story_core.pipeline.review_revision_stage`` is the
     unit of work covered by ``test_review_revision_stage.py``.
-    Tests in ``test_orchestrator.py``, ``test_engine.py`` and
-    ``test_compression_rebalance_guardrail.py`` focus on the
-    surrounding machinery (compression, expansion, memory
-    extraction, progress telemetry) and would otherwise fail on
-    the real length / continuity / critical / genre checks because
-    their bodies are short. Tests in other files
-    (``test_opening_arc``, ``test_progression_lead_review``,
-    ``test_review_quality_gate``, …) deliberately exercise the
-    real gate and would silently regress if the gate were mocked
-    here, so the fixture is scoped to the orchestrator-side test
-    files only.
+    Surrounding tests in ``test_orchestrator.py`` and
+    ``test_engine.py`` focus on the orchestrator's compression,
+    expansion, memory, progress, and quality-report machinery.
+    Those tests opt into this fixture by adding ``passing_hard_gate``
+    to the test signature; tests that omit it run the real
+    ``ReviewService.run_hard_gate`` and would surface any wiring
+    regression immediately.
 
-    Tests that need to assert the gate actually blocks (e.g. to
-    verify the rewrite progress event) can opt out by decorating
-    with ``@pytest.mark.real_review_gate``.
+    Tests that need a passing soft review alongside should also
+    set ``passing_soft_review`` (``monkeypatch.setattr`` on
+    ``ReviewService.run_soft_review``).
     """
     from packages.story_core.review.contracts import ReviewResult
     from packages.story_core.review.service import ReviewService
-
-    fspath = str(request.node.fspath)
-    scoped_files = (
-        "test_orchestrator.py",
-        "test_engine.py",
-    )
-    if not any(name in fspath for name in scoped_files):
-        yield
-        return
-    if request.node.get_closest_marker("real_review_gate"):
-        yield
-        return
 
     def _passing(self, *, body, context):
         return ReviewResult.from_findings([])
 
     monkeypatch.setattr(ReviewService, "run_hard_gate", _passing)
+    yield
+
+
+@pytest.fixture
+def passing_review_service(monkeypatch):
+    """Bypass both ``run_hard_gate`` and ``run_soft_review`` for
+    tests that want the bounded controller to accept any body
+    without re-running the soft reviewers.
+    """
+    from packages.story_core.review.contracts import ReviewResult
+    from packages.story_core.review.service import ReviewService
+
+    def _passing(self, *, body, context):
+        return ReviewResult.from_findings([])
+
+    monkeypatch.setattr(ReviewService, "run_hard_gate", _passing)
+    monkeypatch.setattr(ReviewService, "run_soft_review", _passing)
+    yield
+
+
+@pytest.fixture
+def real_review_only(monkeypatch, request):
+    """Run the real canonical hard gate but bypass the soft
+    reviewers. Useful for tests that need the bounded controller
+    to actually block on the gate but don't care about the soft
+    review path.
+    """
+    from packages.story_core.review.contracts import ReviewResult
+    from packages.story_core.review.service import ReviewService
+
+    def _passing(self, *, body, context):
+        return ReviewResult.from_findings([])
+
+    monkeypatch.setattr(ReviewService, "run_soft_review", _passing)
     yield

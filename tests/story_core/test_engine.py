@@ -293,7 +293,7 @@ def _runtime_generation_responses():
     }
 
 
-def test_successful_generation_records_only_actual_writing_stages(monkeypatch):
+def test_successful_generation_records_only_actual_writing_stages(monkeypatch, passing_review_service):
     _patch_three_stage_generation(monkeypatch, _runtime_generation_responses())
 
     bundle = StoryOrchestrator().generate_next_chapter(_runtime_story("stage-success"))
@@ -376,7 +376,7 @@ def test_new_chapter_clears_previous_stage_runtime_before_planner_request(monkey
         assert entry.last_run_chapter == 0
 
 
-def test_memory_parse_failure_only_marks_memory_fallback(monkeypatch):
+def test_memory_parse_failure_only_marks_memory_fallback(monkeypatch, passing_review_service):
     responses = _runtime_generation_responses()
     responses["memory"] = ("not-json", "")
     _patch_three_stage_generation(monkeypatch, responses)

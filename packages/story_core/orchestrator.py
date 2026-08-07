@@ -2816,6 +2816,15 @@ def _render_compression_length_prompt(
     target_chars: str | None = None,
     feedback: str = "",
 ) -> str:
+    """Render the compression prompt for the given chapter body.
+
+    The bounded flow no longer invokes this prompt automatically
+    (over-length is reported as a ``length.out_of_range`` blocking
+    finding and handed to the same revise pass), but the helper is
+    kept so the file-project store's prompt preview, the
+    ``compression`` prompt-template override, and any future manual
+    compression path can still render the prompt.
+    """
     context = LengthPromptContext(
         story=story,
         chapter_number=chapter_number,
@@ -4335,157 +4344,18 @@ class StoryOrchestrator:
                 stage=f"审稿改稿 第{chapter_number}章（第{round_number}轮）",
             )
 
-        def compress_body(
-            source_body: str,
-            round_number: int,
-            feedback: dict[str, Any] | None,
-        ) -> tuple[str, str]:
-            is_retry = feedback is not None
-            previous_chars = int((feedback or {}).get("previous_chars") or 0)
-            retry_reason = str((feedback or {}).get("reason") or "")
-            prompt = _render_compression_length_prompt(
-                working_story,
-                source_body=source_body,
-                chapter_number=chapter_number,
-                event_plan=event_plan,
-                world_facts=review_world_facts,
-                outline_anchor=outline_anchor,
-                target_chars=(
-                    "保留完整网文章节感，调整到正常范围4200到5500字，"
-                    "建议5200到5500字，绝对不要低于4200字或超过5500字"
-                ) if is_retry else None,
-                feedback=(
-                    f"上次压缩后反而变成{previous_chars}字，比原稿更长；本轮必须真正删减重复说明和面板，只保留事件链。"
-                    if retry_reason == "expanded"
-                    else f"上次压缩到{previous_chars}字，结果过短；本轮必须保留更多关键场景和有效细节。"
-                    if is_retry else ""
-                ),
-            )
-            return self._timed_chat(
-                working_story,
-                prompt,
-                max_tokens=7000 if is_retry else 5000,
-                json_mode=False,
-                agent="writer",
-                stage=(
-                    f"章节压缩重试 第{chapter_number}章"
-                    if is_retry else f"章节压缩 第{chapter_number}章 第{round_number}轮"
-                ),
-                timeout_seconds=_expansion_timeout_seconds(),
-            )
-
-        def report_quality_event(event: str, payload: dict[str, Any]) -> None:
-            if event == "revision_start":
-                round_number = int(payload["round"])
-                candidate_review = payload["review"]
-                self._emit_progress_with_artifact(
-                    f"审稿改稿中...（第{round_number}/1轮）",
-                    "revision",
-                    source="reviewer",
-                    used_modules=["reviewer_agent", "writer_agent", "editor_agent"],
-                    reason=f"写稿审查后触发第{round_number}轮修订",
-                    inputs={
-                        "chapter_number": chapter_number,
-                        "round": round_number,
-                        "max_rounds": 1,
-                        "issue_count": len(candidate_review.get("issues", [])),
-                        "character_cards": planning_character_cards,
-                        "outline": outline_snapshot,
-                        "writer_plan": writer_plan_snapshot,
-                        "review_snapshot": _review_progress_snapshot(candidate_review),
-                        "chapter_title": compact_text(str(event_plan.get("chapter_title") or ""), 100),
-                    },
-                )
-            elif event == "revision_complete":
-                safety = payload.get("safety_report") or {}
-                gate = payload["gate"]
-                candidate_review = payload["review"]
-                self._emit_progress_with_artifact(
-                    "审稿改稿完成",
-                    "revision",
-                    source="reviewer",
-                    used_modules=["reviewer_agent", "writer_agent", "editor_agent"],
-                    reason=f"改稿完成，共执行{payload['round']}轮修订，回填安全评估与剩余问题记录",
-                    inputs={"chapter_number": chapter_number, "rounds_done": payload["round"]},
-                    outputs={
-                        "accepted": bool(safety.get("accepted")),
-                        "rounds_done": payload["round"],
-                        "passed": not gate.get("needs_revision"),
-                        "issues_remaining": len(candidate_review.get("issues", [])),
-                        **{key: safety.get(key) for key in (
-                            "reason", "original_score", "candidate_score", "original_issue_count",
-                            "candidate_issue_count", "original_chars", "candidate_chars",
-                        )},
-                    },
-                )
-            elif event == "compression_start":
-                self._emit_progress_with_artifact(
-                    "章节压缩中...",
-                    "chapter_compress",
-                    source="writer",
-                    used_modules=["writer_agent", "prose_quality_review"],
-                    reason="超字数时压缩无损细节，保留主线和关键钩子",
-                    inputs={"chapter_number": chapter_number, "current_chars": _chapter_char_count(payload["body"])},
-                )
-            elif event == "compression_retry_start":
-                self._emit_progress_with_artifact(
-                    "章节压缩重试中...",
-                    "chapter_compress",
-                    source="writer",
-                    used_modules=["writer_agent", "prose_quality_review"],
-                    reason="压缩候选达到硬下限但低于正常篇幅，从原文保留更多内容后重试",
-                    inputs={
-                        "chapter_number": chapter_number,
-                        "before_chars": _chapter_char_count(payload["before_body"]),
-                        "short_candidate_chars": payload["previous_chars"],
-                    },
-                )
-            elif event == "compression_retry_complete":
-                candidate_review = payload.get("candidate_review") or {}
-                self._emit_progress_with_artifact(
-                    "章节压缩重试完成",
-                    "chapter_compress",
-                    source="writer",
-                    used_modules=["writer_agent", "prose_quality_review"],
-                    reason="重试只在正常篇幅、短于原文且审稿质量不恶化时采用",
-                    inputs={"chapter_number": chapter_number},
-                    outputs={
-                        "before_chars": _chapter_char_count(payload["before_body"]),
-                        "short_candidate_chars": payload.get("previous_chars", 0),
-                        "retry_chars": _chapter_char_count(payload["candidate_body"]),
-                        "accepted": bool(payload.get("accepted")),
-                        "issue_count": len(candidate_review.get("issues", [])),
-                        "error": payload.get("error") or "",
-                    },
-                )
-            elif event == "compression_complete":
-                candidate_review = payload["candidate_review"]
-                self._emit_progress_with_artifact(
-                    "章节压缩完成",
-                    "chapter_compress",
-                    source="writer",
-                    used_modules=["writer_agent", "prose_quality_review", "prose_style_review"],
-                    reason="压缩回写体量，保持关键事件与钩子",
-                    inputs={"chapter_number": chapter_number, "round": 1},
-                    outputs={
-                        "before_chars": _chapter_char_count(payload["before_body"]),
-                        "candidate_chars": _chapter_char_count(payload["candidate_body"]),
-                        "quality_preserved": payload["quality_preserved"],
-                        "candidate_issue_count": len(candidate_review.get("issues", [])),
-                        "candidate_issue_preview": list(candidate_review.get("issues", []))[:6],
-                    },
-                )
-
         # Bounded review flow. The hard gate and soft review are
         # thin callbacks over a single canonical `ReviewService`
         # instance so each reviewer source runs at most once per
         # gate call. The controller below enforces "hard gate ≤ 2,
-        # soft review = 1, model revision ≤ 1, no compression retry"
-        # at the algorithm level, replacing the previous free-form
-        # while loop. Compression re-runs both gates on the
-        # compressed body and replaces the saved result when
-        # accepted so the saved review always matches the saved
-        # body.
+        # soft review = 1, model revision ≤ 1" at the algorithm
+        # level, replacing the previous free-form while loop.
+        # Over-length bodies are reported as
+        # ``length.out_of_range`` blocking findings and handed to
+        # the same revise pass — the plan forbids a second
+        # model body modification after the bounded controller
+        # has produced its final body, so the historical
+        # compression stage is gone.
 
         review_service = ReviewService(
             review_continuity=review_continuity_interface,
@@ -4634,32 +4504,6 @@ class StoryOrchestrator:
                         )},
                     },
                 )
-            elif event == "compression_start":
-                self._emit_progress_with_artifact(
-                    "章节压缩中...",
-                    "chapter_compress",
-                    source="writer",
-                    used_modules=["writer_agent", "prose_quality_review"],
-                    reason="超字数时压缩无损细节，保留主线和关键钩子",
-                    inputs={"chapter_number": chapter_number, "current_chars": _chapter_char_count(payload.get("body", ""))},
-                )
-            elif event == "compression_complete":
-                candidate_review = payload.get("candidate_review") or {}
-                self._emit_progress_with_artifact(
-                    "章节压缩完成",
-                    "chapter_compress",
-                    source="writer",
-                    used_modules=["writer_agent", "prose_quality_review", "prose_style_review"],
-                    reason="压缩回写体量，保持关键事件与钩子",
-                    inputs={"chapter_number": chapter_number, "round": 1},
-                    outputs={
-                        "before_chars": _chapter_char_count(payload.get("before_body", "")),
-                        "candidate_chars": _chapter_char_count(payload.get("candidate_body", "")),
-                        "quality_preserved": payload.get("quality_preserved"),
-                        "candidate_issue_count": len(candidate_review.get("issues", [])),
-                        "candidate_issue_preview": list(candidate_review.get("issues", []))[:6],
-                    },
-                )
 
         review_revision_result = run_review_revision_stage(
             body=body,
@@ -4673,63 +4517,30 @@ class StoryOrchestrator:
             on_event=_report_quality_event,
         )
 
-        # Bounded compression: at most one attempt, no retry. After
-        # the candidate is produced we re-run both the hard gate and
-        # the soft review on the compressed body and, if the
-        # compression is accepted, replace the saved
-        # ``review_revision_result`` so the final review always matches
-        # the final saved body — not the pre-compression one. The hard
-        # gate is part of the acceptance decision: a compressed body
-        # that newly trips a hard blocker is rejected, matching the
-        # invariant "hard gate ≤ 2, soft review = 1 per accepted
-        # body" at the algorithm level rather than letting the saved
-        # review lag behind the saved chapter.
+        # The bounded controller already returned the final body and
+        # the canonical review. The plan forbids any further model
+        # body modifications after this point: over-length bodies
+        # were reported as ``length.out_of_range`` blocking findings
+        # inside the controller's hard gate and handed to the same
+        # revise pass. We accept whatever the controller produced and
+        # surface ``body_chars`` / the gate's status so downstream
+        # callers (memory gate, file-project save) can see when the
+        # length window is still violated.
         body = review_revision_result.body
-        if _should_compress_chapter(body):
-            _report_quality_event("compression_start", {"body": body})
-            compressed_text, compression_error = compress_body(body, 1, None)
-            if not compression_error and compressed_text.strip():
-                postprocessed = _postprocess_revision(compressed_text)
-                if postprocessed.strip():
-                    compressed_hard = _hard_review(postprocessed)
-                    compressed_soft = _soft_review(postprocessed)
-                    compressed_combined = review_service.combine(
-                        compressed_hard, compressed_soft
-                    )
-                    quality_preserved = _compression_review_not_worse(
-                        review_revision_result.hard_result.to_dict(),
-                        compressed_soft.to_dict(),
-                        before_body=body,
-                        candidate_body=postprocessed,
-                    )
-                    action = _compression_candidate_action(body, postprocessed)
-                    accepted_compression = (
-                        _compressed_body_is_acceptable(body, postprocessed)
-                        and quality_preserved
-                        and not compressed_hard.has_hard_errors
-                        and action == "accept"
-                    )
-                    _report_quality_event(
-                        "compression_complete",
-                        {
-                            "before_body": body,
-                            "candidate_body": postprocessed,
-                            "quality_preserved": quality_preserved,
-                            "action": action,
-                            "candidate_review": compressed_soft.to_dict(),
-                            "compressed_hard": compressed_hard.to_dict(),
-                        },
-                    )
-                    if accepted_compression:
-                        body = postprocessed
-                        review_revision_result = ReviewRevisionResult(
-                            body=body,
-                            review_result=compressed_combined,
-                            hard_result=compressed_hard,
-                            soft_result=compressed_soft,
-                            revision_rounds=review_revision_result.revision_rounds,
-                            revision_safety_report=review_revision_result.revision_safety_report,
-                        )
+        if _should_compress_chapter(body) and review_revision_result.hard_result.status != "blocked":
+            # Over-length but no blocking finding is reported (e.g.
+            # the bounded controller downgraded the length issue).
+            # Surface a warning so the front-end and the file-project
+            # save can flag the over-length body without invoking
+            # another model call.
+            self._emit_progress_with_artifact(
+                "正文仍超长，未触发额外压缩",
+                "length_warning",
+                source="reviewer",
+                used_modules=["quality_gate"],
+                reason="bounded flow 完成后正文仍超过章节硬上限，需用户或后续流程处理",
+                inputs={"chapter_number": chapter_number, "current_chars": _chapter_char_count(body)},
+            )
 
         quality_result = review_revision_result
         writing_review = quality_result.review_result.to_dict()
