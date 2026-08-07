@@ -9,7 +9,7 @@ boundary.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -89,15 +89,21 @@ class WriterRequest(BaseModel):
     artifact plus a context view; the writer has no need to read
     anything else. ``director_artifact`` is the only thing the
     writer treats as ground truth for *what* should happen.
+
+    The slice fields are typed as ``list[Any]`` because the
+    role-specific context builders emit heterogeneous payloads
+    (plain strings for short rules, dicts for full cards). The
+    writer prompt builder accepts either shape and renders
+    what it gets.
     """
 
     chapter_number: int
     director_artifact: DirectorArtifact
     previous_tail: str = ""
-    continuity_facts: list[dict] = Field(default_factory=list)
+    continuity_facts: list[Any] = Field(default_factory=list)
     character_cards: list[dict] = Field(default_factory=list)
     entity_cards: list[dict] = Field(default_factory=list)
-    world_rules: list[dict] = Field(default_factory=list)
+    world_rules: list[Any] = Field(default_factory=list)
     craft_modules: list[dict] = Field(default_factory=list)
 
 
