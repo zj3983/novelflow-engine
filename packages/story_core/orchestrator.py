@@ -71,6 +71,12 @@ from packages.story_core.pipeline.planning_stage import resolve_chapter_plan
 from packages.story_core.pipeline.simulation_stage import prepare_simulation_stage
 from packages.story_core.pipeline.writing_stage import generate_chapter_body
 from packages.story_core.pipeline.quality_stage import QualityStageCallbacks, run_quality_stage
+from packages.story_core.pipeline.review_revision_stage import (
+    ReviewRevisionCallbacks,
+    ReviewRevisionResult,
+    run_review_revision_stage,
+)
+from packages.story_core.review.contracts import ReviewResult
 from packages.story_core.review.quality_gate import (
     ReviewDependencies,
     _build_world_state_review as _quality_build_world_state_review,
@@ -4483,50 +4489,276 @@ class StoryOrchestrator:
                     },
                 )
 
-        quality_result = run_quality_stage(
-            body=body,
-            callbacks=QualityStageCallbacks(
-                review=review_body,
-                build_gate=lambda review: build_simplified_review({"writing_review": review}),
-                should_revise=_should_run_full_revision,
-                revise=revise_body,
-                postprocess=lambda text: _postprocess_chapter_output(
-                    working_story,
-                    text,
-                    chapter_number=chapter_number,
-                    scene_cards=scene_cards,
-                    outline_anchor=outline_anchor,
-                ),
-                choose_revision=lambda **kwargs: choose_best_revision(**kwargs, min_delta=0.01),
-                should_compress=_should_compress_chapter,
-                compress=compress_body,
-                compression_quality_not_worse=lambda before, candidate, before_body, candidate_body: (
-                    _compression_review_not_worse(
-                        before,
-                        candidate,
-                        before_body=before_body,
-                        candidate_body=candidate_body,
+        # Bounded review flow. The hard gate and soft review are separate
+        # callbacks so each reviewer source runs at most once per gate
+        # call. The controller below enforces "hard gate ≤ 2, soft
+        # review = 1, model revision ≤ 1, no compression retry" at the
+        # algorithm level, replacing the previous free-form while loop.
+
+        # Single per-call cache keyed by body string. The hard gate and
+        # the soft review both read from this cache so a given body is
+        # only sent through ``_review_chapter_body`` once per chapter
+        # generation — matching the bounded rule "hard gate ≤ 2 calls,
+        # soft review = 1 call" at the algorithm level rather than
+        # letting the controller double-dispatch the legacy aggregate.
+        # The cache is per-orchestrator-call so concurrent or
+        # back-to-back ``generate_next_chapter`` invocations do not
+        # share state.
+        _legacy_review_cache: dict[str, dict[str, Any]] = {}
+
+        def _legacy_review_for(candidate: str) -> dict[str, Any]:
+            cached = _legacy_review_cache.get(candidate)
+            if cached is not None:
+                return cached
+            legacy_review = review_body(candidate)
+            _legacy_review_cache[candidate] = legacy_review
+            return legacy_review
+
+        def _hard_review(candidate: str) -> ReviewResult:
+            legacy_review = _legacy_review_for(candidate)
+            gate = build_simplified_review({"writing_review": legacy_review})
+            if not _should_run_full_revision(gate):
+                return ReviewResult.from_findings([])
+            from packages.story_core.review.contracts import ReviewFinding
+
+            findings: list[ReviewFinding] = []
+            for index, issue in enumerate(legacy_review.get("issues") or []):
+                if isinstance(issue, str):
+                    message = issue
+                elif isinstance(issue, dict):
+                    message = str(
+                        issue.get("message") or issue.get("reason") or issue.get("issue") or ""
                     )
+                else:
+                    continue
+                if not message.strip():
+                    continue
+                findings.append(
+                    ReviewFinding(
+                        code=f"legacy.{index}",
+                        category="hard",
+                        blocking=True,
+                        message=message,
+                        suggestion=str(issue.get("suggestion") or "") if isinstance(issue, dict) else "",
+                        source="legacy",
+                    )
+                )
+            return ReviewResult.from_findings(findings)
+
+        def _soft_review(candidate: str) -> ReviewResult:
+            legacy_review = _legacy_review_for(candidate)
+            from packages.story_core.review.contracts import ReviewFinding
+
+            findings: list[ReviewFinding] = []
+            for index, issue in enumerate(legacy_review.get("issues") or []):
+                if isinstance(issue, str):
+                    message = issue
+                elif isinstance(issue, dict):
+                    message = str(
+                        issue.get("message") or issue.get("reason") or issue.get("issue") or ""
+                    )
+                else:
+                    continue
+                if not message.strip():
+                    continue
+                # Only soft, non-blocking items. The hard gate already
+                # handled blocking ones.
+                findings.append(
+                    ReviewFinding(
+                        code=f"legacy.soft.{index}",
+                        category="prose",
+                        blocking=False,
+                        message=message,
+                        suggestion=str(issue.get("suggestion") or "") if isinstance(issue, dict) else "",
+                        source="legacy",
+                    )
+                )
+            return ReviewResult.from_findings(findings)
+
+        def _postprocess_revision(text: str) -> str:
+            return _postprocess_chapter_output(
+                working_story,
+                text,
+                chapter_number=chapter_number,
+                scene_cards=scene_cards,
+                outline_anchor=outline_anchor,
+            )
+
+        def _choose_revision(
+            *,
+            original_body: str,
+            candidate_body: str,
+            original_hard: ReviewResult,
+            candidate_hard: ReviewResult,
+        ) -> dict[str, Any]:
+            original_quality = {
+                "pass": not original_hard.has_hard_errors,
+                "issues": [item.message for item in original_hard.findings],
+                "has_hard_errors": original_hard.has_hard_errors,
+                "review_result": original_hard.to_dict(),
+            }
+            candidate_quality = {
+                "pass": not candidate_hard.has_hard_errors,
+                "issues": [item.message for item in candidate_hard.findings],
+                "has_hard_errors": candidate_hard.has_hard_errors,
+                "review_result": candidate_hard.to_dict(),
+            }
+            return choose_best_revision(
+                original_body=original_body,
+                original_quality=original_quality,
+                candidate_body=candidate_body,
+                candidate_quality=candidate_quality,
+                min_delta=0.01,
+            )
+
+        def _revise(candidate: str, hard_result: ReviewResult) -> tuple[str, str]:
+            review_for_prompt = hard_result.to_dict()
+            return self._timed_chat(
+                working_story,
+                self._revision_prompt(
+                    working_story,
+                    chapter_number,
+                    candidate,
+                    writer_plan,
+                    review_for_prompt,
                 ),
-                compression_action=_compression_candidate_action,
-                compressed_acceptable=_compressed_body_is_acceptable,
-                retry_acceptable=lambda before, candidate: (
-                    MIN_CHAPTER_CHARS <= _chapter_char_count(candidate) <= MAX_CHAPTER_CHARS
-                    and _chapter_char_count(candidate) < _chapter_char_count(before)
-                ),
-                hard_length_acceptable=lambda candidate: (
-                    CHAPTER_HARD_MIN_CHARS <= _chapter_char_count(candidate) < MIN_CHAPTER_CHARS
-                ),
-                char_count=_chapter_char_count,
+                max_tokens=_revision_max_tokens(candidate),
+                json_mode=False,
+                agent="writer",
+                stage=f"审稿改稿 第{chapter_number}章（第1轮）",
+            )
+
+        def _report_quality_event(event: str, payload: dict[str, Any]) -> None:
+            if event == "revision_start":
+                round_number = int(payload.get("round") or 1)
+                self._emit_progress_with_artifact(
+                    f"审稿改稿中...（第{round_number}/1轮）",
+                    "revision",
+                    source="reviewer",
+                    used_modules=["reviewer_agent", "writer_agent", "editor_agent"],
+                    reason=f"写稿审查后触发第{round_number}轮修订",
+                    inputs={
+                        "chapter_number": chapter_number,
+                        "round": round_number,
+                        "max_rounds": 1,
+                        "issue_count": len(payload.get("review", {}).get("issues", [])),
+                        "character_cards": planning_character_cards,
+                        "outline": outline_snapshot,
+                        "writer_plan": writer_plan_snapshot,
+                        "review_snapshot": _review_progress_snapshot(payload.get("review", {})),
+                        "chapter_title": compact_text(str(event_plan.get("chapter_title") or ""), 100),
+                    },
+                )
+            elif event == "revision_complete":
+                safety = payload.get("safety_report") or {}
+                gate = payload.get("gate") or {}
+                candidate_review = payload.get("review") or {}
+                self._emit_progress_with_artifact(
+                    "审稿改稿完成",
+                    "revision",
+                    source="reviewer",
+                    used_modules=["reviewer_agent", "writer_agent", "editor_agent"],
+                    reason=f"改稿完成，共执行{payload.get('round', 1)}轮修订，回填安全评估与剩余问题记录",
+                    inputs={"chapter_number": chapter_number, "rounds_done": payload.get("round", 1)},
+                    outputs={
+                        "accepted": bool(safety.get("accepted")),
+                        "rounds_done": payload.get("round", 1),
+                        "passed": not gate.get("needs_revision"),
+                        "issues_remaining": len(candidate_review.get("issues", [])),
+                        **{key: safety.get(key) for key in (
+                            "reason", "original_score", "candidate_score", "original_issue_count",
+                            "candidate_issue_count", "original_chars", "candidate_chars",
+                        )},
+                    },
+                )
+            elif event == "compression_start":
+                self._emit_progress_with_artifact(
+                    "章节压缩中...",
+                    "chapter_compress",
+                    source="writer",
+                    used_modules=["writer_agent", "prose_quality_review"],
+                    reason="超字数时压缩无损细节，保留主线和关键钩子",
+                    inputs={"chapter_number": chapter_number, "current_chars": _chapter_char_count(payload.get("body", ""))},
+                )
+            elif event == "compression_complete":
+                candidate_review = payload.get("candidate_review") or {}
+                self._emit_progress_with_artifact(
+                    "章节压缩完成",
+                    "chapter_compress",
+                    source="writer",
+                    used_modules=["writer_agent", "prose_quality_review", "prose_style_review"],
+                    reason="压缩回写体量，保持关键事件与钩子",
+                    inputs={"chapter_number": chapter_number, "round": 1},
+                    outputs={
+                        "before_chars": _chapter_char_count(payload.get("before_body", "")),
+                        "candidate_chars": _chapter_char_count(payload.get("candidate_body", "")),
+                        "quality_preserved": payload.get("quality_preserved"),
+                        "candidate_issue_count": len(candidate_review.get("issues", [])),
+                        "candidate_issue_preview": list(candidate_review.get("issues", []))[:6],
+                    },
+                )
+
+        review_revision_result = run_review_revision_stage(
+            body=body,
+            callbacks=ReviewRevisionCallbacks(
+                hard_review=_hard_review,
+                soft_review=_soft_review,
+                revise=_revise,
+                postprocess=_postprocess_revision,
+                choose_revision=_choose_revision,
             ),
-            on_event=report_quality_event,
+            on_event=_report_quality_event,
         )
-        body = quality_result.body
-        writing_review = quality_result.writing_review
-        review_gate = quality_result.review_gate
+
+        # Bounded compression: at most one attempt, no retry. The soft
+        # review of the candidate uses the same legacy aggregate so we do
+        # not need a second service call.
+        body = review_revision_result.body
+        if _should_compress_chapter(body):
+            _report_quality_event("compression_start", {"body": body})
+            compressed_text, compression_error = compress_body(body, 1, None)
+            if not compression_error and compressed_text.strip():
+                postprocessed = _postprocess_revision(compressed_text)
+                if postprocessed.strip():
+                    candidate_soft = _soft_review(postprocessed)
+                    quality_preserved = _compression_review_not_worse(
+                        review_revision_result.hard_result.to_dict(),
+                        candidate_soft.to_dict(),
+                        before_body=body,
+                        candidate_body=postprocessed,
+                    )
+                    action = _compression_candidate_action(body, postprocessed)
+                    accepted_compression = (
+                        _compressed_body_is_acceptable(body, postprocessed)
+                        and quality_preserved
+                        and action == "accept"
+                    )
+                    _report_quality_event(
+                        "compression_complete",
+                        {
+                            "before_body": body,
+                            "candidate_body": postprocessed,
+                            "quality_preserved": quality_preserved,
+                            "action": action,
+                            "candidate_review": candidate_soft.to_dict(),
+                        },
+                    )
+                    if accepted_compression:
+                        body = postprocessed
+
+        quality_result = review_revision_result
+        writing_review = quality_result.review_result.to_dict()
+        review_gate = {
+            "status": quality_result.hard_result.status,
+            "needs_revision": quality_result.hard_result.needs_revision,
+            "has_hard_errors": quality_result.hard_result.has_hard_errors,
+            "issues": [item.message for item in quality_result.hard_result.findings],
+            "revision_plan": quality_result.hard_result.revision_plan,
+            "categories": writing_review.get("categories", {}),
+        }
         revision_rounds_done = quality_result.revision_rounds
         revision_safety_report = quality_result.revision_safety_report
-        accepted_revision_actions = list(quality_result.accepted_revision_actions)
+        accepted_revision_actions: list[str] = []
         body_chars = _chapter_char_count(body)
         self._emit_workflow_step(
             "review_body",
