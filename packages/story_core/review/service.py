@@ -366,11 +366,23 @@ def _adapt_report(
         return ReviewResult.from_findings([])
     diagnostics = {key: value for key, value in report.items() if key not in {"issues", "revision_plan", "scores"}}
     category_name = category or _category_for_source(source)
+    issues = list(report.get("issues") or [])
+    plan_items = list(report.get("revision_plan") or [])
     findings: list[ReviewFinding] = []
-    for issue in report.get("issues") or []:
+    for index, issue in enumerate(issues):
         message, suggestion, evidence, explicit_blocking = _normalize_issue(issue)
         if not message:
             continue
+        # Pair the i-th ``revision_plan`` entry with the i-th issue when
+        # the reviewer exposes a top-level action list. This gives legacy
+        # reviewers (and any future structured adapter) a way to attach
+        # an explicit fix instruction without stuffing it into the issue
+        # dict. Items without a paired plan keep the issue's own
+        # suggestion.
+        if index < len(plan_items):
+            plan_text = str(plan_items[index] or "").strip()
+            if plan_text:
+                suggestion = plan_text
         blocking = explicit_blocking if explicit_blocking is not None else default_blocking
         findings.append(
             ReviewFinding(
@@ -394,11 +406,20 @@ def _adapt_genre_report(report: Any) -> ReviewResult:
     if isinstance(active, dict):
         diagnostics["active_genre_reviews"] = active
     overall_blocking = not bool(report.get("pass", True))
+    issues = list(report.get("issues") or [])
+    plan_items = list(report.get("revision_plan") or [])
     findings: list[ReviewFinding] = []
-    for issue in report.get("issues") or []:
+    for index, issue in enumerate(issues):
         message, suggestion, evidence, explicit_blocking = _normalize_issue(issue)
         if not message:
             continue
+        # Pair revision_plan[i] with issues[i] so the writer gets the
+        # fix instruction even when genre reviewers do not embed it
+        # in the issue dict.
+        if index < len(plan_items):
+            plan_text = str(plan_items[index] or "").strip()
+            if plan_text:
+                suggestion = plan_text
         # Genre reports are deterministic rule checkers. The current genre
         # reviewers report issues as plain strings; in the absence of an
         # explicit per-issue `blocking` flag, treat the whole report as
@@ -426,11 +447,17 @@ def _adapt_plot_spine_report(report: Any) -> ReviewResult:
     if not isinstance(report, dict):
         return ReviewResult.from_findings([])
     diagnostics = {key: value for key, value in report.items() if key not in {"issues", "revision_plan", "scores"}}
+    issues = list(report.get("issues") or [])
+    plan_items = list(report.get("revision_plan") or [])
     findings: list[ReviewFinding] = []
-    for issue in report.get("issues") or []:
+    for index, issue in enumerate(issues):
         message, suggestion, evidence, explicit_blocking = _normalize_issue(issue)
         if not message:
             continue
+        if index < len(plan_items):
+            plan_text = str(plan_items[index] or "").strip()
+            if plan_text:
+                suggestion = plan_text
         blocking = bool(explicit_blocking) if explicit_blocking is not None else False
         findings.append(
             ReviewFinding(
