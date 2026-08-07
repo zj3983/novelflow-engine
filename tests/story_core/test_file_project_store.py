@@ -44,6 +44,12 @@ def test_manual_quality_report_passes_explicit_genre_context_to_style_review(mon
 
 
 def test_manual_quality_report_forwards_genre_context_and_reuses_cold_reader_report(monkeypatch):
+    """The manual write/rewrite path should call the deterministic
+    cold-reader reviewer exactly once, forward the supplied
+    ``genre_context`` unchanged, and emit a canonical
+    ``review-result/v2`` payload — no longer routing through the three
+    legacy agent reviews (reader/editor/reviewer).
+    """
     genre_context = {"genre": "玄幻", "genre_plugin_ids": ["xuanhuan"]}
     captured = {"cold_reader_calls": 0}
     cold_reader_report = {
@@ -60,14 +66,9 @@ def test_manual_quality_report_forwards_genre_context_and_reuses_cold_reader_rep
         captured["genre_context"] = genre_context
         return cold_reader_report
 
-    def fake_reader_agent(body, *, previous_summary="", cold_reader_review=None):
-        captured["reader_agent_report"] = cold_reader_review
-        return {"pass": True, "scores": {}, "issues": [], "revision_plan": []}
-
     monkeypatch.setattr(file_project_store_module, "review_cold_reader_experience", fake_cold_reader)
-    monkeypatch.setattr(file_project_store_module, "review_reader_agent", fake_reader_agent)
 
-    _manual_chapter_quality_report(
+    report = _manual_chapter_quality_report(
         {
             "chapter_number": 1,
             "chapter_title": "test",
@@ -82,7 +83,15 @@ def test_manual_quality_report_forwards_genre_context_and_reuses_cold_reader_rep
 
     assert captured["cold_reader_calls"] == 1
     assert captured["genre_context"] is genre_context
-    assert captured["reader_agent_report"] is cold_reader_report
+    # The 3 legacy agent review fields are gone — the manual path now
+    # exposes the canonical v2 contract instead.
+    for legacy_key in ("reader_agent_review", "editor_agent_review", "reviewer_agent_review"):
+        assert legacy_key not in report
+        assert legacy_key not in report.get("writing_review", {})
+    review_result = report.get("review_result")
+    assert isinstance(review_result, dict)
+    assert review_result.get("schema_version") == "review-result/v2"
+    assert review_result.get("status") in {"passed", "warning", "blocked"}
 
 
 def test_auto_quality_gate_allows_advisory_review_and_records_warning():

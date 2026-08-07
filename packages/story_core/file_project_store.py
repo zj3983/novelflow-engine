@@ -76,7 +76,6 @@ from packages.story_core.character_profiles import (
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.book_style import normalize_book_style
 from packages.story_core.cold_reader_review import review_cold_reader_experience
-from packages.story_core.editor_agent import review_editor_agent
 from packages.story_core.equipment_cards import (
     equipment_cards_for_context,
     merge_equipment_cards,
@@ -158,8 +157,8 @@ from packages.story_core.relationship_graph import (
     select_relationship_subgraph,
 )
 from packages.story_core.quality import validate_bundle
-from packages.story_core.reader_agent import review_reader_agent
-from packages.story_core.reviewer_agent import review_reviewer_agent
+from packages.story_core.review.contracts import ReviewFinding, ReviewResult
+from packages.story_core.review.service import ReviewService
 from packages.story_core.simplified_review import build_simplified_review
 from packages.story_core.workflow_telemetry import append_workflow_telemetry
 from packages.story_core.writing_learning import learning_snapshot, lessons_from_quality_report, merge_writing_lessons
@@ -627,6 +626,23 @@ def _manual_chapter_quality_report(
     *,
     genre_context: Any = None,
 ) -> dict[str, Any]:
+    """Build the canonical chapter review report for the manual
+    write/rewrite entry point.
+
+    The legacy path ran three separate agent reviews (reader / editor /
+    reviewer) and stitched the result with deterministic prose checks.
+    The plan's Task 7 collapses that into a single canonical
+    ``ReviewService`` run plus a length-based hard gate, exposing the
+    v2 ``review_result`` contract while still keeping the deterministic
+    review sub-blocks (``length_review``, ``ai_flavor_review``,
+    ``prose_style_review``, ``cold_reader_review``) for backward
+    compatibility with the file-project payload shape.
+
+    The output keeps the unified envelope so downstream consumers
+    (assertion, save, front-end) only need to read ``review_result``
+    (v2) and ``simplified_review`` (v1) — the agent review fields are
+    dropped because they duplicate the canonical findings.
+    """
     quality_report = validate_bundle(chapter)
     body = str(chapter.get("body") or "")
     length_review = _chapter_length_review(body)
@@ -637,23 +653,6 @@ def _manual_chapter_quality_report(
         body,
         previous_summary=str((chapter.get("event_plan") or {}).get("summary") or ""),
         genre_context=genre_context,
-    )
-    reader_agent_review = review_reader_agent(
-        body,
-        previous_summary=str((chapter.get("event_plan") or {}).get("summary") or ""),
-        cold_reader_review=cold_reader_review,
-    )
-    editor_agent_review = review_editor_agent(
-        body,
-        genre_context=genre_context,
-        prose_style_review=prose_style_review,
-        ai_flavor_review=ai_flavor_review,
-    )
-    reviewer_agent_review = review_reviewer_agent(
-        chapter_number=int(chapter.get("chapter_number") or 0),
-        body=body,
-        event_plan=chapter.get("event_plan") if isinstance(chapter.get("event_plan"), dict) else {},
-        world_facts=[],
     )
 
     issues = [str(item) for item in quality_report.get("issues", []) if str(item).strip()]
@@ -680,23 +679,70 @@ def _manual_chapter_quality_report(
             reason = issue.get("reason") if isinstance(issue, dict) else str(issue)
             if reason and reason not in issues:
                 issues.append(reason)
-    for agent_review in (reader_agent_review, editor_agent_review, reviewer_agent_review):
-        for issue in agent_review.get("issues", []):
-            text = str(issue).strip()
-            if text and text not in issues:
-                issues.append(text)
 
-    pass_review = (
-        bool(quality_report.get("ok"))
-        and bool(length_review.get("pass", True))
-        and bool(ai_flavor_review.get("pass", True))
-        and bool(reader_feel_review.get("pass", True))
-        and bool(prose_style_review.get("pass", True))
-        and bool(cold_reader_review.get("pass", True))
-        and bool(reader_agent_review.get("pass", True))
-        and bool(editor_agent_review.get("pass", True))
-        and bool(reviewer_agent_review.get("pass", True))
+    # Hard gate: only the deterministic length check is available in
+    # the manual path. Express it as a ReviewResult so the canonical
+    # v2 contract stays uniform.
+    hard_findings: list[ReviewFinding] = []
+    if not bool(length_review.get("pass", True)):
+        for issue in length_review.get("issues", []):
+            text = str(issue).strip()
+            if not text:
+                continue
+            hard_findings.append(
+                ReviewFinding(
+                    code=f"length.{_slugify_text(text)}",
+                    category="hard",
+                    blocking=True,
+                    message=text,
+                    suggestion="扩写到目标字数。",
+                    source="length",
+                )
+            )
+    if not bool(quality_report.get("ok", True)) and not hard_findings:
+        # Structural quality_report failure (missing field, schema
+        # violation) — surface it as a hard finding.
+        structural_issues = [
+            str(item).strip()
+            for item in quality_report.get("issues", [])
+            if str(item).strip()
+        ]
+        for text in structural_issues:
+            hard_findings.append(
+                ReviewFinding(
+                    code=f"quality.{_slugify_text(text)}",
+                    category="hard",
+                    blocking=True,
+                    message=text,
+                    suggestion="补齐质量检查中缺失的字段或事件。",
+                    source="quality",
+                )
+            )
+    hard_result = ReviewResult.from_findings(hard_findings)
+
+    # Soft review: run the deterministic prose checks through
+    # ReviewService so the v2 contract is consistent with the auto
+    # generation path. The service collects the same scores/issues
+    # the legacy code stitched manually, but emits a proper
+    # ReviewResult.
+    soft_service = ReviewService(
+        review_ai_flavor=lambda payload: ai_flavor_review,
+        review_reader_feel=lambda payload: reader_feel_review,
+        review_style=lambda payload, **_: prose_style_review,
+        review_prose_quality=lambda payload: {"pass": True, "issues": [], "revision_plan": []},
+        review_adversarial_cuts=lambda payload: {"pass": True, "issues": [], "revision_plan": []},
+        review_cold_reader=lambda payload, **_: cold_reader_review,
     )
+    soft_result = soft_service.run_soft_review(
+        body=body,
+        context={
+            "previous_summary": str((chapter.get("event_plan") or {}).get("summary") or ""),
+            "genre_context": genre_context,
+        },
+    )
+    review_result_payload = soft_service.combine(hard_result, soft_result).to_dict()
+
+    pass_review = not bool(review_result_payload.get("has_hard_errors"))
     writing_review = {
         "pass": pass_review,
         "issues": issues,
@@ -706,17 +752,11 @@ def _manual_chapter_quality_report(
         "reader_feel_review": reader_feel_review,
         "prose_style_review": prose_style_review,
         "cold_reader_review": cold_reader_review,
-        "reader_agent_review": reader_agent_review,
-        "editor_agent_review": editor_agent_review,
-        "reviewer_agent_review": reviewer_agent_review,
         "revision_plan": _merge_revision_plans(
             ai_flavor_review.get("revision_plan", []),
             reader_feel_review.get("revision_plan", []),
             prose_style_review.get("revision_plan", []),
             cold_reader_review.get("revision_plan", []),
-            reader_agent_review.get("revision_plan", []),
-            editor_agent_review.get("revision_plan", []),
-            reviewer_agent_review.get("revision_plan", []),
         ),
     }
     report = {
@@ -728,9 +768,7 @@ def _manual_chapter_quality_report(
         "reader_feel_review": reader_feel_review,
         "prose_style_review": prose_style_review,
         "cold_reader_review": cold_reader_review,
-        "reader_agent_review": reader_agent_review,
-        "editor_agent_review": editor_agent_review,
-        "reviewer_agent_review": reviewer_agent_review,
+        "review_result": review_result_payload,
     }
     if not pass_review:
         quality_report["ok"] = False
@@ -752,6 +790,13 @@ def _merge_revision_plans(*plans: Any) -> list[str]:
             if text and text not in merged:
                 merged.append(text)
     return merged
+
+
+def _slugify_text(text: str) -> str:
+    """Mirror the service-layer slugifier so finding codes stay
+    consistent with the canonical review-result/v2 contract."""
+    normalized = "".join(ch for ch in str(text or "") if ch.isalnum() or ch in {"_", "-"})
+    return normalized[:40] or "issue"
 
 
 def _project_legacy_review(payload: dict[str, Any]) -> dict[str, Any]:
