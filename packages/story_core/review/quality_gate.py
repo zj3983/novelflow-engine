@@ -412,8 +412,12 @@ def _merge_legacy_review(
     if not isinstance(review, dict):
         return
     for key, score in review.get("scores", {}).items():
-        if prefix:
-            scores[f"{prefix}{key}"] = score
+        # Merge with prefix when provided; for unprefixed reviews
+        # (e.g. plot_spine) keep the source keys as-is so callers
+        # can read ``scores["plot_spine_critical"]`` at the top
+        # level — this matches the legacy v1 contract that the
+        # chapter review envelope used to expose.
+        scores[f"{prefix}{key}"] = score
     for issue in review.get("issues", []):
         if issue not in issues:
             issues.append(issue)

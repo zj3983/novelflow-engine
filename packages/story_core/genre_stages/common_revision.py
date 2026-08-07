@@ -56,8 +56,13 @@ def _blocking_revision_suggestions(review: dict[str, Any]) -> list[tuple[str, st
 
     New runtime code always uses the v2 schema; only blocking findings may
     modify the chapter. Historical v1 reports that lack an explicit
-    ``review_result`` fall back to the legacy ``revision_plan`` plus any
-    issues whose keyword classifier marked them as hard.
+    ``review_result`` fall back to ``build_simplified_review``, which
+    dedupes issues across nested review keys (``reviewer_agent_review``,
+    ``editor_agent_review``, ``reader_agent_review``, ``style_review``,
+    ...), prefers embedded per-issue ``suggestion`` over plan-based
+    fallbacks, prefers nested agent reviews over the aggregate, and
+    sorts by category (hard > dialogue > ai_flavor > prose) so the
+    writer sees the most actionable items first.
     """
     explicit = review.get("review_result")
     if isinstance(explicit, dict) and explicit.get("schema_version") == "review-result/v2":
@@ -76,39 +81,22 @@ def _blocking_revision_suggestions(review: dict[str, Any]) -> list[tuple[str, st
             if len(instructions) >= 3:
                 break
         return instructions
-    return _legacy_revision_suggestions(review)
-
-
-def _legacy_revision_suggestions(review: dict[str, Any]) -> list[tuple[str, str]]:
+    # v1 path: delegate to build_simplified_review for categorized,
+    # deduped legacy issues. The legacy adapter already implements
+    # the "embedded suggestion > plan-based fallback" and
+    # "nested > aggregate" priority rules the v1 storage format
+    # depends on, so the writer still gets actionable instructions
+    # when a chapter loads an old review payload.
+    consolidated = build_simplified_review(review)
+    issues = consolidated.get("issues") if isinstance(consolidated.get("issues"), list) else []
     instructions: list[tuple[str, str]] = []
-    writing_review = review.get("writing_review")
-    if not isinstance(writing_review, dict):
-        writing_review = {}
-    plans: list[Any] = []
-    plans.extend(writing_review.get("revision_plan") or [])
-    plans.extend(review.get("revision_plan") or [])
-
-    def _iter_issue_candidates(container: dict[str, Any]) -> list[Any]:
-        candidates: list[Any] = []
-        for issue in container.get("issues") or []:
-            if isinstance(issue, str):
-                candidates.append(issue)
-            elif isinstance(issue, dict):
-                message = str(issue.get("message") or issue.get("reason") or issue.get("issue") or "").strip()
-                if message:
-                    candidates.append(message)
-        return candidates
-
-    candidates = [*_iter_issue_candidates(writing_review), *_iter_issue_candidates(review)]
-    seen_messages: set[str] = set()
-    for index, issue in enumerate(candidates):
-        message = str(issue).strip()
-        if not message or message in seen_messages:
+    for issue in issues:
+        if not isinstance(issue, dict):
             continue
-        seen_messages.add(message)
-        suggestion = ""
-        if index < len(plans):
-            suggestion = str(plans[index] or "").strip()
+        message = str(issue.get("message") or "").strip()
+        suggestion = str(issue.get("suggestion") or "").strip()
+        if not (message or suggestion):
+            continue
         instructions.append((message, suggestion))
         if len(instructions) >= 3:
             break
@@ -238,7 +226,7 @@ def render_common_revision_prompt(
     if manual_instructions:
         modification_lines.append(f"用户要求：{'；'.join(manual_instructions)}")
     if blocking_instructions:
-        modification_lines.append("必须改到以下三项以内：")
+        modification_lines.append("修改意见（综合后，必须改到以下三项以内）：")
         for index, (message, suggestion) in enumerate(blocking_instructions, start=1):
             label = compact_text(message, 100) or compact_text(suggestion, 120)
             action = compact_text(suggestion, 120) if message else ""

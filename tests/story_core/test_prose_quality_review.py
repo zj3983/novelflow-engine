@@ -124,6 +124,14 @@ def test_chapter_review_includes_adversarial_cut_review():
 
 
 def test_chapter_review_uses_one_consolidated_gate_instead_of_three_duplicate_agent_passes():
+    """The legacy review envelope used to expose three duplicate
+    agent passes (``reader_agent_review`` / ``editor_agent_review`` /
+    ``reviewer_agent_review``). After the canonical review service
+    split landed, the three passes were folded into a single
+    ``ReviewService`` run whose output is the v2 ``review_result``
+    envelope. The three legacy fields are gone — the v2 envelope is
+    the only consolidated gate the chapter review returns.
+    """
     review = _review_chapter_body(
         2,
         "林照核对完账册，发现最后一页被人撕掉了。他问值夜弟子是谁，对方报出名字后又补了一句，昨晚库房换过锁。",
@@ -133,5 +141,5 @@ def test_chapter_review_uses_one_consolidated_gate_instead_of_three_duplicate_ag
     )
 
     for key in ("reader_agent_review", "editor_agent_review", "reviewer_agent_review"):
-        assert review[key]["mode"] == "consolidated"
-        assert review[key]["issues"] == []
+        assert key not in review
+    assert review["review_result"]["schema_version"] == "review-result/v2"
