@@ -698,8 +698,23 @@ def test_writer_request_failure_is_preserved_in_failed_bundle(monkeypatch):
 
 
 def test_generation_attaches_resolved_trope_contract_to_review_without_extra_provider_calls(monkeypatch):
+    """The resolved trope_contract on the simulation_plan must flow
+    through the canonical review service exactly once per chapter so
+    soft reviewers can see it, and the bounded flow must not double-
+    dispatch the writer for a passing body.
+    """
+    from packages.story_core.review.contracts import ReviewResult
+    from packages.story_core.review.service import ReviewService
+
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
+    # Force the canonical hard gate to pass so the short test body
+    # does not trigger a model revision. The soft review path still
+    # runs normally so we can verify the simulation_plan propagation.
+    def _passing_hard(self, *, body, context):
+        return ReviewResult.from_findings([])
+
+    monkeypatch.setattr(ReviewService, "run_hard_gate", _passing_hard)
     monkeypatch.setattr(
         "packages.story_core.chapter_seed.select_genre_plugins",
         lambda *args, **kwargs: [_trope_plugin()],
@@ -719,12 +734,14 @@ def test_generation_attaches_resolved_trope_contract_to_review_without_extra_pro
         ensure_ascii=False,
     )
     seen_contracts: list[dict | None] = []
-
-    def review_spy(_chapter, _body, _event_plan, _world_facts, simulation_plan, *_args, **_kwargs):
+    # The plot_spine soft reviewer is the single source the bounded
+    # service runs against the simulation_plan; capture it to confirm
+    # the resolved trope_contract reaches the soft review path.
+    def plot_spine_spy(_body, simulation_plan):
         seen_contracts.append(simulation_plan.get("trope_contract") if isinstance(simulation_plan, dict) else None)
         return {"pass": True, "issues": [], "revision_plan": []}
 
-    monkeypatch.setattr(orchestrator_module, "_review_chapter_body", review_spy)
+    monkeypatch.setattr(orchestrator_module, "review_plot_spine_completion", plot_spine_spy)
 
     def run_story(outline_context):
         story = StoryState(
@@ -786,7 +803,12 @@ def test_generation_attaches_resolved_trope_contract_to_review_without_extra_pro
     _, calls_with_contract = run_story(valid_context)
     _, calls_without_contract = run_story(invalid_context)
 
+    # Bounded flow: a passing hard gate means the controller does not
+    # double-dispatch the writer for a revision.
     assert calls_with_contract == calls_without_contract == ["writer"]
+    # The valid context attaches the resolved trope_contract to the
+    # simulation_plan that reaches the soft reviewers; the invalid
+    # context never resolves one.
     assert seen_contracts[0] == {
         "template_id": "trial",
         "name": "Trial Stage",
@@ -1429,18 +1451,39 @@ def test_refresh_revised_bundle_reextracts_memory_from_revised_body(monkeypatch)
     assert "偏殿" not in refreshed.chapter_summary["summary"]
 
 
+@pytest.mark.real_review_gate
 def test_memory_extraction_uses_selected_revision_body(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
     initial_body = _reviewable_body("林照按计划把断香炉留在东院。")
     revised_body = _reviewable_body("林照把断香炉搬回偏殿。周执事让他明早去账房回话。")
 
-    def review(body_chapter, body, *_args, **_kwargs):
-        if body == initial_body:
-            return {"pass": False, "issues": ["连续性冲突：地点错误"]}
-        return {"pass": True, "issues": []}
+    # The bounded review flow runs the canonical ReviewService. Make
+    # the first call block (so the controller triggers a revision)
+    # and the second call pass (so the candidate is accepted).
+    from packages.story_core.review.contracts import ReviewFinding, ReviewResult
+    from packages.story_core.review.service import ReviewService
 
-    monkeypatch.setattr(orchestrator_module, "_review_chapter_body", review)
+    _hard_calls = {"count": 0}
+
+    def _variable_hard(self, *, body, context):
+        _hard_calls["count"] += 1
+        if body == initial_body:
+            return ReviewResult.from_findings(
+                [
+                    ReviewFinding(
+                        code="continuity.conflict",
+                        category="hard",
+                        blocking=True,
+                        message="连续性冲突：地点错误",
+                        suggestion="按场景修正地点。",
+                        source="continuity",
+                    )
+                ]
+            )
+        return ReviewResult.from_findings([])
+
+    monkeypatch.setattr(ReviewService, "run_hard_gate", _variable_hard)
     monkeypatch.setattr(
         orchestrator_module,
         "choose_best_revision",
@@ -1595,20 +1638,34 @@ def test_unresolved_dialogue_advice_is_not_sent_to_full_revision(monkeypatch):
     assert bundle.updated_story.writing_lessons == []
 
 
+@pytest.mark.real_review_gate
 def test_progress_artifacts_expose_rewrite_inputs_for_transparency(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: False)
 
-    def review(_chapter, body, *_args, **_kwargs):
-        if body == "first draft":
-            return {
-                "pass": False,
-                "issues": ["连续性冲突：人物状态与上一章不一致。"],
-                "revision_plan": ["把对话拆成两三句，让主角先停顿。"],
-            }
-        return {"pass": True, "issues": []}
+    # The bounded flow runs the canonical ReviewService. Block on
+    # the first body, pass on the revised, so the controller fires
+    # the rewrite event the test asserts against.
+    from packages.story_core.review.contracts import ReviewFinding, ReviewResult
+    from packages.story_core.review.service import ReviewService
 
-    monkeypatch.setattr(orchestrator_module, "_review_chapter_body", review)
+    def _variable_hard(self, *, body, context):
+        if body == "first draft":
+            return ReviewResult.from_findings(
+                [
+                    ReviewFinding(
+                        code="continuity.conflict",
+                        category="hard",
+                        blocking=True,
+                        message="连续性冲突：人物状态与上一章不一致。",
+                        suggestion="把对话拆成两三句，让主角先停顿。",
+                        source="continuity",
+                    )
+                ]
+            )
+        return ReviewResult.from_findings([])
+
+    monkeypatch.setattr(ReviewService, "run_hard_gate", _variable_hard)
     story = StoryState(
         story_id="s-progress-rewrite-transparency",
         outline="夜烬在灰烬村第一次试炼失落与秩序。",
@@ -1804,3 +1861,94 @@ def test_workflow_step_reports_explicit_reads_and_outputs():
     }
     assert artifact["used_modules"] == ["outline_agent"]
     assert artifact["outputs"] == {"chapter_goal": "推进灰狼坡任务"}
+
+
+@pytest.mark.real_review_gate
+def test_compression_re_evaluates_canonical_review_for_compressed_body(monkeypatch):
+    """When a compression candidate is accepted, the bounded flow must
+    re-run the canonical hard gate and soft review on the compressed
+    body and replace the saved review result so the saved body and
+    the saved review always match.
+    """
+    from packages.story_core.review.contracts import ReviewFinding, ReviewResult
+    from packages.story_core.review.service import ReviewService
+
+    monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
+    # Trigger compression on the over-length initial body.
+    monkeypatch.setattr(orchestrator_module, "_should_compress_chapter", lambda *_args, **_kwargs: True)
+
+    initial_body = "原" * 6500
+    compressed_body = "正" * 4800
+
+    hard_calls = []
+    soft_calls = []
+
+    def _tracking_hard(self, *, body, context):
+        hard_calls.append(body)
+        # Both bodies pass the hard gate so the controller does not
+        # fire a rewrite before the compression stage.
+        return ReviewResult.from_findings([])
+
+    def _tracking_soft(self, *, body, context):
+        soft_calls.append(body)
+        if body is compressed_body:
+            return ReviewResult.from_findings(
+                [
+                    ReviewFinding(
+                        code="soft.compressed",
+                        category="prose",
+                        blocking=False,
+                        message="compressed-body soft note",
+                        suggestion="no-op",
+                        source="soft",
+                    )
+                ]
+            )
+        return ReviewResult.from_findings([])
+
+    monkeypatch.setattr(ReviewService, "run_hard_gate", _tracking_hard)
+    monkeypatch.setattr(ReviewService, "run_soft_review", _tracking_soft)
+
+    story = StoryState(
+        story_id="s-compression-reeval",
+        outline="林照看守断香炉。",
+        genre="xuanhuan",
+        style="白描",
+        characters=[CharacterState(name="林照", role="主角", location="祖祠")],
+    )
+    orchestrator = StoryOrchestrator()
+
+    def fake_timed_chat(_story, prompt, *, agent, stage, **_kwargs):
+        if agent == "planner":
+            return json.dumps(_post_draft_plan(), ensure_ascii=False), ""
+        if agent == "writer" and stage.startswith("整章写作"):
+            return initial_body, ""
+        if agent == "writer" and stage.startswith("章节压缩"):
+            return compressed_body, ""
+        if agent == "memory":
+            return json.dumps(_post_draft_memory_payload(), ensure_ascii=False), ""
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+    bundle = orchestrator.generate_next_chapter(story)
+
+    # Compression accepted and replaced the saved body.
+    assert bundle.body == compressed_body
+    # The canonical hard gate and soft review both fired on the
+    # compressed body, after the bounded controller already ran
+    # them on the initial body. Final soft result is the
+    # compressed body's, not the initial body's.
+    assert compressed_body in hard_calls
+    assert compressed_body in soft_calls
+    final_soft = soft_calls[-1]
+    assert final_soft is compressed_body
+    # The saved review result reflects the compressed body, not the
+    # initial one. The orchestrator stores the canonical
+    # review-result/v2 payload under writing_review (the bounded
+    # controller's combined ReviewResult), so the compressed body's
+    # soft note must show up there after a successful compression.
+    writing_review = bundle.quality_report.get("writing_review")
+    assert isinstance(writing_review, dict)
+    assert writing_review.get("schema_version") == "review-result/v2"
+    issue_messages = [item.get("message") for item in writing_review.get("issues", [])]
+    assert "compressed-body soft note" in issue_messages

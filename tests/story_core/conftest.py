@@ -222,3 +222,49 @@ def mock_llm_api():
     """Patch StoryOrchestrator._chat to return mock responses."""
     with patch("packages.story_core.orchestrator.StoryOrchestrator._chat", _mock_chat):
         yield
+
+
+@pytest.fixture(autouse=True)
+def mock_orchestrator_review_gate(request, monkeypatch):
+    """Default the canonical hard gate to pass for orchestrator
+    tests that do not explicitly test the gate.
+
+    The bounded review flow in
+    ``packages.story_core.pipeline.review_revision_stage`` is the
+    unit of work covered by ``test_review_revision_stage.py``.
+    Tests in ``test_orchestrator.py``, ``test_engine.py`` and
+    ``test_compression_rebalance_guardrail.py`` focus on the
+    surrounding machinery (compression, expansion, memory
+    extraction, progress telemetry) and would otherwise fail on
+    the real length / continuity / critical / genre checks because
+    their bodies are short. Tests in other files
+    (``test_opening_arc``, ``test_progression_lead_review``,
+    ``test_review_quality_gate``, …) deliberately exercise the
+    real gate and would silently regress if the gate were mocked
+    here, so the fixture is scoped to the orchestrator-side test
+    files only.
+
+    Tests that need to assert the gate actually blocks (e.g. to
+    verify the rewrite progress event) can opt out by decorating
+    with ``@pytest.mark.real_review_gate``.
+    """
+    from packages.story_core.review.contracts import ReviewResult
+    from packages.story_core.review.service import ReviewService
+
+    fspath = str(request.node.fspath)
+    scoped_files = (
+        "test_orchestrator.py",
+        "test_engine.py",
+    )
+    if not any(name in fspath for name in scoped_files):
+        yield
+        return
+    if request.node.get_closest_marker("real_review_gate"):
+        yield
+        return
+
+    def _passing(self, *, body, context):
+        return ReviewResult.from_findings([])
+
+    monkeypatch.setattr(ReviewService, "run_hard_gate", _passing)
+    yield

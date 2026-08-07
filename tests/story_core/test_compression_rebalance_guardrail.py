@@ -78,11 +78,23 @@ def _run_compression(
     retry_body: str | None = None,
 ):
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(
-        orchestrator_module,
-        "_review_chapter_body",
-        lambda *_args, **_kwargs: {"pass": True, "issues": [], "revision_plan": []},
-    )
+    # Bypass the canonical hard gate and soft review so the bounded
+    # flow can exercise the compression stage without first
+    # triggering a rewrite on the over-length initial body and
+    # without the real soft reviewers dragging the
+    # "quality_preserved" check below zero. The previous
+    # ``_review_chapter_body`` mock is dead under the new
+    # ReviewService-driven flow; ``run_hard_gate`` and
+    # ``run_soft_review`` are the entry points the orchestrator now
+    # uses.
+    from packages.story_core.review.contracts import ReviewResult
+    from packages.story_core.review.service import ReviewService
+
+    def _passing(self, *, body, context):
+        return ReviewResult.from_findings([])
+
+    monkeypatch.setattr(ReviewService, "run_hard_gate", _passing)
+    monkeypatch.setattr(ReviewService, "run_soft_review", _passing)
     initial_body = _body("原", 7801)
     calls: list[tuple[str, str, str]] = []
     orchestrator = StoryOrchestrator()

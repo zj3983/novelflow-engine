@@ -77,6 +77,7 @@ from packages.story_core.pipeline.review_revision_stage import (
     run_review_revision_stage,
 )
 from packages.story_core.review.contracts import ReviewResult
+from packages.story_core.review.service import ReviewService
 from packages.story_core.review.quality_gate import (
     ReviewDependencies,
     _build_world_state_review as _quality_build_world_state_review,
@@ -4318,20 +4319,6 @@ class StoryOrchestrator:
         review_character_names = _review_character_names(story)
         outline_anchor = chapter_seed.get("outline_anchor") if isinstance(chapter_seed, dict) else {}
 
-        def review_body(candidate_body: str) -> dict[str, Any]:
-            return _review_chapter_body(
-                chapter_number,
-                candidate_body,
-                event_plan,
-                review_world_facts,
-                simulation_plan,
-                world_events,
-                scene_cards,
-                genre_context=review_genre_context,
-                protagonist_aliases=review_protagonist_aliases,
-                character_names=review_character_names,
-            )
-
         def revise_body(candidate_body: str, candidate_review: dict[str, Any], round_number: int) -> tuple[str, str]:
             return self._timed_chat(
                 working_story,
@@ -4489,91 +4476,67 @@ class StoryOrchestrator:
                     },
                 )
 
-        # Bounded review flow. The hard gate and soft review are separate
-        # callbacks so each reviewer source runs at most once per gate
-        # call. The controller below enforces "hard gate ≤ 2, soft
-        # review = 1, model revision ≤ 1, no compression retry" at the
-        # algorithm level, replacing the previous free-form while loop.
+        # Bounded review flow. The hard gate and soft review are
+        # thin callbacks over a single canonical `ReviewService`
+        # instance so each reviewer source runs at most once per
+        # gate call. The controller below enforces "hard gate ≤ 2,
+        # soft review = 1, model revision ≤ 1, no compression retry"
+        # at the algorithm level, replacing the previous free-form
+        # while loop. Compression re-runs both gates on the
+        # compressed body and replaces the saved result when
+        # accepted so the saved review always matches the saved
+        # body.
 
-        # Single per-call cache keyed by body string. The hard gate and
-        # the soft review both read from this cache so a given body is
-        # only sent through ``_review_chapter_body`` once per chapter
-        # generation — matching the bounded rule "hard gate ≤ 2 calls,
-        # soft review = 1 call" at the algorithm level rather than
-        # letting the controller double-dispatch the legacy aggregate.
-        # The cache is per-orchestrator-call so concurrent or
-        # back-to-back ``generate_next_chapter`` invocations do not
-        # share state.
-        _legacy_review_cache: dict[str, dict[str, Any]] = {}
-
-        def _legacy_review_for(candidate: str) -> dict[str, Any]:
-            cached = _legacy_review_cache.get(candidate)
-            if cached is not None:
-                return cached
-            legacy_review = review_body(candidate)
-            _legacy_review_cache[candidate] = legacy_review
-            return legacy_review
+        review_service = ReviewService(
+            review_continuity=review_continuity_interface,
+            review_fragments=review_chinese_fragments,
+            review_consistency=review_world_event_consistency,
+            review_critical_rules=review_critical_prose_rules,
+            profile_for=genre_stage_profile_for,
+            review_style=review_prose_style,
+            review_prose_quality=review_prose_quality,
+            review_adversarial_cuts=review_adversarial_cuts,
+            review_ai_flavor=review_ai_flavor,
+            review_reader_feel=review_reader_feel,
+            review_cold_reader=review_cold_reader_experience,
+            review_plot_spine=review_plot_spine_completion,
+            min_chars=_chapter_review_min_chars(simulation_plan),
+            char_tolerance=CHAPTER_CHAR_TOLERANCE,
+        )
+        review_hard_context: dict[str, Any] = {
+            "continuity_interface": (
+                simulation_plan.get("continuity_interface")
+                if isinstance(simulation_plan, dict)
+                and isinstance(simulation_plan.get("continuity_interface"), dict)
+                else {}
+            ),
+            "world_events": list(world_events or []),
+            "scene_cards": list(scene_cards or []),
+            "chapter_number": chapter_number,
+            "genre_context": review_genre_context,
+            "event_plan": event_plan,
+            "world_facts": list(review_world_facts or []),
+            "simulation_plan": simulation_plan,
+            "protagonist_aliases": review_protagonist_aliases,
+            "character_names": review_character_names,
+        }
+        review_soft_context = dict(review_hard_context)
+        review_soft_context["previous_summary"] = str(
+            (simulation_plan or {}).get("previous_summary")
+            or event_plan.get("previous_summary")
+            or event_plan.get("summary")
+            or ""
+        )
 
         def _hard_review(candidate: str) -> ReviewResult:
-            legacy_review = _legacy_review_for(candidate)
-            gate = build_simplified_review({"writing_review": legacy_review})
-            if not _should_run_full_revision(gate):
-                return ReviewResult.from_findings([])
-            from packages.story_core.review.contracts import ReviewFinding
-
-            findings: list[ReviewFinding] = []
-            for index, issue in enumerate(legacy_review.get("issues") or []):
-                if isinstance(issue, str):
-                    message = issue
-                elif isinstance(issue, dict):
-                    message = str(
-                        issue.get("message") or issue.get("reason") or issue.get("issue") or ""
-                    )
-                else:
-                    continue
-                if not message.strip():
-                    continue
-                findings.append(
-                    ReviewFinding(
-                        code=f"legacy.{index}",
-                        category="hard",
-                        blocking=True,
-                        message=message,
-                        suggestion=str(issue.get("suggestion") or "") if isinstance(issue, dict) else "",
-                        source="legacy",
-                    )
-                )
-            return ReviewResult.from_findings(findings)
+            return review_service.run_hard_gate(
+                body=candidate, context=review_hard_context
+            )
 
         def _soft_review(candidate: str) -> ReviewResult:
-            legacy_review = _legacy_review_for(candidate)
-            from packages.story_core.review.contracts import ReviewFinding
-
-            findings: list[ReviewFinding] = []
-            for index, issue in enumerate(legacy_review.get("issues") or []):
-                if isinstance(issue, str):
-                    message = issue
-                elif isinstance(issue, dict):
-                    message = str(
-                        issue.get("message") or issue.get("reason") or issue.get("issue") or ""
-                    )
-                else:
-                    continue
-                if not message.strip():
-                    continue
-                # Only soft, non-blocking items. The hard gate already
-                # handled blocking ones.
-                findings.append(
-                    ReviewFinding(
-                        code=f"legacy.soft.{index}",
-                        category="prose",
-                        blocking=False,
-                        message=message,
-                        suggestion=str(issue.get("suggestion") or "") if isinstance(issue, dict) else "",
-                        source="legacy",
-                    )
-                )
-            return ReviewResult.from_findings(findings)
+            return review_service.run_soft_review(
+                body=candidate, context=review_soft_context
+            )
 
         def _postprocess_revision(text: str) -> str:
             return _postprocess_chapter_output(
@@ -4710,9 +4673,17 @@ class StoryOrchestrator:
             on_event=_report_quality_event,
         )
 
-        # Bounded compression: at most one attempt, no retry. The soft
-        # review of the candidate uses the same legacy aggregate so we do
-        # not need a second service call.
+        # Bounded compression: at most one attempt, no retry. After
+        # the candidate is produced we re-run both the hard gate and
+        # the soft review on the compressed body and, if the
+        # compression is accepted, replace the saved
+        # ``review_revision_result`` so the final review always matches
+        # the final saved body — not the pre-compression one. The hard
+        # gate is part of the acceptance decision: a compressed body
+        # that newly trips a hard blocker is rejected, matching the
+        # invariant "hard gate ≤ 2, soft review = 1 per accepted
+        # body" at the algorithm level rather than letting the saved
+        # review lag behind the saved chapter.
         body = review_revision_result.body
         if _should_compress_chapter(body):
             _report_quality_event("compression_start", {"body": body})
@@ -4720,10 +4691,14 @@ class StoryOrchestrator:
             if not compression_error and compressed_text.strip():
                 postprocessed = _postprocess_revision(compressed_text)
                 if postprocessed.strip():
-                    candidate_soft = _soft_review(postprocessed)
+                    compressed_hard = _hard_review(postprocessed)
+                    compressed_soft = _soft_review(postprocessed)
+                    compressed_combined = review_service.combine(
+                        compressed_hard, compressed_soft
+                    )
                     quality_preserved = _compression_review_not_worse(
                         review_revision_result.hard_result.to_dict(),
-                        candidate_soft.to_dict(),
+                        compressed_soft.to_dict(),
                         before_body=body,
                         candidate_body=postprocessed,
                     )
@@ -4731,6 +4706,7 @@ class StoryOrchestrator:
                     accepted_compression = (
                         _compressed_body_is_acceptable(body, postprocessed)
                         and quality_preserved
+                        and not compressed_hard.has_hard_errors
                         and action == "accept"
                     )
                     _report_quality_event(
@@ -4740,11 +4716,20 @@ class StoryOrchestrator:
                             "candidate_body": postprocessed,
                             "quality_preserved": quality_preserved,
                             "action": action,
-                            "candidate_review": candidate_soft.to_dict(),
+                            "candidate_review": compressed_soft.to_dict(),
+                            "compressed_hard": compressed_hard.to_dict(),
                         },
                     )
                     if accepted_compression:
                         body = postprocessed
+                        review_revision_result = ReviewRevisionResult(
+                            body=body,
+                            review_result=compressed_combined,
+                            hard_result=compressed_hard,
+                            soft_result=compressed_soft,
+                            revision_rounds=review_revision_result.revision_rounds,
+                            revision_safety_report=review_revision_result.revision_safety_report,
+                        )
 
         quality_result = review_revision_result
         writing_review = quality_result.review_result.to_dict()

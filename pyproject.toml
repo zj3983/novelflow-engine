@@ -20,6 +20,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "real_review_gate: opt out of the default mock_orchestrator_review_gate fixture so the canonical hard gate runs for real (used in tests that exercise the bounded rewrite flow)",
+]
 
 [dependency-groups]
 dev = [
