@@ -9,6 +9,21 @@ never orphans references downstream code may have stored.
 """
 
 from .contracts import ALLOWED_KINDS, CanonEntity, Lifecycle
+from .entity_designer import EntityDesigner
 from .registry import CanonRegistry
+from .schemas import CharacterCard, EquipmentCard, TechniqueCard
+from .service import CanonService, EntityPreflightFailed, preflight_requirements
 
-__all__ = ["ALLOWED_KINDS", "CanonEntity", "CanonRegistry", "Lifecycle"]
+__all__ = [
+    "ALLOWED_KINDS",
+    "CanonEntity",
+    "CanonRegistry",
+    "CanonService",
+    "CharacterCard",
+    "EntityDesigner",
+    "EntityPreflightFailed",
+    "EquipmentCard",
+    "Lifecycle",
+    "TechniqueCard",
+    "preflight_requirements",
+]
