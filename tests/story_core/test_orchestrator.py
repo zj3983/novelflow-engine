@@ -1072,11 +1072,25 @@ def test_over_length_body_is_fixed_in_single_revise_without_compression_model_ca
     """The plan forbids a second model body modification after the
     bounded controller. Over-length must be reported as a
     ``length.out_of_range`` blocking finding inside the same revise
-    pass — no separate ``章节压缩`` writer call. This test pins the
-    contract so a future refactor that re-introduces the compression
-    path is caught immediately.
+    pass — no separate ``章节压缩`` writer call.
+
+    This test runs the *real* ``ReviewService`` (no canned
+    ``run_hard_gate`` override) and spies on the orchestrator's
+    constructor kwargs. Two assertions make the wiring regression
+    fail loud:
+
+    1. ``hard_max_chars`` must equal ``MAX_CHAPTER_CHARS`` so
+       ``_run_length_check`` is configured to surface
+       ``length.out_of_range`` on over-length bodies.
+    2. The bounded controller must drive the body back into the
+       length window via a single ``审稿改稿`` call, never via a
+       separate ``章节压缩`` writer call.
+
+    A future refactor that drops ``hard_max_chars`` from the
+    orchestrator's ``ReviewService`` constructor — or that
+    re-introduces the compression model call — will fail one or
+    both checks.
     """
-    from packages.story_core.review.contracts import ReviewFinding, ReviewResult
     from packages.story_core.review.service import ReviewService
 
     monkeypatch.setattr(orchestrator_module, "_should_expand_chapter", lambda *_args, **_kwargs: False)
@@ -1086,24 +1100,58 @@ def test_over_length_body_is_fixed_in_single_revise_without_compression_model_ca
     over_length_body = "原" * 5800
     in_range_body = "正" * 4800
 
-    def _length_blocking_hard(self, *, body, context):
-        if body is over_length_body:
-            return ReviewResult.from_findings(
-                [
-                    ReviewFinding(
-                        code="length.out_of_range",
-                        category="hard",
-                        blocking=True,
-                        message="正文超过章节硬上限，需要把篇幅压回正常范围。",
-                        suggestion=f"扩写或删减到{4800}字左右。",
-                        source="length",
-                    )
-                ]
+    captured_kwargs: dict = {}
+
+    class _SpyReviewService(ReviewService):
+        """Spy + length-only ``ReviewService``.
+
+        Records the kwargs the orchestrator handed to the
+        ``ReviewService`` constructor so the wire check below can
+        assert ``hard_max_chars`` is set. Forwards only the length
+        configuration (``hard_max_chars`` / ``min_chars`` /
+        ``char_tolerance``) to the real ``ReviewService.__init__``,
+        and forces every other reviewer callable to ``None`` so the
+        synthetic test body (a single character repeated N times)
+        cannot trigger arbitrary findings from the orchestrator's
+        real continuity / fragments / consistency / critical /
+        genre / soft reviewers. The bounded controller's behavior
+        under test is the length-only path, and we want the test
+        to be deterministic.
+        """
+
+        def __init__(self, **kwargs):
+            captured_kwargs.clear()
+            captured_kwargs.update(kwargs)
+            super().__init__(
+                hard_max_chars=int(kwargs.get("hard_max_chars") or 0),
+                min_chars=int(kwargs.get("min_chars") or 0),
+                char_tolerance=int(kwargs.get("char_tolerance") or 0),
+                review_continuity=None,
+                review_fragments=None,
+                review_consistency=None,
+                review_critical_rules=None,
+                profile_for=None,
+                review_style=None,
+                review_prose_quality=None,
+                review_adversarial_cuts=None,
+                review_ai_flavor=None,
+                review_reader_feel=None,
+                review_cold_reader=None,
+                review_plot_spine=None,
             )
+
+    monkeypatch.setattr(orchestrator_module, "ReviewService", _SpyReviewService)
+
+    # Pin the soft review to a clean pass so the synthetic test
+    # body cannot trigger arbitrary prose / AI-flavor / cold-reader
+    # findings. The hard gate still runs the real ``_run_length_check``
+    # with the production ceiling — that is the path under test.
+    from packages.story_core.review.contracts import ReviewResult
+
+    def _passing_soft(self, *, body, context):
         return ReviewResult.from_findings([])
 
-    monkeypatch.setattr(ReviewService, "run_hard_gate", _length_blocking_hard)
-    monkeypatch.setattr(ReviewService, "run_soft_review", lambda self, *, body, context: ReviewResult.from_findings([]))
+    monkeypatch.setattr(ReviewService, "run_soft_review", _passing_soft)
 
     story = StoryState(
         story_id="s-length-in-revise",
@@ -1133,6 +1181,15 @@ def test_over_length_body_is_fixed_in_single_revise_without_compression_model_ca
 
     monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
     bundle = orchestrator.generate_next_chapter(story)
+
+    # Wire check: the orchestrator must hand the production
+    # hard ceiling to ``ReviewService`` so ``_run_length_check``
+    # surfaces ``length.out_of_range`` on over-length bodies.
+    assert captured_kwargs.get("hard_max_chars") == orchestrator_module.MAX_CHAPTER_CHARS, (
+        "Orchestrator must wire hard_max_chars=MAX_CHAPTER_CHARS into "
+        f"ReviewService for the length check to surface length.out_of_range. "
+        f"Got: {captured_kwargs.get('hard_max_chars')!r}"
+    )
 
     # The bounded controller's revise is the ONLY model body
     # modification — no separate compression writer call ever fires.

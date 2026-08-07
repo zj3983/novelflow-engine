@@ -4372,6 +4372,14 @@ class StoryOrchestrator:
             review_plot_spine=review_plot_spine_completion,
             min_chars=_chapter_review_min_chars(simulation_plan),
             char_tolerance=CHAPTER_CHAR_TOLERANCE,
+            # Over-length bodies are blocking findings inside the same
+            # revise pass. ``hard_max_chars`` is the strict ceiling the
+            # length check enforces; ``_should_compress_chapter`` uses
+            # ``MAX_CHAPTER_CHARS + CHAPTER_MAX_CHAR_TOLERANCE`` as a
+            # softer "no compression needed" threshold and only fires
+            # for the dead-letter path where the gate is misconfigured
+            # (e.g. ``hard_max_chars=0``).
+            hard_max_chars=MAX_CHAPTER_CHARS,
         )
         review_hard_context: dict[str, Any] = {
             "continuity_interface": (
