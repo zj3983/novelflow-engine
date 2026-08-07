@@ -15,6 +15,7 @@ from packages.story_core.file_project_store import (
     _assert_auto_chapter_quality,
     _chapter_outline_title,
     _manual_chapter_quality_report,
+    _project_legacy_review,
     _regeneration_quality_blocking,
 )
 
@@ -105,6 +106,69 @@ def test_auto_quality_gate_allows_advisory_review_and_records_warning():
     _assert_auto_chapter_quality(report, operation="regenerate")
 
     assert report["quality_warning"]["needs_revision"] is True
+
+
+def test_project_legacy_review_synthesizes_v2_envelope_for_v1_payload():
+    """A persisted v1 review payload (saved before the v2 contract
+    existed) must keep its simplified-review/v1 envelope under
+    ``simplified_review`` AND expose a real ``review-result/v2`` shape
+    under ``review_result`` — never the v1 dict in the v2 slot.
+    """
+    payload = {
+        "issues": ["时间线冲突", "对白过长"],
+        "revision_plan": ["修复时间线顺序", "缩短对白"],
+        "pass": False,
+        "has_hard_errors": True,
+    }
+
+    projected = _project_legacy_review(payload)
+
+    # The v1 dict is still kept under simplified_review for backward
+    # compat with the front-end fallback and historical read paths.
+    assert isinstance(projected.get("simplified_review"), dict)
+    assert "reader_agent_review" not in projected["simplified_review"]  # build_simplified_review normalizes
+
+    # The v2 contract is a real review-result/v2 payload, not a copy
+    # of the v1 dict.
+    review_result = projected["review_result"]
+    assert isinstance(review_result, dict)
+    assert review_result["schema_version"] == "review-result/v2"
+    assert review_result["status"] in {"passed", "warning", "blocked"}
+    assert review_result["has_hard_errors"] is True
+    assert review_result["needs_revision"] is True
+    # Each v1 issue becomes a structured ReviewFinding dict.
+    assert len(review_result["issues"]) == 2
+    first_issue = review_result["issues"][0]
+    assert first_issue["message"] == "时间线冲突"
+    # Paired revision_plan[i] becomes the suggestion.
+    assert first_issue["suggestion"] == "修复时间线顺序"
+    # The second issue also gets its paired plan.
+    second_issue = review_result["issues"][1]
+    assert second_issue["suggestion"] == "缩短对白"
+
+
+def test_project_legacy_review_preserves_existing_v2_payload():
+    """If a payload already has a real v2 ``review_result``, the
+    projection must not clobber it; it should only ensure a
+    ``simplified_review`` mirror exists.
+    """
+    payload = {
+        "review_result": {
+            "schema_version": "review-result/v2",
+            "status": "passed",
+            "pass": True,
+            "has_hard_errors": False,
+            "issues": [],
+        },
+        "issues": ["stale v1 issue"],
+    }
+
+    projected = _project_legacy_review(payload)
+
+    assert projected["review_result"]["schema_version"] == "review-result/v2"
+    assert projected["review_result"]["status"] == "passed"
+    # simplified_review mirrors the v2 payload (not the stale v1 issue).
+    assert projected["simplified_review"] == projected["review_result"]
 from packages.story_core.models import ChapterSummary, StoryState, TimelineEvent
 from packages.story_core.outline_planning import GeneratedOutlinePlan
 from packages.story_core.skill_packs import import_skill_pack_from_path

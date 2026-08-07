@@ -803,9 +803,14 @@ def _project_legacy_review(payload: dict[str, Any]) -> dict[str, Any]:
     """Ensure a v1 review payload also exposes the canonical v2 fields.
 
     Persisted historical chapter data was saved before the v2 schema
-    existed. Callers that always expect ``review_result`` and
-    ``simplified_review`` keys get them computed on demand without
-    mutating the underlying persisted file.
+    existed. The legacy v1 ``build_simplified_review`` shape is preserved
+    under ``simplified_review`` (still useful for the front-end
+    fall-back), and a fresh ``review_result`` is synthesized as a real
+    ``review-result/v2`` payload — never reusing the v1 simplified dict
+    as the v2 contract. Synthesizing rather than copying keeps the
+    field names (``status``, ``categories``, ``diagnostics``,
+    per-issue ``code``/``category``/``blocking``) consistent with what
+    the auto generation path and the file-project write path emit.
     """
     if not isinstance(payload, dict):
         return payload
@@ -814,12 +819,86 @@ def _project_legacy_review(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(explicit, dict) and explicit.get("schema_version") == "review-result/v2":
         projected.setdefault("simplified_review", explicit)
         return projected
-    fallback = build_simplified_review(projected)
-    if isinstance(fallback, dict):
-        projected["simplified_review"] = fallback
-        projected.setdefault("review_result", fallback)
-        projected["ok"] = projected.get("ok", fallback.get("pass", True))
+    simplified = build_simplified_review(projected)
+    if not isinstance(simplified, dict):
+        return projected
+    projected["simplified_review"] = simplified
+    projected["review_result"] = _synthesize_v2_review_result(simplified)
+    projected["ok"] = projected.get("ok", simplified.get("pass", True))
     return projected
+
+
+def _synthesize_v2_review_result(simplified: dict[str, Any]) -> dict[str, Any]:
+    """Build a canonical ``review-result/v2`` dict from a legacy v1
+    simplified-review payload.
+
+    The v1 shape carries issues as plain strings (or
+    ``{"reason": ...}`` dicts from the legacy agents) plus coarse
+    boolean flags (``has_hard_errors``, ``has_blocking_dialogue``,
+    ``needs_revision``, ``pass``). We map those into ``ReviewFinding``
+    objects so the v2 contract stays uniform with what the auto
+    generation path emits. Anything v1 did not express explicitly
+    (e.g. a per-issue ``blocking`` flag) inherits the report-level
+    ``has_hard_errors`` flag, matching the v1 save/display semantics.
+    """
+    has_hard_errors = bool(simplified.get("has_hard_errors", False))
+    has_blocking_dialogue = bool(simplified.get("has_blocking_dialogue", False))
+    needs_revision = bool(simplified.get("needs_revision", has_hard_errors))
+    revision_plan_items: list[str] = []
+    for item in simplified.get("revision_plan") or []:
+        text = str(item).strip()
+        if text and text not in revision_plan_items:
+            revision_plan_items.append(text)
+    findings: list[ReviewFinding] = []
+    issues = simplified.get("issues") or []
+    for index, issue in enumerate(issues):
+        if isinstance(issue, str):
+            message = issue.strip()
+            suggestion = ""
+        elif isinstance(issue, dict):
+            message = str(issue.get("reason") or issue.get("message") or "").strip()
+            suggestion = str(issue.get("suggestion") or "").strip()
+        else:
+            continue
+        if not message:
+            continue
+        # Pair revision_plan[i] with issues[i] so the writer sees the
+        # matched fix instruction rather than the report-level
+        # aggregate plan.
+        suggestion = suggestion or (
+            revision_plan_items[index] if index < len(revision_plan_items) else ""
+        )
+        # Treat the issue as blocking when the v1 report flagged any
+        # hard error; otherwise it's advisory. Per-issue ``blocking``
+        # keys from the v1 dict win when present.
+        explicit_blocking = None
+        if isinstance(issue, dict) and "blocking" in issue:
+            explicit_blocking = bool(issue.get("blocking"))
+        blocking = explicit_blocking if explicit_blocking is not None else has_hard_errors
+        category = "hard" if blocking else "prose"
+        findings.append(
+            ReviewFinding(
+                code=f"legacy.{_slugify_text(message)}",
+                category=category,
+                blocking=blocking,
+                message=message,
+                suggestion=suggestion,
+                source="legacy_v1_projection",
+            )
+        )
+    result = ReviewResult.from_findings(findings)
+    payload = result.to_dict()
+    # Carry the v1 report-level booleans through so callers that read
+    # them directly (front-end fallback, downstream checks) keep
+    # working.
+    payload["pass"] = bool(simplified.get("pass", not has_hard_errors))
+    payload["has_hard_errors"] = has_hard_errors
+    payload["needs_revision"] = needs_revision
+    if has_blocking_dialogue and "blocking_dialogue" not in (payload.get("diagnostics") or {}):
+        diagnostics = dict(payload.get("diagnostics") or {})
+        diagnostics["blocking_dialogue"] = True
+        payload["diagnostics"] = diagnostics
+    return payload
 
 
 class _PinnedPublishingFilesystem:
