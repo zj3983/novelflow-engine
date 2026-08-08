@@ -29,6 +29,7 @@ from packages.story_core.agents.contracts import (
     WriterResult,
 )
 from packages.story_core.agents.writer import WriterAgent
+from packages.story_core.agents.writer.prompt import build_writer_prompt
 from packages.story_core.agents.writer.runtime import (
     GatewayWriterRuntime,
     WriterRuntime,
@@ -158,6 +159,42 @@ def test_writer_agent_prompt_contains_director_artifact_and_context() -> None:
     assert "时间倒流不可逆" in prompt
     # Selected craft module content must make it into the prompt.
     assert "对话先回应" in prompt
+
+
+def test_writer_prompt_contains_numeric_length_policy_and_current_character_state() -> None:
+    """The writer prompt must include the concrete length policy
+    and the active character's current state (including game
+    state) so the model can keep prose on the hard production
+    target and stop hallucinating equipment or quests.
+    """
+    request = WriterRequest(
+        chapter_number=2,
+        director_artifact=_director_artifact(),
+        target_chars={"min": 4200, "max": 5500},
+        acceptance_chars={"min": 3800, "max": 6000},
+        character_cards=[{
+            "name": "苏叶",
+            "role": "protagonist",
+            "lifecycle": "active",
+            "real_state": {"current": {"balance": "61.10元"}},
+            "game_state": {"current": {
+                "game_id": "夜烬",
+                "level": "Lv.2",
+                "class_path": "见习者（未转职）",
+                "equipment": {"main_hand": "新手法杖"},
+                "inventory": {"灰狼毒腺": 8},
+                "quests": {"active": "清道夫：8/16；未提交"},
+            }},
+        }],
+    )
+
+    prompt = build_writer_prompt(request)
+
+    assert "目标4200至5500字" in prompt
+    assert "低于3800字" in prompt
+    assert "超过6000字" in prompt
+    assert "新手法杖" in prompt
+    assert "清道夫：8/16；未提交" in prompt
 
 
 def test_writer_agent_prompt_excludes_unrelated_cards_and_retired_entities() -> None:

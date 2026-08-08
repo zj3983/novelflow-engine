@@ -57,28 +57,47 @@ def _render_previous_handoff(request: WriterRequest) -> str:
     return "\n".join(sections)
 
 
+def _current_character_state(card: dict[str, Any]) -> dict[str, Any]:
+    """Project only the *current* state of a character.
+
+    The writer prompt must not see the full role card
+    (personality dumps, memory arrays, old chapter histories,
+    or unrelated characters). The model needs identity, role,
+    location, and the current ``real_state`` / ``game_state``
+    namespaces so the prose can stay consistent with the
+    established facts without re-deriving them.
+    """
+    state: dict[str, Any] = {}
+    for namespace in ("current_state", "real_state", "game_state"):
+        value = card.get(namespace)
+        if isinstance(value, dict):
+            current = value.get("current") if isinstance(value.get("current"), dict) else value
+            if current:
+                state[namespace] = current
+    return state
+
+
 def _render_character_cards(request: WriterRequest) -> str:
     active_cards = [card for card in request.character_cards if card.get("lifecycle") != "retired"]
     if not active_cards:
         return ""
-    blocks: list[str] = ["## 角色卡（仅活动角色）"]
+    blocks: list[str] = ["## 角色当前状态（仅活动角色）"]
     for card in active_cards:
         name = card.get("name", "未命名")
         role = card.get("role", "")
-        location = card.get("location", "")
-        state = card.get("current_state", "")
-        notes = card.get("behavioral_notes", "")
         header = f"- **{name}**（{role or '?'}）"
-        if location:
-            header += f" · 位置：{location}"
-        if state:
-            header += f" · 状态：{state}"
+        current_state = _current_character_state(card)
+        if current_state:
+            import json
+
+            header += " · 状态：" + json.dumps(
+                current_state, ensure_ascii=False, separators=(",", ":")
+            )
         blocks.append(header)
-        if notes:
-            blocks.append(f"  行为习惯：{notes}")
-        if card.get("knowledge_boundary"):
-            boundary = "、".join(str(item) for item in card["knowledge_boundary"])
-            blocks.append(f"  知情边界：{boundary}")
+        boundary = card.get("knowledge_boundary")
+        if boundary:
+            boundary_text = "、".join(str(item) for item in boundary)
+            blocks.append(f"  知情边界：{boundary_text}")
     return "\n".join(blocks)
 
 
@@ -122,11 +141,21 @@ def build_writer_prompt(request: WriterRequest) -> str:
     markers, retired entities, and unrelated cards must never
     leak in.
     """
+    target_min = int(request.target_chars.get("min", 4200))
+    target_max = int(request.target_chars.get("max", 5500))
+    hard_min = int(request.acceptance_chars.get("min", 3800))
+    hard_max = int(request.acceptance_chars.get("max", 6000))
     sections: list[str] = [
         "你是小说写手。只能输出连续小说正文，不要输出标题、提纲、检查说明。",
         "",
-        _render_director_artifact(request),
     ]
+    if request.project_title or request.genre:
+        sections.append(
+            "## 项目元数据"
+            + (f"\n书名：{request.project_title}" if request.project_title else "")
+            + (f"\n题材：{request.genre}" if request.genre else "")
+        )
+    sections.append(_render_director_artifact(request))
     handoff = _render_previous_handoff(request)
     if handoff:
         sections.append(handoff)
@@ -143,7 +172,9 @@ def build_writer_prompt(request: WriterRequest) -> str:
     if modules:
         sections.append(modules)
     sections.append(
-        "只输出正文（控制在目标篇幅内），不要复述提示词，不要输出修改说明。"
+        f"## 篇幅\n"
+        f"正文目标{target_min}至{target_max}字；"
+        f"低于{hard_min}字或超过{hard_max}字不能交稿。"
     )
     return "\n\n".join(sections)
 

@@ -82,6 +82,7 @@ from packages.story_core.context.legacy_adapter import (
     legacy_active_characters,
     legacy_enabled_skill_ids,
     legacy_outline_view,
+    legacy_project_view,
     legacy_previous_chapter,
     legacy_state_view,
     legacy_volume_view,
@@ -323,9 +324,19 @@ def _legacy_writer_context(
         # writer sees what just happened.
         continuity_facts = _normalize_legacy_facts(previous.get("facts"))
     enabled_skill_ids = legacy_enabled_skill_ids(system_root_path)
+    project_payload = legacy_project_view(system_root_path) or {}
+    project_title = ""
+    genre = ""
+    if isinstance(project_payload, dict):
+        project_title = str(project_payload.get("title") or "").strip()
+        genre_id = project_payload.get("genre_plugin_id") or project_payload.get("genre")
+        if isinstance(genre_id, str) and genre_id.strip():
+            genre = genre_id.strip()
     return WriterContext(
         chapter_number=chapter_number,
         director_artifact=director_artifact,
+        project_title=project_title,
+        genre=genre,
         previous_tail=str(previous.get("tail") or ""),
         continuity_facts=continuity_facts,
         character_cards=character_cards,
@@ -410,6 +421,38 @@ def run_writer(
     )
     agent = WriterAgent(runtime=runtime)
     result = agent.run(request)
+    # Deterministic pre-candidate length gate. The bounded flow
+    # used to surface a 3800-character failure only at the
+    # confirmation step, by which time the workbench had already
+    # shown "通过" on the candidate. We add a blocking finding
+    # here so the candidate quality report shows the same
+    # failure the confirmation will reject.
+    consistency_findings: list[ConsistencyFinding] = []
+    body_chars = len("".join(result.body.split()))
+    if body_chars < int(request.acceptance_chars.get("min", 3800)):
+        consistency_findings.append(
+            ConsistencyFinding(
+                code="chapter.length_too_short",
+                message=(
+                    f"正文约{body_chars}字，低于"
+                    f"{request.acceptance_chars.get('min', 3800)}字。"
+                ),
+                source="deterministic",
+                blocking=True,
+            )
+        )
+    elif body_chars > int(request.acceptance_chars.get("max", 6000)):
+        consistency_findings.append(
+            ConsistencyFinding(
+                code="chapter.length_too_long",
+                message=(
+                    f"正文约{body_chars}字，超过"
+                    f"{request.acceptance_chars.get('max', 6000)}字。"
+                ),
+                source="deterministic",
+                blocking=True,
+            )
+        )
     # The focused consistency review surfaces deterministic
     # contradictions (e.g. world facts the writer violated, the
     # director's plan the writer diverged from). A failure here
@@ -420,7 +463,6 @@ def run_writer(
     # still return the writer's body and just record no
     # findings — the user's confirmation gate is the final
     # safety net for the legacy editor surface.
-    consistency_findings: list[ConsistencyFinding] = []
     if consistency_runtime is None:
         try:
             consistency_runtime = _default_consistency_runtime(project_root)
@@ -428,14 +470,20 @@ def run_writer(
             consistency_runtime = None
     if consistency_runtime is not None:
         try:
-            consistency_findings = focused_consistency_review(
+            model_findings = focused_consistency_review(
                 result.body,
                 director_artifact=director_artifact,
                 active_facts=list(context.continuity_facts or []),
                 runtime=consistency_runtime,
             )
+            consistency_findings.extend(model_findings)
         except Exception:
-            consistency_findings = []
+            # The agent itself is best-effort: a runtime failure
+            # here becomes a ``consistency.unavailable`` finding
+            # in Task 4 (fail-closed). For now the deterministic
+            # length gate above stays in effect; we do not silently
+            # downgrade to ``[]``.
+            pass
     return WriterPipelineResult(
         body=result.body,
         context=context,
@@ -637,6 +685,15 @@ def _build_writer_request(
     return WriterRequest(
         chapter_number=context.chapter_number,
         director_artifact=director_artifact,
+        project_title=context.project_title,
+        genre=context.genre,
+        # Production length policy. The writer prompt prints these
+        # numbers as the hard range so the model cannot drift into
+        # an unpublishable 2k chapter; the post-write deterministic
+        # check (in ``run_writer``) blocks short bodies from
+        # becoming candidates.
+        target_chars={"min": 4200, "max": 5500},
+        acceptance_chars={"min": 3800, "max": 6000},
         previous_tail=context.previous_tail,
         continuity_facts=list(context.continuity_facts),
         character_cards=list(context.character_cards),

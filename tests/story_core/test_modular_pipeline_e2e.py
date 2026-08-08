@@ -155,8 +155,14 @@ class _StubDirectorRuntime:
 class _StubWriterRuntime:
     """Record-and-replay writer runtime for the e2e test."""
 
-    def __init__(self, body: str = "天色已晚，林昭提灯上山。") -> None:
-        self.body = body
+    # The default body is long enough to clear the production
+    # ``3800`` character hard gate. Tests that need a short body
+    # (to exercise the deterministic length finding) pass
+    # their own ``body`` argument.
+    DEFAULT_BODY = "天色已晚，" + ("林昭提灯上山，" * 800)
+
+    def __init__(self, body: str | None = None) -> None:
+        self.body = body if body is not None else self.DEFAULT_BODY
         self.calls: list[Any] = []
 
     def complete(self, request: Any) -> Any:
@@ -457,7 +463,10 @@ def test_orchestrator_runs_focused_consistency_review(tmp_path: Path):
     _seed_legacy_project(project_root, with_outline=False)
 
     director_runtime = _StubDirectorRuntime()
-    writer_runtime = _StubWriterRuntime(body="林昭提灯上山，夜宿山腰。")
+    # The default body is long enough to clear the 3800-character
+    # hard gate so this test only sees the consistency model
+    # finding.
+    writer_runtime = _StubWriterRuntime()
     consistency_runtime = _StubConsistencyRuntime()
 
     orchestrator = StoryOrchestrator(use_modular_agents=True)

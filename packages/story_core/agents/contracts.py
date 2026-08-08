@@ -106,6 +106,18 @@ class WriterRequest(BaseModel):
 
     chapter_number: int
     director_artifact: DirectorArtifact
+    # Project-level metadata is generic — it travels through every
+    # genre, world blueprint, and craft module. The writer prompt
+    # uses ``project_title`` and ``genre`` to anchor voice and the
+    # length ranges to keep prose on the hard production target.
+    project_title: str = ""
+    genre: str = ""
+    target_chars: dict[str, int] = Field(
+        default_factory=lambda: {"min": 4200, "max": 5500}
+    )
+    acceptance_chars: dict[str, int] = Field(
+        default_factory=lambda: {"min": 3800, "max": 6000}
+    )
     previous_tail: str = ""
     continuity_facts: list[Any] = Field(default_factory=list)
     character_cards: list[dict] = Field(default_factory=list)

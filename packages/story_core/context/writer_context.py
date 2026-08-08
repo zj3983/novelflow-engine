@@ -104,6 +104,14 @@ class WriterContext(BaseModel):
     schema_version: str = "writer-context/v1"
     chapter_number: int
     director_artifact: DirectorArtifact
+    # Project-level metadata. The writer prompt uses the title to
+    # anchor voice and the genre to keep craft modules consistent.
+    # These are generic; genre-specific rules stay in
+    # ``world_rules`` and game-specific state stays in
+    # ``character_cards`` (only when a character actually carries
+    # one).
+    project_title: str = ""
+    genre: str = ""
     previous_tail: str = ""
     continuity_facts: list[dict[str, Any]] = Field(default_factory=list)
     character_cards: list[dict[str, Any]] = Field(default_factory=list)
@@ -136,6 +144,20 @@ def build_writer_context(
         raise ValueError(f"project_layout_missing: {system_root}")
 
     reader = _build_reader(system_root, reader)
+
+    # Project-level metadata is sourced from the canonical
+    # ``project.json`` (which holds the title and the genre plugin
+    # id). The legacy adapter does the same translation for
+    # projects that have not yet migrated to ``.story-system/``;
+    # ``_legacy_writer_context`` is responsible for the read.
+    project_payload = reader.try_read_json("project.json", kind="project") or {}
+    project_title = ""
+    genre = ""
+    if isinstance(project_payload, dict):
+        project_title = str(project_payload.get("title") or "").strip()
+        genre_id = project_payload.get("genre_plugin_id") or project_payload.get("genre")
+        if isinstance(genre_id, str) and genre_id.strip():
+            genre = genre_id.strip()
 
     referenced = _entity_referenced_names(director_artifact)
     scene_locations = {beat.location for beat in director_artifact.scene_beats}
@@ -220,6 +242,8 @@ def build_writer_context(
     return WriterContext(
         chapter_number=chapter_number,
         director_artifact=director_artifact,
+        project_title=project_title,
+        genre=genre,
         previous_tail=previous_tail,
         continuity_facts=continuity_facts,
         character_cards=character_cards,
