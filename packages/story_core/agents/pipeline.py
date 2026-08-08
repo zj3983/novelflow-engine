@@ -152,15 +152,43 @@ def _ensure_director_context(
     """Build a director context, falling back to the legacy adapter
     when the canonical ``.story-system/`` artifacts are missing.
     """
+    canonical: DirectorContext | None = None
     try:
-        return build_director_context(
+        canonical = build_director_context(
             project=project_root, chapter_number=chapter_number
         )
     except (FileNotFoundError, ValueError):
         pass
     system_root = _system_root(project_root)
-    return _legacy_director_context(
+    legacy = _legacy_director_context(
         system_root=system_root, project_root=project_root, chapter_number=chapter_number
+    )
+    if canonical is None:
+        return legacy
+    return canonical.model_copy(
+        update={
+            "volume": canonical.volume or legacy.volume,
+            "book_outline_summary": (
+                canonical.book_outline_summary or legacy.book_outline_summary
+            ),
+            "nearby_outline": canonical.nearby_outline or legacy.nearby_outline,
+            "previous_chapter_summary": (
+                canonical.previous_chapter_summary
+                or legacy.previous_chapter_summary
+            ),
+            "previous_chapter_tail": (
+                canonical.previous_chapter_tail or legacy.previous_chapter_tail
+            ),
+            "continuity_ledger": (
+                canonical.continuity_ledger or legacy.continuity_ledger
+            ),
+            "foreshadowing": canonical.foreshadowing or legacy.foreshadowing,
+            "character_cards": canonical.character_cards or legacy.character_cards,
+            "inventory": canonical.inventory or legacy.inventory,
+            "active_entity_names": (
+                canonical.active_entity_names or legacy.active_entity_names
+            ),
+        }
     )
 
 
@@ -173,8 +201,9 @@ def _ensure_writer_context(
     """Build a writer context, falling back to the legacy adapter
     when the canonical ``.story-system/`` artifacts are missing.
     """
+    canonical: WriterContext | None = None
     try:
-        return build_writer_context(
+        canonical = build_writer_context(
             project=project_root,
             chapter_number=chapter_number,
             director_artifact=director_artifact,
@@ -182,11 +211,26 @@ def _ensure_writer_context(
     except (FileNotFoundError, ValueError):
         pass
     system_root = _system_root(project_root)
-    return _legacy_writer_context(
+    legacy = _legacy_writer_context(
         system_root=system_root,
         project_root=project_root,
         chapter_number=chapter_number,
         director_artifact=director_artifact,
+    )
+    if canonical is None:
+        return legacy
+    return canonical.model_copy(
+        update={
+            "previous_tail": canonical.previous_tail or legacy.previous_tail,
+            "continuity_facts": (
+                canonical.continuity_facts or legacy.continuity_facts
+            ),
+            "character_cards": canonical.character_cards or legacy.character_cards,
+            "entity_cards": canonical.entity_cards or legacy.entity_cards,
+            "world_rules": canonical.world_rules or legacy.world_rules,
+            "craft_modules": canonical.craft_modules or legacy.craft_modules,
+            "book_outline": canonical.book_outline or legacy.book_outline,
+        }
     )
 
 
@@ -194,6 +238,18 @@ def _system_root(project_root: Any):
     from pathlib import Path
 
     return Path(project_root) / ".story-system"
+
+
+def _normalize_legacy_facts(items: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in items or []:
+        if isinstance(item, dict):
+            normalized.append(dict(item))
+            continue
+        text = str(item or "").strip()
+        if text:
+            normalized.append({"subject": "", "field": "fact", "value": text})
+    return normalized
 
 
 def _legacy_director_context(
@@ -223,7 +279,7 @@ def _legacy_director_context(
             if isinstance(entry, dict) and entry.get("chapter_number") == chapter_number - 1:
                 previous_summary = str(entry.get("summary") or "")
                 previous_tail = str(entry.get("next_focus") or previous_summary)
-                continuity_ledger = list(entry.get("facts") or [])
+                continuity_ledger = _normalize_legacy_facts(entry.get("facts"))
                 break
         foreshadowing = list(state.get("foreshadowing") or [])
     character_cards = legacy_active_characters(system_root_path)
@@ -256,11 +312,16 @@ def _legacy_writer_context(
     character_cards = legacy_active_characters(system_root_path)
     state = legacy_state_view(system_root_path) or {}
     world_facts = list(state.get("world_facts") or [])
-    continuity_facts = list(state.get("progression_ledger") or {}).get("continuity_ledger", []) if isinstance(state.get("progression_ledger"), dict) else []
+    progression_ledger = state.get("progression_ledger")
+    continuity_facts = (
+        _normalize_legacy_facts(progression_ledger.get("continuity_ledger"))
+        if isinstance(progression_ledger, dict)
+        else []
+    )
     if not continuity_facts:
         # Fall back to the previous chapter's ``facts`` so the
         # writer sees what just happened.
-        continuity_facts = list(previous.get("facts") or [])
+        continuity_facts = _normalize_legacy_facts(previous.get("facts"))
     enabled_skill_ids = legacy_enabled_skill_ids(system_root_path)
     return WriterContext(
         chapter_number=chapter_number,

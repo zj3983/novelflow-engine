@@ -24,7 +24,12 @@ from typing import Any
 
 import pytest
 
-from packages.story_core.agents.pipeline import ModularChapterBundle
+from packages.story_core.agents.pipeline import (
+    ModularChapterBundle,
+    _ensure_director_context,
+    _ensure_writer_context,
+)
+from packages.story_core.agents.contracts import DirectorArtifact
 from packages.story_core.canon.registry import CanonRegistry
 from packages.story_core.orchestrator import StoryOrchestrator
 
@@ -184,6 +189,76 @@ class _StubConsistencyRuntime:
                 }
             ]
         }
+
+
+def test_director_context_falls_back_to_legacy_when_story_system_is_partial(
+    tmp_path: Path,
+):
+    """Runtime artifacts must not masquerade as a completed migration.
+
+    Real legacy projects already have ``.story-system`` because candidate,
+    workflow, and director records are written there.  Until canonical
+    ``outline.json`` and ``volume.json`` exist, the director must still read
+    the established ``.webnovel`` outline and character state.
+    """
+    _seed_legacy_project(tmp_path, with_outline=True)
+    (tmp_path / ".story-system" / "workflow").mkdir(parents=True)
+    state_path = tmp_path / ".webnovel" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["chapter_summaries"] = [
+        {
+            "chapter_number": 1,
+            "summary": "主角进入游戏。",
+            "facts": ["主角仍是一级。"],
+        }
+    ]
+    _write_json(state_path, state)
+
+    context = _ensure_director_context(project_root=tmp_path, chapter_number=2)
+
+    assert context.book_outline_summary == "概述"
+    assert context.nearby_outline[0]["number"] == 1
+    assert context.character_cards[0]["role"] == "protagonist"
+    assert context.continuity_ledger == [
+        {"subject": "", "field": "fact", "value": "主角仍是一级。"}
+    ]
+
+
+def test_writer_context_falls_back_to_legacy_when_story_system_is_partial(
+    tmp_path: Path,
+):
+    _seed_legacy_project(tmp_path, with_outline=True)
+    (tmp_path / ".story-system" / "workflow").mkdir(parents=True)
+    state_path = tmp_path / ".webnovel" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["world_facts"] = ["鍔涢噺浣撶郴浜嬪疄"]
+    state["progression_ledger"] = {
+        "continuity_ledger": [
+            {"subject": "主角", "field": "level", "value": 1}
+        ]
+    }
+    _write_json(state_path, state)
+    artifact = DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="涓婂北",
+        opening_state="",
+        scene_beats=[],
+        ending_state="",
+        hook="",
+        entity_requirements=[],
+    )
+
+    context = _ensure_writer_context(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_artifact=artifact,
+    )
+
+    assert context.character_cards[0]["role"] == "protagonist"
+    assert context.world_rules == ["鍔涢噺浣撶郴浜嬪疄"]
+    assert context.continuity_facts == [
+        {"subject": "主角", "field": "level", "value": 1}
+    ]
 
 
 # --- Tests -------------------------------------------------------------------
