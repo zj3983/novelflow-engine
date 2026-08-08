@@ -4234,6 +4234,16 @@ class StoryOrchestrator:
         ]
         working_story = story.model_copy(deep=True)
         working_story.current_chapter = chapter_number
+        # Carry the ``ContinuityDelta`` from the new modular
+        # ``FactExtractor`` onto the legacy ``ChapterBundle`` so
+        # ``_save_candidate_from_bundle`` can pick it up and skip
+        # the parallel re-extract against an empty canon. The
+        # user feedback after Round 5 flagged that the delta was
+        # silently dropped at this conversion boundary — the
+        # candidate then re-extracted against the same empty
+        # canon and the new agents' findings never made it into
+        # the snapshot or the confirmation transaction.
+        continuity_delta = getattr(bundle, "continuity_delta", None)
         return ChapterBundle(
             chapter_number=chapter_number,
             body=bundle.body,
@@ -4259,6 +4269,7 @@ class StoryOrchestrator:
             quality_report=quality_report,
             pipeline_stages=pipeline_stages,
             context_snapshot_id=f"modular-pipeline:chapter-{chapter_number}",
+            continuity_delta=continuity_delta,
         )
 
     def _generate_next_chapter_bundle(self, story: StoryState):

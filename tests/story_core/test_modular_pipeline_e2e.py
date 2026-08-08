@@ -491,3 +491,45 @@ def test_orchestrator_loads_canon_registry_from_project_root(tmp_path: Path):
     fresh.mkdir()
     empty = _load_canon_registry_for_project_root(fresh)
     assert empty.list_all("character") == []
+
+
+def test_modular_orchestrator_carries_continuity_delta_onto_legacy_bundle(
+    tmp_path: Path,
+) -> None:
+    """The legacy ``ChapterBundle`` produced by the modular
+    orchestrator must carry the new pipeline's ``ContinuityDelta``
+    so ``_save_candidate_from_bundle`` can skip the parallel
+    re-extract against an empty canon.
+
+    The user feedback after Round 5 flagged that the delta was
+    silently dropped at the conversion boundary — the candidate
+    then re-extracted against the same empty canon the modular
+    pipeline just produced findings for, and the new agents'
+    findings never made it into the snapshot or the
+    confirmation transaction.
+    """
+    from packages.story_core.engine import ChapterBundle
+
+    project_root = tmp_path
+    _seed_legacy_project(project_root, with_outline=False)
+
+    director_runtime = _StubDirectorRuntime()
+    writer_runtime = _StubWriterRuntime(body="林昭提灯上山。")
+
+    orchestrator = StoryOrchestrator(use_modular_agents=True)
+    legacy_bundle = orchestrator._generate_next_chapter_bundle_via_modular_agents(
+        _make_stub_story_state(current_chapter=0),
+        project_root=project_root,
+        director_runtime=director_runtime,
+        writer_runtime=writer_runtime,
+    )
+    assert isinstance(legacy_bundle, ChapterBundle)
+    # The new ``continuity_delta`` field is set; legacy code that
+    # checks ``getattr(bundle, "continuity_delta", None)`` will
+    # pick it up instead of re-extracting.
+    assert legacy_bundle.continuity_delta is not None
+    assert legacy_bundle.continuity_delta.chapter_number == 1
+    # The fact-extractor's chapter number is also surfaced on the
+    # quality_report so the workbench renders the new trace id.
+    modular_meta = legacy_bundle.quality_report["modular_pipeline"]
+    assert modular_meta["fact_extractor_chapter"] == 1

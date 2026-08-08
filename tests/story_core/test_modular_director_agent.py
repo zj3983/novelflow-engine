@@ -306,6 +306,79 @@ def test_gateway_director_runtime_routes_through_complete_stage(
     assert stage == "director"
 
 
+def test_gateway_director_runtime_translates_lightweight_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gateway-backed runtime must hand the gateway a fully
+    populated :class:`ModelRequest` — provider / model /
+    operation included — even though the agent only knows about
+    a lightweight ``_ModelRequest`` shape.
+
+    The user feedback after Round 5 flagged that the runtime
+    used to forward the lightweight request verbatim, the
+    gateway's ``dataclasses.replace`` call then raised
+    ``TypeError`` for the missing fields, the gateway's broad
+    ``except`` swallowed the failure, and the consistency review
+    silently returned no findings. The new translation reads
+    the stage-resolved runtime settings exactly the way the
+    gateway would have done internally so the replace never sees
+    a missing field.
+    """
+
+    class _FakeGateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Any]] = []
+
+        def complete_stage(self, stage: str, request: Any) -> Any:
+            self.calls.append((stage, request))
+            return _Response(
+                payload={
+                    "chapter_goal": "目标",
+                    "opening_state": "开场",
+                    "scene_beats": [
+                        {"order": 1, "location": "驿站", "action": "休息", "result": "恢复"}
+                    ],
+                    "ending_state": "收尾",
+                    "entity_requirements": [],
+                }
+            )
+
+    class _FakeSettings:
+        provider_id = "openai"
+        model = "gpt-4o-mini"
+        temperature = 0.3
+
+    # The runtime imports ``resolve_stage_runtime`` lazily inside
+    # ``complete``; patch the symbol on the source module so the
+    # lazy import sees our fake.
+    import packages.story_core.runtime_config as _runtime_config
+
+    monkeypatch.setattr(_runtime_config, "resolve_stage_runtime", lambda _stage: _FakeSettings())
+
+    fake_gateway = _FakeGateway()
+    runtime = GatewayDirectorRuntime(gateway=fake_gateway)
+    project = Path("/tmp/story_director_translate")
+    project.mkdir(parents=True, exist_ok=True)
+    agent = DirectorAgent(runtime=runtime, project_root=project)
+    context = _context_with_outline(chapter_number=4, include_target=False)
+
+    agent.plan(context)
+
+    assert len(fake_gateway.calls) == 1
+    stage, request = fake_gateway.calls[0]
+    assert stage == "director"
+    # The gateway now receives a real ``ModelRequest`` with
+    # provider / model / operation filled from the stage
+    # settings. ``dataclasses.replace`` on this object must not
+    # raise.
+    from packages.story_core.model_gateway.contracts import ModelRequest
+
+    assert isinstance(request, ModelRequest)
+    assert request.provider == "openai"
+    assert request.model == "gpt-4o-mini"
+    assert request.operation == "director"
+
+
 def test_director_runtime_protocol_accepts_custom_runtime(tmp_path: Path) -> None:
     """Anything that implements ``complete(request)`` is a
     valid ``DirectorRuntime`` — the agent only depends on the

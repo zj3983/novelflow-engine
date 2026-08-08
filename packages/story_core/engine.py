@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from packages.story_core.models import StoryState
@@ -31,6 +33,16 @@ class ChapterBundle(BaseModel):
     quality_report: dict = Field(default_factory=dict)
     pipeline_stages: list[str] = Field(default_factory=list)
     context_snapshot_id: str = ""
+    # The new modular pipeline runs the ``FactExtractor`` against the
+    # project's on-disk canon and emits a ``ContinuityDelta`` on the
+    # ``ModularChapterBundle``. The legacy save path
+    # (``_save_candidate_from_bundle``) checks for this attribute
+    # on the bundle to avoid re-extracting against an empty canon
+    # in production. Without the field on the Pydantic model the
+    # attribute lookup is always ``None`` and the candidate
+    # confirmation step re-runs the extractor with the same empty
+    # canon the modular pipeline just produced findings for.
+    continuity_delta: Any | None = None
 
 
 class StoryEngine:

@@ -30,13 +30,59 @@ class GatewayWriterRuntime:
 
     The agent never sees the underlying transport; it only knows
     that a ``complete(request)`` call returns a model response.
+    The writer's lightweight ``_ModelRequest`` is translated to
+    a fully populated :class:`ModelRequest` here so the
+    gateway's :func:`dataclasses.replace` call does not raise
+    on missing ``provider`` / ``model`` fields. Without this
+    translation the gateway's broad ``except`` silently turns
+    the call into a model-failure response and the writer
+    surfaces ``writer_empty_body``.
     """
 
     def __init__(self, gateway: Any) -> None:
         self._gateway = gateway
 
     def complete(self, request: Any) -> Any:
-        return self._gateway.complete_stage("writer", request)
+        from packages.story_core.model_gateway.contracts import ModelRequest
+        from packages.story_core.runtime_config import resolve_stage_runtime
+
+        if isinstance(request, ModelRequest):
+            return self._gateway.complete_stage("writer", request)
+        stage = "writer"
+        operation = "writer"
+        prompt = getattr(request, "prompt", "") or ""
+        metadata = getattr(request, "metadata", None) or {}
+        if isinstance(metadata, dict):
+            metadata_operation = metadata.get("agent") or metadata.get("stage")
+            if isinstance(metadata_operation, str) and metadata_operation.strip():
+                operation = metadata_operation.strip()
+        try:
+            settings = resolve_stage_runtime(stage)
+        except Exception:
+            settings = None
+        provider = ""
+        model = ""
+        temperature: float | None = None
+        if settings is not None:
+            provider = str(
+                getattr(settings, "provider_id", "") or getattr(settings, "provider", "")
+            )
+            model = str(getattr(settings, "model", "") or "")
+            settings_temperature = getattr(settings, "temperature", None)
+            if settings_temperature is not None:
+                try:
+                    temperature = float(settings_temperature)
+                except (TypeError, ValueError):
+                    temperature = None
+        translated = ModelRequest(
+            prompt=prompt,
+            provider=provider,
+            model=model,
+            operation=operation,
+            temperature=temperature,
+            metadata=dict(metadata) if isinstance(metadata, dict) else {},
+        )
+        return self._gateway.complete_stage(stage, translated)
 
 
 __all__ = ["WriterRuntime", "GatewayWriterRuntime"]

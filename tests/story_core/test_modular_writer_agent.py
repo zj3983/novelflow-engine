@@ -243,6 +243,59 @@ def test_gateway_writer_runtime_uses_complete_stage(monkeypatch: pytest.MonkeyPa
     assert stage == "writer"
 
 
+def test_gateway_writer_runtime_translates_lightweight_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gateway-backed writer runtime must hand the gateway a
+    real :class:`ModelRequest` — provider / model / operation
+    included — even though the agent only knows about the
+    lightweight ``_ModelRequest`` shape.
+
+    Without the translation the gateway's ``dataclasses.replace``
+    call would raise ``TypeError`` for the missing fields and
+    the gateway's broad ``except`` would turn the call into a
+    silent model-failure response. The writer agent would then
+    raise ``writer_empty_body`` and the orchestrator would crash
+    the chapter run. The translation reads the stage-resolved
+    runtime settings to fill the missing fields the same way
+    the gateway would have done internally.
+    """
+
+    class _FakeGateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Any]] = []
+
+        def complete_stage(self, stage: str, request: Any) -> Any:
+            self.calls.append((stage, request))
+            return _Response(text="正文")
+
+    class _FakeSettings:
+        provider_id = "openai"
+        model = "gpt-4o-mini"
+        temperature = 0.5
+
+    import packages.story_core.runtime_config as _runtime_config
+
+    monkeypatch.setattr(_runtime_config, "resolve_stage_runtime", lambda _stage: _FakeSettings())
+
+    fake_gateway = _FakeGateway()
+    runtime = GatewayWriterRuntime(gateway=fake_gateway)
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(_writer_request())
+
+    assert result.body == "正文"
+    assert len(fake_gateway.calls) == 1
+    stage, request = fake_gateway.calls[0]
+    from packages.story_core.model_gateway.contracts import ModelRequest
+
+    assert stage == "writer"
+    assert isinstance(request, ModelRequest)
+    assert request.provider == "openai"
+    assert request.model == "gpt-4o-mini"
+    assert request.operation == "writer"
+
+
 def test_writer_runtime_protocol_accepts_custom_runtime() -> None:
     """Any object that implements ``complete(request)`` must be
     usable as a ``WriterRuntime`` — the agent only depends on
