@@ -1888,6 +1888,137 @@ def init_file_project_routes() -> APIRouter:
             _reconcile_file_generation_job_locked(job)
             return _file_generation_job_response(job)
 
+    @router.get("/file-projects/{project_id}/workflow-artifacts")
+    def list_file_project_workflow_artifacts(
+        project_id: str, job_id: str | None = None
+    ) -> dict[str, object]:
+        """List per-stage workflow artifacts the modular agent pipeline wrote.
+
+        The new ``Director → Writer → FactExtractor`` pipeline
+        stores one record per stage under
+        ``.story-system/workflow/<job_id>/<stage_id>.json``.
+        The workbench reads this list on page refresh to show
+        the user what each agent saw and produced without
+        re-running the model. The endpoint is intentionally
+        read-only: a stage record is the agent's inspectable
+        work product, not a control surface.
+        """
+        from packages.story_core.persistence.workflow_artifact_store import (
+            WorkflowArtifactStore,
+        )
+
+        store = _store_for(project_id)
+        workflow_store = WorkflowArtifactStore(store.root)
+        if job_id is not None:
+            job_dir = workflow_store.job_dir(job_id)
+            job_ids = [job_id] if job_dir.is_dir() else []
+        else:
+            workflow_root = workflow_store.directory
+            if not workflow_root.is_dir():
+                job_ids = []
+            else:
+                job_ids = sorted(
+                    path.name
+                    for path in workflow_root.iterdir()
+                    if path.is_dir()
+                )
+        items: list[dict[str, object]] = []
+        for jid in job_ids:
+            stages = workflow_store.list_stages(jid)
+            items.append(
+                {
+                    "job_id": jid,
+                    "stages": [
+                        {
+                            "stage_id": stage.stage_id,
+                            "agent_id": stage.agent_id,
+                            "status": stage.status,
+                            "elapsed_ms": int(stage.elapsed_ms or 0),
+                            "artifact_path": str(stage.artifact_path or ""),
+                            "artifact_sha256": str(stage.artifact_sha256 or ""),
+                            "reads": list(stage.reads or []),
+                            "selected_entity_ids": list(
+                                stage.selected_entity_ids or []
+                            ),
+                            "selected_module_ids": list(
+                                stage.selected_module_ids or []
+                            ),
+                            "provider": str(stage.provider or ""),
+                            "model": str(stage.model or ""),
+                            "prompt_template_id": str(stage.prompt_template_id or ""),
+                            "prompt_template_version": str(
+                                stage.prompt_template_version or ""
+                            ),
+                            "output_summary": str(stage.output_summary or ""),
+                            "error": str(stage.error or ""),
+                            "started_at": str(stage.started_at or ""),
+                            "finished_at": str(stage.finished_at or ""),
+                        }
+                        for stage in stages
+                    ],
+                }
+            )
+        return {
+            "schema_version": "file-workflow-artifacts/v1",
+            "project_id": project_id,
+            "items": items,
+        }
+
+    @router.get(
+        "/file-projects/{project_id}/workflow-artifacts/{job_id}/{stage_id}"
+    )
+    def get_file_project_workflow_artifact(
+        project_id: str, job_id: str, stage_id: str
+    ) -> dict[str, object]:
+        """Read a single per-stage workflow artifact record.
+
+        The workbench calls this when the user expands a
+        stage row in the audit panel. The record carries the
+        exact reads, the selected entity / module ids, the
+        provider / model metadata, and the output summary —
+        everything the workbench needs to render the
+        "本步产物" / "模型调用" / "调用模块" sections
+        without re-running the model.
+        """
+        from packages.story_core.persistence.workflow_artifact_store import (
+            WorkflowArtifactStore,
+        )
+
+        store = _store_for(project_id)
+        workflow_store = WorkflowArtifactStore(store.root)
+        record = workflow_store.read_stage(job_id, stage_id)
+        if record is None:
+            raise HTTPException(
+                status_code=404, detail="workflow_artifact_not_found"
+            )
+        return {
+            "schema_version": "file-workflow-artifact/v1",
+            "project_id": project_id,
+            "job_id": job_id,
+            "stage_id": stage_id,
+            "stage": {
+                "stage_id": record.stage_id,
+                "agent_id": record.agent_id,
+                "status": record.status,
+                "elapsed_ms": int(record.elapsed_ms or 0),
+                "artifact_path": str(record.artifact_path or ""),
+                "artifact_sha256": str(record.artifact_sha256 or ""),
+                "reads": list(record.reads or []),
+                "selected_entity_ids": list(record.selected_entity_ids or []),
+                "selected_module_ids": list(record.selected_module_ids or []),
+                "provider": str(record.provider or ""),
+                "model": str(record.model or ""),
+                "prompt_template_id": str(record.prompt_template_id or ""),
+                "prompt_template_version": str(
+                    record.prompt_template_version or ""
+                ),
+                "output_summary": str(record.output_summary or ""),
+                "error": str(record.error or ""),
+                "started_at": str(record.started_at or ""),
+                "finished_at": str(record.finished_at or ""),
+            },
+        }
+
     @router.get("/file-stories/{story_id}")
     def get_file_story(story_id: str) -> dict[str, Any]:
         wanted = _strip_file_prefix(story_id)
