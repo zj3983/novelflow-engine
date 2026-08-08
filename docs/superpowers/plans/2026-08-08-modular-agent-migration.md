@@ -10,6 +10,19 @@
 
 ---
 
+## Implementation Handoff Status (2026-08-08)
+
+The current branch contains implementation commits for Tasks 1 through 13. Treat those commits as implemented work, not proof that every original acceptance test and smoke scenario has been completed.
+
+- Tasks 1-10: corresponding implementation commits are present.
+- Task 11: transaction code is present. There is no `_failed_bundle` source path; do not add, rename, or modify one based on an older summary.
+- Task 12: implemented tests cover new writes, legacy JSON loading, legacy migration on save, and Markdown hash mismatch by editing the temporary Markdown file. The broader five-project migration matrix belongs to Task 15.
+- Task 13: workflow artifact persistence is present. Re-check API and browser coverage because the originally proposed `tests/api/test_file_project_generation_jobs.py` and `apps/web/tests/writing-flow.spec.ts` files were not created under those exact names.
+- Task 14: partially complete. Pipeline boundary tests and initial orchestrator thinning are committed, but legacy `packages/story_core/writer_agent.py` remains because its API is incompatible with the modular writer.
+- Task 15: not started. Run it in a separate session after Task 14 compatibility cleanup.
+
+Do not repeat Tasks 1-13 from scratch. Review their commits and run focused regression tests before changing them.
+
 ## Guardrails And Target Flow
 
 The implementation must preserve the existing API routes while migrating internals. Do not replace the whole pipeline in one commit.
@@ -656,6 +669,8 @@ git commit -m "feat: attach pending continuity deltas to candidates"
 
 ### Task 11: Commit Chapters And Canon In One Transaction
 
+**Implementation note:** The source tree has no `_failed_bundle` path. It is not part of this task and must not be introduced from historical notes.
+
 **Files:**
 - Create: `packages/story_core/persistence/project_transaction.py`
 - Create: `packages/story_core/continuity/snapshot.py`
@@ -710,6 +725,8 @@ git commit -m "feat: make chapter confirmation transactional"
 ```
 
 ### Task 12: Make Chapter Markdown The Canonical Body
+
+**Implementation note:** The current focused suite covers new write, legacy load, legacy migration on save, and a hash mismatch caused by modifying the temporary Markdown file. Keep these tests; do not replace them merely to match earlier fixture wording.
 
 **Files:**
 - Modify: `packages/story_core/persistence/chapter_store.py`
@@ -825,7 +842,9 @@ git add packages/story_core/persistence/workflow_artifact_store.py packages/stor
 git commit -m "feat: expose agent reads and artifacts in workbench"
 ```
 
-### Task 14: Thin The Orchestrator And Remove Compatibility Code
+### Task 14: Thin The Orchestrator And Remove Compatibility Code (Separate Session, Partially Complete)
+
+**Current state:** `tests/story_core/test_pipeline_boundaries.py` and initial orchestrator thinning are committed. The legacy writer deletion below remains outstanding and should be handled as one isolated compatibility session.
 
 **Files:**
 - Modify: `packages/story_core/engine.py`
@@ -857,11 +876,11 @@ Keep only stage ordering, error propagation, workflow reporting, and candidate b
 
 - [ ] **Step 4: Remove the obsolete writer module**
 
-Move any remaining tests to `packages.story_core.agents.writer`. Verify no import remains before deleting:
+First change `tests/story_core/test_writer.py` to instantiate `packages.story_core.agents.writer.WriterAgent` with an injected fake runtime and the modular `WriterRequest`. Then update runtime callers under `apps/api`. Finally remove stale textual references under `data/test-backups` without rewriting unrelated backup contents. Verify no live-code import remains before deleting:
 
 Run: `rg -n "story_core\.writer_agent|from packages\.story_core import writer_agent" packages apps tests`
 
-Expected: no matches.
+Expected: no matches in `packages`, `apps`, or `tests`. Historical backup references may be removed separately after live code is clean.
 
 - [ ] **Step 5: Run boundary and focused regression tests**
 
@@ -881,7 +900,7 @@ git rm packages/story_core/writer_agent.py
 git commit -m "refactor: reduce orchestrator to pipeline coordination"
 ```
 
-### Task 15: Run Migration, Full Verification, And Handoff Checks
+### Task 15: Run Migration, Full Verification, And Handoff Checks (Separate Session, Not Started)
 
 **Files:**
 - Create: `scripts/migrate_modular_story_state.py`
