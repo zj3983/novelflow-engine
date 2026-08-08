@@ -9,7 +9,6 @@ import json
 import inspect
 import re
 import subprocess
-import urllib.error
 from time import perf_counter
 from types import SimpleNamespace
 
