@@ -3771,6 +3771,67 @@ export async function updateStoryCore(projectId: string, payload: StoryCoreCard)
   })) as StoryCoreCard;
 }
 
+export type WorkflowArtifactStage = {
+  stage_id: string;
+  agent_id: string;
+  status: string;
+  elapsed_ms: number;
+  artifact_path: string;
+  artifact_sha256: string;
+  reads: Record<string, unknown>[];
+  selected_entity_ids: string[];
+  selected_module_ids: string[];
+  provider: string;
+  model: string;
+  prompt_template_id: string;
+  prompt_template_version: string;
+  output_summary: string;
+  error: string;
+  started_at: string;
+  finished_at: string;
+};
+
+export type WorkflowArtifactJob = {
+  job_id: string;
+  stages: WorkflowArtifactStage[];
+};
+
+export type WorkflowArtifactListResponse = {
+  schema_version: string;
+  project_id: string;
+  items: WorkflowArtifactJob[];
+};
+
+export type WorkflowArtifactResponse = {
+  schema_version: string;
+  project_id: string;
+  job_id: string;
+  stage_id: string;
+  stage: WorkflowArtifactStage;
+};
+
+export async function fetchWorkflowArtifacts(
+  projectId: string,
+  jobId?: string,
+): Promise<WorkflowArtifactListResponse> {
+  const query = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/workflow-artifacts${query}`,
+    { method: "GET" },
+  )) as WorkflowArtifactListResponse;
+}
+
+export async function fetchWorkflowArtifact(
+  projectId: string,
+  jobId: string,
+  stageId: string,
+): Promise<WorkflowArtifactResponse> {
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/workflow-artifacts/${encodeURIComponent(jobId)}/${encodeURIComponent(stageId)}`,
+    { method: "GET" },
+  )) as WorkflowArtifactResponse;
+}
+
 function mockListStories(): StorySummary[] {
   return Array.from(mockStore.values()).map((story) => ({
     story_id: story.story_id,

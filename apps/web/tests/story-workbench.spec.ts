@@ -2220,7 +2220,7 @@ test("simulation lazy chapter fetches only the newest simulated detail", async (
 
   await page.goto(`/projects/${encodedId}/sim`);
   await expect(page.getByRole("heading", { name: "世界状态" })).toBeVisible();
-  await expect(page.getByText("第 1 章状态记录")).toBeVisible();
+  await expect(page.getByText("第 1 章响应记录")).toBeVisible();
   await expect(page.getByText("商会开始追查铜牌去向。", { exact: true })).toBeVisible();
   await expect(page.getByText("章节计划明细", { exact: true })).toHaveCount(0);
   await expect(page.getByText("角色动作", { exact: true })).toHaveCount(0);
@@ -2238,9 +2238,9 @@ test("simulation switching chapters requests only the newly selected detail", as
   });
 
   await page.goto(`/projects/${encodedId}/sim`);
-  await expect(page.getByText("第 2 章状态记录")).toBeVisible();
-  await page.getByLabel("状态章节").selectOption("1");
-  await expect(page.getByText("第 1 章状态记录")).toBeVisible();
+  await expect(page.getByText("第 2 章响应记录")).toBeVisible();
+  await page.getByLabel("响应章节").selectOption("1");
+  await expect(page.getByText("第 1 章响应记录")).toBeVisible();
   expect(calls.filter((path) => path.endsWith("/chapters/2"))).toHaveLength(1);
   expect(calls.filter((path) => path.endsWith("/chapters/1"))).toHaveLength(1);
   expect(calls.filter((path) => path.includes("/chapters/"))).toHaveLength(2);
@@ -2487,7 +2487,7 @@ test("file project outline edits three levels and runs outline generation", asyn
   await page.goto("/projects/file%3Aoutline-fixture/outline");
   await page.getByRole("tab", { name: "总纲", exact: true }).click();
   await expect(page.getByRole("heading", { name: "故事定位" })).toBeVisible();
-  await expect(page.getByLabel("一句话简介")).toHaveValue(storyCore.logline);
+  await expect(page.getByLabel("核心故事")).toHaveValue(storyCore.logline);
   await expect(page.getByLabel("具体能力")).toHaveValue(storyCore.core_advantage.ability);
   await expect(page.getByLabel("隐藏真相")).toHaveValue(storyCore.central_mystery.hidden_truth);
   await expect(page.getByLabel("眼前需求")).toHaveValue(storyCore.initial_drive.immediate_need);

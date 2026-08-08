@@ -112,11 +112,11 @@ Real projects on disk still ship data under `.webnovel/`. Bring one up to
 the modular layout with:
 
 ```bash
-python scripts/migrate_modular_story_state.py --project /path/to/project
+python -m scripts.migrate_modular_story_state --project /path/to/project
 # or
-python scripts/migrate_modular_story_state.py --all --projects-file projects.txt
+python -m scripts.migrate_modular_story_state --all --projects-file projects.txt
 # preview only:
-python scripts/migrate_modular_story_state.py --project /path/to/project --dry-run
+python -m scripts.migrate_modular_story_state --project /path/to/project --dry-run
 ```
 
 The script:
@@ -185,7 +185,7 @@ To exercise the modular pipeline end-to-end without a live model
 endpoint, drive the orchestrator with stub director / writer runtimes:
 
 ```bash
-python scripts/smoke_modular_pipeline.py --copy .codex-run/<project> .codex-run/_smoke_target
+python -m scripts.smoke_modular_pipeline --copy .codex-run/<project> .codex-run/_smoke_target
 ```
 
 The script copies the project, runs

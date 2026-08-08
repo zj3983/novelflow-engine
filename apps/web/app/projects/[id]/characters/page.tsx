@@ -83,6 +83,10 @@ type TemplateSection = {
   fields: TemplateField[];
 };
 
+// Stable-profile templates. Dynamic fields (current_goal, immediate_problem,
+// current relations) live in the 当前状态 section, not here, so the workbench
+// can clearly separate what the chapter generator is allowed to rewrite from
+// the long-term identity of the character.
 const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
   protagonist: [
     { title: "基本身份", fields: [
@@ -94,15 +98,14 @@ const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
     { title: "性格与动机", fields: [
       { label: "性格标签", path: ["personality_portrait", "temperament", "core_traits"], list: true },
       { label: "长期目标", path: ["story_drive", "long_term_goal"] },
+      { label: "核心动机", path: ["story_drive", "motivation"] },
       { label: "软肋 / 顾虑", path: ["personality_portrait", "psychology", "fear"] },
       { label: "说话参考", path: ["dialogue_examples"], list: true },
     ] },
     { title: "当前剧情", fields: [
       { label: "重要人际关系", relation: true },
-      { label: "技能 / 武器 / 特殊能力", path: ["current_life_profile", "resources_and_ability"] },
-      { label: "眼前难题", path: ["current_life_profile", "immediate_problem"] },
-      { label: "当前目标", path: ["story_drive", "immediate_goal"] },
       { label: "失败代价", path: ["story_drive", "failure_stakes"] },
+      { label: "主要冲突", path: ["story_drive", "main_conflict_reason"] },
       { label: "隐藏信息", path: ["story_drive", "hidden_matters"], list: true },
       { label: "剧情作用", path: ["story_function"] },
     ] },
@@ -114,14 +117,13 @@ const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
     ] },
     { title: "性格与动机", fields: [
       { label: "性格标签", path: ["personality_portrait", "temperament", "core_traits"], list: true },
-      { label: "当前目标", path: ["story_drive", "immediate_goal"] },
+      { label: "长期目标", path: ["story_drive", "long_term_goal"] },
+      { label: "核心动机", path: ["story_drive", "motivation"] },
       { label: "软肋 / 顾虑", path: ["personality_portrait", "psychology", "fear"] },
       { label: "说话参考", path: ["dialogue_examples"], list: true },
     ] },
     { title: "关系与作用", fields: [
-      { label: "与主角及重要人物关系", relation: true },
       { label: "主要冲突", path: ["story_drive", "main_conflict_reason"] },
-      { label: "技能 / 特长", path: ["current_life_profile", "resources_and_ability"] },
       { label: "隐藏信息", path: ["story_drive", "hidden_matters"], list: true },
       { label: "剧情作用", path: ["story_function"] },
     ] },
@@ -129,8 +131,7 @@ const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
   minor: [
     { title: "角色摘要", fields: [
       { label: "身份 / 职业", path: ["identity_profile", "current_identity"] },
-      { label: "当前目的", path: ["story_drive", "immediate_goal"] },
-      { label: "与主要人物关系", relation: true },
+      { label: "长期目标", path: ["story_drive", "long_term_goal"] },
       { label: "剧情作用", path: ["story_function"] },
     ] },
   ],
@@ -193,10 +194,31 @@ const CURRENT_STATE_FIELD_LABELS: Record<string, string> = {
   immediate_goal: "当前目标",
   memory: "近期记忆与证据",
   recent_evidence: "近期记忆与证据",
+  realm: "修为境界",
+  occupation: "营生",
+  identity_profile: "身份",
+  identity: "身份",
+  level: "等级",
+  game_id: "角色编号",
+  class_path: "职业路径",
+  exp: "经验",
+  hp: "生命",
+  mp: "法力",
+  attributes: "属性",
+  skills: "技能",
+  equipment: "装备",
+  inventory: "背包",
+  currency: "货币",
+  quests: "任务",
+  risk: "风险",
 };
 
 function structuredStateRows(layer: CharacterStateLayer | undefined): DisplayRow[] {
   return Object.entries(layer?.current ?? {}).flatMap(([key, value]) => {
+    // The "当前目标" field is already rendered as a dedicated input in the
+    // 当前状态 section, so re-rendering it here would just duplicate the same
+    // value (and break the "去重" assertion in the test).
+    if (key === "immediate_goal") return [];
     const formatted = stateRows({ current: { [key]: value } })[0];
     return formatted ? [[CURRENT_STATE_FIELD_LABELS[key] ?? formatted[0], formatted[1]]] : [];
   });
@@ -206,6 +228,251 @@ function recentStateChanges(layer: CharacterStateLayer | undefined): string[] {
   return (layer?.recent_changes ?? [])
     .map((change) => `${change.chapter ? `第 ${change.chapter} 章：` : ""}${change.fact}`)
     .filter(Boolean);
+}
+
+// Stable-profile display: identity, background, long-term motivation, and the
+// long-running history of each relationship. Chapter generator must NOT touch
+// any of this without an explicit user edit.
+function StableProfileSection({
+  character,
+  relations,
+  isEditing,
+  draft,
+  onChangeNested,
+  onUpdateRelationField,
+  relationsText,
+}: {
+  character: DisplayCharacter;
+  relations: ImportedRelationshipEdge[];
+  isEditing: boolean;
+  draft: DisplayCharacter | null;
+  onChangeNested: (field: TemplateField, value: string) => void;
+  onUpdateRelationField: (edge: ImportedRelationshipEdge, key: "history" | "shared_interest_or_conflict", value: string) => void;
+  relationsText: string;
+}) {
+  const shown = isEditing && draft ? draft : character;
+  const templateKind = characterTemplateKind(shown as DisplayCharacter);
+  const templateSections = CHARACTER_TEMPLATES[templateKind];
+  const relatedEdges = relations.filter((edge) => edge.source === shown?.name || edge.target === shown?.name);
+  const hasRelations = relatedEdges.length > 0;
+  const hasStableTemplate = templateSections.some((section) => section.fields.some((field) => {
+    if (isEditing) return true;
+    if (field.relation) return Boolean(relationsText.trim());
+    const raw = nestedValue(shown as DisplayCharacter, field.path ?? []);
+    return Array.isArray(raw) ? raw.length > 0 : Boolean(String(raw).trim());
+  }));
+
+  if (!isEditing && !hasRelations && !hasStableTemplate) {
+    return null;
+  }
+
+  return (
+    <section aria-label="稳定档案" className="ws-character-stable">
+      <h2>稳定档案</h2>
+      <p className="ws-card__hint">不随章节自动改写</p>
+      <div className={`ws-character-template ws-character-template--${templateKind}`}>
+        {templateSections.map((section) => {
+          const fields = section.fields.filter((field) => {
+            if (isEditing) return true;
+            if (field.relation) return Boolean(relationsText.trim());
+            const rawValue = nestedValue(shown as DisplayCharacter, field.path ?? []);
+            return (Array.isArray(rawValue) ? rawValue.length > 0 : Boolean(String(rawValue).trim()));
+          });
+          if (!isEditing && fields.length === 0) return null;
+          return (
+            <section className="ws-character-template__section" key={section.title}>
+              <h3>{section.title}</h3>
+              <div className="ws-character-template__fields">
+                {fields.map((field) => {
+                  if (field.relation) {
+                    return isEditing ? (
+                      <div className="ws-character-template__field" key={field.label}>
+                        <span>{field.label}</span>
+                        <p className="is-empty">关系通过项目设置维护。</p>
+                      </div>
+                    ) : (
+                      <div className="ws-character-template__field" key={field.label}>
+                        <span>{field.label}</span>
+                        <p className={relationsText ? "" : "is-empty"}>{relationsText || "待补充"}</p>
+                      </div>
+                    );
+                  }
+                  const rawValue = nestedValue(shown as DisplayCharacter, field.path ?? []);
+                  const text = Array.isArray(rawValue) ? rawValue.join(isEditing ? "\n" : "；") : rawValue;
+                  const displayValue = field.number && text ? `${text}${field.label.includes("年龄") ? "岁" : "章"}` : text;
+                  return isEditing && field.path ? (
+                    <label className="ws-character-template__field" key={field.label}>
+                      <span>{field.label}</span>
+                      {field.number ? (
+                        <input aria-label={field.label} type="number" min={0} value={text} onChange={(event) => onChangeNested(field, event.target.value)} />
+                      ) : (
+                        <textarea aria-label={field.label} rows={field.list ? 3 : 2} value={text} onChange={(event) => onChangeNested(field, event.target.value)} />
+                      )}
+                    </label>
+                  ) : (
+                    <div className="ws-character-template__field" key={field.label}>
+                      <span>{field.label}</span>
+                      <p className={displayValue ? "" : "is-empty"}>{displayValue || "待补充"}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+      {hasRelations ? (
+        <section className="ws-character-template__section">
+          <h4>关系背景</h4>
+          <ul>
+            {relatedEdges.map((edge) => {
+              const other = edge.source === shown?.name ? edge.target : edge.source;
+              const history = edge.history;
+              const shared = edge.shared_interest_or_conflict;
+              if (!isEditing && !history && !shared) return null;
+              return (
+                <li key={edge.id ?? `${edge.source}-${edge.target}`}>
+                  <p><strong>{other}</strong>{edge.relation_type ? ` · ${edge.relation_type}` : ""}</p>
+                  {isEditing ? (
+                    <>
+                      <label><span>历史</span><textarea aria-label={`${other} 历史`} rows={2} value={history ?? ""} onChange={(event) => onUpdateRelationField(edge, "history", event.target.value)} /></label>
+                      <label><span>利害</span><textarea aria-label={`${other} 利害`} rows={2} value={shared ?? ""} onChange={(event) => onUpdateRelationField(edge, "shared_interest_or_conflict", event.target.value)} /></label>
+                    </>
+                  ) : (
+                    <>
+                      {history ? <p>{history}</p> : null}
+                      {shared ? <p>{shared}</p> : null}
+                    </>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+    </section>
+  );
+}
+
+// 当前状态 section: everything that the chapter generator may rewrite after
+// each chapter — current trouble, current goal, residence, livelihood, the
+// state-layer JSON, and the live relationship state.
+function CurrentStateSection({
+  shown,
+  gameStory,
+  isEditing,
+  draft,
+  stateLayers,
+  stateDrafts,
+  relations,
+  onStateDraftChange,
+  onChangeNested,
+}: {
+  shown: DisplayCharacter | null;
+  gameStory: boolean;
+  isEditing: boolean;
+  draft: DisplayCharacter | null;
+  stateLayers: Array<[StateNamespace, CharacterStateLayer]>;
+  stateDrafts: Partial<Record<StateNamespace, string>>;
+  relations: ImportedRelationshipEdge[];
+  onStateDraftChange: (namespace: StateNamespace, value: string) => void;
+  onChangeNested: (field: TemplateField, value: string) => void;
+}) {
+  if (!shown) return null;
+  const life = (shown.current_life_profile ?? {}) as Record<string, unknown>;
+  const lifeEntries: Array<[string, string]> = [];
+  if (life.residence) lifeEntries.push(["当前居住", String(life.residence)]);
+  if (life.livelihood) lifeEntries.push(["营生", String(life.livelihood)]);
+  if (life.economic_state) lifeEntries.push(["经济", String(life.economic_state)]);
+  if (life.resources_and_ability) lifeEntries.push(["技能", String(life.resources_and_ability)]);
+  if (life.authority_scope) lifeEntries.push(["权限", String(life.authority_scope)]);
+  const dynamicRelations = relations.filter((edge) => edge.source === shown.name || edge.target === shown.name);
+
+  const goalField: TemplateField = { label: "当前目标", path: ["story_drive", "immediate_goal"] };
+  const troubleField: TemplateField = { label: "眼前麻烦", path: ["current_life_profile", "immediate_problem"] };
+  const goalValue = nestedValue(shown, goalField.path ?? []);
+  const troubleValue = nestedValue(shown, troubleField.path ?? []);
+
+  return (
+    <section aria-label="当前状态" className="ws-character-current">
+      <h2>当前状态</h2>
+      <p className="ws-card__hint">章后只更新出场证据和明确状态事件</p>
+      <div className="ws-character-template__fields">
+        <div className="ws-character-template__field">
+          <span>眼前麻烦</span>
+          {isEditing ? (
+            <textarea
+              aria-label="眼前麻烦"
+              rows={2}
+              value={Array.isArray(troubleValue) ? troubleValue.join("\n") : String(troubleValue ?? "")}
+              onChange={(event) => draft && onChangeNested(troubleField, event.target.value)}
+            />
+          ) : (
+            <p className={troubleValue ? "" : "is-empty"}>{troubleValue || "待补充"}</p>
+          )}
+        </div>
+        <div className="ws-character-template__field">
+          <span>当前目标</span>
+          {isEditing ? (
+            <textarea
+              aria-label="当前目标"
+              rows={2}
+              value={Array.isArray(goalValue) ? goalValue.join("\n") : String(goalValue ?? "")}
+              onChange={(event) => draft && onChangeNested(goalField, event.target.value)}
+            />
+          ) : (
+            <p className={goalValue ? "" : "is-empty"}>{goalValue || "待补充"}</p>
+          )}
+        </div>
+      </div>
+      {lifeEntries.length > 0 ? (
+        <dl className="ws-panel-grid">
+          {lifeEntries.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+        </dl>
+      ) : null}
+      {stateLayers.length > 0 ? (
+        <div className="ws-character-state-layers">
+          {stateLayers.map(([namespace, layer]) => {
+            const showLayerHeading = STATE_TITLES[namespace] !== "当前状态";
+            return isEditing ? (
+              <section key={namespace} aria-label={STATE_TITLES[namespace]}>
+                {showLayerHeading ? <h4>{STATE_TITLES[namespace]}</h4> : null}
+                <label><span>{STATE_TITLES[namespace]} JSON</span><textarea aria-label={`${STATE_TITLES[namespace]} JSON`} rows={8} value={stateDrafts[namespace] ?? stateJson(layer)} onChange={(event) => onStateDraftChange(namespace, event.target.value)} /></label>
+              </section>
+            ) : (
+              <section key={namespace} aria-label={STATE_TITLES[namespace]}>
+                {showLayerHeading ? <h4>{STATE_TITLES[namespace]}</h4> : null}
+                <dl className="ws-panel-grid">{structuredStateRows(layer).map(([label, value]) => <div key={`${namespace}-${label}`}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+                {recentStateChanges(layer).map((change) => <p key={`${namespace}-${change}`}>{change}</p>)}
+              </section>
+            );
+          })}
+        </div>
+      ) : null}
+      {dynamicRelations.length > 0 ? (
+        <section className="ws-character-template__section">
+          <h4>关系动态</h4>
+          <ul>
+            {dynamicRelations.map((edge) => {
+              const other = edge.source === shown.name ? edge.target : edge.source;
+              const hasContent = edge.current_state || (edge.changes ?? []).some((change) => change.summary);
+              if (!hasContent) return null;
+              return (
+                <li key={edge.id ?? `${edge.source}-${edge.target}`}>
+                  <p><strong>{other}</strong>{edge.relation_type ? ` · ${edge.relation_type}` : ""}</p>
+                  {edge.current_state ? <p>{edge.current_state}</p> : null}
+                  {(edge.changes ?? []).map((change, idx) => change.summary ? (
+                    <p key={`change-${idx}`}>{change.summary}</p>
+                  ) : null)}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+      {gameStory ? null : null}
+    </section>
+  );
 }
 
 export default function CharactersPage() {
@@ -320,6 +587,7 @@ export default function CharactersPage() {
               const graphRelations = (project?.relationship_graph ?? []).filter(
                 (relation) => relation.source === shown?.name || relation.target === shown?.name,
               );
+              const relationsText = relationshipSummary(shown?.name ?? "", graphRelations);
               const genericState = currentStateLayer(shown?.current_state) ?? shown?.real_state;
               const stateLayers = (gameStory ? [
                 ["real_state", shown?.real_state],
@@ -327,14 +595,11 @@ export default function CharactersPage() {
               ] : [
                 ["current_state", genericState],
               ] as Array<[StateNamespace, CharacterStateLayer | undefined]>).filter((entry): entry is [StateNamespace, CharacterStateLayer] => Boolean(entry[1]));
-              const templateKind = characterTemplateKind(shown as DisplayCharacter);
-              const templateSections = CHARACTER_TEMPLATES[templateKind];
-              const relationsText = relationshipSummary(shown?.name ?? "", project?.relationship_graph ?? []);
 
               return (
-                <article className="ws-character-card" data-testid={`character-card-${templateKind}`} key={character.name}>
+                <article className="ws-character-card" data-testid={`character-card-${characterTemplateKind(shown as DisplayCharacter)}`} key={character.name}>
                   <div className="ws-character-card__head">
-                    <div><h2>{shown?.name}</h2><p>{[templateKindLabel(templateKind), characterRoleLabel(shown?.role), displayedGameId].filter(Boolean).join(" / ")}</p></div>
+                    <div><h2>{shown?.name}</h2><p>{[templateKindLabel(characterTemplateKind(shown as DisplayCharacter)), characterRoleLabel(shown?.role), displayedGameId].filter(Boolean).join(" / ")}</p></div>
                     <div className="ws-character-card__actions">
                       <span>{characterCardBadge(shown?.lifecycle_state)}{panel?.updated_chapter ? ` · 第 ${panel.updated_chapter} 章更新` : ""}</span>
                       {isEditing ? (
@@ -344,61 +609,29 @@ export default function CharactersPage() {
                       )}
                     </div>
                   </div>
-                  <div className={`ws-character-template ws-character-template--${templateKind}`}>
-                    {templateSections.map((section) => {
-                      const fields = section.fields.filter((field) => {
-                        if (isEditing) return true;
-                        const rawValue = field.relation ? relationsText : nestedValue(shown as DisplayCharacter, field.path ?? []);
-                        return (Array.isArray(rawValue) ? rawValue.length > 0 : Boolean(String(rawValue).trim()));
-                      });
-                      if (!isEditing && fields.length === 0) return null;
-                      return (
-                      <section className="ws-character-template__section" key={section.title}>
-                        <h3>{section.title}</h3>
-                        <div className="ws-character-template__fields">
-                          {fields.map((field) => {
-                            const rawValue = field.relation ? relationsText : nestedValue(shown as DisplayCharacter, field.path ?? []);
-                            const text = Array.isArray(rawValue) ? rawValue.join(isEditing ? "\n" : "；") : rawValue;
-                            const displayValue = field.number && text ? `${text}${field.label.includes("年龄") ? "岁" : "章"}` : text;
-                            return isEditing && field.path ? (
-                              <label className="ws-character-template__field" key={field.label}>
-                                <span>{field.label}</span>
-                                {field.number ? (
-                                  <input aria-label={field.label} type="number" min={0} value={text} onChange={(event) => setDraft(updateNestedValue(draft as DisplayCharacter, field, event.target.value))} />
-                                ) : (
-                                  <textarea aria-label={field.label} rows={field.list ? 3 : 2} value={text} onChange={(event) => setDraft(updateNestedValue(draft as DisplayCharacter, field, event.target.value))} />
-                                )}
-                              </label>
-                            ) : (
-                              <div className="ws-character-template__field" key={field.label}>
-                                <span>{field.label}</span>
-                                <p className={displayValue ? "" : "is-empty"}>{displayValue || "待补充"}</p>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </section>
-                      );
-                    })}
-                  </div>
-
-                  {(stateLayers.length > 0 || graphRelations.length > 0 || panel) ? (
-                    <details className="ws-character-runtime" open>
-                      <summary>运行状态与章节动态</summary>
-                      {stateLayers.map(([namespace, layer]) => isEditing ? (
-                        <section key={namespace}>
-                          <h3>{STATE_TITLES[namespace]}</h3>
-                          <label><span>{STATE_TITLES[namespace]} JSON</span><textarea aria-label={`${STATE_TITLES[namespace]} JSON`} rows={8} value={stateDrafts[namespace] ?? stateJson(layer)} onChange={(event) => setStateDrafts((current) => ({ ...current, [namespace]: event.target.value }))} /></label>
-                        </section>
-                      ) : (
-                        <section key={namespace}>
-                          <h3>{STATE_TITLES[namespace]}</h3>
-                          <dl className="ws-panel-grid">{structuredStateRows(layer).map(([label, value]) => <div key={`${namespace}-${label}`}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-                          {recentStateChanges(layer).map((change) => <p key={`${namespace}-${change}`}>{change}</p>)}
-                        </section>
-                      ))}
-                    </details>
-                  ) : null}
+                  <StableProfileSection
+                    character={character}
+                    relations={graphRelations}
+                    isEditing={Boolean(isEditing)}
+                    draft={isEditing ? draft : null}
+                    onChangeNested={(field, value) => draft && setDraft(updateNestedValue(draft, field, value))}
+                    onUpdateRelationField={() => {
+                      // Relationship graph is edited via the project API, not per-character.
+                      // For the workbench this is read-only.
+                    }}
+                    relationsText={relationsText}
+                  />
+                  <CurrentStateSection
+                    shown={shown}
+                    gameStory={gameStory}
+                    isEditing={Boolean(isEditing)}
+                    draft={isEditing ? draft : null}
+                    stateLayers={stateLayers}
+                    stateDrafts={stateDrafts}
+                    relations={graphRelations}
+                    onStateDraftChange={(namespace, value) => setStateDrafts((current) => ({ ...current, [namespace]: value }))}
+                    onChangeNested={(field, value) => draft && setDraft(updateNestedValue(draft, field, value))}
+                  />
                 </article>
               );
             })}

@@ -4,12 +4,14 @@ import { useEffect, useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
-import { WritingFlowPanel } from "../../../../components/ws/WritingFlow";
+import { WritingFlowPanel, WorkflowArtifactPanel } from "../../../../components/ws/WritingFlow";
 import {
   fetchGenerationJob,
   fetchGenerationJobHistory,
+  fetchWorkflowArtifacts,
   type GenerationJobResponse,
   type GenerationJobSummary,
+  type WorkflowArtifactJob,
 } from "../../../../lib/api";
 
 function jobStatusLabel(status: GenerationJobSummary["status"]): string {
@@ -31,6 +33,8 @@ export default function GenerationLogPage() {
   const [selectedJobId, setSelectedJobId] = useState("");
   const [loadError, setLoadError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [workflowJobs, setWorkflowJobs] = useState<WorkflowArtifactJob[]>([]);
+  const [workflowError, setWorkflowError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -57,6 +61,29 @@ export default function GenerationLogPage() {
       cancelled = true;
     };
   }, [projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setWorkflowError("");
+    setWorkflowJobs([]);
+    async function loadArtifacts() {
+      try {
+        const response = await fetchWorkflowArtifacts(projectId);
+        if (cancelled) return;
+        setWorkflowJobs(response.items);
+      } catch (reason) {
+        if (!cancelled) {
+          // No workflow artifacts yet is a normal state for projects that
+          // haven't run the new modular pipeline — swallow the error.
+          setWorkflowError(reason instanceof Error ? reason.message : "");
+        }
+      }
+    }
+    void loadArtifacts();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, selectedJobId, job?.status]);
 
   useEffect(() => {
     if (!selectedJobId) return;
@@ -126,6 +153,12 @@ export default function GenerationLogPage() {
         </section>
       ) : null}
       {steps.length > 0 ? <WritingFlowPanel steps={steps} status={job?.progress} /> : null}
+      <section className="ws-card" aria-label="新流程结构化工件">
+        <h2 className="ws-card__title">新流程结构化工件</h2>
+        <p className="ws-card__hint">每次章节生成后，新模块化流程会在这里列出本次 Director / Writer / FactExtractor 的输入资料、调用模块和本步产物。</p>
+        {workflowError ? <p className="ws-inline-error">新流程工件加载失败：{workflowError}</p> : null}
+        <WorkflowArtifactPanel jobs={workflowJobs} />
+      </section>
     </div>
   );
 }

@@ -1,6 +1,10 @@
 "use client";
 
-import type { GenerationJobStep } from "../../lib/api";
+import type {
+  GenerationJobStep,
+  WorkflowArtifactJob,
+  WorkflowArtifactStage,
+} from "../../lib/api";
 
 export type WritingFlowStage = {
   key: string;
@@ -109,6 +113,108 @@ export function writingFlowStatusText(stage: WritingFlowStage): string {
   if (stage.status === "running") return "进行中";
   if (stage.status === "done") return stage.seconds ? `完成 ${stage.seconds}s` : "已完成";
   return "失败";
+}
+
+const AGENT_LABELS: Record<string, string> = {
+  DirectorAgent: "导演",
+  WriterAgent: "写手",
+  FactExtractor: "事实提取",
+  FocusedConsistencyAgent: "一致性检查",
+};
+
+const STAGE_LABELS_ARTIFACT: Record<string, string> = {
+  director: "章节规划",
+  writer: "正文生成",
+  "fact-extractor": "事实提取",
+  consistency: "一致性检查",
+};
+
+function readSummary(reads: WorkflowArtifactStage["reads"]): string {
+  if (!Array.isArray(reads) || reads.length === 0) return "无读取记录";
+  return reads
+    .map((entry) => {
+      if (!isObject(entry)) return String(entry);
+      const kind = typeof entry.kind === "string" ? entry.kind : "";
+      const id = typeof entry.id === "string" ? entry.id : "";
+      return kind && id ? `${kind}:${id}` : kind || id || JSON.stringify(entry);
+    })
+    .filter(Boolean)
+    .join("、");
+}
+
+function elapsedSeconds(stage: WorkflowArtifactStage): string {
+  if (!Number.isFinite(stage.elapsed_ms) || stage.elapsed_ms <= 0) return "—";
+  if (stage.elapsed_ms < 1000) return `${stage.elapsed_ms}ms`;
+  return `${(stage.elapsed_ms / 1000).toFixed(2)}s`;
+}
+
+export function WorkflowArtifactPanel({
+  jobs,
+}: {
+  jobs: WorkflowArtifactJob[];
+}) {
+  if (jobs.length === 0) {
+    return (
+      <p className="ws-card__hint">
+        新流程尚未生成结构化工件。新章节生成完毕后此处会自动列出本步骤的读取资料、调用模块和本步产物。
+      </p>
+    );
+  }
+  const latest = jobs[jobs.length - 1];
+  return (
+    <div className="ws-workflow-artifacts">
+      <p className="ws-card__hint">
+        任务 <code>{latest.job_id}</code> 的结构化工件：
+      </p>
+      <ol className="ws-plain-list">
+        {latest.stages.map((stage) => (
+          <li key={`${latest.job_id}-${stage.stage_id}`} className="ws-workflow-artifacts__stage">
+            <p style={{ margin: 0 }}>
+              <strong>
+                {STAGE_LABELS_ARTIFACT[stage.stage_id] ?? stage.stage_id}
+              </strong>{" "}
+              <span className="ws-badge">
+                {AGENT_LABELS[stage.agent_id] ?? stage.agent_id} · {stage.status} · {elapsedSeconds(stage)}
+              </span>
+            </p>
+            {stage.provider || stage.model ? (
+              <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                模型：{stage.provider || "?"} / {stage.model || "?"}
+              </p>
+            ) : null}
+            {stage.selected_entity_ids.length > 0 ? (
+              <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                涉及实体：{stage.selected_entity_ids.join("、")}
+              </p>
+            ) : null}
+            {stage.selected_module_ids.length > 0 ? (
+              <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                调用模块：{stage.selected_module_ids.join("、")}
+              </p>
+            ) : null}
+            <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+              读取资料：{readSummary(stage.reads)}
+            </p>
+            {stage.output_summary ? (
+              <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                本步产物：<code>{stage.output_summary}</code>
+              </p>
+            ) : null}
+            {stage.artifact_path ? (
+              <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                产物路径：<code>{stage.artifact_path}</code>
+              </p>
+            ) : null}
+            {stage.error ? (
+              <p className="ws-inline-error" style={{ margin: "4px 0 0" }}>
+                错误：{stage.error}
+              </p>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
 }
 
 function stageLabel(stage: string | undefined): string {

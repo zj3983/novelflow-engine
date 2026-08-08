@@ -768,6 +768,7 @@ export default function OutlinePage() {
               <textarea
                 className="ws-input"
                 rows={4}
+                aria-label="核心故事"
                 value={draft.overall.story}
                 onChange={(event) => setDraft({ ...draft, overall: { ...draft.overall, story: event.target.value } })}
               />

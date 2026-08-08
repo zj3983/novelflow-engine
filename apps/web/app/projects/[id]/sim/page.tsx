@@ -115,8 +115,8 @@ export default function WorldStatePage() {
 
       {stateIndex.length > 1 ? (
         <label className="ws-search">
-          <span>状态章节</span>
-          <select className="ws-input" value={selectedChapter} onChange={(event) => setSelectedChapter(Number(event.target.value))}>
+          <span>响应章节</span>
+          <select aria-label="响应章节" className="ws-input" value={selectedChapter} onChange={(event) => setSelectedChapter(Number(event.target.value))}>
             {stateIndex.map((entry) => (
               <option key={entry.chapter_number} value={entry.chapter_number}>
                 第 {entry.chapter_number} 章：{entry.chapter_title || "未命名"}
@@ -155,7 +155,7 @@ function WorldStateRecord({ bundle, encodedProjectId }: { bundle: ChapterBundle;
     <section className="ws-card ws-sim-chapter">
       <div className="ws-section-head">
         <div>
-          <p className="ws-card__title">第 {bundle.chapter_number} 章状态记录</p>
+          <p className="ws-card__title">第 {bundle.chapter_number} 章响应记录</p>
           <h2 className="ws-sim-chapter__title">{bundle.chapter_title || "未命名"}</h2>
         </div>
         <Link href={`/projects/${encodedProjectId}/write?chapter=${bundle.chapter_number}`} className="ws-text-link">
