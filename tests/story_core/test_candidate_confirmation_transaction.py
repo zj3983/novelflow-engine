@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from packages.story_core.candidate_draft import CandidateDraft
+from packages.story_core.engine import StoryState
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.generation_progress import generation_progress
 
@@ -65,6 +66,14 @@ def _long_body(tag: str) -> str:
 
 def _read_managed_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def test_confirm_candidate_writes_chapter_metadata_and_snapshot_atomically(tmp_path):
@@ -382,6 +391,312 @@ def test_confirm_candidate_applies_continuity_delta_to_canon_registry(tmp_path):
     store.confirm_candidate(candidate_two.candidate_id)
     payload = json.loads(canon_registry_path.read_text(encoding="utf-8"))
     assert "char-aaaa1111" in (payload.get("by_id") or {})
+
+
+def test_pending_candidate_exposes_length_and_consistency_failures_before_confirm(
+    tmp_path, monkeypatch
+):
+    """The candidate card must show the same quality failure
+    the confirmation gate would reject.
+
+    The user feedback after Round 5 called out that the
+    workbench's "通过" indicator was a lie: the candidate
+    page showed the body as passable while the confirmation
+    flow later rejected the same body for being below the
+    3800-character hard gate. The two surfaces disagreed
+    because the candidate's ``quality_report`` was assembled
+    before the length review ran — confirmation then ran the
+    length gate independently and surfaced a failure the
+    user never saw on the candidate card.
+
+    The new contract: the candidate carries the length and
+    consistency findings on its ``quality_report.writing_review``
+    so the workbench can render the failure *before* the user
+    clicks confirm. ``quality_report.ok`` is ``False`` whenever
+    a blocking finding is present, and the issue list names
+    the deterministic code so the operator can audit it.
+    """
+    from packages.story_core.engine import StoryEngine
+
+    project_root = tmp_path / "length-quality"
+    project_root.mkdir()
+    _write_json(
+        project_root / ".story-system" / "MASTER_SETTING.json",
+        {
+            "project": {
+                "project_id": "file:length-quality",
+                "title": "长度质量对齐",
+            }
+        },
+    )
+    _write_json(
+        project_root / ".webnovel" / "project.json",
+        {
+            "project_id": "file:length-quality",
+            "title": "长度质量对齐",
+            "character_profiles": [{"name": "林昭", "role": "protagonist"}],
+            "enabled_skill_ids": [],
+        },
+    )
+    _write_json(
+        project_root / ".webnovel" / "state.json",
+        {
+            "story_id": "s-length-quality",
+            "current_chapter": 0,
+            "characters": [{"name": "林昭", "role": "protagonist"}],
+            "world_facts": [],
+            "chapter_summaries": [],
+        },
+    )
+    store = FileProjectStore(project_root)
+
+    # Stub the modular runtimes: a director that always
+    # returns a valid executable artifact, a writer that
+    # returns a body too short to clear the hard gate, and a
+    # consistency runtime that flags the same body.
+    class _StubDirector:
+        def complete(self, request):
+            return {
+                "chapter_number": 1,
+                "chapter_title": "长度测试章",
+                "chapter_goal": "导演测试章节",
+                "opening_state": "林照轻伤",
+                "scene_beats": [
+                    {"order": 1, "location": "妖林", "action": "起身", "result": "离开"},
+                    {"order": 2, "location": "驿站", "action": "交付", "result": "进入"},
+                ],
+                "ending_state": "夜宿驿站",
+                "hook": "下一章",
+                "entity_requirements": [
+                    {"kind": "character", "name": "林昭"},
+                ],
+            }
+
+    class _StubWriter:
+        def complete(self, request):
+            class _Resp:
+                # A short body — far below the 3800 hard gate.
+                text = "字数偏少。" * 100
+                raw: dict = {}
+
+            return _Resp()
+
+    class _StubConsistency:
+        def complete(self, request):
+            return {
+                "issues": [
+                    {
+                        "code": "consistency.unavailable",
+                        "message": "事实审稿未完成：simulated",
+                        "source": "consistency",
+                        "blocking": True,
+                    }
+                ]
+            }
+
+    engine = StoryEngine(
+        use_modular_agents=True,
+        project_root=project_root,
+    )
+    def _stub_pipeline(**kwargs):
+        chapter_number = int(kwargs.get("chapter_number") or 1)
+        return _fake_modular_call(
+            chapter_number=chapter_number,
+            project_root=project_root,
+            director_runtime=_StubDirector(),
+            writer_runtime=_StubWriter(),
+            consistency_runtime=_StubConsistency(),
+        )
+
+    monkeypatch.setattr(
+        engine.orchestrator,
+        "generate_next_chapter_via_modular_pipeline",
+        _stub_pipeline,
+    )
+
+    result = store.generate_next_chapter(engine=engine, persist=False)
+    candidate = result["candidate"]
+
+    quality_report = candidate.get("quality_report") or {}
+    # The candidate card must already show the failure; the
+    # workbench's "通过" indicator must NOT be a lie.
+    assert quality_report.get("ok") is False, (
+        "candidate quality_report.ok must be False when the "
+        "candidate fails the length or consistency gate"
+    )
+    writing_review = quality_report.get("writing_review") or {}
+    blocking = writing_review.get("blocking") or []
+    issues = writing_review.get("issues") or []
+    candidate_codes = {
+        str(item.get("code") if isinstance(item, dict) else item)
+        for item in blocking
+    } | {
+        str(item.get("code") if isinstance(item, dict) else item)
+        for item in issues
+    }
+    assert "chapter.length_too_short" in candidate_codes, (
+        f"chapter.length_too_short must surface in the candidate "
+        f"quality envelope; got {sorted(candidate_codes)}"
+    )
+
+
+def _fake_modular_call(
+    *,
+    chapter_number: int,
+    project_root: Path,
+    director_runtime,
+    writer_runtime,
+    consistency_runtime,
+):
+    """Drive the modular pipeline with stubbed runtimes and
+    return a :class:`ModularChapterBundle` shaped like the
+    production orchestrator output. Used by the
+    candidate-quality tests that need a short body to exercise
+    the deterministic length gate without a real model.
+    """
+    from packages.story_core.agents.contracts import DirectorArtifact, SceneBeat
+    from packages.story_core.agents.fact_extractor import (
+        FactExtractor,
+        FactExtractorContext,
+    )
+    from packages.story_core.agents.pipeline import (
+        ModularChapterBundle,
+        plan_director_artifact,
+        run_writer as run_writer_pipeline,
+    )
+
+    target_chapter = int(chapter_number)
+    director_result = plan_director_artifact(
+        project_root=project_root,
+        chapter_number=target_chapter,
+        runtime=director_runtime,
+    )
+    writer_result = run_writer_pipeline(
+        project_root=project_root,
+        chapter_number=target_chapter,
+        director_artifact=director_result.artifact,
+        runtime=writer_runtime,
+        consistency_runtime=consistency_runtime,
+    )
+    delta = FactExtractor().extract(
+        FactExtractorContext(
+            body=writer_result.body,
+            chapter_number=target_chapter,
+            canon_view={"by_id": {}, "by_kind": {}, "by_alias": {}},
+        )
+    )
+    return ModularChapterBundle(
+        chapter_number=target_chapter,
+        director_artifact=director_result.artifact,
+        director_trace_id=f"director:{target_chapter}",
+        body=writer_result.body,
+        writer_context=writer_result.context,
+        canon_preflight=dict(writer_result.canon_preflight or {}),
+        writer_trace_id=f"writer:{target_chapter}",
+        consistency_findings=list(writer_result.consistency_findings or []),
+        continuity_delta=delta,
+        fact_extractor_trace_id=f"fact-extractor:{target_chapter}",
+    )
+
+
+def test_candidate_envelope_re_runs_length_gate_when_pipeline_omitted_it(
+    tmp_path,
+):
+    """A handcrafted bundle that bypasses the modular
+    pipeline (no orchestrator, no consistency findings on
+    the envelope) must still surface a length failure on
+    the candidate card.
+
+    The user feedback after Round 5 flagged that a
+    candidate built directly from a ``SimpleNamespace``
+    bundle — without going through the orchestrator's
+    ``_generate_next_chapter_bundle_via_modular_agents`` —
+    could land on the candidate card with an
+    empty ``quality_report.writing_review``. The
+    confirmation flow then re-ran the length gate and
+    rejected the body, so the user saw the candidate as
+    passable and the confirmation as failed. The
+    ``_save_candidate_from_bundle`` envelope now runs the
+    deterministic length review itself so the two surfaces
+    always agree.
+    """
+    store = FileProjectStore(tmp_path)
+    bundle = SimpleNamespace(
+        chapter_number=1,
+        chapter_title="手写测试章",
+        title="手写测试章",
+        # A short body — far below the 3800 hard gate.
+        body="短。" * 200,
+        # The envelope carries no writing_review at all so the
+        # candidate must still surface the length finding.
+        quality_report={"ok": True},
+        context_snapshot_id="ctx-handcrafted",
+    )
+    with generation_progress(lambda *_: None):
+        candidate = store._save_candidate_from_bundle(bundle, project_id=store.root.name)
+
+    quality_report = candidate.quality_report or {}
+    assert quality_report.get("ok") is False, (
+        "candidate quality_report.ok must be False when the "
+        "deterministic length gate fails, even for handcrafted "
+        "bundles that bypass the modular pipeline"
+    )
+    writing_review = quality_report.get("writing_review") or {}
+    blocking = writing_review.get("blocking") or []
+    blocking_codes = {
+        str(item.get("code") if isinstance(item, dict) else item)
+        for item in blocking
+    }
+    assert "chapter.length_too_short" in blocking_codes, (
+        "chapter.length_too_short must surface on the candidate "
+        "card for a handcrafted short body so the workbench "
+        "shows the failure before the user clicks confirm"
+    )
+
+
+def test_candidate_envelope_re_runs_length_gate_when_pipeline_passed_through(
+    tmp_path,
+):
+    """A pipeline-built bundle that already lists the length
+    finding on its writing_review must keep the same code on
+    the candidate envelope (no duplicate, no override).
+    """
+    store = FileProjectStore(tmp_path)
+    bundle = SimpleNamespace(
+        chapter_number=1,
+        chapter_title="带信号测试章",
+        title="带信号测试章",
+        body="短。" * 200,
+        quality_report={
+            "ok": False,
+            "writing_review": {
+                "pass": False,
+                "blocking": [
+                    {
+                        "code": "chapter.length_too_short",
+                        "message": "已记录的信号",
+                        "source": "consistency",
+                    }
+                ],
+                "issues": ["chapter.length_too_short"],
+            },
+        },
+        context_snapshot_id="ctx-signal",
+    )
+    with generation_progress(lambda *_: None):
+        candidate = store._save_candidate_from_bundle(bundle, project_id=store.root.name)
+
+    quality_report = candidate.quality_report or {}
+    writing_review = quality_report.get("writing_review") or {}
+    blocking = writing_review.get("blocking") or []
+    blocking_codes = [
+        str(item.get("code") if isinstance(item, dict) else item)
+        for item in blocking
+    ]
+    # The length code is present (added by either the pipeline
+    # or the merge helper — not duplicated either way).
+    assert blocking_codes.count("chapter.length_too_short") == 1
+    assert quality_report.get("ok") is False
 
 
 def test_canon_apply_rolls_back_when_transaction_aborts(tmp_path, monkeypatch):

@@ -266,6 +266,17 @@ export function WorkflowArtifactPanel({
                   错误：{stage.error}
                 </p>
               ) : null}
+              {stage.blocking_issues && stage.blocking_issues.length > 0 ? (
+                <p className="ws-inline-error" style={{ margin: "4px 0 0" }}>
+                  阻断问题：
+                  {stage.blocking_issues
+                    .map(
+                      (issue: { code?: string; message?: string }) =>
+                        `${issue.code || "?"}：${issue.message || ""}`
+                    )
+                    .join("；")}
+                </p>
+              ) : null}
               <button
                 type="button"
                 className="ws-button"

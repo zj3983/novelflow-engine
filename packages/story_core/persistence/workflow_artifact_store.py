@@ -77,6 +77,7 @@ class StageArtifactRecord:
     prompt_template_version: str = ""
     output_summary: str = ""
     error: str = ""
+    blocking_issues: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -98,6 +99,7 @@ class StageArtifactRecord:
             "prompt_template_version": self.prompt_template_version,
             "output_summary": self.output_summary,
             "error": self.error,
+            "blocking_issues": list(self.blocking_issues),
         }
 
     @classmethod
@@ -120,6 +122,7 @@ class StageArtifactRecord:
             prompt_template_version=str(payload.get("prompt_template_version") or ""),
             output_summary=str(payload.get("output_summary") or ""),
             error=str(payload.get("error") or ""),
+            blocking_issues=list(payload.get("blocking_issues") or []),
         )
 
 

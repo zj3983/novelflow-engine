@@ -2430,6 +2430,24 @@ class FileProjectStore:
                 body=body,
                 chapter_number=chapter_number,
             )
+        # Re-run the deterministic length gate while building the
+        # candidate so the workbench's "通过" indicator agrees
+        # with the confirmation gate. The user feedback after
+        # Round 5 flagged that the candidate page said passable
+        # while the confirmation later rejected the same body
+        # for being below the 3800-character hard gate. The
+        # pipeline already surfaces ``chapter.length_too_short``
+        # as a consistency finding for the writer stage, but
+        # we merge the deterministic length review into the
+        # candidate envelope too so callers that bypass the
+        # orchestrator (test fixtures, hand-crafted bundles)
+        # still see the same failure the confirmation will
+        # reject.
+        quality_report = self._merge_candidate_length_review(
+            quality_report=quality_report,
+            bundle=bundle,
+            body=body,
+        )
         context_trace_ids = self._candidate_context_trace_ids(bundle)
         candidate = CandidateDraft.create(
             project_id=project_id,
@@ -2522,6 +2540,111 @@ class FileProjectStore:
         except Exception:
             return {"by_id": {}, "by_kind": {}, "by_alias": {}}
         return _project_canon_registry_for_extractor(registry)
+
+    def _merge_candidate_length_review(
+        self,
+        *,
+        quality_report: dict[str, Any] | None,
+        bundle: Any,
+        body: str,
+    ) -> dict[str, Any]:
+        """Merge the deterministic length review into the
+        candidate ``quality_report``.
+
+        The user feedback after Round 5 called out that the
+        candidate page showed the body as passable while the
+        confirmation flow later rejected the same body for
+        being below the 3800-character hard gate. The two
+        surfaces disagreed because the candidate's
+        ``quality_report`` was assembled before the length
+        review ran — confirmation then ran the length gate
+        independently and surfaced a failure the user never
+        saw on the candidate card.
+
+        The new contract: the candidate carries the length
+        review's pass/fail verdict and the matching finding
+        code (``chapter.length_too_short`` /
+        ``chapter.length_too_long``) on its
+        ``quality_report.writing_review`` so the workbench can
+        render the failure *before* the user clicks confirm.
+        ``quality_report.ok`` is flipped to ``False`` whenever
+        the length review fails, and the issue list names the
+        deterministic code so the operator can audit it.
+        Confirmation keeps re-running the deterministic gate
+        (defense in depth against tampering) but the candidate
+        card no longer lies about the verdict.
+        """
+        length_review = _chapter_length_review(body)
+        if quality_report is None:
+            quality_report = getattr(bundle, "quality_report", None)
+        if not isinstance(quality_report, dict):
+            quality_report = {}
+        # ``writing_review`` is the canonical sub-envelope the
+        # workbench renders. Build it from the existing
+        # quality_report when present so the rest of the
+        # candidate envelope (consistency findings, scores,
+        # etc.) survives the merge.
+        writing_review = quality_report.get("writing_review")
+        if not isinstance(writing_review, dict):
+            writing_review = {}
+        # The deterministic finding the workbench surfaces.
+        # We use the matching ``chapter.length_too_short`` /
+        # ``chapter.length_too_long`` code so the candidate
+        # card and the confirmation gate name the same
+        # blocking issue.
+        existing_blocking = list(writing_review.get("blocking") or [])
+        existing_issues = list(writing_review.get("issues") or [])
+        body_chars = int(length_review.get("body_chars") or 0)
+        min_chars = int(length_review.get("min_chars") or FILE_CHAPTER_MIN_CHARS)
+        max_chars = int(length_review.get("max_chars") or FILE_CHAPTER_HARD_MAX_CHARS)
+        if not bool(length_review.get("pass", True)):
+            if body_chars < min_chars:
+                length_code = "chapter.length_too_short"
+                length_message = (
+                    f"正文约{body_chars}字，低于{min_chars}字硬门槛。"
+                )
+            else:
+                length_code = "chapter.length_too_long"
+                length_message = (
+                    f"正文约{body_chars}字，超过{max_chars}字硬上限。"
+                )
+            if length_code not in {
+                str(item.get("code") if isinstance(item, dict) else item)
+                for item in existing_blocking
+            }:
+                existing_blocking.append(
+                    {
+                        "code": length_code,
+                        "message": length_message,
+                        "source": "deterministic",
+                        "blocking": True,
+                    }
+                )
+            if length_code not in {
+                str(item.get("code") if isinstance(item, dict) else item)
+                for item in existing_issues
+            }:
+                existing_issues.append(length_code)
+        writing_review["blocking"] = existing_blocking
+        writing_review["issues"] = existing_issues
+        # The candidate card's overall verdict agrees with the
+        # confirmation gate whenever any blocking finding is
+        # present — the workbench renders "通过" only when no
+        # deterministic contradiction or length failure is on
+        # the envelope.
+        has_blocking = any(
+            bool(item.get("blocking", True))
+            for item in existing_blocking
+            if isinstance(item, dict)
+        )
+        writing_review["pass"] = not has_blocking
+        quality_report["writing_review"] = writing_review
+        quality_report["ok"] = quality_report.get("ok", True) and not has_blocking
+        # Also surface the raw length-review numbers so the
+        # workbench can render "约 1234 / 3800 字" next to the
+        # body without re-running the gate.
+        quality_report["length_review"] = length_review
+        return quality_report
 
     def _candidate_context_trace_ids(self, bundle: Any) -> list[str]:
         """Collect the per-agent trace ids the bundle already carries.

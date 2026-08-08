@@ -893,6 +893,11 @@ def run_modular_pipeline(
             started_monotonic=writer_started,
             provider=writer_provider,
             model=writer_model,
+            # The blocking findings surface on the workbench's
+            # stage evidence column so the operator sees the
+            # same contradiction / length failure the candidate
+            # card shows before the user clicks confirm.
+            consistency_findings=list(writer_result.consistency_findings or []),
         )
         record_fact_extractor_stage(
             store=workflow_store,

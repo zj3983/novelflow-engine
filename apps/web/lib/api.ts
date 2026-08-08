@@ -3789,6 +3789,7 @@ export type WorkflowArtifactStage = {
   error: string;
   started_at: string;
   finished_at: string;
+  blocking_issues?: { code: string; message: string; source: string }[];
 };
 
 export type WorkflowArtifactJob = {

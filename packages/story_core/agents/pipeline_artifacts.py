@@ -184,8 +184,18 @@ def record_writer_stage(
     model: str = "",
     prompt_template_id: str = "",
     prompt_template_version: str = "",
+    consistency_findings: list[dict[str, Any]] | None = None,
 ) -> Path:
-    """Record the writer stage outcome on disk."""
+    """Record the writer stage outcome on disk.
+
+    The writer stage carries the focused consistency review's
+    blocking findings (length, fact-contradiction, unavailable
+    review) on the workflow artifact. The workbench's stage
+    evidence column renders the same findings the candidate
+    card's "通过" indicator disagrees with, so the operator
+    can audit why a candidate was marked failed before the
+    user clicks confirm.
+    """
     started_monotonic = (
         started_monotonic if started_monotonic is not None else time.monotonic()
     )
@@ -204,6 +214,22 @@ def record_writer_stage(
         for card in context.entity_cards or []:
             if isinstance(card, dict):
                 reads.append({"kind": "entity", "id": str(card.get("name") or "")})
+    blocking_issues: list[dict[str, Any]] = []
+    for finding in consistency_findings or []:
+        if not isinstance(finding, dict):
+            continue
+        if not bool(finding.get("blocking", True)):
+            continue
+        code = str(finding.get("code") or "").strip()
+        if not code:
+            continue
+        blocking_issues.append(
+            {
+                "code": code,
+                "message": str(finding.get("message") or ""),
+                "source": str(finding.get("source") or "consistency"),
+            }
+        )
     record = StageArtifactRecord(
         stage_id="writer",
         agent_id="WriterAgent",
@@ -224,6 +250,7 @@ def record_writer_stage(
         prompt_template_version=prompt_template_version,
         output_summary=_summarise_writer(result.body or ""),
         error="",
+        blocking_issues=blocking_issues,
     )
     return store.write_stage(job_id, record)
 
