@@ -475,15 +475,24 @@ def run_writer(
                 director_artifact=director_artifact,
                 active_facts=list(context.continuity_facts or []),
                 runtime=consistency_runtime,
+                character_states=list(context.character_cards or []),
             )
             consistency_findings.extend(model_findings)
         except Exception:
-            # The agent itself is best-effort: a runtime failure
-            # here becomes a ``consistency.unavailable`` finding
-            # in Task 4 (fail-closed). For now the deterministic
-            # length gate above stays in effect; we do not silently
-            # downgrade to ``[]``.
-            pass
+            # Defensive double-belt: the agent itself now fails
+            # closed inside ``focused_consistency_review`` so a
+            # runtime error surfaces as a blocking
+            # ``consistency.unavailable`` finding. If anything
+            # escapes that layer we still fall back to a blocking
+            # finding rather than silently dropping the review.
+            consistency_findings.append(
+                ConsistencyFinding(
+                    code="consistency.unavailable",
+                    message="事实审稿 pipeline 异常；视为失败。",
+                    source="consistency",
+                    blocking=True,
+                )
+            )
     return WriterPipelineResult(
         body=result.body,
         context=context,

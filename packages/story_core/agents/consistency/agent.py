@@ -5,9 +5,13 @@ contradict the established facts or the approved director
 plan?* It does not grade literary style; style findings stay
 warnings the user can accept and ship with.
 
-The runtime boundary mirrors the writer / director agent shape
-so a CLI / HTTP API swap is invisible to the agent. A test
-double can return a canned payload.
+The agent is **fail-closed**: a runtime exception or a
+malformed response becomes a blocking ``consistency.unavailable``
+or ``consistency.invalid_response`` finding rather than a
+silent ``[]`` that lets a contradictory draft reach the
+confirmation gate. Style findings keep the original
+``blocking=False`` downgrade; only the failure modes are
+treated as blocking.
 """
 
 from __future__ import annotations
@@ -52,18 +56,37 @@ def _extract_payload(response: Any) -> dict[str, Any]:
     return {}
 
 
+def _current_character_state(card: dict[str, Any]) -> dict[str, Any]:
+    """Project only the *current* state of a character for the
+    consistency prompt. Mirrors ``writer/prompt.py`` so the model
+    sees the same canonical snapshot the writer did.
+    """
+    state: dict[str, Any] = {}
+    for namespace in ("current_state", "real_state", "game_state"):
+        value = card.get(namespace)
+        if isinstance(value, dict):
+            current = value.get("current") if isinstance(value.get("current"), dict) else value
+            if current:
+                state[namespace] = current
+    return state
+
+
 def build_consistency_prompt(
     body: str,
     director_artifact: DirectorArtifact,
     active_facts: list[dict[str, Any]],
+    *,
+    character_states: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render the focused consistency prompt.
 
     The prompt names the chapters facts to check (director
-    artifact, active continuity facts) and asks for structured
-    findings only. It explicitly tells the model not to grade
-    style or recommend prose improvements — those go through
-    the soft-review path.
+    artifact, active continuity facts, current character state
+    so the model can see the protagonist's equipment, level,
+    quest progress, etc.) and asks for structured findings
+    only. It explicitly tells the model not to grade style or
+    recommend prose improvements — those go through the
+    soft-review path.
     """
     beats = "\n".join(
         f"- 顺序{beat.order} · 地点：{beat.location} · 动作：{beat.action} · 结果：{beat.result}"
@@ -72,6 +95,19 @@ def build_consistency_prompt(
     facts = "\n".join(
         f"- {fact.get('subject', '?')} · {fact.get('field', '?')}：{fact.get('value', '?')}"
         for fact in active_facts
+    )
+    state_lines: list[str] = []
+    for card in character_states or []:
+        name = card.get("name", "未命名")
+        current = _current_character_state(card)
+        if current:
+            import json
+
+            state_lines.append(
+                f"- {name}：{json.dumps(current, ensure_ascii=False, separators=(',', ':'))}"
+            )
+    character_state_section = (
+        f"## 角色当前状态\n" + "\n".join(state_lines) if state_lines else ""
     )
     return (
         "你是小说事实一致性 agent。\n"
@@ -82,7 +118,10 @@ def build_consistency_prompt(
         f"## 场景节拍\n{beats}\n\n"
         f"## 收尾状态\n{director_artifact.ending_state}\n\n"
         f"## 既定事实\n{facts or '（无）'}\n\n"
-        f"## 正文\n{body}"
+        + (f"{character_state_section}\n\n" if character_state_section else "")
+        + f"## 正文\n{body}\n\n"
+        "只检查：人物身份、位置、职业、等级、属性、装备、库存、任务、已知信息、导演场景结果。"
+        "不要评价文笔、节奏、对话、修辞或爽点。"
     )
 
 
@@ -94,7 +133,10 @@ class ConsistencyFinding:
     deterministic checks live in ``continuity.checks``.
     ``blocking`` is preserved if the runtime tagged it
     blocking, but the wrapper downgrades style issues to
-    advisory so the user can accept them.
+    advisory so the user can accept them. A runtime failure
+    surfaces as a blocking ``consistency.unavailable`` finding
+    so the candidate page shows the same failure the
+    confirmation will reject.
     """
 
     code: str
@@ -131,8 +173,14 @@ class FocusedConsistencyAgent:
         body: str,
         director_artifact: DirectorArtifact,
         active_facts: list[dict[str, Any]],
+        character_states: list[dict[str, Any]] | None = None,
     ) -> list[ConsistencyFinding]:
-        prompt = build_consistency_prompt(body, director_artifact, active_facts)
+        prompt = build_consistency_prompt(
+            body,
+            director_artifact,
+            active_facts,
+            character_states=character_states,
+        )
         request = _ModelRequest(
             prompt=prompt,
             stage="consistency",
@@ -142,11 +190,33 @@ class FocusedConsistencyAgent:
                 "schema_version": director_artifact.schema_version,
             },
         )
-        response = self._runtime.complete(request)
+        # Fail closed: a runtime exception becomes a blocking
+        # ``consistency.unavailable`` finding instead of a silent
+        # ``[]``. The orchestrator's confirmation gate re-runs the
+        # deterministic check, so a contradicted draft never
+        # reaches the user as "通过".
+        try:
+            response = self._runtime.complete(request)
+        except Exception as exc:  # noqa: BLE001 — public boundary
+            return [
+                ConsistencyFinding(
+                    code="consistency.unavailable",
+                    message=f"事实审稿未完成：{type(exc).__name__}: {exc}",
+                    source="consistency",
+                    blocking=True,
+                )
+            ]
         payload = _extract_payload(response)
         issues = payload.get("issues") if isinstance(payload, dict) else None
         if not isinstance(issues, list):
-            return []
+            return [
+                ConsistencyFinding(
+                    code="consistency.invalid_response",
+                    message="事实审稿未返回结构化 issues 列表。",
+                    source="consistency",
+                    blocking=True,
+                )
+            ]
         findings: list[ConsistencyFinding] = []
         for issue in issues:
             if not isinstance(issue, dict):
@@ -174,6 +244,7 @@ def focused_consistency_review(
     director_artifact: DirectorArtifact,
     active_facts: list[dict[str, Any]],
     runtime: ConsistencyRuntime,
+    character_states: list[dict[str, Any]] | None = None,
 ) -> list[ConsistencyFinding]:
     """Convenience entry point for the orchestrator's confirmation path."""
     agent = FocusedConsistencyAgent(runtime=runtime)
@@ -181,6 +252,7 @@ def focused_consistency_review(
         body=body,
         director_artifact=director_artifact,
         active_facts=active_facts,
+        character_states=character_states,
     )
 
 
