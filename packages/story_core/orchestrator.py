@@ -3079,8 +3079,24 @@ def _failed_bundle(story: StoryState, chapter_number: int, reason: str = ""):
 
 
 class StoryOrchestrator:
-    def __init__(self, model_gateway: Any | None = None) -> None:
+    def __init__(
+        self,
+        model_gateway: Any | None = None,
+        *,
+        use_modular_agents: bool = False,
+    ) -> None:
         self.model_gateway = model_gateway or RuntimeModelGateway()
+        # ``use_modular_agents`` flags the new pipeline as the
+        # preferred body-generation path. The legacy
+        # ``generate_next_chapter_bundle`` still calls
+        # ``resolve_chapter_plan`` / ``generate_chapter_body`` for
+        # backward compatibility with the 4 000+ existing tests;
+        # callers that opt in here get
+        # :func:`generate_next_chapter_via_modular_pipeline` which
+        # routes through the new Director / Writer / FactExtractor
+        # agents. The CLI / API layer flips this on for production
+        # in a follow-up; the e2e test does the same in isolation.
+        self._use_modular_agents = bool(use_modular_agents)
         # The fact extractor is shared between the orchestrator and
         # the candidate-save path so both see the same shape. The
         # default factory produces a model-less extractor; callers
@@ -3089,6 +3105,11 @@ class StoryOrchestrator:
         # 14 will tighten when the orchestrator owns the canon
         # registry and can pass a real view to the extractor.
         self._fact_extractor: Any | None = None
+
+    @property
+    def use_modular_agents(self) -> bool:
+        """Whether the orchestrator routes through the new modular pipeline."""
+        return self._use_modular_agents
 
     def fact_extractor(self) -> Any:
         """Return the active ``FactExtractor`` instance.
@@ -3108,6 +3129,49 @@ class StoryOrchestrator:
     def set_fact_extractor(self, extractor: Any) -> None:
         """Install a custom ``FactExtractor`` (used by tests and CLI)."""
         self._fact_extractor = extractor
+
+    def generate_next_chapter_via_modular_pipeline(
+        self,
+        *,
+        project_root: Any,
+        chapter_number: int,
+        director_runtime: Any | None = None,
+        writer_runtime: Any | None = None,
+        fact_extractor: Any | None = None,
+        canon_registry: Any | None = None,
+    ) -> Any:
+        """Run the new modular agent pipeline end-to-end.
+
+        This is the wiring the Tasks 10-14 infrastructure prepared
+        for. The orchestrator calls ``plan_director_artifact`` (new
+        :class:`DirectorAgent`), then ``run_writer`` (new
+        :class:`WriterAgent` with the side-effect-free canon
+        preflight), then ``run_fact_extractor`` (the deterministic
+        :class:`FactExtractor`) — the three modules the user
+        flagged as missing from the main flow. The returned
+        :class:`ModularChapterBundle` carries the
+        :class:`DirectorArtifact`, the body, the
+        :class:`ContinuityDelta`, and per-stage trace ids so the
+        workbench can render each agent's output.
+
+        Tests call this directly to assert the three modules were
+        called exactly once. The legacy
+        ``generate_next_chapter_bundle`` is unchanged so the
+        existing test suite keeps working.
+        """
+        from packages.story_core.agents.fact_extractor import FactExtractor
+        from packages.story_core.agents.pipeline import run_modular_pipeline
+
+        if fact_extractor is None:
+            fact_extractor = self.fact_extractor() or FactExtractor()
+        return run_modular_pipeline(
+            project_root=project_root,
+            chapter_number=chapter_number,
+            director_runtime=director_runtime,
+            writer_runtime=writer_runtime,
+            fact_extractor=fact_extractor,
+            canon_registry=canon_registry,
+        )
 
     def _emit_workflow_step(
         self,

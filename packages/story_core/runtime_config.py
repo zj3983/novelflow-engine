@@ -92,7 +92,7 @@ AGENT_RUNTIME_NAMES: tuple[AgentRuntimeName, ...] = ("character", "director", "w
 # Kept as a public compatibility symbol while callers move to provider IDs.
 RuntimeProvider = str
 RuntimeStage = Literal["planner", "writer"]
-RuntimeStageInput = Literal["planner", "writer", "memory"]
+RuntimeStageInput = Literal["planner", "writer", "memory", "director"]
 RUNTIME_STAGES: tuple[RuntimeStage, ...] = ("planner", "writer")
 
 
@@ -493,9 +493,15 @@ def set_runtime_configuration(configuration: RuntimeConfiguration | dict) -> Run
 
 
 def resolve_stage_runtime(stage: RuntimeStageInput) -> StageRuntimeSettings:
-    if stage not in ("planner", "writer", "memory"):
+    if stage not in ("planner", "writer", "memory", "director"):
         raise ValueError(f"unknown runtime stage: {stage}")
-    resolved_stage: RuntimeStage = "planner" if stage == "memory" else stage
+    # The ``director`` stage reuses the ``planner`` provider binding
+    # so existing configurations cover the new agent. The mapping
+    # lives in the runtime config (not in the director agent) so
+    # the boundary test can pin the whitelist in one place.
+    resolved_stage: RuntimeStage = (
+        "planner" if stage in ("memory", "director") else stage
+    )
     configuration = get_runtime_configuration()
     binding = getattr(configuration.stages, resolved_stage)
     account = configuration.accounts[binding.provider_id]

@@ -13,11 +13,23 @@ from .contracts import (
     WriterRequest,
     WriterResult,
 )
+from .pipeline import (
+    ModularChapterBundle,
+    plan_director_artifact,
+    run_fact_extractor,
+    run_modular_pipeline,
+    run_writer,
+)
 
 __all__ = [
     "DirectorArtifact",
     "EntityRequirement",
+    "ModularChapterBundle",
     "SceneBeat",
     "WriterRequest",
     "WriterResult",
+    "plan_director_artifact",
+    "run_fact_extractor",
+    "run_modular_pipeline",
+    "run_writer",
 ]
