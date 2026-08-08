@@ -68,8 +68,9 @@ def test_saved_candidate_propagates_context_trace_ids_from_bundle(tmp_path):
 def test_saved_candidate_extracts_deterministic_inventory_change_for_known_character(tmp_path):
     project_store = FileProjectStore(tmp_path)
     # The canon registry is not yet wired in this revision, so the
-    # deterministic layer will treat every name as an orphan. The
-    # extraction must still succeed and return a well-formed delta.
+    # deterministic layer will not find a matching entity for any
+    # name. The extraction must still succeed and return a
+    # well-formed delta.
     bundle = SimpleNamespace(
         chapter_number=3,
         chapter_title="第三章",
@@ -82,10 +83,12 @@ def test_saved_candidate_extracts_deterministic_inventory_change_for_known_chara
         candidate = project_store._save_candidate_from_bundle(bundle, project_id=tmp_path.name)
 
     assert isinstance(candidate.continuity_delta, ContinuityDelta)
-    # The orphan detector should record the "name" it saw, even
-    # though no entity resolves.
-    assert any(
-        entry.get("status") == "orphan" for entry in candidate.continuity_delta.reference_validation
+    # No entity is flagged orphan from arbitrary prose anymore —
+    # the orphan pass is gone. The reference_validation list is
+    # therefore empty for the empty-canon case.
+    assert all(
+        entry.get("status") != "orphan"
+        for entry in candidate.continuity_delta.reference_validation
     )
 
 

@@ -381,6 +381,30 @@ def _deterministic_locations(context: FactExtractorContext) -> list[LocationMove
 
 # --- Reference validation ------------------------------------------------------
 
+def _collect_director_requirements(
+    context: FactExtractorContext,
+) -> list[str]:
+    """Surface every entity the director explicitly asked for.
+
+    The director's ``entity_requirements`` is the only sanctioned
+    source of new entity ids: the writer was told to introduce
+    them, so the prose must mention them by name, and the canon
+    registry may not have a card for them yet. We pull the
+    requirement names into the reference validation set so the
+    workbench can prompt the user to confirm or reject.
+    """
+    artifact = context.director_artifact
+    if artifact is None:
+        return []
+    requirements = getattr(artifact, "entity_requirements", None) or []
+    names: list[str] = []
+    for requirement in requirements:
+        name = str(getattr(requirement, "name", "") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def _collect_referenced_names(
     context: FactExtractorContext,
 ) -> list[tuple[str, str]]:
@@ -389,14 +413,15 @@ def _collect_referenced_names(
     Two passes run:
 
     1. *Known-entity pass* — every canon name that appears in the body.
-    2. *Orphan pass* — short Chinese phrases at sentence start that
-       *look* like a name (2-4 characters) but are not in the canon
-       view. These are flagged so the workbench can prompt the user
-       to either accept them as new canon entities or ignore them.
+    2. *Director-requirement pass* — every name the director asked
+       the writer to introduce. The orphan pass that used to
+       extract any 2-4 character phrase at the start of a
+       sentence is gone; ordinary prose fragments no longer
+       enter ``reference_validation``.
 
-    The role is ``"subject"`` for the canonical scan and the implicit
-    actor in the orphan scan; transfer targets are tagged separately
-    so the workbench can render them as object spans.
+    The role is ``"subject"`` for the canonical scan and the
+    director-requirement scan; transfer targets are tagged
+    separately so the workbench can render them as object spans.
     """
     canon_view = context.canon_view
     pairs: list[tuple[str, str]] = []
@@ -413,23 +438,11 @@ def _collect_referenced_names(
                     "transfer",
                 ) not in pairs:
                     pairs.append((name, "transfer"))
-        # Orphan pass: short Chinese names at the start of a sentence
-        # (or after a comma) that the canon does not yet know about.
-        for match in _CANDIDATE_NAME_RE.finditer(sentence):
-            name = match.group("name")
-            if any(name == existing for existing, _ in pairs):
-                continue
-            pairs.append((name, "subject"))
+    for requirement_name in _collect_director_requirements(context):
+        if any(requirement_name == existing for existing, _ in pairs):
+            continue
+        pairs.append((requirement_name, "subject"))
     return pairs
-
-
-# A loose "looks like a name" pattern: 2-4 CJK ideographs at the
-# start of a sentence or right after a comma. It deliberately
-# produces false positives so the workbench can prompt the user
-# to confirm; the user is the final arbiter of canon.
-_CANDIDATE_NAME_RE = re.compile(
-    r"(?:^|[，,。！？!?\s])(?P<name>[一-龥]{2,4})"
-)
 
 
 def _validate_references(
