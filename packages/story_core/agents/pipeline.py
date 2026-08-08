@@ -70,6 +70,7 @@ from packages.story_core.agents.writer.runtime import (
 from packages.story_core.agents.consistency import (
     ConsistencyFinding,
     ConsistencyRuntime,
+    GatewayConsistencyRuntime,
     focused_consistency_review,
 )
 from packages.story_core.canon.registry import CanonEntity
@@ -363,16 +364,25 @@ def plan_director_artifact(
     The returned :class:`DirectorPipelineResult` carries the
     context so the writer pipeline can reuse it without a second
     read pass.
+
+    The agent is told the *real* provider / model from the
+    stage settings so the persisted
+    ``.story-system/director/NNNN.json`` envelope no longer
+    reports the placeholder ``"gateway"`` / ``"runtime/director"``
+    pair. The workbench's stage evidence column reads this
+    field directly, so the operator sees which runtime
+    answered the director call.
     """
     context = _ensure_director_context(
         project_root=project_root, chapter_number=chapter_number
     )
     runtime = runtime or _default_director_runtime(project_root)
+    provider, model = _resolved_stage_provider_model("director")
     agent = DirectorAgent(
         runtime=runtime,
         project_root=project_root,
-        provider="gateway",
-        model="runtime/director",
+        provider=provider,
+        model=model,
     )
     artifact = agent.plan(context)
     return DirectorPipelineResult(
@@ -564,14 +574,52 @@ def _default_writer_runtime(project_root: Any) -> WriterRuntime:
 def _default_consistency_runtime(project_root: Any) -> ConsistencyRuntime:
     """Return a consistency runtime backed by the model gateway.
 
-    The focus-consistency agent uses the same model gateway as the
-    writer so the user does not have to configure a second provider
-    binding just to enable a deterministic contradiction check.
+    The focus-consistency agent uses the same model gateway as
+    the writer so the user does not have to configure a second
+    provider binding just to enable a deterministic
+    contradiction check. The dedicated
+    :class:`GatewayConsistencyRuntime` routes the call through
+    ``complete_stage("consistency", ...)`` — the previous
+    round reused ``GatewayDirectorRuntime`` and the
+    workbench's stage evidence column ended up listing two
+    ``director`` rows per chapter run.
     """
     from packages.story_core.model_gateway import RuntimeModelGateway
 
     gateway = RuntimeModelGateway()
-    return GatewayDirectorRuntime(gateway)
+    return GatewayConsistencyRuntime(gateway)
+
+
+def _resolved_stage_provider_model(stage: str) -> tuple[str, str]:
+    """Return the ``(provider, model)`` the gateway will see
+    for ``stage``.
+
+    The pipeline passes these to
+    :class:`DirectorAgent` (so the persisted
+    ``.story-system/director/NNNN.json`` envelope reports
+    the real provider / model) and to the workflow artifact
+    record writers (so the workbench's stage evidence column
+    shows the same model the user would see in the prompt
+    call log). When the runtime configuration is missing or
+    unparseable the function falls back to empty strings —
+    the agent and the record writer both treat an empty
+    provider as "unknown" rather than crashing.
+    """
+    try:
+        from packages.story_core.runtime_config import resolve_stage_runtime
+    except Exception:
+        return "", ""
+    try:
+        settings = resolve_stage_runtime(stage)
+    except Exception:
+        return "", ""
+    if settings is None:
+        return "", ""
+    provider = str(
+        getattr(settings, "provider_id", "") or getattr(settings, "provider", "")
+    )
+    model = str(getattr(settings, "model", "") or "")
+    return provider, model
 
 
 def _ensure_canon_service(
@@ -815,6 +863,15 @@ def run_modular_pipeline(
                 "path": str(director_path),
                 "sha256": _hashlib.sha256(director_content).hexdigest(),
             }
+        # Resolve the actual provider / model for each stage
+        # so the workbench's stage evidence column shows the
+        # same metadata the user would see in the prompt call
+        # log. The placeholder ``"gateway"`` / ``"runtime/director"``
+        # pair is gone — the resolved values come from
+        # :func:`resolve_stage_runtime` exactly the way the
+        # gateway itself reads them internally.
+        director_provider, director_model = _resolved_stage_provider_model("director")
+        writer_provider, writer_model = _resolved_stage_provider_model("writer")
         record_director_stage(
             store=workflow_store,
             job_id=effective_job_id,
@@ -825,6 +882,8 @@ def run_modular_pipeline(
             artifact_reader=lambda p, _content=director_content: _content
             if _content is not None
             else (p.read_bytes() if p.is_file() else None),
+            provider=director_provider,
+            model=director_model,
         )
         record_writer_stage(
             store=workflow_store,
@@ -832,12 +891,19 @@ def run_modular_pipeline(
             result=writer_result,
             context=writer_result.context,
             started_monotonic=writer_started,
+            provider=writer_provider,
+            model=writer_model,
         )
         record_fact_extractor_stage(
             store=workflow_store,
             job_id=effective_job_id,
             delta=delta,
             started_monotonic=extractor_started,
+            # The fact-extractor stage is a deterministic
+            # algorithm, not a model call, so it carries no
+            # provider / model. The prompt_call_log records the
+            # consistency model call separately under the
+            # ``consistency`` stage.
         )
 
     return ModularChapterBundle(

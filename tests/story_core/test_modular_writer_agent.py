@@ -11,6 +11,10 @@ chapter plan into prose. The boundary contract is:
    the selected context the request asked for, but not internal
    trace hashes, unrelated character cards, or retired entities.
 4. Empty model output must surface as ``writer_empty_body``.
+5. Every model call enters the project-level prompt_call_log so
+   the workbench can audit what the writer asked and what came
+   back, with the resolved provider / model / status fields
+   filled from the same stage settings the gateway saw.
 """
 
 from __future__ import annotations
@@ -33,6 +37,10 @@ from packages.story_core.agents.writer.prompt import build_writer_prompt
 from packages.story_core.agents.writer.runtime import (
     GatewayWriterRuntime,
     WriterRuntime,
+)
+from packages.story_core.prompt_call_log import (
+    PromptCallLog,
+    prompt_call_recording,
 )
 
 
@@ -347,3 +355,184 @@ def test_writer_runtime_protocol_accepts_custom_runtime() -> None:
     agent: WriterAgent = WriterAgent(runtime=CustomRuntime())  # type: ignore[arg-type]
     result = agent.run(_writer_request())
     assert result.body == "custom-body"
+
+
+def test_gateway_writer_runtime_records_resolved_provider_model_and_prompt(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gateway-backed writer runtime must record every
+    successful call to the project-level ``PromptCallLog`` so
+    the workbench can audit what the writer asked, which
+    provider / model answered, and how long it took. The
+    provider / model values come from
+    :func:`resolve_stage_runtime` — the same source the
+    gateway itself reads internally — so the recorded
+    metadata is never a placeholder.
+    """
+
+    class _FakeGateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Any]] = []
+
+        def complete_stage(self, stage: str, request: Any) -> Any:
+            self.calls.append((stage, request))
+            return _Response(text="正文记录")
+
+    class _FakeSettings:
+        provider_id = "openai"
+        model = "gpt-test"
+        temperature = 0.4
+        protocol = "openai"
+
+    import packages.story_core.runtime_config as _runtime_config
+
+    monkeypatch.setattr(
+        _runtime_config, "resolve_stage_runtime", lambda _stage: _FakeSettings()
+    )
+
+    fake_gateway = _FakeGateway()
+    runtime = GatewayWriterRuntime(gateway=fake_gateway)
+    agent = WriterAgent(runtime=runtime)
+    recorder = PromptCallLog(tmp_path, project_id="file:writer-log")
+
+    with prompt_call_recording(recorder):
+        result = agent.run(_writer_request())
+
+    assert result.body == "正文记录"
+    writer_calls = [
+        entry for entry in recorder.list(chapter_number=7) if entry["agent"] == "writer"
+    ]
+    assert len(writer_calls) == 1
+    entry = writer_calls[0]
+    assert entry["stage"] == "writer"
+    assert entry["provider"] == "openai"
+    assert entry["model"] == "gpt-test"
+    assert entry["status"] == "succeeded"
+    assert entry["prompt_chars"] > 0
+    assert entry["output_chars"] >= len("正文记录")
+
+
+def test_gateway_writer_runtime_records_failure_with_status_failed(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed gateway call must close the prompt_call_log
+    entry as ``status="failed"`` and preserve the error
+    message. The workbench's stage evidence column depends on
+    this so the operator can tell a 401 from a model timeout
+    at a glance.
+    """
+
+    class _FakeGateway:
+        def complete_stage(self, stage: str, request: Any) -> Any:
+            from packages.story_core.model_gateway.contracts import ModelRequest
+            from packages.story_core.model_gateway.contracts import ModelResponse
+
+            return ModelResponse.failure(
+                ModelRequest(
+                    prompt=request.prompt,
+                    provider="openai",
+                    model="gpt-test",
+                    operation="writer",
+                ),
+                "missing_api_key",
+            )
+
+    class _FakeSettings:
+        provider_id = "openai"
+        model = "gpt-test"
+        temperature = 0.4
+        protocol = "openai"
+
+    import packages.story_core.runtime_config as _runtime_config
+
+    monkeypatch.setattr(
+        _runtime_config, "resolve_stage_runtime", lambda _stage: _FakeSettings()
+    )
+
+    recorder = PromptCallLog(tmp_path, project_id="file:writer-fail")
+    runtime = GatewayWriterRuntime(gateway=_FakeGateway())
+    agent = WriterAgent(runtime=runtime)
+    # The writer must surface the failure to the agent; the
+    # recorder must still capture the failed lifecycle.
+    with prompt_call_recording(recorder):
+        with pytest.raises(RuntimeError, match="writer_empty_body"):
+            agent.run(_writer_request())
+
+    writer_calls = [
+        entry for entry in recorder.list(chapter_number=7) if entry["agent"] == "writer"
+    ]
+    assert len(writer_calls) == 1
+    entry = writer_calls[0]
+    assert entry["status"] == "failed"
+    assert entry["provider"] == "openai"
+    assert entry["model"] == "gpt-test"
+
+
+def test_gateway_writer_runtime_does_not_rewrite_preexisting_prompt_log(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An existing ``index.jsonl`` (a pre-fix call the user
+    already audited) must remain byte-identical after the
+    runtime finishes a new call. The new entry is appended,
+    not rewritten in place.
+    """
+
+    class _FakeGateway:
+        def complete_stage(self, stage: str, request: Any) -> Any:
+            return _Response(text="正文")
+
+    class _FakeSettings:
+        provider_id = "openai"
+        model = "gpt-test"
+        temperature = 0.4
+        protocol = "openai"
+
+    import packages.story_core.runtime_config as _runtime_config
+
+    monkeypatch.setattr(
+        _runtime_config, "resolve_stage_runtime", lambda _stage: _FakeSettings()
+    )
+
+    recorder = PromptCallLog(tmp_path, project_id="file:writer-append")
+    historical_id = recorder.start(
+        chapter_number=1,
+        stage="writer",
+        agent="writer",
+        user_prompt="历史 prompt",
+        provider="legacy",
+        model="legacy-model",
+    )
+    recorder.finish(historical_id, status="succeeded", output="历史正文")
+    historical_detail_bytes = (
+        tmp_path / "prompt_calls" / f"{historical_id}.json"
+    ).read_bytes()
+    historical_index_line = (
+        tmp_path / "prompt_calls" / "index.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()[0]
+
+    runtime = GatewayWriterRuntime(gateway=_FakeGateway())
+    agent = WriterAgent(runtime=runtime)
+    with prompt_call_recording(recorder):
+        agent.run(_writer_request())
+
+    # The historical detail file is byte-identical to the
+    # snapshot we took before the new call — the runtime
+    # appends, never rewrites.
+    assert (
+        tmp_path / "prompt_calls" / f"{historical_id}.json"
+    ).read_bytes() == historical_detail_bytes
+    # The first line of the index (the historical lifecycle
+    # row) is preserved verbatim; the new lifecycle rows
+    # come after.
+    first_line = (
+        tmp_path / "prompt_calls" / "index.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()[0]
+    assert first_line == historical_index_line
+    # The historical detail is still readable through the
+    # public ``get`` API.
+    historical_payload = recorder.get(historical_id)
+    assert historical_payload["user_prompt"] == "历史 prompt"
+    assert historical_payload["status"] == "succeeded"

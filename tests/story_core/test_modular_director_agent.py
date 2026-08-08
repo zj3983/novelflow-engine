@@ -16,6 +16,9 @@ The agent boundary is:
 * the artifact's ``entity_requirements`` list must surface
   every new person, item, equipment, technique, location,
   organization, quest, or monster the director approved.
+* every model call enters the project-level prompt_call_log
+  with the resolved provider / model so the workbench can
+  audit which runtime answered the director's call.
 """
 
 from __future__ import annotations
@@ -34,6 +37,10 @@ from packages.story_core.agents.director.runtime import (
     GatewayDirectorRuntime,
 )
 from packages.story_core.context.director_context import DirectorContext
+from packages.story_core.prompt_call_log import (
+    PromptCallLog,
+    prompt_call_recording,
+)
 
 
 # --- Test doubles -----------------------------------------------------------
@@ -440,3 +447,59 @@ def test_director_runtime_protocol_accepts_custom_runtime(tmp_path: Path) -> Non
 
     artifact = agent.plan(context)
     assert artifact.chapter_goal == "天黑前到达驿站"
+
+
+def test_gateway_director_runtime_records_resolved_provider_model_and_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gateway-backed director runtime must record every
+    successful call to the project-level ``PromptCallLog`` so
+    the workbench can audit which runtime answered the
+    director's call. The provider / model values come from
+    :func:`resolve_stage_runtime` — the same source the
+    gateway itself reads internally.
+    """
+
+    class _FakeGateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Any]] = []
+
+        def complete_stage(self, stage: str, request: Any) -> Any:
+            self.calls.append((stage, request))
+            return _Response(payload=_executable_director_payload())
+
+    class _FakeSettings:
+        provider_id = "openai"
+        model = "gpt-director"
+        temperature = 0.3
+        protocol = "openai"
+
+    import packages.story_core.runtime_config as _runtime_config
+
+    monkeypatch.setattr(
+        _runtime_config, "resolve_stage_runtime", lambda _stage: _FakeSettings()
+    )
+
+    project = tmp_path / "story-director-log"
+    project.mkdir(parents=True, exist_ok=True)
+    fake_gateway = _FakeGateway()
+    runtime = GatewayDirectorRuntime(gateway=fake_gateway)
+    agent = DirectorAgent(runtime=runtime, project_root=project)
+    context = _context_with_outline(chapter_number=4, include_target=False)
+    recorder = PromptCallLog(tmp_path, project_id="file:director-log")
+
+    with prompt_call_recording(recorder):
+        artifact = agent.plan(context)
+
+    assert artifact.chapter_goal == "天黑前到达驿站"
+    director_calls = [
+        entry for entry in recorder.list(chapter_number=4) if entry["agent"] == "director"
+    ]
+    assert len(director_calls) == 1
+    entry = director_calls[0]
+    assert entry["stage"] == "director"
+    assert entry["provider"] == "openai"
+    assert entry["model"] == "gpt-director"
+    assert entry["status"] == "succeeded"
+    assert entry["prompt_chars"] > 0
