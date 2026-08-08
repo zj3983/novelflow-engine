@@ -2132,6 +2132,55 @@ class FileProjectStore:
     def _remove_chapter_markdowns(self, chapter_number: int) -> None:
         self.chapter_store.remove_markdowns(chapter_number)
 
+    def _separate_chapter_body_to_markdown(
+        self,
+        chapter: dict[str, Any],
+        paths: dict[str, Path],
+    ) -> dict[str, Any]:
+        """Move ``chapter['body']`` into a Markdown file and update the metadata.
+
+        After this call the returned chapter dict carries
+        ``body_path`` and ``body_sha256`` instead of ``body``. The
+        Markdown file at ``paths['markdown']`` is the new source
+        of truth. The input dict is *not* mutated in place; callers
+        that want to keep the legacy body on disk should rely on
+        the workbench, not this helper.
+        """
+        if not isinstance(chapter, dict):
+            return chapter
+        body_value = chapter.get("body")
+        if not isinstance(body_value, str) or not body_value:
+            return chapter
+        markdown_path = paths.get("markdown")
+        if markdown_path is None:
+            return chapter
+        # Skip the split when the chapter already points at a
+        # Markdown body and the recorded hash matches; that means
+        # a previous save already split the body and we are
+        # rewriting the same content.
+        existing_path = chapter.get("body_path")
+        existing_sha = chapter.get("body_sha256")
+        if (
+            existing_path
+            and existing_sha
+            and Path(str(existing_path)) == markdown_path
+            and sha256(body_value.encode("utf-8")).hexdigest()
+            == existing_sha
+        ):
+            updated = dict(chapter)
+            updated.pop("body", None)
+            return updated
+        sha = sha256(body_value.encode("utf-8")).hexdigest()
+        try:
+            relative = markdown_path.relative_to(self.root)
+        except ValueError:
+            relative = markdown_path
+        updated = dict(chapter)
+        updated.pop("body", None)
+        updated["body_path"] = str(relative).replace("\\", "/")
+        updated["body_sha256"] = sha
+        return updated
+
     def _chapter_paths(self, chapter_number: int, title: str) -> dict[str, Path]:
         return self.chapter_store.paths(chapter_number, title)
 
@@ -6374,6 +6423,7 @@ class FileProjectStore:
                 if not self._has_chapter_files():
                     raise FileNotFoundError("no_chapters")
                 raise FileNotFoundError(f"chapter_not_found:{chapter_number}")
+            chapter = self._hydrate_chapter_body(chapter)
             raw_state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
             visible_state = self._visible_state_from_chapters(
                 raw_state if isinstance(raw_state, dict) else {},
@@ -6390,7 +6440,29 @@ class FileProjectStore:
         chapter = self._read_json(path)
         if not isinstance(chapter, dict):
             raise FileNotFoundError(f"chapter_not_found:{target}")
+        chapter = self._hydrate_chapter_body(chapter)
         return self._hydrate_chapter_display_fields(chapter)
+
+    def _hydrate_chapter_body(self, chapter: dict[str, Any]) -> dict[str, Any]:
+        """Re-add a Markdown-canonical chapter's ``body`` field.
+
+        After the Markdown migration the chapter JSON no longer
+        carries the prose; consumers that still read ``chapter['body']``
+        (the inventory parser, the opening-baseline rebuild, the
+        workbench previews) get a hydrated copy through this
+        helper.
+        """
+        if not isinstance(chapter, dict) or "body" in chapter:
+            return chapter
+        body_path_value = chapter.get("body_path")
+        if not body_path_value:
+            return chapter
+        markdown_path = self.root / str(body_path_value)
+        if not markdown_path.is_file():
+            return chapter
+        hydrated = dict(chapter)
+        hydrated["body"] = markdown_path.read_text(encoding="utf-8")
+        return hydrated
 
     def _chapter_index_from_records(
         self,
@@ -6562,9 +6634,10 @@ class FileProjectStore:
 
         synced_state = self._sync_after_chapter(chapter, updated_story)
         self._remove_chapter_markdowns(chapter_number)
+        self._write_text(paths["markdown"], body)
+        chapter = self._separate_chapter_body_to_markdown(chapter, paths)
         self._write_json(paths["json"], chapter)
         self._write_json(paths["review"], review)
-        self._write_text(paths["markdown"], body)
         synced_state["current_chapter"] = max(int(synced_state.get("current_chapter") or 0), current_chapter)
         self._write_json(self.webnovel_dir / "state.json", synced_state)
         commit = self.commit(
@@ -6869,9 +6942,10 @@ class FileProjectStore:
 
         paths = self._chapter_paths(chapter_number, title)
         self._remove_chapter_markdowns(chapter_number)
+        self._write_text(paths["markdown"], body)
+        chapter = self._separate_chapter_body_to_markdown(chapter, paths)
         self._write_json(paths["json"], chapter)
         self._write_json(paths["review"], review)
-        self._write_text(paths["markdown"], body)
         commit = self.commit(
             message=commit_message or f"{operation} chapter {chapter_number}",
             operation=operation,
@@ -7705,9 +7779,10 @@ class FileProjectStore:
             self._sync_after_chapter(chapter, updated_story)
             paths = self._chapter_paths(chapter_number, next_title)
             self._remove_chapter_markdowns(chapter_number)
+            self._write_text(paths["markdown"], body)
+            chapter = self._separate_chapter_body_to_markdown(chapter, paths)
             self._write_json(paths["json"], chapter)
             self._write_json(paths["review"], review)
-            self._write_text(paths["markdown"], body)
             commit = self.commit(
                 message=commit_message or f"rewrite chapter {chapter_number}",
                 operation="rewrite",

@@ -92,7 +92,13 @@ def test_confirm_candidate_writes_chapter_metadata_and_snapshot_atomically(tmp_p
     assert chapter_path.is_file()
     written = _read_managed_json(chapter_path)
     assert written["chapter_number"] == 1
-    assert "候选稿" in written["body"]
+    # Markdown-canonical: body is no longer in the metadata JSON
+    assert "body" not in written
+    assert "body_path" in written
+    assert "body_sha256" in written
+    markdown_path = store.root / written["body_path"]
+    assert markdown_path.is_file()
+    assert "事务候选稿" in markdown_path.read_text(encoding="utf-8")
     # A per-chapter snapshot must be written under
     # ``.story-system/continuity/snapshots/``.
     snapshot_path = store.story_system_dir / "continuity" / "snapshots" / "0001.json"
