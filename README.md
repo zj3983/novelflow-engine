@@ -193,3 +193,40 @@ The script copies the project, runs
 prints the per-stage workflow artifacts the workbench would render.
 It exits non-zero if any stage's artifact is missing on disk.
 
+### Production pipeline smoke (Round 7 acceptance)
+
+`scripts/smoke_production_pipeline.py` drives the production
+modular pipeline end-to-end against a disposable copy of a real
+project and asserts the four acceptance criteria the Round 7
+plan pinned:
+
+```bash
+python -m scripts.smoke_production_pipeline \
+    data/exported-projects/p-gou-webgame-restored
+```
+
+The script:
+
+1. Copies the source project to a temporary disposable
+   directory so the source is never written to.
+2. Hashes the source directory before and after the run —
+   the smoke fails if the source hash changes.
+3. Drives Director → Writer → FocusedConsistency → FactExtractor
+   end-to-end.
+4. Asserts the four acceptance criteria:
+   * director reads only the current book's outline / previous
+     chapter / foreshadowing / character state;
+   * director artifact has ≥ 2 causal scene beats;
+   * writer prompt contains the 4200-5500 target range and
+     the 3800-6000 hard range;
+   * writer context preserves the protagonist's equipment,
+     level, inventory, and quests.
+5. Runs the candidate through `_save_candidate_from_bundle` so
+   the candidate's `quality_report.ok` is checked against the
+   same length gate the confirmation flow will run.
+
+The smoke is the one-line acceptance check for the Round 7
+plan; the rest of the plan's acceptance lives in
+`tests/story_core/test_modular_*` and the production test
+suite (`pytest -q`).
+
