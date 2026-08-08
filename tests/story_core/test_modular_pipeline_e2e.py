@@ -264,3 +264,76 @@ def test_orchestrator_legacy_path_unchanged_when_flag_off():
     """The legacy constructor still defaults to ``use_modular_agents=False``."""
     orchestrator = StoryOrchestrator()
     assert orchestrator.use_modular_agents is False
+
+
+def test_orchestrator_writes_per_stage_artifacts_to_workflow_store(tmp_path: Path):
+    """The orchestrator records every stage in the workflow store.
+
+    The user feedback after Task 13 flagged that the
+    :class:`WorkflowArtifactStore` was implemented and unit-tested
+    but never actually called by the generation flow. This test
+    drives the orchestrator's modular entry point with a real
+    project and asserts all three stage artifacts land on disk
+    under ``.story-system/workflow/{job_id}/``.
+
+    The workbench reads these files on page refresh to show the
+    operator what each agent saw and produced without re-running
+    the pipeline.
+    """
+    project_root = tmp_path
+    _seed_legacy_project(project_root, with_outline=False)
+
+    director_runtime = _StubDirectorRuntime()
+    writer_runtime = _StubWriterRuntime(body="林昭提灯上山，夜宿山腰。")
+
+    orchestrator = StoryOrchestrator(use_modular_agents=True)
+    job_id = "test-job-chapter-1"
+    bundle = orchestrator.generate_next_chapter_via_modular_pipeline(
+        project_root=project_root,
+        chapter_number=1,
+        director_runtime=director_runtime,
+        writer_runtime=writer_runtime,
+        job_id=job_id,
+    )
+
+    assert isinstance(bundle, ModularChapterBundle)
+
+    # All three stage artifacts must be on disk under the job
+    # directory the orchestrator picks.
+    workflow_dir = project_root / ".story-system" / "workflow" / job_id
+    assert workflow_dir.is_dir(), workflow_dir
+    stage_files = sorted(path.name for path in workflow_dir.glob("*.json"))
+    assert stage_files == ["director.json", "fact-extractor.json", "writer.json"]
+
+    # The director record carries the artifact path so the
+    # workbench can link to it.
+    director_record = json.loads(
+        (workflow_dir / "director.json").read_text(encoding="utf-8")
+    )
+    assert director_record["stage_id"] == "director"
+    assert director_record["agent_id"] == "DirectorAgent"
+    assert director_record["status"] == "done"
+    # ``artifact_path`` uses native separators on Windows; the
+    # workbench normalises to posix so we just check the tail.
+    assert director_record["artifact_path"].replace("\\", "/").endswith(
+        "director/0001.json"
+    )
+    assert director_record["output_summary"].startswith("chapter_goal='上山'")
+
+    # The writer record carries the body sha256 so the
+    # workbench can prove the prose is what the model produced.
+    writer_record = json.loads(
+        (workflow_dir / "writer.json").read_text(encoding="utf-8")
+    )
+    assert writer_record["stage_id"] == "writer"
+    assert writer_record["agent_id"] == "WriterAgent"
+    assert writer_record["artifact_sha256"] != ""
+    assert writer_record["output_summary"].startswith("body_chars=")
+
+    # The fact-extractor record is small but always lands.
+    extractor_record = json.loads(
+        (workflow_dir / "fact-extractor.json").read_text(encoding="utf-8")
+    )
+    assert extractor_record["stage_id"] == "fact-extractor"
+    assert extractor_record["agent_id"] == "FactExtractor"
+    assert extractor_record["status"] == "done"

@@ -542,6 +542,8 @@ def run_modular_pipeline(
     writer_runtime: WriterRuntime | None = None,
     fact_extractor: FactExtractor | None = None,
     canon_registry: Any | None = None,
+    workflow_store: Any | None = None,
+    job_id: str | None = None,
 ) -> ModularChapterBundle:
     """Run Director -> CanonService -> Writer -> FactExtractor end-to-end.
 
@@ -562,15 +564,33 @@ def run_modular_pipeline(
        so the candidate can carry a :class:`ContinuityDelta` into
        confirmation.
 
+    When ``workflow_store`` is supplied, each stage records an
+    on-disk artifact under
+    ``.story-system/workflow/{job_id}/{stage_id}.json`` so the
+    workbench can re-render what the agent saw and produced.
+    ``job_id`` defaults to ``chapter-{N}`` when the caller does
+    not pass one; the orchestrator typically passes a timestamped
+    id so parallel runs of the same chapter do not collide.
+
     Returns a :class:`ModularChapterBundle` so the workbench can
     display each agent's output and the e2e test can assert each
     stage was called exactly once.
     """
+    import time as _time
+
+    from .pipeline_artifacts import (
+        record_director_stage,
+        record_fact_extractor_stage,
+        record_writer_stage,
+    )
+
+    director_started = _time.monotonic()
     director_result = plan_director_artifact(
         project_root=project_root,
         chapter_number=chapter_number,
         runtime=director_runtime,
     )
+    writer_started = _time.monotonic()
     writer_result = run_writer(
         project_root=project_root,
         chapter_number=chapter_number,
@@ -578,6 +598,7 @@ def run_modular_pipeline(
         canon_registry=canon_registry,
         runtime=writer_runtime,
     )
+    extractor_started = _time.monotonic()
     if fact_extractor is None:
         fact_extractor = FactExtractor()
     delta = fact_extractor.extract(
@@ -589,6 +610,53 @@ def run_modular_pipeline(
             ),
         )
     )
+
+    if workflow_store is not None:
+        effective_job_id = job_id or f"chapter-{chapter_number}"
+        from pathlib import Path
+
+        director_path = (
+            Path(project_root) / ".story-system" / "director" / f"{chapter_number:04d}.json"
+        )
+        try:
+            director_content = (
+                director_path.read_bytes() if director_path.is_file() else None
+            )
+        except OSError:
+            director_content = None
+        artifact_meta: dict[str, str] = {}
+        if director_content is not None:
+            import hashlib as _hashlib
+
+            artifact_meta = {
+                "path": str(director_path),
+                "sha256": _hashlib.sha256(director_content).hexdigest(),
+            }
+        record_director_stage(
+            store=workflow_store,
+            job_id=effective_job_id,
+            artifact=director_result.artifact,
+            context=director_result.context,
+            started_monotonic=director_started,
+            artifact_paths=(director_path,),
+            artifact_reader=lambda p, _content=director_content: _content
+            if _content is not None
+            else (p.read_bytes() if p.is_file() else None),
+        )
+        record_writer_stage(
+            store=workflow_store,
+            job_id=effective_job_id,
+            result=writer_result,
+            context=writer_result.context,
+            started_monotonic=writer_started,
+        )
+        record_fact_extractor_stage(
+            store=workflow_store,
+            job_id=effective_job_id,
+            delta=delta,
+            started_monotonic=extractor_started,
+        )
+
     return ModularChapterBundle(
         chapter_number=chapter_number,
         director_artifact=director_result.artifact,

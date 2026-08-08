@@ -3139,6 +3139,8 @@ class StoryOrchestrator:
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
         canon_registry: Any | None = None,
+        workflow_store: Any | None = None,
+        job_id: str | None = None,
     ) -> Any:
         """Run the new modular agent pipeline end-to-end.
 
@@ -3154,6 +3156,14 @@ class StoryOrchestrator:
         :class:`ContinuityDelta`, and per-stage trace ids so the
         workbench can render each agent's output.
 
+        When ``workflow_store`` is omitted the orchestrator
+        instantiates a :class:`WorkflowArtifactStore` rooted at
+        ``project_root`` so each stage lands an artifact under
+        ``.story-system/workflow/{job_id}/`` for the workbench to
+        re-render. ``job_id`` defaults to
+        ``chapter-{N}-{timestamp}`` so parallel runs of the same
+        chapter do not collide.
+
         Tests call this directly to assert the three modules were
         called exactly once. The legacy
         ``generate_next_chapter_bundle`` is unchanged so the
@@ -3161,9 +3171,19 @@ class StoryOrchestrator:
         """
         from packages.story_core.agents.fact_extractor import FactExtractor
         from packages.story_core.agents.pipeline import run_modular_pipeline
+        from packages.story_core.persistence.workflow_artifact_store import (
+            WorkflowArtifactStore,
+        )
 
         if fact_extractor is None:
             fact_extractor = self.fact_extractor() or FactExtractor()
+        if workflow_store is None:
+            workflow_store = WorkflowArtifactStore(project_root)
+        if job_id is None:
+            from datetime import datetime, timezone
+
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            job_id = f"chapter-{chapter_number}-{stamp}"
         return run_modular_pipeline(
             project_root=project_root,
             chapter_number=chapter_number,
@@ -3171,6 +3191,8 @@ class StoryOrchestrator:
             writer_runtime=writer_runtime,
             fact_extractor=fact_extractor,
             canon_registry=canon_registry,
+            workflow_store=workflow_store,
+            job_id=job_id,
         )
 
     def _emit_workflow_step(
