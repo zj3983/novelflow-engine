@@ -7,11 +7,14 @@ The agent boundary is:
 
 * one ``DirectorContext`` in, one ``DirectorArtifact`` out
   per ``plan(...)`` call;
-* when the context already contains the target chapter's
-  outline, the agent skips the model call and derives the
-  artifact directly;
-* otherwise the agent calls a ``DirectorRuntime`` and parses
-  the response into the canonical ``DirectorArtifact``;
+* the agent always calls a ``DirectorRuntime`` and parses the
+  response into the canonical ``DirectorArtifact`` — the
+  outline is an input, not a substitute for an executable
+  plan;
+* the artifact is validated before it is persisted; a bad
+  response (empty scene_beats, missing causal results) raises
+  so the writer never has to improvise against a half-built
+  plan;
 * every run is persisted under
   ``.story-system/director/NNNN.json`` with the input trace,
   the output, the provider, the model, and the status.
@@ -19,8 +22,8 @@ The agent boundary is:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 from ..contracts import DirectorArtifact
 from ...context.director_context import DirectorContext
@@ -58,27 +61,24 @@ def _extract_payload(response: Any) -> dict[str, Any]:
     return {}
 
 
-def _outline_artifact(context: DirectorContext) -> Optional[DirectorArtifact]:
-    """Derive an artifact from the context's outline when it is complete."""
-    target = None
-    for entry in context.nearby_outline:
-        if isinstance(entry, dict) and entry.get("number") == context.chapter_number:
-            target = entry
-            break
-    if not target:
-        return None
-    summary = str(target.get("summary") or "").strip()
-    if not summary:
-        return None
-    return DirectorArtifact(
-        chapter_number=context.chapter_number,
-        chapter_goal=summary,
-        opening_state=context.previous_chapter_tail or "",
-        scene_beats=[],
-        ending_state="",
-        hook="",
-        entity_requirements=[],
-    )
+def _validate_executable_artifact(artifact: DirectorArtifact) -> None:
+    """Reject director outputs the writer cannot execute.
+
+    A director response is only useful when it has at least two
+    scene beats (one is rarely a real chapter), every beat has
+    a non-empty location / action / result (the writer needs
+    the causal chain to write prose), and the chapter goal and
+    ending state are populated. A validation failure here is a
+    blocking finding for the orchestrator — the writer never
+    improvises against a half-built plan.
+    """
+    if len(artifact.scene_beats) < 2:
+        raise ValueError("director_artifact_insufficient_beats")
+    for beat in artifact.scene_beats:
+        if not beat.location or not beat.action or not beat.result:
+            raise ValueError("director_artifact_incomplete_beat")
+    if not artifact.chapter_goal.strip() or not artifact.ending_state.strip():
+        raise ValueError("director_artifact_missing_state")
 
 
 class DirectorAgent:
@@ -149,34 +149,33 @@ class DirectorAgent:
                     chars=len(context.previous_chapter_summary),
                 )
             )
-        outline_artifact = _outline_artifact(context)
-        status = "ok"
-        provider = self._provider
-        model = self._model
-        if outline_artifact is not None:
-            artifact = outline_artifact
-            status = "outline_only"
-        else:
-            prompt = build_director_prompt(context)
-            model_request = _ModelRequest(
-                prompt=prompt,
-                stage="director",
-                metadata={
-                    "chapter_number": context.chapter_number,
-                    "agent": "director",
-                    "schema_version": "director-artifact/v1",
-                },
-            )
-            response = self._runtime.complete(model_request)
-            payload = _extract_payload(response)
-            payload.setdefault("chapter_number", context.chapter_number)
-            artifact = parse_director_response(payload)
+        # Always call the director runtime. The plan rule says
+        # the outline is an *input* the model has to expand into
+        # a real chapter plan, never a substitute for the plan
+        # itself. Earlier rounds short-circuited this and the
+        # writer then had to improvise against an empty
+        # ``scene_beats`` list.
+        prompt = build_director_prompt(context)
+        model_request = _ModelRequest(
+            prompt=prompt,
+            stage="director",
+            metadata={
+                "chapter_number": context.chapter_number,
+                "agent": "director",
+                "schema_version": "director-artifact/v1",
+            },
+        )
+        response = self._runtime.complete(model_request)
+        payload = _extract_payload(response)
+        payload.setdefault("chapter_number", context.chapter_number)
+        artifact = parse_director_response(payload)
+        _validate_executable_artifact(artifact)
         self._store.save(
             chapter_number=context.chapter_number,
             payload={
-                "status": status,
-                "provider": provider,
-                "model": model,
+                "status": "ok",
+                "provider": self._provider,
+                "model": self._model,
                 "input_trace": trace.model_dump(mode="json"),
                 "output": artifact.model_dump(mode="json"),
             },

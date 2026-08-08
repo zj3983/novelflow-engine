@@ -58,6 +58,38 @@ class _Response:
     payload: dict[str, Any]
 
 
+def _executable_director_payload(
+    *,
+    chapter_goal: str = "天黑前到达驿站",
+    opening_state: str = "林照受伤",
+    ending_state: str = "进入驿站",
+    scene_beats: list[dict[str, Any]] | None = None,
+    entity_requirements: list[dict[str, Any]] | None = None,
+    chapter_title: str = "夜奔驿站",
+    hook: str = "下一章：从驿站出发",
+) -> dict[str, Any]:
+    """Return a director response payload that satisfies the
+    production validator (≥ 2 beats, all beats fully populated,
+    chapter_goal / ending_state non-empty). Tests that need an
+    intentionally bad artifact build their own payload instead.
+    """
+    beats = scene_beats or [
+        {"order": 1, "location": "妖林", "action": "起身", "result": "走出密林"},
+        {"order": 2, "location": "驿站", "action": "交付情报", "result": "进入驿站"},
+    ]
+    return {
+        "chapter_title": chapter_title,
+        "chapter_goal": chapter_goal,
+        "opening_state": opening_state,
+        "scene_beats": beats,
+        "ending_state": ending_state,
+        "entity_requirements": entity_requirements or [
+            {"kind": "location", "name": "妖林"},
+        ],
+        "hook": hook,
+    }
+
+
 def _context_with_outline(
     chapter_number: int,
     *,
@@ -72,6 +104,9 @@ def _context_with_outline(
                 "number": chapter_number,
                 "title": f"第{chapter_number}章",
                 "summary": "本章目标：天黑前离开妖林。",
+                "goal": "林照要在天黑前离开妖林",
+                "obstacle": "妖林密布，肩伤未愈",
+                "action": "沿东侧小径急行",
             }
         )
     nearby.append(
@@ -98,7 +133,9 @@ def _context_with_outline(
 
 
 def test_director_agent_returns_director_artifact_not_prose(tmp_path: Path) -> None:
-    runtime = _RecordingRuntime()
+    runtime = _RecordingRuntime(
+        responses=[_executable_director_payload()]
+    )
     agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
     context = _context_with_outline(chapter_number=7)
 
@@ -111,36 +148,63 @@ def test_director_agent_returns_director_artifact_not_prose(tmp_path: Path) -> N
     assert not hasattr(artifact, "body")
 
 
-def test_director_agent_skips_model_call_when_outline_is_complete(tmp_path: Path) -> None:
-    runtime = _RecordingRuntime()  # no canned responses
+def test_director_uses_target_outline_as_input_instead_of_returning_it_verbatim(
+    tmp_path: Path,
+) -> None:
+    """The director must always call the runtime, even when the
+    target outline is present. The outline is an *input* the
+    runtime has to expand into an executable plan; it is not a
+    substitute for the plan itself. Earlier rounds short-circuited
+    this and the writer then had to improvise against an empty
+    ``scene_beats`` list.
+    """
+    runtime = _RecordingRuntime(
+        responses=[
+            _executable_director_payload(
+                chapter_title="灰狼坡的红光",
+                chapter_goal="交付清道夫任务后赶到动态事件外围",
+                opening_state="夜烬为Lv.2，任务进度8/16",
+                ending_state="夜烬留在事件外围",
+                scene_beats=[
+                    {
+                        "order": 1,
+                        "location": "灰狼坡",
+                        "action": "补齐八份毒腺",
+                        "result": "任务达到16/16",
+                    },
+                    {
+                        "order": 2,
+                        "location": "灰烬村",
+                        "action": "提交清道夫任务",
+                        "result": "升到Lv.3",
+                    },
+                    {
+                        "order": 3,
+                        "location": "灰狼坡北侧",
+                        "action": "观察动态事件",
+                        "result": "确认首领机制",
+                    },
+                ],
+                entity_requirements=[{"kind": "character", "name": "流霜"}],
+                hook="流霜打断狼王冲锋",
+            )
+        ]
+    )
     agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
-    context = _context_with_outline(chapter_number=7, include_target=True)
+    # The target outline is in the context — the runtime is still
+    # called, and the artifact fields are NOT the outline summary.
+    context = _context_with_outline(chapter_number=2, include_target=True)
 
     artifact = agent.plan(context)
 
-    # The outline is already present in the director's view, so
-    # the agent must NOT call the runtime.
-    assert runtime.call_count == 0
-    assert artifact.chapter_goal == "本章目标：天黑前离开妖林。"
+    assert runtime.call_count == 1
+    assert artifact.chapter_title == "灰狼坡的红光"
+    assert len(artifact.scene_beats) == 3
+    assert artifact.chapter_goal != "本章目标：天黑前离开妖林。"
 
 
 def test_director_agent_calls_runtime_when_outline_is_missing(tmp_path: Path) -> None:
-    runtime = _RecordingRuntime(
-        responses=[
-            {
-                "chapter_goal": "天黑前到达驿站",
-                "opening_state": "林照受伤",
-                "scene_beats": [
-                    {"order": 1, "location": "妖林", "action": "起身", "result": "走出密林"}
-                ],
-                "ending_state": "进入驿站",
-                "entity_requirements": [
-                    {"kind": "location", "name": "妖林"},
-                ],
-                "hook": "下一章：从驿站出发",
-            }
-        ]
-    )
+    runtime = _RecordingRuntime(responses=[_executable_director_payload()])
     agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
     context = _context_with_outline(chapter_number=7, include_target=False)
 
@@ -157,19 +221,25 @@ def test_director_agent_extracts_entity_requirements_from_runtime_response(
 ) -> None:
     runtime = _RecordingRuntime(
         responses=[
-            {
-                "chapter_goal": "探索旧神龛",
-                "opening_state": "林照抵达神龛前",
-                "scene_beats": [
+            _executable_director_payload(
+                chapter_goal="探索旧神龛",
+                opening_state="林照抵达神龛前",
+                ending_state="决定深入调查",
+                scene_beats=[
                     {
                         "order": 1,
                         "location": "旧神龛",
                         "action": "进入",
                         "result": "发现地下通道",
-                    }
+                    },
+                    {
+                        "order": 2,
+                        "location": "地下通道",
+                        "action": "点灯",
+                        "result": "看清通道壁画",
+                    },
                 ],
-                "ending_state": "决定深入调查",
-                "entity_requirements": [
+                entity_requirements=[
                     {"kind": "character", "name": "林照"},
                     {"kind": "character", "name": "守龛人"},
                     {"kind": "item", "name": "旧钥匙"},
@@ -180,7 +250,7 @@ def test_director_agent_extracts_entity_requirements_from_runtime_response(
                     {"kind": "quest", "name": "探索神龛"},
                     {"kind": "monster", "name": "石像守卫"},
                 ],
-            }
+            )
         ]
     )
     agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
@@ -207,7 +277,7 @@ def test_director_agent_persists_artifact_under_story_system_director(tmp_path: 
     project = tmp_path / "story"
     project.mkdir()
     (project / ".story-system").mkdir()
-    runtime = _RecordingRuntime()
+    runtime = _RecordingRuntime(responses=[_executable_director_payload()])
     agent = DirectorAgent(runtime=runtime, project_root=project)
     context = _context_with_outline(chapter_number=7, include_target=True)
 
@@ -216,8 +286,10 @@ def test_director_agent_persists_artifact_under_story_system_director(tmp_path: 
     target = project / ".story-system" / "director" / "0007.json"
     assert target.exists()
     loaded = json.loads(target.read_text(encoding="utf-8"))
-    assert loaded["status"] == "outline_only"  # no model call
-    assert loaded["provider"] == "outline"  # the outline-derived path
+    # The shortcut is gone — the runtime is always called and
+    # the persisted envelope records a real provider / model.
+    assert loaded["status"] == "ok"
+    assert loaded["provider"] == "outline"
     assert loaded["model"] == "outline/v1"
     assert loaded["output"]["chapter_number"] == 7
     assert loaded["input_trace"]["reads"]  # the context reads were recorded
@@ -233,17 +305,7 @@ def test_director_agent_persists_provider_and_model_when_runtime_was_called(
     @dataclass
     class ProviderAwareRuntime:
         def complete(self, request: Any) -> Any:
-            return _Response(
-                payload={
-                    "chapter_goal": "目标",
-                    "opening_state": "开场",
-                    "scene_beats": [
-                        {"order": 1, "location": "驿站", "action": "休息", "result": "恢复体力"}
-                    ],
-                    "ending_state": "收尾",
-                    "entity_requirements": [],
-                }
-            )
+            return _Response(payload=_executable_director_payload())
 
     agent = DirectorAgent(
         runtime=ProviderAwareRuntime(),  # type: ignore[arg-type]
@@ -280,17 +342,7 @@ def test_gateway_director_runtime_routes_through_complete_stage(
 
         def complete_stage(self, stage: str, request: Any) -> Any:
             self.calls.append((stage, request))
-            return _Response(
-                payload={
-                    "chapter_goal": "目标",
-                    "opening_state": "开场",
-                    "scene_beats": [
-                        {"order": 1, "location": "驿站", "action": "休息", "result": "恢复"}
-                    ],
-                    "ending_state": "收尾",
-                    "entity_requirements": [],
-                }
-            )
+            return _Response(payload=_executable_director_payload())
 
     fake_gateway = _FakeGateway()
     runtime = GatewayDirectorRuntime(gateway=fake_gateway)
@@ -331,17 +383,7 @@ def test_gateway_director_runtime_translates_lightweight_request(
 
         def complete_stage(self, stage: str, request: Any) -> Any:
             self.calls.append((stage, request))
-            return _Response(
-                payload={
-                    "chapter_goal": "目标",
-                    "opening_state": "开场",
-                    "scene_beats": [
-                        {"order": 1, "location": "驿站", "action": "休息", "result": "恢复"}
-                    ],
-                    "ending_state": "收尾",
-                    "entity_requirements": [],
-                }
-            )
+            return _Response(payload=_executable_director_payload())
 
     class _FakeSettings:
         provider_id = "openai"
@@ -388,17 +430,7 @@ def test_director_runtime_protocol_accepts_custom_runtime(tmp_path: Path) -> Non
     @dataclass
     class CustomRuntime:
         def complete(self, request: Any) -> Any:
-            return _Response(
-                payload={
-                    "chapter_goal": "目标",
-                    "opening_state": "开场",
-                    "scene_beats": [
-                        {"order": 1, "location": "驿站", "action": "休息", "result": "恢复"}
-                    ],
-                    "ending_state": "收尾",
-                    "entity_requirements": [],
-                }
-            )
+            return _Response(payload=_executable_director_payload())
 
     agent: DirectorAgent = DirectorAgent(
         runtime=CustomRuntime(),  # type: ignore[arg-type]
@@ -407,4 +439,4 @@ def test_director_runtime_protocol_accepts_custom_runtime(tmp_path: Path) -> Non
     context = _context_with_outline(chapter_number=2, include_target=False)
 
     artifact = agent.plan(context)
-    assert artifact.chapter_goal == "目标"
+    assert artifact.chapter_goal == "天黑前到达驿站"

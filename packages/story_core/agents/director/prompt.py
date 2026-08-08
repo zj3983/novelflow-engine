@@ -31,13 +31,34 @@ def _render_volume(context: DirectorContext) -> str:
 def _render_nearby_outline(context: DirectorContext) -> str:
     if not context.nearby_outline:
         return ""
-    lines = ["## 邻近章节大纲"]
+    boundary_lines: list[str] = []
+    target_lines: list[str] = []
     for entry in context.nearby_outline:
         number = entry.get("number", "?")
         title = entry.get("title", "")
         summary = entry.get("summary", "")
-        lines.append(f"- 第{number}章 {title}：{summary}")
-    return "\n".join(lines)
+        goal = entry.get("goal", "")
+        obstacle = entry.get("obstacle", "")
+        action = entry.get("action", "")
+        line = f"- 第{number}章 {title}：{summary}"
+        detail = " · ".join(
+            part for part in (goal, obstacle, action) if isinstance(part, str) and part.strip()
+        )
+        if detail:
+            line = f"{line}（{detail}）"
+        if int(number or 0) == int(context.chapter_number or 0):
+            target_lines.append(line)
+        else:
+            boundary_lines.append(line)
+    sections: list[str] = []
+    if target_lines:
+        sections.append(
+            "## 本章细纲（必须展开为可执行场景计划，不得照抄为标题或正文）\n"
+            + "\n".join(target_lines)
+        )
+    if boundary_lines:
+        sections.append("## 相邻章节边界\n" + "\n".join(boundary_lines))
+    return "\n".join(sections)
 
 
 def _render_previous_handoff(context: DirectorContext) -> str:
@@ -119,6 +140,12 @@ def build_director_prompt(context: DirectorContext) -> str:
             "## 实体要求（entity_requirements）",
             "列出本章新出现或需要卡片支持的角色/物品/装备/技能/地点/组织/任务/怪物，"
             "kind 仅限：character / item / equipment / technique / location / organization / quest / monster / rule。",
+            "",
+            "## 章节标题（chapter_title）",
+            "给一句不超过 20 字的章节标题，"
+            "不得把整段细纲当标题；标题应与 scene_beats 共同表达这一章的关键变化。",
+            "输出简短 chapter_title、2 至 5 个有因果结果的 scene_beats；"
+            "不得把整段细纲作为 chapter_goal 或标题。",
         ]
     )
     return "\n\n".join(section for section in sections if section)
@@ -177,6 +204,7 @@ def parse_director_response(payload: Any) -> DirectorArtifact:
         )
     return DirectorArtifact(
         chapter_number=chapter_number,
+        chapter_title=str(payload.get("chapter_title") or ""),
         chapter_goal=str(payload.get("chapter_goal") or ""),
         opening_state=str(payload.get("opening_state") or ""),
         scene_beats=beats,

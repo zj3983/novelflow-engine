@@ -71,6 +71,13 @@ class DirectorArtifact(BaseModel):
 
     schema_version: Literal["director-artifact/v1"] = "director-artifact/v1"
     chapter_number: int
+    # A dedicated title field is separate from ``chapter_goal`` so
+    # the workbench can render a short headline and the writer
+    # prompt can quote the goal as the dramatic intent without
+    # collapsing the two. The plan rule in the prompt explicitly
+    # forbids treating the outline summary as a title; the
+    # runtime model has to invent one.
+    chapter_title: str = ""
     chapter_goal: str
     opening_state: str
     scene_beats: list[SceneBeat]

@@ -4104,8 +4104,15 @@ class StoryOrchestrator:
             consistency_runtime=consistency_runtime,
         )
         director_artifact = bundle.director_artifact
-        chapter_title = str(director_artifact.chapter_goal or "").strip() or (
-            f"Chapter {chapter_number}"
+        # The director artifact carries a dedicated ``chapter_title``
+        # field that the prompt explicitly separates from the
+        # dramatic intent (``chapter_goal``). Use the title and
+        # fall back to a generic label only when the runtime
+        # forgot to produce one — never substitute ``chapter_goal``
+        # here, that collapses two distinct concepts and
+        # confuses the workbench.
+        chapter_title = str(director_artifact.chapter_title or "").strip() or (
+            f"第{chapter_number}章"
         )
         # Minimal plan dict the downstream ``_save_candidate_from_bundle``
         # can serialise through ``_bundle_to_dict``. The fields

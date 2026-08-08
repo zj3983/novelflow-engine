@@ -121,6 +121,7 @@ class _StubDirectorRuntime:
         chapter_number = int(metadata.get("chapter_number", 1) or 1)
         return {
             "chapter_number": chapter_number,
+            "chapter_title": "夜奔山腰",
             "chapter_goal": "上山",
             "opening_state": "天将暮",
             "scene_beats": [
@@ -129,6 +130,12 @@ class _StubDirectorRuntime:
                     "location": "山脚",
                     "action": "林昭决定上山",
                     "result": "进入山路",
+                },
+                {
+                    "order": 2,
+                    "location": "山腰",
+                    "action": "寻得避雨处",
+                    "result": "夜宿山腰",
                 },
             ],
             "ending_state": "夜宿山腰",
