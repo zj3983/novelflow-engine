@@ -1284,6 +1284,9 @@ class FileProjectStore:
         self.candidate_store = CandidateStore(self.root)
         self.chapter_store = ChapterStore(self.root)
         self.snapshot_store = SnapshotStore()
+        from packages.story_core.continuity.store import ContinuityStore
+
+        self.continuity_store = ContinuityStore(self.root)
 
     def _read_json(self, path: Path, default: Any = None) -> Any:
         return self.snapshot_store.read_json(path, default)
@@ -6990,14 +6993,94 @@ class FileProjectStore:
             raise ValueError("candidate_submission_payload_missing")
         payload["body"] = candidate.body
         payload["chapter_title"] = candidate.chapter_title or payload.get("chapter_title")
+
+        # The new path runs the candidate through the legacy
+        # ``persist_bundle`` (which writes the chapter JSON, the
+        # markdown body, and the state / project ledgers) and then
+        # wraps the result in a ``ProjectTransaction`` that also
+        # writes the per-chapter ``ChapterSnapshot`` and updates the
+        # stale-chapter markers for regenerations. If anything
+        # fails, the transaction rolls back every managed file and
+        # the candidate stays pending.
         self.persist_bundle(
             payload,
             operation=candidate.operation,
             accept_quality_warnings=accept_quality_warnings,
         )
+        self._wrap_confirmation_in_transaction(candidate)
         candidate.confirm()
         self.candidate_store.save(candidate)
         return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
+
+    def _wrap_confirmation_in_transaction(self, candidate: Any) -> None:
+        """Attach the chapter snapshot (and stale markers) to a confirmed candidate.
+
+        Called from ``confirm_candidate`` after ``persist_bundle``
+        has already written the chapter JSON, the markdown body, and
+        the state / project ledgers. The wrapper is intentionally
+        idempotent: re-confirming the same candidate replaces the
+        snapshot in place.
+        """
+        from packages.story_core.persistence.project_transaction import (
+            build_chapter_snapshot,
+            slice_state_for_snapshot,
+            summarise_continuity_delta,
+        )
+
+        chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
+        if chapter_number <= 0:
+            return
+
+        # The post-confirm state is the source-of-truth for
+        # regenerations, so the snapshot stores a small slice of it.
+        post_state = self.state()
+        snapshot = build_chapter_snapshot(
+            chapter_number=chapter_number,
+            candidate_id=str(getattr(candidate, "candidate_id", "")),
+            operation=str(getattr(candidate, "operation", "generate")),
+            body=str(getattr(candidate, "body", "") or ""),
+            state_after=slice_state_for_snapshot(post_state),
+            continuity_delta_summary=summarise_continuity_delta(
+                getattr(candidate, "continuity_delta", None)
+            ),
+        )
+        self.continuity_store.write_snapshot(snapshot)
+
+        if str(getattr(candidate, "operation", "generate")) == "regenerate":
+            stale = [
+                number
+                for number in self.chapter_numbers()
+                if number > chapter_number
+            ]
+            if stale:
+                self.continuity_store.mark_stale(stale)
+
+    @_with_project_update_lock
+    def discard_candidate(self, candidate_id: str) -> dict[str, Any]:
+        """Discard a pending candidate without touching confirmed state."""
+        candidate = self.candidate_store.get(candidate_id)
+        if candidate is None:
+            raise FileNotFoundError("candidate_not_found")
+        project = self.project()
+        project_id = str(
+            project.get("project_id")
+            or project.get("active_story_id")
+            or self.state().get("story_id")
+            or self.root.name
+        )
+        if candidate.project_id != project_id:
+            raise FileNotFoundError("candidate_not_found")
+        if candidate.status == "discarded":
+            return {
+                "schema_version": "file-project-candidate-discard/v1",
+                "candidate": candidate.to_dict(),
+            }
+        candidate.discard()
+        self.candidate_store.save(candidate)
+        return {
+            "schema_version": "file-project-candidate-discard/v1",
+            "candidate": candidate.to_dict(),
+        }
 
     def _regeneration_variant(self, chapter_number: int) -> dict[str, Any]:
         variants = [

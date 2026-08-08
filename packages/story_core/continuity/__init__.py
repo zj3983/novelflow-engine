@@ -34,11 +34,15 @@ from .delta import (
     TaskProgression,
     TimelineAdvance,
 )
+from .snapshot import ChapterSnapshot, SNAPSHOT_SCHEMA_VERSION
+from .store import ContinuityStore
 
 __all__ = [
+    "ChapterSnapshot",
     "CheckContext",
     "CheckFinding",
     "ContinuityDelta",
+    "ContinuityStore",
     "DeterministicChecks",
     "EntityAddition",
     "EntityUpdate",
@@ -47,6 +51,7 @@ __all__ = [
     "InventoryChange",
     "LocationMovement",
     "RelationshipChange",
+    "SNAPSHOT_SCHEMA_VERSION",
     "TaskProgression",
     "TimelineAdvance",
     "check_body_not_empty",
