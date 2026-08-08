@@ -1,4 +1,22 @@
-"""Candidate chapter state kept separate from confirmed project state."""
+"""Candidate chapter state kept separate from confirmed project state.
+
+A candidate is a *proposed* chapter: it carries the prose the writer
+produced, the review verdict, the structured facts the extractor
+proposed, and a list of context-trace ids so the workbench can prove
+which artifacts shaped the draft. The candidate stays in the
+``.story-system/candidates/`` directory until the user confirms or
+discards it; only confirmed candidates touch the canonical chapter
+store, the entity registry, and the continuity ledger.
+
+Schema evolution:
+
+* ``candidate-draft/v1`` — original v1 shape (body, quality report,
+  revision history, submission payload). Still loadable.
+* ``candidate-draft/v2`` — adds ``continuity_delta`` and
+  ``context_trace_ids``. New writes use v2 once any of the new
+  fields are populated; v1 writes still load transparently so
+  existing candidate files keep working.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +27,9 @@ from uuid import uuid4
 
 
 CandidateStatus = str
+
+CANDIDATE_SCHEMA_V1 = "candidate-draft/v1"
+CANDIDATE_SCHEMA_V2 = "candidate-draft/v2"
 
 
 def _now() -> str:
@@ -30,6 +51,9 @@ class CandidateDraft:
     status: CandidateStatus = "pending"
     created_at: str = ""
     confirmed_at: str = ""
+    # --- v2 additions ---
+    continuity_delta: Any | None = None  # ContinuityDelta | None; lazy import
+    context_trace_ids: list[str] = field(default_factory=list)
 
     @classmethod
     def create(
@@ -44,6 +68,8 @@ class CandidateDraft:
         revision_history: list[Mapping[str, Any]] | None = None,
         submission_payload: Mapping[str, Any] | None = None,
         operation: str = "generate",
+        continuity_delta: Any | None = None,
+        context_trace_ids: list[str] | None = None,
     ) -> "CandidateDraft":
         if chapter_number < 1:
             raise ValueError("chapter_number_must_be_positive")
@@ -63,6 +89,8 @@ class CandidateDraft:
             submission_payload=dict(submission_payload or {}),
             operation=operation,
             created_at=_now(),
+            continuity_delta=continuity_delta,
+            context_trace_ids=list(context_trace_ids or []),
         )
 
     @property
@@ -91,8 +119,15 @@ class CandidateDraft:
         return self
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "schema_version": "candidate-draft/v1",
+        # Pick the schema version by content. v1 has no new fields;
+        # v2 carries at least one of the new fields. This keeps the
+        # on-disk format honest: a candidate that claims v2 actually
+        # uses the new fields.
+        has_v2 = self.continuity_delta is not None or bool(self.context_trace_ids)
+        schema_version = CANDIDATE_SCHEMA_V2 if has_v2 else CANDIDATE_SCHEMA_V1
+
+        payload: dict[str, Any] = {
+            "schema_version": schema_version,
             "candidate_id": self.candidate_id,
             "project_id": self.project_id,
             "chapter_number": self.chapter_number,
@@ -107,9 +142,21 @@ class CandidateDraft:
             "created_at": self.created_at,
             "confirmed_at": self.confirmed_at,
         }
+        if schema_version == CANDIDATE_SCHEMA_V2:
+            payload["continuity_delta"] = _delta_to_dict(self.continuity_delta)
+            payload["context_trace_ids"] = list(self.context_trace_ids)
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "CandidateDraft":
+        schema_version = str(payload.get("schema_version") or CANDIDATE_SCHEMA_V1)
+        if schema_version not in {CANDIDATE_SCHEMA_V1, CANDIDATE_SCHEMA_V2}:
+            # Forward compatibility: unknown schemas still load, but
+            # the new fields are simply absent. This is the same
+            # posture the v1 → v2 migration takes.
+            schema_version = CANDIDATE_SCHEMA_V1
+        delta_payload = payload.get("continuity_delta")
+        continuity_delta = _delta_from_dict(delta_payload) if delta_payload else None
         return cls(
             candidate_id=str(payload.get("candidate_id") or ""),
             project_id=str(payload.get("project_id") or ""),
@@ -124,4 +171,37 @@ class CandidateDraft:
             status=str(payload.get("status") or "pending"),
             created_at=str(payload.get("created_at") or ""),
             confirmed_at=str(payload.get("confirmed_at") or ""),
+            continuity_delta=continuity_delta,
+            context_trace_ids=[str(item) for item in (payload.get("context_trace_ids") or [])],
         )
+
+
+def _delta_to_dict(delta: Any) -> dict[str, Any] | None:
+    """Serialize a ContinuityDelta to a plain dict (None-safe)."""
+    if delta is None:
+        return None
+    if hasattr(delta, "model_dump"):
+        return delta.model_dump(mode="json")
+    if isinstance(delta, Mapping):
+        return dict(delta)
+    return None
+
+
+def _delta_from_dict(payload: Any) -> Any:
+    """Rehydrate a ContinuityDelta payload without a hard import cycle.
+
+    The continuity package depends on nothing in candidate_draft, so
+    the import is safe at function-call time. The lazy import keeps
+    the module surface small for callers that never use v2 fields.
+    """
+    if payload is None:
+        return None
+    try:
+        from packages.story_core.continuity.delta import ContinuityDelta  # type: ignore
+    except Exception:
+        return None
+    if isinstance(payload, ContinuityDelta):
+        return payload
+    if isinstance(payload, Mapping):
+        return ContinuityDelta.model_validate(payload)
+    return None

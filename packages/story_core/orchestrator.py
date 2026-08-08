@@ -3082,6 +3082,33 @@ def _failed_bundle(story: StoryState, chapter_number: int, reason: str = ""):
 class StoryOrchestrator:
     def __init__(self, model_gateway: Any | None = None) -> None:
         self.model_gateway = model_gateway or RuntimeModelGateway()
+        # The fact extractor is shared between the orchestrator and
+        # the candidate-save path so both see the same shape. The
+        # default factory produces a model-less extractor; callers
+        # that want the model-backed path swap in a runtime-bearing
+        # instance via ``set_fact_extractor``. This is the seam Task
+        # 14 will tighten when the orchestrator owns the canon
+        # registry and can pass a real view to the extractor.
+        self._fact_extractor: Any | None = None
+
+    def fact_extractor(self) -> Any:
+        """Return the active ``FactExtractor`` instance.
+
+        Lazy-constructs the default on first use so importing this
+        module does not eagerly pull the fact-extractor package (the
+        extractor is only relevant for the candidate-save path).
+        """
+        if self._fact_extractor is None:
+            from packages.story_core.agents.fact_extractor import (
+                build_default_extractor,
+            )
+
+            self._fact_extractor = build_default_extractor()
+        return self._fact_extractor
+
+    def set_fact_extractor(self, extractor: Any) -> None:
+        """Install a custom ``FactExtractor`` (used by tests and CLI)."""
+        self._fact_extractor = extractor
 
     def _emit_workflow_step(
         self,

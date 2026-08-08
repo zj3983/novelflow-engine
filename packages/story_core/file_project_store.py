@@ -2178,11 +2178,25 @@ class FileProjectStore:
         updated_story = submission_payload.get("updated_story")
         if hasattr(updated_story, "model_dump"):
             submission_payload["updated_story"] = updated_story.model_dump(mode="json")
+        # Run the fact extractor so the candidate carries a pending
+        # ContinuityDelta. The canon view is best-effort: when the
+        # project has a registered canon registry we use it,
+        # otherwise we fall back to an empty view and the deterministic
+        # layer records orphan references only. The wiring here is
+        # additive — the existing v1 save path is unchanged for
+        # callers that never set a continuity delta.
+        chapter_number = int(getattr(bundle, "chapter_number", 0) or 0)
+        body = str(getattr(bundle, "body", "") or "")
+        continuity_delta = self._extract_continuity_delta(
+            body=body,
+            chapter_number=chapter_number,
+        )
+        context_trace_ids = self._candidate_context_trace_ids(bundle)
         candidate = CandidateDraft.create(
             project_id=project_id,
-            chapter_number=int(getattr(bundle, "chapter_number", 0) or 0),
+            chapter_number=chapter_number,
             chapter_title=str(getattr(bundle, "chapter_title", "") or ""),
-            body=str(getattr(bundle, "body", "") or ""),
+            body=body,
             context_snapshot_id=str(getattr(bundle, "context_snapshot_id", "") or ""),
             quality_report=quality_report
             if isinstance(quality_report, dict)
@@ -2191,6 +2205,8 @@ class FileProjectStore:
             else {},
             submission_payload=submission_payload,
             operation=operation,
+            continuity_delta=continuity_delta,
+            context_trace_ids=context_trace_ids,
         )
         self.candidate_store.save_latest(candidate)
         report_generation_progress(
@@ -2211,6 +2227,73 @@ class FileProjectStore:
             )
         )
         return candidate
+
+    def _extract_continuity_delta(
+        self,
+        *,
+        body: str,
+        chapter_number: int,
+    ) -> Any | None:
+        """Build a candidate ``ContinuityDelta`` via the shared extractor.
+
+        The canon view is sourced from the project's canon registry when
+        one is registered, otherwise the extractor runs with an empty
+        view and produces a (still-valid) empty delta. Either way the
+        candidate ships with a ``continuity_delta`` field so downstream
+        callers can rely on the shape.
+        """
+        try:
+            from packages.story_core.agents.fact_extractor import (
+                FactExtractor,
+                FactExtractorContext,
+            )
+        except Exception:
+            return None
+        extractor = FactExtractor()
+        try:
+            canon_view = self._candidate_canon_view()
+        except Exception:
+            canon_view = {"by_id": {}, "by_kind": {}, "by_alias": {}}
+        context = FactExtractorContext(
+            body=body,
+            chapter_number=chapter_number,
+            canon_view=canon_view,
+        )
+        return extractor.extract(context)
+
+    def _candidate_canon_view(self) -> dict[str, Any]:
+        """Best-effort canon view for the extractor.
+
+        The file project store does not own a live ``CanonRegistry``
+        in this revision (Task 14 wires the full registry into the
+        orchestrator). For now we return an empty index so the
+        deterministic layer's orphan detector still records the
+        phrases the writer introduced.
+        """
+        return {"by_id": {}, "by_kind": {}, "by_alias": {}}
+
+    def _candidate_context_trace_ids(self, bundle: Any) -> list[str]:
+        """Collect the per-agent trace ids the bundle already carries.
+
+        The bundle does not yet surface the agent traces directly
+        (Task 14 wires the orchestrator's ``ContextTrace`` ids onto
+        the bundle). For now this is a best-effort scan of well-known
+        attribute names so callers do not have to pass ``context_trace_ids``
+        manually. Returns an empty list when the bundle is silent.
+        """
+        ids: list[str] = []
+        seen: set[str] = set()
+        for attribute in (
+            "director_trace_id",
+            "writer_trace_id",
+            "consistency_trace_id",
+            "fact_extractor_trace_id",
+        ):
+            value = getattr(bundle, attribute, None)
+            if isinstance(value, str) and value and value not in seen:
+                seen.add(value)
+                ids.append(value)
+        return ids
 
     def _ensure_regenerate_continuity_fields(
         self,

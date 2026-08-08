@@ -2,10 +2,12 @@
 and the focused consistency agent.
 
 The ``checks`` module owns the pure-function deterministic
-findings; higher-level callers (the orchestrator's
+findings; the ``delta`` module owns the structured proposal
+of facts a chapter introduces that should reach canon once
+confirmed. Higher-level callers (the orchestrator's
 confirmation path, the workbench) read the structured
-``CheckFinding`` records to decide whether a chapter can
-ship.
+``CheckFinding`` and ``ContinuityDelta`` records to decide
+whether a chapter can ship and what state should change.
 """
 
 from .checks import (
@@ -20,11 +22,33 @@ from .checks import (
     check_outline_must_haves,
     run_deterministic_checks,
 )
+from .delta import (
+    ContinuityDelta,
+    EntityAddition,
+    EntityUpdate,
+    FactSource,
+    ForeshadowingChange,
+    InventoryChange,
+    LocationMovement,
+    RelationshipChange,
+    TaskProgression,
+    TimelineAdvance,
+)
 
 __all__ = [
     "CheckContext",
     "CheckFinding",
+    "ContinuityDelta",
     "DeterministicChecks",
+    "EntityAddition",
+    "EntityUpdate",
+    "FactSource",
+    "ForeshadowingChange",
+    "InventoryChange",
+    "LocationMovement",
+    "RelationshipChange",
+    "TaskProgression",
+    "TimelineAdvance",
     "check_body_not_empty",
     "check_chapter_number_contract",
     "check_inventory_changes",
