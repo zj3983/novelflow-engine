@@ -7876,7 +7876,9 @@ class FileProjectStore:
             chapter_number,
         )
         story = StoryState.model_validate(direction_payload)
-        generator = engine or StoryEngine()
+        generator = engine or StoryEngine(
+            use_modular_agents=True, project_root=self.root
+        )
         with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
             self.prompt_call_log()
         ):
