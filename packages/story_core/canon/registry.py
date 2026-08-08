@@ -68,6 +68,17 @@ class CanonRegistry:
         self._by_id: dict[str, CanonEntity] = {}
         self._by_name: dict[tuple[str, str], str] = {}
         self._by_alias: dict[tuple[str, str], str] = {}
+        # Auxiliary stores keyed by the canon delta's per-chapter
+        # proposals. ``relationships`` is keyed by
+        # ``(subject_id, predicate, object_id)`` so the latest
+        # polarity wins on duplicate edges. ``timeline`` and
+        # ``foreshadowing`` are append-only logs so a regeneration
+        # can replay the chapter that produced each marker.
+        self._relationships: dict[
+            tuple[str, str, str], dict[str, Any]
+        ] = {}
+        self._timeline: list[dict[str, Any]] = []
+        self._foreshadowing: dict[str, dict[str, Any]] = {}
 
     @classmethod
     def empty(cls) -> "CanonRegistry":
@@ -280,6 +291,134 @@ class CanonRegistry:
 
     def retire(self, entity_id: str) -> CanonEntity:
         return self._transition(entity_id, "retired")
+
+    # --- Attribute / extension updates --------------------------------------
+
+    def update_attributes(
+        self,
+        entity_id: str,
+        *,
+        changes: dict[str, Any],
+    ) -> CanonEntity:
+        """Shallow-patch an entity's ``extensions`` field.
+
+        ``changes`` is a ``{key: value}`` patch. Setting a key to
+        ``None`` deletes it from the extensions so a continuity
+        delta can clear stale fields. Existing keys not in
+        ``changes`` are preserved; this is the contract the
+        continuity-delta ``EntityUpdate`` operation expects.
+        """
+        entity = self._require(entity_id)
+        merged: dict[str, Any] = dict(entity.extensions or {})
+        for key, value in (changes or {}).items():
+            if value is None:
+                merged.pop(str(key), None)
+                continue
+            merged[str(key)] = value
+        new_entity = entity.model_copy(update={"extensions": merged})
+        self._by_id[entity_id] = new_entity
+        return new_entity
+
+    # --- Auxiliary stores for the continuity delta --------------------------
+
+    def add_relationship(
+        self,
+        *,
+        subject_id: str,
+        predicate: str,
+        object_id: str,
+        polarity: str,
+        chapter_number: int,
+        source_sentence: str = "",
+        confidence: float = 1.0,
+    ) -> dict[str, Any]:
+        """Record or replace a relationship edge.
+
+        Edges are keyed by ``(subject, predicate, object)`` so a
+        later chapter can re-state the same relationship with a
+        different polarity. The full provenance is kept on the
+        edge so the workbench can show when and why the polarity
+        changed.
+        """
+        if not subject_id or not predicate or not object_id:
+            raise ValueError("relationship_missing_endpoint")
+        key = (str(subject_id), str(predicate), str(object_id))
+        edge = {
+            "subject_id": str(subject_id),
+            "predicate": str(predicate),
+            "object_id": str(object_id),
+            "polarity": str(polarity),
+            "chapter_number": int(chapter_number),
+            "source_sentence": str(source_sentence),
+            "confidence": float(confidence),
+        }
+        self._relationships[key] = edge
+        return edge
+
+    def relationships(
+        self,
+        *,
+        subject_id: str | None = None,
+        object_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the recorded relationships, optionally filtered."""
+        items = list(self._relationships.values())
+        if subject_id is not None:
+            items = [item for item in items if item["subject_id"] == str(subject_id)]
+        if object_id is not None:
+            items = [item for item in items if item["object_id"] == str(object_id)]
+        return items
+
+    def add_timeline_marker(
+        self,
+        *,
+        marker: str,
+        chapter_number: int,
+        source_sentence: str = "",
+    ) -> dict[str, Any]:
+        """Append a timeline marker to the chapter log."""
+        if not marker:
+            raise ValueError("timeline_marker_empty")
+        entry = {
+            "marker": str(marker),
+            "chapter_number": int(chapter_number),
+            "source_sentence": str(source_sentence),
+        }
+        self._timeline.append(entry)
+        return entry
+
+    def timeline(self) -> list[dict[str, Any]]:
+        return list(self._timeline)
+
+    def add_foreshadowing_change(
+        self,
+        *,
+        foreshadowing_id: str,
+        action: str,
+        detail: str,
+        chapter_number: int,
+        source_sentence: str = "",
+    ) -> dict[str, Any]:
+        """Record a planted / advanced / resolved foreshadowing entry.
+
+        The registry keeps the latest action per id; the
+        provenance (chapter + source sentence) is kept on the
+        record so the workbench can show the chain of events.
+        """
+        if not foreshadowing_id or not action:
+            raise ValueError("foreshadowing_missing_field")
+        entry = {
+            "foreshadowing_id": str(foreshadowing_id),
+            "action": str(action),
+            "detail": str(detail),
+            "chapter_number": int(chapter_number),
+            "source_sentence": str(source_sentence),
+        }
+        self._foreshadowing[str(foreshadowing_id)] = entry
+        return entry
+
+    def foreshadowing(self) -> list[dict[str, Any]]:
+        return list(self._foreshadowing.values())
 
     # --- Internals ----------------------------------------------------------
 

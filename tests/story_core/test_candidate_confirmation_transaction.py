@@ -313,3 +313,130 @@ def test_project_transaction_rolls_back_chapter_when_snapshot_fails(
     # could not trust.
     pending = store.candidate_store.get(candidate.candidate_id)
     assert pending.status == "pending"
+
+
+def test_confirm_candidate_applies_continuity_delta_to_canon_registry(tmp_path):
+    """The candidate's ``continuity_delta`` lands on the project canon.
+
+    The user feedback after Tasks 10-14 called out that the
+    ``ContinuityDelta`` produced by the fact-extractor was only
+    written as a snapshot summary — never actually applied to
+    characters, items, relationships, or facts. This test
+    confirms a candidate with a delta now lands the
+    corresponding entity in ``.story-system/canon/registry.json``
+    on confirmation, so the next chapter's director context
+    sees the world the user just confirmed.
+    """
+    from packages.story_core.continuity.delta import (
+        ContinuityDelta,
+        EntityAddition,
+    )
+
+    store = FileProjectStore(tmp_path)
+    delta = ContinuityDelta(
+        chapter_number=1,
+        entity_additions=[
+            EntityAddition(
+                chapter_number=1,
+                source_sentence="林昭首次出场",
+                entity_id="char-aaaa1111",
+                kind="character",
+                canonical_name="林昭",
+                aliases=["林公子"],
+            ),
+        ],
+    )
+    candidate = _seed_candidate(
+        store,
+        chapter_number=1,
+        title="第一章",
+        body=_long_body("Canon"),
+        continuity_delta_payload=delta.model_dump(mode="json"),
+    )
+
+    canon_registry_path = (
+        store.story_system_dir / "canon" / "registry.json"
+    )
+    assert not canon_registry_path.exists()
+
+    store.confirm_candidate(candidate.candidate_id)
+
+    # The canon registry now exists on disk.
+    assert canon_registry_path.is_file()
+    payload = json.loads(canon_registry_path.read_text(encoding="utf-8"))
+    by_id = payload.get("by_id") or {}
+    assert "char-aaaa1111" in by_id
+    entry = by_id["char-aaaa1111"]
+    assert entry["display_name"] == "林昭"
+    assert entry["lifecycle"] == "active"
+    assert "林公子" in entry["aliases"]
+
+    # And the round-trip — a second confirm on a different
+    # chapter must not blow away the first chapter's entity.
+    candidate_two = _seed_candidate(
+        store,
+        chapter_number=2,
+        title="第二章",
+        body=_long_body("Canon"),
+    )
+    store.confirm_candidate(candidate_two.candidate_id)
+    payload = json.loads(canon_registry_path.read_text(encoding="utf-8"))
+    assert "char-aaaa1111" in (payload.get("by_id") or {})
+
+
+def test_canon_apply_rolls_back_when_transaction_aborts(tmp_path, monkeypatch):
+    """A failed confirmation rolls the canon registry back too.
+
+    The user feedback called out that the ``ProjectTransaction``
+    must cover every managed file, including the canon
+    registry. This test patches the snapshot writer to fail
+    mid-confirmation and asserts the canon registry is back
+    to its pre-confirmation state.
+    """
+    from packages.story_core.continuity.delta import (
+        ContinuityDelta,
+        EntityAddition,
+    )
+
+    store = FileProjectStore(tmp_path)
+    delta = ContinuityDelta(
+        chapter_number=1,
+        entity_additions=[
+            EntityAddition(
+                chapter_number=1,
+                source_sentence="林昭首次出场",
+                entity_id="char-aaaa1111",
+                kind="character",
+                canonical_name="林昭",
+            ),
+        ],
+    )
+    candidate = _seed_candidate(
+        store,
+        chapter_number=1,
+        title="第一章",
+        body=_long_body("回滚"),
+        continuity_delta_payload=delta.model_dump(mode="json"),
+    )
+    canon_registry_path = (
+        store.story_system_dir / "canon" / "registry.json"
+    )
+    assert not canon_registry_path.exists()
+
+    def _explode_snapshot(self, snapshot):  # noqa: ANN001
+        raise RuntimeError("simulated_snapshot_disk_full")
+
+    monkeypatch.setattr(
+        "packages.story_core.continuity.store.ContinuityStore.write_snapshot",
+        _explode_snapshot,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated_snapshot_disk_full"):
+        store.confirm_candidate(candidate.candidate_id)
+
+    # The canon registry must not have been created on a
+    # failed confirmation — the transaction rolled it back.
+    assert not canon_registry_path.exists()
+    # And the candidate stays pending.
+    pending = store.candidate_store.get(candidate.candidate_id)
+    assert pending.status == "pending"

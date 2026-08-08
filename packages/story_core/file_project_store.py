@@ -590,6 +590,136 @@ def _assert_auto_chapter_quality(
         )
 
 
+# --- Canon registry persistence --------------------------------------------
+
+
+class _NullCanonDesigner:
+    """Placeholder designer used during candidate confirmation.
+
+    The confirmation path never calls
+    :meth:`CanonService.ensure_requirements`; the
+    :meth:`CanonService.apply_delta` path is the only thing
+    that runs, and it does not need a designer. If a future
+    caller wants the confirmation to also promote / create
+    the entities the director asked for, it must pass a real
+    designer; the canon delta is the user-approved surface and
+    must never invent new cards on the user's behalf.
+    """
+
+    def design(self, requirement: Any, registry: Any) -> Any:  # pragma: no cover
+        raise RuntimeError(
+            "confirmation path must not call the designer; "
+            "use the preflight to add new entities before confirmation"
+        )
+
+
+def _registry_to_payload(registry: Any) -> dict[str, Any]:
+    """Serialise a :class:`CanonRegistry` to a plain dict.
+
+    The on-disk shape mirrors the in-memory maps so a future
+    reader can stream the registry without re-deriving the
+    alias / name indexes. ``_by_id`` is the source of truth;
+    the name and alias indexes are rebuilt on load.
+    """
+    from packages.story_core.canon.contracts import Lifecycle  # noqa: F401
+
+    by_id: dict[str, dict[str, Any]] = {}
+    for entity_id, entity in registry._by_id.items():  # type: ignore[attr-defined]
+        by_id[str(entity_id)] = {
+            "entity_id": str(entity.entity_id),
+            "kind": str(entity.kind),
+            "display_name": str(entity.display_name),
+            "aliases": [str(alias) for alias in entity.aliases],
+            "lifecycle": str(entity.lifecycle),
+            "extensions": dict(entity.extensions or {}),
+        }
+    relationships = [
+        dict(edge)
+        for edge in registry.relationships()  # type: ignore[attr-defined]
+    ]
+    timeline = [dict(entry) for entry in registry.timeline()]  # type: ignore[attr-defined]
+    foreshadowing = [
+        dict(entry) for entry in registry.foreshadowing()  # type: ignore[attr-defined]
+    ]
+    return {
+        "schema_version": "canon-registry/v1",
+        "by_id": by_id,
+        "relationships": relationships,
+        "timeline": timeline,
+        "foreshadowing": foreshadowing,
+    }
+
+
+def _registry_from_payload(payload: dict[str, Any]) -> Any:
+    """Rebuild a :class:`CanonRegistry` from its on-disk payload."""
+    from packages.story_core.canon.registry import CanonRegistry
+
+    registry = CanonRegistry()
+    by_id = payload.get("by_id") or {}
+    if not isinstance(by_id, dict):
+        return registry
+    for raw in by_id.values():
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("kind") or "")
+        if not kind:
+            continue
+        try:
+            registry.add(
+                kind=kind,  # type: ignore[arg-type]
+                name=str(raw.get("display_name") or raw.get("entity_id") or ""),
+                aliases=[str(item) for item in (raw.get("aliases") or [])],
+                entity_id=str(raw.get("entity_id") or ""),
+                lifecycle=str(raw.get("lifecycle") or "proposed"),  # type: ignore[arg-type]
+                extensions=dict(raw.get("extensions") or {}),
+            )
+        except ValueError:
+            # Duplicate id / alias collision means the file
+            # was hand-edited; fall through to the next
+            # entry rather than abort the whole load.
+            continue
+    for edge in payload.get("relationships") or []:
+        if not isinstance(edge, dict):
+            continue
+        try:
+            registry.add_relationship(
+                subject_id=str(edge.get("subject_id") or ""),
+                predicate=str(edge.get("predicate") or ""),
+                object_id=str(edge.get("object_id") or ""),
+                polarity=str(edge.get("polarity") or "added"),
+                chapter_number=int(edge.get("chapter_number") or 0),
+                source_sentence=str(edge.get("source_sentence") or ""),
+                confidence=float(edge.get("confidence") or 1.0),
+            )
+        except ValueError:
+            continue
+    for entry in payload.get("timeline") or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            registry.add_timeline_marker(
+                marker=str(entry.get("marker") or ""),
+                chapter_number=int(entry.get("chapter_number") or 0),
+                source_sentence=str(entry.get("source_sentence") or ""),
+            )
+        except ValueError:
+            continue
+    for entry in payload.get("foreshadowing") or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            registry.add_foreshadowing_change(
+                foreshadowing_id=str(entry.get("foreshadowing_id") or ""),
+                action=str(entry.get("action") or ""),
+                detail=str(entry.get("detail") or ""),
+                chapter_number=int(entry.get("chapter_number") or 0),
+                source_sentence=str(entry.get("source_sentence") or ""),
+            )
+        except ValueError:
+            continue
+    return registry
+
+
 def _bundle_generation_failure_reason(quality_report: Any) -> str:
     if not isinstance(quality_report, dict):
         return ""
@@ -7093,6 +7223,14 @@ class FileProjectStore:
                 operation=candidate.operation,
                 accept_quality_warnings=accept_quality_warnings,
             )
+            # Apply the candidate's continuity delta to the
+            # project canon so the next chapter's director
+            # context sees the characters, items, relationships,
+            # and facts the user just confirmed. The
+            # apply happens *inside* the transaction so a
+            # mid-flight failure rolls the canon write back
+            # alongside the chapter / state / project writes.
+            self._apply_candidate_canon_delta(candidate)
             self._wrap_confirmation_in_transaction(candidate)
         candidate.confirm()
         self.candidate_store.save(candidate)
@@ -7128,8 +7266,89 @@ class FileProjectStore:
             self.story_system_dir / "reviews",
             self.story_system_dir / "continuity",
             self.story_system_dir / "commits",
+            self.story_system_dir / "canon",
             self.chapters_dir,
         ]
+
+    # --- Canon delta application -------------------------------------------
+
+    def _apply_candidate_canon_delta(self, candidate: Any) -> dict[str, int]:
+        """Apply a candidate's ``continuity_delta`` to the project canon.
+
+        The user feedback after Tasks 10-14 called out that the
+        delta was only written as a snapshot summary — it never
+        actually touched the characters, items, relationships,
+        or facts the chapter was about. This helper is the
+        missing link: it loads any existing canon registry,
+        applies the candidate's delta, and persists the
+        updated registry so the next chapter's director context
+        sees the world the user confirmed.
+
+        Returns the per-operation apply count so the
+        ``_wrap_confirmation_in_transaction`` hook can surface
+        it on the snapshot summary. A candidate with no delta
+        returns zero counts and leaves the registry untouched.
+        """
+        from packages.story_core.canon.entity_designer import EntityDesigner
+        from packages.story_core.canon.registry import CanonRegistry
+        from packages.story_core.canon.service import CanonService
+
+        delta = getattr(candidate, "continuity_delta", None)
+        if delta is None:
+            return {
+                "entity_additions": 0,
+                "entity_updates": 0,
+                "relationship_changes": 0,
+                "inventory_changes": 0,
+                "task_progressions": 0,
+                "location_movements": 0,
+                "timeline_advances": 0,
+                "foreshadowing_changes": 0,
+            }
+
+        registry = self._load_canon_registry()
+        service = CanonService(
+            registry=registry, designer=_NullCanonDesigner()
+        )
+        counts = service.apply_delta(delta)
+        self._save_canon_registry(registry)
+        return counts
+
+    def _load_canon_registry(self) -> Any:
+        """Read the on-disk canon registry, or return a fresh one.
+
+        The registry is intentionally not versioned through the
+        candidate confirmation transaction: a partial apply
+        from a previous failed run is recoverable, and a
+        missing file is the common case for a project that has
+        not yet had any candidates confirmed.
+        """
+        from packages.story_core.canon.registry import CanonRegistry
+
+        target = self.story_system_dir / "canon" / "registry.json"
+        if not target.is_file():
+            return CanonRegistry()
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return CanonRegistry()
+        if not isinstance(payload, dict):
+            return CanonRegistry()
+        return _registry_from_payload(payload)
+
+    def _save_canon_registry(self, registry: Any) -> Path:
+        """Write the in-memory canon registry back to disk atomically."""
+        from packages.story_core.continuity.snapshot import ChapterSnapshot  # noqa: F401  (typing only)
+        from packages.story_core.persistence.snapshot_store import SnapshotStore
+
+        target = self.story_system_dir / "canon" / "registry.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = _registry_to_payload(registry)
+        # The transaction is already guarding this write; a
+        # direct atomic write keeps the on-disk format
+        # consistent without a second rollback layer.
+        SnapshotStore().write_json_atomic(target, payload)
+        return target
 
     def _wrap_confirmation_in_transaction(self, candidate: Any) -> None:
         """Attach the chapter snapshot (and stale markers) to a confirmed candidate.
