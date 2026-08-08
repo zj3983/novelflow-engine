@@ -1177,6 +1177,49 @@ def _director_snapshot_summary(snapshot: dict) -> dict:
     return result
 
 
+def _load_canon_registry_for_project_root(project_root: Any) -> Any:
+    """Read the on-disk canon registry for ``project_root``.
+
+    The orchestrator's modular pipeline previously started every
+    chapter with a fresh, in-memory :class:`CanonRegistry`. The
+    user's confirmation step writes the registry back to disk
+    under ``.story-system/canon/registry.json``; the next chapter
+    needs to read that file so its ``FactExtractor`` can anchor
+    new facts to the world the user actually has. We reuse the
+    same loader the file project store uses — keeping the
+    read/write formats in one place — and fall back to an empty
+    registry when the project is brand new.
+    """
+    from pathlib import Path
+
+    from packages.story_core.canon.registry import CanonRegistry
+
+    if project_root is None:
+        return CanonRegistry()
+    try:
+        root_path = Path(project_root)
+    except TypeError:
+        return CanonRegistry()
+    target = root_path / ".story-system" / "canon" / "registry.json"
+    if not target.is_file():
+        return CanonRegistry()
+    try:
+        text = target.read_text(encoding="utf-8-sig")
+        import json
+
+        payload = json.loads(text)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return CanonRegistry()
+    if not isinstance(payload, dict):
+        return CanonRegistry()
+    try:
+        from packages.story_core.file_project_store import _registry_from_payload
+
+        return _registry_from_payload(payload)
+    except Exception:
+        return CanonRegistry()
+
+
 def _director_context_payload(story: StoryState, chapter_number: int) -> dict[str, Any]:
     chapter_context = (
         story.outline_context.get("chapter")
@@ -3141,6 +3184,7 @@ class StoryOrchestrator:
         director_runtime: Any | None = None,
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
+        consistency_runtime: Any | None = None,
         canon_registry: Any | None = None,
         workflow_store: Any | None = None,
         job_id: str | None = None,
@@ -3187,12 +3231,31 @@ class StoryOrchestrator:
 
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             job_id = f"chapter-{chapter_number}-{stamp}"
+        # The pipeline accepts an explicit ``canon_registry`` so the
+        # caller can decide which canon the new Director / Writer /
+        # FactExtractor stages should see. The previous round
+        # defaulted to a fresh in-memory registry, which meant a
+        # long-running project silently lost every character, item,
+        # and relationship the user had confirmed — the
+        # ``FactExtractor`` would re-extract against an empty world
+        # and the resulting ``ContinuityDelta`` could not anchor
+        # back to anything. When the caller did not pass a
+        # registry, we now read the project's on-disk canon via
+        # the same helper ``_apply_candidate_canon_delta`` writes
+        # back on confirmation, so the next chapter's pipeline
+        # sees the world the user actually has.
+        if canon_registry is None:
+            try:
+                canon_registry = _load_canon_registry_for_project_root(project_root)
+            except Exception:
+                canon_registry = None
         return run_modular_pipeline(
             project_root=project_root,
             chapter_number=chapter_number,
             director_runtime=director_runtime,
             writer_runtime=writer_runtime,
             fact_extractor=fact_extractor,
+            consistency_runtime=consistency_runtime,
             canon_registry=canon_registry,
             workflow_store=workflow_store,
             job_id=job_id,
@@ -4015,6 +4078,7 @@ class StoryOrchestrator:
         director_runtime: Any | None = None,
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
+        consistency_runtime: Any | None = None,
     ) -> Any:
         """Produce a legacy ``ChapterBundle`` from the modular pipeline.
 
@@ -4037,6 +4101,7 @@ class StoryOrchestrator:
             director_runtime=director_runtime,
             writer_runtime=writer_runtime,
             fact_extractor=fact_extractor,
+            consistency_runtime=consistency_runtime,
         )
         director_artifact = bundle.director_artifact
         chapter_title = str(director_artifact.chapter_goal or "").strip() or (
@@ -4106,12 +4171,49 @@ class StoryOrchestrator:
         # it on the bundle's quality_report so downstream code
         # that reads ``bundle.quality_report`` sees it without
         # having to know about the modular pipeline.
+        #
+        # The writer stage ran the focused consistency review
+        # against the approved director plan and the established
+        # world facts. We propagate the actual findings here —
+        # hard-coding ``pass=True`` would let a draft that
+        # contradicts the canon reach the confirmation gate
+        # silently. Blocking findings flip ``ok`` to ``False``
+        # so the bounded review contract still binds.
+        raw_findings = list(getattr(bundle, "consistency_findings", []) or [])
+        blocking_findings = [
+            finding
+            for finding in raw_findings
+            if bool(finding.get("blocking"))
+        ]
+        non_blocking_findings = [
+            finding
+            for finding in raw_findings
+            if not bool(finding.get("blocking"))
+        ]
+        issues = [str(finding.get("code") or "") for finding in blocking_findings]
+        writing_review_pass = not blocking_findings
         quality_report: dict[str, Any] = {
-            "ok": True,
+            "ok": writing_review_pass,
             "schema_version": "file-writing-review/v1",
             "writing_review": {
-                "pass": True,
-                "issues": [],
+                "pass": writing_review_pass,
+                "issues": issues,
+                "blocking": [
+                    {
+                        "code": str(finding.get("code") or ""),
+                        "message": str(finding.get("message") or ""),
+                        "source": str(finding.get("source") or "consistency"),
+                    }
+                    for finding in blocking_findings
+                ],
+                "warnings": [
+                    {
+                        "code": str(finding.get("code") or ""),
+                        "message": str(finding.get("message") or ""),
+                        "source": str(finding.get("source") or "consistency"),
+                    }
+                    for finding in non_blocking_findings
+                ],
                 "source": "modular_pipeline",
             },
             "modular_pipeline": {

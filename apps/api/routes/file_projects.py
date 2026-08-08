@@ -1892,6 +1892,21 @@ def init_file_project_routes() -> APIRouter:
     def list_file_project_workflow_artifacts(
         project_id: str, job_id: str | None = None
     ) -> dict[str, object]:
+        # Reject path-traversal payloads in the ``job_id`` query
+        # parameter up front so the on-disk store never sees a
+        # value that could escape ``.story-system/workflow/``.
+        if job_id is not None:
+            try:
+                from packages.story_core.persistence.workflow_artifact_store import (
+                    _validate_id,
+                )
+
+                _validate_id("job_id", job_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400, detail="workflow_artifact_invalid_job_id"
+                )
+
         """List per-stage workflow artifacts the modular agent pipeline wrote.
 
         The new ``Director → Writer → FactExtractor`` pipeline
@@ -1970,6 +1985,22 @@ def init_file_project_routes() -> APIRouter:
     def get_file_project_workflow_artifact(
         project_id: str, job_id: str, stage_id: str
     ) -> dict[str, object]:
+        # The URL path component already rejects ``..`` and ``/``,
+        # but an explicit check protects against the rare case of
+        # percent-encoded slashes or a misuse of the
+        # ``workflow_artifact_invalid_*`` family of errors.
+        try:
+            from packages.story_core.persistence.workflow_artifact_store import (
+                _validate_id,
+            )
+
+            _validate_id("job_id", job_id)
+            _validate_id("stage_id", stage_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="workflow_artifact_invalid_id"
+            )
+
         """Read a single per-stage workflow artifact record.
 
         The workbench calls this when the user expands a

@@ -1,9 +1,13 @@
 "use client";
 
-import type {
-  GenerationJobStep,
-  WorkflowArtifactJob,
-  WorkflowArtifactStage,
+import { useState } from "react";
+
+import {
+  fetchWorkflowArtifact,
+  type GenerationJobStep,
+  type WorkflowArtifactJob,
+  type WorkflowArtifactResponse,
+  type WorkflowArtifactStage,
 } from "../../lib/api";
 
 export type WritingFlowStage = {
@@ -129,7 +133,7 @@ const STAGE_LABELS_ARTIFACT: Record<string, string> = {
   consistency: "一致性检查",
 };
 
-function readSummary(reads: WorkflowArtifactStage["reads"]): string {
+function summarizeReads(reads: WorkflowArtifactStage["reads"]): string {
   if (!Array.isArray(reads) || reads.length === 0) return "无读取记录";
   return reads
     .map((entry) => {
@@ -148,11 +152,29 @@ function elapsedSeconds(stage: WorkflowArtifactStage): string {
   return `${(stage.elapsed_ms / 1000).toFixed(2)}s`;
 }
 
+function summarizeStageRecord(record: WorkflowArtifactStage): string {
+  // The summary list is the same string the workbench showed
+  // before the audit panel was introduced: a one-line text the
+  // operator can scan in the timeline view. The full record is
+  // loaded on demand when the operator clicks "查看本步产物".
+  if (record.output_summary) return record.output_summary;
+  if (record.artifact_path) return record.artifact_path;
+  if (record.artifact_sha256) return `sha256=${record.artifact_sha256.slice(0, 12)}`;
+  return "无本步产物摘要";
+}
+
 export function WorkflowArtifactPanel({
+  projectId,
   jobs,
 }: {
+  projectId: string;
   jobs: WorkflowArtifactJob[];
 }) {
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [records, setRecords] = useState<Record<string, WorkflowArtifactStage>>({});
+  const [loading, setLoading] = useState<Record<string, boolean>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
   if (jobs.length === 0) {
     return (
       <p className="ws-card__hint">
@@ -161,57 +183,149 @@ export function WorkflowArtifactPanel({
     );
   }
   const latest = jobs[jobs.length - 1];
+
+  const toggleStage = async (stageId: string) => {
+    const key = `${latest.job_id}/${stageId}`;
+    if (expanded[key]) {
+      setExpanded((current) => ({ ...current, [key]: false }));
+      return;
+    }
+    setExpanded((current) => ({ ...current, [key]: true }));
+    if (records[key]) return;
+    setLoading((current) => ({ ...current, [key]: true }));
+    setErrors((current) => ({ ...current, [key]: "" }));
+    try {
+      const response: WorkflowArtifactResponse = await fetchWorkflowArtifact(
+        projectId,
+        latest.job_id,
+        stageId,
+      );
+      setRecords((current) => ({ ...current, [key]: response.stage }));
+    } catch (reason) {
+      setErrors((current) => ({
+        ...current,
+        [key]: reason instanceof Error ? reason.message : String(reason),
+      }));
+    } finally {
+      setLoading((current) => ({ ...current, [key]: false }));
+    }
+  };
+
   return (
     <div className="ws-workflow-artifacts">
       <p className="ws-card__hint">
         任务 <code>{latest.job_id}</code> 的结构化工件：
       </p>
       <ol className="ws-plain-list">
-        {latest.stages.map((stage) => (
-          <li key={`${latest.job_id}-${stage.stage_id}`} className="ws-workflow-artifacts__stage">
-            <p style={{ margin: 0 }}>
-              <strong>
-                {STAGE_LABELS_ARTIFACT[stage.stage_id] ?? stage.stage_id}
-              </strong>{" "}
-              <span className="ws-badge">
-                {AGENT_LABELS[stage.agent_id] ?? stage.agent_id} · {stage.status} · {elapsedSeconds(stage)}
-              </span>
-            </p>
-            {stage.provider || stage.model ? (
+        {latest.stages.map((stage) => {
+          const detailKey = `${latest.job_id}/${stage.stage_id}`;
+          const isExpanded = Boolean(expanded[detailKey]);
+          const fullRecord = records[detailKey] ?? stage;
+          const isLoading = Boolean(loading[detailKey]);
+          const detailError = errors[detailKey] ?? "";
+          return (
+            <li key={detailKey} className="ws-workflow-artifacts__stage">
+              <p style={{ margin: 0 }}>
+                <strong>
+                  {STAGE_LABELS_ARTIFACT[stage.stage_id] ?? stage.stage_id}
+                </strong>{" "}
+                <span className="ws-badge">
+                  {AGENT_LABELS[stage.agent_id] ?? stage.agent_id} · {stage.status} · {elapsedSeconds(stage)}
+                </span>
+              </p>
+              {stage.provider || stage.model ? (
+                <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                  模型：{stage.provider || "?"} / {stage.model || "?"}
+                </p>
+              ) : null}
+              {stage.selected_entity_ids.length > 0 ? (
+                <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                  涉及实体：{stage.selected_entity_ids.join("、")}
+                </p>
+              ) : null}
+              {stage.selected_module_ids.length > 0 ? (
+                <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                  调用模块：{stage.selected_module_ids.join("、")}
+                </p>
+              ) : null}
               <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
-                模型：{stage.provider || "?"} / {stage.model || "?"}
+                读取资料：{summarizeReads(stage.reads)}
               </p>
-            ) : null}
-            {stage.selected_entity_ids.length > 0 ? (
-              <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
-                涉及实体：{stage.selected_entity_ids.join("、")}
-              </p>
-            ) : null}
-            {stage.selected_module_ids.length > 0 ? (
-              <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
-                调用模块：{stage.selected_module_ids.join("、")}
-              </p>
-            ) : null}
-            <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
-              读取资料：{readSummary(stage.reads)}
-            </p>
-            {stage.output_summary ? (
-              <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
-                本步产物：<code>{stage.output_summary}</code>
-              </p>
-            ) : null}
-            {stage.artifact_path ? (
-              <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
-                产物路径：<code>{stage.artifact_path}</code>
-              </p>
-            ) : null}
-            {stage.error ? (
-              <p className="ws-inline-error" style={{ margin: "4px 0 0" }}>
-                错误：{stage.error}
-              </p>
-            ) : null}
-          </li>
-        ))}
+              {stage.output_summary || stage.artifact_path ? (
+                <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                  本步产物：<code>{summarizeStageRecord(stage)}</code>
+                </p>
+              ) : null}
+              {stage.artifact_path ? (
+                <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                  产物路径：<code>{stage.artifact_path}</code>
+                </p>
+              ) : null}
+              {stage.error ? (
+                <p className="ws-inline-error" style={{ margin: "4px 0 0" }}>
+                  错误：{stage.error}
+                </p>
+              ) : null}
+              <button
+                type="button"
+                className="ws-button"
+                style={{ marginTop: 6 }}
+                aria-expanded={isExpanded}
+                aria-controls={`${detailKey}-detail`}
+                onClick={() => {
+                  void toggleStage(stage.stage_id);
+                }}
+              >
+                {isExpanded ? "收起本步详情" : "查看本步详情"}
+              </button>
+              {isExpanded ? (
+                <div
+                  id={`${detailKey}-detail`}
+                  className="ws-workflow-artifacts__detail"
+                  aria-label={`${stage.stage_id} 详情`}
+                >
+                  {isLoading ? (
+                    <p className="ws-card__hint">正在读取本步详情…</p>
+                  ) : detailError ? (
+                    <p className="ws-inline-error">本步详情加载失败：{detailError}</p>
+                  ) : (
+                    <>
+                      <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                        提示词模板：{fullRecord.prompt_template_id || "?"}@{
+                          fullRecord.prompt_template_version || "?"
+                        }
+                      </p>
+                      <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                        本步产物：
+                        <code>
+                          {fullRecord.output_summary || fullRecord.artifact_path || "—"}
+                        </code>
+                      </p>
+                      {fullRecord.artifact_sha256 ? (
+                        <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                          产物哈希：<code>{fullRecord.artifact_sha256}</code>
+                        </p>
+                      ) : null}
+                      {fullRecord.reads.length > 0 ? (
+                        <details>
+                          <summary className="ws-card__hint">读取资料明细</summary>
+                          <pre className="ws-artifact__payload">
+                            {JSON.stringify(fullRecord.reads, null, 2)}
+                          </pre>
+                        </details>
+                      ) : null}
+                      {fullRecord.started_at || fullRecord.finished_at ? (
+                        <p className="ws-card__hint" style={{ margin: "4px 0 0" }}>
+                          起止时间：{fullRecord.started_at || "?"} → {fullRecord.finished_at || "?"}
+                        </p>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
       </ol>
     </div>
   );

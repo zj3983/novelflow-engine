@@ -720,6 +720,53 @@ def _registry_from_payload(payload: dict[str, Any]) -> Any:
     return registry
 
 
+def _project_canon_registry_for_extractor(registry: Any) -> dict[str, Any]:
+    """Project a :class:`CanonRegistry` into the
+    ``canon_view`` shape :class:`FactExtractor` expects.
+
+    The view has three indexes — ``by_id``, ``by_kind``, and
+    ``by_alias`` — so the extractor's orphan detector can resolve
+    every name the writer introduced back to a known entity. A
+    registry with no entities returns the same empty view as a
+    missing registry; that is the shape the legacy code already
+    handled, so the change is a no-op for brand-new projects.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    by_kind: dict[str, list[str]] = {}
+    by_alias: dict[str, list[str]] = {}
+    if registry is None:
+        return {"by_id": by_id, "by_kind": by_kind, "by_alias": by_alias}
+    list_all = getattr(registry, "list_all", None)
+    if not callable(list_all):
+        return {"by_id": by_id, "by_kind": by_kind, "by_alias": by_alias}
+    for entity in list_all():
+        entity_id = str(getattr(entity, "entity_id", "") or "")
+        if not entity_id:
+            continue
+        kind = str(getattr(entity, "kind", "") or "")
+        display_name = str(getattr(entity, "display_name", "") or "")
+        aliases = [
+            str(alias) for alias in (getattr(entity, "aliases", None) or [])
+            if str(alias).strip()
+        ]
+        extensions = dict(getattr(entity, "extensions", None) or {})
+        by_id[entity_id] = {
+            "entity_id": entity_id,
+            "kind": kind,
+            "display_name": display_name,
+            "aliases": aliases,
+            "lifecycle": str(getattr(entity, "lifecycle", "") or ""),
+            "extensions": extensions,
+        }
+        by_kind.setdefault(kind, []).append(entity_id)
+        for alias in [display_name, *aliases]:
+            normalized = alias.strip().lower()
+            if not normalized:
+                continue
+            by_alias.setdefault(normalized, []).append(entity_id)
+    return {"by_id": by_id, "by_kind": by_kind, "by_alias": by_alias}
+
+
 def _bundle_generation_failure_reason(quality_report: Any) -> str:
     if not isinstance(quality_report, dict):
         return ""
@@ -2369,10 +2416,20 @@ class FileProjectStore:
         # callers that never set a continuity delta.
         chapter_number = int(getattr(bundle, "chapter_number", 0) or 0)
         body = str(getattr(bundle, "body", "") or "")
-        continuity_delta = self._extract_continuity_delta(
-            body=body,
-            chapter_number=chapter_number,
-        )
+        # The modular pipeline already ran the FactExtractor against
+        # the project's on-disk canon and shipped the resulting
+        # ``ContinuityDelta`` on the bundle. Re-extracting here
+        # against a possibly-empty canon would silently drop every
+        # entity the new pipeline saw, so we prefer the bundle's
+        # delta when one is present.
+        existing_delta = getattr(bundle, "continuity_delta", None)
+        if existing_delta is not None:
+            continuity_delta = existing_delta
+        else:
+            continuity_delta = self._extract_continuity_delta(
+                body=body,
+                chapter_number=chapter_number,
+            )
         context_trace_ids = self._candidate_context_trace_ids(bundle)
         candidate = CandidateDraft.create(
             project_id=project_id,
@@ -2444,15 +2501,27 @@ class FileProjectStore:
         return extractor.extract(context)
 
     def _candidate_canon_view(self) -> dict[str, Any]:
-        """Best-effort canon view for the extractor.
+        """Project the project's on-disk canon into a view the
+        :class:`FactExtractor` understands.
 
-        The file project store does not own a live ``CanonRegistry``
-        in this revision (Task 14 wires the full registry into the
-        orchestrator). For now we return an empty index so the
-        deterministic layer's orphan detector still records the
-        phrases the writer introduced.
+        The user feedback after Tasks 10-14 called out that the
+        production flow was extracting facts against an empty
+        canon, so long-running projects silently lost every
+        character, item, relationship, and timeline marker the
+        user had confirmed. This helper now reads the canonical
+        registry file (the same one ``_apply_candidate_canon_delta``
+        writes back on confirmation) and projects it into the
+        three-index shape the extractor already knows how to read.
+
+        A missing or malformed registry falls back to the empty
+        view so a brand-new project still produces a valid (empty)
+        ``ContinuityDelta``.
         """
-        return {"by_id": {}, "by_kind": {}, "by_alias": {}}
+        try:
+            registry = self._load_canon_registry()
+        except Exception:
+            return {"by_id": {}, "by_kind": {}, "by_alias": {}}
+        return _project_canon_registry_for_extractor(registry)
 
     def _candidate_context_trace_ids(self, bundle: Any) -> list[str]:
         """Collect the per-agent trace ids the bundle already carries.

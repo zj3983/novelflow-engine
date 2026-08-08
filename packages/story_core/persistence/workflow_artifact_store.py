@@ -14,6 +14,7 @@ Layout::
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,34 @@ from typing import Any
 
 
 WORKFLOW_ARTIFACT_SCHEMA = "workflow-artifact/v1"
+
+# ``job_id`` and ``stage_id`` end up as path components inside
+# ``.story-system/workflow/``; an attacker-controlled value with
+# ``..`` or a drive letter would let an API caller escape the
+# directory. The store rejects anything that is not a plain
+# identifier built from safe characters. The check is intentionally
+# conservative — real job ids come from the orchestrator
+# (``chapter-{N}-{timestamp}``), real stage ids come from the
+# pipeline (e.g. ``director``, ``writer``, ``fact-extractor``).
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _validate_id(label: str, value: str) -> str:
+    """Reject path-traversal payloads in job / stage ids.
+
+    Empty strings, ``..``, absolute paths, separators, and
+    characters outside ``[A-Za-z0-9._-]`` are all rejected. The
+    cap of 128 chars matches the file name limit on common file
+    systems and prevents absurdly long ids that would still
+    otherwise pass the charset check.
+    """
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"workflow_artifact_invalid_{label}: empty")
+    if not _SAFE_ID_RE.match(value):
+        raise ValueError(f"workflow_artifact_invalid_{label}: {value!r}")
+    if value in {".", ".."}:
+        raise ValueError(f"workflow_artifact_invalid_{label}: {value!r}")
+    return value
 
 
 def _now() -> str:
@@ -102,10 +131,10 @@ class WorkflowArtifactStore:
         self.directory = self.root / ".story-system" / "workflow"
 
     def job_dir(self, job_id: str) -> Path:
-        return self.directory / str(job_id)
+        return self.directory / _validate_id("job_id", job_id)
 
     def stage_path(self, job_id: str, stage_id: str) -> Path:
-        return self.job_dir(job_id) / f"{stage_id}.json"
+        return self.job_dir(job_id) / f"{_validate_id('stage_id', stage_id)}.json"
 
     def write_stage(self, job_id: str, record: StageArtifactRecord) -> Path:
         target = self.stage_path(job_id, record.stage_id)

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
@@ -243,3 +244,39 @@ def test_workflow_artifact_routes_return_404_for_unknown_project(
     assert list_response.json()["detail"] == "file_project_not_found"
     assert get_response.status_code == 404
     assert get_response.json()["detail"] == "file_project_not_found"
+
+
+def test_workflow_artifact_store_rejects_path_traversal_ids(tmp_path: Path) -> None:
+    """The on-disk store must reject ids that escape the workflow dir."""
+    from packages.story_core.persistence.workflow_artifact_store import (
+        _validate_id,
+        WorkflowArtifactStore,
+    )
+
+    store = WorkflowArtifactStore(tmp_path)
+    record = StageArtifactRecord(stage_id="writer", agent_id="WriterAgent", status="done")
+
+    for bad in ("..", "../etc", "with/slash", "with\\slash", "abs/path", ""):
+        with pytest.raises(ValueError):
+            _validate_id("job_id", bad)
+
+    with pytest.raises(ValueError):
+        store.write_stage("../../etc/passwd", record)
+    with pytest.raises(ValueError):
+        store.write_stage("job-1", StageArtifactRecord(stage_id="../escape", agent_id="x", status="done"))
+
+
+def test_workflow_artifact_routes_reject_path_traversal_job_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The list route must 400 on a job_id that escapes the workflow dir."""
+    _create_project(tmp_path, monkeypatch, "file-traversal-fixture")
+
+    # ``..`` is a path component FastAPI will normally route;
+    # percent-encoding the dot is enough to slip the request
+    # through path parsing and into the handler.
+    response = client.get(
+        "/file-projects/file-traversal-fixture/workflow-artifacts?job_id=..%2Fetc"
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("workflow_artifact_invalid_job_id")

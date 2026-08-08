@@ -157,7 +157,7 @@ export default function GenerationLogPage() {
         <h2 className="ws-card__title">新流程结构化工件</h2>
         <p className="ws-card__hint">每次章节生成后，新模块化流程会在这里列出本次 Director / Writer / FactExtractor 的输入资料、调用模块和本步产物。</p>
         {workflowError ? <p className="ws-inline-error">新流程工件加载失败：{workflowError}</p> : null}
-        <WorkflowArtifactPanel jobs={workflowJobs} />
+        <WorkflowArtifactPanel projectId={projectId} jobs={workflowJobs} />
       </section>
     </div>
   );

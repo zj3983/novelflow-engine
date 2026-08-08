@@ -158,6 +158,34 @@ class _StubWriterRuntime:
         return _Resp(self.body)
 
 
+class _StubConsistencyRuntime:
+    """Record-and-replay consistency runtime for the e2e test.
+
+    Returns a canned contradiction payload the focused
+    consistency agent understands. The test asserts the
+    orchestrator actually invoked this runtime and surfaced the
+    blocking finding on the bundle (the previous round
+    hard-coded ``pass=True`` and the body was passing review
+    silently).
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    def complete(self, request: Any) -> dict[str, Any]:
+        self.calls.append(request)
+        return {
+            "issues": [
+                {
+                    "code": "canon_violation",
+                    "message": "铜牌不该出现在山腰草棚。",
+                    "source": "consistency",
+                    "blocking": True,
+                }
+            ]
+        }
+
+
 # --- Tests -------------------------------------------------------------------
 
 
@@ -337,3 +365,129 @@ def test_orchestrator_writes_per_stage_artifacts_to_workflow_store(tmp_path: Pat
     assert extractor_record["stage_id"] == "fact-extractor"
     assert extractor_record["agent_id"] == "FactExtractor"
     assert extractor_record["status"] == "done"
+
+
+def test_orchestrator_runs_focused_consistency_review(tmp_path: Path):
+    """The writer stage must run the focused consistency review
+    and surface the findings on the bundle, not hard-code pass=True.
+    """
+    project_root = tmp_path
+    _seed_legacy_project(project_root, with_outline=False)
+
+    director_runtime = _StubDirectorRuntime()
+    writer_runtime = _StubWriterRuntime(body="林昭提灯上山，夜宿山腰。")
+    consistency_runtime = _StubConsistencyRuntime()
+
+    orchestrator = StoryOrchestrator(use_modular_agents=True)
+    bundle = orchestrator.generate_next_chapter_via_modular_pipeline(
+        project_root=project_root,
+        chapter_number=1,
+        director_runtime=director_runtime,
+        writer_runtime=writer_runtime,
+        consistency_runtime=consistency_runtime,
+    )
+
+    # The consistency runtime was hit exactly once during the
+    # writer stage and the blocking finding came through.
+    assert len(consistency_runtime.calls) == 1
+    assert isinstance(bundle, ModularChapterBundle)
+    assert len(bundle.consistency_findings) == 1
+    finding = bundle.consistency_findings[0]
+    assert finding["code"] == "canon_violation"
+    assert finding["blocking"] is True
+
+    # The bundle's writing_review reflects the real finding
+    # (pass=False) instead of the old hard-coded True.
+    legacy_bundle = orchestrator._generate_next_chapter_bundle_via_modular_agents(
+        _make_stub_story_state(current_chapter=0),
+        project_root=project_root,
+        director_runtime=director_runtime,
+        writer_runtime=writer_runtime,
+        consistency_runtime=consistency_runtime,
+    )
+    writing_review = legacy_bundle.quality_report["writing_review"]
+    assert writing_review["pass"] is False
+    assert "canon_violation" in writing_review["issues"]
+
+
+def _make_stub_story_state(*, current_chapter: int) -> Any:
+    """Build a minimal :class:`StoryState` the orchestrator accepts
+    in the new ``_generate_next_chapter_bundle_via_modular_agents``
+    path. The function only needs the field the orchestrator reads
+    (current_chapter) so we can build a one-off via the model's
+    validators.
+    """
+    from packages.story_core.models import (
+        AgentRuntimeState,
+        AgentSettings,
+        StoryState,
+    )
+
+    return StoryState(
+        story_id="s-test",
+        title="测试",
+        outline="",
+        genre="",
+        style="",
+        current_chapter=current_chapter,
+        characters=[],
+        world_facts=[],
+        agent_settings=AgentSettings(),
+        agent_runtime=AgentRuntimeState(),
+    )
+
+
+def test_orchestrator_loads_canon_registry_from_project_root(tmp_path: Path):
+    """The pipeline must see the on-disk canon registry.
+
+    The user feedback after Round 4 flagged that the production
+    flow was extracting facts against an empty canon, so
+    long-running projects silently lost every entity the user
+    had confirmed. This test seeds a registry file under
+    ``.story-system/canon/registry.json`` and asserts the next
+    chapter's pipeline sees it.
+    """
+    from packages.story_core.canon.registry import CanonRegistry
+    from packages.story_core.orchestrator import _load_canon_registry_for_project_root
+
+    project_root = tmp_path
+    canon_dir = project_root / ".story-system" / "canon"
+    canon_dir.mkdir(parents=True, exist_ok=True)
+    seed_registry = CanonRegistry()
+    seed_registry.add_character(name="林昭", aliases=["主角"])
+    (canon_dir / "registry.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "canon-registry/v1",
+                "by_id": {
+                    entity.entity_id: {
+                        "entity_id": entity.entity_id,
+                        "kind": entity.kind,
+                        "display_name": entity.display_name,
+                        "aliases": list(entity.aliases),
+                        "lifecycle": entity.lifecycle,
+                        "extensions": dict(entity.extensions or {}),
+                    }
+                    for entity in seed_registry.list_all()
+                },
+                "relationships": [],
+                "timeline": [],
+                "foreshadowing": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    # The orchestrator's loader surfaces the seeded entity.
+    loaded = _load_canon_registry_for_project_root(project_root)
+    assert loaded.resolve("林昭", "character") is not None
+    assert loaded.resolve("主角", "character") is not None
+
+    # And a brand-new project (no registry file) returns an
+    # empty registry, never raises.
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    empty = _load_canon_registry_for_project_root(fresh)
+    assert empty.list_all("character") == []

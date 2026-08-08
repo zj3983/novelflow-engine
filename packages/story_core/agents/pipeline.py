@@ -67,6 +67,11 @@ from packages.story_core.agents.writer.runtime import (
     GatewayWriterRuntime,
     WriterRuntime,
 )
+from packages.story_core.agents.consistency import (
+    ConsistencyFinding,
+    ConsistencyRuntime,
+    focused_consistency_review,
+)
 from packages.story_core.canon.registry import CanonEntity
 from packages.story_core.canon.service import CanonService
 from packages.story_core.context.director_context import (
@@ -131,6 +136,7 @@ class ModularChapterBundle:
     writer_context: WriterContext
     canon_preflight: dict[str, Any] = field(default_factory=dict)
     writer_trace_id: str = ""
+    consistency_findings: list[dict[str, Any]] = field(default_factory=list)
     continuity_delta: ContinuityDelta | None = None
     fact_extractor_trace_id: str = ""
 
@@ -314,6 +320,7 @@ def run_writer(
     director_artifact: DirectorArtifact,
     canon_registry: Any | None = None,
     runtime: WriterRuntime | None = None,
+    consistency_runtime: ConsistencyRuntime | None = None,
 ) -> WriterPipelineResult:
     """Run the new writer pipeline for ``chapter_number``.
 
@@ -342,12 +349,46 @@ def run_writer(
     )
     agent = WriterAgent(runtime=runtime)
     result = agent.run(request)
+    # The focused consistency review surfaces deterministic
+    # contradictions (e.g. world facts the writer violated, the
+    # director's plan the writer diverged from). A failure here
+    # must propagate through the bundle so the orchestrator's
+    # ``writing_review.pass`` reflects the actual finding set,
+    # not a hard-coded True. The agent itself is best-effort:
+    # if the runtime is missing or the model call raises we
+    # still return the writer's body and just record no
+    # findings — the user's confirmation gate is the final
+    # safety net for the legacy editor surface.
+    consistency_findings: list[ConsistencyFinding] = []
+    if consistency_runtime is None:
+        try:
+            consistency_runtime = _default_consistency_runtime(project_root)
+        except Exception:
+            consistency_runtime = None
+    if consistency_runtime is not None:
+        try:
+            consistency_findings = focused_consistency_review(
+                result.body,
+                director_artifact=director_artifact,
+                active_facts=list(context.continuity_facts or []),
+                runtime=consistency_runtime,
+            )
+        except Exception:
+            consistency_findings = []
     return WriterPipelineResult(
         body=result.body,
         context=context,
         director_artifact=director_artifact,
         canon_preflight=preflight,
-        consistency_findings=[],
+        consistency_findings=[
+            {
+                "code": finding.code,
+                "message": finding.message,
+                "source": finding.source,
+                "blocking": finding.blocking,
+            }
+            for finding in consistency_findings
+        ],
         trace_id=f"writer:{chapter_number}",
     )
 
@@ -400,6 +441,19 @@ def _default_writer_runtime(project_root: Any) -> WriterRuntime:
 
     gateway = RuntimeModelGateway()
     return GatewayWriterRuntime(gateway)
+
+
+def _default_consistency_runtime(project_root: Any) -> ConsistencyRuntime:
+    """Return a consistency runtime backed by the model gateway.
+
+    The focus-consistency agent uses the same model gateway as the
+    writer so the user does not have to configure a second provider
+    binding just to enable a deterministic contradiction check.
+    """
+    from packages.story_core.model_gateway import RuntimeModelGateway
+
+    gateway = RuntimeModelGateway()
+    return GatewayDirectorRuntime(gateway)
 
 
 def _ensure_canon_service(
@@ -541,6 +595,7 @@ def run_modular_pipeline(
     director_runtime: DirectorRuntime | None = None,
     writer_runtime: WriterRuntime | None = None,
     fact_extractor: FactExtractor | None = None,
+    consistency_runtime: ConsistencyRuntime | None = None,
     canon_registry: Any | None = None,
     workflow_store: Any | None = None,
     job_id: str | None = None,
@@ -597,6 +652,7 @@ def run_modular_pipeline(
         director_artifact=director_result.artifact,
         canon_registry=canon_registry,
         runtime=writer_runtime,
+        consistency_runtime=consistency_runtime,
     )
     extractor_started = _time.monotonic()
     if fact_extractor is None:
@@ -665,6 +721,7 @@ def run_modular_pipeline(
         writer_context=writer_result.context,
         canon_preflight=dict(writer_result.canon_preflight or {}),
         writer_trace_id=writer_result.trace_id,
+        consistency_findings=list(writer_result.consistency_findings or []),
         continuity_delta=delta,
         fact_extractor_trace_id=f"fact-extractor:{chapter_number}",
     )
