@@ -7068,23 +7068,68 @@ class FileProjectStore:
         payload["body"] = candidate.body
         payload["chapter_title"] = candidate.chapter_title or payload.get("chapter_title")
 
-        # The new path runs the candidate through the legacy
-        # ``persist_bundle`` (which writes the chapter JSON, the
-        # markdown body, and the state / project ledgers) and then
-        # wraps the result in a ``ProjectTransaction`` that also
-        # writes the per-chapter ``ChapterSnapshot`` and updates the
-        # stale-chapter markers for regenerations. If anything
-        # fails, the transaction rolls back every managed file and
-        # the candidate stays pending.
-        self.persist_bundle(
-            payload,
-            operation=candidate.operation,
-            accept_quality_warnings=accept_quality_warnings,
+        # The confirmation is the single atomic boundary the user
+        # can trust. The body runs the legacy ``persist_bundle``
+        # (which writes the chapter JSON, the markdown body, the
+        # state / project ledgers, the per-chapter review, and the
+        # commit log) and then the snapshot / stale-marker
+        # writes. A partial failure rolls every managed file back
+        # to the pre-confirmation state so the candidate stays
+        # ``pending`` and the user can re-confirm or discard
+        # without ever having had a "confirmed" candidate they
+        # could not trust.
+        from packages.story_core.persistence.project_transaction import (
+            ProjectTransaction,
         )
-        self._wrap_confirmation_in_transaction(candidate)
+
+        with ProjectTransaction.create(
+            self.root,
+            snapshot_store=self.snapshot_store,
+            managed_paths=self._managed_paths_for_transaction(),
+            managed_directories=self._managed_directories_for_transaction(),
+        ):
+            self.persist_bundle(
+                payload,
+                operation=candidate.operation,
+                accept_quality_warnings=accept_quality_warnings,
+            )
+            self._wrap_confirmation_in_transaction(candidate)
         candidate.confirm()
         self.candidate_store.save(candidate)
         return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
+
+    # --- Transaction-managed paths -----------------------------------------
+
+    def _managed_paths_for_transaction(self) -> list[Path]:
+        """The explicit files a candidate confirmation touches.
+
+        These are the top-level metadata documents plus the
+        per-chapter review. Chapter JSONs and continuity
+        snapshots live in directories that are tracked via
+        :meth:`_managed_directories_for_transaction` so the
+        transaction picks up additions made during the body.
+        """
+        return [
+            self.webnovel_dir / "state.json",
+            self.webnovel_dir / "project.json",
+            self.story_system_dir / "MASTER_SETTING.json",
+        ]
+
+    def _managed_directories_for_transaction(self) -> list[Path]:
+        """The directories a candidate confirmation writes into.
+
+        Every file inside these directories is part of the
+        transaction's recovery snapshot, so a fresh snapshot
+        file or a regenerated commit log is rolled back when
+        the body raises.
+        """
+        return [
+            self.story_system_dir / "chapters",
+            self.story_system_dir / "reviews",
+            self.story_system_dir / "continuity",
+            self.story_system_dir / "commits",
+            self.chapters_dir,
+        ]
 
     def _wrap_confirmation_in_transaction(self, candidate: Any) -> None:
         """Attach the chapter snapshot (and stale markers) to a confirmed candidate.

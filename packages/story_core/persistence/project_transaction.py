@@ -59,10 +59,24 @@ class TransactionResult:
 class ProjectTransaction:
     """Atomic, rollback-safe multi-file commit.
 
-    Build the transaction with the candidate's payloads, then call
-    ``commit`` once. The transaction takes a snapshot of every
-    managed file before writing; if any write fails, the snapshot
-    is restored and the exception propagates.
+    Two ways to use the transaction:
+
+    * **Staged payloads.** Build the transaction with the
+      candidate's payloads, then call :meth:`commit` once. The
+      transaction takes a snapshot of every staged path before
+      writing; if any write fails, the snapshot is restored and
+      the exception propagates. This is the pattern the candidate
+      save / load path uses when it has the payloads in hand.
+
+    * **Context manager.** Use ``with ProjectTransaction(...) as
+      tx:`` to wrap a multi-step commit. The transaction
+      snapshots every managed file in the project's standard
+      directories on ``__enter__``; if the body raises, the
+      snapshot is restored and the exception propagates. This is
+      the pattern ``FileProjectStore.confirm_candidate`` uses —
+      the body runs the legacy ``persist_bundle`` plus the
+      per-chapter snapshot write, and a partial failure rolls
+      everything back so the candidate stays ``pending``.
     """
 
     root: Path
@@ -72,6 +86,16 @@ class ProjectTransaction:
     snapshot: ChapterSnapshot | None = None
     stale_chapters: list[int] = field(default_factory=list)
     managed_directories: tuple[Path, ...] = ()
+    _rollback_snapshot: dict[Path, bytes | None] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _rollback_directories: tuple[Path, ...] = field(
+        default_factory=tuple, init=False, repr=False
+    )
+    _managed_paths: tuple[Path, ...] = field(
+        default_factory=tuple, init=False, repr=False
+    )
+    _rolled_back: bool = field(default=False, init=False, repr=False)
 
     @classmethod
     def create(
@@ -79,13 +103,89 @@ class ProjectTransaction:
         root: str | Path,
         *,
         snapshot_store: SnapshotStore,
+        managed_paths: list[Path] | None = None,
+        managed_directories: list[Path] | None = None,
     ) -> "ProjectTransaction":
+        """Build a transaction rooted at ``root``.
+
+        ``managed_paths`` and ``managed_directories`` are the
+        tracked files the context-manager mode snapshots and
+        restores. ``FileProjectStore`` supplies the canonical
+        set of paths (state, project, chapters, continuity,
+        reviews, commits) so callers do not have to enumerate
+        them per project.
+        """
         root_path = Path(root)
         return cls(
             root=root_path,
             snapshot_store=snapshot_store,
             continuity_store=ContinuityStore(root_path),
+            managed_directories=tuple(managed_directories or ()),
+        )._bind_managed_paths(managed_paths or [])
+
+    def _bind_managed_paths(self, managed_paths: list[Path]) -> "ProjectTransaction":
+        """Cache the explicit managed paths so :meth:`__enter__`
+        can snapshot them without re-resolving the project layout
+        on every transaction. The directories are still
+        snapshotted lazily inside :meth:`__enter__` so file
+        additions during the transaction body are caught.
+        """
+        self._managed_paths = tuple(Path(p) for p in managed_paths)
+        return self
+
+    def __enter__(self) -> "ProjectTransaction":
+        """Snapshot the managed files and stash the snapshot for
+        ``__exit__`` to restore on failure.
+
+        The body of the ``with`` block is free to call
+        :meth:`persist_bundle` or any other writer; the snapshot
+        is the recovery boundary the user can trust.
+        """
+        directories: list[Path] = list(self.managed_directories)
+        snapshot, snapshotted_dirs = SnapshotStore.snapshot_managed_files(
+            list(self._managed_paths), directories
         )
+        self._rollback_snapshot = snapshot
+        self._rollback_directories = snapshotted_dirs
+        self._rolled_back = False
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        """Restore the snapshot if the body raised.
+
+        Successful bodies leave the on-disk state alone; failed
+        bodies roll every managed file back to the
+        pre-transaction state so the candidate stays
+        ``pending`` and the user can re-confirm or discard.
+        """
+        if exc_type is None or not self._rollback_snapshot:
+            return
+        try:
+            SnapshotStore.restore_managed_files(
+                self._rollback_snapshot, self._rollback_directories
+            )
+            self._rolled_back = True
+        except Exception:  # pragma: no cover - last-ditch recovery
+            # The rollback itself failed; surface the original
+            # exception so the caller still sees the failure
+            # reason. The on-disk state may be inconsistent in
+            # that case, but the user has the candidate status
+            # as the authoritative signal of commit success.
+            pass
+
+    def rollback(self) -> None:
+        """Force a rollback now (outside a ``with`` block).
+
+        The snapshot taken by the most recent :meth:`__enter__`
+        is restored. Calling :meth:`rollback` twice is a
+        no-op.
+        """
+        if self._rolled_back or not self._rollback_snapshot:
+            return
+        SnapshotStore.restore_managed_files(
+            self._rollback_snapshot, self._rollback_directories
+        )
+        self._rolled_back = True
 
     def add_payload(self, path: str | Path, payload: Any) -> None:
         self.payloads[Path(path)] = payload

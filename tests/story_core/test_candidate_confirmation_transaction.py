@@ -254,3 +254,62 @@ def test_transaction_replays_failed_candidate_without_leftover_state(tmp_path, m
     # acceptable for the in-process transaction; the candidate
     # status is the authoritative signal of commit success, and
     # the snapshot landing is the recovery boundary.
+
+
+def test_project_transaction_rolls_back_chapter_when_snapshot_fails(
+    tmp_path, monkeypatch
+):
+    """The transaction covers persist_bundle AND the snapshot.
+
+    The user feedback called out the pre-Phase B flow: the chapter
+    file landed on disk via ``persist_bundle`` and only then did
+    the per-chapter snapshot get written. A snapshot failure left
+    the chapter on disk with the candidate still ``pending`` — a
+    half-applied commit the user could not trust.
+
+    This test reproduces that failure mode by patching the
+    snapshot writer to explode after the chapter file has already
+    been written. The ``ProjectTransaction`` context manager
+    must roll every managed file back, so the chapter file is
+    gone and the candidate stays ``pending``.
+    """
+    store = FileProjectStore(tmp_path)
+    candidate = _seed_candidate(
+        store,
+        chapter_number=5,
+        title="第五章",
+        body=_long_body("事务回滚"),
+    )
+
+    chapter_path = store.story_system_dir / "chapters" / "0005.json"
+    snapshot_path = store.story_system_dir / "continuity" / "snapshots" / "0005.json"
+    pre_existing_chapter = chapter_path.exists()
+    assert pre_existing_chapter is False
+
+    # Force the snapshot write to fail. The chapter file will have
+    # landed via ``persist_bundle`` by the time we get here, so a
+    # real transaction must roll it back.
+    def _explode_snapshot(self, snapshot):  # noqa: ANN001
+        raise RuntimeError("simulated_snapshot_disk_full")
+
+    monkeypatch.setattr(
+        "packages.story_core.continuity.store.ContinuityStore.write_snapshot",
+        _explode_snapshot,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated_snapshot_disk_full"):
+        store.confirm_candidate(candidate.candidate_id)
+
+    # The chapter file must NOT be on disk — the transaction
+    # rolled it back when the snapshot write raised.
+    assert not chapter_path.exists(), (
+        "ProjectTransaction did not roll back the chapter file"
+    )
+    # And the snapshot must obviously not exist either.
+    assert not snapshot_path.exists()
+
+    # The candidate stays pending so the user can re-confirm or
+    # discard without ever having seen a confirmed state they
+    # could not trust.
+    pending = store.candidate_store.get(candidate.candidate_id)
+    assert pending.status == "pending"
