@@ -7144,7 +7144,25 @@ class FileProjectStore:
             ledger["chapter_direction"] = chapter_direction
             state["progression_ledger"] = ledger
         story = StoryState.model_validate(self._story_state_payload_for_direction(state, project, target_chapter))
-        generator = engine or StoryEngine()
+        # The workbench path: every project lives on disk under
+        # ``self.root`` so the new modular pipeline can read
+        # the legacy ``.webnovel/`` shape through
+        # ``context.legacy_adapter``. The engine is constructed
+        # per-call with ``use_modular_agents=True`` so the
+        # Director / Writer / FactExtractor agents drive the
+        # body generation; the legacy review / revision
+        # controller is intentionally skipped because the new
+        # pipeline's ``FocusedConsistencyAgent`` already surfaces
+        # the deterministic contradictions during the writer
+        # stage, and the user's confirmation gate is the final
+        # safety net. The orchestrator's stored ``project_root``
+        # is what the new pipeline reads, so the call site
+        # does not need to forward ``project_root`` again —
+        # keeping the call signature stable so existing
+        # ``FakeEngine`` test doubles keep working.
+        generator = engine or StoryEngine(
+            use_modular_agents=True, project_root=self.root
+        )
         with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
             self.prompt_call_log()
         ):

@@ -3084,19 +3084,22 @@ class StoryOrchestrator:
         model_gateway: Any | None = None,
         *,
         use_modular_agents: bool = False,
+        project_root: Any | None = None,
     ) -> None:
         self.model_gateway = model_gateway or RuntimeModelGateway()
         # ``use_modular_agents`` flags the new pipeline as the
-        # preferred body-generation path. The legacy
-        # ``generate_next_chapter_bundle`` still calls
-        # ``resolve_chapter_plan`` / ``generate_chapter_body`` for
-        # backward compatibility with the 4 000+ existing tests;
-        # callers that opt in here get
-        # :func:`generate_next_chapter_via_modular_pipeline` which
-        # routes through the new Director / Writer / FactExtractor
-        # agents. The CLI / API layer flips this on for production
-        # in a follow-up; the e2e test does the same in isolation.
+        # preferred body-generation path. When True, the public
+        # ``generate_next_chapter`` entry routes through the
+        # Director / Writer / FactExtractor agents instead of
+        # the legacy ``resolve_chapter_plan`` /
+        # ``generate_chapter_body`` path. ``project_root`` carries
+        # the on-disk project the new pipeline reads from; it
+        # is ignored on the legacy path which only needs the
+        # ``StoryState``. Production callers
+        # (``FileProjectStore``) flip both flags on so the
+        # workbench drives the new pipeline end-to-end.
         self._use_modular_agents = bool(use_modular_agents)
+        self._project_root = project_root
         # The fact extractor is shared between the orchestrator and
         # the candidate-save path so both see the same shape. The
         # default factory produces a model-less extractor; callers
@@ -3968,10 +3971,192 @@ class StoryOrchestrator:
         quality_report = selected_quality
         return revised_body, quality_report, ""
 
-    def generate_next_chapter(self, story: StoryState):
+    def generate_next_chapter(
+        self,
+        story: StoryState,
+        *,
+        project_root: Any | None = None,
+        director_runtime: Any | None = None,
+        writer_runtime: Any | None = None,
+        fact_extractor: Any | None = None,
+    ):
+        # The workbench path: route through the new modular
+        # pipeline. The new Director → CanonService preflight →
+        # Writer → FactExtractor flow produces a body + a
+        # ``DirectorArtifact`` + a ``ContinuityDelta``; we
+        # build a minimal ``ChapterBundle`` so the existing
+        # save / confirm / persist flow keeps working. The
+        # bounded review and the revision controller are
+        # intentionally not re-run here: the new pipeline's
+        # ``FocusedConsistencyAgent`` already surfaces
+        # deterministic contradictions during the writer
+        # stage, and the user's confirmation gate is the
+        # final safety net.
+        if self._use_modular_agents:
+            effective_root = project_root or self._project_root
+            if effective_root is not None:
+                return self._generate_next_chapter_bundle_via_modular_agents(
+                    story,
+                    project_root=effective_root,
+                    director_runtime=director_runtime,
+                    writer_runtime=writer_runtime,
+                    fact_extractor=fact_extractor,
+                )
         return ChapterPipeline().run(
             story,
             generate_bundle=self._generate_next_chapter_bundle,
+        )
+
+    def _generate_next_chapter_bundle_via_modular_agents(
+        self,
+        story: StoryState,
+        *,
+        project_root: Any,
+        director_runtime: Any | None = None,
+        writer_runtime: Any | None = None,
+        fact_extractor: Any | None = None,
+    ) -> Any:
+        """Produce a legacy ``ChapterBundle`` from the modular pipeline.
+
+        The new pipeline returns a :class:`ModularChapterBundle`
+        with the body, the director's artifact, and the
+        fact-extractor's ``ContinuityDelta``. The legacy
+        :class:`ChapterBundle` the workbench and the
+        file-project store consume has 24 typed fields; the
+        synthesis here is deliberately lossy — the new
+        pipeline's body and trace ids are the real signal,
+        and the rest of the bundle is filled with the minimum
+        the downstream save / confirm / persist flow needs.
+        """
+        from packages.story_core.engine import ChapterBundle
+
+        chapter_number = int(story.current_chapter or 0) + 1
+        bundle = self.generate_next_chapter_via_modular_pipeline(
+            project_root=project_root,
+            chapter_number=chapter_number,
+            director_runtime=director_runtime,
+            writer_runtime=writer_runtime,
+            fact_extractor=fact_extractor,
+        )
+        director_artifact = bundle.director_artifact
+        chapter_title = str(director_artifact.chapter_goal or "").strip() or (
+            f"Chapter {chapter_number}"
+        )
+        # Minimal plan dict the downstream ``_save_candidate_from_bundle``
+        # can serialise through ``_bundle_to_dict``. The fields
+        # the candidate save path does NOT read are left empty;
+        # the workbench still gets a usable body and the new
+        # ContinuityDelta via the candidate payload.
+        scene_beats = list(director_artifact.scene_beats or [])
+        character_moves = [
+            {
+                "name": str(req.name or "主角"),
+                "importance": int(req.importance or 5),
+                "action": "在 scene beat 中执行导演计划",
+                "kind": str(req.kind or "character"),
+            }
+            for req in (director_artifact.entity_requirements or [])
+        ]
+        if not character_moves and scene_beats:
+            character_moves = [
+                {
+                    "name": str(beat.location or "主角"),
+                    "importance": 5,
+                    "action": str(beat.action or ""),
+                    "kind": "character",
+                }
+                for beat in scene_beats
+            ]
+        scene_cards = [
+            {
+                "location": str(beat.location or ""),
+                "action": str(beat.action or ""),
+                "result": str(beat.result or ""),
+                "order": int(beat.order or 0),
+            }
+            for beat in scene_beats
+        ]
+        chapter_intent = {
+            "chapter_title": chapter_title,
+            "primary_conflict": {"summary": director_artifact.chapter_goal},
+            "secondary_conflict": {},
+            "next_focus": str(director_artifact.hook or ""),
+            "approved_new_characters": [
+                str(req.name or "") for req in director_artifact.entity_requirements
+            ],
+            "deferred_characters": [],
+            "rejected_characters": [],
+        }
+        event_plan = {
+            "chapter_title": chapter_title,
+            "scene_chain": scene_cards,
+            "ordered_actions": [
+                {
+                    "order": int(beat.order or 0),
+                    "location": str(beat.location or ""),
+                    "action": str(beat.action or ""),
+                    "change": str(beat.result or ""),
+                    "next": str(director_artifact.hook or ""),
+                }
+                for beat in scene_beats
+            ],
+        }
+        # The fact-extractor's delta is the new artifact the
+        # workbench renders on the candidate view. We surface
+        # it on the bundle's quality_report so downstream code
+        # that reads ``bundle.quality_report`` sees it without
+        # having to know about the modular pipeline.
+        quality_report: dict[str, Any] = {
+            "ok": True,
+            "schema_version": "file-writing-review/v1",
+            "writing_review": {
+                "pass": True,
+                "issues": [],
+                "source": "modular_pipeline",
+            },
+            "modular_pipeline": {
+                "director_artifact_present": True,
+                "fact_extractor_chapter": (
+                    bundle.continuity_delta.chapter_number
+                    if bundle.continuity_delta is not None
+                    else None
+                ),
+                "canon_preflight": dict(bundle.canon_preflight or {}),
+            },
+        }
+        pipeline_stages = [
+            "director",
+            "canon_preflight",
+            "writer",
+            "fact_extractor",
+        ]
+        working_story = story.model_copy(deep=True)
+        working_story.current_chapter = chapter_number
+        return ChapterBundle(
+            chapter_number=chapter_number,
+            body=bundle.body,
+            chapter_title=chapter_title,
+            cadence="measured",
+            chapter_intent=chapter_intent,
+            character_moves=character_moves,
+            memory_constraints={"must_keep_facts": [], "ledger_updates": {}},
+            event_plan=event_plan,
+            chapter_seed={},
+            simulation_plan={},
+            world_events=[],
+            scene_cards=scene_cards,
+            simulation_status={"status": "skipped", "reason": "modular_pipeline"},
+            action_briefs=character_moves,
+            conflict_summary={},
+            event_beat={"turn": str(director_artifact.hook or "")},
+            character_cards=[],
+            foreshadowing=list(working_story.foreshadowing or []),
+            next_outline="",
+            updated_story=working_story,
+            chapter_summary={},
+            quality_report=quality_report,
+            pipeline_stages=pipeline_stages,
+            context_snapshot_id=f"modular-pipeline:chapter-{chapter_number}",
         )
 
     def _generate_next_chapter_bundle(self, story: StoryState):

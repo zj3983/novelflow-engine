@@ -34,8 +34,54 @@ class ChapterBundle(BaseModel):
 
 
 class StoryEngine:
-    def __init__(self, orchestrator: StoryOrchestrator | None = None) -> None:
+    def __init__(
+        self,
+        orchestrator: StoryOrchestrator | None = None,
+        *,
+        use_modular_agents: bool = False,
+        project_root: Any | None = None,
+    ) -> None:
+        # The engine is a thin coordinator. When the caller
+        # passes an orchestrator we keep its flags untouched;
+        # when we build a default orchestrator we forward the
+        # engine's flags so a single ``StoryEngine(use_modular_agents=True,
+        # project_root=...)`` flips the whole chapter flow.
+        if orchestrator is None and (
+            use_modular_agents or project_root is not None
+        ):
+            orchestrator = StoryOrchestrator(
+                use_modular_agents=use_modular_agents,
+                project_root=project_root,
+            )
         self.orchestrator = orchestrator or StoryOrchestrator()
 
-    def generate_next_chapter(self, story: StoryState) -> ChapterBundle:
-        return self.orchestrator.generate_next_chapter(story)
+    def generate_next_chapter(
+        self,
+        story: StoryState,
+        *,
+        project_root: Any | None = None,
+        director_runtime: Any | None = None,
+        writer_runtime: Any | None = None,
+        fact_extractor: Any | None = None,
+    ) -> ChapterBundle:
+        # The engine stores the ``project_root`` itself when
+        # ``use_modular_agents=True``; the call site does not
+        # need to forward it. We still forward the runtime
+        # overrides because those are per-call. We use
+        # ``inspect.signature`` so test doubles that pre-date
+        # the modular main flow keep working — the legacy
+        # ``generate_next_chapter`` signature only takes
+        # ``story``.
+        import inspect
+
+        sig = inspect.signature(self.orchestrator.generate_next_chapter)
+        kwargs: dict[str, Any] = {}
+        for key, value in (
+            ("project_root", project_root),
+            ("director_runtime", director_runtime),
+            ("writer_runtime", writer_runtime),
+            ("fact_extractor", fact_extractor),
+        ):
+            if key in sig.parameters:
+                kwargs[key] = value
+        return self.orchestrator.generate_next_chapter(story, **kwargs)
