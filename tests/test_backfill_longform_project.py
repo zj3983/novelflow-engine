@@ -567,3 +567,155 @@ def test_cli_reconfigures_windows_console_streams_for_utf8(
     assert cli.main([str(root), "--hash-only"]) == 0
     assert stdout.configuration == ("utf-8", "replace")
     assert stderr.configuration == ("utf-8", "replace")
+
+
+def test_preview_rejects_unknown_manuscript_with_four_thousand_prose_chars(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    payload = _payload()
+    payload["continuity"]["manuscript"] = "He opened the door and spoke.\n" * 140  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="preview_contains_long_text:manuscript"):
+        build_backfill_preview(root, payload)
+
+
+def test_preview_allows_normal_one_thousand_character_outline_description(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    payload = _payload()
+    payload["continuity"]["arc_explanation"] = "structured outline note; " * 45  # type: ignore[index]
+
+    preview = build_backfill_preview(root, payload)
+
+    assert len(preview["patch"]["continuity"]["arc_explanation"]) < 1200
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "chapter",
+        "last_review_chapter",
+        "core_ending_chapter",
+        "extension_ceiling_chapter",
+        "chapter_checkpoint",
+    ],
+)
+def test_preview_uses_generic_chapter_number_key_matching(tmp_path: Path, key: str) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    preview["patch"]["continuity"]["generic"] = {key: 3}
+
+    with pytest.raises(ValueError, match="preview_chapter_out_of_range"):
+        validate_backfill_preview(root, preview)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "chapter_count",
+        "total_chapters",
+        "planned_chapters",
+        "published_chapters",
+        "max_chapters",
+        "chapter_total",
+    ],
+)
+def test_preview_does_not_treat_chapter_counts_as_chapter_references(
+    tmp_path: Path, key: str
+) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    preview["patch"]["continuity"][key] = 300
+
+    validate_backfill_preview(root, preview)
+
+
+def test_apply_merges_stable_list_items_and_preserves_unmatched_entries(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["character_profiles"] = [
+        {"name": "Lin Xiu", "legacy_character": {"keep": True}},
+        {"name": "Old Mentor", "legacy_only": True},
+    ]
+    project["relationship_graph"] = [
+        {
+            "source": "Lin Xiu",
+            "target": "Mei",
+            "relation_type": "ally",
+            "legacy_relationship": {"keep": True},
+        }
+    ]
+    _write_json(project_path, project)
+    outline_path = root / ".webnovel" / "outline.json"
+    outline = json.loads(outline_path.read_text(encoding="utf-8"))
+    outline["arcs"] = [
+        {
+            "id": "arc-1",
+            "title": "Old arc title",
+            "start_chapter": 1,
+            "end_chapter": 2,
+            "legacy_arc": {"keep": True},
+        }
+    ]
+    outline["chapters"] = [
+        {"chapter_number": 1, "title": "Old title", "legacy_chapter": {"keep": True}}
+    ]
+    _write_json(outline_path, outline)
+    state_path = root / ".webnovel" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["characters"] = [{"name": "Lin Xiu", "legacy_state": {"keep": True}}]
+    state["foreshadowing"] = [
+        {
+            "text": "the copper key",
+            "first_chapter": 1,
+            "last_touched_chapter": 1,
+            "status": "open",
+            "legacy_clue": {"keep": True},
+        }
+    ]
+    _write_json(state_path, state)
+    payload = _payload()
+    payload["master_outline"]["chapters"] = [  # type: ignore[index]
+        {"chapter_number": 1, "title": "New title", "goal": "find the key"}
+    ]
+    payload["characters"] = [
+        {"name": "Lin Xiu", "entity_type": "character", "occupation": "repairer"},
+        {"name": "Mei", "entity_type": "character", "occupation": "guard"},
+    ]
+    payload["relationships"] = [
+        {"source": "Lin Xiu", "target": "Mei", "relation_type": "trusted ally"}
+    ]
+    payload["foreshadowing"] = [
+        {
+            "text": "the copper key",
+            "first_chapter": 1,
+            "last_touched_chapter": 2,
+            "status": "reinforced",
+        }
+    ]
+    preview = build_backfill_preview(root, payload)
+
+    apply_backfill_preview(root, preview)
+
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    outline = json.loads(outline_path.read_text(encoding="utf-8"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    lin_project = next(item for item in project["character_profiles"] if item["name"] == "Lin Xiu")
+    relation = project["relationship_graph"][0]
+    lin_state = next(item for item in state["characters"] if item["name"] == "Lin Xiu")
+    clue = state["foreshadowing"][0]
+    assert lin_project["legacy_character"] == {"keep": True}
+    assert any(item["name"] == "Old Mentor" for item in project["character_profiles"])
+    assert relation["legacy_relationship"] == {"keep": True}
+    assert relation["relation_type"] == "trusted ally"
+    assert outline["arcs"][0]["legacy_arc"] == {"keep": True}
+    assert outline["chapters"][0]["legacy_chapter"] == {"keep": True}
+    assert outline["chapters"][0]["title"] == "New title"
+    assert lin_state["legacy_state"] == {"keep": True}
+    assert clue["legacy_clue"] == {"keep": True}
+    assert clue["status"] == "reinforced"

@@ -417,6 +417,17 @@ _CHAPTER_FIELDS = frozenset(
 _CHARACTER_EVIDENCE_METADATA_FIELDS = frozenset(
     {"source", "name", "names", "fact", "change", "summary", "chapter_number"}
 )
+_CHAPTER_COUNTER_FIELDS = frozenset(
+    {
+        "chapter_count",
+        "chapter_total",
+        "chapters_count",
+        "total_chapters",
+        "planned_chapters",
+        "total_chapter_count",
+        "planned_chapter_count",
+    }
+)
 
 
 def _genre_text(genre: Any) -> str:
@@ -478,7 +489,18 @@ def _validate_chapter_fields(
 ) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if key in _CHAPTER_FIELDS and item is not None:
+            normalized_key = str(key).casefold()
+            exact_field = normalized_key in _CHAPTER_FIELDS or normalized_key == "chapter"
+            generic_field = (
+                isinstance(item, int)
+                and not isinstance(item, bool)
+                and "chapter" in normalized_key
+                and "chapters" not in normalized_key
+                and normalized_key not in _CHAPTER_COUNTER_FIELDS
+                and "chapter_count" not in normalized_key
+                and "chapters_count" not in normalized_key
+            )
+            if (exact_field or generic_field) and item is not None:
                 if (
                     not isinstance(item, int)
                     or isinstance(item, bool)
@@ -910,7 +932,18 @@ _PREVIEW_PROSE_FIELDS = frozenset(
         "draft",
     }
 )
-_PREVIEW_LONG_TEXT_LIMIT = 8000
+_PREVIEW_LONG_TEXT_LIMIT = 3000
+_STABLE_LIST_FIELDS = frozenset(
+    {
+        "arcs",
+        "chapters",
+        "character_profiles",
+        "characters",
+        "relationship_graph",
+        "relationships",
+        "foreshadowing",
+    }
+)
 
 
 def _read_json_document(path: Path) -> dict[str, Any]:
@@ -1059,6 +1092,20 @@ def _nested_key(value: Any, forbidden: frozenset[str]) -> str | None:
     return None
 
 
+def _looks_like_chapter_prose(value: str) -> bool:
+    if len(value) > _PREVIEW_LONG_TEXT_LIMIT:
+        return True
+    if len(value) < 600:
+        return False
+    nonempty_lines = [line.strip() for line in value.splitlines() if line.strip()]
+    quote_marks = sum(value.count(mark) for mark in ('“', '”', '「', '」', '"'))
+    paragraph_like = len(nonempty_lines) >= 8 and sum(
+        len(line) >= 15 for line in nonempty_lines
+    ) >= 6
+    dialogue_like = quote_marks >= 6 and len(nonempty_lines) >= 4
+    return paragraph_like or dialogue_like
+
+
 def _long_text_key(value: Any, *, key: str = "value") -> str | None:
     if isinstance(value, Mapping):
         for child_key, item in value.items():
@@ -1070,7 +1117,7 @@ def _long_text_key(value: Any, *, key: str = "value") -> str | None:
             found = _long_text_key(item, key=key)
             if found:
                 return found
-    elif isinstance(value, str) and len(value) > _PREVIEW_LONG_TEXT_LIMIT:
+    elif isinstance(value, str) and _looks_like_chapter_prose(value):
         return key
     return None
 
@@ -1163,18 +1210,80 @@ def _character_list(value: Any) -> list[dict[str, Any]]:
     return [deepcopy(dict(card)) for card in value if isinstance(card, Mapping)]
 
 
-def _deep_merge(base: Any, patch: Any) -> Any:
-    """Recursively merge mappings; every non-mapping value replaces the base."""
+def _stable_identities(item: Any, field: str) -> set[tuple[Any, ...]]:
+    if not isinstance(item, Mapping):
+        return set()
+    identities: set[tuple[Any, ...]] = set()
+    item_id = str(item.get("id") or "").strip()
+    if item_id:
+        identities.add(("id", item_id))
+    if field == "arcs":
+        start = item.get("start_chapter")
+        end = item.get("end_chapter")
+        if isinstance(start, int) and isinstance(end, int):
+            identities.add(("range", start, end))
+        name = str(item.get("name") or item.get("title") or "").strip()
+        if name:
+            identities.add(("name", name))
+    elif field == "chapters":
+        chapter_number = item.get("chapter_number")
+        if isinstance(chapter_number, int) and not isinstance(chapter_number, bool):
+            identities.add(("chapter_number", chapter_number))
+    elif field in {"character_profiles", "characters"}:
+        name = str(item.get("name") or "").strip()
+        if name:
+            identities.add(("name", name))
+    elif field in {"relationship_graph", "relationships"}:
+        source = str(item.get("source") or "").strip()
+        target = str(item.get("target") or "").strip()
+        if source and target:
+            identities.add(("endpoints", source, target))
+    elif field == "foreshadowing":
+        text = normalize_foreshadowing_text(str(item.get("text") or ""))
+        if text:
+            identities.add(("text", text))
+    return identities
+
+
+def _merge_stable_list(base: list[Any], patch: list[Any], path: tuple[str, ...]) -> list[Any]:
+    field = path[-1] if path else ""
+    merged = deepcopy(base)
+    for incoming in patch:
+        incoming_ids = _stable_identities(incoming, field)
+        match_index = next(
+            (
+                index
+                for index, existing in enumerate(merged)
+                if incoming_ids
+                and incoming_ids.intersection(_stable_identities(existing, field))
+            ),
+            None,
+        )
+        if match_index is None:
+            merged.append(deepcopy(incoming))
+        else:
+            merged[match_index] = _deep_merge(
+                merged[match_index], incoming, path=path + (str(match_index),)
+            )
+    return merged
+
+
+def _deep_merge(base: Any, patch: Any, *, path: tuple[str, ...] = ()) -> Any:
+    """Deep-merge mappings and stable entity lists; replace atomic lists."""
 
     if isinstance(base, Mapping) and isinstance(patch, Mapping):
         merged = deepcopy(dict(base))
         for key, value in patch.items():
             merged[str(key)] = (
-                _deep_merge(merged[str(key)], value)
+                _deep_merge(merged[str(key)], value, path=path + (str(key),))
                 if str(key) in merged
                 else deepcopy(value)
             )
         return merged
+    if isinstance(base, list) and isinstance(patch, list):
+        field = path[-1] if path else ""
+        if field in _STABLE_LIST_FIELDS:
+            return _merge_stable_list(base, patch, path)
     return deepcopy(patch)
 
 
@@ -1193,24 +1302,42 @@ def _mapped_metadata(
     foreshadowing = [deepcopy(dict(item)) for item in patch.get("foreshadowing", [])]
     continuity = deepcopy(dict(_mapping(patch.get("continuity"))))
 
-    project["story_core"] = _deep_merge(project.get("story_core"), story_core)
+    project["story_core"] = _deep_merge(
+        project.get("story_core"), story_core, path=("story_core",)
+    )
     project["master_outline"] = _deep_merge(
-        project.get("master_outline"), master_outline
+        project.get("master_outline"), master_outline, path=("master_outline",)
     )
     project["world_blueprint"] = _deep_merge(
-        project.get("world_blueprint"), world_blueprint
+        project.get("world_blueprint"), world_blueprint, path=("world_blueprint",)
     )
-    project["character_profiles"] = deepcopy(characters)
-    project["relationship_graph"] = deepcopy(relationships)
+    project["character_profiles"] = _deep_merge(
+        project.get("character_profiles"), characters, path=("character_profiles",)
+    )
+    project["relationship_graph"] = _deep_merge(
+        project.get("relationship_graph"),
+        relationships,
+        path=("relationship_graph",),
+    )
     project["current_chapter"] = continuity["current_chapter"]
     project["current_focus"] = str(continuity.get("current_focus") or "")
-    outline = _deep_merge(old_outline, master_outline)
-    state = _deep_merge(state, continuity)
+    outline = _deep_merge(old_outline, master_outline, path=("outline",))
+    state = _deep_merge(state, continuity, path=("state",))
     state.update(
         {
-            "characters": deepcopy(characters),
-            "relationship_graph": deepcopy(relationships),
-            "foreshadowing": deepcopy(foreshadowing),
+            "characters": _deep_merge(
+                state.get("characters"), characters, path=("characters",)
+            ),
+            "relationship_graph": _deep_merge(
+                state.get("relationship_graph"),
+                relationships,
+                path=("relationship_graph",),
+            ),
+            "foreshadowing": _deep_merge(
+                state.get("foreshadowing"),
+                foreshadowing,
+                path=("foreshadowing",),
+            ),
             "current_chapter": continuity["current_chapter"],
             "current_focus": str(continuity.get("current_focus") or ""),
         }
