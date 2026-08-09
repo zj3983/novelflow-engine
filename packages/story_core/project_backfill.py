@@ -828,6 +828,9 @@ def _normalize_characters(
             for field in _LEGACY_CHARACTER_ZERO_CHAPTER_FIELDS:
                 if card.get(field) in (0, "0"):
                     card.pop(field)
+    for card in cards.values():
+        if not isinstance(card.get("relationships", {}), Mapping):
+            card["relationships"] = {}
     _validate_chapter_fields(cards, maximum=maximum, error="character_chapter_out_of_range")
     return cards, alias_to_name
 

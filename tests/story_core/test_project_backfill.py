@@ -567,6 +567,19 @@ def test_non_game_genre_preserves_real_state_from_character_evidence() -> None:
     }
 
 
+def test_character_relationship_placeholder_is_normalized_to_mapping() -> None:
+    generated = _generated_backfill()
+    generated["characters"][0]["relationships"] = "见关系图谱"  # type: ignore[index]
+
+    plain = build_backfill_patch(
+        _backfill_evidence(),
+        generated,
+        "玄幻",
+    ).to_dict()
+
+    assert plain["characters"]["林修"]["relationships"] == {}
+
+
 def test_real_state_drops_verbatim_chapter_prose_but_keeps_structured_state() -> None:
     evidence = _backfill_evidence()
     quoted_prose = "玄渊真人的声音从雾中落下，平稳得仿佛早已等候多时。"
