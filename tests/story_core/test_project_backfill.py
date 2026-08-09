@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.project_backfill import (
     ChapterEvidence,
     ProjectEvidenceIndex,
@@ -143,3 +144,187 @@ def test_evidence_data_structures_are_immutable(tmp_path: Path) -> None:
     with pytest.raises(FrozenInstanceError):
         index.chapters[0].title = "被修改"  # type: ignore[misc]
     assert isinstance(index.chapters, tuple)
+
+
+def test_hybrid_import_hashes_discovered_markdown_and_detects_changes(tmp_path: Path) -> None:
+    store = FileProjectStore(tmp_path)
+    title = "第1章 混合导入"
+    markdown_path = store.chapter_store.paths(1, title)["markdown"]
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    original = "Markdown才是现有章节文件。\r\n".encode()
+    markdown_path.write_bytes(original)
+    chapter_path = tmp_path / ".story-system" / "chapters" / "0001.json"
+    chapter_path.parent.mkdir(parents=True, exist_ok=True)
+    chapter_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "imported-continuation-chapter/v1",
+                "chapter_number": 1,
+                "chapter_title": title,
+                "body": "JSON中的导入正文。",
+                "chapter_summary": {"summary": "导入摘要", "facts": []},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    first = build_evidence_index(tmp_path).chapters[0]
+    assert first.body_hash == hashlib.sha256(original).hexdigest()
+
+    changed = "Markdown被人工修改。\r\n".encode()
+    markdown_path.write_bytes(changed)
+    second = build_evidence_index(tmp_path).chapters[0]
+    assert second.body_hash == hashlib.sha256(changed).hexdigest()
+    assert second.body_hash != first.body_hash
+
+
+def test_legacy_json_only_chapter_hashes_stable_utf8_body(tmp_path: Path) -> None:
+    body = "只有旧版JSON正文。"
+    chapter_path = tmp_path / ".story-system" / "chapters" / "0001.json"
+    chapter_path.parent.mkdir(parents=True, exist_ok=True)
+    chapter_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "chapter/v1",
+                "chapter_number": 1,
+                "chapter_title": "旧章",
+                "body": body,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert chapter_hashes(tmp_path) == {
+        1: hashlib.sha256(body.encode("utf-8")).hexdigest(),
+    }
+    assert build_evidence_index(tmp_path).chapters[0].body_hash
+
+
+def test_character_evidence_uses_confirmed_facts_and_actual_snapshot_not_planned_moves(
+    tmp_path: Path,
+) -> None:
+    _write_canonical_chapter(
+        tmp_path,
+        147,
+        title="污染暗语",
+        body_bytes="林修压住阵心裂口。".encode(),
+        metadata={
+            "character_moves": [
+                {"name": "林修", "action": "计划中尚未发生的动作"},
+            ],
+            "chapter_summary": {
+                "summary": "林修暂时稳住阵心。",
+                "facts": ["林修的右手已经失去知觉。"],
+            },
+            "updated_story": {
+                "characters": [
+                    {
+                        "name": "林修",
+                        "role": "protagonist",
+                        "current_state": {"injury": "右手失去知觉"},
+                    }
+                ]
+            },
+        },
+    )
+
+    evidence = build_evidence_index(tmp_path).chapters[0]
+    plain = evidence.to_dict()
+    serialized = json.dumps(plain, ensure_ascii=False)
+
+    assert "计划中尚未发生的动作" not in serialized
+    assert "林修的右手已经失去知觉" in serialized
+    assert "右手失去知觉" in serialized
+    assert plain["character_updates"][0]["source"] == "updated_story.characters"
+
+
+def test_character_snapshot_evidence_only_keeps_changes_from_adjacent_snapshot(tmp_path: Path) -> None:
+    shared = {"name": "林修", "current_state": {"realm": "筑基"}}
+    _write_canonical_chapter(
+        tmp_path,
+        1,
+        title="前章",
+        body_bytes="前章正文。".encode(),
+        metadata={"updated_story": {"characters": [shared]}},
+    )
+    _write_canonical_chapter(
+        tmp_path,
+        2,
+        title="后章",
+        body_bytes="后章正文。".encode(),
+        metadata={
+            "updated_story": {
+                "characters": [
+                    shared,
+                    {"name": "沈墨璃", "current_state": {"trust": "提高"}},
+                ]
+            }
+        },
+    )
+
+    first, second = build_evidence_index(tmp_path).chapters
+
+    assert [item["name"] for item in first.character_updates] == ["林修"]
+    assert [item["name"] for item in second.character_updates] == ["沈墨璃"]
+
+
+def test_nested_evidence_is_immutable_and_can_be_converted_to_plain_dict(tmp_path: Path) -> None:
+    _write_canonical_chapter(
+        tmp_path,
+        1,
+        title="冻结证据",
+        body_bytes="正文。".encode(),
+        metadata={
+            "updated_story": {
+                "characters": [
+                    {"name": "林修", "current_state": {"injury": "未愈"}},
+                ]
+            }
+        },
+    )
+    index = build_evidence_index(tmp_path)
+    character = index.chapters[0].character_updates[0]
+
+    with pytest.raises(TypeError):
+        character["name"] = "改名"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        character["character"]["current_state"]["injury"] = "痊愈"  # type: ignore[index]
+
+    plain = index.to_dict()
+    plain["chapters"][0]["character_updates"][0]["character"]["current_state"]["injury"] = "痊愈"
+    assert json.loads(json.dumps(plain, ensure_ascii=False))["chapters"][0]["chapter_number"] == 1
+
+
+def test_confirmed_fact_records_all_named_characters_deterministically(tmp_path: Path) -> None:
+    _write_canonical_chapter(
+        tmp_path,
+        1,
+        title="共同事实",
+        body_bytes="正文。".encode(),
+        metadata={
+            "chapter_summary": {"facts": ["沈墨璃替林修守住出口。"]},
+            "updated_story": {
+                "characters": [
+                    {"name": "林修"},
+                    {"name": "沈墨璃"},
+                ]
+            },
+        },
+    )
+
+    facts = [
+        item
+        for item in build_evidence_index(tmp_path).chapters[0].to_dict()["character_updates"]
+        if item["source"] == "chapter_summary.facts"
+    ]
+
+    assert facts == [
+        {
+            "source": "chapter_summary.facts",
+            "name": "林修",
+            "names": ["林修", "沈墨璃"],
+            "fact": "沈墨璃替林修守住出口。",
+        }
+    ]
