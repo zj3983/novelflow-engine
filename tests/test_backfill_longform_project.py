@@ -433,16 +433,17 @@ def test_preview_rejects_semantic_prose_keys(tmp_path: Path, key: str) -> None:
         build_backfill_preview(root, payload)
 
 
-def test_preview_rejects_long_prose_like_string_but_keeps_normal_outline_notes(
+def test_preview_rejects_strings_over_one_thousand_characters(
     tmp_path: Path,
 ) -> None:
     root = _project(tmp_path)
     payload = _payload()
-    payload["continuity"]["editor_note"] = "A" * 2500  # type: ignore[index]
-    build_backfill_preview(root, payload)
+    payload["continuity"]["editor_note"] = "A" * 1000  # type: ignore[index]
+    preview = build_backfill_preview(root, payload)
+    assert len(preview["patch"]["continuity"]["editor_note"]) == 1000
 
-    payload["continuity"]["raw_material"] = "B" * 12000  # type: ignore[index]
-    with pytest.raises(ValueError, match="preview_contains_long_text:raw_material"):
+    payload["continuity"]["editor_note"] = "B" * 1001  # type: ignore[index]
+    with pytest.raises(ValueError, match="preview_contains_long_text:editor_note"):
         build_backfill_preview(root, payload)
 
 
@@ -583,16 +584,16 @@ def test_preview_rejects_unknown_manuscript_with_four_thousand_prose_chars(
         build_backfill_preview(root, payload)
 
 
-def test_preview_allows_normal_one_thousand_character_outline_description(
+def test_preview_allows_normal_short_outline_description(
     tmp_path: Path,
 ) -> None:
     root = _project(tmp_path)
     payload = _payload()
-    payload["continuity"]["arc_explanation"] = "structured outline note; " * 45  # type: ignore[index]
+    payload["continuity"]["arc_explanation"] = "structured outline note; " * 35  # type: ignore[index]
 
     preview = build_backfill_preview(root, payload)
 
-    assert len(preview["patch"]["continuity"]["arc_explanation"]) < 1200
+    assert len(preview["patch"]["continuity"]["arc_explanation"]) < 1000
 
 
 @pytest.mark.parametrize(
@@ -731,7 +732,20 @@ def test_preview_rejects_body_fragment_under_unknown_key_without_prose_markers(
     body = ("repaircircuitwithoutspaces" * 90)[:2100]
     (root / "chapters" / "0002-chapter-2.md").write_text(body, encoding="utf-8")
     payload = _payload()
-    payload["continuity"]["foo"] = body[250:1750]  # type: ignore[index]
+    payload["continuity"]["foo"] = body[250:950]  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="body_content_forbidden"):
+        build_backfill_preview(root, payload)
+
+
+def test_preview_rejects_twenty_character_evidence_fragment_after_whitespace_normalization(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    body = "confirmed fragment from the chapter body remains protected"
+    (root / "chapters" / "0002-chapter-2.md").write_text(body, encoding="utf-8")
+    payload = _payload()
+    payload["continuity"]["brief_note"] = "confirmed  fragment\nf"  # type: ignore[index]
 
     with pytest.raises(ValueError, match="body_content_forbidden"):
         build_backfill_preview(root, payload)
@@ -746,7 +760,7 @@ def test_preview_validates_numeric_string_chapter_references(tmp_path: Path) -> 
         validate_backfill_preview(root, preview)
 
 
-@pytest.mark.parametrize("key", ["target_chapter", "total_ending_chapter"])
+@pytest.mark.parametrize("key", ["target_chapter"])
 def test_preview_does_not_exclude_singular_chapter_references(
     tmp_path: Path, key: str
 ) -> None:
@@ -766,6 +780,9 @@ def test_preview_does_not_exclude_singular_chapter_references(
         "chapter_length",
         "chapter_word_count",
         "total_published_chapters",
+        "chapter_target_words",
+        "chapter_budget",
+        "total_ending_chapter",
     ],
 )
 def test_preview_allows_chapter_count_and_length_fields(tmp_path: Path, key: str) -> None:
@@ -838,3 +855,95 @@ def test_apply_does_not_merge_list_items_with_conflicting_strong_identities(
     locations = {item["code"]: item for item in project["world_blueprint"]["locations"]}
     assert locations["old-shrine"]["legacy_only"] is True
     assert locations["new-shrine"]["danger"] == "new"
+
+
+def test_apply_prefers_custom_id_over_matching_name(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["world_blueprint"] = {
+        "locations": [
+            {"location_id": "old", "name": "Shrine", "legacy_only": True}
+        ]
+    }
+    _write_json(project_path, project)
+    payload = _payload()
+    payload["world_blueprint"] = {
+        "locations": [
+            {"location_id": "new", "name": "Shrine", "danger": "new"}
+        ]
+    }
+    preview = build_backfill_preview(root, payload)
+
+    apply_backfill_preview(root, preview)
+
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    locations = {
+        item["location_id"]: item
+        for item in project["world_blueprint"]["locations"]
+    }
+    assert locations["old"]["legacy_only"] is True
+    assert locations["new"]["danger"] == "new"
+
+
+@pytest.mark.parametrize("identity_key", ["uuid", "location_id"])
+def test_apply_deep_merges_lists_by_uuid_or_custom_id(
+    tmp_path: Path, identity_key: str
+) -> None:
+    root = _project(tmp_path)
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["world_blueprint"] = {
+        "locations": [
+            {
+                identity_key: "stable-1",
+                "details": {"legacy": True, "status": "old"},
+                "unknown": {"keep": True},
+            }
+        ]
+    }
+    _write_json(project_path, project)
+    payload = _payload()
+    payload["world_blueprint"] = {
+        "locations": [
+            {
+                identity_key: "stable-1",
+                "details": {"status": "new"},
+            }
+        ]
+    }
+    preview = build_backfill_preview(root, payload)
+
+    apply_backfill_preview(root, preview)
+
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    location = project["world_blueprint"]["locations"][0]
+    assert location["details"] == {"legacy": True, "status": "new"}
+    assert location["unknown"] == {"keep": True}
+
+
+def test_apply_uses_common_scalar_identity_key_as_generic_fallback(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["world_blueprint"] = {
+        "artifacts": [
+            {"legacy_code": "copper-key", "label": "old", "unknown": "keep"}
+        ]
+    }
+    _write_json(project_path, project)
+    payload = _payload()
+    payload["world_blueprint"] = {
+        "artifacts": [{"legacy_code": "copper-key", "label": "new"}]
+    }
+    preview = build_backfill_preview(root, payload)
+
+    apply_backfill_preview(root, preview)
+
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    artifact = project["world_blueprint"]["artifacts"][0]
+    assert artifact == {
+        "legacy_code": "copper-key",
+        "label": "new",
+        "unknown": "keep",
+    }

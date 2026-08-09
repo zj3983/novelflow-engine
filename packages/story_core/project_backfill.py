@@ -428,13 +428,23 @@ _CHAPTER_COUNTER_FIELDS = frozenset(
         "planned_chapter_count",
     }
 )
+_CHAPTER_NON_REFERENCE_MARKERS = (
+    "word",
+    "budget",
+    "length",
+    "count",
+    "total",
+    "token",
+    "size",
+    "limit",
+)
 
 
 def _is_chapter_counter_or_length_field(key: str) -> bool:
     return (
         key in _CHAPTER_COUNTER_FIELDS
         or key.endswith(("_count", "_length", "_chapters"))
-        or "words_per_chapter" in key
+        or any(marker in key for marker in _CHAPTER_NON_REFERENCE_MARKERS)
     )
 
 
@@ -498,11 +508,21 @@ def _validate_chapter_fields(
     if isinstance(value, Mapping):
         for key, item in value.items():
             normalized_key = str(key).casefold()
-            excluded_field = _is_chapter_counter_or_length_field(normalized_key)
-            exact_field = not excluded_field and (
+            excluded_field = (
+                _is_chapter_counter_or_length_field(normalized_key)
+                or normalized_key in _PREVIEW_PROSE_FIELDS
+            )
+            collection_value = isinstance(item, (Mapping, list, tuple))
+            chapter_field = not excluded_field and (
                 normalized_key in _CHAPTER_FIELDS
                 or normalized_key == "chapter"
-                or normalized_key.endswith("_chapter")
+                or (
+                    not collection_value
+                    and (
+                        normalized_key.endswith("_chapter")
+                        or normalized_key.startswith("chapter_")
+                    )
+                )
             )
             numeric_item = (
                 item
@@ -511,12 +531,7 @@ def _validate_chapter_fields(
                 if isinstance(item, str) and item.strip().isdigit()
                 else None
             )
-            generic_field = (
-                not excluded_field
-                and numeric_item is not None
-                and "chapter" in normalized_key
-            )
-            if (exact_field or generic_field) and item is not None:
+            if chapter_field and item is not None:
                 if (
                     numeric_item is None
                     or numeric_item < 0
@@ -947,8 +962,10 @@ _PREVIEW_PROSE_FIELDS = frozenset(
         "draft",
     }
 )
-_PREVIEW_LONG_TEXT_LIMIT = 3000
+_PREVIEW_LONG_TEXT_LIMIT = 1000
+_PREVIEW_BODY_FRAGMENT_MIN = 20
 _LIST_IDENTITY_FIELDS = (
+    "uuid",
     "id",
     "key",
     "code",
@@ -957,6 +974,18 @@ _LIST_IDENTITY_FIELDS = (
     "title",
     "text",
     "slug",
+)
+_FALLBACK_IDENTITY_MARKERS = (
+    "id",
+    "uuid",
+    "key",
+    "code",
+    "slug",
+    "name",
+    "title",
+    "text",
+    "source",
+    "target",
 )
 
 
@@ -1156,7 +1185,7 @@ def _iter_patch_strings(value: Any) -> tuple[str, ...]:
     elif isinstance(value, (list, tuple)):
         for item in value:
             strings.extend(_iter_patch_strings(item))
-    elif isinstance(value, str) and len(value) >= 120:
+    elif isinstance(value, str) and len(value) >= _PREVIEW_BODY_FRAGMENT_MIN:
         strings.append(value)
     return tuple(strings)
 
@@ -1166,16 +1195,15 @@ def _normalize_fragment(value: str) -> str:
 
 
 def _validate_no_body_content(index: ProjectEvidenceIndex, patch: Any) -> None:
-    bodies = tuple(
-        (chapter.body, _normalize_fragment(chapter.body))
+    normalized_bodies = tuple(
+        _normalize_fragment(chapter.body)
         for chapter in index.chapters
         if chapter.body
     )
     for candidate in _iter_patch_strings(patch):
         normalized = _normalize_fragment(candidate)
-        if any(
-            candidate in body or (normalized and normalized in normalized_body)
-            for body, normalized_body in bodies
+        if len(normalized) >= _PREVIEW_BODY_FRAGMENT_MIN and any(
+            normalized in normalized_body for normalized_body in normalized_bodies
         ):
             raise ValueError("body_content_forbidden")
 
@@ -1260,22 +1288,43 @@ def _character_list(value: Any) -> list[dict[str, Any]]:
     return [deepcopy(dict(card)) for card in value if isinstance(card, Mapping)]
 
 
+def _scalar_identity_value(field: str, value: Any) -> Any | None:
+    if (
+        isinstance(value, bool)
+        or value is None
+        or isinstance(value, (Mapping, list, tuple, set, frozenset))
+    ):
+        return None
+    if isinstance(value, str):
+        normalized = (
+            normalize_foreshadowing_text(value)
+            if "text" in field
+            else value.strip()
+        )
+        return normalized or None
+    return value
+
+
 def _stable_identities(item: Any) -> tuple[tuple[Any, ...], ...]:
     if not isinstance(item, Mapping):
         return ()
     identities: list[tuple[Any, ...]] = []
-    for field in _LIST_IDENTITY_FIELDS:
-        value = item.get(field)
-        if isinstance(value, bool) or value is None:
+    normalized_items = {str(key).casefold(): value for key, value in item.items()}
+    for field in ("uuid", "id"):
+        normalized = _scalar_identity_value(field, normalized_items.get(field))
+        if normalized is not None:
+            identities.append((field, normalized))
+    for field in sorted(normalized_items):
+        if not field.endswith("_id") or field in _LIST_IDENTITY_FIELDS:
             continue
-        normalized: Any = value
-        if isinstance(value, str):
-            normalized = (
-                normalize_foreshadowing_text(value)
-                if field == "text"
-                else value.strip()
-            )
-        if normalized != "":
+        normalized = _scalar_identity_value(field, normalized_items[field])
+        if normalized is not None:
+            identities.append((field, normalized))
+    for field in _LIST_IDENTITY_FIELDS:
+        if field in {"uuid", "id"}:
+            continue
+        normalized = _scalar_identity_value(field, normalized_items.get(field))
+        if normalized is not None:
             identities.append((field, normalized))
     source = str(item.get("source") or "").strip()
     target = str(item.get("target") or "").strip()
@@ -1284,21 +1333,52 @@ def _stable_identities(item: Any) -> tuple[tuple[Any, ...], ...]:
     return tuple(identities)
 
 
+def _fallback_identities(item: Any) -> dict[str, Any]:
+    if not isinstance(item, Mapping):
+        return {}
+    identities: dict[str, Any] = {}
+    for key, value in item.items():
+        field = str(key).casefold()
+        if not any(marker in field for marker in _FALLBACK_IDENTITY_MARKERS):
+            continue
+        normalized = _scalar_identity_value(field, value)
+        if normalized is not None:
+            identities[field] = normalized
+    return identities
+
+
+def _has_identity_hint(item: Any) -> bool:
+    return bool(_stable_identities(item) or _fallback_identities(item))
+
+
 def _identities_match(existing: Any, incoming: Any) -> bool:
     existing_ids = _stable_identities(existing)
-    for incoming_id in _stable_identities(incoming):
+    incoming_ids = _stable_identities(incoming)
+    for incoming_id in incoming_ids:
         shared_field_ids = tuple(
             identity for identity in existing_ids if identity[0] == incoming_id[0]
         )
         if shared_field_ids:
             return incoming_id in shared_field_ids
-    return False
+    if existing_ids or incoming_ids:
+        return False
+    existing_fallback = _fallback_identities(existing)
+    incoming_fallback = _fallback_identities(incoming)
+    common_fields = existing_fallback.keys() & incoming_fallback.keys()
+    if {"source", "target"}.issubset(common_fields):
+        return all(
+            existing_fallback[field] == incoming_fallback[field]
+            for field in ("source", "target")
+        )
+    return any(
+        existing_fallback[field] == incoming_fallback[field]
+        for field in common_fields
+    )
 
 
 def _merge_mapping_list(base: list[Any], patch: list[Any], path: tuple[str, ...]) -> list[Any]:
     combined = [*base, *patch]
-    identities = [_stable_identities(item) for item in combined]
-    if any(not identity for identity in identities):
+    if any(not _has_identity_hint(item) for item in combined):
         return deepcopy(patch)
     merged = deepcopy(base)
     for incoming in patch:
