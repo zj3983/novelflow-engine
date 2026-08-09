@@ -489,7 +489,10 @@ def test_apply_deep_merges_nested_unknown_fields_and_replaces_lists(tmp_path: Pa
     assert project["world_blueprint"]["rules"] == ["new rule"]
     assert outline["overall"]["legacy_nested"] == {"keep": "outline"}
     assert state["continuity_meta"] == {"keep": "state", "replace": "new"}
-    assert state["timeline"] == [{"chapter_number": 2, "summary": "at shrine"}]
+    assert state["timeline"] == [
+        {"chapter_number": 1, "summary": "old"},
+        {"chapter_number": 2, "summary": "at shrine"},
+    ]
 
 
 def test_post_apply_rollback_restores_original_metadata_bytes_exactly(
@@ -719,3 +722,119 @@ def test_apply_merges_stable_list_items_and_preserves_unmatched_entries(
     assert lin_state["legacy_state"] == {"keep": True}
     assert clue["legacy_clue"] == {"keep": True}
     assert clue["status"] == "reinforced"
+
+
+def test_preview_rejects_body_fragment_under_unknown_key_without_prose_markers(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    body = ("repaircircuitwithoutspaces" * 90)[:2100]
+    (root / "chapters" / "0002-chapter-2.md").write_text(body, encoding="utf-8")
+    payload = _payload()
+    payload["continuity"]["foo"] = body[250:1750]  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="body_content_forbidden"):
+        build_backfill_preview(root, payload)
+
+
+def test_preview_validates_numeric_string_chapter_references(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    preview["patch"]["continuity"]["last_review_chapter"] = "999"
+
+    with pytest.raises(ValueError, match="preview_chapter_out_of_range"):
+        validate_backfill_preview(root, preview)
+
+
+@pytest.mark.parametrize("key", ["target_chapter", "total_ending_chapter"])
+def test_preview_does_not_exclude_singular_chapter_references(
+    tmp_path: Path, key: str
+) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    preview["patch"]["continuity"][key] = "999"
+
+    with pytest.raises(ValueError, match="preview_chapter_out_of_range"):
+        validate_backfill_preview(root, preview)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "words_per_chapter",
+        "target_chapters",
+        "chapter_length",
+        "chapter_word_count",
+        "total_published_chapters",
+    ],
+)
+def test_preview_allows_chapter_count_and_length_fields(tmp_path: Path, key: str) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    preview["patch"]["continuity"][key] = 3000
+
+    validate_backfill_preview(root, preview)
+
+
+def test_apply_generically_merges_identified_world_locations(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["world_blueprint"] = {
+        "locations": [
+            {
+                "code": "shrine",
+                "name": "Old Shrine",
+                "danger": "old",
+                "legacy_location": {"keep": True},
+            },
+            {"code": "village", "name": "Village", "legacy_only": True},
+        ]
+    }
+    _write_json(project_path, project)
+    payload = _payload()
+    payload["world_blueprint"] = {
+        "locations": [
+            {"code": "shrine", "name": "Snow Shrine", "danger": "new"},
+            {"code": "market", "name": "Market"},
+        ]
+    }
+    preview = build_backfill_preview(root, payload)
+
+    apply_backfill_preview(root, preview)
+
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    locations = {item["code"]: item for item in project["world_blueprint"]["locations"]}
+    assert locations["shrine"]["name"] == "Snow Shrine"
+    assert locations["shrine"]["danger"] == "new"
+    assert locations["shrine"]["legacy_location"] == {"keep": True}
+    assert locations["village"]["legacy_only"] is True
+    assert locations["market"]["name"] == "Market"
+
+
+def test_apply_does_not_merge_list_items_with_conflicting_strong_identities(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["world_blueprint"] = {
+        "locations": [
+            {"code": "old-shrine", "name": "Shrine", "legacy_only": True},
+        ]
+    }
+    _write_json(project_path, project)
+    payload = _payload()
+    payload["world_blueprint"] = {
+        "locations": [
+            {"code": "new-shrine", "name": "Shrine", "danger": "new"},
+        ]
+    }
+    preview = build_backfill_preview(root, payload)
+
+    apply_backfill_preview(root, preview)
+
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    locations = {item["code"]: item for item in project["world_blueprint"]["locations"]}
+    assert locations["old-shrine"]["legacy_only"] is True
+    assert locations["new-shrine"]["danger"] == "new"

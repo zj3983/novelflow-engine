@@ -430,6 +430,14 @@ _CHAPTER_COUNTER_FIELDS = frozenset(
 )
 
 
+def _is_chapter_counter_or_length_field(key: str) -> bool:
+    return (
+        key in _CHAPTER_COUNTER_FIELDS
+        or key.endswith(("_count", "_length", "_chapters"))
+        or "words_per_chapter" in key
+    )
+
+
 def _genre_text(genre: Any) -> str:
     if isinstance(genre, Mapping):
         return " ".join(_genre_text(value) for value in genre.values())
@@ -490,23 +498,30 @@ def _validate_chapter_fields(
     if isinstance(value, Mapping):
         for key, item in value.items():
             normalized_key = str(key).casefold()
-            exact_field = normalized_key in _CHAPTER_FIELDS or normalized_key == "chapter"
+            excluded_field = _is_chapter_counter_or_length_field(normalized_key)
+            exact_field = not excluded_field and (
+                normalized_key in _CHAPTER_FIELDS
+                or normalized_key == "chapter"
+                or normalized_key.endswith("_chapter")
+            )
+            numeric_item = (
+                item
+                if isinstance(item, int) and not isinstance(item, bool)
+                else int(item.strip())
+                if isinstance(item, str) and item.strip().isdigit()
+                else None
+            )
             generic_field = (
-                isinstance(item, int)
-                and not isinstance(item, bool)
+                not excluded_field
+                and numeric_item is not None
                 and "chapter" in normalized_key
-                and "chapters" not in normalized_key
-                and normalized_key not in _CHAPTER_COUNTER_FIELDS
-                and "chapter_count" not in normalized_key
-                and "chapters_count" not in normalized_key
             )
             if (exact_field or generic_field) and item is not None:
                 if (
-                    not isinstance(item, int)
-                    or isinstance(item, bool)
-                    or item < 0
-                    or (item == 0 and not allow_unknown_zero)
-                    or item > maximum
+                    numeric_item is None
+                    or numeric_item < 0
+                    or (numeric_item == 0 and not allow_unknown_zero)
+                    or numeric_item > maximum
                 ):
                     raise ValueError(error)
             _validate_chapter_fields(
@@ -933,16 +948,15 @@ _PREVIEW_PROSE_FIELDS = frozenset(
     }
 )
 _PREVIEW_LONG_TEXT_LIMIT = 3000
-_STABLE_LIST_FIELDS = frozenset(
-    {
-        "arcs",
-        "chapters",
-        "character_profiles",
-        "characters",
-        "relationship_graph",
-        "relationships",
-        "foreshadowing",
-    }
+_LIST_IDENTITY_FIELDS = (
+    "id",
+    "key",
+    "code",
+    "chapter_number",
+    "name",
+    "title",
+    "text",
+    "slug",
 )
 
 
@@ -1041,10 +1055,12 @@ def build_backfill_preview(
     root, documents = _project_documents(project_root)
     project = documents["project.json"]
     genre = _project_genre(project)
-    patch = build_backfill_patch(build_evidence_index(root), generated, genre)
+    index = build_evidence_index(root)
+    patch = build_backfill_patch(index, generated, genre)
     prose_error = _preview_prose_error(patch.to_dict())
     if prose_error:
         raise ValueError(prose_error)
+    _validate_no_body_content(index, patch.to_dict())
     preview = {
         "schema_version": _BACKFILL_PREVIEW_SCHEMA,
         "project_root": str(root),
@@ -1132,6 +1148,38 @@ def _preview_prose_error(value: Any) -> str | None:
     return None
 
 
+def _iter_patch_strings(value: Any) -> tuple[str, ...]:
+    strings: list[str] = []
+    if isinstance(value, Mapping):
+        for item in value.values():
+            strings.extend(_iter_patch_strings(item))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            strings.extend(_iter_patch_strings(item))
+    elif isinstance(value, str) and len(value) >= 120:
+        strings.append(value)
+    return tuple(strings)
+
+
+def _normalize_fragment(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _validate_no_body_content(index: ProjectEvidenceIndex, patch: Any) -> None:
+    bodies = tuple(
+        (chapter.body, _normalize_fragment(chapter.body))
+        for chapter in index.chapters
+        if chapter.body
+    )
+    for candidate in _iter_patch_strings(patch):
+        normalized = _normalize_fragment(candidate)
+        if any(
+            candidate in body or (normalized and normalized in normalized_body)
+            for body, normalized_body in bodies
+        ):
+            raise ValueError("body_content_forbidden")
+
+
 def verify_backfill_hashes(project_root: Path, preview: Mapping[str, Any]) -> dict[str, Any]:
     root, documents = _project_documents(project_root)
     if str(preview.get("project_root") or "") != str(root):
@@ -1180,7 +1228,9 @@ def validate_backfill_preview(
     prose_error = _preview_prose_error(patch)
     if prose_error:
         raise ValueError(prose_error)
-    maximum = max(FileProjectStore(root).chapter_numbers(), default=0)
+    index = build_evidence_index(root)
+    _validate_no_body_content(index, patch)
+    maximum = _chapter_limit(index)
     if maximum < 1:
         raise ValueError("empty_project_evidence")
     continuity = patch.get("continuity")
@@ -1210,52 +1260,53 @@ def _character_list(value: Any) -> list[dict[str, Any]]:
     return [deepcopy(dict(card)) for card in value if isinstance(card, Mapping)]
 
 
-def _stable_identities(item: Any, field: str) -> set[tuple[Any, ...]]:
+def _stable_identities(item: Any) -> tuple[tuple[Any, ...], ...]:
     if not isinstance(item, Mapping):
-        return set()
-    identities: set[tuple[Any, ...]] = set()
-    item_id = str(item.get("id") or "").strip()
-    if item_id:
-        identities.add(("id", item_id))
-    if field == "arcs":
-        start = item.get("start_chapter")
-        end = item.get("end_chapter")
-        if isinstance(start, int) and isinstance(end, int):
-            identities.add(("range", start, end))
-        name = str(item.get("name") or item.get("title") or "").strip()
-        if name:
-            identities.add(("name", name))
-    elif field == "chapters":
-        chapter_number = item.get("chapter_number")
-        if isinstance(chapter_number, int) and not isinstance(chapter_number, bool):
-            identities.add(("chapter_number", chapter_number))
-    elif field in {"character_profiles", "characters"}:
-        name = str(item.get("name") or "").strip()
-        if name:
-            identities.add(("name", name))
-    elif field in {"relationship_graph", "relationships"}:
-        source = str(item.get("source") or "").strip()
-        target = str(item.get("target") or "").strip()
-        if source and target:
-            identities.add(("endpoints", source, target))
-    elif field == "foreshadowing":
-        text = normalize_foreshadowing_text(str(item.get("text") or ""))
-        if text:
-            identities.add(("text", text))
-    return identities
+        return ()
+    identities: list[tuple[Any, ...]] = []
+    for field in _LIST_IDENTITY_FIELDS:
+        value = item.get(field)
+        if isinstance(value, bool) or value is None:
+            continue
+        normalized: Any = value
+        if isinstance(value, str):
+            normalized = (
+                normalize_foreshadowing_text(value)
+                if field == "text"
+                else value.strip()
+            )
+        if normalized != "":
+            identities.append((field, normalized))
+    source = str(item.get("source") or "").strip()
+    target = str(item.get("target") or "").strip()
+    if source and target:
+        identities.append(("source_target", source, target))
+    return tuple(identities)
 
 
-def _merge_stable_list(base: list[Any], patch: list[Any], path: tuple[str, ...]) -> list[Any]:
-    field = path[-1] if path else ""
+def _identities_match(existing: Any, incoming: Any) -> bool:
+    existing_ids = _stable_identities(existing)
+    for incoming_id in _stable_identities(incoming):
+        shared_field_ids = tuple(
+            identity for identity in existing_ids if identity[0] == incoming_id[0]
+        )
+        if shared_field_ids:
+            return incoming_id in shared_field_ids
+    return False
+
+
+def _merge_mapping_list(base: list[Any], patch: list[Any], path: tuple[str, ...]) -> list[Any]:
+    combined = [*base, *patch]
+    identities = [_stable_identities(item) for item in combined]
+    if any(not identity for identity in identities):
+        return deepcopy(patch)
     merged = deepcopy(base)
     for incoming in patch:
-        incoming_ids = _stable_identities(incoming, field)
         match_index = next(
             (
                 index
                 for index, existing in enumerate(merged)
-                if incoming_ids
-                and incoming_ids.intersection(_stable_identities(existing, field))
+                if _identities_match(existing, incoming)
             ),
             None,
         )
@@ -1269,7 +1320,7 @@ def _merge_stable_list(base: list[Any], patch: list[Any], path: tuple[str, ...])
 
 
 def _deep_merge(base: Any, patch: Any, *, path: tuple[str, ...] = ()) -> Any:
-    """Deep-merge mappings and stable entity lists; replace atomic lists."""
+    """Deep-merge mappings and identified entity lists; replace atomic lists."""
 
     if isinstance(base, Mapping) and isinstance(patch, Mapping):
         merged = deepcopy(dict(base))
@@ -1281,9 +1332,7 @@ def _deep_merge(base: Any, patch: Any, *, path: tuple[str, ...] = ()) -> Any:
             )
         return merged
     if isinstance(base, list) and isinstance(patch, list):
-        field = path[-1] if path else ""
-        if field in _STABLE_LIST_FIELDS:
-            return _merge_stable_list(base, patch, path)
+        return _merge_mapping_list(base, patch, path)
     return deepcopy(patch)
 
 
