@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
@@ -399,6 +399,30 @@ def _generated_backfill() -> dict[str, object]:
     }
 
 
+def _direct_character_evidence() -> ProjectEvidenceIndex:
+    chapters = []
+    for chapter in _backfill_evidence().chapters:
+        updates = ()
+        if chapter.chapter_number == 12:
+            updates = (
+                {
+                    "name": "林修",
+                    "current_state": {"injury": "旧伤未愈"},
+                    "realm": "炼气二层",
+                },
+            )
+        if chapter.chapter_number == 147:
+            updates = (
+                {
+                    "name": "林修",
+                    "current_state": {"injury": "右手失去知觉"},
+                    "realm": "炼气三层",
+                },
+            )
+        chapters.append(replace(chapter, character_updates=updates))
+    return ProjectEvidenceIndex(project_root=Path("direct"), chapters=tuple(chapters))
+
+
 def test_build_backfill_patch_has_exactly_seven_sections_and_forces_current_chapter() -> None:
     patch = build_backfill_patch(_backfill_evidence(), _generated_backfill(), "玄幻")
 
@@ -473,6 +497,47 @@ def test_character_aliases_merge_to_canonical_name_and_evidence_wins_recent_stat
     assert characters["林修"]["first_appearance_chapter"] == 1
     assert characters["林修"]["realm"] == "炼气三层"
     assert characters["林修"]["current_state"] == {"injury": "右手失去知觉"}
+
+
+def test_character_first_appearance_strictly_uses_evidence_not_earlier_model_claim() -> None:
+    generated = _generated_backfill()
+    generated["characters"][0]["first_appearance_chapter"] = 2  # type: ignore[index]
+
+    characters = build_backfill_patch(
+        _direct_character_evidence(),
+        generated,
+        "玄幻",
+    ).to_dict()["characters"]
+
+    assert characters["林修"]["first_appearance_chapter"] == 12
+
+
+def test_direct_character_evidence_from_latest_chapter_overrides_model_state() -> None:
+    characters = build_backfill_patch(
+        _direct_character_evidence(),
+        _generated_backfill(),
+        "玄幻",
+    ).to_dict()["characters"]
+
+    assert characters["林修"]["realm"] == "炼气三层"
+    assert characters["林修"]["current_state"] == {"injury": "右手失去知觉"}
+
+
+def test_character_evidence_uses_chapter_numbers_when_index_order_is_reversed() -> None:
+    evidence = _direct_character_evidence()
+    reversed_evidence = ProjectEvidenceIndex(
+        project_root=evidence.project_root,
+        chapters=tuple(reversed(evidence.chapters)),
+    )
+
+    characters = build_backfill_patch(
+        reversed_evidence,
+        _generated_backfill(),
+        "玄幻",
+    ).to_dict()["characters"]
+
+    assert characters["林修"]["first_appearance_chapter"] == 12
+    assert characters["林修"]["realm"] == "炼气三层"
 
 
 def test_non_character_entities_are_not_emitted_as_characters() -> None:

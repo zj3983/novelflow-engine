@@ -393,6 +393,9 @@ _CHAPTER_FIELDS = frozenset(
         "resolved_chapter",
     }
 )
+_CHARACTER_EVIDENCE_METADATA_FIELDS = frozenset(
+    {"source", "name", "names", "fact", "change", "summary", "chapter_number"}
+)
 
 
 def _genre_text(genre: Any) -> str:
@@ -491,7 +494,7 @@ def _evidence_character_facts(
     names: set[str] = set()
     first_seen: dict[str, int] = {}
     latest_cards: dict[str, dict[str, Any]] = {}
-    for chapter in index.chapters:
+    for chapter in sorted(index.chapters, key=lambda item: item.chapter_number):
         for update in chapter.character_updates:
             update_names = _text_list(update.get("names"))
             name = str(update.get("name") or "").strip()
@@ -505,8 +508,20 @@ def _evidence_character_facts(
             for item in dict.fromkeys(update_names):
                 names.add(item)
                 first_seen.setdefault(item, chapter.chapter_number)
-            if isinstance(character, Mapping) and name:
-                latest_cards[name] = deepcopy(dict(character))
+            direct_state = any(
+                key not in _CHARACTER_EVIDENCE_METADATA_FIELDS
+                for key in update
+            )
+            evidence_card = (
+                character
+                if isinstance(character, Mapping)
+                else update if direct_state else None
+            )
+            evidence_name = str(
+                (evidence_card or {}).get("name") or name
+            ).strip()
+            if isinstance(evidence_card, Mapping) and evidence_name:
+                latest_cards[evidence_name] = deepcopy(dict(evidence_card))
     return names, first_seen, latest_cards
 
 
@@ -574,18 +589,15 @@ def _normalize_characters(
             cards[canonical] = {"name": canonical, "aliases": []}
             alias_to_name[evidence_name] = canonical
 
+    canonical_first_seen: dict[str, int] = {}
     for evidence_name, chapter_number in first_seen.items():
         canonical = alias_to_name.get(evidence_name, evidence_name)
-        card = cards[canonical]
-        claimed = card.get("first_appearance_chapter")
-        card["first_appearance_chapter"] = min(
-            [
-                number
-                for number in (claimed, chapter_number)
-                if isinstance(number, int) and number > 0
-            ]
-            or [chapter_number]
+        canonical_first_seen[canonical] = min(
+            canonical_first_seen.get(canonical, chapter_number),
+            chapter_number,
         )
+    for canonical, chapter_number in canonical_first_seen.items():
+        cards[canonical]["first_appearance_chapter"] = chapter_number
     for evidence_name, evidence_card in latest_cards.items():
         canonical = alias_to_name.get(evidence_name, evidence_name)
         card = cards[canonical]
