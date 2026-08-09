@@ -540,6 +540,157 @@ def test_character_evidence_uses_chapter_numbers_when_index_order_is_reversed() 
     assert characters["林修"]["realm"] == "炼气三层"
 
 
+def test_build_evidence_index_flows_into_backfill_with_nested_mappingproxy(
+    tmp_path: Path,
+) -> None:
+    _write_canonical_chapter(
+        tmp_path,
+        1,
+        title="维修铺开门",
+        body_bytes="林修检查柜台。".encode(),
+        metadata={
+            "updated_story": {
+                "characters": [
+                    {
+                        "name": "林修",
+                        "entity_type": "character",
+                        "current_state": {"injury": "右手发麻"},
+                    }
+                ]
+            }
+        },
+    )
+    generated = _generated_backfill()
+    generated["characters"][0]["first_appearance_chapter"] = 1  # type: ignore[index]
+
+    patch = build_backfill_patch(build_evidence_index(tmp_path), generated, "玄幻")
+
+    assert patch.to_dict()["characters"]["林修"]["current_state"] == {
+        "injury": "右手发麻"
+    }
+
+
+def test_relationship_without_chapter_numbers_keeps_zero_as_unknown() -> None:
+    generated = _generated_backfill()
+    generated["characters"].append(  # type: ignore[union-attr]
+        {"name": "李澄", "entity_type": "character"}
+    )
+    generated["relationships"] = [
+        {"source": "林修", "target": "李澄", "relation_type": "朋友"}
+    ]
+
+    relationship = build_backfill_patch(
+        _backfill_evidence(), generated, "玄幻"
+    ).to_dict()["relationships"][0]
+
+    assert relationship["first_chapter"] == 0
+    assert relationship["last_changed_chapter"] == 0
+
+
+def test_relationship_rejects_negative_chapter_before_normalization() -> None:
+    generated = _generated_backfill()
+    generated["characters"].append(  # type: ignore[union-attr]
+        {"name": "李澄", "entity_type": "character"}
+    )
+    generated["relationships"] = [
+        {
+            "source": "林修",
+            "target": "李澄",
+            "relation_type": "朋友",
+            "first_chapter": -1,
+        }
+    ]
+
+    with pytest.raises(ValueError, match="relationship_chapter_out_of_range"):
+        build_backfill_patch(_backfill_evidence(), generated, "玄幻")
+
+
+def test_character_entity_type_wins_over_merchant_role_and_human_roles_are_kept() -> None:
+    generated = _generated_backfill()
+    generated["characters"].extend(  # type: ignore[union-attr]
+        [
+            {"name": "钱掌柜", "entity_type": "character", "role": "merchant"},
+            {"name": "周师父", "role": "师父"},
+            {"name": "玄门商号", "entity_type": "vendor_entity", "role": "店主"},
+        ]
+    )
+
+    characters = build_backfill_patch(
+        _backfill_evidence(), generated, "玄幻"
+    ).to_dict()["characters"]
+
+    assert "钱掌柜" in characters
+    assert "周师父" in characters
+    assert "玄门商号" not in characters
+
+
+def test_foreshadowing_evidence_payoff_overrides_model_and_is_order_independent() -> None:
+    evidence = _backfill_evidence()
+    chapters = []
+    for chapter in evidence.chapters:
+        entries = chapter.foreshadowing
+        if chapter.chapter_number == 147:
+            entries = (
+                {
+                    "text": "柜台下的铜钥匙",
+                    "status": "reinforced",
+                    "payoff_plan": "在旧账册真相揭晓时回收",
+                },
+            )
+        chapters.append(replace(chapter, foreshadowing=entries))
+    reversed_evidence = ProjectEvidenceIndex(
+        project_root=evidence.project_root,
+        chapters=tuple(reversed(chapters)),
+    )
+    generated = _generated_backfill()
+    generated["foreshadowing"] = [
+        {
+            "text": "柜台下的铜钥匙",
+            "first_chapter": 80,
+            "last_touched_chapter": 90,
+            "status": "open",
+            "payoff_plan": "模型臆造的错误回收方式",
+        }
+    ]
+
+    entry = build_backfill_patch(
+        reversed_evidence, generated, "玄幻"
+    ).to_dict()["foreshadowing"][0]
+
+    assert entry["first_chapter"] == 12
+    assert entry["last_touched_chapter"] == 147
+    assert entry["status"] == "reinforced"
+    assert entry["payoff_plan"] == "在旧账册真相揭晓时回收"
+
+
+def test_canonical_character_name_uses_evidence_then_explicit_name_not_array_order() -> None:
+    generated = _generated_backfill()
+    generated["characters"] = [
+        {
+            "name": "林师傅",
+            "aliases": ["林修"],
+            "entity_type": "character",
+        },
+        {"name": "林修", "aliases": ["林师傅"], "entity_type": "character"},
+        {"name": "阿澄", "aliases": ["李澄"], "entity_type": "character"},
+        {
+            "name": "李澄",
+            "canonical_name": "李澄",
+            "aliases": ["阿澄"],
+            "entity_type": "character",
+        },
+    ]
+    generated["relationships"] = [
+        {"source": "林师傅", "target": "阿澄", "relation_type": "朋友"}
+    ]
+
+    patch = build_backfill_patch(_backfill_evidence(), generated, "玄幻").to_dict()
+
+    assert set(patch["characters"]) == {"林修", "李澄"}
+    assert patch["relationships"][0]["source"] == "林修"
+    assert patch["relationships"][0]["target"] == "李澄"
+
+
 def test_non_character_entities_are_not_emitted_as_characters() -> None:
     generated = _generated_backfill()
     generated["characters"].extend(  # type: ignore[union-attr]

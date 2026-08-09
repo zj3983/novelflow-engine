@@ -353,6 +353,8 @@ _NON_CHARACTER_TYPES = frozenset(
         "merchant",
         "shop",
         "store",
+        "vendor_entity",
+        "merchant_entity",
         "item",
         "equipment",
         "object",
@@ -364,9 +366,13 @@ _NON_CHARACTER_TYPES = frozenset(
         "场所",
         "商户",
         "商店",
+        "商户实体",
         "物品",
         "装备",
     }
+)
+_HUMAN_ROLE_TYPES = frozenset(
+    {"merchant", "shopkeeper", "master", "店主", "掌柜", "师父", "宗主"}
 )
 _CHARACTER_TYPES = frozenset(
     {
@@ -448,21 +454,38 @@ def _chapter_limit(index: ProjectEvidenceIndex) -> int:
     return max((chapter.chapter_number for chapter in index.chapters), default=0)
 
 
-def _validate_chapter_fields(value: Any, *, maximum: int, error: str) -> None:
+def _validate_chapter_fields(
+    value: Any,
+    *,
+    maximum: int,
+    error: str,
+    allow_unknown_zero: bool = False,
+) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
             if key in _CHAPTER_FIELDS and item is not None:
                 if (
                     not isinstance(item, int)
                     or isinstance(item, bool)
-                    or item < 1
+                    or item < 0
+                    or (item == 0 and not allow_unknown_zero)
                     or item > maximum
                 ):
                     raise ValueError(error)
-            _validate_chapter_fields(item, maximum=maximum, error=error)
+            _validate_chapter_fields(
+                item,
+                maximum=maximum,
+                error=error,
+                allow_unknown_zero=allow_unknown_zero,
+            )
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _validate_chapter_fields(item, maximum=maximum, error=error)
+            _validate_chapter_fields(
+                item,
+                maximum=maximum,
+                error=error,
+                allow_unknown_zero=allow_unknown_zero,
+            )
 
 
 def _character_rows(value: Any) -> list[dict[str, Any]]:
@@ -490,10 +513,16 @@ def _text_list(value: Any) -> list[str]:
 
 def _evidence_character_facts(
     index: ProjectEvidenceIndex,
-) -> tuple[set[str], dict[str, int], dict[str, dict[str, Any]]]:
+) -> tuple[
+    set[str],
+    dict[str, int],
+    dict[str, dict[str, Any]],
+    dict[str, str],
+]:
     names: set[str] = set()
     first_seen: dict[str, int] = {}
     latest_cards: dict[str, dict[str, Any]] = {}
+    canonical_by_alias: dict[str, str] = {}
     for chapter in sorted(index.chapters, key=lambda item: item.chapter_number):
         for update in chapter.character_updates:
             update_names = _text_list(update.get("names"))
@@ -521,19 +550,32 @@ def _evidence_character_facts(
                 (evidence_card or {}).get("name") or name
             ).strip()
             if isinstance(evidence_card, Mapping) and evidence_name:
-                latest_cards[evidence_name] = deepcopy(dict(evidence_card))
-    return names, first_seen, latest_cards
+                plain_card = dict(_thaw(evidence_card))
+                canonical = str(
+                    plain_card.get("canonical_name") or evidence_name
+                ).strip()
+                evidence_aliases = _text_list(plain_card.get("aliases"))
+                for alias in dict.fromkeys((canonical, *update_names, *evidence_aliases)):
+                    names.add(alias)
+                    first_seen.setdefault(alias, chapter.chapter_number)
+                    canonical_by_alias.setdefault(alias, canonical)
+                latest_cards[canonical] = plain_card
+    return names, first_seen, latest_cards, canonical_by_alias
 
 
 def _is_character_entity(card: Mapping[str, Any], evidence_names: set[str]) -> bool:
-    labels = {
-        str(card.get(field) or "").strip().casefold()
-        for field in ("entity_type", "kind", "role")
-        if str(card.get(field) or "").strip()
-    }
-    if labels & _NON_CHARACTER_TYPES:
+    entity_type = str(card.get("entity_type") or "").strip().casefold()
+    kind = str(card.get("kind") or "").strip().casefold()
+    role = str(card.get("role") or "").strip().casefold()
+    if entity_type in _CHARACTER_TYPES:
+        return True
+    if entity_type in _NON_CHARACTER_TYPES:
         return False
-    if labels & _CHARACTER_TYPES:
+    if kind in _CHARACTER_TYPES:
+        return True
+    if kind in _NON_CHARACTER_TYPES:
+        return False
+    if role in _CHARACTER_TYPES or role in _HUMAN_ROLE_TYPES:
         return True
     return str(card.get("name") or "").strip() in evidence_names
 
@@ -557,18 +599,77 @@ def _normalize_characters(
     index: ProjectEvidenceIndex,
     maximum: int,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    evidence_names, first_seen, latest_cards = _evidence_character_facts(index)
-    cards: dict[str, dict[str, Any]] = {}
-    alias_to_name: dict[str, str] = {}
-    for row in _character_rows(value):
-        name = str(row.get("name") or "").strip()
-        if not name or not _is_character_entity(row, evidence_names):
-            continue
-        aliases = [alias for alias in _text_list(row.get("aliases")) if alias != name]
-        canonical = next(
-            (alias_to_name[item] for item in (name, *aliases) if item in alias_to_name),
-            name,
+    (
+        evidence_names,
+        first_seen,
+        latest_cards,
+        evidence_canonical,
+    ) = _evidence_character_facts(index)
+    rows = [
+        row
+        for row in _character_rows(value)
+        if str(row.get("name") or "").strip()
+        and _is_character_entity(row, evidence_names)
+    ]
+
+    parent: dict[str, str] = {}
+
+    def find(name: str) -> str:
+        parent.setdefault(name, name)
+        if parent[name] != name:
+            parent[name] = find(parent[name])
+        return parent[name]
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    for row in rows:
+        identities = _text_list(
+            [row.get("name"), row.get("canonical_name"), *(_text_list(row.get("aliases")))]
         )
+        for identity in identities:
+            union(identities[0], identity)
+    for alias, canonical in evidence_canonical.items():
+        union(alias, canonical)
+
+    components: dict[str, set[str]] = {}
+    for identity in parent:
+        components.setdefault(find(identity), set()).add(identity)
+
+    alias_to_name: dict[str, str] = {}
+    for members in components.values():
+        evidence_choices = sorted(
+            {
+                evidence_canonical[member]
+                for member in members
+                if member in evidence_canonical
+            },
+            key=lambda name: (first_seen.get(name, maximum + 1), name),
+        )
+        explicit_choices = sorted(
+            {
+                str(row.get("canonical_name") or "").strip()
+                for row in rows
+                if str(row.get("name") or "").strip() in members
+                and str(row.get("canonical_name") or "").strip()
+            }
+        )
+        canonical = (
+            evidence_choices[0]
+            if evidence_choices
+            else explicit_choices[0] if explicit_choices else min(members)
+        )
+        for member in members:
+            alias_to_name[member] = canonical
+
+    cards: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        aliases = [alias for alias in _text_list(row.get("aliases")) if alias != name]
+        canonical = alias_to_name.get(name, name)
         card = cards.get(canonical, {"name": canonical, "aliases": []})
         card = _merge_card(card, row)
         card["aliases"] = list(
@@ -581,7 +682,7 @@ def _normalize_characters(
         )
         cards[canonical] = card
         for item in (canonical, name, *aliases):
-            alias_to_name[item] = canonical
+            alias_to_name.setdefault(item, canonical)
 
     for evidence_name in sorted(evidence_names):
         canonical = alias_to_name.get(evidence_name, evidence_name)
@@ -628,11 +729,18 @@ def _normalize_relationships(
         row["source"] = _canonical_name(row.get("source"), aliases)
         row["target"] = _canonical_name(row.get("target"), aliases)
         rows.append(row)
+    _validate_chapter_fields(
+        rows,
+        maximum=maximum,
+        error="relationship_chapter_out_of_range",
+        allow_unknown_zero=True,
+    )
     normalized = normalize_relationship_graph(rows)
     _validate_chapter_fields(
         normalized,
         maximum=maximum,
         error="relationship_chapter_out_of_range",
+        allow_unknown_zero=True,
     )
     return normalized
 
@@ -641,7 +749,7 @@ def _evidence_foreshadowing(
     index: ProjectEvidenceIndex,
 ) -> dict[str, dict[str, Any]]:
     facts: dict[str, dict[str, Any]] = {}
-    for chapter in index.chapters:
+    for chapter in sorted(index.chapters, key=lambda item: item.chapter_number):
         for raw in chapter.foreshadowing:
             text = str(raw.get("text") or raw.get("summary") or "").strip()
             key = normalize_foreshadowing_text(text)
@@ -691,6 +799,7 @@ def _normalize_foreshadowing(
                     "first_chapter": evidence_row["first_chapter"],
                     "last_touched_chapter": evidence_row["last_touched_chapter"],
                     "status": evidence_row["status"],
+                    "payoff_plan": evidence_row["payoff_plan"],
                     "resolved_chapter": evidence_row["resolved_chapter"],
                 }
             )
