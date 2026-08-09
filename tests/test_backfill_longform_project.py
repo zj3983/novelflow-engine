@@ -506,13 +506,28 @@ def test_preview_rejects_common_chapter_fields_beyond_current_chapter(
         validate_backfill_preview(root, preview)
 
 
-def test_preview_rejects_outline_arc_beyond_current_chapter(tmp_path: Path) -> None:
+def test_preview_rejects_unmarked_outline_arc_beyond_current_chapter(tmp_path: Path) -> None:
     root = _project(tmp_path)
     preview = build_backfill_preview(root, _payload())
     preview["patch"]["master_outline"]["arcs"][0]["end_chapter"] = 3
 
     with pytest.raises(ValueError, match="preview_chapter_out_of_range"):
         validate_backfill_preview(root, preview)
+
+
+def test_preview_allows_explicitly_planned_future_outline_arc(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    arc = preview["patch"]["master_outline"]["arcs"][0]
+    arc.update(
+        {
+            "start_chapter": 148,
+            "end_chapter": 160,
+            "end_state": "planned",
+        }
+    )
+
+    validate_backfill_preview(root, preview)
 
 
 @pytest.mark.parametrize("key", ["body", "content", "chapter_text", "full_text", "prose", "draft"])
@@ -783,7 +798,13 @@ def test_apply_merges_stable_list_items_and_preserves_unmatched_entries(
             "start_chapter": 1,
             "end_chapter": 2,
             "legacy_arc": {"keep": True},
-        }
+        },
+        {
+            "id": "obsolete-arc",
+            "title": "Obsolete arc",
+            "start_chapter": 1,
+            "end_chapter": 1,
+        },
     ]
     outline["chapters"] = [
         {"chapter_number": 1, "title": "Old title", "legacy_chapter": {"keep": True}}
@@ -837,11 +858,49 @@ def test_apply_merges_stable_list_items_and_preserves_unmatched_entries(
     assert relation["legacy_relationship"] == {"keep": True}
     assert relation["relation_type"] == "trusted ally"
     assert outline["arcs"][0]["legacy_arc"] == {"keep": True}
+    assert all(item["id"] != "obsolete-arc" for item in outline["arcs"])
     assert outline["chapters"][0]["legacy_chapter"] == {"keep": True}
     assert outline["chapters"][0]["title"] == "New title"
     assert lin_state["legacy_state"] == {"keep": True}
     assert clue["legacy_clue"] == {"keep": True}
     assert clue["status"] == "reinforced"
+
+
+def test_apply_removes_stale_card_timestamp_for_planned_future_character(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    project_path = root / ".webnovel" / "project.json"
+    state_path = root / ".webnovel" / "state.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    future = {
+        "name": "Inspector",
+        "entity_type": "character",
+        "first_appearance": 150,
+        "first_appearance_chapter": 2,
+    }
+    project["character_profiles"] = [future]
+    state["characters"] = [future]
+    _write_json(project_path, project)
+    _write_json(state_path, state)
+    payload = _payload()
+    payload["characters"] = [
+        {
+            "name": "Inspector",
+            "entity_type": "character",
+            "first_appearance": 150,
+        }
+    ]
+
+    preview = build_backfill_preview(root, payload)
+    apply_backfill_preview(root, preview)
+
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "first_appearance_chapter" not in project["character_profiles"][0]
+    assert "first_appearance_chapter" not in state["characters"][0]
+    assert state["characters"][0]["first_appearance"] == 150
 
 
 def test_preview_rejects_body_fragment_under_unknown_key_without_prose_markers(

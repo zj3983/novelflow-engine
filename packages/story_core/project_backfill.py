@@ -453,6 +453,16 @@ def _is_chapter_counter_or_length_field(key: str) -> bool:
     )
 
 
+def _chapter_number(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def _genre_text(genre: Any) -> str:
     if isinstance(genre, Mapping):
         return " ".join(_genre_text(value) for value in genre.values())
@@ -510,8 +520,18 @@ def _validate_chapter_fields(
     error: str,
     allow_unknown_zero: bool = False,
     _outline_scope: bool = False,
+    _planned_outline_scope: bool = False,
 ) -> None:
     if isinstance(value, Mapping):
+        planned_outline_scope = _planned_outline_scope or (
+            _outline_scope
+            and (
+                str(value.get("end_state") or "").casefold() == "planned"
+                or str(value.get("pacing_stage_id") or "")
+                .casefold()
+                .startswith("planned:")
+            )
+        )
         for key, item in value.items():
             normalized_key = str(key).casefold()
             excluded_field = (
@@ -547,7 +567,7 @@ def _validate_chapter_fields(
                     numeric_item is None
                     or numeric_item < 0
                     or (numeric_item == 0 and not allow_unknown_zero)
-                    or numeric_item > maximum
+                    or (numeric_item > maximum and not planned_outline_scope)
                 ):
                     raise ValueError(error)
             _validate_chapter_fields(
@@ -556,6 +576,7 @@ def _validate_chapter_fields(
                 error=error,
                 allow_unknown_zero=allow_unknown_zero,
                 _outline_scope=_outline_scope or normalized_key == "master_outline",
+                _planned_outline_scope=planned_outline_scope,
             )
     elif isinstance(value, (list, tuple)):
         for item in value:
@@ -565,6 +586,7 @@ def _validate_chapter_fields(
                 error=error,
                 allow_unknown_zero=allow_unknown_zero,
                 _outline_scope=_outline_scope,
+                _planned_outline_scope=_planned_outline_scope,
             )
 
 
@@ -798,6 +820,21 @@ def _normalize_characters(
         for item in (canonical, name, *aliases):
             alias_to_name.setdefault(item, canonical)
 
+    verified_generated_first: dict[str, int] = {}
+    chapters_by_number = {chapter.chapter_number: chapter for chapter in index.chapters}
+    for canonical, card in cards.items():
+        proposed = _chapter_number(card.get("first_appearance_chapter"))
+        if proposed is None or len(canonical) < 2:
+            continue
+        chapter = chapters_by_number.get(proposed)
+        names = [canonical, *_text_list(card.get("aliases"))]
+        if chapter is not None and any(
+            name and (name in chapter.title or name in chapter.body)
+            for name in names
+        ):
+            verified_generated_first[canonical] = proposed
+    generated_canonicals = set(cards)
+
     for evidence_name in sorted(evidence_names):
         canonical = alias_to_name.get(evidence_name, evidence_name)
         if canonical not in cards:
@@ -812,7 +849,28 @@ def _normalize_characters(
             chapter_number,
         )
     for canonical, chapter_number in canonical_first_seen.items():
-        cards[canonical]["first_appearance_chapter"] = chapter_number
+        card = cards[canonical]
+        planned_first = _chapter_number(card.get("first_appearance"))
+        if planned_first is not None and planned_first > maximum:
+            card.pop("first_appearance_chapter", None)
+            continue
+        body_first = None
+        if canonical not in generated_canonicals and len(canonical) >= 2:
+            body_first = next(
+                (
+                    chapter.chapter_number
+                    for chapter in sorted(index.chapters, key=lambda item: item.chapter_number)
+                    if canonical in chapter.title or canonical in chapter.body
+                ),
+                None,
+            )
+        resolved = min(
+            chapter_number,
+            verified_generated_first.get(canonical, chapter_number),
+            body_first if body_first is not None else chapter_number,
+        )
+        card["first_appearance_chapter"] = resolved
+        card["first_appearance"] = resolved
     for evidence_name, evidence_card in latest_cards.items():
         canonical = alias_to_name.get(evidence_name, evidence_name)
         card = cards[canonical]
@@ -822,6 +880,14 @@ def _normalize_characters(
                 continue
             if value not in (None, "", [], {}):
                 card[key] = deepcopy(value)
+    for card in cards.values():
+        planned_first = _chapter_number(card.get("first_appearance"))
+        if planned_first is not None and planned_first > maximum:
+            card.pop("first_appearance_chapter", None)
+            continue
+        confirmed_first = _chapter_number(card.get("first_appearance_chapter"))
+        if confirmed_first is not None:
+            card["first_appearance"] = confirmed_first
     cards = _strip_foreign_genre_fields(cards, is_game_story=is_game_story)
     if not is_game_story:
         for card in cards.values():
@@ -1480,6 +1546,52 @@ def _merge_mapping_list(base: list[Any], patch: list[Any], path: tuple[str, ...]
     return merged
 
 
+def _merge_authoritative_mapping_list(
+    base: Any,
+    patch: Any,
+    path: tuple[str, ...],
+) -> Any:
+    if not isinstance(patch, list):
+        return deepcopy(patch)
+    base_rows = base if isinstance(base, list) else []
+    merged = []
+    for incoming in patch:
+        if not isinstance(incoming, Mapping):
+            merged.append(deepcopy(incoming))
+            continue
+        existing = next(
+            (
+                row
+                for row in base_rows
+                if isinstance(row, Mapping)
+                and _has_identity_hint(row)
+                and _identities_match(row, incoming)
+            ),
+            None,
+        )
+        merged.append(
+            _deep_merge(existing, incoming, path=path)
+            if existing is not None
+            else deepcopy(dict(incoming))
+        )
+    return merged
+
+
+def _merge_complete_outline(base: Any, patch: Any, *, path: tuple[str, ...]) -> Any:
+    merged = _deep_merge(base, patch, path=path)
+    if not isinstance(merged, dict) or not isinstance(patch, Mapping):
+        return merged
+    for key in ("arcs", "chapters"):
+        if key in patch:
+            base_value = base.get(key) if isinstance(base, Mapping) else None
+            merged[key] = _merge_authoritative_mapping_list(
+                base_value,
+                patch.get(key),
+                path + (key,),
+            )
+    return merged
+
+
 def _deep_merge(base: Any, patch: Any, *, path: tuple[str, ...] = ()) -> Any:
     """Deep-merge mappings and identified entity lists; replace atomic lists."""
 
@@ -1495,6 +1607,24 @@ def _deep_merge(base: Any, patch: Any, *, path: tuple[str, ...] = ()) -> Any:
     if isinstance(base, list) and isinstance(patch, list):
         return _merge_mapping_list(base, patch, path)
     return deepcopy(patch)
+
+
+def _drop_stale_planned_appearance(
+    characters: Any,
+    *,
+    current_chapter: int,
+) -> Any:
+    if not isinstance(characters, list):
+        return characters
+    cleaned = deepcopy(characters)
+    for card in cleaned:
+        if not isinstance(card, dict):
+            continue
+        planned = _chapter_number(card.get("first_appearance"))
+        recorded = _chapter_number(card.get("first_appearance_chapter"))
+        if planned is not None and planned > current_chapter and recorded is not None:
+            card.pop("first_appearance_chapter", None)
+    return cleaned
 
 
 def _mapped_metadata(
@@ -1515,7 +1645,7 @@ def _mapped_metadata(
     project["story_core"] = _deep_merge(
         project.get("story_core"), story_core, path=("story_core",)
     )
-    project["master_outline"] = _deep_merge(
+    project["master_outline"] = _merge_complete_outline(
         project.get("master_outline"), master_outline, path=("master_outline",)
     )
     project["world_blueprint"] = _deep_merge(
@@ -1532,7 +1662,7 @@ def _mapped_metadata(
     project["current_chapter"] = continuity["current_chapter"]
     if "current_focus" in continuity:
         project["current_focus"] = str(continuity.get("current_focus") or "")
-    outline = _deep_merge(old_outline, master_outline, path=("outline",))
+    outline = _merge_complete_outline(old_outline, master_outline, path=("outline",))
     state = _deep_merge(state, continuity, path=("state",))
     state_updates = {
         "characters": _deep_merge(
@@ -1553,6 +1683,14 @@ def _mapped_metadata(
     if "current_focus" in continuity:
         state_updates["current_focus"] = str(continuity.get("current_focus") or "")
     state.update(state_updates)
+    project["character_profiles"] = _drop_stale_planned_appearance(
+        project.get("character_profiles"),
+        current_chapter=continuity["current_chapter"],
+    )
+    state["characters"] = _drop_stale_planned_appearance(
+        state.get("characters"),
+        current_chapter=continuity["current_chapter"],
+    )
     return {
         "project.json": project,
         "outline.json": outline,

@@ -690,6 +690,69 @@ def test_character_first_appearance_strictly_uses_evidence_not_earlier_model_cla
     assert characters["林修"]["first_appearance_chapter"] == 12
 
 
+def test_character_first_appearance_accepts_model_claim_verified_by_chapter_body() -> None:
+    generated = _generated_backfill()
+    generated["characters"][0]["first_appearance_chapter"] = 1  # type: ignore[index]
+
+    characters = build_backfill_patch(
+        _direct_character_evidence(),
+        generated,
+        "玄幻",
+    ).to_dict()["characters"]
+
+    assert characters["林修"]["first_appearance_chapter"] == 1
+    assert characters["林修"]["first_appearance"] == 1
+
+
+def test_planned_future_character_keeps_planned_first_appearance() -> None:
+    generated = _generated_backfill()
+    generated["characters"].append(  # type: ignore[union-attr]
+        {
+            "name": "巡界使",
+            "entity_type": "character",
+            "first_appearance": 150,
+        }
+    )
+    evidence = _backfill_evidence()
+    chapters = list(evidence.chapters)
+    chapters[-1] = replace(
+        chapters[-1],
+        character_updates=(*chapters[-1].character_updates, {
+            "name": "巡界使",
+            "first_appearance": 150,
+            "first_appearance_chapter": 142,
+        }),
+    )
+
+    characters = build_backfill_patch(
+        ProjectEvidenceIndex(project_root=evidence.project_root, chapters=tuple(chapters)),
+        generated,
+        "玄幻",
+    ).to_dict()["characters"]
+
+    assert characters["巡界使"]["first_appearance"] == 150
+    assert "first_appearance_chapter" not in characters["巡界使"]
+
+
+def test_evidence_only_character_uses_first_exact_body_mention() -> None:
+    evidence = _backfill_evidence()
+    chapters = list(evidence.chapters)
+    chapters[4] = replace(chapters[4], body="老周第一次出场。")
+    chapters[11] = replace(
+        chapters[11],
+        character_updates=({"name": "老周", "role": "supporting"},),
+    )
+
+    characters = build_backfill_patch(
+        ProjectEvidenceIndex(project_root=evidence.project_root, chapters=tuple(chapters)),
+        _generated_backfill(),
+        "玄幻",
+    ).to_dict()["characters"]
+
+    assert characters["老周"]["first_appearance"] == 5
+    assert characters["老周"]["first_appearance_chapter"] == 5
+
+
 def test_direct_character_evidence_from_latest_chapter_overrides_model_state() -> None:
     characters = build_backfill_patch(
         _direct_character_evidence(),
