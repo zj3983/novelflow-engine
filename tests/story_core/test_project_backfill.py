@@ -10,7 +10,9 @@ import pytest
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.project_backfill import (
     ChapterEvidence,
+    ProjectBackfillPatch,
     ProjectEvidenceIndex,
+    build_backfill_patch,
     build_evidence_index,
     chapter_hashes,
 )
@@ -328,3 +330,201 @@ def test_confirmed_fact_records_all_named_characters_deterministically(tmp_path:
             "fact": "沈墨璃替林修守住出口。",
         }
     ]
+
+
+def _backfill_evidence() -> ProjectEvidenceIndex:
+    chapters = []
+    for chapter_number in range(1, 148):
+        character_updates = ()
+        foreshadowing = ()
+        if chapter_number == 1:
+            character_updates = (
+                {
+                    "source": "updated_story.characters",
+                    "name": "林修",
+                    "character": {
+                        "name": "林修",
+                        "current_state": {"injury": "旧伤未愈"},
+                    },
+                },
+            )
+        if chapter_number == 12:
+            foreshadowing = ({"text": "柜台下的铜钥匙", "status": "open"},)
+        if chapter_number == 147:
+            character_updates = (
+                {
+                    "source": "updated_story.characters",
+                    "name": "林修",
+                    "character": {
+                        "name": "林修",
+                        "realm": "炼气三层",
+                        "current_state": {"injury": "右手失去知觉"},
+                    },
+                },
+            )
+            foreshadowing = ({"text": "柜台下的铜钥匙", "status": "reinforced"},)
+        chapters.append(
+            ChapterEvidence(
+                chapter_number=chapter_number,
+                title=f"第{chapter_number}章",
+                body_hash=f"hash-{chapter_number}",
+                body="林修继续经营维修铺。" if chapter_number in {1, 147} else "正文。",
+                summary="",
+                timeline=(),
+                character_updates=character_updates,
+                foreshadowing=foreshadowing,
+            )
+        )
+    return ProjectEvidenceIndex(project_root=Path("example"), chapters=tuple(chapters))
+
+
+def _generated_backfill() -> dict[str, object]:
+    return {
+        "story_core": {"title": "万界维修工", "logline": "林修修复万界器物。"},
+        "master_outline": {"overall": {}, "arcs": [], "chapters": []},
+        "world_blueprint": {"setting": "诸界相连的维修世界"},
+        "characters": [
+            {
+                "name": "林修",
+                "aliases": ["林师傅"],
+                "entity_type": "character",
+                "first_appearance_chapter": 9,
+                "realm": "炼气九层",
+                "current_state": {"injury": "已经痊愈"},
+            }
+        ],
+        "relationships": [],
+        "foreshadowing": [],
+        "continuity": {"current_chapter": 3, "timeline": []},
+    }
+
+
+def test_build_backfill_patch_has_exactly_seven_sections_and_forces_current_chapter() -> None:
+    patch = build_backfill_patch(_backfill_evidence(), _generated_backfill(), "玄幻")
+
+    assert isinstance(patch, ProjectBackfillPatch)
+    assert list(patch.to_dict()) == [
+        "story_core",
+        "master_outline",
+        "world_blueprint",
+        "characters",
+        "relationships",
+        "foreshadowing",
+        "continuity",
+    ]
+    assert patch.to_dict()["continuity"]["current_chapter"] == 147
+
+
+def test_build_backfill_patch_requires_all_sections() -> None:
+    generated = _generated_backfill()
+    generated.pop("relationships")
+
+    with pytest.raises(ValueError, match="missing_backfill_section:relationships"):
+        build_backfill_patch(_backfill_evidence(), generated, "玄幻")
+
+
+def test_non_game_genre_recursively_strips_game_only_fields_but_keeps_equipment() -> None:
+    generated = _generated_backfill()
+    generated["world_blueprint"] = {
+        "game_panel": {"level": 8},
+        "nested": {
+            "game_state": {"hp": 10},
+            "inventory_slots": 20,
+            "inventory": ["玄铁"],
+            "equipment": {"weapon": "断剑"},
+        },
+    }
+    generated["characters"][0]["player_state"] = {"level": 8}  # type: ignore[index]
+
+    serialized = json.dumps(
+        build_backfill_patch(
+            _backfill_evidence(),
+            generated,
+            {"genre": "玄幻", "plugin": "xuanhuan"},
+        ).to_dict(),
+        ensure_ascii=False,
+    )
+
+    assert "game_panel" not in serialized
+    assert "game_state" not in serialized
+    assert "player_state" not in serialized
+    assert "inventory_slots" not in serialized
+    assert '"inventory": ["玄铁"]' in serialized
+    assert '"equipment": {"weapon": "断剑"}' in serialized
+
+
+def test_character_aliases_merge_to_canonical_name_and_evidence_wins_recent_state() -> None:
+    generated = _generated_backfill()
+    generated["characters"].append(  # type: ignore[union-attr]
+        {
+            "name": "林师傅",
+            "aliases": ["阿修"],
+            "kind": "person",
+            "occupation": "维修工",
+            "first_appearance_chapter": 6,
+        }
+    )
+
+    characters = build_backfill_patch(_backfill_evidence(), generated, "玄幻").to_dict()["characters"]
+
+    assert list(characters) == ["林修"]
+    assert characters["林修"]["aliases"] == ["林师傅", "阿修"]
+    assert characters["林修"]["occupation"] == "维修工"
+    assert characters["林修"]["first_appearance_chapter"] == 1
+    assert characters["林修"]["realm"] == "炼气三层"
+    assert characters["林修"]["current_state"] == {"injury": "右手失去知觉"}
+
+
+def test_non_character_entities_are_not_emitted_as_characters() -> None:
+    generated = _generated_backfill()
+    generated["characters"].extend(  # type: ignore[union-attr]
+        [
+            {"name": "白河仓库收购方", "entity_type": "organization", "role": "merchant"},
+            {"name": "旧城维修铺", "kind": "location"},
+            {"name": "裂纹仙器", "entity_type": "item"},
+            {"name": "诸界商会", "entity_type": "组织"},
+            {"name": "李澄", "role": "配角"},
+        ]
+    )
+
+    characters = build_backfill_patch(_backfill_evidence(), generated, "玄幻").to_dict()["characters"]
+
+    assert list(characters) == ["林修", "李澄"]
+    assert "诸界商会" not in characters
+
+
+def test_foreshadowing_uses_evidence_chapters_and_rejects_unseen_out_of_range_entry() -> None:
+    generated = _generated_backfill()
+    generated["foreshadowing"] = [
+        {
+            "text": "柜台下的铜钥匙",
+            "first_chapter": 90,
+            "last_touched_chapter": 100,
+            "status": "open",
+        }
+    ]
+    patch = build_backfill_patch(_backfill_evidence(), generated, "玄幻").to_dict()
+
+    assert patch["foreshadowing"][0]["first_chapter"] == 12
+    assert patch["foreshadowing"][0]["last_touched_chapter"] == 147
+
+    generated["foreshadowing"] = [
+        {
+            "text": "正文从未出现的线索",
+            "first_chapter": 148,
+            "last_touched_chapter": 148,
+            "status": "open",
+        }
+    ]
+    with pytest.raises(ValueError, match="foreshadowing_chapter_out_of_range"):
+        build_backfill_patch(_backfill_evidence(), generated, "玄幻")
+
+
+def test_backfill_does_not_mutate_evidence_and_serializes_to_json() -> None:
+    evidence = _backfill_evidence()
+    before = evidence.to_dict()
+
+    plain = build_backfill_patch(evidence, _generated_backfill(), "玄幻").to_dict()
+
+    assert evidence.to_dict() == before
+    assert json.loads(json.dumps(plain, ensure_ascii=False))["continuity"]["current_chapter"] == 147
