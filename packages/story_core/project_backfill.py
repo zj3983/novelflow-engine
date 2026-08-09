@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
+import json
 from pathlib import Path
+import shutil
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -15,7 +18,11 @@ from packages.story_core.foreshadowing import (
     normalize_foreshadowing_text,
 )
 from packages.story_core.models import ForeshadowingState
-from packages.story_core.project_outline import normalize_outline_for_story_type
+from packages.story_core.persistence.snapshot_store import SnapshotStore
+from packages.story_core.project_outline import (
+    normalize_outline_for_story_type,
+    normalize_project_outline,
+)
 from packages.story_core.relationship_graph import normalize_relationship_graph
 from packages.story_core.story_core_card import StoryCoreCard
 
@@ -880,11 +887,343 @@ def build_backfill_patch(
     )
 
 
+_BACKFILL_PREVIEW_SCHEMA = "longform-backfill-preview/v1"
+_PREVIEW_FILENAME = "backfill-preview.json"
+_METADATA_FILENAMES = ("project.json", "outline.json", "state.json")
+_PREVIEW_PROSE_FIELDS = frozenset({"body", "body_text", "chapter_body", "full_text"})
+
+
+def _read_json_document(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise ValueError(f"missing_project_metadata:{path.name}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid_project_metadata:{path.name}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid_project_metadata:{path.name}")
+    return payload
+
+
+def _safe_fixed_path(root: Path, *parts: str) -> Path:
+    target = root.joinpath(*parts)
+    if not target.resolve().is_relative_to(root):
+        raise ValueError("unsafe_project_path")
+    return target
+
+
+def backfill_preview_path(project_root: Path) -> Path:
+    root = Path(project_root).resolve()
+    return _safe_fixed_path(root, ".story-system", _PREVIEW_FILENAME)
+
+
+def _project_documents(project_root: Path) -> tuple[Path, dict[str, dict[str, Any]]]:
+    root = Path(project_root).resolve()
+    if not root.is_dir():
+        raise ValueError("project_root_not_found")
+    documents = {
+        filename: _read_json_document(_safe_fixed_path(root, ".webnovel", filename))
+        for filename in _METADATA_FILENAMES
+    }
+    return root, documents
+
+
+def _project_identity(project: Mapping[str, Any], root: Path) -> str:
+    project_id = str(project.get("project_id") or project.get("id") or "").strip()
+    return project_id or f"file:{root.name}"
+
+
+def _project_genre(project: Mapping[str, Any]) -> Any:
+    world = _mapping(project.get("world_blueprint"))
+    return (
+        project.get("genre")
+        or project.get("novel_type")
+        or world.get("genre_plugin_ids")
+        or world.get("genre")
+        or ""
+    )
+
+
+def protected_chapter_hashes(project_root: Path) -> dict[str, Any]:
+    """Hash every protected chapter artifact using its original bytes."""
+
+    root = Path(project_root).resolve()
+    protected_directories = (
+        _safe_fixed_path(root, "chapters"),
+        _safe_fixed_path(root, ".story-system", "chapters"),
+    )
+    files: dict[str, str] = {}
+    total = sha256()
+    for directory in protected_directories:
+        if not directory.is_dir():
+            continue
+        for path in sorted(item for item in directory.glob("*") if item.is_file()):
+            resolved = path.resolve()
+            if path.is_symlink() or not resolved.is_relative_to(root):
+                raise ValueError("unsafe_chapter_path")
+            relative = path.relative_to(root).as_posix()
+            content = path.read_bytes()
+            digest = sha256(content).hexdigest()
+            files[relative] = digest
+            relative_bytes = relative.encode("utf-8")
+            total.update(len(relative_bytes).to_bytes(4, "big"))
+            total.update(relative_bytes)
+            total.update(len(content).to_bytes(8, "big"))
+            total.update(content)
+    return {
+        "chapter_count": len(FileProjectStore(root).chapter_numbers()),
+        "file_count": len(files),
+        "non_empty_hash_count": sum(bool(value) for value in files.values()),
+        "total_hash": total.hexdigest(),
+        "files": files,
+    }
+
+
+def build_backfill_preview(
+    project_root: Path,
+    generated: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a serializable preview without changing project metadata."""
+
+    root, documents = _project_documents(project_root)
+    project = documents["project.json"]
+    genre = _project_genre(project)
+    patch = build_backfill_patch(build_evidence_index(root), generated, genre)
+    prose_field = _nested_key(patch.to_dict(), _PREVIEW_PROSE_FIELDS)
+    if prose_field:
+        raise ValueError(f"preview_contains_prose:{prose_field}")
+    preview = {
+        "schema_version": _BACKFILL_PREVIEW_SCHEMA,
+        "project_root": str(root),
+        "project_id": _project_identity(project, root),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "genre": _thaw(genre),
+        "chapter_hashes": protected_chapter_hashes(root),
+        "patch": patch.to_dict(),
+    }
+    json.dumps(preview, ensure_ascii=False)
+    return preview
+
+
+def _foreign_genre_field(value: Any, *, is_game_story: bool) -> str | None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            normalized = str(key).casefold()
+            if not is_game_story and normalized in _GAME_ONLY_FIELDS:
+                return str(key)
+            nested = _foreign_genre_field(item, is_game_story=is_game_story)
+            if nested:
+                return nested
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            nested = _foreign_genre_field(item, is_game_story=is_game_story)
+            if nested:
+                return nested
+    return None
+
+
+def _nested_key(value: Any, forbidden: frozenset[str]) -> str | None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            normalized = str(key).casefold()
+            if normalized in forbidden:
+                return str(key)
+            nested = _nested_key(item, forbidden)
+            if nested:
+                return nested
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            nested = _nested_key(item, forbidden)
+            if nested:
+                return nested
+    return None
+
+
+def verify_backfill_hashes(project_root: Path, preview: Mapping[str, Any]) -> dict[str, Any]:
+    root, documents = _project_documents(project_root)
+    if str(preview.get("project_root") or "") != str(root):
+        raise ValueError("preview_project_root_mismatch")
+    if str(preview.get("project_id") or "") != _project_identity(documents["project.json"], root):
+        raise ValueError("preview_project_id_mismatch")
+    expected = preview.get("chapter_hashes")
+    if not isinstance(expected, Mapping):
+        raise ValueError("preview_hashes_required")
+    current = protected_chapter_hashes(root)
+    if dict(expected) != current:
+        raise ValueError("chapter_hash_mismatch")
+    return current
+
+
+def validate_backfill_preview(
+    project_root: Path,
+    preview: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate structure, evidence bounds, genre isolation and hash baseline."""
+
+    root, documents = _project_documents(project_root)
+    if not isinstance(preview, Mapping):
+        raise ValueError("invalid_backfill_preview")
+    if preview.get("schema_version") != _BACKFILL_PREVIEW_SCHEMA:
+        raise ValueError("preview_schema_version")
+    if not str(preview.get("created_at") or "").strip():
+        raise ValueError("preview_created_at_required")
+    if str(preview.get("project_root") or "") != str(root):
+        raise ValueError("preview_project_root_mismatch")
+    project = documents["project.json"]
+    if str(preview.get("project_id") or "") != _project_identity(project, root):
+        raise ValueError("preview_project_id_mismatch")
+    expected_genre = _thaw(_project_genre(project))
+    if preview.get("genre") != expected_genre:
+        raise ValueError("preview_genre_mismatch")
+    patch = preview.get("patch")
+    if not isinstance(patch, Mapping) or set(patch) != set(_BACKFILL_SECTIONS):
+        raise ValueError("preview_patch_sections")
+    for section in ("story_core", "master_outline", "world_blueprint", "characters", "continuity"):
+        if not isinstance(patch.get(section), Mapping):
+            raise ValueError(f"invalid_preview_section:{section}")
+    for section in ("relationships", "foreshadowing"):
+        if not isinstance(patch.get(section), list):
+            raise ValueError(f"invalid_preview_section:{section}")
+    prose_field = _nested_key(patch, _PREVIEW_PROSE_FIELDS)
+    if prose_field:
+        raise ValueError(f"preview_contains_prose:{prose_field}")
+    maximum = max(FileProjectStore(root).chapter_numbers(), default=0)
+    if maximum < 1:
+        raise ValueError("empty_project_evidence")
+    continuity = patch.get("continuity")
+    if not isinstance(continuity, Mapping) or continuity.get("current_chapter") != maximum:
+        raise ValueError("preview_current_chapter")
+    _validate_chapter_fields(
+        patch,
+        maximum=maximum,
+        error="preview_chapter_out_of_range",
+        allow_unknown_zero=True,
+    )
+    genre = preview.get("genre")
+    field = _foreign_genre_field(patch, is_game_story=_is_game_genre(genre))
+    if field:
+        raise ValueError(f"foreign_genre_field:{field}")
+    try:
+        json.dumps(preview, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("preview_not_json_serializable") from exc
+    verify_backfill_hashes(root, preview)
+    return deepcopy(dict(preview))
+
+
+def _character_list(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, Mapping):
+        return [deepcopy(dict(card)) for card in value.values() if isinstance(card, Mapping)]
+    return [deepcopy(dict(card)) for card in value if isinstance(card, Mapping)]
+
+
+def _mapped_metadata(
+    documents: Mapping[str, Mapping[str, Any]],
+    patch: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    project = deepcopy(dict(documents["project.json"]))
+    old_outline = deepcopy(dict(documents["outline.json"]))
+    state = deepcopy(dict(documents["state.json"]))
+    story_core = deepcopy(dict(_mapping(patch.get("story_core"))))
+    master_outline = normalize_project_outline(patch.get("master_outline"))
+    world_blueprint = deepcopy(dict(_mapping(patch.get("world_blueprint"))))
+    characters = _character_list(patch.get("characters"))
+    relationships = [deepcopy(dict(item)) for item in patch.get("relationships", [])]
+    foreshadowing = [deepcopy(dict(item)) for item in patch.get("foreshadowing", [])]
+    continuity = deepcopy(dict(_mapping(patch.get("continuity"))))
+
+    project.update(
+        {
+            "story_core": story_core,
+            "master_outline": deepcopy(master_outline),
+            "world_blueprint": world_blueprint,
+            "character_profiles": deepcopy(characters),
+            "relationship_graph": deepcopy(relationships),
+            "current_chapter": continuity["current_chapter"],
+            "current_focus": str(continuity.get("current_focus") or ""),
+        }
+    )
+    outline = old_outline
+    for key in ("schema_version", "overall", "arcs", "chapters"):
+        outline[key] = deepcopy(master_outline[key])
+    state.update(continuity)
+    state.update(
+        {
+            "characters": deepcopy(characters),
+            "relationship_graph": deepcopy(relationships),
+            "foreshadowing": deepcopy(foreshadowing),
+            "current_chapter": continuity["current_chapter"],
+            "current_focus": str(continuity.get("current_focus") or ""),
+        }
+    )
+    return {
+        "project.json": project,
+        "outline.json": outline,
+        "state.json": state,
+    }
+
+
+def _create_backfill_backup(root: Path) -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    backup = _safe_fixed_path(root, ".story-system", "backfill-backups", stamp)
+    backup.mkdir(parents=True, exist_ok=False)
+    for filename in _METADATA_FILENAMES:
+        source = _safe_fixed_path(root, ".webnovel", filename)
+        target = backup / filename
+        shutil.copy2(source, target)
+    return backup
+
+
+def apply_backfill_preview(
+    project_root: Path,
+    preview: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Apply a checked preview as one rollback-safe metadata transaction."""
+
+    root, documents = _project_documents(project_root)
+    checked = validate_backfill_preview(root, preview)
+    verify_backfill_hashes(root, checked)
+    backup = _create_backfill_backup(root)
+    mapped = _mapped_metadata(documents, checked["patch"])
+    targets = {
+        _safe_fixed_path(root, ".webnovel", filename): payload
+        for filename, payload in mapped.items()
+    }
+    snapshot_store = SnapshotStore()
+    snapshot_store.replace_json_transaction(targets)
+    try:
+        verify_backfill_hashes(root, checked)
+    except Exception:
+        try:
+            snapshot_store.replace_json_transaction(
+                {
+                    _safe_fixed_path(root, ".webnovel", filename): deepcopy(dict(payload))
+                    for filename, payload in documents.items()
+                }
+            )
+        except Exception as rollback_exc:
+            raise RuntimeError("backfill_post_apply_rollback_failed") from rollback_exc
+        raise
+    return {
+        "status": "applied",
+        "project_id": checked["project_id"],
+        "current_chapter": checked["patch"]["continuity"]["current_chapter"],
+        "backup_path": str(backup),
+        "chapter_hashes": checked["chapter_hashes"],
+    }
+
+
 __all__ = [
     "ChapterEvidence",
     "ProjectBackfillPatch",
     "ProjectEvidenceIndex",
     "build_backfill_patch",
+    "apply_backfill_preview",
+    "backfill_preview_path",
+    "build_backfill_preview",
     "build_evidence_index",
     "chapter_hashes",
+    "protected_chapter_hashes",
+    "validate_backfill_preview",
+    "verify_backfill_hashes",
 ]
