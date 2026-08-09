@@ -19,6 +19,7 @@ from packages.story_core.project_backfill import (
     build_backfill_preview,
     protected_chapter_hashes,
     validate_backfill_preview,
+    validate_backfill_project,
     verify_backfill_hashes,
 )
 
@@ -66,6 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = args.project_root.resolve()
     try:
+        validate_backfill_project(root)
         preview_path = backfill_preview_path(root)
         if args.hash_only:
             if args.payload is not None:

@@ -7,10 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
-import os
 from pathlib import Path
 import shutil
-import tempfile
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -1024,6 +1022,16 @@ def _project_documents(project_root: Path) -> tuple[Path, dict[str, dict[str, An
     return root, documents
 
 
+def validate_backfill_project(project_root: Path) -> ProjectEvidenceIndex:
+    """Require complete metadata and at least one confirmed chapter."""
+
+    root, _ = _project_documents(project_root)
+    index = build_evidence_index(root)
+    if _chapter_limit(index) < 1:
+        raise ValueError("empty_project_evidence")
+    return index
+
+
 def _project_identity(project: Mapping[str, Any], root: Path) -> str:
     project_id = str(project.get("project_id") or project.get("id") or "").strip()
     return project_id or f"file:{root.name}"
@@ -1049,6 +1057,7 @@ def protected_chapter_hashes(project_root: Path) -> dict[str, Any]:
         _safe_fixed_path(root, ".story-system", "chapters"),
     )
     files: dict[str, str] = {}
+    sizes: dict[str, int] = {}
     total = sha256()
     for directory in protected_directories:
         if not directory.is_dir():
@@ -1061,6 +1070,7 @@ def protected_chapter_hashes(project_root: Path) -> dict[str, Any]:
             content = path.read_bytes()
             digest = sha256(content).hexdigest()
             files[relative] = digest
+            sizes[relative] = len(content)
             relative_bytes = relative.encode("utf-8")
             total.update(len(relative_bytes).to_bytes(4, "big"))
             total.update(relative_bytes)
@@ -1069,9 +1079,10 @@ def protected_chapter_hashes(project_root: Path) -> dict[str, Any]:
     return {
         "chapter_count": len(FileProjectStore(root).chapter_numbers()),
         "file_count": len(files),
-        "non_empty_hash_count": sum(bool(value) for value in files.values()),
+        "non_empty_hash_count": sum(size > 0 for size in sizes.values()),
         "total_hash": total.hexdigest(),
         "files": files,
+        "sizes": sizes,
     }
 
 
@@ -1378,20 +1389,26 @@ def _identities_match(existing: Any, incoming: Any) -> bool:
 
 def _merge_mapping_list(base: list[Any], patch: list[Any], path: tuple[str, ...]) -> list[Any]:
     combined = [*base, *patch]
-    if any(not _has_identity_hint(item) for item in combined):
+    if not all(isinstance(item, Mapping) for item in combined):
         return deepcopy(patch)
     merged = deepcopy(base)
     for incoming in patch:
-        match_index = next(
-            (
-                index
-                for index, existing in enumerate(merged)
-                if _identities_match(existing, incoming)
-            ),
-            None,
+        match_index = (
+            next(
+                (
+                    index
+                    for index, existing in enumerate(merged)
+                    if _has_identity_hint(existing)
+                    and _identities_match(existing, incoming)
+                ),
+                None,
+            )
+            if _has_identity_hint(incoming)
+            else None
         )
         if match_index is None:
-            merged.append(deepcopy(incoming))
+            if incoming not in merged:
+                merged.append(deepcopy(incoming))
         else:
             merged[match_index] = _deep_merge(
                 merged[match_index], incoming, path=path + (str(match_index),)
@@ -1449,28 +1466,29 @@ def _mapped_metadata(
         path=("relationship_graph",),
     )
     project["current_chapter"] = continuity["current_chapter"]
-    project["current_focus"] = str(continuity.get("current_focus") or "")
+    if "current_focus" in continuity:
+        project["current_focus"] = str(continuity.get("current_focus") or "")
     outline = _deep_merge(old_outline, master_outline, path=("outline",))
     state = _deep_merge(state, continuity, path=("state",))
-    state.update(
-        {
-            "characters": _deep_merge(
-                state.get("characters"), characters, path=("characters",)
-            ),
-            "relationship_graph": _deep_merge(
-                state.get("relationship_graph"),
-                relationships,
-                path=("relationship_graph",),
-            ),
-            "foreshadowing": _deep_merge(
-                state.get("foreshadowing"),
-                foreshadowing,
-                path=("foreshadowing",),
-            ),
-            "current_chapter": continuity["current_chapter"],
-            "current_focus": str(continuity.get("current_focus") or ""),
-        }
-    )
+    state_updates = {
+        "characters": _deep_merge(
+            state.get("characters"), characters, path=("characters",)
+        ),
+        "relationship_graph": _deep_merge(
+            state.get("relationship_graph"),
+            relationships,
+            path=("relationship_graph",),
+        ),
+        "foreshadowing": _deep_merge(
+            state.get("foreshadowing"),
+            foreshadowing,
+            path=("foreshadowing",),
+        ),
+        "current_chapter": continuity["current_chapter"],
+    }
+    if "current_focus" in continuity:
+        state_updates["current_focus"] = str(continuity.get("current_focus") or "")
+    state.update(state_updates)
     return {
         "project.json": project,
         "outline.json": outline,
@@ -1490,46 +1508,14 @@ def _create_backfill_backup(root: Path) -> Path:
 
 
 def _replace_bytes_transaction(payloads: Mapping[Path, bytes]) -> None:
-    """Replace several files from raw bytes and restore prior bytes on failure."""
+    """Atomically restore several complete files from raw backup bytes."""
 
-    targets = {Path(path): content for path, content in payloads.items()}
-    snapshots = {
-        path: path.read_bytes() if path.exists() else None
-        for path in targets
-    }
-    prepared: dict[Path, Path] = {}
     try:
-        for path, content in targets.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fd, name = tempfile.mkstemp(
-                dir=str(path.parent),
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-            )
-            temporary = Path(name)
-            prepared[path] = temporary
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-        for path in targets:
-            os.replace(prepared[path], path)
-    except Exception as exc:
-        rollback_errors: list[Exception] = []
-        for path, content in snapshots.items():
-            try:
-                if content is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    path.write_bytes(content)
-            except Exception as rollback_exc:  # pragma: no cover
-                rollback_errors.append(rollback_exc)
-        if rollback_errors:
-            raise RuntimeError("byte_transaction_rollback_failed") from exc
-        raise
-    finally:
-        for temporary in prepared.values():
-            temporary.unlink(missing_ok=True)
+        SnapshotStore().restore_bytes_atomic(
+            {Path(path): content for path, content in payloads.items()}
+        )
+    except RuntimeError as exc:
+        raise RuntimeError("byte_transaction_rollback_failed") from exc
 
 
 def apply_backfill_preview(
@@ -1590,5 +1576,6 @@ __all__ = [
     "chapter_hashes",
     "protected_chapter_hashes",
     "validate_backfill_preview",
+    "validate_backfill_project",
     "verify_backfill_hashes",
 ]

@@ -58,6 +58,47 @@ class SnapshotStore:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
+    @staticmethod
+    def _write_bytes_temporary(target: Path, content: bytes) -> Path:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd: int | None = None
+        temporary: Path | None = None
+        try:
+            fd, temporary = SnapshotStore._temporary_path(target)
+            with os.fdopen(fd, "wb") as handle:
+                fd = None
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            return temporary
+        except Exception:
+            if fd is not None:
+                os.close(fd)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            raise
+
+    def restore_bytes_atomic(self, snapshots: dict[Path, bytes | None]) -> None:
+        """Restore complete files via fsynced same-directory replacements."""
+
+        prepared: dict[Path, Path] = {}
+        try:
+            for raw_path, content in snapshots.items():
+                path = Path(raw_path)
+                if content is not None:
+                    prepared[path] = self._write_bytes_temporary(path, content)
+            for raw_path, content in snapshots.items():
+                path = Path(raw_path)
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    self._replace_file(prepared[path], path)
+        except Exception as exc:
+            raise RuntimeError("rollback_failed") from exc
+        finally:
+            for temporary in prepared.values():
+                temporary.unlink(missing_ok=True)
+
     def replace_json_transaction(self, payloads: dict[Path, Any]) -> None:
         targets = [(Path(path), payload) for path, payload in payloads.items()]
         snapshots = {path: path.read_bytes() if path.exists() else None for path, _ in targets}
@@ -74,18 +115,10 @@ class SnapshotStore:
             for path, _ in targets:
                 self._replace_file(prepared[path], path)
         except Exception as exc:
-            rollback_errors: list[Exception] = []
-            for path, content in snapshots.items():
-                try:
-                    if content is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(content)
-                except Exception as rollback_exc:  # pragma: no cover
-                    rollback_errors.append(rollback_exc)
-            if rollback_errors:
-                raise RuntimeError("json_transaction_rollback_failed") from exc
+            try:
+                self.restore_bytes_atomic(snapshots)
+            except RuntimeError as rollback_exc:
+                raise RuntimeError("json_transaction_rollback_failed") from rollback_exc
             raise
         finally:
             for temporary in prepared.values():

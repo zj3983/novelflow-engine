@@ -154,6 +154,25 @@ def test_protected_hashes_cover_markdown_and_chapter_json_raw_bytes(tmp_path: Pa
     assert len(digest["total_hash"]) == 64
 
 
+def test_protected_hashes_count_non_empty_source_files_and_record_sizes(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path, chapter_count=1)
+    markdown = root / "chapters" / "0001-chapter-1.md"
+    snapshot = root / ".story-system" / "chapters" / "0001.json"
+    markdown.write_bytes(b"")
+    snapshot.write_bytes(b"")
+
+    digest = protected_chapter_hashes(root)
+
+    assert digest["file_count"] == 2
+    assert digest["non_empty_hash_count"] == 0
+    assert digest["sizes"] == {
+        ".story-system/chapters/0001.json": 0,
+        "chapters/0001-chapter-1.md": 0,
+    }
+
+
 def test_payload_builds_preview_only_and_preserves_all_chapter_bytes(tmp_path: Path) -> None:
     root = _project(tmp_path)
     payload_path = tmp_path / "generated.json"
@@ -314,6 +333,79 @@ def test_apply_rolls_back_all_metadata_when_second_replace_fails(
         apply_backfill_preview(root, preview)
 
     assert {path: path.read_bytes() for path in paths} == before
+
+
+def test_apply_reports_rollback_failed_when_atomic_restore_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    paths = [root / ".webnovel" / name for name in ("project.json", "outline.json", "state.json")]
+    real_replace = SnapshotStore._replace_file
+    replace_calls = 0
+
+    def fail_third_replace(source: str | Path, target: str | Path) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 3:
+            raise OSError("forward replace failed")
+        real_replace(source, target)
+
+    def fail_restore_write(target: Path, content: bytes) -> Path:
+        raise OSError("rollback write failed")
+
+    monkeypatch.setattr(SnapshotStore, "_replace_file", staticmethod(fail_third_replace))
+    monkeypatch.setattr(
+        SnapshotStore,
+        "_write_bytes_temporary",
+        staticmethod(fail_restore_write),
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="rollback_failed"):
+        apply_backfill_preview(root, preview)
+
+    for path in paths:
+        assert path.stat().st_size > 0
+        json.loads(path.read_text(encoding="utf-8-sig"))
+    backups = list((root / ".story-system" / "backfill-backups").iterdir())
+    assert len(backups) == 1
+    assert all((backups[0] / path.name).is_file() for path in paths)
+    assert list((root / ".webnovel").glob(".*.tmp")) == []
+
+
+def test_apply_reports_rollback_failed_when_atomic_restore_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    paths = [root / ".webnovel" / name for name in ("project.json", "outline.json", "state.json")]
+    real_replace = SnapshotStore._replace_file
+    replace_calls = 0
+
+    def fail_forward_and_rollback_replace(source: str | Path, target: str | Path) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls in {3, 5}:
+            raise OSError(f"replace failed at call {replace_calls}")
+        real_replace(source, target)
+
+    monkeypatch.setattr(
+        SnapshotStore,
+        "_replace_file",
+        staticmethod(fail_forward_and_rollback_replace),
+    )
+
+    with pytest.raises(RuntimeError, match="rollback_failed"):
+        apply_backfill_preview(root, preview)
+
+    for path in paths:
+        assert path.stat().st_size > 0
+        json.loads(path.read_text(encoding="utf-8-sig"))
+    backups = list((root / ".story-system" / "backfill-backups").iterdir())
+    assert len(backups) == 1
+    assert all((backups[0] / path.name).is_file() for path in paths)
+    assert list((root / ".webnovel").glob(".*.tmp")) == []
 
 
 def test_post_apply_hash_change_rolls_back_metadata(
@@ -571,6 +663,33 @@ def test_cli_reconfigures_windows_console_streams_for_utf8(
     assert cli.main([str(root), "--hash-only"]) == 0
     assert stdout.configuration == ("utf-8", "replace")
     assert stderr.configuration == ("utf-8", "replace")
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["hash-only", "payload", "check-preview", "verify-hashes", "apply"],
+)
+def test_cli_all_entrypoints_reject_missing_project_before_other_inputs(
+    tmp_path: Path, capsys, mode: str
+) -> None:
+    root = tmp_path / "missing-project"
+    argv = [str(root), f"--{mode}"]
+    if mode == "payload":
+        argv.append(str(tmp_path / "missing-payload.json"))
+
+    assert main(argv) == 2
+
+    assert "project_root_not_found" in capsys.readouterr().err
+
+
+def test_cli_hash_only_rejects_project_without_chapter_evidence(
+    tmp_path: Path, capsys
+) -> None:
+    root = _project(tmp_path, chapter_count=0)
+
+    assert main([str(root), "--hash-only"]) == 2
+
+    assert "empty_project_evidence" in capsys.readouterr().err
 
 
 def test_preview_rejects_unknown_manuscript_with_four_thousand_prose_chars(
@@ -947,3 +1066,58 @@ def test_apply_uses_common_scalar_identity_key_as_generic_fallback(tmp_path: Pat
         "label": "new",
         "unknown": "keep",
     }
+
+
+def test_apply_merges_mixed_mapping_lists_without_dropping_anonymous_items(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["world_blueprint"] = {
+        "locations": [
+            {"code": "shrine", "details": {"legacy": True}},
+            {"description": "legacy anonymous"},
+        ]
+    }
+    _write_json(project_path, project)
+    payload = _payload()
+    payload["world_blueprint"] = {
+        "locations": [
+            {"code": "shrine", "details": {"status": "new"}},
+            {"description": "legacy anonymous"},
+            {"description": "new anonymous"},
+        ]
+    }
+    preview = build_backfill_preview(root, payload)
+
+    apply_backfill_preview(root, preview)
+
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    locations = project["world_blueprint"]["locations"]
+    shrine = next(item for item in locations if item.get("code") == "shrine")
+    assert shrine["details"] == {"legacy": True, "status": "new"}
+    assert locations.count({"description": "legacy anonymous"}) == 1
+    assert {"description": "new anonymous"} in locations
+
+
+def test_apply_preserves_current_focus_when_patch_omits_it(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["current_focus"] = "keep project focus"
+    _write_json(project_path, project)
+    state_path = root / ".webnovel" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["current_focus"] = "keep state focus"
+    _write_json(state_path, state)
+    payload = _payload()
+    del payload["continuity"]["current_focus"]  # type: ignore[index]
+    preview = build_backfill_preview(root, payload)
+
+    apply_backfill_preview(root, preview)
+
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert project["current_focus"] == "keep project focus"
+    assert state["current_focus"] == "keep state focus"
