@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import shutil
+import tempfile
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -399,6 +401,12 @@ _CHARACTER_TYPES = frozenset(
 _CHAPTER_FIELDS = frozenset(
     {
         "chapter_number",
+        "start_chapter",
+        "end_chapter",
+        "from_chapter",
+        "to_chapter",
+        "chapter_start",
+        "chapter_end",
         "first_chapter",
         "first_appearance_chapter",
         "last_touched_chapter",
@@ -890,7 +898,19 @@ def build_backfill_patch(
 _BACKFILL_PREVIEW_SCHEMA = "longform-backfill-preview/v1"
 _PREVIEW_FILENAME = "backfill-preview.json"
 _METADATA_FILENAMES = ("project.json", "outline.json", "state.json")
-_PREVIEW_PROSE_FIELDS = frozenset({"body", "body_text", "chapter_body", "full_text"})
+_PREVIEW_PROSE_FIELDS = frozenset(
+    {
+        "body",
+        "body_text",
+        "chapter_body",
+        "chapter_text",
+        "content",
+        "full_text",
+        "prose",
+        "draft",
+    }
+)
+_PREVIEW_LONG_TEXT_LIMIT = 8000
 
 
 def _read_json_document(path: Path) -> dict[str, Any]:
@@ -989,9 +1009,9 @@ def build_backfill_preview(
     project = documents["project.json"]
     genre = _project_genre(project)
     patch = build_backfill_patch(build_evidence_index(root), generated, genre)
-    prose_field = _nested_key(patch.to_dict(), _PREVIEW_PROSE_FIELDS)
-    if prose_field:
-        raise ValueError(f"preview_contains_prose:{prose_field}")
+    prose_error = _preview_prose_error(patch.to_dict())
+    if prose_error:
+        raise ValueError(prose_error)
     preview = {
         "schema_version": _BACKFILL_PREVIEW_SCHEMA,
         "project_root": str(root),
@@ -1036,6 +1056,32 @@ def _nested_key(value: Any, forbidden: frozenset[str]) -> str | None:
             nested = _nested_key(item, forbidden)
             if nested:
                 return nested
+    return None
+
+
+def _long_text_key(value: Any, *, key: str = "value") -> str | None:
+    if isinstance(value, Mapping):
+        for child_key, item in value.items():
+            found = _long_text_key(item, key=str(child_key))
+            if found:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            found = _long_text_key(item, key=key)
+            if found:
+                return found
+    elif isinstance(value, str) and len(value) > _PREVIEW_LONG_TEXT_LIMIT:
+        return key
+    return None
+
+
+def _preview_prose_error(value: Any) -> str | None:
+    prose_field = _nested_key(value, _PREVIEW_PROSE_FIELDS)
+    if prose_field:
+        return f"preview_contains_prose:{prose_field}"
+    long_text_field = _long_text_key(value)
+    if long_text_field:
+        return f"preview_contains_long_text:{long_text_field}"
     return None
 
 
@@ -1084,9 +1130,9 @@ def validate_backfill_preview(
     for section in ("relationships", "foreshadowing"):
         if not isinstance(patch.get(section), list):
             raise ValueError(f"invalid_preview_section:{section}")
-    prose_field = _nested_key(patch, _PREVIEW_PROSE_FIELDS)
-    if prose_field:
-        raise ValueError(f"preview_contains_prose:{prose_field}")
+    prose_error = _preview_prose_error(patch)
+    if prose_error:
+        raise ValueError(prose_error)
     maximum = max(FileProjectStore(root).chapter_numbers(), default=0)
     if maximum < 1:
         raise ValueError("empty_project_evidence")
@@ -1117,6 +1163,21 @@ def _character_list(value: Any) -> list[dict[str, Any]]:
     return [deepcopy(dict(card)) for card in value if isinstance(card, Mapping)]
 
 
+def _deep_merge(base: Any, patch: Any) -> Any:
+    """Recursively merge mappings; every non-mapping value replaces the base."""
+
+    if isinstance(base, Mapping) and isinstance(patch, Mapping):
+        merged = deepcopy(dict(base))
+        for key, value in patch.items():
+            merged[str(key)] = (
+                _deep_merge(merged[str(key)], value)
+                if str(key) in merged
+                else deepcopy(value)
+            )
+        return merged
+    return deepcopy(patch)
+
+
 def _mapped_metadata(
     documents: Mapping[str, Mapping[str, Any]],
     patch: Mapping[str, Any],
@@ -1132,21 +1193,19 @@ def _mapped_metadata(
     foreshadowing = [deepcopy(dict(item)) for item in patch.get("foreshadowing", [])]
     continuity = deepcopy(dict(_mapping(patch.get("continuity"))))
 
-    project.update(
-        {
-            "story_core": story_core,
-            "master_outline": deepcopy(master_outline),
-            "world_blueprint": world_blueprint,
-            "character_profiles": deepcopy(characters),
-            "relationship_graph": deepcopy(relationships),
-            "current_chapter": continuity["current_chapter"],
-            "current_focus": str(continuity.get("current_focus") or ""),
-        }
+    project["story_core"] = _deep_merge(project.get("story_core"), story_core)
+    project["master_outline"] = _deep_merge(
+        project.get("master_outline"), master_outline
     )
-    outline = old_outline
-    for key in ("schema_version", "overall", "arcs", "chapters"):
-        outline[key] = deepcopy(master_outline[key])
-    state.update(continuity)
+    project["world_blueprint"] = _deep_merge(
+        project.get("world_blueprint"), world_blueprint
+    )
+    project["character_profiles"] = deepcopy(characters)
+    project["relationship_graph"] = deepcopy(relationships)
+    project["current_chapter"] = continuity["current_chapter"]
+    project["current_focus"] = str(continuity.get("current_focus") or "")
+    outline = _deep_merge(old_outline, master_outline)
+    state = _deep_merge(state, continuity)
     state.update(
         {
             "characters": deepcopy(characters),
@@ -1174,6 +1233,49 @@ def _create_backfill_backup(root: Path) -> Path:
     return backup
 
 
+def _replace_bytes_transaction(payloads: Mapping[Path, bytes]) -> None:
+    """Replace several files from raw bytes and restore prior bytes on failure."""
+
+    targets = {Path(path): content for path, content in payloads.items()}
+    snapshots = {
+        path: path.read_bytes() if path.exists() else None
+        for path in targets
+    }
+    prepared: dict[Path, Path] = {}
+    try:
+        for path, content in targets.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, name = tempfile.mkstemp(
+                dir=str(path.parent),
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+            )
+            temporary = Path(name)
+            prepared[path] = temporary
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        for path in targets:
+            os.replace(prepared[path], path)
+    except Exception as exc:
+        rollback_errors: list[Exception] = []
+        for path, content in snapshots.items():
+            try:
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(content)
+            except Exception as rollback_exc:  # pragma: no cover
+                rollback_errors.append(rollback_exc)
+        if rollback_errors:
+            raise RuntimeError("byte_transaction_rollback_failed") from exc
+        raise
+    finally:
+        for temporary in prepared.values():
+            temporary.unlink(missing_ok=True)
+
+
 def apply_backfill_preview(
     project_root: Path,
     preview: Mapping[str, Any],
@@ -1183,8 +1285,20 @@ def apply_backfill_preview(
     root, documents = _project_documents(project_root)
     checked = validate_backfill_preview(root, preview)
     verify_backfill_hashes(root, checked)
-    backup = _create_backfill_backup(root)
     mapped = _mapped_metadata(documents, checked["patch"])
+    if all(documents[filename] == mapped[filename] for filename in _METADATA_FILENAMES):
+        return {
+            "status": "already_applied",
+            "project_id": checked["project_id"],
+            "current_chapter": checked["patch"]["continuity"]["current_chapter"],
+            "backup_path": None,
+            "chapter_hashes": checked["chapter_hashes"],
+        }
+    backup = _create_backfill_backup(root)
+    backup_bytes = {
+        _safe_fixed_path(root, ".webnovel", filename): (backup / filename).read_bytes()
+        for filename in _METADATA_FILENAMES
+    }
     targets = {
         _safe_fixed_path(root, ".webnovel", filename): payload
         for filename, payload in mapped.items()
@@ -1195,12 +1309,7 @@ def apply_backfill_preview(
         verify_backfill_hashes(root, checked)
     except Exception:
         try:
-            snapshot_store.replace_json_transaction(
-                {
-                    _safe_fixed_path(root, ".webnovel", filename): deepcopy(dict(payload))
-                    for filename, payload in documents.items()
-                }
-            )
+            _replace_bytes_transaction(backup_bytes)
         except Exception as rollback_exc:
             raise RuntimeError("backfill_post_apply_rollback_failed") from rollback_exc
         raise

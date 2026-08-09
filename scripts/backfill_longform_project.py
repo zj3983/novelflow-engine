@@ -51,7 +51,18 @@ def _print(payload: object) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def _configure_console_encoding() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                continue
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_console_encoding()
     args = _parser().parse_args(argv)
     root = args.project_root.resolve()
     try:

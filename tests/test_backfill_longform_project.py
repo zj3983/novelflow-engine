@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ from packages.story_core.project_backfill import (
     validate_backfill_preview,
     verify_backfill_hashes,
 )
+from scripts import backfill_longform_project as cli
 from scripts.backfill_longform_project import main
 
 
@@ -388,3 +390,180 @@ def test_apply_rejects_backup_directory_symlink_outside_project(tmp_path: Path) 
         apply_backfill_preview(root, preview)
 
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
+        ("continuity", "start_chapter"),
+        ("continuity", "end_chapter"),
+        ("continuity", "from_chapter"),
+        ("continuity", "to_chapter"),
+        ("continuity", "chapter_start"),
+        ("continuity", "chapter_end"),
+    ],
+)
+def test_preview_rejects_common_chapter_fields_beyond_current_chapter(
+    tmp_path: Path, section: str, key: str
+) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    preview["patch"][section]["nested"] = {key: 3}
+
+    with pytest.raises(ValueError, match="preview_chapter_out_of_range"):
+        validate_backfill_preview(root, preview)
+
+
+def test_preview_rejects_outline_arc_beyond_current_chapter(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    preview["patch"]["master_outline"]["arcs"][0]["end_chapter"] = 3
+
+    with pytest.raises(ValueError, match="preview_chapter_out_of_range"):
+        validate_backfill_preview(root, preview)
+
+
+@pytest.mark.parametrize("key", ["body", "content", "chapter_text", "full_text", "prose", "draft"])
+def test_preview_rejects_semantic_prose_keys(tmp_path: Path, key: str) -> None:
+    root = _project(tmp_path)
+    payload = _payload()
+    payload["continuity"][key] = "chapter prose"  # type: ignore[index]
+
+    with pytest.raises(ValueError, match=f"preview_contains_prose:{key}"):
+        build_backfill_preview(root, payload)
+
+
+def test_preview_rejects_long_prose_like_string_but_keeps_normal_outline_notes(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    payload = _payload()
+    payload["continuity"]["editor_note"] = "A" * 2500  # type: ignore[index]
+    build_backfill_preview(root, payload)
+
+    payload["continuity"]["raw_material"] = "B" * 12000  # type: ignore[index]
+    with pytest.raises(ValueError, match="preview_contains_long_text:raw_material"):
+        build_backfill_preview(root, payload)
+
+
+def test_apply_deep_merges_nested_unknown_fields_and_replaces_lists(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project.update(
+        {
+            "story_core": {"legacy_nested": {"keep": 1}},
+            "master_outline": {"legacy_nested": {"keep": 2}},
+            "world_blueprint": {
+                "nested": {"keep": "project", "replace": "old"},
+                "rules": ["old rule"],
+            },
+        }
+    )
+    _write_json(project_path, project)
+    outline_path = root / ".webnovel" / "outline.json"
+    outline = json.loads(outline_path.read_text(encoding="utf-8"))
+    outline["overall"]["legacy_nested"] = {"keep": "outline"}
+    _write_json(outline_path, outline)
+    state_path = root / ".webnovel" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["continuity_meta"] = {"keep": "state", "replace": "old"}
+    state["timeline"] = [{"chapter_number": 1, "summary": "old"}]
+    _write_json(state_path, state)
+    payload = _payload()
+    payload["world_blueprint"] = {
+        "nested": {"replace": "new"},
+        "rules": ["new rule"],
+    }
+    payload["continuity"]["continuity_meta"] = {"replace": "new"}  # type: ignore[index]
+    preview = build_backfill_preview(root, payload)
+
+    apply_backfill_preview(root, preview)
+
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    outline = json.loads(outline_path.read_text(encoding="utf-8"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert project["story_core"]["legacy_nested"] == {"keep": 1}
+    assert project["master_outline"]["legacy_nested"] == {"keep": 2}
+    assert project["world_blueprint"]["nested"] == {"keep": "project", "replace": "new"}
+    assert project["world_blueprint"]["rules"] == ["new rule"]
+    assert outline["overall"]["legacy_nested"] == {"keep": "outline"}
+    assert state["continuity_meta"] == {"keep": "state", "replace": "new"}
+    assert state["timeline"] == [{"chapter_number": 2, "summary": "at shrine"}]
+
+
+def test_post_apply_rollback_restores_original_metadata_bytes_exactly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    paths = [root / ".webnovel" / name for name in ("project.json", "outline.json", "state.json")]
+    for index, path in enumerate(paths):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = "\ufeff" + json.dumps(payload, ensure_ascii=False, indent=index + 1) + "\r\n"
+        path.write_bytes(raw.replace("\n", "\r\n").encode("utf-8"))
+    original = {path: path.read_bytes() for path in paths}
+    preview = build_backfill_preview(root, _payload())
+    from packages.story_core import project_backfill
+
+    real_hashes = project_backfill.protected_chapter_hashes
+    calls = 0
+
+    def change_after_commit(project_root: Path) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        result = real_hashes(project_root)
+        if calls >= 3:
+            result["total_hash"] = "f" * 64
+        return result
+
+    monkeypatch.setattr(project_backfill, "protected_chapter_hashes", change_after_commit)
+
+    with pytest.raises(ValueError, match="chapter_hash_mismatch"):
+        apply_backfill_preview(root, preview)
+
+    assert {path: path.read_bytes() for path in paths} == original
+
+
+def test_repeated_apply_returns_already_applied_without_new_backup(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    preview = build_backfill_preview(root, _payload())
+    first = apply_backfill_preview(root, preview)
+    backup_root = root / ".story-system" / "backfill-backups"
+    backups_before = sorted(backup_root.iterdir())
+    metadata_before = {
+        name: (root / ".webnovel" / name).read_bytes()
+        for name in ("project.json", "outline.json", "state.json")
+    }
+
+    second = apply_backfill_preview(root, preview)
+
+    assert first["status"] == "applied"
+    assert second["status"] == "already_applied"
+    assert sorted(backup_root.iterdir()) == backups_before
+    assert {
+        name: (root / ".webnovel" / name).read_bytes()
+        for name in ("project.json", "outline.json", "state.json")
+    } == metadata_before
+
+
+def test_cli_reconfigures_windows_console_streams_for_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+
+    class RecordingStream(io.StringIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.configuration: tuple[str, str] | None = None
+
+        def reconfigure(self, *, encoding: str, errors: str) -> None:
+            self.configuration = (encoding, errors)
+
+    stdout = RecordingStream()
+    stderr = RecordingStream()
+    monkeypatch.setattr(cli.sys, "stdout", stdout)
+    monkeypatch.setattr(cli.sys, "stderr", stderr)
+
+    assert cli.main([str(root), "--hash-only"]) == 0
+    assert stdout.configuration == ("utf-8", "replace")
+    assert stderr.configuration == ("utf-8", "replace")
