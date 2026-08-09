@@ -342,6 +342,7 @@ _GAME_ONLY_FIELDS = frozenset(
     {
         "game_panel",
         "game_state",
+        "real_state",
         "game_id",
         "player_state",
         "monster_panel",
@@ -415,6 +416,10 @@ _CHAPTER_FIELDS = frozenset(
 _CHARACTER_EVIDENCE_METADATA_FIELDS = frozenset(
     {"source", "name", "names", "fact", "change", "summary", "chapter_number"}
 )
+_LEGACY_CHARACTER_ZERO_CHAPTER_FIELDS = (
+    "last_proposed_chapter",
+    "last_approved_chapter",
+)
 _CHAPTER_COUNTER_FIELDS = frozenset(
     {
         "chapter_count",
@@ -425,6 +430,9 @@ _CHAPTER_COUNTER_FIELDS = frozenset(
         "total_chapter_count",
         "planned_chapter_count",
     }
+)
+_OUTLINE_PLANNING_HORIZON_FIELDS = frozenset(
+    {"core_ending_chapter", "extension_ceiling_chapter"}
 )
 _CHAPTER_NON_REFERENCE_MARKERS = (
     "word",
@@ -502,6 +510,7 @@ def _validate_chapter_fields(
     maximum: int,
     error: str,
     allow_unknown_zero: bool = False,
+    _outline_scope: bool = False,
 ) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
@@ -509,6 +518,11 @@ def _validate_chapter_fields(
             excluded_field = (
                 _is_chapter_counter_or_length_field(normalized_key)
                 or normalized_key in _PREVIEW_PROSE_FIELDS
+                or normalized_key == "chapter_title"
+                or (
+                    _outline_scope
+                    and normalized_key in _OUTLINE_PLANNING_HORIZON_FIELDS
+                )
             )
             collection_value = isinstance(item, (Mapping, list, tuple))
             chapter_field = not excluded_field and (
@@ -542,6 +556,7 @@ def _validate_chapter_fields(
                 maximum=maximum,
                 error=error,
                 allow_unknown_zero=allow_unknown_zero,
+                _outline_scope=_outline_scope or normalized_key == "master_outline",
             )
     elif isinstance(value, (list, tuple)):
         for item in value:
@@ -550,6 +565,7 @@ def _validate_chapter_fields(
                 maximum=maximum,
                 error=error,
                 allow_unknown_zero=allow_unknown_zero,
+                _outline_scope=_outline_scope,
             )
 
 
@@ -663,6 +679,8 @@ def _normalize_characters(
     value: Any,
     index: ProjectEvidenceIndex,
     maximum: int,
+    *,
+    is_game_story: bool,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     (
         evidence_names,
@@ -772,6 +790,12 @@ def _normalize_characters(
                 continue
             if value not in (None, "", [], {}):
                 card[key] = deepcopy(value)
+    cards = _strip_foreign_genre_fields(cards, is_game_story=is_game_story)
+    if not is_game_story:
+        for card in cards.values():
+            for field in _LEGACY_CHARACTER_ZERO_CHAPTER_FIELDS:
+                if card.get(field) in (0, "0"):
+                    card.pop(field)
     _validate_chapter_fields(cards, maximum=maximum, error="character_chapter_out_of_range")
     return cards, alias_to_name
 
@@ -902,7 +926,12 @@ def build_backfill_patch(
         payload["master_outline"],
         is_game_story=is_game_story,
     )
-    characters, aliases = _normalize_characters(payload["characters"], index, maximum)
+    characters, aliases = _normalize_characters(
+        payload["characters"],
+        index,
+        maximum,
+        is_game_story=is_game_story,
+    )
     relationships = _normalize_relationships(payload["relationships"], aliases, maximum)
     foreshadowing = _normalize_foreshadowing(
         payload["foreshadowing"],

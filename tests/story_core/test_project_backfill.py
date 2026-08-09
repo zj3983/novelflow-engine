@@ -9,6 +9,7 @@ import pytest
 
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.project_backfill import (
+    _validate_chapter_fields,
     ChapterEvidence,
     ProjectBackfillPatch,
     ProjectEvidenceIndex,
@@ -487,12 +488,23 @@ def test_non_game_genre_strips_game_fields_reintroduced_by_character_evidence() 
                 {
                     "name": "林修",
                     "current_state": {"injury": "右手失去知觉"},
-                    "game_panel": {"level": 99},
+                    "game_panel": {
+                        "level": 99,
+                        "updated_chapter": 0,
+                        "last_proposed_chapter": 0,
+                    },
                     "game_state": {"hp": 10},
+                    "real_state": {
+                        "recent_changes": [
+                            {"fact": "玄渊真人的声音从雾中落下，平稳得仿佛早已等候多时。"}
+                        ]
+                    },
                     "game_id": "player-1",
                     "player_state": {"online": True},
                     "monster_panel": {"rank": "boss"},
                     "inventory_slots": 20,
+                    "last_proposed_chapter": 0,
+                    "last_approved_chapter": 0,
                     "inventory": ["玄铁"],
                     "equipment": {"weapon": "断剑"},
                 },
@@ -513,14 +525,59 @@ def test_non_game_genre_strips_game_fields_reintroduced_by_character_evidence() 
     for field in (
         "game_panel",
         "game_state",
+        "real_state",
         "game_id",
         "player_state",
         "monster_panel",
         "inventory_slots",
+        "last_proposed_chapter",
+        "last_approved_chapter",
     ):
         assert field not in serialized
+    assert plain["characters"]["林修"]["current_state"] == {"injury": "右手失去知觉"}
     assert plain["characters"]["林修"]["inventory"] == ["玄铁"]
     assert plain["characters"]["林修"]["equipment"] == {"weapon": "断剑"}
+
+
+def test_continuity_chapter_title_is_not_validated_as_a_chapter_reference() -> None:
+    generated = _generated_backfill()
+    generated["continuity"]["chapter_summaries"] = [  # type: ignore[index]
+        {
+            "chapter_number": 1,
+            "chapter_title": "第1章 短路与穿越",
+            "summary": "林修穿越后先保住了杂役身份。",
+        }
+    ]
+
+    continuity = build_backfill_patch(
+        _backfill_evidence(),
+        generated,
+        "玄幻",
+    ).to_dict()["continuity"]
+
+    assert continuity["chapter_summaries"][0]["chapter_title"] == "第1章 短路与穿越"
+
+
+def test_outline_planning_horizon_may_extend_beyond_confirmed_chapters() -> None:
+    generated = _generated_backfill()
+    generated["master_outline"]["overall"] = {  # type: ignore[index]
+        "core_ending_chapter": 300,
+        "extension_ceiling_chapter": 450,
+    }
+
+    outline = build_backfill_patch(
+        _backfill_evidence(),
+        generated,
+        "玄幻",
+    ).to_dict()["master_outline"]
+
+    assert outline["overall"]["core_ending_chapter"] == 300
+    assert outline["overall"]["extension_ceiling_chapter"] == 450
+    _validate_chapter_fields(
+        {"master_outline": outline},
+        maximum=147,
+        error="preview_chapter_out_of_range",
+    )
 
 
 def test_character_aliases_merge_to_canonical_name_and_evidence_wins_recent_state() -> None:
