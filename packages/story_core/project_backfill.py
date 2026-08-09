@@ -342,7 +342,6 @@ _GAME_ONLY_FIELDS = frozenset(
     {
         "game_panel",
         "game_state",
-        "real_state",
         "game_id",
         "player_state",
         "monster_panel",
@@ -675,6 +674,38 @@ def _merge_card(existing: dict[str, Any], incoming: Mapping[str, Any]) -> dict[s
     return merged
 
 
+def _strip_verbatim_evidence_prose(value: Any, index: ProjectEvidenceIndex) -> Any:
+    normalized_bodies = tuple(
+        _normalize_fragment(chapter.body)
+        for chapter in index.chapters
+        if chapter.body
+    )
+
+    def clean(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            cleaned = {}
+            for key, child in item.items():
+                normalized_child = clean(child)
+                if normalized_child is not None:
+                    cleaned[str(key)] = normalized_child
+            return cleaned
+        if isinstance(item, (list, tuple)):
+            return [
+                normalized_child
+                for child in item
+                if (normalized_child := clean(child)) is not None
+            ]
+        if isinstance(item, str):
+            normalized = _normalize_fragment(item)
+            if len(normalized) >= _PREVIEW_BODY_FRAGMENT_MIN and any(
+                normalized in body for body in normalized_bodies
+            ):
+                return None
+        return deepcopy(item)
+
+    return clean(value)
+
+
 def _normalize_characters(
     value: Any,
     index: ProjectEvidenceIndex,
@@ -785,7 +816,8 @@ def _normalize_characters(
     for evidence_name, evidence_card in latest_cards.items():
         canonical = alias_to_name.get(evidence_name, evidence_name)
         card = cards[canonical]
-        for key, value in evidence_card.items():
+        sanitized_evidence = _strip_verbatim_evidence_prose(evidence_card, index)
+        for key, value in sanitized_evidence.items():
             if key in {"name", "aliases", "first_appearance_chapter"}:
                 continue
             if value not in (None, "", [], {}):

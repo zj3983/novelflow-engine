@@ -9,6 +9,7 @@ import pytest
 
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.project_backfill import (
+    _validate_no_body_content,
     _validate_chapter_fields,
     ChapterEvidence,
     ProjectBackfillPatch,
@@ -494,11 +495,6 @@ def test_non_game_genre_strips_game_fields_reintroduced_by_character_evidence() 
                         "last_proposed_chapter": 0,
                     },
                     "game_state": {"hp": 10},
-                    "real_state": {
-                        "recent_changes": [
-                            {"fact": "玄渊真人的声音从雾中落下，平稳得仿佛早已等候多时。"}
-                        ]
-                    },
                     "game_id": "player-1",
                     "player_state": {"online": True},
                     "monster_panel": {"rank": "boss"},
@@ -525,7 +521,6 @@ def test_non_game_genre_strips_game_fields_reintroduced_by_character_evidence() 
     for field in (
         "game_panel",
         "game_state",
-        "real_state",
         "game_id",
         "player_state",
         "monster_panel",
@@ -537,6 +532,72 @@ def test_non_game_genre_strips_game_fields_reintroduced_by_character_evidence() 
     assert plain["characters"]["林修"]["current_state"] == {"injury": "右手失去知觉"}
     assert plain["characters"]["林修"]["inventory"] == ["玄铁"]
     assert plain["characters"]["林修"]["equipment"] == {"weapon": "断剑"}
+
+
+def test_non_game_genre_preserves_real_state_from_character_evidence() -> None:
+    evidence = _backfill_evidence()
+    chapters = []
+    for chapter in evidence.chapters:
+        updates = chapter.character_updates
+        if chapter.chapter_number == 147:
+            updates = (
+                {
+                    "name": "林修",
+                    "real_state": {
+                        "occupation": "维修工",
+                        "residence": "旧城维修铺",
+                    },
+                },
+            )
+        chapters.append(replace(chapter, character_updates=updates))
+
+    plain = build_backfill_patch(
+        ProjectEvidenceIndex(
+            project_root=evidence.project_root,
+            chapters=tuple(chapters),
+        ),
+        _generated_backfill(),
+        "玄幻",
+    ).to_dict()
+
+    assert plain["characters"]["林修"]["real_state"] == {
+        "occupation": "维修工",
+        "residence": "旧城维修铺",
+    }
+
+
+def test_real_state_drops_verbatim_chapter_prose_but_keeps_structured_state() -> None:
+    evidence = _backfill_evidence()
+    quoted_prose = "玄渊真人的声音从雾中落下，平稳得仿佛早已等候多时。"
+    chapters = []
+    for chapter in evidence.chapters:
+        updates = chapter.character_updates
+        if chapter.chapter_number == 147:
+            updates = (
+                {
+                    "name": "林修",
+                    "real_state": {
+                        "occupation": "维修工",
+                        "recent_changes": [{"fact": quoted_prose}],
+                    },
+                },
+            )
+            chapter = replace(chapter, body=f"阵心震动。{quoted_prose}林修没有回头。")
+        chapters.append(replace(chapter, character_updates=updates))
+    polluted_evidence = ProjectEvidenceIndex(
+        project_root=evidence.project_root,
+        chapters=tuple(chapters),
+    )
+
+    patch = build_backfill_patch(
+        polluted_evidence,
+        _generated_backfill(),
+        "玄幻",
+    ).to_dict()
+
+    _validate_no_body_content(polluted_evidence, patch)
+    assert patch["characters"]["林修"]["real_state"]["occupation"] == "维修工"
+    assert quoted_prose not in json.dumps(patch, ensure_ascii=False)
 
 
 def test_continuity_chapter_title_is_not_validated_as_a_chapter_reference() -> None:
