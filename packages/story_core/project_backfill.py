@@ -342,6 +342,7 @@ _GAME_ONLY_FIELDS = frozenset(
     {
         "game_panel",
         "game_state",
+        "real_state",
         "game_id",
         "player_state",
         "monster_panel",

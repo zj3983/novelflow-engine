@@ -9,8 +9,8 @@ import pytest
 
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.project_backfill import (
-    _validate_no_body_content,
     _validate_chapter_fields,
+    _validate_no_body_content,
     ChapterEvidence,
     ProjectBackfillPatch,
     ProjectEvidenceIndex,
@@ -495,6 +495,11 @@ def test_non_game_genre_strips_game_fields_reintroduced_by_character_evidence() 
                         "last_proposed_chapter": 0,
                     },
                     "game_state": {"hp": 10},
+                    "real_state": {
+                        "recent_changes": [
+                            {"fact": "玄渊真人的声音从雾中落下，平稳得仿佛早已等候多时。"}
+                        ]
+                    },
                     "game_id": "player-1",
                     "player_state": {"online": True},
                     "monster_panel": {"rank": "boss"},
@@ -521,6 +526,7 @@ def test_non_game_genre_strips_game_fields_reintroduced_by_character_evidence() 
     for field in (
         "game_panel",
         "game_state",
+        "real_state",
         "game_id",
         "player_state",
         "monster_panel",
