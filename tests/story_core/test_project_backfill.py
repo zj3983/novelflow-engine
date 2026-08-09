@@ -477,6 +477,52 @@ def test_non_game_genre_recursively_strips_game_only_fields_but_keeps_equipment(
     assert '"equipment": {"weapon": "断剑"}' in serialized
 
 
+def test_non_game_genre_strips_game_fields_reintroduced_by_character_evidence() -> None:
+    evidence = _backfill_evidence()
+    chapters = []
+    for chapter in evidence.chapters:
+        updates = chapter.character_updates
+        if chapter.chapter_number == 147:
+            updates = (
+                {
+                    "name": "林修",
+                    "current_state": {"injury": "右手失去知觉"},
+                    "game_panel": {"level": 99},
+                    "game_state": {"hp": 10},
+                    "game_id": "player-1",
+                    "player_state": {"online": True},
+                    "monster_panel": {"rank": "boss"},
+                    "inventory_slots": 20,
+                    "inventory": ["玄铁"],
+                    "equipment": {"weapon": "断剑"},
+                },
+            )
+        chapters.append(replace(chapter, character_updates=updates))
+    polluted_evidence = ProjectEvidenceIndex(
+        project_root=evidence.project_root,
+        chapters=tuple(chapters),
+    )
+
+    plain = build_backfill_patch(
+        polluted_evidence,
+        _generated_backfill(),
+        "玄幻",
+    ).to_dict()
+    serialized = json.dumps(plain, ensure_ascii=False)
+
+    for field in (
+        "game_panel",
+        "game_state",
+        "game_id",
+        "player_state",
+        "monster_panel",
+        "inventory_slots",
+    ):
+        assert field not in serialized
+    assert plain["characters"]["林修"]["inventory"] == ["玄铁"]
+    assert plain["characters"]["林修"]["equipment"] == {"weapon": "断剑"}
+
+
 def test_character_aliases_merge_to_canonical_name_and_evidence_wins_recent_state() -> None:
     generated = _generated_backfill()
     generated["characters"].append(  # type: ignore[union-attr]

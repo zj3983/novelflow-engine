@@ -852,14 +852,31 @@ def build_backfill_patch(
         error="continuity_chapter_out_of_range",
     )
 
+    final_sections = _strip_foreign_genre_fields(
+        {
+            "story_core": story_core,
+            "master_outline": master_outline,
+            "world_blueprint": payload["world_blueprint"],
+            "characters": characters,
+            "relationships": relationships,
+            "foreshadowing": foreshadowing,
+            "continuity": continuity,
+        },
+        is_game_story=is_game_story,
+    )
+
     return ProjectBackfillPatch(
-        story_core=_freeze(story_core),
-        master_outline=_freeze(master_outline),
-        world_blueprint=_freeze(payload["world_blueprint"]),
-        characters=_freeze(characters),
-        relationships=tuple(_freeze(item) for item in relationships),
-        foreshadowing=tuple(_freeze(item) for item in foreshadowing),
-        continuity=_freeze(continuity),
+        story_core=_freeze(final_sections["story_core"]),
+        master_outline=_freeze(final_sections["master_outline"]),
+        world_blueprint=_freeze(final_sections["world_blueprint"]),
+        characters=_freeze(final_sections["characters"]),
+        relationships=tuple(
+            _freeze(item) for item in final_sections["relationships"]
+        ),
+        foreshadowing=tuple(
+            _freeze(item) for item in final_sections["foreshadowing"]
+        ),
+        continuity=_freeze(final_sections["continuity"]),
     )
 
 
