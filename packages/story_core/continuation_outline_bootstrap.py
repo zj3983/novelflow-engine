@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -278,9 +278,334 @@ def validate_continuation_bootstrap(project_root: str | Path) -> BootstrapReadin
     )
 
 
+# ---------------------------------------------------------------------------
+# Rolling-compatible chapter window conversion
+# ---------------------------------------------------------------------------
+
+
+def _real_cast_names(character_cards: list[dict[str, Any]]) -> set[str]:
+    """Return the set of cast names actually on disk.
+
+    Cast entries the planner hands back may include placeholders
+    or roles; the conversion only keeps names that exist as
+    concrete character cards so the rolling schema never
+    references a person the project does not know.
+    """
+
+    names: set[str] = set()
+    for card in character_cards:
+        if not isinstance(card, dict):
+            continue
+        name = str(card.get("name") or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def _coerce_non_blank_str(payload: dict[str, Any], field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"rolling_conversion_field_blank:{field}")
+    return value.strip()
+
+
+def _coerce_scenes(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_scenes = payload.get("scene_chain")
+    if not isinstance(raw_scenes, list) or len(raw_scenes) < 2:
+        raise ValueError("rolling_conversion_scenes_too_few")
+    if len(raw_scenes) > 4:
+        raise ValueError("rolling_conversion_scenes_too_many")
+    scenes: list[dict[str, Any]] = []
+    for index, scene in enumerate(raw_scenes):
+        if not isinstance(scene, dict):
+            raise ValueError(f"rolling_conversion_scene_invalid:{index}")
+        location = str(scene.get("location") or "").strip()
+        action = str(scene.get("action") or "").strip()
+        result = str(scene.get("change") or scene.get("result") or "").strip()
+        if not (location and action and result):
+            raise ValueError(
+                f"rolling_conversion_scene_field_blank:{index}"
+            )
+        scenes.append(
+            {
+                "location": location,
+                "action": action,
+                "result": result,
+            }
+        )
+    return scenes
+
+
+def _project_chapter(
+    payload: dict[str, Any],
+    *,
+    expected_chapter_number: int,
+    real_cast: set[str],
+) -> dict[str, Any]:
+    """Map one planner-stage chapter row into the rolling schema.
+
+    The conversion is deterministic: ``goal`` becomes
+    ``chapter_goal``, ``ending_hook`` becomes ``hook``, and the
+    rolling-only fields are passed through unchanged. Cast
+    entries are kept only when they match a real character card;
+    otherwise the conversion raises so the bootstrapper can fail
+    the batch before any disk write.
+    """
+
+    chapter_number = payload.get("chapter_number")
+    if (
+        not isinstance(chapter_number, int)
+        or isinstance(chapter_number, bool)
+        or chapter_number != expected_chapter_number
+    ):
+        raise ValueError(
+            f"rolling_conversion_chapter_number_mismatch:"
+            f"got={chapter_number} expected={expected_chapter_number}"
+        )
+
+    raw_cast = payload.get("cast")
+    if not isinstance(raw_cast, list) or not raw_cast:
+        raise ValueError("rolling_conversion_cast_empty")
+    cast: list[dict[str, Any]] = []
+    for entry in raw_cast:
+        if isinstance(entry, str):
+            name = entry.strip()
+            role = "supporting"
+            character_tier = ""
+        elif isinstance(entry, dict):
+            name = str(entry.get("name") or "").strip()
+            role = str(entry.get("role") or "").strip() or "supporting"
+            character_tier = str(entry.get("character_tier") or "").strip()
+        else:
+            raise ValueError("rolling_conversion_cast_entry_invalid")
+        if not name:
+            raise ValueError("rolling_conversion_cast_entry_blank")
+        if name not in real_cast:
+            raise ValueError(f"rolling_conversion_cast_unknown:{name}")
+        cast.append(
+            {
+                "name": name,
+                "role": role,
+                "character_tier": character_tier,
+            }
+        )
+
+    chapter_goal = _coerce_non_blank_str(payload, "goal")
+    core_conflict = _coerce_non_blank_str(payload, "core_conflict")
+    gain = _coerce_non_blank_str(payload, "gain")
+    cost = _coerce_non_blank_str(payload, "cost")
+    hook = _coerce_non_blank_str(payload, "ending_hook")
+    state_delta = _coerce_non_blank_str(payload, "state_delta_summary")
+    foreshadowing = payload.get("foreshadowing")
+    if not isinstance(foreshadowing, list):
+        raise ValueError("rolling_conversion_foreshadowing_invalid")
+    clean_foreshadowing = [
+        str(item).strip() for item in foreshadowing if str(item or "").strip()
+    ]
+    scenes = _coerce_scenes(payload)
+
+    return {
+        "chapter_number": chapter_number,
+        "title": str(payload.get("title") or "").strip(),
+        "chapter_goal": chapter_goal,
+        "core_conflict": core_conflict,
+        "cast": cast,
+        "scenes": scenes,
+        "gain": gain,
+        "cost": cost,
+        "foreshadowing": clean_foreshadowing,
+        "hook": hook,
+        "state_delta": state_delta,
+    }
+
+
+def rolling_batch_from_generated_window(
+    *,
+    chapters: list[dict[str, Any]],
+    character_cards: list[dict[str, Any]],
+    volume_range: tuple[int, int],
+) -> list[dict[str, Any]]:
+    """Project a planner-stage window into rolling-schema rows.
+
+    The function is pure: it never touches the disk. The caller
+    is responsible for handing the returned batch to
+    :class:`RollingOutlineStore.apply_rolling_batch`, which runs
+    the same ``validate_rolling_batch`` contract.
+
+    Plan rules enforced here:
+
+    * blank ``gain`` / ``cost`` / ``hook`` / ``state_delta``
+      raise ``ValueError`` before any row is built;
+    * fewer than 2 scenes or more than 4 raise ``ValueError``;
+    * unknown cast names raise ``ValueError``;
+    * chapter numbers must equal the expected slot in order;
+    * a chapter that fails any check fails the whole batch.
+    """
+
+    if not chapters:
+        raise ValueError("rolling_conversion_empty_batch")
+    real_cast = _real_cast_names(character_cards)
+    start, end = volume_range
+    rows: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for index, payload in enumerate(chapters):
+        expected_number = start + index
+        if expected_number > end:
+            failures.append(
+                f"rolling_conversion_volume_exceeded:expected={expected_number} end={end}"
+            )
+            continue
+        if not isinstance(payload, dict):
+            failures.append(
+                f"rolling_conversion_chapter_not_dict:index={index}"
+            )
+            continue
+        try:
+            rows.append(
+                _project_chapter(
+                    payload,
+                    expected_chapter_number=expected_number,
+                    real_cast=real_cast,
+                )
+            )
+        except ValueError as exc:
+            failures.append(str(exc))
+    if failures:
+        joined = "; ".join(failures)
+        raise ValueError(f"rolling_batch_conversion_failed:{joined}")
+    return rows
+
+
+class RollingWindowGenerator(Protocol):
+    """Narrow generator interface for legacy-approved projects.
+
+    When a project already has approved overall / arcs /
+    characters, the bootstrapper must NOT call the full planning
+    generator. It calls one of these generators with only the
+    rolling-relevant context (active arc, recent summaries,
+    character cards, world rules, open foreshadowing, requested
+    chapter numbers) so the rolling window can be filled without
+    rewriting the three-level outline.
+    """
+
+    def generate(
+        self,
+        *,
+        context: dict[str, Any],
+        chapter_numbers: list[int],
+        volume_range: tuple[int, int],
+        character_cards: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]: ...
+
+
+class LLMRollingWindowGenerator:
+    """Production rolling-only generator.
+
+    The generator makes one planner-stage JSON call for the
+    complete window, validates the returned batch, and returns the
+    rolling rows. It has no filesystem access: the caller is the
+    bootstrapper, which owns disk writes.
+    """
+
+    def __init__(self, *, gateway: Any | None = None) -> None:
+        # Lazily import the model gateway so the bootstrap module
+        # stays importable in unit tests that never touch a model
+        # runtime.
+        if gateway is None:
+            from packages.story_core.model_gateway import (
+                ModelRequest,
+                RuntimeModelGateway,
+            )
+            from packages.story_core.runtime_config import resolve_stage_runtime
+
+            self._gateway = RuntimeModelGateway(
+                runtime_resolver=resolve_stage_runtime,
+            )
+            self._ModelRequest = ModelRequest
+        else:
+            self._gateway = gateway
+            from packages.story_core.model_gateway import ModelRequest
+
+            self._ModelRequest = ModelRequest
+
+    def generate(
+        self,
+        *,
+        context: dict[str, Any],
+        chapter_numbers: list[int],
+        volume_range: tuple[int, int],
+        character_cards: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        from packages.story_core.agent_base import parse_json_message_content
+        from packages.story_core.outline_planning_generation import (
+            GeneratedChapterWindow,
+        )
+        from packages.story_core.outline_rolling import validate_rolling_batch
+
+        if not chapter_numbers:
+            raise ValueError("rolling_window_no_chapter_numbers")
+        request_payload = {
+            "context": context,
+            "chapter_numbers": list(chapter_numbers),
+            "volume_range": list(volume_range),
+            "character_cards": list(character_cards),
+        }
+        response = self._gateway.complete_stage(
+            "planner",
+            self._ModelRequest(
+                prompt="",
+                messages=(
+                    {
+                        "role": "system",
+                        "content": (
+                            "Generate the requested rolling chapter window. "
+                            "Return JSON with the single root field chapters. "
+                            "Each chapter must include core_conflict, gain, cost, "
+                            "foreshadowing, state_delta_summary, and a scene_chain "
+                            "of 2 to 4 scenes. Cast names must come from "
+                            "prompt_context.character_cards."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            request_payload, ensure_ascii=False
+                        ),
+                    },
+                ),
+                provider="",
+                model="",
+                operation="rolling_window",
+                temperature=None,
+                max_tokens=None,
+                json_mode=True,
+            ),
+        )
+        if not response.ok:
+            raise ValueError(response.error or "rolling_window_model_call_failed")
+        data = parse_json_message_content({"choices": [{"message": {"content": response.text}}]})
+        if data is None:
+            raise ValueError("rolling_window_invalid_json")
+        window = GeneratedChapterWindow.model_validate(data)
+        batch = rolling_batch_from_generated_window(
+            chapters=[row.model_dump(mode="python") for row in window.chapters],
+            character_cards=list(character_cards),
+            volume_range=tuple(volume_range),
+        )
+        validate_rolling_batch(
+            batch,
+            expected_chapter_numbers=list(chapter_numbers),
+            volume_range=tuple(volume_range),
+        )
+        return batch
+
+
 __all__ = [
     "BOOTSTRAP_PHASES",
     "BootstrapPhaseId",
     "BootstrapReadiness",
+    "LLMRollingWindowGenerator",
+    "RollingWindowGenerator",
+    "rolling_batch_from_generated_window",
     "validate_continuation_bootstrap",
 ]

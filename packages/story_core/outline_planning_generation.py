@@ -28,6 +28,7 @@ from packages.story_core.runtime_config import (
 )
 from packages.story_core.project_outline import (
     ChapterPlan,
+    ChapterScenePlan,
     ProjectOutline,
     select_outline_context,
 )
@@ -165,7 +166,32 @@ class OutlinePlanningBrief(_PlanningInput):
 
 
 class GeneratedChapterWindow(_PlanningInput):
-    chapters: list[ChapterPlan]
+    chapters: list["GeneratedDetailedChapter"]
+
+
+class GeneratedDetailedChapter(ChapterPlan):
+    """Planner-stage chapter row carrying the rolling fields.
+
+    The plan rule: the chapter window returned by the planner is
+    the *only* place future chapter detail is generated. The
+    rows it returns extend the legacy ``ChapterPlan`` shape with
+    the rolling-only fields (``core_conflict`` / ``gain`` /
+    ``cost`` / ``foreshadowing`` / ``state_delta_summary`` /
+    ``scene_chain``) so the bootstrapper can project them into
+    the independent rolling schema in one deterministic pass.
+
+    Before merging into ``ProjectOutline`` the bootstrapper
+    re-validates the rows through ``ChapterPlan.model_validate``,
+    which silently drops these fields. The three-level outline
+    schema therefore never sees the rolling-only keys.
+    """
+
+    core_conflict: str = Field(min_length=1)
+    gain: str = Field(min_length=1)
+    cost: str = Field(min_length=1)
+    foreshadowing: list[str] = Field(default_factory=list)
+    state_delta_summary: str = Field(min_length=1)
+    scene_chain: list[ChapterScenePlan] = Field(min_length=2, max_length=4)
 
 
 class GeneratedOutlineFoundation(_PlanningInput):
@@ -787,8 +813,29 @@ class LLMOutlinePlanningGenerator:
                     "chapter_window_generation_failed",
                     "invalid_chapter_window_json",
                 )
+                # Plan rule: the rolling-only fields must not
+                # enter the three-level outline schema. Project
+                # the row back through ``ChapterPlan`` so the
+                # generation-only keys are silently dropped. The
+                # legacy ``ChapterPlan`` rejects ``extra="forbid"``
+                # fields, so we explicitly strip the rolling keys
+                # before re-validating.
+                _ROLLING_CHAPTER_KEYS = (
+                    "core_conflict",
+                    "gain",
+                    "cost",
+                    "foreshadowing",
+                    "state_delta_summary",
+                    "scene_chain",
+                )
                 foundation_data["outline"]["chapters"] = [
-                    chapter.model_dump(mode="json")
+                    ChapterPlan.model_validate(
+                        {
+                            key: value
+                            for key, value in chapter.model_dump(mode="python").items()
+                            if key not in _ROLLING_CHAPTER_KEYS
+                        }
+                    ).model_dump(mode="json")
                     for chapter in chapter_window.chapters
                 ]
                 parsed = foundation_data

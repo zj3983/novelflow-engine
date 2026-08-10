@@ -129,6 +129,48 @@ def _valid_plan() -> dict:
     }
 
 
+def _detailed_chapter_template() -> dict:
+    """Return the rolling-only fields a chapter window response
+    must carry.
+
+    The plan rule: ``GeneratedChapterWindow`` carries the
+    rolling fields; the three-level outline schema does not.
+    Tests that stub the model response use this template to
+    avoid ``ProjectOutline`` rejecting the rolling fields when
+    the chapter rows are later validated.
+    """
+
+    return {
+        "core_conflict": "赵衡设置阻碍，林照被迫应对",
+        "gain": "掌握一条可验证线索",
+        "cost": "得罪赵衡，失去观察的余地",
+        "foreshadowing": ["旧名册缺页"],
+        "state_delta_summary": "林照公开立场，冲突进入下一阶段",
+        "scene_chain": [
+            {
+                "location": "祖祠",
+                "pov": "林照",
+                "goal": "确认现场状况",
+                "obstacle": "赵衡阻拦",
+                "action": "林照留下证据",
+                "change": "获得新线索",
+                "next": "前往管事处对质",
+                "state_delta": {"clue": 1},
+            },
+            {
+                "location": "管事处",
+                "pov": "林照",
+                "goal": "对质",
+                "obstacle": "赵衡回避",
+                "action": "林照出示证据",
+                "change": "赵衡被迫回应",
+                "next": "为下一章埋伏笔",
+                "state_delta": {"tension": 1},
+            },
+        ],
+    }
+
+
 def _brief() -> OutlinePlanningBrief:
     return OutlinePlanningBrief(
         novel_type_id="xuanhuan",
@@ -312,10 +354,12 @@ def _codex_phase_content(prompt: dict) -> dict:
             ]
         }
     template = plan["outline"]["chapters"][0]
+    detailed = _detailed_chapter_template()
     return {
         "chapters": [
             {
                 **template,
+                **detailed,
                 "chapter_number": number,
                 "trope_beat": template["trope_beat"] if number == 1 else None,
             }
@@ -840,10 +884,12 @@ def test_codexcli_full_plan_is_generated_in_three_bounded_phases(scenario: str) 
             }
         else:
             template = plan["outline"]["chapters"][0]
+            detailed = _detailed_chapter_template()
             content = {
                 "chapters": [
                     {
                         **template,
+                        **detailed,
                         "chapter_number": number,
                         "trope_beat": template["trope_beat"] if number == 1 else None,
                     }
