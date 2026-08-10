@@ -478,6 +478,93 @@ class RollingOutlineStore:
 
         return sorted(int(c["chapter_number"]) for c in new_chapters)
 
+    def update_chapter(
+        self,
+        *,
+        chapter_number: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Edit an existing rolling chapter in place. The merged
+        row is stamped ``source="manual"`` and
+        ``last_manual_edit_at`` so subsequent rolling fills skip
+        it (per plan rule "已存在或人工修改的细纲不会被覆盖").
+
+        The merge is field-level: fields the operator did not
+        supply are preserved from the existing row. A backup
+        of the pre-call outline is written before the atomic
+        write so a post-write regression can be rolled back.
+
+        Errors:
+
+        * :class:`RollingOutlineStoreError` with code
+          ``rolling_outline_missing`` when no rolling outline
+          exists on disk yet.
+        * :class:`RollingOutlineStoreError` with code
+          ``rolling_chapter_not_found`` when the rolling
+          outline exists but does not contain ``chapter_number``.
+        * :class:`RollingOutlineStoreError` for atomic-write
+          failures (``rolling_outline_write_failed`` /
+          ``rolling_outline_backup_failed``).
+        """
+        if not isinstance(chapter_number, int) or isinstance(chapter_number, bool):
+            raise RollingOutlineStoreError("rolling_chapter_invalid_number")
+        if chapter_number < 1:
+            raise RollingOutlineStoreError("rolling_chapter_invalid_number")
+        if not isinstance(payload, dict):
+            raise RollingOutlineStoreError("rolling_chapter_invalid_payload")
+
+        # Use the strict reader (returns None for missing) so we can
+        # distinguish "no rolling outline yet" from "outline exists
+        # but the chapter isn't in it". Both raise, but with
+        # different codes so the API can return a useful 4xx.
+        if not self._rolling_path().is_file():
+            raise RollingOutlineStoreError("rolling_outline_missing")
+        existing = _read_existing_rolling_outline(self._root)
+        if not existing or not existing.get("chapters"):
+            raise RollingOutlineStoreError("rolling_outline_missing")
+        existing_chapters = [
+            chapter for chapter in existing.get("chapters") or []
+            if isinstance(chapter, dict)
+        ]
+        target_index = next(
+            (
+                index
+                for index, chapter in enumerate(existing_chapters)
+                if chapter.get("chapter_number") == chapter_number
+            ),
+            None,
+        )
+        if target_index is None:
+            raise RollingOutlineStoreError(
+                f"rolling_chapter_not_found:{chapter_number}"
+            )
+
+        merged_row = dict(existing_chapters[target_index])
+        for key, value in payload.items():
+            if value in (None, "", [], {}):
+                continue
+            merged_row[key] = value
+        merged_row["source"] = "manual"
+        merged_row["last_manual_edit_at"] = _utc_timestamp()
+
+        new_chapters_list = list(existing_chapters)
+        new_chapters_list[target_index] = merged_row
+        new_payload = dict(existing)
+        new_payload["chapters"] = new_chapters_list
+        new_payload["schema_version"] = _ROLLING_SCHEMA_VERSION
+
+        try:
+            self._backup_existing_outline(existing)
+        except RollingOutlineStoreError:
+            raise
+        try:
+            _write_json_atomic(self._rolling_path(), new_payload)
+        except OSError as exc:
+            raise RollingOutlineStoreError(
+                f"rolling_outline_write_failed: {exc}"
+            ) from exc
+        return merged_row
+
 
 __all__ = [
     "RollingOutlineStore",

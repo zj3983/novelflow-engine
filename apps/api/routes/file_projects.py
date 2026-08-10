@@ -1741,6 +1741,52 @@ def init_file_project_routes() -> APIRouter:
             **status,
         }
 
+    @router.put("/file-projects/{project_id}/outline/rolling-chapter/{chapter_number}")
+    def update_file_project_rolling_chapter(
+        project_id: str,
+        chapter_number: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Edit a rolling chapter and mark it as ``source="manual"``.
+
+        The endpoint is the operator's (or the outline editor UI's) way
+        to lock a chapter: after this call, ``RollingOutlineStore`` and
+        ``RollingOutlinePlanner`` both skip the chapter, so subsequent
+        rolling fills never overwrite the operator's edits (per plan
+        rule "已存在或人工修改的细纲不会被覆盖").
+
+        Errors:
+
+        * 404 — project not found.
+        * 422 — invalid ``chapter_number`` or no rolling outline on
+          disk.
+        """
+        if chapter_number is None or int(chapter_number) < 1:
+            raise HTTPException(
+                status_code=422,
+                detail="rolling_chapter_invalid_number",
+            )
+        from packages.story_core.outline_rolling_store import (
+            RollingOutlineStore,
+            RollingOutlineStoreError,
+        )
+        try:
+            store = _store_for(project_id)
+        except HTTPException:
+            raise
+        try:
+            updated = RollingOutlineStore(store.root).update_chapter(
+                chapter_number=int(chapter_number),
+                payload=dict(payload or {}),
+            )
+        except RollingOutlineStoreError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "schema_version": "file-project-rolling-chapter/v1",
+            "project_id": project_id,
+            "chapter": updated,
+        }
+
     @router.get("/file-projects/{project_id}/prompt-preview")
     def get_file_project_prompt_preview(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:
         store = _store_for(project_id)

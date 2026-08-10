@@ -188,3 +188,64 @@ def test_post_rolling_fill_handles_generator_failure(rolling_api, monkeypatch) -
     assert response.status_code == 422, response.text
     detail = response.json().get("detail", "")
     assert "generator" in str(detail).lower() or "failure" in str(detail).lower()
+
+
+def test_put_rolling_chapter_marks_source_manual_and_blocks_subsequent_fill(rolling_api) -> None:
+    """Round 8 Task 8: manual-edit protection.
+
+    After PUT marks chapter 1 as ``source="manual"`` with a custom
+    title, the next POST to the fill endpoint must NOT overwrite the
+    manual chapter.
+    """
+    client, export_root = rolling_api
+    project_id = _seed_minimal_file_project(export_root)
+    # First, fill 1-5
+    fill = client.post(
+        f"/file-projects/{project_id}/outline/rolling-fill",
+        params={"target_chapter": 1},
+    )
+    assert fill.status_code == 200, fill.text
+    # Edit chapter 1 (mark as manual with a custom title)
+    update = client.put(
+        f"/file-projects/{project_id}/outline/rolling-chapter/1",
+        json={"title": "OPERATOR 定制章名"},
+    )
+    assert update.status_code == 200, update.text
+    chapter = update.json()["chapter"]
+    assert chapter["source"] == "manual"
+    assert chapter["title"] == "OPERATOR 定制章名"
+    # The disk file reflects the manual source.
+    rolling_path = export_root / "p-rolling-test" / ".story-system" / "outline-generation" / "rolling_outline.json"
+    on_disk = json.loads(rolling_path.read_text(encoding="utf-8"))
+    by_number = {c["chapter_number"]: c for c in on_disk["chapters"]}
+    assert by_number[1]["source"] == "manual"
+    assert by_number[1]["title"] == "OPERATOR 定制章名"
+    # A subsequent fill (target=1) must NOT overwrite chapter 1.
+    second_fill = client.post(
+        f"/file-projects/{project_id}/outline/rolling-fill",
+        params={"target_chapter": 1},
+    )
+    assert second_fill.status_code == 200, second_fill.text
+    on_disk_2 = json.loads(rolling_path.read_text(encoding="utf-8"))
+    by_number_2 = {c["chapter_number"]: c for c in on_disk_2["chapters"]}
+    assert by_number_2[1]["title"] == "OPERATOR 定制章名"
+    assert by_number_2[1]["source"] == "manual"
+
+
+def test_put_rolling_chapter_returns_422_when_no_rolling_outline(rolling_api) -> None:
+    client, export_root = rolling_api
+    project_id = _seed_minimal_file_project(export_root)
+    response = client.put(
+        f"/file-projects/{project_id}/outline/rolling-chapter/1",
+        json={"title": "no outline yet"},
+    )
+    assert response.status_code == 422
+
+
+def test_put_rolling_chapter_returns_404_for_missing_project(rolling_api) -> None:
+    client, _ = rolling_api
+    response = client.put(
+        "/file-projects/file:does-not-exist/outline/rolling-chapter/1",
+        json={"title": "x"},
+    )
+    assert response.status_code == 404
