@@ -244,3 +244,89 @@ The smoke is the one-line acceptance check for the Round 7
 plan; the rest of the plan's acceptance lives in
 `tests/story_core/test_modular_*` and the production test
 suite (`pytest -q`).
+
+### Rolling-outline fill smoke (Round 8 acceptance)
+
+The Round 8 plan added a rolling chapter-outline fill: when
+the user clicks "生成下一章" and the target chapter has no
+outline, the system must generate a 5-chapter window of
+outlines before the body generation starts. The fill lives
+in a separate file (`.story-system/outline-generation/rolling_outline.json`)
+so the legacy `ProjectOutline` schema is not disturbed.
+
+The same smoke script exposes a `--mode rolling-fill` that
+exercises the fill on a disposable copy of the project:
+
+```bash
+python -m scripts.smoke_production_pipeline --mode rolling-fill \
+    data/exported-projects/p-gou-webgame-restored
+```
+
+The smoke asserts the Round 8 plan's acceptance criteria:
+
+1. The first call produces `kind="filled"` with a 5-chapter
+   window starting at the target chapter (the smoke uses
+   `state.current_chapter + 1` so the test mirrors the
+   production code path).
+2. A second call is a no-op (`kind="present"`, empty
+   `chapter_numbers`) — repeated invocations don't churn
+   the disk.
+3. A chapter the smoke marks with `source="manual"` keeps
+   its user-edited title across a subsequent fill (the
+   "已存在或人工修改的细纲不会被覆盖" rule).
+4. The source project's hash is byte-identical before and
+   after the run — the smoke never writes to the source.
+
+The rolling-fill smoke is the one-line acceptance check
+for the Round 8 plan; the unit tests in
+`tests/story_core/test_outline_rolling*.py` and
+`tests/story_core/test_rolling_outline_*.py` cover the
+planner / store / validation layers in isolation.
+
+### Rolling-outline flow (Round 8)
+
+```
+  生成下一章 click
+        │
+        ▼
+  generate_next_chapter(target_chapter)
+        │
+        ▼
+  ensure_rolling_outline(target_chapter)
+        │
+        ├─ plan_rolling_window → gap = missing chapter numbers
+        │
+        ├─ generator(n)        → fill 5 chapters (window=5)
+        │   stub today; real LLM swap later
+        │
+        ├─ RollingOutlineStore.apply_rolling_batch
+        │   ├─ validate_rolling_batch (whole batch or none)
+        │   ├─ skip chapters already on disk (legacy + rolling)
+        │   ├─ backup previous rolling_outline.json
+        │   └─ atomic write + fill log
+        │
+        └─ return RollingOutlineStatus(kind=filled|present)
+        │
+        ▼
+  body generation reads target chapter's outline
+        │
+        ▼
+  on success: writing_packet + candidate
+```
+
+Idempotency rules:
+
+* The store reads BOTH `.webnovel/outline.json` (legacy)
+  and `.story-system/outline-generation/rolling_outline.json`
+  (rolling) so chapters in either file count as "filled".
+* Chapters with `source="manual"` are skipped on every
+  fill — a user-edited chapter is never overwritten.
+* A failed validation (bad payload, wrong chapter number,
+  out-of-volume) aborts the whole batch; the on-disk
+  outline is byte-identical to the pre-call state.
+
+The `regenerate_chapter` path does NOT call
+`ensure_rolling_outline` — old-chapter rewrites use only
+the chapter's existing outline and the chapters leading
+UP to it, so a re-write of chapter 30 never reads the
+rolling outline for chapter 50.
