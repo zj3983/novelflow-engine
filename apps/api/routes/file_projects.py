@@ -31,6 +31,7 @@ from packages.story_core.models import (
 )
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
+from packages.story_core.outline_rolling_planner import RollingOutlineFailed
 from packages.story_core.simplified_review import build_simplified_review, user_facing_generation_error
 from packages.story_core.publishing_assets import (
     CoverPromptGenerator,
@@ -1669,6 +1670,76 @@ def init_file_project_routes() -> APIRouter:
     def get_file_project_writing_packet(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:
         store = _store_for(project_id)
         return store.writing_packet(chapter_number)
+
+    @router.post("/file-projects/{project_id}/outline/rolling-fill")
+    def trigger_file_project_rolling_fill(
+        project_id: str,
+        target_chapter: int = 1,
+    ) -> dict[str, Any]:
+        """Manually trigger a rolling-fill batch for ``target_chapter``.
+
+        The endpoint is idempotent: if the target chapter already has
+        an outline (rolling or legacy), the call returns the existing
+        status without writing anything new. The default behaviour
+        (``ensure_rolling_outline`` inside ``generate_next_chapter``)
+        is automatic; this endpoint exists so the operator can force
+        a fill (e.g. after editing the seed outline) or recover from
+        a previous failure.
+
+        Errors:
+
+        * 404 — missing project.
+        * 422 — ``target_chapter`` non-positive / out of volume range.
+        * 422 — generation / validation / I/O failure (raised by
+          :class:`RollingOutlineFailed`).
+        """
+        if target_chapter is None or int(target_chapter) < 1:
+            raise HTTPException(
+                status_code=422,
+                detail="rolling_fill_invalid_target_chapter",
+            )
+        try:
+            store = _store_for(project_id)
+        except HTTPException:
+            raise
+        try:
+            store.ensure_rolling_outline(target_chapter=int(target_chapter))
+        except RollingOutlineFailed as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ValueError as exc:
+            # volume_range mismatch, etc.
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        status = store.rolling_fill_status(int(target_chapter))
+        return {
+            "schema_version": "file-project-rolling-fill-response/v1",
+            "project_id": project_id,
+            **status,
+        }
+
+    @router.get("/file-projects/{project_id}/outline/rolling-fill-status")
+    def get_file_project_rolling_fill_status(
+        project_id: str,
+        target_chapter: int = 1,
+    ) -> dict[str, Any]:
+        """Read the rolling-fill status for ``target_chapter``.
+
+        Pure read: no side effects, no generator call. Returns the same
+        status object the writing packet exposes. The frontend uses this
+        to poll after a failed fill so the retry button can be enabled
+        without re-fetching the full writing packet.
+        """
+        if target_chapter is None or int(target_chapter) < 1:
+            raise HTTPException(
+                status_code=422,
+                detail="rolling_fill_invalid_target_chapter",
+            )
+        store = _store_for(project_id)
+        status = store.rolling_fill_status(int(target_chapter))
+        return {
+            "schema_version": "file-project-rolling-fill-status/v1",
+            "project_id": project_id,
+            **status,
+        }
 
     @router.get("/file-projects/{project_id}/prompt-preview")
     def get_file_project_prompt_preview(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:

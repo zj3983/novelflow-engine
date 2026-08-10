@@ -8878,6 +8878,66 @@ class FileProjectStore:
             chapter_number=target,
         )
 
+    def rolling_fill_status(self, target_chapter: int) -> dict[str, Any]:
+        """Pure-read rolling-fill status for ``target_chapter``.
+
+        Returns a dict matching the ``rolling_fill`` field on the
+        writing packet. No side effects: this method does not call the
+        generator or write any chapter. The API uses this for the
+        ``GET /outline/rolling-fill-status`` endpoint so the frontend
+        can poll without triggering accidental fills.
+
+        The status enum:
+
+        * ``"present"`` — a rolling chapter exists on disk.
+        * ``"missing"`` — neither rolling nor legacy outline has the
+          chapter; a fill is needed before body generation.
+        * ``"legacy"`` — the legacy outline has the chapter; no rolling
+          fill needed but the rolling file is empty for this chapter.
+        * ``"failed"`` — the most recent fill log row failed; the
+          operator (or the user) needs to retry.
+        """
+        target = int(target_chapter)
+        if target < 1:
+            raise ValueError("rolling_fill_invalid_target_chapter")
+        next_chapter_outline_source: str | None = None
+        rolling_fill_status_name = "missing"
+        filled_chapter_numbers: list[int] = []
+        error_message: str = ""
+        rolling_store = RollingOutlineStore(self.root)
+        if rolling_store.read_chapter(target):
+            next_chapter_outline_source = "rolling"
+            rolling_fill_status_name = "present"
+        else:
+            outline = self.project_outline()
+            chapters = outline.get("chapters") if isinstance(outline, dict) else None
+            if isinstance(chapters, list):
+                for chapter in chapters:
+                    if (
+                        isinstance(chapter, dict)
+                        and chapter.get("chapter_number") == target
+                    ):
+                        next_chapter_outline_source = "legacy"
+                        rolling_fill_status_name = "legacy"
+                        break
+        fill_log = self._read_rolling_fill_log()
+        if isinstance(fill_log, dict) and fill_log.get("last_status") == "failed":
+            rolling_fill_status_name = "failed"
+            error_message = str(fill_log.get("last_error") or "")
+            last_numbers = fill_log.get("last_chapter_numbers")
+            if isinstance(last_numbers, list):
+                filled_chapter_numbers = [
+                    int(n) for n in last_numbers
+                    if isinstance(n, int) and not isinstance(n, bool)
+                ]
+        return {
+            "status": rolling_fill_status_name,
+            "chapter_number": target,
+            "source": next_chapter_outline_source,
+            "filled_chapter_numbers": filled_chapter_numbers,
+            "error": error_message,
+        }
+
     def _build_writing_packet(
         self,
         chapter_number: int | None = None,
@@ -8909,30 +8969,37 @@ class FileProjectStore:
         # Round 8 Task 5: surface the rolling-fill state and the next-chapter
         # outline. The packet is the canonical place for the frontend to
         # discover whether a rolling outline exists, what its source is, and
-        # whether the body-generation path is allowed to start.
+        # whether the body-generation path is allowed to start. The
+        # computation is delegated to ``rolling_fill_status`` so the API
+        # GET endpoint and the writing packet emit the same shape.
         next_chapter_outline: dict[str, Any] | None = None
         next_chapter_outline_source: str | None = None
-        rolling_fill_status = "missing"
-        rolling_fill_chapter_numbers: list[int] = []
-        rolling_fill_error: str = ""
-        rolling_fill_log = self._read_rolling_fill_log()
-        rolling_store = RollingOutlineStore(self.root)
-        rolling_chapter = rolling_store.read_chapter(int(target or 0))
-        if rolling_chapter:
-            next_chapter_outline = rolling_chapter
-            next_chapter_outline_source = "rolling"
-            rolling_fill_status = "present"
-        elif chapter_outline:
+        try:
+            rolling_fill_info = self.rolling_fill_status(int(target or 0))
+        except ValueError:
+            rolling_fill_info = {
+                "status": "missing",
+                "chapter_number": int(target or 0),
+                "source": None,
+                "filled_chapter_numbers": [],
+                "error": "",
+            }
+        rolling_fill_status = str(rolling_fill_info.get("status") or "missing")
+        filled_chapter_numbers = list(rolling_fill_info.get("filled_chapter_numbers") or [])
+        rolling_fill_error = str(rolling_fill_info.get("error") or "")
+        next_chapter_outline_source = rolling_fill_info.get("source")
+        # Fetch the actual rolling chapter (or legacy outline row) for the
+        # packet body. The status object above only carries the source
+        # label — it does not include the chapter body.
+        if next_chapter_outline_source == "rolling":
+            rolling_chapter = RollingOutlineStore(self.root).read_chapter(int(target or 0))
+            if rolling_chapter:
+                next_chapter_outline = rolling_chapter
+        elif next_chapter_outline_source == "legacy" and chapter_outline:
             next_chapter_outline = dict(chapter_outline)
-            next_chapter_outline_source = "legacy"
-            rolling_fill_status = "legacy"
-        # If the most recent fill log row failed, surface that to the UI.
-        if isinstance(rolling_fill_log, dict) and rolling_fill_log.get("last_status") == "failed":
-            rolling_fill_status = "failed"
-            rolling_fill_error = str(rolling_fill_log.get("last_error") or "")
-            last_numbers = rolling_fill_log.get("last_chapter_numbers")
-            if isinstance(last_numbers, list):
-                rolling_fill_chapter_numbers = [int(n) for n in last_numbers if isinstance(n, int) and not isinstance(n, bool)]
+        # ``filled_chapter_numbers`` is a renamed local to keep the
+        # packet construction untouched below.
+        rolling_fill_chapter_numbers = filled_chapter_numbers
         recent = []
         for number in prior_numbers[-3:]:
             item = self.chapter(number)
