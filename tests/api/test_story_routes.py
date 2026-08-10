@@ -670,7 +670,9 @@ def test_project_writing_packet_uses_explicit_non_game_project_type():
     assert packet_response.status_code == 200
     packet = packet_response.json()
     text = json.dumps(packet, ensure_ascii=False)
-    assert "小说类型：xianxia" in packet["world_facts"]
+    assert packet["world_context"]["genre_plugin_ids"] == ["xianxia"]
+    assert packet["world_context"]["premise"] == "断香炉里有未了因果。"
+    assert "world_facts" not in packet
     assert packet["whole_chapter_contract"] == {}
     assert "现实压力 -> 登录建号" not in text
     assert "见习冒险者（未转职）" not in text

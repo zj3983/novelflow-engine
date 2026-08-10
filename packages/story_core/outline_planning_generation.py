@@ -384,14 +384,19 @@ class LLMOutlinePlanningGenerator:
                     raise ValueError("initial_outline_requires_unstarted_project")
                 target_chapter_numbers = list(range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1))
             elif mode == "regenerate":
-                target_last_chapter = (
-                    validated.current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT
-                    if validated.continuation_start_chapter is not None
-                    else window["target_last_chapter"]
-                )
-                target_chapter_numbers = list(
-                    range(validated.current_chapter + 1, target_last_chapter + 1)
-                )
+                if validated.current_chapter == 0:
+                    target_chapter_numbers = list(
+                        range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)
+                    )
+                else:
+                    target_last_chapter = (
+                        validated.current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT
+                        if validated.continuation_start_chapter is not None
+                        else window["target_last_chapter"]
+                    )
+                    target_chapter_numbers = list(
+                        range(validated.current_chapter + 1, target_last_chapter + 1)
+                    )
                 if not target_chapter_numbers:
                     raise ValueError("outline_window_already_full")
             else:
@@ -477,6 +482,7 @@ class LLMOutlinePlanningGenerator:
             else:
                 validation_rules = [
                     "For initial/regenerate, characters must contain 4 to 6 unique names and include the protagonist, stage_antagonist, and long_term_antagonist tiers.",
+                    "Every character name and every arc stage_antagonist must be a concrete personal name, never a role, occupation, faction, or placeholder label.",
                     "The opening arc must start at chapter 1, and its stage_antagonist must be exactly equal to the name of the character whose character_tier is stage_antagonist.",
                     "The opening arc must contain at least one long_term_antagonist_traces item.",
                     "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order.",
@@ -582,7 +588,13 @@ class LLMOutlinePlanningGenerator:
             }
             split_full_plan = runtime.protocol.endswith("_cli") and (
                 mode == "initial"
-                or (mode == "regenerate" and validated.continuation_start_chapter is not None)
+                or (
+                    mode == "regenerate"
+                    and (
+                        validated.current_chapter == 0
+                        or validated.continuation_start_chapter is not None
+                    )
+                )
             )
             if split_full_plan:
                 cached_phases = phase_payloads or {}
@@ -660,7 +672,12 @@ class LLMOutlinePlanningGenerator:
                             "content": (
                                 "Generate only the story structure as JSON with the single root field outline. "
                                 "Fill overall fields including theme_statement, foreground_story, background_story, "
-                                "book_objective, and ending_image. Each arc must contain exactly three key_results. "
+                                "book_objective, ending_image, core_ending_chapter, extension_ceiling_chapter, "
+                                "planned_length, and planned_arc_count. core_ending_chapter must equal the end_chapter "
+                                "of the final core arc; extension_ceiling_chapter must be at least core_ending_chapter. "
+                                "Each arc must contain exactly three key_results. "
+                                "Every arc stage_antagonist must be a concrete personal name, never a role, occupation, "
+                                "faction, or placeholder label; put that information in the character card later. "
                                 "Provide the complete overall plan and all core arcs. Set outline.chapters to an empty array. "
                                 "Follow prompt_context.output_schema exactly."
                             ),
@@ -690,6 +707,7 @@ class LLMOutlinePlanningGenerator:
                     "validation_rules": [
                         "Return 4 to 6 unique complete character cards.",
                         "Include protagonist, stage_antagonist, long_term_antagonist, and supporting tiers.",
+                        "Every character name must be a concrete personal name, never a role, occupation, faction, or placeholder label.",
                         "The stage_antagonist name must match the opening arc stage_antagonist.",
                     ],
                 }
@@ -702,6 +720,7 @@ class LLMOutlinePlanningGenerator:
                             "content": (
                                 "Generate only the opening character roster. Return JSON with the single root field characters. "
                                 "Create 4 to 6 complete Chinese webnovel character cards that fit outline_foundation. "
+                                "Use concrete personal names; keep roles and occupations in their dedicated fields. "
                                 "Follow prompt_context.output_schema exactly."
                             ),
                         },

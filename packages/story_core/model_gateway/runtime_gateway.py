@@ -21,7 +21,7 @@ from .provider_catalog import provider_definition
 class RuntimeModelGateway:
     def __init__(
         self,
-        stage: Literal["planner", "writer", "memory"] | None = None,
+        stage: Literal["planner", "writer", "memory", "director", "consistency"] | None = None,
         *,
         runtime_resolver: Callable[[str], Any] | None = None,
         transport: JsonTransport | None = None,
@@ -41,10 +41,16 @@ class RuntimeModelGateway:
 
     def complete_stage(
         self,
-        stage: Literal["planner", "writer", "memory"],
+        stage: Literal["planner", "writer", "memory", "director", "consistency"],
         request: ModelRequest,
     ) -> ModelResponse:
-        resolved_stage = "planner" if stage == "memory" else stage
+        resolved_stage = (
+            "planner"
+            if stage == "memory"
+            else "writer"
+            if stage == "consistency"
+            else stage
+        )
         try:
             settings = self.runtime_resolver(resolved_stage)
         except Exception:

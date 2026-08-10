@@ -26,11 +26,22 @@ import pytest
 
 from packages.story_core.agents.pipeline import (
     ModularChapterBundle,
+    _add_prepared_entities_to_context,
+    _build_writer_request,
+    _deterministic_prose_findings,
     _ensure_director_context,
+    _ensure_canon_service,
     _ensure_writer_context,
+    _preflight_entities,
 )
-from packages.story_core.agents.contracts import DirectorArtifact
+from packages.story_core.agents.contracts import (
+    DirectorArtifact,
+    EntityRequirement,
+    SceneBeat,
+)
 from packages.story_core.canon.registry import CanonRegistry
+from packages.story_core.context.writer_context import WriterContext
+from packages.story_core.generation_progress import generation_progress
 from packages.story_core.orchestrator import StoryOrchestrator
 
 
@@ -81,6 +92,7 @@ def _seed_legacy_project(root: Path, *, with_outline: bool = True) -> None:
             "overall": {"story": "概述"},
         },
     )
+
     _write_json(
         root / ".webnovel" / "state.json",
         {
@@ -99,6 +111,118 @@ def _seed_legacy_project(root: Path, *, with_outline: bool = True) -> None:
             "enabled_skill_ids": [],
         },
     )
+
+
+def test_preflight_fills_missing_entity_notes_from_scene_beats(tmp_path: Path) -> None:
+    artifact = DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="find the letter",
+        opening_state="office",
+        scene_beats=[
+            SceneBeat(
+                order=1,
+                location="archive",
+                action="Chen opens the Red Letter and checks its seal",
+                result="The Red Letter points him to tomorrow's hearing",
+            )
+        ],
+        ending_state="new lead",
+        entity_requirements=[
+            EntityRequirement(kind="item", name="Red Letter", notes="")
+        ],
+    )
+    registry = CanonRegistry.empty()
+    canon = _ensure_canon_service(registry, tmp_path)
+
+    summary, prepared = _preflight_entities(canon, artifact)
+    context = _add_prepared_entities_to_context(
+        WriterContext(chapter_number=1, director_artifact=artifact), prepared
+    )
+
+    assert summary["prepared"] == 1
+    assert "tomorrow's hearing" in context.entity_cards[0]["summary"]
+    assert registry.list_all() == []
+
+
+def test_transient_character_card_does_not_use_internal_supporting_label(
+    tmp_path: Path,
+) -> None:
+    artifact = DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="meet witness",
+        opening_state="hallway",
+        scene_beats=[
+            SceneBeat(
+                order=1,
+                location="hallway",
+                action="Chen meets New Witness",
+                result="New Witness agrees to talk",
+            )
+        ],
+        ending_state="witness found",
+        entity_requirements=[
+            EntityRequirement(kind="character", name="New Witness")
+        ],
+    )
+    canon = _ensure_canon_service(CanonRegistry.empty(), tmp_path)
+
+    _, prepared = _preflight_entities(canon, artifact)
+    context = _add_prepared_entities_to_context(
+        WriterContext(chapter_number=1, director_artifact=artifact), prepared
+    )
+
+    assert context.character_cards[0]["role"] == "本章角色"
+
+
+def test_partial_canonical_context_keeps_legacy_project_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "partial-project"
+    _seed_legacy_project(root)
+    project = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
+    project["genre"] = "game_webnovel"
+    _write_json(root / ".webnovel" / "project.json", project)
+    _write_json(root / ".story-system" / "project.json", {})
+
+    artifact = DirectorArtifact(
+        chapter_number=2,
+        chapter_title="夜奔山腰",
+        chapter_goal="上山",
+        opening_state="天将暮",
+        scene_beats=[],
+        ending_state="夜宿山腰",
+    )
+
+    context = _ensure_writer_context(
+        project_root=root,
+        chapter_number=2,
+        director_artifact=artifact,
+    )
+
+    assert context.project_title == "E2E 项目"
+    assert context.genre == "game_webnovel"
+
+
+def test_writer_request_uses_file_project_hard_length_max() -> None:
+    """The writer and file-project confirmation must share one hard max."""
+    artifact = DirectorArtifact(
+        chapter_number=1,
+        chapter_title="第一章",
+        chapter_goal="落脚",
+        opening_state="黄昏",
+        scene_beats=[],
+        ending_state="暂时落脚",
+    )
+    context = WriterContext(
+        chapter_number=1,
+        director_artifact=artifact,
+    )
+
+    request = _build_writer_request(
+        context=context,
+        director_artifact=artifact,
+    )
+
+    assert request.target_chars == {"min": 4200, "max": 5500}
+    assert request.acceptance_chars == {"min": 3800, "max": 5700}
 
 
 class _StubDirectorRuntime:
@@ -300,7 +424,8 @@ def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
     _seed_legacy_project(project_root, with_outline=False)
 
     director_runtime = _StubDirectorRuntime()
-    writer_runtime = _StubWriterRuntime(body="林昭提灯上山，夜宿山腰。")
+    valid_body = "林昭提灯上山，夜宿山腰。" * 400
+    writer_runtime = _StubWriterRuntime(body=valid_body)
 
     # The new pipeline accepts an optional canon registry so the
     # workbench (and the e2e test) can inspect preflight side
@@ -308,13 +433,15 @@ def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
     canon_registry = CanonRegistry()
 
     orchestrator = StoryOrchestrator(use_modular_agents=True)
-    bundle = orchestrator.generate_next_chapter_via_modular_pipeline(
-        project_root=project_root,
-        chapter_number=1,
-        director_runtime=director_runtime,
-        writer_runtime=writer_runtime,
-        canon_registry=canon_registry,
-    )
+    progress_events: list[Any] = []
+    with generation_progress(progress_events.append):
+        bundle = orchestrator.generate_next_chapter_via_modular_pipeline(
+            project_root=project_root,
+            chapter_number=1,
+            director_runtime=director_runtime,
+            writer_runtime=writer_runtime,
+            canon_registry=canon_registry,
+        )
 
     # The director runtime ran exactly once and the artifact
     # carries the chapter goal we returned.
@@ -329,15 +456,17 @@ def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
 
     # The writer runtime ran exactly once and the body matches.
     assert len(writer_runtime.calls) == 1
-    assert bundle.body == "林昭提灯上山，夜宿山腰。"
+    assert bundle.body == valid_body
 
     # The canon preflight ran with the director's requirements.
-    # The preflight is side-effect-free: it counts existing /
-    # missing / inline-minor roles so the candidate flow knows
-    # how many cards the confirmation step would need to create.
+    # Missing requirements become transient cards visible to the
+    # writer, but the registry remains unchanged until confirmation.
     preflight = bundle.canon_preflight or {}
     assert preflight.get("requested", 0) >= 1
-    assert preflight.get("missing", 0) >= 1  # 林昭 not yet in the registry
+    assert preflight.get("prepared", 0) >= 1
+    assert preflight.get("missing", 0) == 0
+    assert canon_registry.list_all() == []
+    assert "character" in writer_runtime.calls[0].prompt
 
     # The fact extractor produced a delta scoped to the chapter.
     assert bundle.continuity_delta is not None
@@ -347,6 +476,12 @@ def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
     assert bundle.director_trace_id.startswith("director:")
     assert bundle.writer_trace_id.startswith("writer:")
     assert bundle.fact_extractor_trace_id.startswith("fact-extractor:")
+    progress_stages = {
+        event.get("stage")
+        for event in progress_events
+        if isinstance(event, dict)
+    }
+    assert {"director", "writer", "fact_extractor"} <= progress_stages
 
 
 def test_orchestrator_modular_path_works_without_legacy_project(tmp_path: Path):
@@ -499,6 +634,61 @@ def test_orchestrator_runs_focused_consistency_review(tmp_path: Path):
     writing_review = legacy_bundle.quality_report["writing_review"]
     assert writing_review["pass"] is False
     assert "canon_violation" in writing_review["issues"]
+
+
+def test_deterministic_prose_findings_block_dense_simile_stacking():
+    body = "。".join(
+        [
+            "风仿佛一只手",
+            "雷声如同重锤",
+            "灰尘犹如潮水",
+            "火光宛如星辰",
+            "伤口就像裂缝",
+            "黑云像是铁幕",
+            "脚步仿佛鼓点",
+            "冷意如同细针",
+        ]
+    )
+
+    findings = _deterministic_prose_findings(body, [])
+
+    assert any(
+        finding.code == "style.simile_stacking" and finding.blocking
+        for finding in findings
+    )
+
+
+def test_deterministic_prose_findings_catch_protagonist_realm_drift():
+    cards = [
+        {
+            "name": "陆沉舟",
+            "role": "主角",
+            "current_life_profile": {
+                "resources_and_ability": "炼气一层，会基础吐纳。"
+            },
+        }
+    ]
+    body = "陆沉舟检查自身境界，发现自己依旧是炼气期三层。"
+
+    findings = _deterministic_prose_findings(body, cards)
+
+    assert any(
+        finding.code == "canon.protagonist_realm_drift" and finding.blocking
+        for finding in findings
+    )
+
+
+def test_deterministic_prose_findings_catch_partial_relief_becoming_full_recovery():
+    findings = _deterministic_prose_findings(
+        "那股力量散去以后，他右臂的经脉淤伤已经完全化解。",
+        [],
+        rewrite_guidance="异物只缓解一处经脉淤伤，不能直接治愈。",
+    )
+
+    assert any(
+        finding.code == "canon.limited_effect_overstated" and finding.blocking
+        for finding in findings
+    )
 
 
 def _make_stub_story_state(*, current_chapter: int) -> Any:

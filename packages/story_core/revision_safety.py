@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.story_core.chapter_length_policy import (
+    CHAPTER_TARGET_MAX_CHARS,
+    CHAPTER_TARGET_MIN_CHARS,
+)
+
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
@@ -100,7 +105,9 @@ def choose_best_revision(
     original_chars = len("".join(str(original_body or "").split()))
     candidate_chars = len("".join(str(candidate_body or "").split()))
     forced_reject_reason = ""
-    original_in_preferred_range = 4200 <= original_chars <= 5500
+    original_in_preferred_range = (
+        CHAPTER_TARGET_MIN_CHARS <= original_chars <= CHAPTER_TARGET_MAX_CHARS
+    )
     original_passed = bool(_as_dict(original_quality).get("ok")) and bool(
         _as_dict(_as_dict(original_quality).get("writing_review")).get("pass")
     )
@@ -120,7 +127,9 @@ def choose_best_revision(
         and bool(original_structural_issues.intersection({"body_too_short", "body_too_long"}))
         and not original_in_preferred_range
     )
-    candidate_in_preferred_range = 4200 <= candidate_chars <= 5500
+    candidate_in_preferred_range = (
+        CHAPTER_TARGET_MIN_CHARS <= candidate_chars <= CHAPTER_TARGET_MAX_CHARS
+    )
     structural_length_preference_allowed = (
         original_has_structural_length_error
         and candidate_in_preferred_range
@@ -133,7 +142,7 @@ def choose_best_revision(
         and candidate_issue_count <= original_issue_count + 2
         and candidate_score >= original_score - 15.0
     )
-    if candidate_chars > 5500:
+    if candidate_chars > CHAPTER_TARGET_MAX_CHARS:
         forced_reject_reason = "candidate_above_chapter_maximum"
         candidate_score -= 120.0
     elif original_has_structural_length_error and candidate_has_hard_errors:
@@ -169,7 +178,9 @@ def choose_best_revision(
     elif original_chars >= 3900 and candidate_chars < original_chars * 0.75:
         forced_reject_reason = "candidate_shrank_too_much"
         candidate_score -= 80.0
-    elif original_in_preferred_range and not 4200 <= candidate_chars <= 5500:
+    elif original_in_preferred_range and not (
+        CHAPTER_TARGET_MIN_CHARS <= candidate_chars <= CHAPTER_TARGET_MAX_CHARS
+    ):
         forced_reject_reason = "failed_candidate_left_preferred_length"
         candidate_score -= 120.0
     elif (

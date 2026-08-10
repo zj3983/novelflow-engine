@@ -261,6 +261,43 @@ def test_generic_world_enrichment_prompt_omits_game_only_world_contracts():
     assert "只整理世界观、角色档案、关系网、类型规则和后续写作约束" in prompt
 
 
+def test_realistic_suspense_world_enrichment_does_not_invent_power_system():
+    project = NovelProject(
+        project_id="p-realistic-suspense",
+        title="明天的调解书",
+        seed_outline="社区调解员收到预告次日事故的匿名调解书，并靠证据追查来源。",
+        world_blueprint={"genre_plugin_ids": ["suspense"]},
+    )
+
+    prompt = world_enrichment._build_prompt(project)
+
+    assert "power_system_spec" not in prompt
+    assert "genre_power_system_template:" not in prompt
+
+
+def test_realistic_suspense_world_enrichment_drops_generated_power_system():
+    project = NovelProject(
+        project_id="p-realistic-suspense-merge",
+        title="明天的调解书",
+        world_blueprint={"genre_plugin_ids": ["suspense"]},
+    )
+
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {
+            "world_blueprint": {
+                "premise": "调解员追查事故预告的来源。",
+                "power_system": ["超凡调查"],
+                "power_system_spec": {"name": "超凡调查体系"},
+            }
+        },
+        rules_only=False,
+    )
+
+    assert "power_system" not in enriched.world_blueprint
+    assert "power_system_spec" not in enriched.world_blueprint
+
+
 def test_generic_world_enrichment_drops_game_only_generated_sections():
     project = NovelProject(
         project_id="p-realistic-merge",

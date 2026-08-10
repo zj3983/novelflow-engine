@@ -4,6 +4,7 @@ from typing import Any
 
 from packages.story_core.story_core_card import (
     StoryCoreCard,
+    merge_story_core_into_overall,
     outline_seed_from_story_core,
     story_core_from_direction,
     story_core_from_legacy,
@@ -144,3 +145,23 @@ def test_outline_seed_uses_core_fields_without_copying_audience() -> None:
     assert seed["overall"]["ending_direction"] == card.ending_direction
     assert seed["overall"]["primary_trope_id"] == "mystery-letter"
     assert "target_audience" not in seed["overall"]
+
+
+def test_overwriting_story_core_refreshes_denormalized_overall_fields() -> None:
+    card = StoryCoreCard.model_validate(_complete_payload())
+
+    merged = merge_story_core_into_overall(
+        {
+            "book_objective": "stale objective",
+            "core_selling_point": "stale selling point",
+            "ending_image": "stale ending image",
+            "ending_contract": "stale ending contract",
+        },
+        card,
+        overwrite=True,
+    )
+
+    assert merged["book_objective"] == card.protagonist_goal
+    assert merged["core_selling_point"] == card.excitement_point
+    assert merged["ending_image"] == card.ending_direction
+    assert merged["ending_contract"] == card.ending_direction

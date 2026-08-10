@@ -11,6 +11,14 @@ The store is the side-effectful sibling of
 disk format and the atomic-write protocol. Every test in
 this file uses a real ``tmp_path`` so the atomic write,
 backup, and restore behaviours are exercised end-to-end.
+
+The store uses a SEPARATE file
+(``.story-system/outline-generation/rolling_outline.json``)
+rather than mutating ``.webnovel/outline.json`` so the
+legacy ``ProjectOutline`` Pydantic schema stays
+untouched. The legacy outline is read as a "filled"
+signal so a chapter the initial planning pass already
+produced is never overwritten by a later rolling fill.
 """
 
 from __future__ import annotations
@@ -34,14 +42,13 @@ from packages.story_core.outline_rolling_store import (
 # --- Test fixtures ----------------------------------------------------------
 
 
-def _seed_outline(
+def _seed_legacy_outline(
     project_root: Path,
     *,
     chapters: list[dict] | None = None,
 ) -> dict:
-    """Write a minimal ``.webnovel/outline.json`` and
-    return the payload that was written so the test can
-    assert the on-disk shape after the store runs.
+    """Write a minimal ``.webnovel/outline.json`` so the
+    store can read the legacy chapter numbers.
     """
     payload = {
         "schema_version": "project-outline/v1",
@@ -56,6 +63,32 @@ def _seed_outline(
         encoding="utf-8",
     )
     return payload
+
+
+def _seed_rolling_outline(
+    project_root: Path,
+    *,
+    chapters: list[dict] | None = None,
+) -> Path:
+    """Write a pre-existing rolling outline so the store
+    has a backup candidate for the next batch.
+    """
+    payload = {
+        "schema_version": "rolling-outline/v1",
+        "chapters": list(chapters or []),
+    }
+    target = (
+        project_root
+        / ".story-system"
+        / "outline-generation"
+        / "rolling_outline.json"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return target
 
 
 def _chapter(number: int) -> dict:
@@ -84,11 +117,11 @@ def _chapter(number: int) -> dict:
 def test_rolling_store_writes_new_chapters_and_marks_them_generated(
     tmp_path: Path,
 ) -> None:
-    """A fresh project (no existing outline) accepts the
-    batch, writes a new ``outline.json`` whose ``chapters``
-    list contains the batch in order, and tags every new
-    chapter with ``source = "generated"`` so a future
-    planner knows it can refresh them.
+    """A fresh project (no legacy or rolling outline)
+    accepts the batch and writes a new
+    ``rolling_outline.json`` whose ``chapters`` list
+    contains the batch in order, tagged with
+    ``source = "generated"``.
     """
     store = RollingOutlineStore(tmp_path)
     chapters = [_chapter(148), _chapter(149), _chapter(150)]
@@ -101,24 +134,24 @@ def test_rolling_store_writes_new_chapters_and_marks_them_generated(
 
     assert sorted(written) == [148, 149, 150]
     on_disk = json.loads(
-        (tmp_path / ".webnovel" / "outline.json").read_text(encoding="utf-8")
+        _seed_rolling_outline.__wrapped__ if False
+        else (tmp_path / ".story-system" / "outline-generation" / "rolling_outline.json").read_text(encoding="utf-8")
     )
     numbers = [int(c["chapter_number"]) for c in on_disk["chapters"]]
     assert numbers == [148, 149, 150]
     sources = [c.get("source") for c in on_disk["chapters"]]
     assert all(source == "generated" for source in sources)
+    # The legacy outline is NOT created or modified.
+    assert not (tmp_path / ".webnovel" / "outline.json").exists()
 
 
-def test_rolling_store_appends_to_existing_outline_without_dropping_legacy(
-    tmp_path: Path,
-) -> None:
-    """A project whose existing outline has chapters 1-14
-    (legacy source) gets the new rolling-fill chapters
-    appended *after* the legacy rows. The store does NOT
-    rewrite the legacy rows; their ``source`` field stays
-    ``"legacy"`` and the operator can audit the migration.
+def test_rolling_store_does_not_modify_legacy_outline(tmp_path: Path) -> None:
+    """The legacy ``.webnovel/outline.json`` is read-only
+    from the store's perspective. The store never
+    overwrites legacy rows, even when the new rolling
+    chapters' numbers overlap the legacy range.
     """
-    _seed_outline(
+    _seed_legacy_outline(
         tmp_path,
         chapters=[
             {
@@ -130,39 +163,65 @@ def test_rolling_store_appends_to_existing_outline_without_dropping_legacy(
             for n in range(1, 15)
         ],
     )
+    pre_legacy = json.loads(
+        (tmp_path / ".webnovel" / "outline.json").read_text(encoding="utf-8")
+    )
     store = RollingOutlineStore(tmp_path)
-    new_chapters = [_chapter(15), _chapter(16)]
-
-    written = store.apply_rolling_batch(
-        chapters=new_chapters,
+    store.apply_rolling_batch(
+        chapters=[_chapter(15), _chapter(16)],
         expected_chapter_numbers=[15, 16],
         volume_range=(1, 50),
     )
-
-    on_disk = json.loads(
+    post_legacy = json.loads(
         (tmp_path / ".webnovel" / "outline.json").read_text(encoding="utf-8")
     )
-    numbers = [int(c["chapter_number"]) for c in on_disk["chapters"]]
-    # Legacy chapters 1-14 stay put, new chapters 15-16
-    # are appended.
-    assert numbers == list(range(1, 17))
-    # Legacy rows keep their source marker; new rows are
-    # marked ``generated``.
-    sources = {int(c["chapter_number"]): c.get("source") for c in on_disk["chapters"]}
-    for n in range(1, 15):
-        assert sources[n] == "legacy"
-    assert sources[15] == "generated"
-    assert sources[16] == "generated"
-    assert sorted(written) == [15, 16]
+    # Legacy outline is byte-identical to the pre-call
+    # snapshot.
+    assert post_legacy == pre_legacy
+    # The new rolling chapters landed in the rolling
+    # outline, not the legacy one.
+    rolling = json.loads(
+        (tmp_path / ".story-system" / "outline-generation" / "rolling_outline.json").read_text(encoding="utf-8")
+    )
+    numbers = [int(c["chapter_number"]) for c in rolling["chapters"]]
+    assert numbers == [15, 16]
+
+
+def test_rolling_store_treats_legacy_chapters_as_already_filled(
+    tmp_path: Path,
+) -> None:
+    """A batch whose chapters are already in the legacy
+    outline is a no-op. The plan rule: "已存在或人工修
+    改的细纲不会被覆盖".
+    """
+    _seed_legacy_outline(
+        tmp_path,
+        chapters=[
+            {
+                "chapter_number": n,
+                "title": f"第{n}章",
+                "chapter_goal": "…",
+                "source": "legacy",
+            }
+            for n in (148, 149, 150)
+        ],
+    )
+    store = RollingOutlineStore(tmp_path)
+    written = store.apply_rolling_batch(
+        chapters=[_chapter(148), _chapter(149), _chapter(150)],
+        expected_chapter_numbers=[148, 149, 150],
+        volume_range=(140, 160),
+    )
+    assert written == []
+    # No rolling outline was written.
+    assert not (tmp_path / ".story-system" / "outline-generation" / "rolling_outline.json").exists()
 
 
 def test_rolling_store_writes_rolling_fill_log(tmp_path: Path) -> None:
     """Every successful batch writes a JSON log to
     ``.story-system/outline-generation/rolling_fill_log.json``
     that records the chapter numbers filled, the volume
-    range, and the timestamp. The log is the audit trail
-    the operator can read to see which chapters were
-    auto-generated.
+    range, and the timestamp.
     """
     store = RollingOutlineStore(tmp_path)
     store.apply_rolling_batch(
@@ -179,10 +238,6 @@ def test_rolling_store_writes_rolling_fill_log(tmp_path: Path) -> None:
     )
     assert log_path.is_file()
     log = json.loads(log_path.read_text(encoding="utf-8"))
-    # The log records the latest batch under
-    # ``last_chapter_numbers`` and the full history under
-    # ``rows``. The test asserts both shapes are
-    # populated correctly.
     assert log["last_chapter_numbers"] == [148, 149]
     assert log["last_status"] == "filled"
     assert isinstance(log["rows"], list)
@@ -197,20 +252,15 @@ def test_rolling_store_writes_rolling_fill_log(tmp_path: Path) -> None:
 
 
 def test_rolling_store_creates_backup_before_overwrite(tmp_path: Path) -> None:
-    """A batch that overwrites an existing outline must
-    copy the previous outline to
+    """A batch that overwrites an existing rolling
+    outline must copy the previous outline to
     ``.story-system/outline-generation/backup/{ts}.json``
-    before the new write. The plan rule: "保留旧大纲备份".
+    before the new write.
     """
-    _seed_outline(
+    _seed_rolling_outline(
         tmp_path,
         chapters=[
-            {
-                "chapter_number": 148,
-                "title": "老章",
-                "chapter_goal": "…",
-                "source": "legacy",
-            }
+            _chapter(148),
         ],
     )
     store = RollingOutlineStore(tmp_path)
@@ -224,8 +274,9 @@ def test_rolling_store_creates_backup_before_overwrite(tmp_path: Path) -> None:
     assert backup_dir.is_dir()
     backups = sorted(backup_dir.glob("*.json"))
     assert len(backups) >= 1
-    # The backup must preserve the legacy chapter so the
-    # operator can recover if a later change is wrong.
+    # The backup must preserve the previous chapter so
+    # the operator can recover if a later change is
+    # wrong.
     backup_payload = json.loads(backups[0].read_text(encoding="utf-8"))
     backup_numbers = [int(c["chapter_number"]) for c in backup_payload["chapters"]]
     assert 148 in backup_numbers
@@ -250,12 +301,14 @@ def test_rolling_store_uses_atomic_write_so_outline_is_never_partial(
         volume_range=(140, 160),
     )
 
-    target = tmp_path / ".webnovel" / "outline.json"
+    target = (
+        tmp_path / ".story-system" / "outline-generation" / "rolling_outline.json"
+    )
     # No leftover ``.tmp`` file in the same directory
     # would be a sign of a non-atomic write that crashed
     # mid-rename.
     siblings = list(target.parent.iterdir())
-    leftovers = [p for p in siblings if p.name.startswith(".outline.json")]
+    leftovers = [p for p in siblings if p.name.startswith(".rolling_outline.json")]
     assert leftovers == [], (
         f"atomic write left leftover temp files: {leftovers}"
     )
@@ -272,38 +325,36 @@ def test_rolling_store_rejects_batch_with_wrong_chapter_number(
     tmp_path: Path,
 ) -> None:
     """A batch whose chapter number does not match the
-    expected list is rejected wholesale. The plan rule:
-    "细纲返回缺字段、章节号错位或越过当前卷范围时，
-    拒绝保存" — the on-disk outline must not change.
+    expected list is rejected wholesale.
     """
-    _seed_outline(
-        tmp_path,
-        chapters=[
-            {
-                "chapter_number": 148,
-                "title": "老章",
-                "chapter_goal": "…",
-                "source": "legacy",
-            }
-        ],
-    )
-    store = RollingOutlineStore(tmp_path)
-    pre_outline = json.loads(
-        (tmp_path / ".webnovel" / "outline.json").read_text(encoding="utf-8")
+    _seed_rolling_outline(tmp_path, chapters=[_chapter(148)])
+    pre_rolling = json.loads(
+        (
+            tmp_path
+            / ".story-system"
+            / "outline-generation"
+            / "rolling_outline.json"
+        ).read_text(encoding="utf-8")
     )
 
     bad_chapter = _chapter(150)  # claims 150 but slot 0 is 149
     with pytest.raises(RollingValidationError):
+        store = RollingOutlineStore(tmp_path)
         store.apply_rolling_batch(
             chapters=[bad_chapter],
             expected_chapter_numbers=[149],
             volume_range=(140, 160),
         )
 
-    post_outline = json.loads(
-        (tmp_path / ".webnovel" / "outline.json").read_text(encoding="utf-8")
+    post_rolling = json.loads(
+        (
+            tmp_path
+            / ".story-system"
+            / "outline-generation"
+            / "rolling_outline.json"
+        ).read_text(encoding="utf-8")
     )
-    assert post_outline == pre_outline
+    assert post_rolling == pre_rolling
 
 
 def test_rolling_store_rejects_partial_success_keeping_disk_unchanged(
@@ -311,50 +362,45 @@ def test_rolling_store_rejects_partial_success_keeping_disk_unchanged(
 ) -> None:
     """A batch where the second chapter fails validation
     must not leave the first chapter partially written.
-    The plan rule: "部分章节生成成功、部分失败时不写入".
     """
-    _seed_outline(
-        tmp_path,
-        chapters=[
-            {
-                "chapter_number": 148,
-                "title": "老章",
-                "chapter_goal": "…",
-                "source": "legacy",
-            }
-        ],
-    )
-    store = RollingOutlineStore(tmp_path)
-    pre_outline = json.loads(
-        (tmp_path / ".webnovel" / "outline.json").read_text(encoding="utf-8")
+    _seed_rolling_outline(tmp_path, chapters=[_chapter(148)])
+    pre_rolling = json.loads(
+        (
+            tmp_path
+            / ".story-system"
+            / "outline-generation"
+            / "rolling_outline.json"
+        ).read_text(encoding="utf-8")
     )
 
     good = _chapter(149)
     bad = _chapter(150)
     del bad["hook"]  # break the second chapter
     with pytest.raises(RollingValidationError):
+        store = RollingOutlineStore(tmp_path)
         store.apply_rolling_batch(
             chapters=[good, bad],
             expected_chapter_numbers=[149, 150],
             volume_range=(140, 160),
         )
 
-    post_outline = json.loads(
-        (tmp_path / ".webnovel" / "outline.json").read_text(encoding="utf-8")
+    post_rolling = json.loads(
+        (
+            tmp_path
+            / ".story-system"
+            / "outline-generation"
+            / "rolling_outline.json"
+        ).read_text(encoding="utf-8")
     )
-    # Neither new chapter landed — the outline is
-    # byte-identical to the pre-call payload.
-    assert post_outline == pre_outline
+    assert post_rolling == pre_rolling
 
 
 def test_rolling_store_rejects_batch_with_chapter_outside_volume(
     tmp_path: Path,
 ) -> None:
     """A batch that includes a chapter past the volume's
-    end is rejected. The plan rule explicitly forbids
-    cross-volume outline writes.
+    end is rejected.
     """
-    _seed_outline(tmp_path, chapters=[])
     store = RollingOutlineStore(tmp_path)
     with pytest.raises(RollingValidationError):
         store.apply_rolling_batch(
@@ -368,7 +414,7 @@ def test_rolling_store_rejects_batch_with_chapter_outside_volume(
 
 
 def test_rolling_store_writes_outline_when_no_previous_file(tmp_path: Path) -> None:
-    """A project that has never had an ``outline.json`` on
+    """A project that has never had a rolling outline on
     disk gets a fresh file written from scratch. The
     store does not require a pre-existing outline to
     bootstrap the file.
@@ -379,45 +425,41 @@ def test_rolling_store_writes_outline_when_no_previous_file(tmp_path: Path) -> N
         expected_chapter_numbers=[1, 2],
         volume_range=(1, 10),
     )
-    target = tmp_path / ".webnovel" / "outline.json"
+    target = (
+        tmp_path / ".story-system" / "outline-generation" / "rolling_outline.json"
+    )
     assert target.is_file()
     on_disk = json.loads(target.read_text(encoding="utf-8"))
     assert [int(c["chapter_number"]) for c in on_disk["chapters"]] == [1, 2]
 
 
-def test_rolling_store_idempotent_for_already_present_chapters(
+def test_rolling_store_idempotent_for_already_present_rolling_chapters(
     tmp_path: Path,
 ) -> None:
-    """Re-applying a batch whose chapters are already on
-    disk is a no-op (the chapters are already filled).
-    The store does not duplicate rows or rewrite their
-    ``source`` marker.
+    """Re-applying a batch whose chapters are already in
+    the rolling outline is a no-op.
     """
-    _seed_outline(
-        tmp_path,
-        chapters=[
-            {
-                "chapter_number": n,
-                "title": f"第{n}章",
-                "chapter_goal": "…",
-                "source": "generated",
-            }
-            for n in (148, 149, 150)
-        ],
-    )
+    seeded = []
+    for n in (148, 149, 150):
+        chapter = _chapter(n)
+        chapter["source"] = "generated"
+        seeded.append(chapter)
+    _seed_rolling_outline(tmp_path, chapters=seeded)
     store = RollingOutlineStore(tmp_path)
     written = store.apply_rolling_batch(
         chapters=[_chapter(148), _chapter(149), _chapter(150)],
         expected_chapter_numbers=[148, 149, 150],
         volume_range=(140, 160),
     )
-    # The store reports nothing to write because the
-    # chapters are already present.
     assert written == []
     on_disk = json.loads(
-        (tmp_path / ".webnovel" / "outline.json").read_text(encoding="utf-8")
+        (
+            tmp_path
+            / ".story-system"
+            / "outline-generation"
+            / "rolling_outline.json"
+        ).read_text(encoding="utf-8")
     )
-    # No duplicate rows.
     numbers = [int(c["chapter_number"]) for c in on_disk["chapters"]]
     assert numbers == [148, 149, 150]
     # The pre-existing ``generated`` source marker is

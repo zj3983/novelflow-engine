@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -136,7 +137,8 @@ def post_json_via_antigravity_cli(
             "--disable-slash-commands",
         ]
         reasoning_effort = str(payload.get("reasoning_effort") or "").strip().lower()
-        if reasoning_effort in {"low", "medium", "high"}:
+        model_encodes_effort = re.search(r"-(?:low|medium|high)$", model.lower()) is not None
+        if reasoning_effort in {"low", "medium", "high"} and not model_encodes_effort:
             args.extend(["--effort", reasoning_effort])
         completed = _run(
             command or "agy",

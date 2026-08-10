@@ -112,6 +112,7 @@ class WriterContext(BaseModel):
     # one).
     project_title: str = ""
     genre: str = ""
+    rewrite_guidance: str = ""
     previous_tail: str = ""
     continuity_facts: list[dict[str, Any]] = Field(default_factory=list)
     character_cards: list[dict[str, Any]] = Field(default_factory=list)

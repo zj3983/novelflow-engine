@@ -6,6 +6,7 @@ from typing import Any
 
 from packages.story_core.attribute_allocation import parse_level, planned_level_target
 from packages.story_core.book_style import book_style_prompt
+from packages.story_core.chapter_length_policy import CHAPTER_TARGET_MIN_CHARS
 from packages.story_core.web_game_economy import opening_market_exchange_flow_lines
 
 
@@ -184,7 +185,9 @@ def _target_chars_text(plan: dict[str, Any]) -> str:
     return "按章节目标字数，正文要完整，不写摘要"
 
 
-def _target_chars_int(plan: dict[str, Any], fallback: int = 4200) -> int:
+def _target_chars_int(
+    plan: dict[str, Any], fallback: int = CHAPTER_TARGET_MIN_CHARS
+) -> int:
     target = plan.get("target_chars")
     if isinstance(target, dict):
         minimum = target.get("min")

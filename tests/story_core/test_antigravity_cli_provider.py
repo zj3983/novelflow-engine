@@ -22,7 +22,7 @@ def test_antigravity_cli_runs_isolated_single_output_request(monkeypatch):
 
     result = antigravity_cli_provider.post_json_via_antigravity_cli(
         {
-            "model": "gemini-3.6-flash-high",
+            "model": "gemini-3.1-pro",
             "messages": [{"role": "user", "content": "写一段"}],
             "reasoning_effort": "high",
         },
@@ -31,12 +31,38 @@ def test_antigravity_cli_runs_isolated_single_output_request(monkeypatch):
 
     args = captured["args"]
     assert args[:2] == ["agy-test", "--print"]
-    assert args[args.index("--model") + 1] == "gemini-3.6-flash-high"
+    assert args[args.index("--model") + 1] == "gemini-3.1-pro"
     assert args[args.index("--output-format") + 1] == "text"
     assert args[args.index("--effort") + 1] == "high"
     assert "--sandbox" in args
     assert Path(captured["cwd"]).name.startswith("novel_antigravity_")
     assert result["choices"][0]["message"]["content"] == "生成结果"
+
+
+def test_antigravity_cli_does_not_duplicate_effort_encoded_in_model(monkeypatch):
+    captured = {}
+
+    def fake_run(args, **_kwargs):
+        captured["args"] = args
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(
+        antigravity_cli_provider,
+        "_antigravity_command_prefix",
+        lambda command: [command],
+    )
+    monkeypatch.setattr(antigravity_cli_provider.subprocess, "run", fake_run)
+
+    antigravity_cli_provider.post_json_via_antigravity_cli(
+        {
+            "model": "gemini-3.1-pro-high",
+            "messages": [{"role": "user", "content": "write"}],
+            "reasoning_effort": "low",
+        },
+        command="agy-test",
+    )
+
+    assert "--effort" not in captured["args"]
 
 
 def test_antigravity_cli_models_are_read_from_command(monkeypatch):

@@ -12,6 +12,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from packages.story_core.chapter_length_policy import (
+    acceptance_chars as default_acceptance_chars,
+    target_chars as default_target_chars,
+)
 
 
 # --- Director ----------------------------------------------------------------
@@ -112,12 +116,14 @@ class WriterRequest(BaseModel):
     # length ranges to keep prose on the hard production target.
     project_title: str = ""
     genre: str = ""
+    rewrite_guidance: str = ""
     target_chars: dict[str, int] = Field(
-        default_factory=lambda: {"min": 4200, "max": 5500}
+        default_factory=default_target_chars
     )
     acceptance_chars: dict[str, int] = Field(
-        default_factory=lambda: {"min": 3800, "max": 6000}
+        default_factory=default_acceptance_chars
     )
+    repair_length: bool = False
     previous_tail: str = ""
     continuity_facts: list[Any] = Field(default_factory=list)
     character_cards: list[dict] = Field(default_factory=list)

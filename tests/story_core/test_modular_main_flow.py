@@ -199,7 +199,8 @@ def test_orchestrator_with_modular_agents_routes_main_entry(tmp_path: Path):
     # director agent itself ran via the outline shortcut.
     _seed_legacy_webnovel(project, with_outline=False)
     director_runtime = _StubDirectorRuntime()
-    writer_runtime = _StubWriterRuntime(body="林昭提灯上山，夜宿山腰。")
+    valid_body = "林昭提灯上山，夜宿山腰。" * 400
+    writer_runtime = _StubWriterRuntime(body=valid_body)
 
     orchestrator = StoryOrchestrator(
         use_modular_agents=True,
@@ -215,7 +216,7 @@ def test_orchestrator_with_modular_agents_routes_main_entry(tmp_path: Path):
     )
 
     assert isinstance(bundle, ChapterBundle)
-    assert bundle.body == "林昭提灯上山，夜宿山腰。"
+    assert bundle.body == valid_body
     assert bundle.chapter_number == 1
     # The bundle's quality_report carries the modular-pipeline
     # marker so the workbench can branch its rendering.

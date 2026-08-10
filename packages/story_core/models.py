@@ -621,6 +621,8 @@ class StoryState(BaseModel):
     monster_profiles: list[dict] = Field(default_factory=list)
     equipment_cards: list[dict] = Field(default_factory=list)
     world_facts: list[str] = Field(default_factory=list)
+    world_snapshot: dict = Field(default_factory=dict)
+    continuity_facts: list[dict] = Field(default_factory=list)
     progression_ledger: dict = Field(default_factory=dict)
     story_core: dict = Field(default_factory=dict, exclude=True)
     world_context: dict = Field(default_factory=dict, exclude=True)

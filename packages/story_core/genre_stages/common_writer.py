@@ -7,6 +7,10 @@ from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
 from packages.story_core.chapter_governance import governance_quality_gate
+from packages.story_core.chapter_length_policy import (
+    CHAPTER_TARGET_MAX_CHARS,
+    CHAPTER_TARGET_MIN_CHARS,
+)
 from packages.story_core.chapter_seed import build_chapter_seed
 from packages.story_core.character_profiles import normalize_speech_style_for_writing
 from packages.story_core.craft import is_game_story
@@ -289,11 +293,18 @@ def _plan_target_chars(plan: dict[str, Any] | None) -> str:
         amount = int(target)
     except (TypeError, ValueError):
         amount = 0
-    if amount < 4200:
-        return "4200到5000字，绝对不要超过5500字"
+    if amount < CHAPTER_TARGET_MIN_CHARS:
+        return (
+            f"{CHAPTER_TARGET_MIN_CHARS}到5000字，"
+            f"绝对不要超过{CHAPTER_TARGET_MAX_CHARS}字"
+        )
     if amount > 5200:
-        return "5000到5400字，绝对不要超过5500字"
-    return f"{max(4200, amount - 300)}到{min(5400, amount + 300)}字，绝对不要超过5500字"
+        return f"5000到5400字，绝对不要超过{CHAPTER_TARGET_MAX_CHARS}字"
+    return (
+        f"{max(CHAPTER_TARGET_MIN_CHARS, amount - 300)}到"
+        f"{min(5400, amount + 300)}字，"
+        f"绝对不要超过{CHAPTER_TARGET_MAX_CHARS}字"
+    )
 
 
 def _writer_output_section(chapter_number: int, plan: dict[str, Any]) -> list[str]:

@@ -74,6 +74,29 @@ class _RecordingDesigner:
         return CanonEntity.model_validate(payload)
 
 
+def test_prepare_requirements_designs_transient_cards_without_mutating_canon() -> None:
+    registry = CanonRegistry.empty()
+    designer = _RecordingDesigner()
+    service = CanonService(registry=registry, designer=designer)
+
+    prepared = service.prepare_requirements(
+        [
+            EntityRequirement(
+                kind="location",
+                name="North Gate",
+                importance=7,
+                notes="The meeting place for this chapter",
+            )
+        ]
+    )
+
+    assert len(prepared) == 1
+    assert prepared[0].display_name == "North Gate"
+    assert prepared[0].lifecycle == "proposed"
+    assert prepared[0].extensions["summary"] == "The meeting place for this chapter"
+    assert registry.list_all() == []
+
+
 # --- 1. Named new character gets a concrete card ---------------------------
 
 

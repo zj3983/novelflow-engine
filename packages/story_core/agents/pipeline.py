@@ -45,6 +45,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+import hashlib
+import re
 from typing import Any
 
 from packages.story_core.agents.contracts import (
@@ -75,6 +77,13 @@ from packages.story_core.agents.consistency import (
 )
 from packages.story_core.canon.registry import CanonEntity
 from packages.story_core.canon.service import CanonService
+from packages.story_core.chapter_length_policy import (
+    CHAPTER_HARD_MAX_CHARS,
+    CHAPTER_HARD_MIN_CHARS,
+    acceptance_chars,
+    target_chars,
+)
+from packages.story_core.generation_progress import report_generation_progress
 from packages.story_core.context.director_context import (
     DirectorContext,
     build_director_context,
@@ -223,6 +232,8 @@ def _ensure_writer_context(
         return legacy
     return canonical.model_copy(
         update={
+            "project_title": canonical.project_title or legacy.project_title,
+            "genre": canonical.genre or legacy.genre,
             "previous_tail": canonical.previous_tail or legacy.previous_tail,
             "continuity_facts": (
                 canonical.continuity_facts or legacy.continuity_facts
@@ -355,6 +366,7 @@ def plan_director_artifact(
     project_root: Any,
     chapter_number: int,
     runtime: DirectorRuntime | None = None,
+    rewrite_guidance: str = "",
 ) -> DirectorPipelineResult:
     """Run the new director pipeline for ``chapter_number``.
 
@@ -376,6 +388,10 @@ def plan_director_artifact(
     context = _ensure_director_context(
         project_root=project_root, chapter_number=chapter_number
     )
+    if rewrite_guidance.strip():
+        context = context.model_copy(
+            update={"rewrite_guidance": rewrite_guidance.strip()}
+        )
     runtime = runtime or _default_director_runtime(project_root)
     provider, model = _resolved_stage_provider_model("director")
     agent = DirectorAgent(
@@ -395,6 +411,105 @@ def plan_director_artifact(
 # --- Writer pipeline ----------------------------------------------------------
 
 
+_SIMILE_MARKERS = ("仿佛", "如同", "犹如", "宛如", "就像", "像是")
+_REALM_PATTERN = re.compile(
+    r"(炼气|筑基|结丹|金丹|元婴|化神|洞天|登天)(?:期)?"
+    r"([一二三四五六七八九十百两\d]+)层"
+)
+
+
+def _plain_card(card: Any) -> dict[str, Any]:
+    if isinstance(card, dict):
+        return card
+    model_dump = getattr(card, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="json")
+        return dumped if isinstance(dumped, dict) else {}
+    return {}
+
+
+def _protagonist_card(cards: list[Any]) -> dict[str, Any] | None:
+    for raw_card in cards:
+        card = _plain_card(raw_card)
+        role_text = " ".join(
+            str(card.get(key) or "")
+            for key in ("role", "character_tier", "story_role")
+        )
+        if "主角" in role_text or "protagonist" in role_text.lower():
+            return card
+    return None
+
+
+def _realm_mentions(text: str) -> list[tuple[str, str]]:
+    return [(match.group(1), match.group(2)) for match in _REALM_PATTERN.finditer(text)]
+
+
+def _deterministic_prose_findings(
+    body: str,
+    character_cards: list[Any],
+    *,
+    rewrite_guidance: str = "",
+) -> list[ConsistencyFinding]:
+    """Catch a few objective draft defects without another model call."""
+    findings: list[ConsistencyFinding] = []
+    simile_count = sum(body.count(marker) for marker in _SIMILE_MARKERS)
+    if simile_count >= 8:
+        findings.append(
+            ConsistencyFinding(
+                code="style.simile_stacking",
+                message=f"正文使用了{simile_count}处显式比喻，密度过高，需要改成直接叙述。",
+                source="deterministic",
+                blocking=True,
+            )
+        )
+
+    limited_relief_required = "只缓解" in rewrite_guidance or "仅缓解" in rewrite_guidance
+    full_recovery_claimed = bool(
+        re.search(r"(?:完全|彻底)(?:化解|治愈|恢复)", body)
+    )
+    if limited_relief_required and full_recovery_claimed:
+        findings.append(
+            ConsistencyFinding(
+                code="canon.limited_effect_overstated",
+                message="本章要求效果仅为缓解，正文却写成完全恢复。",
+                source="deterministic",
+                blocking=True,
+            )
+        )
+
+    protagonist = _protagonist_card(character_cards)
+    if protagonist is None:
+        return findings
+    profile = protagonist.get("current_life_profile") or {}
+    current_state = protagonist.get("current_state") or {}
+    expected_text = " ".join(
+        str(value or "")
+        for value in (
+            profile.get("resources_and_ability") if isinstance(profile, dict) else "",
+            current_state.get("summary") if isinstance(current_state, dict) else current_state,
+        )
+    )
+    expected = _realm_mentions(expected_text)
+    if not expected:
+        return findings
+    expected_realm, expected_layer = expected[-1]
+    for actual_realm, actual_layer in _realm_mentions(body):
+        if actual_realm == expected_realm and actual_layer != expected_layer:
+            findings.append(
+                ConsistencyFinding(
+                    code="canon.protagonist_realm_drift",
+                    message=(
+                        f"主角角色卡为{expected_realm}{expected_layer}层，"
+                        f"正文却写成{actual_realm}{actual_layer}层。"
+                    ),
+                    source="deterministic",
+                    blocking=True,
+                )
+            )
+            break
+    return findings
+
+
 def run_writer(
     *,
     project_root: Any,
@@ -403,6 +518,7 @@ def run_writer(
     canon_registry: Any | None = None,
     runtime: WriterRuntime | None = None,
     consistency_runtime: ConsistencyRuntime | None = None,
+    rewrite_guidance: str = "",
 ) -> WriterPipelineResult:
     """Run the new writer pipeline for ``chapter_number``.
 
@@ -423,8 +539,13 @@ def run_writer(
         chapter_number=chapter_number,
         director_artifact=director_artifact,
     )
+    if rewrite_guidance.strip():
+        context = context.model_copy(
+            update={"rewrite_guidance": rewrite_guidance.strip()}
+        )
     canon = _ensure_canon_service(canon_registry, project_root)
-    preflight = _preflight_entities(canon, director_artifact)
+    preflight, prepared_entities = _preflight_entities(canon, director_artifact)
+    context = _add_prepared_entities_to_context(context, prepared_entities)
     runtime = runtime or _default_writer_runtime(project_root)
     request = _build_writer_request(
         context=context, director_artifact=director_artifact
@@ -438,26 +559,57 @@ def run_writer(
     # here so the candidate quality report shows the same
     # failure the confirmation will reject.
     consistency_findings: list[ConsistencyFinding] = []
+    consistency_findings.extend(
+        _deterministic_prose_findings(
+            result.body,
+            list(context.character_cards or []),
+            rewrite_guidance=rewrite_guidance,
+        )
+    )
+    if result.notes.startswith("rewrite_guidance_violation:"):
+        detail = result.notes.partition(":")[2].replace(",", "、")
+        consistency_findings.append(
+            ConsistencyFinding(
+                code="guidance.explicit_prohibition_violated",
+                message=f"正文仍包含本次写作指导明确禁止的细节：{detail}",
+                source="rewrite_guidance",
+                blocking=True,
+            )
+        )
+    elif result.notes.startswith("document_transcription:"):
+        detail = result.notes.partition(":")[2].replace(",", "、")
+        consistency_findings.append(
+            ConsistencyFinding(
+                code="style.document_transcription",
+                message=f"文书或面板字段照抄过多：{detail}",
+                source="writer",
+                blocking=False,
+            )
+        )
     body_chars = len("".join(result.body.split()))
-    if body_chars < int(request.acceptance_chars.get("min", 3800)):
+    if body_chars < int(
+        request.acceptance_chars.get("min", CHAPTER_HARD_MIN_CHARS)
+    ):
         consistency_findings.append(
             ConsistencyFinding(
                 code="chapter.length_too_short",
                 message=(
                     f"正文约{body_chars}字，低于"
-                    f"{request.acceptance_chars.get('min', 3800)}字。"
+                    f"{request.acceptance_chars.get('min', CHAPTER_HARD_MIN_CHARS)}字。"
                 ),
                 source="deterministic",
                 blocking=True,
             )
         )
-    elif body_chars > int(request.acceptance_chars.get("max", 6000)):
+    elif body_chars > int(
+        request.acceptance_chars.get("max", CHAPTER_HARD_MAX_CHARS)
+    ):
         consistency_findings.append(
             ConsistencyFinding(
                 code="chapter.length_too_long",
                 message=(
                     f"正文约{body_chars}字，超过"
-                    f"{request.acceptance_chars.get('max', 6000)}字。"
+                    f"{request.acceptance_chars.get('max', CHAPTER_HARD_MAX_CHARS)}字。"
                 ),
                 source="deterministic",
                 blocking=True,
@@ -630,10 +782,10 @@ def _ensure_canon_service(
 
     A real project can pass a live ``CanonRegistry``. Tests pass
     ``None`` to opt into a fresh, in-process registry. The
-    preflight path never calls :meth:`CanonService.ensure_requirements`
-    (which is the mutating variant that creates new entities) — the
-    side-effect-free count in :func:`_preflight_entities` only
-    queries the registry, so a no-op designer is enough.
+    preflight path calls the non-mutating
+    :meth:`CanonService.prepare_requirements` variant. Missing entities
+    become transient proposed cards for the writer, while the registry
+    stays unchanged until chapter confirmation.
     """
     if canon_registry is not None:
         registry = canon_registry
@@ -641,24 +793,49 @@ def _ensure_canon_service(
         from packages.story_core.canon.registry import CanonRegistry
 
         registry = CanonRegistry()
-    return CanonService(registry=registry, designer=_NullEntityDesigner())
+    return CanonService(registry=registry, designer=_RequirementEntityDesigner())
 
 
-class _NullEntityDesigner:
-    """No-op designer used by the preflight path.
+class _RequirementEntityDesigner:
+    """Build a small, genre-neutral proposed card from director output."""
 
-    The preflight in :func:`_preflight_entities` is side-effect-free
-    by design: it only counts how many requirements are already in
-    the registry. If a future call site needs to mutate the
-    registry during preflight it must pass an explicit designer;
-    the pipeline never invents cards on the user's behalf during
-    a chapter run.
-    """
-
-    def design(self, requirement: Any, registry: Any) -> Any:
-        raise RuntimeError(
-            "pipeline preflight must not call the designer; "
-            "pass an entity_designer explicitly to mutate canon"
+    def design(self, requirement: EntityRequirement, registry: Any) -> CanonEntity:
+        digest = hashlib.sha1(
+            f"{requirement.kind}:{requirement.name}".encode("utf-8")
+        ).hexdigest()[:10]
+        notes = requirement.notes.strip()
+        if requirement.kind == "character":
+            extensions: dict[str, Any] = {
+                "identity": notes,
+                "origin": "",
+                "age_or_age_range": "",
+                "occupation_or_role": "",
+                "present_goal": notes,
+                "fear_or_weakness": "",
+                "behavioral_habits": "",
+                "speech_tendency": "",
+                "relationships": [],
+                "knowledge_boundary": [],
+                "current_state": notes,
+                "change_arc": "",
+            }
+        elif requirement.kind in {"equipment", "technique"}:
+            extensions = {
+                "effect": notes,
+                "limitation": "",
+                "cost": "",
+                "owner": "",
+                "provenance": "",
+                "plot_function": notes,
+            }
+        else:
+            extensions = {"summary": notes}
+        return CanonEntity(
+            entity_id=f"{requirement.kind}-{digest}",
+            kind=requirement.kind,
+            display_name=requirement.name,
+            lifecycle="proposed",
+            extensions=extensions,
         )
 
 
@@ -694,28 +871,25 @@ def _entity_to_dict(entity: CanonEntity) -> dict[str, Any]:
 def _preflight_entities(
     canon: CanonService,
     director_artifact: DirectorArtifact,
-) -> dict[str, Any]:
-    """Run the entity preflight and return a small summary.
+) -> tuple[dict[str, Any], list[CanonEntity]]:
+    """Prepare transient cards and return a workbench summary.
 
-    The preflight is **side-effect-free by design**: it only counts
-    how many of the director's requirements are already in the
-    registry, how many are missing (and would need to be created
-    at confirmation time), and how many are inline minor roles
-    the pipeline silently skips. The mutating
-    :meth:`CanonService.ensure_requirements` is deliberately *not*
-    called here because confirmation is the only place the user
-    can approve new canon.
+    Designed cards are passed to the writer but are not persisted.
+    Confirmation remains the only path that can change canon.
     """
     requirements = list(director_artifact.entity_requirements or [])
     if not requirements:
-        return {
-            "requested": 0,
-            "existing": 0,
-            "missing": 0,
-            "skipped": 0,
-        }
+        return (
+            {
+                "requested": 0,
+                "existing": 0,
+                "prepared": 0,
+                "missing": 0,
+                "skipped": 0,
+            },
+            [],
+        )
     existing = 0
-    missing = 0
     skipped = 0
     for req in requirements:
         if req.inline_minor:
@@ -723,14 +897,120 @@ def _preflight_entities(
             continue
         if canon.registry.resolve(req.name, req.kind) is not None:
             existing += 1
-        else:
-            missing += 1
-    return {
-        "requested": len(requirements),
-        "existing": existing,
-        "missing": missing,
-        "skipped": skipped,
+    contextual_requirements = [
+        _requirement_with_scene_context(req, director_artifact)
+        for req in requirements
+    ]
+    prepared_entities = canon.prepare_requirements(contextual_requirements)
+    prepared = len(prepared_entities) - existing
+    return (
+        {
+            "requested": len(requirements),
+            "existing": existing,
+            "prepared": prepared,
+            "missing": 0,
+            "skipped": skipped,
+        },
+        prepared_entities,
+    )
+
+
+def _requirement_with_scene_context(
+    requirement: EntityRequirement,
+    artifact: DirectorArtifact,
+) -> EntityRequirement:
+    """Fill an omitted entity note from the beats that mention it."""
+    if requirement.notes.strip() or requirement.inline_minor:
+        return requirement
+    snippets: list[str] = []
+    for beat in artifact.scene_beats:
+        fields = (beat.location, beat.action, beat.result)
+        if requirement.name not in " ".join(fields):
+            continue
+        for value in (beat.action, beat.result):
+            text = str(value).strip()
+            if text and text not in snippets:
+                snippets.append(text)
+    if not snippets:
+        kind_label = {
+            "character": "角色",
+            "item": "物品",
+            "equipment": "装备",
+            "technique": "技能或功法",
+            "location": "地点",
+            "organization": "组织",
+            "quest": "任务",
+            "monster": "怪物",
+            "rule": "规则",
+        }.get(requirement.kind, "实体")
+        snippets.append(f"本章场景中出现的{kind_label}。")
+    notes = "；".join(snippets)[:220]
+    return requirement.model_copy(update={"notes": notes})
+
+
+def _add_prepared_entities_to_context(
+    context: WriterContext,
+    entities: list[CanonEntity],
+) -> WriterContext:
+    """Merge transient entity cards into the writer-only context."""
+    characters = list(context.character_cards)
+    entity_cards = list(context.entity_cards)
+    known_characters = {
+        str(card.get("name") or "").strip() for card in characters
     }
+    known_entities = {
+        (str(card.get("kind") or ""), str(card.get("name") or "").strip())
+        for card in entity_cards
+    }
+    for entity in entities:
+        extensions = dict(entity.extensions or {})
+        name = entity.display_name
+        if entity.kind == "character":
+            if name in known_characters:
+                continue
+            characters.append(
+                {
+                    "id": entity.entity_id,
+                    "name": name,
+                    "role": extensions.get("occupation_or_role") or "本章角色",
+                    "lifecycle": entity.lifecycle,
+                    "identity_profile": {
+                        "current_identity": extensions.get("identity") or "",
+                        "occupation": extensions.get("occupation_or_role") or "",
+                    },
+                    "performance_profile": {
+                        "speech_style": extensions.get("speech_tendency") or "",
+                    },
+                    "knowledge_boundary": list(
+                        extensions.get("knowledge_boundary") or []
+                    ),
+                    "current_state": extensions.get("current_state") or "",
+                }
+            )
+            known_characters.add(name)
+            continue
+        key = (entity.kind, name)
+        if key in known_entities:
+            continue
+        summary = str(
+            extensions.get("summary")
+            or extensions.get("plot_function")
+            or extensions.get("effect")
+            or ""
+        )
+        entity_cards.append(
+            {
+                "id": entity.entity_id,
+                "kind": entity.kind,
+                "name": name,
+                "summary": summary,
+                "lifecycle": entity.lifecycle,
+            }
+        )
+        known_entities.add(key)
+    return context.model_copy(
+        update={"character_cards": characters, "entity_cards": entity_cards}
+    )
 
 
 def _build_writer_request(
@@ -744,13 +1024,15 @@ def _build_writer_request(
         director_artifact=director_artifact,
         project_title=context.project_title,
         genre=context.genre,
+        rewrite_guidance=context.rewrite_guidance,
         # Production length policy. The writer prompt prints these
         # numbers as the hard range so the model cannot drift into
         # an unpublishable 2k chapter; the post-write deterministic
         # check (in ``run_writer``) blocks short bodies from
         # becoming candidates.
-        target_chars={"min": 4200, "max": 5500},
-        acceptance_chars={"min": 3800, "max": 6000},
+        target_chars=target_chars(),
+        acceptance_chars=acceptance_chars(),
+        repair_length=True,
         previous_tail=context.previous_tail,
         continuity_facts=list(context.continuity_facts),
         character_cards=list(context.character_cards),
@@ -774,6 +1056,7 @@ def run_modular_pipeline(
     canon_registry: Any | None = None,
     workflow_store: Any | None = None,
     job_id: str | None = None,
+    rewrite_guidance: str = "",
 ) -> ModularChapterBundle:
     """Run Director -> CanonService -> Writer -> FactExtractor end-to-end.
 
@@ -787,8 +1070,8 @@ def run_modular_pipeline(
 
     1. Builds a :class:`DirectorContext` (canonical-first, legacy
        fallback) and runs the new :class:`DirectorAgent`.
-    2. Builds a :class:`WriterContext`, calls the canon
-       entity preflight (side-effect-free), then runs the new
+    2. Builds a :class:`WriterContext`, prepares transient canon cards
+       without mutating the registry, then runs the new
        :class:`WriterAgent` to render the prose.
     3. Runs the deterministic :class:`FactExtractor` over the body
        so the candidate can carry a :class:`ContinuityDelta` into
@@ -814,11 +1097,57 @@ def run_modular_pipeline(
         record_writer_stage,
     )
 
+    report_generation_progress(
+        {
+            "message": "导演正在读取大纲、连续性和角色卡",
+            "stage": "director",
+            "source": "modular-pipeline",
+            "artifact": {
+                "reason": "stage_started",
+                "inputs": {"chapter_number": chapter_number},
+                "used_modules": ["outline", "continuity", "character_cards"],
+            },
+        }
+    )
     director_started = _time.monotonic()
     director_result = plan_director_artifact(
         project_root=project_root,
         chapter_number=chapter_number,
         runtime=director_runtime,
+        rewrite_guidance=rewrite_guidance,
+    )
+    report_generation_progress(
+        {
+            "message": "导演已产出章节节拍和实体要求",
+            "status": "done",
+            "stage": "director",
+            "source": "modular-pipeline",
+            "artifact": {
+                "reason": "stage_completed",
+                "outputs": {
+                    "scene_beats": len(director_result.artifact.scene_beats),
+                    "entity_requirements": len(
+                        director_result.artifact.entity_requirements
+                    ),
+                },
+            },
+        }
+    )
+    report_generation_progress(
+        {
+            "message": "写手正在准备实体卡并组装写作上下文",
+            "stage": "writer",
+            "source": "modular-pipeline",
+            "artifact": {
+                "reason": "stage_started",
+                "used_modules": [
+                    "director_artifact",
+                    "character_cards",
+                    "entity_preflight",
+                    "world_rules",
+                ],
+            },
+        }
     )
     writer_started = _time.monotonic()
     writer_result = run_writer(
@@ -828,6 +1157,33 @@ def run_modular_pipeline(
         canon_registry=canon_registry,
         runtime=writer_runtime,
         consistency_runtime=consistency_runtime,
+        rewrite_guidance=rewrite_guidance,
+    )
+    report_generation_progress(
+        {
+            "message": "写手已产出正文",
+            "status": "done",
+            "stage": "writer",
+            "source": "modular-pipeline",
+            "artifact": {
+                "reason": "stage_completed",
+                "outputs": {
+                    "body_chars": len("".join(writer_result.body.split())),
+                    "canon_preflight": dict(writer_result.canon_preflight or {}),
+                },
+            },
+        }
+    )
+    report_generation_progress(
+        {
+            "message": "事实审稿正在提取正文中的状态变化",
+            "stage": "fact_extractor",
+            "source": "modular-pipeline",
+            "artifact": {
+                "reason": "stage_started",
+                "used_modules": ["chapter_body", "canon_view"],
+            },
+        }
     )
     extractor_started = _time.monotonic()
     if fact_extractor is None:
@@ -840,6 +1196,22 @@ def run_modular_pipeline(
                 _ensure_canon_service(canon_registry, project_root)
             ),
         )
+    )
+    report_generation_progress(
+        {
+            "message": "事实审稿已产出连续性变更",
+            "status": "done",
+            "stage": "fact_extractor",
+            "source": "modular-pipeline",
+            "artifact": {
+                "reason": "stage_completed",
+                "outputs": {
+                    "chapter_number": delta.chapter_number,
+                    "entity_additions": len(delta.entity_additions),
+                    "entity_updates": len(delta.entity_updates),
+                },
+            },
+        }
     )
 
     if workflow_store is not None:

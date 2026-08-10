@@ -65,6 +65,11 @@ class _Response:
     payload: dict[str, Any]
 
 
+@dataclass
+class _TextResponse:
+    text: str
+
+
 def _executable_director_payload(
     *,
     chapter_goal: str = "天黑前到达驿站",
@@ -153,6 +158,56 @@ def test_director_agent_returns_director_artifact_not_prose(tmp_path: Path) -> N
     # Prose would be a long Chinese paragraph; the artifact body
     # is structured fields only.
     assert not hasattr(artifact, "body")
+    assert "每项都要填写 notes" in runtime.requests[0].prompt
+
+
+def test_director_agent_accepts_json_fenced_text_response(tmp_path: Path) -> None:
+    payload = _executable_director_payload()
+
+    @dataclass
+    class _FencedRuntime:
+        def complete(self, request: Any) -> Any:
+            return _TextResponse(
+                text="```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
+            )
+
+    agent = DirectorAgent(runtime=_FencedRuntime(), project_root=tmp_path)
+
+    artifact = agent.plan(_context_with_outline(chapter_number=7))
+
+    assert artifact.chapter_number == 7
+    assert len(artifact.scene_beats) == 2
+
+
+def test_director_agent_retries_once_after_transient_provider_failure(
+    tmp_path: Path,
+) -> None:
+    @dataclass
+    class _TransientRuntime:
+        call_count: int = 0
+
+        def complete(self, request: Any) -> Any:
+            self.call_count += 1
+            if self.call_count == 1:
+                return type(
+                    "FailedResponse",
+                    (),
+                    {
+                        "ok": False,
+                        "error": "provider_unavailable",
+                        "text": "",
+                        "payload": {},
+                    },
+                )()
+            return _Response(payload=_executable_director_payload())
+
+    runtime = _TransientRuntime()
+    agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
+
+    artifact = agent.plan(_context_with_outline(chapter_number=7))
+
+    assert runtime.call_count == 2
+    assert len(artifact.scene_beats) == 2
 
 
 def test_director_uses_target_outline_as_input_instead_of_returning_it_verbatim(

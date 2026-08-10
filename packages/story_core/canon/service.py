@@ -110,6 +110,37 @@ class CanonService:
             created.append(persisted)
         return created
 
+    def prepare_requirements(
+        self,
+        requirements: Iterable[EntityRequirement],
+    ) -> list[CanonEntity]:
+        """Resolve or design transient cards for a writer run.
+
+        Unlike :meth:`ensure_requirements`, this method never promotes or
+        persists anything. It gives the writer concrete information for
+        entities introduced by the director while keeping confirmation as
+        the only operation that can change project canon.
+        """
+        prepared: list[CanonEntity] = []
+        for requirement in requirements:
+            if requirement.inline_minor:
+                continue
+            existing = self._registry.resolve(requirement.name, requirement.kind)
+            if existing is not None:
+                prepared.append(existing)
+                continue
+            card = self._designer.design(requirement, self._registry)
+            self._validate_card(card, requirement)
+            extensions = dict(card.extensions or {})
+            if requirement.notes.strip():
+                extensions.setdefault("summary", requirement.notes.strip())
+            prepared.append(
+                card.model_copy(
+                    update={"lifecycle": "proposed", "extensions": extensions}
+                )
+            )
+        return prepared
+
     # --- Internals -----------------------------------------------------------
 
     def _validate_card(

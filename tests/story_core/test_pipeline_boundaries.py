@@ -128,10 +128,13 @@ def test_director_prompt_construction_lives_under_agents_director():
         continuity_ledger=[],
         foreshadowing=[],
         character_cards=[],
+        rewrite_guidance="事故只保留关键结果，不展开伤情细节。",
     )
     sample = build_director_prompt(context)
     assert isinstance(sample, str)
     assert sample.strip()
+    assert "本次写作指导" in sample
+    assert "不展开伤情细节" in sample
 
 
 # --- No agent writes project files directly ----------------------------------

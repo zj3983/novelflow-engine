@@ -86,6 +86,27 @@ def test_consistency_runtime_failure_is_not_silent_pass() -> None:
     assert finding.blocking is True
 
 
+def test_consistency_gateway_failure_preserves_provider_error() -> None:
+    class FailedGatewayRuntime:
+        def complete(self, request: Any) -> Any:
+            return type(
+                "FailedResponse",
+                (),
+                {"ok": False, "error": "rate_limited", "text": "", "payload": {}},
+            )()
+
+    findings = focused_consistency_review(
+        "正文",
+        director_artifact=_artifact(),
+        active_facts=[],
+        runtime=FailedGatewayRuntime(),  # type: ignore[arg-type]
+    )
+
+    assert len(findings) == 1
+    assert findings[0].code == "consistency.unavailable"
+    assert "rate_limited" in findings[0].message
+
+
 def test_consistency_invalid_response_is_blocking() -> None:
     class GarbledRuntime:
         def complete(self, request: Any) -> Any:
@@ -100,6 +121,44 @@ def test_consistency_invalid_response_is_blocking() -> None:
     assert len(findings) == 1
     assert findings[0].code == "consistency.invalid_response"
     assert findings[0].blocking is True
+
+
+def test_consistency_accepts_prompt_contract_top_level_issue_list() -> None:
+    class ListRuntime:
+        def complete(self, request: Any) -> Any:
+            return _Response(text="[]", payload={})
+
+    findings = focused_consistency_review(
+        "正文",
+        director_artifact=_artifact(),
+        active_facts=[],
+        runtime=ListRuntime(),  # type: ignore[arg-type]
+    )
+
+    assert findings == []
+
+
+def test_consistency_accepts_fenced_json_issue_list() -> None:
+    class FencedRuntime:
+        def complete(self, request: Any) -> Any:
+            return _Response(
+                text=(
+                    "```json\n"
+                    '[{"code":"state.conflict","message":"状态冲突",'
+                    '"blocking":true,"source":"角色卡"}]'
+                    "\n```"
+                ),
+                payload={},
+            )
+
+    findings = focused_consistency_review(
+        "正文",
+        director_artifact=_artifact(),
+        active_facts=[],
+        runtime=FencedRuntime(),  # type: ignore[arg-type]
+    )
+
+    assert [finding.code for finding in findings] == ["state.conflict"]
 
 
 def test_consistency_style_finding_is_advisory_not_blocking() -> None:
@@ -155,6 +214,34 @@ def test_consistency_factual_finding_defaults_to_blocking() -> None:
     assert len(findings) == 1
     assert findings[0].code == "equipment.contradiction"
     assert findings[0].blocking is True
+
+
+def test_consistency_director_execution_deviation_is_advisory() -> None:
+    class PlanDeviationRuntime:
+        def complete(self, request: Any) -> Any:
+            return _Response(
+                text="",
+                payload={
+                    "issues": [
+                        {
+                            "code": "conflict",
+                            "message": "正文调整了角色离开现场的时机。",
+                            "blocking": True,
+                            "source": "收尾状态",
+                        }
+                    ]
+                },
+            )
+
+    findings = focused_consistency_review(
+        "正文",
+        director_artifact=_artifact(),
+        active_facts=[],
+        runtime=PlanDeviationRuntime(),  # type: ignore[arg-type]
+    )
+
+    assert len(findings) == 1
+    assert findings[0].blocking is False
 
 
 # --- Stage-routed runtime ---------------------------------------------------
@@ -220,6 +307,36 @@ def test_gateway_consistency_runtime_routes_through_consistency_stage(
     assert request.operation == "consistency"
     assert request.provider == "openai"
     assert request.model == "gpt-consistency"
+
+
+def test_model_gateway_maps_consistency_to_writer_runtime_binding() -> None:
+    from packages.story_core.model_gateway import RuntimeModelGateway
+    from packages.story_core.model_gateway.contracts import ModelRequest
+
+    class _Settings:
+        provider_id = "openai"
+        model = "gpt-consistency"
+        temperature = 0.2
+        protocol = "openai"
+
+    seen: list[str] = []
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda stage: seen.append(stage) or _Settings()
+    )
+    gateway.complete_resolved = lambda settings, request: "ok"  # type: ignore[method-assign]
+
+    response = gateway.complete_stage(
+        "consistency",  # type: ignore[arg-type]
+        ModelRequest(
+            prompt="检查",
+            provider="",
+            model="",
+            operation="consistency",
+        ),
+    )
+
+    assert response == "ok"
+    assert seen == ["writer"]
 
 
 def test_gateway_consistency_runtime_records_resolved_provider_model_and_prompt(

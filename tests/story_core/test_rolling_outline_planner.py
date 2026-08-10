@@ -167,11 +167,26 @@ def test_planner_fills_window_when_target_outline_missing(tmp_path: Path) -> Non
     assert status.kind == "filled"
     assert sorted(status.chapter_numbers) == [148, 149, 150, 151, 152]
     assert generator.requests == [148, 149, 150, 151, 152]
-    on_disk = json.loads(
-        (tmp_path / ".webnovel" / "outline.json").read_text(encoding="utf-8")
+    # The rolling outline lives in a separate file
+    # under ``.story-system/outline-generation/`` so the
+    # legacy ``.webnovel/outline.json`` stays untouched.
+    rolling_path = (
+        tmp_path
+        / ".story-system"
+        / "outline-generation"
+        / "rolling_outline.json"
     )
+    on_disk = json.loads(rolling_path.read_text(encoding="utf-8"))
     numbers = [int(c["chapter_number"]) for c in on_disk["chapters"]]
     assert numbers == [148, 149, 150, 151, 152]
+    # The legacy outline is NOT modified by the rolling
+    # fill — the file may pre-exist (empty chapters) but
+    # its content is byte-identical to the pre-call
+    # snapshot.
+    legacy_path = tmp_path / ".webnovel" / "outline.json"
+    if legacy_path.exists():
+        legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+        assert legacy.get("chapters") == []
 
 
 def test_planner_extends_partial_window_to_full(tmp_path: Path) -> None:

@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+from packages.story_core.chapter_length_policy import (
+    CHAPTER_HARD_MAX_CHARS,
+    CHAPTER_HARD_MIN_CHARS,
+    CHAPTER_TARGET_MAX_CHARS,
+    CHAPTER_TARGET_RANGE_TEXT,
+)
+
 
 def validate_bundle(bundle: dict) -> dict:
     issues: list[str] = []
     body = str(bundle.get("body") or "")
     compact_body = "".join(body.split())
-    target_min_chars = 3800
-    target_max_chars = 5500
-    hard_max_chars = target_max_chars + 500
+    target_min_chars = CHAPTER_HARD_MIN_CHARS
+    target_max_chars = CHAPTER_TARGET_MAX_CHARS
+    hard_max_chars = CHAPTER_HARD_MAX_CHARS
     enforce_min_chars = bool(
         bundle.get("enforce_target_chars")
         or bundle.get("manual_instructions")
@@ -48,6 +55,6 @@ def validate_bundle(bundle: dict) -> dict:
             "body_chars": len(compact_body),
             "target_min_chars": target_min_chars,
             "target_max_chars": target_max_chars,
-            "target_range": "4200到5500字",
+            "target_range": CHAPTER_TARGET_RANGE_TEXT,
         },
     }

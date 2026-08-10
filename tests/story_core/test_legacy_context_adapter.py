@@ -151,6 +151,34 @@ def test_legacy_active_characters_prefers_canonical_characters_dir(tmp_path):
     assert names == ["林昭"]
 
 
+def test_legacy_active_characters_normalizes_bracketed_inventory_keys(tmp_path):
+    _write(
+        tmp_path / ".webnovel" / "state.json",
+        {
+            "characters": [
+                {
+                    "name": "苏叶",
+                    "game_state": {
+                        "current": {
+                            "inventory": {
+                                "里静静堆叠着【灰狼毒腺": 7,
+                                "】与【粗糙狼皮": 7,
+                            }
+                        }
+                    },
+                }
+            ]
+        },
+    )
+
+    chars = legacy_active_characters(tmp_path / ".story-system")
+
+    assert chars[0]["game_state"]["current"]["inventory"] == {
+        "灰狼毒腺": 7,
+        "粗糙狼皮": 7,
+    }
+
+
 def test_legacy_previous_chapter_uses_state_summary(tmp_path):
     _write(
         tmp_path / ".webnovel" / "state.json",

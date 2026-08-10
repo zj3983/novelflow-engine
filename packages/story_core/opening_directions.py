@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -127,6 +128,17 @@ class GeneratedCentralMystery(_StrictOpeningModel):
     hidden_truth: str = Field(min_length=1, max_length=2000)
     reality_impact: str = Field(min_length=1, max_length=1000)
     reveal_path: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("reveal_path", mode="before")
+    @classmethod
+    def normalize_reveal_path(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        return [
+            part
+            for part in re.split(r"\s*(?:->|=>|→|➡)\s*", value.strip())
+            if part
+        ]
 
 
 class GeneratedInitialDrive(_StrictOpeningModel):

@@ -21,7 +21,7 @@ from packages.story_core.generation_progress import generation_progress
 
 
 def _long_body(tag: str) -> str:
-    return (f"{tag}章节。" * 800)[:8000]
+    return (f"{tag}章节。" * 800)[:5200]
 
 
 def _seed_and_confirm(

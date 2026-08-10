@@ -1079,7 +1079,7 @@ def test_over_length_body_is_fixed_in_single_revise_without_compression_model_ca
     constructor kwargs. Two assertions make the wiring regression
     fail loud:
 
-    1. ``hard_max_chars`` must equal ``MAX_CHAPTER_CHARS`` so
+    1. ``hard_max_chars`` must equal ``CHAPTER_HARD_MAX_CHARS`` so
        ``_run_length_check`` is configured to surface
        ``length.out_of_range`` on over-length bodies.
     2. The bounded controller must drive the body back into the
@@ -1185,8 +1185,8 @@ def test_over_length_body_is_fixed_in_single_revise_without_compression_model_ca
     # Wire check: the orchestrator must hand the production
     # hard ceiling to ``ReviewService`` so ``_run_length_check``
     # surfaces ``length.out_of_range`` on over-length bodies.
-    assert captured_kwargs.get("hard_max_chars") == orchestrator_module.MAX_CHAPTER_CHARS, (
-        "Orchestrator must wire hard_max_chars=MAX_CHAPTER_CHARS into "
+    assert captured_kwargs.get("hard_max_chars") == orchestrator_module.CHAPTER_HARD_MAX_CHARS, (
+        "Orchestrator must wire hard_max_chars=CHAPTER_HARD_MAX_CHARS into "
         f"ReviewService for the length check to surface length.out_of_range. "
         f"Got: {captured_kwargs.get('hard_max_chars')!r}"
     )

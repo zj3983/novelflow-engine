@@ -794,8 +794,11 @@ def test_generator_requests_one_compact_structured_plan() -> None:
     assert "五章" not in request["payload"]["messages"][0]["content"]
 
 
-@pytest.mark.parametrize("mode", ["initial", "regenerate"])
-def test_codexcli_full_plan_is_generated_in_three_bounded_phases(mode: str) -> None:
+@pytest.mark.parametrize(
+    "scenario",
+    ["initial", "regenerate_continuation", "regenerate_unstarted"],
+)
+def test_codexcli_full_plan_is_generated_in_three_bounded_phases(scenario: str) -> None:
     calls: list[dict] = []
     systems: list[str] = []
 
@@ -860,7 +863,8 @@ def test_codexcli_full_plan_is_generated_in_three_bounded_phases(mode: str) -> N
     )
 
     brief = _brief()
-    if mode == "regenerate":
+    mode = "initial" if scenario == "initial" else "regenerate"
+    if scenario == "regenerate_continuation":
         brief = brief.model_copy(
             update={
                 "current_chapter": 145,
@@ -881,11 +885,18 @@ def test_codexcli_full_plan_is_generated_in_three_bounded_phases(mode: str) -> N
     ]
     assert calls[0]["target_chapter_numbers"] == []
     assert "theme_statement" in systems[0]
+    assert "core_ending_chapter" in systems[0]
+    assert "extension_ceiling_chapter" in systems[0]
     assert "exactly three key_results" in systems[0]
+    assert "concrete personal name" in systems[0]
     assert "character cards" not in systems[0].lower()
+    assert any(
+        "concrete personal name" in rule
+        for rule in calls[1]["validation_rules"]
+    )
     expected_numbers = (
         list(range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1))
-        if mode == "initial"
+        if scenario in {"initial", "regenerate_unstarted"}
         else list(range(146, 156))
     )
     assert calls[2]["target_chapter_numbers"] == expected_numbers

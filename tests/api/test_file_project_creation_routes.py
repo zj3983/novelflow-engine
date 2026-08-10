@@ -175,6 +175,18 @@ def test_file_story_overview_returns_lightweight_chapter_index_without_hydration
     project = json.loads(project_path.read_text(encoding="utf-8"))
     project["seed_outline"] = "A buried transmitter wakes beneath the city."
     project_path.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    state_path = store.webnovel_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["world_snapshot"] = {"current_arc": "The transmitter is active."}
+    state["continuity_facts"] = [
+        {
+            "id": "fact-transmitter",
+            "text": "The transmitter sent one pulse.",
+            "source_chapter": 2,
+            "status": "active",
+        }
+    ]
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     _write_lazy_story_chapters(store)
     chapter_reads = []
     original_read_json = FileProjectStore._read_json
@@ -200,6 +212,8 @@ def test_file_story_overview_returns_lightweight_chapter_index_without_hydration
     assert story["chapter_count"] == 2
     assert story["total_body_chars"] == len("alphabeta") + len("gammadeltaepsilon")
     assert story["current_chapter"] == 2
+    assert story["world_snapshot"] == {"current_arc": "The transmitter is active."}
+    assert story["continuity_facts"][0]["text"] == "The transmitter sent one pulse."
     assert [chapter["chapter_number"] for chapter in story["chapters"]] == [1, 2]
     assert story["chapters"][1]["has_quality_report"] is True
     assert all("body" not in chapter for chapter in story["chapters"])

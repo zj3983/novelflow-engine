@@ -4,9 +4,11 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from packages.story_core.agent_base import LONGFORM_FACT_PREFIXES, compact_list, compact_text
+from packages.story_core.agent_base import compact_list, compact_text
 from packages.story_core.attribute_allocation import attribute_allocation_context
+from packages.story_core.chapter_length_policy import target_chars
 from packages.story_core.chapter_governance import build_chapter_governance, governance_quality_gate
+from packages.story_core.world_state import normalize_world_context, relevant_continuity_facts
 from packages.story_core.dual_state import project_character_for_scene, scene_kind_for_cards
 from packages.story_core.memory import build_character_cards
 from packages.story_core.power_systems import power_system_prompt_slice
@@ -596,11 +598,18 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
 
     target_chapter = int(chapter_number or getattr(bundle, "chapter_number", None) or (getattr(story, "current_chapter", 0) + 1))
     game_genre = is_game_story(story)
-    raw_world_facts = getattr(story, "world_facts", []) or []
-    world_facts = _as_list(
-        [fact for fact in raw_world_facts if not str(fact).startswith(LONGFORM_FACT_PREFIXES)],
-        max_items=28,
-        item_chars=140,
+    normalized_world = normalize_world_context(
+        blueprint=getattr(story, "world_context", {}),
+        state={
+            "world_facts": getattr(story, "world_facts", []) or [],
+            "world_snapshot": getattr(story, "world_snapshot", {}) or {},
+            "continuity_facts": getattr(story, "continuity_facts", []) or [],
+        },
+    )
+    continuity_facts = relevant_continuity_facts(
+        normalized_world.continuity_facts,
+        query_terms=re.findall(r"[\u4e00-\u9fffA-Za-z0-9_]{2,16}", str(getattr(story, "outline", ""))),
+        limit=12,
     )
     author_constraints = _as_list(getattr(story, "author_constraints", []), max_items=18, item_chars=160)
     writing_learning = learning_snapshot(getattr(story, "writing_lessons", []), max_items=8)
@@ -630,7 +639,16 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         build_character_cards(story),
         scene_kind=scene_kind,
     )
-    governance = build_chapter_governance(story, bundle, chapter_number=target_chapter)
+    governance_story = story
+    if hasattr(story, "model_copy"):
+        governance_story = story.model_copy(
+            update={
+                "world_facts": [item["text"] for item in continuity_facts],
+                "continuity_facts": continuity_facts,
+                "world_snapshot": normalized_world.world_snapshot,
+            }
+        )
+    governance = build_chapter_governance(governance_story, bundle, chapter_number=target_chapter)
     governance_intent = governance.get("chapter_intent") if isinstance(governance.get("chapter_intent"), dict) else {}
     hard_locks = _hard_locks(
         game_genre,
@@ -675,7 +693,7 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
             "examples": _title_examples(game_genre),
         },
         "goal": "把结构化推演写成读者可读的网文正文，而不是继续堆规则。",
-        "target_chars": {"min": 4200, "max": 5500},
+        "target_chars": target_chars(),
         "story": {
             "story_id": getattr(story, "story_id", ""),
             "outline": compact_text(str(getattr(story, "outline", "")), 500),
@@ -709,7 +727,9 @@ def build_codex_writing_packet(story: Any, bundle: Any | None = None, *, chapter
         "style_rules": style_rules,
         "writing_learning": writing_learning,
         "author_constraints": author_constraints,
-        "world_facts": world_facts,
+        "world_context": normalized_world.static_blueprint,
+        "world_snapshot": normalized_world.world_snapshot,
+        "continuity_facts": continuity_facts,
         "continuity": {
             "previous_summary": compact_text(_previous_chapter_summary(story, target_chapter), 260),
             "existing_body_chars": _chapter_body_chars(existing_body),

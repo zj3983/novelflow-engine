@@ -38,6 +38,13 @@ from packages.story_core.chapter_continuity import (
     review_chinese_fragments,
     review_continuity_interface,
 )
+from packages.story_core.chapter_length_policy import (
+    CHAPTER_HARD_MAX_CHARS,
+    CHAPTER_HARD_MIN_CHARS as POLICY_HARD_MIN_CHARS,
+    CHAPTER_TARGET_MAX_CHARS,
+    CHAPTER_TARGET_MIN_CHARS,
+    CHAPTER_TARGET_RANGE_TEXT,
+)
 from packages.story_core.chapter_planning import build_outline_chapter_plan
 from packages.story_core.chapter_scope import first_chapter_trade_authorized
 from packages.story_core.chapter_seed import build_chapter_seed
@@ -205,14 +212,14 @@ from packages.story_core.scene_contract_repair import build_scene_contract_repai
 
 _FORBIDDEN_REAL_CURRENCY_NAME = "\u4eba\u6c11\u5e01"
 VALID_CADENCES = {"urgent", "measured", "breathing"}
-MIN_CHAPTER_CHARS = 4200
-MAX_CHAPTER_CHARS = 5500
+MIN_CHAPTER_CHARS = CHAPTER_TARGET_MIN_CHARS
+MAX_CHAPTER_CHARS = CHAPTER_TARGET_MAX_CHARS
 CHAPTER_CHAR_TOLERANCE = 300
-CHAPTER_MAX_CHAR_TOLERANCE = 500
-CHAPTER_HARD_MIN_CHARS = 3800
+CHAPTER_MAX_CHAR_TOLERANCE = CHAPTER_HARD_MAX_CHARS - MAX_CHAPTER_CHARS
+CHAPTER_HARD_MIN_CHARS = POLICY_HARD_MIN_CHARS
 REGENERATION_MIN_CHARS = 3500
 REGENERATION_FAST_MIN_CHARS = 3200
-TARGET_CHAPTER_CHARS = "4200到5500字"
+TARGET_CHAPTER_CHARS = CHAPTER_TARGET_RANGE_TEXT
 
 
 def _env_int(name: str, default: int) -> int:
@@ -3188,6 +3195,7 @@ class StoryOrchestrator:
         canon_registry: Any | None = None,
         workflow_store: Any | None = None,
         job_id: str | None = None,
+        rewrite_guidance: str = "",
     ) -> Any:
         """Run the new modular agent pipeline end-to-end.
 
@@ -3259,6 +3267,7 @@ class StoryOrchestrator:
             canon_registry=canon_registry,
             workflow_store=workflow_store,
             job_id=job_id,
+            rewrite_guidance=rewrite_guidance,
         )
 
     def _emit_workflow_step(
@@ -4095,6 +4104,14 @@ class StoryOrchestrator:
         from packages.story_core.engine import ChapterBundle
 
         chapter_number = int(story.current_chapter or 0) + 1
+        rewrite_guidance = ""
+        progression_ledger = getattr(story, "progression_ledger", None)
+        if isinstance(progression_ledger, dict):
+            simulation_variant = progression_ledger.get("simulation_variant")
+            if isinstance(simulation_variant, dict):
+                guidance_payload = simulation_variant.get("rewrite_guidance")
+                if isinstance(guidance_payload, dict):
+                    rewrite_guidance = str(guidance_payload.get("text") or "").strip()
         bundle = self.generate_next_chapter_via_modular_pipeline(
             project_root=project_root,
             chapter_number=chapter_number,
@@ -4102,6 +4119,7 @@ class StoryOrchestrator:
             writer_runtime=writer_runtime,
             fact_extractor=fact_extractor,
             consistency_runtime=consistency_runtime,
+            rewrite_guidance=rewrite_guidance,
         )
         director_artifact = bundle.director_artifact
         # The director artifact carries a dedicated ``chapter_title``
@@ -4796,7 +4814,7 @@ class StoryOrchestrator:
             # softer "no compression needed" threshold and only fires
             # for the dead-letter path where the gate is misconfigured
             # (e.g. ``hard_max_chars=0``).
-            hard_max_chars=MAX_CHAPTER_CHARS,
+            hard_max_chars=CHAPTER_HARD_MAX_CHARS,
         )
         review_hard_context: dict[str, Any] = {
             "continuity_interface": (

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from packages.story_core.character_profiles import (
     filter_character_cards,
+    is_placeholder_character_name,
     is_non_character_card,
     merge_character_alias_cards,
     merge_character_profile,
@@ -10,6 +13,19 @@ from packages.story_core.character_profiles import (
     project_character_for_writer,
     remove_cross_character_aliases,
 )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["底层执行者", "幕后黑手", "幕后黑手（开发商高层）", "数据分析师"],
+)
+def test_placeholder_role_label_is_not_accepted_as_character_name(name: str) -> None:
+    assert is_placeholder_character_name(name)
+
+
+@pytest.mark.parametrize("name", ["刘大军", "赵衡", "林警官"])
+def test_concrete_person_name_is_not_treated_as_placeholder(name: str) -> None:
+    assert not is_placeholder_character_name(name)
 
 
 def test_functional_market_entity_is_not_a_character_card() -> None:

@@ -1,12 +1,26 @@
 import { groupWorldFacts } from "../../lib/worldDisplay";
 
 type Props = {
-  facts?: string[];
+  facts?: Array<string | {
+    text: string;
+    source_chapter?: number;
+    status?: string;
+    updated_chapter?: number;
+  }>;
 };
 
 export function ConfirmedFactsPanel({ facts = [] }: Props) {
-  const grouped = groupWorldFacts(facts);
-  const isEmpty = grouped.projectFacts.length === 0 && grouped.chapters.length === 0;
+  const structured = facts.filter((fact): fact is Exclude<(typeof facts)[number], string> => (
+    typeof fact === "object" && fact !== null && typeof fact.text === "string" && Boolean(fact.text.trim())
+  ));
+  const grouped = groupWorldFacts(facts.filter((fact): fact is string => typeof fact === "string"));
+  const isEmpty = structured.length === 0 && grouped.projectFacts.length === 0 && grouped.chapters.length === 0;
+  const statusLabel = (status?: string) => ({
+    active: "有效",
+    resolved: "已解决",
+    superseded: "已替代",
+    retired: "已失效",
+  }[status || "active"] || status || "有效");
 
   return (
     <section className="ws-card" aria-labelledby="confirmed-facts-title">
@@ -18,6 +32,19 @@ export function ConfirmedFactsPanel({ facts = [] }: Props) {
       </div>
 
       {isEmpty ? <p className="ws-card__hint">暂无已确认事实</p> : null}
+
+      {structured.length > 0 ? (
+        <ul className="ws-fact-list">
+          {structured.map((fact, index) => (
+            <li key={`${fact.source_chapter ?? 0}-${index}`}>
+              <span>{fact.text}</span>
+              <small className="ws-card__hint">
+                {fact.source_chapter ? `来源：第 ${fact.source_chapter} 章 · ` : ""}{statusLabel(fact.status)}
+              </small>
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       {grouped.projectFacts.length > 0 ? (
         <section aria-labelledby="project-facts-title">

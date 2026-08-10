@@ -63,6 +63,7 @@ class DirectorContext(BaseModel):
     character_cards: list[dict[str, Any]] = Field(default_factory=list)
     inventory: list[dict[str, Any]] = Field(default_factory=list)
     active_entity_names: list[str] = Field(default_factory=list)
+    rewrite_guidance: str = ""
 
 
 def build_director_context(

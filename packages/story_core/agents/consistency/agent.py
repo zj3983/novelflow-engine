@@ -40,19 +40,34 @@ def _extract_payload(response: Any) -> dict[str, Any]:
         return {}
     if isinstance(response, dict):
         return response
+    if isinstance(response, list):
+        return {"issues": response}
     payload = getattr(response, "payload", None)
-    if isinstance(payload, dict):
+    if isinstance(payload, dict) and payload:
         return payload
+    if isinstance(payload, list):
+        return {"issues": payload}
     text = getattr(response, "text", None)
     if isinstance(text, str) and text.strip():
         import json
+        import re
 
+        normalized = text.strip()
+        fenced = re.fullmatch(
+            r"```(?:json)?\s*(.*?)\s*```",
+            normalized,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if fenced:
+            normalized = fenced.group(1).strip()
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(normalized)
         except ValueError:
             return {}
         if isinstance(parsed, dict):
             return parsed
+        if isinstance(parsed, list):
+            return {"issues": parsed}
     return {}
 
 
@@ -111,7 +126,9 @@ def build_consistency_prompt(
     )
     return (
         "你是小说事实一致性 agent。\n"
-        "只判断正文是否与下列既定事实或导演计划矛盾。不要评价文笔、风格、对话自然度。\n"
+        "只判断正文是否与既定事实矛盾。导演计划用于理解本章意图，不是已经发生的事实。\n"
+        "正文调整导演动作、过程、地点细节或收尾镜头，不算事实冲突；确需指出时使用 "
+        "code=plan.deviation、blocking=false、source=director_plan。不要评价文笔、风格、对话自然度。\n"
         "如果出现矛盾,返回 code / message / blocking / source 四个字段的 JSON 列表。\n"
         "如果没有矛盾,返回空列表 []。\n\n"
         f"## 章节目标\n{director_artifact.chapter_goal}\n\n"
@@ -120,7 +137,7 @@ def build_consistency_prompt(
         f"## 既定事实\n{facts or '（无）'}\n\n"
         + (f"{character_state_section}\n\n" if character_state_section else "")
         + f"## 正文\n{body}\n\n"
-        "只检查：人物身份、位置、职业、等级、属性、装备、库存、任务、已知信息、导演场景结果。"
+        "只检查：人物身份、位置、职业、等级、属性、装备、库存、任务、已知信息和已确认时间线。"
         "不要评价文笔、节奏、对话、修辞或爽点。"
     )
 
@@ -154,9 +171,24 @@ _STYLE_CODES: set[str] = {
 }
 
 
-def _downgrade_style(code: str, blocking: bool) -> bool:
-    """Advisory only: never let a style finding block a chapter."""
+def _downgrade_non_factual(code: str, source: str, blocking: bool) -> bool:
+    """Only established-fact contradictions may block confirmation.
+
+    The director artifact is an executable writing plan, not committed canon.
+    A draft may realise a beat with a different action or move the final camera
+    position without creating a continuity error.  Keep those findings visible,
+    but do not let them masquerade as factual contradictions.
+    """
     if code in _STYLE_CODES:
+        return False
+    normalized_source = source.strip().lower()
+    if normalized_source.startswith("顺序") or normalized_source in {
+        "收尾状态",
+        "场景节拍",
+        "导演计划",
+        "director",
+        "director_plan",
+    }:
         return False
     return blocking
 
@@ -206,6 +238,16 @@ class FocusedConsistencyAgent:
                     blocking=True,
                 )
             ]
+        if getattr(response, "ok", True) is False:
+            error = str(getattr(response, "error", "") or "model_call_failed")
+            return [
+                ConsistencyFinding(
+                    code="consistency.unavailable",
+                    message=f"事实审稿未完成：{error}",
+                    source="consistency",
+                    blocking=True,
+                )
+            ]
         payload = _extract_payload(response)
         issues = payload.get("issues") if isinstance(payload, dict) else None
         if not isinstance(issues, list):
@@ -227,12 +269,13 @@ class FocusedConsistencyAgent:
                 continue
             blocking_raw = issue.get("blocking")
             blocking = bool(blocking_raw) if blocking_raw is not None else True
+            source = str(issue.get("source") or "consistency")
             findings.append(
                 ConsistencyFinding(
                     code=code,
                     message=message,
-                    source=str(issue.get("source") or "consistency"),
-                    blocking=_downgrade_style(code, blocking),
+                    source=source,
+                    blocking=_downgrade_non_factual(code, source, blocking),
                 )
             )
         return findings

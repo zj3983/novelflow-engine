@@ -48,6 +48,12 @@ REPORT_PHRASES: tuple[str, ...] = (
     "核心问题",
 )
 
+AUTHOR_VERDICT_PATTERNS: tuple[str, ...] = (
+    r"[^。！？\n]{0,24}可谓[^。！？\n]{1,28}",
+    r"这就是[^。！？\n]{1,36}",
+    r"(?:建立的)?世界观(?:被|让)[^。！？\n]{0,20}(?:击碎|粉碎|颠覆)",
+)
+
 CONCRETE_TOKENS: tuple[str, ...] = (
     "手",
     "指",
@@ -100,6 +106,13 @@ def _formula_hits(text: str) -> list[str]:
     return list(dict.fromkeys(hits))
 
 
+def _author_verdict_hits(text: str) -> list[str]:
+    hits: list[str] = []
+    for pattern in AUTHOR_VERDICT_PATTERNS:
+        hits.extend(match.group(0) for match in re.finditer(pattern, text))
+    return list(dict.fromkeys(hits))
+
+
 def _concrete_density(text: str) -> float:
     sentences = _sentences(text)
     if not sentences:
@@ -141,12 +154,14 @@ def review_ai_flavor(text: str) -> dict[str, Any]:
     formula_hits = _formula_hits(text)
     abstract_hits = [term for term in ABSTRACT_TERMS if term in text]
     report_hits = [term for term in REPORT_PHRASES if term in text]
+    author_verdict_hits = _author_verdict_hits(text)
     concrete_density = _concrete_density(text)
 
     metrics = {
         "formula_count": len(formula_hits),
         "abstract_count": len(abstract_hits),
         "report_phrase_count": len(report_hits),
+        "author_verdict_count": len(author_verdict_hits),
         "concrete_density": concrete_density,
     }
     issues: list[str] = []
@@ -179,6 +194,18 @@ def review_ai_flavor(text: str) -> dict[str, Any]:
         issues.append(f"AI味偏重：报告式连接词过多：{'、'.join(report_hits[:4])}。")
         revision_plan.append("删除“这意味着/这说明/换句话说”等连接词，直接进入下一步动作或对话。")
 
+    if len(author_verdict_hits) >= 2:
+        score = min(score, 6)
+        issues.append(
+            "AI味偏重：动作之后又追加作者判词："
+            + "、".join(hit[:32] for hit in author_verdict_hits[:3])
+            + "。"
+        )
+        revision_plan.append(
+            "删除“可谓、这就是、世界观被击碎”等替读者下结论的句子；"
+            "保留前面的动作、对话和物件变化。"
+        )
+
     if text.strip() and concrete_density < 0.2 and len(_sentences(text)) >= 3:
         score = min(score, 6)
         issues.append("AI味偏重：具体动作、物件、对白或界面反馈太少，读起来像判断清单。")
@@ -196,5 +223,6 @@ def review_ai_flavor(text: str) -> dict[str, Any]:
             "formula": formula_hits,
             "abstract_terms": abstract_hits,
             "report_phrases": report_hits,
+            "author_verdicts": author_verdict_hits,
         },
     }

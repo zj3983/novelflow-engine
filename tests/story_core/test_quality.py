@@ -20,7 +20,7 @@ def test_validate_bundle_flags_body_over_hard_tolerance():
     bundle = {
         "chapter_number": 2,
         "chapter_title": "过长章节",
-        "body": "字" * 6001,
+        "body": "字" * 5701,
         "cadence": "measured",
         "next_outline": "continue",
         "updated_story": {"timeline": ["x"], "chapter_summaries": ["x"]},
@@ -42,11 +42,11 @@ def test_validate_bundle_flags_body_over_hard_tolerance():
     assert report["metrics"]["target_max_chars"] == 5500
 
 
-def test_validate_bundle_allows_reasonable_upper_tolerance_without_rewrite():
+def test_validate_bundle_allows_hard_upper_limit_without_rewrite():
     bundle = {
         "chapter_number": 2,
         "chapter_title": "边界篇幅",
-        "body": "字" * 5950,
+        "body": "字" * 5700,
         "cadence": "measured",
         "next_outline": "continue",
         "updated_story": {"timeline": ["x"], "chapter_summaries": ["x"]},

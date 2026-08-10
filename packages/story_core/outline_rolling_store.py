@@ -5,31 +5,49 @@ every rolling fill must write a complete batch atomically
 (all-or-nothing) and keep a backup of the previous
 outline so a future operator can recover.
 
-The store owns three disk artefacts:
+Storage layout — the rolling fill deliberately uses a
+**separate file** rather than appending rows to the
+legacy ``.webnovel/outline.json``:
 
-* ``.webnovel/outline.json`` — the canonical outline file.
-* ``.story-system/outline-generation/backup/{ts}.json`` —
-  the previous outline, copied before every overwrite.
+* ``.webnovel/outline.json`` — the legacy
+  ``ProjectOutline`` Pydantic shape; the rolling fill
+  reads it but never writes to it. Legacy consumers
+  see the file unchanged.
+* ``.story-system/outline-generation/rolling_outline.json``
+  — the rolling-fill chapters in the new shape
+  (``chapter_goal`` / ``core_conflict`` / ``scenes`` /
+  ``gain`` / ``cost`` / ``foreshadowing`` / ``hook`` /
+  ``state_delta``).
+* ``.story-system/outline-generation/backup/{ts}.json``
+  — the previous rolling outline, copied before every
+  overwrite.
 * ``.story-system/outline-generation/rolling_fill_log.json``
   — an audit trail of which chapters the rolling fill
   generated, with the volume range and timestamp.
 
+The legacy outline uses a strict Pydantic schema
+(``extra="forbid"``) that does not match the new
+rolling-fill field set. Mixing the two into one file
+would either require schema migration or silently drop
+the new fields on every read. A separate file keeps both
+shapes self-contained and forward-compatible.
+
 Atomic-write protocol:
 
-1. Read the existing outline (if any).
+1. Read the existing rolling outline (if any).
 2. Validate the entire batch up-front via
    :func:`validate_rolling_batch`; any failure aborts the
    whole write.
-3. If the outline already exists, copy it to
+3. If the rolling outline already exists, copy it to
    ``.story-system/outline-generation/backup/{ts}.json``.
-4. Write the new outline to a temp file in the same
-   directory, then rename it onto the target.
+4. Write the new rolling outline to a temp file in the
+   same directory, then rename it onto the target.
 5. Append a row to the rolling fill log.
 
-Any failure between steps 3 and 5 rolls the outline back
-to the backup so the project on disk stays consistent
-with the in-memory cache the orchestrator is working
-against.
+Any failure between steps 3 and 5 rolls the rolling
+outline back to the backup so the project on disk
+stays consistent with the in-memory cache the
+orchestrator is working against.
 """
 
 from __future__ import annotations
@@ -49,10 +67,11 @@ from .outline_rolling import (
 )
 
 
-_OUTLINE_RELATIVE = Path(".webnovel") / "outline.json"
 _GENERATION_DIR = Path(".story-system") / "outline-generation"
+_ROLLING_OUTLINE_NAME = "rolling_outline.json"
 _BACKUP_DIR = _GENERATION_DIR / "backup"
 _FILL_LOG_NAME = "rolling_fill_log.json"
+_ROLLING_SCHEMA_VERSION = "rolling-outline/v1"
 
 
 class RollingOutlineStoreError(RuntimeError):
@@ -76,51 +95,79 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
-def _read_existing_outline(project_root: Path) -> dict[str, Any]:
-    """Return the existing outline payload, or an empty
-    default when no file is on disk.
+def _read_existing_rolling_outline(
+    project_root: Path,
+) -> dict[str, Any]:
+    """Return the existing rolling-outline payload, or
+    an empty default when no file is on disk.
 
     A corrupt JSON file is treated as no file at all —
-    the next rolling fill is a fresh start. The plan
-    rule: a corrupt outline must not block new chapter
-    generation forever.
+    the next rolling fill is a fresh start.
     """
-    target = project_root / _OUTLINE_RELATIVE
+    target = project_root / _GENERATION_DIR / _ROLLING_OUTLINE_NAME
     if not target.is_file():
         return {
-            "schema_version": "project-outline/v1",
+            "schema_version": _ROLLING_SCHEMA_VERSION,
             "chapters": [],
-            "arcs": [],
-            "overall": {"story": ""},
         }
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {
-            "schema_version": "project-outline/v1",
+            "schema_version": _ROLLING_SCHEMA_VERSION,
             "chapters": [],
-            "arcs": [],
-            "overall": {"story": ""},
         }
     if not isinstance(payload, dict):
         return {
-            "schema_version": "project-outline/v1",
+            "schema_version": _ROLLING_SCHEMA_VERSION,
             "chapters": [],
-            "arcs": [],
-            "overall": {"story": ""},
         }
     if not isinstance(payload.get("chapters"), list):
         payload["chapters"] = []
     return payload
 
 
-def _existing_chapter_numbers(payload: dict[str, Any]) -> set[int]:
-    """Return the set of chapter numbers already on disk,
-    regardless of ``source`` marker.
+def _read_legacy_outline_chapter_numbers(
+    project_root: Path,
+) -> set[int]:
+    """Return the set of chapter numbers already on disk
+    in the legacy ``.webnovel/outline.json``.
 
-    A future refactor that adds a "skip" source would
-    need to extend this function, but the current
-    contract is "any row in ``chapters`` is filled".
+    The rolling fill treats the legacy outline as
+    "filled" so a chapter that the initial planning
+    pass already produced is never overwritten by a
+    later rolling fill.
+    """
+    target = project_root / ".webnovel" / "outline.json"
+    if not target.is_file():
+        return set()
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+    chapters = payload.get("chapters")
+    if not isinstance(chapters, list):
+        return set()
+    numbers: set[int] = set()
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+        number = chapter.get("chapter_number")
+        if (
+            isinstance(number, int)
+            and not isinstance(number, bool)
+            and number > 0
+        ):
+            numbers.add(number)
+    return numbers
+
+
+def _existing_chapter_numbers(payload: dict[str, Any]) -> set[int]:
+    """Return the set of chapter numbers already in the
+    rolling-outline payload, regardless of ``source``
+    marker.
     """
     numbers: set[int] = set()
     for chapter in payload.get("chapters") or []:
@@ -155,9 +202,6 @@ def _write_json_atomic(target: Path, payload: dict[str, Any]) -> None:
             os.fsync(handle.fileno())
         os.replace(temp_name, target)
     except Exception:
-        # Remove the temp file on failure so the
-        # directory does not accumulate ``.tmp``
-        # artefacts.
         try:
             os.unlink(temp_name)
         except OSError:
@@ -169,9 +213,9 @@ class RollingOutlineStore:
     """Filesystem-backed store for the rolling outline fill.
 
     The store is intentionally simple: a project root, a
-    canonical outline file, a backup directory, and a
-    fill log. There is no caching or background process
-    — every call is a discrete read-validate-write
+    separate rolling-outline file, a backup directory,
+    and a fill log. There is no caching or background
+    process — every call is a discrete read-validate-write
     transaction so the operator can reason about the
     disk state after each call.
     """
@@ -179,8 +223,8 @@ class RollingOutlineStore:
     def __init__(self, project_root: Path | str) -> None:
         self._root = Path(project_root)
 
-    def _outline_path(self) -> Path:
-        return self._root / _OUTLINE_RELATIVE
+    def _rolling_path(self) -> Path:
+        return self._root / _GENERATION_DIR / _ROLLING_OUTLINE_NAME
 
     def _backup_dir(self) -> Path:
         return self._root / _BACKUP_DIR
@@ -191,16 +235,11 @@ class RollingOutlineStore:
     def _backup_existing_outline(
         self, existing_payload: dict[str, Any]
     ) -> str | None:
-        """Copy the current outline to
+        """Copy the current rolling outline to
         ``backup/{ts}.json`` so the operator can recover
-        from a future regression. Returns the backup
-        filename or ``None`` when there was nothing to
-        back up (fresh project).
+        from a future regression.
         """
         if not existing_payload.get("chapters"):
-            # No chapters on disk — nothing worth
-            # backing up. The plan rule targets
-            # overwrites, not first-time creation.
             return None
         backup_dir = self._backup_dir()
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -214,17 +253,17 @@ class RollingOutlineStore:
             ) from exc
         return backup_path.name
 
-    def _merge_outline(
+    def _merge_rolling(
         self,
         existing: dict[str, Any],
         new_chapters: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Return a new outline payload with the new
-        chapters appended after the existing rows.
+        """Return a new rolling-outline payload with the
+        new chapters appended after the existing rows.
 
         Existing rows are kept verbatim (including their
         ``source`` marker) so the operator can audit the
-        legacy / generated split. New rows are marked
+        generated / manual split. New rows are marked
         ``source = "generated"`` so the rolling fill can
         refresh them in a future pass.
         """
@@ -251,7 +290,6 @@ class RollingOutlineStore:
                 and number > 0
                 and number in seen_numbers
             ):
-                # Already on disk; skip the duplicate.
                 continue
             stamped = dict(chapter)
             if not stamped.get("source"):
@@ -266,8 +304,7 @@ class RollingOutlineStore:
                 seen_numbers.add(number)
         payload = dict(existing)
         payload["chapters"] = merged_chapters
-        if "schema_version" not in payload:
-            payload["schema_version"] = "project-outline/v1"
+        payload["schema_version"] = _ROLLING_SCHEMA_VERSION
         return payload
 
     def _append_fill_log(
@@ -314,10 +351,6 @@ class RollingOutlineStore:
         try:
             _write_json_atomic(log_path, existing)
         except OSError as exc:
-            # The log is best-effort: a failed write here
-            # does not roll back the outline because the
-            # outline is already on disk. Surface the
-            # error so the caller can decide what to do.
             raise RollingOutlineStoreError(
                 f"rolling_outline_fill_log_failed: {exc}"
             ) from exc
@@ -331,43 +364,45 @@ class RollingOutlineStore:
     ) -> list[int]:
         """Apply a rolling-fill batch to the project
         outline. Returns the chapter numbers that were
-        actually written (chapters already on disk are
-        skipped, not re-written).
+        actually written.
 
-        The function is fail-fast:
+        Fail-fast:
 
         * Validation failure → no write, no backup.
         * Atomic write failure → no backup on disk; the
           pre-call outline is byte-identical to the
           post-call outline.
+
+        The function is idempotent: chapters already on
+        disk (in either the legacy outline or the
+        rolling outline) are skipped, not re-written.
         """
         # Step 1: validate the entire batch up front.
-        # ``validate_rolling_batch`` raises
-        # ``RollingValidationError`` with a single
-        # message naming every failure so the operator
-        # can fix the batch in one pass.
         validate_rolling_batch(
             chapters,
             expected_chapter_numbers=expected_chapter_numbers,
             volume_range=volume_range,
         )
 
-        # Step 2: read the existing outline so the merge
-        # can preserve legacy / manual rows and the
-        # backup can capture the pre-call state.
-        existing = _read_existing_outline(self._root)
-        existing_numbers = _existing_chapter_numbers(existing)
+        # Step 2: read both the legacy outline and the
+        # rolling outline so the merge can preserve
+        # existing rows and the backup can capture the
+        # pre-call state.
+        existing_rolling = _read_existing_rolling_outline(self._root)
+        legacy_numbers = _read_legacy_outline_chapter_numbers(self._root)
+        rolling_numbers = _existing_chapter_numbers(existing_rolling)
+        already_filled = legacy_numbers | rolling_numbers
 
         # Step 3: only the chapters that are NOT already
         # on disk are written. ``validate_rolling_batch``
         # already accepted them, so this is the
         # idempotency check the plan rule requires ("已
         # 存在或人工修改的细纲不会被覆盖").
-        new_chapters = [
-            chapter
-            for chapter, number in zip(chapters, expected_chapter_numbers)
-            if number not in existing_numbers
-        ]
+        new_chapters: list[dict[str, Any]] = []
+        for chapter, number in zip(chapters, expected_chapter_numbers):
+            if number in already_filled:
+                continue
+            new_chapters.append(chapter)
         if not new_chapters:
             self._append_fill_log(
                 chapter_numbers=[],
@@ -380,13 +415,13 @@ class RollingOutlineStore:
         # atomically. The pre-call outline is captured
         # as a backup right before the write so a
         # post-write regression can roll back.
-        merged = self._merge_outline(existing, new_chapters)
+        merged = self._merge_rolling(existing_rolling, new_chapters)
         try:
-            self._backup_existing_outline(existing)
+            self._backup_existing_outline(existing_rolling)
         except RollingOutlineStoreError:
             raise
         try:
-            _write_json_atomic(self._outline_path(), merged)
+            _write_json_atomic(self._rolling_path(), merged)
         except OSError as exc:
             raise RollingOutlineStoreError(
                 f"rolling_outline_write_failed: {exc}"

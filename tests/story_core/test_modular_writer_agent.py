@@ -135,6 +135,235 @@ def test_writer_agent_takes_one_request_and_returns_one_result() -> None:
     assert result.notes == ""
 
 
+def test_writer_agent_rewrites_once_when_first_draft_exceeds_hard_max() -> None:
+    runtime = _RecordingRuntime(responses=["甲" * 31, "乙" * 18])
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 20},
+            acceptance_chars={"min": 8, "max": 24},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == "乙" * 18
+    assert runtime.call_count == 2
+    assert "上一稿超过24字" in runtime.requests[1].prompt
+    assert "不要从头另写" in runtime.requests[1].prompt
+    assert "不可压成摘要" in runtime.requests[1].prompt
+    assert runtime.requests[1].metadata["attempt"] == 2
+
+
+def test_writer_agent_rewrites_again_when_first_compaction_is_still_over_limit() -> None:
+    runtime = _RecordingRuntime(responses=["甲" * 31, "乙" * 28, "丙" * 18])
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 20},
+            acceptance_chars={"min": 8, "max": 24},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == "丙" * 18
+    assert runtime.call_count == 3
+    assert runtime.requests[2].metadata["attempt"] == 3
+    assert runtime.requests[2].metadata["reason"] == "over_hard_max"
+
+
+def test_writer_agent_expands_draft_when_it_is_below_acceptance_minimum() -> None:
+    runtime = _RecordingRuntime(responses=["甲" * 7, "乙" * 18])
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 20},
+            acceptance_chars={"min": 8, "max": 24},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == "乙" * 18
+    assert runtime.call_count == 2
+    assert runtime.requests[1].metadata["attempt"] == 2
+    assert runtime.requests[1].metadata["reason"] == "under_acceptance_min"
+    assert "上一稿不足8字" in runtime.requests[1].prompt
+    assert "不要从头另写" in runtime.requests[1].prompt
+    assert "在原有段落之间补入" in runtime.requests[1].prompt
+
+
+def test_writer_agent_can_expand_after_two_overlong_compactions() -> None:
+    runtime = _RecordingRuntime(
+        responses=["甲" * 31, "乙" * 28, "丙" * 7, "丁" * 18]
+    )
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 20},
+            acceptance_chars={"min": 8, "max": 24},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == "丁" * 18
+    assert runtime.call_count == 4
+    assert runtime.requests[3].metadata["attempt"] == 4
+    assert runtime.requests[3].metadata["reason"] == "under_acceptance_min"
+
+
+def test_writer_agent_alternates_repair_direction_but_returns_closest_draft() -> None:
+    runtime = _RecordingRuntime(
+        responses=["甲" * 31, "乙" * 7, "丙" * 30, "丁" * 6]
+    )
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 20},
+            acceptance_chars={"min": 8, "max": 24},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == "乙" * 7
+    assert runtime.call_count == 4
+    assert runtime.requests[2].metadata["reason"] == "under_acceptance_min"
+    assert runtime.requests[3].metadata["reason"] == "over_hard_max"
+    assert "丙" * 30 in runtime.requests[3].prompt
+
+
+def test_writer_agent_rewrites_explicit_non_graphic_guidance_violation() -> None:
+    graphic = ("事故发生，伤者内脏破裂。" + "甲" * 3800)
+    compliant = ("事故发生，伤者被送往医院。" + "乙" * 3800)
+    runtime = _RecordingRuntime(responses=[graphic, compliant])
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            rewrite_guidance="车祸不描写器官、脑组织或尸体细节。",
+            repair_length=True,
+        )
+    )
+
+    assert result.body == compliant
+    assert result.notes == ""
+    assert runtime.call_count == 2
+    assert runtime.requests[1].metadata["reason"] == "rewrite_guidance_violation"
+    assert "内脏" in runtime.requests[1].prompt
+
+
+def test_writer_agent_rewrites_long_form_transcription() -> None:
+    copied_form = (
+        "事故地点：路口\n"
+        "事故时间：十八点\n"
+        "当事人姓名：赵某\n"
+        "处理结果：等待事故发生\n"
+        + "甲" * 20
+    )
+    runtime = _RecordingRuntime(responses=[copied_form, "乙" * 18])
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 40},
+            acceptance_chars={"min": 8, "max": 100},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == "乙" * 18
+    assert runtime.requests[1].metadata["reason"] == "document_transcription"
+    assert "总共最多保留三行" in runtime.requests[1].prompt
+
+
+def test_writer_agent_rewrites_dense_simile_stacking() -> None:
+    stacked = "。".join(
+        [
+            "风仿佛一只手",
+            "雷声如同重锤",
+            "灰尘犹如潮水",
+            "火光宛如星辰",
+            "伤口就像裂缝",
+            "黑云像是铁幕",
+            "脚步仿佛鼓点",
+            "冷意如同细针",
+        ]
+    )
+    clean = "人物观察到雷声变重，立刻退到石墙后面。" * 5
+    runtime = _RecordingRuntime(responses=[stacked, clean])
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 200},
+            acceptance_chars={"min": 8, "max": 300},
+            repair_length=True,
+            rewrite_guidance="STYLE-ORIGINAL-MARKER",
+        )
+    )
+
+    assert result.body == clean
+    assert runtime.call_count == 2
+    assert runtime.requests[1].metadata["reason"] == "simile_stacking"
+    assert "改成直接的动作、状态和结果" in runtime.requests[1].prompt
+    assert "STYLE-ORIGINAL-MARKER" not in runtime.requests[1].prompt
+
+
+def test_writer_agent_repairs_length_before_similes_when_both_fail() -> None:
+    stacked = "仿佛如同犹如宛如就像像是仿佛如同" + "甲" * 40
+    runtime = _RecordingRuntime(responses=[stacked, "乙" * 18])
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 20},
+            acceptance_chars={"min": 8, "max": 24},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == "乙" * 18
+    assert runtime.requests[1].metadata["reason"] == "over_hard_max"
+
+
+def test_writer_agent_keeps_valid_length_draft_when_style_repair_explodes() -> None:
+    stacked = "仿佛如同犹如宛如就像像是仿佛如同" + "甲" * 30
+    runtime = _RecordingRuntime(responses=[stacked, "乙" * 80])
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 60},
+            acceptance_chars={"min": 8, "max": 70},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == stacked
+
+
+def test_writer_agent_tightens_each_overlong_compaction_target() -> None:
+    runtime = _RecordingRuntime(
+        responses=["甲" * 31, "乙" * 29, "丙" * 27, "丁" * 18]
+    )
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 20},
+            acceptance_chars={"min": 8, "max": 24},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == "丁" * 18
+    assert runtime.call_count == 4
+    assert "10至18字" in runtime.requests[3].prompt
+
+
 def test_writer_agent_uses_same_request_contract_for_cli_and_api_runtimes() -> None:
     cli_runtime = _RecordingRuntime(responses=["body-cli"])
     api_runtime = _RecordingRuntime(responses=["body-api"])
@@ -169,6 +398,15 @@ def test_writer_agent_prompt_contains_director_artifact_and_context() -> None:
     assert "对话先回应" in prompt
 
 
+def test_writer_prompt_contains_one_off_rewrite_guidance() -> None:
+    prompt = build_writer_prompt(
+        _writer_request(rewrite_guidance="事故只写必要后果，不描写器官和尸体细节。")
+    )
+
+    assert "## 本次写作指导（优先执行）" in prompt
+    assert "事故只写必要后果" in prompt
+
+
 def test_writer_prompt_contains_numeric_length_policy_and_current_character_state() -> None:
     """The writer prompt must include the concrete length policy
     and the active character's current state (including game
@@ -179,7 +417,7 @@ def test_writer_prompt_contains_numeric_length_policy_and_current_character_stat
         chapter_number=2,
         director_artifact=_director_artifact(),
         target_chars={"min": 4200, "max": 5500},
-        acceptance_chars={"min": 3800, "max": 6000},
+        acceptance_chars={"min": 3800, "max": 5700},
         character_cards=[{
             "name": "苏叶",
             "role": "protagonist",
@@ -200,9 +438,67 @@ def test_writer_prompt_contains_numeric_length_policy_and_current_character_stat
 
     assert "目标4200至5500字" in prompt
     assert "低于3800字" in prompt
-    assert "超过6000字" in prompt
+    assert "超过5700字" in prompt
+    assert "整章只在必要处保留一两处比喻" in prompt
     assert "新手法杖" in prompt
     assert "清道夫：8/16；未提交" in prompt
+
+
+def test_writer_prompt_includes_concise_craft_baseline_and_relevant_character_voice() -> None:
+    request = _writer_request(
+        character_cards=[
+            {
+                "name": "林照",
+                "role": "主角",
+                "lifecycle": "active",
+                "story_drive": {
+                    "immediate_goal": "天黑前离开妖林",
+                    "motivation": "把受伤的同伴带回城",
+                },
+                "performance_profile": {
+                    "speech_style": "说话完整直接，不故作高深",
+                    "action_style": "先观察退路再行动",
+                    "decision_rules": ["不拿同伴冒险"],
+                },
+            },
+            {
+                "name": "无关城主",
+                "role": "后期人物",
+                "lifecycle": "active",
+                "performance_profile": {"speech_style": "每句话都像宣判"},
+            },
+        ]
+    )
+
+    prompt = build_writer_prompt(request)
+
+    assert "## 成稿要求" in prompt
+    assert "不要替读者总结人物心理" in prompt
+    assert "可谓" in prompt
+    assert "世界观被击碎" in prompt
+    assert "说话完整直接，不故作高深" in prompt
+    assert "先观察退路再行动" in prompt
+    assert "不拿同伴冒险" in prompt
+    assert "无关城主" not in prompt
+    assert "每句话都像宣判" not in prompt
+    assert "把受伤的同伴带回城" not in prompt
+    assert "严格停在导演给出的收尾状态" in prompt
+    assert "每个节拍平均不超过" in prompt
+    assert "文书、面板或记录最多摘三行" in prompt
+    assert "不细写暴露的器官" in prompt
+
+
+def test_writer_prompt_omits_empty_legacy_character_entities() -> None:
+    request = _writer_request(
+        entity_cards=[
+            {"name": "林照", "lifecycle": "active"},
+            {"name": "无关城主", "lifecycle": "active"},
+        ]
+    )
+
+    prompt = build_writer_prompt(request)
+
+    assert "## 活动实体卡" not in prompt
 
 
 def test_writer_agent_prompt_excludes_unrelated_cards_and_retired_entities() -> None:

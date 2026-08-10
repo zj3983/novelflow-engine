@@ -460,6 +460,24 @@ def test_first_chapter_packet_contains_contract():
     assert any("谜语式" in item for item in packet["whole_chapter_contract"]["avoid"])
 
 
+def test_codex_packet_uses_structured_world_state_instead_of_legacy_world_facts():
+    story = StoryState(
+        story_id="s-structured-world",
+        outline="林修守住神殿入口。",
+        genre="玄幻",
+        style="",
+        world_facts=["第147章事实：林修负伤。", "第147章摘要：不应进入写作包。"],
+        world_snapshot={"current_arc": "雪山神殿封锁。"},
+    )
+
+    packet = build_codex_writing_packet(story, chapter_number=148)
+
+    assert packet["world_snapshot"] == {"current_arc": "雪山神殿封锁。"}
+    assert [item["text"] for item in packet["continuity_facts"]] == ["林修负伤。"]
+    assert "world_facts" not in packet
+    assert "不应进入写作包" not in str(packet)
+
+
 def test_non_game_packet_does_not_leak_webgame_terms():
     story = StoryState(
         story_id="s-xianxia-packet",

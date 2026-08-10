@@ -12,6 +12,7 @@ from packages.story_core.character_profiles import (
     IdentityProfile,
     RelationshipNote,
     StoryDriveProfile,
+    is_placeholder_character_name,
 )
 from packages.story_core.elastic_outline import DETAIL_WINDOW
 from packages.story_core.models import CharacterPerformanceProfile
@@ -332,6 +333,13 @@ def validate_generated_opening_plan(
     plan = GeneratedOutlinePlan.model_validate(payload)
     _validate_generated_outline_amounts(plan)
     overall = plan.outline.overall
+    if (
+        overall.planned_length > 0
+        and plan.outline.arcs
+        and overall.core_ending_chapter
+        not in {arc.end_chapter for arc in plan.outline.arcs}
+    ):
+        raise ValueError("core_ending_not_arc_boundary")
     for field_name in (
         "story",
         "theme_statement",
@@ -369,11 +377,18 @@ def validate_generated_opening_plan(
     names = [card.name.strip() for card in plan.characters]
     if len(names) != len(set(names)):
         raise ValueError("duplicate_character_name")
+    for name in names:
+        if is_placeholder_character_name(name):
+            raise ValueError(f"placeholder_character_name:{name}")
 
     opening_arcs = [arc for arc in plan.outline.arcs if arc.start_chapter == 1]
     if not opening_arcs:
         raise ValueError("opening_arc_required")
     opening_arc = opening_arcs[0]
+    if is_placeholder_character_name(opening_arc.stage_antagonist):
+        raise ValueError(
+            f"placeholder_arc_antagonist:{opening_arc.id}:{opening_arc.stage_antagonist}"
+        )
     stage_names = {card.name for card in plan.characters if card.character_tier == "stage_antagonist"}
     if opening_arc.stage_antagonist not in stage_names:
         raise ValueError("stage_antagonist_card_mismatch")

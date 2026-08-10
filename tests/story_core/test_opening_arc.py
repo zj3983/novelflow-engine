@@ -39,6 +39,163 @@ def test_world_enrichment_adds_game_golden_three_chapters():
     assert any("多个命名NPC" in item for item in opening_arc["chapter_1"]["background_budget"]["forbidden_layers"])
 
 
+def test_xuanhuan_world_enrichment_uses_genre_neutral_opening_defaults():
+    project = NovelProject(
+        project_id="p-opening-xuanhuan",
+        title="我养了一场天劫",
+        seed_outline="外门弟子在天劫废墟里捡到一枚会吞噬修炼缺陷的劫种。",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+
+    enriched = _merge_enrichment(project, {})
+    opening_arc = enriched.world_blueprint["opening_arc"]["golden_three_chapters"]
+    active_text = json.dumps(opening_arc, ensure_ascii=False)
+
+    assert "当下困境" in opening_arc["chapter_1"]["conflict_modes"]
+    assert "行动条件" in opening_arc["chapter_2"]["conflict_modes"]
+    for leaked_term in ("现实缺口", "界面", "任务门槛", "服务节点", "玩家"):
+        assert leaked_term not in active_text
+
+
+def test_xuanhuan_world_enrichment_prompt_does_not_request_game_class_fields():
+    project = NovelProject(
+        project_id="p-power-prompt-xuanhuan",
+        title="我养了一场天劫",
+        seed_outline="外门弟子养大一枚天劫种子，并追查上界收割修为的真相。",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+
+    prompt = _build_prompt(project)
+
+    assert "成长路线" in prompt
+    for leaked_term in ("武器护甲", "战斗循环", "转职任务", "transfer_task", "player_ecology"):
+        assert leaked_term not in prompt
+
+
+def test_xuanhuan_world_enrichment_discards_game_only_power_path_fields():
+    project = NovelProject(
+        project_id="p-power-merge-xuanhuan",
+        title="我养了一场天劫",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    spec = {
+        "name": "劫种修炼体系",
+        "origin": ["天地灵气"],
+        "attributes": [{"name": "灵根", "effect": "影响吐纳"}],
+        "paths": [
+            {
+                "name": "养劫道",
+                "role": "借劫修行",
+                "core_resource": "劫力",
+                "core_attributes": ["神识"],
+                "weapons": ["法杖"],
+                "armor": ["法衣"],
+                "combat_loop": "控制后爆发",
+                "strengths": ["修补缺陷"],
+                "weaknesses": ["留下雷纹"],
+                "skill_categories": ["养劫法"],
+                "branches": ["吞缺", "炼痕"],
+                "transfer_task": "完成转职任务",
+                "advancement": ["喂养真实缺陷"],
+                "advancement_tree": [{"level": 10, "tier_name": "转职", "options": []}],
+            },
+            {
+                "name": "守常道",
+                "role": "稳固根基",
+                "core_resource": "灵气",
+                "core_attributes": ["体魄"],
+                "strengths": ["根基稳定"],
+                "weaknesses": ["进境缓慢"],
+                "skill_categories": ["吐纳法"],
+                "branches": ["炼体", "炼神"],
+                "advancement": ["积累灵气"],
+            },
+        ],
+        "stages": [
+            {"name": "炼气", "entry": "引气", "change": "可用术法", "failure": "经脉受损"},
+            {"name": "筑基", "entry": "筑道基", "change": "灵力质变", "failure": "道基破裂"},
+            {"name": "结丹", "entry": "凝丹", "change": "神识增长", "failure": "金丹碎裂"},
+        ],
+        "skills": ["术法来自功法"],
+        "equipment": ["法器受境界限制"],
+        "resources": ["灵石与灵材"],
+        "advancement": ["积累与突破并重"],
+        "costs": ["突破可能伤及根基"],
+        "counters": ["道途相克"],
+        "boundaries": ["不能无凭依越阶"],
+        "social_impact": ["宗门控制资源"],
+        "visibility": ["高阶可看穿低阶"],
+        "continuity_ledger": ["境界", "功法", "资源", "伤势"],
+        "class_advancement_tiers": [{"level": 10, "name": "转职"}],
+    }
+
+    enriched = _merge_enrichment(
+        project,
+        {"world_blueprint": {"power_system_spec": spec}},
+        rules_only=False,
+    )
+    power = enriched.world_blueprint["power_system_spec"]
+
+    assert "class_advancement_tiers" not in power
+    for path in power["paths"]:
+        assert not ({"weapons", "armor", "combat_loop", "transfer_task", "advancement_tree"} & path.keys())
+
+
+def test_xuanhuan_world_enrichment_migrates_stale_generic_opening_terms():
+    project = NovelProject(
+        project_id="p-opening-migrate-xuanhuan",
+        title="我养了一场天劫",
+        world_blueprint={
+            "genre_plugin_ids": ["xuanhuan"],
+            "opening_arc": {
+                "golden_three_chapters": {
+                    "chapter_1": {
+                        "conflict_modes": ["现实缺口", "规则验证", "弱线索外溢"],
+                        "must_include": ["主角现实处境或核心缺口"],
+                        "exposition_beats": ["用动作或界面交代世界规则"],
+                        "background_budget": {"allowed_layers": ["一个服务节点"]},
+                    },
+                    "chapter_2": {"conflict_modes": ["资源路线", "任务门槛", "外部观察"]},
+                }
+            },
+        },
+    )
+
+    enriched = _merge_enrichment(project, {})
+    opening = enriched.world_blueprint["opening_arc"]
+    active_text = json.dumps(opening, ensure_ascii=False)
+
+    assert "当下困境" in opening["golden_three_chapters"]["chapter_1"]["conflict_modes"]
+    assert "行动条件" in opening["golden_three_chapters"]["chapter_2"]["conflict_modes"]
+    for leaked_term in ("现实缺口", "界面", "任务门槛", "服务节点"):
+        assert leaked_term not in active_text
+
+
+def test_non_game_longform_uses_defaults_only_as_fallback_and_omits_reality_ladder():
+    project = NovelProject(
+        project_id="p-longform-xuanhuan",
+        title="我养了一场天劫",
+        world_blueprint={
+            "genre_plugin_ids": ["xuanhuan"],
+            "longform_framework": {
+                "volume_ladder": [
+                    {"range": "1-60", "title": "外门养劫", "unlock": "养活劫种", "pressure_cap": "宗门执事"},
+                    {"range": "1-30", "title": "起势", "unlock": "核心能力与第一阶段目标", "pressure_cap": "局部势力压力"},
+                ],
+                "progression_ladder": ["修补经脉", "能力、资源、关系和信息必须分阶段解锁。"],
+                "reality_ladder": ["现实线先提供压力"],
+            },
+        },
+    )
+
+    enriched = _merge_enrichment(project, {})
+    longform = enriched.world_blueprint["longform_framework"]
+
+    assert [item["title"] for item in longform["volume_ladder"]] == ["外门养劫"]
+    assert longform["progression_ladder"] == ["修补经脉"]
+    assert "reality_ladder" not in longform
+
+
 def test_game_world_enrichment_prompt_uses_unified_economy_boundaries():
     project = NovelProject(
         project_id="p-economy-prompt",

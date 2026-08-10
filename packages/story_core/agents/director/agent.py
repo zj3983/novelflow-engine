@@ -52,8 +52,16 @@ def _extract_payload(response: Any) -> dict[str, Any]:
     if isinstance(text, str) and text.strip():
         import json
 
+        candidate = text.strip()
+        if candidate.startswith("```"):
+            lines = candidate.splitlines()
+            if lines and lines[0].strip().lower() in {"```", "```json"}:
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            candidate = "\n".join(lines).strip()
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(candidate)
         except ValueError:
             return {}
         if isinstance(parsed, dict):
@@ -165,11 +173,30 @@ class DirectorAgent:
                 "schema_version": "director-artifact/v1",
             },
         )
-        response = self._runtime.complete(model_request)
-        payload = _extract_payload(response)
-        payload.setdefault("chapter_number", context.chapter_number)
-        artifact = parse_director_response(payload)
-        _validate_executable_artifact(artifact)
+        artifact: DirectorArtifact | None = None
+        last_error: Exception | None = None
+        for attempt in range(2):
+            attempt_request = _ModelRequest(
+                prompt=model_request.prompt,
+                stage=model_request.stage,
+                metadata={**model_request.metadata, "attempt": attempt + 1},
+            )
+            try:
+                response = self._runtime.complete(attempt_request)
+                if getattr(response, "ok", True) is False:
+                    error = str(getattr(response, "error", "") or "model_call_failed")
+                    raise RuntimeError(f"director_unavailable:{error}")
+                payload = _extract_payload(response)
+                payload.setdefault("chapter_number", context.chapter_number)
+                artifact = parse_director_response(payload)
+                _validate_executable_artifact(artifact)
+                break
+            except (RuntimeError, ValueError) as exc:
+                last_error = exc
+                if attempt == 1:
+                    raise
+        if artifact is None:  # pragma: no cover - defensive loop invariant
+            raise last_error or RuntimeError("director_unavailable")
         self._store.save(
             chapter_number=context.chapter_number,
             payload={

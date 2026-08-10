@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from packages.story_core.agent_base import compact_list, compact_text
+from packages.story_core.chapter_length_policy import (
+    CHAPTER_TARGET_MAX_CHARS,
+    CHAPTER_TARGET_MIN_CHARS,
+    CHAPTER_TARGET_RANGE_TEXT,
+)
 from packages.story_core.chapter_continuity import generic_revision_fact_lock
 from packages.story_core.prompt_templates import get_effective_prompt_template, render_prompt_template
 from packages.story_core.scene_contract_repair import build_scene_contract_repair_plan
@@ -12,9 +17,9 @@ from packages.story_core.simplified_review import build_simplified_review
 from packages.story_core.writing_taskbook import ensure_writing_taskbook
 
 
-MIN_CHAPTER_CHARS = 4200
-MAX_CHAPTER_CHARS = 5500
-TARGET_CHAPTER_CHARS = "4200到5500字"
+MIN_CHAPTER_CHARS = CHAPTER_TARGET_MIN_CHARS
+MAX_CHAPTER_CHARS = CHAPTER_TARGET_MAX_CHARS
+TARGET_CHAPTER_CHARS = CHAPTER_TARGET_RANGE_TEXT
 
 
 @dataclass(frozen=True)

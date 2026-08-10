@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { ConfirmedFactsPanel } from "../../../../components/ws/ConfirmedFactsPanel";
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
@@ -112,6 +113,20 @@ export default function WorldStatePage() {
       />
 
       {error ? <p className="ws-inline-error">加载失败：{error}</p> : null}
+
+      {story?.world_snapshot && Object.keys(story.world_snapshot).length > 0 ? (
+        <section className="ws-card">
+          <div className="ws-section-head">
+            <div>
+              <h2 className="ws-card__title">当前世界快照</h2>
+              <p className="ws-card__hint">当前章结束后的局面，会随章节推进更新。</p>
+            </div>
+          </div>
+          <StateBlock title="当前状态" lines={recordLines(story.world_snapshot)} />
+        </section>
+      ) : null}
+
+      <ConfirmedFactsPanel facts={story?.continuity_facts ?? story?.world_facts ?? []} />
 
       {stateIndex.length > 1 ? (
         <label className="ws-search">

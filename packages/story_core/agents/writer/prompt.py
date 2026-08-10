@@ -9,7 +9,15 @@ in.
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+from packages.story_core.chapter_length_policy import (
+    CHAPTER_HARD_MAX_CHARS,
+    CHAPTER_HARD_MIN_CHARS,
+    CHAPTER_TARGET_MAX_CHARS,
+    CHAPTER_TARGET_MIN_CHARS,
+)
 
 from ..contracts import WriterRequest
 
@@ -77,8 +85,70 @@ def _current_character_state(card: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+def _relevant_character_names(request: WriterRequest) -> set[str]:
+    artifact = request.director_artifact
+    text_parts = [
+        artifact.chapter_goal,
+        artifact.opening_state,
+        artifact.ending_state,
+        artifact.hook,
+    ]
+    for beat in artifact.scene_beats:
+        text_parts.extend((beat.location, beat.action, beat.result))
+    text_parts.extend(item.name for item in artifact.entity_requirements)
+    artifact_text = "\n".join(text_parts)
+
+    relevant: set[str] = set()
+    for card in request.character_cards:
+        name = str(card.get("name") or "").strip()
+        role = str(card.get("role") or "").strip().casefold()
+        tier = str(card.get("character_tier") or "").strip().casefold()
+        if name and (
+            name in artifact_text
+            or tier == "protagonist"
+            or role in {"主角", "protagonist"}
+        ):
+            relevant.add(name)
+    return relevant
+
+
+def _compact_character_direction(card: dict[str, Any]) -> list[str]:
+    details: list[str] = []
+    identity = card.get("identity_profile")
+    if isinstance(identity, dict):
+        current_identity = str(identity.get("current_identity") or "").strip()
+        occupation = str(identity.get("occupation") or "").strip()
+        identity_text = current_identity or occupation
+        if identity_text:
+            details.append(f"身份：{identity_text}")
+
+    performance = card.get("performance_profile")
+    if not isinstance(performance, dict):
+        performance = {}
+    speech_style = str(
+        performance.get("speech_style") or card.get("speech_style") or ""
+    ).strip()
+    action_style = str(performance.get("action_style") or "").strip()
+    if speech_style:
+        details.append(f"说话：{speech_style}")
+    if action_style:
+        details.append(f"行动：{action_style}")
+    decision_rules = performance.get("decision_rules")
+    if isinstance(decision_rules, list):
+        rules = [str(item).strip() for item in decision_rules if str(item).strip()][:2]
+        if rules:
+            details.append("决定依据：" + "；".join(rules))
+    return details
+
+
 def _render_character_cards(request: WriterRequest) -> str:
-    active_cards = [card for card in request.character_cards if card.get("lifecycle") != "retired"]
+    relevant_names = _relevant_character_names(request)
+    active_cards = [
+        card
+        for card in request.character_cards
+        if card.get("lifecycle") != "retired"
+        and str(card.get("name") or "").strip() in relevant_names
+    ]
     if not active_cards:
         return ""
     blocks: list[str] = ["## 角色当前状态（仅活动角色）"]
@@ -88,12 +158,12 @@ def _render_character_cards(request: WriterRequest) -> str:
         header = f"- **{name}**（{role or '?'}）"
         current_state = _current_character_state(card)
         if current_state:
-            import json
-
             header += " · 状态：" + json.dumps(
                 current_state, ensure_ascii=False, separators=(",", ":")
             )
         blocks.append(header)
+        for detail in _compact_character_direction(card):
+            blocks.append(f"  {detail}")
         boundary = card.get("knowledge_boundary")
         if boundary:
             boundary_text = "、".join(str(item) for item in boundary)
@@ -102,7 +172,15 @@ def _render_character_cards(request: WriterRequest) -> str:
 
 
 def _render_entity_cards(request: WriterRequest) -> str:
-    active_entities = [card for card in request.entity_cards if card.get("lifecycle") != "retired"]
+    active_entities = [
+        card
+        for card in request.entity_cards
+        if card.get("lifecycle") != "retired"
+        and (
+            str(card.get("kind") or "").strip() not in {"", "entity"}
+            or bool(str(card.get("summary") or "").strip())
+        )
+    ]
     if not active_entities:
         return ""
     blocks: list[str] = ["## 活动实体卡"]
@@ -141,19 +219,33 @@ def build_writer_prompt(request: WriterRequest) -> str:
     markers, retired entities, and unrelated cards must never
     leak in.
     """
-    target_min = int(request.target_chars.get("min", 4200))
-    target_max = int(request.target_chars.get("max", 5500))
-    hard_min = int(request.acceptance_chars.get("min", 3800))
-    hard_max = int(request.acceptance_chars.get("max", 6000))
+    target_min = int(request.target_chars.get("min", CHAPTER_TARGET_MIN_CHARS))
+    target_max = int(request.target_chars.get("max", CHAPTER_TARGET_MAX_CHARS))
+    hard_min = int(request.acceptance_chars.get("min", CHAPTER_HARD_MIN_CHARS))
+    hard_max = int(request.acceptance_chars.get("max", CHAPTER_HARD_MAX_CHARS))
     sections: list[str] = [
         "你是小说写手。只能输出连续小说正文，不要输出标题、提纲、检查说明。",
         "",
+        "## 成稿要求\n"
+        "- 直接写人物在场景中的行动、观察和交流，不要用报告口吻复述剧情。\n"
+        "- 对话要接住对方的话并表达完整意思；不要把正常口语压成并列词组或故作高深的短句。\n"
+        "- 描写只保留会影响人物判断、情绪或后续行动的细节；整章只在必要处保留一两处比喻，其余直接写动作和结果。\n"
+        "- 文书、面板或记录最多摘三行，只保留会改变人物判断的字段；不照抄完整经过、后台字段和处理说明。\n"
+        "- 除非本章明确要求恐怖细节，不细写暴露的器官、体液或尸体状态，用人物反应和现场后果呈现危险。\n"
+        "- 不要替读者总结人物心理、手段效果或场面意义，让正文中的行动和反应自行说明。\n"
+        "- 动作之后不要追加作者判词；删掉“可谓……”“这就是……”或“世界观被击碎”一类替读者下结论的句子。\n"
+        "- 按场景节拍分配篇幅，核心异常和章末钩子必须在目标篇幅内完整出现。\n"
+        "- 严格停在导演给出的收尾状态，不自行推进到下一时间、地点或下一章行动。",
     ]
     if request.project_title or request.genre:
         sections.append(
             "## 项目元数据"
             + (f"\n书名：{request.project_title}" if request.project_title else "")
             + (f"\n题材：{request.genre}" if request.genre else "")
+        )
+    if request.rewrite_guidance.strip():
+        sections.append(
+            "## 本次写作指导（优先执行）\n" + request.rewrite_guidance.strip()
         )
     sections.append(_render_director_artifact(request))
     handoff = _render_previous_handoff(request)
@@ -171,10 +263,14 @@ def build_writer_prompt(request: WriterRequest) -> str:
     modules = _render_craft_modules(request)
     if modules:
         sections.append(modules)
+    beat_count = max(1, len(request.director_artifact.scene_beats))
+    beat_budget = max(1, target_max // beat_count)
     sections.append(
         f"## 篇幅\n"
         f"正文目标{target_min}至{target_max}字；"
-        f"低于{hard_min}字或超过{hard_max}字不能交稿。"
+        f"低于{hard_min}字或超过{hard_max}字不能交稿。\n"
+        f"本章共{beat_count}个节拍，每个节拍平均不超过{beat_budget}字；"
+        "一个节拍的结果写清后立即转入下一节拍，不重复解释同一判断。"
     )
     return "\n\n".join(sections)
 

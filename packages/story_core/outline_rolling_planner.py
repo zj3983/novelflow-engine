@@ -83,27 +83,38 @@ class RollingOutlineStatus:
 def _read_existing_outline_chapters(
     project_root: Path,
 ) -> list[dict[str, Any]]:
-    """Return the existing ``chapters`` list from
-    ``.webnovel/outline.json``, or ``[]`` when the file
-    is missing or unreadable.
+    """Return the existing chapter rows from BOTH the
+    legacy ``.webnovel/outline.json`` and the rolling
+    ``.story-system/outline-generation/rolling_outline.json``.
 
-    The planner only needs the chapter list (numbers +
-    source markers) to compute the gap; the store
-    handles the actual read-back at write time.
+    The planner only needs the chapter numbers + source
+    markers to compute the gap; the store handles the
+    actual read-back at write time. Reading both files
+    means a project whose outline was split across the
+    legacy migration path and the rolling-fill path
+    still reports a single coherent filled set.
     """
-    target = project_root / ".webnovel" / "outline.json"
-    if not target.is_file():
-        return []
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(payload, dict):
-        return []
-    chapters = payload.get("chapters")
-    if not isinstance(chapters, list):
-        return []
-    return [c for c in chapters if isinstance(c, dict)]
+    chapters: list[dict[str, Any]] = []
+    for relative in (
+        ".webnovel/outline.json",
+        ".story-system/outline-generation/rolling_outline.json",
+    ):
+        target = project_root / relative
+        if not target.is_file():
+            continue
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        rows = payload.get("chapters")
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict):
+                chapters.append(row)
+    return chapters
 
 
 def _build_payloads_from_generator(

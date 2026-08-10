@@ -34,6 +34,21 @@ cd apps/web
 npx playwright test
 ```
 
+### Legacy world-context migration
+
+File projects created before the world-context split can be inspected and
+migrated without changing chapter prose:
+
+```bash
+python scripts/migrate_world_context.py data/exported-projects/<project-id> --dry-run
+python scripts/migrate_world_context.py data/exported-projects/<project-id> --apply
+```
+
+The migration keeps static settings in `world_blueprint`, writes the current
+state to `world_snapshot`, writes short sourced facts to `continuity_facts`,
+and backs up the original JSON files under
+`.story-system/world-context-backups/` before applying changes.
+
 ## Configuration
 
 The API loads `.env` and `.env.local` without overriding real process
@@ -229,4 +244,3 @@ The smoke is the one-line acceptance check for the Round 7
 plan; the rest of the plan's acceptance lives in
 `tests/story_core/test_modular_*` and the production test
 suite (`pytest -q`).
-

@@ -1,4 +1,6 @@
 import json
+import importlib
+import importlib.util
 import os
 import re
 import threading
@@ -13,7 +15,9 @@ from packages.story_core.file_project_store import (
     ChapterQualityError,
     FileProjectStore,
     _assert_auto_chapter_quality,
+    _assert_auto_chapter_length,
     _chapter_outline_title,
+    _chapter_length_review,
     _manual_chapter_quality_report,
     _project_legacy_review,
     _regeneration_quality_blocking,
@@ -42,6 +46,89 @@ def test_manual_quality_report_passes_explicit_genre_context_to_style_review(mon
     )
 
     assert captured["genre_context"] == {"genre_plugin_ids": ["game_webnovel"]}
+
+
+def test_world_state_load_projects_legacy_dynamic_fields_without_mutating_files(tmp_path):
+    root = tmp_path / "legacy-world-context"
+    webnovel = root / ".webnovel"
+    webnovel.mkdir(parents=True)
+    project = {
+        "project_id": "legacy-world-context",
+        "title": "Legacy",
+        "current_focus": "守住神殿入口。",
+        "world_blueprint": {
+            "premise": "灵气依赖地脉。",
+            "current_arc": "雪山神殿封锁。",
+            "continuity_state": {"running_facts": ["林修负伤。"]},
+        },
+    }
+    state = {
+        "story_id": "legacy-world-context",
+        "outline": "",
+        "genre": "xuanhuan",
+        "style": "",
+        "current_chapter": 147,
+        "world_facts": ["第147章事实：林修负伤。", "第147章摘要：长摘要不应进入事实。"],
+        "characters": [],
+    }
+    (webnovel / "project.json").write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    (webnovel / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    visible = FileProjectStore(root).state()
+
+    assert visible["world_snapshot"]["current_arc"] == "雪山神殿封锁。"
+    assert visible["continuity_facts"] == [
+        {
+            "text": "林修负伤。",
+            "source_chapter": 147,
+            "status": "active",
+            "updated_chapter": 147,
+        }
+    ]
+    assert "world_snapshot" not in json.loads((webnovel / "state.json").read_text(encoding="utf-8"))
+
+
+def test_sync_state_writes_continuity_facts_without_copying_summary_to_world_facts(tmp_path):
+    root = tmp_path / "new-world-context"
+    webnovel = root / ".webnovel"
+    webnovel.mkdir(parents=True)
+    (webnovel / "project.json").write_text(
+        json.dumps(
+            {
+                "project_id": "new-world-context",
+                "title": "New",
+                "world_blueprint": {"premise": "灵气依赖地脉。"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = FileProjectStore(root)
+    synced = store._sync_state_after_chapter(
+        {"story_id": "new-world-context", "world_facts": ["世界前提：灵气依赖地脉。"]},
+        {
+            "chapter_number": 1,
+            "chapter_title": "神殿封门",
+            "body": "林修退到门边。",
+            "next_outline": "守住入口。",
+            "chapter_summary": {
+                "chapter_number": 1,
+                "chapter_title": "神殿封门",
+                "summary": "林修负伤后封住神殿入口。",
+                "facts": ["林修负伤。", "神殿入口已经封死。"],
+                "unresolved_threads": [],
+                "resolved_threads": [],
+                "next_focus": "守住入口。",
+            },
+        },
+    )
+
+    assert [item["text"] for item in synced["continuity_facts"]] == [
+        "林修负伤。",
+        "神殿入口已经封死。",
+    ]
+    assert synced["world_facts"] == ["世界前提：灵气依赖地脉。"]
+    assert all("摘要" not in str(item) for item in synced["world_facts"])
 
 
 def test_manual_quality_report_forwards_genre_context_and_reuses_cold_reader_report(monkeypatch):
@@ -106,6 +193,82 @@ def test_auto_quality_gate_allows_advisory_review_and_records_warning():
     _assert_auto_chapter_quality(report, operation="regenerate")
 
     assert report["quality_warning"]["needs_revision"] is True
+
+
+def test_auto_chapter_length_rejects_body_above_hard_max():
+    body = "正文" * 2851  # 5702 non-whitespace characters
+
+    review = _chapter_length_review(body)
+
+    assert review["pass"] is False
+    assert review["max_chars"] == 5500
+    assert review["hard_max_chars"] == 5700
+    with pytest.raises(ValueError, match="硬上限5700字"):
+        _assert_auto_chapter_length(body, operation="generate")
+
+
+def test_shared_chapter_length_policy_is_the_single_source():
+    module_name = "packages.story_core.chapter_length_policy"
+    assert importlib.util.find_spec(module_name) is not None
+    policy = importlib.import_module(module_name)
+
+    assert policy.CHAPTER_HARD_MIN_CHARS == 3800
+    assert policy.CHAPTER_TARGET_MIN_CHARS == 4200
+    assert policy.CHAPTER_TARGET_MAX_CHARS == 5500
+    assert policy.CHAPTER_HARD_MAX_CHARS == 5700
+    assert file_project_store_module.FILE_CHAPTER_MIN_CHARS == policy.CHAPTER_HARD_MIN_CHARS
+    assert file_project_store_module.FILE_CHAPTER_TARGET_MIN_CHARS == policy.CHAPTER_TARGET_MIN_CHARS
+    assert file_project_store_module.FILE_CHAPTER_MAX_CHARS == policy.CHAPTER_TARGET_MAX_CHARS
+    assert file_project_store_module.FILE_CHAPTER_HARD_MAX_CHARS == policy.CHAPTER_HARD_MAX_CHARS
+
+
+def test_file_project_state_normalizes_all_inventory_views(tmp_path):
+    root = tmp_path / "inventory-project"
+    state_path = root / ".webnovel" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "genre": "网游",
+                "genre_plugin_ids": ["game_webnovel"],
+                "characters": [
+                    {
+                        "name": "苏叶",
+                        "role": "protagonist",
+                        "game_state": {
+                            "current": {
+                                "inventory": {
+                                    "里静静堆叠着【灰狼毒腺": 7,
+                                    "】与【粗糙狼皮": 7,
+                                }
+                            }
+                        },
+                    }
+                ],
+                "progression_ledger": {
+                    "economy": {
+                        "inventory": {
+                            "背包里还剩【灰狼毒腺": 7,
+                            "】与【粗糙狼皮": 7,
+                        }
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    state = FileProjectStore(root).state()
+
+    assert state["characters"][0]["game_state"]["current"]["inventory"] == {
+        "灰狼毒腺": 7,
+        "粗糙狼皮": 7,
+    }
+    assert state["progression_ledger"]["economy"]["inventory"] == {
+        "灰狼毒腺": 7,
+        "粗糙狼皮": 7,
+    }
 
 
 def test_project_legacy_review_synthesizes_v2_envelope_for_v1_payload():
@@ -447,6 +610,48 @@ def test_writing_packet_selects_relevant_equipment_cards(tmp_path):
     assert [item["name"] for item in packet["equipment_cards"]] == ["Dusk Verdict"]
     assert packet["project"]["world_blueprint"]["equipment_cards"] == packet["equipment_cards"]
     assert [item["name"] for item in story_payload["equipment_cards"]] == ["Dusk Verdict", "Tide Ring"]
+
+
+def test_writing_packet_separates_static_world_snapshot_and_continuity_facts(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "world-context-packet",
+        project={
+            "project_id": "world-context-packet",
+            "title": "World Context",
+            "current_focus": "守住神殿入口。",
+            "world_blueprint": {
+                "genre_plugin_ids": ["xuanhuan"],
+                "premise": "灵气依赖地脉。",
+                "current_arc": "雪山神殿封锁。",
+                "continuity_state": {
+                    "running_facts": ["林修负伤。"],
+                    "chapter_facts": [{"chapter_number": 147, "facts": ["林修负伤。"]}],
+                },
+            },
+        },
+        state={
+            "story_id": "world-context-packet",
+            "genre": "xuanhuan",
+            "style": "",
+            "current_chapter": 147,
+            "characters": [{"name": "林修", "role": "protagonist"}],
+            "world_facts": [
+                "世界前提：灵气依赖地脉。",
+                "第147章事实：林修负伤。",
+                "第147章摘要：林修在雪山神殿与敌人周旋。",
+            ],
+        },
+    )
+
+    packet = store.writing_packet(148)
+
+    assert packet["project"]["world_blueprint"].get("premise") == "灵气依赖地脉。"
+    assert "current_arc" not in packet["project"]["world_blueprint"]
+    assert "continuity_state" not in packet["project"]["world_blueprint"]
+    assert packet["state"]["world_snapshot"]["current_arc"] == "雪山神殿封锁。"
+    assert [item["text"] for item in packet["state"]["continuity_facts"]] == ["林修负伤。"]
+    assert "world_facts" not in packet["state"]
+    assert "林修在雪山神殿与敌人周旋" not in json.dumps(packet, ensure_ascii=False)
 
 
 def _make_minimal_file_project(root, *, state=None, project=None):
@@ -1098,6 +1303,77 @@ def test_save_generated_plan_updates_outline_project_and_state_together(tmp_path
     assert store.project()["character_profiles"][0]["identity_profile"]["occupation"] == "守祠杂役"
     assert store.state()["characters"][0]["identity_profile"]["age"] == 21
     assert list((root / ".story-system" / "plans").glob("*-initial.json"))
+
+
+def test_unstarted_full_outline_generation_replaces_stale_character_roster_and_graph(
+    tmp_path,
+) -> None:
+    project = {
+        "project_id": "p-file",
+        "title": "断香炉",
+        "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        "character_profiles": [
+            {
+                "name": "林照",
+                "role": "protagonist",
+                "current_state": {"current": {"summary": "已经进入后续危机"}},
+            },
+            {"name": "底层执行者", "role": "stage_antagonist"},
+            {"name": "幕后黑手", "role": "long_term_antagonist"},
+        ],
+        "relationship_graph": [
+            {"source": "林照", "target": "底层执行者", "relation_type": "旧关系"}
+        ],
+    }
+    state = {
+        "story_id": "s-file",
+        "current_chapter": 0,
+        "world_facts": [],
+        "characters": project["character_profiles"],
+    }
+    store = _make_minimal_file_project(tmp_path / "initial", project=project, state=state)
+
+    saved = store.save_generated_outline_plan(_generated_opening_plan(), mode="initial")
+
+    names = {card["name"] for card in saved["characters"]}
+    assert "底层执行者" not in names
+    assert "幕后黑手" not in names
+    protagonist = next(card for card in saved["characters"] if card["name"] == "林照")
+    assert "current_state" not in protagonist
+    assert all(
+        edge["source"] in names and edge["target"] in names
+        for edge in store.project()["relationship_graph"]
+    )
+
+
+def test_unstarted_regeneration_replaces_stale_character_roster(tmp_path) -> None:
+    project = {
+        "project_id": "p-file",
+        "title": "断香炉",
+        "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        "character_profiles": [
+            {"name": "林照", "role": "protagonist"},
+            {"name": "底层执行者", "role": "stage_antagonist"},
+        ],
+    }
+    state = {
+        "story_id": "s-file",
+        "current_chapter": 0,
+        "world_facts": [],
+        "characters": project["character_profiles"],
+    }
+    store = _make_minimal_file_project(
+        tmp_path / "regenerate",
+        project=project,
+        state=state,
+    )
+
+    saved = store.save_generated_outline_plan(
+        _generated_opening_plan(),
+        mode="regenerate",
+    )
+
+    assert "底层执行者" not in {card["name"] for card in saved["characters"]}
 
 
 def test_save_generated_plan_revalidates_tropes_before_writes(tmp_path):
@@ -1964,6 +2240,26 @@ def test_chapter_ledger_parses_only_remaining_inventory_and_prose_real_balance(t
     assert ledger["economy"]["inventory"] == {"灰狼毒腺": 8, "粗糙狼皮": 7}
     assert ledger["real"]["end_balance"] == "332.60元"
     assert synced["characters"][0]["real_state"]["current"]["balance"] == "332.60元"
+
+
+def test_chapter_ledger_normalizes_bracketed_inventory_prose(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    state = {
+        "genre": "game_webnovel",
+        "progression_ledger": {"economy": {"inventory": {}}},
+        "characters": [{"name": "苏叶", "role": "protagonist", "game_id": "夜烬"}],
+    }
+    body = "夜烬清点背包，背包里静静堆叠着【灰狼毒腺×7】与【粗糙狼皮×7】。"
+
+    synced = store._sync_ledger_from_chapter_body(
+        state,
+        {"chapter_number": 1, "chapter_title": "裂纹狼心", "body": body},
+    )
+
+    assert synced["progression_ledger"]["economy"]["inventory"] == {
+        "灰狼毒腺": 7,
+        "粗糙狼皮": 7,
+    }
 
 
 def test_body_ledger_summary_preserves_confirmed_next_focus(tmp_path):
@@ -4524,8 +4820,9 @@ def test_file_project_store_writes_rewrites_and_commits(tmp_path, monkeypatch):
     assert (root / ".story-system" / "commits" / "latest_commit.json").exists()
     project_after_write = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
     assert project_after_write["current_chapter"] == 1
-    assert project_after_write["world_blueprint"]["continuity_state"]["latest_chapter"] == 1
-    assert project_after_write["world_blueprint"]["continuity_state"]["latest_summary"] == "Night Ember enters the village."
+    assert "continuity_state" not in project_after_write["world_blueprint"]
+    state_after_write = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    assert state_after_write["chapter_summaries"][-1]["summary"] == "Night Ember enters the village."
 
     rewritten = store.rewrite_chapter(
         chapter_number=1,
@@ -4545,11 +4842,11 @@ def test_file_project_store_writes_rewrites_and_commits(tmp_path, monkeypatch):
     assert latest_commit["operation"] == "rewrite"
     assert any(item["path"] == "chapters/0001-Chapter One Revised.md" for item in latest_commit["manifest"])
     project_after_rewrite = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
-    assert project_after_rewrite["world_blueprint"]["continuity_state"]["latest_title"] == "Chapter One Revised"
+    assert "continuity_state" not in project_after_rewrite["world_blueprint"]
     state_after_rewrite = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
-    world_facts_after_rewrite = "\n".join(state_after_rewrite["world_facts"])
-    assert "remove explanatory narrator voice" in world_facts_after_rewrite
-    assert "keep it grounded" not in world_facts_after_rewrite
+    continuity_after_rewrite = "\n".join(item["text"] for item in state_after_rewrite["continuity_facts"])
+    assert "remove explanatory narrator voice" in continuity_after_rewrite
+    assert "keep it grounded" not in continuity_after_rewrite
     workflow_records = [json.loads(line) for line in workflow_log.read_text(encoding="utf-8").splitlines()]
     assert [record["operation"] for record in workflow_records] == ["write", "rewrite"]
     assert workflow_records[0]["chapter"] == 1
@@ -5415,18 +5712,19 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
     state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
     assert state["current_chapter"] == 1
     assert any(item["chapter_number"] == 1 for item in state["chapter_summaries"])
-    assert any("Night Ember checks the counter." in item for item in state["world_facts"])
+    assert any(item["text"] == "No sale happened." for item in state["continuity_facts"])
     assert state["time_state"]["server_day"] == 1
     assert state["time_state"]["chapter_time_spans"][0]["chapter_number"] == 1
     project = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
     assert project["current_chapter"] == 1
     assert project["current_focus"] == "Check costs."
-    assert project["world_blueprint"]["continuity_state"]["latest_title"] == "Generated One"
-    assert project["world_blueprint"]["time_state"]["current_scene_time"] == "第1章章末"
+    assert "continuity_state" not in project["world_blueprint"]
+    assert "time_state" not in project["world_blueprint"]
+    assert state["world_snapshot"]["time_state"]["current_scene_time"] == "第1章章末"
     assert project["character_profiles"][0]["name"] == "Night Ember"
     assert project["character_profiles"][0]["game_panel"]["updated_chapter"] == 1
     packet = FileProjectStore(root).writing_packet(2)
-    assert packet["state"]["time_state"]["current_scene_time"] == "第1章章末"
+    assert packet["state"]["world_snapshot"]["time_state"]["current_scene_time"] == "第1章章末"
     latest_commit = json.loads((root / ".story-system" / "commits" / "latest_commit.json").read_text(encoding="utf-8"))
     assert latest_commit["operation"] == "generate"
 
@@ -6832,9 +7130,9 @@ def test_persist_bundle_ignores_stale_bundle_updated_story(tmp_path):
     store.persist_bundle(bundle)
 
     state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
-    facts = "\n".join(state["world_facts"])
+    facts = "\n".join(item["text"] for item in state["continuity_facts"])
     assert "fresh fact from summary" in facts
-    assert "Fresh summary wins." in facts
+    assert "Fresh summary wins." not in facts
     assert "stale fact should not return" not in facts
     assert state["current_chapter"] == 1
 
@@ -7841,7 +8139,7 @@ def test_rewrite_chapter_uses_canonical_state_not_embedded_snapshot(tmp_path):
     )
 
     state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
-    facts = "\n".join(state["world_facts"])
+    facts = "\n".join(item["text"] for item in state["continuity_facts"])
     assert "fresh rewrite fact" in facts
     assert "stale embedded snapshot" not in facts
 
@@ -7907,9 +8205,8 @@ def test_freeze_opening_baseline_rebuilds_state_and_blocks_rewrites(tmp_path):
     assert state["progression_ledger"]["economy"]["inventory"]["灰狼毒腺"] == 0
     assert state["progression_ledger"]["continuity_lock"]["opening_baseline"]["next_chapter"] == 4
     project = json.loads((root / ".webnovel" / "project.json").read_text(encoding="utf-8"))
-    continuity = project["world_blueprint"]["continuity_state"]
-    assert [item["chapter_number"] for item in continuity["chapter_facts"]] == [1, 2, 3]
-    assert "stale two" not in json.dumps(project, ensure_ascii=False)
+    assert "continuity_state" not in project.get("world_blueprint", {})
+    assert "stale two" not in json.dumps(state, ensure_ascii=False)
 
     try:
         store.write_chapter(chapter_number=1, title="Bad Rewrite", body="Should not write.", overwrite=True)

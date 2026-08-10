@@ -210,6 +210,21 @@ def test_updating_legacy_story_core_updates_overall_without_creating_file(tmp_pa
     assert not (store.webnovel_dir / "story_core.json").exists()
 
 
+def test_planning_brief_uses_edited_story_core_instead_of_selected_direction(tmp_path):
+    store = make_opening_store(tmp_path)
+    store.generate_opening_directions(StaticDirectionGenerator())
+    store.select_opening_direction("direction-2")
+    core = store.story_core()
+    core["logline"] = "Edited story core logline"
+    core["reader_promise"] = "Edited story core promise"
+    store.update_story_core(core)
+
+    brief = store._planning_brief()
+
+    assert brief.opening_direction.hook == "Edited story core logline"
+    assert brief.opening_direction.opening_promise == "Edited story core promise"
+
+
 def test_legacy_story_core_file_only_fills_empty_overall_fields(tmp_path):
     store = make_opening_store(tmp_path)
     outline = store.project_outline()
@@ -403,6 +418,29 @@ def test_generator_uses_planner_gateway_model_request():
     assert calls[0][1].operation == "opening_directions"
     assert calls[0][1].json_mode is True
     assert "An idea" in calls[0][1].prompt
+
+
+def test_generator_normalizes_arrow_separated_mystery_reveal_path():
+    payload = direction_set()
+    for item in payload["directions"]:
+        item["central_mystery"]["reveal_path"] = "first clue -> shared evidence -> hidden truth"
+
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"directions": payload["directions"]}),
+            )
+
+    result = LLMOpeningDirectionGenerator(model_gateway=Gateway()).generate(
+        OpeningBrief(novel_type_id="urban", idea="An idea")
+    )
+
+    assert result.directions[0].central_mystery.reveal_path == [
+        "first clue",
+        "shared evidence",
+        "hidden truth",
+    ]
 
 
 def test_generator_adds_trimmed_one_time_guidance_to_prompt():

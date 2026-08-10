@@ -34,5 +34,20 @@ def test_ai_flavor_review_passes_grounded_webnovel_prose():
 
     assert review["pass"]
     assert review["scores"]["ai_flavor"] == 8
+
+
+def test_ai_flavor_review_flags_author_verdicts_after_visible_actions() -> None:
+    body = (
+        "陈默先问了两边最怕什么，又把价钱压回桌面。"
+        "他这套说辞可谓炉火纯青。"
+        "这就是他每天都要处理的麻烦。"
+        "打印纸上的名字，让他二十多年来建立的世界观被彻底击碎。"
+    )
+
+    review = review_ai_flavor(body)
+
+    assert review["pass"] is False
+    assert review["metrics"]["author_verdict_count"] >= 3
+    assert any("作者判词" in issue for issue in review["issues"])
     assert review["metrics"]["concrete_density"] >= 0.35
     assert review["cuts"] == []

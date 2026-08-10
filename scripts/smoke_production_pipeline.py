@@ -1,4 +1,4 @@
-"""Real-model smoke for the production generation pipeline.
+"""Smoke test for the production generation pipeline.
 
 The user feedback after Round 7 listed seven concrete
 production failures; the Round 7 plan added Tasks 1-7 to
@@ -9,8 +9,8 @@ hold on a real project. The script:
   the operator can re-run it without touching the source;
 * hashes the source directory before and after the run so
   any accidental write to the source is detected;
-* drives ``store.generate_next_chapter(persist=False)`` so
-  no candidate is confirmed;
+* drives the public ``run_modular_pipeline`` entry point on a
+  disposable project so no candidate is confirmed;
 * asserts the four acceptance criteria the Round 7 plan
   pinned:
 
@@ -20,16 +20,13 @@ hold on a real project. The script:
   2. the director artifact carries ≥ 2 causal scene beats
      (a chapter plan, not an outline summary);
   3. the writer prompt contains the 4200-5500 target range
-     and the 3800-6000 hard range;
+     and the 3800-5700 hard range;
   4. the writer context preserves the protagonist's
      equipment, level, inventory, and quests.
 
-The script falls back to stubbed runtimes when the
-production gateway cannot reach a real model — the
-acceptance criteria are still structural checks, so a
-stub-backed run is enough to prove the wiring, and a
-real-model run is enough to prove the production
-behaviour.
+By default the script uses deterministic stub runtimes for
+CI-safe wiring checks. Pass ``--live`` to use the configured
+production gateway against the disposable copy.
 
 Invoke as::
 
@@ -54,6 +51,20 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable
+
+# Direct script execution places ``scripts`` rather than the
+# repository root on sys.path. Keep both ``python -m`` and
+# ``python scripts/...py`` supported for operators.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from packages.story_core.chapter_length_policy import (
+    CHAPTER_HARD_MAX_CHARS,
+    CHAPTER_HARD_MIN_CHARS,
+    CHAPTER_TARGET_MAX_CHARS,
+    CHAPTER_TARGET_MIN_CHARS,
+)
 
 
 SOURCE_HASH_BLOCK_SIZE = 65536
@@ -290,6 +301,7 @@ def _run_smoke(
     chapter_number: int,
     *,
     source_for_hash: Path | None = None,
+    live: bool = False,
 ) -> SmokeReport:
     """Drive the modular pipeline end-to-end against
     ``project_root``.
@@ -305,13 +317,8 @@ def _run_smoke(
     copy-semantic drift that accidentally writes to the
     source is detected.
     """
-    from packages.story_core.agents.fact_extractor import (
-        FactExtractor,
-        FactExtractorContext,
-    )
     from packages.story_core.agents.pipeline import (
-        plan_director_artifact,
-        run_writer as run_writer_pipeline,
+        run_modular_pipeline,
     )
     from packages.story_core.engine import ChapterBundle, StoryState
     from packages.story_core.file_project_store import FileProjectStore
@@ -335,24 +342,18 @@ def _run_smoke(
     except Exception as exc:  # pragma: no cover - defensive
         report.warnings.append(f"writer_prompt_capture_failed: {type(exc).__name__}: {exc}")
 
-    # Drive the full pipeline with stubbed runtimes. The
-    # smoke is a structural / wiring check, not a prose
-    # quality check; the stubs satisfy the production
-    # validators and let the writer gate clear.
-    director_runtime = _StubDirectorRuntime(chapter_number)
-    writer_runtime = _StubWriterRuntime()
-    consistency_runtime = _StubConsistencyRuntime()
+    # Drive the public modular entry point. The default stubs
+    # keep CI deterministic; ``--live`` leaves runtimes unset
+    # so the configured production gateway is exercised.
+    director_runtime = None if live else _StubDirectorRuntime(chapter_number)
+    writer_runtime = None if live else _StubWriterRuntime()
+    consistency_runtime = None if live else _StubConsistencyRuntime()
     try:
-        director_result = plan_director_artifact(
+        modular_result = run_modular_pipeline(
             project_root=project_root,
             chapter_number=chapter_number,
-            runtime=director_runtime,
-        )
-        writer_result = run_writer_pipeline(
-            project_root=project_root,
-            chapter_number=chapter_number,
-            director_artifact=director_result.artifact,
-            runtime=writer_runtime,
+            director_runtime=director_runtime,
+            writer_runtime=writer_runtime,
             consistency_runtime=consistency_runtime,
         )
     except Exception as exc:
@@ -360,29 +361,10 @@ def _run_smoke(
         report.source_hash_after = _hash_directory(project_root)
         return report
 
-    body = writer_result.body
+    director_artifact = modular_result.director_artifact
+    body = modular_result.body
     report.body_chars = len("".join(str(body or "").split()))
-
-    # Run the deterministic fact-extractor so the candidate
-    # carries a ContinuityDelta the smoke can inspect.
-    try:
-        from packages.story_core.canon.registry import CanonRegistry
-
-        canon_view = {
-            "by_id": {},
-            "by_kind": {},
-            "by_alias": {},
-        }
-        delta = FactExtractor().extract(
-            FactExtractorContext(
-                body=body,
-                chapter_number=chapter_number,
-                canon_view=canon_view,
-            )
-        )
-    except Exception as exc:
-        report.warnings.append(f"fact_extractor_failed: {type(exc).__name__}: {exc}")
-        delta = None
+    delta = modular_result.continuity_delta
 
     # Build a candidate via the public save path so the
     # smoke exercises the same envelope the workbench
@@ -390,9 +372,9 @@ def _run_smoke(
     # stops at the candidate draft.
     try:
         chapter_intent = {
-            "chapter_title": director_result.artifact.chapter_title,
-            "primary_conflict": {"summary": director_result.artifact.chapter_goal},
-            "next_focus": director_result.artifact.hook or "",
+            "chapter_title": director_artifact.chapter_title,
+            "primary_conflict": {"summary": director_artifact.chapter_goal},
+            "next_focus": director_artifact.hook or "",
         }
         event_plan = {
             "scene_chain": [
@@ -402,7 +384,7 @@ def _run_smoke(
                     "action": str(beat.action or ""),
                     "change": str(beat.result or ""),
                 }
-                for beat in director_result.artifact.scene_beats
+                for beat in director_artifact.scene_beats
             ],
         }
         scene_chain = list(event_plan.get("scene_chain") or [])
@@ -415,7 +397,7 @@ def _run_smoke(
         bundle = ChapterBundle(
             chapter_number=chapter_number,
             body=body,
-            chapter_title=director_result.artifact.chapter_title,
+            chapter_title=director_artifact.chapter_title,
             cadence="measured",
             chapter_intent=chapter_intent,
             character_moves=[],
@@ -428,7 +410,7 @@ def _run_smoke(
             simulation_status={"status": "skipped", "reason": "smoke"},
             action_briefs=[],
             conflict_summary={},
-            event_beat={"turn": director_result.artifact.hook or ""},
+            event_beat={"turn": director_artifact.hook or ""},
             character_cards=[],
             foreshadowing=[],
             next_outline="",
@@ -455,8 +437,8 @@ def _run_smoke(
     candidate_dict = candidate.to_dict() if hasattr(candidate, "to_dict") else dict(candidate)
     report.quality_report = dict(candidate_dict.get("quality_report") or {})
     report.director_artifact = {
-        "chapter_title": director_result.artifact.chapter_title,
-        "primary_conflict": director_result.artifact.chapter_goal,
+        "chapter_title": director_artifact.chapter_title,
+        "primary_conflict": director_artifact.chapter_goal,
         "scene_chain": scene_chain,
     }
 
@@ -471,20 +453,24 @@ def _run_smoke(
     writing_review = report.quality_report.get("writing_review") or {}
     blocking = writing_review.get("blocking") or []
     issues = writing_review.get("issues") or []
+
+    def record_blocking_code(value: Any) -> None:
+        code = str(value or "").strip()
+        if code and code not in report.blocking_codes:
+            report.blocking_codes.append(code)
+
     for item in blocking:
         if isinstance(item, dict):
             code = str(item.get("code") or "").strip()
-            if code:
-                report.blocking_codes.append(code)
+            record_blocking_code(code)
         elif isinstance(item, str):
-            report.blocking_codes.append(item)
+            record_blocking_code(item)
     for item in issues:
         if isinstance(item, str):
-            report.blocking_codes.append(item)
+            record_blocking_code(item)
         elif isinstance(item, dict):
             code = str(item.get("code") or "").strip()
-            if code:
-                report.blocking_codes.append(code)
+            record_blocking_code(code)
 
     # Writer context cards: render the current state of each
     # card so the smoke can assert the protagonist's
@@ -506,9 +492,9 @@ def _run_smoke(
             chapter_number=chapter_number,
             director_artifact=_DA(
                 chapter_number=chapter_number,
-                chapter_title=director_result.artifact.chapter_title,
-                chapter_goal=director_result.artifact.chapter_goal,
-                opening_state=director_result.artifact.opening_state,
+                chapter_title=director_artifact.chapter_title,
+                chapter_goal=director_artifact.chapter_goal,
+                opening_state=director_artifact.opening_state,
                 scene_beats=[
                     _SB(
                         order=beat.order,
@@ -516,10 +502,10 @@ def _run_smoke(
                         action=beat.action,
                         result=beat.result,
                     )
-                    for beat in director_result.artifact.scene_beats
+                    for beat in director_artifact.scene_beats
                 ],
-                ending_state=director_result.artifact.ending_state,
-                hook=director_result.artifact.hook,
+                ending_state=director_artifact.ending_state,
+                hook=director_artifact.hook,
             ),
         )
         for card in context.character_cards or []:
@@ -586,14 +572,30 @@ def _assert_acceptance(report: SmokeReport) -> list[str]:
             break
 
     # 3. Writer prompt contains the 4200-5500 target and
-    #    the 3800-6000 hard range.
+    #    the 3800-5700 hard range.
     prompt = report.writer_prompt
-    if "目标4200至5500字" not in prompt:
+    if (
+        f"目标{CHAPTER_TARGET_MIN_CHARS}至{CHAPTER_TARGET_MAX_CHARS}字"
+        not in prompt
+    ):
         failures.append("writer_prompt_missing_target_range")
-    if "低于3800字" not in prompt:
+    if f"低于{CHAPTER_HARD_MIN_CHARS}字" not in prompt:
         failures.append("writer_prompt_missing_hard_min")
-    if "超过6000字" not in prompt:
+    if f"超过{CHAPTER_HARD_MAX_CHARS}字" not in prompt:
         failures.append("writer_prompt_missing_hard_max")
+
+    if report.quality_report.get("ok") is not True:
+        failures.append("quality_report_failed")
+    if not (
+        CHAPTER_HARD_MIN_CHARS
+        <= int(report.body_chars or 0)
+        <= CHAPTER_HARD_MAX_CHARS
+    ):
+        failures.append(f"body_chars_out_of_range:{int(report.body_chars or 0)}")
+    if report.blocking_codes:
+        failures.append(
+            "blocking_findings:" + ",".join(report.blocking_codes)
+        )
 
     # 4. Writer context preserves the protagonist's
     #    equipment / level / inventory / quests when those
@@ -613,6 +615,30 @@ def _assert_acceptance(report: SmokeReport) -> list[str]:
         ]
         if not non_empty:
             failures.append("writer_context_dropped_character_state")
+        from packages.story_core.context.legacy_adapter import (
+            _normalize_inventory_item_name,
+        )
+
+        for card in non_empty:
+            current = card.get("current") or {}
+            for namespace in ("game_state", "game_panel"):
+                state = current.get(namespace)
+                if not isinstance(state, dict):
+                    continue
+                inventory = state.get("inventory")
+                if not isinstance(inventory, dict):
+                    continue
+                malformed = [
+                    str(name)
+                    for name in inventory
+                    if _normalize_inventory_item_name(name) != str(name).strip()
+                ]
+                if malformed:
+                    failures.append(
+                        "writer_context_malformed_inventory: "
+                        + ",".join(malformed[:4])
+                    )
+                    break
 
     # Source hash must match — the smoke never touches the
     # source directory.
@@ -662,7 +688,7 @@ def _resolve_project(
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Real-model smoke for the production generation "
+            "Production generation pipeline smoke for the "
             "pipeline. Drives a disposable copy of the project "
             "through the modular pipeline and asserts the four "
             "acceptance criteria the Round 7 plan pinned."
@@ -685,6 +711,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--tmpdir",
         default=None,
         help="temporary directory to use with --copy when --copy is omitted",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="use the configured production gateway instead of deterministic stubs",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -713,7 +744,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
 
     report = _run_smoke(
-        project_root, args.chapter, source_for_hash=source_for_hash
+        project_root,
+        args.chapter,
+        source_for_hash=source_for_hash,
+        live=args.live,
     )
     failures = _assert_acceptance(report)
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))

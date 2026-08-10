@@ -56,12 +56,12 @@ def _seed_candidate(
     return candidate
 
 
-# The file-project length gate rejects bodies under ~3800 chars.
+# The file-project length gate accepts 4200-5500 target characters.
 # Every test body in this file is therefore a single long sentence
-# repeated enough times to clear the gate while staying short
-# enough to keep the diff readable.
+# repeated enough times to clear the gate while staying inside the
+# production hard maximum.
 def _long_body(tag: str) -> str:
-    return (f"{tag}章节。" * 800)[:8000]
+    return (f"{tag}章节。" * 800)[:5200]
 
 
 def _read_managed_json(path: Path) -> dict:
@@ -697,6 +697,34 @@ def test_candidate_envelope_re_runs_length_gate_when_pipeline_passed_through(
     # or the merge helper — not duplicated either way).
     assert blocking_codes.count("chapter.length_too_short") == 1
     assert quality_report.get("ok") is False
+
+
+def test_candidate_length_merge_preserves_existing_review_failure(tmp_path):
+    store = FileProjectStore(tmp_path)
+    bundle = SimpleNamespace(
+        chapter_number=1,
+        chapter_title="审稿警告章",
+        title="审稿警告章",
+        body=_long_body("审稿警告"),
+        quality_report={
+            "ok": False,
+            "writing_review": {
+                "pass": False,
+                "blocking": [],
+                "issues": ["对话仍需修改"],
+            },
+        },
+        context_snapshot_id="ctx-review-warning",
+    )
+
+    with generation_progress(lambda *_: None):
+        candidate = store._save_candidate_from_bundle(
+            bundle, project_id=store.root.name
+        )
+
+    review = candidate.quality_report["writing_review"]
+    assert review["pass"] is False
+    assert candidate.quality_report["ok"] is False
 
 
 def test_canon_apply_rolls_back_when_transaction_aborts(tmp_path, monkeypatch):

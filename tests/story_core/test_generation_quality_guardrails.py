@@ -258,9 +258,9 @@ def test_rebalanced_draft_allows_small_upper_length_tolerance():
 def test_hard_length_fallback_accepts_publishable_draft_outside_preferred_range():
     assert _chapter_body_is_hard_length_acceptable("字" * 3849) is True
     assert _chapter_body_is_hard_length_acceptable("字" * 5640) is True
-    assert _chapter_body_is_hard_length_acceptable("字" * 5844) is True
+    assert _chapter_body_is_hard_length_acceptable("字" * 5700) is True
     assert _chapter_body_is_hard_length_acceptable("字" * 2993) is False
-    assert _chapter_body_is_hard_length_acceptable("字" * 6001) is False
+    assert _chapter_body_is_hard_length_acceptable("字" * 5701) is False
 
 
 def test_compression_accepts_small_lower_boundary_tolerance():

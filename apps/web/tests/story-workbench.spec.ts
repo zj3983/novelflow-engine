@@ -81,11 +81,11 @@ test("file story lazy-loading clients request encoded GET endpoints and pass res
     expect(calls).toHaveLength(2);
     expect(calls[0]).toMatchObject({
       url: `${baseUrl}/file-stories/${encodedStoryId}/overview`,
-      init: { method: "GET" },
+      init: { method: "GET", cache: "no-store" },
     });
     expect(calls[1]).toMatchObject({
       url: `${baseUrl}/file-stories/${encodedStoryId}/chapters/7`,
-      init: { method: "GET" },
+      init: { method: "GET", cache: "no-store" },
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -583,6 +583,21 @@ test("已确认事实面板真实渲染标题、只读说明和空状态", () =>
   expect(markup).not.toContain("删除");
 });
 
+test("世界状态页承载结构化连续性事实，世界观页不再混入章节事实", () => {
+  const markup = JSON.stringify(ConfirmedFactsPanel({
+    facts: [{ text: "林修负伤。", source_chapter: 147, status: "active", updated_chapter: 148 }],
+  }));
+  const worldPage = fs.readFileSync(path.resolve(__dirname, "../app/projects/[id]/world/page.tsx"), "utf8");
+  const statePage = fs.readFileSync(path.resolve(__dirname, "../app/projects/[id]/sim/page.tsx"), "utf8");
+
+  expect(markup).toContain("林修负伤。");
+  expect(markup).toContain("来源：第 147 章");
+  expect(markup).toContain("有效");
+  expect(worldPage).not.toContain("ConfirmedFactsPanel");
+  expect(statePage).toContain("ConfirmedFactsPanel");
+  expect(statePage).toContain("world_snapshot");
+});
+
 test("服务端刷新只同步未修改的世界背景和规则字段", () => {
   const original: ImportedWorldBlueprint = {
     premise: "旧前提",
@@ -600,7 +615,6 @@ test("服务端刷新只同步未修改的世界背景和规则字段", () => {
   expect(backgroundState.values).toEqual({
     world_summary: "服务端新摘要",
     premise: "未保存前提",
-    current_arc: "服务端新局势",
   });
 
   let rulesState = createWorldRulesEditorState(original);
@@ -704,20 +718,19 @@ test("世界背景与分类规则编辑器保留蓝图其他字段并独立保�
   }) as typeof updateProject;
   let savedCount = 0;
 
-  expect(WORLD_BACKGROUND_FIELDS.map((field) => field.label)).toEqual(["项目摘要", "世界前提", "当前局势"]);
+  expect(WORLD_BACKGROUND_FIELDS.map((field) => field.label)).toEqual(["项目摘要", "世界前提"]);
 
   await saveWorldBackground({
     projectId: "file:world-editor-fixture",
     worldSummary: "新项目摘要",
     premise: "新世界前提",
-    currentArc: "新局势",
     blueprint,
     onSaved: () => { savedCount += 1; },
     updater,
   });
   expect(calls[0][1]).toEqual({
     world_summary: "新项目摘要",
-    world_blueprint: { premise: "新世界前提", current_arc: "新局势" },
+    world_blueprint: { premise: "新世界前提" },
   });
   expect(calls[0][2]).toEqual({ fallbackToMock: false });
 
@@ -3938,7 +3951,7 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
   await page.setViewportSize({ width: 901, height: 900 });
   await page.goto("/projects/file%3Aworld-page-fixture/world");
 
-  for (const heading of ["世界背景", "世界规则", "地点", "阵营", "怪物图鉴", "已确认事实"]) {
+  for (const heading of ["世界背景", "世界规则", "地点", "阵营", "怪物图鉴"]) {
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
   }
   const orderedSections = page.locator([
@@ -3952,9 +3965,8 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
     "#constraints-world-rules-title",
     "#world-entities-title",
     "#monster-bestiary-title",
-    "#confirmed-facts-title",
   ].join(", "));
-  await expect(orderedSections).toHaveCount(11);
+  await expect(orderedSections).toHaveCount(10);
   await expect(orderedSections).toHaveText([
     "世界背景",
     "基础规则",
@@ -3966,7 +3978,6 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
     "世界硬约束",
     "地点与阵营",
     "怪物图鉴",
-    "已确认事实",
   ]);
   for (const buttonName of ["保存力量体系", "保存成长规则", "保存经济体系", "保存任务体系"]) {
     await expect(page.getByRole("button", { name: buttonName, exact: true })).toBeVisible();
@@ -3990,7 +4001,7 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
   );
   expect(mobileBounds[1].top).toBeGreaterThan(mobileBounds[0].bottom);
   expect(mobileBounds.every(({ left, right }) => left >= 0 && right <= 390)).toBe(true);
-  await expect(page.getByText("项目事实25", { exact: true })).toBeVisible();
+  await expect(page.getByText("项目事实25", { exact: true })).toHaveCount(0);
   await expect(page.getByText("作者约束", { exact: true })).toHaveCount(0);
 
   const summary = page.getByLabel("项目摘要");
@@ -4005,7 +4016,7 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
   await expect(unsavedRule).toHaveValue("尚未保存的规则草稿");
   await expect.poll(() => completedProjectGetCount).toBeGreaterThan(1);
   await expect(unsavedRule).toHaveValue("尚未保存的规则草稿");
-  expect(savedPayload.world_blueprint).toEqual({ premise: "旧世界前提", current_arc: "旧局势" });
+  expect(savedPayload.world_blueprint).toEqual({ premise: "旧世界前提" });
   expect(project.world_blueprint).toMatchObject({ monster_profiles: monsterProfiles });
 });
 

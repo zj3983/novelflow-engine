@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import re
 from typing import Any, Iterable
+import unicodedata
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -92,7 +93,38 @@ _NON_CHARACTER_ROLES = frozenset(
         "收购方NPC",
     }
 )
+_PLACEHOLDER_CHARACTER_NAMES = frozenset(
+    {
+        "底层执行者",
+        "阶段对手",
+        "阶段反派",
+        "长期反派",
+        "最终反派",
+        "幕后黑手",
+        "神秘人",
+        "数据分析师",
+        "开发商高层",
+        "辖区民警",
+    }
+)
+_PLACEHOLDER_CHARACTER_PREFIXES = (
+    "幕后黑手（",
+    "幕后黑手(",
+    "阶段反派（",
+    "阶段反派(",
+    "长期反派（",
+    "长期反派(",
+)
 _MISSING = object()
+
+
+def is_placeholder_character_name(value: Any) -> bool:
+    """Return whether a generated name is only a role or occupation label."""
+
+    name = unicodedata.normalize("NFKC", str(value or "")).strip()
+    return name in _PLACEHOLDER_CHARACTER_NAMES or name.startswith(
+        _PLACEHOLDER_CHARACTER_PREFIXES
+    )
 
 
 def is_non_character_card(card: dict[str, Any] | None) -> bool:

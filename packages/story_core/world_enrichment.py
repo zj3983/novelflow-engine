@@ -67,7 +67,16 @@ def _selected_novel_type_plugin(project: NovelProject, plugins=None):
 
 
 def _requires_structured_power_system(plugin_id: str) -> bool:
-    return plugin_id not in {"generic_webnovel", "urban"}
+    # Realistic catalog types must not gain a supernatural
+    # progression system merely because they have a genre plugin.
+    # Unknown/custom types keep the historical opt-in behavior so a
+    # user-supplied power-system template is still honored.
+    return plugin_id not in {
+        "generic_webnovel",
+        "urban",
+        "romance",
+        "suspense",
+    }
 
 
 def _uses_game_world_modules(plugin_id: str) -> bool:
@@ -320,6 +329,13 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
         world_fields.extend(("power_system", "power_system_spec"))
     if uses_game_modules:
         world_fields.extend(("quest_rules", "panel_rules", "npc_system", "quest_network", "server_runtime", "map_ecology"))
+    path_schema = (
+        "paths: [{name, role, core_resource, core_attributes, weapons, armor, combat_loop, strengths, weaknesses, skill_categories, branches, transfer_task, advancement}]，"
+        "逐职业写明定位、核心资源、属性、武器护甲、战斗循环、强弱项、技能类别、至少两个分支、转职任务和晋升；"
+        if uses_game_modules
+        else "paths: [{name, role, core_resource, core_attributes, strengths, weaknesses, skill_categories, branches, advancement}]，"
+        "逐成长路线写明路线定位、力量来源、关键条件、强弱项、能力类别、至少两个分支和晋升条件；只使用上述字段；"
+    )
     mode_line = (
         "请在不重写已有剧情的前提下，补强中文长篇网文项目的世界规则手册，只返回 JSON。"
         if rules_only
@@ -333,7 +349,7 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             f"world_blueprint: {{{', '.join(world_fields)}}}",
             "power_system_spec 必须是完整具体的结构化力量体系，禁止使用待定、略、同上或其他模糊占位符。规范字段：",
             "name: 体系名称字符串；origin: 力量来源与获得方式字符串数组；attributes: [{name, effect}] 属性名与具体效果；",
-            "paths: [{name, role, core_resource, core_attributes, weapons, armor, combat_loop, strengths, weaknesses, skill_categories, branches, transfer_task, advancement}]，逐路线写明职责、资源、属性、武防、战斗循环、强弱项、技能类别、至少两个分支、转职任务和晋升；",
+            path_schema,
             "stages: [{name, level, entry, change, failure}]，按顺序写明阶段名、等级里程碑、进入条件、能力变化和失败后果；",
             "skills: 技能获得与使用规则；equipment: 装备类别与限制；resources: 资源产出、转化与消耗；advancement: 晋升条件与流程；",
             "costs: 使用和突破代价；counters: 路线或机制克制；boundaries: 越级与能力硬边界；social_impact: 对组织、职业和秩序的影响；visibility: 角色可观察到的信息；continuity_ledger: 后续逐章必须追踪的状态字段。以上字段除 name 外均使用数组，paths/stages/attributes 使用前述对象数组。",
@@ -358,7 +374,7 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "progression_rules/economy_rules/quest_rules/faction_rules/panel_rules/chapter_formula/forbidden_breaks 必须是字符串数组，每组 3 到 6 条。",
             "world_systems 必须包含：material_base, institutions, social_order, conflict_engines, causal_loops。",
             "world_systems 要回答：资源从哪里来，谁负责分配，普通人如何上升，秩序如何维持，矛盾如何自动发生，一个动作会留下什么可追踪痕迹。",
-            "longform_framework 必须包含：target_words, series_premise, volume_ladder, progression_ladder, faction_ladder, economy_ladder, reality_ladder, mystery_ladder, map_ladder, npc_evolution_ladder, simulation_rules。",
+            "longform_framework 必须包含：target_words, series_premise, volume_ladder, progression_ladder, faction_ladder, economy_ladder, mystery_ladder, map_ladder, npc_evolution_ladder, simulation_rules；只有存在现实/虚拟双线时才添加 reality_ladder。",
             "longform_framework 不写死每章剧情，只规定百万字长篇的解锁顺序、压力上限、真相揭露节奏、势力升级路径和每卷推演边界。",
             "opening_arc 必须包含 golden_three_chapters，分别规划第1章、第2章、第3章的 purpose、must_include、exposition_beats、background_budget、ending_hook。",
             "黄金三章要回答：第1章如何立世界/立主角/立金手指/立风险，第2章如何扩大收益并让压力逼近，第3章如何形成第一个小高潮并确立长期路线。",
@@ -1188,26 +1204,26 @@ def _default_opening_arc(project: NovelProject, genre_plugins: list[dict[str, An
         "golden_three_chapters": {
             "chapter_1": {
                 "purpose": "立世界、立主角、立核心优势、立风险，并给读者一个可感知的第一爽点。",
-                "conflict_modes": ["现实缺口", "规则验证", "弱线索外溢"],
+                "conflict_modes": ["当下困境", "核心机制初次验证", "行动后果向外扩散"],
                 "forbidden_conflicts": ["禁止无铺垫正面对决", "禁止核心秘密立刻暴露"],
-                "must_include": ["世界入口", "主角现实处境或核心缺口", "核心能力首次验证", "首次收益与代价", "外部压力钩子"],
-                "exposition_beats": ["用动作或界面交代世界规则", "用细节交代主角动机", "用对话或传闻交代外部势力"],
+                "must_include": ["具体场景入口", "主角当前处境与眼前目标", "核心能力首次验证", "首次收益与代价", "外部压力钩子"],
+                "exposition_beats": ["用行动及结果交代世界规则", "用具体细节交代主角动机", "用对话或传闻交代外部势力"],
                 "background_budget": {
                     "required_layers": ["主角处境", "世界入口", "核心能力首次验证"],
-                    "allowed_layers": ["一个外部势力弱反应", "一个服务节点"],
+                    "allowed_layers": ["一个外部势力弱反应", "一个有明确用途的地点"],
                     "forbidden_layers": ["连续堆设定", "多势力完整视角"],
                 },
                 "ending_hook": "外部世界开始注意到主角造成的异常。",
             },
             "chapter_2": {
                 "purpose": "扩大收益，验证规则，让外部压力逼近。",
-                "conflict_modes": ["资源路线", "任务门槛", "外部观察"],
+                "conflict_modes": ["资源选择", "行动条件", "外部观察"],
                 "forbidden_conflicts": ["禁止敌人一步到位知道真相"],
                 "must_include": ["能力第二次验证", "资源或关系收益", "外部势力反应", "下一阶段门槛"],
-                "exposition_beats": ["用交易、任务或冲突补充制度", "用配角反应展示世界不是静止背景"],
+                "exposition_beats": ["用交换、差事或冲突补充制度", "用配角反应展示世界不是静止背景"],
                 "background_budget": {
                     "required_layers": ["规则代价", "外部反应"],
-                    "allowed_layers": ["一个新地点或新服务"],
+                    "allowed_layers": ["一个新地点或新关系"],
                     "forbidden_layers": ["敌人一步到位知道真相"],
                 },
                 "ending_hook": "主角进入观察名单或触发下一阶段线索。",
@@ -1254,6 +1270,33 @@ def _as_background_budget(value: Any) -> dict[str, list[str]]:
 def _merge_opening_arc(project: NovelProject, incoming_world: dict[str, Any], current_world: dict[str, Any], genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
     incoming = _as_dict(incoming_world.get("opening_arc"))
     current = _as_dict(current_world.get("opening_arc"))
+    plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
+    if not _has_game_plugin(genre_plugins) and plugin_ids.intersection(
+        {"xuanhuan", "xianxia", "eastern_fantasy"}
+    ):
+        replacements = {
+            "现实缺口": "当下困境",
+            "规则验证": "核心机制初次验证",
+            "弱线索外溢": "行动后果向外扩散",
+            "资源路线": "资源选择",
+            "任务门槛": "行动条件",
+            "主角现实处境或核心缺口": "主角当前处境与眼前目标",
+            "用动作或界面交代世界规则": "用行动及结果交代世界规则",
+            "一个服务节点": "一个有明确用途的地点",
+            "一个新地点或新服务": "一个新地点或新关系",
+        }
+
+        def migrate(value: Any) -> Any:
+            if isinstance(value, str):
+                return replacements.get(value, value)
+            if isinstance(value, list):
+                return [migrate(item) for item in value]
+            if isinstance(value, dict):
+                return {key: migrate(item) for key, item in value.items()}
+            return value
+
+        incoming = migrate(incoming)
+        current = migrate(current)
     defaults = _default_opening_arc(project, genre_plugins)
     incoming_golden = _as_dict(incoming.get("golden_three_chapters"))
     current_golden = _as_dict(current.get("golden_three_chapters"))
@@ -1492,18 +1535,35 @@ def _merge_longform_framework(project: NovelProject, incoming_world: dict[str, A
     current = _as_dict(current_world.get("longform_framework"))
     defaults = _default_longform_framework(project, genre_plugins)
     target_words = _as_int(incoming.get("target_words") or current.get("target_words"), int(defaults["target_words"]))
+    def preferred(field: str) -> Any:
+        for source in (incoming, current, defaults):
+            value = source.get(field)
+            if value not in (None, "", [], {}):
+                if source is not defaults and isinstance(value, list):
+                    default_value = defaults.get(field)
+                    if isinstance(default_value, list):
+                        default_keys = {_serialized_json(item) for item in default_value}
+                        specific = [
+                            item for item in value
+                            if _serialized_json(item) not in default_keys
+                        ]
+                        if specific:
+                            return specific
+                return value
+        return []
+
     return {
         "target_words": max(100000, target_words),
         "series_premise": compact_text(str(incoming.get("series_premise") or current.get("series_premise") or defaults["series_premise"]), 420),
-        "volume_ladder": _merge_ladder_entries(incoming.get("volume_ladder"), current.get("volume_ladder"), defaults.get("volume_ladder"), limit=12),
-        "progression_ladder": _merge_string_lists(incoming.get("progression_ladder"), current.get("progression_ladder"), defaults.get("progression_ladder"), limit=12, item_limit=240),
-        "faction_ladder": _merge_string_lists(incoming.get("faction_ladder"), current.get("faction_ladder"), defaults.get("faction_ladder"), limit=12, item_limit=240),
-        "economy_ladder": _merge_string_lists(incoming.get("economy_ladder"), current.get("economy_ladder"), defaults.get("economy_ladder"), limit=10, item_limit=240),
-        "reality_ladder": _merge_string_lists(incoming.get("reality_ladder"), current.get("reality_ladder"), defaults.get("reality_ladder"), limit=10, item_limit=240),
-        "mystery_ladder": _merge_string_lists(incoming.get("mystery_ladder"), current.get("mystery_ladder"), defaults.get("mystery_ladder"), limit=12, item_limit=240),
-        "map_ladder": _merge_string_lists(incoming.get("map_ladder"), current.get("map_ladder"), defaults.get("map_ladder"), limit=12, item_limit=240),
-        "npc_evolution_ladder": _merge_string_lists(incoming.get("npc_evolution_ladder"), current.get("npc_evolution_ladder"), defaults.get("npc_evolution_ladder"), limit=10, item_limit=240),
-        "simulation_rules": _merge_string_lists(incoming.get("simulation_rules"), current.get("simulation_rules"), defaults.get("simulation_rules"), limit=12, item_limit=240),
+        "volume_ladder": _merge_ladder_entries(preferred("volume_ladder"), limit=12),
+        "progression_ladder": _merge_string_lists(preferred("progression_ladder"), limit=12, item_limit=240),
+        "faction_ladder": _merge_string_lists(preferred("faction_ladder"), limit=12, item_limit=240),
+        "economy_ladder": _merge_string_lists(preferred("economy_ladder"), limit=10, item_limit=240),
+        "reality_ladder": _merge_string_lists(preferred("reality_ladder"), limit=10, item_limit=240),
+        "mystery_ladder": _merge_string_lists(preferred("mystery_ladder"), limit=12, item_limit=240),
+        "map_ladder": _merge_string_lists(preferred("map_ladder"), limit=12, item_limit=240),
+        "npc_evolution_ladder": _merge_string_lists(preferred("npc_evolution_ladder"), limit=10, item_limit=240),
+        "simulation_rules": _merge_string_lists(preferred("simulation_rules"), limit=12, item_limit=240),
     }
 
 
@@ -1782,6 +1842,28 @@ def _power_system_validation_error(error: PowerSystemValidationError) -> ValueEr
     )
 
 
+_GAME_ONLY_POWER_PATH_FIELDS = frozenset(
+    ("weapons", "armor", "combat_loop", "transfer_task", "advancement_tree")
+)
+
+
+def _power_spec_for_genre(value: Any, plugin_id: str) -> Any:
+    """Remove game-class structure before validating a non-game power system."""
+
+    if plugin_id == "game_webnovel" or not isinstance(value, dict):
+        return value
+    cleaned = deepcopy(value)
+    cleaned.pop("class_advancement_tiers", None)
+    paths = cleaned.get("paths")
+    if isinstance(paths, list):
+        for path in paths:
+            if not isinstance(path, dict):
+                continue
+            for field in _GAME_ONLY_POWER_PATH_FIELDS:
+                path.pop(field, None)
+    return cleaned
+
+
 def _validated_power_system_merge(
     project: NovelProject,
     incoming_world: dict[str, Any],
@@ -1802,7 +1884,13 @@ def _validated_power_system_merge(
     if "power_system_spec" in current_world:
         try:
             current_validated = validate_power_system_spec(
-                current_world.get("power_system_spec"), **validation_args
+                _power_spec_for_genre(
+                    current_world.get("power_system_spec"), selected_plugin.plugin_id
+                ),
+                **validation_args,
+            )
+            current_validated = _power_spec_for_genre(
+                current_validated, selected_plugin.plugin_id
             )
         except PowerSystemValidationError:
             current_validated = None
@@ -1810,7 +1898,13 @@ def _validated_power_system_merge(
     if incoming_supplied:
         try:
             incoming_validated = validate_power_system_spec(
-                incoming_world.get("power_system_spec"), **validation_args
+                _power_spec_for_genre(
+                    incoming_world.get("power_system_spec"), selected_plugin.plugin_id
+                ),
+                **validation_args,
+            )
+            incoming_validated = _power_spec_for_genre(
+                incoming_validated, selected_plugin.plugin_id
             )
         except PowerSystemValidationError as error:
             raise _power_system_validation_error(error) from error
@@ -1818,12 +1912,17 @@ def _validated_power_system_merge(
         return deepcopy(incoming_validated), changed
 
     if current_validated is not None:
-        return deepcopy(current_world["power_system_spec"]), False
+        return deepcopy(current_validated), False
     if rules_only is not False:
         return None, False
 
     try:
-        validate_power_system_spec(current_world.get("power_system_spec"), **validation_args)
+        validate_power_system_spec(
+            _power_spec_for_genre(
+                current_world.get("power_system_spec"), selected_plugin.plugin_id
+            ),
+            **validation_args,
+        )
     except PowerSystemValidationError as error:
         raise _power_system_validation_error(error) from error
     raise ValueError("invalid_power_system_spec: validation_failed")
@@ -1880,6 +1979,8 @@ def _merge_enrichment(
     world_blueprint["opening_arc"] = _merge_opening_arc(project, incoming_world, current_world, genre_plugins)
     world_blueprint["volume_plan"] = _merge_volume_plan(project, incoming_world, current_world, genre_plugins)
     world_blueprint["longform_framework"] = _merge_longform_framework(project, incoming_world, current_world, genre_plugins)
+    if not uses_game_modules:
+        world_blueprint["longform_framework"].pop("reality_ladder", None)
     world_blueprint["progression_ledger"] = _merge_progression_ledger(project, incoming_world, current_world, genre_plugins)
     world_blueprint["world_systems"] = _merge_world_systems(project, incoming_world, current_world, genre_plugins)
     world_blueprint["living_world"] = _merge_living_world(project, incoming_world, current_world, genre_plugins)

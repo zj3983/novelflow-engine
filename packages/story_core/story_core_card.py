@@ -223,9 +223,13 @@ def merge_story_core_into_overall(
 
     assign(merged, "story", card.logline)
     assign(merged, "protagonist_goal", card.protagonist_goal)
+    assign(merged, "book_objective", card.protagonist_goal)
     assign(merged, "main_conflict", card.main_conflict)
     assign(merged, "growth_path", card.growth_path)
     assign(merged, "ending_direction", card.ending_direction)
+    assign(merged, "ending_image", card.ending_direction)
+    assign(merged, "ending_contract", card.ending_direction)
+    assign(merged, "core_selling_point", card.excitement_point or card.reader_promise)
 
     positioning = dict(merged.get("positioning") or {})
     for key in (

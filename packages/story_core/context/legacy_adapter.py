@@ -37,6 +37,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from packages.story_core.inventory_normalization import (
+    normalize_inventory_item_name as _normalize_inventory_item_name,
+    normalize_inventory_mapping,
+)
+
 
 _LEGACY_OUTLINE_PATH = ("..", ".webnovel", "outline.json")
 _LEGACY_STATE_PATH = ("..", ".webnovel", "state.json")
@@ -48,6 +53,23 @@ def _read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, json.JSONDecodeError):
         return None
+
+
+def _normalize_character_inventory(card: dict[str, Any]) -> dict[str, Any]:
+    """Normalize inventory keys in both legacy state namespaces."""
+    for namespace in ("game_state", "game_panel"):
+        container = card.get(namespace)
+        if not isinstance(container, dict):
+            continue
+        target = (
+            container.get("current")
+            if namespace == "game_state"
+            else container
+        )
+        if not isinstance(target, dict) or not isinstance(target.get("inventory"), dict):
+            continue
+        target["inventory"] = normalize_inventory_mapping(target["inventory"])
+    return card
 
 
 def _system_path(system_root: Path, *parts: str) -> Path:
@@ -181,7 +203,7 @@ def legacy_active_characters(system_root: Path) -> list[dict[str, Any]]:
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
             if isinstance(card, dict):
-                items.append(card)
+                items.append(_normalize_character_inventory(card))
         if items:
             return items
     state = legacy_state_view(system_root)
@@ -189,6 +211,7 @@ def legacy_active_characters(system_root: Path) -> list[dict[str, Any]]:
         chars = list(state.get("characters") or [])
         for card in chars:
             if isinstance(card, dict):
+                _normalize_character_inventory(card)
                 card.setdefault("lifecycle", "active")
         return chars
     project = legacy_project_view(system_root)
@@ -196,6 +219,7 @@ def legacy_active_characters(system_root: Path) -> list[dict[str, Any]]:
         chars = list(project.get("character_profiles") or [])
         for card in chars:
             if isinstance(card, dict):
+                _normalize_character_inventory(card)
                 card.setdefault("lifecycle", "active")
         return chars
     return []

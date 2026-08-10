@@ -125,6 +125,11 @@ def build_director_prompt(context: DirectorContext) -> str:
     characters = _render_character_cards(context)
     if characters:
         sections.append(characters)
+    if context.rewrite_guidance.strip():
+        sections.append(
+            "## 本次写作指导（必须落实到场景计划）\n"
+            + context.rewrite_guidance.strip()
+        )
     sections.extend(
         [
             "## 必须回答的 8 个问题",
@@ -140,6 +145,7 @@ def build_director_prompt(context: DirectorContext) -> str:
             "## 实体要求（entity_requirements）",
             "列出本章新出现或需要卡片支持的角色/物品/装备/技能/地点/组织/任务/怪物，"
             "kind 仅限：character / item / equipment / technique / location / organization / quest / monster / rule。",
+            "每项都要填写 notes，用一两句写清本章身份、用途、已知效果或场景作用；不要只给名称。",
             "",
             "## 章节标题（chapter_title）",
             "给一句不超过 20 字的章节标题，"

@@ -688,6 +688,13 @@ export type StoryResponse = {
   author_constraints?: string[];
   writing_lessons?: string[];
   world_facts?: string[];
+  world_snapshot?: Record<string, unknown>;
+  continuity_facts?: Array<{
+    text: string;
+    source_chapter?: number;
+    status?: string;
+    updated_chapter?: number;
+  }>;
   parent_story_id?: string | null;
   branched_from_chapter?: number | null;
   characters: Array<{
@@ -3701,12 +3708,14 @@ export async function fetchStory(storyId: string): Promise<StoryResponse> {
 export async function fetchFileStoryOverview(storyId: string): Promise<FileStoryOverview> {
   return (await tryFetchJson(`${fileStoryPath(storyId)}/overview`, {
     method: "GET",
+    cache: "no-store",
   }, 30000)) as FileStoryOverview;
 }
 
 export async function fetchFileChapter(storyId: string, chapterNumber: number): Promise<ChapterBundle> {
   return (await tryFetchJson(`${fileStoryPath(storyId)}/chapters/${chapterNumber}`, {
     method: "GET",
+    cache: "no-store",
   }, 30000)) as ChapterBundle;
 }
 

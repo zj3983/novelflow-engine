@@ -58,6 +58,12 @@ from packages.story_core.attribute_allocation import (
     rebuild_attribute_progression,
 )
 from packages.story_core.chapter_continuity import build_continuity_interface
+from packages.story_core.chapter_length_policy import (
+    CHAPTER_HARD_MAX_CHARS,
+    CHAPTER_HARD_MIN_CHARS,
+    CHAPTER_TARGET_MAX_CHARS,
+    CHAPTER_TARGET_MIN_CHARS,
+)
 from packages.story_core.chapter_direction import build_chapter_direction_options
 from packages.story_core.web_game_economy import (
     normalize_legacy_economy_prompt_value,
@@ -95,6 +101,10 @@ from packages.story_core.foreshadowing import (
     select_unresolved_foreshadowing,
 )
 from packages.story_core.models import CharacterState, ForeshadowingState, StoryState
+from packages.story_core.inventory_normalization import (
+    normalize_inventory_item_name,
+    normalize_inventory_tree,
+)
 from packages.story_core.novel_type_catalog import (
     is_game_story_type,
     normalize_novel_type_ids,
@@ -163,6 +173,11 @@ from packages.story_core.simplified_review import build_simplified_review
 from packages.story_core.workflow_telemetry import append_workflow_telemetry
 from packages.story_core.writing_learning import learning_snapshot, lessons_from_quality_report, merge_writing_lessons
 from packages.story_core.writing_packet import power_system_context_for_state, prose_renderer_contract
+from packages.story_core.world_state import (
+    append_continuity_facts,
+    normalize_world_context,
+    relevant_continuity_facts,
+)
 from packages.story_core.skill_packs import (
     resolve_enabled_skill_ids,
     resolve_enabled_skill_module_ids,
@@ -414,10 +429,10 @@ _REGENERATION_CONTINUITY_QUALITY_ISSUES: tuple[str, ...] = (
     "summary",
 )
 
-FILE_CHAPTER_MIN_CHARS = 3800
-FILE_CHAPTER_TARGET_MIN_CHARS = 4200
-FILE_CHAPTER_MAX_CHARS = 5500
-FILE_CHAPTER_HARD_MAX_CHARS = FILE_CHAPTER_MAX_CHARS + 200
+FILE_CHAPTER_MIN_CHARS = CHAPTER_HARD_MIN_CHARS
+FILE_CHAPTER_TARGET_MIN_CHARS = CHAPTER_TARGET_MIN_CHARS
+FILE_CHAPTER_MAX_CHARS = CHAPTER_TARGET_MAX_CHARS
+FILE_CHAPTER_HARD_MAX_CHARS = CHAPTER_HARD_MAX_CHARS
 NON_BLOCKING_QUALITY_ISSUES = {"body_too_long"}
 
 
@@ -462,6 +477,7 @@ def _chapter_length_review(body: str) -> dict[str, Any]:
         "body_chars": body_chars,
         "min_chars": FILE_CHAPTER_MIN_CHARS,
         "max_chars": FILE_CHAPTER_MAX_CHARS,
+        "hard_max_chars": FILE_CHAPTER_HARD_MAX_CHARS,
         "issues": issues,
     }
 
@@ -474,9 +490,17 @@ def _assert_auto_chapter_length(body: str, *, operation: str) -> None:
         return
     body_chars = int(length_review.get("body_chars") or 0)
     min_chars = int(length_review.get("min_chars") or FILE_CHAPTER_MIN_CHARS)
+    hard_max_chars = int(
+        length_review.get("hard_max_chars") or FILE_CHAPTER_HARD_MAX_CHARS
+    )
     if body_chars < min_chars:
         issue = "; ".join(str(item) for item in length_review.get("issues", []) if str(item).strip())
         raise ValueError(f"{operation}_length_failed:{issue or f'body_chars {body_chars} < {min_chars}'}")
+    if body_chars > hard_max_chars:
+        raise ValueError(
+            f"{operation}_length_failed:章节字数超标：当前约{body_chars}字，"
+            f"硬上限{hard_max_chars}字。"
+        )
 
 
 def _is_regeneration_continuity_failure(
@@ -1466,7 +1490,7 @@ class FileProjectStore:
         self.continuity_store = ContinuityStore(self.root)
 
     def _read_json(self, path: Path, default: Any = None) -> Any:
-        return self.snapshot_store.read_json(path, default)
+        return normalize_inventory_tree(self.snapshot_store.read_json(path, default))
 
     def _write_json(self, path: Path, payload: Any) -> None:
         self.snapshot_store.write_json(path, payload)
@@ -2596,7 +2620,9 @@ class FileProjectStore:
         existing_issues = list(writing_review.get("issues") or [])
         body_chars = int(length_review.get("body_chars") or 0)
         min_chars = int(length_review.get("min_chars") or FILE_CHAPTER_MIN_CHARS)
-        max_chars = int(length_review.get("max_chars") or FILE_CHAPTER_HARD_MAX_CHARS)
+        max_chars = int(
+            length_review.get("hard_max_chars") or FILE_CHAPTER_HARD_MAX_CHARS
+        )
         if not bool(length_review.get("pass", True)):
             if body_chars < min_chars:
                 length_code = "chapter.length_too_short"
@@ -2637,7 +2663,10 @@ class FileProjectStore:
             for item in existing_blocking
             if isinstance(item, dict)
         )
-        writing_review["pass"] = not has_blocking
+        existing_pass = writing_review.get("pass")
+        writing_review["pass"] = (
+            existing_pass is not False and not has_blocking
+        )
         quality_report["writing_review"] = writing_review
         quality_report["ok"] = quality_report.get("ok", True) and not has_blocking
         # Also surface the raw length-review numbers so the
@@ -4083,6 +4112,18 @@ class FileProjectStore:
             return state
         synced = dict(state)
         summary = self._chapter_summary_payload(chapter)
+        current_project = self.project()
+        normalized_world = normalize_world_context(
+            blueprint=current_project.get("world_blueprint"),
+            state=synced,
+            current_focus=current_project.get("current_focus"),
+        )
+        synced["world_snapshot"] = normalized_world.world_snapshot
+        synced["continuity_facts"] = append_continuity_facts(
+            normalized_world.continuity_facts,
+            chapter_number=chapter_number,
+            facts=summary["facts"],
+        )
         foreshadowing = self._parse_foreshadowing_ledger(synced.get("foreshadowing"))
         reconciled_foreshadowing = reconcile_foreshadowing(
             foreshadowing,
@@ -4111,16 +4152,6 @@ class FileProjectStore:
             summary,
             limit=240,
         )
-        chapter_fact_prefix = f"第{chapter_number}章事实："
-        chapter_summary_prefix = f"第{chapter_number}章摘要："
-        existing_world_facts = [
-            str(item)
-            for item in list(synced.get("world_facts") or [])
-            if not str(item).startswith(chapter_fact_prefix) and not str(item).startswith(chapter_summary_prefix)
-        ]
-        facts = [f"第{chapter_number}章事实：{fact}" for fact in summary["facts"]]
-        facts.append(f"第{chapter_number}章摘要：{summary['summary']}")
-        synced["world_facts"] = self._merge_unique(existing_world_facts, facts, limit=260)
         timeline_entry = {
             "chapter_number": chapter_number,
             "summary": summary["summary"],
@@ -4145,7 +4176,6 @@ class FileProjectStore:
             "unresolved_threads": summary["unresolved_threads"],
             "resolved_threads": summary["resolved_threads"],
         }
-        current_project = self.project()
         is_game_story = self._is_game_story_payload(current_project, synced)
         protagonist_card = (
             self._protagonist_character_card(synced, current_project)
@@ -4175,8 +4205,12 @@ class FileProjectStore:
         )
         if is_game_story:
             self._sync_time_state_after_chapter(synced, current_project, chapter)
+            synced["world_snapshot"]["time_state"] = deepcopy(synced.get("time_state") or {})
         else:
             synced.pop("time_state", None)
+            synced["world_snapshot"].pop("time_state", None)
+        if summary["next_focus"] and summary["next_focus"] != "continue":
+            synced["world_snapshot"]["current_focus"] = summary["next_focus"]
         return synced
 
     def _sync_project_after_chapter(self, project: dict[str, Any], state: dict[str, Any], chapter: dict[str, Any]) -> dict[str, Any]:
@@ -4194,44 +4228,9 @@ class FileProjectStore:
         )
         if equipment_merge.cards:
             blueprint["equipment_cards"] = equipment_merge.cards
-        continuity = dict(blueprint.get("continuity_state") or {})
-        previous_chapter_facts: list[str] = []
-        for item in continuity.get("chapter_facts", []) if isinstance(continuity.get("chapter_facts"), list) else []:
-            if isinstance(item, dict) and int(item.get("chapter_number") or 0) == chapter_number:
-                previous_chapter_facts = [str(fact) for fact in item.get("facts") or [] if str(fact).strip()]
-                break
-        chapter_record = {
-            "chapter_number": chapter_number,
-            "chapter_title": summary["chapter_title"],
-            "summary": summary["summary"],
-            "facts": summary["facts"],
-            "unresolved_threads": summary["unresolved_threads"],
-            "next_focus": summary["next_focus"],
-        }
-        continuity["latest_chapter"] = chapter_number
-        continuity["latest_title"] = summary["chapter_title"]
-        continuity["latest_summary"] = summary["summary"]
-        continuity["next_focus"] = summary["next_focus"]
-        continuity["chapter_facts"] = self._replace_by_chapter_number(
-            list(continuity.get("chapter_facts") or []),
-            chapter_record,
-            limit=120,
-        )
-        existing_running_facts = [
-            str(item)
-            for item in list(continuity.get("running_facts") or [])
-            if str(item) not in previous_chapter_facts
-        ]
-        continuity["running_facts"] = self._merge_unique(
-            existing_running_facts,
-            summary["facts"],
-            limit=160,
-        )
-        blueprint["continuity_state"] = continuity
-        if is_game_story and isinstance(state.get("time_state"), dict):
-            blueprint["time_state"] = state["time_state"]
-        elif not is_game_story:
-            blueprint.pop("time_state", None)
+        blueprint.pop("continuity_state", None)
+        blueprint.pop("time_state", None)
+        blueprint.pop("current_arc", None)
         synced["world_blueprint"] = blueprint
         if summary["next_focus"] and summary["next_focus"] != "continue":
             synced["current_focus"] = summary["next_focus"]
@@ -4800,9 +4799,9 @@ class FileProjectStore:
                 r"([^×xX*＊,，;；]+?)\s*[×xX*＊]\s*(\d+)",
                 inventory_line,
             ):
-                item = re.sub(r"\s+", " ", raw_item).strip(" \t:：;；,，、")
-                item = re.sub(r"^(?:里|中)?(?:还剩|只剩|剩下|有|装着)\s*", "", item)
-                item = re.sub(r"^(?:和|及|以及)\s*", "", item)
+                item = normalize_inventory_item_name(
+                    re.sub(r"\s+", " ", raw_item)
+                )
                 if item:
                     inventory[item] = int(count)
             if inventory:
@@ -4906,16 +4905,17 @@ class FileProjectStore:
                 limit=240,
             )
             chapter_number = int(chapter.get("chapter_number") or 0)
-            fact_prefix = f"第{chapter_number}章事实："
-            summary_prefix = f"第{chapter_number}章摘要："
-            existing_world_facts = [
-                str(item)
-                for item in list(state.get("world_facts") or [])
-                if not str(item).startswith(fact_prefix) and not str(item).startswith(summary_prefix)
-            ]
-            body_facts = [f"{fact_prefix}{fact}" for fact in summary["facts"]]
-            body_facts.append(f"{summary_prefix}{summary['summary']}")
-            state["world_facts"] = self._merge_unique(existing_world_facts, body_facts, limit=260)
+            normalized_world = normalize_world_context(
+                blueprint=self.project().get("world_blueprint"),
+                state=state,
+                current_focus=self.project().get("current_focus"),
+            )
+            state["world_snapshot"] = normalized_world.world_snapshot
+            state["continuity_facts"] = append_continuity_facts(
+                normalized_world.continuity_facts,
+                chapter_number=chapter_number,
+                facts=summary["facts"],
+            )
             timeline_entry = {
                 "chapter_number": chapter_number,
                 "summary": summary["summary"],
@@ -5469,6 +5469,48 @@ class FileProjectStore:
         project: dict[str, Any],
         outline: dict[str, Any],
     ) -> dict[str, Any]:
+        # Priority 1: canonical story_core from `overall` (only when the user has
+        # actually populated it via `select_opening_direction` or
+        # `update_story_core`). We detect that by checking fields that those
+        # code paths exclusively write (positioning.*, core_selling_point, etc.).
+        # `overall.story` alone is NOT a reliable signal because
+        # `outline_from_legacy_project` also fills it from `seed_outline`.
+        overall = outline.get("overall") if isinstance(outline.get("overall"), dict) else {}
+        positioning = (
+            overall.get("positioning")
+            if isinstance(overall.get("positioning"), dict)
+            else {}
+        )
+        story_core_populated = bool(
+            positioning.get("reader_promise")
+            or positioning.get("target_audience")
+            or positioning.get("protagonist_profile")
+            or positioning.get("inciting_incident")
+            or positioning.get("failure_stakes")
+            or positioning.get("excitement_point")
+            or overall.get("core_selling_point")
+            or overall.get("ending_contract")
+            or overall.get("ending_image")
+        )
+        if story_core_populated:
+            story = str(overall.get("story") or "").strip()
+            primary_trope_id = overall.get("primary_trope_id")
+            if isinstance(primary_trope_id, str):
+                primary_trope_id = primary_trope_id.strip() or None
+            else:
+                primary_trope_id = None
+            return {
+                "title": str(project.get("title") or ""),
+                "hook": story,
+                "opening_promise": str(
+                    positioning.get("reader_promise")
+                    or overall.get("ending_direction")
+                    or "开篇建立的核心冲突会得到阶段性兑现。"
+                ),
+                "primary_trope_id": primary_trope_id,
+            }
+        # Priority 2: user-selected opening direction from opening_directions.json
+        # (the only signal available when no story_core has been written).
         directions = self.opening_directions()
         selected_id = str((directions or {}).get("selected_id") or "")
         selected = next(
@@ -5486,7 +5528,7 @@ class FileProjectStore:
                 "opening_promise": str(selected.get("opening_promise") or ""),
                 "primary_trope_id": selected.get("primary_trope_id"),
             }
-        overall = outline.get("overall") if isinstance(outline.get("overall"), dict) else {}
+        # Priority 3: project-level fallback (seed / world_summary / title).
         seed = str(project.get("seed_outline") or project.get("world_summary") or overall.get("story") or project.get("title") or "")
         primary_trope_id = overall.get("primary_trope_id")
         if isinstance(primary_trope_id, str):
@@ -5684,7 +5726,12 @@ class FileProjectStore:
             ),
         )
 
-    def _merge_generated_character_cards(self, generated: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _merge_generated_character_cards(
+        self,
+        generated: list[dict[str, Any]],
+        *,
+        preserve_unmentioned: bool = True,
+    ) -> list[dict[str, Any]]:
         project = self.project()
         state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
         existing: dict[str, dict[str, Any]] = {}
@@ -5722,8 +5769,20 @@ class FileProjectStore:
                 merged["role"] = card["role"]
             if generated_tier == "protagonist" and current_tier in {"", "supporting"}:
                 merged["character_tier"] = card["character_tier"]
+            if not preserve_unmentioned:
+                for field_name in (
+                    "current_state",
+                    "current_location",
+                    "recent_changes",
+                ):
+                    if field_name in card:
+                        merged[field_name] = deepcopy(card[field_name])
+                    else:
+                        merged.pop(field_name, None)
             existing[name] = merged
-        order = [*generated_names, *(name for name in existing_order if name not in generated_names)]
+        order = list(generated_names)
+        if preserve_unmentioned:
+            order.extend(name for name in existing_order if name not in generated_names)
         cards = [
             normalize_character_profile(existing[name])
             for name in order
@@ -5928,19 +5987,24 @@ class FileProjectStore:
                 raise ValueError("initial_outline_requires_unstarted_project")
             expected_chapter_numbers = list(range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1))
         elif mode == "regenerate":
-            ceiling = (
-                current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT
-                if continuation_start is not None
-                else normalize_project_outline(current_outline)["overall"][
-                    "extension_ceiling_chapter"
-                ]
-            )
-            expected_chapter_numbers = list(
-                range(
-                    current_chapter + 1,
-                    min(current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT, ceiling) + 1,
+            if current_chapter == 0:
+                expected_chapter_numbers = list(
+                    range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)
                 )
-            )
+            else:
+                ceiling = (
+                    current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT
+                    if continuation_start is not None
+                    else normalize_project_outline(current_outline)["overall"][
+                        "extension_ceiling_chapter"
+                    ]
+                )
+                expected_chapter_numbers = list(
+                    range(
+                        current_chapter + 1,
+                        min(current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT, ceiling) + 1,
+                    )
+                )
             if not expected_chapter_numbers:
                 raise ValueError("outline_window_already_full")
         else:
@@ -6031,13 +6095,22 @@ class FileProjectStore:
                 current_chapter if mode in {"extend", "regenerate"} else None
             ),
         )
+        replace_unstarted_roster = (
+            current_chapter == 0 and mode in {"initial", "regenerate"}
+        )
         cards = self._merge_generated_character_cards(
-            [card.model_dump(mode="json") for card in validated.characters]
+            [card.model_dump(mode="json") for card in validated.characters],
+            preserve_unmentioned=not replace_unstarted_roster,
         )
         project["character_profiles"] = cards
-        project["relationship_graph"] = merge_relationship_graph(
-            project.get("relationship_graph"),
-            graph_from_character_cards(cards),
+        generated_relationships = graph_from_character_cards(cards)
+        project["relationship_graph"] = (
+            generated_relationships
+            if replace_unstarted_roster
+            else merge_relationship_graph(
+                project.get("relationship_graph"),
+                generated_relationships,
+            )
         )
         project["pipeline_stage"] = "world_ready"
         first_arc = generated_outline["arcs"][0] if generated_outline["arcs"] else {}
@@ -6637,11 +6710,19 @@ class FileProjectStore:
         state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
         project = self.project()
         records = self._read_chapter_records(ignore_errors=True)
-        return self._visible_state_from_chapters(
+        visible = self._visible_state_from_chapters(
             state if isinstance(state, dict) else {},
             project,
             [chapter for _, chapter in records],
         )
+        normalized_world = normalize_world_context(
+            blueprint=project.get("world_blueprint"),
+            state=visible,
+            current_focus=project.get("current_focus"),
+        )
+        visible["world_snapshot"] = normalized_world.world_snapshot
+        visible["continuity_facts"] = normalized_world.continuity_facts
+        return visible
 
     def _valid_foreshadowing_ledger(self, raw_ledger: Any) -> list[ForeshadowingState]:
         parsed = self._parse_foreshadowing_ledger(raw_ledger)
@@ -8440,8 +8521,16 @@ class FileProjectStore:
             outline_context,
             current_chapter=current_chapter,
         )
+        normalized_world = normalize_world_context(
+            blueprint=world_blueprint,
+            state=state,
+            current_focus=project.get("current_focus"),
+        )
+        world_snapshot = deepcopy(normalized_world.world_snapshot)
+        if target_chapter <= current_chapter:
+            world_snapshot.pop("current_focus", None)
         scoped_world = select_world_context(
-            world_blueprint,
+            normalized_world.static_blueprint,
             relevance_text,
             max_rules=8,
         )
@@ -8533,10 +8622,15 @@ class FileProjectStore:
                 if isinstance(opening_chapter, dict) and isinstance(opening_chapter.get("must_include"), list)
                 else []
             )
+        continuity_facts = relevant_continuity_facts(
+            normalized_world.continuity_facts,
+            query_terms=re.findall(r"[\u4e00-\u9fffA-Za-z0-9_]{2,16}", relevance_text),
+            limit=12,
+        )
         merged_world_facts = list(
             dict.fromkeys(
                 str(item).strip()
-                for item in [*stable_chapter_facts, *(state.get("world_facts") or [])]
+                for item in [*stable_chapter_facts, *(item["text"] for item in continuity_facts)]
                 if str(item).strip()
             )
         )
@@ -8553,6 +8647,8 @@ class FileProjectStore:
                 project.get("author_constraints") or state.get("author_constraints") or []
             ),
             "world_facts": merged_world_facts,
+            "world_snapshot": world_snapshot,
+            "continuity_facts": continuity_facts,
             "progression_ledger": dict(state.get("progression_ledger") or {}),
             "world_context": scoped_world,
             "characters": characters,
@@ -8691,10 +8787,23 @@ class FileProjectStore:
             scene_cards,
             current_chapter=current_chapter,
         )
+        normalized_world = normalize_world_context(
+            blueprint=world_blueprint,
+            state=state,
+            current_focus=project.get("current_focus"),
+        )
+        world_snapshot = deepcopy(normalized_world.world_snapshot)
+        if int(target or 0) <= current_chapter:
+            world_snapshot.pop("current_focus", None)
         scoped_world = select_world_context(
-            world_blueprint,
+            normalized_world.static_blueprint,
             relevance_text,
             max_rules=8,
+        )
+        continuity_facts = relevant_continuity_facts(
+            normalized_world.continuity_facts,
+            query_terms=re.findall(r"[\u4e00-\u9fffA-Za-z0-9_]{2,16}", relevance_text),
+            limit=12,
         )
         relevant_monster_profiles = _select_relevant_monster_profiles(
             world_blueprint.get("monster_profiles"),
@@ -8934,9 +9043,9 @@ class FileProjectStore:
                     if int(target or 0) > current_chapter
                     else ""
                 ),
-                "time_state": state.get("time_state") or world_blueprint.get("time_state", {}),
+                "world_snapshot": world_snapshot,
+                "continuity_facts": continuity_facts,
                 "author_constraints": scoped_author_constraints,
-                "world_facts": state.get("world_facts", [])[-20:],
                 "characters": characters,
             },
             "recent_chapters": recent,

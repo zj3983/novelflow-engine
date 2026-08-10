@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useState } from "react";
 
-import { ConfirmedFactsPanel } from "../../../../components/ws/ConfirmedFactsPanel";
 import { EquipmentCatalog } from "../../../../components/ws/EquipmentCatalog";
 import { MonsterBestiary } from "../../../../components/ws/MonsterBestiary";
 import { PageHeader } from "../../../../components/ws/PageHeader";
@@ -43,7 +42,7 @@ export default function WorldPage() {
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
         title="世界观"
-        subtitle={project?.world_summary || "维护世界背景、规则、地点、阵营、怪物与已确认事实。"}
+        subtitle={project?.world_summary || "维护世界背景、规则、地点、阵营和题材体系。"}
       />
 
       {error ? (
@@ -87,7 +86,6 @@ export default function WorldPage() {
               <MonsterBestiary projectId={projectId} blueprint={blueprint} onSaved={refresh} />
             </>
           ) : null}
-          <ConfirmedFactsPanel facts={story?.world_facts ?? []} />
         </>
       ) : null}
     </div>

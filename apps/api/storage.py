@@ -556,6 +556,7 @@ def _sync_project_character_profiles(story: StoryState, project: NovelProject) -
 
 def _sync_project_generation_context(story: StoryState, project: NovelProject, *, has_history: bool) -> None:
     story.author_constraints = list(project.author_constraints)
+    story.world_context = deepcopy(project.world_blueprint or {})
     story.world_facts = _project_world_facts(project)
     story.enabled_skill_ids = list(project.enabled_skill_ids)
     story.enabled_skill_module_ids = list(project.enabled_skill_module_ids)

@@ -132,6 +132,13 @@ def test_valid_opening_plan_has_concrete_cast_and_two_layer_opposition(valid_pay
     }
 
 
+def test_generated_opening_plan_rejects_core_ending_before_planned_arc(valid_payload) -> None:
+    valid_payload["outline"]["overall"]["planned_length"] = 10
+
+    with pytest.raises(ValueError, match="core_ending_not_arc_boundary"):
+        validate_generated_opening_plan(valid_payload)
+
+
 @pytest.mark.parametrize(
     "mutation,error",
     [
@@ -161,6 +168,16 @@ def test_opening_plan_rejects_cast_without_character_card(valid_payload) -> None
     valid_payload["outline"]["chapters"][0]["cast"].append("无卡人物")
 
     with pytest.raises(ValueError, match="missing_character_card:无卡人物"):
+        validate_generated_opening_plan(valid_payload)
+
+
+def test_opening_plan_rejects_role_label_used_as_character_name(valid_payload) -> None:
+    valid_payload["characters"][1]["name"] = "底层执行者"
+    valid_payload["outline"]["arcs"][0]["stage_antagonist"] = "底层执行者"
+    for chapter in valid_payload["outline"]["chapters"][:2]:
+        chapter["cast"] = ["林照", "底层执行者"]
+
+    with pytest.raises(ValueError, match="placeholder_character_name:底层执行者"):
         validate_generated_opening_plan(valid_payload)
 
 

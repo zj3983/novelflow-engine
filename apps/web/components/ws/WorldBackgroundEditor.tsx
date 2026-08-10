@@ -17,14 +17,12 @@ type Props = {
 
 type SaveWorldBackgroundArgs = Props & {
   premise: string;
-  currentArc: string;
   updater?: typeof updateProject;
 };
 
 export const WORLD_BACKGROUND_FIELDS = [
   { field: "world_summary", label: "项目摘要" },
   { field: "premise", label: "世界前提" },
-  { field: "current_arc", label: "当前局势" },
 ] as const;
 
 export type WorldBackgroundField = (typeof WORLD_BACKGROUND_FIELDS)[number]["field"];
@@ -40,7 +38,6 @@ function backgroundValues(worldSummary: string, blueprint: ImportedWorldBlueprin
   return {
     world_summary: worldSummary,
     premise: blueprint.premise ?? "",
-    current_arc: blueprint.current_arc ?? "",
   };
 }
 
@@ -50,7 +47,7 @@ export function createWorldBackgroundEditorState(
 ): WorldBackgroundEditorState {
   return {
     values: backgroundValues(worldSummary, blueprint),
-    dirty: { world_summary: false, premise: false, current_arc: false },
+    dirty: { world_summary: false, premise: false },
     status: "idle",
     error: "",
   };
@@ -106,7 +103,6 @@ export async function saveWorldBackground({
   projectId,
   worldSummary,
   premise,
-  currentArc,
   blueprint,
   onSaved,
   updater = updateProject,
@@ -117,7 +113,6 @@ export async function saveWorldBackground({
       world_summary: worldSummary,
       world_blueprint: {
         premise,
-        current_arc: currentArc,
       },
     },
     { fallbackToMock: false },
@@ -141,7 +136,6 @@ export function WorldBackgroundEditor({ projectId, worldSummary, blueprint, onSa
         projectId,
         worldSummary: submittedValues.world_summary,
         premise: submittedValues.premise,
-        currentArc: submittedValues.current_arc,
         blueprint,
         onSaved,
       });
@@ -164,7 +158,7 @@ export function WorldBackgroundEditor({ projectId, worldSummary, blueprint, onSa
       <div className="ws-section-head">
         <div>
           <h2 className="ws-card__title" id="world-background-title">世界背景</h2>
-          <p className="ws-card__hint">维护项目摘要、世界前提与故事当前局势。</p>
+          <p className="ws-card__hint">维护不会随章节变化的项目摘要与世界前提。</p>
         </div>
         <button type="button" className="ws-button ws-button--primary" disabled={editorState.status === "saving"} onClick={save}>
           {editorState.status === "saving" ? "保存中..." : "保存世界背景"}
@@ -176,13 +170,9 @@ export function WorldBackgroundEditor({ projectId, worldSummary, blueprint, onSa
           <span>{WORLD_BACKGROUND_FIELDS[0].label}</span>
           <textarea className="ws-input" rows={4} value={editorState.values.world_summary} onChange={(event) => edit("world_summary", event.target.value)} />
         </label>
-        <label className="ws-search">
+        <label className="ws-search ws-form-grid__wide">
           <span>{WORLD_BACKGROUND_FIELDS[1].label}</span>
           <textarea className="ws-input" rows={5} value={editorState.values.premise} onChange={(event) => edit("premise", event.target.value)} />
-        </label>
-        <label className="ws-search">
-          <span>{WORLD_BACKGROUND_FIELDS[2].label}</span>
-          <textarea className="ws-input" rows={5} value={editorState.values.current_arc} onChange={(event) => edit("current_arc", event.target.value)} />
         </label>
       </div>
 
