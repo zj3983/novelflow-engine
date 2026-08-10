@@ -65,6 +65,7 @@ from packages.story_core.chapter_length_policy import (
     CHAPTER_TARGET_MIN_CHARS,
 )
 from packages.story_core.chapter_direction import build_chapter_direction_options
+from packages.story_core.outline_rolling import rolling_chapter_to_outline_entry
 from packages.story_core.outline_rolling_store import RollingOutlineStore
 from packages.story_core.web_game_economy import (
     normalize_legacy_economy_prompt_value,
@@ -5949,7 +5950,13 @@ class FileProjectStore:
         return merged
 
     @_with_project_update_lock
-    def save_generated_outline_plan(self, plan: Any, *, mode: str) -> dict[str, Any]:
+    def save_generated_outline_plan(
+        self,
+        plan: Any,
+        *,
+        mode: str,
+        persist_chapter_window: bool = True,
+    ) -> dict[str, Any]:
         validated = GeneratedOutlinePlan.model_validate(plan)
         if mode not in {"initial", "regenerate", "extend"}:
             raise ValueError("invalid_outline_planning_mode")
@@ -6118,6 +6125,23 @@ class FileProjectStore:
         project["current_focus"] = str(first_arc.get("goal") or project.get("current_focus") or "")
         state["characters"] = cards
         state["outline"] = str(generated_outline["overall"].get("story") or state.get("outline") or "")
+        # Plan rule: the bootstrapper is responsible for the
+        # rolling window. With ``persist_chapter_window=False``,
+        # the legacy outline keeps only the overall/arcs layer
+        # plus the committed historical chapter rows; the
+        # planner-stage chapter detail stays in the bootstrap
+        # checkpoint so the rolling-only generator can re-emit
+        # it without rewriting the three-level outline.
+        if not persist_chapter_window:
+            committed_numbers = {
+                number
+                for number, _ in self._read_chapter_records(ignore_errors=True)
+            }
+            generated_outline["chapters"] = [
+                chapter
+                for chapter in generated_outline.get("chapters", [])
+                if int(chapter.get("chapter_number") or 0) in committed_numbers
+            ]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         snapshot_path = self.story_system_dir / "plans" / f"{stamp}-{mode}.json"
         snapshot = {
@@ -6143,6 +6167,7 @@ class FileProjectStore:
         mode: str,
         guidance: str = "",
         restart_from: str | None = None,
+        persist_chapter_window: bool = True,
     ) -> dict[str, Any]:
         brief = self._planning_brief()
         normalized_guidance = guidance.strip()
@@ -6198,7 +6223,11 @@ class FileProjectStore:
                 mode=mode,
                 guidance=normalized_guidance,
             )
-        return self.save_generated_outline_plan(plan, mode=mode)
+        return self.save_generated_outline_plan(
+            plan,
+            mode=mode,
+            persist_chapter_window=persist_chapter_window,
+        )
 
     def outline_generation_checkpoints(self) -> dict[str, Any]:
         checkpoints = OutlineCheckpointStore(
@@ -7411,12 +7440,9 @@ class FileProjectStore:
         state = self._generation_state(self.state())
         project = self.project()
         target_chapter = int(state.get("current_chapter") or 0) + 1
-        # Round 8 Task 4b: trigger a rolling outline fill if the target
-        # chapter's outline is missing. Failure here halts body generation
-        # so the user sees the error and can retry, not a half-written
-        # candidate. ``ensure_rolling_outline`` is a no-op when the
-        # outline is already present.
-        self.ensure_rolling_outline(target_chapter=target_chapter)
+        outline_status = self.rolling_fill_status(target_chapter)
+        if outline_status.get("status") not in {"present", "legacy"}:
+            raise ValueError(f"chapter_outline_required:{target_chapter}")
         chapter_direction = self._resolve_chapter_direction(state, project, target_chapter, chapter_direction_id)
         if chapter_direction:
             state = dict(state)
@@ -7865,50 +7891,6 @@ class FileProjectStore:
                         return (start, end)
         return (1, max(target_chapter + 5, 10))
 
-    @staticmethod
-    def _default_rolling_chapter_generator(chapter_number: int) -> dict[str, Any]:
-        """Return a deterministic stub chapter payload.
-
-        The plan rule: "本次只调整规划与写作衔接，不新增
-        Agent" — the rolling fill uses a stub until a
-        real model is wired in. The stub satisfies
-        :func:`validate_rolling_chapter` so the batch
-        lands on disk and the body-generation flow has
-        something to consume. A future caller can
-        inject a real generator via the ``generator``
-        argument.
-        """
-        return {
-            "chapter_number": chapter_number,
-            "title": f"第{chapter_number}章",
-            "chapter_goal": f"第{chapter_number}章目标",
-            "core_conflict": f"第{chapter_number}章冲突",
-            "cast": [
-                {
-                    "name": "林昭",
-                    "role": "protagonist",
-                    "this_chapter_role": "本章行动",
-                }
-            ],
-            "scenes": [
-                {
-                    "location": "灰狼坡",
-                    "action": "补齐毒腺",
-                    "result": "任务达到 16/16",
-                },
-                {
-                    "location": "灰烬村",
-                    "action": "提交任务",
-                    "result": "升级到下一阶段",
-                },
-            ],
-            "gain": "本章推进",
-            "cost": "本章代价",
-            "foreshadowing": [],
-            "hook": "本章钩子",
-            "state_delta": "本章状态变化",
-        }
-
     def ensure_rolling_outline(
         self,
         target_chapter: int | None = None,
@@ -7938,9 +7920,13 @@ class FileProjectStore:
             target_chapter = int(self.state().get("current_chapter") or 0) + 1
         target_chapter = int(target_chapter)
         volume_range = self._current_outline_volume_range(target_chapter)
-        planner = RollingOutlinePlanner(
-            generator=generator or self._default_rolling_chapter_generator,
-        )
+        if generator is None:
+            from packages.story_core.outline_rolling_planner import RollingOutlineFailed
+
+            raise RollingOutlineFailed(
+                "rolling_outline_generation_requires_outline_workspace"
+            )
+        planner = RollingOutlinePlanner(generator=generator)
         return planner.ensure_rolling_outline(
             project_root=self.root,
             target_chapter=target_chapter,
@@ -8630,6 +8616,10 @@ class FileProjectStore:
             else {}
         )
         outline_context = dict(select_outline_context(project_outline, target_chapter))
+        rolling_chapter = RollingOutlineStore(self.root).read_chapter(target_chapter)
+        adapted_rolling_chapter = rolling_chapter_to_outline_entry(rolling_chapter)
+        if adapted_rolling_chapter:
+            outline_context["chapter"] = adapted_rolling_chapter
         known_chapter_numbers = self.chapter_numbers()
         continuity_interface = self._continuity_interface_for_target(target_chapter, known_chapter_numbers)
         if continuity_interface:
@@ -8995,6 +8985,10 @@ class FileProjectStore:
             rolling_chapter = RollingOutlineStore(self.root).read_chapter(int(target or 0))
             if rolling_chapter:
                 next_chapter_outline = rolling_chapter
+                adapted_rolling_chapter = rolling_chapter_to_outline_entry(rolling_chapter)
+                if adapted_rolling_chapter:
+                    chapter_outline = adapted_rolling_chapter
+                    outline_context["chapter"] = adapted_rolling_chapter
         elif next_chapter_outline_source == "legacy" and chapter_outline:
             next_chapter_outline = dict(chapter_outline)
         # ``filled_chapter_numbers`` is a renamed local to keep the
@@ -9031,7 +9025,11 @@ class FileProjectStore:
                     "turn": turn,
                     "ending_hook": hook,
                     "chapter": chapter,
-                    "source": "outline_context.chapter",
+                    "source": (
+                        "rolling_outline.chapter"
+                        if next_chapter_outline_source == "rolling"
+                        else "outline_context.chapter"
+                    ),
                     "line": chapter_outline.get("line"),
                     "scene_line": chapter_outline.get("scene_line"),
                 }

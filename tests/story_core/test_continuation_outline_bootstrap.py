@@ -242,6 +242,17 @@ def seed_imported_project(
     _write_imported_chapter(root, current_chapter)
     _write_imported_chapter(root, current_chapter - 1, title="上一章")
 
+    # The continuation-analysis.json is written by the import
+    # baseline; the bootstrapper reads it to compute the
+    # input fingerprint and to confirm the source analysis.
+    _write_json(
+        root / ".story-system" / "continuation-analysis.json",
+        {
+            "story_overview": "林修承接万修传承，闯荡万界",
+            "needs_confirmation": [],
+        },
+    )
+
     if rolling:
         store = RollingOutlineStore(root)
         store.apply_rolling_batch(
@@ -523,3 +534,328 @@ def test_llm_rolling_window_generator_makes_one_planner_call() -> None:
     # The generator never touches the filesystem; it just
     # produces the rolling rows.
     assert all(isinstance(row["scenes"], list) and len(row["scenes"]) >= 2 for row in rows)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Resumable bootstrap orchestrator
+# ---------------------------------------------------------------------------
+
+
+def _seed_legacy_approved_project(
+    tmp_path: Path,
+    *,
+    current_chapter: int = 147,
+) -> Path:
+    """Seed a project whose overall/arcs/characters are already
+    approved. The bootstrapper must NOT call the full planning
+    generator; it must call the rolling-only generator for the
+    next five chapters and seed the rolling outline file.
+    """
+
+    return seed_imported_project(
+        tmp_path,
+        future_arc=True,
+        rolling=False,
+        current_chapter=current_chapter,
+    )
+
+
+def _fake_planning_generator(
+    *,
+    chapters: list[dict[str, Any]] | None = None,
+    error: str = "",
+):
+    """Return a stub LLMOutlinePlanningGenerator-like object
+    that records its calls. The test asserts the bootstrapper
+    does NOT call it for legacy-approved projects.
+    """
+
+    calls: list[dict[str, Any]] = []
+
+    class _Stub:
+        def generate(self, brief: Any, *, mode: str, guidance: str = "", **kwargs: Any) -> Any:  # type: ignore[no-untyped-def]
+            calls.append({"mode": mode, "guidance": guidance})
+            if error:
+                raise ValueError(error)
+            from packages.story_core.outline_planning_generation import (
+                GeneratedOutlinePlan,
+            )
+
+            raise AssertionError("planning generator must not be called for legacy-approved projects")
+
+    return _Stub(), calls
+
+
+def _fake_rolling_generator(
+    chapters: list[dict[str, Any]] | None = None,
+    *,
+    error: str = "",
+):
+    """Return a stub LLMRollingWindowGenerator-like object
+    that records its calls. The default fixture returns the
+    chapters from the ``chapters`` argument.
+    """
+
+    captured: list[dict[str, Any]] = []
+
+    class _Stub:
+        def generate(
+            self,
+            *,
+            context: dict[str, Any],
+            chapter_numbers: list[int],
+            volume_range: tuple[int, int],
+            character_cards: list[dict[str, Any]],
+        ) -> list[dict[str, Any]]:
+            captured.append(
+                {
+                    "context": context,
+                    "chapter_numbers": list(chapter_numbers),
+                    "volume_range": tuple(volume_range),
+                    "character_cards": list(character_cards),
+                }
+            )
+            if error:
+                raise ValueError(error)
+            if chapters is not None:
+                return chapters
+            return [
+                {
+                    "chapter_number": number,
+                    "title": f"第{number}章 续写推进",
+                    "chapter_goal": f"推进主线并完成第{number}章的阶段目标",
+                    "core_conflict": "林修面对新出现的阻力并尝试化解",
+                    "cast": [{"name": "林修", "role": "protagonist", "character_tier": "protagonist"}],
+                    "scenes": [
+                        {"location": "万修坊", "action": "林修确认炉子状态", "result": "确认炉子恢复稳定"},
+                        {"location": "维修铺", "action": "林修准备下一步", "result": "确定下一步任务"},
+                    ],
+                    "gain": f"完成第{number}章的维修委托",
+                    "cost": "消耗部分灵材",
+                    "foreshadowing": ["万修之墓的线索"],
+                    "hook": f"新的异常订单出现（第{number}章）",
+                    "state_delta": f"林修灵材库存减少（第{number}章）",
+                }
+                for number in chapter_numbers
+            ]
+
+    return _Stub(), captured
+
+
+def test_bootstrapper_full_run_reaches_ready(tmp_path: Path) -> None:
+    """A full bootstrap run on a legacy-approved baseline
+    reaches readiness and writes the rolling outline.
+
+    The plan rule: the bootstrapper owns the rolling window.
+    When the three-level outline is already valid, the
+    bootstrapper must adopt the foundation/character layers
+    and only call the rolling-only generator.
+    """
+
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    rolling_stub, rolling_calls = _fake_rolling_generator()
+
+    def planning_generate(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(
+            "planning generator must not be called for legacy-approved"
+        )
+
+    from packages.story_core.continuation_outline_bootstrap import (
+        ContinuationOutlineBootstrapper,
+    )
+
+    bootstrapper = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=planning_generate,
+        rolling_generator=rolling_stub,
+    )
+    result = bootstrapper.run()
+    assert result.ready
+    assert result.errors == []
+    assert len(rolling_calls) == 1
+
+    # Rolling outline was written for chapters 148..152.
+    from packages.story_core.outline_rolling_store import RollingOutlineStore
+
+    rolling = RollingOutlineStore(root)
+    numbers = [
+        chapter["chapter_number"]
+        for chapter in rolling.read_rolling_outline()["chapters"]
+    ]
+    assert numbers == [148, 149, 150, 151, 152]
+
+
+def test_bootstrapper_legacy_approved_uses_rolling_only(tmp_path: Path) -> None:
+    """When the three-level outline is already valid, the
+    bootstrapper must not call the planning generator.
+    """
+
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    rolling_stub, rolling_calls = _fake_rolling_generator()
+
+    planning_called = {"count": 0}
+
+    def planning_generate(*args: Any, **kwargs: Any) -> Any:
+        planning_called["count"] += 1
+        raise AssertionError("planning generator must not be called for legacy-approved")
+
+    from packages.story_core.continuation_outline_bootstrap import (
+        ContinuationOutlineBootstrapper,
+    )
+
+    bootstrapper = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=planning_generate,
+        rolling_generator=rolling_stub,
+    )
+    result = bootstrapper.run()
+
+    assert result.ready
+    assert planning_called["count"] == 0
+    assert len(rolling_calls) == 1
+    assert rolling_calls[0]["chapter_numbers"] == [148, 149, 150, 151, 152]
+
+
+def test_bootstrapper_preserves_manual_rolling_chapters(tmp_path: Path) -> None:
+    """A user-edited rolling chapter (source="manual") must
+    survive a fresh bootstrap run.
+    """
+
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    from packages.story_core.outline_rolling_store import RollingOutlineStore
+
+    store = RollingOutlineStore(root)
+    manual_chapter = {
+        "chapter_number": 148,
+        "title": "用户自定义章节",
+        "chapter_goal": "用户手动填写的目标",
+        "core_conflict": "用户手动填写的冲突",
+        "cast": [{"name": "林修", "role": "protagonist", "character_tier": "protagonist"}],
+        "scenes": [
+            {"location": "万修坊", "action": "用户填写的场景", "result": "用户填写的结果"},
+            {"location": "维修铺", "action": "用户填写的场景二", "result": "用户填写的结果二"},
+        ],
+        "gain": "用户填写的收获",
+        "cost": "用户填写的代价",
+        "foreshadowing": [],
+        "hook": "用户填写的钩子",
+        "state_delta": "用户填写的状态变化",
+        "source": "manual",
+    }
+    store.apply_rolling_batch(
+        chapters=[manual_chapter],
+        expected_chapter_numbers=[148],
+        volume_range=(148, 160),
+    )
+
+    rolling_stub, rolling_calls = _fake_rolling_generator()
+
+    from packages.story_core.continuation_outline_bootstrap import (
+        ContinuationOutlineBootstrapper,
+    )
+
+    bootstrapper = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("planning must not be called for legacy-approved")
+        ),
+        rolling_generator=rolling_stub,
+    )
+    result = bootstrapper.run()
+    assert result.ready
+
+    # The rolling generator was called only for the missing
+    # chapters (149-152), not for 148 (already manual).
+    assert rolling_calls[0]["chapter_numbers"] == [149, 150, 151, 152]
+
+    # The manual chapter's title survived.
+    rolling = RollingOutlineStore(root).read_rolling_outline()
+    chapter_148 = next(
+        chapter
+        for chapter in rolling["chapters"]
+        if chapter["chapter_number"] == 148
+    )
+    assert chapter_148["title"] == "用户自定义章节"
+    assert chapter_148["source"] == "manual"
+
+
+def test_bootstrapper_invalid_chapter_batch_writes_nothing(tmp_path: Path) -> None:
+    """A bad rolling batch (blank gain) must leave the rolling
+    outline file byte-identical to the pre-call state.
+    """
+
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    from packages.story_core.outline_rolling_store import RollingOutlineStore
+
+    bad_chapter = {
+        "chapter_number": 148,
+        "title": "错误章节",
+        "chapter_goal": "错误目标",
+        "core_conflict": "错误冲突",
+        "cast": [{"name": "林修", "role": "protagonist", "character_tier": "protagonist"}],
+        "scenes": [
+            {"location": "万修坊", "action": "测试", "result": "测试结果"},
+            {"location": "维修铺", "action": "测试二", "result": "测试结果二"},
+        ],
+        "gain": "",  # invalid
+        "cost": "错误代价",
+        "foreshadowing": [],
+        "hook": "错误钩子",
+        "state_delta": "错误状态",
+    }
+    rolling_stub, _ = _fake_rolling_generator(chapters=[bad_chapter])
+    from packages.story_core.continuation_outline_bootstrap import (
+        ContinuationOutlineBootstrapper,
+    )
+
+    bootstrapper = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("planning must not be called for legacy-approved")
+        ),
+        rolling_generator=rolling_stub,
+    )
+    result = bootstrapper.run()
+    assert not result.ready
+    assert any("import_chapter_window_required" in err for err in result.errors)
+    # The rolling outline file was never created.
+    assert not (root / ".story-system" / "outline-generation" / "rolling_outline.json").is_file()
+
+
+def test_bootstrapper_resumes_from_persisted_checkpoints(tmp_path: Path) -> None:
+    """A re-run with the same input fingerprint must reuse
+    completed phases and skip the model call.
+    """
+
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    rolling_stub, rolling_calls = _fake_rolling_generator()
+    planning_calls: list[None] = []
+
+    def planning_generate(*args: Any, **kwargs: Any) -> Any:
+        planning_calls.append(None)
+        raise AssertionError("planning must not be called for legacy-approved")
+
+    from packages.story_core.continuation_outline_bootstrap import (
+        ContinuationOutlineBootstrapper,
+    )
+
+    first = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=planning_generate,
+        rolling_generator=rolling_stub,
+    )
+    result = first.run()
+    assert result.ready
+    assert len(rolling_calls) == 1
+
+    # A second run with the same input must not call the
+    # rolling generator again.
+    second = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=planning_generate,
+        rolling_generator=rolling_stub,
+    )
+    result = second.run()
+    assert result.ready
+    assert len(rolling_calls) == 1  # no new call
+    assert planning_calls == []
