@@ -65,6 +65,7 @@ from packages.story_core.chapter_length_policy import (
     CHAPTER_TARGET_MIN_CHARS,
 )
 from packages.story_core.chapter_direction import build_chapter_direction_options
+from packages.story_core.outline_rolling_store import RollingOutlineStore
 from packages.story_core.web_game_economy import (
     normalize_legacy_economy_prompt_value,
 )
@@ -7405,12 +7406,17 @@ class FileProjectStore:
         commit_message: str | None = None,
         persist: bool = True,
     ) -> dict[str, Any]:
-        self.ensure_rolling_outline(target_chapter=target_chapter)
         from packages.story_core.engine import StoryEngine
 
         state = self._generation_state(self.state())
         project = self.project()
         target_chapter = int(state.get("current_chapter") or 0) + 1
+        # Round 8 Task 4b: trigger a rolling outline fill if the target
+        # chapter's outline is missing. Failure here halts body generation
+        # so the user sees the error and can retry, not a half-written
+        # candidate. ``ensure_rolling_outline`` is a no-op when the
+        # outline is already present.
+        self.ensure_rolling_outline(target_chapter=target_chapter)
         chapter_direction = self._resolve_chapter_direction(state, project, target_chapter, chapter_direction_id)
         if chapter_direction:
             state = dict(state)
@@ -8808,8 +8814,33 @@ class FileProjectStore:
         }
 
     def _chapter_direction_options(self, state: dict[str, Any], project: dict[str, Any], chapter_number: int) -> dict[str, Any]:
-        story = StoryState.model_validate(self._story_state_payload_for_direction(state, project, chapter_number))
-        return build_chapter_direction_options(story, chapter_number)
+        """Deprecated: the three-card "next chapter direction" picker was
+        replaced by the rolling outline (Round 8). This method is kept so
+        legacy callers (and the ``chapter_direction_options`` field on the
+        writing packet) still resolve; it now returns an empty
+        ``{options: []}`` payload so the frontend can detect "no direction
+        options" without crashing.
+        """
+        return {"schema_version": "chapter-direction-options/v1", "chapter_number": int(chapter_number or 0), "options": [], "recommended_id": ""}
+
+    def _read_rolling_fill_log(self) -> dict[str, Any] | None:
+        """Read ``.story-system/outline-generation/rolling_fill_log.json``.
+
+        Returns the parsed payload, or None when the file is missing or
+        corrupt. The writing_packet uses this to surface the most recent
+        fill status (so a failed batch is visible in the UI without an
+        extra round-trip).
+        """
+        path = self.root / ".story-system" / "outline-generation" / "rolling_fill_log.json"
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
 
     def _resolve_chapter_direction(
         self,
@@ -8818,6 +8849,12 @@ class FileProjectStore:
         chapter_number: int,
         chapter_direction_id: str | None,
     ) -> dict[str, Any]:
+        """Resolve a ``chapter_direction_id`` against the legacy three-card
+        picker. Round 8 Task 5 removed the picker; the parameter is
+        preserved for API compatibility but is silently ignored when no
+        options are available. The rolling outline is the new source of
+        truth for the chapter's structure.
+        """
         direction_id = str(chapter_direction_id or "").strip()
         if not direction_id:
             return {}
@@ -8825,7 +8862,10 @@ class FileProjectStore:
         for option in options.get("options", []):
             if isinstance(option, dict) and str(option.get("id") or "") == direction_id:
                 return option
-        raise ValueError(f"unknown_chapter_direction:{direction_id}")
+        # Legacy ``chapter_direction_id`` from the v1 UI: silently ignore
+        # rather than raise. The rolling outline (or its absence) drives
+        # the body generation now.
+        return {}
 
     def writing_packet(
         self,
@@ -8866,6 +8906,33 @@ class FileProjectStore:
             for key in ("overall", "active_arc", "chapter")
         }
         chapter_outline = outline_context["chapter"] if isinstance(outline_context.get("chapter"), dict) else {}
+        # Round 8 Task 5: surface the rolling-fill state and the next-chapter
+        # outline. The packet is the canonical place for the frontend to
+        # discover whether a rolling outline exists, what its source is, and
+        # whether the body-generation path is allowed to start.
+        next_chapter_outline: dict[str, Any] | None = None
+        next_chapter_outline_source: str | None = None
+        rolling_fill_status = "missing"
+        rolling_fill_chapter_numbers: list[int] = []
+        rolling_fill_error: str = ""
+        rolling_fill_log = self._read_rolling_fill_log()
+        rolling_store = RollingOutlineStore(self.root)
+        rolling_chapter = rolling_store.read_chapter(int(target or 0))
+        if rolling_chapter:
+            next_chapter_outline = rolling_chapter
+            next_chapter_outline_source = "rolling"
+            rolling_fill_status = "present"
+        elif chapter_outline:
+            next_chapter_outline = dict(chapter_outline)
+            next_chapter_outline_source = "legacy"
+            rolling_fill_status = "legacy"
+        # If the most recent fill log row failed, surface that to the UI.
+        if isinstance(rolling_fill_log, dict) and rolling_fill_log.get("last_status") == "failed":
+            rolling_fill_status = "failed"
+            rolling_fill_error = str(rolling_fill_log.get("last_error") or "")
+            last_numbers = rolling_fill_log.get("last_chapter_numbers")
+            if isinstance(last_numbers, list):
+                rolling_fill_chapter_numbers = [int(n) for n in last_numbers if isinstance(n, int) and not isinstance(n, bool)]
         recent = []
         for number in prior_numbers[-3:]:
             item = self.chapter(number)
@@ -9017,9 +9084,13 @@ class FileProjectStore:
             project.get("relationship_graph"),
             [str(card.get("name") or "") for card in characters],
         )
-        chapter_direction_options = (
+        # Round 8 Task 5: the three-card "next chapter direction" picker
+        # was replaced by the rolling outline. We still emit
+        # ``chapter_direction_options`` for backward compatibility (legacy
+        # clients that read the field), but the payload is always empty.
+        chapter_direction_options: dict[str, Any] = (
             self._chapter_direction_options(state, project, int(target or 0))
-            if int(target or 0) > current_chapter and not chapter_outline
+            if int(target or 0) > current_chapter and not next_chapter_outline
             else {}
         )
         enabled_skill_ids = resolve_enabled_skill_ids(project, state)
@@ -9178,6 +9249,15 @@ class FileProjectStore:
             "latest_review": self.review(latest_context_number) if latest_context_number else {},
             "latest_event_plan": latest_chapter.get("event_plan", {}) if isinstance(latest_chapter, dict) else {},
             "chapter_direction_options": chapter_direction_options,
+            "next_chapter_outline": next_chapter_outline,
+            "next_chapter_outline_source": next_chapter_outline_source,
+            "rolling_fill": {
+                "status": rolling_fill_status,
+                "chapter_number": int(target or 0),
+                "source": next_chapter_outline_source,
+                "filled_chapter_numbers": rolling_fill_chapter_numbers,
+                "error": rolling_fill_error,
+            },
             "skill_context": {key: value for key, value in skill_context.items() if value},
         }
         if power_system:

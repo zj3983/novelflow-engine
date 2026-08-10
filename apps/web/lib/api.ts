@@ -1499,6 +1499,73 @@ export type ChapterDirectionOption = {
   risk: string;
 };
 
+/** @deprecated Round 8 removed the three-card direction picker. The shape
+ * is kept on the writing packet for backward compatibility, but the
+ * ``options`` list is always empty. New code should use
+ * ``next_chapter_outline`` + ``rolling_fill`` on ``CodexWritingPacket``.
+ */
+export type ChapterDirectionOptions = {
+  schema_version: "chapter-direction-options/v1";
+  chapter_number: number;
+  recommended_id: string;
+  selection_rule?: string;
+  options: ChapterDirectionOption[];
+};
+
+export type RollingOutlineStatus = "present" | "missing" | "failed" | "legacy";
+
+export type RollingOutlinePayload = {
+  chapter_number?: number;
+  title?: string;
+  chapter_goal?: string;
+  core_conflict?: string;
+  cast?: Array<{ name?: string; role?: string }>;
+  scenes?: Array<{ location?: string; action?: string; result?: string }>;
+  gain?: string;
+  cost?: string;
+  foreshadowing?: string[];
+  hook?: string;
+  state_delta?: Record<string, unknown>;
+  source?: string;
+};
+
+export type RollingFillInfo = {
+  status: RollingOutlineStatus;
+  chapter_number: number;
+  source: "rolling" | "legacy" | "manual" | null;
+  filled_chapter_numbers: number[];
+  error: string;
+};
+
+export type CodexWritingPacket = {
+  schema_version: "codex-writing-packet/v1" | "file-writing-packet/v1";
+  chapter_number: number;
+  chapter_title?: string;
+  goal?: string;
+  target_chars?: {
+    min: number;
+    max: number;
+  };
+  story?: Record<string, unknown>;
+  protagonist?: Record<string, unknown>;
+  event_plan?: Record<string, unknown>;
+  plot_simulation?: Record<string, unknown>;
+  scene_cards?: Array<Record<string, unknown>>;
+  hard_locks?: string[];
+  style_rules?: string[];
+  author_constraints?: string[];
+  world_facts?: string[];
+  continuity?: Record<string, unknown>;
+  submission_contract?: Record<string, unknown>;
+  /** @deprecated kept for backward compatibility; options list is
+   * always empty. New code should use ``next_chapter_outline`` and
+   * ``rolling_fill`` instead. */
+  chapter_direction_options?: ChapterDirectionOptions;
+  next_chapter_outline?: RollingOutlinePayload | null;
+  next_chapter_outline_source?: "rolling" | "legacy" | "manual" | null;
+  rolling_fill?: RollingFillInfo | null;
+};
+
 export type SkillPackModuleSummary = {
   module_id: string;
   title: string;
@@ -1526,37 +1593,6 @@ export type UninstallSkillPackResponse = {
   pack: SkillPackSummary;
   affected_project_count: number;
   affected_project_ids: string[];
-};
-
-export type ChapterDirectionOptions = {
-  schema_version: "chapter-direction-options/v1";
-  chapter_number: number;
-  recommended_id: string;
-  selection_rule?: string;
-  options: ChapterDirectionOption[];
-};
-
-export type CodexWritingPacket = {
-  schema_version: "codex-writing-packet/v1" | "file-writing-packet/v1";
-  chapter_number: number;
-  chapter_title?: string;
-  goal?: string;
-  target_chars?: {
-    min: number;
-    max: number;
-  };
-  story?: Record<string, unknown>;
-  protagonist?: Record<string, unknown>;
-  event_plan?: Record<string, unknown>;
-  plot_simulation?: Record<string, unknown>;
-  scene_cards?: Array<Record<string, unknown>>;
-  hard_locks?: string[];
-  style_rules?: string[];
-  author_constraints?: string[];
-  world_facts?: string[];
-  continuity?: Record<string, unknown>;
-  submission_contract?: Record<string, unknown>;
-  chapter_direction_options?: ChapterDirectionOptions;
 };
 
 export type PromptPreviewEntry = {

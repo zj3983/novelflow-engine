@@ -253,6 +253,48 @@ class RollingOutlineStore:
             ) from exc
         return backup_path.name
 
+    def read_rolling_outline(self) -> dict[str, Any] | None:
+        """Return the current rolling outline payload, or None.
+
+        The reader is intentionally rolling-only; legacy outline chapters
+        are surfaced separately by :class:`FileProjectStore`. A corrupt
+        file is treated as "no rolling outline" rather than raising —
+        the writing path owns validation, the read path is best-effort.
+        """
+        path = self._rolling_path()
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def read_chapter(self, chapter_number: int) -> dict[str, Any] | None:
+        """Return the rolling chapter for ``chapter_number`` if present.
+
+        Returns None when:
+        * no rolling outline exists,
+        * the rolling outline file is corrupt,
+        * the chapter is not in the rolling outline (legacy outline
+          chapters are NOT consulted here — that is the caller's job).
+        """
+        if not isinstance(chapter_number, int) or isinstance(chapter_number, bool):
+            return None
+        if chapter_number < 1:
+            return None
+        payload = self.read_rolling_outline()
+        if not payload:
+            return None
+        for chapter in payload.get("chapters") or []:
+            if not isinstance(chapter, dict):
+                continue
+            if chapter.get("chapter_number") == chapter_number:
+                return dict(chapter)
+        return None
+
     def _merge_rolling(
         self,
         existing: dict[str, Any],

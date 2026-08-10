@@ -9,7 +9,7 @@ import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
-import { resolveChapterDirectionId } from "../../../../lib/chapterDirections";
+import { RollingOutlineCard } from "../../../../components/ws/RollingOutlineCard";
 import {
   downstreamRewriteNotice,
   confirmFileProjectCandidate,
@@ -20,7 +20,6 @@ import {
   startFileProjectRegenerationJob,
   startGenerationJob,
   type ChapterIndexEntry,
-  type ChapterDirectionOption,
   type CandidateDraft,
   type CodexWritingPacket,
   type GenerationJobStep,
@@ -142,7 +141,6 @@ export default function WritePage() {
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
   const [temporaryGuidance, setTemporaryGuidance] = useState("");
   const [nextWritingPacket, setNextWritingPacket] = useState<CodexWritingPacket | null>(null);
-  const [selectedDirectionId, setSelectedDirectionId] = useState("");
   const [copyStatus, setCopyStatus] = useState<CopyStatus>("idle");
   const [pendingCandidate, setPendingCandidate] = useState<CandidateDraft | null>(null);
   const [candidateAction, setCandidateAction] = useState<"confirm" | "force-confirm" | "discard" | null>(null);
@@ -225,22 +223,21 @@ export default function WritePage() {
     let cancelled = false;
     if (!isFileProject || !projectId) {
       setNextWritingPacket(null);
-      setSelectedDirectionId("");
       return;
     }
     fetchProjectWritingPacket(projectId, nextChapterNumber)
       .then((packet) => {
         if (cancelled) return;
-        const options = packet.chapter_direction_options;
+        // Round 8 Task 5: the legacy chapter-direction picker was
+        // removed; the rolling outline (and its status) is now the
+        // source of truth for what the next chapter looks like. The
+        // packet still carries ``chapter_direction_options`` for
+        // backward compatibility, but its options list is always empty.
         setNextWritingPacket(packet);
-        setSelectedDirectionId((current) =>
-          resolveChapterDirectionId(current, options?.options, options?.recommended_id),
-        );
       })
       .catch(() => {
         if (cancelled) return;
         setNextWritingPacket(null);
-        setSelectedDirectionId("");
       });
     return () => {
       cancelled = true;
@@ -271,8 +268,9 @@ export default function WritePage() {
     };
   }, [isFileProject, projectId, requestedChapter, nextChapterNumber, refreshVersion]);
 
-  const directionOptions = nextWritingPacket?.chapter_direction_options?.options ?? [];
-  const selectedDirection = directionOptions.find((option) => option.id === selectedDirectionId) ?? directionOptions[0] ?? null;
+  const nextChapterOutline = nextWritingPacket?.next_chapter_outline ?? null;
+  const nextChapterOutlineSource = nextWritingPacket?.next_chapter_outline_source ?? null;
+  const rollingFill = nextWritingPacket?.rolling_fill ?? null;
   const writingReview = chapter?.quality_report?.writing_review;
   const downstreamNotice = downstreamRewriteNotice(chapter?.quality_report);
   const lengthReview = chapter?.quality_report?.length_review ?? writingReview?.length_review;
@@ -339,7 +337,7 @@ export default function WritePage() {
     setRegenerateStatus("排队中");
     setRegenerateError(null);
     try {
-      const job = await startGenerationJob(generationTargetId, isFileProject ? selectedDirection?.id : undefined);
+      const job = await startGenerationJob(generationTargetId);
       if (!operationIsActive()) return;
       let currentJob = job;
       setGenerationSteps(Array.isArray(job.steps) ? job.steps : []);
@@ -546,42 +544,15 @@ export default function WritePage() {
                 onForceConfirm={() => void handleConfirmCandidate(true)}
               />
             ) : null}
-            {directionOptions.length > 0 ? (
-              <section className="ws-card">
-                <div className="ws-section-head">
-                  <div>
-                    <p className="ws-card__title">下一章方向</p>
-                    <p className="ws-card__hint">生成前先选剧情分支，系统会锁定本章目标、哇点和章末钩子。</p>
-                  </div>
-                  {selectedDirection ? <span className="ws-badge">已选：{selectedDirection.name}</span> : null}
-                </div>
-                <div className="ws-simple-grid">
-                  {directionOptions.map((option: ChapterDirectionOption) => {
-                    const active = option.id === selectedDirectionId;
-                    return (
-                      <button
-                        key={option.id}
-                        className={`ws-simple-item${active ? " ws-simple-item--active" : ""}`}
-                        type="button"
-                        onClick={() => setSelectedDirectionId(option.id)}
-                        style={{
-                          textAlign: "left",
-                          cursor: "pointer",
-                          borderColor: active ? "var(--ws-accent)" : undefined,
-                        }}
-                      >
-                        <strong>
-                          {option.name}
-                          {option.recommended ? " · 推荐" : ""}
-                        </strong>
-                        <span>{option.reader_promise}</span>
-                        <small>{option.ending_hook}</small>
-                      </button>
-                    );
-                  })}
-                </div>
-                {selectedDirection ? <p className="ws-card__hint">本章目标：{selectedDirection.chapter_goal}</p> : null}
-              </section>
+            {nextWritingPacket && rollingFill ? (
+              <RollingOutlineCard
+                chapterNumber={nextChapterNumber}
+                status={rollingFill.status}
+                source={nextChapterOutlineSource}
+                outline={nextChapterOutline}
+                error={rollingFill.error ?? ""}
+                filledChapterNumbers={rollingFill.filled_chapter_numbers ?? []}
+              />
             ) : null}
             {temporaryGuidance ? (
               <section className="ws-card">

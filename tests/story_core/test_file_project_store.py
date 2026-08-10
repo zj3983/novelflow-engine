@@ -5767,7 +5767,13 @@ def test_file_project_writing_packet_requires_fast_visible_progression(tmp_path)
     assert packet["state"]["current_focus"] == "Turn the hidden route into a visible level gain."
 
 
-def test_file_project_writing_packet_exposes_next_chapter_direction_options(tmp_path):
+def test_file_project_writing_packet_omits_legacy_direction_options_and_exposes_rolling_fill(tmp_path):
+    """Round 8 Task 5: the three-card direction picker was replaced by the
+    rolling outline. The packet no longer carries three pre-generated
+    options; instead it surfaces the rolling fill status so the frontend
+    can either show the filled outline or prompt the user to retry the
+    fill.
+    """
     root = tmp_path / "novel"
     store = _make_minimal_file_project(
         root,
@@ -5787,14 +5793,13 @@ def test_file_project_writing_packet_exposes_next_chapter_direction_options(tmp_
 
     packet = store.writing_packet(2)
 
-    choices = packet["chapter_direction_options"]
-    assert choices["recommended_id"] == "trade-bridge"
-    assert [item["id"] for item in choices["options"]] == [
-        "trade-bridge",
-        "chaos-seed-trace",
-        "guild-ecology",
-    ]
-    assert any("现实" in item["reader_promise"] for item in choices["options"])
+    # Legacy three-card picker is gone.
+    assert packet["chapter_direction_options"].get("options") == []
+    # Rolling fill status is exposed; no outline present → "missing".
+    assert packet["rolling_fill"]["status"] == "missing"
+    assert packet["rolling_fill"]["chapter_number"] == 2
+    assert packet["next_chapter_outline"] is None
+    assert packet["next_chapter_outline_source"] is None
 
 
 def test_file_project_writing_packet_does_not_offer_branches_over_explicit_chapter_outline(tmp_path):
@@ -5831,7 +5836,17 @@ def test_file_project_writing_packet_does_not_offer_branches_over_explicit_chapt
     assert packet["chapter_direction_options"] == {}
 
 
-def test_file_project_generate_next_accepts_selected_chapter_direction(tmp_path):
+def test_file_project_generate_next_ignores_legacy_chapter_direction_id(tmp_path):
+    """Round 8 Task 5: the three-card direction picker was removed. The
+    ``chapter_direction_id`` parameter is preserved on
+    ``generate_next_chapter`` for backward compatibility (the API request
+    model still has the field), but it is silently ignored: the rolling
+    outline now drives the chapter structure.
+
+    The test asserts that a passed-in ``chapter_direction_id`` does NOT
+    raise (no ``unknown_chapter_direction`` error) and the generation
+    proceeds normally via the rolling-outline path.
+    """
     root = tmp_path / "novel"
     store = _make_minimal_file_project(
         root,
@@ -5848,11 +5863,9 @@ def test_file_project_generate_next_accepts_selected_chapter_direction(tmp_path)
             },
         },
     )
-    captured = {}
 
     class FakeEngine:
         def generate_next_chapter(self, story):
-            captured["direction"] = story.progression_ledger["chapter_direction"]
             updated_story = story.model_copy(update={"current_chapter": 2})
             return SimpleNamespace(
                 chapter_number=2,
@@ -5874,11 +5887,11 @@ def test_file_project_generate_next_accepts_selected_chapter_direction(tmp_path)
                 quality_report={"ok": True},
             )
 
+    # A legacy chapter_direction_id used to resolve via the
+    # chapter-direction options card. Now it is a no-op: the rolling
+    # outline (or stub) drives the chapter. The call must succeed.
     generated = store.generate_next_chapter(engine=FakeEngine(), chapter_direction_id="chaos-seed-trace")
-
     assert generated["chapter_number"] == 2
-    assert captured["direction"]["id"] == "chaos-seed-trace"
-    assert "未解析" in captured["direction"]["wow_beat"] or "残片" in captured["direction"]["wow_beat"]
 
 
 def test_file_project_writing_packet_exposes_outline_constraints(tmp_path):
