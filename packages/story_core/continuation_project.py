@@ -55,8 +55,13 @@ class ContinuationSettings(BaseModel):
     planned_chapters: int = Field(default=0, ge=0, le=10_000)
     must_preserve: list[str] = Field(default_factory=list, max_length=100)
     forbidden_content: list[str] = Field(default_factory=list, max_length=100)
-    generate_outline: bool = True
-    outline_chapters: int = Field(default=10, ge=0, le=30)
+    # The plan rule: "Import cannot disable outline initialization."
+    # The baseline is fixed at ``generate_outline=True``; future
+    # outline material is produced by
+    # :class:`ContinuationOutlineBootstrapper` after the baseline
+    # exists, never during import.
+    generate_outline: Literal[True] = True
+    outline_chapters: int = Field(default=5, ge=5, le=10)
     novel_type_id: str = "generic_webnovel"
 
     @field_validator("direction", "novel_type_id", mode="before")
@@ -78,10 +83,12 @@ class ContinuationSettings(BaseModel):
     def _validate_outline_settings(self) -> "ContinuationSettings":
         if runtime_novel_type(self.novel_type_id) is None:
             raise ValueError("invalid_novel_type")
-        if self.generate_outline and not 5 <= self.outline_chapters <= 30:
+        # The plan rule: ``outline_chapters`` is the rolling
+        # window size for the bootstrapper; the import baseline
+        # is the only place it appears so we keep a narrow range
+        # to prevent wire drift.
+        if not 5 <= self.outline_chapters <= 10:
             raise ValueError("invalid_outline_chapter_count")
-        if not self.generate_outline and self.outline_chapters != 0:
-            raise ValueError("unexpected_outline_chapter_count")
         return self
 
 
@@ -666,7 +673,10 @@ def _project_payload(
         },
         "current_chapter": settings.start_after_chapter,
         "status": "draft",
-        "pipeline_stage": "imported",
+        # Plan rule: "Import cannot disable outline initialization."
+        # The pipeline stage is set to ``outline_bootstrapping`` so
+        # the workbench knows the bootstrapper is the next step.
+        "pipeline_stage": "outline_bootstrapping",
         "active_story_id": f"file:{project_id}",
         "continuation": continuation,
     }
@@ -684,28 +694,25 @@ _CONTINUATION_STAGES = (
     "正面碰撞",
     "留下新局",
 )
-
+# Plan rule: ``_CONTINUATION_STAGES`` is reserved for the future
+# planning pass run by the bootstrapper; the import baseline no
+# longer uses it. The constant stays here so the bootstrapper can
+# import it as a fallback if its prompt context is empty.
 
 def _continuation_outline(
     analysis: ContinuationAnalysis,
     settings: ContinuationSettings,
 ) -> dict[str, Any]:
-    if not settings.generate_outline:
-        return normalize_project_outline({})
+    """Return the evidence-only historical baseline outline.
 
-    start = settings.start_after_chapter + 1
-    end = settings.start_after_chapter + settings.outline_chapters
-    genre = runtime_novel_type(settings.novel_type_id)
-    trope_ids = [
-        str(item.get("id") or "").strip()
-        for item in novel_type_prompt_context(genre).get("genre_trope_templates", [])
-        if isinstance(item, dict) and str(item.get("id") or "").strip()
-    ] if genre is not None else []
-    primary_trope_id = (
-        "chapter_hook_escalation"
-        if "chapter_hook_escalation" in trope_ids
-        else (trope_ids[0] if trope_ids else None)
-    )
+    The plan rule: "Baseline creation performs no model call and
+    fabricates no future plot." The baseline records the imported
+    history (story overview + the historical arc covering chapters
+    1..start_after_chapter) and intentionally leaves the future
+    arc and the chapter rows empty so the bootstrapper is the only
+    place that future material is produced.
+    """
+
     direction = (
         settings.direction.strip()
         or analysis.continuation_start.guidance.strip()
@@ -713,43 +720,6 @@ def _continuation_outline(
         or "延续当前主线"
     )
     situation = analysis.continuation_start.situation.strip() or direction
-    hooks = [
-        item.text.strip()
-        for item in analysis.open_hooks
-        if item.confidence == "confirmed"
-        and item.status != "resolved"
-        and item.text.strip()
-    ]
-    protagonist = next(
-        (
-            item.name.strip()
-            for item in analysis.characters
-            if item.confidence == "confirmed"
-            and item.role.strip().lower() in {"protagonist", "主角"}
-            and item.name.strip()
-        ),
-        next(
-            (
-                item.name.strip()
-                for item in analysis.characters
-                if item.confidence == "confirmed" and item.name.strip()
-            ),
-            "主角",
-        ),
-    )
-    growth_items: list[str] = []
-    growth_chars = 0
-    for item in analysis.power_system:
-        claim = item.claim.strip()
-        if item.confidence != "confirmed" or not claim:
-            continue
-        separator_chars = 1 if growth_items else 0
-        if growth_chars + separator_chars + len(claim) > 500:
-            break
-        growth_items.append(claim)
-        growth_chars += separator_chars + len(claim)
-    growth = "；".join(growth_items)
-    focuses = hooks or [direction]
     arcs: list[dict[str, Any]] = []
     if settings.start_after_chapter > 0:
         arcs.append(
@@ -760,48 +730,10 @@ def _continuation_outline(
                 "end_chapter": settings.start_after_chapter,
                 "goal": analysis.story_overview.strip() or "承接原著既有主线",
                 "obstacle": situation,
-                "payoff": f"原著推进至第{settings.start_after_chapter}章的既定状态。",
-                "end_state": situation,
-            }
-        )
-    arcs.append(
-        {
-            "id": f"continuation-{start}-{end}",
-            "title": f"续写阶段：{direction[:18]}",
-            "start_chapter": start,
-            "end_chapter": end,
-            "goal": direction,
-            "obstacle": situation,
-            "payoff": f"完成从第{settings.start_after_chapter}章遗留局势到下一阶段的推进。",
-            "trope_id": primary_trope_id,
-            "end_state": "当前冲突获得阶段性结果，并建立新的明确目标。",
-        }
-    )
-    chapters: list[dict[str, Any]] = []
-    for offset in range(settings.outline_chapters):
-        number = start + offset
-        focus = focuses[offset % len(focuses)]
-        stage = _CONTINUATION_STAGES[offset % len(_CONTINUATION_STAGES)]
-        cycle = offset // len(_CONTINUATION_STAGES) + 1
-        title = f"{stage}：{focus[:12]}"
-        if cycle > 1:
-            title = f"{title}（{cycle}）"
-        next_focus = focuses[(offset + 1) % len(focuses)]
-        chapters.append(
-            {
-                "chapter_number": number,
-                "title": title,
-                "goal": focus,
-                "obstacle": situation,
-                "action": f"{protagonist}围绕“{focus}”采取具体行动并验证判断。",
-                "turn": f"行动暴露新的限制，使“{direction}”进入下一阶段。",
-                "payoff": f"推进“{focus}”，并形成可见的关系、信息或实力变化。",
-                "ending_hook": (
-                    f"将矛盾转向“{next_focus}”。"
-                    if offset + 1 < settings.outline_chapters
-                    else "本段目标暂时兑现，同时留下下一阶段的新问题。"
+                "payoff": (
+                    f"原著推进至第{settings.start_after_chapter}章的既定状态。"
                 ),
-                "cast": [protagonist],
+                "end_state": situation,
             }
         )
 
@@ -811,16 +743,16 @@ def _continuation_outline(
                 "story": analysis.story_overview.strip() or situation,
                 "protagonist_goal": direction,
                 "main_conflict": situation,
-                "growth_path": growth,
+                "growth_path": "",
                 "ending_direction": direction,
-                "primary_trope_id": primary_trope_id,
-                "core_ending_chapter": end,
-                "extension_ceiling_chapter": end,
+                "primary_trope_id": None,
+                "core_ending_chapter": settings.start_after_chapter,
+                "extension_ceiling_chapter": settings.start_after_chapter,
                 "current_strategy": "observe",
                 "ending_contract": direction,
             },
             "arcs": arcs,
-            "chapters": chapters,
+            "chapters": [],
         }
     )
 

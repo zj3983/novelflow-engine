@@ -111,7 +111,7 @@ def _settings(start_after_chapter: int):
         must_preserve=["地图以记忆为代价"],
         forbidden_content=["复活已死亡角色"],
         generate_outline=True,
-        outline_chapters=10,
+        outline_chapters=5,
     )
 
 
@@ -208,7 +208,18 @@ def test_confirmed_session_creates_readable_file_project(tmp_path: Path) -> None
     assert created.next_path == "/projects/file%3Ap-continuation-test/outline"
 
 
-def test_conversion_generates_requested_continuation_outline(tmp_path: Path) -> None:
+def test_conversion_baseline_outline_records_only_imported_history(
+    tmp_path: Path,
+) -> None:
+    """The import baseline records the historical arc only.
+
+    The plan rule: the import baseline must contain no future arc
+    or chapter rows. The overall still records the imported story
+    overview, the historical arc is present, and
+    ``pipeline_stage="outline_bootstrapping"`` tells the workbench
+    the bootstrap is responsible for the future plot.
+    """
+
     session = _ready_session()
     settings = _settings(3)
 
@@ -216,23 +227,19 @@ def test_conversion_generates_requested_continuation_outline(tmp_path: Path) -> 
         tmp_path,
         session,
         settings,
-        project_id_factory=lambda: "p-generated-outline",
+        project_id_factory=lambda: "p-baseline-only",
     )
 
     outline = FileProjectStore(created.root).project_outline()
+    project = FileProjectStore(created.root).project()
+
     assert outline["overall"]["story"] == session.analysis["story_overview"]
     assert outline["arcs"][0]["start_chapter"] == 1
     assert outline["arcs"][0]["end_chapter"] == 3
     assert outline["arcs"][0]["title"] == "原著已发生"
-    assert outline["arcs"][1]["start_chapter"] == 4
-    assert outline["arcs"][1]["end_chapter"] == 13
-    assert outline["overall"]["primary_trope_id"] == "chapter_hook_escalation"
-    assert outline["arcs"][1]["trope_id"] == "chapter_hook_escalation"
-    assert [chapter["chapter_number"] for chapter in outline["chapters"]] == list(
-        range(4, 14)
-    )
-    assert all(chapter["goal"] for chapter in outline["chapters"])
-    assert len({chapter["title"] for chapter in outline["chapters"]}) == 10
+    assert not [arc for arc in outline["arcs"] if arc["start_chapter"] > 3]
+    assert outline["chapters"] == []
+    assert project["pipeline_stage"] == "outline_bootstrapping"
 
 
 def test_conversion_outline_recognizes_chinese_protagonist_role(tmp_path: Path) -> None:
@@ -246,8 +253,13 @@ def test_conversion_outline_recognizes_chinese_protagonist_role(tmp_path: Path) 
         project_id_factory=lambda: "p-chinese-protagonist",
     )
 
-    outline = FileProjectStore(created.root).project_outline()
-    assert outline["chapters"][0]["cast"] == ["沈砚"]
+    project = FileProjectStore(created.root).project()
+    state = FileProjectStore(created.root).state()
+    protagonist = next(
+        card for card in project["character_profiles"] if card.get("name") == "沈砚"
+    )
+    assert str(protagonist.get("role") or "").strip() == "主角"
+    assert any(item.get("name") == "沈砚" for item in state["characters"])
 
 
 def test_conversion_outline_uses_first_confirmed_character_when_roles_are_blank(
@@ -263,13 +275,26 @@ def test_conversion_outline_uses_first_confirmed_character_when_roles_are_blank(
         project_id_factory=lambda: "p-blank-character-role",
     )
 
-    outline = FileProjectStore(created.root).project_outline()
-    assert outline["chapters"][0]["cast"] == ["沈砚"]
+    project = FileProjectStore(created.root).project()
+    state = FileProjectStore(created.root).state()
+    assert any(
+        card.get("name") == "沈砚" for card in project["character_profiles"]
+    )
+    assert any(item.get("name") == "沈砚" for item in state["characters"])
 
 
-def test_conversion_outline_caps_growth_summary_for_planning_brief(
+def test_conversion_baseline_persists_confirmed_world_into_blueprint(
     tmp_path: Path,
 ) -> None:
+    """The import baseline persists the confirmed world into the
+    blueprint even when the future plot is left empty.
+
+    Plan rule: the bootstrapper is responsible for the growth
+    summary; the import baseline only persists the historical
+    evidence. The blueprint still gets the confirmed world so
+    the bootstrapper can read it back.
+    """
+
     session = _ready_session()
     session.analysis["power_system"] = [
         {
@@ -286,27 +311,67 @@ def test_conversion_outline_caps_growth_summary_for_planning_brief(
         project_id_factory=lambda: "p-growth-summary",
     )
 
-    outline = FileProjectStore(created.root).project_outline()
-    assert len(outline["overall"]["growth_path"]) <= 500
+    project = FileProjectStore(created.root).project()
+    blueprint = project["world_blueprint"]
+    confirmed_power = [item["claim"] for item in session.analysis["power_system"]]
+    assert blueprint["power_system"] == confirmed_power
+    # The growth_path stays empty in the baseline; the
+    # bootstrapper will fill it.
+    assert project["pipeline_stage"] == "outline_bootstrapping"
 
 
 def test_conversion_leaves_outline_empty_when_generation_is_disabled(
     tmp_path: Path,
 ) -> None:
-    settings = _settings(3).model_copy(
-        update={"generate_outline": False, "outline_chapters": 0}
-    )
+    # Plan rule: "Import cannot disable outline initialization."
+    # The bootstrapper is the only place future outlines are
+    # produced, so the import baseline is fixed at
+    # ``generate_outline=True``. This test pins the new wire
+    # contract: disabling is no longer a supported import option,
+    # and the previous "no arc / no chapter" empty path is gone.
+    from packages.story_core.continuation_project import ContinuationSettings
+
+    with pytest.raises(ValueError):
+        ContinuationSettings(
+            start_after_chapter=3,
+            generate_outline=False,
+            outline_chapters=0,
+        )
+
+
+def test_import_baseline_has_no_template_future_plot(tmp_path: Path) -> None:
+    """The import baseline must not fabricate a future plot.
+
+    The plan rule: "Baseline creation performs no model call and
+    fabricates no future plot." The imported project is a
+    historical baseline only — the bootstrapper is responsible for
+    the future arc and chapter rows.
+    """
 
     created = _create_project(
         tmp_path,
         _ready_session(),
-        settings,
-        project_id_factory=lambda: "p-empty-outline",
+        _settings(3),
+        project_id_factory=lambda: "p-baseline-no-future",
     )
 
     outline = FileProjectStore(created.root).project_outline()
-    assert outline["arcs"] == []
+    project = FileProjectStore(created.root).project()
+
     assert outline["chapters"] == []
+    assert not [arc for arc in outline["arcs"] if arc["start_chapter"] > 12]
+    assert project["pipeline_stage"] == "outline_bootstrapping"
+
+
+def test_import_cannot_disable_outline_bootstrap() -> None:
+    from packages.story_core.continuation_project import ContinuationSettings
+
+    with pytest.raises(ValueError):
+        ContinuationSettings(
+            start_after_chapter=12,
+            generate_outline=False,
+            outline_chapters=0,
+        )
 
 
 def test_conversion_promotes_confirmed_world_analysis_into_editable_blueprint(

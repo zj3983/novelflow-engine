@@ -1334,6 +1334,10 @@ def _confirm_analysis(client: TestClient, session: dict) -> dict:
 
 
 def _create_project_payload(chapter_number: int = 2) -> dict:
+    # Plan rule: "Import cannot disable outline initialization."
+    # The import baseline is fixed at ``generate_outline=True`` so
+    # the bootstrapper is the only place that future outlines are
+    # produced. The route layer simply forwards the call.
     return {
         "expected_revision": 4,
         "settings": {
@@ -1344,8 +1348,8 @@ def _create_project_payload(chapter_number: int = 2) -> dict:
             "planned_chapters": 20,
             "must_preserve": [],
             "forbidden_content": [],
-            "generate_outline": False,
-            "outline_chapters": 0,
+            "generate_outline": True,
+            "outline_chapters": 5,
             "novel_type_id": "generic_webnovel",
         },
     }
