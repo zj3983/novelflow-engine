@@ -12,7 +12,7 @@ from threading import Lock
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Path as ApiPath, Request, Response
+from fastapi import APIRouter, HTTPException, Path as ApiPath, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from packages.story_core.book_dissection import diagnose_project_chapter, dissect_reference_text
@@ -31,7 +31,6 @@ from packages.story_core.models import (
 )
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
-from packages.story_core.outline_rolling_planner import RollingOutlineFailed
 from packages.story_core.simplified_review import build_simplified_review, user_facing_generation_error
 from packages.story_core.publishing_assets import (
     CoverPromptGenerator,
@@ -71,6 +70,12 @@ _file_generation_executor = ThreadPoolExecutor(max_workers=1)
 _file_generation_jobs: dict[str, dict[str, object]] = {}
 _active_file_generation_jobs: dict[str, str] = {}
 _file_generation_jobs_lock = Lock()
+# Plan rule: "Add a dedicated single-worker executor" for the
+# continuation bootstrap. Body generation and bootstrap share
+# a single worker to keep the disk state coherent.
+_continuation_bootstrap_executor = ThreadPoolExecutor(max_workers=1)
+_continuation_bootstrap_checkpoints: dict[str, dict[str, object]] = {}
+_continuation_bootstrap_lock = Lock()
 
 
 class FileProjectRegenerateRequest(BaseModel):
@@ -1028,6 +1033,14 @@ def start_file_generation_job(
         if payload and isinstance(payload.chapter_number, int)
         else None
     )
+    if target_chapter is None:
+        next_chapter = int(store.summary().get("current_chapter") or 0) + 1
+        outline_status = store.rolling_fill_status(next_chapter)
+        if outline_status.get("status") not in {"present", "legacy"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"chapter_outline_required:{next_chapter}",
+            )
     variant = payload.variant if payload else None
     guidance = payload.guidance if payload else None
     chapter_direction_id = payload.chapter_direction_id if payload else None
@@ -1139,6 +1152,78 @@ def start_file_generation_job(
         _run_file_generation_job, job_id, project_id, **job_kwargs
     )
     return response
+
+
+# ---------------------------------------------------------------------------
+# Continuation bootstrap
+# ---------------------------------------------------------------------------
+
+
+def _read_continuation_bootstrap_checkpoint(
+    project_root: Path,
+) -> dict[str, Any]:
+    """Read the bootstrap checkpoint from disk.
+
+    Plan rule: "Progress and artifacts survive reload." The
+    endpoint must read the file every time so a route reload
+    sees the same status the worker wrote. An in-memory cache
+    is only an opportunistic accelerator and must not be the
+    source of truth.
+    """
+
+    from packages.story_core.continuation_outline_bootstrap import (
+        ContinuationOutlineBootstrapper,
+    )
+
+    return ContinuationOutlineBootstrapper(
+        project_root=project_root,
+        planning_generator=object(),
+        rolling_generator=object(),
+    ).read_checkpoint()
+
+
+def _run_continuation_bootstrap_job(
+    project_id: str,
+    project_root: Path,
+) -> None:
+    """Background entry point: run the bootstrapper and update
+    the cached status snapshot.
+    """
+
+    from packages.story_core.continuation_outline_bootstrap import (
+        ContinuationOutlineBootstrapper,
+        LLMRollingWindowGenerator,
+        validate_continuation_bootstrap,
+    )
+    from packages.story_core.outline_planning_generation import (
+        LLMOutlinePlanningGenerator,
+    )
+
+    try:
+        planning = LLMOutlinePlanningGenerator()
+        rolling = LLMRollingWindowGenerator()
+        bootstrapper = ContinuationOutlineBootstrapper(
+            project_root=project_root,
+            planning_generator=planning,
+            rolling_generator=rolling,
+        )
+        bootstrapper.run()
+    except Exception:
+        # Persist a failed status so the API surfaces a
+        # stable error to the operator.
+        with _continuation_bootstrap_lock:
+            _continuation_bootstrap_checkpoints[project_id] = (
+                _read_continuation_bootstrap_checkpoint(project_root)
+            )
+        return
+
+    with _continuation_bootstrap_lock:
+        _continuation_bootstrap_checkpoints[project_id] = (
+            _read_continuation_bootstrap_checkpoint(project_root)
+        )
+    # Touch the validator so the result is part of the public
+    # status surface.
+    validate_continuation_bootstrap(project_root)
 
 
 def init_file_project_routes() -> APIRouter:
@@ -1548,6 +1633,54 @@ def init_file_project_routes() -> APIRouter:
     def get_outline_generation_checkpoints(project_id: str) -> dict[str, Any]:
         return _store_for(project_id).outline_generation_checkpoints()
 
+    @router.post("/file-projects/{project_id}/continuation-bootstrap")
+    def start_continuation_bootstrap(
+        project_id: str, response: Response
+    ) -> dict[str, Any]:
+        """Enqueue the continuation bootstrap for a file project.
+
+        Plan rule: the bootstrap runs in a dedicated single-worker
+        executor; the route returns 202 immediately so a refresh
+        does not block on the model. A duplicate call short-
+        circuits when the persisted checkpoint is already
+        ``ready`` and returns 200 so the operator can tell
+        the difference between ``enqueued`` and ``no-op``.
+        """
+
+        store = _store_for(project_id)
+        stripped = _strip_file_prefix(project_id)
+        current = _read_continuation_bootstrap_checkpoint(store.root)
+        if current.get("status") == "ready":
+            response.status_code = status.HTTP_200_OK
+            return {"status": "ready", "checkpoint": current}
+        with _continuation_bootstrap_lock:
+            _continuation_bootstrap_checkpoints[stripped] = current
+        _continuation_bootstrap_executor.submit(
+            _run_continuation_bootstrap_job,
+            stripped,
+            store.root,
+        )
+        queued_snapshot = {
+            **(current if isinstance(current, dict) else {}),
+            "status": "queued",
+        }
+        with _continuation_bootstrap_lock:
+            _continuation_bootstrap_checkpoints[stripped] = queued_snapshot
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"status": "queued", "checkpoint": queued_snapshot}
+
+    @router.get("/file-projects/{project_id}/continuation-bootstrap")
+    def get_continuation_bootstrap(project_id: str) -> dict[str, Any]:
+        """Return the persisted bootstrap status.
+
+        Plan rule: the status comes from disk, not from
+        transient route memory, so a page reload never loses
+        progress.
+        """
+
+        store = _store_for(project_id)
+        return _read_continuation_bootstrap_checkpoint(store.root)
+
     @router.post("/file-projects/{project_id}/enrich-world")
     def enrich_file_project_world(project_id: str) -> dict[str, Any]:
         store = _store_for(project_id)
@@ -1676,40 +1809,23 @@ def init_file_project_routes() -> APIRouter:
         project_id: str,
         target_chapter: int = 1,
     ) -> dict[str, Any]:
-        """Manually trigger a rolling-fill batch for ``target_chapter``.
+        """Compatibility check for callers of the removed auto-fill route.
 
-        The endpoint is idempotent: if the target chapter already has
-        an outline (rolling or legacy), the call returns the existing
-        status without writing anything new. The default behaviour
-        (``ensure_rolling_outline`` inside ``generate_next_chapter``)
-        is automatic; this endpoint exists so the operator can force
-        a fill (e.g. after editing the seed outline) or recover from
-        a previous failure.
-
-        Errors:
-
-        * 404 — missing project.
-        * 422 — ``target_chapter`` non-positive / out of volume range.
-        * 422 — generation / validation / I/O failure (raised by
-          :class:`RollingOutlineFailed`).
+        Missing chapter outlines are generated from the outline workspace,
+        never as a side effect of a body-generation request.
         """
         if target_chapter is None or int(target_chapter) < 1:
             raise HTTPException(
                 status_code=422,
                 detail="rolling_fill_invalid_target_chapter",
             )
-        try:
-            store = _store_for(project_id)
-        except HTTPException:
-            raise
-        try:
-            store.ensure_rolling_outline(target_chapter=int(target_chapter))
-        except RollingOutlineFailed as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except ValueError as exc:
-            # volume_range mismatch, etc.
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        store = _store_for(project_id)
         status = store.rolling_fill_status(int(target_chapter))
+        if status.get("status") not in {"present", "legacy"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"chapter_outline_required:{int(target_chapter)}",
+            )
         return {
             "schema_version": "file-project-rolling-fill-response/v1",
             "project_id": project_id,
@@ -1863,6 +1979,13 @@ def init_file_project_routes() -> APIRouter:
     @router.post("/file-projects/{project_id}/generate-next")
     def generate_file_project_next(project_id: str, payload: FileProjectGenerateNextRequest | None = None) -> dict[str, Any]:
         store = _store_for(project_id)
+        next_chapter = int(store.summary().get("current_chapter") or 0) + 1
+        outline_status = store.rolling_fill_status(next_chapter)
+        if outline_status.get("status") not in {"present", "legacy"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"chapter_outline_required:{next_chapter}",
+            )
         generated = store.generate_next_chapter(chapter_direction_id=payload.chapter_direction_id if payload else None)
         return {
             "schema_version": "file-project-generate-next-response/v1",

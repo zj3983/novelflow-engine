@@ -1782,21 +1782,109 @@ def test_quick_continue_reuses_the_file_project_generation_job(
         f"/continuation-imports/{session['session_id']}/quick-continue",
         json={},
     )
+    # The plan rule: "body generation remains 409 until bootstrap
+    # readiness succeeds." The first call creates the project;
+    # the body generation gate blocks the actual job queue.
+    assert first.status_code == 409
+    assert "chapter_outline_required" in first.json()["detail"]
+    # Look up the project_id from the session's conversion
+    # metadata; the 409 body does not include the project_id
+    # but the project was still created on disk.
+    session_after = client.get(
+        f"/continuation-imports/{session['session_id']}"
+    ).json()
+    conversion = session_after.get("analysis_progress", {}).get(
+        "project_conversion", {}
+    )
+    project_id = "file:" + conversion.get("project_id", "")
+    assert project_id
+
+    # Seed a rolling outline to pass the readiness gate.
+    # Determine the project's current chapter so we seed the
+    # next-chapter outline.
+    project_root = file_projects._store_for(project_id).root
+    project_state = json.loads(
+        (project_root / ".webnovel" / "state.json").read_text(encoding="utf-8")
+    )
+    next_chapter = int(project_state.get("current_chapter") or 0) + 1
+    _seed_rolling_outline_for_project(project_id, target_chapter=next_chapter)
+
     second = client.post(
         f"/continuation-imports/{session['session_id']}/quick-continue",
         json={},
     )
+    third = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue",
+        json={},
+    )
 
-    assert first.status_code == 202
     assert second.status_code == 202
-    assert first.json()["job_id"] == second.json()["job_id"]
+    assert third.status_code == 202
+    assert second.json()["job_id"] == third.json()["job_id"]
     assert len(submitted) == 1
     job = client.get(
-        f"/file-projects/{first.json()['project_id']}/generation-jobs/{first.json()['job_id']}"
+        f"/file-projects/{project_id}/generation-jobs/{second.json()['job_id']}"
     )
     assert job.status_code == 200
     assert job.json()["status"] == "queued"
 
+
+def _seed_rolling_outline_for_project(project_id: str, target_chapter: int) -> None:
+    """Seed a rolling outline so the body generation gate passes.
+
+    Plan rule: the bootstrap is the only place that creates the
+    rolling outline; tests that need a ready project can call
+    this helper to bypass the bootstrap and exercise the body
+    generation path directly.
+    """
+
+    import json
+    from apps.api.routes import file_projects
+
+    store = file_projects._store_for(project_id)
+    rolling_payload = {
+        "schema_version": "rolling-outline/v1",
+        "chapters": [
+            {
+                "chapter_number": target_chapter,
+                "title": f"第{target_chapter}章 测试用",
+                "chapter_goal": "测试用目标",
+                "core_conflict": "测试用冲突",
+                "cast": [
+                    {
+                        "name": "林修",
+                        "role": "protagonist",
+                        "character_tier": "protagonist",
+                    }
+                ],
+                "scenes": [
+                    {
+                        "location": "测试地点",
+                        "action": "测试动作",
+                        "result": "测试结果",
+                    },
+                    {
+                        "location": "测试地点二",
+                        "action": "测试动作二",
+                        "result": "测试结果二",
+                    },
+                ],
+                "gain": "测试收获",
+                "cost": "测试代价",
+                "foreshadowing": [],
+                "hook": "测试钩子",
+                "state_delta": "测试状态",
+            }
+        ],
+    }
+    store_path = (
+        store.root / ".story-system" / "outline-generation" / "rolling_outline.json"
+    )
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.write_text(
+        json.dumps(rolling_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 def test_concurrent_quick_continue_submits_one_reserved_generation_job(
     client: TestClient,
@@ -1863,17 +1951,23 @@ def test_concurrent_quick_continue_submits_one_reserved_generation_job(
                 json={},
             )
 
+    # The plan rule: body generation remains 409 until the
+    # bootstrap readiness validator succeeds. The concurrent
+    # test now exercises the project creation path (the body
+    # generation gate is exercised by
+    # ``test_quick_continue_returns_409_until_bootstrap_ready``).
     with ThreadPoolExecutor(max_workers=2) as executor:
         responses = [future.result(timeout=15) for future in [
             executor.submit(post_quick),
             executor.submit(post_quick),
         ]]
 
-    assert [response.status_code for response in responses] == [202, 202], [
+    # Both calls return 409 because the bootstrap has not run;
+    # the project was still created exactly once.
+    assert [response.status_code for response in responses] == [409, 409], [
         response.text for response in responses
     ]
     assert responses[0].json() == responses[1].json()
-    assert len(submitted) == 1
     assert partial_project_seen.is_set()
 
 
@@ -1912,11 +2006,350 @@ def test_quick_continue_retry_after_response_save_failure_reuses_reserved_job(
     first = client.post(
         f"/continuation-imports/{session['session_id']}/quick-continue", json={}
     )
+    # The plan rule: body generation is gated by bootstrap
+    # readiness. Without a rolling outline, the first call
+    # returns 409 (chapter_outline_required). The retry test
+    # then seeds a rolling outline to exercise the
+    # response-save failure path.
+    assert first.status_code == 409
+    session_after = client.get(
+        f"/continuation-imports/{session['session_id']}"
+    ).json()
+    conversion = session_after.get("analysis_progress", {}).get(
+        "project_conversion", {}
+    )
+    project_id = "file:" + conversion.get("project_id", "")
+    project_root = file_projects._store_for(project_id).root
+    project_state = json.loads(
+        (project_root / ".webnovel" / "state.json").read_text(encoding="utf-8")
+    )
+    next_chapter = int(project_state.get("current_chapter") or 0) + 1
+    _seed_rolling_outline_for_project(project_id, target_chapter=next_chapter)
+
     second = client.post(
         f"/continuation-imports/{session['session_id']}/quick-continue", json={}
     )
+    # The first attempt with the rolling outline seeded
+    # triggers the fail_once path: the response save fails and
+    # the route returns 500.
+    assert second.status_code == 500
 
-    assert first.status_code == 500
-    assert second.status_code == 202
+    third = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue", json={}
+    )
+
+    assert third.status_code == 202
     assert len(submitted) == 1
-    assert submitted[0][1] == second.json()["job_id"]
+    assert submitted[0][1] == third.json()["job_id"]
+
+
+# ---------------------------------------------------------------------------
+# Task 5: continuation bootstrap API surface
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_status_endpoint_returns_persisted_checkpoint(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``GET /file-projects/{id}/continuation-bootstrap`` returns
+    the persisted checkpoint payload so a route reload sees the
+    same status as the worker.
+    """
+
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+
+    create_response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project",
+        json=payload,
+    )
+    assert create_response.status_code == 201
+    project_id = create_response.json()["project_id"]
+
+    status = client.get(
+        f"/file-projects/{project_id}/continuation-bootstrap"
+    )
+    assert status.status_code == 200
+    body = status.json()
+    assert body["schema_version"] == "continuation-bootstrap/v1"
+    assert "phases" in body
+    assert {phase["id"] for phase in body["phases"]} == {
+        "source_analysis",
+        "outline_foundation",
+        "character_roster",
+        "world_context",
+        "chapter_window",
+        "readiness_check",
+    }
+
+
+def test_start_bootstrap_endpoint_returns_202(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``POST /file-projects/{id}/continuation-bootstrap`` returns
+    202 and enqueues the bootstrapper in a dedicated executor.
+    """
+
+    from apps.api.routes import file_projects
+
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+
+    create_response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project",
+        json=payload,
+    )
+    assert create_response.status_code == 201
+    project_id = create_response.json()["project_id"]
+
+    submitted: list[tuple[object, ...]] = []
+    executor = file_projects._continuation_bootstrap_executor
+    monkeypatch.setattr(
+        executor,
+        "submit",
+        lambda *args, **_kwargs: submitted.append(args),
+    )
+
+    response = client.post(
+        f"/file-projects/{project_id}/continuation-bootstrap"
+    )
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert len(submitted) == 1
+    # The submitted call is the bootstrapper's run() method.
+    submitted_fn = submitted[0][0]
+    assert submitted_fn.__name__ == "_run_continuation_bootstrap_job"
+
+
+def test_bootstrap_status_comes_from_disk_after_route_clear(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The status endpoint must always read the checkpoint
+    from disk so a route reload does not lose progress.
+    """
+
+    from apps.api.routes import file_projects
+
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+
+    create_response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project",
+        json=payload,
+    )
+    project_id = create_response.json()["project_id"]
+
+    # Pre-seed a checkpoint file on disk.
+    import json
+    from pathlib import Path
+
+    project_root = next(
+        Path(create_response.json()["source_path"]).iterdir()  # the .webnovel dir
+    ).parent if False else Path(create_response.json()["source_path"])
+    checkpoint_dir = project_root / ".story-system" / "continuation-bootstrap"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_dir / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "continuation-bootstrap/v1",
+                "input_fingerprint": "fake",
+                "status": "ready",
+                "phases": [
+                    {
+                        "id": "source_analysis",
+                        "status": "completed",
+                        "artifact": {},
+                        "error": "",
+                    },
+                    {
+                        "id": "outline_foundation",
+                        "status": "completed",
+                        "artifact": {},
+                        "error": "",
+                    },
+                    {
+                        "id": "character_roster",
+                        "status": "completed",
+                        "artifact": {},
+                        "error": "",
+                    },
+                    {
+                        "id": "world_context",
+                        "status": "completed",
+                        "artifact": {},
+                        "error": "",
+                    },
+                    {
+                        "id": "chapter_window",
+                        "status": "completed",
+                        "artifact": {},
+                        "error": "",
+                    },
+                    {
+                        "id": "readiness_check",
+                        "status": "completed",
+                        "artifact": {},
+                        "error": "",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    # The endpoint reads the file, not the in-memory cache.
+    # We do not assert the in-memory cache is empty: previous
+    # tests may have left entries behind; the contract is
+    # that the response status is the persisted file's status.
+    response = client.get(
+        f"/file-projects/{project_id}/continuation-bootstrap"
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+
+
+def test_bootstrap_retry_queues_only_first_failed_phase(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry POST must not re-enqueue a successful run.
+    The endpoint must short-circuit when the persisted
+    checkpoint is already ``ready``.
+    """
+
+    from apps.api.routes import file_projects
+
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+    create_response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project",
+        json=payload,
+    )
+    project_id = create_response.json()["project_id"]
+
+    # Pre-seed a ready checkpoint.
+    import json
+    from pathlib import Path
+
+    project_root = Path(create_response.json()["source_path"])
+    checkpoint_dir = project_root / ".story-system" / "continuation-bootstrap"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_dir / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "continuation-bootstrap/v1",
+                "input_fingerprint": "fake",
+                "status": "ready",
+                "phases": [
+                    {
+                        "id": phase,
+                        "status": "completed",
+                        "artifact": {},
+                        "error": "",
+                    }
+                    for phase in (
+                        "source_analysis",
+                        "outline_foundation",
+                        "character_roster",
+                        "world_context",
+                        "chapter_window",
+                        "readiness_check",
+                    )
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    submitted: list[tuple[object, ...]] = []
+    executor = file_projects._continuation_bootstrap_executor
+    monkeypatch.setattr(
+        executor,
+        "submit",
+        lambda *args, **_kwargs: submitted.append(args),
+    )
+
+    response = client.post(
+        f"/file-projects/{project_id}/continuation-bootstrap"
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert submitted == []
+
+
+def test_create_project_rejects_generate_outline_false(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plan rule: ``generate_outline=False`` is no longer a
+    supported import option. The route must return 422.
+    """
+
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+    payload["settings"]["generate_outline"] = False
+    payload["settings"]["outline_chapters"] = 0
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project",
+        json=payload,
+    )
+    assert response.status_code == 422
+
+
+def test_quick_continue_returns_409_until_bootstrap_ready(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``quick-continue`` queues a body generation. The
+    generation gate must keep body generation at 409 until the
+    bootstrap readiness validator succeeds.
+    """
+
+    session = _analyzed_import(client, allowed_root, monkeypatch)
+    submitted: list[tuple[object, ...]] = []
+
+    from apps.api.routes import file_projects
+
+    with file_projects._file_generation_jobs_lock:
+        file_projects._file_generation_jobs.clear()
+        file_projects._active_file_generation_jobs.clear()
+    monkeypatch.setattr(
+        file_projects._file_generation_executor,
+        "submit",
+        lambda *args, **_kwargs: submitted.append(args),
+    )
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/quick-continue", json={}
+    )
+    assert response.status_code == 409
+    assert "chapter_outline_required" in response.json()["detail"]

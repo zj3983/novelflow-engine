@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.main import app
 from apps.api.routes import stories as story_routes
+from packages.story_core.file_project_store import FileProjectStore
 
 
 @pytest.fixture
@@ -80,24 +81,39 @@ def _seed_minimal_file_project(export_root: Path) -> str:
     return "file:p-rolling-test"
 
 
-def test_post_rolling_fill_writes_chapters_and_returns_status(rolling_api) -> None:
+def _outline_row(number: int) -> dict:
+    return {
+        "chapter_number": number,
+        "title": f"第{number}章",
+        "chapter_goal": "林修追查香炉裂纹的来源",
+        "core_conflict": "修复香炉会暴露林修的位置",
+        "cast": [{"name": "林修", "role": "protagonist", "this_chapter_role": "追查"}],
+        "scenes": [
+            {"location": "旧宅", "action": "检查香炉", "result": "发现暗纹"},
+            {"location": "后巷", "action": "追踪暗纹", "result": "找到线索"},
+        ],
+        "gain": "获得线索",
+        "cost": "暴露行踪",
+        "foreshadowing": [],
+        "hook": "门外有人敲门",
+        "state_delta": "林修掌握新的暗纹位置",
+    }
+
+
+def test_post_rolling_fill_redirects_missing_outline_to_outline_workspace(rolling_api) -> None:
     client, export_root = rolling_api
     project_id = _seed_minimal_file_project(export_root)
     response = client.post(
         f"/file-projects/{project_id}/outline/rolling-fill",
         params={"target_chapter": 1},
     )
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["status"] in ("filled", "present")
-    if payload["status"] == "filled":
-        assert payload["chapter_numbers"] == [1, 2, 3, 4, 5]
-    # The rolling outline file should now exist on disk.
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "chapter_outline_required:1"
     rolling_path = export_root / "p-rolling-test" / ".story-system" / "outline-generation" / "rolling_outline.json"
-    assert rolling_path.is_file()
+    assert not rolling_path.exists()
 
 
-def test_get_rolling_fill_status_reports_present_after_fill(rolling_api) -> None:
+def test_get_rolling_fill_status_stays_missing_after_compatibility_post(rolling_api) -> None:
     client, export_root = rolling_api
     project_id = _seed_minimal_file_project(export_root)
     # Trigger a fill first
@@ -112,7 +128,7 @@ def test_get_rolling_fill_status_reports_present_after_fill(rolling_api) -> None
     )
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["status"] == "present"
+    assert payload["status"] == "missing"
     assert payload["chapter_number"] == 1
 
 
@@ -127,6 +143,30 @@ def test_get_rolling_fill_status_reports_missing_before_fill(rolling_api) -> Non
     payload = response.json()
     assert payload["status"] == "missing"
     assert payload["chapter_number"] == 1
+
+
+def test_start_body_generation_rejects_before_creating_job_when_outline_missing(rolling_api) -> None:
+    client, export_root = rolling_api
+    project_id = _seed_minimal_file_project(export_root)
+
+    response = client.post(f"/file-projects/{project_id}/generation-jobs", json={})
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "chapter_outline_required:1"
+    jobs_dir = export_root / "p-rolling-test" / ".story-system" / "generation-jobs"
+    assert not jobs_dir.exists() or not list(jobs_dir.glob("fgj-*.json"))
+
+
+def test_legacy_generate_next_rejects_before_body_generation_when_outline_missing(rolling_api) -> None:
+    client, export_root = rolling_api
+    project_id = _seed_minimal_file_project(export_root)
+
+    response = client.post(f"/file-projects/{project_id}/generate-next", json={})
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "chapter_outline_required:1"
+    candidates_dir = export_root / "p-rolling-test" / ".story-system" / "candidates"
+    assert not candidates_dir.exists() or not list(candidates_dir.glob("*.json"))
 
 
 def test_post_rolling_fill_returns_404_for_missing_project(rolling_api) -> None:
@@ -157,37 +197,16 @@ def test_post_rolling_fill_rejects_non_positive_target_chapter(rolling_api) -> N
     assert response.status_code == 422
 
 
-def test_post_rolling_fill_handles_generator_failure(rolling_api, monkeypatch) -> None:
-    """When the generator raises, the endpoint must surface a 422 with
-    a meaningful detail, not a 500 or a silent failure."""
-    from packages.story_core import outline_rolling_planner
-
+def test_post_rolling_fill_does_not_invoke_hidden_generator(rolling_api) -> None:
     client, export_root = rolling_api
     project_id = _seed_minimal_file_project(export_root)
 
-    def boom(_chapter_number: int) -> dict:
-        raise RuntimeError("injected generator failure")
-
-    monkeypatch.setattr(
-        outline_rolling_planner.RollingOutlinePlanner,
-        "_generator_thunk",
-        lambda self, gen: boom,
-        raising=False,
-    )
-    # Simpler: monkeypatch the FileProjectStore._default_rolling_chapter_generator
-    from packages.story_core import file_project_store as fps_module
-    monkeypatch.setattr(
-        fps_module.FileProjectStore,
-        "_default_rolling_chapter_generator",
-        staticmethod(boom),
-    )
     response = client.post(
         f"/file-projects/{project_id}/outline/rolling-fill",
         params={"target_chapter": 1},
     )
-    assert response.status_code == 422, response.text
-    detail = response.json().get("detail", "")
-    assert "generator" in str(detail).lower() or "failure" in str(detail).lower()
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "chapter_outline_required:1"
 
 
 def test_put_rolling_chapter_marks_source_manual_and_blocks_subsequent_fill(rolling_api) -> None:
@@ -199,12 +218,8 @@ def test_put_rolling_chapter_marks_source_manual_and_blocks_subsequent_fill(roll
     """
     client, export_root = rolling_api
     project_id = _seed_minimal_file_project(export_root)
-    # First, fill 1-5
-    fill = client.post(
-        f"/file-projects/{project_id}/outline/rolling-fill",
-        params={"target_chapter": 1},
-    )
-    assert fill.status_code == 200, fill.text
+    store = FileProjectStore(export_root / "p-rolling-test")
+    store.ensure_rolling_outline(target_chapter=1, generator=_outline_row)
     # Edit chapter 1 (mark as manual with a custom title)
     update = client.put(
         f"/file-projects/{project_id}/outline/rolling-chapter/1",
@@ -220,7 +235,7 @@ def test_put_rolling_chapter_marks_source_manual_and_blocks_subsequent_fill(roll
     by_number = {c["chapter_number"]: c for c in on_disk["chapters"]}
     assert by_number[1]["source"] == "manual"
     assert by_number[1]["title"] == "OPERATOR 定制章名"
-    # A subsequent fill (target=1) must NOT overwrite chapter 1.
+    # The compatibility POST only reports the existing outline and never overwrites it.
     second_fill = client.post(
         f"/file-projects/{project_id}/outline/rolling-fill",
         params={"target_chapter": 1},
