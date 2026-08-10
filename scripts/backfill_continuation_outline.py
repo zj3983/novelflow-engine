@@ -131,9 +131,24 @@ def _missing_phases(root: Path) -> list[str]:
 
     The script does not run the validator (the project on disk
     may have been modified by a previous run). Instead it asks
-    the bootstrapper which phases are still pending.
+    the bootstrapper which phases are still pending. Phases
+    that the bootstrapper can adopt from the existing layers
+    (overall/arcs/characters/world) are excluded so the dry-run
+    report names only the phases that actually need a model
+    call.
     """
 
+    bootstrapper = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=None,
+        rolling_generator=None,
+    )
+    if bootstrapper._outline_layers_already_valid():
+        adopted = {"outline_foundation", "character_roster"}
+    else:
+        adopted = set()
+    adopted.add("source_analysis")
+    adopted.add("world_context")
     checkpoint_path = root / ".story-system" / "continuation-bootstrap" / "checkpoint.json"
     payload = _read_json(checkpoint_path)
     completed: set[str] = set()
@@ -145,11 +160,8 @@ def _missing_phases(root: Path) -> list[str]:
             phase = str(record.get("id") or "")
             if status in {"completed", "adopted"}:
                 completed.add(phase)
-    result: list[str] = []
-    for phase in BOOTSTRAP_PHASES:
-        if phase not in completed:
-            result.append(phase)
-    return result
+    adopted |= completed
+    return [phase for phase in BOOTSTRAP_PHASES if phase not in adopted]
 
 
 def _print_dry_run(root: Path) -> int:
