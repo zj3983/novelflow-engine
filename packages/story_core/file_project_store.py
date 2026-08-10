@@ -7405,6 +7405,7 @@ class FileProjectStore:
         commit_message: str | None = None,
         persist: bool = True,
     ) -> dict[str, Any]:
+        self.ensure_rolling_outline(target_chapter=target_chapter)
         from packages.story_core.engine import StoryEngine
 
         state = self._generation_state(self.state())
@@ -7816,6 +7817,131 @@ class FileProjectStore:
         ):
             profile.pop(field, None)
         return profile
+
+    def _current_outline_volume_range(
+        self, target_chapter: int
+    ) -> tuple[int, int]:
+        """Return the current volume's chapter range from
+        the on-disk ``.webnovel/outline.json``.
+
+        The planner needs a volume range so it does not
+        invent cross-volume chapters. The range comes
+        from the outline's arcs: the arc whose
+        ``start_chapter <= target <= end_chapter`` is
+        the active volume. When no arc matches (a
+        pre-migration outline without arcs), the function
+        falls back to ``(1, target + window)`` so the
+        planner still has a finite range.
+        """
+        outline_path = self.webnovel_dir / "outline.json"
+        if outline_path.is_file():
+            try:
+                payload = json.loads(
+                    outline_path.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError):
+                payload = None
+            if isinstance(payload, dict):
+                arcs = [
+                    arc
+                    for arc in payload.get("arcs", [])
+                    if isinstance(arc, dict)
+                ]
+                for arc in arcs:
+                    try:
+                        start = int(arc.get("start_chapter") or 0)
+                        end = int(arc.get("end_chapter") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if start <= 0 or end <= 0 or end < start:
+                        continue
+                    if start <= target_chapter <= end:
+                        return (start, end)
+        return (1, max(target_chapter + 5, 10))
+
+    @staticmethod
+    def _default_rolling_chapter_generator(chapter_number: int) -> dict[str, Any]:
+        """Return a deterministic stub chapter payload.
+
+        The plan rule: "本次只调整规划与写作衔接，不新增
+        Agent" — the rolling fill uses a stub until a
+        real model is wired in. The stub satisfies
+        :func:`validate_rolling_chapter` so the batch
+        lands on disk and the body-generation flow has
+        something to consume. A future caller can
+        inject a real generator via the ``generator``
+        argument.
+        """
+        return {
+            "chapter_number": chapter_number,
+            "title": f"第{chapter_number}章",
+            "chapter_goal": f"第{chapter_number}章目标",
+            "core_conflict": f"第{chapter_number}章冲突",
+            "cast": [
+                {
+                    "name": "林昭",
+                    "role": "protagonist",
+                    "this_chapter_role": "本章行动",
+                }
+            ],
+            "scenes": [
+                {
+                    "location": "灰狼坡",
+                    "action": "补齐毒腺",
+                    "result": "任务达到 16/16",
+                },
+                {
+                    "location": "灰烬村",
+                    "action": "提交任务",
+                    "result": "升级到下一阶段",
+                },
+            ],
+            "gain": "本章推进",
+            "cost": "本章代价",
+            "foreshadowing": [],
+            "hook": "本章钩子",
+            "state_delta": "本章状态变化",
+        }
+
+    def ensure_rolling_outline(
+        self,
+        target_chapter: int | None = None,
+        *,
+        generator: Callable[[int], dict[str, Any]] | None = None,
+        window: int = 5,
+    ) -> RollingOutlineStatus:
+        """Ensure the rolling window starting at
+        ``target_chapter`` is fully outlined. Returns a
+        :class:`RollingOutlineStatus` describing what the
+        planner did.
+
+        The plan rule: when the user clicks "生成下一章",
+        the backend must check whether the target chapter
+        has an outline and, if not, trigger a rolling
+        fill BEFORE the body generation starts. A failed
+        fill raises :class:`RollingOutlineFailed`; the
+        caller (``generate_next_chapter``) stops the
+        body generation and surfaces the error to the
+        UI for retry.
+        """
+        from packages.story_core.outline_rolling_planner import (
+            RollingOutlinePlanner,
+        )
+
+        if target_chapter is None:
+            target_chapter = int(self.state().get("current_chapter") or 0) + 1
+        target_chapter = int(target_chapter)
+        volume_range = self._current_outline_volume_range(target_chapter)
+        planner = RollingOutlinePlanner(
+            generator=generator or self._default_rolling_chapter_generator,
+        )
+        return planner.ensure_rolling_outline(
+            project_root=self.root,
+            target_chapter=target_chapter,
+            volume_range=volume_range,
+            window=window,
+        )
+
 
     def _conservative_regeneration_state(
         self,
