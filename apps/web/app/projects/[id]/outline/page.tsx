@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
@@ -10,9 +11,14 @@ import {
   fetchProjectForeshadowing,
   fetchProjectOutline,
   fetchOutlineGenerationCheckpoints,
+  fetchContinuationBootstrap,
   generateProjectOutline,
+  startContinuationBootstrap,
   updateProjectForeshadowing,
   updateProjectOutline,
+  type ContinuationBootstrapPhase,
+  type ContinuationBootstrapPhaseId,
+  type ContinuationBootstrapStatus,
   type ForeshadowingEntry,
   type ForeshadowingStatus,
   type OutlineGenerationMode,
@@ -68,6 +74,23 @@ const OUTLINE_PHASE_LABELS: Record<OutlineGenerationPhaseId, string> = {
   outline_foundation: "总纲与阶段大纲",
   character_roster: "开篇角色表",
   chapter_window: "章节细纲",
+};
+
+const BOOTSTRAP_PHASE_LABELS: Record<ContinuationBootstrapPhaseId, string> = {
+  source_analysis: "来源分析",
+  outline_foundation: "总纲与阶段大纲",
+  character_roster: "核心人物卡",
+  world_context: "世界观上下文",
+  chapter_window: "下一批章节细纲",
+  readiness_check: "正文就绪校验",
+};
+
+const BOOTSTRAP_PHASE_STATUS: Record<string, string> = {
+  pending: "等待",
+  running: "正在执行",
+  completed: "已完成",
+  failed: "失败",
+  adopted: "已沿用",
 };
 
 const OUTLINE_PHASE_STATUS: Record<string, string> = {
@@ -212,13 +235,22 @@ function rangesOverlap(left: ProjectOutlineArc, right: ProjectOutlineArc): boole
 
 export default function OutlinePage() {
   const { project, story, error: projectError, encodedProjectId, projectId } = useProjectWorkspace();
-  const [activeTab, setActiveTab] = useState<OutlineTab>("overall");
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams?.get("tab");
+  const [activeTab, setActiveTab] = useState<OutlineTab>(requestedTab === "chapters" ? "chapters" : "overall");
   const [draft, setDraft] = useState<ProjectOutline | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState<OutlineGenerationMode | null>(null);
   const [lastGenerationMode, setLastGenerationMode] = useState<OutlineGenerationMode>("initial");
   const [generationCheckpoints, setGenerationCheckpoints] = useState<OutlineGenerationCheckpointResponse | null>(null);
+  // Plan rule: the continuation bootstrap status is always
+  // read from disk; the workbench just polls and renders.
+  // ``bootstrap=1`` in the URL opts the user into the progress
+  // view; legacy projects (no checkpoint yet) only see the
+  // backfill button.
+  const [bootstrapStatus, setBootstrapStatus] = useState<ContinuationBootstrapStatus | null>(null);
+  const [bootstrapBusy, setBootstrapBusy] = useState(false);
   const [guidance, setGuidance] = useState("");
   const [message, setMessage] = useState("");
   const [localError, setLocalError] = useState("");
@@ -231,6 +263,10 @@ export default function OutlinePage() {
   const [foreshadowingSaving, setForeshadowingSaving] = useState(false);
   const [foreshadowingError, setForeshadowingError] = useState("");
   const [foreshadowingMessage, setForeshadowingMessage] = useState("");
+
+  useEffect(() => {
+    if (requestedTab === "chapters") setActiveTab("chapters");
+  }, [requestedTab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -300,6 +336,66 @@ export default function OutlinePage() {
       window.clearInterval(timer);
     };
   }, [generating, projectId]);
+
+  useEffect(() => {
+    // Plan rule: "Poll only while queued/running." The bootstrap
+    // status endpoint is disk-backed; we only poll while the
+    // run is in progress to avoid hammering the API.
+    if (!bootstrapStatus) return;
+    if (bootstrapStatus.status === "ready" || bootstrapStatus.status === "failed") {
+      return;
+    }
+    let cancelled = false;
+    const refreshBootstrap = () => {
+      fetchContinuationBootstrap(projectId)
+        .then((response) => {
+          if (!cancelled) setBootstrapStatus(response);
+        })
+        .catch(() => undefined);
+    };
+    refreshBootstrap();
+    const timer = window.setInterval(refreshBootstrap, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [bootstrapStatus, projectId]);
+
+  useEffect(() => {
+    if (!requestedTab || !requestedTab.includes("bootstrap")) return;
+    let cancelled = false;
+    fetchContinuationBootstrap(projectId)
+      .then((response) => {
+        if (!cancelled) {
+          setBootstrapStatus(response);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, requestedTab]);
+
+  async function startBootstrap() {
+    setBootstrapBusy(true);
+    setMessage("");
+    setLocalError("");
+    try {
+      const response = await startContinuationBootstrap(projectId);
+      setBootstrapStatus(response.checkpoint);
+      setMessage(
+        response.status === "ready"
+          ? "导入资料已就绪，无需重跑。"
+          : "已启动导入资料补全。",
+      );
+    } catch (caught) {
+      setLocalError(
+        caught instanceof Error ? caught.message : String(caught),
+      );
+    } finally {
+      setBootstrapBusy(false);
+    }
+  }
 
   const nextChapter = (story?.current_chapter ?? 0) + 1;
   const isGameProject = isGameWebnovel(project);
@@ -723,6 +819,74 @@ export default function OutlinePage() {
                     </article>
                   ))}
                 </div>
+              </section>
+            ) : null}
+            {bootstrapStatus ? (
+              <section
+                className="ws-outline-generation-progress"
+                aria-label="续写导入资料补齐"
+              >
+                <strong>续写导入资料补齐</strong>
+                <p>
+                  {bootstrapStatus.status === "ready"
+                    ? "导入资料已就绪，可以开始正文。"
+                    : bootstrapStatus.status === "failed"
+                    ? "导入资料补齐失败，请重试。"
+                    : "正在补齐导入资料……"}
+                </p>
+                <div className="ws-outline-generation-steps">
+                  {bootstrapStatus.phases.map((phase) => (
+                    <article key={phase.id}>
+                      <b>{BOOTSTRAP_PHASE_LABELS[phase.id]}</b>
+                      <p>{BOOTSTRAP_PHASE_STATUS[phase.status] ?? phase.status}</p>
+                      {phase.error ? (
+                        <p className="ws-outline-error">{phase.error}</p>
+                      ) : null}
+                      {phase.artifact && Object.keys(phase.artifact).length > 0 ? (
+                        <details>
+                          <summary>查看已保存产物</summary>
+                          <pre>{JSON.stringify(phase.artifact, null, 2)}</pre>
+                        </details>
+                      ) : null}
+                      {phase.status === "failed" ? (
+                        <button
+                          className="ws-btn"
+                          type="button"
+                          disabled={bootstrapBusy}
+                          onClick={() => void startBootstrap()}
+                        >
+                          重试
+                        </button>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+                {bootstrapStatus.status === "ready" ? null : (
+                  <button
+                    className="ws-btn"
+                    type="button"
+                    disabled={bootstrapBusy}
+                    onClick={() => void startBootstrap()}
+                  >
+                    {bootstrapStatus.status === "failed" ? "重新补齐" : "立即补齐"}
+                  </button>
+                )}
+              </section>
+            ) : continuationStart ? (
+              <section
+                className="ws-outline-generation-progress"
+                aria-label="续写导入资料补齐"
+              >
+                <strong>续写导入资料补齐</strong>
+                <p>这是从续写项目跳转过来的旧项目，点击下面的按钮即可补齐导入资料。</p>
+                <button
+                  className="ws-btn ws-btn--primary"
+                  type="button"
+                  disabled={bootstrapBusy}
+                  onClick={() => void startBootstrap()}
+                >
+                  补齐导入资料
+                </button>
               </section>
             ) : null}
           </div>

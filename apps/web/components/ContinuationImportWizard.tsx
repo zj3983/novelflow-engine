@@ -135,8 +135,9 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
   const [direction, setDirection] = useState("");
   const [mustPreserve, setMustPreserve] = useState("");
   const [forbiddenContent, setForbiddenContent] = useState("");
-  const [generateOutline, setGenerateOutline] = useState(true);
-  const [outlineChapters, setOutlineChapters] = useState(10);
+  // Plan rule: the outline bootstrap is mandatory; the user
+  // can no longer disable it. The wizard always requests
+  // ``generate_outline: true`` and ``outline_chapters: 5``.
   const [novelTypeId, setNovelTypeId] = useState("generic_webnovel");
 
   useEffect(() => {
@@ -453,11 +454,21 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
         planned_chapters: 0,
         must_preserve: mustPreserve.split("\n").map((item) => item.trim()).filter(Boolean),
         forbidden_content: forbiddenContent.split("\n").map((item) => item.trim()).filter(Boolean),
-        generate_outline: generateOutline,
-        outline_chapters: generateOutline ? outlineChapters : 0,
+        // Plan rule: "Import cannot disable outline initialization."
+        // The wizard always requests the bootstrap; the
+        // continuation settings enforce ``generate_outline: true``
+        // and ``outline_chapters: 5``.
+        generate_outline: true,
+        outline_chapters: 5,
         novel_type_id: novelTypeId,
       });
-      router.push(result.next_path);
+      // The bootstrap is mandatory; the wizard hands the
+      // user off to the workbench which polls the status
+      // surface and renders the six-phase progress bar.
+      const target = result.next_path.includes("?")
+        ? `${result.next_path}&bootstrap=1`
+        : `${result.next_path}?bootstrap=1`;
+      router.push(target);
     } catch (caught) {
       setError(errorText(caught));
       setBusy("");
@@ -573,10 +584,9 @@ export function ContinuationImportWizard({ novelTypes }: { novelTypes: NovelType
             <label className="ws-project-create__field ws-project-create__field--wide"><span>后续方向</span><textarea rows={4} maxLength={1000} value={direction} onChange={(event) => setDirection(event.target.value)} /></label>
             <label className="ws-project-create__field"><span>必须保留 <small>每行一条</small></span><textarea rows={5} value={mustPreserve} onChange={(event) => setMustPreserve(event.target.value)} /></label>
             <label className="ws-project-create__field"><span>禁止内容 <small>每行一条</small></span><textarea rows={5} value={forbiddenContent} onChange={(event) => setForbiddenContent(event.target.value)} /></label>
-            <label className="ws-continuation__toggle"><input type="checkbox" checked={generateOutline} onChange={(event) => setGenerateOutline(event.target.checked)} /><span>同时生成后续大纲</span></label>
-            {generateOutline ? <label className="ws-project-create__field"><span>大纲章节数</span><input type="number" min={5} max={30} value={outlineChapters} onChange={(event) => setOutlineChapters(Number(event.target.value))} /></label> : null}
+            <p className="ws-continuation__hint">导入后自动生成5章细纲，可在工作台查看进度。</p>
           </div>
-          <div className="ws-continuation__actions"><button type="button" className="ws-btn ws-btn--primary" disabled={Boolean(busy) || !session || targetChars < 1000 || targetChars > 20000 || (generateOutline && (outlineChapters < 5 || outlineChapters > 30))} onClick={() => void finish()}>{busy === "create" ? <LoaderCircle className="is-spinning" size={16} /> : null}创建续写项目</button></div>
+          <div className="ws-continuation__actions"><button type="button" className="ws-btn ws-btn--primary" disabled={Boolean(busy) || !session || targetChars < 1000 || targetChars > 20000} onClick={() => void finish()}>{busy === "create" ? <LoaderCircle className="is-spinning" size={16} /> : null}创建续写项目</button></div>
         </div>
       ) : null}
     </section>

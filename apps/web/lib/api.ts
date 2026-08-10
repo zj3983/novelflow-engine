@@ -1456,6 +1456,64 @@ export type OutlineGenerationCheckpointResponse = {
   phases: OutlineGenerationCheckpoint[];
 };
 
+// Plan rule: the continuation import bootstrap is a six-phase
+// pipeline. The wizard and the workbench both poll the same
+// status surface; the type names are exported so callers can
+// branch on the literal ids without a stringly-typed hack.
+export type ContinuationBootstrapPhaseId =
+  | "source_analysis"
+  | "outline_foundation"
+  | "character_roster"
+  | "world_context"
+  | "chapter_window"
+  | "readiness_check";
+
+export type ContinuationBootstrapPhaseStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "adopted";
+
+export type ContinuationBootstrapPhase = {
+  id: ContinuationBootstrapPhaseId;
+  status: ContinuationBootstrapPhaseStatus;
+  artifact: Record<string, unknown>;
+  error: string;
+};
+
+export type ContinuationBootstrapStatus = {
+  schema_version: "continuation-bootstrap/v1";
+  input_fingerprint: string;
+  status: "running" | "ready" | "failed";
+  phases: ContinuationBootstrapPhase[];
+};
+
+export type ContinuationBootstrapStartResponse = {
+  status: "queued" | "ready";
+  checkpoint: ContinuationBootstrapStatus;
+};
+
+export async function startContinuationBootstrap(
+  projectId: string,
+): Promise<ContinuationBootstrapStartResponse> {
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/continuation-bootstrap`,
+    { method: "POST" },
+    60000,
+  )) as ContinuationBootstrapStartResponse;
+}
+
+export async function fetchContinuationBootstrap(
+  projectId: string,
+): Promise<ContinuationBootstrapStatus> {
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/continuation-bootstrap`,
+    { method: "GET" },
+    60000,
+  )) as ContinuationBootstrapStatus;
+}
+
 export type GeneratedOutlinePlanResponse = {
   schema_version: "generated-outline-plan/v1";
   mode: OutlineGenerationMode;
