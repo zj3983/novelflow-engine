@@ -467,6 +467,57 @@ def test_enabled_chapter_sop_allows_generic_summary_with_concrete_detail(
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        "推进一下",
+        "继续进行",
+        "升级看看",
+        "推进呀呀",
+        "获得奖励",
+    ],
+)
+def test_enabled_chapter_sop_rejects_generic_values_without_concrete_residue(
+    valid_payload: dict,
+    value: str,
+) -> None:
+    _add_chapter_contracts(valid_payload)
+    valid_payload["outline"]["chapters"][0]["chapter_sop"]["turn"] = value
+
+    with pytest.raises(
+        ValueError,
+        match="chapter_contract_not_concrete:1:chapter_sop.turn",
+    ):
+        validate_generated_opening_plan(
+            valid_payload,
+            require_chapter_contracts=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "林修得到父亲的铜镜",
+        "林修获得父亲的线索",
+        "林修获得镜芯并得到父亲线索",
+        "林修继续调查父亲失踪线索",
+    ],
+)
+def test_enabled_chapter_sop_accepts_generic_verbs_with_concrete_residue(
+    valid_payload: dict,
+    value: str,
+) -> None:
+    _add_chapter_contracts(valid_payload)
+    valid_payload["outline"]["chapters"][0]["chapter_sop"]["turn"] = value
+
+    plan = validate_generated_opening_plan(
+        valid_payload,
+        require_chapter_contracts=True,
+    )
+
+    assert plan.outline.chapters[0].chapter_sop.turn == value
+
+
+@pytest.mark.parametrize(
     "section,field,location",
     [
         (

@@ -106,6 +106,8 @@ _ABSTRACT_CHAPTER_CONTRACT_NOUNS = frozenset(
     {
         "压力",
         "冲突",
+        "奖励",
+        "工作",
         "情况",
         "问题",
         "反馈",
@@ -124,6 +126,7 @@ _ABSTRACT_CHAPTER_CONTRACT_NOUNS = frozenset(
 _GENERIC_CHAPTER_CONTRACT_ACTIONS = frozenset(
     {
         "继续",
+        "进行",
         "进一步",
         "升级",
         "推进",
@@ -155,26 +158,54 @@ _GENERIC_CHAPTER_CONTRACT_MODIFIERS = frozenset(
         "新",
         "重要",
         "更加",
-        "更多",
-        "一些",
-        "一点",
-        "一个",
         "复杂",
         "不简单",
         "待定",
         "placeholder",
         "tbd",
         "todo",
-        "了",
-        "的",
         "有",
-        "吧",
+    }
+)
+_GENERIC_CHAPTER_CONTRACT_FILLERS = frozenset(
+    {
+        "一下",
+        "看看",
+        "呀",
         "呢",
+        "吧",
         "呗",
+        "啦",
+        "的",
+        "了",
         "时",
+        "中",
+        "后",
         "以后",
         "阶段",
+        "待续",
         "些",
+        "化",
+        "并",
+        "和",
+        "更多",
+        "一些",
+        "一点",
+        "一个",
+        "随后",
+        "后面",
+        "后续",
+        "再",
+        "补",
+        "细节",
+        "在",
+        "下一",
+        "一轮",
+        "决定",
+        "关于",
+        "安排",
+        "严重",
+        "观察",
     }
 )
 
@@ -186,18 +217,10 @@ def _chapter_contract_term_pattern(values: frozenset[str]) -> re.Pattern[str]:
     return re.compile(alternatives, re.IGNORECASE)
 
 
-_GENERIC_CHAPTER_CONTRACT_ACTION_PATTERN = _chapter_contract_term_pattern(
-    _GENERIC_CHAPTER_CONTRACT_ACTIONS
-)
-_GENERIC_CHAPTER_CONTRACT_DRIVER_PATTERN = _chapter_contract_term_pattern(
-    _GENERIC_CHAPTER_CONTRACT_ACTIONS | _GENERIC_CHAPTER_CONTRACT_MODIFIERS
-)
-_ABSTRACT_CHAPTER_CONTRACT_NOUN_PATTERN = _chapter_contract_term_pattern(
-    _ABSTRACT_CHAPTER_CONTRACT_NOUNS
-)
 _GENERIC_CHAPTER_CONTRACT_VOCABULARY_PATTERN = _chapter_contract_term_pattern(
     _GENERIC_CHAPTER_CONTRACT_ACTIONS
     | _GENERIC_CHAPTER_CONTRACT_MODIFIERS
+    | _GENERIC_CHAPTER_CONTRACT_FILLERS
     | _ABSTRACT_CHAPTER_CONTRACT_NOUNS
 )
 _CHAPTER_CONTRACT_PUNCTUATION_PATTERN = re.compile(r"[\W_]+", re.UNICODE)
@@ -276,51 +299,17 @@ def _chapter_contract_value(section: Any, field_name: str) -> Any:
     return getattr(section, field_name, None)
 
 
-def _normalize_chapter_contract_clause(value: str) -> str:
-    return _CHAPTER_CONTRACT_PUNCTUATION_PATTERN.sub(
+def _concrete_chapter_contract_residue(value: str) -> str:
+    normalized = _CHAPTER_CONTRACT_PUNCTUATION_PATTERN.sub(
         "",
         unicodedata.normalize("NFKC", value).casefold(),
     )
-
-
-def _concrete_chapter_contract_residue(value: str) -> str:
-    residue = _GENERIC_CHAPTER_CONTRACT_VOCABULARY_PATTERN.sub("", value)
+    residue = _GENERIC_CHAPTER_CONTRACT_VOCABULARY_PATTERN.sub("", normalized)
     return "".join(_CJK_CHARACTER_PATTERN.findall(residue))
 
 
-def _contains_generic_chapter_contract_composition(value: str) -> bool:
-    if not value:
-        return True
-    driver_hits = list(_GENERIC_CHAPTER_CONTRACT_DRIVER_PATTERN.finditer(value))
-    has_action = bool(_GENERIC_CHAPTER_CONTRACT_ACTION_PATTERN.search(value))
-    has_abstract_noun = bool(
-        _ABSTRACT_CHAPTER_CONTRACT_NOUN_PATTERN.search(value)
-    )
-    if (has_action and len(driver_hits) >= 2) or (
-        driver_hits and has_abstract_noun
-    ):
-        return True
-    has_generic_vocabulary = bool(
-        _GENERIC_CHAPTER_CONTRACT_VOCABULARY_PATTERN.search(value)
-    )
-    return has_generic_vocabulary and len(
-        _concrete_chapter_contract_residue(value)
-    ) < 2
-
-
 def _is_generic_chapter_contract_value(value: str) -> bool:
-    normalized = unicodedata.normalize("NFKC", value).casefold()
-    summary, delimiter, detail = normalized.partition(":")
-    normalized_summary = _normalize_chapter_contract_clause(summary)
-    if delimiter and _contains_generic_chapter_contract_composition(
-        normalized_summary
-    ):
-        normalized_detail = _normalize_chapter_contract_clause(detail)
-        if len(_concrete_chapter_contract_residue(normalized_detail)) >= 2:
-            return False
-    return _contains_generic_chapter_contract_composition(
-        _normalize_chapter_contract_clause(normalized)
-    )
+    return len(_concrete_chapter_contract_residue(value)) < 2
 
 
 def validate_concrete_chapter_contract(
