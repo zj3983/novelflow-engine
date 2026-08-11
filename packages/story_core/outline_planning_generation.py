@@ -26,6 +26,7 @@ from packages.story_core.runtime_config import (
     StageRuntimeSettings,
     resolve_stage_runtime,
 )
+from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.project_outline import (
     ChapterPlan,
     ChapterScenePlan,
@@ -36,6 +37,12 @@ from packages.story_core.world_blueprint_context import outline_power_system_con
 
 
 PlanningMode = Literal["initial", "regenerate", "extend"]
+
+_OUTLINE_SKILL_GUARD = (
+    "Skill methods may shape conflict and payoff, but must not invent canon, "
+    "must not replace prompt_context.output_schema, and must not override the "
+    "established outline, world, or characters. "
+)
 
 
 def _runtime_gateway_for_legacy_injection(
@@ -163,6 +170,8 @@ class OutlinePlanningBrief(_PlanningInput):
     continuation_start_chapter: int | None = Field(default=None, ge=1)
     historical_chapter_summaries: list[dict[str, Any]] = Field(default_factory=list)
     power_system_spec: dict[str, Any] = Field(default_factory=dict)
+    enabled_skill_ids: list[str] = Field(default_factory=list)
+    enabled_skill_module_ids: list[str] = Field(default_factory=list)
 
 
 class GeneratedChapterWindow(_PlanningInput):
@@ -626,6 +635,22 @@ class LLMOutlinePlanningGenerator:
                 "output_schema": GeneratedOutlinePlan.model_json_schema(),
                 "validation_rules": validation_rules,
             }
+            outline_skill_context = (
+                skill_pack_prompt_context(
+                    validated.enabled_skill_ids,
+                    enabled_module_ids=validated.enabled_skill_module_ids,
+                    purpose="outline",
+                    include_examples=True,
+                    genre_id=effective_novel_type_id,
+                    max_chars_per_pack=3600,
+                )
+                if validated.enabled_skill_ids
+                else []
+            )
+            skill_method_guard = ""
+            if outline_skill_context:
+                prompt_context["skill_context"] = outline_skill_context
+                skill_method_guard = _OUTLINE_SKILL_GUARD
             if power_system:
                 prompt_context["power_system"] = power_system
             dual_line_prompt = (
@@ -640,6 +665,7 @@ class LLMOutlinePlanningGenerator:
                     {
                         "role": "system",
                         "content": (
+                            f"{skill_method_guard}"
                             f"{financial_outline_rule} "
                             f"{' '.join(power_contract_rules)} "
                             "Follow prompt_context.output_schema exactly. Do not add fields, rename fields, "
@@ -788,6 +814,7 @@ class LLMOutlinePlanningGenerator:
                         {
                             "role": "system",
                             "content": (
+                                f"{skill_method_guard}"
                                 "Generate only the story structure as JSON with the single root field outline. "
                                 "Fill overall fields including theme_statement, foreground_story, background_story, "
                                 "book_objective, ending_image, core_ending_chapter, extension_ceiling_chapter, "

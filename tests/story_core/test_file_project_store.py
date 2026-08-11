@@ -3361,6 +3361,11 @@ def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path
             "author_constraints": ["对白完整。"],
             "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
             "character_profiles": [],
+            "enabled_skill_ids": ["commercial-shuangwen"],
+            "enabled_skill_module_ids": [
+                "commercial-shuangwen::genre-examples",
+                "commercial-shuangwen::plot-engine",
+            ],
         },
         state={"story_id": "s-file", "current_chapter": 0, "world_facts": [], "characters": []},
     )
@@ -3424,8 +3429,36 @@ def test_generate_outline_plan_uses_compact_brief_and_one_time_guidance(tmp_path
     assert brief.opening_direction.primary_trope_id == "selected-trope"
     assert brief.existing_characters == []
     assert brief.existing_character_names == []
+    assert brief.enabled_skill_ids == ["commercial-shuangwen"]
+    assert brief.enabled_skill_module_ids == [
+        "commercial-shuangwen::genre-examples",
+        "commercial-shuangwen::plot-engine",
+    ]
     secret = "对手有现实利益".encode("utf-8")
     assert all(secret not in path.read_bytes() for path in store.root.rglob("*") if path.is_file())
+
+
+def test_outline_planning_brief_respects_explicit_project_module_disable(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "title": "照夜行",
+            "seed_outline": "林照从断香炉查出宗门旧案。",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+            "enabled_skill_ids": ["commercial-shuangwen"],
+            "enabled_skill_module_ids": [],
+        },
+        state={
+            "current_chapter": 0,
+            "enabled_skill_ids": ["legacy-pack"],
+            "enabled_skill_module_ids": ["commercial-shuangwen::plot-engine"],
+        },
+    )
+
+    brief = store._planning_brief()
+
+    assert brief.enabled_skill_ids == ["commercial-shuangwen"]
+    assert brief.enabled_skill_module_ids == []
 
 
 def test_generate_outline_plan_resumes_from_persisted_phase_checkpoints(tmp_path):

@@ -5765,6 +5765,8 @@ class FileProjectStore:
                 if isinstance(blueprint.get("power_system_spec"), dict)
                 else {}
             ),
+            enabled_skill_ids=resolve_enabled_skill_ids(project, state),
+            enabled_skill_module_ids=resolve_enabled_skill_module_ids(project, state) or [],
         )
 
     def _merge_generated_character_cards(

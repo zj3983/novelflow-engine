@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 import inspect
+from pathlib import Path
 
 import pytest
 
+import packages.story_core.outline_planning_generation as outline_generation_module
 from packages.story_core.model_gateway import ModelResponse
 from packages.story_core.outline_planning import (
     INITIAL_OUTLINE_CHAPTER_COUNT,
@@ -20,6 +22,9 @@ from packages.story_core.outline_planning_generation import (
     _expand_character_seed,
 )
 from packages.story_core.runtime_config import StageRuntimeSettings
+
+
+PACKS_DIR = Path(__file__).resolve().parents[2] / "data" / "skill-packs"
 
 
 def test_generator_constructor_does_not_accept_legacy_strategy_resolver() -> None:
@@ -219,6 +224,13 @@ def _brief() -> OutlinePlanningBrief:
         },
         author_constraints=["白描，对话完整自然。"],
     )
+
+
+def _skill_enabled_brief(module_ids: list[str]) -> OutlinePlanningBrief:
+    payload = _brief().model_dump(mode="json")
+    payload["enabled_skill_ids"] = ["commercial-shuangwen"]
+    payload["enabled_skill_module_ids"] = module_ids
+    return OutlinePlanningBrief.model_validate(payload)
 
 
 def _trope_templates() -> list[dict]:
@@ -753,9 +765,169 @@ def test_planning_brief_has_one_overall_source_instead_of_three_story_core_copie
     payload = _brief().model_dump(mode="json")
 
     assert payload["overall_context"]["story"]
+    assert payload["enabled_skill_ids"] == []
+    assert payload["enabled_skill_module_ids"] == []
     assert "story_core" not in payload
     assert "character_story_core" not in payload
     assert "planning_story_core" not in payload
+
+
+def test_enabled_xuanhuan_outline_prompt_gets_only_outline_skill_modules(monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["system"] = payload["messages"][0]["content"]
+        captured["context"] = json.loads(payload["messages"][1]["content"])
+        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+
+    all_module_ids = [
+        f"commercial-shuangwen::{module_id}"
+        for module_id in (
+            "chapter-sop",
+            "genre-examples",
+            "plot-engine",
+            "review-checklist",
+            "writer-execution",
+        )
+    ]
+    fixture = RecordingRuntime()
+    LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve).generate(
+        _skill_enabled_brief(all_module_ids),
+        mode="initial",
+    )
+
+    skill_context = captured["context"]["skill_context"]
+    assert [module["module_id"] for module in skill_context[0]["modules"]] == [
+        "genre-examples",
+        "plot-engine",
+    ]
+    serialized = json.dumps(skill_context, ensure_ascii=False)
+    assert "石碑" in serialized
+    assert "副本" not in serialized
+    assert "玩家" not in serialized
+    assert "chapter-sop" not in serialized
+    assert "writer-execution" not in serialized
+    assert "review-checklist" not in serialized
+    assert "may shape conflict and payoff" in captured["system"]
+    assert "must not invent canon" in captured["system"]
+    assert "must not replace prompt_context.output_schema" in captured["system"]
+    assert "must not override the established outline, world, or characters" in captured["system"]
+
+
+def test_outline_skill_context_uses_canonical_genre_and_bounded_budget(monkeypatch) -> None:
+    captured_call: dict = {}
+    sentinel = [{"skill_id": "commercial-shuangwen", "modules": []}]
+
+    def fake_skill_context(skill_ids, **kwargs):
+        captured_call["skill_ids"] = skill_ids
+        captured_call.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(outline_generation_module, "skill_pack_prompt_context", fake_skill_context)
+    captured_prompt: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured_prompt.update(json.loads(payload["messages"][1]["content"]))
+        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve).generate(
+        _skill_enabled_brief(["commercial-shuangwen::plot-engine"]),
+        mode="initial",
+    )
+
+    assert captured_call == {
+        "skill_ids": ["commercial-shuangwen"],
+        "enabled_module_ids": ["commercial-shuangwen::plot-engine"],
+        "purpose": "outline",
+        "include_examples": True,
+        "genre_id": "xuanhuan",
+        "max_chars_per_pack": 3600,
+    }
+    assert captured_prompt["skill_context"] == sentinel
+
+
+def test_split_outline_prompt_routes_skill_only_to_outline_foundation(monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
+    captured: dict[str, dict] = {}
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            prompt = json.loads(request.messages[1]["content"])
+            captured[request.operation] = {
+                "system": request.messages[0]["content"],
+                "context": prompt,
+            }
+            return ModelResponse.success(
+                request,
+                text=json.dumps(_codex_phase_content(prompt), ensure_ascii=False),
+            )
+
+    runtime = StageRuntimeSettings(
+        provider_id="codexcli",
+        protocol="codex_cli",
+        model="planning-test-model",
+        codex_command="codex-test",
+    )
+    all_module_ids = [
+        f"commercial-shuangwen::{module_id}"
+        for module_id in (
+            "chapter-sop",
+            "genre-examples",
+            "plot-engine",
+            "review-checklist",
+            "writer-execution",
+        )
+    ]
+
+    LLMOutlinePlanningGenerator(
+        runtime_resolver=lambda stage: runtime,
+        model_gateway=Gateway(),
+    ).generate(_skill_enabled_brief(all_module_ids), mode="initial")
+
+    foundation = captured["outline_planning_outline_foundation"]
+    assert [
+        module["module_id"]
+        for module in foundation["context"]["skill_context"][0]["modules"]
+    ] == ["genre-examples", "plot-engine"]
+    assert "may shape conflict and payoff" in foundation["system"]
+    assert "skill_context" not in captured["outline_planning_character_roster"]["context"]
+    assert "skill_context" not in captured["outline_planning_chapter_window"]["context"]
+
+
+@pytest.mark.parametrize(
+    ("skill_ids", "module_ids"),
+    [
+        pytest.param([], [], id="disabled-project"),
+        pytest.param(["commercial-shuangwen"], [], id="explicit-module-disable"),
+        pytest.param(["missing-pack"], ["missing-pack::plot-engine"], id="missing-pack"),
+    ],
+)
+def test_outline_prompt_omits_empty_or_unavailable_skill_context(
+    monkeypatch,
+    skill_ids: list[str],
+    module_ids: list[str],
+) -> None:
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
+    payload = _brief().model_dump(mode="json")
+    payload["enabled_skill_ids"] = skill_ids
+    payload["enabled_skill_module_ids"] = module_ids
+    captured: dict = {}
+
+    def fake_post(base_url, path, request_payload, api_key, **kwargs):
+        captured["system"] = request_payload["messages"][0]["content"]
+        captured["context"] = json.loads(request_payload["messages"][1]["content"])
+        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+
+    fixture = RecordingRuntime()
+    LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve).generate(
+        OutlinePlanningBrief.model_validate(payload),
+        mode="initial",
+    )
+
+    assert "skill_context" not in captured["context"]
+    assert "may shape conflict and payoff" not in captured["system"]
 
 
 def test_generator_requests_one_compact_structured_plan() -> None:
