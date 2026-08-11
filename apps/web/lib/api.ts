@@ -530,6 +530,30 @@ export type SimplifiedReview = {
   diagnostics?: Record<string, unknown>;
 };
 
+export type ShuangwenReviewChecks = {
+  goal: string[];
+  pressure: string[];
+  information_gap: string[];
+  counterattack: string[];
+  payoff: string[];
+  reaction: string[];
+  ending_hook: string[];
+  cliches: string[];
+};
+
+export type ShuangwenSkillReview = {
+  schema_version: "skill-review/v1";
+  skill_id: "commercial-shuangwen";
+  executed: true;
+  status: "passed" | "warning";
+  summary: string;
+  checks: ShuangwenReviewChecks;
+  issues: string[];
+  runtime?: string;
+  model?: string;
+  trace_id?: string;
+};
+
 export type ChapterBundle = {
   chapter_number: number;
   body: string;
@@ -648,6 +672,7 @@ export type ChapterBundle = {
     editor_agent_review?: ReviewSection;
     reviewer_agent_review?: ReviewSection;
     simplified_review?: SimplifiedReview;
+    skill_reviews?: Record<string, ShuangwenSkillReview | undefined>;
   };
   updated_story?: unknown;
 };
@@ -3884,6 +3909,20 @@ export async function fetchFileChapter(storyId: string, chapterNumber: number): 
     method: "GET",
     cache: "no-store",
   }, 30000)) as ChapterBundle;
+}
+
+export async function runFileProjectShuangwenReview(
+  projectId: string,
+  chapterNumber: number,
+): Promise<ShuangwenSkillReview> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("shuangwen_review_only_supports_file_projects");
+  }
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/chapters/${chapterNumber}/skill-reviews/commercial-shuangwen`,
+    { method: "POST" },
+    180000,
+  )) as ShuangwenSkillReview;
 }
 
 export async function createProject(payload: CreateProjectRequest): Promise<ProjectResponse> {

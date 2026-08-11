@@ -2,15 +2,24 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
-import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
+import { ShuangwenReview, SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
+import {
+  runFileProjectShuangwenReview,
+  type ShuangwenSkillReview,
+} from "../../../../lib/api";
 
 export default function ReviewPage() {
   const searchParams = useSearchParams();
   const { project, story, chapterIndex, error, encodedProjectId, projectId, refreshVersion } = useProjectWorkspace();
+  const [shuangwenReport, setShuangwenReport] = useState<ShuangwenSkillReview | undefined>();
+  const [shuangwenLoading, setShuangwenLoading] = useState(false);
+  const [shuangwenError, setShuangwenError] = useState("");
+  const shuangwenRequestSequence = useRef(0);
   const requestedChapter = Number(searchParams?.get("chapter") || story?.current_chapter || chapterIndex.at(-1)?.chapter_number || 0);
   const { chapter, loading: chapterLoading, error: chapterError } = useChapterDetail({
     projectId,
@@ -20,6 +29,42 @@ export default function ReviewPage() {
   });
   const selectedIndex = chapterIndex.find((entry) => entry.chapter_number === requestedChapter) ?? null;
   const selectedChapter = chapter?.chapter_number === requestedChapter ? chapter : null;
+  const storedShuangwenReport = selectedChapter?.quality_report?.skill_reviews?.["commercial-shuangwen"];
+  const shuangwenPackEnabled = project?.enabled_skill_ids?.includes("commercial-shuangwen") ?? false;
+  const reviewerModuleEnabled = project?.skill_module_selection_mode === "legacy_all"
+    || project?.skill_module_selection_mode == null && project?.enabled_skill_module_ids == null
+    || project?.enabled_skill_module_ids?.includes("commercial-shuangwen::review-checklist") === true;
+  const shuangwenEnabled = Boolean(
+    selectedChapter
+    && shuangwenPackEnabled
+    && reviewerModuleEnabled
+    && (project?.storage_source === "file" || projectId.startsWith("file:")),
+  );
+
+  useEffect(() => {
+    shuangwenRequestSequence.current += 1;
+    setShuangwenReport(storedShuangwenReport);
+    setShuangwenError("");
+    setShuangwenLoading(false);
+  }, [requestedChapter, storedShuangwenReport]);
+
+  async function runShuangwenReview() {
+    if (!shuangwenEnabled) return;
+    const sequence = ++shuangwenRequestSequence.current;
+    setShuangwenLoading(true);
+    setShuangwenError("");
+    try {
+      const report = await runFileProjectShuangwenReview(projectId, requestedChapter);
+      if (sequence === shuangwenRequestSequence.current) setShuangwenReport(report);
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : String(reason);
+      if (sequence === shuangwenRequestSequence.current) {
+        setShuangwenError(`爽文检查失败：${detail}`);
+      }
+    } finally {
+      if (sequence === shuangwenRequestSequence.current) setShuangwenLoading(false);
+    }
+  }
 
   return (
     <div className="ws-page">
@@ -58,6 +103,14 @@ export default function ReviewPage() {
           <main>
             {chapterError ? <p className="ws-inline-error" role="alert">章节加载失败：{chapterError}</p> : null}
             {selectedChapter ? <SimplifiedReview report={selectedChapter.quality_report?.simplified_review} /> : null}
+            {shuangwenEnabled ? (
+              <ShuangwenReview
+                report={shuangwenReport}
+                loading={shuangwenLoading}
+                error={shuangwenError}
+                onRun={() => void runShuangwenReview()}
+              />
+            ) : null}
             {chapterLoading && !selectedChapter ? <p className="ws-card__hint">正在加载章节...</p> : null}
           </main>
         </div>

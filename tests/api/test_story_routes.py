@@ -86,6 +86,107 @@ def _make_file_project(root, *, project_id="p-file-api", state=None):
     )
 
 
+def _seed_shuangwen_review_project(
+    root,
+    *,
+    project_id="p-shuangwen-review",
+    current_chapter=1,
+    enabled_skill_ids=None,
+    enabled_module_ids=None,
+):
+    _make_file_project(
+        root,
+        project_id=project_id,
+        state={"story_id": "s-file-api", "current_chapter": current_chapter, "world_facts": []},
+    )
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["enabled_skill_ids"] = (
+        ["commercial-shuangwen"] if enabled_skill_ids is None else enabled_skill_ids
+    )
+    if enabled_module_ids is not None:
+        project["enabled_skill_module_ids"] = enabled_module_ids
+    project_path.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "第一章 回执",
+        "body": "林修亮出备案回执，负责人当场撤回拒绝函。",
+        "quality_report": {"ok": True, "issues": []},
+    }
+    (root / ".story-system" / "chapters" / "0001.json").write_text(
+        json.dumps(chapter, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    rolling_path = root / ".story-system" / "outline-generation" / "rolling_outline.json"
+    rolling_path.parent.mkdir(parents=True, exist_ok=True)
+    rolling_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rolling-outline/v1",
+                "chapters": [
+                    {
+                        "chapter_number": 1,
+                        "title": "第一章 回执",
+                        "payoff_contract": {
+                            "need": "拿到替换镜芯",
+                            "pressure": "一夜内完成验货",
+                            "hidden_advantage": "恢复旧运行状态",
+                            "concrete_reward": "获得订单与线索",
+                        },
+                        "chapter_sop": {
+                            "opening_carry": "铜镜亮起",
+                            "mid_feedback": "旧影像恢复",
+                            "turn": "镜中人认出林修",
+                            "ending_hook": "父亲的名字出现",
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return chapter
+
+
+class _ShuangwenReviewGateway:
+    def __init__(self):
+        self.calls = []
+
+    def complete_stage(self, stage, request):
+        from packages.story_core.model_gateway import ModelResponse
+
+        self.calls.append((stage, request))
+        return ModelResponse(
+            ok=True,
+            text=json.dumps(
+                {
+                    "schema_version": "skill-review/v1",
+                    "skill_id": "commercial-shuangwen",
+                    "executed": True,
+                    "status": "warning",
+                    "summary": "反击成立，但回报尚未落地。",
+                    "checks": {
+                        "goal": [],
+                        "pressure": [],
+                        "information_gap": [],
+                        "counterattack": [],
+                        "payoff": ["到账结果尚未写明。"],
+                        "reaction": [],
+                        "ending_hook": [],
+                        "cliches": [],
+                    },
+                    "issues": ["补充订单到账这一可观察结果。"],
+                },
+                ensure_ascii=False,
+            ),
+            provider="test-runtime",
+            model="test-reviewer",
+            operation=request.operation,
+            request_id="trace-api-review",
+        )
+
+
 def _seed_generation_outline(root, chapter_number: int) -> None:
     path = root / ".story-system" / "outline-generation" / "rolling_outline.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -729,6 +830,131 @@ def test_explicit_empty_file_project_serialization_marks_module_selection_explic
 
     assert response["enabled_skill_module_ids"] == []
     assert response["skill_module_selection_mode"] == "explicit"
+
+
+def test_manual_shuangwen_review_persists_report_without_mutating_chapter_or_candidates(
+    tmp_path, monkeypatch
+):
+    from hashlib import sha256
+
+    from packages.story_core.candidate_draft import CandidateDraft
+    from packages.story_core.file_project_store import FileProjectStore
+
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    root = tmp_path / "manual-shuangwen-review"
+    original_chapter = _seed_shuangwen_review_project(root)
+    store = FileProjectStore(root)
+    candidate = CandidateDraft.create(
+        project_id="p-shuangwen-review",
+        chapter_number=2,
+        chapter_title="候选第二章",
+        body="这是不能被爽文检查改动的候选正文。",
+    )
+    candidate_path = store.candidate_store.save(candidate)
+    candidate_before = candidate_path.read_bytes()
+    body_hash_before = sha256(original_chapter["body"].encode("utf-8")).hexdigest()
+    gateway = _ShuangwenReviewGateway()
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", gateway, raising=False)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("manual review invoked a mutating chapter workflow")
+
+    for method_name in (
+        "generate_next_chapter",
+        "regenerate_chapter",
+        "expand_chapter",
+        "rewrite_chapter",
+        "confirm_candidate",
+        "persist_bundle",
+        "write_chapter",
+    ):
+        monkeypatch.setattr(FileProjectStore, method_name, forbidden)
+
+    response = client.post(
+        "/file-projects/p-shuangwen-review/chapters/1/skill-reviews/commercial-shuangwen"
+    )
+
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["schema_version"] == "skill-review/v1"
+    assert report["status"] == "warning"
+    assert report["runtime"] == "test-runtime"
+    assert report["model"] == "test-reviewer"
+    assert report["trace_id"] == "trace-api-review"
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0][0] == "consistency"
+    prompt = gateway.calls[0][1].prompt
+    assert original_chapter["body"] in prompt
+    assert "拿到替换镜芯" in prompt
+    assert "review-checklist" in prompt
+    assert "对手为什么会作出错误判断" not in prompt
+    assert "File API Novel" not in prompt
+
+    reloaded = FileProjectStore(root).chapter(1)
+    assert sha256(reloaded["body"].encode("utf-8")).hexdigest() == body_hash_before
+    assert reloaded["quality_report"]["ok"] is True
+    assert reloaded["quality_report"]["skill_reviews"]["commercial-shuangwen"] == report
+    assert candidate_path.read_bytes() == candidate_before
+
+
+@pytest.mark.parametrize(
+    ("enabled_skill_ids", "enabled_module_ids", "current_chapter", "expected_detail"),
+    [
+        ([], None, 1, "commercial_shuangwen_skill_disabled"),
+        (["commercial-shuangwen"], [], 1, "commercial_shuangwen_reviewer_disabled"),
+        (["commercial-shuangwen"], ["commercial-shuangwen::review-checklist"], 0, "chapter_not_confirmed:1"),
+    ],
+)
+def test_manual_shuangwen_review_rejects_disabled_or_unconfirmed_chapters(
+    tmp_path,
+    monkeypatch,
+    enabled_skill_ids,
+    enabled_module_ids,
+    current_chapter,
+    expected_detail,
+):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    root = tmp_path / expected_detail.replace(":", "-")
+    _seed_shuangwen_review_project(
+        root,
+        project_id=f"p-{root.name}",
+        current_chapter=current_chapter,
+        enabled_skill_ids=enabled_skill_ids,
+        enabled_module_ids=enabled_module_ids,
+    )
+    gateway = _ShuangwenReviewGateway()
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", gateway, raising=False)
+
+    response = client.post(
+        f"/file-projects/p-{root.name}/chapters/1/skill-reviews/commercial-shuangwen"
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == expected_detail
+    assert gateway.calls == []
+
+
+def test_manual_shuangwen_review_returns_not_found_when_pack_is_missing(tmp_path, monkeypatch):
+    import packages.story_core.file_project_store as file_project_store_module
+
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    root = tmp_path / "missing-shuangwen-pack"
+    _seed_shuangwen_review_project(
+        root,
+        project_id="p-missing-shuangwen-pack",
+        enabled_module_ids=["commercial-shuangwen::review-checklist"],
+    )
+    monkeypatch.setattr(file_project_store_module, "get_skill_pack", lambda _skill_id: None, raising=False)
+    gateway = _ShuangwenReviewGateway()
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", gateway, raising=False)
+
+    response = client.post(
+        "/file-projects/p-missing-shuangwen-pack/chapters/1/skill-reviews/commercial-shuangwen"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "commercial_shuangwen_skill_missing"
+    assert gateway.calls == []
 
 
 @pytest.mark.parametrize(

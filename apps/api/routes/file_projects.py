@@ -29,6 +29,7 @@ from packages.story_core.models import (
     ForeshadowingStatus,
     NovelProject,
 )
+from packages.story_core.model_gateway import RuntimeModelGateway
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
 from packages.story_core.simplified_review import build_simplified_review, user_facing_generation_error
@@ -63,6 +64,7 @@ cover_prompt_generator = CoverPromptGenerator()
 # Kept as an explicit alias/seam for route tests and compatible image providers.
 OpenAICompatibleCoverImageProvider = OpenAICoverImageProvider
 cover_image_provider = OpenAICompatibleCoverImageProvider()
+shuangwen_model_gateway = RuntimeModelGateway()
 FILE_ID_PREFIX = "file:"
 FILE_GENERATION_JOB_STALE_SECONDS = 15 * 60
 FILE_GENERATION_JOB_STEP_LIMIT = 200
@@ -1875,6 +1877,39 @@ def init_file_project_routes() -> APIRouter:
     def get_file_project_writing_packet(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:
         store = _store_for(project_id)
         return store.writing_packet(chapter_number)
+
+    @router.post(
+        "/file-projects/{project_id}/chapters/{chapter_number}/skill-reviews/commercial-shuangwen"
+    )
+    def run_file_project_shuangwen_review(
+        project_id: str,
+        chapter_number: int,
+    ) -> dict[str, Any]:
+        from packages.story_core.shuangwen_review import ShuangwenReviewError
+
+        store = _store_for(project_id)
+        try:
+            return store.run_shuangwen_review(
+                chapter_number,
+                model_gateway=shuangwen_model_gateway,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            detail = str(exc)
+            if detail == "commercial_shuangwen_skill_missing":
+                raise HTTPException(status_code=404, detail=detail) from exc
+            if detail.startswith("chapter_not_confirmed:") or detail in {
+                "commercial_shuangwen_skill_disabled",
+                "commercial_shuangwen_reviewer_disabled",
+                "shuangwen_review_chapter_changed",
+                "shuangwen_review_body_changed",
+                "shuangwen_review_candidate_changed",
+            }:
+                raise HTTPException(status_code=409, detail=detail) from exc
+            raise HTTPException(status_code=422, detail=detail) from exc
+        except ShuangwenReviewError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @router.post("/file-projects/{project_id}/outline/rolling-fill")
     def trigger_file_project_rolling_fill(

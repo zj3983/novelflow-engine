@@ -853,7 +853,9 @@ function currentProjectFixture(projectId: string) {
     } as Record<string, unknown>,
     character_profiles: [],
     relationship_graph: [],
-    enabled_skill_ids: [],
+    enabled_skill_ids: [] as string[],
+    enabled_skill_module_ids: null as string[] | null,
+    skill_module_selection_mode: "legacy_all" as "legacy_all" | "explicit",
     status: "writing",
     pipeline_stage: "writing",
     active_story_id: projectId,
@@ -2366,6 +2368,149 @@ test("review hides retained prior report while selected chapter loads", async ({
   await expect(page.getByText("SECOND_REVIEW", { exact: true })).toHaveCount(0);
   releaseChapterDetail();
   await expect(page.getByText("FIRST_REVIEW", { exact: true })).toBeVisible();
+});
+
+const manualShuangwenReview = (status: "passed" | "warning" = "warning") => ({
+  schema_version: "skill-review/v1",
+  skill_id: "commercial-shuangwen",
+  executed: true,
+  status,
+  summary: status === "passed" ? "本章爽文推进检查通过。" : "反击成立，但回报尚未落地。",
+  checks: {
+    goal: [],
+    pressure: [],
+    information_gap: [],
+    counterattack: [],
+    payoff: status === "passed" ? [] : ["到账结果尚未写明。"],
+    reaction: [],
+    ending_hook: [],
+    cliches: [],
+  },
+  issues: status === "passed" ? [] : ["补充订单到账这一可观察结果。"],
+  runtime: "test-runtime",
+  model: "test-reviewer",
+  trace_id: "trace-ui-review",
+});
+
+test("manual shuangwen review shows not-run, loading, request, and warning report", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "manual-shuangwen-review");
+  fixture.project.enabled_skill_ids = ["commercial-shuangwen"];
+  fixture.project.enabled_skill_module_ids = ["commercial-shuangwen::review-checklist"];
+  fixture.project.skill_module_selection_mode = "explicit";
+  let releaseReview!: () => void;
+  const reviewGate = new Promise<void>((resolve) => { releaseReview = resolve; });
+  const requests: string[] = [];
+  await page.route(
+    `**/file-projects/${fixture.encodedId}/chapters/1/skill-reviews/commercial-shuangwen`,
+    async (route) => {
+      requests.push(`${route.request().method()} ${decodeURIComponent(new URL(route.request().url()).pathname)}`);
+      await reviewGate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(manualShuangwenReview("warning")),
+      });
+    },
+  );
+
+  await page.goto(`/projects/${fixture.encodedId}/review?chapter=1`);
+  const panel = page.getByTestId("shuangwen-review");
+  await expect(panel.getByText("尚未执行爽文检查", { exact: true })).toBeVisible();
+  await expect(panel.getByText("通过", { exact: true })).toHaveCount(0);
+  await expect(panel).not.toContainText("0 个问题");
+
+  await panel.getByRole("button", { name: "运行爽文检查" }).click();
+  await expect(panel.getByRole("button", { name: "正在运行爽文检查" })).toBeDisabled();
+  expect(requests).toEqual([
+    "POST /file-projects/file:manual-shuangwen-review/chapters/1/skill-reviews/commercial-shuangwen",
+  ]);
+  releaseReview();
+
+  await expect(panel.getByText("有修改建议", { exact: true })).toBeVisible();
+  await expect(panel.getByText("反击成立，但回报尚未落地。", { exact: true })).toBeVisible();
+  await expect(panel.getByText("补充订单到账这一可观察结果。", { exact: true })).toBeVisible();
+});
+
+test("manual shuangwen review renders stored pass only after execution", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "manual-shuangwen-review-passed");
+  fixture.project.enabled_skill_ids = ["commercial-shuangwen"];
+  fixture.project.enabled_skill_module_ids = ["commercial-shuangwen::review-checklist"];
+  fixture.project.skill_module_selection_mode = "explicit";
+  Object.assign(fixture.story.history[0].quality_report, {
+    skill_reviews: { "commercial-shuangwen": manualShuangwenReview("passed") },
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/review?chapter=1`);
+
+  const panel = page.getByTestId("shuangwen-review");
+  await expect(panel.getByText("通过", { exact: true })).toBeVisible();
+  await expect(panel.getByText("本章爽文推进检查通过。", { exact: true })).toBeVisible();
+  await expect(panel.getByText("尚未执行爽文检查", { exact: true })).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "运行爽文检查" })).toBeVisible();
+});
+
+test("manual shuangwen review button is hidden when reviewer is disabled", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "manual-shuangwen-review-disabled");
+  fixture.project.enabled_skill_ids = ["commercial-shuangwen"];
+  fixture.project.enabled_skill_module_ids = [];
+  fixture.project.skill_module_selection_mode = "explicit";
+
+  await page.goto(`/projects/${fixture.encodedId}/review?chapter=1`);
+
+  await expect(page.getByRole("button", { name: "运行爽文检查" })).toHaveCount(0);
+  await expect(page.getByTestId("shuangwen-review")).toHaveCount(0);
+});
+
+test("manual shuangwen review surfaces request errors without changing the report state", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "manual-shuangwen-review-error");
+  fixture.project.enabled_skill_ids = ["commercial-shuangwen"];
+  fixture.project.enabled_skill_module_ids = ["commercial-shuangwen::review-checklist"];
+  fixture.project.skill_module_selection_mode = "explicit";
+  await page.route(
+    `**/file-projects/${fixture.encodedId}/chapters/1/skill-reviews/commercial-shuangwen`,
+    (route) => route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "shuangwen_review_runtime_failed" }),
+    }),
+  );
+
+  await page.goto(`/projects/${fixture.encodedId}/review?chapter=1`);
+  const panel = page.getByTestId("shuangwen-review");
+  await panel.getByRole("button", { name: "运行爽文检查" }).click();
+
+  await expect(panel.getByRole("alert")).toContainText("爽文检查失败");
+  await expect(panel.getByText("尚未执行爽文检查", { exact: true })).toBeVisible();
+});
+
+test("manual shuangwen review does not leak a completed request across chapters", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "manual-shuangwen-review-switch", { chapterCount: 2 });
+  fixture.project.enabled_skill_ids = ["commercial-shuangwen"];
+  fixture.project.enabled_skill_module_ids = ["commercial-shuangwen::review-checklist"];
+  fixture.project.skill_module_selection_mode = "explicit";
+  let releaseReview!: () => void;
+  const reviewGate = new Promise<void>((resolve) => { releaseReview = resolve; });
+  await page.route(
+    `**/file-projects/${fixture.encodedId}/chapters/1/skill-reviews/commercial-shuangwen`,
+    async (route) => {
+      await reviewGate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(manualShuangwenReview("warning")),
+      });
+    },
+  );
+
+  await page.goto(`/projects/${fixture.encodedId}/review?chapter=1`);
+  await page.getByRole("button", { name: "运行爽文检查" }).click();
+  await page.getByRole("link", { name: /第 2 章/ }).click();
+  await expect(page.getByText("审稿：第 2 章", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("shuangwen-review").getByText("尚未执行爽文检查", { exact: true })).toBeVisible();
+  releaseReview();
+
+  await expect(page.getByText("反击成立，但回报尚未落地。", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("shuangwen-review").getByText("尚未执行爽文检查", { exact: true })).toBeVisible();
 });
 
 test("prompts uses chapter index without requesting chapter detail", async ({ page }) => {

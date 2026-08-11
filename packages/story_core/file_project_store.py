@@ -187,8 +187,10 @@ from packages.story_core.world_state import (
     relevant_continuity_facts,
 )
 from packages.story_core.skill_packs import (
+    get_skill_pack,
     resolve_enabled_skill_ids,
     resolve_enabled_skill_module_ids,
+    skill_module_key,
     skill_pack_prompt_context,
 )
 from packages.story_core.writing_taskbook import format_taskbook_brief_section
@@ -7141,6 +7143,131 @@ class FileProjectStore:
         if isinstance(quality_report, dict) and quality_report:
             return _project_legacy_review(quality_report)
         return validate_bundle(chapter)
+
+    def _candidate_artifacts_hash(self) -> str:
+        digest = sha256()
+        directory = self.candidate_store.directory
+        if not directory.is_dir():
+            return digest.hexdigest()
+        for path in sorted(item for item in directory.rglob("*") if item.is_file()):
+            digest.update(str(path.relative_to(directory)).replace("\\", "/").encode("utf-8"))
+            digest.update(path.read_bytes())
+        return digest.hexdigest()
+
+    @staticmethod
+    def _chapter_contracts(chapter: dict[str, Any], rolling_chapter: dict[str, Any]) -> dict[str, Any]:
+        adapted = rolling_chapter_to_outline_entry(rolling_chapter)
+        plan = adapted if isinstance(adapted, dict) else {}
+        event_plan = chapter.get("event_plan") if isinstance(chapter.get("event_plan"), dict) else {}
+        return {
+            key: deepcopy(
+                plan.get(key)
+                or rolling_chapter.get(key)
+                or chapter.get(key)
+                or event_plan.get(key)
+                or {}
+            )
+            for key in ("payoff_contract", "chapter_sop")
+        }
+
+    @_with_project_update_lock
+    def _store_shuangwen_review(
+        self,
+        *,
+        chapter_number: int,
+        report: dict[str, Any],
+        expected_artifact_hash: str,
+        expected_body_hash: str,
+        expected_candidate_hash: str,
+    ) -> dict[str, Any]:
+        chapter_path = self.story_system_dir / "chapters" / f"{chapter_number:04d}.json"
+        if not chapter_path.is_file():
+            raise FileNotFoundError(f"chapter_not_found:{chapter_number}")
+        if sha256(chapter_path.read_bytes()).hexdigest() != expected_artifact_hash:
+            raise ValueError("shuangwen_review_chapter_changed")
+        raw_chapter = self._read_json(chapter_path, {}) or {}
+        hydrated = self._hydrate_chapter_body(raw_chapter)
+        body = str(hydrated.get("body") or "")
+        if sha256(body.encode("utf-8")).hexdigest() != expected_body_hash:
+            raise ValueError("shuangwen_review_body_changed")
+        if self._candidate_artifacts_hash() != expected_candidate_hash:
+            raise ValueError("shuangwen_review_candidate_changed")
+
+        updated = dict(raw_chapter)
+        quality_report = dict(updated.get("quality_report") or {})
+        skill_reviews = dict(quality_report.get("skill_reviews") or {})
+        skill_reviews["commercial-shuangwen"] = deepcopy(report)
+        quality_report["skill_reviews"] = skill_reviews
+        updated["quality_report"] = quality_report
+        self._replace_json_transaction({chapter_path: updated})
+
+        reloaded = self.chapter(chapter_number)
+        reloaded_body = str(reloaded.get("body") or "")
+        if sha256(reloaded_body.encode("utf-8")).hexdigest() != expected_body_hash:
+            raise ValueError("shuangwen_review_body_changed")
+        if self._candidate_artifacts_hash() != expected_candidate_hash:
+            raise ValueError("shuangwen_review_candidate_changed")
+        return deepcopy(report)
+
+    def run_shuangwen_review(
+        self,
+        chapter_number: int,
+        *,
+        model_gateway: Any | None = None,
+    ) -> dict[str, Any]:
+        from packages.story_core.shuangwen_review import review_shuangwen_chapter
+
+        project = self.project()
+        state = self.state()
+        pack = get_skill_pack("commercial-shuangwen")
+        if pack is None or not any(module.module_id == "review-checklist" for module in pack.modules):
+            raise ValueError("commercial_shuangwen_skill_missing")
+        if "commercial-shuangwen" not in resolve_enabled_skill_ids(project, state):
+            raise ValueError("commercial_shuangwen_skill_disabled")
+        enabled_modules = resolve_enabled_skill_module_ids(project, state)
+        reviewer_key = skill_module_key("commercial-shuangwen", "review-checklist")
+        if enabled_modules is not None and reviewer_key not in enabled_modules:
+            raise ValueError("commercial_shuangwen_reviewer_disabled")
+        if chapter_number < 1 or int(state.get("current_chapter") or 0) < chapter_number:
+            raise ValueError(f"chapter_not_confirmed:{chapter_number}")
+
+        chapter_path = self.story_system_dir / "chapters" / f"{chapter_number:04d}.json"
+        if not chapter_path.is_file():
+            raise FileNotFoundError(f"chapter_not_found:{chapter_number}")
+        chapter = self.chapter(chapter_number)
+        body = str(chapter.get("body") or "")
+        artifact_hash = sha256(chapter_path.read_bytes()).hexdigest()
+        body_hash = sha256(body.encode("utf-8")).hexdigest()
+        candidate_hash = self._candidate_artifacts_hash()
+        rolling_chapter = RollingOutlineStore(self.root).read_chapter(chapter_number) or {}
+        genre_context = self._review_genre_context()
+        genre_ids = genre_context.get("genre_plugin_ids") or []
+        genre_id = str(genre_ids[0] if genre_ids else genre_context.get("genre") or "")
+        skill_context = skill_pack_prompt_context(
+            ["commercial-shuangwen"],
+            enabled_module_ids=enabled_modules,
+            purpose="reviewer",
+            include_examples=True,
+            genre_id=genre_id,
+            max_chars_per_pack=2200,
+            compact=True,
+            max_serialized_chars=2600,
+        )
+        report = review_shuangwen_chapter(
+            body=body,
+            chapter_plan=self._chapter_contracts(chapter, rolling_chapter),
+            skill_context=skill_context,
+            model_gateway=model_gateway,
+        )
+        if sha256(body.encode("utf-8")).hexdigest() != body_hash:
+            raise ValueError("shuangwen_review_body_changed")
+        return self._store_shuangwen_review(
+            chapter_number=chapter_number,
+            report=report,
+            expected_artifact_hash=artifact_hash,
+            expected_body_hash=body_hash,
+            expected_candidate_hash=candidate_hash,
+        )
 
     def commit(self, *, message: str, operation: str = "manual", chapter_number: int | None = None) -> dict[str, Any]:
         commits_dir = self.story_system_dir / "commits"
