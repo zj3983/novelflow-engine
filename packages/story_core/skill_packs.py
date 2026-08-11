@@ -808,3 +808,44 @@ def skill_pack_prompt_context(
             }
         )
     return contexts
+
+
+def writer_skill_pack_prompt_context(
+    skill_ids: list[str],
+    *,
+    enabled_module_ids: list[str] | None = None,
+    genre_id: str = "",
+    max_chars_per_pack: int = 2600,
+) -> list[dict[str, Any]]:
+    """Build the external writing package from writer-purpose modules only.
+
+    Legacy pack-level selection still means all installed non-root modules are
+    eligible. Explicit selection remains explicit, including an empty list.
+    The pack root and reviewer-only modules never enter this context.
+    """
+
+    if enabled_module_ids is None:
+        selected_module_ids = [
+            skill_module_key(pack.skill_id, module.module_id)
+            for skill_id in skill_ids
+            for pack in [get_skill_pack(skill_id)]
+            if pack is not None
+            for module in pack.modules
+            if module.module_id != "root"
+        ]
+    else:
+        selected_module_ids = [
+            str(module_id).strip()
+            for module_id in enabled_module_ids
+            if str(module_id).strip()
+            and not str(module_id).strip().endswith("::root")
+        ]
+
+    return skill_pack_prompt_context(
+        skill_ids,
+        enabled_module_ids=selected_module_ids,
+        purpose="writer",
+        include_examples=True,
+        genre_id=canonical_novel_type_id(genre_id),
+        max_chars_per_pack=max_chars_per_pack,
+    )

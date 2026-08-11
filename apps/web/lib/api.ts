@@ -1726,6 +1726,11 @@ export type SkillPackSummary = {
   module_count: number;
   modules: SkillPackModuleSummary[];
   root_skill?: string;
+  narrative_enhancement_status?: {
+    status: "available" | "unavailable" | "incomplete" | "unknown" | string;
+    reason: string;
+    missing_module_ids: string[];
+  };
 };
 
 export type UninstallSkillPackResponse = {

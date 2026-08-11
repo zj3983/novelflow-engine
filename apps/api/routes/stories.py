@@ -69,7 +69,10 @@ from packages.story_core.quality import validate_bundle
 
 from packages.story_core.runtime_config import get_runtime_strategy_settings
 
-from packages.story_core.skill_packs import skill_pack_prompt_context
+from packages.story_core.skill_packs import (
+    skill_pack_prompt_context,
+    writer_skill_pack_prompt_context,
+)
 from packages.story_core.prompt_templates import (
     get_default_prompt_template,
     load_global_prompt_templates,
@@ -2742,20 +2745,29 @@ def get_project_writing_packet(project_id: str, chapter_number: int | None = Non
 
     packet = build_codex_writing_packet(packet_story, bundle, chapter_number=target_chapter)
 
-    skill_context = {
-
-        purpose: skill_pack_prompt_context(
-            project.enabled_skill_ids,
-            enabled_module_ids=project.enabled_skill_module_ids,
-            purpose=purpose,
-            max_chars_per_pack=2600,
-        )
-
-        for purpose in ("writer", "dialogue", "style", "genre", "continuity", "reviewer")
-
-    }
-
-    packet["skill_context"] = {key: value for key, value in skill_context.items() if value}
+    blueprint = (
+        project.world_blueprint
+        if isinstance(project.world_blueprint, dict)
+        else {}
+    )
+    genre_ids = blueprint.get("genre_plugin_ids")
+    raw_genre_id = (
+        str(genre_ids[0]).strip()
+        if isinstance(genre_ids, list) and genre_ids
+        else str(packet_story.genre or "").strip()
+    )
+    genre_id = resolve_novel_type_id(raw_genre_id) or raw_genre_id
+    writer_skill_context = writer_skill_pack_prompt_context(
+        project.enabled_skill_ids,
+        enabled_module_ids=project.enabled_skill_module_ids,
+        genre_id=genre_id,
+        max_chars_per_pack=2600,
+    )
+    packet["skill_context"] = (
+        {"writer": writer_skill_context}
+        if writer_skill_context
+        else {}
+    )
 
     return packet
 

@@ -14,7 +14,15 @@ import {
 import { DEFAULT_NOVEL_TYPE_ID } from "../../../lib/novelTypes";
 
 type CreationMode = "inspiration" | "blank" | "continuation";
-type EnhancementAvailability = "loading" | "available" | "missing" | "error";
+type EnhancementAvailability = "loading" | "available" | "missing" | "incomplete" | "error";
+
+const COMMERCIAL_SHUANGWEN_REQUIRED_MODULE_IDS = [
+  "plot-engine",
+  "chapter-sop",
+  "writer-execution",
+  "review-checklist",
+  "genre-examples",
+] as const;
 
 export default function NewProjectPage() {
   const router = useRouter();
@@ -35,6 +43,8 @@ export default function NewProjectPage() {
   const [commercialShuangwenEnabled, setCommercialShuangwenEnabled] = useState(false);
   const [commercialShuangwenAvailability, setCommercialShuangwenAvailability] =
     useState<EnhancementAvailability>("loading");
+  const [commercialShuangwenUnavailableReason, setCommercialShuangwenUnavailableReason] =
+    useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -80,13 +90,39 @@ export default function NewProjectPage() {
     void listSkillPacks()
       .then((packs) => {
         if (cancelled) return;
-        const installed = packs.some((pack) => pack.skill_id === "commercial-shuangwen");
-        setCommercialShuangwenAvailability(installed ? "available" : "missing");
-        if (!installed) setCommercialShuangwenEnabled(false);
+        const pack = packs.find((item) => item.skill_id === "commercial-shuangwen");
+        if (!pack) {
+          setCommercialShuangwenAvailability("missing");
+          setCommercialShuangwenUnavailableReason("skill_pack_missing");
+          setCommercialShuangwenEnabled(false);
+          return;
+        }
+        const installedModuleIds = new Set(pack.modules.map((module) => module.module_id));
+        const missingModuleIds = COMMERCIAL_SHUANGWEN_REQUIRED_MODULE_IDS.filter(
+          (moduleId) => !installedModuleIds.has(moduleId),
+        );
+        const status = pack.narrative_enhancement_status;
+        const reportedMissing = status?.missing_module_ids ?? [];
+        const effectiveMissing = reportedMissing.length > 0 ? reportedMissing : missingModuleIds;
+        if (status?.status === "incomplete" || effectiveMissing.length > 0) {
+          setCommercialShuangwenAvailability("incomplete");
+          setCommercialShuangwenUnavailableReason(effectiveMissing.join(", "));
+          setCommercialShuangwenEnabled(false);
+          return;
+        }
+        if (status && status.status !== "available") {
+          setCommercialShuangwenAvailability("missing");
+          setCommercialShuangwenUnavailableReason(status.reason || "skill_pack_unavailable");
+          setCommercialShuangwenEnabled(false);
+          return;
+        }
+        setCommercialShuangwenAvailability("available");
+        setCommercialShuangwenUnavailableReason("");
       })
       .catch(() => {
         if (cancelled) return;
         setCommercialShuangwenAvailability("error");
+        setCommercialShuangwenUnavailableReason("skill_pack_list_failed");
         setCommercialShuangwenEnabled(false);
       });
 
@@ -265,6 +301,11 @@ export default function NewProjectPage() {
             {commercialShuangwenAvailability === "missing" ? (
               <p className="ws-project-create__error" role="alert">
                 未安装“商业爽文推进”叙事增强，当前不可用。
+              </p>
+            ) : null}
+            {commercialShuangwenAvailability === "incomplete" ? (
+              <p className="ws-project-create__error" role="alert">
+                “商业爽文推进”缺少必需模块：{commercialShuangwenUnavailableReason}，当前不可用。
               </p>
             ) : null}
             {commercialShuangwenAvailability === "error" ? (

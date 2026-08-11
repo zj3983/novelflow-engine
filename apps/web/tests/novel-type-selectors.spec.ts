@@ -27,7 +27,13 @@ const commercialShuangwenPack = {
   name: "商业爽文推进",
   version: "1.0.0",
   module_count: 5,
-  modules: [],
+  modules: [
+    "plot-engine",
+    "chapter-sop",
+    "writer-execution",
+    "review-checklist",
+    "genre-examples",
+  ].map((module_id) => ({ module_id, title: module_id })),
 };
 
 function novelTypeResponse(type: NovelTypeFixture) {
@@ -224,6 +230,23 @@ test("新建页在叙事增强包未安装时显示不可用并禁用选择", as
   await expect(page.getByRole("checkbox", { name: "商业爽文推进" })).toBeDisabled();
   await expect(page.getByRole("alert").filter({ hasText: "未安装“商业爽文推进”叙事增强" }))
     .toContainText("未安装“商业爽文推进”叙事增强，当前不可用。");
+});
+
+test("新建页在商业爽文增强缺少必需模块时禁用并说明原因", async ({ page }) => {
+  await routeNovelTypes(page, [genericType]);
+  await routeSkillPacks(page, [{
+    ...commercialShuangwenPack,
+    module_count: 4,
+    modules: commercialShuangwenPack.modules.filter(
+      (module) => module.module_id !== "review-checklist",
+    ),
+  }]);
+
+  await page.goto("/projects/new");
+
+  await expect(page.getByRole("checkbox", { name: "商业爽文推进" })).toBeDisabled();
+  await expect(page.getByRole("alert").filter({ hasText: "缺少必需模块" }))
+    .toContainText("缺少必需模块：review-checklist");
 });
 
 test("新建页叙事增强列表加载失败时保持创建可用", async ({ page }) => {

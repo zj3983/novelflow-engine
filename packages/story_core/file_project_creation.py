@@ -16,13 +16,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import StoryState
+from packages.story_core.narrative_enhancements import (
+    NARRATIVE_ENHANCEMENT_REQUIREMENTS,
+    inspect_narrative_enhancement,
+)
 from packages.story_core.novel_type_catalog import resolve_novel_type_id, runtime_novel_type
 from packages.story_core.project_outline import normalize_project_outline
 from packages.story_core.skill_packs import get_skill_pack, skill_module_key
 
 
 PROJECT_ID_PATTERN = re.compile(r"p-[A-Za-z0-9-]+")
-KNOWN_NARRATIVE_ENHANCEMENT_IDS = frozenset({"commercial-shuangwen"})
+KNOWN_NARRATIVE_ENHANCEMENT_IDS = frozenset(NARRATIVE_ENHANCEMENT_REQUIREMENTS)
 
 
 class FileProjectCreateSpec(BaseModel):
@@ -85,8 +89,23 @@ def _narrative_skill_selection(spec: FileProjectCreateSpec) -> tuple[list[str], 
     enabled_module_ids: list[str] = []
     for enhancement_id in enabled_skill_ids:
         pack = get_skill_pack(enhancement_id)
-        if pack is None:
-            continue
+        availability = inspect_narrative_enhancement(enhancement_id, pack)
+        if not availability.available:
+            if availability.reason == "skill_pack_missing":
+                raise ValueError(
+                    f"narrative_enhancement_unavailable:{enhancement_id}:skill_pack_missing"
+                )
+            if availability.reason == "missing_required_modules":
+                missing = ",".join(availability.missing_module_ids)
+                raise ValueError(
+                    f"narrative_enhancement_incomplete:{enhancement_id}:"
+                    f"missing_modules:{missing}"
+                )
+            raise ValueError(
+                f"narrative_enhancement_unavailable:{enhancement_id}:"
+                f"{availability.reason}"
+            )
+        assert pack is not None
         enabled_module_ids.extend(
             skill_module_key(pack.skill_id, module.module_id)
             for module in pack.modules

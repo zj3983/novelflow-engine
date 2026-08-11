@@ -35,6 +35,48 @@ def test_skill_pack_import_and_list(tmp_path: Path, monkeypatch) -> None:
     assert listed.json()[0]["modules"][0]["module_id"] == "dialogue"
 
 
+def test_commercial_shuangwen_pack_list_reports_missing_required_modules(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = tmp_path / "registry"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(registry))
+    source = tmp_path / "commercial-shuangwen"
+    (source / "skills" / "plot-engine").mkdir(parents=True)
+    (source / "manifest.json").write_text(
+        json.dumps(
+            {
+                "skill_id": "commercial-shuangwen",
+                "name": "Commercial Shuangwen",
+                "version": "1.0.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "SKILL.md").write_text("# Commercial Shuangwen\n", encoding="utf-8")
+    (source / "skills" / "plot-engine" / "SKILL.md").write_text(
+        "---\nname: plot-engine\npurposes: outline\n---\n\n# Plot Engine\n",
+        encoding="utf-8",
+    )
+    assert client.post(
+        "/skill-packs/import",
+        json={"source_path": str(source)},
+    ).status_code == 200
+
+    response = client.get("/skill-packs")
+
+    assert response.status_code == 200
+    status = response.json()[0]["narrative_enhancement_status"]
+    assert status["status"] == "incomplete"
+    assert status["reason"] == "missing_required_modules"
+    assert status["missing_module_ids"] == [
+        "chapter-sop",
+        "genre-examples",
+        "review-checklist",
+        "writer-execution",
+    ]
+
+
 def test_skill_pack_import_rejects_path_outside_allowed_roots(tmp_path: Path, monkeypatch) -> None:
     allowed = tmp_path / "allowed"
     allowed.mkdir()

@@ -144,33 +144,69 @@ def test_create_project_persists_selected_narrative_enhancement_in_project_and_s
     assert master["state"] == state
 
 
-def test_create_project_preserves_known_enhancement_when_pack_is_missing(tmp_path, monkeypatch):
+def test_create_project_rejects_known_enhancement_when_pack_is_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(tmp_path / "missing-skill-packs"))
 
-    created = create_file_project(
-        tmp_path,
-        FileProjectCreateSpec(
-            mode="blank",
-            title="照夜行",
-            novel_type_id="xuanhuan",
-            narrative_enhancement_ids=["commercial-shuangwen"],
+    with pytest.raises(
+        ValueError,
+        match=(
+            "narrative_enhancement_unavailable:commercial-shuangwen:"
+            "skill_pack_missing"
         ),
-        project_id_factory=lambda: "p-missing-enhancement",
-    )
+    ):
+        create_file_project(
+            tmp_path,
+            FileProjectCreateSpec(
+                mode="blank",
+                title="照夜行",
+                novel_type_id="xuanhuan",
+                narrative_enhancement_ids=["commercial-shuangwen"],
+            ),
+            project_id_factory=lambda: "p-missing-enhancement",
+        )
+    assert not (tmp_path / "p-missing-enhancement").exists()
 
-    for relative_path in (".webnovel/project.json", ".webnovel/state.json"):
-        persisted = read_json(created.root / relative_path)
-        assert persisted["enabled_skill_ids"] == ["commercial-shuangwen"]
-        assert persisted["enabled_skill_module_ids"] == []
+
+def test_create_project_rejects_incomplete_commercial_shuangwen_pack(
+    tmp_path,
+    monkeypatch,
+):
+    pack = SimpleNamespace(
+        skill_id="commercial-shuangwen",
+        modules=[SimpleNamespace(module_id="plot-engine")],
+    )
+    monkeypatch.setattr(file_project_creation, "get_skill_pack", lambda _skill_id: pack)
+
+    with pytest.raises(
+        ValueError,
+        match="narrative_enhancement_incomplete:commercial-shuangwen:missing_modules:",
+    ):
+        create_file_project(
+            tmp_path,
+            FileProjectCreateSpec(
+                mode="blank",
+                title="照夜行",
+                novel_type_id="xuanhuan",
+                narrative_enhancement_ids=["commercial-shuangwen"],
+            ),
+            project_id_factory=lambda: "p-incomplete-enhancement",
+        )
+    assert not (tmp_path / "p-incomplete-enhancement").exists()
 
 
 def test_create_project_does_not_enable_pack_root_as_stage_module(tmp_path, monkeypatch):
-    stage_module_id = "stage-module"
+    stage_module_ids = [
+        "plot-engine",
+        "chapter-sop",
+        "writer-execution",
+        "review-checklist",
+        "genre-examples",
+    ]
     pack = SimpleNamespace(
         skill_id="commercial-shuangwen",
         modules=[
             SimpleNamespace(module_id="root"),
-            SimpleNamespace(module_id=stage_module_id),
+            *(SimpleNamespace(module_id=module_id) for module_id in stage_module_ids),
         ],
     )
     monkeypatch.setattr(file_project_creation, "get_skill_pack", lambda _skill_id: pack)
@@ -187,7 +223,9 @@ def test_create_project_does_not_enable_pack_root_as_stage_module(tmp_path, monk
     )
 
     project = read_json(created.root / ".webnovel/project.json")
-    assert project["enabled_skill_module_ids"] == [skill_module_key(pack.skill_id, stage_module_id)]
+    assert project["enabled_skill_module_ids"] == [
+        skill_module_key(pack.skill_id, module_id) for module_id in stage_module_ids
+    ]
 
 
 @pytest.mark.parametrize("enhancements", [None, []])

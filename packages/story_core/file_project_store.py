@@ -192,6 +192,7 @@ from packages.story_core.skill_packs import (
     resolve_enabled_skill_module_ids,
     skill_module_key,
     skill_pack_prompt_context,
+    writer_skill_pack_prompt_context,
 )
 from packages.story_core.writing_taskbook import format_taskbook_brief_section
 from packages.story_core.world_blueprint_context import (
@@ -9614,15 +9615,24 @@ class FileProjectStore:
         )
         enabled_skill_ids = resolve_enabled_skill_ids(project, state)
         enabled_skill_module_ids = resolve_enabled_skill_module_ids(project, state)
-        skill_context = {
-            purpose: skill_pack_prompt_context(
-                enabled_skill_ids,
-                enabled_module_ids=enabled_skill_module_ids,
-                purpose=purpose,
-                max_chars_per_pack=2600,
-            )
-            for purpose in ("writer", "dialogue", "style", "genre", "continuity", "reviewer")
-        }
+        genre_context = self._review_genre_context()
+        genre_ids = genre_context.get("genre_plugin_ids") or []
+        genre_id = str(
+            genre_ids[0]
+            if genre_ids
+            else genre_context.get("genre") or ""
+        )
+        writer_skill_context = writer_skill_pack_prompt_context(
+            enabled_skill_ids,
+            enabled_module_ids=enabled_skill_module_ids,
+            genre_id=genre_id,
+            max_chars_per_pack=2600,
+        )
+        skill_context = (
+            {"writer": writer_skill_context}
+            if writer_skill_context
+            else {}
+        )
         packet_project = dict(project)
         packet_project["character_profiles"] = characters
         scoped_author_constraints = self._global_author_constraints(
@@ -9777,7 +9787,7 @@ class FileProjectStore:
                 "filled_chapter_numbers": rolling_fill_chapter_numbers,
                 "error": rolling_fill_error,
             },
-            "skill_context": {key: value for key, value in skill_context.items() if value},
+            "skill_context": skill_context,
         }
         if power_system:
             packet["power_system"] = power_system

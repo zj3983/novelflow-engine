@@ -545,6 +545,9 @@ class RollingWindowGenerator(Protocol):
         volume_range: tuple[int, int],
         character_cards: list[dict[str, Any]],
         require_shuangwen_contracts: bool,
+        enabled_skill_ids: list[str],
+        enabled_skill_module_ids: list[str] | None,
+        genre_id: str,
     ) -> list[dict[str, Any]]: ...
 
 
@@ -637,6 +640,9 @@ class LLMRollingWindowGenerator:
         volume_range: tuple[int, int],
         character_cards: list[dict[str, Any]],
         require_shuangwen_contracts: bool,
+        enabled_skill_ids: list[str] | None = None,
+        enabled_skill_module_ids: list[str] | None = None,
+        genre_id: str = "",
     ) -> list[dict[str, Any]]:
         from packages.story_core.agent_base import parse_json_message_content
         from packages.story_core.outline_planning_generation import (
@@ -645,9 +651,20 @@ class LLMRollingWindowGenerator:
             chapter_output_schema,
         )
         from packages.story_core.outline_rolling import validate_rolling_batch
+        from packages.story_core.skill_packs import skill_pack_prompt_context
 
         if not chapter_numbers:
             raise ValueError("rolling_window_no_chapter_numbers")
+        chapter_skill_context = skill_pack_prompt_context(
+            list(enabled_skill_ids or []),
+            enabled_module_ids=enabled_skill_module_ids,
+            purpose="chapter_plan",
+            include_examples=True,
+            genre_id=genre_id,
+            max_chars_per_pack=2200,
+            compact=True,
+            max_serialized_chars=2600,
+        )
         request_payload = {
             "context": context,
             "chapter_numbers": list(chapter_numbers),
@@ -658,6 +675,16 @@ class LLMRollingWindowGenerator:
                 require_chapter_contracts=require_shuangwen_contracts,
             ),
         }
+        if chapter_skill_context:
+            request_payload["skill_context"] = {
+                "chapter_plan": chapter_skill_context,
+            }
+        skill_instruction = (
+            "使用request.skill_context.chapter_plan中的方法与当前题材示例来设计本章因果；"
+            "Skill不得覆盖既有世界规则、人物事实和output_schema。"
+            if chapter_skill_context
+            else ""
+        )
         response = self._gateway.complete_stage(
             "planner",
             self._ModelRequest(
@@ -673,6 +700,7 @@ class LLMRollingWindowGenerator:
                             "location、pov、goal、obstacle、action、change、next和state_delta。"
                             "cast只能使用character_cards中已有的人名。"
                             f"{CHAPTER_CONTRACT_RULE if require_shuangwen_contracts else ''}"
+                            f"{skill_instruction}"
                         ),
                     },
                     {
@@ -1253,12 +1281,18 @@ class ContinuationOutlineBootstrapper:
         context = self._rolling_context()
         character_cards = self._rolling_character_cards()
         require_shuangwen_contracts = self._require_shuangwen_contracts()
+        enabled_skill_ids = self._enabled_skill_ids()
+        enabled_skill_module_ids = self._enabled_skill_module_ids()
+        genre_id = self._novel_type_id()
         rows = self._rolling_generator.generate(
             context=context,
             chapter_numbers=missing,
             volume_range=volume_range,
             character_cards=character_cards,
             require_shuangwen_contracts=require_shuangwen_contracts,
+            enabled_skill_ids=enabled_skill_ids,
+            enabled_skill_module_ids=enabled_skill_module_ids,
+            genre_id=genre_id,
         )
         if not isinstance(rows, list):
             raise _BootstrapFailure(
@@ -1333,6 +1367,33 @@ class ContinuationOutlineBootstrapper:
             state = {}
         return resolve_enabled_skill_module_ids(project, state)
 
+    def _enabled_skill_ids(self) -> list[str]:
+        from packages.story_core.skill_packs import resolve_enabled_skill_ids
+
+        project = _read_json(self._root / ".webnovel" / "project.json") or {}
+        state = _read_json(self._root / ".webnovel" / "state.json") or {}
+        return resolve_enabled_skill_ids(
+            project if isinstance(project, dict) else {},
+            state if isinstance(state, dict) else {},
+        )
+
+    def _novel_type_id(self) -> str:
+        from packages.story_core.novel_type_catalog import normalize_novel_type_ids
+
+        project = _read_json(self._root / ".webnovel" / "project.json") or {}
+        state = _read_json(self._root / ".webnovel" / "state.json") or {}
+        project = project if isinstance(project, dict) else {}
+        state = state if isinstance(state, dict) else {}
+        blueprint = (
+            project.get("world_blueprint")
+            if isinstance(project.get("world_blueprint"), dict)
+            else {}
+        )
+        genre_ids = normalize_novel_type_ids(blueprint.get("genre_plugin_ids"))
+        if not genre_ids:
+            genre_ids = normalize_novel_type_ids(state.get("genre_plugin_ids"))
+        return genre_ids[0] if genre_ids else ""
+
     def _require_shuangwen_contracts(self) -> bool:
         from packages.story_core.outline_planning import (
             CHAPTER_SOP_MODULE_ID,
@@ -1368,12 +1429,9 @@ class ContinuationOutlineBootstrapper:
         fingerprint_source = {
             "source_fingerprint": continuation.get("source_fingerprint", ""),
             "continuation_point": continuation.get("start_after_chapter", 0),
-            "novel_type_id": (
-                (project.get("world_blueprint") or {}).get("genre_plugin_ids", [""])[0]
-                if isinstance(project.get("world_blueprint"), dict)
-                else ""
-            ),
+            "novel_type_id": self._novel_type_id(),
             "analysis_confirmed": analysis.get("story_overview", "")[:200],
+            "enabled_skill_ids": self._enabled_skill_ids(),
             "enabled_skill_module_ids": self._enabled_skill_module_ids(),
         }
         encoded = json.dumps(

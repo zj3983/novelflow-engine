@@ -15,6 +15,10 @@ from packages.story_core.skill_packs import (
     uninstall_skill_module,
     uninstall_skill_pack,
 )
+from packages.story_core.narrative_enhancements import (
+    NARRATIVE_ENHANCEMENT_REQUIREMENTS,
+    inspect_narrative_enhancement,
+)
 
 from apps.api.fs_access import require_allowed_path
 
@@ -26,8 +30,18 @@ class ImportSkillPackRequest(BaseModel):
     source_path: str
 
 
-def _pack_detail(pack) -> dict[str, Any]:
+def _pack_summary(pack) -> dict[str, Any]:
     data = pack.summary()
+    if pack.skill_id in NARRATIVE_ENHANCEMENT_REQUIREMENTS:
+        data["narrative_enhancement_status"] = inspect_narrative_enhancement(
+            pack.skill_id,
+            pack,
+        ).as_dict()
+    return data
+
+
+def _pack_detail(pack) -> dict[str, Any]:
+    data = _pack_summary(pack)
     data["root_skill"] = pack.root_content
     data["modules"] = [
         {
@@ -47,7 +61,7 @@ def _pack_detail(pack) -> dict[str, Any]:
 def init_skill_pack_routes() -> APIRouter:
     @router.get("/skill-packs")
     def list_registered_skill_packs() -> list[dict[str, Any]]:
-        return [pack.summary() for pack in list_skill_packs()]
+        return [_pack_summary(pack) for pack in list_skill_packs()]
 
     @router.get("/skill-packs/{skill_id}")
     def get_registered_skill_pack(skill_id: str) -> dict[str, Any]:

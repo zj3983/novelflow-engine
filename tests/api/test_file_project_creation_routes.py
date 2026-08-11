@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.parse import quote
 
@@ -10,6 +11,7 @@ from apps.api.main import app
 from apps.api.routes import file_projects as file_project_routes
 from apps.api.routes import stories as story_routes
 from packages.story_core.chapter_seed import build_chapter_seed
+from packages.story_core import file_project_creation
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import NovelProject, StoryState
 from packages.story_core.novel_type_library import NovelTypeLibrary
@@ -90,6 +92,40 @@ def test_file_project_creation_rejects_unknown_narrative_enhancement(creation_ap
 
     assert response.status_code == 422
     assert "unknown_narrative_enhancement_id:unknown-method" in response.text
+    assert not export_root.exists() or list(export_root.iterdir()) == []
+    legacy_create.assert_not_called()
+
+
+def test_file_project_creation_rejects_incomplete_narrative_enhancement(
+    creation_api,
+    monkeypatch,
+):
+    client, export_root, legacy_create = creation_api
+    incomplete_pack = SimpleNamespace(
+        skill_id="commercial-shuangwen",
+        modules=[SimpleNamespace(module_id="plot-engine")],
+    )
+    monkeypatch.setattr(
+        file_project_creation,
+        "get_skill_pack",
+        lambda _skill_id: incomplete_pack,
+    )
+
+    response = client.post(
+        "/file-projects",
+        json={
+            "mode": "blank",
+            "title": "Incomplete Enhancement",
+            "novel_type_id": "urban",
+            "narrative_enhancement_ids": ["commercial-shuangwen"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert (
+        "narrative_enhancement_incomplete:commercial-shuangwen:missing_modules:"
+        in response.text
+    )
     assert not export_root.exists() or list(export_root.iterdir()) == []
     legacy_create.assert_not_called()
 
@@ -1395,6 +1431,59 @@ def test_generate_file_project_plan_passes_mode_and_trimmed_guidance(creation_ap
     assert response.status_code == 200
     assert response.json()["outline"]["chapters"][0]["chapter_number"] == 1
     assert calls[0][1:] == ("regenerate", "阶段对手要有现实利益")
+
+
+def test_outline_generation_api_preserves_explicit_skill_modules_and_genre(
+    creation_api,
+    monkeypatch,
+):
+    client, _, _ = creation_api
+    project = client.post(
+        "/file-projects",
+        json={
+            "mode": "blank",
+            "title": "石碑试炼",
+            "novel_type_id": "xuanhuan",
+            "narrative_enhancement_ids": ["commercial-shuangwen"],
+        },
+    ).json()
+    root = Path(project["source_path"])
+    selected_modules = ["commercial-shuangwen::genre-examples"]
+    for relative_path in (".webnovel/project.json", ".webnovel/state.json"):
+        path = root / relative_path
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["enabled_skill_module_ids"] = selected_modules
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    trope = novel_type_prompt_context(runtime_novel_type("xuanhuan"))[
+        "genre_trope_templates"
+    ][0]
+    captured = {}
+
+    class OutlineGenerator:
+        def generate(self, brief, *, mode, guidance):
+            captured["enabled_skill_ids"] = brief.enabled_skill_ids
+            captured["enabled_skill_module_ids"] = brief.enabled_skill_module_ids
+            captured["novel_type_id"] = brief.novel_type_id
+            return _outline_plan_with_trope(trope["id"], trope["beats"][0])
+
+    monkeypatch.setattr(
+        file_project_routes,
+        "outline_planning_generator",
+        OutlineGenerator(),
+    )
+
+    response = client.post(
+        f"/file-projects/{project['project_id']}/outline/generate",
+        json={"mode": "initial", "guidance": ""},
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured == {
+        "enabled_skill_ids": ["commercial-shuangwen"],
+        "enabled_skill_module_ids": selected_modules,
+        "novel_type_id": "xuanhuan",
+    }
 
 
 def test_outline_generation_checkpoint_api_and_restart_phase(creation_api, monkeypatch):

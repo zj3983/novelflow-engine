@@ -1091,13 +1091,20 @@ def test_project_writing_packet_preserves_module_selection_mode(
     )
 
     assert response.status_code == 200
-    writer_context = response.json().get("skill_context", {}).get("writer", [])
+    skill_context = response.json().get("skill_context", {})
+    assert set(skill_context) == ({"writer"} if expected_writer_modules else set())
+    writer_context = skill_context.get("writer", [])
     writer_modules = sorted(
         module["module_id"]
         for pack in writer_context
         for module in pack.get("modules", [])
     )
     assert writer_modules == expected_writer_modules
+    serialized = json.dumps(skill_context, ensure_ascii=False)
+    assert "review-checklist" not in serialized
+    if expected_writer_modules:
+        assert "周执事押上长老担保" in serialized
+        assert "公会押上声望封锁副本" not in serialized
 
 
 def test_project_writing_packet_uses_explicit_non_game_project_type():

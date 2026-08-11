@@ -777,7 +777,7 @@ class LLMOutlinePlanningGenerator:
                     compact=True,
                     max_serialized_chars=_CHAPTER_SKILL_LIST_MAX_CHARS,
                 )
-                if chapter_contracts_enabled and validated.enabled_skill_ids
+                if validated.enabled_skill_ids
                 else []
             )
             skill_method_guard = ""

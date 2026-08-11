@@ -646,13 +646,63 @@ def test_llm_rolling_window_generator_requires_enabled_contracts() -> None:
         volume_range=(148, 160),
         character_cards=[character_card("林修", "protagonist")],
         require_shuangwen_contracts=True,
+        enabled_skill_ids=["commercial-shuangwen"],
+        enabled_skill_module_ids=[
+            "commercial-shuangwen::chapter-sop",
+            "commercial-shuangwen::genre-examples",
+        ],
+        genre_id="xuanhuan",
     )
 
     serialized_request = json.dumps(captured[0]["messages"], ensure_ascii=False)
     assert "payoff_contract" in serialized_request
     assert "chapter_sop" in serialized_request
+    assert "chapter-sop" in serialized_request
+    assert "genre-examples" in serialized_request
+    assert "周执事押上长老担保" in serialized_request
+    assert "公会押上声望封锁副本" not in serialized_request
+    assert "review-checklist" not in serialized_request
     assert rows[0]["payoff_contract"] == CHAPTER_CONTRACT["payoff_contract"]
     assert rows[0]["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]
+
+
+def test_llm_rolling_window_generator_can_load_genre_examples_without_chapter_sop() -> None:
+    from packages.story_core.continuation_outline_bootstrap import (
+        LLMRollingWindowGenerator,
+    )
+
+    captured: list[dict[str, Any]] = []
+
+    class _FakeGateway:
+        def complete_stage(self, stage: str, request):  # type: ignore[no-untyped-def]
+            captured.append({"stage": stage, "messages": list(request.messages)})
+            chapter = {**detailed_chapter(148), "cast": ["林修"]}
+            from packages.story_core.model_gateway import ModelResponse
+
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"chapters": [chapter]}, ensure_ascii=False),
+            )
+
+    rows = LLMRollingWindowGenerator(gateway=_FakeGateway()).generate(  # type: ignore[arg-type]
+        context={"current_arc": "续写主线"},
+        chapter_numbers=[148],
+        volume_range=(148, 160),
+        character_cards=[character_card("林修", "protagonist")],
+        require_shuangwen_contracts=False,
+        enabled_skill_ids=["commercial-shuangwen"],
+        enabled_skill_module_ids=["commercial-shuangwen::genre-examples"],
+        genre_id="xuanhuan",
+    )
+
+    serialized_request = json.dumps(captured[0]["messages"], ensure_ascii=False)
+    assert "genre-examples" in serialized_request
+    assert "周执事押上长老担保" in serialized_request
+    assert "chapter-sop" not in serialized_request
+    assert "payoff_contract" not in serialized_request
+    assert "chapter_sop" not in serialized_request
+    assert "payoff_contract" not in rows[0]
+    assert "chapter_sop" not in rows[0]
 
 
 def test_llm_rolling_window_generator_normalizes_common_cli_shape() -> None:
@@ -857,6 +907,9 @@ def _fake_rolling_generator(
             volume_range: tuple[int, int],
             character_cards: list[dict[str, Any]],
             require_shuangwen_contracts: bool,
+            enabled_skill_ids: list[str],
+            enabled_skill_module_ids: list[str] | None,
+            genre_id: str,
         ) -> list[dict[str, Any]]:
             captured.append(
                 {
@@ -865,6 +918,13 @@ def _fake_rolling_generator(
                     "volume_range": tuple(volume_range),
                     "character_cards": list(character_cards),
                     "require_shuangwen_contracts": require_shuangwen_contracts,
+                    "enabled_skill_ids": list(enabled_skill_ids),
+                    "enabled_skill_module_ids": (
+                        None
+                        if enabled_skill_module_ids is None
+                        else list(enabled_skill_module_ids)
+                    ),
+                    "genre_id": genre_id,
                 }
             )
             if error:
@@ -956,6 +1016,8 @@ def test_disabled_bootstrap_drops_partial_contracts_before_persisting(
 
     assert result.ready
     assert rolling_calls[0]["require_shuangwen_contracts"] is False
+    assert rolling_calls[0]["enabled_skill_ids"] == []
+    assert rolling_calls[0]["enabled_skill_module_ids"] is None
     persisted = RollingOutlineStore(root).read_rolling_outline()
     assert all("payoff_contract" not in row for row in persisted["chapters"])
     assert all("chapter_sop" not in row for row in persisted["chapters"])
@@ -967,8 +1029,14 @@ def test_enabled_bootstrap_requires_and_persists_full_contracts(
     root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
     project_path = root / ".webnovel" / "project.json"
     project = _read_json(project_path)
+    project["enabled_skill_ids"] = ["commercial-shuangwen"]
+    project["world_blueprint"] = {
+        **project.get("world_blueprint", {}),
+        "genre_plugin_ids": ["xuanhuan"],
+    }
     project["enabled_skill_module_ids"] = [
-        "commercial-shuangwen::chapter-sop"
+        "commercial-shuangwen::chapter-sop",
+        "commercial-shuangwen::genre-examples",
     ]
     _write_json(project_path, project)
     chapters = [
@@ -985,6 +1053,12 @@ def test_enabled_bootstrap_requires_and_persists_full_contracts(
 
     assert result.ready
     assert rolling_calls[0]["require_shuangwen_contracts"] is True
+    assert rolling_calls[0]["enabled_skill_ids"] == ["commercial-shuangwen"]
+    assert rolling_calls[0]["enabled_skill_module_ids"] == [
+        "commercial-shuangwen::chapter-sop",
+        "commercial-shuangwen::genre-examples",
+    ]
+    assert rolling_calls[0]["genre_id"] == "xuanhuan"
     persisted = RollingOutlineStore(root).read_rolling_outline()
     assert persisted["chapters"][0]["payoff_contract"] == CHAPTER_CONTRACT["payoff_contract"]
     assert persisted["chapters"][0]["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]

@@ -705,6 +705,23 @@ def test_commercial_shuangwen_http_workflow_isolates_creation_and_manual_review(
         assert payload["enabled_skill_ids"] == ["commercial-shuangwen"]
         assert payload["enabled_skill_module_ids"] == expected_module_ids
 
+    packet_response = client.get(
+        f"/file-projects/{enhanced_root.name}/writing-packet?chapter_number=1"
+    )
+    assert packet_response.status_code == 200, packet_response.text
+    packet_skill_context = packet_response.json().get("skill_context", {})
+    assert set(packet_skill_context) == {"writer"}
+    packet_modules = [
+        module["module_id"]
+        for pack_context in packet_skill_context["writer"]
+        for module in pack_context.get("modules", [])
+    ]
+    assert packet_modules == ["genre-examples", "writer-execution"]
+    packet_skill_text = json.dumps(packet_skill_context, ensure_ascii=False)
+    assert "周执事押上长老担保" in packet_skill_text
+    assert "公会押上声望封锁副本" not in packet_skill_text
+    assert "review-checklist" not in packet_skill_text
+
     baseline_outline_response = client.put(
         f"/file-projects/{baseline_root.name}/outline",
         json=_workflow_outline(enhanced=False),

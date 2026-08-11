@@ -911,6 +911,50 @@ def test_enabled_chapter_sop_requires_and_persists_concrete_chapter_contracts(
     assert result.outline.chapters[0].chapter_sop.model_dump() == CHAPTER_CONTRACT["chapter_sop"]
 
 
+def test_chapter_plan_loads_explicit_genre_examples_without_chapter_sop(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["context"] = json.loads(payload["messages"][1]["content"])
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(_valid_plan(), ensure_ascii=False)
+                    }
+                }
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    result = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    ).generate(
+        _skill_enabled_brief(["commercial-shuangwen::genre-examples"]),
+        mode="initial",
+    )
+
+    skill_context = captured["context"]["skill_context"]
+    chapter_modules = [
+        module["module_id"]
+        for pack in skill_context["chapter_plan"]
+        for module in pack["modules"]
+    ]
+    assert chapter_modules == ["genre-examples"]
+    assert "周执事押上长老担保" in json.dumps(
+        skill_context["chapter_plan"], ensure_ascii=False
+    )
+    assert "payoff_contract" not in json.dumps(
+        captured["context"]["output_schema"], ensure_ascii=False
+    )
+    assert result.outline.chapters[0].payoff_contract is None
+    assert result.outline.chapters[0].chapter_sop is None
+
+
 def test_disabled_chapter_sop_does_not_mention_or_persist_contract_fields(
     monkeypatch,
 ) -> None:
@@ -1021,12 +1065,11 @@ def test_enabled_chapter_sop_rejects_partial_or_vague_generated_contracts(
 
 
 def test_outline_skill_context_uses_canonical_genre_and_bounded_budget(monkeypatch) -> None:
-    captured_call: dict = {}
+    captured_calls: list[dict] = []
     sentinel = [{"skill_id": "commercial-shuangwen", "modules": []}]
 
     def fake_skill_context(skill_ids, **kwargs):
-        captured_call["skill_ids"] = skill_ids
-        captured_call.update(kwargs)
+        captured_calls.append({"skill_ids": skill_ids, **kwargs})
         return sentinel
 
     monkeypatch.setattr(outline_generation_module, "skill_pack_prompt_context", fake_skill_context)
@@ -1042,17 +1085,32 @@ def test_outline_skill_context_uses_canonical_genre_and_bounded_budget(monkeypat
         mode="initial",
     )
 
-    assert captured_call == {
-        "skill_ids": ["commercial-shuangwen"],
-        "enabled_module_ids": ["commercial-shuangwen::plot-engine"],
-        "purpose": "outline",
-        "include_examples": True,
-        "genre_id": "xuanhuan",
-        "max_chars_per_pack": 3600,
-        "compact": True,
-        "max_serialized_chars": 3587,
+    assert captured_calls == [
+        {
+            "skill_ids": ["commercial-shuangwen"],
+            "enabled_module_ids": ["commercial-shuangwen::plot-engine"],
+            "purpose": "outline",
+            "include_examples": True,
+            "genre_id": "xuanhuan",
+            "max_chars_per_pack": 3600,
+            "compact": True,
+            "max_serialized_chars": 3587,
+        },
+        {
+            "skill_ids": ["commercial-shuangwen"],
+            "enabled_module_ids": ["commercial-shuangwen::plot-engine"],
+            "purpose": "chapter_plan",
+            "include_examples": True,
+            "genre_id": "xuanhuan",
+            "max_chars_per_pack": 1200,
+            "compact": True,
+            "max_serialized_chars": 1182,
+        },
+    ]
+    assert captured_prompt["skill_context"] == {
+        "outline": sentinel,
+        "chapter_plan": sentinel,
     }
-    assert captured_prompt["skill_context"] == {"outline": sentinel}
 
 
 def _valid_plan_with_chapter_contracts() -> dict:
