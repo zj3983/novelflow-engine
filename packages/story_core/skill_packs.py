@@ -260,7 +260,7 @@ def extract_skill_instructions(
             continue
         added_chars = len(block) + (1 if selected else 0)
         if total + added_chars > limit:
-            break
+            continue
         selected.append(block)
         total += added_chars
 

@@ -182,6 +182,22 @@ def test_example_block_is_omitted_instead_of_truncated() -> None:
     assert "完整示例的第二行" not in instructions
 
 
+def test_oversized_example_does_not_hide_a_later_rule_block() -> None:
+    source = """# 单章结构
+## 正例
+这是一个超出预算的完整示例第一行。
+这是一个超出预算的完整示例第二行。
+## 规则
+后置规则必须保留。
+"""
+
+    instructions = extract_skill_instructions(source, limit=30, include_examples=True)
+
+    assert "后置规则必须保留" in instructions
+    assert "完整示例第一行" not in instructions
+    assert "完整示例第二行" not in instructions
+
+
 def test_genre_examples_keep_only_general_and_canonical_selected_genre(
     tmp_path: Path, monkeypatch
 ) -> None:
