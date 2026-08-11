@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from hashlib import sha256
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
+from fastapi.testclient import TestClient
 
-from packages.story_core.file_project_creation import (
-    FileProjectCreateSpec,
-    create_file_project,
-)
+from apps.api.main import app
+from apps.api.routes import file_projects as file_project_routes
+from apps.api.routes import stories as story_routes
+from packages.story_core.file_project_creation import FileProjectCreateSpec
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.genre_stages.common_writer import writer_skill_trace
 from packages.story_core.model_gateway import ModelResponse
@@ -30,6 +34,12 @@ from packages.story_core.skill_packs import (
 
 PACKS_DIR = Path(__file__).resolve().parents[2] / "data" / "skill-packs"
 PACK_DIR = PACKS_DIR / "commercial-shuangwen"
+REAL_PROJECT_ID = "p-da2c16a6ee9440d6ad52cb402ead88a0"
+GAME_SPECIFIC_MARKERS = (
+    "game_webnovel",
+    "\u516c\u4f1a\u62bc\u4e0a\u58f0\u671b\u5c01\u9501\u526f\u672c",
+    "\u73a9\u5bb6\u8c03\u51fa\u524d\u7ae0\u9996\u901a\u8bb0\u5f55",
+)
 GENRE_MARKERS = {
     "通用": "审核",
     "game_webnovel": "公会",
@@ -51,6 +61,96 @@ GENRE_CATEGORY_MARKERS = (
 
 def _enable_local_packs(monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
+
+
+def _real_user_project_root() -> Path | None:
+    main_workspace = Path(
+        os.environ.get(
+            "NOVEL_AUTOGROWTH_MAIN_WORKSPACE",
+            r"D:\xiaoshuofish-flow-test",
+        )
+    )
+    if not main_workspace.is_dir():
+        return None
+    resolved_workspace = main_workspace.resolve(strict=True)
+    candidate = resolved_workspace / "data" / "exported-projects" / REAL_PROJECT_ID
+    if not candidate.is_dir():
+        return None
+    resolved_candidate = candidate.resolve(strict=True)
+    assert resolved_candidate.is_relative_to(resolved_workspace)
+    return resolved_candidate
+
+
+def _content_fingerprint(root: Path) -> str:
+    digest = sha256()
+    paths = sorted(
+        root.rglob("*"),
+        key=lambda item: item.relative_to(root).as_posix(),
+    )
+    for path in paths:
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        if path.is_symlink():
+            link_target = os.readlink(path).encode("utf-8")
+            digest.update(b"L\0" + relative + b"\0" + link_target)
+        elif path.is_dir():
+            digest.update(b"D\0" + relative + b"\0")
+        elif path.is_file():
+            digest.update(b"F\0" + relative + b"\0")
+            with path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+            digest.update(b"\0")
+        else:
+            digest.update(b"O\0" + relative + b"\0")
+    return digest.hexdigest()
+
+
+def _checked_project_path(source_path: str, temp_root: Path) -> Path:
+    resolved_root = temp_root.resolve(strict=True)
+    resolved_project = Path(source_path).resolve(strict=True)
+    assert resolved_project != resolved_root
+    assert resolved_project.is_relative_to(resolved_root)
+    return resolved_project
+
+
+def _remove_checked_projects(project_paths: list[Path], temp_root: Path) -> None:
+    resolved_root = temp_root.resolve(strict=True)
+    for project_path in project_paths:
+        resolved_project = project_path.resolve(strict=True)
+        assert resolved_project != resolved_root
+        assert resolved_project.is_relative_to(resolved_root)
+        shutil.rmtree(resolved_project)
+        assert not resolved_project.exists()
+    assert not any(path.is_dir() for path in resolved_root.iterdir())
+
+
+@pytest.fixture
+def isolated_task8_api(tmp_path: Path, monkeypatch):
+    _enable_local_packs(monkeypatch)
+    temp_root = (tmp_path / "task-8-api-projects").resolve()
+    temp_root.mkdir()
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(temp_root))
+    legacy_create = Mock(
+        side_effect=AssertionError("legacy SQLite project creation called")
+    )
+    monkeypatch.setattr(story_routes.store, "create_project", legacy_create)
+
+    real_project_root = _real_user_project_root()
+    real_project_before = (
+        _content_fingerprint(real_project_root)
+        if real_project_root is not None
+        else None
+    )
+    generated_projects: list[Path] = []
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client, temp_root, generated_projects, legacy_create
+    finally:
+        try:
+            _remove_checked_projects(generated_projects, temp_root)
+        finally:
+            if real_project_root is not None:
+                assert _content_fingerprint(real_project_root) == real_project_before
 
 
 def _joined_instructions(context: list[dict[str, object]]) -> str:
@@ -396,29 +496,10 @@ class _PassingReviewGateway:
 
 
 def test_commercial_shuangwen_end_to_end_isolates_two_xuanhuan_projects(
-    tmp_path: Path,
+    isolated_task8_api,
     monkeypatch,
 ) -> None:
-    _enable_local_packs(monkeypatch)
-    project_root = (tmp_path / "isolated-projects").resolve()
-    project_root.mkdir()
-    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(project_root))
-
-    tracked_project_id = "p-da2c16a6ee9440d6ad52cb402ead88a0"
-    tracked_guard = tmp_path / "tracked-project-guard" / tracked_project_id
-    tracked_guard.mkdir(parents=True)
-    tracked_project_path = tracked_guard / "project.json"
-    tracked_project_path.write_text(
-        json.dumps(
-            {
-                "project_id": tracked_project_id,
-                "enabled_skill_ids": [],
-                "enabled_skill_module_ids": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    tracked_before = tracked_project_path.read_bytes()
+    client, temp_root, generated_projects, legacy_create = isolated_task8_api
 
     base_payload = {
         "mode": "blank",
@@ -436,26 +517,33 @@ def test_commercial_shuangwen_end_to_end_isolates_two_xuanhuan_projects(
         genre_id="xuanhuan",
     ) == []
 
-    baseline = create_file_project(
-        project_root,
-        FileProjectCreateSpec.model_validate(
-            {**base_payload, "narrative_enhancement_ids": []}
-        ),
-        project_id_factory=lambda: "p-task8-baseline",
+    baseline_response = client.post(
+        "/file-projects",
+        json={**base_payload, "narrative_enhancement_ids": []},
     )
-    enhanced = create_file_project(
-        project_root,
-        FileProjectCreateSpec.model_validate(
-            {
-                **base_payload,
-                "title": "石碑第九纹",
-                "narrative_enhancement_ids": ["commercial-shuangwen"],
-            }
-        ),
-        project_id_factory=lambda: "p-task8-enhanced",
+    enhanced_response = client.post(
+        "/file-projects",
+        json={
+            **base_payload,
+            "title": "Task 8 Enhanced Xuanhuan",
+            "narrative_enhancement_ids": ["commercial-shuangwen"],
+        },
     )
-    baseline_store = FileProjectStore(baseline.root)
-    enhanced_store = FileProjectStore(enhanced.root)
+    assert baseline_response.status_code == 201, baseline_response.text
+    assert enhanced_response.status_code == 201, enhanced_response.text
+    baseline_project = baseline_response.json()
+    enhanced_project = enhanced_response.json()
+    baseline_root = _checked_project_path(baseline_project["source_path"], temp_root)
+    enhanced_root = _checked_project_path(enhanced_project["source_path"], temp_root)
+    generated_projects.extend((baseline_root, enhanced_root))
+    assert baseline_root != enhanced_root
+    assert {path.name for path in temp_root.iterdir()} == {
+        baseline_root.name,
+        enhanced_root.name,
+    }
+    baseline_store = FileProjectStore(baseline_root)
+    enhanced_store = FileProjectStore(enhanced_root)
+    legacy_create.assert_not_called()
 
     pack = get_skill_pack("commercial-shuangwen")
     assert pack is not None
@@ -539,10 +627,12 @@ def test_commercial_shuangwen_end_to_end_isolates_two_xuanhuan_projects(
         baseline_writer_prompt,
         enhanced_writer_prompt,
     ):
-        assert "公会押上声望封锁副本" not in text
-        assert "玩家调出前章首通记录" not in text
+        for marker in GAME_SPECIFIC_MARKERS:
+            assert marker not in text
 
     confirmed_body = "沈砚补全最后一式，石碑第九纹亮起，周执事重新打开名册。"
+    confirmed_body_bytes = confirmed_body.encode("utf-8")
+    chapter_body_paths: dict[Path, Path] = {}
     for store, include_contract in (
         (baseline_store, False),
         (enhanced_store, True),
@@ -550,10 +640,15 @@ def test_commercial_shuangwen_end_to_end_isolates_two_xuanhuan_projects(
         state = store.state()
         state["current_chapter"] = 1
         store._write_json_atomic(store.webnovel_dir / "state.json", state)
+        body_path = store.root / "chapters" / "0001-confirmed.md"
+        body_path.parent.mkdir(parents=True, exist_ok=True)
+        body_path.write_bytes(confirmed_body_bytes)
+        chapter_body_paths[store.root] = body_path
         chapter = {
             "chapter_number": 1,
             "chapter_title": "石碑第九纹",
-            "body": confirmed_body,
+            "body_path": body_path.relative_to(store.root).as_posix(),
+            "body_sha256": sha256(confirmed_body_bytes).hexdigest(),
             "quality_report": {"ok": True, "issues": []},
         }
         if include_contract:
@@ -564,36 +659,50 @@ def test_commercial_shuangwen_end_to_end_isolates_two_xuanhuan_projects(
         )
 
     baseline_gateway = _PassingReviewGateway()
-    with pytest.raises(ValueError, match="commercial_shuangwen_skill_disabled"):
-        baseline_store.run_shuangwen_review(1, model_gateway=baseline_gateway)
+    monkeypatch.setattr(
+        file_project_routes,
+        "shuangwen_model_gateway",
+        baseline_gateway,
+        raising=False,
+    )
+    baseline_review_response = client.post(
+        f"/file-projects/{baseline_root.name}/chapters/1/skill-reviews/commercial-shuangwen"
+    )
+    assert baseline_review_response.status_code == 409
+    assert (
+        baseline_review_response.json()["detail"]
+        == "commercial_shuangwen_skill_disabled"
+    )
     assert baseline_gateway.calls == []
 
     review_gateway = _PassingReviewGateway()
-    body_before = enhanced_store.chapter(1)["body"]
-    body_hash_before = sha256(body_before.encode("utf-8")).hexdigest()
-    candidate_hash_before = enhanced_store._candidate_artifacts_hash()
-    report = enhanced_store.run_shuangwen_review(
-        1,
-        model_gateway=review_gateway,
+    monkeypatch.setattr(
+        file_project_routes,
+        "shuangwen_model_gateway",
+        review_gateway,
+        raising=False,
     )
-    body_after = enhanced_store.chapter(1)["body"]
+    enhanced_body_path = chapter_body_paths[enhanced_store.root]
+    body_before = enhanced_body_path.read_bytes()
+    candidate_hash_before = enhanced_store._candidate_artifacts_hash()
+    review_response = client.post(
+        f"/file-projects/{enhanced_root.name}/chapters/1/skill-reviews/commercial-shuangwen"
+    )
+    assert review_response.status_code == 200, review_response.text
+    report = review_response.json()
     assert report["executed"] is True
     assert report["status"] == "passed"
+    assert report["runtime"] == "test"
+    assert report["model"] == "task-8-reviewer"
     assert review_gateway.calls[0][0] == "consistency"
-    assert "review-checklist" in review_gateway.calls[0][1].prompt
-    assert body_after == body_before
-    assert sha256(body_after.encode("utf-8")).hexdigest() == body_hash_before
+    review_prompt = review_gateway.calls[0][1].prompt
+    assert "review-checklist" in review_prompt
+    for marker in GAME_SPECIFIC_MARKERS:
+        assert marker not in review_prompt
+    assert enhanced_body_path.read_bytes() == body_before
+    assert enhanced_store.chapter(1)["body"].encode("utf-8") == body_before
     assert enhanced_store._candidate_artifacts_hash() == candidate_hash_before
     assert (
         enhanced_store.review(1)["skill_reviews"]["commercial-shuangwen"]
         == report
     )
-
-    assert tracked_project_path.read_bytes() == tracked_before
-    assert json.loads(tracked_project_path.read_text(encoding="utf-8"))[
-        "enabled_skill_ids"
-    ] == []
-    assert {path.name for path in project_root.iterdir()} == {
-        "p-task8-baseline",
-        "p-task8-enhanced",
-    }
