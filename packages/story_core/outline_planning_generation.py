@@ -129,10 +129,7 @@ def _chapter_output_schema(
     return schema
 
 
-def _drop_disabled_chapter_contracts(payload: Any) -> None:
-    if not isinstance(payload, dict):
-        return
-    outline = payload.get("outline")
+def _drop_chapter_contracts_from_outline(outline: Any) -> None:
     if not isinstance(outline, dict):
         return
     chapters = outline.get("chapters")
@@ -143,6 +140,11 @@ def _drop_disabled_chapter_contracts(payload: Any) -> None:
             continue
         for field_name in _CHAPTER_CONTRACT_FIELDS:
             chapter.pop(field_name, None)
+
+
+def _drop_disabled_chapter_contracts(payload: Any) -> None:
+    if isinstance(payload, dict):
+        _drop_chapter_contracts_from_outline(payload.get("outline"))
 
 
 def _runtime_gateway_for_legacy_injection(
@@ -697,8 +699,10 @@ class LLMOutlinePlanningGenerator:
                     ]
                 )
 
-            existing_outline = dict(validated.existing_outline)
+            existing_outline = deepcopy(validated.existing_outline)
             existing_outline.pop("overall", None)
+            if not chapter_contracts_enabled:
+                _drop_chapter_contracts_from_outline(existing_outline)
             if mode == "regenerate" and validated.continuation_start_chapter is not None:
                 boundary = int(validated.continuation_start_chapter)
                 existing_outline["arcs"] = [

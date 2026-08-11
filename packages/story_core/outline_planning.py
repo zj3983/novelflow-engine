@@ -101,23 +101,38 @@ _CHAPTER_CONTRACT_FIELDS = {
         "ending_hook",
     ),
 }
-_VAGUE_CHAPTER_CONTRACT_VALUES = {
-    "continue",
-    "tbd",
-    "todo",
-    "事情不简单",
-    "事情更加复杂",
-    "情况复杂",
-    "情况更加复杂",
-    "制造爽点",
-    "增加压力",
-    "待定",
-    "提升压力",
-    "留下悬念",
-    "继续",
-    "获得爽点",
-    "设置悬念",
-}
+_MIN_CHAPTER_CONTRACT_INFORMATION_CHARS = 6
+_CHAPTER_CONTRACT_INFORMATION_CHAR_PATTERN = re.compile(
+    r"[\u3400-\u9fffA-Za-z0-9]"
+)
+_GENERIC_CHAPTER_CONTRACT_PATTERNS = (
+    re.compile(
+        r"^(?:continue|proceed|progress|tbd|todo|placeholder)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:继续|接着|后续)(?:推进|发展|展开|进行)?(?:一下)?"
+        r"(?:剧情|故事|情节|事件|行动)?(?:下去)?$"
+    ),
+    re.compile(
+        r"^(?:事情|情况|局势|形势|情节|剧情)"
+        r"(?:(?:发生|出现|产生)了?|有了?|变得)?"
+        r"(?:一些|一点|新的?|更多)?(?:变化|改变|复杂|不简单|转折)$"
+    ),
+    re.compile(
+        r"^(?:有所|得到|获得|取得|收获|制造)(?:了)?"
+        r"(?:一些|一点|一定|新的?|更多)?"
+        r"(?:收获|成果|回报|爽点|进展|好处)?$"
+    ),
+    re.compile(
+        r"^(?:留下|设置|制造|埋下)(?:了)?(?:一个|一些|一点)?"
+        r"(?:新的?|更多)?(?:悬念|钩子|伏笔)$"
+    ),
+    re.compile(
+        r"^(?:提升|增加|加强|加大|制造)(?:了)?"
+        r"(?:一些|一点|新的?|更多)?(?:压力|冲突|紧张感|难度)$"
+    ),
+)
 _NUMBER_TOKEN = (
     r"(?:\d+(?:,\d{3})*(?:\.\d+)?[万亿]?"
     r"|[零〇一二两三四五六七八九十百千万亿]+)"
@@ -192,8 +207,21 @@ def _chapter_contract_value(section: Any, field_name: str) -> Any:
     return getattr(section, field_name, None)
 
 
-def _normalized_contract_placeholder(value: str) -> str:
-    return re.sub(r"[\s，。！？、,.!?;；:_-]+", "", value).casefold()
+def _is_generic_chapter_contract_value(value: str) -> bool:
+    normalized = re.sub(
+        r"[\s，。！？、,.!?;；:_-]+",
+        "",
+        unicodedata.normalize("NFKC", value),
+    )
+    information_chars = _CHAPTER_CONTRACT_INFORMATION_CHAR_PATTERN.findall(
+        normalized
+    )
+    if len(information_chars) < _MIN_CHAPTER_CONTRACT_INFORMATION_CHARS:
+        return True
+    return any(
+        pattern.fullmatch(normalized)
+        for pattern in _GENERIC_CHAPTER_CONTRACT_PATTERNS
+    )
 
 
 def validate_concrete_chapter_contract(
@@ -220,7 +248,7 @@ def validate_concrete_chapter_contract(
             location = f"{section_name}.{field_name}"
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"chapter_contract_missing:{number}:{location}")
-            if _normalized_contract_placeholder(value) in _VAGUE_CHAPTER_CONTRACT_VALUES:
+            if _is_generic_chapter_contract_value(value):
                 raise ValueError(
                     f"chapter_contract_not_concrete:{number}:{location}"
                 )

@@ -345,6 +345,10 @@ def test_outline_prompt_fills_only_the_selected_genre_outline_template() -> None
     template_text = json.dumps(
         captured["context"]["genre_outline_template"], ensure_ascii=False
     )
+    assert "力量成长线" in template_text
+    assert "游戏成长线" not in template_text
+    assert "genre_outline_template" in captured["system"]
+    assert "逐项填写" in captured["system"]
 
 
 def _codex_phase_content(prompt: dict) -> dict:
@@ -399,10 +403,6 @@ def _codex_phase_content(prompt: dict) -> dict:
             for number in prompt["target_chapter_numbers"]
         ]
     }
-    assert "力量成长线" in template_text
-    assert "游戏成长线" not in template_text
-    assert "genre_outline_template" in captured["system"]
-    assert "逐项填写" in captured["system"]
 
 
 def test_outline_prompt_does_not_fabricate_power_contract_for_legacy_brief() -> None:
@@ -943,6 +943,45 @@ def test_disabled_chapter_sop_does_not_mention_or_persist_contract_fields(
     assert "chapter_sop" not in serialized_request
     assert result.outline.chapters[0].payoff_contract is None
     assert result.outline.chapters[0].chapter_sop is None
+
+
+def test_disabled_chapter_sop_removes_persisted_contracts_only_from_prompt_copy(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
+    source_outline = _valid_plan_with_chapter_contracts()["outline"]
+    brief_payload = _brief().model_dump(mode="json")
+    brief_payload["existing_outline"] = source_outline
+    brief_payload["enabled_skill_ids"] = ["commercial-shuangwen"]
+    brief_payload["enabled_skill_module_ids"] = []
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["context"] = json.loads(payload["messages"][1]["content"])
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    ).generate(OutlinePlanningBrief.model_validate(brief_payload), mode="initial")
+
+    serialized_existing = json.dumps(
+        captured["context"]["existing_outline"],
+        ensure_ascii=False,
+    )
+    assert "payoff_contract" not in serialized_existing
+    assert "chapter_sop" not in serialized_existing
+    assert source_outline["chapters"][0]["payoff_contract"] == CHAPTER_CONTRACT[
+        "payoff_contract"
+    ]
+    assert source_outline["chapters"][0]["chapter_sop"] == CHAPTER_CONTRACT[
+        "chapter_sop"
+    ]
 
 
 @pytest.mark.parametrize(
