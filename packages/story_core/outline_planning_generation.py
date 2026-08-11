@@ -348,6 +348,38 @@ def _drop_invalid_optional_trope_beats(
             chapter["trope_beat"] = None
 
 
+def _preserve_unlocked_legacy_tropes(
+    payload: dict[str, Any],
+    fallback_outline: dict[str, Any],
+) -> None:
+    """Keep an untagged legacy book untagged while extending its outline."""
+
+    outline = payload.get("outline")
+    if not isinstance(outline, dict):
+        return
+    overall = outline.get("overall")
+    if isinstance(overall, dict):
+        overall["primary_trope_id"] = None
+
+    fallback_arcs = {
+        str(arc.get("id") or ""): arc
+        for arc in fallback_outline.get("arcs", [])
+        if isinstance(arc, dict) and str(arc.get("id") or "")
+    }
+    for arc in outline.get("arcs", []):
+        if not isinstance(arc, dict):
+            continue
+        fallback_arc = fallback_arcs.get(str(arc.get("id") or ""))
+        arc["trope_id"] = (
+            fallback_arc.get("trope_id")
+            if isinstance(fallback_arc, dict)
+            else None
+        )
+    for chapter in outline.get("chapters", []):
+        if isinstance(chapter, dict):
+            chapter["trope_beat"] = None
+
+
 class LLMOutlinePlanningGenerator:
     def __init__(
         self,
@@ -376,6 +408,7 @@ class LLMOutlinePlanningGenerator:
         guidance: str = "",
         phase_payloads: dict[str, dict[str, Any]] | None = None,
         phase_callback: Callable[[str, str, dict[str, Any] | None, str], None] | None = None,
+        stop_after_phase: str | None = None,
     ) -> GeneratedOutlinePlan:
         validated = OutlinePlanningBrief.model_validate(brief)
         normalized_guidance = guidance.strip()
@@ -468,6 +501,17 @@ class LLMOutlinePlanningGenerator:
                 if mode in {"regenerate", "extend"} and existing_primary_trope_id
                 else opening_primary_trope_id
             )
+            preserve_unlocked_legacy_tropes = (
+                mode == "extend"
+                and validated.current_chapter > 0
+                and expected_primary_trope_id is None
+            )
+            if preserve_unlocked_legacy_tropes:
+                trope_candidates = []
+                genre_context = {
+                    **genre_context,
+                    "genre_trope_templates": [],
+                }
 
             trope_validation_rules = [
                 "If prompt_context.genre_trope_templates is non-empty, overall.primary_trope_id must exactly equal one candidate id.",
@@ -540,6 +584,24 @@ class LLMOutlinePlanningGenerator:
 
             existing_outline = dict(validated.existing_outline)
             existing_outline.pop("overall", None)
+            if mode == "regenerate" and validated.continuation_start_chapter is not None:
+                boundary = int(validated.continuation_start_chapter)
+                existing_outline["arcs"] = [
+                    arc
+                    for arc in existing_outline.get("arcs", [])
+                    if isinstance(arc, dict)
+                    and isinstance(arc.get("end_chapter"), int)
+                    and not isinstance(arc.get("end_chapter"), bool)
+                    and int(arc["end_chapter"]) <= boundary
+                ]
+                existing_outline["chapters"] = [
+                    chapter
+                    for chapter in existing_outline.get("chapters", [])
+                    if isinstance(chapter, dict)
+                    and isinstance(chapter.get("chapter_number"), int)
+                    and not isinstance(chapter.get("chapter_number"), bool)
+                    and int(chapter["chapter_number"]) <= boundary
+                ]
             prompt_context = {
                 "mode": mode,
                 **genre_context,
@@ -631,16 +693,25 @@ class LLMOutlinePlanningGenerator:
                     request_payload: dict[str, Any],
                     error_prefix: str,
                     invalid_json_error: str,
+                    result_validator: Callable[[BaseModel], None] | None = None,
                 ) -> BaseModel:
                     cached = cached_phases.get(phase)
                     if isinstance(cached, dict):
                         try:
-                            return schema.model_validate(cached)
+                            cached_result = schema.model_validate(cached)
+                            if result_validator:
+                                result_validator(cached_result)
+                            return cached_result
                         except Exception as exc:
-                            error = f"invalid_cached_{phase}:{type(exc).__name__}"
+                            detail = re.sub(r"\s+", " ", str(exc)).strip()[:500]
+                            error = (
+                                f"invalid_cached_{phase}:{type(exc).__name__}:"
+                                f"{detail or 'no_detail'}"
+                            )
                             if phase_callback:
                                 phase_callback(phase, "failed", None, error)
-                            raise ValueError(error) from exc
+                            # Regenerate only this invalid cached phase.  A
+                            # structurally valid placeholder is not reusable.
 
                     if phase_callback:
                         phase_callback(phase, "running", None, "")
@@ -651,7 +722,20 @@ class LLMOutlinePlanningGenerator:
                             operation=f"outline_planning_{phase}",
                         )
                         data = parse_json_message_content(response)
-                        if data is None and phase == "chapter_window":
+                        validation_error = ""
+                        result: BaseModel | None = None
+                        if data is None:
+                            validation_error = invalid_json_error
+                        else:
+                            try:
+                                result = schema.model_validate(data)
+                                if result_validator:
+                                    result_validator(result)
+                            except Exception as exc:
+                                validation_error = re.sub(
+                                    r"\s+", " ", str(exc)
+                                ).strip()[:1000]
+                        if result is None:
                             retry_payload = {
                                 **request_payload,
                                 "messages": [
@@ -659,8 +743,10 @@ class LLMOutlinePlanningGenerator:
                                     {
                                         "role": "system",
                                         "content": (
-                                            "Your previous response was not valid JSON. Return only one complete JSON object "
-                                            "with the root field chapters. Do not use markdown fences, commentary, or omit required fields."
+                                            "The previous JSON failed schema validation. Correct only the reported "
+                                            "format or missing-field problems, then return the complete JSON object "
+                                            "again without markdown or commentary. Validation error: "
+                                            f"{validation_error}"
                                         ),
                                     },
                                 ],
@@ -668,17 +754,23 @@ class LLMOutlinePlanningGenerator:
                             response = _complete_payload(
                                 self._model_gateway,
                                 retry_payload,
-                                operation="outline_planning_chapter_window_retry",
+                                operation=f"outline_planning_{phase}_retry",
                             )
                             data = parse_json_message_content(response)
-                        if data is None:
-                            raise ValueError(invalid_json_error)
-                        result = schema.model_validate(data)
+                            if data is None:
+                                raise ValueError(invalid_json_error)
+                            result = schema.model_validate(data)
+                            if result_validator:
+                                result_validator(result)
                         if phase_callback:
                             phase_callback(phase, "completed", result.model_dump(mode="json"), "")
                         return result
                     except Exception as exc:
-                        error = f"{error_prefix}:{type(exc).__name__}"
+                        detail = re.sub(r"\s+", " ", str(exc)).strip()[:500]
+                        error = (
+                            f"{error_prefix}:{type(exc).__name__}"
+                            f":{detail or 'no_detail'}"
+                        )
                         if phase_callback:
                             phase_callback(phase, "failed", None, error)
                         raise ValueError(error) from exc
@@ -711,15 +803,58 @@ class LLMOutlinePlanningGenerator:
                         {"role": "user", "content": json.dumps(outline_context, ensure_ascii=False)},
                     ],
                 }
+
+                def validate_foundation_detail(result: BaseModel) -> None:
+                    if stop_after_phase != "outline_foundation":
+                        return
+                    outline = getattr(result, "outline", None)
+                    arcs = getattr(outline, "arcs", [])
+                    boundary = max(0, int(validated.current_chapter))
+                    problems: list[str] = []
+                    for arc in arcs:
+                        if int(arc.end_chapter) <= boundary:
+                            continue
+                        missing = [
+                            field
+                            for field in (
+                                "goal",
+                                "obstacle",
+                                "payoff",
+                                "stage_antagonist",
+                                "core_loop",
+                                "midpoint_turn",
+                                "climax",
+                            )
+                            if not str(getattr(arc, field, "") or "").strip()
+                        ]
+                        if len([item for item in arc.escalations if str(item).strip()]) < 2:
+                            missing.append("escalations")
+                        if not any(str(item).strip() for item in arc.active_long_term_lines):
+                            missing.append("active_long_term_lines")
+                        if missing:
+                            problems.append(f"{arc.id}({','.join(missing)})")
+                    if problems:
+                        raise ValueError(
+                            "incomplete_future_arc_detail:" + ";".join(problems)
+                        )
+
                 outline_foundation_model = run_phase(
                     "outline_foundation",
                     GeneratedOutlineFoundation,
                     outline_payload,
                     "outline_generation_failed",
                     "invalid_outline_json",
+                    validate_foundation_detail,
                 )
                 outline_foundation = outline_foundation_model.model_dump(mode="json")
                 outline_foundation["outline"]["chapters"] = []
+                if stop_after_phase == "outline_foundation":
+                    return GeneratedOutlinePlan.model_validate(
+                        {
+                            "outline": outline_foundation["outline"],
+                            "characters": [],
+                        }
+                    )
 
                 character_context = {
                     "generation_phase": "characters",
@@ -850,6 +985,11 @@ class LLMOutlinePlanningGenerator:
                 if parsed is None:
                     raise ValueError("invalid_json")
             parsed = sanitize_generated_outline_amounts(parsed)
+            if preserve_unlocked_legacy_tropes:
+                _preserve_unlocked_legacy_tropes(
+                    parsed,
+                    validated.existing_outline,
+                )
             _drop_invalid_optional_trope_beats(
                 parsed,
                 trope_candidates,

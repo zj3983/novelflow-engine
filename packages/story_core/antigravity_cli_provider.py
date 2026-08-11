@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -140,18 +141,27 @@ def post_json_via_antigravity_cli(
         model_encodes_effort = re.search(r"-(?:low|medium|high)$", model.lower()) is not None
         if reasoning_effort in {"low", "medium", "high"} and not model_encodes_effort:
             args.extend(["--effort", reasoning_effort])
-        completed = _run(
-            command or "agy",
-            args,
-            timeout=cfg.timeout + 10,
-            cwd=temp_dir,
-            env=os.environ.copy(),
-        )
-        if completed.returncode != 0:
+        attempts = max(1, int(cfg.max_retries))
+        delay = max(0.0, float(cfg.initial_delay))
+        content = ""
+        detail = ""
+        for attempt in range(1, attempts + 1):
+            completed = _run(
+                command or "agy",
+                args,
+                timeout=cfg.timeout + 10,
+                cwd=temp_dir,
+                env=os.environ.copy(),
+            )
+            content = (completed.stdout or "").strip()
+            if completed.returncode == 0 and content:
+                break
             detail = (completed.stderr or completed.stdout or "").strip()
-            raise RuntimeError(f"antigravity_cli_failed:{detail[:500]}")
-        content = (completed.stdout or "").strip()
-        if not content:
-            raise ValueError("antigravity_cli_empty")
+            if attempt >= attempts:
+                if completed.returncode != 0:
+                    raise RuntimeError(f"antigravity_cli_failed:{detail[:500]}")
+                raise ValueError("antigravity_cli_empty")
+            time.sleep(delay)
+            delay = min(delay * cfg.backoff_factor, cfg.max_delay)
 
     return {"choices": [{"message": {"role": "assistant", "content": content}}]}

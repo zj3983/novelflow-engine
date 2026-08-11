@@ -238,6 +238,21 @@ def _fact_key(text: str) -> str:
 def _is_continuity_fact(text: str) -> bool:
     if not text or len(text) > _MAX_CONTINUITY_FACT_CHARS:
         return False
+    normalized = text.strip().casefold()
+    if normalized in {
+        "continue",
+        "manual draft",
+        "manual rewrite",
+        "manual chapter",
+        "chapter-progress",
+    }:
+        return False
+    if re.match(
+        r"^(?:\u7b2c\s*\d+\s*\u7ae0\s*(?:\u4e8b\u5b9e|\u6458\u8981)|chapter\s*\d+\s*(?:fact|summary))\s*[:\uff1a]\s*continue\s*$",
+        normalized,
+        re.IGNORECASE,
+    ):
+        return False
     if _CHAPTER_SUMMARY_PREFIX.match(text) or _STATIC_FACT_PREFIX.match(text):
         return False
     return True

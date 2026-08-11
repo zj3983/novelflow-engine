@@ -6,7 +6,7 @@ import { PageHeader } from "../../../components/ws/PageHeader";
 import { PublishingAssetsCards } from "../../../components/ws/PublishingAssetsCards";
 import { useProjectWorkspace } from "../../../components/ws/ProjectWorkspaceProvider";
 import type { ProjectStatus } from "../../../lib/api";
-import { cleanLines, isGameWebnovel, mergeCharacters, shortStatus } from "../../../lib/worldDisplay";
+import { isGameWebnovel, mergeCharacters, shortStatus } from "../../../lib/worldDisplay";
 
 const STATUS_LABEL: Record<string, string> = {
   draft: "草稿",
@@ -27,13 +27,20 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
 
+function hasFactText(value: unknown): boolean {
+  if (typeof value === "string") return Boolean(value.trim());
+  if (!value || typeof value !== "object") return false;
+  const text = (value as { text?: unknown }).text;
+  return typeof text === "string" && Boolean(text.trim());
+}
+
 export default function ProjectOverviewPage() {
   const { project, story, chapterIndex, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
   const currentChapter = story?.current_chapter ?? 0;
   const recentBundles = [...chapterIndex].slice(-5).reverse();
   const latest = chapterIndex.at(-1) ?? null;
   const characters = mergeCharacters(project?.character_profiles, story?.characters);
-  const worldFacts = cleanLines(story?.world_facts, 5);
+  const confirmedFactCount = (story?.continuity_facts ?? story?.world_facts ?? []).filter(hasFactText).length;
   const totalWords = story && "total_body_chars" in story
     ? story.total_body_chars
     : chapterIndex.reduce((sum, bundle) => sum + bundle.body_chars, 0);
@@ -118,16 +125,25 @@ export default function ProjectOverviewPage() {
 
           <section className="ws-card">
             <div className="ws-section-head">
-              <h2 className="ws-section-title">世界状态</h2>
+              <h2 className="ws-section-title">故事状态</h2>
               <Link href={`/projects/${encodedProjectId}/sim`} className="ws-text-link">
                 查看
               </Link>
             </div>
-            <p className="ws-card__hint">
-              {chapterIndex.some((chapter) => chapter.has_simulation)
-                ? `${chapterIndex.filter((chapter) => chapter.has_simulation).length} 章已记录`
-                : "尚无已确认的世界状态"}
-            </p>
+            <div className="ws-simple-grid">
+              <div className="ws-simple-item">
+                <strong>当前局面</strong>
+                <span>
+                  {chapterIndex.some((chapter) => chapter.has_simulation)
+                    ? `${chapterIndex.filter((chapter) => chapter.has_simulation).length} 章有响应记录`
+                    : "尚无世界响应记录"}
+                </span>
+              </div>
+              <div className="ws-simple-item">
+                <strong>已确认事实</strong>
+                <span>{confirmedFactCount > 0 ? `${confirmedFactCount} 条已记录` : "暂无已确认事实"}</span>
+              </div>
+            </div>
           </section>
 
           <section className="ws-card">
@@ -170,23 +186,6 @@ export default function ProjectOverviewPage() {
             )}
           </section>
 
-          <section className="ws-card">
-            <div className="ws-section-head">
-              <h2 className="ws-section-title">世界事实</h2>
-              <Link href={`/projects/${encodedProjectId}/world`} className="ws-text-link">
-                查看
-              </Link>
-            </div>
-            {worldFacts.length > 0 ? (
-              <ul className="ws-plain-list">
-                {worldFacts.map((fact, index) => (
-                  <li key={`${fact}-${index}`}>{fact}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="ws-card__hint">暂无可读世界事实。</p>
-            )}
-          </section>
         </>
       ) : null}
     </div>

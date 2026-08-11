@@ -50,6 +50,23 @@ def test_normalize_world_context_separates_static_snapshot_and_facts() -> None:
     ]
 
 
+def test_continuity_facts_drop_legacy_continue_placeholders() -> None:
+    result = normalize_world_context(
+        blueprint={},
+        state={
+            "continuity_facts": [
+                {"text": "continue", "source_chapter": 1},
+                {"text": "陈默亲眼看到预言中的车祸发生。", "source_chapter": 1},
+            ],
+            "world_facts": ["第1章事实：continue", "第1章摘要：continue"],
+        },
+    )
+
+    assert [item["text"] for item in result.continuity_facts] == [
+        "陈默亲眼看到预言中的车祸发生。"
+    ]
+
+
 def test_normalize_world_context_keeps_unknown_short_fact_but_excludes_body_fragment() -> None:
     body_fragment = "林修抬头看见殿门上的旧纹亮起。" * 30
     result = normalize_world_context(
@@ -92,4 +109,3 @@ def test_append_and_retrieve_continuity_facts_are_deduplicated_and_relevant() ->
         "林修负伤。",
         "神殿入口已经封死。",
     ]
-

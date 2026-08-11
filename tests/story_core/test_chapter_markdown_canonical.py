@@ -57,12 +57,37 @@ def test_new_chapter_metadata_points_at_markdown_file(tmp_path):
     assert "body" not in chapter, "metadata JSON must not duplicate the body"
     assert "body_path" in chapter, "metadata must point at the Markdown file"
     assert "body_sha256" in chapter
+    assert chapter["body_chars"] == len("".join(body.split()))
     # The body_path is relative to the project root so the project
     # is portable. The Markdown file actually exists and has the
     # expected hash.
     body_path = store.root / chapter["body_path"]
     assert body_path.is_file()
     assert chapter["body_sha256"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def test_chapter_index_counts_existing_markdown_body_without_cached_length(tmp_path):
+    store = FileProjectStore(tmp_path)
+    body = "第一段正文。\n\n第二段正文。"
+    markdown_path = store.root / "chapters" / "0001-第一章.md"
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(body, encoding="utf-8")
+    chapter_path = store.story_system_dir / "chapters" / "0001.json"
+    chapter_path.parent.mkdir(parents=True, exist_ok=True)
+    chapter_path.write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "chapter_title": "第一章",
+                "body_path": "chapters/0001-第一章.md",
+                "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert store.chapter_index()[0]["body_chars"] == len("".join(body.split()))
 
 
 def test_read_chapter_hydrates_body_from_markdown(tmp_path):

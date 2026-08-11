@@ -1383,6 +1383,40 @@ def test_outline_generation_checkpoint_api_and_restart_phase(creation_api, monke
     ]
 
 
+def test_outline_extension_readiness_api(creation_api, monkeypatch):
+    client, _, _ = creation_api
+    project = client.post(
+        "/file-projects",
+        json={"mode": "blank", "title": "Readiness", "novel_type_id": "xuanhuan"},
+    ).json()
+    expected = {
+        "schema_version": "outline-extension-readiness/v1",
+        "ready": False,
+        "current_chapter": 10,
+        "next_chapter_numbers": [11, 12],
+        "blockers": [
+            {
+                "code": "stage_arc_required",
+                "message": "阶段大纲不完整。",
+                "section": "arcs",
+            }
+        ],
+        "warnings": [],
+    }
+    monkeypatch.setattr(
+        file_project_routes.FileProjectStore,
+        "outline_extension_readiness",
+        lambda _store: expected,
+    )
+
+    response = client.get(
+        f"/file-projects/{project['project_id']}/outline/extension-readiness"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
 def test_outline_api_round_trips_trope_lock_fields(creation_api, monkeypatch):
     client, _, _ = creation_api
     project = client.post(

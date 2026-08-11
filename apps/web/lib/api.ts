@@ -1429,6 +1429,39 @@ export type ProjectChapterOutline = {
   gain_or_loss: string;
 };
 
+export type RollingOutlineScene = {
+  location: string;
+  action: string;
+  result: string;
+};
+
+export type RollingOutlineCastMember = {
+  name: string;
+  role?: string;
+  character_tier?: string;
+  this_chapter_role?: string;
+};
+
+export type RollingOutlineChapter = {
+  chapter_number: number;
+  title: string;
+  chapter_goal: string;
+  core_conflict: string;
+  cast: RollingOutlineCastMember[];
+  scenes: RollingOutlineScene[];
+  gain: string;
+  cost: string;
+  foreshadowing: string[];
+  hook: string;
+  state_delta: string;
+  source?: string;
+};
+
+export type RollingOutline = {
+  schema_version: "rolling-outline/v1";
+  chapters: RollingOutlineChapter[];
+};
+
 export type ProjectOutline = {
   schema_version: "project-outline/v1";
   source: "saved" | "legacy";
@@ -1454,6 +1487,27 @@ export type OutlineGenerationCheckpointResponse = {
   fingerprint?: string;
   updated_at?: string;
   phases: OutlineGenerationCheckpoint[];
+};
+
+export type OutlineExtensionReadinessSection =
+  | "overall"
+  | "arcs"
+  | "chapters"
+  | "characters"
+  | "world";
+export type OutlineExtensionReadinessIssue = {
+  code: string;
+  message: string;
+  section: OutlineExtensionReadinessSection;
+  names?: string[];
+};
+export type OutlineExtensionReadinessResponse = {
+  schema_version: "outline-extension-readiness/v1";
+  ready: boolean;
+  current_chapter: number;
+  next_chapter_numbers: number[];
+  blockers: OutlineExtensionReadinessIssue[];
+  warnings: OutlineExtensionReadinessIssue[];
 };
 
 // Plan rule: the continuation import bootstrap is a six-phase
@@ -2105,6 +2159,7 @@ export type CreatedContinuationProject = {
   current_chapter: number;
   storage_source: string;
   next_path: string;
+  bootstrap_status: "queued" | "ready";
 };
 
 export type QuickContinuationResult = {
@@ -3465,6 +3520,20 @@ export async function startFileProjectRegenerationJob(
   })) as GenerationJobResponse;
 }
 
+export async function startFileProjectExpansionJob(
+  projectId: string,
+  chapterNumber: number,
+): Promise<GenerationJobResponse> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("expand_chapter_only_supports_file_projects");
+  }
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/generation-jobs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chapter_number: chapterNumber, operation: "expand" }),
+  })) as GenerationJobResponse;
+}
+
 export async function fetchCurrentGenerationJob(storyId: string): Promise<GenerationJobResponse | null> {
   const path = isFileProjectId(storyId)
     ? `${fileProjectPath(storyId)}/generation-jobs/current`
@@ -4325,6 +4394,16 @@ export async function fetchProjectOutline(projectId: string): Promise<ProjectOut
   return (await tryFetchJson(`${fileProjectPath(projectId)}/outline`, { method: "GET" })) as ProjectOutline;
 }
 
+export async function fetchProjectRollingOutline(projectId: string): Promise<RollingOutline> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("rolling_outline_requires_file_project");
+  }
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/outline/rolling`,
+    { method: "GET" },
+  )) as RollingOutline;
+}
+
 export async function updateProjectOutline(projectId: string, payload: ProjectOutlineUpdate): Promise<ProjectOutline> {
   if (!isFileProjectId(projectId)) {
     throw new Error("three_level_outline_requires_file_project");
@@ -4372,6 +4451,18 @@ export async function generateProjectOutline(
     },
     420000,
   )) as GeneratedOutlinePlanResponse;
+}
+
+export async function fetchOutlineExtensionReadiness(
+  projectId: string,
+): Promise<OutlineExtensionReadinessResponse> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("只有文件项目支持后续细纲体检");
+  }
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/outline/extension-readiness`,
+    { method: "GET" },
+  )) as OutlineExtensionReadinessResponse;
 }
 
 export async function fetchOutlineGenerationCheckpoints(

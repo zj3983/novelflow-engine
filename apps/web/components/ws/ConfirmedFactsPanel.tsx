@@ -23,7 +23,7 @@ export function ConfirmedFactsPanel({ facts = [] }: Props) {
   }[status || "active"] || status || "有效");
 
   return (
-    <section className="ws-card" aria-labelledby="confirmed-facts-title">
+    <section id="confirmed-facts" className="ws-card" aria-labelledby="confirmed-facts-title">
       <div className="ws-section-head">
         <div>
           <h2 className="ws-card__title" id="confirmed-facts-title">已确认事实</h2>

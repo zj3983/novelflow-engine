@@ -155,6 +155,35 @@ def _arc_covers(arc: dict[str, Any], chapter_number: int) -> bool:
     return start <= chapter_number <= end
 
 
+def _arc_has_planning_detail(arc: dict[str, Any]) -> bool:
+    """Return whether a future arc contains enough structure to write from.
+
+    Imported books often contain range-only placeholder arcs.  Those rows are
+    useful as boundaries, but treating them as completed planning prevents the
+    continuation bootstrap from ever generating a real stage outline.
+    """
+
+    required_text = (
+        "goal",
+        "obstacle",
+        "payoff",
+        "stage_antagonist",
+        "core_loop",
+        "midpoint_turn",
+        "climax",
+    )
+    if any(not str(arc.get(field) or "").strip() for field in required_text):
+        return False
+    escalations = arc.get("escalations")
+    long_term_lines = arc.get("active_long_term_lines")
+    return (
+        isinstance(escalations, list)
+        and len([item for item in escalations if str(item or "").strip()]) >= 2
+        and isinstance(long_term_lines, list)
+        and any(str(item or "").strip() for item in long_term_lines)
+    )
+
+
 def validate_continuation_bootstrap(project_root: str | Path) -> BootstrapReadiness:
     """Return a pure readiness snapshot for ``project_root``.
 
@@ -500,6 +529,57 @@ class RollingWindowGenerator(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
+def _normalize_rolling_window_payload(
+    payload: Any,
+    *,
+    chapter_numbers: list[int],
+    character_cards: list[dict[str, Any]],
+) -> Any:
+    """Normalize two common CLI JSON variations without inventing plot."""
+
+    if not isinstance(payload, dict):
+        return payload
+    chapters = payload.get("chapters")
+    if not isinstance(chapters, list) or len(chapters) != len(chapter_numbers):
+        return payload
+    protagonist = next(
+        (
+            str(card.get("name") or "").strip()
+            for card in character_cards
+            if isinstance(card, dict)
+            and str(card.get("character_tier") or card.get("role") or "").lower()
+            in {"protagonist", "主角"}
+            and str(card.get("name") or "").strip()
+        ),
+        "主角",
+    )
+    normalized: list[Any] = []
+    for expected_number, raw_chapter in zip(chapter_numbers, chapters, strict=True):
+        if not isinstance(raw_chapter, dict):
+            normalized.append(raw_chapter)
+            continue
+        chapter = dict(raw_chapter)
+        chapter.setdefault("chapter_number", expected_number)
+        scenes = chapter.get("scene_chain")
+        if isinstance(scenes, list) and all(isinstance(scene, str) for scene in scenes):
+            chapter["scene_chain"] = [
+                {
+                    "location": "当前场景",
+                    "pov": protagonist,
+                    "goal": "完成当前行动",
+                    "obstacle": "当前阻力尚未解决",
+                    "action": scene.strip(),
+                    "change": scene.strip(),
+                    "next": "进入下一场景",
+                    "state_delta": {},
+                }
+                for scene in scenes
+                if scene.strip()
+            ]
+        normalized.append(chapter)
+    return {**payload, "chapters": normalized}
+
+
 class LLMRollingWindowGenerator:
     """Production rolling-only generator.
 
@@ -551,6 +631,7 @@ class LLMRollingWindowGenerator:
             "chapter_numbers": list(chapter_numbers),
             "volume_range": list(volume_range),
             "character_cards": list(character_cards),
+            "output_schema": GeneratedChapterWindow.model_json_schema(),
         }
         response = self._gateway.complete_stage(
             "planner",
@@ -560,12 +641,12 @@ class LLMRollingWindowGenerator:
                     {
                         "role": "system",
                         "content": (
-                            "Generate the requested rolling chapter window. "
-                            "Return JSON with the single root field chapters. "
-                            "Each chapter must include core_conflict, gain, cost, "
-                            "foreshadowing, state_delta_summary, and a scene_chain "
-                            "of 2 to 4 scenes. Cast names must come from "
-                            "prompt_context.character_cards."
+                            "为中文长篇小说生成滚动章节细纲，只返回JSON。"
+                            "根字段只能是chapters，章节数量、顺序和chapter_number必须与"
+                            "chapter_numbers完全一致。严格遵守output_schema。"
+                            "scene_chain必须包含2至4个对象，不能写成字符串；每个对象填写"
+                            "location、pov、goal、obstacle、action、change、next和state_delta。"
+                            "cast只能使用character_cards中已有的人名。"
                         ),
                     },
                     {
@@ -588,6 +669,11 @@ class LLMRollingWindowGenerator:
         data = parse_json_message_content({"choices": [{"message": {"content": response.text}}]})
         if data is None:
             raise ValueError("rolling_window_invalid_json")
+        data = _normalize_rolling_window_payload(
+            data,
+            chapter_numbers=list(chapter_numbers),
+            character_cards=list(character_cards),
+        )
         window = GeneratedChapterWindow.model_validate(data)
         batch = rolling_batch_from_generated_window(
             chapters=[row.model_dump(mode="python") for row in window.chapters],
@@ -763,6 +849,55 @@ class ContinuationOutlineBootstrapper:
             }
         return payload
 
+    def prepare(self) -> dict[str, Any]:
+        """Persist a running checkpoint before the worker is submitted."""
+
+        _, _, checkpoint = self._initialize_checkpoint()
+        return checkpoint.model_dump(mode="json")
+
+    def outline_foundation_needs_refresh(self) -> bool:
+        """Return whether the next stage is absent or only a placeholder."""
+
+        return not self._outline_foundation_already_valid()
+
+    def refresh_ready_checkpoint(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Refresh file-backed artifacts without rerunning model phases."""
+
+        try:
+            checkpoint = _BootstrapCheckpoint.model_validate(payload)
+        except Exception:  # noqa: BLE001
+            return payload
+
+        from packages.story_core.outline_rolling_store import RollingOutlineStore
+
+        rolling = RollingOutlineStore(self._root).read_rolling_outline() or {
+            "chapters": []
+        }
+        available_numbers = sorted(
+            {
+                int(chapter.get("chapter_number"))
+                for chapter in rolling.get("chapters", [])
+                if isinstance(chapter, dict)
+                and isinstance(chapter.get("chapter_number"), int)
+            }
+        )
+        chapter_phase = next(
+            (phase for phase in checkpoint.phases if phase.id == "chapter_window"),
+            None,
+        )
+        if chapter_phase is not None:
+            chapter_phase.artifact = {
+                **chapter_phase.artifact,
+                "available_chapter_numbers": available_numbers,
+            }
+
+        self._persist_checkpoint(
+            checkpoint,
+            status=str(payload.get("status") or "ready"),
+            fingerprint=str(payload.get("input_fingerprint") or ""),
+        )
+        return checkpoint.model_dump(mode="json")
+
     def run(self) -> BootstrapReadiness:
         """Run the bootstrap until ready or until a phase fails.
 
@@ -772,9 +907,7 @@ class ContinuationOutlineBootstrapper:
         fingerprint invalidates the affected phase and starts
         from there.
         """
-        analysis = self._read_continuation_analysis()
-        fingerprint = self._compute_fingerprint(analysis)
-        checkpoint = self._load_checkpoint(fingerprint)
+        analysis, fingerprint, checkpoint = self._initialize_checkpoint()
         self._adopt_existing_layers(checkpoint)
 
         next_chapter = self._current_chapter() + 1
@@ -786,18 +919,42 @@ class ContinuationOutlineBootstrapper:
 
         try:
             self._ensure_source_analysis(checkpoint, analysis)
-            self._ensure_world_context(checkpoint)
             self._ensure_outline_and_characters(checkpoint)
+            self._ensure_world_context(checkpoint)
             self._ensure_chapter_window(checkpoint, next_window)
             self._ensure_readiness(checkpoint)
         except _BootstrapFailure as failure:
             self._mark_failed(checkpoint, failure.phase, failure.error)
             self._persist_checkpoint(checkpoint, status="failed", fingerprint=fingerprint)
             return validate_continuation_bootstrap(self._root)
+        except Exception as exc:  # noqa: BLE001
+            active = next(
+                (record.id for record in checkpoint.phases if record.status == "running"),
+                "readiness_check",
+            )
+            error = str(exc).strip() or type(exc).__name__
+            self._mark_failed(checkpoint, active, error[:500])
+            self._persist_checkpoint(checkpoint, status="failed", fingerprint=fingerprint)
+            return validate_continuation_bootstrap(self._root)
 
         self._persist_checkpoint(checkpoint, status="ready", fingerprint=fingerprint)
         self._mark_world_ready()
         return validate_continuation_bootstrap(self._root)
+
+    def _initialize_checkpoint(
+        self,
+    ) -> tuple[dict[str, Any], str, _BootstrapCheckpoint]:
+        """Load the input-matched checkpoint and mark the run as started."""
+
+        analysis = self._read_continuation_analysis()
+        fingerprint = self._compute_fingerprint(analysis)
+        checkpoint = self._load_checkpoint(fingerprint)
+        self._persist_checkpoint(
+            checkpoint,
+            status="running",
+            fingerprint=fingerprint,
+        )
+        return analysis, fingerprint, checkpoint
 
     # -- checkpoint helpers -----------------------------------------------
 
@@ -860,6 +1017,19 @@ class ContinuationOutlineBootstrapper:
             checkpoint.phases[index] = record
         else:
             checkpoint.phases.append(record)
+        if checkpoint.input_fingerprint:
+            self._persist_checkpoint(
+                checkpoint,
+                status="running",
+                fingerprint=checkpoint.input_fingerprint,
+            )
+
+    def _begin_phase(
+        self,
+        checkpoint: _BootstrapCheckpoint,
+        phase: str,
+    ) -> None:
+        self._mark_phase(checkpoint, phase, "running")
 
     def _mark_failed(
         self,
@@ -902,6 +1072,7 @@ class ContinuationOutlineBootstrapper:
             "adopted",
         }:
             return
+        self._begin_phase(checkpoint, "source_analysis")
         if not analysis:
             raise _BootstrapFailure(
                 "source_analysis",
@@ -920,9 +1091,12 @@ class ContinuationOutlineBootstrapper:
             "adopted",
         }:
             return
-        # No second model call: the world blueprint was
-        # produced during the import baseline; the bootstrapper
-        # only needs to mark the phase as adopted.
+        self._begin_phase(checkpoint, "world_context")
+        if not self._world_context_already_valid():
+            raise _BootstrapFailure(
+                "world_context",
+                "world_context_missing_confirmed_source",
+            )
         self._mark_phase(
             checkpoint,
             "world_context",
@@ -945,10 +1119,12 @@ class ContinuationOutlineBootstrapper:
         } and self._phase_status(checkpoint, "character_roster") in {
             "completed",
             "adopted",
-        }:
+        } and self._outline_foundation_already_valid() and self._character_roster_already_valid():
             return
 
-        if self._outline_layers_already_valid():
+        foundation_valid = self._outline_foundation_already_valid()
+        roster_valid = self._character_roster_already_valid()
+        if foundation_valid and roster_valid:
             self._mark_phase(
                 checkpoint,
                 "outline_foundation",
@@ -963,6 +1139,8 @@ class ContinuationOutlineBootstrapper:
             )
             return
 
+        self._begin_phase(checkpoint, "outline_foundation")
+        self._begin_phase(checkpoint, "character_roster")
         snapshot = self._call_planning_generator()
         foundation = (
             snapshot.get("outline_foundation")
@@ -978,6 +1156,16 @@ class ContinuationOutlineBootstrapper:
             raise _BootstrapFailure(
                 "outline_foundation",
                 "outline_planning_generation_failed",
+            )
+        if not self._outline_foundation_already_valid():
+            raise _BootstrapFailure(
+                "outline_foundation",
+                "outline_planning_missing_future_arc",
+            )
+        if not self._character_roster_already_valid():
+            raise _BootstrapFailure(
+                "character_roster",
+                "outline_planning_missing_protagonist",
             )
         self._mark_phase(
             checkpoint,
@@ -1002,6 +1190,7 @@ class ContinuationOutlineBootstrapper:
             "adopted",
         }:
             return
+        self._begin_phase(checkpoint, "chapter_window")
         from packages.story_core.outline_rolling_store import RollingOutlineStore
 
         store = RollingOutlineStore(self._root)
@@ -1075,6 +1264,7 @@ class ContinuationOutlineBootstrapper:
         )
 
     def _ensure_readiness(self, checkpoint: _BootstrapCheckpoint) -> None:
+        self._begin_phase(checkpoint, "readiness_check")
         result = validate_continuation_bootstrap(self._root)
         if not result.ready:
             raise _BootstrapFailure(
@@ -1134,7 +1324,7 @@ class ContinuationOutlineBootstrapper:
         # The current disk state may already pass the
         # readiness validator; adopt each layer so we never
         # overwrite approved data.
-        if self._outline_layers_already_valid():
+        if self._outline_foundation_already_valid():
             if self._phase_status(checkpoint, "outline_foundation") == "pending":
                 self._mark_phase(
                     checkpoint,
@@ -1142,15 +1332,18 @@ class ContinuationOutlineBootstrapper:
                     "adopted",
                     artifact={"source": "imported_baseline"},
                 )
-            if self._phase_status(checkpoint, "character_roster") == "pending":
-                self._mark_phase(
-                    checkpoint,
-                    "character_roster",
-                    "adopted",
-                    artifact={"source": "imported_baseline"},
-                )
+        if (
+            self._character_roster_already_valid()
+            and self._phase_status(checkpoint, "character_roster") == "pending"
+        ):
+            self._mark_phase(
+                checkpoint,
+                "character_roster",
+                "adopted",
+                artifact={"source": "imported_baseline"},
+            )
 
-    def _outline_layers_already_valid(self) -> bool:
+    def _outline_foundation_already_valid(self) -> bool:
         outline = _read_json(self._root / ".webnovel" / "outline.json")
         if not isinstance(outline, dict):
             return False
@@ -1160,7 +1353,36 @@ class ContinuationOutlineBootstrapper:
             return False
         if not isinstance(arcs, list) or not arcs:
             return False
-        return True
+        current_chapter = self._current_chapter()
+        next_chapter = current_chapter + 1
+        current_arc_exists = any(
+            _arc_covers(arc, current_chapter) for arc in arcs if isinstance(arc, dict)
+        )
+        next_arcs = [
+            arc
+            for arc in arcs
+            if isinstance(arc, dict) and _arc_covers(arc, next_chapter)
+        ]
+        return current_arc_exists and any(
+            _arc_has_planning_detail(arc) for arc in next_arcs
+        )
+
+    def _character_roster_already_valid(self) -> bool:
+        project = _read_json(self._root / ".webnovel" / "project.json") or {}
+        state = _read_json(self._root / ".webnovel" / "state.json") or {}
+        characters: list[Any] = []
+        if isinstance(project, dict):
+            characters.extend(project.get("character_profiles") or [])
+        if isinstance(state, dict):
+            characters.extend(state.get("characters") or [])
+        return _has_protagonist_card(characters)
+
+    def _world_context_already_valid(self) -> bool:
+        project = _read_json(self._root / ".webnovel" / "project.json") or {}
+        state = _read_json(self._root / ".webnovel" / "state.json") or {}
+        blueprint = project.get("world_blueprint") if isinstance(project, dict) else None
+        premise, has_rules, has_power_system = _world_premise_and_rules(blueprint, state)
+        return bool(premise and (has_rules or has_power_system))
 
     def _current_chapter(self) -> int:
         state = _read_json(self._root / ".webnovel" / "state.json")
@@ -1258,6 +1480,14 @@ class ContinuationOutlineBootstrapper:
 
         store = FileProjectStore(self._root)
         generator = self._planning_generator
+        if hasattr(generator, "generate"):
+            return store.generate_outline_plan(
+                generator,
+                mode="regenerate",
+                guidance="",
+                persist_chapter_window=False,
+                foundation_only=True,
+            )
         if hasattr(generator, "generate_outline_plan"):
             return generator.generate_outline_plan(
                 store,

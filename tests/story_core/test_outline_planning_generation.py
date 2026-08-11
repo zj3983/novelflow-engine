@@ -949,6 +949,142 @@ def test_codexcli_full_plan_is_generated_in_three_bounded_phases(scenario: str) 
     assert len(plan.outline.chapters) == INITIAL_OUTLINE_CHAPTER_COUNT
 
 
+def test_codexcli_retries_a_phase_after_schema_validation_failure() -> None:
+    outline_attempts = 0
+    retry_system_messages: list[str] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal outline_attempts
+        prompt = json.loads(payload["messages"][1]["content"])
+        phase = prompt["generation_phase"]
+        plan = _valid_plan()
+        if phase == "outline":
+            outline_attempts += 1
+            plan["outline"]["chapters"] = []
+            plan["outline"]["overall"].update(
+                {
+                    "core_ending_chapter": 10,
+                    "extension_ceiling_chapter": 20,
+                    "expansion_route": "继续追查下一宗旧案",
+                    "closing_route": "公开现有证据并收束旧案",
+                }
+            )
+            if outline_attempts > 1:
+                plan["outline"]["arcs"][0]["extension_gate"] = {
+                    "continue_route": "进入内门追查下一宗旧案",
+                    "close_route": "公开名册并完成当前旧案",
+                }
+            retry_system_messages.extend(
+                message["content"]
+                for message in payload["messages"][2:]
+                if message.get("role") == "system"
+            )
+            content = {"outline": plan["outline"]}
+        elif phase == "characters":
+            content = _codex_phase_content(prompt)
+        else:
+            content = _codex_phase_content(prompt)
+        return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
+
+    runtime = lambda _stage: StageRuntimeSettings(
+        provider_id="codexcli",
+        protocol="codex_cli",
+        model="planning-test-model",
+        codex_command="codex-test",
+    )
+
+    plan = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=runtime,
+    ).generate(_brief(), mode="initial")
+
+    assert outline_attempts == 2
+    assert any("missing_arc_extension_route" in message for message in retry_system_messages)
+    assert plan.outline.arcs[0].extension_gate.continue_route
+
+
+def test_codexcli_foundation_only_stops_before_characters_and_chapters() -> None:
+    calls: list[str] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        calls.append(prompt["generation_phase"])
+        plan = _valid_plan()
+        plan["outline"]["chapters"] = []
+        plan["outline"]["arcs"][0].update({
+            "core_loop": "查证、受阻、换证据路径、公开一项结果",
+            "escalations": ["取得查档资格", "找到被换过的名册"],
+            "midpoint_turn": "林照发现失火和换名册是同一批人所为",
+            "climax": "林照当众拿出无法销毁的证据",
+            "active_long_term_lines": ["被改写的宗门旧史"],
+        })
+        return {
+            "choices": [{
+                "message": {
+                    "content": json.dumps({"outline": plan["outline"]}, ensure_ascii=False)
+                }
+            }]
+        }
+
+    plan = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _stage: StageRuntimeSettings(
+            provider_id="codexcli",
+            protocol="codex_cli",
+            model="planning-test-model",
+            codex_command="codex-test",
+        ),
+    ).generate(_brief(), mode="initial", stop_after_phase="outline_foundation")
+
+    assert calls == ["outline"]
+    assert plan.characters == []
+    assert plan.outline.chapters == []
+
+
+def test_continuation_regenerate_does_not_prompt_with_future_placeholders() -> None:
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured.update(json.loads(payload["messages"][1]["content"]))
+        raise RuntimeError("stop_after_prompt_capture")
+
+    brief = _brief().model_copy(
+        update={
+            "current_chapter": 147,
+            "continuation_start_chapter": 147,
+            "existing_outline": {
+                "arcs": [
+                    {"id": "history", "start_chapter": 1, "end_chapter": 147},
+                    {"id": "future-shell", "start_chapter": 148, "end_chapter": 300},
+                ],
+                "chapters": [
+                    {"chapter_number": 147, "title": "已发生"},
+                    {"chapter_number": 148, "title": "未来占位"},
+                ],
+            },
+        }
+    )
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _stage: StageRuntimeSettings(
+            provider_id="codexcli",
+            protocol="codex_cli",
+            model="planning-test-model",
+            codex_command="codex-test",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="outline_planning_generation_failed"):
+        generator.generate(
+            brief,
+            mode="regenerate",
+            stop_after_phase="outline_foundation",
+        )
+
+    assert [arc["id"] for arc in captured["existing_outline"]["arcs"]] == ["history"]
+    assert [chapter["chapter_number"] for chapter in captured["existing_outline"]["chapters"]] == [147]
+
+
 def test_codexcli_generation_callbacks_keep_completed_phases_after_later_failure() -> None:
     events: list[tuple[str, str, dict | None, str]] = []
 
@@ -1194,6 +1330,51 @@ def test_extend_rejects_existing_primary_trope_drift() -> None:
 
     assert isinstance(exc_info.value.__cause__, ValueError)
     assert str(exc_info.value.__cause__) == "unexpected_primary_trope_id"
+
+
+def test_extend_preserves_null_tropes_for_legacy_project_without_lock() -> None:
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["overall"]["primary_trope_id"] = "model-invented-trope"
+        plan["outline"]["arcs"][0]["trope_id"] = "model-invented-trope"
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": number,
+                "trope_beat": "model invented beat",
+                "cast": ["鏋楃収", "New"],
+            }
+            for number in prompt["target_chapter_numbers"]
+        ]
+        plan["characters"] = [_card("New", "supporting")]
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(plan, ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    brief = fixture.brief(current_chapter=10, existing_chapters=list(range(1, 11)))
+    payload = brief.model_dump(mode="json")
+    payload["opening_direction"]["primary_trope_id"] = None
+    payload["existing_outline"]["overall"]["primary_trope_id"] = None
+    payload["existing_outline"]["arcs"][0]["trope_id"] = None
+    payload["existing_character_names"] = ["鏋楃収"]
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    )
+
+    result = generator.generate(
+        OutlinePlanningBrief.model_validate(payload),
+        mode="extend",
+    )
+
+    assert result.outline.overall.primary_trope_id is None
+    assert all(arc.trope_id is None for arc in result.outline.arcs)
+    assert all(chapter.trope_beat is None for chapter in result.outline.chapters)
 
 
 @pytest.mark.parametrize("mode", ["extend", "regenerate"])

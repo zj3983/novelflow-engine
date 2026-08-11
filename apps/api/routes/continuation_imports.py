@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from apps.api.fs_access import allowed_fs_roots, require_allowed_path
 from apps.api.routes.file_projects import (
     FileProjectGenerationJobRequest,
+    enqueue_continuation_bootstrap,
     start_file_generation_job,
 )
 from packages.story_core.continuation_analysis import (
@@ -124,6 +125,7 @@ class CreatedContinuationProjectResponse(BaseModel):
     current_chapter: int
     storage_source: str = "file"
     next_path: str
+    bootstrap_status: str = "queued"
 
 
 class QuickContinueResponse(BaseModel):
@@ -232,12 +234,14 @@ def _created_project_response(
     project_id: str, root: Path, next_path: str
 ) -> CreatedContinuationProjectResponse:
     project = FileProjectStore(root).project()
+    bootstrap = enqueue_continuation_bootstrap(project_id, root)
     return CreatedContinuationProjectResponse(
         project_id=f"file:{project_id}",
         title=str(project.get("title") or project_id),
         source_path=str(root),
         current_chapter=int(project.get("current_chapter") or 0),
         next_path=next_path,
+        bootstrap_status=str(bootstrap.get("status") or "queued"),
     )
 
 

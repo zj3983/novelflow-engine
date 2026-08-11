@@ -218,6 +218,12 @@ def test_orchestrator_with_modular_agents_routes_main_entry(tmp_path: Path):
     assert isinstance(bundle, ChapterBundle)
     assert bundle.body == valid_body
     assert bundle.chapter_number == 1
+    assert bundle.next_outline == "远处传来钟声"
+    assert "进入山路" in bundle.chapter_summary["summary"]
+    assert bundle.chapter_summary["facts"] == ["进入山路", "夜宿山腰"]
+    assert bundle.chapter_summary["next_focus"] == "远处传来钟声"
+    assert bundle.updated_story.chapter_summaries[-1].chapter_number == 1
+    assert bundle.updated_story.timeline[-1].chapter_number == 1
     # The bundle's quality_report carries the modular-pipeline
     # marker so the workbench can branch its rendering.
     modular_marker = (

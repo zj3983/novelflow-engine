@@ -4101,8 +4101,6 @@ class StoryOrchestrator:
         and the rest of the bundle is filled with the minimum
         the downstream save / confirm / persist flow needs.
         """
-        from packages.story_core.engine import ChapterBundle
-
         chapter_number = int(story.current_chapter or 0) + 1
         rewrite_guidance = ""
         progression_ledger = getattr(story, "progression_ledger", None)
@@ -4121,180 +4119,14 @@ class StoryOrchestrator:
             consistency_runtime=consistency_runtime,
             rewrite_guidance=rewrite_guidance,
         )
-        director_artifact = bundle.director_artifact
-        # The director artifact carries a dedicated ``chapter_title``
-        # field that the prompt explicitly separates from the
-        # dramatic intent (``chapter_goal``). Use the title and
-        # fall back to a generic label only when the runtime
-        # forgot to produce one — never substitute ``chapter_goal``
-        # here, that collapses two distinct concepts and
-        # confuses the workbench.
-        chapter_title = str(director_artifact.chapter_title or "").strip() or (
-            f"第{chapter_number}章"
+        from packages.story_core.modular_bundle_adapter import (
+            adapt_modular_bundle_to_legacy,
         )
-        # Minimal plan dict the downstream ``_save_candidate_from_bundle``
-        # can serialise through ``_bundle_to_dict``. The fields
-        # the candidate save path does NOT read are left empty;
-        # the workbench still gets a usable body and the new
-        # ContinuityDelta via the candidate payload.
-        scene_beats = list(director_artifact.scene_beats or [])
-        character_moves = [
-            {
-                "name": str(req.name or "主角"),
-                "importance": int(req.importance or 5),
-                "action": "在 scene beat 中执行导演计划",
-                "kind": str(req.kind or "character"),
-            }
-            for req in (director_artifact.entity_requirements or [])
-        ]
-        if not character_moves and scene_beats:
-            character_moves = [
-                {
-                    "name": str(beat.location or "主角"),
-                    "importance": 5,
-                    "action": str(beat.action or ""),
-                    "kind": "character",
-                }
-                for beat in scene_beats
-            ]
-        scene_cards = [
-            {
-                "location": str(beat.location or ""),
-                "action": str(beat.action or ""),
-                "result": str(beat.result or ""),
-                "order": int(beat.order or 0),
-            }
-            for beat in scene_beats
-        ]
-        chapter_intent = {
-            "chapter_title": chapter_title,
-            "primary_conflict": {"summary": director_artifact.chapter_goal},
-            "secondary_conflict": {},
-            "next_focus": str(director_artifact.hook or ""),
-            "approved_new_characters": [
-                str(req.name or "") for req in director_artifact.entity_requirements
-            ],
-            "deferred_characters": [],
-            "rejected_characters": [],
-        }
-        event_plan = {
-            "chapter_title": chapter_title,
-            "scene_chain": scene_cards,
-            "ordered_actions": [
-                {
-                    "order": int(beat.order or 0),
-                    "location": str(beat.location or ""),
-                    "action": str(beat.action or ""),
-                    "change": str(beat.result or ""),
-                    "next": str(director_artifact.hook or ""),
-                }
-                for beat in scene_beats
-            ],
-        }
-        # The fact-extractor's delta is the new artifact the
-        # workbench renders on the candidate view. We surface
-        # it on the bundle's quality_report so downstream code
-        # that reads ``bundle.quality_report`` sees it without
-        # having to know about the modular pipeline.
-        #
-        # The writer stage ran the focused consistency review
-        # against the approved director plan and the established
-        # world facts. We propagate the actual findings here —
-        # hard-coding ``pass=True`` would let a draft that
-        # contradicts the canon reach the confirmation gate
-        # silently. Blocking findings flip ``ok`` to ``False``
-        # so the bounded review contract still binds.
-        raw_findings = list(getattr(bundle, "consistency_findings", []) or [])
-        blocking_findings = [
-            finding
-            for finding in raw_findings
-            if bool(finding.get("blocking"))
-        ]
-        non_blocking_findings = [
-            finding
-            for finding in raw_findings
-            if not bool(finding.get("blocking"))
-        ]
-        issues = [str(finding.get("code") or "") for finding in blocking_findings]
-        writing_review_pass = not blocking_findings
-        quality_report: dict[str, Any] = {
-            "ok": writing_review_pass,
-            "schema_version": "file-writing-review/v1",
-            "writing_review": {
-                "pass": writing_review_pass,
-                "issues": issues,
-                "blocking": [
-                    {
-                        "code": str(finding.get("code") or ""),
-                        "message": str(finding.get("message") or ""),
-                        "source": str(finding.get("source") or "consistency"),
-                    }
-                    for finding in blocking_findings
-                ],
-                "warnings": [
-                    {
-                        "code": str(finding.get("code") or ""),
-                        "message": str(finding.get("message") or ""),
-                        "source": str(finding.get("source") or "consistency"),
-                    }
-                    for finding in non_blocking_findings
-                ],
-                "source": "modular_pipeline",
-            },
-            "modular_pipeline": {
-                "director_artifact_present": True,
-                "fact_extractor_chapter": (
-                    bundle.continuity_delta.chapter_number
-                    if bundle.continuity_delta is not None
-                    else None
-                ),
-                "canon_preflight": dict(bundle.canon_preflight or {}),
-            },
-        }
-        pipeline_stages = [
-            "director",
-            "canon_preflight",
-            "writer",
-            "fact_extractor",
-        ]
-        working_story = story.model_copy(deep=True)
-        working_story.current_chapter = chapter_number
-        # Carry the ``ContinuityDelta`` from the new modular
-        # ``FactExtractor`` onto the legacy ``ChapterBundle`` so
-        # ``_save_candidate_from_bundle`` can pick it up and skip
-        # the parallel re-extract against an empty canon. The
-        # user feedback after Round 5 flagged that the delta was
-        # silently dropped at this conversion boundary — the
-        # candidate then re-extracted against the same empty
-        # canon and the new agents' findings never made it into
-        # the snapshot or the confirmation transaction.
-        continuity_delta = getattr(bundle, "continuity_delta", None)
-        return ChapterBundle(
+
+        return adapt_modular_bundle_to_legacy(
+            story=story,
+            modular_bundle=bundle,
             chapter_number=chapter_number,
-            body=bundle.body,
-            chapter_title=chapter_title,
-            cadence="measured",
-            chapter_intent=chapter_intent,
-            character_moves=character_moves,
-            memory_constraints={"must_keep_facts": [], "ledger_updates": {}},
-            event_plan=event_plan,
-            chapter_seed={},
-            simulation_plan={},
-            world_events=[],
-            scene_cards=scene_cards,
-            simulation_status={"status": "skipped", "reason": "modular_pipeline"},
-            action_briefs=character_moves,
-            conflict_summary={},
-            event_beat={"turn": str(director_artifact.hook or "")},
-            character_cards=[],
-            foreshadowing=list(working_story.foreshadowing or []),
-            next_outline="",
-            updated_story=working_story,
-            chapter_summary={},
-            quality_report=quality_report,
-            pipeline_stages=pipeline_stages,
-            context_snapshot_id=f"modular-pipeline:chapter-{chapter_number}",
-            continuity_delta=continuity_delta,
         )
 
     def _generate_next_chapter_bundle(self, story: StoryState):

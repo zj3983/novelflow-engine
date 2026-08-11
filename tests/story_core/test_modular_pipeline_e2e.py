@@ -223,6 +223,7 @@ def test_writer_request_uses_file_project_hard_length_max() -> None:
 
     assert request.target_chars == {"min": 4200, "max": 5500}
     assert request.acceptance_chars == {"min": 3800, "max": 5700}
+    assert request.repair_length is False
 
 
 class _StubDirectorRuntime:

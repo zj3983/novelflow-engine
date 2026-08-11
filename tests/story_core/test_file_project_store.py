@@ -24,6 +24,36 @@ from packages.story_core.file_project_store import (
 )
 
 
+def _seed_generation_outline(root: Path, chapter_number: int) -> None:
+    path = root / ".story-system" / "outline-generation" / "rolling_outline.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rolling-outline/v1",
+                "chapters": [
+                    {
+                        "chapter_number": chapter_number,
+                        "title": f"Chapter {chapter_number}",
+                        "chapter_goal": "Advance the test chapter.",
+                        "core_conflict": "Resolve the test conflict.",
+                        "cast": [{"name": "Lead", "role": "protagonist", "this_chapter_role": "act"}],
+                        "scenes": [{"location": "test", "action": "advance", "result": "complete"}],
+                        "gain": "progress",
+                        "cost": "effort",
+                        "foreshadowing": [],
+                        "hook": "continue",
+                        "state_delta": "test state advances",
+                        "source": "manual",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_manual_quality_report_passes_explicit_genre_context_to_style_review(monkeypatch):
     captured = {}
 
@@ -3876,6 +3906,86 @@ def test_extend_rejects_locked_trope_drift_without_writes(
     assert _file_snapshot(root) == before
 
 
+def test_extend_allows_unlocked_legacy_outline_without_selecting_trope(
+    tmp_path,
+) -> None:
+    _, store, current_outline = _prepare_extendable_outline(tmp_path)
+    current_outline["overall"]["primary_trope_id"] = None
+    for arc in current_outline["arcs"]:
+        arc["trope_id"] = None
+    for chapter in current_outline["chapters"]:
+        chapter["trope_beat"] = None
+    store.update_project_outline(current_outline)
+
+    saved = store.save_generated_outline_plan(
+        _extension_plan(current_outline),
+        mode="extend",
+    )
+
+    assert saved["outline"]["overall"]["primary_trope_id"] is None
+    assert all(arc["trope_id"] is None for arc in saved["outline"]["arcs"])
+    assert all(
+        chapter["trope_beat"] is None
+        for chapter in saved["outline"]["chapters"]
+        if chapter["chapter_number"] > 10
+    )
+
+
+def test_outline_extension_readiness_reports_missing_prerequisites(tmp_path) -> None:
+    _, store, current_outline = _prepare_extendable_outline(tmp_path)
+    current_outline["overall"]["story"] = ""
+    current_outline["arcs"] = []
+    store.update_project_outline(current_outline)
+    project = store.project()
+    project["character_profiles"] = []
+    project["world_blueprint"] = {}
+    store._write_json(store.webnovel_dir / "project.json", project)
+    state = store.state()
+    state["characters"] = []
+    store._write_json(store.webnovel_dir / "state.json", state)
+
+    readiness = store.outline_extension_readiness()
+
+    assert readiness["ready"] is False
+    assert {item["code"] for item in readiness["blockers"]} == {
+        "overall_core_required",
+        "stage_arc_required",
+        "protagonist_card_required",
+        "world_context_required",
+    }
+    assert readiness["next_chapter_numbers"] == list(range(11, 21))
+
+
+def test_outline_extension_readiness_accepts_complete_materials(tmp_path) -> None:
+    _, store, _ = _prepare_extendable_outline(tmp_path)
+    project = store.project()
+    project["world_blueprint"] = {
+        "premise": "A grounded cultivation mystery.",
+        "world_rules": ["Every repair consumes a matching material."],
+    }
+    store._write_json(store.webnovel_dir / "project.json", project)
+
+    readiness = store.outline_extension_readiness()
+
+    assert readiness["ready"] is True
+    assert readiness["blockers"] == []
+    assert readiness["next_chapter_numbers"] == list(range(11, 21))
+
+
+def test_extend_does_not_call_model_when_prerequisites_are_missing(tmp_path) -> None:
+    _, store, _ = _prepare_extendable_outline(tmp_path)
+
+    class Generator:
+        def generate(self, brief, *, mode, guidance):
+            raise AssertionError("planner must not run before readiness passes")
+
+    with pytest.raises(
+        ValueError,
+        match="^outline_extension_not_ready:world_context_required$",
+    ):
+        store.generate_outline_plan(Generator(), mode="extend")
+
+
 def _regeneration_plan_from_current(
     current_outline: dict,
     *,
@@ -5655,6 +5765,7 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
         ),
         encoding="utf-8",
     )
+    _seed_generation_outline(root, 1)
 
     class FakeEngine:
         def generate_next_chapter(self, story):
@@ -5863,6 +5974,7 @@ def test_file_project_generate_next_ignores_legacy_chapter_direction_id(tmp_path
             },
         },
     )
+    _seed_generation_outline(root, 2)
 
     class FakeEngine:
         def generate_next_chapter(self, story):
@@ -9142,6 +9254,84 @@ def test_file_project_store_regenerate_does_not_fail_on_continuity_quality_field
     assert regenerated["chapter_number"] == 1
 
 
+def test_file_project_store_regenerate_replaces_import_placeholder_summary(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file",
+            "outline": "A grounded suspense story.",
+            "genre": "suspense",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": ["chapter 1 fact: continue", "chapter 1 summary: continue"],
+            "continuity_facts": [
+                {
+                    "text": "continue",
+                    "source_chapter": 1,
+                    "status": "active",
+                    "updated_chapter": 1,
+                }
+            ],
+            "chapter_summaries": [
+                {
+                    "chapter_number": 1,
+                    "chapter_title": "Imported One",
+                    "summary": "continue",
+                    "facts": ["continue"],
+                    "next_focus": "continue",
+                }
+            ],
+            "timeline": [{"chapter_number": 1, "summary": "continue", "impact": "continue"}],
+        },
+    )
+    store.write_chapter(
+        chapter_number=1,
+        title="Imported One",
+        body=_long_test_body("The imported draft still carries placeholder memory."),
+        summary="continue",
+    )
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            body = _long_test_body(
+                "Chen Mo verifies that the printer predicted the crash and finds a second warning."
+            )
+            updated_story = story.model_copy(update={"current_chapter": 1})
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="Death Printer",
+                body=body,
+                cadence="measured",
+                next_outline="continue",
+                updated_story=updated_story,
+                chapter_summary={
+                    "chapter_number": 1,
+                    "chapter_title": "Death Printer",
+                    "summary": "continue",
+                    "facts": ["continue"],
+                    "next_focus": "continue",
+                    "event_beat": {
+                        "turn": "A second warning names the resident from the leak dispute."
+                    },
+                },
+            )
+
+    store.regenerate_chapter(1, engine=FakeEngine())
+
+    chapter = store.chapter(1)
+    summary = chapter["chapter_summary"]
+    assert summary["summary"] != "continue"
+    assert summary["facts"] != ["continue"]
+    assert summary["next_focus"] == "A second warning names the resident from the leak dispute."
+
+    state = store.state()
+    assert state["chapter_summaries"][-1]["summary"] != "continue"
+    assert state["timeline"][-1]["summary"] != "continue"
+    assert not any(str(item).endswith(": continue") for item in state["world_facts"])
+    assert not any(item.get("text") == "continue" for item in state["continuity_facts"])
+
+
 def test_file_project_store_blocks_short_generated_bundle(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(
@@ -9155,6 +9345,7 @@ def test_file_project_store_blocks_short_generated_bundle(tmp_path):
             "world_facts": [],
         },
     )
+    _seed_generation_outline(root, 1)
 
     class FakeEngine:
         def generate_next_chapter(self, story):
@@ -9184,6 +9375,171 @@ def test_file_project_store_blocks_short_generated_bundle(tmp_path):
     assert not (root / ".story-system" / "chapters" / "0001.json").exists()
 
 
+def test_file_project_store_saves_short_first_draft_for_human_review(tmp_path):
+    root = tmp_path / "novel-human-review"
+    store = _make_minimal_file_project(
+        root,
+        state={
+            "story_id": "s-file-human-review",
+            "outline": "A grounded story.",
+            "genre": "general",
+            "style": "plain",
+            "current_chapter": 0,
+            "world_facts": [],
+        },
+    )
+    _seed_generation_outline(root, 1)
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            updated_story = story.model_copy(update={"current_chapter": 1})
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="First Draft",
+                body="This is a usable but short first draft.",
+                cadence="manual",
+                next_outline="Continue.",
+                updated_story=updated_story,
+                chapter_summary={
+                    "chapter_title": "First Draft",
+                    "cadence": "manual",
+                    "summary": "A short first draft.",
+                    "facts": ["first draft saved"],
+                    "next_focus": "Continue.",
+                    "primary_conflict": "choice",
+                    "secondary_conflict": "time",
+                    "event_beat": "draft",
+                },
+            )
+
+    result = store.generate_next_chapter(
+        engine=FakeEngine(),
+        accept_quality_warnings=True,
+    )
+
+    assert result["chapter_number"] == 1
+    saved = store.chapter(1)
+    assert saved["body"] == "This is a usable but short first draft."
+    assert saved["quality_report"]["manual_quality_override"] is True
+
+
+def test_file_project_store_expands_short_chapter_as_candidate(tmp_path):
+    root = tmp_path / "manual-expand"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-manual-expand", "title": "Manual Expand"},
+        state={
+            "story_id": "s-manual-expand",
+            "outline": "A grounded story.",
+            "genre": "general",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": ["The repair shop is still open."],
+        },
+    )
+    source_body = "The customer waits beside the counter. " * 30
+    store.write_chapter(
+        chapter_number=1,
+        title="Short Chapter",
+        body=source_body,
+        summary="The customer waits.",
+    )
+    expanded_body = "The customer and Chen Mo work through the repair in full. " * 85
+
+    class FakeOrchestrator:
+        def __init__(self):
+            self.calls = []
+
+        def _timed_chat(self, story, prompt, **kwargs):
+            self.calls.append({"story": story, "prompt": prompt, "kwargs": kwargs})
+            return expanded_body, ""
+
+    orchestrator = FakeOrchestrator()
+    result = store.expand_chapter(1, orchestrator=orchestrator)
+
+    assert len(orchestrator.calls) == 1
+    assert source_body.strip() in orchestrator.calls[0]["prompt"]
+    assert result["schema_version"] == "file-project-candidate/v1"
+    assert result["candidate"]["operation"] == "regenerate"
+    assert result["candidate"]["body"] == expanded_body
+    assert store.chapter(1)["body"] == source_body
+
+
+def test_file_project_store_expands_full_length_chapter_as_candidate(tmp_path):
+    root = tmp_path / "manual-expand-full"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-manual-expand-full", "title": "Manual Expand Full"},
+        state={
+            "story_id": "s-manual-expand-full",
+            "outline": "A grounded story.",
+            "genre": "general",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    store.write_chapter(
+        chapter_number=1,
+        title="Full Chapter",
+        body="甲" * 3800,
+        summary="Already full length.",
+    )
+
+    expanded_body = "乙" * 4400
+
+    class FakeOrchestrator:
+        def _timed_chat(self, *_args, **_kwargs):
+            return expanded_body, ""
+
+    result = store.expand_chapter(1, orchestrator=FakeOrchestrator())
+
+    assert result["candidate"]["body"] == expanded_body
+    assert store.chapter(1)["body"] == "甲" * 3800
+
+
+@pytest.mark.parametrize(
+    ("model_body", "expected_error"),
+    [
+        ("", "chapter_expansion_failed:empty_body"),
+        ("原文。" * 100, "chapter_expansion_failed:invalid_length"),
+        ("超长。" * 2000, "chapter_expansion_failed:invalid_length"),
+    ],
+    ids=["empty", "not-longer", "too-long"],
+)
+def test_file_project_store_rejects_invalid_manual_expansion_output(
+    tmp_path,
+    model_body,
+    expected_error,
+):
+    root = tmp_path / f"manual-expand-invalid-{len(model_body)}"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-manual-expand-invalid", "title": "Manual Expand Invalid"},
+        state={
+            "story_id": "s-manual-expand-invalid",
+            "outline": "A grounded story.",
+            "genre": "general",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    store.write_chapter(
+        chapter_number=1,
+        title="Short Chapter",
+        body="原文。" * 100,
+        summary="Short.",
+    )
+
+    class FakeOrchestrator:
+        def _timed_chat(self, *_args, **_kwargs):
+            return model_body, ""
+
+    with pytest.raises(ValueError, match=expected_error):
+        store.expand_chapter(1, orchestrator=FakeOrchestrator())
+
+
 def test_file_project_store_blocks_failed_generated_quality_report(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(
@@ -9197,6 +9553,7 @@ def test_file_project_store_blocks_failed_generated_quality_report(tmp_path):
             "world_facts": [],
         },
     )
+    _seed_generation_outline(root, 1)
 
     class FakeEngine:
         def generate_next_chapter(self, story):
@@ -9247,6 +9604,7 @@ def test_file_project_store_persists_generated_chapter_with_unpassed_advisory_re
             "world_facts": [],
         },
     )
+    _seed_generation_outline(root, 1)
 
     class FakeEngine:
         def generate_next_chapter(self, story):
@@ -9481,6 +9839,7 @@ def test_file_project_store_normalizes_generated_chapter_title_prefix(tmp_path):
             "world_facts": [],
         },
     )
+    _seed_generation_outline(root, 1)
 
     class FakeEngine:
         def generate_next_chapter(self, story):

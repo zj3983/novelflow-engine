@@ -86,6 +86,36 @@ def _make_file_project(root, *, project_id="p-file-api", state=None):
     )
 
 
+def _seed_generation_outline(root, chapter_number: int) -> None:
+    path = root / ".story-system" / "outline-generation" / "rolling_outline.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rolling-outline/v1",
+                "chapters": [
+                    {
+                        "chapter_number": chapter_number,
+                        "title": f"Chapter {chapter_number}",
+                        "chapter_goal": "Advance the test chapter.",
+                        "core_conflict": "Resolve the test conflict.",
+                        "cast": [{"name": "Lead", "role": "protagonist", "this_chapter_role": "act"}],
+                        "scenes": [{"location": "test", "action": "advance", "result": "complete"}],
+                        "gain": "progress",
+                        "cost": "effort",
+                        "foreshadowing": [],
+                        "hook": "continue",
+                        "state_delta": "test state advances",
+                        "source": "manual",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _mock_story_chat(self, story, prompt: str, *, max_tokens: int, json_mode: bool, agent: str = "director"):
     chapter_number = getattr(story, "current_chapter", 0) or 1
     active = [c for c in story.characters if c.lifecycle_state == "active" and not c.frozen]
@@ -1013,6 +1043,7 @@ def test_file_project_generate_next_accepts_chapter_direction_id(tmp_path, monke
         project_id="p-direction-file",
         state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
     )
+    _seed_generation_outline(project_root, 2)
     captured: dict[str, object] = {}
 
     def fake_generate_next(self, engine=None, *, chapter_direction_id=None, commit_message=None):
@@ -1161,6 +1192,7 @@ def test_file_project_generation_job_accepts_chapter_direction_id(tmp_path, monk
         project_id="p-direction-job-file",
         state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
     )
+    _seed_generation_outline(project_root, 2)
     submitted: dict[str, object] = {}
 
     def fake_submit(fn, job_id, project_id, **kwargs):
@@ -1189,6 +1221,7 @@ def test_file_project_generation_job_response_has_steps(tmp_path, monkeypatch):
         project_id="p-queued-step-file",
         state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
     )
+    _seed_generation_outline(project_root, 2)
     monkeypatch.setattr(file_projects._file_generation_executor, "submit", lambda *args, **kwargs: None)
 
     response = client.post(
@@ -1220,6 +1253,7 @@ def test_file_project_current_generation_job_returns_active_job(tmp_path, monkey
         project_id="p-current-job-file",
         state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
     )
+    _seed_generation_outline(project_root, 2)
     monkeypatch.setattr(file_projects._file_generation_executor, "submit", lambda *args, **kwargs: None)
 
     missing = client.get("/file-projects/p-current-job-file/generation-jobs/current")
@@ -1309,6 +1343,7 @@ def test_file_project_generation_log_survives_in_memory_job_reset(tmp_path, monk
         project_id="p-persistent-log-file",
         state={"story_id": "s-file-api", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
     )
+    _seed_generation_outline(project_root, 2)
     monkeypatch.setattr(file_projects._file_generation_executor, "submit", lambda *args, **kwargs: None)
 
     started = client.post("/file-projects/p-persistent-log-file/generation-jobs", json={})
@@ -1327,6 +1362,93 @@ def test_file_project_generation_log_survives_in_memory_job_reset(tmp_path, monk
     assert payload["steps"] == started_payload["steps"]
 
 
+def test_file_generation_job_persists_new_chapter_without_candidate(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        def generate_next_chapter(
+            self,
+            *,
+            chapter_direction_id=None,
+            persist=True,
+            accept_quality_warnings=False,
+        ):
+            captured["chapter_direction_id"] = chapter_direction_id
+            captured["persist"] = persist
+            captured["accept_quality_warnings"] = accept_quality_warnings
+            return {"chapter_number": 2, "chapter_title": "New chapter"}
+
+    job_id = "fgj-direct-new-chapter"
+    monkeypatch.setattr(file_projects, "_store_for", lambda _project_id: FakeStore())
+    monkeypatch.setattr(file_projects, "_persist_file_generation_job", lambda _job: None)
+    with file_projects._file_generation_jobs_lock:
+        file_projects._file_generation_jobs[job_id] = {
+            "job_id": job_id,
+            "story_id": "file:p-direct-new-chapter",
+            "project_id": "file:p-direct-new-chapter",
+            "status": "queued",
+            "progress": "queued",
+            "steps": [],
+            "created_at": "",
+            "updated_at": "",
+        }
+
+    try:
+        file_projects._run_file_generation_job(
+            job_id,
+            "file:p-direct-new-chapter",
+            chapter_direction_id="continue-main-line",
+        )
+    finally:
+        with file_projects._file_generation_jobs_lock:
+            file_projects._file_generation_jobs.pop(job_id, None)
+            file_projects._active_file_generation_jobs.pop("file:p-direct-new-chapter", None)
+
+    assert captured == {
+        "chapter_direction_id": "continue-main-line",
+        "persist": True,
+        "accept_quality_warnings": True,
+    }
+
+
+def test_file_generation_job_dispatches_manual_expansion(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        def expand_chapter(self, chapter_number):
+            captured["chapter_number"] = chapter_number
+            return {"chapter_number": chapter_number, "chapter_title": "Expanded"}
+
+    job_id = "fgj-manual-expand"
+    monkeypatch.setattr(file_projects, "_store_for", lambda _project_id: FakeStore())
+    monkeypatch.setattr(file_projects, "_persist_file_generation_job", lambda _job: None)
+    with file_projects._file_generation_jobs_lock:
+        file_projects._file_generation_jobs[job_id] = {
+            "job_id": job_id,
+            "story_id": "file:p-manual-expand",
+            "project_id": "file:p-manual-expand",
+            "status": "queued",
+            "progress": "queued",
+            "steps": [],
+            "created_at": "",
+            "updated_at": "",
+        }
+
+    try:
+        file_projects._run_file_generation_job(
+            job_id,
+            "file:p-manual-expand",
+            chapter_number=1,
+            operation="expand",
+        )
+    finally:
+        with file_projects._file_generation_jobs_lock:
+            file_projects._file_generation_jobs.pop(job_id, None)
+            file_projects._active_file_generation_jobs.pop("file:p-manual-expand", None)
+
+    assert captured == {"chapter_number": 1}
+
+
 def test_reserved_generation_job_reuses_completed_persisted_job(tmp_path, monkeypatch):
     monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
     project_root = tmp_path / "reserved-job-file-project"
@@ -1335,6 +1457,7 @@ def test_reserved_generation_job_reuses_completed_persisted_job(tmp_path, monkey
         project_id="p-reserved-job-file",
         state={"story_id": "s-reserved-job", "outline": "A grounded game story.", "current_chapter": 1, "world_facts": []},
     )
+    _seed_generation_outline(project_root, 2)
     submitted: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         file_projects._file_generation_executor,

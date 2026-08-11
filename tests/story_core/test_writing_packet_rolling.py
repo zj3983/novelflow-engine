@@ -180,6 +180,35 @@ def test_writing_packet_emits_next_chapter_outline_from_rolling_file(tmp_path: P
     assert outline["chapter_number"] == 2
     assert outline["title"] == "第2章 标题"
     assert packet.get("next_chapter_outline_source") == "rolling"
+    assert packet["outline_context"]["chapter"]["chapter_goal"] == "第2章目标"
+    assert packet["scene_cards"][0]["source"] == "rolling_outline.chapter"
+
+
+def test_generation_state_uses_rolling_outline_for_target_chapter(tmp_path: Path) -> None:
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "断香炉",
+            "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+            "character_profiles": [],
+        },
+        state={
+            "story_id": "s-file",
+            "current_chapter": 1,
+            "world_facts": [],
+            "characters": [],
+        },
+    )
+    _write_rolling_outline(tmp_path / "novel", [_stub_rolling_chapter(2)])
+
+    payload = store._story_state_payload_for_direction(
+        store.state(), store.project(), 2
+    )
+
+    chapter = payload["outline_context"]["chapter"]
+    assert chapter["chapter_goal"] == "第2章目标"
+    assert chapter["cast"] == ["夜烬"]
 
 
 def test_writing_packet_falls_back_to_legacy_outline_when_no_rolling_chapter(

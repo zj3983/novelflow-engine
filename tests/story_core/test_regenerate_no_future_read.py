@@ -206,12 +206,8 @@ def test_regenerate_chapter_uses_existing_outline_for_target_only(tmp_path: Path
     assert rolling is None or rolling.get("chapters") == []
 
 
-def test_generate_next_chapter_still_triggers_rolling_fill(tmp_path: Path) -> None:
-    """Symmetric guard: the sentinel above proves ``regenerate``
-    does NOT call ``ensure_rolling_outline``. This test proves
-    ``generate_next_chapter`` DOES — so we don't accidentally
-    silence the trigger while hardening the regenerate path.
-    """
+def test_generate_next_chapter_requires_outline_without_auto_fill(tmp_path: Path) -> None:
+    """Body generation stops before the engine when its fine outline is missing."""
     store = _make_minimal_file_project(
         tmp_path / "novel",
         project={
@@ -222,18 +218,10 @@ def test_generate_next_chapter_still_triggers_rolling_fill(tmp_path: Path) -> No
         },
         state={"story_id": "s-file", "current_chapter": 0, "world_facts": [], "characters": []},
     )
-    called = {"count": 0}
-
-    def counting(*args, **kwargs):
-        called["count"] += 1
-        # Don't actually run the fill — just record the call.
-    with patch.object(FileProjectStore, "ensure_rolling_outline", counting):
-        engine = _FakeEngine()
-        try:
-            store.generate_next_chapter(engine=engine, persist=False)
-        except Exception:
-            # The body generation may fail for unrelated reasons
-            # (state.json shape etc.); the only thing this test
-            # asserts is that ensure_rolling_outline was called.
-            pass
-    assert called["count"] >= 1, "generate_next_chapter must trigger ensure_rolling_outline"
+    with patch.object(
+        FileProjectStore,
+        "ensure_rolling_outline",
+        side_effect=AssertionError("body generation must not auto-fill outlines"),
+    ):
+        with pytest.raises(ValueError, match="chapter_outline_required:1"):
+            store.generate_next_chapter(engine=_FakeEngine(), persist=False)

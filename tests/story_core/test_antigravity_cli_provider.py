@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from packages.story_core import antigravity_cli_provider
+from packages.story_core.http_retry import RetryConfig
 
 
 def test_antigravity_cli_runs_isolated_single_output_request(monkeypatch):
@@ -63,6 +64,41 @@ def test_antigravity_cli_does_not_duplicate_effort_encoded_in_model(monkeypatch)
     )
 
     assert "--effort" not in captured["args"]
+
+
+def test_antigravity_cli_retries_transient_command_failure(monkeypatch):
+    calls = 0
+
+    def fake_run(args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="temporary provider unavailable",
+            )
+        return SimpleNamespace(returncode=0, stdout="recovered\n", stderr="")
+
+    monkeypatch.setattr(
+        antigravity_cli_provider,
+        "_antigravity_command_prefix",
+        lambda command: [command],
+    )
+    monkeypatch.setattr(antigravity_cli_provider.subprocess, "run", fake_run)
+    monkeypatch.setattr(antigravity_cli_provider.time, "sleep", lambda _delay: None)
+
+    result = antigravity_cli_provider.post_json_via_antigravity_cli(
+        {
+            "model": "gemini-3.1-pro-high",
+            "messages": [{"role": "user", "content": "write"}],
+        },
+        command="agy-test",
+        config=RetryConfig(max_retries=2, initial_delay=0),
+    )
+
+    assert calls == 2
+    assert result["choices"][0]["message"]["content"] == "recovered"
 
 
 def test_antigravity_cli_models_are_read_from_command(monkeypatch):

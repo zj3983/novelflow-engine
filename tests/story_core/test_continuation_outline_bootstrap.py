@@ -26,6 +26,7 @@ from packages.story_core.continuation_outline_bootstrap import (
     BootstrapPhaseId,
     BootstrapReadiness,
     BOOTSTRAP_PHASES,
+    ContinuationOutlineBootstrapper,
     validate_continuation_bootstrap,
 )
 from packages.story_core.outline_rolling_store import RollingOutlineStore
@@ -536,6 +537,37 @@ def test_llm_rolling_window_generator_makes_one_planner_call() -> None:
     assert all(isinstance(row["scenes"], list) and len(row["scenes"]) >= 2 for row in rows)
 
 
+def test_llm_rolling_window_generator_normalizes_common_cli_shape() -> None:
+    """CLI models may omit ordered chapter ids and emit scene strings."""
+
+    from packages.story_core.continuation_outline_bootstrap import (
+        LLMRollingWindowGenerator,
+    )
+
+    class _FakeGateway:
+        def complete_stage(self, stage: str, request):  # type: ignore[no-untyped-def]
+            chapter = detailed_chapter(148)
+            chapter.pop("chapter_number")
+            chapter["cast"] = ["林修"]
+            chapter["scene_chain"] = ["林修检查炉火。", "林修确认新的异常。"]
+            from packages.story_core.model_gateway import ModelResponse
+
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"chapters": [chapter]}, ensure_ascii=False),
+            )
+
+    rows = LLMRollingWindowGenerator(gateway=_FakeGateway()).generate(  # type: ignore[arg-type]
+        context={"current_arc": "续写主线"},
+        chapter_numbers=[148],
+        volume_range=(148, 160),
+        character_cards=[character_card("林修", "protagonist")],
+    )
+
+    assert rows[0]["chapter_number"] == 148
+    assert rows[0]["scenes"][0]["action"] == "林修检查炉火。"
+
+
 # ---------------------------------------------------------------------------
 # Task 4: Resumable bootstrap orchestrator
 # ---------------------------------------------------------------------------
@@ -552,12 +584,111 @@ def _seed_legacy_approved_project(
     next five chapters and seed the rolling outline file.
     """
 
-    return seed_imported_project(
+    root = seed_imported_project(
         tmp_path,
         future_arc=True,
         rolling=False,
         current_chapter=current_chapter,
     )
+    outline_path = root / ".webnovel" / "outline.json"
+    outline = _read_json(outline_path)
+    future_arc = outline["arcs"][-1]
+    future_arc.update(
+        {
+            "stage_antagonist": "负责阻断万修传承的巡界使",
+            "core_loop": "接单、诊断、维修、承担代价并得到新的线索",
+            "escalations": [
+                "维修对象从民用器物升级为宗门法器",
+                "维修结果开始改变各方势力关系",
+                "巡界使亲自封锁万修传承",
+            ],
+            "midpoint_turn": "林修发现故障并非自然形成，而是有人主动制造",
+            "climax": "林修修复关键仙器并迫使巡界使暴露",
+            "active_long_term_lines": ["万修传承的来历", "幕后故障制造者"],
+            "relationship_changes": ["林修与盟友从交易关系转为共同承担风险"],
+            "foreshadowing_in": ["早期异常维修单"],
+            "foreshadowing_out": ["上界巡查体系"],
+            "next_arc_entry": "修复结果惊动更高层的巡界机构",
+        }
+    )
+    _write_json(outline_path, outline)
+    return root
+
+
+def test_bootstrapper_rejects_sparse_future_arc_shell(tmp_path: Path) -> None:
+    """A title/range/goal shell is not a usable stage outline."""
+
+    root = seed_imported_project(
+        tmp_path,
+        future_arc=True,
+        rolling=False,
+        current_chapter=147,
+    )
+    bootstrapper = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=object(),
+        rolling_generator=object(),
+    )
+
+    assert bootstrapper.outline_foundation_needs_refresh()
+
+
+def test_refresh_ready_checkpoint_lists_all_available_rolling_chapters(
+    tmp_path: Path,
+) -> None:
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    rolling_path = (
+        root
+        / ".story-system"
+        / "outline-generation"
+        / "rolling_outline.json"
+    )
+    _write_json(
+        rolling_path,
+        {
+            "schema_version": "rolling-outline/v1",
+            "chapters": [
+                {"chapter_number": number, "title": f"Chapter {number}"}
+                for number in range(148, 154)
+            ],
+        },
+    )
+    bootstrapper = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=object(),
+        rolling_generator=object(),
+    )
+    payload = {
+        "schema_version": "continuation-bootstrap/v1",
+        "input_fingerprint": "fingerprint",
+        "status": "ready",
+        "phases": [
+            {
+                "id": phase,
+                "status": "completed",
+                "artifact": {"written_chapter_numbers": [148, 149]},
+                "error": "",
+            }
+            for phase in BOOTSTRAP_PHASES
+        ],
+    }
+
+    refreshed = bootstrapper.refresh_ready_checkpoint(payload)
+
+    chapter_phase = next(
+        phase
+        for phase in refreshed["phases"]
+        if phase["id"] == "chapter_window"
+    )
+    assert chapter_phase["artifact"]["written_chapter_numbers"] == [148, 149]
+    assert chapter_phase["artifact"]["available_chapter_numbers"] == [
+        148,
+        149,
+        150,
+        151,
+        152,
+        153,
+    ]
 
 
 def _fake_planning_generator(
@@ -683,6 +814,106 @@ def test_bootstrapper_full_run_reaches_ready(tmp_path: Path) -> None:
         for chapter in rolling.read_rolling_outline()["chapters"]
     ]
     assert numbers == [148, 149, 150, 151, 152]
+
+
+def test_bootstrapper_real_import_baseline_generates_future_arc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real import baseline has history only, so planning must run.
+
+    This guards against treating any non-empty arc list as a complete
+    continuation foundation.  The production planner is passed to
+    ``FileProjectStore.generate_outline_plan`` rather than called as a
+    facade itself.
+    """
+
+    root = seed_imported_project(
+        tmp_path,
+        future_arc=False,
+        rolling=False,
+        current_chapter=147,
+    )
+    rolling_stub, rolling_calls = _fake_rolling_generator()
+    planning_calls: list[object] = []
+
+    class PlannerLikeProduction:
+        def generate(self, brief: Any, **kwargs: Any) -> Any:
+            raise AssertionError("store adapter owns this call")
+
+    planner = PlannerLikeProduction()
+
+    from packages.story_core.file_project_store import FileProjectStore
+
+    def generate_outline_plan(
+        store: FileProjectStore,
+        generator: object,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        planning_calls.append(generator)
+        outline = store.project_outline()
+        outline["arcs"].append(
+            {
+                "id": "continuation-148-300",
+                "title": "续写阶段",
+                "start_chapter": 148,
+                "end_chapter": 300,
+                "goal": "推进续写主线",
+                    "obstacle": "既有冲突继续升级",
+                    "payoff": "完成续写目标",
+                    "end_state": "主角完成阶段成长",
+                    "stage_antagonist": "阻断万修传承的巡界使",
+                    "core_loop": "接单、诊断、维修、承担代价并获得线索",
+                    "escalations": ["维修宗门法器", "维修结果改变势力关系"],
+                    "midpoint_turn": "林修确认故障是人为制造",
+                    "climax": "林修修复关键仙器并逼出幕后对手",
+                    "active_long_term_lines": ["万修传承的来历"],
+                }
+        )
+        store.update_project_outline(outline)
+        return {
+            "outline_foundation": {"overall": outline["overall"], "arcs": outline["arcs"]},
+            "character_roster": store.project()["character_profiles"],
+        }
+
+    monkeypatch.setattr(FileProjectStore, "generate_outline_plan", generate_outline_plan)
+
+    result = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=planner,
+        rolling_generator=rolling_stub,
+    ).run()
+
+    assert result.ready
+    assert planning_calls == [planner]
+    assert rolling_calls[0]["chapter_numbers"] == [148, 149, 150, 151, 152]
+
+
+def test_bootstrapper_unexpected_model_error_persists_failed_phase(
+    tmp_path: Path,
+) -> None:
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    rolling_stub, _ = _fake_rolling_generator(error="provider_unavailable")
+
+    bootstrapper = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=lambda *args, **kwargs: None,
+        rolling_generator=rolling_stub,
+    )
+    result = bootstrapper.run()
+    checkpoint = bootstrapper.read_checkpoint()
+
+    assert not result.ready
+    assert checkpoint["status"] == "failed"
+    failed = [phase for phase in checkpoint["phases"] if phase["status"] == "failed"]
+    assert failed == [
+        {
+            "id": "chapter_window",
+            "status": "failed",
+            "artifact": {},
+            "error": "provider_unavailable",
+        }
+    ]
 
 
 def test_bootstrapper_legacy_approved_uses_rolling_only(tmp_path: Path) -> None:

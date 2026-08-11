@@ -23,6 +23,13 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv(
         "NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path / "projects")
     )
+    from apps.api.routes import file_projects
+
+    monkeypatch.setattr(
+        file_projects._continuation_bootstrap_executor,
+        "submit",
+        lambda *args, **kwargs: None,
+    )
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -2048,6 +2055,36 @@ def test_quick_continue_retry_after_response_save_failure_reuses_reserved_job(
 # ---------------------------------------------------------------------------
 
 
+def test_create_project_automatically_enqueues_bootstrap(
+    client: TestClient,
+    allowed_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.routes import file_projects
+
+    submitted: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        file_projects._continuation_bootstrap_executor,
+        "submit",
+        lambda *args, **kwargs: submitted.append(args),
+    )
+    session = _confirm_analysis(
+        client, _analyzed_import(client, allowed_root, monkeypatch)
+    )
+    payload = _create_project_payload()
+    payload["expected_revision"] = session["revision"]
+
+    response = client.post(
+        f"/continuation-imports/{session['session_id']}/create-project",
+        json=payload,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["bootstrap_status"] == "queued"
+    assert len(submitted) == 1
+    assert submitted[0][0].__name__ == "_run_continuation_bootstrap_job"
+
+
 def test_bootstrap_status_endpoint_returns_persisted_checkpoint(
     client: TestClient,
     allowed_root: Path,
@@ -2088,14 +2125,12 @@ def test_bootstrap_status_endpoint_returns_persisted_checkpoint(
     }
 
 
-def test_start_bootstrap_endpoint_returns_202(
+def test_start_bootstrap_endpoint_does_not_duplicate_automatic_job(
     client: TestClient,
     allowed_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``POST /file-projects/{id}/continuation-bootstrap`` returns
-    202 and enqueues the bootstrapper in a dedicated executor.
-    """
+    """A manual POST while the automatic job is queued is idempotent."""
 
     from apps.api.routes import file_projects
 
@@ -2125,10 +2160,7 @@ def test_start_bootstrap_endpoint_returns_202(
     )
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
-    assert len(submitted) == 1
-    # The submitted call is the bootstrapper's run() method.
-    submitted_fn = submitted[0][0]
-    assert submitted_fn.__name__ == "_run_continuation_bootstrap_job"
+    assert submitted == []
 
 
 def test_bootstrap_status_comes_from_disk_after_route_clear(
@@ -2225,15 +2257,12 @@ def test_bootstrap_status_comes_from_disk_after_route_clear(
     assert response.json()["status"] == "ready"
 
 
-def test_bootstrap_retry_queues_only_first_failed_phase(
+def test_bootstrap_ready_checkpoint_is_requeued_when_future_arc_is_sparse(
     client: TestClient,
     allowed_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A retry POST must not re-enqueue a successful run.
-    The endpoint must short-circuit when the persisted
-    checkpoint is already ``ready``.
-    """
+    """A stale ready marker must not hide an incomplete future stage."""
 
     from apps.api.routes import file_projects
 
@@ -2286,6 +2315,8 @@ def test_bootstrap_retry_queues_only_first_failed_phase(
 
     submitted: list[tuple[object, ...]] = []
     executor = file_projects._continuation_bootstrap_executor
+    with file_projects._continuation_bootstrap_lock:
+        file_projects._continuation_bootstrap_checkpoints.clear()
     monkeypatch.setattr(
         executor,
         "submit",
@@ -2295,9 +2326,9 @@ def test_bootstrap_retry_queues_only_first_failed_phase(
     response = client.post(
         f"/file-projects/{project_id}/continuation-bootstrap"
     )
-    assert response.status_code == 200
-    assert response.json()["status"] == "ready"
-    assert submitted == []
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert len(submitted) == 1
 
 
 def test_create_project_rejects_generate_outline_false(

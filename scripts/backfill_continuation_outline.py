@@ -143,12 +143,15 @@ def _missing_phases(root: Path) -> list[str]:
         planning_generator=None,
         rolling_generator=None,
     )
-    if bootstrapper._outline_layers_already_valid():
-        adopted = {"outline_foundation", "character_roster"}
-    else:
-        adopted = set()
-    adopted.add("source_analysis")
-    adopted.add("world_context")
+    adopted: set[str] = set()
+    if bootstrapper._outline_foundation_already_valid():
+        adopted.add("outline_foundation")
+    if bootstrapper._character_roster_already_valid():
+        adopted.add("character_roster")
+    if bootstrapper._world_context_already_valid():
+        adopted.add("world_context")
+    if (root / ".story-system" / "continuation-analysis.json").is_file():
+        adopted.add("source_analysis")
     checkpoint_path = root / ".story-system" / "continuation-bootstrap" / "checkpoint.json"
     payload = _read_json(checkpoint_path)
     completed: set[str] = set()

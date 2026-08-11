@@ -62,6 +62,61 @@ _MIN_SCENES = 2
 _MAX_SCENES = 4
 
 
+def rolling_chapter_to_outline_entry(payload: Any) -> dict[str, Any]:
+    """Adapt one rolling chapter to the legacy outline chapter shape.
+
+    Rolling outlines are the chapter-level source of truth, while some
+    generation contexts still consume the older ``goal/action/payoff``
+    fields. Keeping the conversion here gives both paths the same view.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    try:
+        chapter_number = int(payload.get("chapter_number") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if chapter_number <= 0:
+        return {}
+
+    raw_cast = payload.get("cast") if isinstance(payload.get("cast"), list) else []
+    cast_names = [
+        str(item.get("name") or "").strip()
+        for item in raw_cast
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ]
+    scenes = payload.get("scenes") if isinstance(payload.get("scenes"), list) else []
+    action_parts: list[str] = []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        location = str(scene.get("location") or "").strip()
+        action = str(scene.get("action") or "").strip()
+        result = str(scene.get("result") or "").strip()
+        beat = "，".join(part for part in (action, result) if part)
+        if location and beat:
+            beat = f"{location}：{beat}"
+        elif location:
+            beat = location
+        if beat:
+            action_parts.append(beat)
+
+    chapter_goal = str(payload.get("chapter_goal") or "").strip()
+    return {
+        **payload,
+        "number": chapter_number,
+        "chapter_number": chapter_number,
+        "summary": chapter_goal,
+        "goal": chapter_goal,
+        "obstacle": str(payload.get("core_conflict") or "").strip(),
+        "action": "；".join(action_parts),
+        "payoff": str(payload.get("gain") or "").strip(),
+        "turn": str(payload.get("cost") or "").strip(),
+        "ending_hook": str(payload.get("hook") or "").strip(),
+        "cast_cards": raw_cast,
+        "cast": cast_names,
+    }
+
+
 def _normalize_chapter_numbers(
     existing_chapters: Iterable[dict[str, Any]],
 ) -> set[int]:
@@ -435,6 +490,7 @@ __all__ = [
     "RollingPlanError",
     "RollingValidationError",
     "plan_rolling_window",
+    "rolling_chapter_to_outline_entry",
     "validate_rolling_batch",
     "validate_rolling_chapter",
 ]

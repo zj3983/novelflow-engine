@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import Link from "next/link";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Expand } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -18,6 +18,7 @@ import {
   fetchGenerationJob,
   fetchProjectWritingPacket,
   startFileProjectRegenerationJob,
+  startFileProjectExpansionJob,
   startGenerationJob,
   type ChapterIndexEntry,
   type CandidateDraft,
@@ -135,6 +136,7 @@ export default function WritePage() {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [regenerating, setRegenerating] = useState(false);
+  const [expanding, setExpanding] = useState(false);
   const [generatingNext, setGeneratingNext] = useState(false);
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
   const [generationSteps, setGenerationSteps] = useState<GenerationJobStep[]>([]);
@@ -143,6 +145,7 @@ export default function WritePage() {
   const [nextWritingPacket, setNextWritingPacket] = useState<CodexWritingPacket | null>(null);
   const [copyStatus, setCopyStatus] = useState<CopyStatus>("idle");
   const [pendingCandidate, setPendingCandidate] = useState<CandidateDraft | null>(null);
+  const [nextPendingCandidate, setNextPendingCandidate] = useState<CandidateDraft | null>(null);
   const [candidateAction, setCandidateAction] = useState<"confirm" | "force-confirm" | "discard" | null>(null);
   const mountedRef = useRef(false);
   const operationTokenRef = useRef(0);
@@ -250,15 +253,16 @@ export default function WritePage() {
       setPendingCandidate(null);
       return;
     }
-    const chapterNumbers = Array.from(new Set([requestedChapter, nextChapterNumber].filter((value) => value > 0)));
-    Promise.all(chapterNumbers.map((number) => fetchFileProjectCandidates(projectId, number)))
-      .then((responses) => {
+    fetchFileProjectCandidates(projectId, requestedChapter)
+      .then((response) => {
         if (cancelled) return;
-        const pending = responses
-          .flatMap((response) => response.items)
-          .filter((item) => item.status === "pending")
-          .sort((left, right) => left.created_at.localeCompare(right.created_at));
-        setPendingCandidate(pending.at(-1) ?? null);
+        const pending = response.items
+          .filter((item) => item.status === "pending");
+        const latest = pending
+          .filter((item) => item.chapter_number === requestedChapter)
+          .sort((left, right) => left.created_at.localeCompare(right.created_at))
+          .at(-1) ?? null;
+        setPendingCandidate(latest);
       })
       .catch(() => {
         if (!cancelled) setPendingCandidate(null);
@@ -266,11 +270,38 @@ export default function WritePage() {
     return () => {
       cancelled = true;
     };
-  }, [isFileProject, projectId, requestedChapter, nextChapterNumber, refreshVersion]);
+  }, [isFileProject, projectId, requestedChapter, refreshVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isFileProject || !projectId || nextChapterNumber === requestedChapter) {
+      setNextPendingCandidate(null);
+      return;
+    }
+    fetchFileProjectCandidates(projectId, nextChapterNumber)
+      .then((response) => {
+        if (cancelled) return;
+        const latest = response.items
+          .filter((item) => item.status === "pending" && item.chapter_number === nextChapterNumber)
+          .sort((left, right) => left.created_at.localeCompare(right.created_at))
+          .at(-1) ?? null;
+        setNextPendingCandidate(latest);
+      })
+      .catch(() => {
+        if (!cancelled) setNextPendingCandidate(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isFileProject, nextChapterNumber, projectId, requestedChapter, refreshVersion]);
 
   const nextChapterOutline = nextWritingPacket?.next_chapter_outline ?? null;
   const nextChapterOutlineSource = nextWritingPacket?.next_chapter_outline_source ?? null;
   const rollingFill = nextWritingPacket?.rolling_fill ?? null;
+  const nextChapterNeedsOutline = isFileProject
+    && rollingFill !== null
+    && rollingFill.status !== "present"
+    && rollingFill.status !== "legacy";
   const writingReview = chapter?.quality_report?.writing_review;
   const downstreamNotice = downstreamRewriteNotice(chapter?.quality_report);
   const lengthReview = chapter?.quality_report?.length_review ?? writingReview?.length_review;
@@ -281,14 +312,19 @@ export default function WritePage() {
   const lengthIssues = lengthReview?.issues ?? [];
   const writingLessons = story?.writing_lessons ?? [];
 
-  async function loadPendingCandidate(chapterNumber: number): Promise<void> {
-    if (!isFileProject) return;
+  async function loadPendingCandidate(chapterNumber: number): Promise<CandidateDraft | null> {
+    if (!isFileProject) return null;
     const response = await fetchFileProjectCandidates(projectId, chapterNumber);
     const pending = response.items
       .filter((item) => item.status === "pending")
       .sort((left, right) => left.created_at.localeCompare(right.created_at))
       .at(-1) ?? null;
-    setPendingCandidate(pending);
+    if (chapterNumber === requestedChapter) {
+      setPendingCandidate(pending);
+    } else if (chapterNumber === nextChapterNumber) {
+      setNextPendingCandidate(pending);
+    }
+    return pending;
   }
 
   async function handleRegenerateChapter() {
@@ -329,8 +365,48 @@ export default function WritePage() {
     }
   }
 
+  async function handleExpandChapter() {
+    if (!chapter || !isFileProject || expanding) return;
+    const operationToken = ++operationTokenRef.current;
+    const operationIsActive = () => mountedRef.current && operationTokenRef.current === operationToken;
+    setExpanding(true);
+    setRegenerateStatus("扩写已排队");
+    setRegenerateError(null);
+    try {
+      const job = await startFileProjectExpansionJob(projectId, chapter.chapter_number);
+      if (!operationIsActive()) return;
+      let currentJob = job;
+      setGenerationSteps(Array.isArray(job.steps) ? job.steps : []);
+      setRegenerateStatus(currentJob.progress || currentJob.status);
+      while (currentJob.status === "queued" || currentJob.status === "running") {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        if (!operationIsActive()) return;
+        currentJob = await fetchGenerationJob(projectId, currentJob.job_id);
+        if (!operationIsActive()) return;
+        setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
+        setRegenerateStatus(currentJob.progress || currentJob.status);
+      }
+      if (currentJob.status === "failed") {
+        throw new Error(currentJob.error || "chapter_expansion_failed");
+      }
+      if (!operationIsActive()) return;
+      await loadPendingCandidate(chapter.chapter_number);
+    } catch (err) {
+      if (operationIsActive()) setRegenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (operationIsActive()) {
+        setExpanding(false);
+        setRegenerateStatus(null);
+      }
+    }
+  }
+
   async function handleGenerateNextChapter() {
     if (!generationTargetId || !canGenerateNext) return;
+    if (nextChapterNeedsOutline) {
+      router.push(`/projects/${encodedProjectId}/outline?tab=chapters&chapter=${nextChapterNumber}`);
+      return;
+    }
     const operationToken = ++operationTokenRef.current;
     const operationIsActive = () => mountedRef.current && operationTokenRef.current === operationToken;
     setGeneratingNext(true);
@@ -358,9 +434,16 @@ export default function WritePage() {
       const generatedChapterNumber = Number.isInteger(completedChapterNumber) && completedChapterNumber > 0
         ? completedChapterNumber
         : nextChapterNumber;
-      await loadPendingCandidate(generatedChapterNumber);
+      await refresh({ invalidateChapter: false });
+      setNextPendingCandidate(null);
+      router.push(`/projects/${encodedProjectId}/write?chapter=${generatedChapterNumber}`);
     } catch (err) {
-      if (operationIsActive()) setRegenerateError(err instanceof Error ? err.message : String(err));
+      const detail = err instanceof Error ? err.message : String(err);
+      if (operationIsActive() && detail.includes("chapter_outline_required")) {
+        router.push(`/projects/${encodedProjectId}/outline?tab=chapters&chapter=${nextChapterNumber}`);
+      } else if (operationIsActive()) {
+        setRegenerateError(detail);
+      }
     } finally {
       if (operationIsActive()) {
         setGeneratingNext(false);
@@ -416,8 +499,12 @@ export default function WritePage() {
           { label: "我的作品", href: "/projects" },
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
-        title={chapter ? `章节：第 ${chapter.chapter_number} 章` : "章节"}
-        subtitle={chapter?.chapter_title || project?.current_focus || "目录和正文放在同一页。"}
+        title={chapter
+          ? `章节：第 ${chapter.chapter_number} 章`
+          : pendingCandidate
+            ? `候选稿：第 ${pendingCandidate.chapter_number} 章`
+            : "章节"}
+        subtitle={chapter?.chapter_title || pendingCandidate?.chapter_title || project?.current_focus || "目录和正文放在同一页。"}
       />
 
       {error ? (
@@ -485,7 +572,24 @@ export default function WritePage() {
           </aside>
 
           <article className="ws-reader" id="chapter-reader">
-            {chapterError ? (
+            {!chapter && pendingCandidate ? (
+              <>
+                <header className="ws-reader__head">
+                  <div>
+                    <p className="ws-card__title">全新章节候选稿</p>
+                    <h2>{pendingCandidate.chapter_title || `第 ${pendingCandidate.chapter_number} 章`}</h2>
+                  </div>
+                  <span className="ws-badge">尚未提交</span>
+                </header>
+                <CandidatePanel
+                  candidate={pendingCandidate}
+                  action={candidateAction}
+                  onDiscard={() => void handleDiscardCandidate()}
+                  onConfirm={() => void handleConfirmCandidate()}
+                  onForceConfirm={() => void handleConfirmCandidate(true)}
+                />
+              </>
+            ) : chapterError ? (
               <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
                 <p style={{ color: "var(--ws-danger)", margin: 0 }}>章节加载失败：{chapterError}</p>
               </div>
@@ -509,15 +613,24 @@ export default function WritePage() {
                 <button
                   className="ws-btn ws-btn--sm ws-btn--primary"
                   type="button"
-                  disabled={!canGenerateNext || regenerating || generatingNext}
+                  disabled={!canGenerateNext || expanding || regenerating || generatingNext}
                   onClick={() => void handleGenerateNextChapter()}
                 >
-                  {generatingNext ? "生成中..." : "生成下一章"}
+                  {generatingNext ? "生成中..." : nextChapterNeedsOutline ? "先补细纲" : "生成下一章"}
                 </button>
                 <button
                   className="ws-btn ws-btn--sm"
                   type="button"
-                  disabled={!canRegenerate || regenerating || generatingNext}
+                  disabled={expanding || regenerating || generatingNext}
+                  onClick={() => void handleExpandChapter()}
+                >
+                  <Expand size={15} aria-hidden="true" />
+                  {expanding ? "扩写中..." : "扩写本章"}
+                </button>
+                <button
+                  className="ws-btn ws-btn--sm"
+                  type="button"
+                  disabled={!canRegenerate || expanding || regenerating || generatingNext}
                   onClick={() => void handleRegenerateChapter()}
                 >
                   {regenerating ? "重新生成中..." : "重新生成本章"}
@@ -527,7 +640,7 @@ export default function WritePage() {
             </header>
             {copyStatus === "failed" ? <p className="ws-error" role="alert">复制失败，请允许浏览器访问剪贴板后重试。</p> : null}
 
-            {(regenerating || generatingNext || generationSteps.length > 0) ? (
+            {(expanding || regenerating || generatingNext || generationSteps.length > 0) ? (
               <WritingProgressRow
                 status={regenerateStatus || generationSteps[generationSteps.length - 1]?.message || "准备中"}
                 href={`/projects/${encodedProjectId}/log`}
@@ -535,6 +648,24 @@ export default function WritePage() {
             ) : null}
 
             {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
+            {nextPendingCandidate ? (
+              <section className="ws-card" aria-label="下一章候选稿已保留">
+                <div className="ws-section-head">
+                  <div>
+                    <p className="ws-card__title">下一章候选稿已保留</p>
+                    <p className="ws-card__hint">
+                      第 {nextPendingCandidate.chapter_number} 章候选稿已经生成并保留，不会覆盖当前章节。
+                    </p>
+                  </div>
+                  <Link
+                    className="ws-btn ws-btn--sm ws-btn--primary"
+                    href={`/projects/${encodedProjectId}/write?chapter=${nextPendingCandidate.chapter_number}`}
+                  >
+                    查看第 {nextPendingCandidate.chapter_number} 章候选稿
+                  </Link>
+                </div>
+              </section>
+            ) : null}
             {pendingCandidate ? (
               <CandidatePanel
                 candidate={pendingCandidate}
@@ -552,6 +683,7 @@ export default function WritePage() {
                 outline={nextChapterOutline}
                 error={rollingFill.error ?? ""}
                 filledChapterNumbers={rollingFill.filled_chapter_numbers ?? []}
+                outlineHref={`/projects/${encodedProjectId}/outline?tab=chapters&chapter=${nextChapterNumber}`}
               />
             ) : null}
             {temporaryGuidance ? (
@@ -627,7 +759,7 @@ export default function WritePage() {
             disabled={!canGenerateNext || generatingNext}
             onClick={() => void handleGenerateNextChapter()}
           >
-            {generatingNext ? "生成中..." : "生成第一章"}
+            {generatingNext ? "生成中..." : nextChapterNeedsOutline ? "先补细纲" : "生成第一章"}
           </button>
           {(generatingNext || generationSteps.length > 0) ? (
             <WritingProgressRow

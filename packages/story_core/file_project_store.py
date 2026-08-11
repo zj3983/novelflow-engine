@@ -10,6 +10,7 @@ import tempfile
 import threading
 import uuid
 import ctypes
+from types import SimpleNamespace
 from ctypes import wintypes
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -58,6 +59,7 @@ from packages.story_core.attribute_allocation import (
     rebuild_attribute_progression,
 )
 from packages.story_core.chapter_continuity import build_continuity_interface
+from packages.story_core.chapter_history import replace_chapter_record
 from packages.story_core.chapter_length_policy import (
     CHAPTER_HARD_MAX_CHARS,
     CHAPTER_HARD_MIN_CHARS,
@@ -129,6 +131,9 @@ from packages.story_core.outline_planning import (
     validate_generated_trope_selection,
 )
 from packages.story_core.outline_planning_generation import OutlinePlanningBrief
+from packages.story_core.outline_extension_readiness import (
+    inspect_outline_extension_readiness,
+)
 from packages.story_core.outline_generation_checkpoints import OutlineCheckpointStore
 from packages.story_core.candidate_draft import CandidateDraft
 from packages.story_core.generation_progress import report_generation_progress
@@ -2343,7 +2348,7 @@ class FileProjectStore:
         """Move ``chapter['body']`` into a Markdown file and update the metadata.
 
         After this call the returned chapter dict carries
-        ``body_path`` and ``body_sha256`` instead of ``body``. The
+        ``body_path``, ``body_sha256`` and ``body_chars`` instead of ``body``. The
         Markdown file at ``paths['markdown']`` is the new source
         of truth. The input dict is *not* mutated in place; callers
         that want to keep the legacy body on disk should rely on
@@ -2372,6 +2377,7 @@ class FileProjectStore:
         ):
             updated = dict(chapter)
             updated.pop("body", None)
+            updated["body_chars"] = len("".join(body_value.split()))
             return updated
         sha = sha256(body_value.encode("utf-8")).hexdigest()
         try:
@@ -2382,6 +2388,7 @@ class FileProjectStore:
         updated.pop("body", None)
         updated["body_path"] = str(relative).replace("\\", "/")
         updated["body_sha256"] = sha
+        updated["body_chars"] = len("".join(body_value.split()))
         return updated
 
     def _chapter_paths(self, chapter_number: int, title: str) -> dict[str, Path]:
@@ -2711,11 +2718,14 @@ class FileProjectStore:
         repaired["chapter_title"] = chapter_title
         if not repaired.get("cadence"):
             repaired["cadence"] = "measured"
-        if not repaired.get("next_outline"):
-            repaired["next_outline"] = "continue"
-
         summary_payload = self._chapter_summary_payload(repaired)
         chapter_summary = repaired.get("chapter_summary")
+        if (
+            isinstance(chapter_summary, dict)
+            and isinstance(chapter_summary.get("state_changes"), list)
+            and "state_changes" not in repaired
+        ):
+            repaired["state_changes"] = deepcopy(chapter_summary["state_changes"])
         if not isinstance(chapter_summary, dict):
             repaired["chapter_summary"] = summary_payload
         else:
@@ -2730,13 +2740,13 @@ class FileProjectStore:
             normalized.setdefault("primary_conflict", summary_payload["primary_conflict"])
             normalized.setdefault("secondary_conflict", summary_payload["secondary_conflict"])
             normalized.setdefault("event_beat", summary_payload["event_beat"])
-            repaired["chapter_summary"] = normalized
+            repaired["chapter_summary"] = self._chapter_summary_payload(
+                {**repaired, "chapter_summary": normalized}
+            )
             summary_payload = self._chapter_summary_payload(repaired)
 
-        if not repaired.get("next_outline"):
-            repaired["next_outline"] = (
-                str(summary_payload.get("next_focus") or "continue") or "continue"
-            )
+        if self._is_placeholder_text(repaired.get("next_outline")):
+            repaired["next_outline"] = str(summary_payload.get("next_focus") or "").strip()
 
         updated_story = repaired.get("updated_story")
         if hasattr(updated_story, "model_dump"):
@@ -2744,21 +2754,23 @@ class FileProjectStore:
         if not isinstance(updated_story, dict):
             updated_story = {}
 
-        if isinstance(updated_story.get("timeline"), list):
-            pass
-        else:
-            updated_story["timeline"] = [
-                {
-                    "chapter_number": chapter_number,
-                    "summary": summary_payload["summary"],
-                    "impact": summary_payload.get("next_focus") or repaired["next_outline"],
-                }
-            ]
-
-        if isinstance(updated_story.get("chapter_summaries"), list):
-            pass
-        else:
-            updated_story["chapter_summaries"] = [summary_payload]
+        updated_story["timeline"] = replace_chapter_record(
+            list(updated_story.get("timeline") or []),
+            {
+                "chapter_number": chapter_number,
+                "summary": summary_payload["summary"],
+                "impact": summary_payload.get("next_focus") or repaired["next_outline"],
+            },
+            limit=240,
+        )
+        updated_story["chapter_summaries"] = replace_chapter_record(
+            list(updated_story.get("chapter_summaries") or []),
+            summary_payload,
+            limit=240,
+        )
+        updated_story["world_facts"] = self._clean_state_fact_list(
+            updated_story.get("world_facts")
+        )
 
         repaired["updated_story"] = updated_story
         return repaired
@@ -2799,11 +2811,22 @@ class FileProjectStore:
             "第2章事实：新手法杖9/10",
             "第2章事实：背包为粗糙狼皮×7",
         )
-        return [
-            item
-            for item in values
-            if not (isinstance(item, str) and any(fragment in item for fragment in blocked_fragments))
-        ]
+        cleaned: list[Any] = []
+        for item in values:
+            if not isinstance(item, str):
+                cleaned.append(item)
+                continue
+            compact = self._compact_text(item, 260)
+            if any(fragment in compact for fragment in blocked_fragments):
+                continue
+            if self._is_placeholder_text(compact) or re.search(
+                r"(?:事实|摘要|fact|summary)\s*[:：]\s*continue\s*$",
+                compact,
+                re.IGNORECASE,
+            ):
+                continue
+            cleaned.append(item)
+        return cleaned
 
     def _clean_summary_mapping(self, value: Any, *, label: str) -> dict[str, Any]:
         mapping = self._coerce_summary_mapping(value, label=label)
@@ -3408,15 +3431,58 @@ class FileProjectStore:
         chapter_number = int(chapter.get("chapter_number") or 0)
         summary = dict(chapter.get("chapter_summary") or {})
         title = str(chapter.get("chapter_title") or summary.get("chapter_title") or f"Chapter {chapter_number}")
-        summary_text = self._compact_text(summary.get("summary") or chapter.get("next_outline") or chapter.get("body"), 320)
+        summary_text = self._compact_text(summary.get("summary"), 320)
+        if self._is_placeholder_text(summary_text):
+            chapter_intent = chapter.get("chapter_intent") or {}
+            summary_text = self._first_mapping_text(
+                chapter_intent.get("primary_conflict")
+                if isinstance(chapter_intent, dict)
+                else {},
+                ("summary", "collision", "goal", "conflict"),
+            )
+        if self._is_placeholder_text(summary_text):
+            summary_text = self._compact_text(
+                (chapter.get("event_plan") or {}).get("summary"),
+                320,
+            )
+        if self._is_placeholder_text(summary_text):
+            summary_text = self._compact_text(chapter.get("body"), 320)
         raw_facts = summary.get("facts") if isinstance(summary.get("facts"), list) else []
-        facts = [self._compact_text(item, 220) for item in raw_facts if str(item).strip()]
+        facts = [
+            self._compact_text(item, 220)
+            for item in raw_facts
+            if str(item).strip() and not self._is_placeholder_text(item)
+        ]
         if summary_text and not facts:
             facts = [summary_text]
+        event_beat = self._coerce_summary_mapping(
+            summary.get("event_beat") or chapter.get("event_beat"),
+            label="event_beat",
+        )
+        next_focus = ""
+        for candidate in (
+            summary.get("next_focus"),
+            chapter.get("next_outline"),
+            (chapter.get("event_plan") or {}).get("next_focus"),
+            self._first_mapping_text(
+                event_beat,
+                ("turn", "pivot", "hook", "result", "change", "next"),
+            ),
+            (chapter.get("chapter_intent") or {}).get("next_focus"),
+        ):
+            compact = self._compact_text(candidate, 220)
+            if compact and not self._is_placeholder_text(compact):
+                next_focus = compact
+                break
+        cadence = str(
+            summary.get("cadence") or chapter.get("cadence") or "measured"
+        ).strip()
+        if cadence not in {"urgent", "measured", "breathing"}:
+            cadence = "measured"
         return {
             "chapter_number": chapter_number,
             "chapter_title": title,
-            "cadence": summary.get("cadence") or chapter.get("cadence") or "measured",
+            "cadence": cadence,
             "summary": summary_text or f"Chapter {chapter_number}.",
             "facts": facts[:8],
             "unresolved_threads": [
@@ -3429,13 +3495,7 @@ class FileProjectStore:
                 for item in (summary.get("resolved_threads") if isinstance(summary.get("resolved_threads"), list) else [])
                 if str(item).strip()
             ][:8],
-            "next_focus": self._compact_text(
-                summary.get("next_focus")
-                or chapter.get("next_outline")
-                or (chapter.get("event_plan") or {}).get("next_focus")
-                or "continue",
-                220,
-            ),
+            "next_focus": next_focus,
             "primary_conflict": self._coerce_summary_mapping(
                 summary.get("primary_conflict") or chapter.get("conflict_summary", {}).get("primary_conflict"),
                 label="primary_conflict",
@@ -3444,29 +3504,8 @@ class FileProjectStore:
                 summary.get("secondary_conflict") or chapter.get("conflict_summary", {}).get("secondary_conflict"),
                 label="secondary_conflict",
             ),
-            "event_beat": self._coerce_summary_mapping(
-                summary.get("event_beat") or chapter.get("event_beat"),
-                label="event_beat",
-            ),
+            "event_beat": event_beat,
         }
-
-    def _replace_by_chapter_number(self, items: list[Any], entry: dict[str, Any], *, limit: int = 120) -> list[Any]:
-        chapter_number = entry.get("chapter_number")
-        filtered = [
-            item
-            for item in items
-            if not (
-                (isinstance(item, dict) and item.get("chapter_number") == chapter_number)
-                or (
-                    isinstance(item, str)
-                    and chapter_number is not None
-                    and re.match(rf"^\s*chapter\s+{int(chapter_number)}\s*:", item, re.IGNORECASE)
-                )
-            )
-        ]
-        filtered.append(entry)
-        filtered.sort(key=lambda item: int(item.get("chapter_number") or 0) if isinstance(item, dict) else 0)
-        return filtered[-limit:]
 
     def _dedupe_numbered_records(self, items: list[Any], *, limit: int = 240) -> list[Any]:
         """Keep one structured record per chapter and drop stale manual shells."""
@@ -4149,7 +4188,7 @@ class FileProjectStore:
                 if normalize_foreshadowing_text(item.text) in manual_keys
             ]
         synced["current_chapter"] = max(int(synced.get("current_chapter") or 0), chapter_number)
-        synced["chapter_summaries"] = self._replace_by_chapter_number(
+        synced["chapter_summaries"] = replace_chapter_record(
             list(synced.get("chapter_summaries") or []),
             summary,
             limit=240,
@@ -4159,7 +4198,7 @@ class FileProjectStore:
             "summary": summary["summary"],
             "impact": summary["next_focus"],
         }
-        synced["timeline"] = self._replace_by_chapter_number(
+        synced["timeline"] = replace_chapter_record(
             list(synced.get("timeline") or []),
             timeline_entry,
             limit=240,
@@ -4200,7 +4239,7 @@ class FileProjectStore:
             [*([str(protagonist_card["name"])] if protagonist_card else []), *character_entity_names],
             limit=24,
         )
-        synced["memory_index"] = self._replace_by_chapter_number(
+        synced["memory_index"] = replace_chapter_record(
             list(synced.get("memory_index") or []),
             memory_entry,
             limit=240,
@@ -4901,7 +4940,7 @@ class FileProjectStore:
         if level or exp or hp or mp or durability or money or real_balance or inventory_line or quest_line:
             summary = self._chapter_body_ledger_summary(chapter, ledger)
             chapter["chapter_summary"] = summary
-            state["chapter_summaries"] = self._replace_by_chapter_number(
+            state["chapter_summaries"] = replace_chapter_record(
                 list(state.get("chapter_summaries") or []),
                 summary,
                 limit=240,
@@ -4923,7 +4962,7 @@ class FileProjectStore:
                 "summary": summary["summary"],
                 "impact": summary["next_focus"],
             }
-            state["timeline"] = self._replace_by_chapter_number(
+            state["timeline"] = replace_chapter_record(
                 list(state.get("timeline") or []),
                 timeline_entry,
                 limit=240,
@@ -4941,7 +4980,7 @@ class FileProjectStore:
                 "facts": summary["facts"],
                 "unresolved_threads": summary["unresolved_threads"],
             }
-            state["memory_index"] = self._replace_by_chapter_number(
+            state["memory_index"] = replace_chapter_record(
                 list(state.get("memory_index") or []),
                 memory_entry,
                 limit=240,
@@ -5990,6 +6029,14 @@ class FileProjectStore:
             ]
         trope_candidates = self._current_project_trope_candidates(project, state)
         expected_primary_trope_id = self._outline_primary_trope_id(current_outline)
+        if (
+            mode == "extend"
+            and current_chapter > 0
+            and expected_primary_trope_id is None
+        ):
+            # Legacy projects may predate trope locking. Extending them must not
+            # force a newly available genre template into the established outline.
+            trope_candidates = []
         if mode == "initial":
             if current_chapter != 0:
                 raise ValueError("initial_outline_requires_unstarted_project")
@@ -6160,6 +6207,100 @@ class FileProjectStore:
         )
         return {**snapshot, "source": "generated"}
 
+    @_with_project_update_lock
+    def _save_generated_outline_foundation(
+        self,
+        plan: Any,
+        *,
+        mode: str,
+    ) -> dict[str, Any]:
+        """Persist only overall/arcs while preserving committed history.
+
+        Continuation bootstrap already owns character cards and the rolling
+        chapter window.  Saving the foundation separately prevents an outline
+        repair from making two unrelated model calls and from replacing those
+        approved layers.
+        """
+
+        if mode != "regenerate":
+            raise ValueError("outline_foundation_requires_regenerate")
+        validated = GeneratedOutlinePlan.model_validate(plan)
+        project = dict(self.project())
+        state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
+        current_chapter = int(state.get("current_chapter") or 0)
+        continuation = (
+            project.get("continuation")
+            if isinstance(project.get("continuation"), dict)
+            else {}
+        )
+        continuation_start = continuation.get("start_after_chapter")
+        immutable_arc_through = (
+            int(continuation_start)
+            if isinstance(continuation_start, int)
+            and not isinstance(continuation_start, bool)
+            and continuation_start >= 1
+            else None
+        )
+        current_outline = dict(self.project_outline())
+        current_outline.pop("source", None)
+        generated_outline = validated.outline.model_dump(mode="json")
+        generated_outline["chapters"] = []
+        generated_outline = self._preserve_committed_outline(
+            current_outline,
+            generated_outline,
+            current_chapter=current_chapter,
+            immutable_arc_through=immutable_arc_through,
+        )
+        cards = [
+            dict(card)
+            for card in project.get("character_profiles", [])
+            if isinstance(card, dict)
+        ]
+        project["pipeline_stage"] = "world_ready"
+        next_arc = next(
+            (
+                arc
+                for arc in generated_outline.get("arcs", [])
+                if int(arc.get("start_chapter") or 0)
+                <= current_chapter + 1
+                <= int(arc.get("end_chapter") or 0)
+            ),
+            {},
+        )
+        project["current_focus"] = str(
+            next_arc.get("goal") or project.get("current_focus") or ""
+        )
+        state["outline"] = str(
+            generated_outline.get("overall", {}).get("story")
+            or state.get("outline")
+            or ""
+        )
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        snapshot_path = self.story_system_dir / "plans" / f"{stamp}-{mode}-foundation.json"
+        snapshot = {
+            "schema_version": "generated-outline-foundation/v1",
+            "mode": mode,
+            "outline": generated_outline,
+            "characters": cards,
+        }
+        self._replace_json_transaction(
+            {
+                self.webnovel_dir / "outline.json": generated_outline,
+                self.webnovel_dir / "project.json": project,
+                self.webnovel_dir / "state.json": state,
+                snapshot_path: snapshot,
+            }
+        )
+        return {
+            **snapshot,
+            "outline_foundation": {
+                "overall": generated_outline["overall"],
+                "arcs": generated_outline["arcs"],
+            },
+            "character_roster": cards,
+            "source": "generated",
+        }
+
     def generate_outline_plan(
         self,
         generator: Any,
@@ -6168,7 +6309,13 @@ class FileProjectStore:
         guidance: str = "",
         restart_from: str | None = None,
         persist_chapter_window: bool = True,
+        foundation_only: bool = False,
     ) -> dict[str, Any]:
+        if mode == "extend":
+            readiness = self.outline_extension_readiness()
+            if not readiness["ready"]:
+                codes = ",".join(item["code"] for item in readiness["blockers"])
+                raise ValueError(f"outline_extension_not_ready:{codes}")
         brief = self._planning_brief()
         normalized_guidance = guidance.strip()
         generate_parameters = inspect.signature(generator.generate).parameters
@@ -6210,23 +6357,36 @@ class FileProjectStore:
                 elif status == "failed":
                     checkpoints.fail(phase, error)
 
-            plan = generator.generate(
-                brief,
-                mode=mode,
-                guidance=normalized_guidance,
-                phase_payloads=checkpoints.completed_payloads(),
-                phase_callback=record_phase,
-            )
+            generation_kwargs = {
+                "mode": mode,
+                "guidance": normalized_guidance,
+                "phase_payloads": checkpoints.completed_payloads(),
+                "phase_callback": record_phase,
+            }
+            if foundation_only and "stop_after_phase" in generate_parameters:
+                generation_kwargs["stop_after_phase"] = "outline_foundation"
+            plan = generator.generate(brief, **generation_kwargs)
         else:
             plan = generator.generate(
                 brief,
                 mode=mode,
                 guidance=normalized_guidance,
             )
+        if foundation_only:
+            return self._save_generated_outline_foundation(plan, mode=mode)
         return self.save_generated_outline_plan(
             plan,
             mode=mode,
             persist_chapter_window=persist_chapter_window,
+        )
+
+    def outline_extension_readiness(self) -> dict[str, Any]:
+        outline = dict(self.project_outline())
+        outline.pop("source", None)
+        return inspect_outline_extension_readiness(
+            project=dict(self.project()),
+            state=dict(self._read_json(self.webnovel_dir / "state.json", {}) or {}),
+            outline=outline,
         )
 
     def outline_generation_checkpoints(self) -> dict[str, Any]:
@@ -6909,7 +7069,6 @@ class FileProjectStore:
                 payload_chapter_number = number
             chapter_summary = chapter.get("chapter_summary")
             summary = chapter_summary if isinstance(chapter_summary, dict) else {}
-            body = str(chapter.get("body") or "")
             summary_text = self._compact_text(summary.get("summary") or "", 320)
             next_focus = self._compact_text(
                 chapter.get("next_outline") or summary.get("next_focus") or "",
@@ -6921,7 +7080,7 @@ class FileProjectStore:
                 {
                     "chapter_number": payload_chapter_number,
                     "chapter_title": str(chapter.get("chapter_title") or f"第{number}章"),
-                    "body_chars": len("".join(body.split())),
+                    "body_chars": self._chapter_body_chars(chapter),
                     "summary": summary_text,
                     "next_focus": next_focus,
                     "has_quality_report": isinstance(quality_report, dict) and bool(quality_report),
@@ -6929,6 +7088,28 @@ class FileProjectStore:
                 }
             )
         return entries
+
+    def _chapter_body_chars(self, chapter: dict[str, Any]) -> int:
+        """Return the compact character count without hydrating a full chapter."""
+        body = chapter.get("body")
+        if isinstance(body, str):
+            return len("".join(body.split()))
+
+        cached = chapter.get("body_chars")
+        if isinstance(cached, int) and not isinstance(cached, bool) and cached >= 0:
+            return cached
+
+        body_path = chapter.get("body_path")
+        if not body_path:
+            return 0
+        markdown_path = self.root / str(body_path)
+        if not markdown_path.is_file():
+            return 0
+        try:
+            markdown_body = markdown_path.read_text(encoding="utf-8")
+        except OSError:
+            return 0
+        return len("".join(markdown_body.split()))
 
     def chapter_index(self) -> list[dict[str, Any]]:
         return self._chapter_index_from_records(self._read_chapter_records())
@@ -7205,14 +7386,15 @@ class FileProjectStore:
                 reason = failure_reason
                 raise ValueError(f"{operation}_failed:{reason}")
             raise ValueError("body_required")
-        if operation in {"generate", "regenerate"} and failure_reason:
+        if operation in {"generate", "regenerate"} and failure_reason and not accept_quality_warnings:
             raise ValueError(f"{operation}_failed:{failure_reason}")
         chapter = self._ensure_regenerate_continuity_fields(
             chapter,
             chapter_number=chapter_number,
             chapter_title=title,
         )
-        _assert_auto_chapter_length(body, operation=operation)
+        if not accept_quality_warnings:
+            _assert_auto_chapter_length(body, operation=operation)
 
         review = quality_report
         if "writing_review" not in review:
@@ -7434,6 +7616,7 @@ class FileProjectStore:
         chapter_direction_id: str | None = None,
         commit_message: str | None = None,
         persist: bool = True,
+        accept_quality_warnings: bool = False,
     ) -> dict[str, Any]:
         from packages.story_core.engine import StoryEngine
 
@@ -7488,7 +7671,12 @@ class FileProjectStore:
                 "chapter_title": candidate.chapter_title,
                 "candidate": candidate.to_dict(),
             }
-        persisted = self.persist_bundle(bundle, operation="generate", commit_message=commit_message)
+        persisted = self.persist_bundle(
+            bundle,
+            operation="generate",
+            commit_message=commit_message,
+            accept_quality_warnings=accept_quality_warnings,
+        )
         return {
             "schema_version": "file-project-generate-next/v1",
             "root": str(self.root),
@@ -7496,6 +7684,119 @@ class FileProjectStore:
             "chapter_title": persisted["chapter_title"],
             "chapter_direction": chapter_direction,
             "persisted": persisted,
+        }
+
+    @_with_project_update_lock
+    def expand_chapter(
+        self,
+        chapter_number: int,
+        *,
+        orchestrator: Any | None = None,
+    ) -> dict[str, Any]:
+        """Expand one confirmed chapter into a pending candidate."""
+
+        from packages.story_core.orchestrator import (
+            StoryOrchestrator,
+            _expanded_body_is_acceptable,
+            _postprocess_chapter_output,
+            _render_expansion_length_prompt,
+        )
+
+        if chapter_number < 1:
+            raise ValueError("chapter_number_must_be_positive")
+        chapter = self.chapter(chapter_number)
+        source_body = str(chapter.get("body") or "")
+        if not source_body.strip():
+            raise ValueError("chapter_body_required")
+        current_state = dict(self.state())
+        project = self.project()
+        state_payload = self._story_state_payload_for_direction(
+            current_state,
+            project,
+            chapter_number,
+        )
+        story = StoryState.model_validate(state_payload)
+        event_plan = chapter.get("event_plan") if isinstance(chapter.get("event_plan"), dict) else {}
+        prompt = _render_expansion_length_prompt(
+            story,
+            source_body=source_body,
+            chapter_number=chapter_number,
+            event_plan=event_plan,
+            world_facts=[str(item) for item in (story.world_facts or []) if str(item).strip()],
+        )
+        runner = orchestrator or StoryOrchestrator(project_root=self.root)
+        report_generation_progress(f"第{chapter_number}章人工扩写：读取正文和章节上下文")
+        with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
+            self.prompt_call_log()
+        ):
+            candidate_body, error = runner._timed_chat(
+                story,
+                prompt,
+                max_tokens=6200,
+                json_mode=False,
+                agent="writer",
+                stage=f"章节扩写 第{chapter_number}章",
+                timeout_seconds=720,
+            )
+        if error:
+            raise ValueError(f"chapter_expansion_failed:{error}")
+        candidate_body = _postprocess_chapter_output(
+            story,
+            str(candidate_body or ""),
+            chapter_number=chapter_number,
+            scene_cards=list(chapter.get("scene_cards") or []),
+            outline_anchor=(chapter.get("chapter_seed") or {}).get("outline_anchor")
+            if isinstance(chapter.get("chapter_seed"), dict)
+            else None,
+        )
+        if not candidate_body.strip():
+            raise ValueError("chapter_expansion_failed:empty_body")
+        if not _expanded_body_is_acceptable(source_body, candidate_body):
+            raise ValueError("chapter_expansion_failed:invalid_length")
+
+        updated_story_payload = chapter.get("updated_story")
+        if isinstance(updated_story_payload, dict):
+            try:
+                updated_story = StoryState.model_validate(updated_story_payload)
+            except ValidationError:
+                updated_story = story.model_copy(update={"current_chapter": chapter_number})
+        else:
+            updated_story = story.model_copy(update={"current_chapter": chapter_number})
+
+        bundle_payload = dict(chapter)
+        bundle_payload.update(
+            {
+                "chapter_number": chapter_number,
+                "chapter_title": str(chapter.get("chapter_title") or f"Chapter {chapter_number}"),
+                "body": candidate_body,
+                "updated_story": updated_story,
+                "quality_report": {},
+            }
+        )
+        validation_payload = dict(bundle_payload)
+        validation_payload["updated_story"] = updated_story.model_dump(mode="json")
+        quality_report = validate_bundle(validation_payload)
+        bundle = SimpleNamespace(**bundle_payload)
+        bundle.quality_report = quality_report
+        project_id = str(
+            project.get("project_id")
+            or project.get("active_story_id")
+            or current_state.get("story_id")
+            or self.root.name
+        )
+        candidate = self._save_candidate_from_bundle(
+            bundle,
+            project_id=project_id,
+            quality_report=bundle.quality_report,
+            operation="regenerate",
+        )
+        report_generation_progress(f"第{chapter_number}章扩写候选稿已生成，等待人工确认")
+        return {
+            "schema_version": "file-project-candidate/v1",
+            "root": str(self.root),
+            "chapter_number": chapter_number,
+            "chapter_title": candidate.chapter_title,
+            "candidate": candidate.to_dict(),
         }
 
     @_with_project_update_lock

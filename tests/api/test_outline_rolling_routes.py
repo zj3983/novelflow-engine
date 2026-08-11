@@ -145,6 +145,21 @@ def test_get_rolling_fill_status_reports_missing_before_fill(rolling_api) -> Non
     assert payload["chapter_number"] == 1
 
 
+def test_get_rolling_outline_returns_saved_chapter_details(rolling_api) -> None:
+    client, export_root = rolling_api
+    project_id = _seed_minimal_file_project(export_root)
+    store = FileProjectStore(export_root / "p-rolling-test")
+    store.ensure_rolling_outline(target_chapter=1, generator=_outline_row)
+
+    response = client.get(f"/file-projects/{project_id}/outline/rolling")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["schema_version"] == "rolling-outline/v1"
+    assert payload["chapters"][0]["chapter_number"] == 1
+    assert payload["chapters"][0]["chapter_goal"] == "林修追查香炉裂纹的来源"
+
+
 def test_start_body_generation_rejects_before_creating_job_when_outline_missing(rolling_api) -> None:
     client, export_root = rolling_api
     project_id = _seed_minimal_file_project(export_root)

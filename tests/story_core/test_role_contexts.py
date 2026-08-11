@@ -312,6 +312,42 @@ def test_director_context_contains_volume_and_outline(sample_project: Path) -> N
     assert ctx.book_outline_summary == "测试书"
 
 
+def test_director_context_prefers_rolling_outline_for_target_chapter(sample_project: Path) -> None:
+    _write(
+        sample_project / ".story-system",
+        "outline-generation/rolling_outline.json",
+        {
+            "schema_version": "rolling-outline/v1",
+            "chapters": [
+                {
+                    "chapter_number": 7,
+                    "title": "滚动细纲标题",
+                    "chapter_goal": "林照必须在天黑前离开妖林",
+                    "core_conflict": "肩伤拖慢速度，妖物封住东侧小径",
+                    "cast": [{"name": "林照", "role": "protagonist"}],
+                    "scenes": [
+                        {"location": "妖林", "action": "改走旧猎道", "result": "避开第一轮围堵"},
+                        {"location": "山口", "action": "斩断追踪藤", "result": "抵达驿站外"},
+                    ],
+                    "gain": "找到驿站入口",
+                    "cost": "肩伤加重",
+                    "foreshadowing": ["旧猎道有人走过"],
+                    "hook": "驿站里没有灯",
+                    "state_delta": "林照抵达驿站外，肩伤加重",
+                    "source": "generated",
+                }
+            ],
+        },
+    )
+
+    ctx = build_director_context(project=sample_project, chapter_number=7)
+
+    target = next(item for item in ctx.nearby_outline if item["number"] == 7)
+    assert target["title"] == "滚动细纲标题"
+    assert target["goal"] == "林照必须在天黑前离开妖林"
+    assert "改走旧猎道" in target["action"]
+
+
 def test_director_context_includes_previous_summary_and_ledger(sample_project: Path) -> None:
     ctx = build_director_context(
         project=sample_project,

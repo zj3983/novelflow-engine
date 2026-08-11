@@ -21,6 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..outline_rolling import rolling_chapter_to_outline_entry
 from .project_reader import ProjectContextReader
 
 
@@ -90,13 +91,27 @@ def build_director_context(
     reader = _build_reader(system_root, reader)
 
     outline = reader.try_read_json("outline.json", kind="outline") or {}
+    rolling_outline = reader.try_read_json(
+        "outline-generation/rolling_outline.json", kind="outline"
+    ) or {}
     volume = reader.try_read_json("volume.json", kind="volume") or {}
 
     volume_range = volume.get("chapter_range") if isinstance(volume, dict) else None
-    nearby: list[dict[str, Any]] = []
+    outline_by_number: dict[int, dict[str, Any]] = {}
     for entry in outline.get("chapters") or []:
         if not isinstance(entry, dict):
             continue
+        number = entry.get("number")
+        if isinstance(number, int):
+            outline_by_number[number] = entry
+    for payload in rolling_outline.get("chapters") or []:
+        adapted = rolling_chapter_to_outline_entry(payload)
+        number = adapted.get("number")
+        if isinstance(number, int):
+            outline_by_number[number] = adapted
+
+    nearby: list[dict[str, Any]] = []
+    for entry in outline_by_number.values():
         number = entry.get("number")
         if not isinstance(number, int):
             continue

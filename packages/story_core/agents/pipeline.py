@@ -1025,14 +1025,12 @@ def _build_writer_request(
         project_title=context.project_title,
         genre=context.genre,
         rewrite_guidance=context.rewrite_guidance,
-        # Production length policy. The writer prompt prints these
-        # numbers as the hard range so the model cannot drift into
-        # an unpublishable 2k chapter; the post-write deterministic
-        # check (in ``run_writer``) blocks short bodies from
-        # becoming candidates.
+        # Production length policy is guidance plus review metadata.
+        # Preserve the first draft for human judgment instead of
+        # asking the writer model to resize it automatically.
         target_chars=target_chars(),
         acceptance_chars=acceptance_chars(),
-        repair_length=True,
+        repair_length=False,
         previous_tail=context.previous_tail,
         continuity_facts=list(context.continuity_facts),
         character_cards=list(context.character_cards),

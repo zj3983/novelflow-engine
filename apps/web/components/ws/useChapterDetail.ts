@@ -56,6 +56,7 @@ export function useChapterDetail({
       };
     }
 
+    setChapter(null);
     setLoading(true);
     setError(null);
     fetchFileChapter(fileStoryId, chapterNumber)

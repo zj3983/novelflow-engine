@@ -118,6 +118,7 @@ class OutlinePlanGenerationRequest(BaseModel):
 
 class FileProjectGenerationJobRequest(BaseModel):
     chapter_number: int | None = None
+    operation: Literal["expand"] | None = None
     variant: str | None = None
     guidance: str | None = None
     chapter_direction_id: str | None = None
@@ -638,6 +639,7 @@ def _run_file_generation_job(
     project_id: str,
     *,
     chapter_number: int | None = None,
+    operation: Literal["expand"] | None = None,
     variant: str | None = None,
     guidance: str | None = None,
     chapter_direction_id: str | None = None,
@@ -691,6 +693,7 @@ def _run_file_generation_job(
                 "inputs": {
                     "project_id": project_id,
                     "chapter_number": chapter_number,
+                    "operation": operation or ("regenerate" if chapter_number else "generate"),
                     "variant": variant or "",
                     "guidance": guidance or "",
                     "chapter_direction_id": chapter_direction_id or "",
@@ -701,11 +704,20 @@ def _run_file_generation_job(
     try:
         store = _store_for(project_id)
         with generation_progress(report_progress):
-            generated = (
-                store.regenerate_chapter(chapter_number, variant=variant, guidance=guidance, persist=False)
-                if isinstance(chapter_number, int) and chapter_number > 0
-                else store.generate_next_chapter(chapter_direction_id=chapter_direction_id, persist=False)
-            )
+            if operation == "expand":
+                if not isinstance(chapter_number, int) or chapter_number < 1:
+                    raise ValueError("chapter_number_required_for_expansion")
+                generated = store.expand_chapter(chapter_number)
+            else:
+                generated = (
+                    store.regenerate_chapter(chapter_number, variant=variant, guidance=guidance, persist=False)
+                    if isinstance(chapter_number, int) and chapter_number > 0
+                    else store.generate_next_chapter(
+                    chapter_direction_id=chapter_direction_id,
+                    persist=True,
+                    accept_quality_warnings=True,
+                )
+                )
     except Exception as exc:  # pragma: no cover - background safety net
         friendly_error = _user_facing_generation_error(exc)
         _update_file_generation_job(job_id, status="failed", progress="生成失败", error=friendly_error)
@@ -1028,11 +1040,19 @@ def start_file_generation_job(
     """Queue generation through the shared file-project job runner."""
     store = _store_for(project_id)
     story_id = _story_id_for(store)
+    operation = payload.operation if payload else None
     target_chapter = (
         payload.chapter_number
         if payload and isinstance(payload.chapter_number, int)
         else None
     )
+    if operation == "expand" and not (
+        isinstance(target_chapter, int) and target_chapter > 0
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="chapter_number_required_for_expansion",
+        )
     if target_chapter is None:
         next_chapter = int(store.summary().get("current_chapter") or 0) + 1
         outline_status = store.rolling_fill_status(next_chapter)
@@ -1063,6 +1083,8 @@ def start_file_generation_job(
                     "variant": loaded.get("variant") or None,
                     "guidance": loaded.get("guidance") or None,
                 }
+                if loaded.get("operation") == "expand":
+                    job_kwargs["operation"] = "expand"
                 loaded_direction = loaded.get("chapter_direction_id")
                 if loaded_direction:
                     job_kwargs["chapter_direction_id"] = loaded_direction
@@ -1108,6 +1130,7 @@ def start_file_generation_job(
                             "inputs": {
                                 "project_id": _public_project_id(store),
                                 "target_chapter": target_chapter,
+                                "operation": operation or "",
                                 "variant": variant or "",
                                 "guidance": guidance or "",
                                 "chapter_direction_id": chapter_direction_id or "",
@@ -1118,7 +1141,9 @@ def start_file_generation_job(
                             "outputs": {
                                 "will_run_generate_next": target_chapter is None,
                                 "will_regen": isinstance(target_chapter, int)
-                                and target_chapter > 0,
+                                and target_chapter > 0
+                                and operation != "expand",
+                                "will_expand": operation == "expand",
                             },
                         },
                         "at": now,
@@ -1126,6 +1151,7 @@ def start_file_generation_job(
                 ],
                 "chapter_number": None,
                 "target_chapter": target_chapter,
+                "operation": operation or "",
                 "variant": variant or "",
                 "guidance": guidance or "",
                 "chapter_direction_id": chapter_direction_id or "",
@@ -1146,6 +1172,8 @@ def start_file_generation_job(
             "variant": variant,
             "guidance": guidance,
         }
+        if operation == "expand":
+            job_kwargs["operation"] = "expand"
         if chapter_direction_id:
             job_kwargs["chapter_direction_id"] = chapter_direction_id
     _file_generation_executor.submit(
@@ -1224,6 +1252,46 @@ def _run_continuation_bootstrap_job(
     # Touch the validator so the result is part of the public
     # status surface.
     validate_continuation_bootstrap(project_root)
+
+
+def enqueue_continuation_bootstrap(
+    project_id: str,
+    project_root: Path,
+) -> dict[str, Any]:
+    """Persist initial progress and submit one bootstrap worker."""
+
+    from packages.story_core.continuation_outline_bootstrap import (
+        ContinuationOutlineBootstrapper,
+    )
+
+    stripped = _strip_file_prefix(project_id)
+    current = _read_continuation_bootstrap_checkpoint(project_root)
+    bootstrapper = ContinuationOutlineBootstrapper(
+        project_root=project_root,
+        planning_generator=object(),
+        rolling_generator=object(),
+    )
+    if (
+        current.get("status") == "ready"
+        and not bootstrapper.outline_foundation_needs_refresh()
+    ):
+        current = bootstrapper.refresh_ready_checkpoint(current)
+        return {"status": "ready", "checkpoint": current}
+
+    with _continuation_bootstrap_lock:
+        cached = _continuation_bootstrap_checkpoints.get(stripped)
+        if isinstance(cached, dict) and cached.get("status") in {"queued", "running"}:
+            return {"status": "queued", "checkpoint": cached}
+
+    checkpoint = bootstrapper.prepare()
+    _continuation_bootstrap_executor.submit(
+        _run_continuation_bootstrap_job,
+        stripped,
+        project_root,
+    )
+    with _continuation_bootstrap_lock:
+        _continuation_bootstrap_checkpoints[stripped] = checkpoint
+    return {"status": "queued", "checkpoint": checkpoint}
 
 
 def init_file_project_routes() -> APIRouter:
@@ -1606,6 +1674,16 @@ def init_file_project_routes() -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    @router.get("/file-projects/{project_id}/outline/extension-readiness")
+    def get_file_project_outline_extension_readiness(
+        project_id: str,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.outline_extension_readiness()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @router.post("/file-projects/{project_id}/outline/generate")
     def generate_file_project_outline_plan(
         project_id: str,
@@ -1648,26 +1726,12 @@ def init_file_project_routes() -> APIRouter:
         """
 
         store = _store_for(project_id)
-        stripped = _strip_file_prefix(project_id)
-        current = _read_continuation_bootstrap_checkpoint(store.root)
-        if current.get("status") == "ready":
+        result = enqueue_continuation_bootstrap(project_id, store.root)
+        if result["status"] == "ready":
             response.status_code = status.HTTP_200_OK
-            return {"status": "ready", "checkpoint": current}
-        with _continuation_bootstrap_lock:
-            _continuation_bootstrap_checkpoints[stripped] = current
-        _continuation_bootstrap_executor.submit(
-            _run_continuation_bootstrap_job,
-            stripped,
-            store.root,
-        )
-        queued_snapshot = {
-            **(current if isinstance(current, dict) else {}),
-            "status": "queued",
-        }
-        with _continuation_bootstrap_lock:
-            _continuation_bootstrap_checkpoints[stripped] = queued_snapshot
+            return result
         response.status_code = status.HTTP_202_ACCEPTED
-        return {"status": "queued", "checkpoint": queued_snapshot}
+        return result
 
     @router.get("/file-projects/{project_id}/continuation-bootstrap")
     def get_continuation_bootstrap(project_id: str) -> dict[str, Any]:
@@ -1856,6 +1920,15 @@ def init_file_project_routes() -> APIRouter:
             "project_id": project_id,
             **status,
         }
+
+    @router.get("/file-projects/{project_id}/outline/rolling")
+    def get_file_project_rolling_outline(project_id: str) -> dict[str, Any]:
+        """Return the independent, upcoming chapter-outline window."""
+
+        from packages.story_core.outline_rolling_store import RollingOutlineStore
+
+        store = _store_for(project_id)
+        return RollingOutlineStore(store.root).read_rolling_outline()
 
     @router.put("/file-projects/{project_id}/outline/rolling-chapter/{chapter_number}")
     def update_file_project_rolling_chapter(

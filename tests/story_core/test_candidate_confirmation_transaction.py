@@ -76,6 +76,31 @@ def _write_json(path: Path, payload: dict) -> None:
     )
 
 
+def _seed_generation_outline(root: Path, chapter_number: int) -> None:
+    _write_json(
+        root / ".story-system" / "outline-generation" / "rolling_outline.json",
+        {
+            "schema_version": "rolling-outline/v1",
+            "chapters": [
+                {
+                    "chapter_number": chapter_number,
+                    "title": f"Chapter {chapter_number}",
+                    "chapter_goal": "Advance the test chapter.",
+                    "core_conflict": "Resolve the test conflict.",
+                    "cast": [{"name": "Lead", "role": "protagonist", "this_chapter_role": "act"}],
+                    "scenes": [{"location": "test", "action": "advance", "result": "complete"}],
+                    "gain": "progress",
+                    "cost": "effort",
+                    "foreshadowing": [],
+                    "hook": "continue",
+                    "state_delta": "test state advances",
+                    "source": "manual",
+                }
+            ],
+        },
+    )
+
+
 def test_confirm_candidate_writes_chapter_metadata_and_snapshot_atomically(tmp_path):
     store = FileProjectStore(tmp_path)
     candidate = _seed_candidate(
@@ -449,6 +474,7 @@ def test_pending_candidate_exposes_length_and_consistency_failures_before_confir
         },
     )
     store = FileProjectStore(project_root)
+    _seed_generation_outline(project_root, 1)
 
     # Stub the modular runtimes: a director that always
     # returns a valid executable artifact, a writer that

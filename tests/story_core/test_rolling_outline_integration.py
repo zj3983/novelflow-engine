@@ -1,12 +1,9 @@
 """Integration tests for the rolling-outline flow inside
 :class:`FileProjectStore`.
 
-The plan rule: when the user clicks "生成下一章", the
-backend must check whether the target chapter's outline
-exists. If not, it triggers a rolling fill BEFORE the
-body generation starts. A failed rolling fill must
-stop the body generation — the user must see the failure
-and retry, not a half-written candidate.
+The body workflow only checks rolling outlines. Missing
+outlines are handled explicitly in the outline workspace,
+never generated as a side effect of writing prose.
 
 These tests are integration-level: they exercise the
 file-project store end-to-end on a real ``tmp_path`` so
@@ -267,32 +264,17 @@ def test_ensure_rolling_outline_uses_state_current_chapter_when_target_omitted(
     assert sorted(status.chapter_numbers) == [148, 149, 150, 151, 152]
 
 
-def test_ensure_rolling_outline_default_generator_produces_stub_payloads(
+def test_ensure_rolling_outline_without_generator_rejects_hidden_auto_fill(
     tmp_path: Path,
 ) -> None:
-    """When the caller does not pass a generator, the
-    store uses a deterministic stub so smoke runs and
-    legacy callers without a real model binding still
-    work. The plan rule: "本次只调整规划与写作衔接，
-    不新增 Agent" — the default generator is the
-    minimal v1 fallback, not a real model.
-    """
+    """Production cannot silently write a fixture outline into a novel."""
     store = _seed_file_project(
         tmp_path, outline_chapters=[], state_chapters=147
     )
 
-    status = store.ensure_rolling_outline(target_chapter=148)
-
-    assert status.kind == "filled"
-    # The default generator produces a well-formed
-    # chapter so the batch validates successfully.
-    on_disk = json.loads(
-        _rolling_outline_path(tmp_path).read_text(encoding="utf-8")
-    )
-    numbers = [int(c["chapter_number"]) for c in on_disk["chapters"]]
-    assert numbers == [148, 149, 150, 151, 152]
-    # The default generator tags every row with
-    # ``source = "generated"`` so the rolling fill can
-    # refresh them in a future pass.
-    sources = {int(c["chapter_number"]): c.get("source") for c in on_disk["chapters"]}
-    assert all(sources[n] == "generated" for n in (148, 149, 150, 151, 152))
+    with pytest.raises(
+        RollingOutlineFailed,
+        match="rolling_outline_generation_requires_outline_workspace",
+    ):
+        store.ensure_rolling_outline(target_chapter=148)
+    assert not _rolling_outline_path(tmp_path).exists()

@@ -137,7 +137,7 @@ def test_writer_agent_takes_one_request_and_returns_one_result() -> None:
 
 def test_writer_agent_rewrites_once_when_first_draft_exceeds_hard_max() -> None:
     runtime = _RecordingRuntime(responses=["甲" * 31, "乙" * 18])
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -149,15 +149,33 @@ def test_writer_agent_rewrites_once_when_first_draft_exceeds_hard_max() -> None:
 
     assert result.body == "乙" * 18
     assert runtime.call_count == 2
-    assert "上一稿超过24字" in runtime.requests[1].prompt
+    assert "上一稿约31字" in runtime.requests[1].prompt
+    assert "只需删减约" in runtime.requests[1].prompt
     assert "不要从头另写" in runtime.requests[1].prompt
     assert "不可压成摘要" in runtime.requests[1].prompt
     assert runtime.requests[1].metadata["attempt"] == 2
 
 
+def test_writer_agent_does_not_rewrite_without_human_approval() -> None:
+    first_draft = "甲" * 31
+    runtime = _RecordingRuntime(responses=[first_draft, "乙" * 18])
+    agent = WriterAgent(runtime=runtime)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 20},
+            acceptance_chars={"min": 8, "max": 24},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == first_draft
+    assert runtime.call_count == 1
+
+
 def test_writer_agent_rewrites_again_when_first_compaction_is_still_over_limit() -> None:
     runtime = _RecordingRuntime(responses=["甲" * 31, "乙" * 28, "丙" * 18])
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -175,7 +193,7 @@ def test_writer_agent_rewrites_again_when_first_compaction_is_still_over_limit()
 
 def test_writer_agent_expands_draft_when_it_is_below_acceptance_minimum() -> None:
     runtime = _RecordingRuntime(responses=["甲" * 7, "乙" * 18])
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -189,7 +207,8 @@ def test_writer_agent_expands_draft_when_it_is_below_acceptance_minimum() -> Non
     assert runtime.call_count == 2
     assert runtime.requests[1].metadata["attempt"] == 2
     assert runtime.requests[1].metadata["reason"] == "under_acceptance_min"
-    assert "上一稿不足8字" in runtime.requests[1].prompt
+    assert "上一稿约7字" in runtime.requests[1].prompt
+    assert "只需增加约" in runtime.requests[1].prompt
     assert "不要从头另写" in runtime.requests[1].prompt
     assert "在原有段落之间补入" in runtime.requests[1].prompt
 
@@ -198,7 +217,7 @@ def test_writer_agent_can_expand_after_two_overlong_compactions() -> None:
     runtime = _RecordingRuntime(
         responses=["甲" * 31, "乙" * 28, "丙" * 7, "丁" * 18]
     )
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -218,7 +237,7 @@ def test_writer_agent_alternates_repair_direction_but_returns_closest_draft() ->
     runtime = _RecordingRuntime(
         responses=["甲" * 31, "乙" * 7, "丙" * 30, "丁" * 6]
     )
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -229,7 +248,8 @@ def test_writer_agent_alternates_repair_direction_but_returns_closest_draft() ->
     )
 
     assert result.body == "乙" * 7
-    assert runtime.call_count == 4
+    assert runtime.call_count == 5
+    assert runtime.requests[4].metadata["attempt"] == 5
     assert runtime.requests[2].metadata["reason"] == "under_acceptance_min"
     assert runtime.requests[3].metadata["reason"] == "over_hard_max"
     assert "丙" * 30 in runtime.requests[3].prompt
@@ -239,7 +259,7 @@ def test_writer_agent_rewrites_explicit_non_graphic_guidance_violation() -> None
     graphic = ("事故发生，伤者内脏破裂。" + "甲" * 3800)
     compliant = ("事故发生，伤者被送往医院。" + "乙" * 3800)
     runtime = _RecordingRuntime(responses=[graphic, compliant])
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -264,7 +284,7 @@ def test_writer_agent_rewrites_long_form_transcription() -> None:
         + "甲" * 20
     )
     runtime = _RecordingRuntime(responses=[copied_form, "乙" * 18])
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -294,7 +314,7 @@ def test_writer_agent_rewrites_dense_simile_stacking() -> None:
     )
     clean = "人物观察到雷声变重，立刻退到石墙后面。" * 5
     runtime = _RecordingRuntime(responses=[stacked, clean])
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -315,7 +335,7 @@ def test_writer_agent_rewrites_dense_simile_stacking() -> None:
 def test_writer_agent_repairs_length_before_similes_when_both_fail() -> None:
     stacked = "仿佛如同犹如宛如就像像是仿佛如同" + "甲" * 40
     runtime = _RecordingRuntime(responses=[stacked, "乙" * 18])
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -329,10 +349,34 @@ def test_writer_agent_repairs_length_before_similes_when_both_fail() -> None:
     assert runtime.requests[1].metadata["reason"] == "over_hard_max"
 
 
+def test_writer_agent_repairs_length_before_document_transcription() -> None:
+    copied_overlong = (
+        "事故地点：路口\n"
+        "事故时间：十八点\n"
+        "当事人姓名：赵某\n"
+        "处理结果：等待事故发生\n"
+        + "甲" * 40
+    )
+    compact = "乙" * 18
+    runtime = _RecordingRuntime(responses=[copied_overlong, compact])
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 20},
+            acceptance_chars={"min": 8, "max": 24},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == compact
+    assert runtime.requests[1].metadata["reason"] == "over_hard_max"
+
+
 def test_writer_agent_keeps_valid_length_draft_when_style_repair_explodes() -> None:
     stacked = "仿佛如同犹如宛如就像像是仿佛如同" + "甲" * 30
     runtime = _RecordingRuntime(responses=[stacked, "乙" * 80])
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -349,7 +393,7 @@ def test_writer_agent_tightens_each_overlong_compaction_target() -> None:
     runtime = _RecordingRuntime(
         responses=["甲" * 31, "乙" * 29, "丙" * 27, "丁" * 18]
     )
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
     result = agent.run(
         _writer_request(
@@ -361,7 +405,52 @@ def test_writer_agent_tightens_each_overlong_compaction_target() -> None:
 
     assert result.body == "丁" * 18
     assert runtime.call_count == 4
-    assert "10至18字" in runtime.requests[3].prompt
+    assert "上一稿约27字" in runtime.requests[3].prompt
+    assert "只需删减约" in runtime.requests[3].prompt
+    assert "18至20字" in runtime.requests[3].prompt
+
+
+def test_writer_agent_gets_one_final_repair_after_length_oscillation() -> None:
+    runtime = _RecordingRuntime(
+        responses=["甲" * 31, "乙" * 7, "丙" * 29, "丁" * 25, "戊" * 18]
+    )
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": 20},
+            acceptance_chars={"min": 8, "max": 24},
+            repair_length=True,
+        )
+    )
+
+    assert result.body == "戊" * 18
+    assert runtime.call_count == 5
+    assert runtime.requests[4].metadata["reason"] == "over_hard_max"
+
+
+def test_writer_agent_trims_small_final_overflow_without_cutting_hook() -> None:
+    opening = "陈默推开仓库门。"
+    expendable = "墙边堆着多年没人处理的破木箱，灰尘落得很厚。"
+    hook = "门外忽然传来脚步声。"
+    draft = f"{opening}\n\n{expendable}\n\n{hook}"
+    compact_length = len("".join(draft.split()))
+    runtime = _RecordingRuntime(responses=[draft, "短。", "短。", "短。", "短。"])
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
+
+    result = agent.run(
+        _writer_request(
+            target_chars={"min": 10, "max": compact_length - 6},
+            acceptance_chars={"min": 10, "max": compact_length - 5},
+            repair_length=True,
+        )
+    )
+
+    assert len("".join(result.body.split())) <= compact_length - 5
+    assert opening in result.body
+    assert hook in result.body
+    assert expendable not in result.body
+    assert "deterministic_length_trim" in result.notes
 
 
 def test_writer_agent_uses_same_request_contract_for_cli_and_api_runtimes() -> None:
