@@ -21,6 +21,15 @@ from packages.story_core.project_outline import normalize_project_outline
 
 
 PROJECT_ID_PATTERN = re.compile(r"p-[A-Za-z0-9-]+")
+NARRATIVE_ENHANCEMENT_MODULE_IDS = {
+    "commercial-shuangwen": (
+        "commercial-shuangwen::plot-engine",
+        "commercial-shuangwen::chapter-sop",
+        "commercial-shuangwen::writer-execution",
+        "commercial-shuangwen::review-checklist",
+        "commercial-shuangwen::genre-examples",
+    ),
+}
 
 
 class FileProjectCreateSpec(BaseModel):
@@ -30,11 +39,24 @@ class FileProjectCreateSpec(BaseModel):
     title: str = Field(default="", max_length=120)
     novel_type_id: str
     idea: str = Field(default="", max_length=1000)
+    narrative_enhancement_ids: list[str] = Field(default_factory=list, max_length=8)
 
     @field_validator("title", "idea", mode="before")
     @classmethod
     def trim_text_fields(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("narrative_enhancement_ids")
+    @classmethod
+    def normalize_narrative_enhancement_ids(cls, value: list[str]) -> list[str]:
+        normalized_ids: list[str] = []
+        for raw_id in value:
+            enhancement_id = raw_id.strip()
+            if enhancement_id not in NARRATIVE_ENHANCEMENT_MODULE_IDS:
+                raise ValueError(f"unknown_narrative_enhancement_id:{enhancement_id}")
+            if enhancement_id not in normalized_ids:
+                normalized_ids.append(enhancement_id)
+        return normalized_ids
 
     @model_validator(mode="after")
     def validate_mode_fields(self) -> "FileProjectCreateSpec":
@@ -65,7 +87,18 @@ def _write_json(path: Path, payload: Any) -> None:
         os.fsync(handle.fileno())
 
 
+def _narrative_skill_selection(spec: FileProjectCreateSpec) -> tuple[list[str], list[str]]:
+    enabled_skill_ids = list(spec.narrative_enhancement_ids)
+    enabled_module_ids = [
+        module_id
+        for enhancement_id in enabled_skill_ids
+        for module_id in NARRATIVE_ENHANCEMENT_MODULE_IDS[enhancement_id]
+    ]
+    return enabled_skill_ids, enabled_module_ids
+
+
 def _project_payload(project_id: str, spec: FileProjectCreateSpec) -> dict[str, Any]:
+    enabled_skill_ids, enabled_module_ids = _narrative_skill_selection(spec)
     return {
         "project_id": project_id,
         "title": spec.title or "未命名作品",
@@ -75,8 +108,8 @@ def _project_payload(project_id: str, spec: FileProjectCreateSpec) -> dict[str, 
         "author_constraints": [],
         "character_profiles": [],
         "relationship_graph": [],
-        "enabled_skill_ids": [],
-        "enabled_skill_module_ids": [],
+        "enabled_skill_ids": enabled_skill_ids,
+        "enabled_skill_module_ids": enabled_module_ids,
         "world_blueprint": {"genre_plugin_ids": [spec.novel_type_id]},
         "current_chapter": 0,
         "status": "draft",
@@ -84,10 +117,11 @@ def _project_payload(project_id: str, spec: FileProjectCreateSpec) -> dict[str, 
     }
 
 
-def _state_payload(project_id: str, novel_type_id: str) -> dict[str, Any]:
-    novel_type = runtime_novel_type(novel_type_id)
+def _state_payload(project_id: str, spec: FileProjectCreateSpec) -> dict[str, Any]:
+    novel_type = runtime_novel_type(spec.novel_type_id)
     if novel_type is None:
         raise ValueError("invalid_novel_type")
+    enabled_skill_ids, enabled_module_ids = _narrative_skill_selection(spec)
     state = StoryState(
         story_id=f"file:{project_id}",
         outline="",
@@ -95,6 +129,8 @@ def _state_payload(project_id: str, novel_type_id: str) -> dict[str, Any]:
         genre_plugin_ids=[novel_type.id],
         style="通俗网文",
         current_chapter=0,
+        enabled_skill_ids=enabled_skill_ids,
+        enabled_skill_module_ids=enabled_module_ids,
     )
     return state.model_dump(mode="json")
 
@@ -126,7 +162,7 @@ def _write_project_files(
         (root / relative_path).mkdir(parents=True, exist_ok=True)
 
     project = _project_payload(project_id, spec)
-    state = _state_payload(project_id, spec.novel_type_id)
+    state = _state_payload(project_id, spec)
     outline = normalize_project_outline({})
     master_setting = {
         "schema_version": "story-system-master-setting/v1",
@@ -175,7 +211,7 @@ def _validate_created_project(
     master_setting = _read_json(root / ".story-system/MASTER_SETTING.json")
     if project != _project_payload(project_id, spec):
         raise ValueError("invalid_project_payload")
-    if state != _state_payload(project_id, spec.novel_type_id):
+    if state != _state_payload(project_id, spec):
         raise ValueError("invalid_story_state")
     if outline != normalize_project_outline({}):
         raise ValueError("invalid_project_outline")

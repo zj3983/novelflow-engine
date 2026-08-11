@@ -152,7 +152,48 @@ test("新建页加载全局类型，优先通用类型并提交动态 ID", async
   await page.getByRole("button", { name: "创建小说" }).click();
 
   await expect(page).toHaveURL(/file%3Acreated\/outline$/);
-  expect(creates).toEqual([{ mode: "blank", title: "试剑录", novel_type_id: customType.id, idea: "" }]);
+  expect(creates).toEqual([{
+    mode: "blank",
+    title: "试剑录",
+    novel_type_id: customType.id,
+    idea: "",
+    narrative_enhancement_ids: [],
+  }]);
+});
+
+test("新建页叙事增强默认关闭，勾选后随请求提交且不跟随题材", async ({ page }) => {
+  await routeNovelTypes(page, [genericType, customType]);
+  const creates: unknown[] = [];
+  await page.route("**/file-projects", async (route) => {
+    creates.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ next_path: "/projects/file%3Aenhanced/outline" }),
+    });
+  });
+
+  await page.goto("/projects/new");
+  const enhancement = page.getByRole("checkbox", { name: "商业爽文推进" });
+  await expect(page.getByRole("heading", { name: "叙事增强" })).toBeVisible();
+  await expect(enhancement).not.toBeChecked();
+  await expect(page.getByText("需求、压制、反击、回报；按题材加载具体例子。")).toBeVisible();
+
+  await page.getByLabel("小说类型").selectOption(customType.id);
+  await expect(enhancement).not.toBeChecked();
+  await enhancement.check();
+  await page.getByRole("tab", { name: "建立空白小说" }).click();
+  await page.getByLabel("小说名").fill("爽文试剑录");
+  await page.getByRole("button", { name: "创建小说" }).click();
+
+  await expect(page).toHaveURL(/file%3Aenhanced\/outline$/);
+  expect(creates).toEqual([{
+    mode: "blank",
+    title: "爽文试剑录",
+    novel_type_id: customType.id,
+    idea: "",
+    narrative_enhancement_ids: ["commercial-shuangwen"],
+  }]);
 });
 
 test("新建页在没有通用类型时默认第一项", async ({ page }) => {

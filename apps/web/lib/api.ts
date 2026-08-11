@@ -1207,6 +1207,7 @@ export type NewFileProjectRequest = {
   title: string;
   novel_type_id: string;
   idea: string;
+  narrative_enhancement_ids?: string[];
 };
 
 export type NewFileProjectResponse = ProjectResponse & {

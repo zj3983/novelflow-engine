@@ -94,6 +94,8 @@ def test_create_blank_project_writes_clean_complete_project(tmp_path):
     assert state["foreshadowing"] == []
     assert state["chapter_summaries"] == []
     assert state["memory_index"] == []
+    assert state["enabled_skill_ids"] == []
+    assert state["enabled_skill_module_ids"] == []
     assert outline == normalize_project_outline({})
     assert read_json(created.root / ".webnovel/opening_brief.json") == {
         "schema_version": "opening-brief/v1",
@@ -107,6 +109,95 @@ def test_create_blank_project_writes_clean_complete_project(tmp_path):
         "project": project,
         "state": state,
     }
+
+
+def test_create_project_persists_selected_narrative_enhancement_in_project_and_state(tmp_path):
+    created = create_file_project(
+        tmp_path,
+        FileProjectCreateSpec(
+            mode="blank",
+            title="照夜行",
+            novel_type_id="xuanhuan",
+            narrative_enhancement_ids=["commercial-shuangwen"],
+        ),
+        project_id_factory=lambda: "p-enhanced",
+    )
+
+    expected_skill_ids = ["commercial-shuangwen"]
+    expected_module_ids = [
+        "commercial-shuangwen::plot-engine",
+        "commercial-shuangwen::chapter-sop",
+        "commercial-shuangwen::writer-execution",
+        "commercial-shuangwen::review-checklist",
+        "commercial-shuangwen::genre-examples",
+    ]
+    project = read_json(created.root / ".webnovel/project.json")
+    state = read_json(created.root / ".webnovel/state.json")
+    master = read_json(created.root / ".story-system/MASTER_SETTING.json")
+
+    for payload in (project, state):
+        assert payload["enabled_skill_ids"] == expected_skill_ids
+        assert payload["enabled_skill_module_ids"] == expected_module_ids
+    assert master["project"] == project
+    assert master["state"] == state
+
+
+@pytest.mark.parametrize("enhancements", [None, []])
+def test_create_spec_omitted_or_empty_narrative_enhancements_stay_disabled(tmp_path, enhancements):
+    payload = {
+        "mode": "blank",
+        "title": "照夜行",
+        "novel_type_id": "xuanhuan",
+    }
+    if enhancements is not None:
+        payload["narrative_enhancement_ids"] = enhancements
+
+    spec = FileProjectCreateSpec.model_validate(payload)
+    created = create_file_project(
+        tmp_path,
+        spec,
+        project_id_factory=lambda: f"p-disabled-{enhancements is not None}",
+    )
+
+    assert spec.narrative_enhancement_ids == []
+    for relative_path in (".webnovel/project.json", ".webnovel/state.json"):
+        persisted = read_json(created.root / relative_path)
+        assert persisted["enabled_skill_ids"] == []
+        assert persisted["enabled_skill_module_ids"] == []
+
+
+def test_create_spec_rejects_unknown_narrative_enhancement():
+    with pytest.raises(ValidationError, match="unknown_narrative_enhancement_id:unknown-method"):
+        FileProjectCreateSpec(
+            mode="blank",
+            title="照夜行",
+            novel_type_id="xuanhuan",
+            narrative_enhancement_ids=["unknown-method"],
+        )
+
+
+def test_create_spec_deduplicates_narrative_enhancements_preserving_order():
+    spec = FileProjectCreateSpec(
+        mode="blank",
+        title="照夜行",
+        novel_type_id="xuanhuan",
+        narrative_enhancement_ids=[
+            " commercial-shuangwen ",
+            "commercial-shuangwen",
+        ],
+    )
+
+    assert spec.narrative_enhancement_ids == ["commercial-shuangwen"]
+
+
+def test_create_spec_rejects_more_than_eight_narrative_enhancements():
+    with pytest.raises(ValidationError, match="too_long"):
+        FileProjectCreateSpec(
+            mode="blank",
+            title="照夜行",
+            novel_type_id="xuanhuan",
+            narrative_enhancement_ids=["commercial-shuangwen"] * 9,
+        )
 
 
 def test_create_inspiration_project_keeps_idea_isolated(tmp_path):

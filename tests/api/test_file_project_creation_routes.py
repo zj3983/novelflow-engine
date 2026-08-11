@@ -48,6 +48,55 @@ def test_blank_file_project_creation_returns_201_and_is_readable(creation_api):
     legacy_create.assert_not_called()
 
 
+def test_file_project_creation_accepts_narrative_enhancement_request(creation_api):
+    client, _, legacy_create = creation_api
+
+    response = client.post(
+        "/file-projects",
+        json={
+            "mode": "blank",
+            "title": "Commercial Route Project",
+            "novel_type_id": "urban",
+            "narrative_enhancement_ids": ["commercial-shuangwen"],
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    project = response.json()
+    expected_module_ids = [
+        "commercial-shuangwen::plot-engine",
+        "commercial-shuangwen::chapter-sop",
+        "commercial-shuangwen::writer-execution",
+        "commercial-shuangwen::review-checklist",
+        "commercial-shuangwen::genre-examples",
+    ]
+    assert project["enabled_skill_ids"] == ["commercial-shuangwen"]
+    assert project["enabled_skill_module_ids"] == expected_module_ids
+    state = FileProjectStore(Path(project["source_path"])).state()
+    assert state["enabled_skill_ids"] == ["commercial-shuangwen"]
+    assert state["enabled_skill_module_ids"] == expected_module_ids
+    legacy_create.assert_not_called()
+
+
+def test_file_project_creation_rejects_unknown_narrative_enhancement(creation_api):
+    client, export_root, legacy_create = creation_api
+
+    response = client.post(
+        "/file-projects",
+        json={
+            "mode": "blank",
+            "title": "Unknown Enhancement",
+            "novel_type_id": "urban",
+            "narrative_enhancement_ids": ["unknown-method"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "unknown_narrative_enhancement_id:unknown-method" in response.text
+    assert not export_root.exists() or list(export_root.iterdir()) == []
+    legacy_create.assert_not_called()
+
+
 def test_file_project_response_exposes_sanitized_continuation_boundary(creation_api):
     client, _, _ = creation_api
     created = client.post(

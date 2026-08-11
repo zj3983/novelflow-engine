@@ -26,6 +26,7 @@ export default function NewProjectPage() {
   const [typesError, setTypesError] = useState("");
   const [typesLoadVersion, setTypesLoadVersion] = useState(0);
   const [idea, setIdea] = useState("");
+  const [commercialShuangwenEnabled, setCommercialShuangwenEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -112,6 +113,7 @@ export default function NewProjectPage() {
         title: title.trim(),
         novel_type_id: novelTypeId,
         idea: mode === "inspiration" ? idea.trim() : "",
+        narrative_enhancement_ids: commercialShuangwenEnabled ? ["commercial-shuangwen"] : [],
       });
       if (!mountedRef.current || requestId !== submitRequestIdRef.current) return;
       router.push(response.next_path);
@@ -210,6 +212,25 @@ export default function NewProjectPage() {
             </select>
             {selectedNovelType ? <small>{selectedNovelType.description}</small> : null}
           </label>
+
+          <section className="ws-project-create__field--wide" aria-labelledby="narrative-enhancements-heading">
+            <h2 id="narrative-enhancements-heading" className="ws-card__title">
+              叙事增强
+            </h2>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                aria-label="商业爽文推进"
+                checked={commercialShuangwenEnabled}
+                onChange={(event) => setCommercialShuangwenEnabled(event.target.checked)}
+              />
+              <span>
+                <strong>商业爽文推进</strong>
+                <br />
+                <span className="ws-card__hint">需求、压制、反击、回报；按题材加载具体例子。</span>
+              </span>
+            </label>
+          </section>
 
           {typesError ? (
             <div className="ws-project-create__error" role="alert">
