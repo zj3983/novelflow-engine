@@ -386,6 +386,36 @@ def test_enabled_chapter_sop_rejects_vague_values(
 
 
 @pytest.mark.parametrize(
+    "section,field,value",
+    [
+        ("chapter_sop", "mid_feedback", "继续推进调查吧，后面再补细节"),
+        ("payoff_contract", "pressure", "压力在下一阶段继续加剧阶段"),
+        ("payoff_contract", "hidden_advantage", "情况随后变得更加复杂了些"),
+        ("chapter_sop", "mid_feedback", "获得一轮重要反馈以后再决定"),
+        ("chapter_sop", "ending_hook", "留下关于后续安排的悬念呢"),
+        ("chapter_sop", "turn", "出现了一个新的严重问题时继续观察"),
+    ],
+)
+def test_enabled_chapter_sop_rejects_contained_generic_phrase_families(
+    valid_payload: dict,
+    section: str,
+    field: str,
+    value: str,
+) -> None:
+    _add_chapter_contracts(valid_payload)
+    valid_payload["outline"]["chapters"][0][section][field] = value
+
+    with pytest.raises(
+        ValueError,
+        match=rf"chapter_contract_not_concrete:1:{section}.{field}",
+    ):
+        validate_generated_opening_plan(
+            valid_payload,
+            require_chapter_contracts=True,
+        )
+
+
+@pytest.mark.parametrize(
     "section,field,location",
     [
         (

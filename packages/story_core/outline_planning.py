@@ -179,35 +179,23 @@ _GENERIC_CHAPTER_CONTRACT_SUFFIXES = frozenset(
     }
 )
 
-
-def _regex_union(values: frozenset[str]) -> str:
-    return "|".join(
-        re.escape(value) for value in sorted(values, key=len, reverse=True)
+_CONTAINED_GENERIC_CHAPTER_CONTRACT_PATTERNS = (
+    re.compile(r"^继续(?:推进|处理|发展|行动|调查)", re.IGNORECASE),
+    re.compile(r"(?:压力|冲突|局势).*(?:升级|加剧|恶化)"),
+    re.compile(r"情况.*(?:复杂|变化)"),
+    re.compile(r"(?:得到|获得|有所).*(?:反馈|收获|进展)"),
+    re.compile(r"留下.*悬念"),
+    re.compile(r"出现.*(?:新|新的)?.*问题"),
+)
+_GENERIC_CHAPTER_CONTRACT_RESIDUE_TERMS = tuple(
+    sorted(
+        _ABSTRACT_CHAPTER_CONTRACT_NOUNS
+        | _GENERIC_CHAPTER_CONTRACT_ACTIONS
+        | _GENERIC_CHAPTER_CONTRACT_MODIFIERS
+        | _GENERIC_CHAPTER_CONTRACT_SUFFIXES,
+        key=len,
+        reverse=True,
     )
-
-
-_ABSTRACT_CHAPTER_CONTRACT_PATTERN = _regex_union(
-    _ABSTRACT_CHAPTER_CONTRACT_NOUNS
-)
-_GENERIC_CHAPTER_CONTRACT_PATTERN = _regex_union(
-    _GENERIC_CHAPTER_CONTRACT_ACTIONS | _GENERIC_CHAPTER_CONTRACT_MODIFIERS
-)
-_GENERIC_CHAPTER_CONTRACT_SUFFIX_PATTERN = _regex_union(
-    _GENERIC_CHAPTER_CONTRACT_SUFFIXES
-)
-_GENERIC_ACTION_ONLY_PHRASE_PATTERN = re.compile(
-    rf"^(?:{_GENERIC_CHAPTER_CONTRACT_PATTERN})+"
-    rf"(?:{_GENERIC_CHAPTER_CONTRACT_SUFFIX_PATTERN})*$",
-    re.IGNORECASE,
-)
-_GENERIC_ABSTRACT_PHRASE_PATTERN = re.compile(
-    rf"^(?:{_GENERIC_CHAPTER_CONTRACT_PATTERN}|"
-    rf"{_GENERIC_CHAPTER_CONTRACT_SUFFIX_PATTERN})*"
-    rf"(?:{_ABSTRACT_CHAPTER_CONTRACT_PATTERN})"
-    rf"(?:{_GENERIC_CHAPTER_CONTRACT_PATTERN}|"
-    rf"{_ABSTRACT_CHAPTER_CONTRACT_PATTERN}|"
-    rf"{_GENERIC_CHAPTER_CONTRACT_SUFFIX_PATTERN})*$",
-    re.IGNORECASE,
 )
 _NUMBER_TOKEN = (
     r"(?:\d+(?:,\d{3})*(?:\.\d+)?[万亿]?"
@@ -291,10 +279,15 @@ def _is_generic_chapter_contract_value(value: str) -> bool:
     ).casefold()
     if not normalized:
         return True
-    return bool(
-        _GENERIC_ACTION_ONLY_PHRASE_PATTERN.fullmatch(normalized)
-        or _GENERIC_ABSTRACT_PHRASE_PATTERN.fullmatch(normalized)
-    )
+    if any(
+        pattern.search(normalized)
+        for pattern in _CONTAINED_GENERIC_CHAPTER_CONTRACT_PATTERNS
+    ):
+        return True
+    remainder = normalized
+    for term in _GENERIC_CHAPTER_CONTRACT_RESIDUE_TERMS:
+        remainder = remainder.replace(term, "")
+    return not remainder
 
 
 def validate_concrete_chapter_contract(
