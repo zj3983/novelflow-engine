@@ -664,6 +664,82 @@ def test_project_writing_packet_ignores_previous_bundle_attribute_decision(monke
     assert "chapter_decision" not in allocation
 
 
+def test_legacy_project_serialization_emits_empty_module_list_without_mutating_storage():
+    project_id = "p-legacy-project-response"
+    story_routes.store.create_project(
+        NovelProject(
+            project_id=project_id,
+            title="Legacy Project Response",
+            enabled_skill_ids=["commercial-shuangwen"],
+        )
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).get(f"/projects/{project_id}")
+
+    assert response.status_code == 200
+    assert response.json()["enabled_skill_module_ids"] == []
+    assert story_routes.store.get_project(project_id).enabled_skill_module_ids is None
+
+
+def test_legacy_file_project_serialization_emits_empty_module_list_without_mutating_files(tmp_path):
+    from packages.story_core.file_project_store import FileProjectStore
+
+    root = tmp_path / "legacy-file-project-response"
+    _make_file_project(root, project_id="p-legacy-file-project-response")
+    store = FileProjectStore(root)
+
+    response = file_projects._project_payload(store)
+
+    assert response["enabled_skill_module_ids"] == []
+    assert "enabled_skill_module_ids" not in store.project()
+
+
+@pytest.mark.parametrize(
+    ("project_id", "module_selection", "expected_writer_modules"),
+    [
+        ("p-explicit-empty-packet", [], []),
+        ("p-legacy-absent-packet", None, ["genre-examples", "writer-execution"]),
+    ],
+)
+def test_project_writing_packet_preserves_module_selection_mode(
+    project_id,
+    module_selection,
+    expected_writer_modules,
+):
+    story_id = f"s-{project_id}"
+    story_routes.store.create(
+        StoryState(
+            story_id=story_id,
+            outline="A cultivator enters a sect trial.",
+            genre="xuanhuan",
+            style="plain",
+        )
+    )
+    story_routes.store.create_project(
+        NovelProject(
+            project_id=project_id,
+            title="Skill Packet Selection",
+            active_story_id=story_id,
+            enabled_skill_ids=["commercial-shuangwen"],
+            enabled_skill_module_ids=module_selection,
+            world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+        )
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).get(
+        f"/projects/{project_id}/writing-packet?chapter_number=1"
+    )
+
+    assert response.status_code == 200
+    writer_context = response.json().get("skill_context", {}).get("writer", [])
+    writer_modules = sorted(
+        module["module_id"]
+        for pack in writer_context
+        for module in pack.get("modules", [])
+    )
+    assert writer_modules == expected_writer_modules
+
+
 def test_project_writing_packet_uses_explicit_non_game_project_type():
     story_id = "s-xianxia-packet-api"
     project_id = "p-xianxia-packet-api"

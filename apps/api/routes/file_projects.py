@@ -818,6 +818,7 @@ def _display_title(project: dict[str, Any], state: dict[str, Any], summary: dict
 def _project_payload(store: FileProjectStore) -> dict[str, Any]:
     project = store.project()
     state = store.state()
+    enabled_skill_module_ids = resolve_enabled_skill_module_ids(project, state)
     summary = store.summary()
     current_chapter = int(summary.get("current_chapter") or 0)
     title = _display_title(project, state, summary, store.root.name)
@@ -842,7 +843,11 @@ def _project_payload(store: FileProjectStore) -> dict[str, Any]:
         "character_profiles": project.get("character_profiles") or [],
         "relationship_graph": project.get("relationship_graph") or [],
         "enabled_skill_ids": resolve_enabled_skill_ids(project, state),
-        "enabled_skill_module_ids": resolve_enabled_skill_module_ids(project, state),
+        "enabled_skill_module_ids": (
+            list(enabled_skill_module_ids)
+            if enabled_skill_module_ids is not None
+            else []
+        ),
         "status": project.get("status") or "simulating",
         "pipeline_stage": project.get("pipeline_stage") or ("simulating" if current_chapter else "environment_ready"),
         "active_story_id": _story_id_for(store),

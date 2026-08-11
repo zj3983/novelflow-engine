@@ -1320,7 +1320,7 @@ class ContinuationOutlineBootstrapper:
         payload = _read_json(path)
         return payload if isinstance(payload, dict) else {}
 
-    def _enabled_skill_module_ids(self) -> list[str]:
+    def _enabled_skill_module_ids(self) -> list[str] | None:
         from packages.story_core.skill_packs import (
             resolve_enabled_skill_module_ids,
         )
@@ -1331,16 +1331,26 @@ class ContinuationOutlineBootstrapper:
             project = {}
         if not isinstance(state, dict):
             state = {}
-        return resolve_enabled_skill_module_ids(project, state) or []
+        return resolve_enabled_skill_module_ids(project, state)
 
     def _require_shuangwen_contracts(self) -> bool:
         from packages.story_core.outline_planning import (
             CHAPTER_SOP_MODULE_ID,
         )
 
+        enabled_module_ids = self._enabled_skill_module_ids()
+        if enabled_module_ids is None:
+            from packages.story_core.skill_packs import resolve_enabled_skill_ids
+
+            project = _read_json(self._root / ".webnovel" / "project.json") or {}
+            state = _read_json(self._root / ".webnovel" / "state.json") or {}
+            return CHAPTER_SOP_MODULE_ID.split("::", 1)[0] in resolve_enabled_skill_ids(
+                project if isinstance(project, dict) else {},
+                state if isinstance(state, dict) else {},
+            )
         return CHAPTER_SOP_MODULE_ID in {
             str(module_id).strip()
-            for module_id in self._enabled_skill_module_ids()
+            for module_id in enabled_module_ids
         }
 
     def _compute_fingerprint(self, analysis: dict[str, Any]) -> str:

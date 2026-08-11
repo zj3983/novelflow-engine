@@ -1784,7 +1784,11 @@ def _serialize_project(project: NovelProject) -> ProjectResponse:
         relationship_graph=project.relationship_graph,
 
         enabled_skill_ids=project.enabled_skill_ids,
-        enabled_skill_module_ids=project.enabled_skill_module_ids,
+        enabled_skill_module_ids=(
+            list(project.enabled_skill_module_ids)
+            if project.enabled_skill_module_ids is not None
+            else []
+        ),
 
         status=project.status,
 
@@ -2736,7 +2740,7 @@ def get_project_writing_packet(project_id: str, chapter_number: int | None = Non
 
         purpose: skill_pack_prompt_context(
             project.enabled_skill_ids,
-            enabled_module_ids=project.enabled_skill_module_ids or None,
+            enabled_module_ids=project.enabled_skill_module_ids,
             purpose=purpose,
             max_chars_per_pack=2600,
         )

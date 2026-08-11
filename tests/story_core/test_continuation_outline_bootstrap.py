@@ -1264,3 +1264,29 @@ def test_bootstrapper_resumes_from_persisted_checkpoints(tmp_path: Path) -> None
     assert result.ready
     assert len(rolling_calls) == 1  # no new call
     assert planning_calls == []
+
+
+def test_bootstrapper_preserves_legacy_vs_explicit_empty_module_selection(tmp_path: Path) -> None:
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    project_path = root / ".webnovel" / "project.json"
+    project = _read_json(project_path)
+    project["enabled_skill_ids"] = ["commercial-shuangwen"]
+    project.pop("enabled_skill_module_ids", None)
+    _write_json(project_path, project)
+    bootstrapper = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=lambda *args, **kwargs: None,
+        rolling_generator=lambda *args, **kwargs: None,
+    )
+
+    legacy_fingerprint = bootstrapper._compute_fingerprint({})
+
+    assert bootstrapper._enabled_skill_module_ids() is None
+    assert bootstrapper._require_shuangwen_contracts() is True
+
+    project["enabled_skill_module_ids"] = []
+    _write_json(project_path, project)
+
+    assert bootstrapper._enabled_skill_module_ids() == []
+    assert bootstrapper._require_shuangwen_contracts() is False
+    assert bootstrapper._compute_fingerprint({}) != legacy_fingerprint

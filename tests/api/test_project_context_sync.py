@@ -25,6 +25,22 @@ def test_project_genre_selection_distinguishes_missing_unknown_and_known_values(
     assert _project_genre_selection(known) == (["xuanhuan"], True)
 
 
+def test_default_project_context_sync_preserves_legacy_module_selection():
+    project = NovelProject(project_id="p-legacy-skills", title="Legacy Skills")
+    story = StoryState(
+        story_id="s-legacy-skills",
+        outline="Legacy outline",
+        genre="xuanhuan",
+        style="plain",
+        enabled_skill_module_ids=["stale::module"],
+    )
+
+    _sync_project_generation_context(story, project, has_history=True)
+
+    assert project.enabled_skill_module_ids is None
+    assert story.enabled_skill_module_ids is None
+
+
 def test_project_character_sync_preserves_dual_state_history_and_author_fields():
     project = NovelProject(
         project_id="p-dual-state",

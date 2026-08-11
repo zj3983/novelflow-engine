@@ -559,7 +559,11 @@ def _sync_project_generation_context(story: StoryState, project: NovelProject, *
     story.world_context = deepcopy(project.world_blueprint or {})
     story.world_facts = _project_world_facts(project)
     story.enabled_skill_ids = list(project.enabled_skill_ids)
-    story.enabled_skill_module_ids = list(project.enabled_skill_module_ids)
+    story.enabled_skill_module_ids = (
+        list(project.enabled_skill_module_ids)
+        if project.enabled_skill_module_ids is not None
+        else None
+    )
 
     genre_ids, _ = _project_genre_selection(project)
     primary_genre = genre_ids[0] if genre_ids else ""
