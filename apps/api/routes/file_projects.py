@@ -1885,7 +1885,10 @@ def init_file_project_routes() -> APIRouter:
         project_id: str,
         chapter_number: int,
     ) -> dict[str, Any]:
-        from packages.story_core.shuangwen_review import ShuangwenReviewError
+        from packages.story_core.shuangwen_review import (
+            ShuangwenReviewError,
+            ShuangwenReviewPreconditionError,
+        )
 
         store = _store_for(project_id)
         try:
@@ -1894,7 +1897,11 @@ def init_file_project_routes() -> APIRouter:
                 model_gateway=shuangwen_model_gateway,
             )
         except FileNotFoundError as exc:
+            if str(exc).startswith("chapter_not_found:"):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ShuangwenReviewPreconditionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ValueError as exc:
             detail = str(exc)
             if detail == "commercial_shuangwen_skill_missing":

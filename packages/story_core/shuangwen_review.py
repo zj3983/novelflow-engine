@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
-from typing import Any, Literal, Mapping
+from typing import Annotated, Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    model_validator,
+)
 
 from packages.story_core.model_gateway import ModelRequest, ModelResponse, RuntimeModelGateway
 
@@ -24,6 +31,31 @@ CHECK_KEYS = (
 )
 PAYOFF_FIELDS = ("need", "pressure", "hidden_advantage", "concrete_reward")
 SOP_FIELDS = ("opening_carry", "mid_feedback", "turn", "ending_hook")
+MAX_SUMMARY_CHARS = 1000
+MAX_FINDING_CHARS = 2000
+MAX_FINDINGS_PER_CHECK = 20
+MAX_ISSUES = 50
+
+SummaryText = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_SUMMARY_CHARS,
+    ),
+]
+FindingText = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_FINDING_CHARS,
+    ),
+]
+
+
+class ShuangwenReviewPreconditionError(ValueError):
+    """Local chapter state does not permit a reviewer call."""
 
 
 class ShuangwenReviewError(RuntimeError):
@@ -35,14 +67,14 @@ class _StrictModel(BaseModel):
 
 
 class ShuangwenChecks(_StrictModel):
-    goal: list[str]
-    pressure: list[str]
-    information_gap: list[str]
-    counterattack: list[str]
-    payoff: list[str]
-    reaction: list[str]
-    ending_hook: list[str]
-    cliches: list[str]
+    goal: list[FindingText] = Field(max_length=MAX_FINDINGS_PER_CHECK)
+    pressure: list[FindingText] = Field(max_length=MAX_FINDINGS_PER_CHECK)
+    information_gap: list[FindingText] = Field(max_length=MAX_FINDINGS_PER_CHECK)
+    counterattack: list[FindingText] = Field(max_length=MAX_FINDINGS_PER_CHECK)
+    payoff: list[FindingText] = Field(max_length=MAX_FINDINGS_PER_CHECK)
+    reaction: list[FindingText] = Field(max_length=MAX_FINDINGS_PER_CHECK)
+    ending_hook: list[FindingText] = Field(max_length=MAX_FINDINGS_PER_CHECK)
+    cliches: list[FindingText] = Field(max_length=MAX_FINDINGS_PER_CHECK)
 
 
 class ShuangwenReviewResult(_StrictModel):
@@ -50,9 +82,20 @@ class ShuangwenReviewResult(_StrictModel):
     skill_id: Literal["commercial-shuangwen"]
     executed: Literal[True]
     status: Literal["passed", "warning"]
-    summary: str = Field(min_length=1)
+    summary: SummaryText
     checks: ShuangwenChecks
-    issues: list[str]
+    issues: list[FindingText] = Field(max_length=MAX_ISSUES)
+
+    @model_validator(mode="after")
+    def validate_status_matches_findings(self) -> "ShuangwenReviewResult":
+        has_findings = bool(self.issues) or any(
+            getattr(self.checks, key) for key in CHECK_KEYS
+        )
+        if self.status == "passed" and has_findings:
+            raise ValueError("passed_review_has_findings")
+        if self.status == "warning" and not has_findings:
+            raise ValueError("warning_review_has_no_findings")
+        return self
 
 
 def _text_fields(value: Any, fields: tuple[str, ...]) -> dict[str, str]:
@@ -100,10 +143,19 @@ def build_shuangwen_review_prompt(
             "schema_version": "skill-review/v1",
             "skill_id": SKILL_ID,
             "executed": True,
-            "status": "passed|warning",
-            "summary": "non-empty string",
-            "checks": {key: ["finding strings"] for key in CHECK_KEYS},
-            "issues": ["actionable issue strings"],
+            "status": "passed only with zero findings; otherwise warning",
+            "summary": f"non-empty string, max {MAX_SUMMARY_CHARS} characters",
+            "checks": {
+                key: (
+                    f"array of at most {MAX_FINDINGS_PER_CHECK} non-empty finding strings; "
+                    f"max {MAX_FINDING_CHARS} characters each"
+                )
+                for key in CHECK_KEYS
+            },
+            "issues": (
+                f"array of at most {MAX_ISSUES} non-empty actionable issue strings; "
+                f"max {MAX_FINDING_CHARS} characters each"
+            ),
         },
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -145,7 +197,9 @@ def review_shuangwen_chapter(
     """Run one manual review call and return a validated report."""
 
     if not isinstance(body, str) or not body.strip():
-        raise ShuangwenReviewError("shuangwen_review_confirmed_body_required")
+        raise ShuangwenReviewPreconditionError(
+            "shuangwen_review_confirmed_body_required"
+        )
     before_hash = sha256(body.encode("utf-8")).hexdigest()
     prompt = build_shuangwen_review_prompt(
         body=body,
@@ -181,8 +235,13 @@ def review_shuangwen_chapter(
 
 __all__ = [
     "CHECK_KEYS",
+    "MAX_FINDING_CHARS",
+    "MAX_FINDINGS_PER_CHECK",
+    "MAX_ISSUES",
+    "MAX_SUMMARY_CHARS",
     "SKILL_ID",
     "ShuangwenReviewError",
+    "ShuangwenReviewPreconditionError",
     "ShuangwenReviewResult",
     "build_shuangwen_review_prompt",
     "review_shuangwen_chapter",

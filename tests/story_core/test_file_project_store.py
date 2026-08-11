@@ -710,6 +710,214 @@ def _make_minimal_file_project(root, *, state=None, project=None):
     return FileProjectStore(root)
 
 
+def _manual_shuangwen_report():
+    return {
+        "schema_version": "skill-review/v1",
+        "skill_id": "commercial-shuangwen",
+        "executed": True,
+        "status": "warning",
+        "summary": "The payoff needs one observable result.",
+        "checks": {
+            "goal": [],
+            "pressure": [],
+            "information_gap": [],
+            "counterattack": [],
+            "payoff": ["The order result is not visible."],
+            "reaction": [],
+            "ending_hook": [],
+            "cliches": [],
+        },
+        "issues": ["Show whether the order was credited."],
+        "runtime": "test-runtime",
+        "model": "test-reviewer",
+        "trace_id": "trace-store-review",
+    }
+
+
+def _seed_manual_shuangwen_chapter(store):
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "Receipt",
+        "body": "Lin Xiu presents the archived receipt.",
+        "quality_report": {"ok": True, "issues": []},
+    }
+    chapter_path = store.story_system_dir / "chapters" / "0001.json"
+    review_path = store.story_system_dir / "reviews" / "0001.json"
+    store._write_json(chapter_path, chapter)
+    store._write_json(review_path, chapter["quality_report"])
+    return chapter, chapter_path, review_path
+
+
+def _store_manual_shuangwen_report(store, chapter, chapter_path, report):
+    from hashlib import sha256
+
+    return store._store_shuangwen_review(
+        chapter_number=1,
+        report=report,
+        expected_artifact_hash=sha256(chapter_path.read_bytes()).hexdigest(),
+        expected_body_hash=sha256(chapter["body"].encode("utf-8")).hexdigest(),
+        expected_candidate_hash=store._candidate_artifacts_hash(),
+    )
+
+
+def test_manual_shuangwen_review_synchronizes_chapter_sidecar_and_latest_review(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "manual-review-sidecar",
+        state={"story_id": "s-file", "current_chapter": 1, "world_facts": []},
+    )
+    chapter, chapter_path, _review_path = _seed_manual_shuangwen_chapter(store)
+    report = _manual_shuangwen_report()
+
+    _store_manual_shuangwen_report(store, chapter, chapter_path, report)
+
+    chapter_report = store.chapter(1)["quality_report"]["skill_reviews"]["commercial-shuangwen"]
+    sidecar_report = store.review(1)["skill_reviews"]["commercial-shuangwen"]
+    latest_report = store.writing_packet(2)["latest_review"]["skill_reviews"]["commercial-shuangwen"]
+    assert chapter_report == report
+    assert sidecar_report == report
+    assert latest_report == report
+
+
+def test_manual_shuangwen_review_rolls_back_both_files_when_second_replace_fails(
+    tmp_path,
+    monkeypatch,
+):
+    store = _make_minimal_file_project(
+        tmp_path / "manual-review-sidecar-rollback",
+        state={"story_id": "s-file", "current_chapter": 1, "world_facts": []},
+    )
+    chapter, chapter_path, review_path = _seed_manual_shuangwen_chapter(store)
+    chapter_before = chapter_path.read_bytes()
+    review_before = review_path.read_bytes()
+    original_replace = store.snapshot_store._replace_file
+    calls = 0
+
+    def fail_second_replace(source, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected second review write failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(store.snapshot_store, "_replace_file", fail_second_replace)
+
+    with pytest.raises(OSError, match="injected second review write failure"):
+        _store_manual_shuangwen_report(
+            store,
+            chapter,
+            chapter_path,
+            _manual_shuangwen_report(),
+        )
+
+    assert chapter_path.read_bytes() == chapter_before
+    assert review_path.read_bytes() == review_before
+    assert "skill_reviews" not in store.chapter(1)["quality_report"]
+    assert "skill_reviews" not in store.review(1)
+    assert "skill_reviews" not in store.writing_packet(2)["latest_review"]
+
+
+@pytest.mark.parametrize(
+    ("changed_artifact", "expected_error"),
+    [
+        ("chapter", "shuangwen_review_chapter_changed"),
+        ("body", "shuangwen_review_body_changed"),
+        ("candidate", "shuangwen_review_candidate_changed"),
+    ],
+)
+def test_manual_shuangwen_review_checks_all_hashes_before_persisting(
+    tmp_path,
+    monkeypatch,
+    changed_artifact,
+    expected_error,
+):
+    from hashlib import sha256
+
+    store = _make_minimal_file_project(
+        tmp_path / f"manual-review-{changed_artifact}-conflict",
+        state={"story_id": "s-file", "current_chapter": 1, "world_facts": []},
+    )
+    body = "Lin Xiu presents the archived receipt."
+    markdown_path = store.root / "chapters" / "0001-Receipt.md"
+    markdown_path.write_text(body, encoding="utf-8")
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "Receipt",
+        "body_path": "chapters/0001-Receipt.md",
+        "body_sha256": sha256(body.encode("utf-8")).hexdigest(),
+        "quality_report": {"ok": True, "issues": []},
+    }
+    chapter_path = store.story_system_dir / "chapters" / "0001.json"
+    review_path = store.story_system_dir / "reviews" / "0001.json"
+    store._write_json(chapter_path, chapter)
+    store._write_json(review_path, chapter["quality_report"])
+    expected_artifact_hash = sha256(chapter_path.read_bytes()).hexdigest()
+    expected_body_hash = sha256(body.encode("utf-8")).hexdigest()
+    expected_candidate_hash = store._candidate_artifacts_hash()
+
+    if changed_artifact == "chapter":
+        chapter["chapter_title"] = "Changed receipt"
+        store._write_json(chapter_path, chapter)
+    elif changed_artifact == "body":
+        markdown_path.write_text("Concurrent body edit.", encoding="utf-8")
+    else:
+        store.candidate_store.directory.mkdir(parents=True, exist_ok=True)
+        (store.candidate_store.directory / "concurrent.json").write_text(
+            "{}",
+            encoding="utf-8",
+        )
+
+    def forbidden_transaction(_payloads):
+        raise AssertionError("conflict reached persistent write")
+
+    monkeypatch.setattr(store, "_replace_json_transaction", forbidden_transaction)
+
+    with pytest.raises(ValueError, match=f"^{expected_error}$"):
+        store._store_shuangwen_review(
+            chapter_number=1,
+            report=_manual_shuangwen_report(),
+            expected_artifact_hash=expected_artifact_hash,
+            expected_body_hash=expected_body_hash,
+            expected_candidate_hash=expected_candidate_hash,
+        )
+
+    assert "skill_reviews" not in store.review(1)
+
+
+def test_manual_shuangwen_review_does_not_raise_conflict_after_successful_commit(
+    tmp_path,
+    monkeypatch,
+):
+    store = _make_minimal_file_project(
+        tmp_path / "manual-review-post-commit",
+        state={"story_id": "s-file", "current_chapter": 1, "world_facts": []},
+    )
+    chapter, chapter_path, _review_path = _seed_manual_shuangwen_chapter(store)
+    original_transaction = store._replace_json_transaction
+
+    def commit_then_create_candidate(payloads):
+        original_transaction(payloads)
+        store.candidate_store.directory.mkdir(parents=True, exist_ok=True)
+        (store.candidate_store.directory / "after-commit.json").write_text(
+            "{}",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(store, "_replace_json_transaction", commit_then_create_candidate)
+
+    result = _store_manual_shuangwen_report(
+        store,
+        chapter,
+        chapter_path,
+        _manual_shuangwen_report(),
+    )
+
+    assert result == _manual_shuangwen_report()
+    assert (
+        store.review(1)["skill_reviews"]["commercial-shuangwen"]
+        == _manual_shuangwen_report()
+    )
+
+
 def test_direction_payload_keeps_opening_chapter_facts_when_regeneration_rolls_back_state(tmp_path):
     project = {
         "project_id": "p-file",

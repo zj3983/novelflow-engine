@@ -957,6 +957,103 @@ def test_manual_shuangwen_review_returns_not_found_when_pack_is_missing(tmp_path
     assert gateway.calls == []
 
 
+def test_manual_shuangwen_review_returns_conflict_when_confirmed_chapter_is_missing(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    root = tmp_path / "missing-confirmed-shuangwen-chapter"
+    _make_file_project(
+        root,
+        project_id="p-missing-confirmed-shuangwen-chapter",
+        state={"story_id": "s-file-api", "current_chapter": 1, "world_facts": []},
+    )
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["enabled_skill_ids"] = ["commercial-shuangwen"]
+    project_path.write_text(json.dumps(project), encoding="utf-8")
+    gateway = _ShuangwenReviewGateway()
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", gateway, raising=False)
+
+    response = client.post(
+        "/file-projects/p-missing-confirmed-shuangwen-chapter/chapters/1/skill-reviews/commercial-shuangwen"
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "chapter_not_found:1"
+    assert gateway.calls == []
+
+
+def test_manual_shuangwen_review_returns_unprocessable_for_empty_confirmed_body(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    root = tmp_path / "empty-shuangwen-body"
+    _seed_shuangwen_review_project(root, project_id="p-empty-shuangwen-body")
+    chapter_path = root / ".story-system" / "chapters" / "0001.json"
+    chapter = json.loads(chapter_path.read_text(encoding="utf-8"))
+    chapter["body"] = "   "
+    chapter_path.write_text(json.dumps(chapter), encoding="utf-8")
+    gateway = _ShuangwenReviewGateway()
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", gateway, raising=False)
+
+    response = client.post(
+        "/file-projects/p-empty-shuangwen-body/chapters/1/skill-reviews/commercial-shuangwen"
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "shuangwen_review_confirmed_body_required"
+    assert gateway.calls == []
+
+
+@pytest.mark.parametrize("failure_mode", ["runtime", "invalid-response"])
+def test_manual_shuangwen_review_returns_bad_gateway_for_reviewer_failures(
+    tmp_path,
+    monkeypatch,
+    failure_mode,
+):
+    from packages.story_core.model_gateway import ModelResponse
+
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    root = tmp_path / f"shuangwen-{failure_mode}"
+    project_id = f"p-shuangwen-{failure_mode}"
+    _seed_shuangwen_review_project(root, project_id=project_id)
+
+    class FailingGateway:
+        def complete_stage(self, _stage, request):
+            if failure_mode == "runtime":
+                raise RuntimeError("reviewer offline")
+            return ModelResponse(
+                ok=True,
+                text='{"schema_version":"skill-review/v1"}',
+                provider="test-runtime",
+                model="test-reviewer",
+                operation=request.operation,
+                request_id="trace-invalid-review",
+            )
+
+    monkeypatch.setattr(
+        file_projects,
+        "shuangwen_model_gateway",
+        FailingGateway(),
+        raising=False,
+    )
+
+    response = client.post(
+        f"/file-projects/{project_id}/chapters/1/skill-reviews/commercial-shuangwen"
+    )
+
+    assert response.status_code == 502
+    expected_detail = (
+        "shuangwen_review_runtime_failed"
+        if failure_mode == "runtime"
+        else "shuangwen_review_invalid_response"
+    )
+    assert response.json()["detail"] == expected_detail
+    assert not (root / ".story-system" / "reviews" / "0001.json").exists()
+
+
 @pytest.mark.parametrize(
     ("project_id", "module_selection", "expected_writer_modules"),
     [

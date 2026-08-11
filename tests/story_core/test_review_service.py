@@ -48,6 +48,8 @@ def _shuangwen_payload(**overrides):
         "issues": ["补充财务核款或订单到账这一可观察结果。"],
     }
     payload.update(overrides)
+    if payload["status"] == "passed" and "checks" not in overrides:
+        payload["checks"] = {key: [] for key in SHUANGWEN_CHECKS}
     return payload
 
 
@@ -155,6 +157,122 @@ def test_shuangwen_review_rejects_non_contract_runtime_results(payload):
             skill_context=[],
             model_gateway=_ShuangwenGateway(payload),
         )
+
+
+def test_shuangwen_review_trims_summary_and_finding_strings():
+    from packages.story_core.shuangwen_review import review_shuangwen_chapter
+
+    checks = {key: [] for key in SHUANGWEN_CHECKS}
+    checks["goal"] = ["  Make the chapter goal concrete.  "]
+    result = review_shuangwen_chapter(
+        body="confirmed body",
+        chapter_plan={"payoff_contract": {}, "chapter_sop": {}},
+        skill_context=[],
+        model_gateway=_ShuangwenGateway(
+            _shuangwen_payload(
+                summary="  One goal finding.  ",
+                checks=checks,
+                issues=["  Clarify the immediate objective.  "],
+            )
+        ),
+    )
+
+    assert result["summary"] == "One goal finding."
+    assert result["checks"]["goal"] == ["Make the chapter goal concrete."]
+    assert result["issues"] == ["Clarify the immediate objective."]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _shuangwen_payload(summary="   "),
+        _shuangwen_payload(
+            checks={**SHUANGWEN_CHECKS, "goal": ["   "]},
+        ),
+        _shuangwen_payload(issues=["   "]),
+    ],
+)
+def test_shuangwen_review_rejects_whitespace_only_strings(payload):
+    from packages.story_core.shuangwen_review import ShuangwenReviewError, review_shuangwen_chapter
+
+    with pytest.raises(ShuangwenReviewError, match="shuangwen_review_invalid_response"):
+        review_shuangwen_chapter(
+            body="confirmed body",
+            chapter_plan={"payoff_contract": {}, "chapter_sop": {}},
+            skill_context=[],
+            model_gateway=_ShuangwenGateway(payload),
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _shuangwen_payload(summary="x" * 1001),
+        _shuangwen_payload(
+            checks={**SHUANGWEN_CHECKS, "goal": ["finding"] * 21},
+        ),
+        _shuangwen_payload(
+            checks={**SHUANGWEN_CHECKS, "goal": ["x" * 2001]},
+        ),
+        _shuangwen_payload(issues=["issue"] * 51),
+    ],
+)
+def test_shuangwen_review_bounds_strings_and_finding_counts(payload):
+    from packages.story_core.shuangwen_review import ShuangwenReviewError, review_shuangwen_chapter
+
+    with pytest.raises(ShuangwenReviewError, match="shuangwen_review_invalid_response"):
+        review_shuangwen_chapter(
+            body="confirmed body",
+            chapter_plan={"payoff_contract": {}, "chapter_sop": {}},
+            skill_context=[],
+            model_gateway=_ShuangwenGateway(payload),
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _shuangwen_payload(status="passed", checks=SHUANGWEN_CHECKS, issues=[]),
+        _shuangwen_payload(status="passed", issues=["unresolved issue"]),
+        _shuangwen_payload(
+            status="warning",
+            checks={key: [] for key in SHUANGWEN_CHECKS},
+            issues=[],
+        ),
+    ],
+)
+def test_shuangwen_review_status_matches_presence_of_findings(payload):
+    from packages.story_core.shuangwen_review import ShuangwenReviewError, review_shuangwen_chapter
+
+    with pytest.raises(ShuangwenReviewError, match="shuangwen_review_invalid_response"):
+        review_shuangwen_chapter(
+            body="confirmed body",
+            chapter_plan={"payoff_contract": {}, "chapter_sop": {}},
+            skill_context=[],
+            model_gateway=_ShuangwenGateway(payload),
+        )
+
+
+def test_shuangwen_review_empty_body_is_a_local_precondition_error():
+    from packages.story_core.shuangwen_review import (
+        ShuangwenReviewPreconditionError,
+        review_shuangwen_chapter,
+    )
+
+    gateway = _ShuangwenGateway(_shuangwen_payload())
+
+    with pytest.raises(
+        ShuangwenReviewPreconditionError,
+        match="shuangwen_review_confirmed_body_required",
+    ):
+        review_shuangwen_chapter(
+            body="   ",
+            chapter_plan={"payoff_contract": {}, "chapter_sop": {}},
+            skill_context=[],
+            model_gateway=gateway,
+        )
+
+    assert gateway.calls == []
 
 
 class _RecordingService(ReviewService):

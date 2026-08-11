@@ -7199,14 +7199,13 @@ class FileProjectStore:
         skill_reviews["commercial-shuangwen"] = deepcopy(report)
         quality_report["skill_reviews"] = skill_reviews
         updated["quality_report"] = quality_report
-        self._replace_json_transaction({chapter_path: updated})
-
-        reloaded = self.chapter(chapter_number)
-        reloaded_body = str(reloaded.get("body") or "")
-        if sha256(reloaded_body.encode("utf-8")).hexdigest() != expected_body_hash:
-            raise ValueError("shuangwen_review_body_changed")
-        if self._candidate_artifacts_hash() != expected_candidate_hash:
-            raise ValueError("shuangwen_review_candidate_changed")
+        review_path = self.story_system_dir / "reviews" / f"{chapter_number:04d}.json"
+        self._replace_json_transaction(
+            {
+                chapter_path: updated,
+                review_path: deepcopy(quality_report),
+            }
+        )
         return deepcopy(report)
 
     def run_shuangwen_review(
@@ -7215,7 +7214,10 @@ class FileProjectStore:
         *,
         model_gateway: Any | None = None,
     ) -> dict[str, Any]:
-        from packages.story_core.shuangwen_review import review_shuangwen_chapter
+        from packages.story_core.shuangwen_review import (
+            ShuangwenReviewPreconditionError,
+            review_shuangwen_chapter,
+        )
 
         project = self.project()
         state = self.state()
@@ -7236,6 +7238,10 @@ class FileProjectStore:
             raise FileNotFoundError(f"chapter_not_found:{chapter_number}")
         chapter = self.chapter(chapter_number)
         body = str(chapter.get("body") or "")
+        if not body.strip():
+            raise ShuangwenReviewPreconditionError(
+                "shuangwen_review_confirmed_body_required"
+            )
         artifact_hash = sha256(chapter_path.read_bytes()).hexdigest()
         body_hash = sha256(body.encode("utf-8")).hexdigest()
         candidate_hash = self._candidate_artifacts_hash()
