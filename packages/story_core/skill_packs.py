@@ -201,14 +201,13 @@ def _clean_instruction_line(line: str) -> str:
     return line
 
 
-def extract_skill_instructions(
+def _skill_instruction_candidates(
     text: str,
     *,
-    limit: int = 1000,
     include_examples: bool = False,
     genre_id: str = "",
-) -> str:
-    """Extract complete, purpose-aware heading blocks from a Skill document."""
+) -> list[tuple[int, str]]:
+    """Return complete instruction blocks ordered later by semantic priority."""
 
     body = text
     if text.startswith("---"):
@@ -219,7 +218,7 @@ def extract_skill_instructions(
     meta = _frontmatter(text)
     is_genre_examples = normalize_skill_id(meta.get("name", "")) == "genre-examples"
     if is_genre_examples and not include_examples:
-        return ""
+        return []
 
     candidates: list[tuple[int, str]] = []
     skipped_scope_level: int | None = None
@@ -281,7 +280,15 @@ def extract_skill_instructions(
             priority = 1
         candidates.append((priority, block))
 
-    selected: list[str] = []
+    return candidates
+
+
+def _select_instruction_blocks(
+    candidates: list[tuple[int, str]],
+    *,
+    limit: int,
+) -> list[tuple[int, str]]:
+    selected: list[tuple[int, str]] = []
     total = 0
     for priority in range(3):
         for block_priority, block in candidates:
@@ -290,10 +297,44 @@ def extract_skill_instructions(
             added_chars = len(block) + (1 if selected else 0)
             if total + added_chars > limit:
                 continue
-            selected.append(block)
+            selected.append((block_priority, block))
             total += added_chars
+    return selected
 
-    return " ".join(selected).strip()
+
+def _selected_skill_instruction_blocks(
+    text: str,
+    *,
+    limit: int,
+    include_examples: bool = False,
+    genre_id: str = "",
+) -> list[tuple[int, str]]:
+    return _select_instruction_blocks(
+        _skill_instruction_candidates(
+            text,
+            include_examples=include_examples,
+            genre_id=genre_id,
+        ),
+        limit=limit,
+    )
+
+
+def extract_skill_instructions(
+    text: str,
+    *,
+    limit: int = 1000,
+    include_examples: bool = False,
+    genre_id: str = "",
+) -> str:
+    """Extract complete, purpose-aware heading blocks from a Skill document."""
+
+    selected = _selected_skill_instruction_blocks(
+        text,
+        limit=limit,
+        include_examples=include_examples,
+        genre_id=genre_id,
+    )
+    return " ".join(block for _, block in selected).strip()
 
 
 def infer_skill_purposes(*values: str) -> list[str]:
@@ -590,6 +631,101 @@ def import_skill_pack_from_zip(zip_bytes: bytes, root: Path | None = None) -> Sk
         return import_skill_pack_from_path(source, root=base)
 
 
+def _render_compact_skill_context(
+    sources: list[dict[str, Any]],
+    selected_blocks: dict[tuple[int, int], list[str]],
+) -> list[dict[str, Any]]:
+    contexts: list[dict[str, Any]] = []
+    for pack_index, source in enumerate(sources):
+        modules = []
+        for module_index, module in enumerate(source["modules"]):
+            blocks = selected_blocks.get((pack_index, module_index), [])
+            if not blocks:
+                continue
+            modules.append(
+                {
+                    "module_id": module["module_id"],
+                    "instructions": " ".join(blocks).strip(),
+                }
+            )
+        if modules:
+            contexts.append({"skill_id": source["skill_id"], "modules": modules})
+    return contexts
+
+
+def _compact_skill_pack_prompt_context(
+    skill_ids: list[str],
+    *,
+    enabled_module_ids: list[str] | None,
+    purpose: str | None,
+    include_examples: bool,
+    genre_id: str,
+    max_chars_per_pack: int,
+    max_serialized_chars: int | None,
+) -> list[dict[str, Any]]:
+    selected_module_keys = None if enabled_module_ids is None else {str(item).strip() for item in enabled_module_ids}
+    sources: list[dict[str, Any]] = []
+    for skill_id in skill_ids:
+        pack = get_skill_pack(skill_id)
+        if pack is None:
+            continue
+        used_chars = 0
+        source_modules: list[dict[str, Any]] = []
+        root_selected = selected_module_keys is None or skill_module_key(pack.skill_id, "root") in selected_module_keys
+        if root_selected:
+            root_blocks = _selected_skill_instruction_blocks(
+                pack.root_content,
+                limit=max(0, min(1000, max_chars_per_pack)),
+                include_examples=include_examples,
+                genre_id=genre_id,
+            )
+            root_instructions = " ".join(block for _, block in root_blocks).strip()
+            used_chars += len(root_instructions)
+            if root_blocks:
+                source_modules.append({"module_id": "root", "blocks": root_blocks})
+        for module in pack.modules:
+            if selected_module_keys is not None and skill_module_key(pack.skill_id, module.module_id) not in selected_module_keys:
+                continue
+            if purpose and purpose not in module.purposes and "general" not in module.purposes:
+                continue
+            if used_chars >= max_chars_per_pack:
+                break
+            blocks = _selected_skill_instruction_blocks(
+                module.content,
+                limit=max(0, min(1000, max_chars_per_pack - used_chars)),
+                include_examples=include_examples,
+                genre_id=genre_id,
+            )
+            instructions = " ".join(block for _, block in blocks).strip()
+            used_chars += len(instructions)
+            if blocks:
+                source_modules.append({"module_id": module.module_id, "blocks": blocks})
+        if source_modules:
+            sources.append({"skill_id": pack.skill_id, "modules": source_modules})
+
+    selected_blocks: dict[tuple[int, int], list[str]] = {}
+    if max_serialized_chars is None:
+        for pack_index, source in enumerate(sources):
+            for module_index, module in enumerate(source["modules"]):
+                selected_blocks[(pack_index, module_index)] = [
+                    block for _, block in module["blocks"]
+                ]
+        return _render_compact_skill_context(sources, selected_blocks)
+
+    for priority in range(3):
+        for pack_index, source in enumerate(sources):
+            for module_index, module in enumerate(source["modules"]):
+                key = (pack_index, module_index)
+                for block_priority, block in module["blocks"]:
+                    if block_priority != priority:
+                        continue
+                    selected_blocks.setdefault(key, []).append(block)
+                    candidate = _render_compact_skill_context(sources, selected_blocks)
+                    if len(json.dumps(candidate, ensure_ascii=False)) > max_serialized_chars:
+                        selected_blocks[key].pop()
+    return _render_compact_skill_context(sources, selected_blocks)
+
+
 def skill_pack_prompt_context(
     skill_ids: list[str],
     *,
@@ -598,7 +734,19 @@ def skill_pack_prompt_context(
     include_examples: bool = False,
     genre_id: str = "",
     max_chars_per_pack: int = 5000,
+    compact: bool = False,
+    max_serialized_chars: int | None = None,
 ) -> list[dict[str, Any]]:
+    if compact:
+        return _compact_skill_pack_prompt_context(
+            skill_ids,
+            enabled_module_ids=enabled_module_ids,
+            purpose=purpose,
+            include_examples=include_examples,
+            genre_id=genre_id,
+            max_chars_per_pack=max_chars_per_pack,
+            max_serialized_chars=max_serialized_chars,
+        )
     contexts: list[dict[str, Any]] = []
     selected_module_keys = None if enabled_module_ids is None else {str(item).strip() for item in enabled_module_ids}
     for skill_id in skill_ids:

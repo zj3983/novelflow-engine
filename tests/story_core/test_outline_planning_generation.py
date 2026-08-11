@@ -797,13 +797,27 @@ def test_enabled_xuanhuan_outline_prompt_gets_only_outline_skill_modules(monkeyp
         mode="initial",
     )
 
-    assert set(captured["context"]["skill_context"]) == {"outline"}
-    skill_context = captured["context"]["skill_context"]["outline"]
+    stage_skill_context = captured["context"]["skill_context"]
+    assert set(stage_skill_context) == {"outline"}
+    assert len(json.dumps(stage_skill_context, ensure_ascii=False)) <= 3600
+    skill_context = stage_skill_context["outline"]
     assert [module["module_id"] for module in skill_context[0]["modules"]] == [
         "genre-examples",
         "plot-engine",
     ]
+    assert set(skill_context[0]) == {"skill_id", "modules"}
+    assert all(
+        set(module) == {"module_id", "instructions"}
+        for module in skill_context[0]["modules"]
+    )
     serialized = json.dumps(skill_context, ensure_ascii=False)
+    assert "content" not in serialized
+    assert "summary" not in serialized
+    assert "设局/需求" in serialized
+    assert "主角与读者已知" in serialized
+    assert "对手错误认知" in serialized
+    assert "误判如何驱动冲突" in serialized
+    assert "纠错与回报" in serialized
     assert "石碑" in serialized
     assert "副本" not in serialized
     assert "玩家" not in serialized
@@ -845,6 +859,8 @@ def test_outline_skill_context_uses_canonical_genre_and_bounded_budget(monkeypat
         "include_examples": True,
         "genre_id": "xuanhuan",
         "max_chars_per_pack": 3600,
+        "compact": True,
+        "max_serialized_chars": 3587,
     }
     assert captured_prompt["skill_context"] == {"outline": sentinel}
 

@@ -43,6 +43,11 @@ _OUTLINE_SKILL_GUARD = (
     "must not replace prompt_context.output_schema, and must not override the "
     "established outline, world, or characters. "
 )
+_OUTLINE_SKILL_CONTEXT_MAX_CHARS = 3600
+_OUTLINE_SKILL_LIST_MAX_CHARS = _OUTLINE_SKILL_CONTEXT_MAX_CHARS - (
+    len(json.dumps({"outline": []}, ensure_ascii=False))
+    - len(json.dumps([], ensure_ascii=False))
+)
 
 
 def _runtime_gateway_for_legacy_injection(
@@ -643,6 +648,8 @@ class LLMOutlinePlanningGenerator:
                     include_examples=True,
                     genre_id=effective_novel_type_id,
                     max_chars_per_pack=3600,
+                    compact=True,
+                    max_serialized_chars=_OUTLINE_SKILL_LIST_MAX_CHARS,
                 )
                 if validated.enabled_skill_ids
                 else []

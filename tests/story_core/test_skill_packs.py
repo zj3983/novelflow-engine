@@ -85,6 +85,72 @@ def test_skill_pack_prompt_context_is_trimmed_and_structured(tmp_path: Path, mon
     assert [module["module_id"] for module in dialogue_context[0]["modules"]] == ["dialogue"]
 
 
+def test_compact_prompt_context_omits_display_metadata_without_changing_default(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _write_pack(tmp_path)
+    registry = tmp_path / "registry"
+    import_skill_pack_from_path(source, root=registry)
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(registry))
+
+    selected_modules = [skill_module_key("plain-webnovel", "writer")]
+    default_context = skill_pack_prompt_context(
+        ["plain-webnovel"],
+        enabled_module_ids=selected_modules,
+        purpose="writer",
+    )
+    compact_context = skill_pack_prompt_context(
+        ["plain-webnovel"],
+        enabled_module_ids=selected_modules,
+        purpose="writer",
+        compact=True,
+    )
+
+    assert "content" in default_context[0]["modules"][0]
+    assert "summary" in default_context[0]["modules"][0]
+    assert set(compact_context[0]) == {"skill_id", "modules"}
+    assert set(compact_context[0]["modules"][0]) == {"module_id", "instructions"}
+    assert compact_context[0]["modules"][0]["instructions"] == default_context[0]["modules"][0]["instructions"]
+
+
+def test_compact_prompt_context_budget_keeps_rule_block_and_drops_whole_example(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _write_pack(tmp_path)
+    (source / "skills" / "writer" / "SKILL.md").write_text(
+        """---
+name: plot-engine
+purposes: outline
+---
+# Plot Engine
+## 规则
+规则必须完整保留。
+## 正例
+完整示例块开头，这一段很长，用来占据有限的提示词预算。
+完整示例块结尾，不能只留下其中一半。
+""",
+        encoding="utf-8",
+    )
+    registry = tmp_path / "registry"
+    import_skill_pack_from_path(source, root=registry)
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(registry))
+
+    context = skill_pack_prompt_context(
+        ["plain-webnovel"],
+        enabled_module_ids=[skill_module_key("plain-webnovel", "plot-engine")],
+        purpose="outline",
+        include_examples=True,
+        compact=True,
+        max_serialized_chars=150,
+    )
+    serialized = json.dumps(context, ensure_ascii=False)
+
+    assert len(serialized) <= 150
+    assert "规则必须完整保留" in serialized
+    assert "完整示例块开头" not in serialized
+    assert "完整示例块结尾" not in serialized
+
+
 def test_skill_pack_prompt_context_can_select_one_module_without_root_or_other_modules(
     tmp_path: Path, monkeypatch
 ) -> None:
