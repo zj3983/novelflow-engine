@@ -797,7 +797,8 @@ def test_enabled_xuanhuan_outline_prompt_gets_only_outline_skill_modules(monkeyp
         mode="initial",
     )
 
-    skill_context = captured["context"]["skill_context"]
+    assert set(captured["context"]["skill_context"]) == {"outline"}
+    skill_context = captured["context"]["skill_context"]["outline"]
     assert [module["module_id"] for module in skill_context[0]["modules"]] == [
         "genre-examples",
         "plot-engine",
@@ -845,7 +846,7 @@ def test_outline_skill_context_uses_canonical_genre_and_bounded_budget(monkeypat
         "genre_id": "xuanhuan",
         "max_chars_per_pack": 3600,
     }
-    assert captured_prompt["skill_context"] == sentinel
+    assert captured_prompt["skill_context"] == {"outline": sentinel}
 
 
 def test_split_outline_prompt_routes_skill_only_to_outline_foundation(monkeypatch) -> None:
@@ -889,7 +890,7 @@ def test_split_outline_prompt_routes_skill_only_to_outline_foundation(monkeypatc
     foundation = captured["outline_planning_outline_foundation"]
     assert [
         module["module_id"]
-        for module in foundation["context"]["skill_context"][0]["modules"]
+        for module in foundation["context"]["skill_context"]["outline"][0]["modules"]
     ] == ["genre-examples", "plot-engine"]
     assert "may shape conflict and payoff" in foundation["system"]
     assert "skill_context" not in captured["outline_planning_character_roster"]["context"]

@@ -649,7 +649,7 @@ class LLMOutlinePlanningGenerator:
             )
             skill_method_guard = ""
             if outline_skill_context:
-                prompt_context["skill_context"] = outline_skill_context
+                prompt_context["skill_context"] = {"outline": outline_skill_context}
                 skill_method_guard = _OUTLINE_SKILL_GUARD
             if power_system:
                 prompt_context["power_system"] = power_system
